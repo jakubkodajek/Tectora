@@ -1,4 +1,4 @@
-"""Hlavní okno aplikace Tectora."""
+"""Main window of the Tectora application."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -118,7 +118,7 @@ class MainWindow(QMainWindow):
         about.triggered.connect(self._on_about)
         help_menu.addAction(about)
 
-    # ---------- akce ----------
+    # ---------- actions ----------
     def _on_calculate(self) -> None:
         try:
             spec = self.form_panel.build_spec()
@@ -139,7 +139,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_type_changed(self) -> None:
-        # Při změně typu schovat staré výsledky aby uživatel věděl, že musí přepočítat
+        # On type change, hide old results so the user knows a recalculation is needed
         self.statusBar().showMessage("Typ střechy změněn — klikni „Provést výpočet“.")
 
     def _on_open_xlsx(self) -> None:

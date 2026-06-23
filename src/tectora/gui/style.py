@@ -1,6 +1,6 @@
-"""Stylesheet a barvy pro GUI — moderní tmavá/světlá paleta."""
+"""Stylesheet and colours for the GUI — modern light palette with blue accents."""
 
-# Hlavní paleta (světlá s modrými akcenty)
+# Primary palette (light with blue accents)
 PRIMARY = "#1F4E78"
 PRIMARY_LIGHT = "#2E75B6"
 ACCENT = "#F2A900"
@@ -11,8 +11,8 @@ TEXT_MUTED = "#6C757D"
 BORDER = "#DEE2E6"
 SUCCESS = "#2E7D32"
 
-# Barvy pro 3D vykreslování (rovinný odstín se světlem)
-ROOF_BASE = (235, 130, 80)        # cihlově oranžová
+# Colours for 3D rendering (flat shading with lighting)
+ROOF_BASE = (235, 130, 80)        # brick orange
 ROOF_HIGHLIGHT = (250, 180, 140)
 ROOF_SHADOW = (170, 80, 40)
 WALL = (245, 245, 235)

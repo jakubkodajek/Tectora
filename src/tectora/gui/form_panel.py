@@ -1,4 +1,4 @@
-"""Levý panel — vstupní formulář."""
+"""Left panel — input form."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
@@ -18,7 +18,7 @@ from tectora.core.spec import RoofSpec, RoofType
 
 
 class FormPanel(QFrame):
-    """Form s parametry střechy + tlačítko Provést výpočet."""
+    """Form with roof parameters and a Calculate button."""
 
     calculate_requested = Signal()
     type_changed = Signal()
@@ -56,7 +56,7 @@ class FormPanel(QFrame):
         self.type_combo = QComboBox()
         for t in RoofType:
             self.type_combo.addItem(f"{t.cs_name} ({t.value})", t)
-        self.type_combo.setCurrentIndex(1)  # sedlová default
+        self.type_combo.setCurrentIndex(1)  # gable is the default
         self.type_combo.currentIndexChanged.connect(self._on_type_changed)
         form.addRow("Typ:", self.type_combo)
 
@@ -89,7 +89,7 @@ class FormPanel(QFrame):
         outer.addLayout(form)
         outer.addStretch(1)
 
-        # Tlačítka
+        # Buttons
         self.calc_button = QPushButton("✓  Provést výpočet")
         self.calc_button.setObjectName("primary")
         self.calc_button.setMinimumHeight(40)
@@ -128,7 +128,7 @@ class FormPanel(QFrame):
         self.pitch_back_check.setEnabled(t == RoofType.GABLE)
         if t != RoofType.GABLE:
             self.pitch_back_check.setCurrentIndex(0)
-        # Stanová → uzamknout width = length (jen jednou připojíme)
+        # Pyramid → lock width = length (connect the signal only once)
         if not hasattr(self, "_length_sync_connected"):
             self.length_spin.valueChanged.connect(self._sync_width)
             self._length_sync_connected = True
@@ -141,7 +141,7 @@ class FormPanel(QFrame):
         if getattr(self, "_pyramid_mode", False):
             self.width_spin.setValue(value)
 
-    # ---------- API ----------
+    # ---------- public API ----------
     def current_type(self) -> RoofType:
         return self.type_combo.currentData()
 
@@ -164,7 +164,7 @@ class FormPanel(QFrame):
 
     def load_spec(self, spec: RoofSpec) -> None:
         self.name_edit.setText(spec.name)
-        # set type
+        # restore type selection
         for i in range(self.type_combo.count()):
             if self.type_combo.itemData(i) == spec.type:
                 self.type_combo.setCurrentIndex(i)

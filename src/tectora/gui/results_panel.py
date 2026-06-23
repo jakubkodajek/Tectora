@@ -1,4 +1,4 @@
-"""Panel výsledků pod 3D náhledem."""
+"""Results panel displayed below the 3D preview."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
@@ -35,7 +35,7 @@ class ResultsPanel(QFrame):
         header.setObjectName("sectionHeader")
         outer.addWidget(header)
 
-        # KPI grid (vlajkové metriky)
+        # KPI grid (headline metrics)
         kpi_grid = QGridLayout()
         kpi_grid.setSpacing(10)
         self.kpis = {}
@@ -53,7 +53,7 @@ class ResultsPanel(QFrame):
             kpi_grid.addWidget(tile["frame"], i // 3, i % 3)
         outer.addLayout(kpi_grid)
 
-        # Detailní tabulka po rovinách
+        # Detailed per-plane table
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Rovina", "Plocha [m²]", "Sklon [°]"])
         self.table.horizontalHeader().setSectionResizeMode(
@@ -70,7 +70,7 @@ class ResultsPanel(QFrame):
         self.table.setAlternatingRowColors(True)
         outer.addWidget(self.table, stretch=1)
 
-        # poznámka
+        # notes
         self.notes_label = QLabel("")
         self.notes_label.setWordWrap(True)
         self.notes_label.setObjectName("subtle")
@@ -128,7 +128,7 @@ class ResultsPanel(QFrame):
             slope_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(i, 2, slope_item)
 
-        # Doplňková řádka s rozpočítáním nároží + štítů
+        # Extra breakdown of hips and gable edges
         notes = []
         if result.hip_count > 0:
             notes.append(
