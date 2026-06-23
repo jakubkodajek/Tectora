@@ -1,9 +1,14 @@
 # Plán implementace — Tectora Fáze 1: Knihovna zakázek (SQLite) + poloha (backend + CLI)
 
-> Verze 1.0 · 2026-06-23
-> **Předpoklad:** dokončený plán `2026-06-23-faze1-jadro.md` (existují balíčky
-> `tectora.domain`, `tectora.application`, `tectora.adapters`, `tectora.cli`,
-> typy `Project`, `result_to_dict`, `JsonProjectRepository`, CLI `main`).
+> Verze 1.1 · 2026-06-23 (sladěno se směrem „Sloučit")
+> **Předpoklad:** dokončený plán `2026-06-23-faze1-jadro.md` v RECONCILE verzi
+> (existují balíčky `tectora.core`, `tectora.application`, `tectora.adapters`,
+> `tectora.cli`; typy `Project` (Footprint-based), `JsonProjectRepository`,
+> use-case `calculate_project`, výsledek `RoofResult`).
+> **Sladění:** cached výsledek zakázky = `RoofResult.as_dict()` (ne `result_to_dict`);
+> porty `ProjectLibrary`/`GeocodingService` přidej do `application/ports.py`;
+> `LibraryEntry.result` je dict z `as_dict()`. Domain value object `Location`
+> umísti do `tectora.core.location` (ne `domain.location`).
 > Čti `docs/specifikace.md` §5.10, §5.11, §7.
 
 ## Cíl
