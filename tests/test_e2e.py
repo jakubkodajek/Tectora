@@ -1,9 +1,9 @@
-"""End-to-end testy: celé řetězce od vstupu po výstup.
+"""End-to-end tests: full pipelines from input to output.
 
-Dvě roviny:
-1. Reálné CLI přes subprocess (spustitelný příkaz `tectora`, parametrický vstup).
-2. Nový hexagonální tok: nakreslený polygon (Footprint) → calculate_project →
-   RoofResult → serializace / export přes port.
+Two dimensions:
+1. Real CLI via subprocess (executable `tectora` command, parametric input).
+2. New hexagonal flow: drawn polygon (Footprint) → calculate_project →
+   RoofResult → serialisation / export via port.
 """
 import json
 import subprocess
@@ -79,7 +79,7 @@ class TestCliEndToEnd:
 
 
 class TestHexagonalPipelineEndToEnd:
-    """Tok přes novou vrstvu: Footprint → use-case → výsledek/export."""
+    """Flow through the new layer: Footprint → use-case → result/export."""
 
     def _gable_project(self):
         from tectora.application.project import Project

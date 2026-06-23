@@ -1,1 +1,1 @@
-"""Aplikační vrstva — use-casy a porty nad doménou."""
+"""Application layer — use cases and ports over the domain."""

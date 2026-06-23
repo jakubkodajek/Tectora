@@ -1,4 +1,4 @@
-"""Vstupní specifikace střechy."""
+"""Input specification for a roof."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -6,12 +6,12 @@ from enum import Enum
 
 
 class RoofType(str, Enum):
-    """Podporované typy střech."""
-    SHED = "shed"          # pultová
-    GABLE = "gable"        # sedlová
-    HIP = "hip"            # valbová
-    HALF_HIP = "half_hip"  # polovalbová (clipped gable)
-    PYRAMID = "pyramid"    # stanová
+    """Supported roof types."""
+    SHED = "shed"          # mono-pitch (lean-to)
+    GABLE = "gable"        # gable / saddle
+    HIP = "hip"            # hip roof
+    HALF_HIP = "half_hip"  # half-hip (clipped gable)
+    PYRAMID = "pyramid"    # pyramid / tent
 
     @property
     def cs_name(self) -> str:
@@ -26,33 +26,33 @@ class RoofType(str, Enum):
 
 @dataclass
 class RoofSpec:
-    """Vstupní specifikace pro výpočet střechy.
+    """Input specification for roof calculation.
 
-    Všechny délkové rozměry v metrech, úhly ve stupních.
-    `length` a `width` jsou rozměry půdorysu MEZI VENKOVNÍMI HRANAMI ZDÍ.
-    Skutečný roof footprint = (length + 2*eave_overhang, width + 2*eave_overhang).
+    All length dimensions in metres, angles in degrees.
+    `length` and `width` are footprint dimensions BETWEEN OUTER WALL FACES.
+    Actual roof footprint = (length + 2*eave_overhang, width + 2*eave_overhang).
     """
     type: RoofType
-    length: float        # L — delší rozměr půdorysu, m
-    width: float         # W — kratší rozměr půdorysu, m
-    pitch: float         # hlavní sklon, stupně (0–89)
+    length: float        # L — longer footprint dimension, m
+    width: float         # W — shorter footprint dimension, m
+    pitch: float         # main pitch, degrees (0–89)
     pitch_back: float | None = None
-    """Sklon zadní strany pro asymetrickou sedlovou. None = symetrické (= pitch)."""
+    """Back-face pitch for asymmetric gable. None = symmetric (= pitch)."""
 
     half_hip_ratio: float = 0.5
-    """Pouze pro HALF_HIP: 0 → sedlová, 1 → valbová. Délka valby = ratio * W/2."""
+    """For HALF_HIP only: 0 → gable, 1 → full hip. Hip length = ratio * W/2."""
 
     eave_overhang: float = 0.0
-    """Přesah okapu od líce zdi, m. Aplikuje se na všech stranách."""
+    """Eave overhang from wall face, m. Applied on all sides."""
 
     name: str = ""
-    """Volitelný popisek / název projektu."""
+    """Optional label / project name."""
 
     metadata: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # Qt comboboxes mohou předat str místo RoofType (RoofType dědí z str).
-        # Sjednotíme to vždy na enum, ať `.cs_name` apod. funguje.
+        # Qt combo-boxes may pass a str instead of RoofType (RoofType inherits from str).
+        # Always normalise to the enum so `.cs_name` etc. work correctly.
         if not isinstance(self.type, RoofType):
             self.type = RoofType(self.type)
 
@@ -75,7 +75,7 @@ class RoofSpec:
                 f"dostáno {self.length} × {self.width}"
             )
         if self.type == RoofType.HALF_HIP and self.half_hip_ratio > 0:
-            # Po přesazení o valbu musí ještě zbýt hřeben
+            # After the hip offset, a positive ridge length must still remain
             d = self.half_hip_ratio * (self.roof_width / 2)
             if self.roof_length - 2 * d <= 0:
                 raise ValueError(
@@ -85,10 +85,10 @@ class RoofSpec:
 
     @property
     def roof_length(self) -> float:
-        """Délka půdorysu střechy včetně přesahů okapu."""
+        """Roof footprint length including eave overhangs."""
         return self.length + 2 * self.eave_overhang
 
     @property
     def roof_width(self) -> float:
-        """Šířka půdorysu střechy včetně přesahů okapu."""
+        """Roof footprint width including eave overhangs."""
         return self.width + 2 * self.eave_overhang

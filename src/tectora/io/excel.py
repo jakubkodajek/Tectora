@@ -1,4 +1,4 @@
-"""Excel I/O — vstupní šablona a výstupní výkaz."""
+"""Excel I/O — input template and output report."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,7 +12,7 @@ from tectora.core.spec import RoofSpec, RoofType
 from tectora.io.json_io import spec_from_dict
 
 
-# ---------- styly ----------
+# ---------- styles ----------
 _HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
 _HEADER_FONT = Font(bold=True, color="FFFFFF", size=12)
 _SUBHEADER_FILL = PatternFill("solid", fgColor="D9E1F2")
@@ -27,7 +27,7 @@ _BORDER = Border(
 )
 
 
-# ---------- input (vstupní šablona) ----------
+# ---------- input (input template) ----------
 _INPUT_FIELDS = [
     ("Název projektu", "name", "", "text"),
     ("Typ střechy", "type", "gable", "select: shed | gable | hip | half_hip | pyramid"),
@@ -41,7 +41,7 @@ _INPUT_FIELDS = [
 
 
 def write_template_xlsx(path: Path) -> None:
-    """Vytvoří prázdnou Excel šablonu pro zadávání střechy."""
+    """Create a blank Excel input template for entering roof parameters."""
     wb = Workbook()
     ws = wb.active
     ws.title = "Vstup"
@@ -74,7 +74,7 @@ def write_template_xlsx(path: Path) -> None:
 
 
 def read_spec_xlsx(path: Path) -> RoofSpec:
-    """Načte spec z Excel šablony."""
+    """Read a spec from an Excel template."""
     wb = load_workbook(path, data_only=True)
     if "Vstup" in wb.sheetnames:
         ws = wb["Vstup"]
@@ -90,15 +90,15 @@ def read_spec_xlsx(path: Path) -> RoofSpec:
     return spec_from_dict(data)
 
 
-# ---------- output (výkaz) ----------
+# ---------- output (report) ----------
 def write_report_xlsx(result: RoofResult, path: Path) -> None:
-    """Hezky formátovaný výkaz s parametry a všemi výsledky."""
+    """Nicely formatted report with input parameters and all results."""
     wb = Workbook()
     ws = wb.active
     ws.title = "Výkaz"
 
     row = 1
-    # Hlavička
+    # Header
     ws.cell(row=row, column=1, value="Tectora — výkaz výpočtu střechy").font = Font(
         bold=True, size=16, color="1F4E78"
     )
@@ -110,7 +110,7 @@ def write_report_xlsx(result: RoofResult, path: Path) -> None:
         ws.cell(row=row, column=2, value=result.spec.name)
         row += 1
 
-    # Vstup
+    # Inputs
     row = _write_section(ws, row, "Vstupní parametry", [
         ("Typ střechy", f"{result.spec.type.cs_name} ({result.spec.type.value})", ""),
         ("Délka L", result.spec.length, "m"),
@@ -123,7 +123,7 @@ def write_report_xlsx(result: RoofResult, path: Path) -> None:
         ("Přesah okapu", result.spec.eave_overhang, "m"),
     ])
 
-    # Výsledky
+    # Results
     row = _write_section(ws, row + 1, "Výsledky", [
         ("Celková plocha střechy", round(result.total_area_m2, 2), "m²"),
         ("Délka hřebene", round(result.ridge_length_m, 2), "m"),
@@ -137,7 +137,7 @@ def write_report_xlsx(result: RoofResult, path: Path) -> None:
         ("Výška hřebene nad okapem", round(result.apex_height_m, 2), "m"),
     ])
 
-    # Plochy po rovinách
+    # Area per face
     row += 1
     row = _write_section(ws, row, "Plochy po rovinách", [
         (f.name, round(f.area_m2, 2), f"m² ({f.slope_deg:.1f}°)") for f in result.faces

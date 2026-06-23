@@ -1,15 +1,15 @@
-"""CLI rozhraní pro Tectoru.
+"""CLI interface for Tectora.
 
-Příklady použití:
+Usage examples:
 
     tectora calculate --type gable --length 10 --width 6 --pitch 30
     tectora calculate --spec roof.json --output result.json
     tectora calculate --spec input.xlsx --output report.xlsx
     tectora template --output input.xlsx
-    tectora schema                       # JSON schéma pro LLM
-    tectora types                        # přehled podporovaných typů
+    tectora schema                       # JSON schema for LLMs
+    tectora types                        # list of supported roof types
 
-Pro AI: použij `tectora schema` k získání struktury vstupu.
+For AI: use `tectora schema` to obtain the input structure.
 """
 from __future__ import annotations
 
@@ -19,11 +19,11 @@ import json
 import sys
 from pathlib import Path
 
-# Vynutíme UTF-8 stdout/stderr — na Windows je default cp1250, který komolí diakritiku.
+# Force UTF-8 stdout/stderr — on Windows the default is cp1250, which mangles diacritics.
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
     sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-else:  # starší Python — wrap buffer
+else:  # older Python — wrap buffer
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
@@ -94,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"Tectora {__version__}")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    # ---- calculate
+    # ---- calculate subcommand
     p_calc = sub.add_parser(
         "calculate",
         help="Spočítá střechu ze spec souboru (JSON/XLSX) nebo z parametrů.",
@@ -104,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
         "-o", "--output", type=Path,
         help="Cesta pro výstup (.json nebo .xlsx). Bez tohoto se výsledek vypíše na stdout.",
     )
-    # Inline parametry — alternativa k --spec
+    # Inline parameters — alternative to --spec
     p_calc.add_argument("--type", choices=[t.value for t in RoofType])
     p_calc.add_argument("--length", type=float)
     p_calc.add_argument("--width", type=float)
@@ -116,14 +116,14 @@ def main(argv: list[str] | None = None) -> int:
     p_calc.add_argument("--quiet", "-q", action="store_true",
                         help="Při zápisu do souboru potlač shrnutí na stdout.")
 
-    # ---- template
+    # ---- template subcommand
     p_tpl = sub.add_parser("template", help="Vygeneruje prázdnou Excel šablonu pro vstup.")
     p_tpl.add_argument("-o", "--output", type=Path, required=True)
 
-    # ---- schema
+    # ---- schema subcommand
     sub.add_parser("schema", help="Vypíše JSON schéma vstupu (pro LLM).")
 
-    # ---- types
+    # ---- types subcommand
     sub.add_parser("types", help="Vypíše přehled podporovaných typů střech.")
 
     args = parser.parse_args(argv)
@@ -200,7 +200,7 @@ def _cmd_calculate(args) -> int:
 
 
 def _print_summary(result: RoofResult) -> None:
-    """Stručné shrnutí pro lidi (na stderr aby nešlo do JSON pipe)."""
+    """Brief human-readable summary (written to stderr to avoid polluting JSON pipes)."""
     s = result.spec
     print(file=sys.stderr)
     print(f"  Typ:               {s.type.cs_name} ({s.type.value})", file=sys.stderr)

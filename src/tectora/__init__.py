@@ -1,4 +1,4 @@
-"""Tectora — kalkulátor střech."""
+"""Tectora — roof calculator."""
 
 from tectora.core.spec import RoofSpec, RoofType
 from tectora.core.result import RoofResult, FaceResult

@@ -1,4 +1,4 @@
-"""Projekt = Footprint + globální sklon + metadata. Mapuje na JSON v1.0."""
+"""Project = Footprint + global pitch + metadata. Maps to JSON v1.0."""
 from __future__ import annotations
 
 from dataclasses import dataclass

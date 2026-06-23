@@ -1,4 +1,4 @@
-"""Porty — implementují adaptéry."""
+"""Ports — implemented by adapters."""
 from __future__ import annotations
 
 from typing import Protocol

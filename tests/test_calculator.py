@@ -1,4 +1,4 @@
-"""Verifikuje matematiku pro každý typ střechy proti známým vzorcům."""
+"""Verifies the maths for each roof type against known formulae."""
 import math
 
 import pytest
@@ -10,8 +10,8 @@ def approx(value, tol=1e-3):
     return pytest.approx(value, abs=tol)
 
 
-# Společný invariant: plocha sklonové roviny × cos(α) = plocha jejího půdorysu.
-# Test ploch dělám hlavně přes celkový součet = L*W/cos(α) pro typy s rovnoměrným sklonem.
+# Common invariant: sloped face area × cos(α) = its footprint area.
+# Area tests are done primarily via the total sum = L*W/cos(α) for uniform-pitch types.
 
 
 class TestShed:
@@ -57,14 +57,14 @@ class TestGable:
         assert r.apex_height_m == approx(3 * math.tan(math.radians(30)))
 
     def test_asymmetric_apex_height_continuity(self):
-        # Pokud pitch_back == pitch, výsledek musí být stejný jako symetrický
+        # When pitch_back == pitch the result must match the symmetric case
         sym = calculate(RoofSpec(RoofType.GABLE, 10, 6, 30))
         asym = calculate(RoofSpec(RoofType.GABLE, 10, 6, 30, pitch_back=30))
         assert sym.apex_height_m == approx(asym.apex_height_m)
         assert sym.total_area_m2 == approx(asym.total_area_m2)
 
     def test_asymmetric_apex_height(self):
-        # Strmější přední (60°), pologé zadní (20°)
+        # Steeper front (60°), shallower back (20°)
         r = calculate(RoofSpec(RoofType.GABLE, 10, 6, 60, pitch_back=20))
         # h = y_apex * tan(60) = (6 - y_apex) * tan(20)
         # y_apex = 6 * tan(20)/(tan(60)+tan(20))
@@ -75,7 +75,7 @@ class TestGable:
 
     def test_gable_edges(self):
         r = calculate(RoofSpec(RoofType.GABLE, 10, 6, 30))
-        # Dvě šikmé hrany na štítu, každá slope_len
+        # Two sloped edges per gable end, each of length slope_len
         slope = 3 / math.cos(math.radians(30))
         assert r.gable_edge_left_m == approx(2 * slope)
 
@@ -139,12 +139,12 @@ class TestHalfHip:
         gable = calculate(RoofSpec(RoofType.GABLE, 10, 6, 30))
         hip = calculate(RoofSpec(RoofType.HIP, 10, 6, 30))
         half = calculate(RoofSpec(RoofType.HALF_HIP, 10, 6, 30, half_hip_ratio=0.5))
-        # Polovalbová má strmější konce — víc plochy než sedlová.
-        # Stejnou nebo víc než valbová (záleží na ratio)
+        # Half-hip has steeper ends — more area than gable.
+        # Same or more than hip (depends on ratio)
         assert half.total_area_m2 >= gable.total_area_m2 - 1e-6
 
     def test_intermediate_ratio_full(self):
-        # Pro ratio 0.5, L=10, W=6, pitch=30:
+        # For ratio 0.5, L=10, W=6, pitch=30:
         # d=1.5, h=√3, slope_len=2√3
         # trapezoid_area = (10+7)/2 × 2√3 = 17√3
         # end_slant = √(1.5² + 3) = √5.25
@@ -193,7 +193,7 @@ class TestValidation:
             calculate(RoofSpec(RoofType.GABLE, 10, 6, 90))
 
     def test_half_hip_too_aggressive(self):
-        # Příliš krátká budova pro plnou valbu
+        # Building too short for a full hip
         with pytest.raises(ValueError, match="hřeben"):
             calculate(RoofSpec(RoofType.HALF_HIP, length=4, width=8, pitch=30, half_hip_ratio=1))
 
@@ -206,7 +206,7 @@ class TestEaveOverhang:
 
     def test_overhang_extends_ridge(self):
         with_overhang = calculate(RoofSpec(RoofType.GABLE, 10, 6, 30, eave_overhang=0.5))
-        # Hřeben sedlové = L + 2*overhang
+        # Gable ridge = L + 2*overhang
         assert with_overhang.ridge_length_m == approx(11)
 
 

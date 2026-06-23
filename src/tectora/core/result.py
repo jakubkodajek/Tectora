@@ -1,4 +1,4 @@
-"""Výstupní datové třídy."""
+"""Output data classes."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -13,7 +13,7 @@ Vertex3D = tuple[float, float, float]
 
 @dataclass
 class FaceResult:
-    """Jedna rovina střechy (poly v 3D)."""
+    """A single roof face (polygon in 3D space)."""
     name: str
     area_m2: float
     slope_deg: float
@@ -22,18 +22,18 @@ class FaceResult:
 
 @dataclass
 class RoofResult:
-    """Kompletní výsledek výpočtu střechy."""
+    """Complete roof calculation result."""
     spec: "RoofSpec"
 
-    total_area_m2: float           # celková plocha všech rovin
-    ridge_length_m: float          # délka hřebene
-    hip_length_m: float            # celková délka nároží (součet)
-    hip_count: int                 # počet nároží
-    valley_length_m: float         # celková délka úžlabí
-    gable_edge_left_m: float       # délka krajových tašek levý štít
-    gable_edge_right_m: float      # délka krajových tašek pravý štít
-    eaves_perimeter_m: float       # obvod okapové hrany
-    apex_height_m: float           # výška hřebene nad okapem
+    total_area_m2: float           # total area of all faces
+    ridge_length_m: float          # ridge length
+    hip_length_m: float            # total hip rafter length (sum)
+    hip_count: int                 # number of hip rafters
+    valley_length_m: float         # total valley length
+    gable_edge_left_m: float       # edge tile length, left gable
+    gable_edge_right_m: float      # edge tile length, right gable
+    eaves_perimeter_m: float       # eaves perimeter
+    apex_height_m: float           # apex height above eaves
 
     faces: list[FaceResult] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
@@ -43,7 +43,7 @@ class RoofResult:
         return self.gable_edge_left_m + self.gable_edge_right_m
 
     def as_dict(self) -> dict:
-        """JSON-friendly dict reprezentace pro CLI a Excel export."""
+        """JSON-friendly dict representation for CLI and Excel export."""
         from dataclasses import asdict
         return {
             "project_name": self.spec.name,

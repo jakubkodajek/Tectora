@@ -1,4 +1,4 @@
-"""Most: rectangle Footprint + typy hran → RoofSpec (reuse výpočtu)."""
+"""Bridge: rectangle Footprint + edge types → RoofSpec (reuses the calculator)."""
 from __future__ import annotations
 
 from tectora.core.footprint import EdgeType, Footprint
@@ -8,7 +8,7 @@ _TOL = 1e-6
 
 
 class UnsupportedFootprint(ValueError):
-    """Tvar, který most na RoofSpec zatím neumí (obecný polygon → skeleton)."""
+    """A shape the bridge cannot yet convert to RoofSpec (general polygon → skeleton)."""
 
 
 def _axis_aligned_rectangle(fp: Footprint) -> bool:

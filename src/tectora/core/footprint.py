@@ -1,4 +1,4 @@
-"""Půdorys jako polygon s typovanými hranami (okap/štít). Čistý, bez UI."""
+"""Footprint as a polygon with typed edges (eave/gable). Pure domain, no UI."""
 from __future__ import annotations
 
 import math
@@ -63,7 +63,7 @@ class Footprint:
             raise ValueError("Půdorys se sám protíná.")
         if abs(_signed_area(pts)) < 1e-9:
             raise ValueError("Půdorys má nulovou plochu.")
-        if _signed_area(pts) < 0:  # normalizuj na CCW
+        if _signed_area(pts) < 0:  # normalise to CCW winding
             pts = list(reversed(pts))
             rev = list(reversed(edges))
             edges = tuple(rev[1:] + rev[:1])

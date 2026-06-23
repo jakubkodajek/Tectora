@@ -1,4 +1,4 @@
-"""Use-casy — obalují existující výpočet a porty."""
+"""Use cases — wrap the existing calculator and ports."""
 from __future__ import annotations
 
 from tectora.application.ports import ReportExporter

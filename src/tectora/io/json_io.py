@@ -1,4 +1,4 @@
-"""JSON serializace a deserializace pro CLI / AI integraci."""
+"""JSON serialisation and deserialisation for CLI / AI integration."""
 from __future__ import annotations
 
 import json
@@ -10,27 +10,27 @@ from tectora.core.spec import RoofSpec, RoofType
 
 
 def spec_from_dict(d: dict[str, Any]) -> RoofSpec:
-    """Tolerantní parser — bere české i anglické klíče a varianty."""
+    """Lenient parser — accepts both Czech and English keys and aliases."""
     aliases = {
-        # typ
+        # type
         "type": "type", "typ": "type",
-        # délka
+        # length
         "length": "length", "length_m": "length", "L": "length",
         "delka": "length", "délka": "length",
-        # šířka
+        # width
         "width": "width", "width_m": "width", "W": "width",
         "sirka": "width", "šířka": "width",
-        # sklon
+        # pitch
         "pitch": "pitch", "pitch_deg": "pitch", "sklon": "pitch",
         "pitch_back": "pitch_back", "pitch_back_deg": "pitch_back",
         "sklon_zadni": "pitch_back", "sklon_zadní": "pitch_back",
-        # poměr valby
+        # half-hip ratio
         "half_hip_ratio": "half_hip_ratio", "valba": "half_hip_ratio",
         "polovalba": "half_hip_ratio",
-        # přesah
+        # eave overhang
         "eave_overhang": "eave_overhang", "overhang": "eave_overhang",
         "presah": "eave_overhang", "přesah": "eave_overhang",
-        # název
+        # name
         "name": "name", "nazev": "name", "název": "name",
         "project_name": "name",
     }
@@ -43,7 +43,7 @@ def spec_from_dict(d: dict[str, Any]) -> RoofSpec:
     if "type" not in normalized:
         raise ValueError("V JSON specifikaci chybí pole 'type'")
 
-    # Normalizace typu — povol české i anglické názvy
+    # Normalise type — accept Czech and English names
     type_map = {
         "shed": RoofType.SHED, "pultova": RoofType.SHED, "pultová": RoofType.SHED,
         "gable": RoofType.GABLE, "sedlova": RoofType.GABLE, "sedlová": RoofType.GABLE,
