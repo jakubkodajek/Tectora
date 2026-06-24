@@ -61,7 +61,7 @@ if TYPE_CHECKING:
 # Small helpers
 # ---------------------------------------------------------------------------
 
-_DEFAULT_TITLE = "Nová zakázka"
+_DEFAULT_TITLE = ""  # filled at runtime from tr("untitled", lang)
 
 # Tool identifiers match i18n keys
 _TOOLS = ("draw", "editPoints", "eaveGable")
@@ -160,6 +160,8 @@ class EditorView(QWidget):
 
     def _build_ui(self) -> None:
         self._lang = getattr(self._window, "lang", "cs")
+        global _DEFAULT_TITLE
+        _DEFAULT_TITLE = tr("untitled", self._lang)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -638,7 +640,7 @@ class EditorView(QWidget):
         v.addSpacing(16)
 
         # ── Save button ───────────────────────────────────────────────
-        self._save_btn = QPushButton(f"💾  {tr('save', lang)}")
+        self._save_btn = QPushButton(tr("save", lang))
         self._save_btn.setFixedHeight(40)
         self._save_btn.setStyleSheet(
             f"QPushButton {{"
@@ -654,6 +656,24 @@ class EditorView(QWidget):
         )
         self._save_btn.clicked.connect(self._on_save)
         v.addWidget(self._save_btn)
+
+        # ── Export to Excel button ────────────────────────────────────
+        self._export_btn = QPushButton(tr("exportXls", lang))
+        self._export_btn.setFixedHeight(40)
+        self._export_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background: {CARD};"
+            f"  color: {ACCENT};"
+            f"  border: 1px solid {ACCENT};"
+            f"  border-radius: 9px;"
+            f"  padding: 0 20px;"
+            f"  font-size: 10pt;"
+            f"  font-weight: 600;"
+            f"}}"
+            f"QPushButton:hover {{ background: {BG}; }}"
+        )
+        self._export_btn.clicked.connect(self._on_export)
+        v.addWidget(self._export_btn)
 
         v.addStretch(1)
 
@@ -841,6 +861,32 @@ class EditorView(QWidget):
             )
 
         self._show_toast(tr("saved", lang))
+
+    def _export_to(self, path: str) -> None:
+        """Write a RoofResult to an Excel file at *path*.
+
+        If no result is available, shows a toast hint and returns.
+        Tests call this directly, bypassing the file dialog.
+        """
+        lang = self._lang
+        if self.last_result is None:
+            self._show_toast(tr("drawFirst", lang))
+            return
+        from tectora.io import write_report_xlsx
+        write_report_xlsx(self.last_result, path)
+        self._show_toast(tr("exportDone", lang))
+
+    def _on_export(self) -> None:
+        """Open a Save dialog and call _export_to with the chosen path."""
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            tr("exportXls", self._lang),
+            "",
+            "Excel (*.xlsx)",
+        )
+        if path:
+            self._export_to(path)
 
     def set_pitch(self, value: int) -> None:
         """Update the pitch, refresh the button label, and recompute if a result exists."""
