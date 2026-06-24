@@ -61,3 +61,21 @@ def test_delete(tmp_path):
 def test_get_missing_raises(tmp_path):
     with pytest.raises(EntryNotFound):
         lib(tmp_path).get(999)
+
+
+def test_multi_building_entry_roundtrip(tmp_path):
+    from tectora.application.project import Building
+    fp1 = Footprint.from_lists([(0, 0), (8, 0), (8, 5), (0, 5)], ["eave"] * 4)
+    fp2 = Footprint.from_lists([(20, 0), (26, 0), (26, 4), (20, 4)], ["eave"] * 4)
+    proj = Project(project_name="Statek", buildings=[
+        Building(footprint=fp1, pitch_deg=35.0, name="Dům"),
+        Building(footprint=fp2, pitch_deg=18.0, overhang_m=0.6, name="Stodola"),
+    ])
+    ts = now_iso()
+    L = lib(tmp_path)
+    eid = L.add(LibraryEntry(None, "Statek", "", None, proj, None, ts, ts))
+    got = L.get(eid)
+    assert len(got.project.buildings) == 2
+    assert [b.name for b in got.project.buildings] == ["Dům", "Stodola"]
+    assert got.project.buildings[1].pitch_deg == 18.0
+    assert got.project.buildings[1].overhang_m == 0.6
