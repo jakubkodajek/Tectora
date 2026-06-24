@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu,
     QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
@@ -299,16 +299,17 @@ class HomeView(QWidget):
         self._search.textChanged.connect(self._on_search)
         tb_layout.addWidget(self._search)
 
-        # Language chip (non-functional in G1)
-        lang_btn = QPushButton(f"{self._lang.upper()} ▾")
-        lang_btn.setFixedHeight(38)
-        lang_btn.setStyleSheet(
+        # Language chip (G8: wired to set_language)
+        self._lang_btn = QPushButton(f"{self._lang.upper()} ▾")
+        self._lang_btn.setFixedHeight(38)
+        self._lang_btn.setStyleSheet(
             f"QPushButton {{ background:{CARD}; color:{MID};"
             f" border:1px solid {BORDER}; border-radius:8px;"
             f" font-size:9pt; font-weight:600; padding:0 12px; }}"
             f"QPushButton:hover {{ background:{BG}; }}"
         )
-        tb_layout.addWidget(lang_btn)
+        self._lang_btn.clicked.connect(self._on_lang_click)
+        tb_layout.addWidget(self._lang_btn)
 
         root.addWidget(topbar)
 
@@ -435,3 +436,16 @@ class HomeView(QWidget):
     def _on_search(self, text: str) -> None:
         self._search_query = text
         self.refresh()
+
+    def _on_lang_click(self) -> None:
+        """Open a small language menu and call window.set_language on choice."""
+        from tectora.gui.i18n import LANGS
+        menu = QMenu(self)
+        for code in LANGS:
+            action = menu.addAction(code.upper())
+            action.setData(code)
+        chosen = menu.exec(self._lang_btn.mapToGlobal(
+            self._lang_btn.rect().bottomLeft()
+        ))
+        if chosen is not None:
+            self._window.set_language(chosen.data())

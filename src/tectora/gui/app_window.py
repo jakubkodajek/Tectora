@@ -54,3 +54,78 @@ class MainWindow(QMainWindow):
         home = self._stack.widget(0)
         if hasattr(home, "refresh"):
             home.refresh()
+
+    # ------------------------------------------------------------------
+    # G8: Language switcher
+    # ------------------------------------------------------------------
+
+    def set_language(self, lang: str) -> None:
+        """Switch UI language and rebuild both views (G8)."""
+        if lang not in ("cs", "sk", "en"):
+            return
+        self.lang = lang
+
+        # Capture current state before teardown
+        current_idx = self._stack.currentIndex()
+
+        # Capture editor state
+        editor = self._editor
+        saved_project = getattr(self, "_current_project", None)
+        saved_entry_id = getattr(self, "_current_entry_id", None)
+        saved_name = editor.get_name() if hasattr(editor, "get_name") else ""
+        saved_note = editor.get_note() if hasattr(editor, "get_note") else ""
+        saved_location = editor.get_location() if hasattr(editor, "get_location") else None
+        saved_pitch = getattr(editor, "pitch", 35)
+        saved_footprint = None
+        if hasattr(editor, "canvas") and editor.canvas is not None:
+            saved_footprint = getattr(editor.canvas, "_vertices", None)
+            saved_footprint_closed = getattr(editor.canvas, "_closed", False)
+        else:
+            saved_footprint_closed = False
+
+        # Rebuild HomeView (index 0)
+        from tectora.gui.home.home_view import HomeView
+        old_home = self._stack.widget(0)
+        new_home = HomeView(self)
+        self._stack.insertWidget(0, new_home)
+        self._stack.removeWidget(old_home)
+        old_home.deleteLater()
+        self._home = new_home
+
+        # Rebuild EditorView (index 1)
+        from tectora.gui.editor.editor_view import EditorView
+        old_editor = self._stack.widget(1)
+        new_editor = EditorView(self)
+        self._stack.insertWidget(1, new_editor)
+        self._stack.removeWidget(old_editor)
+        old_editor.deleteLater()
+        self._editor = new_editor
+
+        # Restore editor state if there was a project
+        if saved_project is not None:
+            from tectora.application.project import Project
+            # Reconstruct project with possibly updated name/pitch
+            proj = Project(
+                project_name=saved_name or getattr(saved_project, "project_name", ""),
+                footprint=getattr(saved_project, "footprint", None),
+                global_pitch_deg=float(saved_pitch),
+            )
+            new_editor.load_project(
+                proj, saved_entry_id,
+                note=saved_note,
+                location=saved_location,
+            )
+            new_editor._current_entry_id = saved_entry_id
+            self._current_project = proj
+            self._current_entry_id = saved_entry_id
+
+            # Restore drawn vertices if the polygon was closed
+            if (saved_footprint is not None and saved_footprint_closed
+                    and hasattr(new_editor, "canvas")):
+                canvas = new_editor.canvas
+                canvas._vertices = list(saved_footprint)
+                canvas._closed = True
+                canvas.update()
+
+        # Restore which view was showing
+        self._stack.setCurrentIndex(current_idx)

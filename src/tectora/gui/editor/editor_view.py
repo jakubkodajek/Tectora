@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMenuBar,
     QPlainTextEdit,
     QPushButton,
@@ -230,10 +231,10 @@ class EditorView(QWidget):
 
         layout.addStretch(1)
 
-        # Language chip
-        lang_chip = QPushButton(f"{self._lang.upper()} ▾")
-        lang_chip.setFixedHeight(32)
-        lang_chip.setStyleSheet(
+        # Language chip (G8: wired to set_language)
+        self._lang_chip = QPushButton(f"{self._lang.upper()} ▾")
+        self._lang_chip.setFixedHeight(32)
+        self._lang_chip.setStyleSheet(
             f"QPushButton {{"
             f"  background: {CARD};"
             f"  color: {MID};"
@@ -245,7 +246,8 @@ class EditorView(QWidget):
             f"}}"
             f"QPushButton:hover {{ background: {BG}; }}"
         )
-        layout.addWidget(lang_chip)
+        self._lang_chip.clicked.connect(self._on_lang_click)
+        layout.addWidget(self._lang_chip)
 
         return bar
 
@@ -872,3 +874,16 @@ class EditorView(QWidget):
         toast.raise_()
         toast.show()
         QTimer.singleShot(2500, toast.deleteLater)
+
+    def _on_lang_click(self) -> None:
+        """Open a small language menu and call window.set_language on choice (G8)."""
+        from tectora.gui.i18n import LANGS
+        menu = QMenu(self)
+        for code in LANGS:
+            action = menu.addAction(code.upper())
+            action.setData(code)
+        chosen = menu.exec(self._lang_chip.mapToGlobal(
+            self._lang_chip.rect().bottomLeft()
+        ))
+        if chosen is not None:
+            self._window.set_language(chosen.data())
