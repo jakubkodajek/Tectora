@@ -245,6 +245,17 @@ class Roof3DView(QWidget):
         for face in faces:
             geom.append((list(face.vertices), False))  # False = roof
 
+        # Gable walls (štíty) — vertical triangles at valid gable wing-ends.
+        # Only when there is no overhang: with an overhang the roof polygon is
+        # rebuilt as all-eave, so there are no gables to draw (matches 2D/results).
+        if overhang <= 1e-9:
+            from tectora.core.gable import GableNotSupported, gable_wall_triangles
+            try:
+                for tri in gable_wall_triangles(footprint, pitch_deg):
+                    geom.append((list(tri), True))  # vertical štít = a wall face
+            except GableNotSupported:
+                pass  # invalid gable (shouldn't happen; 2D validates) — just skip
+
         self._geom_faces = geom
         self.update()
 
