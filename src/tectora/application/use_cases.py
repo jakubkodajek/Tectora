@@ -1,11 +1,12 @@
 """Use cases — wrap the existing calculator and ports."""
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Optional
 
 from tectora.application.library import LibraryEntry, now_iso
 from tectora.application.ports import GeocodingService, ProjectLibrary, ReportExporter
-from tectora.application.project import Project
+from tectora.application.project import Building, Project
 from tectora.core.location import Location
 from tectora.core.result import RoofResult
 from tectora.core.roof_generator import generate_roof
@@ -18,6 +19,48 @@ def calculate_project(project: Project) -> RoofResult:
         project.footprint, project.global_pitch_deg, name=project.project_name,
         overhang=project.overhang_m,
     )
+
+
+@dataclass
+class DesignResult:
+    """Aggregate result of a multi-building design: per-building results + totals."""
+    buildings: list[RoofResult] = field(default_factory=list)
+
+    @property
+    def total_area_m2(self) -> float:
+        return sum(r.total_area_m2 for r in self.buildings)
+
+    @property
+    def total_eaves_perimeter_m(self) -> float:
+        return sum(r.eaves_perimeter_m for r in self.buildings)
+
+    @property
+    def total_ridge_length_m(self) -> float:
+        return sum(r.ridge_length_m for r in self.buildings)
+
+    @property
+    def total_hip_length_m(self) -> float:
+        return sum(r.hip_length_m for r in self.buildings)
+
+    @property
+    def total_valley_length_m(self) -> float:
+        return sum(r.valley_length_m for r in self.buildings)
+
+    @property
+    def total_gable_edge_m(self) -> float:
+        return sum(r.gable_edge_total_m for r in self.buildings)
+
+
+def calculate_design(project: Project) -> DesignResult:
+    """Compute one RoofResult per building (skipping buildings with no footprint)."""
+    results: list[RoofResult] = []
+    for b in project.buildings:
+        if b.footprint is None:
+            continue
+        results.append(
+            generate_roof(b.footprint, b.pitch_deg, name=b.name, overhang=b.overhang_m)
+        )
+    return DesignResult(results)
 
 
 def export_report(result: RoofResult, exporter: ReportExporter, path: str) -> None:
