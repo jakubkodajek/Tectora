@@ -287,24 +287,46 @@ def _vertex_velocity(v: "Vertex") -> tuple:
 def _edge_event_candidate(v: "Vertex", vnext: "Vertex"):
     """Compute the edge-event candidate (t, I) for edge v -> vnext.
 
-    Returns (t, I) or None if the bisectors are parallel or degenerate.
-    t  = absolute offset time (v.t + perpendicular advance from v's right edge)
-    I  = intersection point of the two bisector rays
+    Solves for the offset time at which the two vertices, moving along their
+    bisectors from their (possibly different) creation times, collide and the
+    edge between them collapses.
+
+    Using MOVING positions — rather than a static intersection of bisector rays
+    from the original points — is essential when v and vnext were created at
+    different times (e.g. an original reflex vertex that becomes the neighbour of
+    a vertex created by a later merge). Otherwise the computed time can come out
+    in the PAST (less than the later vertex's creation time), pop out of heap
+    order, and corrupt the skeleton.
+
+    Returns (t, I) or None if the edge never collapses or the event would be in
+    the past relative to either vertex's creation time.
     """
-    I = g.line_intersection(v.point, v.bisector, vnext.point, vnext.bisector)
-    if I is None:
+    vel_v = _vertex_velocity(v)
+    vel_n = _vertex_velocity(vnext)
+    if vel_v == (0.0, 0.0) or vel_n == (0.0, 0.0):
         return None
-    # Compute the perpendicular advance from v's position toward I
-    # along the inward normal of v's right polygon edge.
-    # inward normal of CCW polygon edge (dx,dy) is (-dy, dx).
-    er = v.edge_right
-    inward_n = (-er[1], er[0])
-    advance = g.dot(g.sub(I, v.point), inward_n)
-    t = v.t + advance
-    if t < v.t - EPS:
+
+    dvel = g.sub(vel_v, vel_n)
+    dvel2 = g.dot(dvel, dvel)
+    if dvel2 < EPS * EPS:
+        return None  # parallel motion — the edge never collapses
+
+    # pos(t) = base + t * vel, where base is the position extrapolated to t = 0.
+    base_v = g.sub(v.point, g.scale(vel_v, v.t))
+    base_n = g.sub(vnext.point, g.scale(vel_n, vnext.t))
+    t = g.dot(g.sub(base_n, base_v), dvel) / dvel2
+
+    lo = max(v.t, vnext.t)
+    if t < lo - EPS:
+        return None  # event in the past — invalid
+    t = max(t, lo)
+
+    I = g.add(base_v, g.scale(vel_v, t))
+    # Consistency: both moving points must coincide at t (the edge truly collapses).
+    I2 = g.add(base_n, g.scale(vel_n, t))
+    if g.length(g.sub(I, I2)) > 1e-6:
         return None
-    t = max(t, v.t)
-    # Skip degenerate events where I has not advanced beyond v's current time
+
     if abs(t - v.t) < EPS and abs(t - vnext.t) < EPS:
         return None
     return (t, I)
@@ -468,7 +490,93 @@ def _ring_size(start: "Vertex") -> int:
 # skeletonize
 # ---------------------------------------------------------------------------
 
+def _has_reflex(polygon_ccw: list[tuple]) -> bool:
+    """True if the polygon has at least one reflex (concave) vertex."""
+    return any(v.is_reflex for v in build_lav(polygon_ccw).vertices())
+
+
+def _perturb(polygon_ccw: list[tuple], scale: float = 1e-6) -> list[tuple]:
+    """Apply a tiny deterministic jitter to break exact degenerate coincidences.
+
+    Axis-aligned building footprints (L/T/U) routinely have events that coincide
+    exactly (a valley meeting a corner's hip at the same point), which the
+    split-event 'strictly inside the edge' test rejects. Perturbing the input by
+    a sub-millimetre, vertex-dependent offset makes those coincidences distinct,
+    so the events fire; the resulting near-coincident nodes are merged back by
+    `_snap_graph`. Deterministic → results are reproducible.
+    """
+    import math as _m
+    out = []
+    for i, (x, y) in enumerate(polygon_ccw):
+        a = (i + 1) * 2.3999632
+        out.append((float(x) + scale * _m.cos(a), float(y) + scale * _m.sin(a)))
+    return out
+
+
+def _snap_graph(sg: SkeletonGraph, original_polygon: list[tuple],
+                node_tol: float = 5e-4, vertex_tol: float = 2e-3) -> SkeletonGraph:
+    """Snap a perturbed skeleton back to clean coordinates.
+
+    - skeleton points within `vertex_tol` of an original polygon vertex snap to
+      that exact vertex (undoing the perturbation at corners);
+    - remaining interior points within `node_tol` of each other collapse to a
+      single canonical node (merging the near-coincident cluster that a
+      degenerate event produced).
+    Arcs are rewritten to canonical endpoints; zero-length and duplicate arcs
+    are dropped.
+    """
+    originals = [(float(x), float(y)) for x, y in original_polygon]
+    reps: list[tuple] = []
+
+    def canon(p: tuple) -> tuple:
+        for ov in originals:
+            if abs(p[0] - ov[0]) < vertex_tol and abs(p[1] - ov[1]) < vertex_tol:
+                return ov
+        for r in reps:
+            if abs(p[0] - r[0]) < node_tol and abs(p[1] - r[1]) < node_tol:
+                return r
+        rp = (p[0], p[1])
+        reps.append(rp)
+        return rp
+
+    out = SkeletonGraph()
+    node_seen: set = set()
+    for (x, y, t) in sg.nodes:
+        c = canon((x, y))
+        key = (round(c[0], 5), round(c[1], 5))
+        if key in node_seen:
+            continue
+        node_seen.add(key)
+        out.nodes.append((c[0], c[1], t))
+
+    arc_seen: set = set()
+    for (a, b) in sg.arcs:
+        ca, cb = canon(a), canon(b)
+        if abs(ca[0] - cb[0]) < 1e-9 and abs(ca[1] - cb[1]) < 1e-9:
+            continue
+        key = tuple(sorted([(round(ca[0], 5), round(ca[1], 5)),
+                            (round(cb[0], 5), round(cb[1], 5))]))
+        if key in arc_seen:
+            continue
+        arc_seen.add(key)
+        out.arcs.append((ca, cb))
+    return out
+
+
 def skeletonize(polygon_ccw: list[tuple]) -> SkeletonGraph:
+    """Compute the straight skeleton of a simple CCW polygon.
+
+    Convex polygons run directly (exact). Polygons with reflex vertices are run
+    on a tiny perturbation of the input (to break degenerate coincidences common
+    in axis-aligned footprints) and the result is snapped back to clean nodes.
+    """
+    if _has_reflex(polygon_ccw):
+        raw = _skeletonize_core(_perturb(polygon_ccw))
+        return _snap_graph(raw, polygon_ccw)
+    return _skeletonize_core(polygon_ccw)
+
+
+def _skeletonize_core(polygon_ccw: list[tuple]) -> SkeletonGraph:
     """Compute the straight skeleton of a simple (possibly non-convex) CCW polygon.
 
     Parameters
