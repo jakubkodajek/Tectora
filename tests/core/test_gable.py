@@ -15,7 +15,11 @@ import pytest
 
 from tectora.core.calculator import calculate
 from tectora.core.footprint import Footprint
-from tectora.core.gable import GableNotSupported, is_valid_gable_edge
+from tectora.core.gable import (
+    GableNotSupported,
+    gable_wall_triangles,
+    is_valid_gable_edge,
+)
 from tectora.core.roof_faces import build_faces
 from tectora.core.roof_from_skeleton import build_roof
 from tectora.core.spec import RoofSpec, RoofType
@@ -200,3 +204,23 @@ def test_both_wing_ends_gabled_contribute_rake():
     assert both.gable_edge_total_m == pytest.approx(
         one_a.gable_edge_total_m + one_b.gable_edge_total_m, rel=1e-6
     )
+
+
+def test_gable_wall_triangles_for_rectangle_caps():
+    import math as _m
+    valid = [i for i in range(4) if is_valid_gable_edge(Footprint.from_lists(RECT, ["eave"] * 4), i)]
+    et = ["gable" if i in valid else "eave" for i in range(4)]
+    walls = gable_wall_triangles(Footprint.from_lists(RECT, et), 35)
+    assert len(walls) == 2
+    h = 2.5 * _m.tan(_m.radians(35))
+    for a, b, m in walls:
+        # eave corners at z=0, apex lifted, apex foot on the gable edge line
+        assert a[2] == 0.0 and b[2] == 0.0
+        assert m[2] == pytest.approx(h, rel=1e-6)
+        assert m[1] == pytest.approx(2.5)        # midpoint of the 5 m short edge
+
+
+def test_gable_wall_triangles_rejects_invalid_edge():
+    # Edge 0 of the L is the long bottom edge — not a cap.
+    with pytest.raises(GableNotSupported):
+        gable_wall_triangles(Footprint.from_lists(L, ["gable"] + ["eave"] * 5), 35)

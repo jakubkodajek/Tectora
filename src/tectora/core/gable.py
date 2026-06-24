@@ -296,3 +296,41 @@ def folded_skeleton(footprint: Footprint) -> FoldedSkeleton:
         node_t=node_t,
         gable_edges=gable_edges,
     )
+
+
+def gable_wall_triangles(
+    footprint: Footprint, pitch_deg: float
+) -> list[tuple[tuple, tuple, tuple]]:
+    """Return the vertical gable-wall (štít) triangles for a footprint.
+
+    One triangle per valid ``gable`` edge: ``(A, B, M)`` with
+    ``A = (x, y, 0)`` and ``B = (x, y, 0)`` the eave corners and
+    ``M = (mx, my, h)`` the ridge apex above the perpendicular foot on ``AB``,
+    where ``h = t_P * tan(pitch)``. These are 3-D wall faces (not roof faces);
+    the 3-D view renders them as the vertical triangular štít at each gabled
+    wing end.
+
+    Raises :class:`GableNotSupported` if a ``gable`` edge is not a valid cap.
+    """
+    slope = math.tan(math.radians(pitch_deg))
+    poly = list(footprint.vertices)
+    graph = polyskel_skeleton(poly)
+    n = footprint.n
+    walls: list[tuple[tuple, tuple, tuple]] = []
+    for i, edge in enumerate(footprint.edges):
+        if edge.type != EdgeType.GABLE:
+            continue
+        if not is_valid_gable_edge(footprint, i):
+            raise GableNotSupported(
+                f"Edge {i} is marked 'gable' but is not a Stage-1 cap."
+            )
+        a = footprint.vertices[i]
+        b = footprint.vertices[(i + 1) % n]
+        px, py, t_p = _find_cap_apex(graph, a, b)
+        mx, my = _perp_foot((px, py), a, b)
+        walls.append((
+            (float(a[0]), float(a[1]), 0.0),
+            (float(b[0]), float(b[1]), 0.0),
+            (mx, my, t_p * slope),
+        ))
+    return walls
