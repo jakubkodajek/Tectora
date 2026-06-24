@@ -14,3 +14,9 @@ venv/
 *.spec
 output/
 Design podle briefu-handoff.zip
+
+# Proprietary reference binaries / data (DACAD CZ — do NOT commit)
+*.exe
+*.SOL
+*.sol
+DACAD*.exe
