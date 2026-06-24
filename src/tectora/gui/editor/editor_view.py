@@ -41,18 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 from tectora.gui.i18n import tr
-from tectora.gui.theme import (
-    ACCENT,
-    ACCENT_HOVER,
-    BG,
-    BORDER,
-    BORDER_SOFT,
-    CARD,
-    FAINT,
-    MID,
-    MUTED,
-    TEXT,
-)
+from tectora.gui import theme
 
 if TYPE_CHECKING:
     pass  # MainWindow imported at runtime only
@@ -75,21 +64,21 @@ def _tool_btn(label: str, checkable: bool = True) -> QPushButton:
     btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
     btn.setStyleSheet(
         f"QPushButton {{"
-        f"  background: {CARD};"
-        f"  color: {MID};"
-        f"  border: 1px solid {BORDER};"
+        f"  background: {theme.CARD};"
+        f"  color: {theme.MID};"
+        f"  border: 1px solid {theme.BORDER};"
         f"  border-radius: 7px;"
         f"  padding: 0 14px;"
         f"  font-size: 10pt;"
         f"  font-weight: 500;"
         f"}}"
         f"QPushButton:checked {{"
-        f"  background: {TEXT};"
+        f"  background: {theme.TEXT};"
         f"  color: #ffffff;"
-        f"  border-color: {TEXT};"
+        f"  border-color: {theme.TEXT};"
         f"}}"
         f"QPushButton:hover:!checked {{"
-        f"  background: {BG};"
+        f"  background: {theme.BG};"
         f"}}"
     )
     return btn
@@ -98,7 +87,7 @@ def _tool_btn(label: str, checkable: bool = True) -> QPushButton:
 def _section_header(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setStyleSheet(
-        f"color: {FAINT}; font-size: 8pt; font-weight: 600;"
+        f"color: {theme.FAINT}; font-size: 8pt; font-weight: 600;"
         f" letter-spacing: 1px; background: transparent;"
     )
     return lbl
@@ -186,7 +175,7 @@ class EditorView(QWidget):
         bar = QWidget()
         bar.setFixedHeight(52)
         bar.setStyleSheet(
-            f"background: {CARD}; border-bottom: 1px solid {BORDER_SOFT};"
+            f"background: {theme.CARD}; border-bottom: 1px solid {theme.BORDER_SOFT};"
         )
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(12, 0, 16, 0)
@@ -198,13 +187,13 @@ class EditorView(QWidget):
         back_btn.setStyleSheet(
             f"QPushButton {{"
             f"  background: transparent;"
-            f"  color: {MID};"
+            f"  color: {theme.MID};"
             f"  border: none;"
             f"  padding: 0 10px 0 6px;"
             f"  font-size: 10pt;"
             f"  font-weight: 500;"
             f"}}"
-            f"QPushButton:hover {{ color: {TEXT}; }}"
+            f"QPushButton:hover {{ color: {theme.TEXT}; }}"
         )
         back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         back_btn.clicked.connect(self._window.open_home)
@@ -219,7 +208,7 @@ class EditorView(QWidget):
         tf.setPointSize(11)
         self._title_label.setFont(tf)
         self._title_label.setStyleSheet(
-            f"color: {TEXT}; background: transparent;"
+            f"color: {theme.TEXT}; background: transparent;"
         )
         layout.addWidget(self._title_label)
 
@@ -229,9 +218,9 @@ class EditorView(QWidget):
         menu_bar = QMenuBar()
         menu_bar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         menu_bar.setStyleSheet(
-            f"QMenuBar {{ background: transparent; border: none; color: {MID}; }}"
+            f"QMenuBar {{ background: transparent; border: none; color: {theme.MID}; }}"
             f"QMenuBar::item {{ padding: 6px 10px; border-radius: 4px; }}"
-            f"QMenuBar::item:selected {{ background: {BG}; }}"
+            f"QMenuBar::item:selected {{ background: {theme.BG}; }}"
         )
         for key in ("file", "edit", "view", "help"):
             menu = menu_bar.addMenu(tr(key, self._lang))
@@ -246,18 +235,34 @@ class EditorView(QWidget):
         self._lang_chip.setFixedHeight(32)
         self._lang_chip.setStyleSheet(
             f"QPushButton {{"
-            f"  background: {CARD};"
-            f"  color: {MID};"
-            f"  border: 1px solid {BORDER};"
+            f"  background: {theme.CARD};"
+            f"  color: {theme.MID};"
+            f"  border: 1px solid {theme.BORDER};"
             f"  border-radius: 8px;"
             f"  font-size: 9pt;"
             f"  font-weight: 600;"
             f"  padding: 0 12px;"
             f"}}"
-            f"QPushButton:hover {{ background: {BG}; }}"
+            f"QPushButton:hover {{ background: {theme.BG}; }}"
         )
         self._lang_chip.clicked.connect(self._on_lang_click)
         layout.addWidget(self._lang_chip)
+
+        # Gear button (F2: opens settings dialog)
+        self._gear_btn = QPushButton("⚙")
+        self._gear_btn.setFixedSize(32, 32)
+        self._gear_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background: {theme.CARD};"
+            f"  color: {theme.MID};"
+            f"  border: 1px solid {theme.BORDER};"
+            f"  border-radius: 8px;"
+            f"  font-size: 14pt;"
+            f"}}"
+            f"QPushButton:hover {{ background: {theme.BG}; }}"
+        )
+        self._gear_btn.clicked.connect(self._on_settings)
+        layout.addWidget(self._gear_btn)
 
         return bar
 
@@ -267,7 +272,7 @@ class EditorView(QWidget):
         bar = QWidget()
         bar.setFixedHeight(52)
         bar.setStyleSheet(
-            f"background: {CARD}; border-bottom: 1px solid {BORDER_SOFT};"
+            f"background: {theme.CARD}; border-bottom: 1px solid {theme.BORDER_SOFT};"
         )
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(16, 0, 16, 0)
@@ -300,7 +305,7 @@ class EditorView(QWidget):
         # Separator
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.VLine)
-        sep.setStyleSheet(f"color: {BORDER};")
+        sep.setStyleSheet(f"color: {theme.BORDER};")
         layout.addWidget(sep)
 
         layout.addSpacing(12)
@@ -311,14 +316,14 @@ class EditorView(QWidget):
         self._pitch_btn.setFixedHeight(34)
         self._pitch_btn.setStyleSheet(
             f"QPushButton {{"
-            f"  background: {CARD};"
-            f"  color: {MID};"
-            f"  border: 1px solid {BORDER};"
+            f"  background: {theme.CARD};"
+            f"  color: {theme.MID};"
+            f"  border: 1px solid {theme.BORDER};"
             f"  border-radius: 7px;"
             f"  padding: 0 14px;"
             f"  font-size: 10pt;"
             f"}}"
-            f"QPushButton:hover {{ background: {BG}; }}"
+            f"QPushButton:hover {{ background: {theme.BG}; }}"
         )
         layout.addWidget(self._pitch_btn)
 
@@ -328,7 +333,7 @@ class EditorView(QWidget):
         seg_container = QWidget()
         seg_container.setFixedHeight(36)
         seg_container.setStyleSheet(
-            f"background: {BG}; border-radius: 9px;"
+            f"background: {theme.BG}; border-radius: 9px;"
         )
         seg_layout = QHBoxLayout(seg_container)
         seg_layout.setContentsMargins(3, 3, 3, 3)
@@ -346,15 +351,15 @@ class EditorView(QWidget):
             b.setStyleSheet(
                 f"QPushButton {{"
                 f"  background: transparent;"
-                f"  color: {MUTED};"
+                f"  color: {theme.MUTED};"
                 f"  border: none;"
                 f"  border-radius: 7px;"
                 f"  font-size: 10pt;"
                 f"  font-weight: 600;"
                 f"}}"
                 f"QPushButton:checked {{"
-                f"  background: {CARD};"
-                f"  color: {TEXT};"
+                f"  background: {theme.CARD};"
+                f"  color: {theme.TEXT};"
                 f"}}"
             )
             seg_layout.addWidget(b)
@@ -375,7 +380,7 @@ class EditorView(QWidget):
         self._calc_btn.setFixedHeight(36)
         self._calc_btn.setStyleSheet(
             f"QPushButton {{"
-            f"  background: {ACCENT};"
+            f"  background: {theme.ACCENT};"
             f"  color: #ffffff;"
             f"  border: none;"
             f"  border-radius: 8px;"
@@ -383,8 +388,8 @@ class EditorView(QWidget):
             f"  font-size: 10pt;"
             f"  font-weight: 600;"
             f"}}"
-            f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}"
-            f"QPushButton:pressed {{ background: {ACCENT_HOVER}; }}"
+            f"QPushButton:hover {{ background: {theme.ACCENT_HOVER}; }}"
+            f"QPushButton:pressed {{ background: {theme.ACCENT_HOVER}; }}"
         )
         self._calc_btn.clicked.connect(self._on_calculate)
         layout.addWidget(self._calc_btn)
@@ -395,7 +400,7 @@ class EditorView(QWidget):
 
     def _make_content(self) -> QWidget:
         content = QWidget()
-        content.setStyleSheet(f"background: {BG};")
+        content.setStyleSheet(f"background: {theme.BG};")
         h_layout = QHBoxLayout(content)
         h_layout.setContentsMargins(0, 0, 0, 0)
         h_layout.setSpacing(0)
@@ -451,7 +456,7 @@ class EditorView(QWidget):
         panel = QWidget()
         panel.setFixedWidth(300)
         panel.setStyleSheet(
-            f"background: {CARD}; border-left: 1px solid {BORDER_SOFT};"
+            f"background: {theme.CARD}; border-left: 1px solid {theme.BORDER_SOFT};"
         )
 
         scroll = QScrollArea()
@@ -461,7 +466,7 @@ class EditorView(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         inner = QWidget()
-        inner.setStyleSheet(f"background: {CARD};")
+        inner.setStyleSheet(f"background: {theme.CARD};")
         v = QVBoxLayout(inner)
         v.setContentsMargins(16, 20, 16, 20)
         v.setSpacing(0)
@@ -474,22 +479,22 @@ class EditorView(QWidget):
 
         # Název
         _lbl_name = QLabel(tr("name", lang))
-        _lbl_name.setStyleSheet(f"color: {MID}; font-size: 9pt; background: transparent;")
+        _lbl_name.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
         v.addWidget(_lbl_name)
         v.addSpacing(4)
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText(tr("name", lang) + "…")
         self.name_edit.setFixedHeight(36)
         self.name_edit.setStyleSheet(
-            f"background: {CARD}; border: 1px solid {BORDER}; border-radius: 8px;"
-            f" padding: 0 10px; color: {MID}; font-size: 10pt;"
+            f"background: {theme.CARD}; border: 1px solid {theme.BORDER}; border-radius: 8px;"
+            f" padding: 0 10px; color: {theme.MID}; font-size: 10pt;"
         )
         v.addWidget(self.name_edit)
         v.addSpacing(12)
 
         # Poloha
         _lbl_loc = QLabel(tr("location", lang))
-        _lbl_loc.setStyleSheet(f"color: {MID}; font-size: 9pt; background: transparent;")
+        _lbl_loc.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
         v.addWidget(_lbl_loc)
         v.addSpacing(4)
         self.location_field = LocationField(lang=lang)
@@ -498,15 +503,15 @@ class EditorView(QWidget):
 
         # Poznámka
         _lbl_note = QLabel(tr("note", lang))
-        _lbl_note.setStyleSheet(f"color: {MID}; font-size: 9pt; background: transparent;")
+        _lbl_note.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
         v.addWidget(_lbl_note)
         v.addSpacing(4)
         self.note_edit = QPlainTextEdit()
         self.note_edit.setPlaceholderText("Volitelná poznámka…")
         self.note_edit.setFixedHeight(72)
         self.note_edit.setStyleSheet(
-            f"background: {CARD}; border: 1px solid {BORDER}; border-radius: 8px;"
-            f" padding: 6px 10px; color: {MID}; font-size: 10pt;"
+            f"background: {theme.CARD}; border: 1px solid {theme.BORDER}; border-radius: 8px;"
+            f" padding: 6px 10px; color: {theme.MID}; font-size: 10pt;"
         )
         v.addWidget(self.note_edit)
         v.addSpacing(12)
@@ -519,7 +524,7 @@ class EditorView(QWidget):
 
         # Sklon (pitch spin box with − / value / + layout)
         _lbl_pitch = QLabel(tr("pitch", lang))
-        _lbl_pitch.setStyleSheet(f"color: {MID}; font-size: 9pt; background: transparent;")
+        _lbl_pitch.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
         v.addWidget(_lbl_pitch)
         v.addSpacing(4)
 
@@ -533,10 +538,10 @@ class EditorView(QWidget):
         _btn_minus.setFixedSize(32, 34)
         _btn_minus.setStyleSheet(
             f"QPushButton {{"
-            f"  background: {CARD}; color: {MID}; border: 1px solid {BORDER};"
+            f"  background: {theme.CARD}; color: {theme.MID}; border: 1px solid {theme.BORDER};"
             f"  border-radius: 7px; font-size: 14pt; font-weight: 600;"
             f"}}"
-            f"QPushButton:hover {{ background: {BG}; }}"
+            f"QPushButton:hover {{ background: {theme.BG}; }}"
         )
 
         self._pitch_spin = QSpinBox()
@@ -546,11 +551,11 @@ class EditorView(QWidget):
         self._pitch_spin.setFixedHeight(34)
         self._pitch_spin.setStyleSheet(
             f"QSpinBox {{"
-            f"  background: {CARD}; color: {MID}; border: 1px solid {BORDER};"
+            f"  background: {theme.CARD}; color: {theme.MID}; border: 1px solid {theme.BORDER};"
             f"  border-radius: 7px; padding: 0 8px; font-size: 10pt;"
             f"  font-weight: 600;"
             f"}}"
-            f"QSpinBox:focus {{ border-color: {ACCENT}; }}"
+            f"QSpinBox:focus {{ border-color: {theme.ACCENT}; }}"
             f"QSpinBox::up-button, QSpinBox::down-button {{ width: 0; }}"
         )
 
@@ -558,10 +563,10 @@ class EditorView(QWidget):
         _btn_plus.setFixedSize(32, 34)
         _btn_plus.setStyleSheet(
             f"QPushButton {{"
-            f"  background: {CARD}; color: {MID}; border: 1px solid {BORDER};"
+            f"  background: {theme.CARD}; color: {theme.MID}; border: 1px solid {theme.BORDER};"
             f"  border-radius: 7px; font-size: 14pt; font-weight: 600;"
             f"}}"
-            f"QPushButton:hover {{ background: {BG}; }}"
+            f"QPushButton:hover {{ background: {theme.BG}; }}"
         )
 
         _btn_minus.clicked.connect(
@@ -580,7 +585,7 @@ class EditorView(QWidget):
 
         # Výška stěn (wall height double spin box)
         _lbl_wall = QLabel(tr("wallHeight", lang))
-        _lbl_wall.setStyleSheet(f"color: {MID}; font-size: 9pt; background: transparent;")
+        _lbl_wall.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
         v.addWidget(_lbl_wall)
         v.addSpacing(4)
 
@@ -593,11 +598,11 @@ class EditorView(QWidget):
         self._wall_height_spin.setFixedHeight(34)
         self._wall_height_spin.setStyleSheet(
             f"QDoubleSpinBox {{"
-            f"  background: {CARD}; color: {MID}; border: 1px solid {BORDER};"
+            f"  background: {theme.CARD}; color: {theme.MID}; border: 1px solid {theme.BORDER};"
             f"  border-radius: 7px; padding: 0 8px; font-size: 10pt;"
             f"  font-weight: 600;"
             f"}}"
-            f"QDoubleSpinBox:focus {{ border-color: {ACCENT}; }}"
+            f"QDoubleSpinBox:focus {{ border-color: {theme.ACCENT}; }}"
             f"QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; }}"
         )
         self._wall_height_spin.valueChanged.connect(self._on_wall_height_changed)
@@ -606,7 +611,7 @@ class EditorView(QWidget):
 
         # Typ střechy badge
         _lbl_roof_type = QLabel(tr("roofType", lang))
-        _lbl_roof_type.setStyleSheet(f"color: {MID}; font-size: 9pt; background: transparent;")
+        _lbl_roof_type.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
         v.addWidget(_lbl_roof_type)
         v.addSpacing(4)
 
@@ -614,7 +619,7 @@ class EditorView(QWidget):
         self.roof_type_badge.setFixedHeight(32)
         self.roof_type_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.roof_type_badge.setStyleSheet(
-            f"background: #eef4ff; color: {ACCENT}; border-radius: 8px;"
+            f"background: #eef4ff; color: {theme.ACCENT}; border-radius: 8px;"
             f" font-size: 10pt; font-weight: 600; padding: 0 12px;"
         )
         v.addWidget(self.roof_type_badge)
@@ -641,7 +646,7 @@ class EditorView(QWidget):
 
         results_box = QWidget()
         results_box.setStyleSheet(
-            f"background: {BG}; border-radius: 8px;"
+            f"background: {theme.BG}; border-radius: 8px;"
         )
         rb_layout = QVBoxLayout(results_box)
         rb_layout.setContentsMargins(10, 10, 10, 10)
@@ -656,13 +661,13 @@ class EditorView(QWidget):
 
             lbl = QLabel(tr(row_key, lang))
             lbl.setStyleSheet(
-                f"color: {MID}; font-size: 9pt; background: transparent;"
+                f"color: {theme.MID}; font-size: 9pt; background: transparent;"
             )
             row_h.addWidget(lbl, stretch=1)
 
             val = QLabel("—")
             val.setStyleSheet(
-                f"color: {TEXT}; font-size: 9pt; font-weight: 600;"
+                f"color: {theme.TEXT}; font-size: 9pt; font-weight: 600;"
                 f" background: transparent;"
             )
             val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -678,7 +683,7 @@ class EditorView(QWidget):
         self._save_btn.setFixedHeight(40)
         self._save_btn.setStyleSheet(
             f"QPushButton {{"
-            f"  background: {ACCENT};"
+            f"  background: {theme.ACCENT};"
             f"  color: #ffffff;"
             f"  border: none;"
             f"  border-radius: 9px;"
@@ -686,7 +691,7 @@ class EditorView(QWidget):
             f"  font-size: 10pt;"
             f"  font-weight: 600;"
             f"}}"
-            f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}"
+            f"QPushButton:hover {{ background: {theme.ACCENT_HOVER}; }}"
         )
         self._save_btn.clicked.connect(self._on_save)
         v.addWidget(self._save_btn)
@@ -696,15 +701,15 @@ class EditorView(QWidget):
         self._export_btn.setFixedHeight(40)
         self._export_btn.setStyleSheet(
             f"QPushButton {{"
-            f"  background: {CARD};"
-            f"  color: {ACCENT};"
-            f"  border: 1px solid {ACCENT};"
+            f"  background: {theme.CARD};"
+            f"  color: {theme.ACCENT};"
+            f"  border: 1px solid {theme.ACCENT};"
             f"  border-radius: 9px;"
             f"  padding: 0 20px;"
             f"  font-size: 10pt;"
             f"  font-weight: 600;"
             f"}}"
-            f"QPushButton:hover {{ background: {BG}; }}"
+            f"QPushButton:hover {{ background: {theme.BG}; }}"
         )
         self._export_btn.clicked.connect(self._on_export)
         v.addWidget(self._export_btn)
@@ -726,14 +731,14 @@ class EditorView(QWidget):
         bar = QWidget()
         bar.setFixedHeight(28)
         bar.setStyleSheet(
-            f"background: {CARD}; border-top: 1px solid {BORDER_SOFT};"
+            f"background: {theme.CARD}; border-top: 1px solid {theme.BORDER_SOFT};"
         )
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(16, 0, 16, 0)
 
         self.status_label = QLabel(f"Kurzor —  ·  Jednotky: m")
         self.status_label.setStyleSheet(
-            f"color: {MUTED}; font-size: 9pt; background: transparent;"
+            f"color: {theme.MUTED}; font-size: 9pt; background: transparent;"
         )
         layout.addWidget(self.status_label)
         layout.addStretch(1)
@@ -980,3 +985,17 @@ class EditorView(QWidget):
         ))
         if chosen is not None:
             self._window.set_language(chosen.data())
+
+    def _on_settings(self) -> None:
+        """Open the settings dialog (F2)."""
+        from tectora.gui.settings_dialog import SettingsDialog
+        current_lang = getattr(self._window, "lang", "cs")
+        current_dark = getattr(self._window, "dark", False)
+        dlg = SettingsDialog(current_lang=current_lang, current_dark=current_dark, parent=self)
+        if dlg.exec():
+            lang = dlg.selected_lang()
+            dark = dlg.selected_dark()
+            if dark != current_dark:
+                self._window.set_theme(dark)
+            if lang != current_lang:
+                self._window.set_language(lang)

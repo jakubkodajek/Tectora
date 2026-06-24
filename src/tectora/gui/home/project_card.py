@@ -12,7 +12,8 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFormLayout,
                                 QSizePolicy, QVBoxLayout, QWidget)
 
 from tectora.core.footprint import EdgeType, Footprint
-from tectora.gui.theme import ACCENT, BORDER, CARD, FAINT, MUTED, TEXT, COL
+from tectora.gui import theme
+from tectora.gui.theme import COL
 
 if TYPE_CHECKING:
     from tectora.application.library import LibraryEntry
@@ -94,11 +95,13 @@ class _FootprintPreview(QWidget):
 
         w, h = self.width(), self.height()
 
-        # Background
-        painter.fillRect(0, 0, w, h, QColor("#fafbfc"))
+        # Background — use theme card color slightly lighter
+        bg_col = "#fafbfc" if not theme.is_dark() else theme.BG
+        painter.fillRect(0, 0, w, h, QColor(bg_col))
 
         # Grid lines
-        grid_pen = QPen(QColor("#eceef1"), 1)
+        grid_col = "#eceef1" if not theme.is_dark() else theme.BORDER_SOFT
+        grid_pen = QPen(QColor(grid_col), 1)
         painter.setPen(grid_pen)
         x = _GRID_STEP
         while x < w:
@@ -120,7 +123,7 @@ class _FootprintPreview(QWidget):
         for px, py in pts:
             poly.append(QPoint(int(round(px)), int(round(py))))
 
-        fill_color = QColor(ACCENT)
+        fill_color = QColor(theme.ACCENT)
         fill_color.setAlpha(15)
         painter.setBrush(fill_color)
         painter.setPen(Qt.PenStyle.NoPen)
@@ -131,7 +134,7 @@ class _FootprintPreview(QWidget):
         for i, edge in enumerate(self._footprint.edges):
             x1, y1 = pts[i]
             x2, y2 = pts[(i + 1) % n]
-            color_hex = COL.get(edge.type.value, ACCENT)
+            color_hex = COL.get(edge.type.value, theme.ACCENT)
             pen = QPen(QColor(color_hex), 1.6)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)
@@ -178,12 +181,12 @@ class ProjectCard(QWidget):
         # Separator line under preview
         sep = QWidget()
         sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background:{BORDER};")
+        sep.setStyleSheet(f"background:{theme.BORDER};")
         layout.addWidget(sep)
 
         # Info section
         info = QWidget()
-        info.setStyleSheet(f"background:{CARD};")
+        info.setStyleSheet(f"background:{theme.CARD};")
         info_layout = QVBoxLayout(info)
         info_layout.setContentsMargins(14, 12, 14, 14)
         info_layout.setSpacing(3)
@@ -198,7 +201,7 @@ class ProjectCard(QWidget):
         name_font.setWeight(QFont.Weight.DemiBold)
         name_font.setPointSize(10)
         name_label.setFont(name_font)
-        name_label.setStyleSheet(f"color:{TEXT}; background:transparent;")
+        name_label.setStyleSheet(f"color:{theme.TEXT}; background:transparent;")
         name_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         # Ellipsize long names
         name_label.setWordWrap(False)
@@ -212,8 +215,8 @@ class ProjectCard(QWidget):
         menu_btn.setFixedSize(28, 28)
         menu_btn.setStyleSheet(
             f"QPushButton {{ background:transparent; border:none; border-radius:7px;"
-            f" color:{MUTED}; font-size:16px; }}"
-            f"QPushButton:hover {{ background:#f1f3f6; color:{TEXT}; }}"
+            f" color:{theme.MUTED}; font-size:16px; }}"
+            f"QPushButton:hover {{ background:{theme.BG}; color:{theme.TEXT}; }}"
         )
         menu_btn.clicked.connect(self._show_menu)
         name_row.addWidget(menu_btn, stretch=0)
@@ -223,16 +226,17 @@ class ProjectCard(QWidget):
         # Meta line: location · date
         meta = self._build_meta()
         meta_label = QLabel(meta)
-        meta_label.setStyleSheet(f"color:{FAINT}; font-size:9pt; background:transparent;")
+        meta_label.setStyleSheet(f"color:{theme.FAINT}; font-size:9pt; background:transparent;")
         info_layout.addWidget(meta_label)
 
         # Area badge
         area = self._build_area()
         if area is not None:
             badge = QLabel(area)
+            badge_bg = "#2a3658" if theme.is_dark() else "#f1f5fd"
             badge.setStyleSheet(
-                "background:#f1f5fd; border-radius:6px; padding:4px 9px;"
-                f" font-size:9pt; font-weight:600; color:{ACCENT};"
+                f"background:{badge_bg}; border-radius:6px; padding:4px 9px;"
+                f" font-size:9pt; font-weight:600; color:{theme.ACCENT};"
             )
             badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             info_layout.addWidget(badge)
@@ -265,12 +269,12 @@ class ProjectCard(QWidget):
     def _apply_style(self) -> None:
         self.setStyleSheet(
             f"ProjectCard {{"
-            f"  background:{CARD};"
-            f"  border:1px solid #e6e8eb;"
+            f"  background:{theme.CARD};"
+            f"  border:1px solid {theme.BORDER};"
             f"  border-radius:14px;"
             f"}}"
             f"ProjectCard:hover {{"
-            f"  border-color:#d4d7dc;"
+            f"  border-color:{theme.MUTED};"
             f"}}"
         )
 
@@ -287,11 +291,11 @@ class ProjectCard(QWidget):
 
         menu = QMenu(self)
         menu.setStyleSheet(
-            f"QMenu {{ background:{CARD}; border:1px solid #e6e8eb;"
+            f"QMenu {{ background:{theme.CARD}; border:1px solid {theme.BORDER};"
             f" border-radius:10px; padding:6px; }}"
             f"QMenu::item {{ padding:9px 10px; border-radius:7px;"
             f" font-size:10pt; font-weight:500; }}"
-            f"QMenu::item:selected {{ background:#f1f3f6; }}"
+            f"QMenu::item:selected {{ background:{theme.BG}; }}"
         )
 
         open_action = menu.addAction(tr("open", lang))

@@ -11,6 +11,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.library = library or SqliteProjectLibrary(default_db_path())
         self.lang = lang
+        self.dark = False
         self.setWindowTitle("Tectora")
         self.resize(1100, 720)
 
@@ -129,3 +130,23 @@ class MainWindow(QMainWindow):
 
         # Restore which view was showing
         self._stack.setCurrentIndex(current_idx)
+
+    # ------------------------------------------------------------------
+    # F2: Dark theme switcher
+    # ------------------------------------------------------------------
+
+    def set_theme(self, dark: bool) -> None:
+        """Switch between light and dark theme and rebuild both views."""
+        from tectora.gui import theme as _theme
+        from PySide6.QtWidgets import QApplication
+
+        _theme.set_dark(dark)
+        app = QApplication.instance()
+        if app is not None:
+            _theme.apply_theme(app)
+        self.dark = dark
+
+        # Rebuild views so freshly constructed widgets read the new palette.
+        # Reuse the same logic as set_language (captures + restores state).
+        current_lang = self.lang
+        self.set_language(current_lang)

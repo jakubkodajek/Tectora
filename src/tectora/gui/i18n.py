@@ -63,6 +63,9 @@ CATALOG: dict[str, dict[str, str]] = {
         "confirmDelete": "Smazat zakázku",
         "confirmDeleteMsg": 'Opravdu smazat "{name}"?',
         "wallHeight": "Výška stěn",
+        "settings": "Nastavení",
+        "language": "Jazyk",
+        "darkTheme": "Tmavý režim",
     },
     "sk": {
         "new": "Nová zákazka",
@@ -122,6 +125,9 @@ CATALOG: dict[str, dict[str, str]] = {
         "confirmDelete": "Zmazať zákazku",
         "confirmDeleteMsg": 'Naozaj zmazať "{name}"?',
         "wallHeight": "Výška stien",
+        "settings": "Nastavenia",
+        "language": "Jazyk",
+        "darkTheme": "Tmavý režim",
     },
     "en": {
         "new": "New project",
@@ -181,6 +187,9 @@ CATALOG: dict[str, dict[str, str]] = {
         "confirmDelete": "Delete project",
         "confirmDeleteMsg": 'Really delete "{name}"?',
         "wallHeight": "Wall height",
+        "settings": "Settings",
+        "language": "Language",
+        "darkTheme": "Dark mode",
     },
 }
 

@@ -1,32 +1,80 @@
-"""Design tokens and global QSS theme for Tectora."""
+"""Design tokens and global QSS theme for Tectora.
+
+Palette constants (BG, CARD, …) are module-level names that can be
+switched between LIGHT and DARK by calling ``set_dark(True/False)``.
+Chrome widgets must import the module and reference ``theme.BG`` etc.
+at widget-build time so freshly constructed widgets always read the
+current palette.
+"""
 from __future__ import annotations
 
-# --- Colour palette ---------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Static palette dicts
+# ---------------------------------------------------------------------------
 
-ACCENT = "#2563eb"
-ACCENT_HOVER = "#1d4ed8"
-BG = "#eef0f2"
-CARD = "#ffffff"
-TEXT = "#111827"
-BORDER = "#e0e2e6"
-BORDER_SOFT = "#eceef1"
-MUTED = "#6b7280"
-FAINT = "#9ca3af"
-MID = "#374151"
-DANGER = "#dc2626"
+LIGHT: dict[str, str] = {
+    "ACCENT":       "#2563eb",
+    "ACCENT_HOVER": "#1d4ed8",
+    "BG":           "#eef0f2",
+    "CARD":         "#ffffff",
+    "TEXT":         "#111827",
+    "BORDER":       "#e0e2e6",
+    "BORDER_SOFT":  "#eceef1",
+    "MUTED":        "#6b7280",
+    "FAINT":        "#9ca3af",
+    "MID":          "#374151",
+    "DANGER":       "#dc2626",
+}
 
-# Edge/line colours per roof element
+DARK: dict[str, str] = {
+    "ACCENT":       "#2563eb",
+    "ACCENT_HOVER": "#3b73ef",
+    "BG":           "#1f2430",
+    "CARD":         "#262b38",
+    "TEXT":         "#e6e8eb",
+    "BORDER":       "#3a4150",
+    "BORDER_SOFT":  "#2f3542",
+    "MUTED":        "#9aa3b2",
+    "FAINT":        "#6b7280",
+    "MID":          "#c2c8d2",
+    "DANGER":       "#ef4444",
+}
+
+# Edge/line colours per roof element — constant, never theme-switched
 COL: dict[str, str] = {
     "ridge": "#e11d48",
-    "hip": "#9333ea",
-    "valley": "#0d9488",
-    "eave": "#2563eb",
+    "hip":   "#9333ea",
+    "valley":"#0d9488",
+    "eave":  "#2563eb",
     "gable": "#ea580c",
 }
 
-# --- Global stylesheet -------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Module-level mutable palette names (start with LIGHT values)
+# ---------------------------------------------------------------------------
 
-GLOBAL_QSS: str = f"""
+ACCENT:       str = LIGHT["ACCENT"]
+ACCENT_HOVER: str = LIGHT["ACCENT_HOVER"]
+BG:           str = LIGHT["BG"]
+CARD:         str = LIGHT["CARD"]
+TEXT:         str = LIGHT["TEXT"]
+BORDER:       str = LIGHT["BORDER"]
+BORDER_SOFT:  str = LIGHT["BORDER_SOFT"]
+MUTED:        str = LIGHT["MUTED"]
+FAINT:        str = LIGHT["FAINT"]
+MID:          str = LIGHT["MID"]
+DANGER:       str = LIGHT["DANGER"]
+
+# Internal dark-mode flag
+_dark: bool = False
+
+
+# ---------------------------------------------------------------------------
+# GLOBAL_QSS — rebuilt by set_dark()
+# ---------------------------------------------------------------------------
+
+def _build_qss() -> str:
+    return f"""
 /* ── App / window backgrounds ─────────────────────────────────────── */
 QMainWindow, QDialog, QWidget {{
     background-color: {BG};
@@ -135,17 +183,49 @@ QStatusBar {{
 """
 
 
+GLOBAL_QSS: str = _build_qss()
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def set_dark(dark: bool) -> None:
+    """Switch the palette to DARK or LIGHT and rebuild GLOBAL_QSS."""
+    global ACCENT, ACCENT_HOVER, BG, CARD, TEXT, BORDER, BORDER_SOFT
+    global MUTED, FAINT, MID, DANGER, GLOBAL_QSS, _dark
+
+    _dark = dark
+    palette = DARK if dark else LIGHT
+    ACCENT       = palette["ACCENT"]
+    ACCENT_HOVER = palette["ACCENT_HOVER"]
+    BG           = palette["BG"]
+    CARD         = palette["CARD"]
+    TEXT         = palette["TEXT"]
+    BORDER       = palette["BORDER"]
+    BORDER_SOFT  = palette["BORDER_SOFT"]
+    MUTED        = palette["MUTED"]
+    FAINT        = palette["FAINT"]
+    MID          = palette["MID"]
+    DANGER       = palette["DANGER"]
+
+    GLOBAL_QSS = _build_qss()
+
+
+def is_dark() -> bool:
+    """Return True if the dark palette is currently active."""
+    return _dark
+
+
 def apply_theme(app) -> None:
-    """Apply the Tectora theme to *app* (a QApplication instance)."""
+    """Apply the current Tectora theme to *app* (a QApplication instance)."""
     from PySide6.QtGui import QFont, QFontDatabase
 
-    # Try to use Inter; fall back gracefully to whatever the system provides.
     families = QFontDatabase.families()
     font_family = "Inter" if "Inter" in families else None
 
     if font_family:
         font = QFont(font_family, 10)
         app.setFont(font)
-    # If Inter is not installed we leave the system default — never crash.
 
     app.setStyleSheet(GLOBAL_QSS)

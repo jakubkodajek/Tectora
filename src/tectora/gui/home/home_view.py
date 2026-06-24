@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from tectora.gui.i18n import tr
-from tectora.gui.theme import ACCENT, BG, BORDER, CARD, FAINT, MID, MUTED, TEXT
+from tectora.gui import theme
 from tectora.gui.home.project_card import ProjectCard
 
 if TYPE_CHECKING:
@@ -37,7 +37,7 @@ class _LogoWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         path = QPainterPath()
         path.addRoundedRect(0, 0, 26, 26, 6, 6)
-        painter.fillPath(path, QColor(ACCENT))
+        painter.fillPath(path, QColor(theme.ACCENT))
         # House icon: roof line + walls
         pen_color = QColor("#ffffff")
         from PySide6.QtGui import QPen
@@ -81,7 +81,7 @@ class _NewProjectCard(QWidget):
         icon_btn = QPushButton("+")
         icon_btn.setFixedSize(46, 46)
         icon_btn.setStyleSheet(
-            f"QPushButton {{ background:{ACCENT}; color:#fff; border:none;"
+            f"QPushButton {{ background:{theme.ACCENT}; color:#fff; border:none;"
             f" border-radius:12px; font-size:22px; font-weight:600; }}"
         )
         icon_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -95,13 +95,13 @@ class _NewProjectCard(QWidget):
         title_font.setPointSize(11)
         title.setFont(title_font)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet(f"color:{TEXT}; background:transparent;")
+        title.setStyleSheet(f"color:{theme.TEXT}; background:transparent;")
         layout.addWidget(title)
 
         sub = QLabel(tr("newSub", self._lang))
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sub.setWordWrap(True)
-        sub.setStyleSheet(f"color:{FAINT}; font-size:9pt; background:transparent;")
+        sub.setStyleSheet(f"color:{theme.FAINT}; font-size:9pt; background:transparent;")
         layout.addWidget(sub)
 
     def mousePressEvent(self, event):  # noqa: N802
@@ -112,9 +112,10 @@ class _NewProjectCard(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         from PySide6.QtGui import QPen
         from PySide6.QtCore import Qt as _Qt
-        pen = QPen(QColor("#c4cad2"), 1.5, _Qt.PenStyle.DashLine)
+        border_col = theme.BORDER if theme.is_dark() else "#c4cad2"
+        pen = QPen(QColor(border_col), 1.5, _Qt.PenStyle.DashLine)
         painter.setPen(pen)
-        painter.setBrush(QColor(CARD))
+        painter.setBrush(QColor(theme.CARD))
         path = QPainterPath()
         path.addRoundedRect(1, 1, self.width() - 2, self.height() - 2, 14, 14)
         painter.drawPath(path)
@@ -187,8 +188,8 @@ class _EmptyState(QWidget):
 
         frame = QFrame()
         frame.setStyleSheet(
-            "QFrame { border:1.5px dashed #dfe3e8; border-radius:14px;"
-            " background:#ffffff; }"
+            f"QFrame {{ border:1.5px dashed {theme.BORDER}; border-radius:14px;"
+            f" background:{theme.CARD}; }}"
         )
         inner = QVBoxLayout(frame)
         inner.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -199,7 +200,7 @@ class _EmptyState(QWidget):
         icon_box = QWidget()
         icon_box.setFixedSize(64, 64)
         icon_box.setStyleSheet(
-            "background:#f1f3f6; border-radius:16px; border:none;"
+            f"background:{theme.BG}; border-radius:16px; border:none;"
         )
         inner.addWidget(icon_box, alignment=Qt.AlignmentFlag.AlignCenter)
         inner.addSpacing(18)
@@ -210,7 +211,7 @@ class _EmptyState(QWidget):
         title_font.setPointSize(12)
         title.setFont(title_font)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet(f"color:{TEXT}; border:none; background:transparent;")
+        title.setStyleSheet(f"color:{theme.TEXT}; border:none; background:transparent;")
         inner.addWidget(title)
 
         inner.addSpacing(6)
@@ -219,7 +220,7 @@ class _EmptyState(QWidget):
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint.setWordWrap(True)
         hint.setMaximumWidth(300)
-        hint.setStyleSheet(f"color:{FAINT}; font-size:9pt; border:none; background:transparent;")
+        hint.setStyleSheet(f"color:{theme.FAINT}; font-size:9pt; border:none; background:transparent;")
         inner.addWidget(hint, alignment=Qt.AlignmentFlag.AlignCenter)
 
         inner.addSpacing(22)
@@ -227,7 +228,7 @@ class _EmptyState(QWidget):
         btn = QPushButton(tr("new", self._lang))
         btn.setFixedHeight(40)
         btn.setStyleSheet(
-            f"QPushButton {{ background:{ACCENT}; color:#fff; border:none;"
+            f"QPushButton {{ background:{theme.ACCENT}; color:#fff; border:none;"
             f" border-radius:9px; font-size:10pt; font-weight:600;"
             f" padding:0 20px; }}"
         )
@@ -266,7 +267,7 @@ class HomeView(QWidget):
         topbar = QWidget()
         topbar.setFixedHeight(60)
         topbar.setStyleSheet(
-            f"background:{CARD}; border-bottom:1px solid #e6e8eb;"
+            f"background:{theme.CARD}; border-bottom:1px solid {theme.BORDER};"
         )
         tb_layout = QHBoxLayout(topbar)
         tb_layout.setContentsMargins(24, 0, 24, 0)
@@ -281,7 +282,7 @@ class HomeView(QWidget):
         brand_font.setWeight(QFont.Weight.Bold)
         brand_font.setPointSize(12)
         brand.setFont(brand_font)
-        brand.setStyleSheet(f"color:{TEXT}; background:transparent; border:none;")
+        brand.setStyleSheet(f"color:{theme.TEXT}; background:transparent; border:none;")
         tb_layout.addWidget(brand)
 
         tb_layout.addStretch(1)
@@ -291,10 +292,10 @@ class HomeView(QWidget):
         self._search.setPlaceholderText(tr("search", self._lang))
         self._search.setFixedSize(280, 38)
         self._search.setStyleSheet(
-            f"QLineEdit {{ border:1px solid {BORDER}; border-radius:8px;"
-            f" background:{CARD}; color:{TEXT}; font-size:10pt;"
+            f"QLineEdit {{ border:1px solid {theme.BORDER}; border-radius:8px;"
+            f" background:{theme.CARD}; color:{theme.TEXT}; font-size:10pt;"
             f" padding:0 12px 0 34px; }}"
-            f"QLineEdit:focus {{ border-color:{ACCENT}; }}"
+            f"QLineEdit:focus {{ border-color:{theme.ACCENT}; }}"
         )
         self._search.textChanged.connect(self._on_search)
         tb_layout.addWidget(self._search)
@@ -303,13 +304,25 @@ class HomeView(QWidget):
         self._lang_btn = QPushButton(f"{self._lang.upper()} ▾")
         self._lang_btn.setFixedHeight(38)
         self._lang_btn.setStyleSheet(
-            f"QPushButton {{ background:{CARD}; color:{MID};"
-            f" border:1px solid {BORDER}; border-radius:8px;"
+            f"QPushButton {{ background:{theme.CARD}; color:{theme.MID};"
+            f" border:1px solid {theme.BORDER}; border-radius:8px;"
             f" font-size:9pt; font-weight:600; padding:0 12px; }}"
-            f"QPushButton:hover {{ background:{BG}; }}"
+            f"QPushButton:hover {{ background:{theme.BG}; }}"
         )
         self._lang_btn.clicked.connect(self._on_lang_click)
         tb_layout.addWidget(self._lang_btn)
+
+        # Gear button (F2: opens settings dialog)
+        self._gear_btn = QPushButton("⚙")
+        self._gear_btn.setFixedSize(38, 38)
+        self._gear_btn.setStyleSheet(
+            f"QPushButton {{ background:{theme.CARD}; color:{theme.MID};"
+            f" border:1px solid {theme.BORDER}; border-radius:8px;"
+            f" font-size:14pt; }}"
+            f"QPushButton:hover {{ background:{theme.BG}; }}"
+        )
+        self._gear_btn.clicked.connect(self._on_settings)
+        tb_layout.addWidget(self._gear_btn)
 
         root.addWidget(topbar)
 
@@ -320,7 +333,7 @@ class HomeView(QWidget):
         scroll.setStyleSheet("background:transparent;")
 
         body = QWidget()
-        body.setStyleSheet(f"background:#fafbfc;")
+        body.setStyleSheet(f"background:{theme.BG};")
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(40, 36, 40, 60)
         body_layout.setSpacing(0)
@@ -344,13 +357,13 @@ class HomeView(QWidget):
         wt_font.setWeight(QFont.Weight.Bold)
         wt_font.setPointSize(14)
         wt.setFont(wt_font)
-        wt.setStyleSheet(f"color:{TEXT}; background:transparent;")
+        wt.setStyleSheet(f"color:{theme.TEXT}; background:transparent;")
         wl.addWidget(wt)
 
         ws = QLabel(tr("welcomeSub", self._lang))
         ws.setWordWrap(True)
         ws.setMaximumWidth(440)
-        ws.setStyleSheet(f"color:{MUTED}; font-size:10pt; background:transparent;")
+        ws.setStyleSheet(f"color:{theme.MUTED}; font-size:10pt; background:transparent;")
         wl.addWidget(ws)
 
         hero_row.addWidget(welcome, stretch=1)
@@ -368,13 +381,13 @@ class HomeView(QWidget):
         section_font.setPointSize(9)
         section_title.setFont(section_font)
         section_title.setStyleSheet(
-            f"color:{MID}; letter-spacing:1px; background:transparent;"
+            f"color:{theme.MID}; letter-spacing:1px; background:transparent;"
         )
         header_row.addWidget(section_title)
         header_row.addStretch(1)
 
         self._count_label = QLabel("")
-        self._count_label.setStyleSheet(f"color:{FAINT}; font-size:9pt; background:transparent;")
+        self._count_label.setStyleSheet(f"color:{theme.FAINT}; font-size:9pt; background:transparent;")
         header_row.addWidget(self._count_label)
 
         body_layout.addLayout(header_row)
@@ -449,3 +462,17 @@ class HomeView(QWidget):
         ))
         if chosen is not None:
             self._window.set_language(chosen.data())
+
+    def _on_settings(self) -> None:
+        """Open the settings dialog."""
+        from tectora.gui.settings_dialog import SettingsDialog
+        current_lang = getattr(self._window, "lang", "cs")
+        current_dark = getattr(self._window, "dark", False)
+        dlg = SettingsDialog(current_lang=current_lang, current_dark=current_dark, parent=self)
+        if dlg.exec():
+            lang = dlg.selected_lang()
+            dark = dlg.selected_dark()
+            if dark != current_dark:
+                self._window.set_theme(dark)
+            if lang != current_lang:
+                self._window.set_language(lang)

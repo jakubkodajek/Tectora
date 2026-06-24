@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from tectora.application.use_cases import suggest_location
 from tectora.core.location import Location
-from tectora.gui.theme import ACCENT, BG, BORDER, CARD, MID, TEXT
+from tectora.gui import theme
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +94,7 @@ class LocationField(QWidget):
         # Row: pin + line edit
         row = QWidget()
         row.setStyleSheet(
-            f"background: {CARD}; border: 1px solid {BORDER}; border-radius: 8px;"
+            f"background: {theme.CARD}; border: 1px solid {theme.BORDER}; border-radius: 8px;"
         )
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(8, 0, 8, 0)
@@ -108,7 +108,7 @@ class LocationField(QWidget):
         self._line_edit.setPlaceholderText("Zadejte obec nebo adresu…")
         self._line_edit.setStyleSheet(
             "background: transparent; border: none; color: "
-            f"{TEXT}; font-size: 10pt;"
+            f"{theme.TEXT}; font-size: 10pt;"
         )
         self._line_edit.setFixedHeight(34)
         row_layout.addWidget(self._line_edit, stretch=1)
@@ -119,18 +119,18 @@ class LocationField(QWidget):
         self._dropdown = QListWidget()
         self._dropdown.setStyleSheet(
             f"QListWidget {{"
-            f"  background: {CARD};"
-            f"  border: 1px solid {BORDER};"
+            f"  background: {theme.CARD};"
+            f"  border: 1px solid {theme.BORDER};"
             f"  border-radius: 6px;"
             f"  font-size: 10pt;"
-            f"  color: {TEXT};"
+            f"  color: {theme.TEXT};"
             f"}}"
             f"QListWidget::item:selected {{"
-            f"  background: {BG};"
-            f"  color: {TEXT};"
+            f"  background: {theme.BG};"
+            f"  color: {theme.TEXT};"
             f"}}"
             f"QListWidget::item:hover {{"
-            f"  background: {BG};"
+            f"  background: {theme.BG};"
             f"}}"
         )
         self._dropdown.hide()
