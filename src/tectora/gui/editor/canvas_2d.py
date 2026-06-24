@@ -92,6 +92,9 @@ class Canvas2D(QWidget):
 
     # Emitted when a closed polygon is edited (toggle_edge_type / move_vertex)
     edited = Signal()
+    # Emitted with the active index when the active building changes
+    # (new_building / set_active / a successful select_building_at).
+    active_changed = Signal(int)
 
     def __init__(self, editor: "EditorView"):
         super().__init__(editor.canvas_container)
@@ -191,6 +194,7 @@ class Canvas2D(QWidget):
         self._buildings.append(_CanvasBuilding())
         self._active = len(self._buildings) - 1
         self.update()
+        self.active_changed.emit(self._active)
         return self._active
 
     def set_active(self, index: int) -> None:
@@ -198,6 +202,7 @@ class Canvas2D(QWidget):
         if 0 <= index < len(self._buildings):
             self._active = index
             self.update()
+            self.active_changed.emit(self._active)
 
     def delete_building(self, index: int) -> None:
         """Remove building *index*; always keep at least one (empty) building."""
@@ -242,8 +247,31 @@ class Canvas2D(QWidget):
             if _point_in_polygon(px, py, pts):
                 self._active = i
                 self.update()
+                self.active_changed.emit(self._active)
                 return i
         return None
+
+    # ------------------------------------------------------------------
+    # Active-building roof parameters (read/write self._b)
+    # ------------------------------------------------------------------
+
+    def active_pitch(self) -> int:
+        return self._b.pitch
+
+    def set_active_pitch(self, value: int) -> None:
+        self._b.pitch = int(value)
+
+    def active_wall_height(self) -> float:
+        return self._b.wall_height
+
+    def set_active_wall_height(self, value: float) -> None:
+        self._b.wall_height = float(value)
+
+    def active_name(self) -> str:
+        return self._b.name
+
+    def set_active_name(self, value: str) -> None:
+        self._b.name = str(value)
 
     # ------------------------------------------------------------------
     # Model API — called by mouse handlers AND by tests
@@ -440,6 +468,9 @@ class Canvas2D(QWidget):
         self.add_point(mx, my)
 
     def _handle_editpoints_press(self, px: float, py: float) -> None:
+        # Clicking inside another building makes it active first, so the edit
+        # then applies to it. A miss leaves the active building unchanged.
+        self.select_building_at(px, py)
         if not self._vertices:
             return
         node_pts = [self._to_screen(v[0], v[1]) for v in self._vertices]
@@ -447,6 +478,9 @@ class Canvas2D(QWidget):
         self._drag_idx = idx
 
     def _handle_eavegable_click(self, px: float, py: float) -> None:
+        # Clicking inside another building makes it active first, so the
+        # eave/gable toggle then applies to it.
+        self.select_building_at(px, py)
         if not self._closed or len(self._vertices) < 2:
             return
         n = len(self._vertices)

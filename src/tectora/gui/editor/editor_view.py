@@ -332,6 +332,14 @@ class EditorView(QWidget):
 
         layout.addSpacing(12)
 
+        # + Nová stavba — start a new building in the same design (card style,
+        # not checkable: it's an action, not a mode).
+        self._new_building_btn = _tool_btn(tr("newBuilding", self._lang), checkable=False)
+        self._new_building_btn.clicked.connect(self._on_new_building)
+        layout.addWidget(self._new_building_btn)
+
+        layout.addSpacing(12)
+
         # Separator
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.VLine)
@@ -453,6 +461,10 @@ class EditorView(QWidget):
 
         # G4b: wire live re-generation on footprint edits
         self.canvas.edited.connect(self._on_footprint_edited)
+
+        # P3: when the active building changes (new / select), reload the
+        # right-panel parameter controls from that building.
+        self.canvas.active_changed.connect(self._on_active_building_changed)
 
         # Right panel
         h_layout.addWidget(self._make_right_panel())
@@ -796,36 +808,76 @@ class EditorView(QWidget):
             self._btn_3d.setChecked(mode == "3d")
 
     def _on_calculate(self) -> None:
-        """Provést výpočet — compute the roof and update canvas + results panel."""
+        """Provést výpočet — compute EVERY building and update canvas + panel.
+
+        Each building computes independently with its own pitch/overhang. The
+        results panel shows the design TOTAL (Σ across buildings); the 3D view
+        and roof-type badge track the ACTIVE building. ``self.last_result`` is
+        kept as the active building's RoofResult so the single-building path
+        behaves exactly as before (one building == the active building).
+        """
         from tectora.application import use_cases as uc
         from tectora.application.project import Project
 
         lang = self._lang
-        fp = self.canvas.footprint
-        if fp is None:
+        canvas = self.canvas
+        active = canvas.active_index()
+
+        n = canvas.building_count()
+        results: list = []          # per-building RoofResult (computed only)
+        active_result = None
+        active_fp = None
+        any_footprint = False
+
+        for i in range(n):
+            fp = canvas.building_footprint(i)
+            if fp is None:
+                canvas.set_building_skeleton(i, None)
+                continue
+            any_footprint = True
+            b = canvas._buildings[i]
+            try:
+                result = uc.calculate_project(
+                    Project(
+                        project_name=(self._project.project_name if self._project else ""),
+                        footprint=fp,
+                        global_pitch_deg=float(b.pitch),
+                        overhang_m=float(b.overhang),
+                    )
+                )
+            except ValueError:
+                # Only surface the toast for the building the user is on.
+                if i == active:
+                    self._show_toast(tr("unsupportedShape", lang))
+                canvas.set_building_skeleton(i, None)
+                continue
+
+            canvas.set_building_skeleton(i, result)
+            results.append(result)
+            if i == active:
+                active_result = result
+                active_fp = fp
+
+        if not any_footprint:
             self._show_toast(tr("drawFirst", lang))
             return
-        try:
-            result = uc.calculate_project(
-                Project(
-                    project_name=(self._project.project_name if self._project else ""),
-                    footprint=fp,
-                    global_pitch_deg=float(self.pitch),
-                    overhang_m=self.overhang,
-                )
-            )
-        except ValueError:
-            self._show_toast(tr("unsupportedShape", lang))
-            return
 
-        self.last_result = result
-        self.canvas.set_overhang(self.overhang)
-        self.canvas.set_skeleton(result)
-        self.set_results(result)
-        self._update_roof_type_badge(fp)
-        # G7: update 3D view with walls + roof geometry
-        if hasattr(self, "view3d"):
-            self.view3d.set_geometry(fp, float(self.pitch), self.wall_height, self.overhang)
+        # last_result tracks the active building (None if it has no footprint),
+        # preserving the single-building contract.
+        self.last_result = active_result
+
+        # Results panel = design total. With one building the totals equal that
+        # building's values, so existing assertions still hold.
+        design = uc.DesignResult(results)
+        self.set_results_from_design(design)
+
+        # Roof-type badge + 3D view follow the active building.
+        if active_fp is not None:
+            self._update_roof_type_badge(active_fp)
+            if hasattr(self, "view3d"):
+                self.view3d.set_geometry(
+                    active_fp, float(self.pitch), self.wall_height, self.overhang
+                )
 
     # ------------------------------------------------------------------
     # G5: public helpers for G6
@@ -854,6 +906,10 @@ class EditorView(QWidget):
     def set_overhang(self, value: float) -> None:
         """Update the overhang value and recompute if a result exists."""
         self.overhang = float(value)
+        # Mirror onto the active building (set_overhang writes self._overhang,
+        # which is the active building's overhang).
+        if hasattr(self, "canvas"):
+            self.canvas.set_overhang(self.overhang)
         if hasattr(self, "_overhang_spin"):
             self._overhang_spin.blockSignals(True)
             self._overhang_spin.setValue(self.overhang)
@@ -897,6 +953,40 @@ class EditorView(QWidget):
         if "rakeR" in labels:
             labels["rakeR"].setText(f"{result.gable_edge_right_m:.2f} m")
 
+    def set_results_from_design(self, design) -> None:
+        """Populate the VÝSLEDKY rows from a :class:`DesignResult` (Σ totals).
+
+        Counts and lengths are summed across all computed buildings. With a
+        single building these totals equal that building's values, so the
+        single-building strings are identical to :meth:`set_results`.
+        """
+        labels = self._result_value_labels
+        per = design.buildings
+        hip_count = sum(r.hip_count for r in per)
+        valley_count = sum(r.valley_count for r in per)
+        if "area" in labels:
+            labels["area"].setText(f"{design.total_area_m2:.2f} m²")
+        if "ridgeLen" in labels:
+            labels["ridgeLen"].setText(f"{design.total_ridge_length_m:.2f} m")
+        if "hips" in labels:
+            labels["hips"].setText(
+                f"{hip_count} ks / {design.total_hip_length_m:.2f} m"
+            )
+        if "valleys" in labels:
+            labels["valleys"].setText(
+                f"{valley_count} ks / {design.total_valley_length_m:.2f} m"
+            )
+        if "eavePerim" in labels:
+            labels["eavePerim"].setText(f"{design.total_eaves_perimeter_m:.2f} m")
+        if "rakeL" in labels:
+            labels["rakeL"].setText(
+                f"{sum(r.gable_edge_left_m for r in per):.2f} m"
+            )
+        if "rakeR" in labels:
+            labels["rakeR"].setText(
+                f"{sum(r.gable_edge_right_m for r in per):.2f} m"
+            )
+
     def clear_results(self) -> None:
         """Reset all VÝSLEDKY rows to dashes."""
         for lbl in self._result_value_labels.values():
@@ -911,6 +1001,58 @@ class EditorView(QWidget):
         """Re-run the calculation when the closed polygon is edited in place."""
         if self.last_result is not None and self.canvas.footprint is not None:
             self._on_calculate()
+
+    # ------------------------------------------------------------------
+    # P3: multi-building — new building + per-building parameter sync
+    # ------------------------------------------------------------------
+
+    def _on_new_building(self) -> None:
+        """Start a fresh building in the same design and switch to the draw tool."""
+        self.canvas.new_building()
+        # Back to drawing so the user can outline the new building.
+        self._set_active_tool("draw")
+        if hasattr(self, "_tool_buttons") and "draw" in self._tool_buttons:
+            self._tool_buttons["draw"].setChecked(True)
+        # new_building() emits active_changed → _sync_params_from_active, but
+        # sync explicitly too in case the signal path is ever bypassed.
+        self._sync_params_from_active()
+
+    def _on_active_building_changed(self, idx: int) -> None:
+        """Reload the parameter controls from the now-active building."""
+        self._sync_params_from_active()
+
+    def _sync_params_from_active(self) -> None:
+        """Load the active building's pitch/overhang/wall into the panel controls.
+
+        Mirrors the values into ``self.pitch`` / ``self.overhang`` /
+        ``self.wall_height`` so the rest of the editor (which reads those) acts
+        on the active building. Signals are blocked so loading does not trigger
+        a recompute or write back onto the building.
+        """
+        canvas = getattr(self, "canvas", None)
+        if canvas is None:
+            return
+
+        pitch = int(canvas.active_pitch())
+        overhang = float(canvas._overhang)
+        wall = float(canvas.active_wall_height())
+
+        self.pitch = pitch
+        self.overhang = overhang
+        self.wall_height = wall
+
+        if hasattr(self, "_pitch_spin"):
+            self._pitch_spin.blockSignals(True)
+            self._pitch_spin.setValue(pitch)
+            self._pitch_spin.blockSignals(False)
+        if hasattr(self, "_overhang_spin"):
+            self._overhang_spin.blockSignals(True)
+            self._overhang_spin.setValue(overhang)
+            self._overhang_spin.blockSignals(False)
+        if hasattr(self, "_wall_height_spin"):
+            self._wall_height_spin.blockSignals(True)
+            self._wall_height_spin.setValue(wall)
+            self._wall_height_spin.blockSignals(False)
 
     def _on_save(self) -> None:
         """Save the current project to the library (create or update)."""
@@ -1065,6 +1207,9 @@ class EditorView(QWidget):
     def set_pitch(self, value: int) -> None:
         """Update the pitch and recompute if a result exists."""
         self.pitch = int(value)
+        # Mirror onto the active building so it computes with this pitch.
+        if hasattr(self, "canvas"):
+            self.canvas.set_active_pitch(self.pitch)
         # Keep spin box in sync without triggering another valueChanged→set_pitch cycle
         self._pitch_spin.blockSignals(True)
         self._pitch_spin.setValue(self.pitch)
@@ -1083,6 +1228,8 @@ class EditorView(QWidget):
     def _on_wall_height_changed(self, value: float) -> None:
         """Update wall_height and refresh the 3D view if a result exists."""
         self.wall_height = float(value)
+        if hasattr(self, "canvas"):
+            self.canvas.set_active_wall_height(self.wall_height)
         if self.last_result is not None and hasattr(self, "view3d"):
             fp = self.canvas.footprint
             if fp is not None:

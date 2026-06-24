@@ -82,6 +82,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "zoomOut": "Oddálit",
         "openFile": "Otevřít soubor…",
         "saveFile": "Uložit do souboru…",
+        "newBuilding": "+ Nová stavba",
     },
     "sk": {
         "new": "Nová zákazka",
@@ -160,6 +161,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "zoomOut": "Oddialiť",
         "openFile": "Otvoriť súbor…",
         "saveFile": "Uložiť do súboru…",
+        "newBuilding": "+ Nová stavba",
     },
     "en": {
         "new": "New project",
@@ -238,6 +240,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "zoomOut": "Zoom out",
         "openFile": "Open file…",
         "saveFile": "Save to file…",
+        "newBuilding": "+ New building",
     },
 }
 
