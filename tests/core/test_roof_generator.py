@@ -30,3 +30,21 @@ def test_convex_pentagon_generates_roof():
     assert r.total_area_m2 > 0
     assert r.hip_count >= 1
     assert r.valley_count == 0
+
+
+def test_collinear_split_rectangle_still_calculates():
+    # A rectangle drawn with extra mid-edge points (collinear) must NOT be
+    # rejected — it should calculate identically to the clean rectangle.
+    split = Footprint.from_lists(
+        [(0, 0), (3, 0), (6, 0), (6, 2), (6, 4), (0, 4)], ["eave"] * 6)
+    clean = Footprint.from_lists([(0, 0), (6, 0), (6, 4), (0, 4)], ["eave"] * 4)
+    r_split = generate_roof(split, 35)
+    r_clean = generate_roof(clean, 35)
+    assert r_split.total_area_m2 == pytest.approx(r_clean.total_area_m2, rel=1e-6)
+
+
+def test_collinear_split_rectangle_with_overhang():
+    split = Footprint.from_lists(
+        [(0, 0), (3, 0), (6, 0), (6, 2), (6, 4), (0, 4)], ["eave"] * 6)
+    r = generate_roof(split, 35, overhang=1.0)
+    assert r.total_area_m2 > 0

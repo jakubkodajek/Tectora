@@ -48,6 +48,47 @@ def is_simple_polygon(pts: list[Point]) -> bool:
     return _is_simple(pts)
 
 
+def drop_collinear_vertices(
+    vertices: list[Point],
+    edge_types: list[str],
+    tol: float = 1e-7,
+) -> tuple[list[Point], list[str]]:
+    """Remove vertices that sit (within *tol*) on the straight line between
+    their two neighbours.
+
+    Such mid-edge points don't change the polygon's outline but they DO break
+    corner-counting in the straight skeleton (a 180° "corner" is neither convex
+    nor reflex, so the structural self-check fails and the roof is rejected).
+    Dropping them lets an accidentally-split rectangle calculate as a rectangle.
+
+    The merged edge keeps the edge type of the kept vertex's outgoing edge.
+    Returns simplified ``(vertices, edge_types)``; falls back to the originals
+    if fewer than 3 vertices would remain.
+    """
+    n = len(vertices)
+    if n <= 3:
+        return list(vertices), list(edge_types)
+    keep_v: list[Point] = []
+    keep_e: list[str] = []
+    for i in range(n):
+        prev = vertices[(i - 1) % n]
+        cur = vertices[i]
+        nxt = vertices[(i + 1) % n]
+        ax, ay = cur[0] - prev[0], cur[1] - prev[1]
+        bx, by = nxt[0] - cur[0], nxt[1] - cur[1]
+        cross = ax * by - ay * bx
+        la = math.hypot(ax, ay)
+        lb = math.hypot(bx, by)
+        # Collinear (or a zero-length spur): drop this vertex.
+        if la <= tol or lb <= tol or abs(cross) <= tol * la * lb:
+            continue
+        keep_v.append(cur)
+        keep_e.append(edge_types[i] if i < len(edge_types) else "eave")
+    if len(keep_v) < 3:
+        return list(vertices), list(edge_types)
+    return keep_v, keep_e
+
+
 @dataclass(frozen=True)
 class Footprint:
     vertices: tuple[Point, ...]
