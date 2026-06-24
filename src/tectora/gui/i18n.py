@@ -74,6 +74,8 @@ CATALOG: dict[str, dict[str, str]] = {
         "view3d": "3D",
         "zoomIn": "Přiblížit",
         "zoomOut": "Oddálit",
+        "openFile": "Otevřít soubor…",
+        "saveFile": "Uložit do souboru…",
     },
     "sk": {
         "new": "Nová zákazka",
@@ -144,6 +146,8 @@ CATALOG: dict[str, dict[str, str]] = {
         "view3d": "3D",
         "zoomIn": "Priblížiť",
         "zoomOut": "Oddialiť",
+        "openFile": "Otvoriť súbor…",
+        "saveFile": "Uložiť do súboru…",
     },
     "en": {
         "new": "New project",
@@ -214,6 +218,8 @@ CATALOG: dict[str, dict[str, str]] = {
         "view3d": "3D",
         "zoomIn": "Zoom in",
         "zoomOut": "Zoom out",
+        "openFile": "Open file…",
+        "saveFile": "Save to file…",
     },
 }
 

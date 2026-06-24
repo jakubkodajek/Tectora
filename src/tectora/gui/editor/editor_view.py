@@ -206,6 +206,10 @@ class EditorView(QWidget):
         menu_file.addAction(tr("new", lang), lambda: window.open_editor(_Project(global_pitch_deg=35.0)))
         menu_file.addAction(tr("open", lang), window.open_home)
         menu_file.addAction(tr("save", lang), self._on_save)
+        menu_file.addSeparator()
+        menu_file.addAction(tr("openFile", lang), self._on_file_open)
+        menu_file.addAction(tr("saveFile", lang), self._on_file_save)
+        menu_file.addSeparator()
         menu_file.addAction(tr("exportXls", lang), self._on_export)
         menu_file.addSeparator()
         menu_file.addAction(tr("exit", lang), window.close)
@@ -956,6 +960,85 @@ class EditorView(QWidget):
         )
         if path:
             self._export_to(path)
+
+    # ------------------------------------------------------------------
+    # F4: Open / Save portable .tectora file
+    # ------------------------------------------------------------------
+
+    def _on_file_open(self) -> None:
+        """Open a .tectora file via a file dialog."""
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            tr("openFile", self._lang),
+            "",
+            "Tectora (*.tectora *.json)",
+        )
+        if path:
+            self._open_from_file(path)
+
+    def _on_file_save(self) -> None:
+        """Save the current drawing to a .tectora file via a file dialog."""
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            tr("saveFile", self._lang),
+            "",
+            "Tectora (*.tectora *.json)",
+        )
+        if path:
+            # Ensure .tectora suffix when none given
+            import os
+            _, ext = os.path.splitext(path)
+            if not ext:
+                path = path + ".tectora"
+            self._save_to_file(path)
+
+    def _save_to_file(self, path: str) -> None:
+        """Build a Project from current editor state and write it to *path*."""
+        from tectora.application.project import Project
+        from tectora.io.project_file import save_project_file
+
+        project = Project(
+            project_name=self.get_name() or "Bez názvu",
+            footprint=self.canvas.footprint,
+            global_pitch_deg=float(self.pitch),
+            overhang_m=self.overhang,
+            wall_height_m=self.wall_height,
+        )
+        save_project_file(path, project, note=self.get_note(),
+                          location=self.get_location())
+        self._show_toast(tr("saveFile", self._lang))
+
+    def _open_from_file(self, path: str) -> None:
+        """Load a .tectora file and restore the drawing + parameters."""
+        from tectora.io.project_file import load_project_file
+
+        project, note, location = load_project_file(path)
+        self.load_project(project, entry_id=None, note=note, location=location)
+
+        # Restore the drawn polygon onto the canvas
+        if project.footprint is not None:
+            self.canvas._vertices = [(x, y) for (x, y) in project.footprint.vertices]
+            self.canvas._edge_types = [e.type.value for e in project.footprint.edges]
+            self.canvas._closed = True
+            self.canvas.update()
+
+        # Restore individual parameters
+        self.set_overhang(project.overhang_m)
+        self.wall_height = project.wall_height_m
+        self.set_pitch(int(project.global_pitch_deg))
+
+        # Mark as not associated with any library entry
+        self._current_entry_id = None
+
+        # Trigger recalculation so the roof shows immediately
+        try:
+            self._on_calculate()
+        except Exception:
+            pass
+
+        self._show_toast(tr("openFile", self._lang))
 
     def set_pitch(self, value: int) -> None:
         """Update the pitch and recompute if a result exists."""
