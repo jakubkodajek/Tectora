@@ -16,6 +16,7 @@ class Project:
     global_pitch_deg: float = 35.0
     overhang_m: float = 0.0
     units: str = "m"
+    wall_height_m: float = 2.5
 
     def to_dict(self) -> dict:
         fp = None
@@ -31,6 +32,7 @@ class Project:
             "footprint": fp,
             "global_pitch_deg": self.global_pitch_deg,
             "overhang_m": self.overhang_m,
+            "wall_height_m": self.wall_height_m,
         }
 
     @classmethod
@@ -47,4 +49,5 @@ class Project:
             global_pitch_deg=float(data.get("global_pitch_deg", 35.0)),
             overhang_m=float(data.get("overhang_m", 0.0)),
             units=data.get("units", "m"),
+            wall_height_m=float(data.get("wall_height_m", 2.5)),
         )

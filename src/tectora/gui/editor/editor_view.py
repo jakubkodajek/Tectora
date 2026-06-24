@@ -23,6 +23,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -121,6 +122,7 @@ class EditorView(QWidget):
         self._entry_id = None
         self._current_entry_id = None   # G6: tracks saved entry id (None = unsaved)
         self.pitch: int = 35          # current pitch in degrees; G5 will wire the control
+        self.wall_height: float = 2.5  # wall height in metres
         self.last_result = None       # last successful RoofResult or None
         self._build_ui()
 
@@ -148,11 +150,17 @@ class EditorView(QWidget):
         else:
             self.location_field.set_text("")
 
-        # Sync pitch control if project is available
+        # Sync pitch and wall-height controls if project is available
         if project is not None:
             pitch = int(round(project.global_pitch_deg))
             self._pitch_spin.setValue(pitch)
             self._pitch_btn.setText(f"{tr('pitch', self._lang)}  {pitch}°  ▾")
+            if hasattr(self, "_wall_height_spin"):
+                wh = getattr(project, "wall_height_m", 2.5)
+                self._wall_height_spin.blockSignals(True)
+                self._wall_height_spin.setValue(float(wh))
+                self._wall_height_spin.blockSignals(False)
+                self.wall_height = float(wh)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -570,6 +578,32 @@ class EditorView(QWidget):
         v.addWidget(pitch_row)
         v.addSpacing(12)
 
+        # Výška stěn (wall height double spin box)
+        _lbl_wall = QLabel(tr("wallHeight", lang))
+        _lbl_wall.setStyleSheet(f"color: {MID}; font-size: 9pt; background: transparent;")
+        v.addWidget(_lbl_wall)
+        v.addSpacing(4)
+
+        self._wall_height_spin = QDoubleSpinBox()
+        self._wall_height_spin.setRange(1.0, 10.0)
+        self._wall_height_spin.setSingleStep(0.5)
+        self._wall_height_spin.setDecimals(1)
+        self._wall_height_spin.setValue(self.wall_height)
+        self._wall_height_spin.setSuffix(" m")
+        self._wall_height_spin.setFixedHeight(34)
+        self._wall_height_spin.setStyleSheet(
+            f"QDoubleSpinBox {{"
+            f"  background: {CARD}; color: {MID}; border: 1px solid {BORDER};"
+            f"  border-radius: 7px; padding: 0 8px; font-size: 10pt;"
+            f"  font-weight: 600;"
+            f"}}"
+            f"QDoubleSpinBox:focus {{ border-color: {ACCENT}; }}"
+            f"QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; }}"
+        )
+        self._wall_height_spin.valueChanged.connect(self._on_wall_height_changed)
+        v.addWidget(self._wall_height_spin)
+        v.addSpacing(12)
+
         # Typ střechy badge
         _lbl_roof_type = QLabel(tr("roofType", lang))
         _lbl_roof_type.setStyleSheet(f"color: {MID}; font-size: 9pt; background: transparent;")
@@ -748,9 +782,9 @@ class EditorView(QWidget):
         self.canvas.set_skeleton(result)
         self.set_results(result)
         self._update_roof_type_badge(fp)
-        # G7: update 3D view
+        # G7: update 3D view with walls + roof geometry
         if hasattr(self, "view3d"):
-            self.view3d.set_result(result)
+            self.view3d.set_geometry(fp, float(self.pitch), self.wall_height)
 
     # ------------------------------------------------------------------
     # G5: public helpers for G6
@@ -767,6 +801,10 @@ class EditorView(QWidget):
     def get_location(self):
         """Return the current Location (or None) from the Poloha field."""
         return self.location_field.location
+
+    def get_wall_height(self) -> float:
+        """Return the current wall height in metres."""
+        return self.wall_height
 
     # ------------------------------------------------------------------
     # G5: roof-type badge helper
@@ -836,6 +874,7 @@ class EditorView(QWidget):
             project_name=proj_name,
             footprint=fp,
             global_pitch_deg=float(self.pitch),
+            wall_height_m=self.wall_height,
         )
 
         result = None
@@ -898,6 +937,14 @@ class EditorView(QWidget):
         self._pitch_spin.blockSignals(False)
         if self.last_result is not None and self.canvas.footprint is not None:
             self._on_calculate()
+
+    def _on_wall_height_changed(self, value: float) -> None:
+        """Update wall_height and refresh the 3D view if a result exists."""
+        self.wall_height = float(value)
+        if self.last_result is not None and hasattr(self, "view3d"):
+            fp = self.canvas.footprint
+            if fp is not None:
+                self.view3d.set_geometry(fp, float(self.pitch), self.wall_height)
 
     def _show_toast(self, text: str) -> None:
         """Show a dark floating toast message that auto-hides after ~2.5 s."""

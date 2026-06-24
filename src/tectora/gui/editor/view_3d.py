@@ -37,6 +37,10 @@ _FACE_LIGHT = QColor(200, 215, 240, 170)
 _FACE_MID = QColor(170, 185, 210, 150)
 _FACE_DARK = QColor(130, 145, 170, 130)
 
+# Wall colours
+_WALL_FILL = QColor(0xD9, 0xDD, 0xE3, 200)   # #d9dde3, slightly translucent
+_WALL_EDGE = QColor(0xB0, 0xB5, 0xBD, 220)   # slightly darker edge
+
 
 # ---------------------------------------------------------------------------
 # Pure math — unit-testable, no Qt needed
@@ -167,6 +171,10 @@ class Roof3DView(QWidget):
 
         self._result: Optional[RoofResult] = None
 
+        # Geometry set via set_geometry (list of (verts, is_wall) tuples)
+        # Each entry: (vertices: list[tuple[float,float,float]], is_wall: bool)
+        self._geom_faces: list[tuple[list[tuple[float, float, float]], bool]] = []
+
         # View state — default: gentle bird's-eye perspective
         self._azimuth: float = math.radians(-35)
         self._elevation: float = math.radians(28)
@@ -178,8 +186,53 @@ class Roof3DView(QWidget):
     # ------------------------------------------------------------------
 
     def set_result(self, result: Optional[RoofResult]) -> None:
-        """Display *result*; pass None to show the empty placeholder."""
+        """Display *result*; pass None to show the empty placeholder.
+
+        For backwards compatibility this still works; the editor now calls
+        set_geometry() which also stores the result via this path.
+        """
         self._result = result
+        self.update()
+
+    def set_geometry(self, footprint, pitch_deg: float, wall_height: float) -> None:
+        """Compute and store roof + wall geometry, then repaint.
+
+        Args:
+            footprint:   A Footprint instance (or None to clear).
+            pitch_deg:   Roof pitch in degrees.
+            wall_height: Wall height in metres (walls go down from z=0).
+        """
+        if footprint is None:
+            self._geom_faces = []
+            self._result = None
+            self.update()
+            return
+
+        from tectora.core.roof_faces import build_faces
+
+        faces = build_faces(footprint, pitch_deg)
+
+        geom: list[tuple[list[tuple[float, float, float]], bool]] = []
+
+        # Wall quads — one per footprint edge
+        verts = footprint.vertices  # tuple of (x, y)
+        n = len(verts)
+        for i in range(n):
+            ax, ay = verts[i]
+            bx, by = verts[(i + 1) % n]
+            quad: list[tuple[float, float, float]] = [
+                (ax, ay, 0.0),
+                (bx, by, 0.0),
+                (bx, by, -wall_height),
+                (ax, ay, -wall_height),
+            ]
+            geom.append((quad, True))  # True = wall
+
+        # Roof faces
+        for face in faces:
+            geom.append((list(face.vertices), False))  # False = roof
+
+        self._geom_faces = geom
         self.update()
 
     def reset_view(self) -> None:
@@ -229,6 +282,11 @@ class Roof3DView(QWidget):
 
         # Dark background
         painter.fillRect(self.rect(), _BG_COLOR)
+
+        # Prefer set_geometry geometry if available
+        if self._geom_faces:
+            self._draw_geom_scene(painter)
+            return
 
         if self._result is None or not self._result.faces:
             self._draw_placeholder(painter)
@@ -308,4 +366,77 @@ class Roof3DView(QWidget):
         for pf in projected:
             painter.setBrush(QBrush(pf.color))
             painter.setPen(edge_pen)
+            painter.drawPolygon(pf.polygon)
+
+    def _draw_geom_scene(self, painter: QPainter) -> None:
+        """Draw the combined wall + roof geometry stored in _geom_faces."""
+        geom = self._geom_faces
+        if not geom:
+            self._draw_placeholder(painter)
+            return
+
+        # Collect all vertices to compute bounding box
+        all_verts = [v for (verts, _is_wall) in geom for v in verts]
+        xs = [v[0] for v in all_verts]
+        ys = [v[1] for v in all_verts]
+        zs = [v[2] for v in all_verts]
+
+        cx = (min(xs) + max(xs)) / 2
+        cy = (min(ys) + max(ys)) / 2
+        cz = (min(zs) + max(zs)) / 2
+
+        span = max(
+            max(xs) - min(xs),
+            max(ys) - min(ys),
+            (max(zs) - min(zs)) * 1.5,
+            1.0,
+        )
+
+        view_w, view_h = self.width(), self.height()
+        scale = min(view_w, view_h) / (span * 1.6) * self._zoom
+        origin = (view_w / 2, view_h / 2 + view_h * 0.05)
+
+        projected: list[_ProjectedFace] = []
+
+        for (face_verts, is_wall) in geom:
+            if len(face_verts) < 3:
+                continue
+
+            centred = [(v[0] - cx, v[1] - cy, v[2] - cz) for v in face_verts]
+            screen_pts = [
+                project_point(v, self._azimuth, self._elevation, scale, origin)
+                for v in centred
+            ]
+            poly = QPolygonF([QPointF(sx, sy) for sx, sy in screen_pts])
+
+            avg_depth = sum(
+                _depth_of_point(v, self._azimuth, self._elevation)
+                for v in centred
+            ) / len(centred)
+
+            if is_wall:
+                color = _WALL_FILL
+            else:
+                normal = _face_normal(face_verts)
+                color = _shade_color(normal)
+
+            projected.append(_ProjectedFace(poly, color, avg_depth))
+
+        # Sort furthest-first
+        projected.sort(key=lambda f: f.depth)
+
+        roof_edge_pen = QPen(_EDGE_COLOR)
+        roof_edge_pen.setWidthF(1.0)
+        wall_edge_pen = QPen(_WALL_EDGE)
+        wall_edge_pen.setWidthF(0.8)
+
+        for i, pf in enumerate(projected):
+            # Determine if this is a wall face by checking the original entry
+            # We need to track wall vs roof — re-derive from position in list
+            painter.setBrush(QBrush(pf.color))
+            # Use wall edge pen for wall-coloured faces, roof pen otherwise
+            if pf.color == _WALL_FILL:
+                painter.setPen(wall_edge_pen)
+            else:
+                painter.setPen(roof_edge_pen)
             painter.drawPolygon(pf.polygon)

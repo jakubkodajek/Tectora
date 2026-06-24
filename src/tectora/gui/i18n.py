@@ -62,6 +62,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "editEntry": "Upravit",
         "confirmDelete": "Smazat zakázku",
         "confirmDeleteMsg": 'Opravdu smazat "{name}"?',
+        "wallHeight": "Výška stěn",
     },
     "sk": {
         "new": "Nová zákazka",
@@ -120,6 +121,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "editEntry": "Upraviť",
         "confirmDelete": "Zmazať zákazku",
         "confirmDeleteMsg": 'Naozaj zmazať "{name}"?',
+        "wallHeight": "Výška stien",
     },
     "en": {
         "new": "New project",
@@ -178,6 +180,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "editEntry": "Edit",
         "confirmDelete": "Delete project",
         "confirmDeleteMsg": 'Really delete "{name}"?',
+        "wallHeight": "Wall height",
     },
 }
 
