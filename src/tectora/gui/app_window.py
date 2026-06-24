@@ -12,6 +12,7 @@ class MainWindow(QMainWindow):
         self.library = library or SqliteProjectLibrary(default_db_path())
         self.lang = lang
         self.dark = False
+        self.mode = "light"
         self.setWindowTitle("Tectora")
         self.resize(1100, 720)
 
@@ -175,3 +176,42 @@ class MainWindow(QMainWindow):
         # Reuse the same logic as set_language (captures + restores state).
         current_lang = self.lang
         self.set_language(current_lang)
+
+    def _resolve_mode_dark(self, mode: str) -> bool:
+        """Resolve an appearance *mode* to a dark boolean.
+
+        "dark" -> True, "light" -> False, "system" -> query the OS colour
+        scheme.  The OS query is heavily guarded so it never raises on
+        platforms/Qt versions lacking ``colorScheme()`` (offscreen returns
+        ``Unknown`` -> treated as light/False).
+        """
+        if mode == "dark":
+            return True
+        if mode == "light":
+            return False
+        # mode == "system": query the OS, falling back to light on any failure.
+        try:
+            from PySide6.QtCore import Qt
+            from PySide6.QtWidgets import QApplication
+
+            app = QApplication.instance()
+            if app is None:
+                return False
+            hints = getattr(app, "styleHints", None)
+            if hints is None:
+                return False
+            style_hints = hints()
+            color_scheme = getattr(style_hints, "colorScheme", None)
+            if color_scheme is None:
+                return False
+            return color_scheme() == Qt.ColorScheme.Dark
+        except Exception:
+            return False
+
+    def set_mode(self, mode: str) -> None:
+        """Switch appearance mode ("light"/"dark"/"system") and apply it."""
+        if mode not in ("light", "dark", "system"):
+            return
+        self.mode = mode
+        dark = self._resolve_mode_dark(mode)
+        self.set_theme(dark)

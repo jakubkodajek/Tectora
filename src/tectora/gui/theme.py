@@ -120,22 +120,33 @@ QComboBox::drop-down {{
 
 /* ── Buttons ───────────────────────────────────────────────────────── */
 QPushButton {{
-    background-color: {ACCENT};
-    color: {CARD};
-    border: none;
+    background-color: {CARD};
+    color: {TEXT};
+    border: 1px solid {BORDER};
     border-radius: 8px;
     padding: 7px 16px;
     font-weight: 600;
 }}
 QPushButton:hover {{
-    background-color: {ACCENT_HOVER};
-}}
-QPushButton:pressed {{
-    background-color: {ACCENT_HOVER};
+    background-color: {BG};
 }}
 QPushButton:disabled {{
+    color: {FAINT};
+}}
+QPushButton[primary="true"] {{
+    background-color: {ACCENT};
+    color: #ffffff;
+    border: none;
+}}
+QPushButton[primary="true"]:hover {{
+    background-color: {ACCENT_HOVER};
+}}
+QPushButton[primary="true"]:pressed {{
+    background-color: {ACCENT_HOVER};
+}}
+QPushButton[primary="true"]:disabled {{
     background-color: {FAINT};
-    color: {CARD};
+    color: #ffffff;
 }}
 
 /* ── Scroll bars ───────────────────────────────────────────────────── */

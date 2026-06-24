@@ -442,12 +442,12 @@ class HomeView(QWidget):
         """Open the settings dialog."""
         from tectora.gui.settings_dialog import SettingsDialog
         current_lang = getattr(self._window, "lang", "cs")
-        current_dark = getattr(self._window, "dark", False)
-        dlg = SettingsDialog(current_lang=current_lang, current_dark=current_dark, parent=self)
+        current_mode = getattr(self._window, "mode", "light")
+        dlg = SettingsDialog(current_lang=current_lang, current_mode=current_mode, parent=self)
         if dlg.exec():
             lang = dlg.selected_lang()
-            dark = dlg.selected_dark()
-            if dark != current_dark:
-                self._window.set_theme(dark)
+            mode = dlg.selected_mode()
+            if mode != current_mode:
+                self._window.set_mode(mode)
             if lang != current_lang:
                 self._window.set_language(lang)

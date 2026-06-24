@@ -36,8 +36,8 @@ def test_set_theme_on_window(tmp_path):
 def test_settings_dialog_reports_choices(tmp_path):
     from tectora.gui.settings_dialog import SettingsDialog
     app, w = _win(tmp_path)
-    d = SettingsDialog(current_lang="cs", current_dark=False)
+    d = SettingsDialog(current_lang="cs", current_mode="light")
     # simulate user choosing EN + dark (use the dialog's setters/widgets)
-    d.set_choices("en", True)
+    d.set_choices("en", "dark")
     assert d.selected_lang() == "en"
-    assert d.selected_dark() is True
+    assert d.selected_mode() == "dark"
