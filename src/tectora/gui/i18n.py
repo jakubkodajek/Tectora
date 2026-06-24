@@ -42,6 +42,9 @@ CATALOG: dict[str, dict[str, str]] = {
         "help": "Nápověda",
         "order": "Zakázka",
         "params": "Parametry",
+        "clear": "Vymazat",
+        "snapIndicator": "Přichytit",
+        "cursorFmt": "Kurzor  X: {x} m  Y: {y} m",
     },
     "sk": {
         "new": "Nová zákazka",
@@ -80,6 +83,9 @@ CATALOG: dict[str, dict[str, str]] = {
         "help": "Pomocník",
         "order": "Zákazka",
         "params": "Parametre",
+        "clear": "Vymazať",
+        "snapIndicator": "Prichytiť",
+        "cursorFmt": "Kurzor  X: {x} m  Y: {y} m",
     },
     "en": {
         "new": "New project",
@@ -118,6 +124,9 @@ CATALOG: dict[str, dict[str, str]] = {
         "help": "Help",
         "order": "Project",
         "params": "Parameters",
+        "clear": "Clear",
+        "snapIndicator": "Snap",
+        "cursorFmt": "Cursor  X: {x} m  Y: {y} m",
     },
 }
 

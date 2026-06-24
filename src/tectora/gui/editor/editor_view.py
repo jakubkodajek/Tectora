@@ -366,7 +366,7 @@ class EditorView(QWidget):
         h_layout.setContentsMargins(0, 0, 0, 0)
         h_layout.setSpacing(0)
 
-        # Canvas placeholder — G3 replaces the interior
+        # Canvas container — G3 fills this with Canvas2D
         self.canvas_container = QWidget()
         self.canvas_container.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -374,14 +374,19 @@ class EditorView(QWidget):
         self.canvas_container.setStyleSheet(
             f"background: #f0f4f8;"
         )
-        # Inner label so the placeholder is visually identifiable
         _inner = QVBoxLayout(self.canvas_container)
-        _inner.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        _canvas_hint = QLabel("[ Canvas — G3 ]")
-        _canvas_hint.setStyleSheet(f"color: {FAINT}; font-size: 9pt; background: transparent;")
-        _inner.addWidget(_canvas_hint)
+        _inner.setContentsMargins(0, 0, 0, 0)
+        _inner.setSpacing(0)
 
         h_layout.addWidget(self.canvas_container, stretch=1)
+
+        # G3: instantiate Canvas2D and fill canvas_container
+        from tectora.gui.editor.canvas_2d import Canvas2D
+        self.canvas = Canvas2D(self)
+        self.canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        _inner.addWidget(self.canvas)
 
         # Right panel
         h_layout.addWidget(self._make_right_panel())
