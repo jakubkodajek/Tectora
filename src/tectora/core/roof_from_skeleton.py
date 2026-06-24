@@ -9,7 +9,7 @@ import math
 from math import radians, tan, cos, sqrt
 
 from tectora.core.footprint import Footprint
-from tectora.core.polyskel_adapter import polyskel_skeleton
+from tectora.core.gable import folded_skeleton
 from tectora.core.result import RoofResult
 from tectora.core.roof_faces import build_faces
 from tectora.core.spec import RoofSpec, RoofType
@@ -53,27 +53,22 @@ def build_roof(footprint: Footprint, pitch_deg: float) -> RoofResult:
                 apex height, and skeleton_segments populated.
     """
     poly = list(footprint.vertices)
-    graph = polyskel_skeleton(poly)
     slope = tan(radians(pitch_deg))
 
     # -----------------------------------------------------------------------
-    # Build a lookup: rounded (x, y) -> t (offset height) for skeleton nodes.
-    # Polygon vertices have t = 0 by definition.
+    # Compute the hipped skeleton, then fold every `gable` edge (Stage 1).
+    # `folded_skeleton` returns the modified node set / arcs / per-arc rake
+    # flags / offset-height lookup / set of gabled edge indices, and raises
+    # GableNotSupported for an invalid gable placement. build_roof and
+    # build_faces share this helper so they agree on the folded geometry.
     # -----------------------------------------------------------------------
-    node_t: dict[tuple, float] = {}
-    for x, y, t in graph.nodes:
-        key = _round2((x, y))
-        # Keep the first (or max) — duplicate coincident nodes get same t.
-        if key not in node_t:
-            node_t[key] = t
-        else:
-            # In degenerate cases (coincident duplicate nodes from SS3) take max.
-            node_t[key] = max(node_t[key], t)
+    folded = folded_skeleton(footprint)
+    node_t = folded.node_t
+    rake_keys = folded.rake_keys
+    gable_edges = folded.gable_edges
 
     # Polygon vertices are eave-level (t = 0).
     poly_set: set[tuple] = {_round2(p) for p in poly}
-    for key in poly_set:
-        node_t[key] = 0.0
 
     def _get_t(pt: tuple) -> float:
         key = _round2(pt)
@@ -93,13 +88,13 @@ def build_roof(footprint: Footprint, pitch_deg: float) -> RoofResult:
             reflex_pts.add(_round2(v.point))
 
     # -----------------------------------------------------------------------
-    # Classify arcs.
+    # Classify (folded) arcs.
     # -----------------------------------------------------------------------
     EPS = 1e-6
 
     classified: list[tuple] = []   # (kind, a3d, b3d)
 
-    for (ax, ay), (bx, by) in graph.arcs:
+    for (ax, ay), (bx, by) in folded.arcs:
         a2 = (ax, ay)
         b2 = (bx, by)
 
@@ -114,7 +109,10 @@ def build_roof(footprint: Footprint, pitch_deg: float) -> RoofResult:
         a_is_poly = _round2(a2) in poly_set
         b_is_poly = _round2(b2) in poly_set
 
-        if a_is_poly or b_is_poly:
+        if frozenset((_round2(a2), _round2(b2))) in rake_keys:
+            # Folded gable rake (A-M / B-M): a vertical-wall edge, not a hip.
+            kind = "gable"
+        elif a_is_poly or b_is_poly:
             # One endpoint is on the polygon boundary (z = 0).
             # The poly endpoint determines whether this is a hip or valley arc.
             poly_pt = _round2(a2) if a_is_poly else _round2(b2)
@@ -136,6 +134,7 @@ def build_roof(footprint: Footprint, pitch_deg: float) -> RoofResult:
     ridge_len = 0.0
     hip_len = 0.0
     valley_len = 0.0
+    gable_len = 0.0
     hip_corners: set = set()
     valley_corners: set = set()
 
@@ -146,6 +145,8 @@ def build_roof(footprint: Footprint, pitch_deg: float) -> RoofResult:
         seg = _len3d(a3, b3)
         if kind == "ridge":
             ridge_len += seg
+        elif kind == "gable":
+            gable_len += seg
         elif kind == "hip":
             hip_len += seg
             for p in (_round2((a3[0], a3[1])), _round2((b3[0], b3[1]))):
@@ -160,15 +161,22 @@ def build_roof(footprint: Footprint, pitch_deg: float) -> RoofResult:
     valley_count = len(valley_corners)
 
     # Structural self-check: every convex corner emits one hip rafter, every
-    # reflex corner one valley. If the skeleton violates this it is unreliable
-    # for this shape — fail loudly (RoofGenerationError is a ValueError, so the
-    # GUI/CLI report it gracefully) rather than drawing a wrong roof.
+    # reflex corner one valley — EXCEPT the convex endpoints of a gabled edge,
+    # whose hip rafters have been folded into rakes. If the skeleton violates
+    # this it is unreliable for this shape — fail loudly (RoofGenerationError is
+    # a ValueError, so the GUI/CLI report it gracefully) rather than drawing a
+    # wrong roof.
+    gable_corners: set = set()
+    for i in gable_edges:
+        gable_corners.add(_round2(footprint.vertices[i]))
+        gable_corners.add(_round2(footprint.vertices[(i + 1) % footprint.n]))
     n_reflex = len(reflex_pts)
     n_convex = footprint.n - n_reflex
-    if hip_count != n_convex or valley_count != n_reflex:
+    expected_hips = n_convex - len(gable_corners & (poly_set - reflex_pts))
+    if hip_count != expected_hips or valley_count != n_reflex:
         raise RoofGenerationError(
             "Skeleton failed the structural check for this shape "
-            f"(hips {hip_count}/{n_convex}, valleys {valley_count}/{n_reflex})."
+            f"(hips {hip_count}/{expected_hips}, valleys {valley_count}/{n_reflex})."
         )
 
     # -----------------------------------------------------------------------
@@ -177,10 +185,15 @@ def build_roof(footprint: Footprint, pitch_deg: float) -> RoofResult:
     footprint_area = _shoelace(poly)
     total_area = footprint_area / cos(radians(pitch_deg))
 
-    eaves_perimeter = sum(footprint.edge_length(i) for i in range(footprint.n))
+    # Eave perimeter excludes gable edges (the gable wall is not an eave).
+    eaves_perimeter = sum(
+        footprint.edge_length(i)
+        for i in range(footprint.n)
+        if i not in gable_edges
+    )
 
     apex_height = max(
-        (t * slope for _, _, t in graph.nodes),
+        (t * slope for t in node_t.values()),
         default=0.0,
     )
 
@@ -210,7 +223,10 @@ def build_roof(footprint: Footprint, pitch_deg: float) -> RoofResult:
         hip_count=hip_count,
         valley_length_m=valley_len,
         valley_count=valley_count,
-        gable_edge_left_m=0.0,
+        # The full straight-skeleton rake (štít) total goes in the left slot;
+        # gable_edge_total_m then reports the correct sum. A later GUI task owns
+        # splitting/displaying per-gable.
+        gable_edge_left_m=gable_len,
         gable_edge_right_m=0.0,
         eaves_perimeter_m=eaves_perimeter,
         apex_height_m=apex_height,

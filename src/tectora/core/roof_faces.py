@@ -10,7 +10,7 @@ import math
 from math import atan2, cos, radians, tan
 
 from tectora.core.footprint import Footprint
-from tectora.core.polyskel_adapter import polyskel_skeleton
+from tectora.core.gable import folded_skeleton
 from tectora.core.result import FaceResult
 
 # Precision for rounding coordinates to a canonical key
@@ -48,22 +48,28 @@ def build_faces(footprint: Footprint, pitch_deg: float) -> list[FaceResult]:
                         vertices lifted by z = t * tan(pitch_deg).
     """
     poly = list(footprint.vertices)
-    graph = polyskel_skeleton(poly)
+    # Compute the hipped skeleton then fold every `gable` edge (Stage 1). The
+    # vertical gable-wall triangle projects to zero 2-D area and is therefore
+    # dropped by the positive-area filter below; the two adjacent roof faces
+    # extend to M. Shares the fold with roof_from_skeleton.build_roof.
+    folded = folded_skeleton(footprint)
     slope = tan(radians(pitch_deg))
     cos_pitch = cos(radians(pitch_deg))
 
     # ------------------------------------------------------------------
     # 1. Collect all points and build a t-lookup (offset height).
     # ------------------------------------------------------------------
-    # node_t: rounded key -> t
+    # node_t: rounded key -> t. folded.node_t is keyed at precision _ROUND (6);
+    # rebuild at this module's _key precision (5) so lookups line up.
     node_t: dict[tuple, float] = {}
 
     # Polygon vertices are at t=0
     for p in poly:
         node_t[_key(p)] = 0.0
 
-    # Skeleton nodes carry their offset height
-    for x, y, t in graph.nodes:
+    # Folded skeleton nodes carry their offset height (gable apexes already
+    # moved to M).
+    for x, y, t in folded.nodes:
         k = _key((x, y))
         if k not in node_t:
             node_t[k] = t
@@ -102,13 +108,19 @@ def build_faces(footprint: Footprint, pitch_deg: float) -> list[FaceResult]:
         if ka not in adj[kb]:
             adj[kb].append(ka)
 
-    # Polygon edges
+    # Polygon edges. A gabled edge AB is NOT added: its two rake arcs A-M and
+    # B-M (in folded.arcs) lie on the same line and subdivide AB at the apex
+    # foot M, so adding AB as one full-span edge would overlap them and corrupt
+    # the planar graph. The rakes serve as the face boundary on the gable side.
     n = len(poly)
     for i in range(n):
+        if i in folded.gable_edges:
+            continue
         add_edge(poly[i], poly[(i + 1) % n])
 
-    # Skeleton arcs
-    for (ax, ay), (bx, by) in graph.arcs:
+    # Folded skeleton arcs (gable apex endpoints already remapped to M; for a
+    # gabled edge these include the rakes A-M / B-M that replace edge AB).
+    for (ax, ay), (bx, by) in folded.arcs:
         add_edge((ax, ay), (bx, by))
 
     # ------------------------------------------------------------------
