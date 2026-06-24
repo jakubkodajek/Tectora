@@ -96,3 +96,22 @@ def test_toggle_edge_cycle():
     assert c.footprint.edges[0].type.value == "gable"
     c.toggle_edge_type(0)
     assert c.footprint.edges[0].type.value == "eave"
+
+
+def test_self_intersecting_polygon_stays_open():
+    import pytest
+    c = _canvas()
+    # "bowtie" quad — self-intersecting
+    for (x, y) in [(0, 0), (2, 2), (2, 0), (0, 2)]:
+        c.add_point(x, y)
+    with pytest.raises(ValueError):
+        c.close_polygon()
+    # Must stay open so the user can keep editing
+    assert c._closed is False
+    assert c.footprint is None
+
+
+def test_invalid_shape_key_present_in_all_catalogs():
+    from tectora.gui.i18n import tr
+    for lang in ("cs", "sk", "en"):
+        assert tr("invalidShape", lang) != "invalidShape"

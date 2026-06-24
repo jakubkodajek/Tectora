@@ -43,6 +43,11 @@ def _is_simple(pts: list[Point]) -> bool:
     return True
 
 
+def is_simple_polygon(pts: list[Point]) -> bool:
+    """Public predicate: ``True`` if the polygon *pts* does not self-intersect."""
+    return _is_simple(pts)
+
+
 @dataclass(frozen=True)
 class Footprint:
     vertices: tuple[Point, ...]

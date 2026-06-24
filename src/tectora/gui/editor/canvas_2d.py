@@ -116,11 +116,15 @@ class Canvas2D(QWidget):
         self.update()
 
     def close_polygon(self) -> None:
-        """Finalise the polygon.  Requires ≥ 3 existing vertices."""
+        """Finalise the polygon.  Requires ≥ 3 existing vertices and no self-intersection."""
         if len(self._vertices) < 3:
             raise ValueError(
                 f"Polygon requires at least 3 vertices; got {len(self._vertices)}."
             )
+        from tectora.core.footprint import is_simple_polygon
+        if not is_simple_polygon(self._vertices):
+            # Stay open so the user can keep editing.
+            raise ValueError("Polygon self-intersects; cannot close.")
         self._closed = True
         self._edge_types = ["eave"] * len(self._vertices)
         self.update()
@@ -274,7 +278,10 @@ class Canvas2D(QWidget):
         if len(self._vertices) >= 3:
             sx, sy = self._to_screen(*self._vertices[0])
             if ((px - sx) ** 2 + (py - sy) ** 2) ** 0.5 <= _CLOSE_SNAP_RADIUS:
-                self.close_polygon()
+                try:
+                    self.close_polygon()
+                except ValueError:
+                    self._editor._show_toast(tr("invalidShape", self._lang))
                 return
 
         self.add_point(mx, my)
@@ -379,6 +386,10 @@ class Canvas2D(QWidget):
 
     def _draw_polygon(self, p: QPainter) -> None:
         if not self._closed or len(self._vertices) < 2:
+            return
+        # Safety net: a closed polygon that fails to build a Footprint
+        # (e.g. self-intersecting) must not render garbage.
+        if self.footprint is None:
             return
         n = len(self._vertices)
 

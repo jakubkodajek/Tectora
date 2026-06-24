@@ -1,5 +1,5 @@
 import pytest
-from tectora.core.footprint import Edge, EdgeType, Footprint
+from tectora.core.footprint import Edge, EdgeType, Footprint, is_simple_polygon
 
 
 def rect(types):
@@ -32,3 +32,13 @@ def test_self_intersection_rejected():
 def test_bad_edge_type():
     with pytest.raises(ValueError):
         rect(["eave", "wall", "eave", "gable"])
+
+
+def test_is_simple_polygon_true_for_rectangle():
+    # CCW rectangle is a simple polygon
+    assert is_simple_polygon([(0, 0), (12, 0), (12, 8), (0, 8)]) is True
+
+
+def test_is_simple_polygon_false_for_bowtie():
+    # Self-intersecting "bowtie" quad
+    assert is_simple_polygon([(0, 0), (2, 2), (2, 0), (0, 2)]) is False

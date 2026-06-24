@@ -392,7 +392,7 @@ class EditorView(QWidget):
         content = QWidget()
         content.setStyleSheet(f"background: {theme.BG};")
         h_layout = QHBoxLayout(content)
-        h_layout.setContentsMargins(0, 0, 0, 0)
+        h_layout.setContentsMargins(20, 0, 0, 0)
         h_layout.setSpacing(0)
 
         # Canvas container — holds a QStackedWidget with 2D (index 0) and 3D (index 1)
