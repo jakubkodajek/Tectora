@@ -11,6 +11,7 @@ from math import radians, tan, cos, sqrt
 from tectora.core.footprint import Footprint
 from tectora.core.polyskel_adapter import polyskel_skeleton
 from tectora.core.result import RoofResult
+from tectora.core.roof_faces import build_faces
 from tectora.core.spec import RoofSpec, RoofType
 from tectora.core.straight_skeleton import build_lav, RoofGenerationError
 
@@ -213,7 +214,7 @@ def build_roof(footprint: Footprint, pitch_deg: float) -> RoofResult:
         gable_edge_right_m=0.0,
         eaves_perimeter_m=eaves_perimeter,
         apex_height_m=apex_height,
-        faces=[],
+        faces=build_faces(footprint, pitch_deg),
         skeleton_segments=classified,
         notes=[],
     )
