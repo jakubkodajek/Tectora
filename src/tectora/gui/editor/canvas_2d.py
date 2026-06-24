@@ -35,7 +35,8 @@ from tectora.gui.editor.canvas_geometry import (
     snap_to_grid,
 )
 from tectora.gui.i18n import tr
-from tectora.gui.theme import ACCENT, BG, BORDER_SOFT, CARD, COL, FAINT, MID, MUTED, TEXT
+from tectora.gui import theme
+from tectora.gui.theme import ACCENT, BG, BORDER, BORDER_SOFT, CARD, COL, FAINT, MID, MUTED, TEXT
 
 if TYPE_CHECKING:
     from tectora.gui.editor.editor_view import EditorView
@@ -321,7 +322,7 @@ class Canvas2D(QWidget):
     # ── Background ───────────────────────────────────────────────────────
 
     def _draw_background(self, p: QPainter) -> None:
-        p.fillRect(0, 0, self.width(), self.height(), QColor(BG))
+        p.fillRect(0, 0, self.width(), self.height(), QColor(theme.BG))
 
     # ── Grid ─────────────────────────────────────────────────────────────
 
@@ -684,9 +685,9 @@ class Canvas2D(QWidget):
         total_h = pad * 2 + 14 + 6 + row_h * len(_LEGEND_ITEMS)
         total_w = _LEGEND_W
 
-        # Background box
-        p.setPen(QPen(QColor(BORDER_SOFT), 1.0))
-        p.setBrush(QColor("#ffffffcc"))
+        # Background box — uses theme.CARD fill and a visible theme.ACCENT border
+        p.setPen(QPen(QColor(theme.ACCENT), 1.5))
+        p.setBrush(QColor(theme.CARD))
         p.drawRoundedRect(pad, pad, total_w, total_h, 6, 6)
 
         # Title
@@ -694,7 +695,7 @@ class Canvas2D(QWidget):
         font.setPointSize(8)
         font.setWeight(QFont.Weight.DemiBold)
         p.setFont(font)
-        p.setPen(QColor(MID))
+        p.setPen(QColor(theme.MID))
         p.drawText(pad + 8, pad + 14, tr("legend", lang))
 
         # Items
@@ -707,7 +708,7 @@ class Canvas2D(QWidget):
             p.setBrush(QColor(COL[col_key]))
             p.drawRect(pad + 8, y + 2, swatch_w, row_h - 6)
             # Label
-            p.setPen(QColor(TEXT))
+            p.setPen(QColor(theme.TEXT))
             p.drawText(pad + 8 + text_x_off, y + row_h - 5, tr(key, lang))
 
     # ── Clear button (top-right) ──────────────────────────────────────────
@@ -723,15 +724,15 @@ class Canvas2D(QWidget):
         # Store rect so we can hit-test it in mousePressEvent
         self._clear_btn_rect = QRect(bx, by, btn_w, btn_h)
 
-        p.setPen(QPen(QColor(BORDER_SOFT), 1.0))
-        p.setBrush(QColor(CARD))
+        p.setPen(QPen(QColor(theme.ACCENT), 1.5))
+        p.setBrush(QColor(theme.CARD))
         p.drawRoundedRect(bx, by, btn_w, btn_h, 6, 6)
 
         font = QFont()
         font.setPointSize(9)
         font.setWeight(QFont.Weight.Medium)
         p.setFont(font)
-        p.setPen(QColor(MID))
+        p.setPen(QColor(theme.MID))
         p.drawText(QRect(bx, by, btn_w, btn_h), Qt.AlignmentFlag.AlignCenter, label)
 
     # Override mousePressEvent to also handle clear button

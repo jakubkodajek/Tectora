@@ -401,7 +401,7 @@ class EditorView(QWidget):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
         self.canvas_container.setStyleSheet(
-            f"background: #f0f4f8;"
+            f"background: {theme.BG};"
         )
         _inner = QVBoxLayout(self.canvas_container)
         _inner.setContentsMargins(0, 0, 0, 0)
@@ -448,6 +448,7 @@ class EditorView(QWidget):
         panel.setStyleSheet(
             f"background: {theme.CARD}; border-left: 1px solid {theme.BORDER_SOFT};"
         )
+        self.right_panel = panel  # exposed for tests (test_dark_visible)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -631,7 +632,7 @@ class EditorView(QWidget):
         self.roof_type_badge.setFixedHeight(32)
         self.roof_type_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.roof_type_badge.setStyleSheet(
-            f"background: #eef4ff; color: {theme.ACCENT}; border-radius: 8px;"
+            f"background: {theme.BG}; color: {theme.ACCENT}; border-radius: 8px;"
             f" font-size: 10pt; font-weight: 600; padding: 0 12px;"
         )
         v.addWidget(self.roof_type_badge)
@@ -1074,8 +1075,8 @@ class EditorView(QWidget):
         """Show a dark floating toast message that auto-hides after ~2.5 s."""
         toast = QLabel(text, self)
         toast.setStyleSheet(
-            "background: #111827;"
-            " color: #ffffff;"
+            f"background: {theme.TEXT};"
+            f" color: {theme.CARD};"
             " border-radius: 8px;"
             " padding: 10px 16px;"
             " font-size: 10pt;"
