@@ -40,6 +40,8 @@ CATALOG: dict[str, dict[str, str]] = {
         "edit": "Upravit",
         "view": "Pohled",
         "help": "Nápověda",
+        "order": "Zakázka",
+        "params": "Parametry",
     },
     "sk": {
         "new": "Nová zákazka",
@@ -76,6 +78,8 @@ CATALOG: dict[str, dict[str, str]] = {
         "edit": "Upraviť",
         "view": "Pohľad",
         "help": "Pomocník",
+        "order": "Zákazka",
+        "params": "Parametre",
     },
     "en": {
         "new": "New project",
@@ -112,6 +116,8 @@ CATALOG: dict[str, dict[str, str]] = {
         "edit": "Edit",
         "view": "View",
         "help": "Help",
+        "order": "Project",
+        "params": "Parameters",
     },
 }
 
