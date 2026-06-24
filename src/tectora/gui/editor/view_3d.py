@@ -62,11 +62,11 @@ def _rotate_point(
     x1 = x * ca - y * sa
     y1 = x * sa + y * ca
     z1 = z
-    # Elevation: rotate around X-axis (tilt downward)
+    # Elevation: tilt so +z (height) maps to screen-up, -z (walls) downward.
     ce, se = math.cos(elevation), math.sin(elevation)
     x2 = x1
-    y2 = y1 * ce - z1 * se
-    z2 = y1 * se + z1 * ce
+    y2 = z1 * ce - y1 * se   # screen-up component
+    z2 = y1 * ce + z1 * se   # depth (toward viewer) for painter's sort
     return x2, y2, z2
 
 

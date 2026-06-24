@@ -68,3 +68,10 @@ def test_stacked_widget_switches_on_toggle(tmp_path):
     e._btn_2d.click()
     app.processEvents()
     assert e.view_mode == "2d"
+
+
+def test_higher_z_renders_higher_on_screen():
+    from tectora.gui.editor.view_3d import project_point
+    base = project_point((0, 0, 0), -0.6, 0.5, 10.0, (100, 100))
+    top = project_point((0, 0, 2), -0.6, 0.5, 10.0, (100, 100))
+    assert top[1] < base[1]   # higher z -> smaller screen-y -> higher on screen

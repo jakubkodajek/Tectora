@@ -78,9 +78,13 @@ class MainWindow(QMainWindow):
         saved_location = editor.get_location() if hasattr(editor, "get_location") else None
         saved_pitch = getattr(editor, "pitch", 35)
         saved_footprint = None
+        saved_edge_types = None
+        saved_overhang = getattr(editor, "overhang", 0.0)
+        saved_wall_height = getattr(editor, "wall_height", 2.5)
         if hasattr(editor, "canvas") and editor.canvas is not None:
             saved_footprint = getattr(editor.canvas, "_vertices", None)
             saved_footprint_closed = getattr(editor.canvas, "_closed", False)
+            saved_edge_types = getattr(editor.canvas, "_edge_types", None)
         else:
             saved_footprint_closed = False
 
@@ -126,7 +130,28 @@ class MainWindow(QMainWindow):
                 canvas = new_editor.canvas
                 canvas._vertices = list(saved_footprint)
                 canvas._closed = True
+                if saved_edge_types is not None:
+                    canvas._edge_types = list(saved_edge_types)
                 canvas.update()
+
+            # Restore overhang and wall_height on the new editor
+            if hasattr(new_editor, "set_overhang"):
+                new_editor.set_overhang(saved_overhang)
+            else:
+                new_editor.overhang = saved_overhang
+            if hasattr(new_editor, "set_wall_height"):
+                new_editor.set_wall_height(saved_wall_height)
+            else:
+                new_editor.wall_height = saved_wall_height
+
+            # Re-run calculation so the roof reappears if polygon is valid
+            if (saved_footprint_closed
+                    and hasattr(new_editor, "canvas")
+                    and new_editor.canvas.footprint is not None):
+                try:
+                    new_editor._on_calculate()
+                except Exception:
+                    pass
 
         # Restore which view was showing
         self._stack.setCurrentIndex(current_idx)
