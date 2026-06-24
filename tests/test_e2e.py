@@ -136,3 +136,49 @@ class TestHexagonalPipelineEndToEnd:
         project = Project(project_name="L", footprint=l_shape, global_pitch_deg=35.0)
         with pytest.raises(UnsupportedFootprint):
             uc.calculate_project(project)
+
+
+class TestLibraryCliEndToEnd:
+    """Real `tectora library` command over a temporary SQLite DB."""
+
+    def _write_project(self, tmp_path, name="Dům"):
+        from tectora.application.project import Project
+        from tectora.core.footprint import Footprint
+
+        fp = Footprint.from_lists(
+            [(0, 0), (12, 0), (12, 8), (0, 8)],
+            ["eave", "gable", "eave", "gable"],
+        )
+        p = tmp_path / "proj.json"
+        p.write_text(
+            json.dumps(Project(project_name=name, footprint=fp,
+                               global_pitch_deg=35.0).to_dict()),
+            encoding="utf-8",
+        )
+        return str(p)
+
+    def test_library_add_then_list_via_cli(self, tmp_path):
+        db = str(tmp_path / "lib.db")
+        proj = self._write_project(tmp_path)
+
+        r = run_cli(["library", "add", proj, "--db", db,
+                     "--name", "Dům Novák", "--location", "Brno"])
+        assert r.returncode == 0, r.stderr
+        assert json.loads(r.stdout)["id"] == 1
+
+        r = run_cli(["library", "list", "--db", db])
+        assert r.returncode == 0, r.stderr
+        rows = json.loads(r.stdout)
+        assert len(rows) == 1
+        assert rows[0]["name"] == "Dům Novák"
+        assert rows[0]["location"] == "Brno"
+        assert rows[0]["area_m2"] is not None
+
+    def test_geocode_offline_returns_empty(self, monkeypatch, capsys):
+        from tectora.cli.main import main
+        from tectora.io import nominatim_geocoder as ng
+
+        monkeypatch.setattr(ng.NominatimGeocoder, "search",
+                            lambda self, q, limit=5: [])
+        assert main(["geocode", "Mor"]) == 0
+        assert json.loads(capsys.readouterr().out) == []
