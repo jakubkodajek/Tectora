@@ -2,9 +2,10 @@
 """EditorView — roof footprint editor shell (G2).
 
 Layout (top-to-bottom):
-  - Top bar   : ‹ Zpět | project name | menu items | lang chip
+  - Top bar   : QMenuBar (Soubor/Zobrazení/Nastavení/Nápověda) +
+                nav row (‹ Zpět | project name)
   - Toolbar   : tool buttons (Kreslit / Upravit body / Okap·Štít) |
-                pitch button | 2D/3D toggle | ▶ Provést výpočet
+                2D/3D toggle | ▶ Provést výpočet
   - Content   : canvas placeholder (left)  +  right panel (~300 px)
   - Status bar: cursor coords / units label
 
@@ -144,7 +145,6 @@ class EditorView(QWidget):
         if project is not None:
             pitch = int(round(project.global_pitch_deg))
             self._pitch_spin.setValue(pitch)
-            self._pitch_btn.setText(f"{tr('pitch', self._lang)}  {pitch}°  ▾")
             if hasattr(self, "_wall_height_spin"):
                 wh = getattr(project, "wall_height_m", 2.5)
                 self._wall_height_spin.blockSignals(True)
@@ -179,17 +179,61 @@ class EditorView(QWidget):
     # ── Top bar ──────────────────────────────────────────────────────────
 
     def _make_topbar(self) -> QWidget:
-        bar = QWidget()
-        bar.setFixedHeight(52)
-        bar.setStyleSheet(
+        """Build a two-row top area: menu bar row + back/title row."""
+        container = QWidget()
+        container.setStyleSheet(
             f"background: {theme.CARD}; border-bottom: 1px solid {theme.BORDER_SOFT};"
         )
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(12, 0, 16, 0)
-        layout.setSpacing(0)
+        vbox = QVBoxLayout(container)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(0)
 
-        # ‹ Zpět button
-        back_btn = QPushButton(f"‹  {tr('back', self._lang)}")
+        # ── Row 1: real QMenuBar ──────────────────────────────────────
+        lang = self._lang
+        window = self._window
+
+        self.menubar = QMenuBar()
+        self.menubar.setStyleSheet(
+            f"QMenuBar {{ background: {theme.CARD}; border: none; color: {theme.MID};"
+            f" border-bottom: 1px solid {theme.BORDER_SOFT}; }}"
+            f"QMenuBar::item {{ padding: 6px 12px; border-radius: 4px; }}"
+            f"QMenuBar::item:selected {{ background: {theme.BG}; }}"
+        )
+
+        # Soubor
+        from tectora.application.project import Project as _Project
+        menu_file = self.menubar.addMenu(tr("file", lang))
+        menu_file.addAction(tr("new", lang), lambda: window.open_editor(_Project(global_pitch_deg=35.0)))
+        menu_file.addAction(tr("open", lang), window.open_home)
+        menu_file.addAction(tr("save", lang), self._on_save)
+        menu_file.addAction(tr("exportXls", lang), self._on_export)
+        menu_file.addSeparator()
+        menu_file.addAction(tr("exit", lang), window.close)
+
+        # Zobrazení
+        menu_view = self.menubar.addMenu(tr("view", lang))
+        menu_view.addAction(tr("view2d", lang), lambda: self._set_view_mode("2d"))
+        menu_view.addAction(tr("view3d", lang), lambda: self._set_view_mode("3d"))
+
+        # Nastavení
+        menu_settings = self.menubar.addMenu(tr("settings", lang))
+        menu_settings.addAction(tr("settings", lang) + "…", self._open_settings)
+
+        # Nápověda
+        menu_help = self.menubar.addMenu(tr("help", lang))
+        menu_help.addAction(tr("about", lang), self._on_about)
+
+        vbox.addWidget(self.menubar)
+
+        # ── Row 2: ‹ Zpět  |  project name ──────────────────────────
+        nav_bar = QWidget()
+        nav_bar.setFixedHeight(46)
+        nav_bar.setStyleSheet("background: transparent;")
+        nav_layout = QHBoxLayout(nav_bar)
+        nav_layout.setContentsMargins(12, 0, 16, 0)
+        nav_layout.setSpacing(0)
+
+        back_btn = QPushButton(f"‹  {tr('back', lang)}")
         back_btn.setFixedHeight(34)
         back_btn.setStyleSheet(
             f"QPushButton {{"
@@ -203,12 +247,11 @@ class EditorView(QWidget):
             f"QPushButton:hover {{ color: {theme.TEXT}; }}"
         )
         back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        back_btn.clicked.connect(self._window.open_home)
-        layout.addWidget(back_btn)
+        back_btn.clicked.connect(window.open_home)
+        nav_layout.addWidget(back_btn)
 
-        layout.addSpacing(12)
+        nav_layout.addSpacing(12)
 
-        # Project name label
         self._title_label = QLabel(_DEFAULT_TITLE)
         tf = QFont()
         tf.setWeight(QFont.Weight.DemiBold)
@@ -217,61 +260,13 @@ class EditorView(QWidget):
         self._title_label.setStyleSheet(
             f"color: {theme.TEXT}; background: transparent;"
         )
-        layout.addWidget(self._title_label)
+        nav_layout.addWidget(self._title_label)
 
-        layout.addSpacing(32)
+        nav_layout.addStretch(1)
 
-        # Menu bar (File / Edit / View / Help)
-        menu_bar = QMenuBar()
-        menu_bar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        menu_bar.setStyleSheet(
-            f"QMenuBar {{ background: transparent; border: none; color: {theme.MID}; }}"
-            f"QMenuBar::item {{ padding: 6px 10px; border-radius: 4px; }}"
-            f"QMenuBar::item:selected {{ background: {theme.BG}; }}"
-        )
-        for key in ("file", "edit", "view", "help"):
-            menu = menu_bar.addMenu(tr(key, self._lang))
-            # Stub actions — G-later will populate
-            menu.addAction(f"({tr(key, self._lang)}…)")
-        layout.addWidget(menu_bar)
+        vbox.addWidget(nav_bar)
 
-        layout.addStretch(1)
-
-        # Language chip (G8: wired to set_language)
-        self._lang_chip = QPushButton(f"{self._lang.upper()} ▾")
-        self._lang_chip.setFixedHeight(32)
-        self._lang_chip.setStyleSheet(
-            f"QPushButton {{"
-            f"  background: {theme.CARD};"
-            f"  color: {theme.MID};"
-            f"  border: 1px solid {theme.BORDER};"
-            f"  border-radius: 8px;"
-            f"  font-size: 9pt;"
-            f"  font-weight: 600;"
-            f"  padding: 0 12px;"
-            f"}}"
-            f"QPushButton:hover {{ background: {theme.BG}; }}"
-        )
-        self._lang_chip.clicked.connect(self._on_lang_click)
-        layout.addWidget(self._lang_chip)
-
-        # Gear button (F2: opens settings dialog)
-        self._gear_btn = QPushButton("⚙")
-        self._gear_btn.setFixedSize(32, 32)
-        self._gear_btn.setStyleSheet(
-            f"QPushButton {{"
-            f"  background: {theme.CARD};"
-            f"  color: {theme.MID};"
-            f"  border: 1px solid {theme.BORDER};"
-            f"  border-radius: 8px;"
-            f"  font-size: 14pt;"
-            f"}}"
-            f"QPushButton:hover {{ background: {theme.BG}; }}"
-        )
-        self._gear_btn.clicked.connect(self._on_settings)
-        layout.addWidget(self._gear_btn)
-
-        return bar
+        return container
 
     # ── Toolbar ──────────────────────────────────────────────────────────
 
@@ -314,25 +309,6 @@ class EditorView(QWidget):
         sep.setFrameShape(QFrame.Shape.VLine)
         sep.setStyleSheet(f"color: {theme.BORDER};")
         layout.addWidget(sep)
-
-        layout.addSpacing(12)
-
-        # Pitch button (stub — shows current pitch; G5 will open a popover)
-        pitch = 35
-        self._pitch_btn = QPushButton(f"{tr('pitch', self._lang)}  {pitch}°  ▾")
-        self._pitch_btn.setFixedHeight(34)
-        self._pitch_btn.setStyleSheet(
-            f"QPushButton {{"
-            f"  background: {theme.CARD};"
-            f"  color: {theme.MID};"
-            f"  border: 1px solid {theme.BORDER};"
-            f"  border-radius: 7px;"
-            f"  padding: 0 14px;"
-            f"  font-size: 10pt;"
-            f"}}"
-            f"QPushButton:hover {{ background: {theme.BG}; }}"
-        )
-        layout.addWidget(self._pitch_btn)
 
         layout.addStretch(1)
 
@@ -983,9 +959,8 @@ class EditorView(QWidget):
             self._export_to(path)
 
     def set_pitch(self, value: int) -> None:
-        """Update the pitch, refresh the button label, and recompute if a result exists."""
+        """Update the pitch and recompute if a result exists."""
         self.pitch = int(value)
-        self._pitch_btn.setText(f"{tr('pitch', self._lang)}  {self.pitch}°  ▾")
         # Keep spin box in sync without triggering another valueChanged→set_pitch cycle
         self._pitch_spin.blockSignals(True)
         self._pitch_spin.setValue(self.pitch)
@@ -1027,21 +1002,8 @@ class EditorView(QWidget):
         toast.show()
         QTimer.singleShot(2500, toast.deleteLater)
 
-    def _on_lang_click(self) -> None:
-        """Open a small language menu and call window.set_language on choice (G8)."""
-        from tectora.gui.i18n import LANGS
-        menu = QMenu(self)
-        for code in LANGS:
-            action = menu.addAction(code.upper())
-            action.setData(code)
-        chosen = menu.exec(self._lang_chip.mapToGlobal(
-            self._lang_chip.rect().bottomLeft()
-        ))
-        if chosen is not None:
-            self._window.set_language(chosen.data())
-
-    def _on_settings(self) -> None:
-        """Open the settings dialog (F2)."""
+    def _open_settings(self) -> None:
+        """Open the settings dialog (accessible from the Nastavení menu)."""
         from tectora.gui.settings_dialog import SettingsDialog
         current_lang = getattr(self._window, "lang", "cs")
         current_dark = getattr(self._window, "dark", False)
@@ -1053,3 +1015,8 @@ class EditorView(QWidget):
                 self._window.set_theme(dark)
             if lang != current_lang:
                 self._window.set_language(lang)
+
+    def _on_about(self) -> None:
+        """Show the About dialog."""
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.about(self, "Tectora", tr("aboutText", self._lang))

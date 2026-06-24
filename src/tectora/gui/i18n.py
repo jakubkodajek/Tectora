@@ -67,6 +67,11 @@ CATALOG: dict[str, dict[str, str]] = {
         "language": "Jazyk",
         "darkTheme": "Tmavý režim",
         "overhang": "Přesah okapu",
+        "exit": "Konec",
+        "about": "O aplikaci",
+        "aboutText": "Tectora — kalkulátor střech\nVerze 1.0",
+        "view2d": "2D",
+        "view3d": "3D",
     },
     "sk": {
         "new": "Nová zákazka",
@@ -130,6 +135,11 @@ CATALOG: dict[str, dict[str, str]] = {
         "language": "Jazyk",
         "darkTheme": "Tmavý režim",
         "overhang": "Presah odkvapu",
+        "exit": "Koniec",
+        "about": "O aplikácii",
+        "aboutText": "Tectora — kalkulátor striech\nVerzia 1.0",
+        "view2d": "2D",
+        "view3d": "3D",
     },
     "en": {
         "new": "New project",
@@ -193,6 +203,11 @@ CATALOG: dict[str, dict[str, str]] = {
         "language": "Language",
         "darkTheme": "Dark mode",
         "overhang": "Eave overhang",
+        "exit": "Exit",
+        "about": "About",
+        "aboutText": "Tectora — roof calculator\nVersion 1.0",
+        "view2d": "2D",
+        "view3d": "3D",
     },
 }
 
