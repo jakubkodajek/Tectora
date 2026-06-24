@@ -5,21 +5,17 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from tectora.gui import style
-from tectora.gui.main_window import MainWindow
+from tectora.gui import theme
+from tectora.gui.app_window import MainWindow
 
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("Tectora")
-    app.setOrganizationName("Tectora")
-    app.setStyleSheet(style.STYLESHEET)
-
+    theme.apply_theme(app)
     window = MainWindow()
     window.show()
-
     return app.exec()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
