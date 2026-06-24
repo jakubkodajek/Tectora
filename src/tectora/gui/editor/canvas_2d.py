@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt
+from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -82,6 +82,8 @@ class _CanvasBuilding:
     closed: bool = False
     skeleton_data: Any = None                         # RoofResult or None
     overhang: float = 0.0
+    pitch: int = 35
+    wall_height: float = 2.5
     name: str = ""
 
 
@@ -206,6 +208,12 @@ class Canvas2D(QWidget):
             self._buildings = [_CanvasBuilding()]
         self._active = min(self._active, len(self._buildings) - 1)
         self.update()
+
+    def set_building_skeleton(self, index: int, data: Any) -> None:
+        """Store a RoofResult (or None) for building *index*; schedules repaint."""
+        if 0 <= index < len(self._buildings):
+            self._buildings[index].skeleton_data = data
+            self.update()
 
     def building_footprint(self, index: int):
         """Return the Footprint of building *index*, or None."""
@@ -475,8 +483,19 @@ class Canvas2D(QWidget):
 
         self._draw_background(painter)
         self._draw_grid(painter)
-        self._draw_polygon(painter)
-        self._draw_skeleton(painter)
+
+        # Draw every building's polygon + roof. The per-building draw helpers
+        # read the active building's state, so temporarily point _active at each
+        # building in turn (cheap, avoids threading a param through every helper).
+        saved_active = self._active
+        for i in range(len(self._buildings)):
+            self._active = i
+            self._draw_polygon(painter)
+            self._draw_skeleton(painter)
+        self._active = saved_active
+
+        # Overlays apply to the active building only.
+        self._draw_active_highlight(painter)
         self._draw_in_progress(painter)
         self._draw_nodes(painter)
         self._draw_snap_indicator(painter)
@@ -484,6 +503,24 @@ class Canvas2D(QWidget):
         self._draw_clear_button(painter)
 
         painter.end()
+
+    def _draw_active_highlight(self, p: QPainter) -> None:
+        """Tint the active building so the user sees which one is selected.
+
+        Only shown when there is more than one building (no point otherwise).
+        """
+        if self.building_count() <= 1:
+            return
+        b = self._b
+        if not b.closed or len(b.vertices) < 3:
+            return
+        from PySide6.QtGui import QPolygonF
+        pts = [QPointF(*self._to_screen(*v)) for v in b.vertices]
+        fill = QColor(theme.ACCENT)
+        fill.setAlpha(28)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(fill)
+        p.drawPolygon(QPolygonF(pts))
 
     # ── Background ───────────────────────────────────────────────────────
 

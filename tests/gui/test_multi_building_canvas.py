@@ -83,6 +83,25 @@ def test_clear_resets_all_buildings():
     assert c.footprint is None
 
 
+def test_set_building_skeleton_and_render_all():
+    from PySide6.QtGui import QPixmap
+    from tectora.application import use_cases as uc
+    from tectora.application.project import Project
+    c = _canvas()
+    _draw(c, [(0, 0), (6, 0), (6, 4), (0, 4)])
+    r0 = uc.calculate_project(Project(footprint=c.building_footprint(0), global_pitch_deg=35.0))
+    c.set_building_skeleton(0, r0)
+    c.new_building()
+    _draw(c, [(12, 0), (18, 0), (18, 4), (12, 4)])
+    r1 = uc.calculate_project(Project(footprint=c.building_footprint(1), global_pitch_deg=35.0))
+    c.set_building_skeleton(1, r1)
+    assert c._buildings[0].skeleton_data is r0
+    assert c._buildings[1].skeleton_data is r1
+    pm = QPixmap(c.size())
+    c.render(pm)                 # draws BOTH buildings' polygons + roofs
+    assert not pm.isNull()
+
+
 def test_point_in_polygon_helper():
     sq = [(0, 0), (10, 0), (10, 10), (0, 10)]
     assert point_in_polygon(5, 5, sq) is True
