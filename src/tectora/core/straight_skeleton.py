@@ -29,7 +29,7 @@ _SPLIT_EVENT = 1
 # Exceptions
 # ---------------------------------------------------------------------------
 
-class RoofGenerationError(Exception):
+class RoofGenerationError(ValueError):
     """Raised when the straight-skeleton simulation fails to converge."""
 
 

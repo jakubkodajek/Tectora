@@ -123,10 +123,11 @@ class TestHexagonalPipelineEndToEnd:
         assert out.exists()
         assert "Výkaz" in openpyxl.load_workbook(out).sheetnames
 
-    def test_unsupported_polygon_is_rejected(self):
+    def test_general_polygon_handled_via_skeleton(self):
+        """SS5: L-shaped (and other non-rectangle) polygons are now routed through
+        the straight-skeleton instead of raising UnsupportedFootprint."""
         from tectora.application import use_cases as uc
         from tectora.application.project import Project
-        from tectora.core.bridge import UnsupportedFootprint
         from tectora.core.footprint import Footprint
 
         l_shape = Footprint.from_lists(
@@ -134,8 +135,8 @@ class TestHexagonalPipelineEndToEnd:
             ["eave"] * 6,
         )
         project = Project(project_name="L", footprint=l_shape, global_pitch_deg=35.0)
-        with pytest.raises(UnsupportedFootprint):
-            uc.calculate_project(project)
+        result = uc.calculate_project(project)
+        assert result.valley_length_m > 0
 
 
 class TestLibraryCliEndToEnd:
