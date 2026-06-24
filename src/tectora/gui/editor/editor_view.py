@@ -26,10 +26,13 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMenuBar,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -122,15 +125,29 @@ class EditorView(QWidget):
     # Public interface
     # ------------------------------------------------------------------
 
-    def load_project(self, project, entry_id=None) -> None:
-        """Store project, update title. Called by MainWindow.open_editor()."""
+    def load_project(self, project, entry_id=None, note: str = "", location=None) -> None:
+        """Store project, update title and right-panel fields.
+
+        Called by MainWindow.open_editor().
+        ``note`` and ``location`` come from the library entry (G6 will pass them).
+        """
         self._project = project
         self._entry_id = entry_id
         name = (project.project_name or "").strip() if project else ""
         self._title_label.setText(name or _DEFAULT_TITLE)
-        # Sync pitch button if project is available
+
+        # Populate ZAKÁZKA fields
+        self.name_edit.setText(name)
+        self.note_edit.setPlainText(note or "")
+        if location is not None:
+            self.location_field.set_selected(location)
+        else:
+            self.location_field.set_text("")
+
+        # Sync pitch control if project is available
         if project is not None:
             pitch = int(round(project.global_pitch_deg))
+            self._pitch_spin.setValue(pitch)
             self._pitch_btn.setText(f"{tr('pitch', self._lang)}  {pitch}°  ▾")
 
     # ------------------------------------------------------------------
@@ -401,6 +418,8 @@ class EditorView(QWidget):
     # ── Right panel ───────────────────────────────────────────────────────
 
     def _make_right_panel(self) -> QWidget:
+        from tectora.gui.editor.location_field import LocationField
+
         panel = QWidget()
         panel.setFixedWidth(300)
         panel.setStyleSheet(
@@ -425,18 +444,44 @@ class EditorView(QWidget):
         v.addWidget(_section_header(tr("order", lang).upper()))
         v.addSpacing(10)
 
-        for field_key in ("name", "location", "note"):
-            lbl = QLabel(tr(field_key, lang))
-            lbl.setStyleSheet(f"color: {MID}; font-size: 9pt; background: transparent;")
-            v.addWidget(lbl)
-            v.addSpacing(4)
-            ph = QWidget()
-            ph.setFixedHeight(36)
-            ph.setStyleSheet(
-                f"background: {CARD}; border: 1px solid {BORDER}; border-radius: 8px;"
-            )
-            v.addWidget(ph)
-            v.addSpacing(12)
+        # Název
+        _lbl_name = QLabel(tr("name", lang))
+        _lbl_name.setStyleSheet(f"color: {MID}; font-size: 9pt; background: transparent;")
+        v.addWidget(_lbl_name)
+        v.addSpacing(4)
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText(tr("name", lang) + "…")
+        self.name_edit.setFixedHeight(36)
+        self.name_edit.setStyleSheet(
+            f"background: {CARD}; border: 1px solid {BORDER}; border-radius: 8px;"
+            f" padding: 0 10px; color: {MID}; font-size: 10pt;"
+        )
+        v.addWidget(self.name_edit)
+        v.addSpacing(12)
+
+        # Poloha
+        _lbl_loc = QLabel(tr("location", lang))
+        _lbl_loc.setStyleSheet(f"color: {MID}; font-size: 9pt; background: transparent;")
+        v.addWidget(_lbl_loc)
+        v.addSpacing(4)
+        self.location_field = LocationField(lang=lang)
+        v.addWidget(self.location_field)
+        v.addSpacing(12)
+
+        # Poznámka
+        _lbl_note = QLabel(tr("note", lang))
+        _lbl_note.setStyleSheet(f"color: {MID}; font-size: 9pt; background: transparent;")
+        v.addWidget(_lbl_note)
+        v.addSpacing(4)
+        self.note_edit = QPlainTextEdit()
+        self.note_edit.setPlaceholderText("Volitelná poznámka…")
+        self.note_edit.setFixedHeight(72)
+        self.note_edit.setStyleSheet(
+            f"background: {CARD}; border: 1px solid {BORDER}; border-radius: 8px;"
+            f" padding: 6px 10px; color: {MID}; font-size: 10pt;"
+        )
+        v.addWidget(self.note_edit)
+        v.addSpacing(12)
 
         v.addSpacing(8)
 
@@ -444,18 +489,82 @@ class EditorView(QWidget):
         v.addWidget(_section_header(tr("params", lang).upper()))
         v.addSpacing(10)
 
-        for field_key in ("pitch", "roofType"):
-            lbl = QLabel(tr(field_key, lang))
-            lbl.setStyleSheet(f"color: {MID}; font-size: 9pt; background: transparent;")
-            v.addWidget(lbl)
-            v.addSpacing(4)
-            ph = QWidget()
-            ph.setFixedHeight(36)
-            ph.setStyleSheet(
-                f"background: {CARD}; border: 1px solid {BORDER}; border-radius: 8px;"
-            )
-            v.addWidget(ph)
-            v.addSpacing(12)
+        # Sklon (pitch spin box with − / value / + layout)
+        _lbl_pitch = QLabel(tr("pitch", lang))
+        _lbl_pitch.setStyleSheet(f"color: {MID}; font-size: 9pt; background: transparent;")
+        v.addWidget(_lbl_pitch)
+        v.addSpacing(4)
+
+        pitch_row = QWidget()
+        pitch_row.setStyleSheet("background: transparent;")
+        pitch_layout = QHBoxLayout(pitch_row)
+        pitch_layout.setContentsMargins(0, 0, 0, 0)
+        pitch_layout.setSpacing(6)
+
+        _btn_minus = QPushButton("−")
+        _btn_minus.setFixedSize(32, 34)
+        _btn_minus.setStyleSheet(
+            f"QPushButton {{"
+            f"  background: {CARD}; color: {MID}; border: 1px solid {BORDER};"
+            f"  border-radius: 7px; font-size: 14pt; font-weight: 600;"
+            f"}}"
+            f"QPushButton:hover {{ background: {BG}; }}"
+        )
+
+        self._pitch_spin = QSpinBox()
+        self._pitch_spin.setRange(1, 89)
+        self._pitch_spin.setValue(self.pitch)
+        self._pitch_spin.setSuffix("°")
+        self._pitch_spin.setFixedHeight(34)
+        self._pitch_spin.setStyleSheet(
+            f"QSpinBox {{"
+            f"  background: {CARD}; color: {MID}; border: 1px solid {BORDER};"
+            f"  border-radius: 7px; padding: 0 8px; font-size: 10pt;"
+            f"  font-weight: 600;"
+            f"}}"
+            f"QSpinBox:focus {{ border-color: {ACCENT}; }}"
+            f"QSpinBox::up-button, QSpinBox::down-button {{ width: 0; }}"
+        )
+
+        _btn_plus = QPushButton("+")
+        _btn_plus.setFixedSize(32, 34)
+        _btn_plus.setStyleSheet(
+            f"QPushButton {{"
+            f"  background: {CARD}; color: {MID}; border: 1px solid {BORDER};"
+            f"  border-radius: 7px; font-size: 14pt; font-weight: 600;"
+            f"}}"
+            f"QPushButton:hover {{ background: {BG}; }}"
+        )
+
+        _btn_minus.clicked.connect(
+            lambda: self.set_pitch(max(1, self._pitch_spin.value() - 1))
+        )
+        _btn_plus.clicked.connect(
+            lambda: self.set_pitch(min(89, self._pitch_spin.value() + 1))
+        )
+        self._pitch_spin.valueChanged.connect(self.set_pitch)
+
+        pitch_layout.addWidget(_btn_minus)
+        pitch_layout.addWidget(self._pitch_spin, stretch=1)
+        pitch_layout.addWidget(_btn_plus)
+        v.addWidget(pitch_row)
+        v.addSpacing(12)
+
+        # Typ střechy badge
+        _lbl_roof_type = QLabel(tr("roofType", lang))
+        _lbl_roof_type.setStyleSheet(f"color: {MID}; font-size: 9pt; background: transparent;")
+        v.addWidget(_lbl_roof_type)
+        v.addSpacing(4)
+
+        self.roof_type_badge = QLabel("—")
+        self.roof_type_badge.setFixedHeight(32)
+        self.roof_type_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.roof_type_badge.setStyleSheet(
+            f"background: #eef4ff; color: {ACCENT}; border-radius: 8px;"
+            f" font-size: 10pt; font-weight: 600; padding: 0 12px;"
+        )
+        v.addWidget(self.roof_type_badge)
+        v.addSpacing(12)
 
         v.addSpacing(8)
 
@@ -575,6 +684,36 @@ class EditorView(QWidget):
         self.last_result = result
         self.canvas.set_skeleton(result)
         self.set_results(result)
+        self._update_roof_type_badge(fp)
+
+    # ------------------------------------------------------------------
+    # G5: public helpers for G6
+    # ------------------------------------------------------------------
+
+    def get_name(self) -> str:
+        """Return the current project name from the Název field."""
+        return self.name_edit.text()
+
+    def get_note(self) -> str:
+        """Return the current note from the Poznámka field."""
+        return self.note_edit.toPlainText()
+
+    def get_location(self):
+        """Return the current Location (or None) from the Poloha field."""
+        return self.location_field.location
+
+    # ------------------------------------------------------------------
+    # G5: roof-type badge helper
+    # ------------------------------------------------------------------
+
+    def _update_roof_type_badge(self, fp) -> None:
+        """Set the roof-type badge from the footprint + current pitch."""
+        from tectora.core.bridge import UnsupportedFootprint, footprint_to_spec
+        try:
+            spec = footprint_to_spec(fp, float(self.pitch))
+            self.roof_type_badge.setText(spec.type.cs_name.capitalize())
+        except UnsupportedFootprint:
+            self.roof_type_badge.setText("Obecná")
 
     def set_results(self, result) -> None:
         """Populate the VÝSLEDKY rows from *result* (a RoofResult)."""
@@ -618,6 +757,10 @@ class EditorView(QWidget):
         """Update the pitch, refresh the button label, and recompute if a result exists."""
         self.pitch = int(value)
         self._pitch_btn.setText(f"{tr('pitch', self._lang)}  {self.pitch}°  ▾")
+        # Keep spin box in sync without triggering another valueChanged→set_pitch cycle
+        self._pitch_spin.blockSignals(True)
+        self._pitch_spin.setValue(self.pitch)
+        self._pitch_spin.blockSignals(False)
         if self.last_result is not None and self.canvas.footprint is not None:
             self._on_calculate()
 
