@@ -45,6 +45,11 @@ class MainWindow(QMainWindow):
 
     def open_entry(self, entry) -> None:
         """Open an existing library entry in the editor (G6)."""
+        # Track current project/entry on the window so a theme/language change
+        # (which tears down and rebuilds both views via set_language) restores
+        # this project instead of an empty editor.
+        self._current_project = entry.project
+        self._current_entry_id = entry.id
         self._editor.load_project(
             entry.project, entry.id, note=entry.note, location=entry.location
         )

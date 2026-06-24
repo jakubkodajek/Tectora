@@ -158,6 +158,27 @@ class EditorView(QWidget):
                 self._overhang_spin.blockSignals(False)
                 self.overhang = float(oh)
 
+        # Restore the drawn polygon onto the canvas so opening a saved project
+        # shows its geometry (and recompute so the roof + results reappear).
+        # Without this, opening an existing project showed an empty canvas.
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None:
+            fp = project.footprint if project is not None else None
+            if fp is not None:
+                canvas._vertices = [(float(x), float(y)) for (x, y) in fp.vertices]
+                canvas._edge_types = [e.type.value for e in fp.edges]
+                canvas._closed = True
+                canvas.set_overhang(self.overhang)
+                canvas.update()
+                try:
+                    self._on_calculate()
+                except Exception:
+                    pass
+            else:
+                # New / empty project: clear any drawing left from a prior open.
+                canvas.clear()
+                self.clear_results()
+
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
