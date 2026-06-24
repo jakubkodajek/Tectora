@@ -17,8 +17,9 @@ class MainWindow(QMainWindow):
         self._stack = QStackedWidget()
         self.setCentralWidget(self._stack)
 
-        # G0 placeholders; real HomeView/EditorView arrive in G1/G2.
-        self._home = self._placeholder("Home")
+        # G1: real HomeView; G2+ will replace editor placeholder.
+        from tectora.gui.home.home_view import HomeView
+        self._home = HomeView(self)
         self._editor = self._placeholder("Editor")
         self._stack.addWidget(self._home)      # index 0
         self._stack.addWidget(self._editor)    # index 1
@@ -39,3 +40,9 @@ class MainWindow(QMainWindow):
         self._current_project = project
         self._current_entry_id = entry_id
         self._stack.setCurrentIndex(1)
+
+    def refresh_home(self) -> None:
+        """Refresh the home view grid (e.g. after a delete)."""
+        home = self._stack.widget(0)
+        if hasattr(home, "refresh"):
+            home.refresh()
