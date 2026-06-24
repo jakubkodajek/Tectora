@@ -90,10 +90,14 @@ class Canvas2D(QWidget):
         self._overhang: float = 0.0
 
         # ── View state ───────────────────────────────────────────────────
-        # Origin = pixel position of model (0, 0); dynamically centred.
+        # Origin = pixel position of model (0, 0); widget centre + pan offset.
         self._scale: float = _DEFAULT_SCALE
         self._cursor_screen: Optional[tuple[float, float]] = None
         self._snap_pt: Optional[tuple[float, float]] = None  # snapped model pt
+
+        # Pan offset (pixels) applied to the origin; dragged with the RIGHT button.
+        self._pan: tuple[float, float] = (0.0, 0.0)
+        self._pan_anchor: Optional[tuple[float, float, float, float]] = None
 
         # editPoints: currently dragged node index
         self._drag_idx: Optional[int] = None
@@ -155,6 +159,8 @@ class Canvas2D(QWidget):
         self._skeleton_data = None
         self._drag_idx = None
         self._snap_pt = None
+        self._pan = (0.0, 0.0)
+        self._pan_anchor = None
         self.update()
 
     @property
@@ -214,8 +220,9 @@ class Canvas2D(QWidget):
     # ------------------------------------------------------------------
 
     def _origin_px(self) -> tuple[float, float]:
-        """Pixel position of model (0, 0) — centre of the widget."""
-        return self.width() / 2.0, self.height() / 2.0
+        """Pixel position of model (0, 0) — widget centre plus the pan offset."""
+        px, py = self._pan
+        return self.width() / 2.0 + px, self.height() / 2.0 + py
 
     def _to_screen(self, mx: float, my: float) -> tuple[float, float]:
         return model_to_screen(mx, my, self._origin_px(), self._scale)
@@ -247,6 +254,13 @@ class Canvas2D(QWidget):
         px, py = float(event.position().x()), float(event.position().y())
         self._cursor_screen = (px, py)
 
+        # Right-button pan: drag moves the whole view.
+        if self._pan_anchor is not None:
+            ax, ay, pan0x, pan0y = self._pan_anchor
+            self._pan = (pan0x + (px - ax), pan0y + (py - ay))
+            self.update()
+            return
+
         # Snap indicator
         mx, my = self._snapped_model(px, py)
         self._snap_pt = (mx, my)
@@ -267,6 +281,9 @@ class Canvas2D(QWidget):
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_idx = None
+        elif event.button() == Qt.MouseButton.RightButton and self._pan_anchor is not None:
+            self._pan_anchor = None
+            self.setCursor(Qt.CursorShape.CrossCursor)
 
     def _handle_draw_click(self, px: float, py: float) -> None:
         mx, my = self._snapped_model(px, py)
@@ -615,6 +632,27 @@ class Canvas2D(QWidget):
 
     # ── In-progress polyline ──────────────────────────────────────────────
 
+    def _draw_seg_len_label(
+        self,
+        p: QPainter,
+        a_model: tuple[float, float],
+        b_model: tuple[float, float],
+        color: str,
+    ) -> None:
+        """Label the metric length of a model-space segment near its midpoint."""
+        from tectora.gui.editor.skeleton_render import fmt_len
+        (ax, ay), (bx, by) = a_model, b_model
+        length = ((bx - ax) ** 2 + (by - ay) ** 2) ** 0.5
+        if length < 1e-6:
+            return
+        # Midpoint, offset a few px perpendicular to the segment so the label
+        # doesn't sit on the line.
+        mx, my = (ax + bx) / 2.0, (ay + by) / 2.0
+        nx, ny = -(by - ay) / length, (bx - ax) / length
+        offset_m = 9.0 / self._scale
+        lx, ly = self._to_screen(mx + nx * offset_m, my + ny * offset_m)
+        self._draw_label_at(p, lx, ly, fmt_len(length), color, bold=True)
+
     def _draw_in_progress(self, p: QPainter) -> None:
         if self._closed or len(self._vertices) == 0:
             return
@@ -626,6 +664,9 @@ class Canvas2D(QWidget):
             ax, ay = self._to_screen(*self._vertices[i])
             bx, by = self._to_screen(*self._vertices[i + 1])
             p.drawLine(int(ax), int(ay), int(bx), int(by))
+            # Live length label so the user sees each segment length while
+            # drawing, without running the calculation.
+            self._draw_seg_len_label(p, self._vertices[i], self._vertices[i + 1], TEXT)
 
         # Dashed preview segment from last vertex to snapped cursor
         if self._snap_pt is not None and len(self._vertices) >= 1:
@@ -634,6 +675,8 @@ class Canvas2D(QWidget):
             dash_pen = QPen(QColor(COL["eave"]), 1.5, Qt.PenStyle.DashLine)
             p.setPen(dash_pen)
             p.drawLine(int(lx), int(ly), int(cx), int(cy))
+            # Live length of the segment currently being drawn.
+            self._draw_seg_len_label(p, self._vertices[-1], self._snap_pt, MUTED)
 
         # Closing snap highlight: circle around first vertex when close enough
         if len(self._vertices) >= 3 and self._cursor_screen is not None:
@@ -749,6 +792,12 @@ class Canvas2D(QWidget):
     # Override mousePressEvent to also handle clear button
     def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
         px, py = float(event.position().x()), float(event.position().y())
+
+        # Right button starts panning the view (works in every tool).
+        if event.button() == Qt.MouseButton.RightButton:
+            self._pan_anchor = (px, py, self._pan[0], self._pan[1])
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
 
         # Check clear button first
         if event.button() == Qt.MouseButton.LeftButton:
