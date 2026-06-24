@@ -19,3 +19,9 @@ def test_overhang_lshape_still_valid():
     r = generate_roof(fp, 35, overhang=0.4)
     assert r.valley_count == 1
     assert r.total_area_m2 > 0
+
+
+def test_overhang_uses_skeleton_segments():
+    fp = Footprint.from_lists([(0, 0), (12, 0), (12, 8), (0, 8)], ["eave"] * 4)
+    r = generate_roof(fp, 35, overhang=0.5)
+    assert r.skeleton_segments   # non-empty → 2D will use the model-coord SS path

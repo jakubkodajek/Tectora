@@ -803,7 +803,7 @@ class EditorView(QWidget):
         self._update_roof_type_badge(fp)
         # G7: update 3D view with walls + roof geometry
         if hasattr(self, "view3d"):
-            self.view3d.set_geometry(fp, float(self.pitch), self.wall_height)
+            self.view3d.set_geometry(fp, float(self.pitch), self.wall_height, self.overhang)
 
     # ------------------------------------------------------------------
     # G5: public helpers for G6
@@ -1064,7 +1064,7 @@ class EditorView(QWidget):
         if self.last_result is not None and hasattr(self, "view3d"):
             fp = self.canvas.footprint
             if fp is not None:
-                self.view3d.set_geometry(fp, float(self.pitch), self.wall_height)
+                self.view3d.set_geometry(fp, float(self.pitch), self.wall_height, self.overhang)
 
     def _on_overhang_changed(self, value: float) -> None:
         """Update overhang and recompute if a result exists."""

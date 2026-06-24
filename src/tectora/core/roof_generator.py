@@ -16,11 +16,14 @@ def generate_roof(
     name: str = "",
     overhang: float = 0.0,
 ) -> RoofResult:
-    # If overhang is requested, offset the footprint outward and work on that.
+    # If overhang is requested, offset the footprint outward and always use the
+    # straight-skeleton path so faces are in real model coordinates (matching the
+    # offset eave outline drawn on the 2D canvas).
     if overhang > EPS:
         offset_verts = offset_polygon(list(footprint.vertices), overhang)
         n = len(offset_verts)
-        footprint = Footprint.from_lists(offset_verts, ["eave"] * n)
+        offset_fp = Footprint.from_lists(offset_verts, ["eave"] * n)
+        return build_roof(offset_fp, pitch_deg)
 
     try:
         spec = footprint_to_spec(footprint, pitch_deg, name=name)

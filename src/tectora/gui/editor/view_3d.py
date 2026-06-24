@@ -194,13 +194,16 @@ class Roof3DView(QWidget):
         self._result = result
         self.update()
 
-    def set_geometry(self, footprint, pitch_deg: float, wall_height: float) -> None:
+    def set_geometry(self, footprint, pitch_deg: float, wall_height: float, overhang: float = 0.0) -> None:
         """Compute and store roof + wall geometry, then repaint.
 
         Args:
             footprint:   A Footprint instance (or None to clear).
             pitch_deg:   Roof pitch in degrees.
             wall_height: Wall height in metres (walls go down from z=0).
+            overhang:    Eave overhang in metres.  Walls stay on the original
+                         footprint; the roof is built on the offset polygon so
+                         the eaves extend beyond the wall tops.
         """
         if footprint is None:
             self._geom_faces = []
@@ -210,7 +213,17 @@ class Roof3DView(QWidget):
 
         from tectora.core.roof_faces import build_faces
 
-        faces = build_faces(footprint, pitch_deg)
+        # Build roof on the offset footprint when overhang is requested
+        if overhang > 1e-9:
+            from tectora.core.footprint import Footprint
+            from tectora.core.poly_offset import offset_polygon
+            offset_verts = offset_polygon(list(footprint.vertices), overhang)
+            n = len(offset_verts)
+            roof_fp = Footprint.from_lists(offset_verts, ["eave"] * n)
+        else:
+            roof_fp = footprint
+
+        faces = build_faces(roof_fp, pitch_deg)
 
         geom: list[tuple[list[tuple[float, float, float]], bool]] = []
 
