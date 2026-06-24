@@ -588,11 +588,10 @@ class EditorView(QWidget):
                 f"{result.hip_count} ks / {result.hip_length_m:.2f} m"
             )
         if "valleys" in labels:
-            vcount = len([
-                s for s in getattr(result, "faces", [])
-                if "valley" in getattr(s, "name", "").lower()
-            ]) if result.valley_length_m > 0 else 0
-            labels["valleys"].setText(f"{result.valley_length_m:.2f} m")
+            vcount = result.valley_count
+            labels["valleys"].setText(
+                f"{vcount} ks / {result.valley_length_m:.2f} m"
+            )
         if "eavePerim" in labels:
             labels["eavePerim"].setText(f"{result.eaves_perimeter_m:.2f} m")
         if "rakeL" in labels:

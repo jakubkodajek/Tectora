@@ -358,35 +358,67 @@ class Canvas2D(QWidget):
     def _draw_skeleton(self, p: QPainter) -> None:
         if self._skeleton_data is None:
             return
-        from tectora.gui.editor.skeleton_render import (
-            classify_skeleton, face_area_labels, fmt_len, fmt_area, map_calc_point
-        )
 
-        # Compute footprint bounding box in model space
+        result = self._skeleton_data
         verts = self._vertices
         if not verts:
             return
-        xs = [v[0] for v in verts]
-        ys = [v[1] for v in verts]
-        bbox = (min(xs), min(ys), max(xs), max(ys))
 
-        # ── Draw skeleton lines ──────────────────────────────────────────
-        segments = classify_skeleton(self._skeleton_data)
-        for kind, (cx1, cy1), (cx2, cy2), length3d in segments:
-            mx1, my1 = map_calc_point(cx1, cy1, bbox)
-            mx2, my2 = map_calc_point(cx2, cy2, bbox)
-            sx1, sy1 = self._to_screen(mx1, my1)
-            sx2, sy2 = self._to_screen(mx2, my2)
-            color = COL.get(kind, COL["hip"])
-            pen = QPen(QColor(color), 3.0)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            p.setPen(pen)
-            p.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
+        # ── Branch: general polygon (SS path) vs rectangle (exact path) ──
+        if result.skeleton_segments:
+            # SS path: segments are already in model coords (x, y, z)
+            import math
+            from tectora.gui.editor.skeleton_render import fmt_len
+            for kind, a, b in result.skeleton_segments:
+                ax, ay = a[0], a[1]
+                bx, by = b[0], b[1]
+                sx1, sy1 = self._to_screen(ax, ay)
+                sx2, sy2 = self._to_screen(bx, by)
+                color = COL.get(kind, COL["hip"])
+                pen = QPen(QColor(color), 3.0)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(pen)
+                p.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
+                # Label midpoint with 3D length
+                length3d = math.sqrt(
+                    (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
+                )
+                mid_sx = (sx1 + sx2) / 2.0
+                mid_sy = (sy1 + sy2) / 2.0
+                dx, dy = sx2 - sx1, sy2 - sy1
+                seg_len = (dx * dx + dy * dy) ** 0.5
+                if seg_len > 1e-3:
+                    nx, ny = -dy / seg_len, dx / seg_len
+                    mid_sx += nx * 10
+                    mid_sy += ny * 10
+                label = fmt_len(length3d)
+                self._draw_label_at(p, mid_sx, mid_sy, label, color, bold=True)
+            # Draw footprint edge-length labels (both paths share this)
+            self._draw_edge_length_labels(p)
+        else:
+            # Exact path (rectangle): use classify_skeleton + map_calc_point
+            from tectora.gui.editor.skeleton_render import (
+                classify_skeleton, face_area_labels, fmt_len, fmt_area, map_calc_point
+            )
+            xs = [v[0] for v in verts]
+            ys = [v[1] for v in verts]
+            bbox = (min(xs), min(ys), max(xs), max(ys))
 
-        # ── Draw dimension labels ────────────────────────────────────────
-        self._draw_edge_length_labels(p)
-        self._draw_skeleton_length_labels(p, segments, bbox)
-        self._draw_face_area_labels(p, bbox)
+            segments = classify_skeleton(result)
+            for kind, (cx1, cy1), (cx2, cy2), length3d in segments:
+                mx1, my1 = map_calc_point(cx1, cy1, bbox)
+                mx2, my2 = map_calc_point(cx2, cy2, bbox)
+                sx1, sy1 = self._to_screen(mx1, my1)
+                sx2, sy2 = self._to_screen(mx2, my2)
+                color = COL.get(kind, COL["hip"])
+                pen = QPen(QColor(color), 3.0)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(pen)
+                p.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
+
+            self._draw_edge_length_labels(p)
+            self._draw_skeleton_length_labels(p, segments, bbox)
+            self._draw_face_area_labels(p, bbox)
 
     def _dim_font(self) -> QFont:
         """Small annotation font for dimension labels."""
