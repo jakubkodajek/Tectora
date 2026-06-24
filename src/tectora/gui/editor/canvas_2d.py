@@ -103,6 +103,7 @@ class Canvas2D(QWidget):
         """Append a vertex in model space (metres). Only valid while open."""
         if self._closed:
             return
+        self._skeleton_data = None
         self._vertices.append((float(mx), float(my)))
         self.update()
 
@@ -118,6 +119,7 @@ class Canvas2D(QWidget):
 
     def move_vertex(self, i: int, mx: float, my: float) -> None:
         """Reposition vertex *i* to model coordinates (mx, my)."""
+        self._skeleton_data = None
         self._vertices[i] = (float(mx), float(my))
         self.update()
 
@@ -125,6 +127,7 @@ class Canvas2D(QWidget):
         """Flip edge *i* between "eave" and "gable"."""
         if not self._edge_types:
             return
+        self._skeleton_data = None
         self._edge_types[i] = "gable" if self._edge_types[i] == "eave" else "eave"
         self.update()
 
@@ -150,7 +153,7 @@ class Canvas2D(QWidget):
             return None
 
     def set_skeleton(self, data: Any) -> None:
-        """G4 placeholder: store skeleton data and schedule a repaint."""
+        """Store a RoofResult (or None) for skeleton rendering; schedules repaint."""
         self._skeleton_data = data
         self.update()
 
@@ -259,6 +262,7 @@ class Canvas2D(QWidget):
         self._draw_background(painter)
         self._draw_grid(painter)
         self._draw_polygon(painter)
+        self._draw_skeleton(painter)
         self._draw_in_progress(painter)
         self._draw_nodes(painter)
         self._draw_snap_indicator(painter)
@@ -340,6 +344,33 @@ class Canvas2D(QWidget):
             ax, ay = self._to_screen(*a)
             bx, by = self._to_screen(*b)
             p.drawLine(int(ax), int(ay), int(bx), int(by))
+
+    # ── Skeleton (ridge / hip / valley) ──────────────────────────────────
+
+    def _draw_skeleton(self, p: QPainter) -> None:
+        if self._skeleton_data is None:
+            return
+        from tectora.gui.editor.skeleton_render import classify_skeleton, map_calc_point
+
+        # Compute footprint bounding box in model space
+        verts = self._vertices
+        if not verts:
+            return
+        xs = [v[0] for v in verts]
+        ys = [v[1] for v in verts]
+        bbox = (min(xs), min(ys), max(xs), max(ys))
+
+        segments = classify_skeleton(self._skeleton_data)
+        for kind, (cx1, cy1), (cx2, cy2) in segments:
+            mx1, my1 = map_calc_point(cx1, cy1, bbox)
+            mx2, my2 = map_calc_point(cx2, cy2, bbox)
+            sx1, sy1 = self._to_screen(mx1, my1)
+            sx2, sy2 = self._to_screen(mx2, my2)
+            color = COL.get(kind, COL["hip"])
+            pen = QPen(QColor(color), 3.0)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            p.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
 
     # ── In-progress polyline ──────────────────────────────────────────────
 

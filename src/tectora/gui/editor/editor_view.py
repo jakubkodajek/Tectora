@@ -17,9 +17,9 @@ Public attributes consumed by G3+:
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -114,6 +114,8 @@ class EditorView(QWidget):
         self._window = window
         self._project = None
         self._entry_id = None
+        self.pitch: int = 35          # current pitch in degrees; G5 will wire the control
+        self.last_result = None       # last successful RoofResult or None
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -458,17 +460,51 @@ class EditorView(QWidget):
         v.addWidget(_section_header(tr("results", lang).upper()))
         v.addSpacing(10)
 
-        results_ph = QWidget()
-        results_ph.setFixedHeight(60)
-        results_ph.setStyleSheet(
+        # Result rows: (i18n_key, attr_name_or_None, unit_suffix)
+        _RESULT_ROWS = [
+            ("area",     "total_area_m2",       " m²"),
+            ("ridgeLen", "ridge_length_m",       " m"),
+            ("hips",     "_hips_label",          ""),
+            ("valleys",  "_valleys_label",       ""),
+            ("eavePerim","eaves_perimeter_m",    " m"),
+            ("rakeL",    "gable_edge_left_m",    " m"),
+            ("rakeR",    "gable_edge_right_m",   " m"),
+        ]
+
+        self._result_value_labels: dict[str, QLabel] = {}
+
+        results_box = QWidget()
+        results_box.setStyleSheet(
             f"background: {BG}; border-radius: 8px;"
         )
-        _rl = QVBoxLayout(results_ph)
-        _rl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        _rh = QLabel("[ G5 ]")
-        _rh.setStyleSheet(f"color: {FAINT}; font-size: 9pt; background: transparent;")
-        _rl.addWidget(_rh)
-        v.addWidget(results_ph)
+        rb_layout = QVBoxLayout(results_box)
+        rb_layout.setContentsMargins(10, 10, 10, 10)
+        rb_layout.setSpacing(6)
+
+        for row_key, _attr, _unit in _RESULT_ROWS:
+            row_w = QWidget()
+            row_w.setStyleSheet("background: transparent;")
+            row_h = QHBoxLayout(row_w)
+            row_h.setContentsMargins(0, 0, 0, 0)
+            row_h.setSpacing(4)
+
+            lbl = QLabel(tr(row_key, lang))
+            lbl.setStyleSheet(
+                f"color: {MID}; font-size: 9pt; background: transparent;"
+            )
+            row_h.addWidget(lbl, stretch=1)
+
+            val = QLabel("—")
+            val.setStyleSheet(
+                f"color: {TEXT}; font-size: 9pt; font-weight: 600;"
+                f" background: transparent;"
+            )
+            val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            row_h.addWidget(val)
+            self._result_value_labels[row_key] = val
+            rb_layout.addWidget(row_w)
+
+        v.addWidget(results_box)
 
         v.addStretch(1)
 
@@ -512,5 +548,79 @@ class EditorView(QWidget):
         self.view_mode = mode
 
     def _on_calculate(self) -> None:
-        """No-op stub — G4 will connect real calculation logic here."""
-        pass
+        """Provést výpočet — compute the roof and update canvas + results panel."""
+        from tectora.application import use_cases as uc
+        from tectora.application.project import Project
+
+        lang = self._lang
+        fp = self.canvas.footprint
+        if fp is None:
+            self._show_toast(tr("drawFirst", lang))
+            return
+        try:
+            result = uc.calculate_project(
+                Project(
+                    project_name=(self._project.project_name if self._project else ""),
+                    footprint=fp,
+                    global_pitch_deg=float(self.pitch),
+                )
+            )
+        except ValueError:
+            self._show_toast(tr("unsupportedShape", lang))
+            return
+
+        self.last_result = result
+        self.canvas.set_skeleton(result)
+        self.set_results(result)
+
+    def set_results(self, result) -> None:
+        """Populate the VÝSLEDKY rows from *result* (a RoofResult)."""
+        labels = self._result_value_labels
+        if "area" in labels:
+            labels["area"].setText(f"{result.total_area_m2:.2f} m²")
+        if "ridgeLen" in labels:
+            labels["ridgeLen"].setText(f"{result.ridge_length_m:.2f} m")
+        if "hips" in labels:
+            labels["hips"].setText(
+                f"{result.hip_count} ks / {result.hip_length_m:.2f} m"
+            )
+        if "valleys" in labels:
+            vcount = len([
+                s for s in getattr(result, "faces", [])
+                if "valley" in getattr(s, "name", "").lower()
+            ]) if result.valley_length_m > 0 else 0
+            labels["valleys"].setText(f"{result.valley_length_m:.2f} m")
+        if "eavePerim" in labels:
+            labels["eavePerim"].setText(f"{result.eaves_perimeter_m:.2f} m")
+        if "rakeL" in labels:
+            labels["rakeL"].setText(f"{result.gable_edge_left_m:.2f} m")
+        if "rakeR" in labels:
+            labels["rakeR"].setText(f"{result.gable_edge_right_m:.2f} m")
+
+    def clear_results(self) -> None:
+        """Reset all VÝSLEDKY rows to dashes."""
+        for lbl in self._result_value_labels.values():
+            lbl.setText("—")
+        self.last_result = None
+
+    def _show_toast(self, text: str) -> None:
+        """Show a dark floating toast message that auto-hides after ~2.5 s."""
+        toast = QLabel(text, self)
+        toast.setStyleSheet(
+            "background: #111827;"
+            " color: #ffffff;"
+            " border-radius: 8px;"
+            " padding: 10px 16px;"
+            " font-size: 10pt;"
+            " font-weight: 500;"
+        )
+        toast.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        toast.adjustSize()
+        # Centre horizontally, 80 px from bottom
+        pw, ph = self.width(), self.height()
+        tw, th = toast.width() + 32, toast.height() + 4
+        toast.resize(tw, th)
+        toast.move((pw - tw) // 2, ph - th - 80)
+        toast.raise_()
+        toast.show()
+        QTimer.singleShot(2500, toast.deleteLater)
