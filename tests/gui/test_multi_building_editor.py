@@ -106,6 +106,35 @@ def test_selecting_building_syncs_pitch(tmp_path):
     assert e.pitch == 45
 
 
+def test_export_two_buildings_writes_design_report(tmp_path):
+    """P4: drawing two buildings and exporting writes a multi-building výkaz
+    with a per-building section for each plus a design-totals section."""
+    import openpyxl
+
+    app, e = _editor(tmp_path)
+    c = e.canvas
+
+    _draw(c, _B0)
+    c._buildings[0].name = "Hlavní"
+    e._on_new_building()
+    _draw(c, _B1)
+    c._buildings[1].name = "Přístavek"
+
+    e._on_calculate()
+    app.processEvents()
+
+    out = str(tmp_path / "design.xlsx")
+    e._export_to(out)
+    assert os.path.exists(out)
+
+    ws = openpyxl.load_workbook(out)["Výkaz"]
+    texts = [v for row in ws.iter_rows(values_only=True) for v in row
+             if isinstance(v, str)]
+    assert "Hlavní" in texts
+    assert "Přístavek" in texts
+    assert "Celkem za návrh" in texts
+
+
 def test_single_building_regression(tmp_path):
     from tectora.application import use_cases as uc
     from tectora.application.project import Project

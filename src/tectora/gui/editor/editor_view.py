@@ -1111,17 +1111,47 @@ class EditorView(QWidget):
         self._show_toast(tr("saved", lang))
 
     def _export_to(self, path: str) -> None:
-        """Write a RoofResult to an Excel file at *path*.
+        """Write the whole design's výkaz výměr to an Excel file at *path*.
 
-        If no result is available, shows a toast hint and returns.
-        Tests call this directly, bypassing the file dialog.
+        Computes one RoofResult per drawn building and writes a per-building
+        section plus design totals. If NO building has a footprint, shows the
+        ``drawFirst`` toast and returns. Tests call this directly, bypassing the
+        file dialog.
         """
+        from tectora.application import use_cases as uc
+        from tectora.application.project import Project
+        from tectora.io import write_design_report_xlsx
+
         lang = self._lang
-        if self.last_result is None:
+        canvas = self.canvas
+
+        results: list = []
+        names: list = []
+        for i in range(canvas.building_count()):
+            fp = canvas.building_footprint(i)
+            if fp is None:
+                continue
+            b = canvas._buildings[i]
+            try:
+                result = uc.calculate_project(
+                    Project(
+                        project_name=(self._project.project_name if self._project else ""),
+                        footprint=fp,
+                        global_pitch_deg=float(b.pitch),
+                        overhang_m=float(b.overhang),
+                    )
+                )
+            except ValueError:
+                continue
+            results.append(result)
+            names.append(b.name)
+
+        if not results:
             self._show_toast(tr("drawFirst", lang))
             return
-        from tectora.io import write_report_xlsx
-        write_report_xlsx(self.last_result, path)
+
+        design = uc.DesignResult(results)
+        write_design_report_xlsx(design, path, building_names=names)
         self._show_toast(tr("exportDone", lang))
 
     def _on_export(self) -> None:

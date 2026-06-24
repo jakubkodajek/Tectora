@@ -91,6 +91,27 @@ def read_spec_xlsx(path: Path) -> RoofSpec:
 
 
 # ---------- output (report) ----------
+def _result_rows(result: RoofResult) -> list[tuple]:
+    """Per-building results rows ``(label, value, unit)``, rounded to 2 decimals.
+
+    Shared by :func:`write_report_xlsx` (the single-roof "Výsledky" section) and
+    :func:`write_design_report_xlsx` (each per-building section) so the two
+    reports never drift.
+    """
+    return [
+        ("Celková plocha střechy", round(result.total_area_m2, 2), "m²"),
+        ("Délka hřebene", round(result.ridge_length_m, 2), "m"),
+        ("Délka nároží (celkem)", round(result.hip_length_m, 2), "m"),
+        ("Počet nároží", result.hip_count, "ks"),
+        ("Délka úžlabí", round(result.valley_length_m, 2), "m"),
+        ("Krajové tašky — levý štít", round(result.gable_edge_left_m, 2), "m"),
+        ("Krajové tašky — pravý štít", round(result.gable_edge_right_m, 2), "m"),
+        ("Krajové tašky — celkem", round(result.gable_edge_total_m, 2), "m"),
+        ("Obvod okapové hrany", round(result.eaves_perimeter_m, 2), "m"),
+        ("Výška hřebene nad okapem", round(result.apex_height_m, 2), "m"),
+    ]
+
+
 def write_report_xlsx(result: RoofResult, path: Path) -> None:
     """Nicely formatted report with input parameters and all results."""
     wb = Workbook()
@@ -124,18 +145,7 @@ def write_report_xlsx(result: RoofResult, path: Path) -> None:
     ])
 
     # Results
-    row = _write_section(ws, row + 1, "Výsledky", [
-        ("Celková plocha střechy", round(result.total_area_m2, 2), "m²"),
-        ("Délka hřebene", round(result.ridge_length_m, 2), "m"),
-        ("Délka nároží (celkem)", round(result.hip_length_m, 2), "m"),
-        ("Počet nároží", result.hip_count, "ks"),
-        ("Délka úžlabí", round(result.valley_length_m, 2), "m"),
-        ("Krajové tašky — levý štít", round(result.gable_edge_left_m, 2), "m"),
-        ("Krajové tašky — pravý štít", round(result.gable_edge_right_m, 2), "m"),
-        ("Krajové tašky — celkem", round(result.gable_edge_total_m, 2), "m"),
-        ("Obvod okapové hrany", round(result.eaves_perimeter_m, 2), "m"),
-        ("Výška hřebene nad okapem", round(result.apex_height_m, 2), "m"),
-    ])
+    row = _write_section(ws, row + 1, "Výsledky", _result_rows(result))
 
     # Area per face
     row += 1
@@ -153,6 +163,54 @@ def write_report_xlsx(result: RoofResult, path: Path) -> None:
             ws.cell(row=row, column=1, value=note).font = Font(italic=True)
             ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
             row += 1
+
+    ws.column_dimensions["A"].width = 34
+    ws.column_dimensions["B"].width = 16
+    ws.column_dimensions["C"].width = 12
+    ws.column_dimensions["D"].width = 4
+
+    wb.save(path)
+
+
+def write_design_report_xlsx(design, path: Path, building_names=None) -> None:
+    """Výkaz výměr for a whole multi-building design.
+
+    One "Výkaz" worksheet with a per-building "Výsledky" section for each
+    building (reusing :func:`_result_rows`) followed by a "Celkem za návrh"
+    section with the design totals. ``design`` is a
+    :class:`tectora.application.use_cases.DesignResult`; ``building_names`` is an
+    optional list aligned with ``design.buildings`` — entries that are falsy
+    (``None``/``""``) fall back to ``Budova N``.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Výkaz"
+
+    row = 1
+    ws.cell(row=row, column=1, value="Tectora — výkaz výměr (návrh)").font = Font(
+        bold=True, size=16, color="1F4E78"
+    )
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+    row += 2
+
+    names = list(building_names) if building_names is not None else []
+    for i, result in enumerate(design.buildings):
+        name = names[i] if i < len(names) else None
+        title = (name or "").strip() if isinstance(name, str) else name
+        if not title:
+            title = f"Budova {i + 1}"
+        row = _write_section(ws, row, title, _result_rows(result))
+        row += 1
+
+    # Design totals
+    _write_section(ws, row, "Celkem za návrh", [
+        ("Celková plocha střechy", round(design.total_area_m2, 2), "m²"),
+        ("Obvod okapové hrany", round(design.total_eaves_perimeter_m, 2), "m"),
+        ("Délka hřebene", round(design.total_ridge_length_m, 2), "m"),
+        ("Délka nároží (celkem)", round(design.total_hip_length_m, 2), "m"),
+        ("Délka úžlabí", round(design.total_valley_length_m, 2), "m"),
+        ("Krajové tašky — celkem", round(design.total_gable_edge_m, 2), "m"),
+    ])
 
     ws.column_dimensions["A"].width = 34
     ws.column_dimensions["B"].width = 16
