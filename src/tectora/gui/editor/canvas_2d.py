@@ -395,6 +395,7 @@ class Canvas2D(QWidget):
                 self._draw_label_at(p, mid_sx, mid_sy, label, color, bold=True)
             # Draw footprint edge-length labels (both paths share this)
             self._draw_edge_length_labels(p)
+            self._draw_ss_face_area_labels(p)
         else:
             # Exact path (rectangle): use classify_skeleton + map_calc_point
             from tectora.gui.editor.skeleton_render import (
@@ -515,6 +516,19 @@ class Canvas2D(QWidget):
             sx, sy = self._to_screen(mx, my)
             label = fmt_area(area_m2)
             self._draw_label_at(p, sx, sy, label, MUTED)
+
+    def _draw_ss_face_area_labels(self, p: QPainter) -> None:
+        """Per-plane area labels for the SS path (faces are in model coords)."""
+        from tectora.gui.editor.skeleton_render import fmt_area
+        result = self._skeleton_data
+        for face in getattr(result, "faces", None) or []:
+            vs = face.vertices
+            if not vs:
+                continue
+            cx = sum(v[0] for v in vs) / len(vs)
+            cy = sum(v[1] for v in vs) / len(vs)
+            sx, sy = self._to_screen(cx, cy)
+            self._draw_label_at(p, sx, sy, fmt_area(face.area_m2), MUTED)
 
     # ── In-progress polyline ──────────────────────────────────────────────
 
