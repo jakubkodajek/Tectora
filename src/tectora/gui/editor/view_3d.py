@@ -210,7 +210,30 @@ class Roof3DView(QWidget):
             self._result = None
             self.update()
             return
+        self._geom_faces = self._geometry_for(footprint, pitch_deg, wall_height, overhang)
+        self.update()
 
+    def set_design(self, items) -> None:
+        """Render an entire multi-building design.
+
+        *items* is an iterable of ``(footprint, pitch_deg, wall_height,
+        overhang)`` tuples — one per building. Buildings with ``footprint is
+        None`` are skipped. All buildings share one scene (auto-centred/scaled
+        together by the painter).
+        """
+        geom: list[tuple[list[tuple[float, float, float]], bool]] = []
+        for footprint, pitch_deg, wall_height, overhang in items:
+            if footprint is None:
+                continue
+            geom.extend(self._geometry_for(footprint, pitch_deg, wall_height, overhang))
+        self._geom_faces = geom
+        self._result = None
+        self.update()
+
+    def _geometry_for(
+        self, footprint, pitch_deg: float, wall_height: float, overhang: float
+    ) -> list[tuple[list[tuple[float, float, float]], bool]]:
+        """Build the (vertices, is_wall) faces for ONE building."""
         from tectora.core.roof_faces import build_faces
 
         # Build roof on the offset footprint when overhang is requested
@@ -256,8 +279,7 @@ class Roof3DView(QWidget):
             except GableNotSupported:
                 pass  # invalid gable (shouldn't happen; 2D validates) — just skip
 
-        self._geom_faces = geom
-        self.update()
+        return geom
 
     def reset_view(self) -> None:
         """Reset rotation and zoom to defaults."""

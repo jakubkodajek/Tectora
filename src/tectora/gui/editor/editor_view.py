@@ -871,13 +871,24 @@ class EditorView(QWidget):
         design = uc.DesignResult(results)
         self.set_results_from_design(design)
 
-        # Roof-type badge + 3D view follow the active building.
+        # Roof-type badge follows the active building; the 3D view shows ALL
+        # buildings of the design together.
         if active_fp is not None:
             self._update_roof_type_badge(active_fp)
-            if hasattr(self, "view3d"):
-                self.view3d.set_geometry(
-                    active_fp, float(self.pitch), self.wall_height, self.overhang
-                )
+        self._update_3d_all()
+
+    def _update_3d_all(self) -> None:
+        """Rebuild the 3D scene from EVERY building in the design."""
+        if not hasattr(self, "view3d"):
+            return
+        items = []
+        for i in range(self.canvas.building_count()):
+            bfp = self.canvas.building_footprint(i)
+            if bfp is None:
+                continue
+            bb = self.canvas._buildings[i]
+            items.append((bfp, float(bb.pitch), float(bb.wall_height), float(bb.overhang)))
+        self.view3d.set_design(items)
 
     # ------------------------------------------------------------------
     # G5: public helpers for G6
@@ -1230,10 +1241,8 @@ class EditorView(QWidget):
         self.wall_height = float(value)
         if hasattr(self, "canvas"):
             self.canvas.set_active_wall_height(self.wall_height)
-        if self.last_result is not None and hasattr(self, "view3d"):
-            fp = self.canvas.footprint
-            if fp is not None:
-                self.view3d.set_geometry(fp, float(self.pitch), self.wall_height, self.overhang)
+        if self.last_result is not None:
+            self._update_3d_all()
 
     def _on_overhang_changed(self, value: float) -> None:
         """Update overhang and recompute if a result exists."""
