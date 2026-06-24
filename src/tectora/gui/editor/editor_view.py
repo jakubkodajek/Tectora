@@ -117,6 +117,7 @@ class EditorView(QWidget):
         self._window = window
         self._project = None
         self._entry_id = None
+        self._current_entry_id = None   # G6: tracks saved entry id (None = unsaved)
         self.pitch: int = 35          # current pitch in degrees; G5 will wire the control
         self.last_result = None       # last successful RoofResult or None
         self._build_ui()
@@ -133,6 +134,7 @@ class EditorView(QWidget):
         """
         self._project = project
         self._entry_id = entry_id
+        self._current_entry_id = entry_id  # G6: keep in sync
         name = (project.project_name or "").strip() if project else ""
         self._title_label.setText(name or _DEFAULT_TITLE)
 
@@ -617,6 +619,25 @@ class EditorView(QWidget):
             rb_layout.addWidget(row_w)
 
         v.addWidget(results_box)
+        v.addSpacing(16)
+
+        # ── Save button ───────────────────────────────────────────────
+        self._save_btn = QPushButton(f"💾  {tr('save', lang)}")
+        self._save_btn.setFixedHeight(40)
+        self._save_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background: {ACCENT};"
+            f"  color: #ffffff;"
+            f"  border: none;"
+            f"  border-radius: 9px;"
+            f"  padding: 0 20px;"
+            f"  font-size: 10pt;"
+            f"  font-weight: 600;"
+            f"}}"
+            f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}"
+        )
+        self._save_btn.clicked.connect(self._on_save)
+        v.addWidget(self._save_btn)
 
         v.addStretch(1)
 
@@ -752,6 +773,49 @@ class EditorView(QWidget):
         """Re-run the calculation when the closed polygon is edited in place."""
         if self.last_result is not None and self.canvas.footprint is not None:
             self._on_calculate()
+
+    def _on_save(self) -> None:
+        """Save the current project to the library (create or update)."""
+        from tectora.application import use_cases as uc
+        from tectora.application.project import Project
+
+        lang = self._lang
+        fp = self.canvas.footprint
+        if fp is None:
+            self._show_toast(tr("drawFirst", lang))
+            return
+
+        raw_name = self.get_name().strip()
+        proj_name = raw_name or tr("untitled", lang)
+        project = Project(
+            project_name=proj_name,
+            footprint=fp,
+            global_pitch_deg=float(self.pitch),
+        )
+
+        result = None
+        try:
+            result = uc.calculate_project(project).as_dict()
+        except (ValueError, Exception):
+            pass
+
+        note = self.get_note()
+        location = self.get_location()
+
+        if self._current_entry_id is None:
+            eid = uc.save_entry(
+                self._window.library, project, proj_name,
+                note=note, location=location, result=result,
+            )
+            self._current_entry_id = eid
+        else:
+            uc.update_entry_full(
+                self._window.library, self._current_entry_id,
+                project=project, name=proj_name,
+                note=note, location=location, result=result,
+            )
+
+        self._show_toast(tr("saved", lang))
 
     def set_pitch(self, value: int) -> None:
         """Update the pitch, refresh the button label, and recompute if a result exists."""

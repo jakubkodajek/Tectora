@@ -31,12 +31,22 @@ class MainWindow(QMainWindow):
         self.open_home()
 
     def open_home(self) -> None:
+        self.refresh_home()
         self._stack.setCurrentIndex(0)
 
     def open_editor(self, project=None, entry_id=None) -> None:
         self._current_project = project
         self._current_entry_id = entry_id
         self._editor.load_project(project, entry_id)
+        self._editor._current_entry_id = entry_id  # G6: keep editor in sync
+        self._stack.setCurrentIndex(1)
+
+    def open_entry(self, entry) -> None:
+        """Open an existing library entry in the editor (G6)."""
+        self._editor.load_project(
+            entry.project, entry.id, note=entry.note, location=entry.location
+        )
+        self._editor._current_entry_id = entry.id
         self._stack.setCurrentIndex(1)
 
     def refresh_home(self) -> None:

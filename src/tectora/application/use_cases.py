@@ -59,6 +59,24 @@ def delete_entry(library: ProjectLibrary, entry_id: int) -> None:
     library.delete(entry_id)
 
 
+def update_entry_full(library: ProjectLibrary, entry_id: int, *, project=None,
+                      name=None, note=None, location=_UNSET, result=None):
+    entry = library.get(entry_id)
+    if project is not None:
+        entry.project = project
+    if name is not None:
+        entry.name = name
+    if note is not None:
+        entry.note = note
+    if location is not _UNSET:
+        entry.location = location
+    if result is not None:
+        entry.result = result
+    entry.updated_at = now_iso()
+    library.update(entry_id, entry)
+    return entry
+
+
 def suggest_location(geocoder: GeocodingService, query: str,
                      limit: int = 5) -> list[Location]:
     return geocoder.search(query, limit)

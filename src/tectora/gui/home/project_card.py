@@ -6,8 +6,10 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import (QColor, QFont, QFontMetrics, QPainter, QPainterPath,
                             QPen, QPolygonF)
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QMenu, QMessageBox,
-                                QPushButton, QSizePolicy, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFormLayout,
+                                QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+                                QMenu, QMessageBox, QPlainTextEdit, QPushButton,
+                                QSizePolicy, QVBoxLayout, QWidget)
 
 from tectora.core.footprint import EdgeType, Footprint
 from tectora.gui.theme import ACCENT, BORDER, CARD, FAINT, MUTED, TEXT, COL
@@ -277,12 +279,12 @@ class ProjectCard(QWidget):
     # ------------------------------------------------------------------
 
     def _open(self) -> None:
-        self._window.open_editor(
-            project=self._entry.project,
-            entry_id=self._entry.id,
-        )
+        self._window.open_entry(self._entry)
 
     def _show_menu(self) -> None:
+        from tectora.gui.i18n import tr
+        lang = getattr(self._window, "lang", "cs")
+
         menu = QMenu(self)
         menu.setStyleSheet(
             f"QMenu {{ background:{CARD}; border:1px solid #e6e8eb;"
@@ -292,13 +294,18 @@ class ProjectCard(QWidget):
             f"QMenu::item:selected {{ background:#f1f3f6; }}"
         )
 
-        open_action = menu.addAction("Otevřít")
+        open_action = menu.addAction(tr("open", lang))
         open_action.triggered.connect(self._open)
 
         menu.addSeparator()
 
-        delete_action = menu.addAction("Smazat")
-        delete_action.setData("danger")
+        rename_action = menu.addAction(tr("rename", lang))
+        edit_action = menu.addAction(tr("editEntry", lang))
+        duplicate_action = menu.addAction(tr("duplicate", lang))
+
+        menu.addSeparator()
+
+        delete_action = menu.addAction(tr("delete", lang))
 
         # Show menu at button position
         sender = self.sender()
@@ -308,12 +315,91 @@ class ProjectCard(QWidget):
             pos = self.mapToGlobal(QPoint(self.width(), 0))
 
         chosen = menu.exec(pos)
-        if chosen is delete_action:
+        if chosen is open_action:
+            self._open()
+        elif chosen is rename_action:
+            self._rename()
+        elif chosen is edit_action:
+            self._edit_entry()
+        elif chosen is duplicate_action:
+            self._duplicate()
+        elif chosen is delete_action:
             self._confirm_delete()
 
+    def _rename(self) -> None:
+        from tectora.application import use_cases as uc
+        from tectora.gui.i18n import tr
+        lang = getattr(self._window, "lang", "cs")
+
+        new_name, ok = QInputDialog.getText(
+            self, tr("rename", lang), tr("name", lang) + ":",
+            text=self._entry.name,
+        )
+        if ok and new_name.strip():
+            uc.update_entry(self._window.library, self._entry.id,
+                            name=new_name.strip())
+            self._window.refresh_home()
+
+    def _edit_entry(self) -> None:
+        """Dialog to edit name, note, and location name."""
+        from tectora.application import use_cases as uc
+        from tectora.core.location import Location
+        from tectora.gui.i18n import tr
+        lang = getattr(self._window, "lang", "cs")
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("editEntry", lang))
+        form = QFormLayout(dlg)
+
+        name_edit = QLineEdit(self._entry.name)
+        note_edit = QPlainTextEdit(self._entry.note or "")
+        note_edit.setFixedHeight(80)
+        loc_name_edit = QLineEdit(
+            self._entry.location.name if self._entry.location else ""
+        )
+
+        form.addRow(tr("name", lang) + ":", name_edit)
+        form.addRow(tr("note", lang) + ":", note_edit)
+        form.addRow(tr("location", lang) + ":", loc_name_edit)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            new_name = name_edit.text().strip() or self._entry.name
+            new_note = note_edit.toPlainText()
+            loc_text = loc_name_edit.text().strip()
+            new_loc = Location(loc_text) if loc_text else None
+
+            uc.update_entry(
+                self._window.library, self._entry.id,
+                name=new_name, note=new_note, location=new_loc,
+            )
+            self._window.refresh_home()
+
+    def _duplicate(self) -> None:
+        from tectora.application import use_cases as uc
+        uc.save_entry(
+            self._window.library,
+            self._entry.project,
+            self._entry.name + " (kopie)",
+            note=self._entry.note or "",
+            location=self._entry.location,
+            result=self._entry.result,
+        )
+        self._window.refresh_home()
+
     def _confirm_delete(self) -> None:
+        from tectora.application import use_cases as uc
+        from tectora.gui.i18n import tr
+        lang = getattr(self._window, "lang", "cs")
+
         msg = QMessageBox(self)
-        msg.setWindowTitle("Smazat zakazku")
+        msg.setWindowTitle(tr("confirmDelete", lang))
         msg.setText(f'Opravdu smazat "{self._entry.name}"?')
         msg.setIcon(QMessageBox.Icon.Question)
         msg.setStandardButtons(
@@ -321,5 +407,5 @@ class ProjectCard(QWidget):
         )
         msg.setDefaultButton(QMessageBox.StandardButton.Cancel)
         if msg.exec() == QMessageBox.StandardButton.Yes:
-            self._window.library.delete(self._entry.id)
+            uc.delete_entry(self._window.library, self._entry.id)
             self._window.refresh_home()
