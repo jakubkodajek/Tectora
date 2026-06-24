@@ -28,7 +28,11 @@ else:  # older Python — wrap buffer
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
 from tectora import __version__
+from tectora.application import use_cases as uc
+from tectora.application.library import EntryNotFound, entry_summary
+from tectora.application.project import Project
 from tectora.core import RoofSpec, RoofType, calculate
+from tectora.core.location import Location
 from tectora.core.result import RoofResult
 from tectora.io import (
     read_spec_json,
@@ -126,6 +130,36 @@ def main(argv: list[str] | None = None) -> int:
     # ---- types subcommand
     sub.add_parser("types", help="Vypíše přehled podporovaných typů střech.")
 
+    # ---- library
+    p_lib = sub.add_parser("library", help="Knihovna zakázek (CRUD)")
+    lib_sub = p_lib.add_subparsers(dest="lib_cmd", required=True)
+    la = lib_sub.add_parser("add", help="Přidá projekt do knihovny")
+    la.add_argument("project")
+    la.add_argument("--db", default=None)
+    la.add_argument("--name", required=True)
+    la.add_argument("--note", default="")
+    la.add_argument("--location", default=None)
+    ll = lib_sub.add_parser("list", help="Vypíše zakázky (JSON)")
+    ll.add_argument("--db", default=None)
+    lg = lib_sub.add_parser("get", help="Uloží projekt zakázky do souboru")
+    lg.add_argument("id", type=int)
+    lg.add_argument("--db", default=None)
+    lg.add_argument("--output", required=True)
+    lu = lib_sub.add_parser("update", help="Upraví metadata zakázky")
+    lu.add_argument("id", type=int)
+    lu.add_argument("--db", default=None)
+    lu.add_argument("--name", default=None)
+    lu.add_argument("--note", default=None)
+    lu.add_argument("--location", default=None)
+    ld = lib_sub.add_parser("delete", help="Smaže zakázku")
+    ld.add_argument("id", type=int)
+    ld.add_argument("--db", default=None)
+
+    # ---- geocode
+    p_geo = sub.add_parser("geocode", help="Našeptá místa (JSON)")
+    p_geo.add_argument("query")
+    p_geo.add_argument("--limit", type=int, default=5)
+
     args = parser.parse_args(argv)
 
     if args.cmd == "calculate":
@@ -140,6 +174,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "types":
         return _cmd_types()
+    if args.cmd == "library":
+        return _cmd_library(args)
+    if args.cmd == "geocode":
+        return _cmd_geocode(args)
     return 1
 
 
@@ -230,6 +268,59 @@ def _cmd_types() -> int:
     }
     for t in RoofType:
         print(f"  {t.value:12s} {t.cs_name:14s} {descriptions[t]}")
+    return 0
+
+
+def _cmd_library(args) -> int:
+    from tectora.io.sqlite_library import SqliteProjectLibrary, default_db_path
+
+    library = SqliteProjectLibrary(args.db or default_db_path())
+    try:
+        if args.lib_cmd == "add":
+            with open(args.project, encoding="utf-8") as f:
+                project = Project.from_dict(json.load(f))
+            try:
+                result = uc.calculate_project(project).as_dict()
+            except ValueError:
+                result = None  # e.g. non-rectangle footprint: store without cached result
+            location = Location(args.location) if args.location else None
+            eid = uc.save_entry(library, project, args.name,
+                                note=args.note, location=location, result=result)
+            json.dump({"id": eid}, sys.stdout, ensure_ascii=False)
+            sys.stdout.write("\n")
+            return 0
+        if args.lib_cmd == "list":
+            rows = [entry_summary(e) for e in uc.list_entries(library)]
+            json.dump(rows, sys.stdout, ensure_ascii=False)
+            sys.stdout.write("\n")
+            return 0
+        if args.lib_cmd == "get":
+            entry = uc.load_entry(library, args.id)
+            with open(args.output, "w", encoding="utf-8") as f:
+                json.dump(entry.project.to_dict(), f, ensure_ascii=False, indent=2)
+            return 0
+        if args.lib_cmd == "update":
+            changes = {"name": args.name, "note": args.note}
+            if args.location is not None:
+                changes["location"] = Location(args.location)
+            uc.update_entry(library, args.id, **changes)
+            return 0
+        if args.lib_cmd == "delete":
+            uc.delete_entry(library, args.id)
+            return 0
+    except (EntryNotFound, ValueError) as exc:
+        print(f"Chyba: {exc}", file=sys.stderr)
+        return 2
+    return 1
+
+
+def _cmd_geocode(args) -> int:
+    from tectora.io.nominatim_geocoder import NominatimGeocoder
+
+    places = NominatimGeocoder().search(args.query, args.limit)
+    json.dump([{"name": p.name, "lat": p.lat, "lon": p.lon} for p in places],
+              sys.stdout, ensure_ascii=False)
+    sys.stdout.write("\n")
     return 0
 
 
