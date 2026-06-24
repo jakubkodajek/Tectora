@@ -56,7 +56,7 @@ _EDGE_TOL = 8               # px, edge hit tolerance
 _LEGEND_W = 136             # px
 _LEGEND_PAD = 10            # px
 _LEGEND_ROW_H = 18          # px
-_LEGEND_ROWS = 4            # ridge, hip, valley, eave
+_LEGEND_ROWS = 4            # unused; legend height derives from len(_LEGEND_ITEMS)
 
 # Legend items: (i18n_key, COL_key)
 _LEGEND_ITEMS = [
@@ -64,6 +64,7 @@ _LEGEND_ITEMS = [
     ("hip", "hip"),
     ("valley", "valley"),
     ("eave", "eave"),
+    ("gable", "gable"),
 ]
 
 
@@ -320,8 +321,22 @@ class Canvas2D(QWidget):
             b = self._to_screen(*self._vertices[(i + 1) % n])
             segs.append((a, b))
         idx = hit_test_edge(px, py, segs, tol=_EDGE_TOL)
-        if idx is not None:
-            self.toggle_edge_type(idx)
+        if idx is None:
+            return
+
+        # Turning eave -> gable: validate first so we never produce a roof the
+        # core would reject. Turning gable -> eave is always allowed.
+        current = self._edge_types[idx] if idx < len(self._edge_types) else "eave"
+        if current == "eave":
+            from tectora.core.gable import is_valid_gable_edge_at
+            a = self._vertices[idx]
+            b = self._vertices[(idx + 1) % n]
+            fp = self.footprint
+            if fp is None or not is_valid_gable_edge_at(fp, a, b):
+                self._editor._show_toast(tr("gableNotHere", self._lang))
+                return
+
+        self.toggle_edge_type(idx)
 
     # ------------------------------------------------------------------
     # Painting
