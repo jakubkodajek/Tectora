@@ -174,6 +174,37 @@ class Canvas2D(QWidget):
         self.update()
 
     # ------------------------------------------------------------------
+    # Zoom API
+    # ------------------------------------------------------------------
+
+    _SCALE_MIN: float = 10.0
+    _SCALE_MAX: float = 400.0
+    _ZOOM_FACTOR: float = 1.2
+
+    def zoom_in(self) -> None:
+        """Zoom in by *_ZOOM_FACTOR*, clamped to _SCALE_MAX."""
+        self._scale = min(self._SCALE_MAX, self._scale * self._ZOOM_FACTOR)
+        self.update()
+
+    def zoom_out(self) -> None:
+        """Zoom out by *_ZOOM_FACTOR*, clamped to _SCALE_MIN."""
+        self._scale = max(self._SCALE_MIN, self._scale / self._ZOOM_FACTOR)
+        self.update()
+
+    def wheelEvent(self, event) -> None:  # type: ignore[override]
+        """Zoom canvas with the mouse wheel (centred on widget centre)."""
+        delta = event.angleDelta().y()
+        if delta == 0:
+            super().wheelEvent(event)
+            return
+        steps = delta / 120.0
+        factor = self._ZOOM_FACTOR ** steps
+        new_scale = self._scale * factor
+        self._scale = max(self._SCALE_MIN, min(self._SCALE_MAX, new_scale))
+        self.update()
+        event.accept()
+
+    # ------------------------------------------------------------------
     # Coordinate helpers (depend on current widget size)
     # ------------------------------------------------------------------
 

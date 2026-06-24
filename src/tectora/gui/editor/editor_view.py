@@ -214,6 +214,9 @@ class EditorView(QWidget):
         menu_view = self.menubar.addMenu(tr("view", lang))
         menu_view.addAction(tr("view2d", lang), lambda: self._set_view_mode("2d"))
         menu_view.addAction(tr("view3d", lang), lambda: self._set_view_mode("3d"))
+        menu_view.addSeparator()
+        menu_view.addAction(tr("zoomIn", lang), lambda: self.canvas.zoom_in())
+        menu_view.addAction(tr("zoomOut", lang), lambda: self.canvas.zoom_out())
 
         # Nastavení
         menu_settings = self.menubar.addMenu(tr("settings", lang))
@@ -552,12 +555,8 @@ class EditorView(QWidget):
             f"QPushButton:hover {{ background: {theme.BG}; }}"
         )
 
-        _btn_minus.clicked.connect(
-            lambda: self.set_pitch(max(1, self._pitch_spin.value() - 1))
-        )
-        _btn_plus.clicked.connect(
-            lambda: self.set_pitch(min(89, self._pitch_spin.value() + 1))
-        )
+        _btn_minus.clicked.connect(self._pitch_minus)
+        _btn_plus.clicked.connect(self._pitch_plus)
         self._pitch_spin.valueChanged.connect(self.set_pitch)
 
         pitch_layout.addWidget(_btn_minus)
@@ -967,6 +966,14 @@ class EditorView(QWidget):
         self._pitch_spin.blockSignals(False)
         if self.last_result is not None and self.canvas.footprint is not None:
             self._on_calculate()
+
+    def _pitch_minus(self) -> None:
+        """Decrement the pitch by 1, clamped to the minimum of 1°."""
+        self.set_pitch(max(1, self.pitch - 1))
+
+    def _pitch_plus(self) -> None:
+        """Increment the pitch by 1, clamped to the maximum of 89°."""
+        self.set_pitch(min(89, self.pitch + 1))
 
     def _on_wall_height_changed(self, value: float) -> None:
         """Update wall_height and refresh the 3D view if a result exists."""

@@ -72,6 +72,8 @@ CATALOG: dict[str, dict[str, str]] = {
         "aboutText": "Tectora — kalkulátor střech\nVerze 1.0",
         "view2d": "2D",
         "view3d": "3D",
+        "zoomIn": "Přiblížit",
+        "zoomOut": "Oddálit",
     },
     "sk": {
         "new": "Nová zákazka",
@@ -140,6 +142,8 @@ CATALOG: dict[str, dict[str, str]] = {
         "aboutText": "Tectora — kalkulátor striech\nVerzia 1.0",
         "view2d": "2D",
         "view3d": "3D",
+        "zoomIn": "Priblížiť",
+        "zoomOut": "Oddialiť",
     },
     "en": {
         "new": "New project",
@@ -208,6 +212,8 @@ CATALOG: dict[str, dict[str, str]] = {
         "aboutText": "Tectora — roof calculator\nVersion 1.0",
         "view2d": "2D",
         "view3d": "3D",
+        "zoomIn": "Zoom in",
+        "zoomOut": "Zoom out",
     },
 }
 
