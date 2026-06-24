@@ -66,6 +66,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "settings": "Nastavení",
         "language": "Jazyk",
         "darkTheme": "Tmavý režim",
+        "overhang": "Přesah okapu",
     },
     "sk": {
         "new": "Nová zákazka",
@@ -128,6 +129,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "settings": "Nastavenia",
         "language": "Jazyk",
         "darkTheme": "Tmavý režim",
+        "overhang": "Presah odkvapu",
     },
     "en": {
         "new": "New project",
@@ -190,6 +192,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "settings": "Settings",
         "language": "Language",
         "darkTheme": "Dark mode",
+        "overhang": "Eave overhang",
     },
 }
 

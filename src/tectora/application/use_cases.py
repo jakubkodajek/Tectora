@@ -15,7 +15,9 @@ def calculate_project(project: Project) -> RoofResult:
     if project.footprint is None:
         raise ValueError("Projekt nemá zadaný půdorys.")
     return generate_roof(
-        project.footprint, project.global_pitch_deg, name=project.project_name)
+        project.footprint, project.global_pitch_deg, name=project.project_name,
+        overhang=project.overhang_m,
+    )
 
 
 def export_report(result: RoofResult, exporter: ReportExporter, path: str) -> None:

@@ -85,6 +85,9 @@ class Canvas2D(QWidget):
         # G4 skeleton placeholder
         self._skeleton_data: Any = None
 
+        # F3: eave overhang (metres); 0 = eave == walls (current behaviour)
+        self._overhang: float = 0.0
+
         # ── View state ───────────────────────────────────────────────────
         # Origin = pixel position of model (0, 0); dynamically centred.
         self._scale: float = _DEFAULT_SCALE
@@ -163,6 +166,11 @@ class Canvas2D(QWidget):
     def set_skeleton(self, data: Any) -> None:
         """Store a RoofResult (or None) for skeleton rendering; schedules repaint."""
         self._skeleton_data = data
+        self.update()
+
+    def set_overhang(self, overhang: float) -> None:
+        """Store the eave overhang (metres) and schedule a repaint."""
+        self._overhang = float(overhang)
         self.update()
 
     # ------------------------------------------------------------------
@@ -341,17 +349,49 @@ class Canvas2D(QWidget):
         if not self._closed or len(self._vertices) < 2:
             return
         n = len(self._vertices)
-        for i in range(n):
-            a = self._vertices[i]
-            b = self._vertices[(i + 1) % n]
-            etype = self._edge_types[i] if i < len(self._edge_types) else "eave"
-            color = COL.get(etype, COL["eave"])
-            pen = QPen(QColor(color), 2.5)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            p.setPen(pen)
-            ax, ay = self._to_screen(*a)
-            bx, by = self._to_screen(*b)
-            p.drawLine(int(ax), int(ay), int(bx), int(by))
+
+        has_overhang = self._overhang > 1e-9
+
+        if has_overhang:
+            # Draw walls (drawn polygon) muted/thin to distinguish from eave outline
+            for i in range(n):
+                a = self._vertices[i]
+                b = self._vertices[(i + 1) % n]
+                pen = QPen(QColor(MUTED), 1.2, Qt.PenStyle.DashLine)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(pen)
+                ax, ay = self._to_screen(*a)
+                bx, by = self._to_screen(*b)
+                p.drawLine(int(ax), int(ay), int(bx), int(by))
+
+            # Draw the offset eave outline in eave-blue
+            from tectora.core.poly_offset import offset_polygon
+            try:
+                eave_verts = offset_polygon(self._vertices, self._overhang)
+                eave_color = COL.get("eave", "#4a90d9")
+                pen = QPen(QColor(eave_color), 2.5)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(pen)
+                m = len(eave_verts)
+                for i in range(m):
+                    ax, ay = self._to_screen(*eave_verts[i])
+                    bx, by = self._to_screen(*eave_verts[(i + 1) % m])
+                    p.drawLine(int(ax), int(ay), int(bx), int(by))
+            except Exception:
+                pass  # If offset fails, skip silently
+        else:
+            # No overhang: draw footprint edges in their eave/gable colours (current behaviour)
+            for i in range(n):
+                a = self._vertices[i]
+                b = self._vertices[(i + 1) % n]
+                etype = self._edge_types[i] if i < len(self._edge_types) else "eave"
+                color = COL.get(etype, COL["eave"])
+                pen = QPen(QColor(color), 2.5)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(pen)
+                ax, ay = self._to_screen(*a)
+                bx, by = self._to_screen(*b)
+                p.drawLine(int(ax), int(ay), int(bx), int(by))
 
     # ── Skeleton (ridge / hip / valley) ──────────────────────────────────
 

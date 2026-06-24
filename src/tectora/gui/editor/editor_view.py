@@ -112,6 +112,7 @@ class EditorView(QWidget):
         self._current_entry_id = None   # G6: tracks saved entry id (None = unsaved)
         self.pitch: int = 35          # current pitch in degrees; G5 will wire the control
         self.wall_height: float = 2.5  # wall height in metres
+        self.overhang: float = 0.0    # eave overhang in metres (F3)
         self.last_result = None       # last successful RoofResult or None
         self._build_ui()
 
@@ -139,7 +140,7 @@ class EditorView(QWidget):
         else:
             self.location_field.set_text("")
 
-        # Sync pitch and wall-height controls if project is available
+        # Sync pitch, wall-height and overhang controls if project is available
         if project is not None:
             pitch = int(round(project.global_pitch_deg))
             self._pitch_spin.setValue(pitch)
@@ -150,6 +151,12 @@ class EditorView(QWidget):
                 self._wall_height_spin.setValue(float(wh))
                 self._wall_height_spin.blockSignals(False)
                 self.wall_height = float(wh)
+            if hasattr(self, "_overhang_spin"):
+                oh = getattr(project, "overhang_m", 0.0)
+                self._overhang_spin.blockSignals(True)
+                self._overhang_spin.setValue(float(oh))
+                self._overhang_spin.blockSignals(False)
+                self.overhang = float(oh)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -609,6 +616,32 @@ class EditorView(QWidget):
         v.addWidget(self._wall_height_spin)
         v.addSpacing(12)
 
+        # Přesah okapu (eave overhang double spin box)
+        _lbl_overhang = QLabel(tr("overhang", lang))
+        _lbl_overhang.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
+        v.addWidget(_lbl_overhang)
+        v.addSpacing(4)
+
+        self._overhang_spin = QDoubleSpinBox()
+        self._overhang_spin.setRange(0.0, 2.0)
+        self._overhang_spin.setSingleStep(0.1)
+        self._overhang_spin.setDecimals(1)
+        self._overhang_spin.setValue(self.overhang)
+        self._overhang_spin.setSuffix(" m")
+        self._overhang_spin.setFixedHeight(34)
+        self._overhang_spin.setStyleSheet(
+            f"QDoubleSpinBox {{"
+            f"  background: {theme.CARD}; color: {theme.MID}; border: 1px solid {theme.BORDER};"
+            f"  border-radius: 7px; padding: 0 8px; font-size: 10pt;"
+            f"  font-weight: 600;"
+            f"}}"
+            f"QDoubleSpinBox:focus {{ border-color: {theme.ACCENT}; }}"
+            f"QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; }}"
+        )
+        self._overhang_spin.valueChanged.connect(self._on_overhang_changed)
+        v.addWidget(self._overhang_spin)
+        v.addSpacing(12)
+
         # Typ střechy badge
         _lbl_roof_type = QLabel(tr("roofType", lang))
         _lbl_roof_type.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
@@ -777,6 +810,7 @@ class EditorView(QWidget):
                     project_name=(self._project.project_name if self._project else ""),
                     footprint=fp,
                     global_pitch_deg=float(self.pitch),
+                    overhang_m=self.overhang,
                 )
             )
         except ValueError:
@@ -784,6 +818,7 @@ class EditorView(QWidget):
             return
 
         self.last_result = result
+        self.canvas.set_overhang(self.overhang)
         self.canvas.set_skeleton(result)
         self.set_results(result)
         self._update_roof_type_badge(fp)
@@ -810,6 +845,20 @@ class EditorView(QWidget):
     def get_wall_height(self) -> float:
         """Return the current wall height in metres."""
         return self.wall_height
+
+    def get_overhang(self) -> float:
+        """Return the current eave overhang in metres."""
+        return self.overhang
+
+    def set_overhang(self, value: float) -> None:
+        """Update the overhang value and recompute if a result exists."""
+        self.overhang = float(value)
+        if hasattr(self, "_overhang_spin"):
+            self._overhang_spin.blockSignals(True)
+            self._overhang_spin.setValue(self.overhang)
+            self._overhang_spin.blockSignals(False)
+        if self.last_result is not None and self.canvas.footprint is not None:
+            self._on_calculate()
 
     # ------------------------------------------------------------------
     # G5: roof-type badge helper
@@ -880,6 +929,7 @@ class EditorView(QWidget):
             footprint=fp,
             global_pitch_deg=float(self.pitch),
             wall_height_m=self.wall_height,
+            overhang_m=self.overhang,
         )
 
         result = None
@@ -950,6 +1000,10 @@ class EditorView(QWidget):
             fp = self.canvas.footprint
             if fp is not None:
                 self.view3d.set_geometry(fp, float(self.pitch), self.wall_height)
+
+    def _on_overhang_changed(self, value: float) -> None:
+        """Update overhang and recompute if a result exists."""
+        self.set_overhang(float(value))
 
     def _show_toast(self, text: str) -> None:
         """Show a dark floating toast message that auto-hides after ~2.5 s."""
