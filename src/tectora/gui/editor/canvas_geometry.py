@@ -68,6 +68,28 @@ def hit_test_node(
     return None
 
 
+def point_in_polygon(
+    px: float,
+    py: float,
+    polygon_screen_pts: list[tuple[float, float]],
+) -> bool:
+    """Ray-casting point-in-polygon test (screen space). Edges count as inside-ish."""
+    n = len(polygon_screen_pts)
+    if n < 3:
+        return False
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon_screen_pts[i]
+        xj, yj = polygon_screen_pts[j]
+        if ((yi > py) != (yj > py)) and (
+            px < (xj - xi) * (py - yi) / (yj - yi + 1e-12) + xi
+        ):
+            inside = not inside
+        j = i
+    return inside
+
+
 def hit_test_edge(
     px: float,
     py: float,

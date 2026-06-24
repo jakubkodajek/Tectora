@@ -14,6 +14,7 @@ The widget is placed in editor.canvas_container by EditorView.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
@@ -31,6 +32,7 @@ from tectora.gui.editor.canvas_geometry import (
     hit_test_edge,
     hit_test_node,
     model_to_screen,
+    point_in_polygon as _point_in_polygon,
     screen_to_model,
     snap_to_grid,
 )
@@ -68,6 +70,21 @@ _LEGEND_ITEMS = [
 ]
 
 
+@dataclass
+class _CanvasBuilding:
+    """Per-building model state on the canvas (one drawn footprint + its roof).
+
+    The canvas holds a list of these and an active index; the legacy
+    single-building attributes (``_vertices`` etc.) delegate to the active one.
+    """
+    vertices: list = field(default_factory=list)     # list[tuple[float, float]]
+    edge_types: list = field(default_factory=list)   # list[str]
+    closed: bool = False
+    skeleton_data: Any = None                         # RoofResult or None
+    overhang: float = 0.0
+    name: str = ""
+
+
 class Canvas2D(QWidget):
     """2D drawing canvas.  Pass the ``EditorView`` instance as *editor*."""
 
@@ -79,16 +96,12 @@ class Canvas2D(QWidget):
         self._editor = editor
         self._lang = getattr(editor, "_lang", "cs")
 
-        # ── Model state ──────────────────────────────────────────────────
-        self._vertices: list[tuple[float, float]] = []
-        self._edge_types: list[str] = []
-        self._closed: bool = False
-
-        # G4 skeleton placeholder
-        self._skeleton_data: Any = None
-
-        # F3: eave overhang (metres); 0 = eave == walls (current behaviour)
-        self._overhang: float = 0.0
+        # ── Model state — list of buildings + active index ───────────────
+        # The legacy single-building attributes (_vertices/_edge_types/_closed/
+        # _skeleton_data/_overhang) are properties that delegate to the active
+        # building, so existing single-building code keeps working unchanged.
+        self._buildings: list[_CanvasBuilding] = [_CanvasBuilding()]
+        self._active: int = 0
 
         # ── View state ───────────────────────────────────────────────────
         # Origin = pixel position of model (0, 0); widget centre + pan offset.
@@ -107,6 +120,122 @@ class Canvas2D(QWidget):
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.setMinimumSize(QSize(200, 200))
+
+    # ------------------------------------------------------------------
+    # Active-building delegation (legacy single-building API)
+    # ------------------------------------------------------------------
+
+    @property
+    def _b(self) -> _CanvasBuilding:
+        """The active building (the one drawing/editing operates on)."""
+        if not self._buildings:
+            self._buildings = [_CanvasBuilding()]
+            self._active = 0
+        self._active = max(0, min(self._active, len(self._buildings) - 1))
+        return self._buildings[self._active]
+
+    @property
+    def _vertices(self) -> list:
+        return self._b.vertices
+
+    @_vertices.setter
+    def _vertices(self, value: list) -> None:
+        self._b.vertices = value
+
+    @property
+    def _edge_types(self) -> list:
+        return self._b.edge_types
+
+    @_edge_types.setter
+    def _edge_types(self, value: list) -> None:
+        self._b.edge_types = value
+
+    @property
+    def _closed(self) -> bool:
+        return self._b.closed
+
+    @_closed.setter
+    def _closed(self, value: bool) -> None:
+        self._b.closed = value
+
+    @property
+    def _skeleton_data(self) -> Any:
+        return self._b.skeleton_data
+
+    @_skeleton_data.setter
+    def _skeleton_data(self, value: Any) -> None:
+        self._b.skeleton_data = value
+
+    @property
+    def _overhang(self) -> float:
+        return self._b.overhang
+
+    @_overhang.setter
+    def _overhang(self, value: float) -> None:
+        self._b.overhang = value
+
+    # ------------------------------------------------------------------
+    # Multi-building API
+    # ------------------------------------------------------------------
+
+    def building_count(self) -> int:
+        return len(self._buildings)
+
+    def active_index(self) -> int:
+        return self._active
+
+    def new_building(self) -> int:
+        """Append a fresh empty building, make it active, and return its index."""
+        self._buildings.append(_CanvasBuilding())
+        self._active = len(self._buildings) - 1
+        self.update()
+        return self._active
+
+    def set_active(self, index: int) -> None:
+        """Select building *index* as the active one."""
+        if 0 <= index < len(self._buildings):
+            self._active = index
+            self.update()
+
+    def delete_building(self, index: int) -> None:
+        """Remove building *index*; always keep at least one (empty) building."""
+        if not (0 <= index < len(self._buildings)):
+            return
+        del self._buildings[index]
+        if not self._buildings:
+            self._buildings = [_CanvasBuilding()]
+        self._active = min(self._active, len(self._buildings) - 1)
+        self.update()
+
+    def building_footprint(self, index: int):
+        """Return the Footprint of building *index*, or None."""
+        if not (0 <= index < len(self._buildings)):
+            return None
+        b = self._buildings[index]
+        if not b.closed or len(b.vertices) < 3:
+            return None
+        from tectora.core.footprint import Footprint
+        try:
+            return Footprint.from_lists(b.vertices, b.edge_types)
+        except ValueError:
+            return None
+
+    def select_building_at(self, px: float, py: float) -> Optional[int]:
+        """If (px, py) is inside a closed building's polygon, make it active.
+
+        Returns the selected index, or None if no building was hit. Topmost
+        (last-drawn) building wins on overlap.
+        """
+        for i in range(len(self._buildings) - 1, -1, -1):
+            b = self._buildings[i]
+            if not b.closed or len(b.vertices) < 3:
+                continue
+            pts = [self._to_screen(*v) for v in b.vertices]
+            if _point_in_polygon(px, py, pts):
+                self._active = i
+                self.update()
+                return i
+        return None
 
     # ------------------------------------------------------------------
     # Model API — called by mouse handlers AND by tests
@@ -153,11 +282,9 @@ class Canvas2D(QWidget):
             self.edited.emit()
 
     def clear(self) -> None:
-        """Reset to empty drawing state."""
-        self._vertices = []
-        self._edge_types = []
-        self._closed = False
-        self._skeleton_data = None
+        """Reset to a single empty building (clears ALL buildings)."""
+        self._buildings = [_CanvasBuilding()]
+        self._active = 0
         self._drag_idx = None
         self._snap_pt = None
         self._pan = (0.0, 0.0)
