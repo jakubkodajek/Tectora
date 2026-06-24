@@ -35,8 +35,12 @@ class RoofResult:
     eaves_perimeter_m: float       # eaves perimeter
     apex_height_m: float           # apex height above eaves
 
+    valley_count: int = 0               # number of valley rafters
+
     faces: list[FaceResult] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    skeleton_segments: list = field(default_factory=list)
+    """Each item: (kind, (x1,y1,z1), (x2,y2,z2)) with kind in {ridge,hip,valley}."""
 
     @property
     def gable_edge_total_m(self) -> float:
@@ -79,4 +83,12 @@ class RoofResult:
                 for f in self.faces
             ],
             "notes": list(self.notes),
+            "skeleton_segments": [
+                {
+                    "kind": s[0],
+                    "a": [round(c, 6) for c in s[1]],
+                    "b": [round(c, 6) for c in s[2]],
+                }
+                for s in self.skeleton_segments
+            ],
         }
