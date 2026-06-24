@@ -1,20 +1,42 @@
 # -*- coding: utf-8 -*-
 """Pure (no-Qt) helpers for rendering the roof skeleton on the 2D canvas.
 
-Two public functions:
+Public functions:
 
   classify_skeleton(result, tol=1e-6)
-      Returns interior skeleton segments with kind labels.
+      Returns interior skeleton segments with kind labels and 3D length.
+      Each item: ``(kind, (x1, y1), (x2, y2), length3d)``
+
+  face_area_labels(result)
+      Returns ``[(cx, cy, area_m2), ...]`` for each face in the calculator frame.
+
+  fmt_len(m) / fmt_area(m2)
+      Czech-locale number formatters.
 
   map_calc_point(cx, cy, bbox)
       Maps a point from the calculator's frame into the footprint's model frame.
 """
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from tectora.core.result import RoofResult
+
+# ---------------------------------------------------------------------------
+# Czech-locale formatters
+# ---------------------------------------------------------------------------
+
+def fmt_len(m: float) -> str:
+    """Format a length in metres with Czech comma decimal, e.g. ``"4,00 m"``."""
+    return f"{m:.2f}".replace(".", ",") + " m"
+
+
+def fmt_area(m2: float) -> str:
+    """Format an area in m² with Czech comma decimal, e.g. ``"4,62 m²"``."""
+    return f"{m2:.2f}".replace(".", ",") + " m²"
+
 
 # ---------------------------------------------------------------------------
 # classify_skeleton
@@ -23,7 +45,7 @@ if TYPE_CHECKING:
 def classify_skeleton(
     result: "RoofResult",
     tol: float = 1e-6,
-) -> list[tuple[str, tuple[float, float], tuple[float, float]]]:
+) -> list[tuple[str, tuple[float, float], tuple[float, float], float]]:
     """Classify interior skeleton edges of *result* as ridge or hip.
 
     Algorithm:
@@ -35,10 +57,11 @@ def classify_skeleton(
          - both endpoints have z > tol AND |z1 - z2| < tol → "ridge"
          - otherwise → "hip"
 
-    Returns a list of ``(kind, (x1, y1), (x2, y2))`` — z coordinates are
-    dropped; only the shared (interior) edges are returned.
+    Returns a list of ``(kind, (x1, y1), (x2, y2), length3d)`` — z coordinates
+    are dropped from the 2D positions but used for the 3D Euclidean length.
+    Only the shared (interior) edges are returned.
     """
-    # edge_key → [(x1,y1,z1), (x2,y2,z2), count]
+    # edge_key → {"p1": ..., "p2": ..., "count": int}
     edge_data: dict[frozenset, dict] = {}
 
     for face in result.faces:
@@ -56,7 +79,7 @@ def classify_skeleton(
             else:
                 edge_data[key] = {"p1": p1, "p2": p2, "count": 1}
 
-    segments: list[tuple[str, tuple[float, float], tuple[float, float]]] = []
+    segments: list[tuple[str, tuple[float, float], tuple[float, float], float]] = []
 
     for info in edge_data.values():
         if info["count"] < 2:
@@ -68,9 +91,33 @@ def classify_skeleton(
             kind = "ridge"
         else:
             kind = "hip"
-        segments.append((kind, (x1, y1), (x2, y2)))
+        # True 3D Euclidean distance
+        length3d = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2 + (z2 - z1) ** 2)
+        segments.append((kind, (x1, y1), (x2, y2), length3d))
 
     return segments
+
+
+# ---------------------------------------------------------------------------
+# face_area_labels
+# ---------------------------------------------------------------------------
+
+def face_area_labels(
+    result: "RoofResult",
+) -> list[tuple[float, float, float]]:
+    """Return ``(centroid_x, centroid_y, area_m2)`` for each face.
+
+    Centroid is the average of the face's x, y vertices (in the calculator
+    frame).  Area is taken directly from :attr:`FaceResult.area_m2`.
+    """
+    labels: list[tuple[float, float, float]] = []
+    for face in result.faces:
+        verts = face.vertices  # list of (x, y, z)
+        n = len(verts)
+        cx = sum(v[0] for v in verts) / n
+        cy = sum(v[1] for v in verts) / n
+        labels.append((cx, cy, face.area_m2))
+    return labels
 
 
 # ---------------------------------------------------------------------------

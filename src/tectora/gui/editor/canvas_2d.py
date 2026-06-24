@@ -25,6 +25,7 @@ from PySide6.QtGui import (
     QMouseEvent,
 )
 from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import Signal
 
 from tectora.gui.editor.canvas_geometry import (
     hit_test_edge,
@@ -34,7 +35,7 @@ from tectora.gui.editor.canvas_geometry import (
     snap_to_grid,
 )
 from tectora.gui.i18n import tr
-from tectora.gui.theme import ACCENT, BG, BORDER_SOFT, CARD, COL, FAINT, MID, TEXT
+from tectora.gui.theme import ACCENT, BG, BORDER_SOFT, CARD, COL, FAINT, MID, MUTED, TEXT
 
 if TYPE_CHECKING:
     from tectora.gui.editor.editor_view import EditorView
@@ -67,6 +68,9 @@ _LEGEND_ITEMS = [
 
 class Canvas2D(QWidget):
     """2D drawing canvas.  Pass the ``EditorView`` instance as *editor*."""
+
+    # Emitted when a closed polygon is edited (toggle_edge_type / move_vertex)
+    edited = Signal()
 
     def __init__(self, editor: "EditorView"):
         super().__init__(editor.canvas_container)
@@ -122,6 +126,8 @@ class Canvas2D(QWidget):
         self._skeleton_data = None
         self._vertices[i] = (float(mx), float(my))
         self.update()
+        if self._closed:
+            self.edited.emit()
 
     def toggle_edge_type(self, i: int) -> None:
         """Flip edge *i* between "eave" and "gable"."""
@@ -130,6 +136,8 @@ class Canvas2D(QWidget):
         self._skeleton_data = None
         self._edge_types[i] = "gable" if self._edge_types[i] == "eave" else "eave"
         self.update()
+        if self._closed:
+            self.edited.emit()
 
     def clear(self) -> None:
         """Reset to empty drawing state."""
@@ -350,7 +358,9 @@ class Canvas2D(QWidget):
     def _draw_skeleton(self, p: QPainter) -> None:
         if self._skeleton_data is None:
             return
-        from tectora.gui.editor.skeleton_render import classify_skeleton, map_calc_point
+        from tectora.gui.editor.skeleton_render import (
+            classify_skeleton, face_area_labels, fmt_len, fmt_area, map_calc_point
+        )
 
         # Compute footprint bounding box in model space
         verts = self._vertices
@@ -360,8 +370,9 @@ class Canvas2D(QWidget):
         ys = [v[1] for v in verts]
         bbox = (min(xs), min(ys), max(xs), max(ys))
 
+        # ── Draw skeleton lines ──────────────────────────────────────────
         segments = classify_skeleton(self._skeleton_data)
-        for kind, (cx1, cy1), (cx2, cy2) in segments:
+        for kind, (cx1, cy1), (cx2, cy2), length3d in segments:
             mx1, my1 = map_calc_point(cx1, cy1, bbox)
             mx2, my2 = map_calc_point(cx2, cy2, bbox)
             sx1, sy1 = self._to_screen(mx1, my1)
@@ -371,6 +382,107 @@ class Canvas2D(QWidget):
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             p.setPen(pen)
             p.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
+
+        # ── Draw dimension labels ────────────────────────────────────────
+        self._draw_edge_length_labels(p)
+        self._draw_skeleton_length_labels(p, segments, bbox)
+        self._draw_face_area_labels(p, bbox)
+
+    def _dim_font(self) -> QFont:
+        """Small annotation font for dimension labels."""
+        f = QFont()
+        f.setPointSize(7)
+        f.setWeight(QFont.Weight.Normal)
+        return f
+
+    def _draw_label_at(
+        self,
+        p: QPainter,
+        sx: float,
+        sy: float,
+        text: str,
+        color: str,
+        bold: bool = False,
+    ) -> None:
+        """Draw *text* centred at screen position (sx, sy), clipped to widget."""
+        w, h = self.width(), self.height()
+        font = self._dim_font()
+        if bold:
+            font.setWeight(QFont.Weight.DemiBold)
+        p.setFont(font)
+        p.setPen(QColor(color))
+        fm = p.fontMetrics()
+        tw = fm.horizontalAdvance(text)
+        th = fm.height()
+        tx = int(sx - tw / 2)
+        ty = int(sy - th / 2)
+        # Keep inside widget
+        tx = max(2, min(tx, w - tw - 2))
+        ty = max(2 + th, min(ty, h - 4))
+        p.drawText(tx, ty, text)
+
+    def _draw_edge_length_labels(self, p: QPainter) -> None:
+        """Draw edge-length annotations near each footprint edge midpoint."""
+        from tectora.gui.editor.skeleton_render import fmt_len
+        fp = self.footprint
+        if fp is None:
+            return
+        n = fp.n
+        verts = fp.vertices  # 2-D model coords (already in model space)
+        for i in range(n):
+            ax, ay = verts[i]
+            bx, by = verts[(i + 1) % n]
+            # Midpoint in model space
+            mx = (ax + bx) / 2.0
+            my = (ay + by) / 2.0
+            # Normal vector (perpendicular to edge, pointing outward ~10 px)
+            dx, dy = bx - ax, by - ay
+            length = (dx * dx + dy * dy) ** 0.5
+            if length < 1e-9:
+                continue
+            # Outward normal (rotate 90° and offset slightly)
+            nx, ny = -dy / length, dx / length
+            offset_m = 8.0 / self._scale  # 8 px in model space
+            lx, ly = self._to_screen(mx + nx * offset_m, my + ny * offset_m)
+            label = fmt_len(fp.edge_length(i))
+            self._draw_label_at(p, lx, ly, label, TEXT)
+
+    def _draw_skeleton_length_labels(
+        self,
+        p: QPainter,
+        segments: list,
+        bbox: tuple,
+    ) -> None:
+        """Draw length annotations near each hip/ridge segment midpoint."""
+        from tectora.gui.editor.skeleton_render import fmt_len, map_calc_point
+        for kind, (cx1, cy1), (cx2, cy2), length3d in segments:
+            mx1, my1 = map_calc_point(cx1, cy1, bbox)
+            mx2, my2 = map_calc_point(cx2, cy2, bbox)
+            # Midpoint in screen space
+            sx1, sy1 = self._to_screen(mx1, my1)
+            sx2, sy2 = self._to_screen(mx2, my2)
+            mid_sx = (sx1 + sx2) / 2.0
+            mid_sy = (sy1 + sy2) / 2.0
+            # Offset slightly perpendicular to segment
+            dx, dy = sx2 - sx1, sy2 - sy1
+            seg_len = (dx * dx + dy * dy) ** 0.5
+            if seg_len > 1e-3:
+                nx, ny = -dy / seg_len, dx / seg_len
+                mid_sx += nx * 10
+                mid_sy += ny * 10
+            color = COL.get(kind, COL["hip"])
+            label = fmt_len(length3d)
+            self._draw_label_at(p, mid_sx, mid_sy, label, color, bold=True)
+
+    def _draw_face_area_labels(self, p: QPainter, bbox: tuple) -> None:
+        """Draw area annotations at each face centroid."""
+        from tectora.gui.editor.skeleton_render import face_area_labels, fmt_area, map_calc_point
+        labels = face_area_labels(self._skeleton_data)
+        for cx, cy, area_m2 in labels:
+            mx, my = map_calc_point(cx, cy, bbox)
+            sx, sy = self._to_screen(mx, my)
+            label = fmt_area(area_m2)
+            self._draw_label_at(p, sx, sy, label, MUTED)
 
     # ── In-progress polyline ──────────────────────────────────────────────
 

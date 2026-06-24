@@ -390,6 +390,9 @@ class EditorView(QWidget):
         )
         _inner.addWidget(self.canvas)
 
+        # G4b: wire live re-generation on footprint edits
+        self.canvas.edited.connect(self._on_footprint_edited)
+
         # Right panel
         h_layout.addWidget(self._make_right_panel())
 
@@ -602,6 +605,22 @@ class EditorView(QWidget):
         for lbl in self._result_value_labels.values():
             lbl.setText("—")
         self.last_result = None
+
+    # ------------------------------------------------------------------
+    # G4b: live re-generation
+    # ------------------------------------------------------------------
+
+    def _on_footprint_edited(self) -> None:
+        """Re-run the calculation when the closed polygon is edited in place."""
+        if self.last_result is not None and self.canvas.footprint is not None:
+            self._on_calculate()
+
+    def set_pitch(self, value: int) -> None:
+        """Update the pitch, refresh the button label, and recompute if a result exists."""
+        self.pitch = int(value)
+        self._pitch_btn.setText(f"{tr('pitch', self._lang)}  {self.pitch}°  ▾")
+        if self.last_result is not None and self.canvas.footprint is not None:
+            self._on_calculate()
 
     def _show_toast(self, text: str) -> None:
         """Show a dark floating toast message that auto-hides after ~2.5 s."""
