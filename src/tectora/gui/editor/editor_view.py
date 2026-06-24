@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -387,7 +388,7 @@ class EditorView(QWidget):
         h_layout.setContentsMargins(0, 0, 0, 0)
         h_layout.setSpacing(0)
 
-        # Canvas container — G3 fills this with Canvas2D
+        # Canvas container — holds a QStackedWidget with 2D (index 0) and 3D (index 1)
         self.canvas_container = QWidget()
         self.canvas_container.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -401,13 +402,26 @@ class EditorView(QWidget):
 
         h_layout.addWidget(self.canvas_container, stretch=1)
 
-        # G3: instantiate Canvas2D and fill canvas_container
+        # G3: instantiate Canvas2D
         from tectora.gui.editor.canvas_2d import Canvas2D
         self.canvas = Canvas2D(self)
         self.canvas.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        _inner.addWidget(self.canvas)
+
+        # G7: instantiate Roof3DView
+        from tectora.gui.editor.view_3d import Roof3DView
+        self.view3d = Roof3DView(self)
+        self.view3d.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+
+        # G7: stacked widget — index 0 = 2D canvas, index 1 = 3D view
+        self._canvas_stack = QStackedWidget()
+        self._canvas_stack.addWidget(self.canvas)   # index 0
+        self._canvas_stack.addWidget(self.view3d)   # index 1
+        self._canvas_stack.setCurrentIndex(0)
+        _inner.addWidget(self._canvas_stack)
 
         # G4b: wire live re-generation on footprint edits
         self.canvas.edited.connect(self._on_footprint_edited)
@@ -679,6 +693,12 @@ class EditorView(QWidget):
 
     def _set_view_mode(self, mode: str) -> None:
         self.view_mode = mode
+        if hasattr(self, "_canvas_stack"):
+            self._canvas_stack.setCurrentIndex(0 if mode == "2d" else 1)
+        # Keep toggle buttons in sync (e.g. when called programmatically)
+        if hasattr(self, "_btn_2d") and hasattr(self, "_btn_3d"):
+            self._btn_2d.setChecked(mode == "2d")
+            self._btn_3d.setChecked(mode == "3d")
 
     def _on_calculate(self) -> None:
         """Provést výpočet — compute the roof and update canvas + results panel."""
@@ -706,6 +726,9 @@ class EditorView(QWidget):
         self.canvas.set_skeleton(result)
         self.set_results(result)
         self._update_roof_type_badge(fp)
+        # G7: update 3D view
+        if hasattr(self, "view3d"):
+            self.view3d.set_result(result)
 
     # ------------------------------------------------------------------
     # G5: public helpers for G6
