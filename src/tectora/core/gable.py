@@ -334,3 +334,22 @@ def gable_wall_triangles(
             (mx, my, t_p * slope),
         ))
     return walls
+
+
+def is_valid_gable_edge_at(footprint: Footprint, p: tuple, q: tuple) -> bool:
+    """``True`` iff the footprint edge with endpoints ``{p, q}`` is a valid cap.
+
+    Matches the edge by its endpoint coordinates (order-independent) so callers
+    that index a polygon in a *different* winding/order than the normalised
+    ``Footprint`` (e.g. the 2-D canvas, which stores draw-order vertices while
+    ``Footprint.from_lists`` re-winds to CCW and rotates the edge list) validate
+    the edge they actually mean. Returns ``False`` if no edge matches.
+    """
+    kp, kq = _round2(p), _round2(q)
+    n = footprint.n
+    for i in range(n):
+        a = _round2(footprint.vertices[i])
+        b = _round2(footprint.vertices[(i + 1) % n])
+        if {a, b} == {kp, kq}:
+            return is_valid_gable_edge(footprint, i)
+    return False

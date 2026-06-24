@@ -224,3 +224,17 @@ def test_gable_wall_triangles_rejects_invalid_edge():
     # Edge 0 of the L is the long bottom edge — not a cap.
     with pytest.raises(GableNotSupported):
         gable_wall_triangles(Footprint.from_lists(L, ["gable"] + ["eave"] * 5), 35)
+
+
+def test_is_valid_gable_edge_at_matches_by_endpoints_any_winding():
+    from tectora.core.gable import is_valid_gable_edge_at
+    # Canvas may hold vertices in either winding; validate by endpoint coords.
+    for verts in (L, list(reversed(L))):
+        fp = Footprint.from_lists(verts, ["eave"] * len(verts))
+        # Wing-end cap edges of the L are the short edges (6,0)-(6,3) and (3,6)-(0,6).
+        assert is_valid_gable_edge_at(fp, (6, 0), (6, 3)) is True
+        assert is_valid_gable_edge_at(fp, (3, 6), (0, 6)) is True
+        # A long side is not a cap.
+        assert is_valid_gable_edge_at(fp, (0, 0), (6, 0)) is False
+        # Non-existent edge → False, never raises.
+        assert is_valid_gable_edge_at(fp, (99, 99), (1, 1)) is False
