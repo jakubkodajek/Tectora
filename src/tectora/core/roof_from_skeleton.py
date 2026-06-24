@@ -9,9 +9,10 @@ import math
 from math import radians, tan, cos, sqrt
 
 from tectora.core.footprint import Footprint
+from tectora.core.polyskel_adapter import polyskel_skeleton
 from tectora.core.result import RoofResult
 from tectora.core.spec import RoofSpec, RoofType
-from tectora.core.straight_skeleton import skeletonize, build_lav
+from tectora.core.straight_skeleton import build_lav, RoofGenerationError
 
 # Rounding precision used when matching node coordinates
 _ROUND = 6
@@ -51,7 +52,7 @@ def build_roof(footprint: Footprint, pitch_deg: float) -> RoofResult:
                 apex height, and skeleton_segments populated.
     """
     poly = list(footprint.vertices)
-    graph = skeletonize(poly)
+    graph = polyskel_skeleton(poly)
     slope = tan(radians(pitch_deg))
 
     # -----------------------------------------------------------------------
@@ -121,14 +122,10 @@ def build_roof(footprint: Footprint, pitch_deg: float) -> RoofResult:
             else:
                 kind = "hip"
         else:
-            # Both endpoints are interior skeleton nodes (both z > 0 in general).
-            # Compare their heights: equal -> ridge, unequal -> hip slope arc.
-            za = a3[2]
-            zb = b3[2]
-            if abs(za - zb) < EPS:
-                kind = "ridge"
-            else:
-                kind = "hip"
+            # Both endpoints are interior skeleton nodes — an internal ridge edge
+            # of the skeleton (horizontal ridge, or a sloped interior edge on
+            # non-axis-aligned shapes). Either way it is not a corner rafter.
+            kind = "ridge"
 
         classified.append((kind, a3, b3))
 
@@ -137,23 +134,41 @@ def build_roof(footprint: Footprint, pitch_deg: float) -> RoofResult:
     # -----------------------------------------------------------------------
     ridge_len = 0.0
     hip_len = 0.0
-    hip_count = 0
     valley_len = 0.0
-    valley_count = 0
+    hip_corners: set = set()
+    valley_corners: set = set()
 
-    # Track hip arcs as unique (we need to count rafters, not segments).
-    # For polygons each corner produces one hip rafter arc to the skeleton.
-    # We count each distinct hip arc as one rafter.
+    # Count hips/valleys as RAFTERS (one per polygon corner), not arc segments:
+    # on non-axis-aligned shapes a rafter can be split into several arcs by
+    # intermediate skeleton nodes, so we tally the distinct corner endpoints.
     for kind, a3, b3 in classified:
         seg = _len3d(a3, b3)
         if kind == "ridge":
             ridge_len += seg
         elif kind == "hip":
             hip_len += seg
-            hip_count += 1
+            for p in (_round2((a3[0], a3[1])), _round2((b3[0], b3[1]))):
+                if p in poly_set:
+                    hip_corners.add(p)
         elif kind == "valley":
             valley_len += seg
-            valley_count += 1
+            for p in (_round2((a3[0], a3[1])), _round2((b3[0], b3[1]))):
+                if p in poly_set:
+                    valley_corners.add(p)
+    hip_count = len(hip_corners)
+    valley_count = len(valley_corners)
+
+    # Structural self-check: every convex corner emits one hip rafter, every
+    # reflex corner one valley. If the skeleton violates this it is unreliable
+    # for this shape — fail loudly (RoofGenerationError is a ValueError, so the
+    # GUI/CLI report it gracefully) rather than drawing a wrong roof.
+    n_reflex = len(reflex_pts)
+    n_convex = footprint.n - n_reflex
+    if hip_count != n_convex or valley_count != n_reflex:
+        raise RoofGenerationError(
+            "Skeleton failed the structural check for this shape "
+            f"(hips {hip_count}/{n_convex}, valleys {valley_count}/{n_reflex})."
+        )
 
     # -----------------------------------------------------------------------
     # Totals that don't depend on arc classification.

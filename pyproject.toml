@@ -13,6 +13,7 @@ license = { text = "MIT" }
 dependencies = [
     "numpy>=1.26",
     "openpyxl>=3.1",
+    "euclid3>=0.1",  # used by the vendored polyskel straight-skeleton (LGPL)
 ]
 
 [project.optional-dependencies]
