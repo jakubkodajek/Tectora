@@ -453,7 +453,11 @@ class Canvas2D(QWidget):
         mx, my = self._snapped_model(px, py)
 
         if self._closed:
-            return  # polygon already done
+            # The active building is finished — a click selects another building
+            # (loading its parameters) instead of doing nothing. To draw a new
+            # one the user presses "Nová stavba".
+            self.select_building_at(px, py)
+            return
 
         # If ≥ 3 vertices, check if click is near the first node → close polygon
         if len(self._vertices) >= 3:

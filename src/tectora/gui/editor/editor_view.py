@@ -275,7 +275,7 @@ class EditorView(QWidget):
             f"QPushButton:hover {{ color: {theme.TEXT}; }}"
         )
         back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        back_btn.clicked.connect(window.open_home)
+        back_btn.clicked.connect(self._on_back)
         nav_layout.addWidget(back_btn)
 
         nav_layout.addSpacing(12)
@@ -741,6 +741,7 @@ class EditorView(QWidget):
         )
         self._save_btn.clicked.connect(self._on_save)
         v.addWidget(self._save_btn)
+        v.addSpacing(10)
 
         # ── Export to Excel button ────────────────────────────────────
         self._export_btn = QPushButton(tr("exportXls", lang))
@@ -802,6 +803,13 @@ class EditorView(QWidget):
         self.view_mode = mode
         if hasattr(self, "_canvas_stack"):
             self._canvas_stack.setCurrentIndex(0 if mode == "2d" else 1)
+            # Force the now-visible widget to repaint. A QStackedWidget child
+            # that was hidden does not reliably get a fresh paintEvent when shown
+            # again, which made the 2D drawing appear to vanish after 2D→3D→2D.
+            if mode == "2d" and hasattr(self, "canvas"):
+                self.canvas.update()
+            elif mode == "3d" and hasattr(self, "view3d"):
+                self.view3d.update()
         # Keep toggle buttons in sync (e.g. when called programmatically)
         if hasattr(self, "_btn_2d") and hasattr(self, "_btn_3d"):
             self._btn_2d.setChecked(mode == "2d")
@@ -1065,31 +1073,60 @@ class EditorView(QWidget):
             self._wall_height_spin.setValue(wall)
             self._wall_height_spin.blockSignals(False)
 
+    def _default_project_name(self) -> str:
+        """Auto-generated project name ``Stavba #N`` (next free increment)."""
+        import re
+        maxn = 0
+        try:
+            for e in self._window.library.list():
+                m = re.fullmatch(r"Stavba #(\d+)", (e.name or "").strip())
+                if m:
+                    maxn = max(maxn, int(m.group(1)))
+        except Exception:
+            pass
+        return f"Stavba #{maxn + 1}"
+
+    def _collect_buildings(self) -> list:
+        """Build a list of application Buildings from every drawn canvas building."""
+        from tectora.application.project import Building
+        buildings = []
+        for i in range(self.canvas.building_count()):
+            bfp = self.canvas.building_footprint(i)
+            if bfp is None:
+                continue
+            bb = self.canvas._buildings[i]
+            buildings.append(Building(
+                footprint=bfp, pitch_deg=float(bb.pitch),
+                overhang_m=float(bb.overhang), wall_height_m=float(bb.wall_height),
+                name=bb.name,
+            ))
+        return buildings
+
     def _on_save(self) -> None:
-        """Save the current project to the library (create or update)."""
+        """Save the whole design (ALL buildings) to the library."""
         from tectora.application import use_cases as uc
         from tectora.application.project import Project
 
         lang = self._lang
-        fp = self.canvas.footprint
-        if fp is None:
+        buildings = self._collect_buildings()
+        if not buildings:
             self._show_toast(tr("drawFirst", lang))
             return
 
         raw_name = self.get_name().strip()
-        proj_name = raw_name or tr("untitled", lang)
-        project = Project(
-            project_name=proj_name,
-            footprint=fp,
-            global_pitch_deg=float(self.pitch),
-            wall_height_m=self.wall_height,
-            overhang_m=self.overhang,
-        )
+        proj_name = raw_name or self._default_project_name()
+        # Reflect an auto-generated name back into the UI so the user sees it.
+        if not raw_name:
+            self.name_edit.setText(proj_name)
+            self._title_label.setText(proj_name)
 
+        project = Project(project_name=proj_name, buildings=buildings)
+
+        # Cached summary result = the design's first building (for the home card).
         result = None
         try:
             result = uc.calculate_project(project).as_dict()
-        except (ValueError, Exception):
+        except Exception:
             pass
 
         note = self.get_note()
@@ -1109,6 +1146,49 @@ class EditorView(QWidget):
             )
 
         self._show_toast(tr("saved", lang))
+
+    # ------------------------------------------------------------------
+    # Back / leave confirmation
+    # ------------------------------------------------------------------
+
+    def _on_back(self) -> None:
+        """Go back to Home, confirming first if there is an unsaved drawing."""
+        has_drawing = any(
+            self.canvas.building_footprint(i) is not None
+            for i in range(self.canvas.building_count())
+        )
+        if not has_drawing:
+            self._window.open_home()
+            return
+        choice = self._confirm_leave()
+        if choice == "cancel":
+            return
+        if choice == "save":
+            self._on_save()
+        self._window.open_home()
+
+    def _confirm_leave(self) -> str:
+        """Modal Save / Discard / Cancel dialog. Returns the chosen action.
+
+        Split out so tests can stub it (a modal exec cannot be driven offscreen).
+        """
+        from PySide6.QtWidgets import QMessageBox
+        lang = self._lang
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(tr("leaveTitle", lang))
+        box.setText(tr("leaveMsg", lang))
+        save_btn = box.addButton(tr("save", lang), QMessageBox.ButtonRole.AcceptRole)
+        discard_btn = box.addButton(tr("discard", lang), QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = box.addButton(tr("cancel", lang), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(save_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is discard_btn:
+            return "discard"
+        if clicked is cancel_btn:
+            return "cancel"
+        return "save"
 
     def _export_to(self, path: str) -> None:
         """Write the whole design's výkaz výměr to an Excel file at *path*.
