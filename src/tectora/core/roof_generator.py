@@ -23,6 +23,7 @@ def generate_roof(
     name: str = "",
     overhang: float = 0.0,
     half_hip_m: float = 0.0,
+    pitch_back: float | None = None,
 ) -> RoofResult:
     # Drop accidental mid-edge (collinear) points first: they don't change the
     # outline but would break the skeleton's corner-count self-check. This also
@@ -40,6 +41,15 @@ def generate_roof(
         spec = footprint_to_spec(footprint, pitch_deg, name=name)
     except UnsupportedFootprint:
         return build_roof(footprint, pitch_deg)   # general polygon → SS
+
+    # Asymmetric gable: a different back-slope pitch on a GABLE rectangle (the
+    # two long slopes get pitch_deg / pitch_back instead of a single pitch).
+    if (pitch_back is not None and spec.type == RoofType.GABLE
+            and 0 < pitch_back < 90 and abs(pitch_back - pitch_deg) > 1e-9):
+        try:
+            spec = dataclasses.replace(spec, pitch_back=float(pitch_back))
+        except Exception:
+            pass
 
     # Half-hip (polovalba): a GABLE rectangle clipped by depth *half_hip_m*
     # becomes a half-hip. d = half_hip_m along the ridge; ratio = 2·d/W

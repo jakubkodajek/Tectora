@@ -28,6 +28,7 @@ class Building:
     overhang_m: float = 0.0
     wall_height_m: float = 2.5
     half_hip_m: float = 0.0      # half-hip (polovalba) clip depth in metres
+    pitch_back_deg: Optional[float] = None  # asymmetric gable: back slope pitch
     name: str = ""
 
     def to_dict(self) -> dict:
@@ -44,6 +45,7 @@ class Building:
             "overhang_m": self.overhang_m,
             "wall_height_m": self.wall_height_m,
             "half_hip_m": self.half_hip_m,
+            "pitch_back_deg": self.pitch_back_deg,
         }
 
     @classmethod
@@ -60,6 +62,10 @@ class Building:
             overhang_m=float(data.get("overhang_m", 0.0)),
             wall_height_m=float(data.get("wall_height_m", 2.5)),
             half_hip_m=float(data.get("half_hip_m", 0.0)),
+            pitch_back_deg=(
+                float(data["pitch_back_deg"])
+                if data.get("pitch_back_deg") is not None else None
+            ),
             name=data.get("name", ""),
         )
 

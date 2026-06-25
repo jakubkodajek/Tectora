@@ -176,6 +176,7 @@ class EditorView(QWidget):
                         pitch=int(round(b.pitch_deg)),
                         wall_height=float(b.wall_height_m),
                         half_hip=float(b.half_hip_m),
+                        pitch_back=b.pitch_back_deg,
                         name=b.name,
                     )
                     for b in drawn
@@ -723,6 +724,31 @@ class EditorView(QWidget):
         v.addWidget(self._half_hip_spin)
         v.addSpacing(12)
 
+        # Sklon zadní (asymmetric gable: a different back-slope pitch; — = same).
+        _lbl_pb = QLabel(tr("pitchBack", lang))
+        _lbl_pb.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
+        v.addWidget(_lbl_pb)
+        v.addSpacing(4)
+
+        self._pitch_back_spin = QSpinBox()
+        self._pitch_back_spin.setRange(0, 89)
+        self._pitch_back_spin.setValue(0)
+        self._pitch_back_spin.setSuffix("°")
+        self._pitch_back_spin.setSpecialValueText("—")   # 0 → "—" = same as front
+        self._pitch_back_spin.setFixedHeight(34)
+        self._pitch_back_spin.setStyleSheet(
+            f"QSpinBox {{"
+            f"  background: {theme.CARD}; color: {theme.MID}; border: 1px solid {theme.BORDER};"
+            f"  border-radius: 7px; padding: 0 8px; font-size: 10pt;"
+            f"  font-weight: 600;"
+            f"}}"
+            f"QSpinBox:focus {{ border-color: {theme.ACCENT}; }}"
+            f"QSpinBox::up-button, QSpinBox::down-button {{ width: 0; }}"
+        )
+        self._pitch_back_spin.valueChanged.connect(self._on_pitch_back_changed)
+        v.addWidget(self._pitch_back_spin)
+        v.addSpacing(12)
+
         # Typ střechy badge
         _lbl_roof_type = QLabel(tr("roofType", lang))
         _lbl_roof_type.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
@@ -991,6 +1017,7 @@ class EditorView(QWidget):
                     fp, float(b.pitch),
                     name=(self._project.project_name if self._project else ""),
                     overhang=float(b.overhang), half_hip_m=float(b.half_hip),
+                    pitch_back=b.pitch_back,
                 )
             except ValueError:
                 # Only surface the toast for the building the user is on.
@@ -1222,6 +1249,11 @@ class EditorView(QWidget):
             self._half_hip_spin.blockSignals(True)
             self._half_hip_spin.setValue(float(canvas.active_half_hip()))
             self._half_hip_spin.blockSignals(False)
+        if hasattr(self, "_pitch_back_spin"):
+            pb = canvas.active_pitch_back()
+            self._pitch_back_spin.blockSignals(True)
+            self._pitch_back_spin.setValue(int(round(pb)) if pb else 0)
+            self._pitch_back_spin.blockSignals(False)
 
     def _default_project_name(self) -> str:
         """Auto-generated project name ``Stavba #N`` (next free increment)."""
@@ -1248,7 +1280,8 @@ class EditorView(QWidget):
             buildings.append(Building(
                 footprint=bfp, pitch_deg=float(bb.pitch),
                 overhang_m=float(bb.overhang), wall_height_m=float(bb.wall_height),
-                half_hip_m=float(bb.half_hip), name=bb.name,
+                half_hip_m=float(bb.half_hip), pitch_back_deg=bb.pitch_back,
+                name=bb.name,
             ))
         return buildings
 
@@ -1511,6 +1544,12 @@ class EditorView(QWidget):
     def _on_half_hip_changed(self, value: float) -> None:
         """Update the active building's half-hip (polovalba) depth and recompute."""
         self.canvas.set_active_half_hip(float(value))
+        if self.last_result is not None and self.canvas.footprint is not None:
+            self._on_calculate()
+
+    def _on_pitch_back_changed(self, value: int) -> None:
+        """Update the active building's back-slope pitch (0 = same as front)."""
+        self.canvas.set_active_pitch_back(None if value <= 0 else float(value))
         if self.last_result is not None and self.canvas.footprint is not None:
             self._on_calculate()
 

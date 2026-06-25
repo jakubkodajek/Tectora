@@ -86,6 +86,7 @@ class _CanvasBuilding:
     pitch: int = 35
     wall_height: float = 2.5
     half_hip: float = 0.0      # half-hip (polovalba) clip depth in metres
+    pitch_back: Optional[float] = None  # asymmetric gable back-slope pitch
     name: str = ""
 
 
@@ -295,6 +296,12 @@ class Canvas2D(QWidget):
     def set_active_half_hip(self, value: float) -> None:
         self._b.half_hip = float(value)
 
+    def active_pitch_back(self) -> Optional[float]:
+        return self._b.pitch_back
+
+    def set_active_pitch_back(self, value: Optional[float]) -> None:
+        self._b.pitch_back = (None if value is None else float(value))
+
     # ------------------------------------------------------------------
     # Undo / redo (snapshot-based)
     # ------------------------------------------------------------------
@@ -315,6 +322,7 @@ class Canvas2D(QWidget):
                 b.wall_height,
                 b.name,
                 b.half_hip,
+                b.pitch_back,
             )
             for b in self._buildings
         )
@@ -326,9 +334,9 @@ class Canvas2D(QWidget):
             _CanvasBuilding(
                 vertices=list(v), edge_types=list(et), closed=cl,
                 skeleton_data=None, overhang=oh, pitch=pi, wall_height=wh,
-                half_hip=hh, name=nm,
+                half_hip=hh, name=nm, pitch_back=pb,
             )
-            for (v, et, cl, oh, pi, wh, nm, hh) in buildings
+            for (v, et, cl, oh, pi, wh, nm, hh, pb) in buildings
         ]
         if not self._buildings:
             self._buildings = [_CanvasBuilding()]

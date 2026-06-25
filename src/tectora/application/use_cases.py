@@ -15,10 +15,12 @@ from tectora.core.roof_generator import generate_roof
 def calculate_project(project: Project) -> RoofResult:
     if project.footprint is None:
         raise ValueError("Projekt nemá zadaný půdorys.")
-    half_hip = project.buildings[0].half_hip_m if project.buildings else 0.0
+    b0 = project.buildings[0] if project.buildings else None
+    half_hip = b0.half_hip_m if b0 else 0.0
+    pitch_back = b0.pitch_back_deg if b0 else None
     return generate_roof(
         project.footprint, project.global_pitch_deg, name=project.project_name,
-        overhang=project.overhang_m, half_hip_m=half_hip,
+        overhang=project.overhang_m, half_hip_m=half_hip, pitch_back=pitch_back,
     )
 
 
@@ -60,7 +62,8 @@ def calculate_design(project: Project) -> DesignResult:
             continue
         results.append(
             generate_roof(b.footprint, b.pitch_deg, name=b.name,
-                          overhang=b.overhang_m, half_hip_m=b.half_hip_m)
+                          overhang=b.overhang_m, half_hip_m=b.half_hip_m,
+                          pitch_back=b.pitch_back_deg)
         )
     return DesignResult(results)
 
