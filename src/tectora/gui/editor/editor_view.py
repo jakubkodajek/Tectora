@@ -1010,6 +1010,13 @@ class EditorView(QWidget):
             if fp is None:
                 canvas.set_building_skeleton(i, None)
                 continue
+            # Auto-revert any gable that a later edit made invalid (e.g. a now
+            # slanted neighbour edge), so the calc succeeds (as a hip) instead of
+            # failing silently with a generic "unsupported shape".
+            if canvas.revert_invalid_gables(i):
+                fp = canvas.building_footprint(i)
+                if i == active:
+                    self._show_toast(tr("gableReverted", self._lang))
             any_footprint = True
             b = canvas._buildings[i]
             try:

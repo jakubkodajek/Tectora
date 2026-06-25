@@ -447,6 +447,35 @@ class Canvas2D(QWidget):
         if self._closed:
             self.edited.emit()
 
+    def revert_invalid_gables(self, bi: int) -> int:
+        """Revert any gable edge of building *bi* that is no longer a valid cap
+        (e.g. after a later edit slanted a neighbour) back to eave.
+
+        Returns the number of edges reverted. Lets the calc succeed instead of
+        failing with GableNotSupported on a shape the user has since changed.
+        """
+        if not (0 <= bi < len(self._buildings)):
+            return 0
+        b = self._buildings[bi]
+        if not b.closed or len(b.vertices) < 3:
+            return 0
+        fp = self.building_footprint(bi)
+        if fp is None:
+            return 0
+        from tectora.core.gable import is_valid_gable_edge_at
+        n = len(b.vertices)
+        reverted = 0
+        for i in range(n):
+            if i < len(b.edge_types) and b.edge_types[i] == "gable":
+                a = b.vertices[i]
+                c = b.vertices[(i + 1) % n]
+                if not is_valid_gable_edge_at(fp, a, c):
+                    b.edge_types[i] = "eave"
+                    reverted += 1
+        if reverted:
+            self.update()
+        return reverted
+
     def reset_history(self) -> None:
         """Drop all undo/redo history (e.g. after loading a project)."""
         self._undo_stack.clear()
@@ -1276,9 +1305,21 @@ class Canvas2D(QWidget):
         if cur < 1e-9 or new_length <= 0:
             return
         ux, uy = dx / cur, dy / cur
+        new_vertex = (a[0] + ux * new_length, a[1] + uy * new_length)
+
+        # Guard: don't apply a resize that would make the polygon self-intersect
+        # (which would silently void the footprint and blank the roof).
+        if b.closed and len(b.vertices) >= 3:
+            from tectora.core.footprint import is_simple_polygon
+            candidate = list(b.vertices)
+            candidate[(ei + 1) % nb] = new_vertex
+            if not is_simple_polygon(candidate):
+                self._editor._show_toast(tr("invalidShape", self._lang))
+                return
+
         self._push_undo()
         self._active = bi
-        b.vertices[(ei + 1) % nb] = (a[0] + ux * new_length, a[1] + uy * new_length)
+        b.vertices[(ei + 1) % nb] = new_vertex
         b.skeleton_data = None
         self.update()
         if b.closed:
