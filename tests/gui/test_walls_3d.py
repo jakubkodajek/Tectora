@@ -44,7 +44,7 @@ def test_calculate_populates_3d_with_walls(tmp_path):
     app.processEvents()
 
 
-def test_set_geometry_overhang_enlarges_roof(tmp_path):
+def test_set_geometry_overhang_insets_walls(tmp_path):
     from tectora.core.footprint import Footprint
     from tectora.gui.editor.view_3d import Roof3DView
     from PySide6.QtWidgets import QApplication
@@ -53,6 +53,11 @@ def test_set_geometry_overhang_enlarges_roof(tmp_path):
     v = Roof3DView()
     v.set_geometry(fp, 35, 2.5, overhang=0.0)
     roof0 = [vv for (verts, is_wall) in v._geom_faces if not is_wall for vv in verts]
+    walls0 = [vv for (verts, is_wall) in v._geom_faces if is_wall for vv in verts]
     v.set_geometry(fp, 35, 2.5, overhang=1.0)
     roof1 = [vv for (verts, is_wall) in v._geom_faces if not is_wall for vv in verts]
-    assert max(x for (x, _y, _z) in roof1) > max(x for (x, _y, _z) in roof0)
+    walls1 = [vv for (verts, is_wall) in v._geom_faces if is_wall for vv in verts]
+    # We model the ROOF: the drawn eave is unchanged by overhang; the WALLS move
+    # inward (the building sits under the roof edge).
+    assert max(x for (x, _y, _z) in roof1) == max(x for (x, _y, _z) in roof0)
+    assert max(x for (x, _y, _z) in walls1) < max(x for (x, _y, _z) in walls0)

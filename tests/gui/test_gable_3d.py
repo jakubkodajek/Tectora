@@ -77,7 +77,7 @@ def test_gable_adds_one_vertical_wall_triangle():
     assert zs[2] > 0.0                  # ridge apex M lifted above the edge
 
 
-def test_overhang_suppresses_gable_wall():
+def test_overhang_keeps_gable_wall():
     from tectora.core.footprint import Footprint
     from tectora.gui.editor.view_3d import Roof3DView
 
@@ -91,9 +91,10 @@ def test_overhang_suppresses_gable_wall():
     view = Roof3DView()
     view.set_geometry(fp_gable, 35, 2.5, overhang=1.0)
 
-    # Under an overhang, gables are suppressed: walls == one quad per footprint
-    # edge (no gable triangle added). The roof is rebuilt all-eave, so no štít.
-    assert _wall_count(view) == n
+    # New semantics: the roof is the drawn polygon at any overhang, so the gable
+    # is honoured — the vertical štít triangle is still drawn even with overhang.
+    tri_walls = [(v, w) for (v, w) in view._geom_faces if w and len(v) == 3]
+    assert len(tri_walls) == 1
 
 
 def test_gabled_view_renders_without_exception():

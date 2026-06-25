@@ -1,11 +1,15 @@
-"""Dispatch: rectangle → exact calculator; general polygon → straight skeleton."""
+"""Dispatch: rectangle → exact calculator; general polygon → straight skeleton.
+
+Tectora models the ROOF, not the house footprint: the drawn polygon is the
+**eave (roof) outline**, so the roof geometry is built on it directly. The eave
+overhang only insets the *walls* inward (handled by the 3D view) — it does NOT
+change the roof area/eaves and does NOT suppress gables.
+"""
 from __future__ import annotations
 
 from tectora.core.bridge import UnsupportedFootprint, footprint_to_spec
 from tectora.core.calculator import calculate
 from tectora.core.footprint import Footprint, drop_collinear_vertices
-from tectora.core.geom2d import EPS
-from tectora.core.poly_offset import offset_polygon
 from tectora.core.result import RoofResult
 from tectora.core.roof_from_skeleton import build_roof
 
@@ -25,15 +29,9 @@ def generate_roof(
     if len(sv) != footprint.n:
         footprint = Footprint.from_lists(sv, se)
 
-    # If overhang is requested, offset the footprint outward and always use the
-    # straight-skeleton path so faces are in real model coordinates (matching the
-    # offset eave outline drawn on the 2D canvas).
-    if overhang > EPS:
-        offset_verts = offset_polygon(list(footprint.vertices), overhang)
-        n = len(offset_verts)
-        offset_fp = Footprint.from_lists(offset_verts, ["eave"] * n)
-        return build_roof(offset_fp, pitch_deg)
-
+    # The drawn polygon IS the roof eave outline. ``overhang`` does not affect the
+    # roof geometry (it only insets the walls in the 3D view), so it is ignored
+    # here — gables are therefore honoured at any overhang.
     try:
         spec = footprint_to_spec(footprint, pitch_deg, name=name)
     except UnsupportedFootprint:

@@ -14,13 +14,17 @@ def _editor(tmp_path):
     return app, w._stack.widget(1)
 
 
-def test_overhang_control_recomputes(tmp_path):
+def test_overhang_control_keeps_area_and_stores_per_building(tmp_path):
+    import pytest
     app, e = _editor(tmp_path)
     for (x, y) in [(0, 0), (12, 0), (12, 8), (0, 8)]:
         e.canvas.add_point(x, y)
     e.canvas.close_polygon()
     e._on_calculate()
     area0 = e.last_result.total_area_m2
-    e._overhang_spin.setValue(0.5) if hasattr(e, "_overhang_spin") else e.set_overhang(0.5)
+    e._overhang_spin.setValue(0.5)
     app.processEvents()
-    assert e.last_result.total_area_m2 > area0
+    # Overhang insets the walls, not the roof — area is unchanged, and the value
+    # is stored on the active building.
+    assert e.last_result.total_area_m2 == pytest.approx(area0)
+    assert e.canvas._buildings[0].overhang == 0.5

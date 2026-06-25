@@ -233,29 +233,31 @@ class Roof3DView(QWidget):
     def _geometry_for(
         self, footprint, pitch_deg: float, wall_height: float, overhang: float
     ) -> list[tuple[list[tuple[float, float, float]], bool]]:
-        """Build the (vertices, is_wall) faces for ONE building."""
+        """Build the (vertices, is_wall) faces for ONE building.
+
+        The drawn polygon is the ROOF eave outline, so the roof is built on it
+        directly. The overhang insets the WALLS inward (the building sits under
+        the eave). Gable walls work at any overhang.
+        """
         from tectora.core.roof_faces import build_faces
 
-        # Build roof on the offset footprint when overhang is requested
-        if overhang > 1e-9:
-            from tectora.core.footprint import Footprint
-            from tectora.core.poly_offset import offset_polygon
-            offset_verts = offset_polygon(list(footprint.vertices), overhang)
-            n = len(offset_verts)
-            roof_fp = Footprint.from_lists(offset_verts, ["eave"] * n)
-        else:
-            roof_fp = footprint
-
-        faces = build_faces(roof_fp, pitch_deg)
+        faces = build_faces(footprint, pitch_deg)
 
         geom: list[tuple[list[tuple[float, float, float]], bool]] = []
 
-        # Wall quads — one per footprint edge
-        verts = footprint.vertices  # tuple of (x, y)
-        n = len(verts)
+        # Walls sit INWARD of the eave by the overhang.
+        wall_verts = [(float(x), float(y)) for x, y in footprint.vertices]
+        if overhang > 1e-9:
+            from tectora.core.footprint import is_simple_polygon
+            from tectora.core.poly_offset import offset_polygon
+            inset = offset_polygon(list(footprint.vertices), -overhang)
+            if len(inset) == len(wall_verts) and is_simple_polygon(inset):
+                wall_verts = [(float(x), float(y)) for x, y in inset]
+
+        n = len(wall_verts)
         for i in range(n):
-            ax, ay = verts[i]
-            bx, by = verts[(i + 1) % n]
+            ax, ay = wall_verts[i]
+            bx, by = wall_verts[(i + 1) % n]
             quad: list[tuple[float, float, float]] = [
                 (ax, ay, 0.0),
                 (bx, by, 0.0),
@@ -264,20 +266,18 @@ class Roof3DView(QWidget):
             ]
             geom.append((quad, True))  # True = wall
 
-        # Roof faces
+        # Roof faces (on the drawn polygon)
         for face in faces:
             geom.append((list(face.vertices), False))  # False = roof
 
         # Gable walls (štíty) — vertical triangles at valid gable wing-ends.
-        # Only when there is no overhang: with an overhang the roof polygon is
-        # rebuilt as all-eave, so there are no gables to draw (matches 2D/results).
-        if overhang <= 1e-9:
-            from tectora.core.gable import GableNotSupported, gable_wall_triangles
-            try:
-                for tri in gable_wall_triangles(footprint, pitch_deg):
-                    geom.append((list(tri), True))  # vertical štít = a wall face
-            except GableNotSupported:
-                pass  # invalid gable (shouldn't happen; 2D validates) — just skip
+        # The roof is the drawn polygon at any overhang, so these always apply.
+        from tectora.core.gable import GableNotSupported, gable_wall_triangles
+        try:
+            for tri in gable_wall_triangles(footprint, pitch_deg):
+                geom.append((list(tri), True))  # vertical štít = a wall face
+        except GableNotSupported:
+            pass  # invalid gable (shouldn't happen; 2D validates) — just skip
 
         return geom
 

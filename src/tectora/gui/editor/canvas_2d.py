@@ -627,48 +627,37 @@ class Canvas2D(QWidget):
             return
         n = len(self._vertices)
 
-        has_overhang = self._overhang > 1e-9
+        # The drawn polygon IS the roof eave outline — draw its edges in their
+        # eave/gable colours (we model the roof, not the house footprint).
+        for i in range(n):
+            a = self._vertices[i]
+            b = self._vertices[(i + 1) % n]
+            etype = self._edge_types[i] if i < len(self._edge_types) else "eave"
+            color = COL.get(etype, COL["eave"])
+            pen = QPen(QColor(color), 2.5)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            ax, ay = self._to_screen(*a)
+            bx, by = self._to_screen(*b)
+            p.drawLine(int(ax), int(ay), int(bx), int(by))
 
-        if has_overhang:
-            # Draw walls (drawn polygon) muted/thin to distinguish from eave outline
-            for i in range(n):
-                a = self._vertices[i]
-                b = self._vertices[(i + 1) % n]
-                pen = QPen(QColor(MUTED), 1.2, Qt.PenStyle.DashLine)
-                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-                p.setPen(pen)
-                ax, ay = self._to_screen(*a)
-                bx, by = self._to_screen(*b)
-                p.drawLine(int(ax), int(ay), int(bx), int(by))
-
-            # Draw the offset eave outline in eave-blue
+        # Overhang insets the WALLS inward of the eave — draw them as a dashed
+        # muted hint (the building sits under the roof edge).
+        if self._overhang > 1e-9:
+            from tectora.core.footprint import is_simple_polygon
             from tectora.core.poly_offset import offset_polygon
             try:
-                eave_verts = offset_polygon(self._vertices, self._overhang)
-                eave_color = COL.get("eave", "#4a90d9")
-                pen = QPen(QColor(eave_color), 2.5)
-                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-                p.setPen(pen)
-                m = len(eave_verts)
-                for i in range(m):
-                    ax, ay = self._to_screen(*eave_verts[i])
-                    bx, by = self._to_screen(*eave_verts[(i + 1) % m])
-                    p.drawLine(int(ax), int(ay), int(bx), int(by))
+                wall_verts = offset_polygon(self._vertices, -self._overhang)
+                if len(wall_verts) == n and is_simple_polygon(wall_verts):
+                    pen = QPen(QColor(MUTED), 1.2, Qt.PenStyle.DashLine)
+                    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                    p.setPen(pen)
+                    for i in range(n):
+                        ax, ay = self._to_screen(*wall_verts[i])
+                        bx, by = self._to_screen(*wall_verts[(i + 1) % n])
+                        p.drawLine(int(ax), int(ay), int(bx), int(by))
             except Exception:
-                pass  # If offset fails, skip silently
-        else:
-            # No overhang: draw footprint edges in their eave/gable colours (current behaviour)
-            for i in range(n):
-                a = self._vertices[i]
-                b = self._vertices[(i + 1) % n]
-                etype = self._edge_types[i] if i < len(self._edge_types) else "eave"
-                color = COL.get(etype, COL["eave"])
-                pen = QPen(QColor(color), 2.5)
-                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-                p.setPen(pen)
-                ax, ay = self._to_screen(*a)
-                bx, by = self._to_screen(*b)
-                p.drawLine(int(ax), int(ay), int(bx), int(by))
+                pass  # If the inward offset fails, just skip the wall hint.
 
     # ── Skeleton (ridge / hip / valley) ──────────────────────────────────
 
