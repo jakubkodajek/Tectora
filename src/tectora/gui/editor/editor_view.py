@@ -351,6 +351,7 @@ class EditorView(QWidget):
             "draw": tr("draw", self._lang),
             "editPoints": tr("editPoints", self._lang),
             "eaveGable": tr("eaveGable", self._lang),
+            "facePitch": tr("facePitch", self._lang),
         }
         self._tool_buttons: dict[str, QPushButton] = {}
         for key, label in tool_keys.items():

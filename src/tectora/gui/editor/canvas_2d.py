@@ -142,6 +142,11 @@ class Canvas2D(QWidget):
         self._edge_len_hits: list = []
         self._len_editor = None  # QLineEdit shown when a length label is clicked
 
+        # Clickable roof faces (for per-face pitch): recorded each paint as
+        # (centroid_x, centroid_y, building_index, face_name, slope_deg).
+        self._face_hits: list = []
+        self._pitch_editor = None  # QLineEdit shown when a face is clicked
+
         # Cursor shape
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.CrossCursor)
@@ -734,6 +739,7 @@ class Canvas2D(QWidget):
         # building in turn (cheap, avoids threading a param through every helper).
         self._painted_ridges = []   # rebuilt below for hover-height hit-testing
         self._edge_len_hits = []    # rebuilt below for editable length labels
+        self._face_hits = []        # rebuilt below for per-face pitch clicks
         saved_active = self._active
         for i in range(len(self._buildings)):
             self._active = i
@@ -913,6 +919,7 @@ class Canvas2D(QWidget):
             # Draw footprint edge-length labels (both paths share this)
             self._draw_edge_length_labels(p)
             self._draw_ss_face_area_labels(p)
+            self._record_face_hits(None)
         else:
             # Exact path (rectangle): use classify_skeleton + map_calc_point
             from tectora.gui.editor.skeleton_render import (
@@ -940,6 +947,7 @@ class Canvas2D(QWidget):
             self._draw_edge_length_labels(p)
             self._draw_skeleton_length_labels(p, segments, bbox)
             self._draw_face_area_labels(p, bbox)
+            self._record_face_hits(bbox)
 
     def _dim_font(self) -> QFont:
         """Small annotation font for dimension labels."""
@@ -1276,6 +1284,95 @@ class Canvas2D(QWidget):
         if b.closed:
             self.edited.emit()   # triggers a live recompute in the editor
 
+    # ------------------------------------------------------------------
+    # Per-face pitch (click a roof plane to set its slope)
+    # ------------------------------------------------------------------
+
+    def _record_face_hits(self, bbox) -> None:
+        """Record each roof face's clickable centroid for the active building.
+
+        *bbox* is the calc-space bbox for the exact (rectangle) path (face
+        vertices are in calc coords there) or None for the SS path (model coords).
+        """
+        from tectora.gui.editor.skeleton_render import map_calc_point
+        for face in getattr(self._skeleton_data, "faces", None) or []:
+            vs = face.vertices
+            if not vs:
+                continue
+            cx = sum(v[0] for v in vs) / len(vs)
+            cy = sum(v[1] for v in vs) / len(vs)
+            if bbox is not None:
+                cx, cy = map_calc_point(cx, cy, bbox)
+            sx, sy = self._to_screen(cx, cy)
+            self._face_hits.append((sx, sy, self._active, face.name, face.slope_deg))
+
+    def _handle_face_pitch_click(self, px: float, py: float) -> None:
+        self.select_building_at(px, py)
+        b = self._b
+        if not b.closed or len(b.vertices) < 3:
+            return
+        poly = [self._to_screen(*v) for v in b.vertices]
+        if not _point_in_polygon(px, py, poly):
+            return
+        best, best_d = None, None
+        for (sx, sy, bi, name, slope) in self._face_hits:
+            if bi != self._active:
+                continue
+            d = (px - sx) ** 2 + (py - sy) ** 2
+            if best_d is None or d < best_d:
+                best_d, best = d, (sx, sy, name, slope)
+        if best is None:
+            self._editor._show_toast(tr("calcFirst", self._lang))
+            return
+        sx, sy, name, slope = best
+        self._open_pitch_editor(name, slope, sx, sy)
+
+    def _open_pitch_editor(self, face_name: str, slope: float,
+                           lx: float, ly: float) -> None:
+        self._close_pitch_editor()
+        ed = QLineEdit(self)
+        ed.setText(f"{slope:.0f}")
+        ed.selectAll()
+        ed.setFixedSize(54, 24)
+        ed.move(int(lx - 27), int(ly - 12))
+        ed.setStyleSheet(
+            f"background: {theme.CARD}; border: 1.5px solid {theme.ACCENT};"
+            f" border-radius: 5px; padding: 0 4px; color: {theme.TEXT}; font-size: 9pt;"
+        )
+        ed.editingFinished.connect(lambda fn=face_name: self._apply_pitch_editor(fn))
+        self._pitch_editor = ed
+        ed.show()
+        ed.setFocus()
+
+    def _apply_pitch_editor(self, face_name: str) -> None:
+        if self._pitch_editor is None:
+            return
+        txt = self._pitch_editor.text().strip().replace(",", ".")
+        self._close_pitch_editor()
+        try:
+            val = float(txt)
+        except ValueError:
+            return
+        if not (1 <= val <= 89):
+            return
+        self._push_undo()
+        # A "zadní" (back) gable plane sets the back pitch; any other plane sets
+        # the building's (front / global) pitch.
+        if "zadní" in (face_name or "").lower():
+            self._b.pitch_back = val
+        else:
+            self._b.pitch = int(round(val))
+        self._b.skeleton_data = None
+        self.update()
+        self.active_changed.emit(self._active)   # re-sync the panel spins
+        if self._b.closed:
+            self.edited.emit()                    # live recompute
+
+    def _close_pitch_editor(self) -> None:
+        if self._pitch_editor is not None:
+            self._pitch_editor.deleteLater()
+            self._pitch_editor = None
+
     # Override mousePressEvent to also handle clear button
     def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
         px, py = float(event.position().x()), float(event.position().y())
@@ -1307,3 +1404,5 @@ class Canvas2D(QWidget):
                 self._handle_editpoints_press(px, py)
             elif tool == "eaveGable":
                 self._handle_eavegable_click(px, py)
+            elif tool == "facePitch":
+                self._handle_face_pitch_click(px, py)

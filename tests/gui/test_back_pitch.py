@@ -83,3 +83,36 @@ def test_back_pitch_persists_and_survives_undo(tmp_path):
     ed2.canvas._buildings[0].pitch_back = 10.0
     ed2.canvas.undo()
     assert ed2.canvas._buildings[0].pitch_back == 40.0
+
+
+def test_click_face_sets_pitch(tmp_path):
+    from PySide6.QtGui import QPixmap
+    app, w, ed = _editor(tmp_path)
+    _gable_rect(ed)
+    ed._on_calculate()
+    c = ed.canvas
+    QPixmap(c.size())  # ensure size
+    pm = QPixmap(c.size()); c.render(pm)   # populate face hits
+    assert len(c._face_hits) == 2
+    ed.active_tool = "facePitch"
+
+    back = next(h for h in c._face_hits if "zadní" in h[3].lower())
+    c._handle_face_pitch_click(back[0], back[1])
+    assert c._pitch_editor is not None
+    c._pitch_editor.setText("20")
+    c._apply_pitch_editor(back[3])
+    app.processEvents()
+    assert c._buildings[0].pitch_back == 20.0
+    assert c._buildings[0].pitch == 35           # front unchanged
+
+    pm = QPixmap(c.size()); c.render(pm)
+    front = next(h for h in c._face_hits if "přední" in h[3].lower())
+    c._handle_face_pitch_click(front[0], front[1])
+    c._pitch_editor.setText("45")
+    c._apply_pitch_editor(front[3])
+    app.processEvents()
+    assert c._buildings[0].pitch == 45
+    assert c._buildings[0].pitch_back == 20.0     # back unchanged
+    # Panel spins re-synced to the new per-face pitches.
+    assert ed._pitch_spin.value() == 45
+    assert ed._pitch_back_spin.value() == 20
