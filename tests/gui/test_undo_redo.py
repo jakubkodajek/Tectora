@@ -111,3 +111,43 @@ def test_reopen_restores_all_buildings(tmp_path):
     ed2 = w._stack.widget(1)
     assert ed2.canvas.building_count() == 2
     assert ed2.canvas._buildings[1].overhang == 0.7
+
+
+def test_undo_redo_arrow_buttons(tmp_path):
+    app, w, ed = _editor(tmp_path)
+    c = ed.canvas
+    c.add_point(0, 0)
+    c.add_point(6, 0)
+    c.add_point(6, 4)
+    ed._undo_btn.click()
+    assert len(c._vertices) == 2
+    ed._redo_btn.click()
+    assert len(c._vertices) == 3
+
+
+def test_no_edit_menu_in_menubar(tmp_path):
+    app, w, ed = _editor(tmp_path)
+    labels = [a.text() for a in ed.menubar.actions()]
+    assert "Upravit" not in labels and "Edit" not in labels
+
+
+def test_multibuilding_survives_theme_and_language_change(tmp_path):
+    app, w, ed = _editor(tmp_path)
+    c = ed.canvas
+    _rect(c, [(0, 0), (6, 0), (6, 4), (0, 4)])
+    ed._overhang_spin.setValue(0.0)
+    ed._on_new_building()
+    _rect(c, [(12, 0), (18, 0), (18, 4), (12, 4)])
+    ed._overhang_spin.setValue(0.6)
+    assert c.building_count() == 2
+
+    w.set_theme(True)
+    app.processEvents()
+    c2 = w._stack.widget(1).canvas
+    assert c2.building_count() == 2
+    assert c2._buildings[1].overhang == 0.6
+
+    w.set_language("en")
+    app.processEvents()
+    assert w._stack.widget(1).canvas.building_count() == 2
+    w.set_theme(False)

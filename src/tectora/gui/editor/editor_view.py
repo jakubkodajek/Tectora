@@ -210,6 +210,11 @@ class EditorView(QWidget):
         root.addWidget(self._make_content(), stretch=1)
         root.addWidget(self._make_statusbar())
 
+        # Keyboard shortcuts for undo/redo (Ctrl+Z / Ctrl+Y) — no visible menu.
+        from PySide6.QtGui import QKeySequence, QShortcut
+        QShortcut(QKeySequence.StandardKey.Undo, self, activated=self._on_undo)
+        QShortcut(QKeySequence.StandardKey.Redo, self, activated=self._on_redo)
+
     # ── Top bar ──────────────────────────────────────────────────────────
 
     def _make_topbar(self) -> QWidget:
@@ -247,14 +252,6 @@ class EditorView(QWidget):
         menu_file.addAction(tr("exportXls", lang), self._on_export)
         menu_file.addSeparator()
         menu_file.addAction(tr("exit", lang), window.close)
-
-        # Upravit (zpět / vpřed)
-        from PySide6.QtGui import QKeySequence
-        menu_edit = self.menubar.addMenu(tr("edit", lang))
-        self._act_undo = menu_edit.addAction(tr("undo", lang), self._on_undo)
-        self._act_undo.setShortcut(QKeySequence.StandardKey.Undo)   # Ctrl+Z
-        self._act_redo = menu_edit.addAction(tr("redo", lang), self._on_redo)
-        self._act_redo.setShortcut(QKeySequence.StandardKey.Redo)   # Ctrl+Y / Ctrl+Shift+Z
 
         # Zobrazení
         menu_view = self.menubar.addMenu(tr("view", lang))
@@ -319,6 +316,21 @@ class EditorView(QWidget):
 
     # ── Toolbar ──────────────────────────────────────────────────────────
 
+    def _make_icon_button(self, glyph: str, tooltip: str, slot) -> QPushButton:
+        """A small square icon button (used for the undo/redo arrows)."""
+        btn = QPushButton(glyph)
+        btn.setFixedSize(34, 34)
+        btn.setToolTip(tooltip)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet(
+            f"QPushButton {{ background: {theme.CARD}; color: {theme.MID};"
+            f" border: 1px solid {theme.BORDER}; border-radius: 7px;"
+            f" font-size: 15pt; font-weight: 600; }}"
+            f"QPushButton:hover {{ background: {theme.BG}; color: {theme.TEXT}; }}"
+        )
+        btn.clicked.connect(slot)
+        return btn
+
     def _make_toolbar(self) -> QWidget:
         bar = QWidget()
         bar.setFixedHeight(52)
@@ -358,6 +370,14 @@ class EditorView(QWidget):
         self._new_building_btn = _tool_btn(tr("newBuilding", self._lang), checkable=False)
         self._new_building_btn.clicked.connect(self._on_new_building)
         layout.addWidget(self._new_building_btn)
+
+        layout.addSpacing(10)
+
+        # Undo / redo arrow buttons (krok zpět / vpřed) — on-screen, not a menu.
+        self._undo_btn = self._make_icon_button("↶", tr("undo", self._lang), self._on_undo)
+        self._redo_btn = self._make_icon_button("↷", tr("redo", self._lang), self._on_redo)
+        layout.addWidget(self._undo_btn)
+        layout.addWidget(self._redo_btn)
 
         layout.addSpacing(12)
 

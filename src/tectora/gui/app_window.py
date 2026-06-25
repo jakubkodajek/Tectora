@@ -83,16 +83,11 @@ class MainWindow(QMainWindow):
         saved_note = editor.get_note() if hasattr(editor, "get_note") else ""
         saved_location = editor.get_location() if hasattr(editor, "get_location") else None
         saved_pitch = getattr(editor, "pitch", 35)
-        saved_footprint = None
-        saved_edge_types = None
-        saved_overhang = getattr(editor, "overhang", 0.0)
-        saved_wall_height = getattr(editor, "wall_height", 2.5)
-        if hasattr(editor, "canvas") and editor.canvas is not None:
-            saved_footprint = getattr(editor.canvas, "_vertices", None)
-            saved_footprint_closed = getattr(editor.canvas, "_closed", False)
-            saved_edge_types = getattr(editor.canvas, "_edge_types", None)
-        else:
-            saved_footprint_closed = False
+        # Capture ALL buildings (geometry + per-building params), not just the
+        # active one, so a multi-building design survives a language/theme change.
+        saved_buildings = (
+            editor._collect_buildings() if hasattr(editor, "_collect_buildings") else []
+        )
 
         # Rebuild HomeView (index 0)
         from tectora.gui.home.home_view import HomeView
@@ -112,14 +107,15 @@ class MainWindow(QMainWindow):
         old_editor.deleteLater()
         self._editor = new_editor
 
-        # Restore editor state if there was a project
-        if saved_project is not None:
+        # Restore editor state if there was a project or any drawn building.
+        if saved_project is not None or saved_buildings:
             from tectora.application.project import Project
-            # Reconstruct project with possibly updated name/pitch
+            # Reconstruct the project with ALL buildings; load_project restores
+            # every building (geometry + per-building pitch/overhang/wall) and
+            # recomputes — so multi-building designs survive the rebuild.
             proj = Project(
                 project_name=saved_name or getattr(saved_project, "project_name", ""),
-                footprint=getattr(saved_project, "footprint", None),
-                global_pitch_deg=float(saved_pitch),
+                buildings=saved_buildings or None,
             )
             new_editor.load_project(
                 proj, saved_entry_id,
@@ -129,35 +125,6 @@ class MainWindow(QMainWindow):
             new_editor._current_entry_id = saved_entry_id
             self._current_project = proj
             self._current_entry_id = saved_entry_id
-
-            # Restore drawn vertices if the polygon was closed
-            if (saved_footprint is not None and saved_footprint_closed
-                    and hasattr(new_editor, "canvas")):
-                canvas = new_editor.canvas
-                canvas._vertices = list(saved_footprint)
-                canvas._closed = True
-                if saved_edge_types is not None:
-                    canvas._edge_types = list(saved_edge_types)
-                canvas.update()
-
-            # Restore overhang and wall_height on the new editor
-            if hasattr(new_editor, "set_overhang"):
-                new_editor.set_overhang(saved_overhang)
-            else:
-                new_editor.overhang = saved_overhang
-            if hasattr(new_editor, "set_wall_height"):
-                new_editor.set_wall_height(saved_wall_height)
-            else:
-                new_editor.wall_height = saved_wall_height
-
-            # Re-run calculation so the roof reappears if polygon is valid
-            if (saved_footprint_closed
-                    and hasattr(new_editor, "canvas")
-                    and new_editor.canvas.footprint is not None):
-                try:
-                    new_editor._on_calculate()
-                except Exception:
-                    pass
 
         # Restore which view was showing
         self._stack.setCurrentIndex(current_idx)
