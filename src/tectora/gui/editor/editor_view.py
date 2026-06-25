@@ -844,12 +844,13 @@ class EditorView(QWidget):
 
     def _make_statusbar(self) -> QWidget:
         bar = QWidget()
-        bar.setFixedHeight(28)
+        bar.setFixedHeight(36)
         bar.setStyleSheet(
             f"background: {theme.CARD}; border-top: 1px solid {theme.BORDER_SOFT};"
         )
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(16, 0, 16, 0)
+        layout.setContentsMargins(16, 0, 12, 0)
+        layout.setSpacing(6)
 
         self.status_label = QLabel(f"Kurzor —  ·  Jednotky: m")
         self.status_label.setStyleSheet(
@@ -858,7 +859,51 @@ class EditorView(QWidget):
         layout.addWidget(self.status_label)
         layout.addStretch(1)
 
+        # Precise length + direction entry (DACAD-style): type a length, press an
+        # arrow to add the next segment in that cardinal direction.
+        _len_lbl = QLabel(tr("length", self._lang) + ":")
+        _len_lbl.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
+        layout.addWidget(_len_lbl)
+
+        self._len_input = QLineEdit()
+        self._len_input.setFixedSize(60, 26)
+        self._len_input.setPlaceholderText("m")
+        self._len_input.setStyleSheet(
+            f"background: {theme.CARD}; border: 1px solid {theme.BORDER};"
+            f" border-radius: 6px; padding: 0 6px; color: {theme.TEXT}; font-size: 9pt;"
+        )
+        layout.addWidget(self._len_input)
+
+        def _arrow(glyph, dx, dy, tip):
+            b = QPushButton(glyph)
+            b.setFixedSize(28, 26)
+            b.setToolTip(tip)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(
+                f"QPushButton {{ background: {theme.CARD}; color: {theme.MID};"
+                f" border: 1px solid {theme.BORDER}; border-radius: 6px; font-size: 11pt; }}"
+                f"QPushButton:hover {{ background: {theme.BG}; color: {theme.TEXT}; }}"
+            )
+            b.clicked.connect(lambda _=False, ddx=dx, ddy=dy: self._add_relative(ddx, ddy))
+            return b
+
+        layout.addWidget(_arrow("←", -1, 0, "vlevo"))
+        layout.addWidget(_arrow("↑", 0, 1, "nahoru"))
+        layout.addWidget(_arrow("↓", 0, -1, "dolů"))
+        layout.addWidget(_arrow("→", 1, 0, "vpravo"))
+
         return bar
+
+    def _add_relative(self, dirx: float, diry: float) -> None:
+        """Add the next vertex at the typed length in the given cardinal direction."""
+        txt = self._len_input.text().strip().replace(",", ".")
+        try:
+            length = float(txt)
+        except ValueError:
+            return
+        if length <= 0:
+            return
+        self.canvas.add_relative_point(dirx * length, diry * length)
 
     # ------------------------------------------------------------------
     # Slots / internal helpers

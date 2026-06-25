@@ -25,7 +25,7 @@ from PySide6.QtGui import (
     QPen,
     QMouseEvent,
 )
-from PySide6.QtWidgets import QToolTip, QWidget
+from PySide6.QtWidgets import QLineEdit, QToolTip, QWidget
 from PySide6.QtCore import Signal
 
 from tectora.gui.editor.canvas_geometry import (
@@ -135,6 +135,11 @@ class Canvas2D(QWidget):
         self._hover_timer.setInterval(550)
         self._hover_timer.timeout.connect(self._show_hover_height)
         self._hover_pending: Optional[tuple] = None  # (text, global QPoint)
+
+        # Editable edge-length labels: recorded each paint as
+        # (screen_x, screen_y, building_index, edge_index, length_m).
+        self._edge_len_hits: list = []
+        self._len_editor = None  # QLineEdit shown when a length label is clicked
 
         # Cursor shape
         self.setMouseTracking(True)
@@ -379,6 +384,21 @@ class Canvas2D(QWidget):
         self._skeleton_data = None
         self._vertices.append((float(mx), float(my)))
         self.update()
+
+    def add_relative_point(self, dx: float, dy: float) -> None:
+        """Append a vertex offset (dx, dy) metres from the last one (precise entry).
+
+        Starts at the origin when the polygon is empty, so a length + direction
+        can draw an exact outline without clicking.
+        """
+        if self._closed:
+            return
+        if self._vertices:
+            lx, ly = self._vertices[-1]
+        else:
+            lx, ly = 0.0, 0.0
+            self.add_point(0.0, 0.0)
+        self.add_point(float(lx) + float(dx), float(ly) + float(dy))
 
     def close_polygon(self) -> None:
         """Finalise the polygon.  Requires ≥ 3 existing vertices and no self-intersection."""
@@ -705,6 +725,7 @@ class Canvas2D(QWidget):
         # read the active building's state, so temporarily point _active at each
         # building in turn (cheap, avoids threading a param through every helper).
         self._painted_ridges = []   # rebuilt below for hover-height hit-testing
+        self._edge_len_hits = []    # rebuilt below for editable length labels
         saved_active = self._active
         for i in range(len(self._buildings)):
             self._active = i
@@ -946,20 +967,18 @@ class Canvas2D(QWidget):
         p.drawText(tx, ty, text)
 
     def _draw_edge_length_labels(self, p: QPainter) -> None:
-        """Draw edge-length annotations near each footprint edge midpoint."""
+        """Draw edge-length annotations near each edge midpoint, and record them
+        as clickable hit targets so the user can rewrite a length."""
         from tectora.gui.editor.skeleton_render import fmt_len
-        fp = self.footprint
-        if fp is None:
+        if not self._closed or len(self._vertices) < 3:
             return
-        n = fp.n
-        verts = fp.vertices  # 2-D model coords (already in model space)
+        verts = self._vertices  # canvas (draw-order) vertices → indices match
+        n = len(verts)
         for i in range(n):
             ax, ay = verts[i]
             bx, by = verts[(i + 1) % n]
-            # Midpoint in model space
             mx = (ax + bx) / 2.0
             my = (ay + by) / 2.0
-            # Normal vector (perpendicular to edge, pointing outward ~10 px)
             dx, dy = bx - ax, by - ay
             length = (dx * dx + dy * dy) ** 0.5
             if length < 1e-9:
@@ -968,8 +987,8 @@ class Canvas2D(QWidget):
             nx, ny = -dy / length, dx / length
             offset_m = 8.0 / self._scale  # 8 px in model space
             lx, ly = self._to_screen(mx + nx * offset_m, my + ny * offset_m)
-            label = fmt_len(fp.edge_length(i))
-            self._draw_label_at(p, lx, ly, label, TEXT)
+            self._draw_label_at(p, lx, ly, fmt_len(length), TEXT)
+            self._edge_len_hits.append((lx, ly, self._active, i, length))
 
     def _draw_skeleton_length_labels(
         self,
@@ -1180,6 +1199,75 @@ class Canvas2D(QWidget):
         p.setPen(QColor(theme.MID))
         p.drawText(QRect(bx, by, btn_w, btn_h), Qt.AlignmentFlag.AlignCenter, label)
 
+    # ------------------------------------------------------------------
+    # Editable edge-length labels (click a length on the roof to rewrite it)
+    # ------------------------------------------------------------------
+
+    def _hit_edge_len_label(self, px: float, py: float):
+        """Return (bi, ei, length, lx, ly) for a length label under (px, py)."""
+        for (lx, ly, bi, ei, length) in self._edge_len_hits:
+            if abs(px - lx) <= 24 and abs(py - ly) <= 12:
+                return (bi, ei, length, lx, ly)
+        return None
+
+    def _open_len_editor(self, bi: int, ei: int, length: float,
+                         lx: float, ly: float) -> None:
+        self._close_len_editor()
+        ed = QLineEdit(self)
+        ed.setText(f"{length:.2f}")
+        ed.selectAll()
+        ed.setFixedSize(60, 24)
+        ed.move(int(lx - 30), int(ly - 14))
+        ed.setStyleSheet(
+            f"background: {theme.CARD}; border: 1.5px solid {theme.ACCENT};"
+            f" border-radius: 5px; padding: 0 4px; color: {theme.TEXT}; font-size: 9pt;"
+        )
+        ed.editingFinished.connect(lambda b=bi, e=ei: self._apply_len_editor(b, e))
+        self._len_editor = ed
+        ed.show()
+        ed.setFocus()
+
+    def _apply_len_editor(self, bi: int, ei: int) -> None:
+        if self._len_editor is None:
+            return
+        txt = self._len_editor.text().strip().replace(",", ".")
+        self._close_len_editor()
+        try:
+            new_len = float(txt)
+        except ValueError:
+            return
+        if new_len > 0:
+            self.set_edge_length(bi, ei, new_len)
+
+    def _close_len_editor(self) -> None:
+        if self._len_editor is not None:
+            self._len_editor.deleteLater()
+            self._len_editor = None
+
+    def set_edge_length(self, bi: int, ei: int, new_length: float) -> None:
+        """Resize edge *ei* of building *bi* to *new_length* by moving its end
+        vertex along the edge direction (the start vertex stays fixed)."""
+        if not (0 <= bi < len(self._buildings)):
+            return
+        b = self._buildings[bi]
+        nb = len(b.vertices)
+        if not (0 <= ei < nb):
+            return
+        a = b.vertices[ei]
+        c = b.vertices[(ei + 1) % nb]
+        dx, dy = c[0] - a[0], c[1] - a[1]
+        cur = (dx * dx + dy * dy) ** 0.5
+        if cur < 1e-9 or new_length <= 0:
+            return
+        ux, uy = dx / cur, dy / cur
+        self._push_undo()
+        self._active = bi
+        b.vertices[(ei + 1) % nb] = (a[0] + ux * new_length, a[1] + uy * new_length)
+        b.skeleton_data = None
+        self.update()
+        if b.closed:
+            self.edited.emit()   # triggers a live recompute in the editor
+
     # Override mousePressEvent to also handle clear button
     def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
         px, py = float(event.position().x()), float(event.position().y())
@@ -1196,6 +1284,11 @@ class Canvas2D(QWidget):
                 int(px), int(py)
             ):
                 self.clear()
+                return
+            # Clicking an edge-length label opens an inline editor to rewrite it.
+            hit = self._hit_edge_len_label(px, py)
+            if hit is not None:
+                self._open_len_editor(*hit)
                 return
 
         tool = getattr(self._editor, "active_tool", "draw")
