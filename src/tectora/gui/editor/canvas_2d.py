@@ -108,6 +108,10 @@ class Canvas2D(QWidget):
         self._buildings: list[_CanvasBuilding] = [_CanvasBuilding()]
         self._active: int = 0
 
+        # Undo/redo history of geometric state (snapshots; skeletons recomputed).
+        self._undo_stack: list = []
+        self._redo_stack: list = []
+
         # ── View state ───────────────────────────────────────────────────
         # Origin = pixel position of model (0, 0); widget centre + pan offset.
         self._scale: float = _DEFAULT_SCALE
@@ -191,6 +195,7 @@ class Canvas2D(QWidget):
 
     def new_building(self) -> int:
         """Append a fresh empty building, make it active, and return its index."""
+        self._push_undo()
         self._buildings.append(_CanvasBuilding())
         self._active = len(self._buildings) - 1
         self.update()
@@ -208,6 +213,7 @@ class Canvas2D(QWidget):
         """Remove building *index*; always keep at least one (empty) building."""
         if not (0 <= index < len(self._buildings)):
             return
+        self._push_undo()
         del self._buildings[index]
         if not self._buildings:
             self._buildings = [_CanvasBuilding()]
@@ -267,6 +273,75 @@ class Canvas2D(QWidget):
     def set_active_wall_height(self, value: float) -> None:
         self._b.wall_height = float(value)
 
+    # ------------------------------------------------------------------
+    # Undo / redo (snapshot-based)
+    # ------------------------------------------------------------------
+
+    def _snapshot(self) -> tuple:
+        """Capture the geometric state of all buildings + active index.
+
+        Skeleton data is excluded (recomputed after a restore) to keep
+        snapshots small and copy-safe.
+        """
+        buildings = tuple(
+            (
+                list(b.vertices),
+                list(b.edge_types),
+                b.closed,
+                b.overhang,
+                b.pitch,
+                b.wall_height,
+                b.name,
+            )
+            for b in self._buildings
+        )
+        return (buildings, self._active)
+
+    def _restore(self, snap: tuple) -> None:
+        buildings, active = snap
+        self._buildings = [
+            _CanvasBuilding(
+                vertices=list(v), edge_types=list(et), closed=cl,
+                skeleton_data=None, overhang=oh, pitch=pi, wall_height=wh, name=nm,
+            )
+            for (v, et, cl, oh, pi, wh, nm) in buildings
+        ]
+        if not self._buildings:
+            self._buildings = [_CanvasBuilding()]
+        self._active = max(0, min(active, len(self._buildings) - 1))
+        self.update()
+        self.active_changed.emit(self._active)
+
+    def _push_undo(self) -> None:
+        """Record the current state before a mutating operation; clears redo."""
+        self._undo_stack.append(self._snapshot())
+        # Cap history so long sessions don't grow without bound.
+        if len(self._undo_stack) > 200:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+
+    def can_undo(self) -> bool:
+        return bool(self._undo_stack)
+
+    def can_redo(self) -> bool:
+        return bool(self._redo_stack)
+
+    def undo(self) -> bool:
+        """Revert to the previous snapshot. Returns True if anything changed."""
+        if not self._undo_stack:
+            return False
+        self._redo_stack.append(self._snapshot())
+        self._restore(self._undo_stack.pop())
+        return True
+
+    def redo(self) -> bool:
+        """Re-apply an undone snapshot. Returns True if anything changed."""
+        if not self._redo_stack:
+            return False
+        self._undo_stack.append(self._snapshot())
+        self._restore(self._redo_stack.pop())
+        return True
+
     def active_name(self) -> str:
         return self._b.name
 
@@ -281,6 +356,7 @@ class Canvas2D(QWidget):
         """Append a vertex in model space (metres). Only valid while open."""
         if self._closed:
             return
+        self._push_undo()
         self._skeleton_data = None
         self._vertices.append((float(mx), float(my)))
         self.update()
@@ -295,6 +371,7 @@ class Canvas2D(QWidget):
         if not is_simple_polygon(self._vertices):
             # Stay open so the user can keep editing.
             raise ValueError("Polygon self-intersects; cannot close.")
+        self._push_undo()
         self._closed = True
         self._edge_types = ["eave"] * len(self._vertices)
         self.update()
@@ -311,14 +388,21 @@ class Canvas2D(QWidget):
         """Flip edge *i* between "eave" and "gable"."""
         if not self._edge_types:
             return
+        self._push_undo()
         self._skeleton_data = None
         self._edge_types[i] = "gable" if self._edge_types[i] == "eave" else "eave"
         self.update()
         if self._closed:
             self.edited.emit()
 
+    def reset_history(self) -> None:
+        """Drop all undo/redo history (e.g. after loading a project)."""
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+
     def clear(self) -> None:
         """Reset to a single empty building (clears ALL buildings)."""
+        self._push_undo()
         self._buildings = [_CanvasBuilding()]
         self._active = 0
         self._drag_idx = None
@@ -479,6 +563,10 @@ class Canvas2D(QWidget):
             return
         node_pts = [self._to_screen(v[0], v[1]) for v in self._vertices]
         idx = hit_test_node(px, py, node_pts, radius=_NODE_RADIUS + 4)
+        if idx is not None:
+            # Snapshot once at the start of the drag (move_vertex itself does
+            # not, so the whole drag collapses into a single undo step).
+            self._push_undo()
         self._drag_idx = idx
 
     def _handle_eavegable_click(self, px: float, py: float) -> None:

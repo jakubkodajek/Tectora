@@ -158,17 +158,29 @@ class EditorView(QWidget):
                 self._overhang_spin.blockSignals(False)
                 self.overhang = float(oh)
 
-        # Restore the drawn polygon onto the canvas so opening a saved project
-        # shows its geometry (and recompute so the roof + results reappear).
-        # Without this, opening an existing project showed an empty canvas.
+        # Restore ALL buildings onto the canvas so opening a saved (multi-
+        # building) project shows its full geometry. Without this, opening an
+        # existing project showed an empty canvas / only the first building.
         canvas = getattr(self, "canvas", None)
         if canvas is not None:
-            fp = project.footprint if project is not None else None
-            if fp is not None:
-                canvas._vertices = [(float(x), float(y)) for (x, y) in fp.vertices]
-                canvas._edge_types = [e.type.value for e in fp.edges]
-                canvas._closed = True
-                canvas.set_overhang(self.overhang)
+            from tectora.gui.editor.canvas_2d import _CanvasBuilding
+            blds = list(getattr(project, "buildings", []) or []) if project is not None else []
+            drawn = [b for b in blds if b.footprint is not None]
+            if drawn:
+                canvas._buildings = [
+                    _CanvasBuilding(
+                        vertices=[(float(x), float(y)) for (x, y) in b.footprint.vertices],
+                        edge_types=[e.type.value for e in b.footprint.edges],
+                        closed=True,
+                        overhang=float(b.overhang_m),
+                        pitch=int(round(b.pitch_deg)),
+                        wall_height=float(b.wall_height_m),
+                        name=b.name,
+                    )
+                    for b in drawn
+                ]
+                canvas._active = 0
+                self._sync_params_from_active()
                 canvas.update()
                 try:
                     self._on_calculate()
@@ -178,6 +190,7 @@ class EditorView(QWidget):
                 # New / empty project: clear any drawing left from a prior open.
                 canvas.clear()
                 self.clear_results()
+            canvas.reset_history()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -234,6 +247,14 @@ class EditorView(QWidget):
         menu_file.addAction(tr("exportXls", lang), self._on_export)
         menu_file.addSeparator()
         menu_file.addAction(tr("exit", lang), window.close)
+
+        # Upravit (zpět / vpřed)
+        from PySide6.QtGui import QKeySequence
+        menu_edit = self.menubar.addMenu(tr("edit", lang))
+        self._act_undo = menu_edit.addAction(tr("undo", lang), self._on_undo)
+        self._act_undo.setShortcut(QKeySequence.StandardKey.Undo)   # Ctrl+Z
+        self._act_redo = menu_edit.addAction(tr("redo", lang), self._on_redo)
+        self._act_redo.setShortcut(QKeySequence.StandardKey.Redo)   # Ctrl+Y / Ctrl+Shift+Z
 
         # Zobrazení
         menu_view = self.menubar.addMenu(tr("view", lang))
@@ -814,6 +835,34 @@ class EditorView(QWidget):
         if hasattr(self, "_btn_2d") and hasattr(self, "_btn_3d"):
             self._btn_2d.setChecked(mode == "2d")
             self._btn_3d.setChecked(mode == "3d")
+
+    # ------------------------------------------------------------------
+    # Undo / redo
+    # ------------------------------------------------------------------
+
+    def _on_undo(self) -> None:
+        if self.canvas.undo():
+            self._after_history_change()
+
+    def _on_redo(self) -> None:
+        if self.canvas.redo():
+            self._after_history_change()
+
+    def _after_history_change(self) -> None:
+        """Refresh after an undo/redo: recompute roofs (if any) and repaint."""
+        has_fp = any(
+            self.canvas.building_footprint(i) is not None
+            for i in range(self.canvas.building_count())
+        )
+        if self.last_result is not None and has_fp:
+            try:
+                self._on_calculate()
+            except Exception:
+                pass
+        else:
+            self.last_result = None
+            self._update_3d_all()
+        self.canvas.update()
 
     def _on_calculate(self) -> None:
         """Provést výpočet — compute EVERY building and update canvas + panel.
