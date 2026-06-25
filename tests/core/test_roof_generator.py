@@ -48,3 +48,23 @@ def test_collinear_split_rectangle_with_overhang():
         [(0, 0), (3, 0), (6, 0), (6, 2), (6, 4), (0, 4)], ["eave"] * 6)
     r = generate_roof(split, 35, overhang=1.0)
     assert r.total_area_m2 > 0
+
+
+def test_half_hip_clips_a_gable_rectangle():
+    # Gables on the two short ends → a gable roof; a half-hip depth clips the
+    # ends into a half-hip (polovalba) — ridge shorter than the gable's, 4 hips.
+    types = ["eave", "gable", "eave", "gable"]
+    rect = lambda: Footprint.from_lists([(0, 0), (10, 0), (10, 6), (0, 6)], types)
+    g = generate_roof(rect(), 35, half_hip_m=0.0)
+    hh = generate_roof(rect(), 35, half_hip_m=1.0)
+    assert g.spec.type == RoofType.GABLE
+    assert hh.spec.type == RoofType.HALF_HIP
+    assert 0 < hh.ridge_length_m < g.ridge_length_m
+    assert hh.hip_count == 4
+
+
+def test_half_hip_ignored_without_gable():
+    # No gable edges → a half-hip depth has no effect (stays a full hip).
+    fp = Footprint.from_lists([(0, 0), (10, 0), (10, 6), (0, 6)], ["eave"] * 4)
+    r = generate_roof(fp, 35, half_hip_m=1.0)
+    assert r.spec.type == RoofType.HIP

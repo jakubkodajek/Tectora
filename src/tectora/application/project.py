@@ -27,6 +27,7 @@ class Building:
     pitch_deg: float = 35.0
     overhang_m: float = 0.0
     wall_height_m: float = 2.5
+    half_hip_m: float = 0.0      # half-hip (polovalba) clip depth in metres
     name: str = ""
 
     def to_dict(self) -> dict:
@@ -42,6 +43,7 @@ class Building:
             "pitch_deg": self.pitch_deg,
             "overhang_m": self.overhang_m,
             "wall_height_m": self.wall_height_m,
+            "half_hip_m": self.half_hip_m,
         }
 
     @classmethod
@@ -57,6 +59,7 @@ class Building:
             pitch_deg=float(data.get("pitch_deg", 35.0)),
             overhang_m=float(data.get("overhang_m", 0.0)),
             wall_height_m=float(data.get("wall_height_m", 2.5)),
+            half_hip_m=float(data.get("half_hip_m", 0.0)),
             name=data.get("name", ""),
         )
 

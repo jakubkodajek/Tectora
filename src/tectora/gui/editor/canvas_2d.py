@@ -85,6 +85,7 @@ class _CanvasBuilding:
     overhang: float = 0.0
     pitch: int = 35
     wall_height: float = 2.5
+    half_hip: float = 0.0      # half-hip (polovalba) clip depth in metres
     name: str = ""
 
 
@@ -283,6 +284,12 @@ class Canvas2D(QWidget):
     def set_active_wall_height(self, value: float) -> None:
         self._b.wall_height = float(value)
 
+    def active_half_hip(self) -> float:
+        return self._b.half_hip
+
+    def set_active_half_hip(self, value: float) -> None:
+        self._b.half_hip = float(value)
+
     # ------------------------------------------------------------------
     # Undo / redo (snapshot-based)
     # ------------------------------------------------------------------
@@ -302,6 +309,7 @@ class Canvas2D(QWidget):
                 b.pitch,
                 b.wall_height,
                 b.name,
+                b.half_hip,
             )
             for b in self._buildings
         )
@@ -312,9 +320,10 @@ class Canvas2D(QWidget):
         self._buildings = [
             _CanvasBuilding(
                 vertices=list(v), edge_types=list(et), closed=cl,
-                skeleton_data=None, overhang=oh, pitch=pi, wall_height=wh, name=nm,
+                skeleton_data=None, overhang=oh, pitch=pi, wall_height=wh,
+                half_hip=hh, name=nm,
             )
-            for (v, et, cl, oh, pi, wh, nm) in buildings
+            for (v, et, cl, oh, pi, wh, nm, hh) in buildings
         ]
         if not self._buildings:
             self._buildings = [_CanvasBuilding()]

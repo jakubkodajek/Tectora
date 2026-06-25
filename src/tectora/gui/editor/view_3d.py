@@ -217,31 +217,39 @@ class Roof3DView(QWidget):
         """Render an entire multi-building design.
 
         *items* is an iterable of ``(footprint, pitch_deg, wall_height,
-        overhang)`` tuples — one per building. Buildings with ``footprint is
-        None`` are skipped. All buildings share one scene (auto-centred/scaled
-        together by the painter).
+        overhang)`` tuples — one per building, optionally with a 5th element
+        ``roof_faces`` (precomputed FaceResults, e.g. a half-hip) used verbatim
+        instead of rebuilding the roof. Buildings with ``footprint is None`` are
+        skipped. All buildings share one scene.
         """
         geom: list[tuple[list[tuple[float, float, float]], bool]] = []
-        for footprint, pitch_deg, wall_height, overhang in items:
+        for item in items:
+            footprint, pitch_deg, wall_height, overhang = item[0], item[1], item[2], item[3]
+            roof_faces = item[4] if len(item) > 4 else None
             if footprint is None:
                 continue
-            geom.extend(self._geometry_for(footprint, pitch_deg, wall_height, overhang))
+            geom.extend(self._geometry_for(
+                footprint, pitch_deg, wall_height, overhang, roof_faces))
         self._geom_faces = geom
         self._result = None
         self.update()
 
     def _geometry_for(
-        self, footprint, pitch_deg: float, wall_height: float, overhang: float
+        self, footprint, pitch_deg: float, wall_height: float, overhang: float,
+        roof_faces=None,
     ) -> list[tuple[list[tuple[float, float, float]], bool]]:
         """Build the (vertices, is_wall) faces for ONE building.
 
         The drawn polygon is the ROOF eave outline, so the roof is built on it
         directly. The overhang insets the WALLS inward (the building sits under
-        the eave). Gable walls work at any overhang.
+        the eave). Gable walls work at any overhang. If *roof_faces* is given
+        (e.g. a half-hip computed by the exact calculator), they are used as the
+        roof verbatim and gable walls are skipped.
         """
         from tectora.core.roof_faces import build_faces
 
-        faces = build_faces(footprint, pitch_deg)
+        use_provided = roof_faces is not None and len(roof_faces) > 0
+        faces = roof_faces if use_provided else build_faces(footprint, pitch_deg)
 
         geom: list[tuple[list[tuple[float, float, float]], bool]] = []
 
@@ -271,13 +279,15 @@ class Roof3DView(QWidget):
             geom.append((list(face.vertices), False))  # False = roof
 
         # Gable walls (štíty) — vertical triangles at valid gable wing-ends.
-        # The roof is the drawn polygon at any overhang, so these always apply.
-        from tectora.core.gable import GableNotSupported, gable_wall_triangles
-        try:
-            for tri in gable_wall_triangles(footprint, pitch_deg):
-                geom.append((list(tri), True))  # vertical štít = a wall face
-        except GableNotSupported:
-            pass  # invalid gable (shouldn't happen; 2D validates) — just skip
+        # Skipped when explicit roof faces are supplied (e.g. a half-hip already
+        # encodes its end geometry, with no full vertical gable).
+        if not use_provided:
+            from tectora.core.gable import GableNotSupported, gable_wall_triangles
+            try:
+                for tri in gable_wall_triangles(footprint, pitch_deg):
+                    geom.append((list(tri), True))  # vertical štít = a wall face
+            except GableNotSupported:
+                pass  # invalid gable (shouldn't happen; 2D validates) — just skip
 
         return geom
 

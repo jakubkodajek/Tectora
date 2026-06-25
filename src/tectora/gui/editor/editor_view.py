@@ -175,6 +175,7 @@ class EditorView(QWidget):
                         overhang=float(b.overhang_m),
                         pitch=int(round(b.pitch_deg)),
                         wall_height=float(b.wall_height_m),
+                        half_hip=float(b.half_hip_m),
                         name=b.name,
                     )
                     for b in drawn
@@ -696,6 +697,32 @@ class EditorView(QWidget):
         v.addWidget(self._overhang_spin)
         v.addSpacing(12)
 
+        # Polovalba (half-hip clip depth) — clips a gable rectangle's ends.
+        _lbl_halfhip = QLabel(tr("halfHip", lang))
+        _lbl_halfhip.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
+        v.addWidget(_lbl_halfhip)
+        v.addSpacing(4)
+
+        self._half_hip_spin = QDoubleSpinBox()
+        self._half_hip_spin.setRange(0.0, 5.0)
+        self._half_hip_spin.setSingleStep(0.1)
+        self._half_hip_spin.setDecimals(1)
+        self._half_hip_spin.setValue(0.0)
+        self._half_hip_spin.setSuffix(" m")
+        self._half_hip_spin.setFixedHeight(34)
+        self._half_hip_spin.setStyleSheet(
+            f"QDoubleSpinBox {{"
+            f"  background: {theme.CARD}; color: {theme.MID}; border: 1px solid {theme.BORDER};"
+            f"  border-radius: 7px; padding: 0 8px; font-size: 10pt;"
+            f"  font-weight: 600;"
+            f"}}"
+            f"QDoubleSpinBox:focus {{ border-color: {theme.ACCENT}; }}"
+            f"QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; }}"
+        )
+        self._half_hip_spin.valueChanged.connect(self._on_half_hip_changed)
+        v.addWidget(self._half_hip_spin)
+        v.addSpacing(12)
+
         # Typ střechy badge
         _lbl_roof_type = QLabel(tr("roofType", lang))
         _lbl_roof_type.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
@@ -914,13 +941,11 @@ class EditorView(QWidget):
             any_footprint = True
             b = canvas._buildings[i]
             try:
-                result = uc.calculate_project(
-                    Project(
-                        project_name=(self._project.project_name if self._project else ""),
-                        footprint=fp,
-                        global_pitch_deg=float(b.pitch),
-                        overhang_m=float(b.overhang),
-                    )
+                from tectora.core.roof_generator import generate_roof
+                result = generate_roof(
+                    fp, float(b.pitch),
+                    name=(self._project.project_name if self._project else ""),
+                    overhang=float(b.overhang), half_hip_m=float(b.half_hip),
                 )
             except ValueError:
                 # Only surface the toast for the building the user is on.
@@ -964,7 +989,14 @@ class EditorView(QWidget):
             if bfp is None:
                 continue
             bb = self.canvas._buildings[i]
-            items.append((bfp, float(bb.pitch), float(bb.wall_height), float(bb.overhang)))
+            # For a half-hip, the drawn polygon + edge types can't be rebuilt by
+            # build_faces (it doesn't know the clip depth) — feed it the computed
+            # result faces instead.
+            roof_faces = None
+            if bb.half_hip > 0 and bb.skeleton_data is not None:
+                roof_faces = getattr(bb.skeleton_data, "faces", None)
+            items.append((bfp, float(bb.pitch), float(bb.wall_height),
+                          float(bb.overhang), roof_faces))
         self.view3d.set_design(items)
 
     # ------------------------------------------------------------------
@@ -1141,6 +1173,10 @@ class EditorView(QWidget):
             self._wall_height_spin.blockSignals(True)
             self._wall_height_spin.setValue(wall)
             self._wall_height_spin.blockSignals(False)
+        if hasattr(self, "_half_hip_spin"):
+            self._half_hip_spin.blockSignals(True)
+            self._half_hip_spin.setValue(float(canvas.active_half_hip()))
+            self._half_hip_spin.blockSignals(False)
 
     def _default_project_name(self) -> str:
         """Auto-generated project name ``Stavba #N`` (next free increment)."""
@@ -1167,7 +1203,7 @@ class EditorView(QWidget):
             buildings.append(Building(
                 footprint=bfp, pitch_deg=float(bb.pitch),
                 overhang_m=float(bb.overhang), wall_height_m=float(bb.wall_height),
-                name=bb.name,
+                half_hip_m=float(bb.half_hip), name=bb.name,
             ))
         return buildings
 
@@ -1426,6 +1462,12 @@ class EditorView(QWidget):
     def _on_overhang_changed(self, value: float) -> None:
         """Update overhang and recompute if a result exists."""
         self.set_overhang(float(value))
+
+    def _on_half_hip_changed(self, value: float) -> None:
+        """Update the active building's half-hip (polovalba) depth and recompute."""
+        self.canvas.set_active_half_hip(float(value))
+        if self.last_result is not None and self.canvas.footprint is not None:
+            self._on_calculate()
 
     def _show_toast(self, text: str) -> None:
         """Show a dark floating toast message that auto-hides after ~2.5 s."""
