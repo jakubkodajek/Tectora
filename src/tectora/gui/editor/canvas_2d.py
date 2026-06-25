@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt
+from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -25,7 +25,7 @@ from PySide6.QtGui import (
     QPen,
     QMouseEvent,
 )
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QToolTip, QWidget
 from PySide6.QtCore import Signal
 
 from tectora.gui.editor.canvas_geometry import (
@@ -124,6 +124,15 @@ class Canvas2D(QWidget):
 
         # editPoints: currently dragged node index
         self._drag_idx: Optional[int] = None
+
+        # Hover-height tooltip (eaves/ridges). Painted ridge segments are
+        # recorded each repaint as (sx1, sy1, sx2, sy2, height_m).
+        self._painted_ridges: list = []
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.setInterval(550)
+        self._hover_timer.timeout.connect(self._show_hover_height)
+        self._hover_pending: Optional[tuple] = None  # (text, global QPoint)
 
         # Cursor shape
         self.setMouseTracking(True)
@@ -524,6 +533,10 @@ class Canvas2D(QWidget):
             self.move_vertex(self._drag_idx, mx, my)
             return
 
+        # Hover-height tooltip: when the cursor rests on a ridge or eave, show
+        # its height after a short delay.
+        self._update_hover(px, py, event)
+
         self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
@@ -532,6 +545,63 @@ class Canvas2D(QWidget):
         elif event.button() == Qt.MouseButton.RightButton and self._pan_anchor is not None:
             self._pan_anchor = None
             self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def leaveEvent(self, event) -> None:  # type: ignore[override]
+        self._hover_timer.stop()
+        self._hover_pending = None
+        QToolTip.hideText()
+        super().leaveEvent(event)
+
+    # ------------------------------------------------------------------
+    # Hover-height tooltip (eaves / ridges)
+    # ------------------------------------------------------------------
+
+    def _hover_text_at(self, px: float, py: float) -> Optional[str]:
+        """Return a height label if (px, py) is on a ridge or an eave, else None."""
+        # Ridge segments recorded during the last paint.
+        if self._painted_ridges:
+            segs = [((s[0], s[1]), (s[2], s[3])) for s in self._painted_ridges]
+            ri = hit_test_edge(px, py, segs, tol=6)
+            if ri is not None:
+                h = self._painted_ridges[ri][4]
+                return f"{tr('ridge', self._lang)}: {h:.2f} m"
+        # Eave (footprint edges) — height is the eave height (0 for now).
+        for b in self._buildings:
+            if not b.closed or len(b.vertices) < 2:
+                continue
+            n = len(b.vertices)
+            esegs = [
+                (self._to_screen(*b.vertices[i]),
+                 self._to_screen(*b.vertices[(i + 1) % n]))
+                for i in range(n)
+            ]
+            ei = hit_test_edge(px, py, esegs, tol=6)
+            if ei is not None:
+                etype = b.edge_types[ei] if ei < len(b.edge_types) else "eave"
+                label = tr("gable", self._lang) if etype == "gable" else tr("eave", self._lang)
+                return f"{label}: 0.00 m"
+        return None
+
+    def _update_hover(self, px: float, py: float, event: QMouseEvent) -> None:
+        text = self._hover_text_at(px, py)
+        if text is None:
+            self._hover_timer.stop()
+            self._hover_pending = None
+            QToolTip.hideText()
+            return
+        gpos = event.globalPosition().toPoint()
+        if self._hover_pending is None or self._hover_pending[0] != text:
+            # New target → (re)start the rest delay before showing the tooltip.
+            self._hover_pending = (text, gpos)
+            self._hover_timer.start()
+        else:
+            self._hover_pending = (text, gpos)  # same target, keep position fresh
+
+    def _show_hover_height(self) -> None:
+        if self._hover_pending is None:
+            return
+        text, gpos = self._hover_pending
+        QToolTip.showText(gpos, text, self)
 
     def _handle_draw_click(self, px: float, py: float) -> None:
         mx, my = self._snapped_model(px, py)
@@ -613,6 +683,7 @@ class Canvas2D(QWidget):
         # Draw every building's polygon + roof. The per-building draw helpers
         # read the active building's state, so temporarily point _active at each
         # building in turn (cheap, avoids threading a param through every helper).
+        self._painted_ridges = []   # rebuilt below for hover-height hit-testing
         saved_active = self._active
         for i in range(len(self._buildings)):
             self._active = i
@@ -773,6 +844,8 @@ class Canvas2D(QWidget):
                 pen.setCapStyle(Qt.PenCapStyle.RoundCap)
                 p.setPen(pen)
                 p.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
+                if kind == "ridge":
+                    self._painted_ridges.append((sx1, sy1, sx2, sy2, a[2]))
                 # Label midpoint with 3D length
                 length3d = math.sqrt(
                     (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
@@ -810,6 +883,9 @@ class Canvas2D(QWidget):
                 pen.setCapStyle(Qt.PenCapStyle.RoundCap)
                 p.setPen(pen)
                 p.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
+                if kind == "ridge":
+                    self._painted_ridges.append(
+                        (sx1, sy1, sx2, sy2, result.apex_height_m))
 
             self._draw_edge_length_labels(p)
             self._draw_skeleton_length_labels(p, segments, bbox)
