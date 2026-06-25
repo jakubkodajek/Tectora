@@ -90,6 +90,25 @@ def point_in_polygon(
     return inside
 
 
+def point_segment_distance(
+    px: float,
+    py: float,
+    a: tuple[float, float],
+    b: tuple[float, float],
+) -> float:
+    """Shortest distance from point (px, py) to segment a–b (screen space)."""
+    ax, ay = a
+    bx, by = b
+    dx, dy = bx - ax, by - ay
+    seg2 = dx * dx + dy * dy
+    if seg2 < 1e-12:
+        return math.hypot(px - ax, py - ay)
+    t = ((px - ax) * dx + (py - ay) * dy) / seg2
+    t = max(0.0, min(1.0, t))
+    fx, fy = ax + t * dx, ay + t * dy
+    return math.hypot(px - fx, py - fy)
+
+
 def hit_test_edge(
     px: float,
     py: float,
