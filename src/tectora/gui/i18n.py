@@ -109,6 +109,8 @@ CATALOG: dict[str, dict[str, str]] = {
         "duplicateBuilding": "Duplikovat stavbu",
         "rotateBuilding": "Otočit stavbu o 90°",
         "copySuffix": " (kopie)",
+        "halfHipPitchTooLow": "Sklon polovalby musí být větší než hlavní sklon střechy.",
+        "halfHipOnlyRect": "Sklon valby jde nastavit zatím jen na obdélníkové střeše.",
     },
     "sk": {
         "new": "Nová zákazka",
@@ -214,6 +216,8 @@ CATALOG: dict[str, dict[str, str]] = {
         "duplicateBuilding": "Duplikovať stavbu",
         "rotateBuilding": "Otočiť stavbu o 90°",
         "copySuffix": " (kópia)",
+        "halfHipPitchTooLow": "Sklon polovalby musí byť väčší než hlavný sklon strechy.",
+        "halfHipOnlyRect": "Sklon valby sa dá nastaviť zatiaľ len na obdĺžnikovej streche.",
     },
     "en": {
         "new": "New project",
@@ -319,6 +323,8 @@ CATALOG: dict[str, dict[str, str]] = {
         "duplicateBuilding": "Duplicate building",
         "rotateBuilding": "Rotate building 90°",
         "copySuffix": " (copy)",
+        "halfHipPitchTooLow": "The half-hip pitch must be steeper than the main roof pitch.",
+        "halfHipOnlyRect": "Setting the hip-end pitch works on rectangular roofs only for now.",
     },
 }
 

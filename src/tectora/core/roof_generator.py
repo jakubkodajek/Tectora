@@ -8,6 +8,7 @@ change the roof area/eaves and does NOT suppress gables.
 from __future__ import annotations
 
 import dataclasses
+import math
 
 from tectora.core.bridge import UnsupportedFootprint, footprint_to_spec
 from tectora.core.calculator import calculate
@@ -15,6 +16,28 @@ from tectora.core.footprint import Footprint, drop_collinear_vertices
 from tectora.core.result import RoofResult
 from tectora.core.roof_from_skeleton import build_roof
 from tectora.core.spec import RoofType
+
+
+def half_hip_depth_for_pitch(
+    width: float,
+    pitch_deg: float,
+    end_pitch_deg: float,
+) -> float:
+    """Half-hip clip depth *d* that gives the end face the pitch *end_pitch_deg*.
+
+    The ridge keeps the main slopes' height H = (W/2)·tan(pitch); the end face
+    rises H over the horizontal run d, so β = atan(H/d) ⇒ d = H / tan(β).
+    A steeper end (β → 90°) means a shallower clip (d → 0, almost a gable);
+    β equal to the main pitch means d = W/2 (a full hip). *end_pitch_deg*
+    must therefore be greater than *pitch_deg*.
+    """
+    if not (0 < pitch_deg < 90 and 0 < end_pitch_deg < 90):
+        raise ValueError("Sklony musí být v rozsahu 1–89°.")
+    if end_pitch_deg <= pitch_deg:
+        raise ValueError(
+            "Sklon polovalby musí být větší než hlavní sklon střechy.")
+    h = (width / 2.0) * math.tan(math.radians(pitch_deg))
+    return h / math.tan(math.radians(end_pitch_deg))
 
 
 def generate_roof(

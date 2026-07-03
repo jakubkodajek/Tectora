@@ -794,7 +794,7 @@ class EditorView(QWidget):
         v.addSpacing(4)
 
         self._half_hip_spin = QDoubleSpinBox()
-        self._half_hip_spin.setRange(0.0, 5.0)
+        self._half_hip_spin.setRange(0.0, 20.0)
         self._half_hip_spin.setSingleStep(0.1)
         self._half_hip_spin.setDecimals(1)
         self._half_hip_spin.setValue(0.0)

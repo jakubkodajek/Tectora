@@ -1593,6 +1593,15 @@ class Canvas2D(QWidget):
         ed.show()
         ed.setFocus()
 
+    @staticmethod
+    def _is_hip_end_face(face_name: str) -> bool:
+        """True for the triangular END faces: "valba" (hip) / "valbička"
+        (half-hip). The main slopes of a hip roof are named "… (valbová)" —
+        that suffix does NOT contain the substring "valba", so they fall
+        through to the front/back pitch handling."""
+        n = (face_name or "").lower()
+        return "valbička" in n or "valba" in n
+
     def _apply_pitch_editor(self, face_name: str) -> None:
         if self._pitch_editor is None:
             return
@@ -1603,6 +1612,11 @@ class Canvas2D(QWidget):
         except ValueError:
             return
         if not (1 <= val <= 89):
+            return
+        # Clicking a valba/valbička end triangle re-clips the roof so the end
+        # face gets this pitch → a half-hip (polovalba).
+        if self._is_hip_end_face(face_name):
+            self._set_end_face_pitch(val)
             return
         self._push_undo()
         # A "zadní" (back) gable plane sets the back pitch; any other plane sets
@@ -1615,6 +1629,49 @@ class Canvas2D(QWidget):
         self.update()
         self.active_changed.emit(self._active)   # re-sync the panel spins
         if self._b.closed:
+            self.edited.emit()                    # live recompute
+
+    def _set_end_face_pitch(self, val: float) -> None:
+        """Turn the end of the roof into a half-hip whose end face has pitch
+        *val* (degrees).
+
+        Computes the clip depth from the geometry (d = H / tan(val)), marks
+        both cap edges as gables (the exact HALF_HIP mapping needs them) and
+        sets the per-building half-hip depth. The exact model is symmetric,
+        so BOTH ends get the same pitch. Rectangles only.
+        """
+        b = self._b
+        result = b.skeleton_data
+        if (result is None or getattr(result, "skeleton_segments", None)
+                or len(b.vertices) != 4):
+            self._editor._show_toast(tr("halfHipOnlyRect", self._lang))
+            return
+        if val <= float(b.pitch) + 1e-9:
+            self._editor._show_toast(tr("halfHipPitchTooLow", self._lang))
+            return
+        from tectora.core.roof_generator import half_hip_depth_for_pitch
+        xs = [v[0] for v in b.vertices]
+        ys = [v[1] for v in b.vertices]
+        width = min(max(xs) - min(xs), max(ys) - min(ys))
+        d = half_hip_depth_for_pitch(width, float(b.pitch), val)
+
+        self._push_undo()
+        # Cap edges = the shortest edge and its opposite partner.
+        n = len(b.vertices)
+        lens = [
+            (b.vertices[(i + 1) % n][0] - b.vertices[i][0]) ** 2
+            + (b.vertices[(i + 1) % n][1] - b.vertices[i][1]) ** 2
+            for i in range(n)
+        ]
+        i0 = min(range(n), key=lambda i: lens[i])
+        for i in (i0, (i0 + 2) % n):
+            if i < len(b.edge_types):
+                b.edge_types[i] = "gable"
+        b.half_hip = float(d)
+        b.skeleton_data = None
+        self.update()
+        self.active_changed.emit(self._active)   # re-sync the Polovalba spin
+        if b.closed:
             self.edited.emit()                    # live recompute
 
     def _close_pitch_editor(self) -> None:
