@@ -147,3 +147,25 @@ def map_calc_point(
         return (x0 + cx, y0 + cy)
     else:
         return (x0 + cy, y0 + cx)
+
+
+def map_faces_to_model(faces, bbox):
+    """Map exact-calculator faces into the footprint's model frame.
+
+    The exact calculator emits :class:`FaceResult` vertices in its own local
+    frame (origin at the corner, length along x). Anything that renders those
+    faces in model space — the 3D view above all — must map them through
+    :func:`map_calc_point` first, otherwise the roof lands at the calculator
+    origin instead of on the drawn building. Returns new FaceResults; z is
+    kept (eave = 0).
+    """
+    from tectora.core.result import FaceResult
+    out = []
+    for f in faces:
+        verts = [
+            (*map_calc_point(v[0], v[1], bbox), v[2])
+            for v in f.vertices
+        ]
+        out.append(FaceResult(name=f.name, area_m2=f.area_m2,
+                              slope_deg=f.slope_deg, vertices=verts))
+    return out

@@ -1179,7 +1179,19 @@ class EditorView(QWidget):
             # depth nor the back pitch) — feed it the computed result faces.
             roof_faces = None
             if (bb.half_hip > 0 or bb.pitch_back) and bb.skeleton_data is not None:
-                roof_faces = getattr(bb.skeleton_data, "faces", None)
+                result = bb.skeleton_data
+                faces = getattr(result, "faces", None)
+                if faces and not getattr(result, "skeleton_segments", None):
+                    # Exact-calculator faces live in the calc frame — map them
+                    # onto the drawn footprint (same mapping as the 2D canvas),
+                    # or the roof renders at the origin instead of on the walls.
+                    from tectora.gui.editor.skeleton_render import map_faces_to_model
+                    xs = [v[0] for v in bb.vertices]
+                    ys = [v[1] for v in bb.vertices]
+                    roof_faces = map_faces_to_model(
+                        faces, (min(xs), min(ys), max(xs), max(ys)))
+                else:
+                    roof_faces = faces
             items.append((bfp, float(bb.pitch), float(bb.wall_height),
                           float(bb.overhang), roof_faces, float(bb.base_height)))
         self.view3d.set_design(items)
