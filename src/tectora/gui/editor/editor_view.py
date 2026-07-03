@@ -207,6 +207,7 @@ class EditorView(QWidget):
                     self._sync_params_from_active()
                 self.clear_results()
             canvas.reset_history()
+            self._refresh_building_list()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -610,6 +611,22 @@ class EditorView(QWidget):
         )
         v.addWidget(self.note_edit)
         v.addSpacing(12)
+
+        v.addSpacing(8)
+
+        # ── STAVBY section (building list of the design) ─────────────
+        v.addWidget(_section_header(tr("buildings", lang).upper()))
+        v.addSpacing(10)
+
+        _buildings_box = QWidget()
+        _buildings_box.setStyleSheet("background: transparent;")
+        self._buildings_box_layout = QVBoxLayout(_buildings_box)
+        self._buildings_box_layout.setContentsMargins(0, 0, 0, 0)
+        self._buildings_box_layout.setSpacing(4)
+        v.addWidget(_buildings_box)
+        v.addSpacing(12)
+        self._building_rows: list = []
+        self._refresh_building_list()
 
         v.addSpacing(8)
 
@@ -1305,6 +1322,69 @@ class EditorView(QWidget):
     def _on_active_building_changed(self, idx: int) -> None:
         """Reload the parameter controls from the now-active building."""
         self._sync_params_from_active()
+        self._refresh_building_list()
+
+    def _refresh_building_list(self) -> None:
+        """Rebuild the STAVBY rows: one row per building, active highlighted.
+
+        Clicking a row selects that building on the canvas; ✕ removes it.
+        """
+        canvas = getattr(self, "canvas", None)
+        box = getattr(self, "_buildings_box_layout", None)
+        if canvas is None or box is None:
+            return
+        while box.count():
+            item = box.takeAt(0)
+            wdg = item.widget()
+            if wdg is not None:
+                wdg.deleteLater()
+        self._building_rows = []
+
+        active = canvas.active_index()
+        for i in range(canvas.building_count()):
+            b = canvas._buildings[i]
+            label = b.name or tr("buildingN", self._lang).format(n=i + 1)
+            if canvas.building_footprint(i) is None:
+                label += " " + tr("emptyBuilding", self._lang)
+
+            row = QWidget()
+            row.setStyleSheet("background: transparent;")
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(6)
+
+            is_active = (i == active)
+            sel = QPushButton(label)
+            sel.setFixedHeight(30)
+            sel.setCursor(Qt.CursorShape.PointingHandCursor)
+            border = theme.ACCENT if is_active else theme.BORDER
+            color = theme.TEXT if is_active else theme.MID
+            weight = 600 if is_active else 500
+            sel.setStyleSheet(
+                f"QPushButton {{ background: {theme.CARD}; color: {color};"
+                f" border: 1.5px solid {border}; border-radius: 7px;"
+                f" padding: 0 10px; font-size: 9pt; font-weight: {weight};"
+                f" text-align: left; }}"
+                f"QPushButton:hover {{ background: {theme.BG}; }}"
+            )
+            sel.clicked.connect(lambda _c=False, k=i: self.canvas.set_active(k))
+            h.addWidget(sel, stretch=1)
+
+            rm = QPushButton("✕")
+            rm.setFixedSize(26, 30)
+            rm.setToolTip(tr("removeBuilding", self._lang))
+            rm.setCursor(Qt.CursorShape.PointingHandCursor)
+            rm.setStyleSheet(
+                f"QPushButton {{ background: {theme.CARD}; color: {theme.MUTED};"
+                f" border: 1px solid {theme.BORDER}; border-radius: 7px;"
+                f" font-size: 10pt; }}"
+                f"QPushButton:hover {{ background: {theme.BG}; color: {theme.TEXT}; }}"
+            )
+            rm.clicked.connect(lambda _c=False, k=i: self._on_delete_building(k))
+            h.addWidget(rm, stretch=0)
+
+            box.addWidget(row)
+            self._building_rows.append((sel, rm))
 
     def _sync_params_from_active(self) -> None:
         """Load the active building's pitch/overhang/wall into the panel controls.

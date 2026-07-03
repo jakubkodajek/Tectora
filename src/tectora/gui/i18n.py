@@ -100,6 +100,9 @@ CATALOG: dict[str, dict[str, str]] = {
         "newBuilding": "+ Nová stavba",
         "removeBuilding": "− Odebrat stavbu",
         "buildingRemoved": "Stavba odebrána.",
+        "buildings": "Stavby",
+        "buildingN": "Stavba {n}",
+        "emptyBuilding": "(prázdná)",
     },
     "sk": {
         "new": "Nová zákazka",
@@ -196,6 +199,9 @@ CATALOG: dict[str, dict[str, str]] = {
         "newBuilding": "+ Nová stavba",
         "removeBuilding": "− Odobrať stavbu",
         "buildingRemoved": "Stavba odobraná.",
+        "buildings": "Stavby",
+        "buildingN": "Stavba {n}",
+        "emptyBuilding": "(prázdna)",
     },
     "en": {
         "new": "New project",
@@ -292,6 +298,9 @@ CATALOG: dict[str, dict[str, str]] = {
         "newBuilding": "+ New building",
         "removeBuilding": "− Remove building",
         "buildingRemoved": "Building removed.",
+        "buildings": "Buildings",
+        "buildingN": "Building {n}",
+        "emptyBuilding": "(empty)",
     },
 }
 

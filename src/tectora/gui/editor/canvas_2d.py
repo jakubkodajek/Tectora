@@ -448,6 +448,9 @@ class Canvas2D(QWidget):
         self._closed = True
         self._edge_types = ["eave"] * len(self._vertices)
         self.update()
+        # The active building now has a footprint — listeners (building list,
+        # panel) refresh their state.
+        self.active_changed.emit(self._active)
 
     def move_vertex(self, i: int, mx: float, my: float) -> None:
         """Reposition vertex *i* to model coordinates (mx, my).
