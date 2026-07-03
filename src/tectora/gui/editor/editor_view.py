@@ -334,17 +334,21 @@ class EditorView(QWidget):
 
     # ── Toolbar ──────────────────────────────────────────────────────────
 
-    def _make_icon_button(self, glyph: str, tooltip: str, slot) -> QPushButton:
-        """A small square icon button (used for the undo/redo arrows)."""
-        btn = QPushButton(glyph)
+    def _make_icon_button(self, icon, tooltip: str, slot) -> QPushButton:
+        """A small square icon button (undo/redo/rotate). *icon* is a QIcon —
+        painted, not a font glyph (glyphs render as empty squares on fonts
+        that lack them)."""
+        from PySide6.QtCore import QSize
+        btn = QPushButton()
+        btn.setIcon(icon)
+        btn.setIconSize(QSize(20, 20))
         btn.setFixedSize(34, 34)
         btn.setToolTip(tooltip)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(
-            f"QPushButton {{ background: {theme.CARD}; color: {theme.MID};"
-            f" border: 1px solid {theme.BORDER}; border-radius: 7px;"
-            f" font-size: 15pt; font-weight: 600; }}"
-            f"QPushButton:hover {{ background: {theme.BG}; color: {theme.TEXT}; }}"
+            f"QPushButton {{ background: {theme.CARD};"
+            f" border: 1px solid {theme.BORDER}; border-radius: 7px; }}"
+            f"QPushButton:hover {{ background: {theme.BG}; }}"
         )
         btn.clicked.connect(slot)
         return btn
@@ -398,15 +402,18 @@ class EditorView(QWidget):
         layout.addSpacing(10)
 
         # Rotate the active building by 90° (shape-preserving, undoable).
+        from tectora.gui.icons import redo_icon, rotate_icon, undo_icon
         self._rotate_btn = self._make_icon_button(
-            "⟳", tr("rotateBuilding", self._lang), self._on_rotate_building)
+            rotate_icon(), tr("rotateBuilding", self._lang), self._on_rotate_building)
         layout.addWidget(self._rotate_btn)
 
         layout.addSpacing(10)
 
         # Undo / redo arrow buttons (krok zpět / vpřed) — on-screen, not a menu.
-        self._undo_btn = self._make_icon_button("↶", tr("undo", self._lang), self._on_undo)
-        self._redo_btn = self._make_icon_button("↷", tr("redo", self._lang), self._on_redo)
+        self._undo_btn = self._make_icon_button(
+            undo_icon(), tr("undo", self._lang), self._on_undo)
+        self._redo_btn = self._make_icon_button(
+            redo_icon(), tr("redo", self._lang), self._on_redo)
         layout.addWidget(self._undo_btn)
         layout.addWidget(self._redo_btn)
 
@@ -982,23 +989,28 @@ class EditorView(QWidget):
         )
         layout.addWidget(self._len_input)
 
-        def _arrow(glyph, dx, dy, tip):
-            b = QPushButton(glyph)
+        from PySide6.QtCore import QSize
+        from tectora.gui.icons import arrow_icon
+
+        def _arrow(direction, dx, dy, tip):
+            b = QPushButton()
+            b.setIcon(arrow_icon(direction))
+            b.setIconSize(QSize(15, 15))
             b.setFixedSize(28, 26)
             b.setToolTip(tip)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setStyleSheet(
-                f"QPushButton {{ background: {theme.CARD}; color: {theme.MID};"
-                f" border: 1px solid {theme.BORDER}; border-radius: 6px; font-size: 11pt; }}"
-                f"QPushButton:hover {{ background: {theme.BG}; color: {theme.TEXT}; }}"
+                f"QPushButton {{ background: {theme.CARD};"
+                f" border: 1px solid {theme.BORDER}; border-radius: 6px; }}"
+                f"QPushButton:hover {{ background: {theme.BG}; }}"
             )
             b.clicked.connect(lambda _=False, ddx=dx, ddy=dy: self._add_relative(ddx, ddy))
             return b
 
-        layout.addWidget(_arrow("←", -1, 0, "vlevo"))
-        layout.addWidget(_arrow("↑", 0, 1, "nahoru"))
-        layout.addWidget(_arrow("↓", 0, -1, "dolů"))
-        layout.addWidget(_arrow("→", 1, 0, "vpravo"))
+        layout.addWidget(_arrow("left", -1, 0, "vlevo"))
+        layout.addWidget(_arrow("up", 0, 1, "nahoru"))
+        layout.addWidget(_arrow("down", 0, -1, "dolů"))
+        layout.addWidget(_arrow("right", 1, 0, "vpravo"))
 
         return bar
 
@@ -1430,28 +1442,32 @@ class EditorView(QWidget):
             sel.clicked.connect(lambda _c=False, k=i: self.canvas.set_active(k))
             h.addWidget(sel, stretch=1)
 
-            def _small_btn(glyph: str, tooltip: str) -> QPushButton:
-                btn = QPushButton(glyph)
+            from PySide6.QtCore import QSize as _QSize
+            from tectora.gui.icons import close_icon, duplicate_icon, rename_icon
+
+            def _small_btn(icon, tooltip: str) -> QPushButton:
+                btn = QPushButton()
+                btn.setIcon(icon)
+                btn.setIconSize(_QSize(14, 14))
                 btn.setFixedSize(26, 30)
                 btn.setToolTip(tooltip)
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.setStyleSheet(
-                    f"QPushButton {{ background: {theme.CARD}; color: {theme.MUTED};"
-                    f" border: 1px solid {theme.BORDER}; border-radius: 7px;"
-                    f" font-size: 10pt; }}"
-                    f"QPushButton:hover {{ background: {theme.BG}; color: {theme.TEXT}; }}"
+                    f"QPushButton {{ background: {theme.CARD};"
+                    f" border: 1px solid {theme.BORDER}; border-radius: 7px; }}"
+                    f"QPushButton:hover {{ background: {theme.BG}; }}"
                 )
                 return btn
 
-            ren = _small_btn("✎", tr("renameBuilding", self._lang))
+            ren = _small_btn(rename_icon(), tr("renameBuilding", self._lang))
             ren.clicked.connect(lambda _c=False, k=i: self._on_rename_building(k))
             h.addWidget(ren, stretch=0)
 
-            dup = _small_btn("⧉", tr("duplicateBuilding", self._lang))
+            dup = _small_btn(duplicate_icon(), tr("duplicateBuilding", self._lang))
             dup.clicked.connect(lambda _c=False, k=i: self._on_duplicate_building(k))
             h.addWidget(dup, stretch=0)
 
-            rm = _small_btn("✕", tr("removeBuilding", self._lang))
+            rm = _small_btn(close_icon(), tr("removeBuilding", self._lang))
             rm.clicked.connect(lambda _c=False, k=i: self._on_delete_building(k))
             h.addWidget(rm, stretch=0)
 
