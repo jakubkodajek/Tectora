@@ -72,9 +72,10 @@ def test_gable_adds_one_vertical_wall_triangle():
     assert len(tri_walls) == 1
     tri_verts, _is_wall = tri_walls[0]
     zs = sorted(v[2] for v in tri_verts)
-    assert abs(zs[0]) < 1e-9            # base corner A on the eave line
-    assert abs(zs[1]) < 1e-9            # base corner B on the eave line
-    assert zs[2] > 0.0                  # ridge apex M lifted above the edge
+    # Ground-aligned model: the eave line sits at base(0) + wall height (2.5).
+    assert abs(zs[0] - 2.5) < 1e-9      # base corner A on the eave line
+    assert abs(zs[1] - 2.5) < 1e-9      # base corner B on the eave line
+    assert zs[2] > 2.5                  # ridge apex M lifted above the edge
 
 
 def test_overhang_keeps_gable_wall():

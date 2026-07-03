@@ -177,6 +177,7 @@ class EditorView(QWidget):
                         wall_height=float(b.wall_height_m),
                         half_hip=float(b.half_hip_m),
                         pitch_back=b.pitch_back_deg,
+                        base_height=float(getattr(b, "base_height_m", 0.0)),
                         name=b.name,
                     )
                     for b in drawn
@@ -191,6 +192,19 @@ class EditorView(QWidget):
             else:
                 # New / empty project: clear any drawing left from a prior open.
                 canvas.clear()
+                if project is not None and project.buildings:
+                    # Seed the fresh building with the project's parameters so
+                    # e.g. a saved pitch is not lost (clear() resets to defaults
+                    # and re-syncs the panel from the canvas).
+                    b0 = project.buildings[0]
+                    cb = canvas._buildings[0]
+                    cb.pitch = int(round(b0.pitch_deg))
+                    cb.overhang = float(b0.overhang_m)
+                    cb.wall_height = float(b0.wall_height_m)
+                    cb.half_hip = float(b0.half_hip_m)
+                    cb.pitch_back = b0.pitch_back_deg
+                    cb.base_height = float(getattr(b0, "base_height_m", 0.0))
+                    self._sync_params_from_active()
                 self.clear_results()
             canvas.reset_history()
 
@@ -673,6 +687,35 @@ class EditorView(QWidget):
         v.addWidget(self._wall_height_spin)
         v.addSpacing(12)
 
+        # Výška budovy (base elevation) — lifts the whole building above the
+        # ground plane so two overlapping buildings can sit at different levels.
+        _lbl_base = QLabel(tr("baseHeight", lang))
+        _lbl_base.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
+        _lbl_base.setToolTip(tr("baseHeightTip", lang))
+        v.addWidget(_lbl_base)
+        v.addSpacing(4)
+
+        self._base_height_spin = QDoubleSpinBox()
+        self._base_height_spin.setRange(0.0, 50.0)
+        self._base_height_spin.setSingleStep(0.5)
+        self._base_height_spin.setDecimals(1)
+        self._base_height_spin.setValue(0.0)
+        self._base_height_spin.setSuffix(" m")
+        self._base_height_spin.setFixedHeight(34)
+        self._base_height_spin.setToolTip(tr("baseHeightTip", lang))
+        self._base_height_spin.setStyleSheet(
+            f"QDoubleSpinBox {{"
+            f"  background: {theme.CARD}; color: {theme.MID}; border: 1px solid {theme.BORDER};"
+            f"  border-radius: 7px; padding: 0 8px; font-size: 10pt;"
+            f"  font-weight: 600;"
+            f"}}"
+            f"QDoubleSpinBox:focus {{ border-color: {theme.ACCENT}; }}"
+            f"QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; }}"
+        )
+        self._base_height_spin.valueChanged.connect(self._on_base_height_changed)
+        v.addWidget(self._base_height_spin)
+        v.addSpacing(12)
+
         # Přesah okapu (eave overhang double spin box)
         _lbl_overhang = QLabel(tr("overhang", lang))
         _lbl_overhang.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
@@ -1004,6 +1047,7 @@ class EditorView(QWidget):
         active_result = None
         active_fp = None
         any_footprint = False
+        failed_other = 0            # non-active buildings whose calc failed
 
         for i in range(n):
             fp = canvas.building_footprint(i)
@@ -1028,9 +1072,12 @@ class EditorView(QWidget):
                     pitch_back=b.pitch_back,
                 )
             except ValueError:
-                # Only surface the toast for the building the user is on.
+                # Only surface the detailed toast for the building the user is
+                # on; other failures are counted and reported in one message.
                 if i == active:
                     self._show_toast(tr("unsupportedShape", lang))
+                else:
+                    failed_other += 1
                 canvas.set_building_skeleton(i, None)
                 continue
 
@@ -1043,6 +1090,11 @@ class EditorView(QWidget):
         if not any_footprint:
             self._show_toast(tr("drawFirst", lang))
             return
+
+        if failed_other:
+            # The totals below exclude these buildings — say so instead of
+            # silently under-reporting the design.
+            self._show_toast(tr("someBuildingsFailed", lang))
 
         # last_result tracks the active building (None if it has no footprint),
         # preserving the single-building contract.
@@ -1069,14 +1121,14 @@ class EditorView(QWidget):
             if bfp is None:
                 continue
             bb = self.canvas._buildings[i]
-            # For a half-hip, the drawn polygon + edge types can't be rebuilt by
-            # build_faces (it doesn't know the clip depth) — feed it the computed
-            # result faces instead.
+            # For a half-hip or an asymmetric gable, the drawn polygon + edge
+            # types can't be rebuilt by build_faces (it knows neither the clip
+            # depth nor the back pitch) — feed it the computed result faces.
             roof_faces = None
-            if bb.half_hip > 0 and bb.skeleton_data is not None:
+            if (bb.half_hip > 0 or bb.pitch_back) and bb.skeleton_data is not None:
                 roof_faces = getattr(bb.skeleton_data, "faces", None)
             items.append((bfp, float(bb.pitch), float(bb.wall_height),
-                          float(bb.overhang), roof_faces))
+                          float(bb.overhang), roof_faces, float(bb.base_height)))
         self.view3d.set_design(items)
 
     # ------------------------------------------------------------------
@@ -1253,6 +1305,10 @@ class EditorView(QWidget):
             self._wall_height_spin.blockSignals(True)
             self._wall_height_spin.setValue(wall)
             self._wall_height_spin.blockSignals(False)
+        if hasattr(self, "_base_height_spin"):
+            self._base_height_spin.blockSignals(True)
+            self._base_height_spin.setValue(float(canvas.active_base_height()))
+            self._base_height_spin.blockSignals(False)
         if hasattr(self, "_half_hip_spin"):
             self._half_hip_spin.blockSignals(True)
             self._half_hip_spin.setValue(float(canvas.active_half_hip()))
@@ -1289,6 +1345,7 @@ class EditorView(QWidget):
                 footprint=bfp, pitch_deg=float(bb.pitch),
                 overhang_m=float(bb.overhang), wall_height_m=float(bb.wall_height),
                 half_hip_m=float(bb.half_hip), pitch_back_deg=bb.pitch_back,
+                base_height_m=float(bb.base_height),
                 name=bb.name,
             ))
         return buildings
@@ -1390,7 +1447,7 @@ class EditorView(QWidget):
         file dialog.
         """
         from tectora.application import use_cases as uc
-        from tectora.application.project import Project
+        from tectora.core.roof_generator import generate_roof
         from tectora.io import write_design_report_xlsx
 
         lang = self._lang
@@ -1404,13 +1461,13 @@ class EditorView(QWidget):
                 continue
             b = canvas._buildings[i]
             try:
-                result = uc.calculate_project(
-                    Project(
-                        project_name=(self._project.project_name if self._project else ""),
-                        footprint=fp,
-                        global_pitch_deg=float(b.pitch),
-                        overhang_m=float(b.overhang),
-                    )
+                # Same call as _on_calculate, so the export matches the screen
+                # (including half-hip and the asymmetric back pitch).
+                result = generate_roof(
+                    fp, float(b.pitch),
+                    name=(self._project.project_name if self._project else ""),
+                    overhang=float(b.overhang), half_hip_m=float(b.half_hip),
+                    pitch_back=b.pitch_back,
                 )
             except ValueError:
                 continue
@@ -1471,48 +1528,44 @@ class EditorView(QWidget):
             self._save_to_file(path)
 
     def _save_to_file(self, path: str) -> None:
-        """Build a Project from current editor state and write it to *path*."""
-        from tectora.application.project import Project
+        """Build a Project from current editor state and write it to *path*.
+
+        Saves ALL drawn buildings (with their per-building parameters), the
+        same as saving to the library — not just the active one.
+        """
+        from tectora.application.project import Building, Project
         from tectora.io.project_file import save_project_file
 
+        buildings = self._collect_buildings()
+        if not buildings:
+            # Nothing drawn yet — keep the current panel parameters so the
+            # file reopens with them.
+            buildings = [Building(
+                footprint=None, pitch_deg=float(self.pitch),
+                overhang_m=float(self.overhang),
+                wall_height_m=float(self.wall_height),
+            )]
         project = Project(
             project_name=self.get_name() or "Bez názvu",
-            footprint=self.canvas.footprint,
-            global_pitch_deg=float(self.pitch),
-            overhang_m=self.overhang,
-            wall_height_m=self.wall_height,
+            buildings=buildings,
         )
         save_project_file(path, project, note=self.get_note(),
                           location=self.get_location())
         self._show_toast(tr("saveFile", self._lang))
 
     def _open_from_file(self, path: str) -> None:
-        """Load a .tectora file and restore the drawing + parameters."""
+        """Load a .tectora file and restore the drawing + parameters.
+
+        ``load_project`` restores every building (geometry + per-building
+        parameters), syncs the panel and recomputes — nothing else to do here.
+        """
         from tectora.io.project_file import load_project_file
 
         project, note, location = load_project_file(path)
         self.load_project(project, entry_id=None, note=note, location=location)
 
-        # Restore the drawn polygon onto the canvas
-        if project.footprint is not None:
-            self.canvas._vertices = [(x, y) for (x, y) in project.footprint.vertices]
-            self.canvas._edge_types = [e.type.value for e in project.footprint.edges]
-            self.canvas._closed = True
-            self.canvas.update()
-
-        # Restore individual parameters
-        self.set_overhang(project.overhang_m)
-        self.wall_height = project.wall_height_m
-        self.set_pitch(int(project.global_pitch_deg))
-
         # Mark as not associated with any library entry
         self._current_entry_id = None
-
-        # Trigger recalculation so the roof shows immediately
-        try:
-            self._on_calculate()
-        except Exception:
-            pass
 
         self._show_toast(tr("openFile", self._lang))
 
@@ -1542,6 +1595,17 @@ class EditorView(QWidget):
         self.wall_height = float(value)
         if hasattr(self, "canvas"):
             self.canvas.set_active_wall_height(self.wall_height)
+        if self.last_result is not None:
+            self._update_3d_all()
+
+    def _on_base_height_changed(self, value: float) -> None:
+        """Update the active building's base elevation and refresh the 3D view.
+
+        Roof measurements do not depend on the elevation, so no recompute is
+        needed — only the 3D scene (and the hover heights on repaint) change.
+        """
+        self.canvas.set_active_base_height(float(value))
+        self.canvas.update()
         if self.last_result is not None:
             self._update_3d_all()
 

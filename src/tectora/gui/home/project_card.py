@@ -22,27 +22,20 @@ if TYPE_CHECKING:
 # Pure geometry helper
 # ---------------------------------------------------------------------------
 
-def footprint_to_mini_points(
-    footprint: Footprint,
+def _map_into_box(
+    vertices,
+    bbox: tuple[float, float, float, float],
     width: int,
     height: int,
-    pad: int = 10,
+    pad: int,
 ) -> list[tuple[float, float]]:
-    """Map footprint vertices into a thumbnail box (pixel space).
+    """Map model-space *vertices* into the padded thumbnail box using *bbox*.
 
-    The polygon is scaled uniformly (preserving aspect ratio) and centred
-    inside the padded box ``[pad, width-pad] x [pad, height-pad]``.
-    Returns a list of (x, y) pixel-space points.
+    The bbox is scaled uniformly (preserving aspect ratio) and centred inside
+    ``[pad, width-pad] x [pad, height-pad]``. Model y points up while screen y
+    points down, so y is flipped — the thumbnail matches the editor canvas.
     """
-    vertices = footprint.vertices
-    if not vertices:
-        return []
-
-    xs = [v[0] for v in vertices]
-    ys = [v[1] for v in vertices]
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-
+    min_x, min_y, max_x, max_y = bbox
     fp_w = max_x - min_x
     fp_h = max_y - min_y
 
@@ -62,13 +55,47 @@ def footprint_to_mini_points(
     offset_x = pad + (box_w - scaled_w) / 2
     offset_y = pad + (box_h - scaled_h) / 2
 
-    result = []
-    for x, y in vertices:
-        px = offset_x + (x - min_x) * scale
-        py = offset_y + (y - min_y) * scale
-        result.append((px, py))
+    return [
+        (offset_x + (x - min_x) * scale, offset_y + (max_y - y) * scale)
+        for x, y in vertices
+    ]
 
-    return result
+
+def footprint_to_mini_points(
+    footprint: Footprint,
+    width: int,
+    height: int,
+    pad: int = 10,
+) -> list[tuple[float, float]]:
+    """Map ONE footprint's vertices into a thumbnail box (pixel space)."""
+    vertices = footprint.vertices
+    if not vertices:
+        return []
+    xs = [v[0] for v in vertices]
+    ys = [v[1] for v in vertices]
+    bbox = (min(xs), min(ys), max(xs), max(ys))
+    return _map_into_box(vertices, bbox, width, height, pad)
+
+
+def footprints_to_mini_points(
+    footprints,
+    width: int,
+    height: int,
+    pad: int = 10,
+) -> list[list[tuple[float, float]]]:
+    """Map SEVERAL footprints into one thumbnail box (shared combined bbox).
+
+    Returns one list of pixel points per footprint, all in a common scale so a
+    multi-building design previews with the buildings' true relative placement.
+    ``None`` entries are skipped.
+    """
+    fps = [fp for fp in footprints if fp is not None and fp.vertices]
+    if not fps:
+        return []
+    xs = [v[0] for fp in fps for v in fp.vertices]
+    ys = [v[1] for fp in fps for v in fp.vertices]
+    bbox = (min(xs), min(ys), max(xs), max(ys))
+    return [_map_into_box(fp.vertices, bbox, width, height, pad) for fp in fps]
 
 
 # ---------------------------------------------------------------------------
@@ -80,11 +107,20 @@ _GRID_STEP = 20  # px
 
 
 class _FootprintPreview(QWidget):
-    """Paints a mini footprint polygon on a light grid background."""
+    """Paints the design's footprint polygons on a light grid background.
 
-    def __init__(self, footprint: Footprint | None, parent: QWidget | None = None):
+    Accepts a single Footprint (legacy), a list of Footprints (multi-building
+    design), or None.
+    """
+
+    def __init__(self, footprints, parent: QWidget | None = None):
         super().__init__(parent)
-        self._footprint = footprint
+        if footprints is None:
+            self._footprints: list[Footprint] = []
+        elif isinstance(footprints, Footprint):
+            self._footprints = [footprints]
+        else:
+            self._footprints = [fp for fp in footprints if fp is not None]
         self.setFixedHeight(_PREVIEW_H)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -112,36 +148,40 @@ class _FootprintPreview(QWidget):
             painter.drawLine(0, y, w, y)
             y += _GRID_STEP
 
-        if self._footprint is None or len(self._footprint.vertices) < 3:
+        fps = [fp for fp in self._footprints if len(fp.vertices) >= 3]
+        if not fps:
             painter.end()
             return
 
-        pts = footprint_to_mini_points(self._footprint, w, h, pad=16)
+        # All footprints share one bbox so the thumbnail keeps their true
+        # relative placement (multi-building design).
+        mapped = footprints_to_mini_points(fps, w, h, pad=16)
 
-        # Fill polygon
-        poly = QPolygonF()
-        for px, py in pts:
-            poly.append(QPoint(int(round(px)), int(round(py))))
+        for fp, pts in zip(fps, mapped):
+            # Fill polygon
+            poly = QPolygonF()
+            for px, py in pts:
+                poly.append(QPoint(int(round(px)), int(round(py))))
 
-        fill_color = QColor(theme.ACCENT)
-        fill_color.setAlpha(15)
-        painter.setBrush(fill_color)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawPolygon(poly)
+            fill_color = QColor(theme.ACCENT)
+            fill_color.setAlpha(15)
+            painter.setBrush(fill_color)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawPolygon(poly)
 
-        # Edges coloured by type
-        n = len(pts)
-        for i, edge in enumerate(self._footprint.edges):
-            x1, y1 = pts[i]
-            x2, y2 = pts[(i + 1) % n]
-            color_hex = COL.get(edge.type.value, theme.ACCENT)
-            pen = QPen(QColor(color_hex), 1.6)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(pen)
-            painter.drawLine(
-                int(round(x1)), int(round(y1)),
-                int(round(x2)), int(round(y2)),
-            )
+            # Edges coloured by type
+            n = len(pts)
+            for i, edge in enumerate(fp.edges):
+                x1, y1 = pts[i]
+                x2, y2 = pts[(i + 1) % n]
+                color_hex = COL.get(edge.type.value, theme.ACCENT)
+                pen = QPen(QColor(color_hex), 1.6)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                painter.setPen(pen)
+                painter.drawLine(
+                    int(round(x1)), int(round(y1)),
+                    int(round(x2)), int(round(y2)),
+                )
 
         painter.end()
 
@@ -172,9 +212,13 @@ class ProjectCard(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Footprint preview area
-        fp = self._entry.project.footprint if self._entry.project else None
-        self._preview = _FootprintPreview(fp, self)
+        # Footprint preview area — every drawn building of the design
+        project = self._entry.project
+        fps = (
+            [b.footprint for b in project.buildings if b.footprint is not None]
+            if project is not None else []
+        )
+        self._preview = _FootprintPreview(fps, self)
         self._preview.mousePressEvent = lambda e: self._open()
         layout.addWidget(self._preview)
 
@@ -298,8 +342,9 @@ class ProjectCard(QWidget):
             f"QMenu::item:selected {{ background:{theme.BG}; }}"
         )
 
+        # NOTE: no triggered.connect here — menu.exec() returns the chosen
+        # action and the dispatch below calls the handler exactly once.
         open_action = menu.addAction(tr("open", lang))
-        open_action.triggered.connect(self._open)
 
         menu.addSeparator()
 

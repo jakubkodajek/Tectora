@@ -87,7 +87,13 @@ class _CanvasBuilding:
     wall_height: float = 2.5
     half_hip: float = 0.0      # half-hip (polovalba) clip depth in metres
     pitch_back: Optional[float] = None  # asymmetric gable back-slope pitch
+    base_height: float = 0.0   # elevation of the wall base above ground
     name: str = ""
+
+    @property
+    def eave_height(self) -> float:
+        """Absolute eave height above ground: base elevation + wall height."""
+        return float(self.base_height) + float(self.wall_height)
 
 
 class Canvas2D(QWidget):
@@ -241,6 +247,9 @@ class Canvas2D(QWidget):
             self._buildings = [_CanvasBuilding()]
         self._active = min(self._active, len(self._buildings) - 1)
         self.update()
+        # The active building (or its parameters) changed — let the editor
+        # re-sync the right panel.
+        self.active_changed.emit(self._active)
 
     def set_building_skeleton(self, index: int, data: Any) -> None:
         """Store a RoofResult (or None) for building *index*; schedules repaint."""
@@ -307,6 +316,12 @@ class Canvas2D(QWidget):
     def set_active_pitch_back(self, value: Optional[float]) -> None:
         self._b.pitch_back = (None if value is None else float(value))
 
+    def active_base_height(self) -> float:
+        return self._b.base_height
+
+    def set_active_base_height(self, value: float) -> None:
+        self._b.base_height = max(0.0, float(value))
+
     # ------------------------------------------------------------------
     # Undo / redo (snapshot-based)
     # ------------------------------------------------------------------
@@ -328,6 +343,7 @@ class Canvas2D(QWidget):
                 b.name,
                 b.half_hip,
                 b.pitch_back,
+                b.base_height,
             )
             for b in self._buildings
         )
@@ -339,9 +355,9 @@ class Canvas2D(QWidget):
             _CanvasBuilding(
                 vertices=list(v), edge_types=list(et), closed=cl,
                 skeleton_data=None, overhang=oh, pitch=pi, wall_height=wh,
-                half_hip=hh, name=nm, pitch_back=pb,
+                half_hip=hh, name=nm, pitch_back=pb, base_height=bh,
             )
-            for (v, et, cl, oh, pi, wh, nm, hh, pb) in buildings
+            for (v, et, cl, oh, pi, wh, nm, hh, pb, bh) in buildings
         ]
         if not self._buildings:
             self._buildings = [_CanvasBuilding()]
@@ -429,7 +445,18 @@ class Canvas2D(QWidget):
         self.update()
 
     def move_vertex(self, i: int, mx: float, my: float) -> None:
-        """Reposition vertex *i* to model coordinates (mx, my)."""
+        """Reposition vertex *i* to model coordinates (mx, my).
+
+        On a closed polygon a move that would make the outline self-intersect
+        is ignored (the vertex stays put) — otherwise the footprint silently
+        becomes invalid and the whole roof vanishes mid-drag.
+        """
+        if self._closed and len(self._vertices) >= 3:
+            from tectora.core.footprint import is_simple_polygon
+            candidate = list(self._vertices)
+            candidate[i] = (float(mx), float(my))
+            if not is_simple_polygon(candidate):
+                return
         self._skeleton_data = None
         self._vertices[i] = (float(mx), float(my))
         self.update()
@@ -491,6 +518,10 @@ class Canvas2D(QWidget):
         self._pan = (0.0, 0.0)
         self._pan_anchor = None
         self.update()
+        # The fresh building has default parameters — re-sync the right panel,
+        # otherwise it keeps showing the cleared building's pitch/overhang while
+        # the calculation would use the defaults.
+        self.active_changed.emit(self._active)
 
     @property
     def footprint(self):
@@ -567,18 +598,6 @@ class Canvas2D(QWidget):
     # Mouse event handlers (thin wrappers; logic is in model API above)
     # ------------------------------------------------------------------
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
-        tool = getattr(self._editor, "active_tool", "draw")
-        px, py = float(event.position().x()), float(event.position().y())
-
-        if event.button() == Qt.MouseButton.LeftButton:
-            if tool == "draw":
-                self._handle_draw_click(px, py)
-            elif tool == "editPoints":
-                self._handle_editpoints_press(px, py)
-            elif tool == "eaveGable":
-                self._handle_eavegable_click(px, py)
-
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
         px, py = float(event.position().x()), float(event.position().y())
         self._cursor_screen = (px, py)
@@ -629,7 +648,11 @@ class Canvas2D(QWidget):
     # ------------------------------------------------------------------
 
     def _hover_text_at(self, px: float, py: float) -> Optional[str]:
-        """Return a height label if (px, py) is on a ridge or an eave, else None."""
+        """Return a height label if (px, py) is on a ridge or an eave, else None.
+
+        Heights are absolute (above ground): eave = base + wall height, ridge =
+        base + wall + apex (the absolute ridge z is recorded at paint time).
+        """
         # Ridge segments recorded during the last paint.
         if self._painted_ridges:
             segs = [((s[0], s[1]), (s[2], s[3])) for s in self._painted_ridges]
@@ -637,7 +660,7 @@ class Canvas2D(QWidget):
             if ri is not None:
                 h = self._painted_ridges[ri][4]
                 return f"{tr('ridge', self._lang)}: {h:.2f} m"
-        # Eave (footprint edges) — height is the eave height (0 for now).
+        # Eave (footprint edges) — absolute eave height of that building.
         for b in self._buildings:
             if not b.closed or len(b.vertices) < 2:
                 continue
@@ -651,7 +674,7 @@ class Canvas2D(QWidget):
             if ei is not None:
                 etype = b.edge_types[ei] if ei < len(b.edge_types) else "eave"
                 label = tr("gable", self._lang) if etype == "gable" else tr("eave", self._lang)
-                return f"{label}: 0.00 m"
+                return f"{label}: {b.eave_height:.2f} m"
         return None
 
     def _update_hover(self, px: float, py: float, event: QMouseEvent) -> None:
@@ -930,7 +953,9 @@ class Canvas2D(QWidget):
                 p.setPen(pen)
                 p.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
                 if kind == "ridge":
-                    self._painted_ridges.append((sx1, sy1, sx2, sy2, a[2]))
+                    # Absolute ridge height = segment z above eave + eave height.
+                    self._painted_ridges.append(
+                        (sx1, sy1, sx2, sy2, a[2] + self._b.eave_height))
                 # Label midpoint with 3D length
                 length3d = math.sqrt(
                     (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
@@ -971,7 +996,8 @@ class Canvas2D(QWidget):
                 p.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
                 if kind == "ridge":
                     self._painted_ridges.append(
-                        (sx1, sy1, sx2, sy2, result.apex_height_m))
+                        (sx1, sy1, sx2, sy2,
+                         result.apex_height_m + self._b.eave_height))
 
             self._draw_edge_length_labels(p)
             self._draw_skeleton_length_labels(p, segments, bbox)
@@ -1318,10 +1344,14 @@ class Canvas2D(QWidget):
                 return
 
         self._push_undo()
+        switched = (self._active != bi)
         self._active = bi
         b.vertices[(ei + 1) % nb] = new_vertex
         b.skeleton_data = None
         self.update()
+        if switched:
+            # Editing another building's label makes it active — re-sync panel.
+            self.active_changed.emit(self._active)
         if b.closed:
             self.edited.emit()   # triggers a live recompute in the editor
 
@@ -1414,7 +1444,6 @@ class Canvas2D(QWidget):
             self._pitch_editor.deleteLater()
             self._pitch_editor = None
 
-    # Override mousePressEvent to also handle clear button
     def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
         px, py = float(event.position().x()), float(event.position().y())
 

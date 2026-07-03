@@ -194,23 +194,26 @@ class Roof3DView(QWidget):
         self._result = result
         self.update()
 
-    def set_geometry(self, footprint, pitch_deg: float, wall_height: float, overhang: float = 0.0) -> None:
+    def set_geometry(self, footprint, pitch_deg: float, wall_height: float,
+                     overhang: float = 0.0, base_height: float = 0.0) -> None:
         """Compute and store roof + wall geometry, then repaint.
 
         Args:
             footprint:   A Footprint instance (or None to clear).
             pitch_deg:   Roof pitch in degrees.
-            wall_height: Wall height in metres (walls go down from z=0).
-            overhang:    Eave overhang in metres.  Walls stay on the original
-                         footprint; the roof is built on the offset polygon so
-                         the eaves extend beyond the wall tops.
+            wall_height: Wall height in metres.
+            overhang:    Eave overhang in metres — insets the walls inward
+                         (the drawn polygon is the roof eave outline).
+            base_height: Elevation of the wall base above the ground plane
+                         (z=0). The eave sits at ``base_height + wall_height``.
         """
         if footprint is None:
             self._geom_faces = []
             self._result = None
             self.update()
             return
-        self._geom_faces = self._geometry_for(footprint, pitch_deg, wall_height, overhang)
+        self._geom_faces = self._geometry_for(
+            footprint, pitch_deg, wall_height, overhang, base_height=base_height)
         self.update()
 
     def set_design(self, items) -> None:
@@ -219,32 +222,43 @@ class Roof3DView(QWidget):
         *items* is an iterable of ``(footprint, pitch_deg, wall_height,
         overhang)`` tuples — one per building, optionally with a 5th element
         ``roof_faces`` (precomputed FaceResults, e.g. a half-hip) used verbatim
-        instead of rebuilding the roof. Buildings with ``footprint is None`` are
-        skipped. All buildings share one scene.
+        instead of rebuilding the roof, and a 6th element ``base_height``
+        (elevation of the building above the shared ground plane). Buildings
+        with ``footprint is None`` are skipped. All buildings share one scene
+        and one ground plane at z=0.
         """
         geom: list[tuple[list[tuple[float, float, float]], bool]] = []
         for item in items:
             footprint, pitch_deg, wall_height, overhang = item[0], item[1], item[2], item[3]
             roof_faces = item[4] if len(item) > 4 else None
+            base_height = float(item[5]) if len(item) > 5 else 0.0
             if footprint is None:
                 continue
             geom.extend(self._geometry_for(
-                footprint, pitch_deg, wall_height, overhang, roof_faces))
+                footprint, pitch_deg, wall_height, overhang, roof_faces,
+                base_height=base_height))
         self._geom_faces = geom
         self._result = None
         self.update()
 
     def _geometry_for(
         self, footprint, pitch_deg: float, wall_height: float, overhang: float,
-        roof_faces=None,
+        roof_faces=None, base_height: float = 0.0,
     ) -> list[tuple[list[tuple[float, float, float]], bool]]:
         """Build the (vertices, is_wall) faces for ONE building.
+
+        Vertical model: the GROUND is the shared plane z=0. The wall band spans
+        ``[base_height, base_height + wall_height]`` and the roof (whose own
+        coordinates start at z=0 on the eave) is lifted onto the wall tops. Two
+        buildings with different wall/base heights therefore stand on the same
+        ground and one can sit visibly higher than the other.
 
         The drawn polygon is the ROOF eave outline, so the roof is built on it
         directly. The overhang insets the WALLS inward (the building sits under
         the eave). Gable walls work at any overhang. If *roof_faces* is given
-        (e.g. a half-hip computed by the exact calculator), they are used as the
-        roof verbatim and gable walls are skipped.
+        (e.g. a half-hip or an asymmetric gable computed by the exact
+        calculator), they are used as the roof verbatim and gable walls are
+        skipped.
         """
         from tectora.core.roof_faces import build_faces
 
@@ -252,6 +266,7 @@ class Roof3DView(QWidget):
         faces = roof_faces if use_provided else build_faces(footprint, pitch_deg)
 
         geom: list[tuple[list[tuple[float, float, float]], bool]] = []
+        eave_z = float(base_height) + float(wall_height)
 
         # Walls sit INWARD of the eave by the overhang.
         wall_verts = [(float(x), float(y)) for x, y in footprint.vertices]
@@ -267,16 +282,17 @@ class Roof3DView(QWidget):
             ax, ay = wall_verts[i]
             bx, by = wall_verts[(i + 1) % n]
             quad: list[tuple[float, float, float]] = [
-                (ax, ay, 0.0),
-                (bx, by, 0.0),
-                (bx, by, -wall_height),
-                (ax, ay, -wall_height),
+                (ax, ay, eave_z),
+                (bx, by, eave_z),
+                (bx, by, float(base_height)),
+                (ax, ay, float(base_height)),
             ]
             geom.append((quad, True))  # True = wall
 
-        # Roof faces (on the drawn polygon)
+        # Roof faces (on the drawn polygon), lifted onto the wall tops.
         for face in faces:
-            geom.append((list(face.vertices), False))  # False = roof
+            verts = [(v[0], v[1], v[2] + eave_z) for v in face.vertices]
+            geom.append((verts, False))  # False = roof
 
         # Gable walls (štíty) — vertical triangles at valid gable wing-ends.
         # Skipped when explicit roof faces are supplied (e.g. a half-hip already
@@ -285,7 +301,8 @@ class Roof3DView(QWidget):
             from tectora.core.gable import GableNotSupported, gable_wall_triangles
             try:
                 for tri in gable_wall_triangles(footprint, pitch_deg):
-                    geom.append((list(tri), True))  # vertical štít = a wall face
+                    lifted = [(v[0], v[1], v[2] + eave_z) for v in tri]
+                    geom.append((lifted, True))  # vertical štít = a wall face
             except GableNotSupported:
                 pass  # invalid gable (shouldn't happen; 2D validates) — just skip
 

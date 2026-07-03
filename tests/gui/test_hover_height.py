@@ -23,7 +23,7 @@ def _paint(c):
     c.render(pm)
 
 
-def test_ridge_hover_shows_apex_height(tmp_path):
+def test_ridge_hover_shows_absolute_height(tmp_path):
     import math
     app, w, ed = _editor(tmp_path)
     c = ed.canvas
@@ -36,13 +36,14 @@ def test_ridge_hover_shows_apex_height(tmp_path):
     s = c._painted_ridges[0]
     mx, my = (s[0] + s[2]) / 2, (s[1] + s[3]) / 2
     text = c._hover_text_at(mx, my)
-    # 10x6 hip at 35°: apex = (6/2)*tan(35) ≈ 2.10 m.
-    expected = (6 / 2) * math.tan(math.radians(35))
+    # Absolute height above ground: eave (wall 2.5 + base 0) + apex.
+    # 10x6 hip at 35°: apex = (6/2)*tan(35) ≈ 2.10 m → ridge ≈ 4.60 m.
+    expected = 2.5 + (6 / 2) * math.tan(math.radians(35))
     assert text is not None and "m" in text
     assert abs(float(text.split(":")[1].strip().rstrip(" m")) - expected) < 0.05
 
 
-def test_eave_hover_shows_zero(tmp_path):
+def test_eave_hover_shows_eave_height(tmp_path):
     app, w, ed = _editor(tmp_path)
     c = ed.canvas
     for x, y in [(2, 2), (12, 2), (12, 8), (2, 8)]:
@@ -52,7 +53,8 @@ def test_eave_hover_shows_zero(tmp_path):
     _paint(c)
     ex, ey = c._to_screen(7, 2)   # midpoint of the bottom eave edge
     text = c._hover_text_at(ex, ey)
-    assert text is not None and text.endswith("0.00 m")
+    # Default: base 0 + wall height 2.5 → the eave line is 2.50 m above ground.
+    assert text is not None and text.endswith("2.50 m")
 
 
 def test_hover_miss_returns_none(tmp_path):

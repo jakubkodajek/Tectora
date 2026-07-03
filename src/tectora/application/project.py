@@ -29,6 +29,7 @@ class Building:
     wall_height_m: float = 2.5
     half_hip_m: float = 0.0      # half-hip (polovalba) clip depth in metres
     pitch_back_deg: Optional[float] = None  # asymmetric gable: back slope pitch
+    base_height_m: float = 0.0   # elevation of the wall base above ground (z=0)
     name: str = ""
 
     def to_dict(self) -> dict:
@@ -46,6 +47,7 @@ class Building:
             "wall_height_m": self.wall_height_m,
             "half_hip_m": self.half_hip_m,
             "pitch_back_deg": self.pitch_back_deg,
+            "base_height_m": self.base_height_m,
         }
 
     @classmethod
@@ -66,6 +68,7 @@ class Building:
                 float(data["pitch_back_deg"])
                 if data.get("pitch_back_deg") is not None else None
             ),
+            base_height_m=float(data.get("base_height_m", 0.0)),
             name=data.get("name", ""),
         )
 
