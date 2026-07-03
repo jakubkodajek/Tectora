@@ -98,6 +98,8 @@ CATALOG: dict[str, dict[str, str]] = {
         "openFile": "Otevřít soubor…",
         "saveFile": "Uložit do souboru…",
         "newBuilding": "+ Nová stavba",
+        "removeBuilding": "− Odebrat stavbu",
+        "buildingRemoved": "Stavba odebrána.",
     },
     "sk": {
         "new": "Nová zákazka",
@@ -192,6 +194,8 @@ CATALOG: dict[str, dict[str, str]] = {
         "openFile": "Otvoriť súbor…",
         "saveFile": "Uložiť do súboru…",
         "newBuilding": "+ Nová stavba",
+        "removeBuilding": "− Odobrať stavbu",
+        "buildingRemoved": "Stavba odobraná.",
     },
     "en": {
         "new": "New project",
@@ -286,6 +290,8 @@ CATALOG: dict[str, dict[str, str]] = {
         "openFile": "Open file…",
         "saveFile": "Save to file…",
         "newBuilding": "+ New building",
+        "removeBuilding": "− Remove building",
+        "buildingRemoved": "Building removed.",
     },
 }
 

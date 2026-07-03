@@ -388,6 +388,11 @@ class EditorView(QWidget):
         self._new_building_btn.clicked.connect(self._on_new_building)
         layout.addWidget(self._new_building_btn)
 
+        # − Odebrat stavbu — remove the active building (undoable via ↶).
+        self._remove_building_btn = _tool_btn(tr("removeBuilding", self._lang), checkable=False)
+        self._remove_building_btn.clicked.connect(self._on_delete_building)
+        layout.addWidget(self._remove_building_btn)
+
         layout.addSpacing(10)
 
         # Undo / redo arrow buttons (krok zpět / vpřed) — on-screen, not a menu.
@@ -519,6 +524,14 @@ class EditorView(QWidget):
 
         # G4b: wire live re-generation on footprint edits
         self.canvas.edited.connect(self._on_footprint_edited)
+
+        # Delete key removes the active building — only while the canvas has
+        # focus (WidgetShortcut), so typing in a text field is unaffected.
+        from PySide6.QtCore import Qt as _Qt
+        from PySide6.QtGui import QKeySequence, QShortcut
+        _del = QShortcut(QKeySequence(_Qt.Key.Key_Delete), self.canvas)
+        _del.setContext(_Qt.ShortcutContext.WidgetShortcut)
+        _del.activated.connect(self._on_delete_building)
 
         # P3: when the active building changes (new / select), reload the
         # right-panel parameter controls from that building.
@@ -1011,7 +1024,7 @@ class EditorView(QWidget):
             self._after_history_change()
 
     def _after_history_change(self) -> None:
-        """Refresh after an undo/redo: recompute roofs (if any) and repaint."""
+        """Refresh after an undo/redo or delete: recompute roofs and repaint."""
         has_fp = any(
             self.canvas.building_footprint(i) is not None
             for i in range(self.canvas.building_count())
@@ -1022,6 +1035,9 @@ class EditorView(QWidget):
             except Exception:
                 pass
         else:
+            if not has_fp:
+                # Nothing left to measure — don't keep stale numbers around.
+                self.clear_results()
             self.last_result = None
             self._update_3d_all()
         self.canvas.update()
@@ -1268,6 +1284,23 @@ class EditorView(QWidget):
         # new_building() emits active_changed → _sync_params_from_active, but
         # sync explicitly too in case the signal path is ever bypassed.
         self._sync_params_from_active()
+
+    def _on_delete_building(self, index: int | None = None) -> None:
+        """Remove building *index* (default: the active one).
+
+        Undoable via ↶. A lone empty building is a no-op — there is nothing
+        to remove.
+        """
+        canvas = self.canvas
+        if index is None:
+            index = canvas.active_index()
+        if (canvas.building_count() == 1
+                and canvas.building_footprint(0) is None):
+            return
+        canvas.delete_building(index)
+        self._show_toast(tr("buildingRemoved", self._lang))
+        # Recompute totals / 3D without the removed building (or clear them).
+        self._after_history_change()
 
     def _on_active_building_changed(self, idx: int) -> None:
         """Reload the parameter controls from the now-active building."""

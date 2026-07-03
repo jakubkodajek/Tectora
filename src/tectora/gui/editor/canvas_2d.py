@@ -157,6 +157,9 @@ class Canvas2D(QWidget):
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.setMinimumSize(QSize(200, 200))
+        # Clicking the canvas gives it focus so widget-scoped shortcuts
+        # (Delete = remove building) work without stealing keys from inputs.
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
 
     # ------------------------------------------------------------------
     # Active-building delegation (legacy single-building API)
