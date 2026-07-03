@@ -5,11 +5,15 @@ Usage examples:
     tectora calculate --type gable --length 10 --width 6 --pitch 30
     tectora calculate --spec roof.json --output result.json
     tectora calculate --spec input.xlsx --output report.xlsx
+    tectora calculate --project dum.tectora --output vykaz.xlsx
+    tectora validate dum.tectora         # check a project file before use
     tectora template --output input.xlsx
-    tectora schema                       # JSON schema for LLMs
+    tectora schema                       # JSON schema of the parametric spec
+    tectora schema --project             # JSON schema of a project (polygons)
     tectora types                        # list of supported roof types
 
-For AI: use `tectora schema` to obtain the input structure.
+For AI: `tectora schema --project` describes the polygon-based project format
+(the same one the GUI edits); the full workflow lives in docs/ai/.
 """
 from __future__ import annotations
 
@@ -90,6 +94,114 @@ _JSON_SCHEMA = {
 }
 
 
+_FOOTPRINT_SCHEMA = {
+    "type": ["object", "null"],
+    "description": (
+        "Půdorys jako polygon v metrech. null = budova zatím nenakreslená. "
+        "Kreslený polygon JE obrys střechy (okapová hrana)."
+    ),
+    "required": ["vertices", "edges"],
+    "properties": {
+        "vertices": {
+            "type": "array", "minItems": 3,
+            "items": {
+                "type": "array", "minItems": 2, "maxItems": 2,
+                "items": {"type": "number"},
+            },
+            "description": (
+                "Vrcholy [x, y] v metrech, jednoduchý (neprotínající se) "
+                "polygon. Pořadí po nebo proti směru hodinových ručiček — "
+                "normalizuje se automaticky."
+            ),
+        },
+        "edges": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["type"],
+                "properties": {
+                    "type": {
+                        "type": "string", "enum": ["eave", "gable"],
+                        "description": (
+                            "eave=okap, gable=štít. Hrana i vede z vrcholu i "
+                            "do vrcholu i+1; počet hran = počet vrcholů. Štít "
+                            "je platný jen na konci křídla s kolmými sousedy."
+                        ),
+                    },
+                },
+            },
+        },
+    },
+}
+
+_BUILDING_SCHEMA = {
+    "type": "object",
+    "description": "Jedno střešní těleso (budova) návrhu.",
+    "properties": {
+        "name": {"type": "string", "description": "Volitelný název stavby."},
+        "footprint": _FOOTPRINT_SCHEMA,
+        "pitch_deg": {
+            "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 90,
+            "description": "Hlavní sklon střechy ve stupních.",
+        },
+        "overhang_m": {
+            "type": "number", "minimum": 0,
+            "description": "Přesah okapu (m) — stěny se v 3D odsadí dovnitř.",
+        },
+        "wall_height_m": {
+            "type": "number", "exclusiveMinimum": 0,
+            "description": "Výška stěn (m); okap leží ve výšce base+wall.",
+        },
+        "base_height_m": {
+            "type": "number", "minimum": 0,
+            "description": (
+                "Výška budovy = elevace spodku stěn nad terénem (m). "
+                "Umožňuje položit budovu výš (věž/patro nad nižší budovou)."
+            ),
+        },
+        "half_hip_m": {
+            "type": "number", "minimum": 0,
+            "description": (
+                "Polovalba: hloubka useknutí štítů OBDÉLNÍKU se dvěma štíty "
+                "(m). 0 = bez polovalby."
+            ),
+        },
+        "pitch_back_deg": {
+            "type": ["number", "null"], "exclusiveMinimum": 0,
+            "exclusiveMaximum": 90,
+            "description": (
+                "Asymetrická sedlová: sklon zadní roviny (obdélník se dvěma "
+                "štíty). null = symetrická."
+            ),
+        },
+    },
+}
+
+_PROJECT_JSON_SCHEMA = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Tectora project (schema 2.0) — polygonový návrh s budovami",
+    "type": "object",
+    "required": ["buildings"],
+    "properties": {
+        "schema_version": {"type": "string", "description": 'Pište "2.0".'},
+        "project_name": {"type": "string"},
+        "units": {"type": "string", "description": 'Vždy "m".'},
+        "buildings": {
+            "type": "array", "minItems": 1, "items": _BUILDING_SCHEMA,
+            "description": "Návrh = jedna či více budov ve společné rovině x-y.",
+        },
+        "note": {
+            "type": "string",
+            "description": "Volitelná poznámka (jen v .tectora souborech).",
+        },
+        "location": {
+            "type": ["object", "null"],
+            "description": "Volitelná lokalita {name, lat, lon}.",
+        },
+    },
+}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="tectora",
@@ -104,6 +216,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Spočítá střechu ze spec souboru (JSON/XLSX) nebo z parametrů.",
     )
     p_calc.add_argument("--spec", type=Path, help="Cesta ke spec souboru (.json nebo .xlsx)")
+    p_calc.add_argument(
+        "--project", type=Path,
+        help="Cesta k projektu (.tectora/.json, schema 2.0) — spočítá VŠECHNY budovy.",
+    )
     p_calc.add_argument(
         "-o", "--output", type=Path,
         help="Cesta pro výstup (.json nebo .xlsx). Bez tohoto se výsledek vypíše na stdout.",
@@ -125,7 +241,20 @@ def main(argv: list[str] | None = None) -> int:
     p_tpl.add_argument("-o", "--output", type=Path, required=True)
 
     # ---- schema subcommand
-    sub.add_parser("schema", help="Vypíše JSON schéma vstupu (pro LLM).")
+    p_schema = sub.add_parser("schema", help="Vypíše JSON schéma vstupu (pro LLM).")
+    p_schema.add_argument(
+        "--project", action="store_true",
+        help="Schéma polygonového projektu (schema 2.0) místo parametrické spec.",
+    )
+
+    # ---- validate subcommand
+    p_val = sub.add_parser(
+        "validate",
+        help="Zkontroluje projektový soubor (.tectora/.json): polygony, štíty, spočitatelnost.",
+    )
+    p_val.add_argument("file", type=Path)
+    p_val.add_argument("--json", action="store_true",
+                       help="Strojový výstup {valid, problems, warnings}.")
 
     # ---- types subcommand
     sub.add_parser("types", help="Vypíše přehled podporovaných typů střech.")
@@ -169,9 +298,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Šablona vytvořena: {args.output}", file=sys.stderr)
         return 0
     if args.cmd == "schema":
-        json.dump(_JSON_SCHEMA, sys.stdout, indent=2, ensure_ascii=False)
+        schema = _PROJECT_JSON_SCHEMA if args.project else _JSON_SCHEMA
+        json.dump(schema, sys.stdout, indent=2, ensure_ascii=False)
         sys.stdout.write("\n")
         return 0
+    if args.cmd == "validate":
+        return _cmd_validate(args)
     if args.cmd == "types":
         return _cmd_types()
     if args.cmd == "library":
@@ -208,6 +340,11 @@ def _load_spec(path: Path) -> RoofSpec:
 
 
 def _cmd_calculate(args) -> int:
+    if args.project is not None:
+        if args.spec is not None:
+            print("Chyba: --project a --spec nelze kombinovat.", file=sys.stderr)
+            return 2
+        return _cmd_calculate_project(args)
     if args.spec is not None:
         spec = _load_spec(args.spec)
     else:
@@ -235,6 +372,174 @@ def _cmd_calculate(args) -> int:
         json.dump(result.as_dict(), sys.stdout, indent=2, ensure_ascii=False)
         sys.stdout.write("\n")
     return 0
+
+
+def _building_label(building, index: int) -> str:
+    return building.name or f"Stavba {index + 1}"
+
+
+def _cmd_calculate_project(args) -> int:
+    """Compute EVERY building of a schema-2.0 project file (like the GUI calc).
+
+    Output: design JSON on stdout, or --output file.json / file.xlsx (the
+    xlsx matches the GUI export: per-building sections, totals, heights above
+    ground and the material estimate). Any failing building aborts with exit
+    code 2 and a message naming it, so an AI caller can fix the input.
+    """
+    from tectora.core.materials import MaterialSpec
+    from tectora.core.roof_generator import generate_roof
+    from tectora.io.excel import write_design_report_xlsx
+    from tectora.io.project_file import load_project_file
+
+    try:
+        project, _note, _location = load_project_file(str(args.project))
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"Chyba: projekt nelze načíst: {exc}", file=sys.stderr)
+        return 2
+
+    results, names, eaves = [], [], []
+    for i, b in enumerate(project.buildings):
+        if b.footprint is None:
+            continue
+        label = _building_label(b, i)
+        try:
+            result = generate_roof(
+                b.footprint, b.pitch_deg, name=b.name or project.project_name,
+                overhang=b.overhang_m, half_hip_m=b.half_hip_m,
+                pitch_back=b.pitch_back_deg,
+            )
+        except ValueError as exc:
+            print(f"Chyba: {label}: {exc}", file=sys.stderr)
+            return 2
+        results.append(result)
+        names.append(label)
+        eaves.append(b.base_height_m + b.wall_height_m)
+
+    if not results:
+        print("Chyba: projekt nemá žádnou budovu s půdorysem.", file=sys.stderr)
+        return 2
+
+    design = uc.DesignResult(results)
+    out = {
+        "project_name": project.project_name,
+        "buildings": [
+            {"name": names[i], "eave_height_m": round(eaves[i], 3),
+             **results[i].as_dict()}
+            for i in range(len(results))
+        ],
+        "totals": {
+            "total_area_m2": round(design.total_area_m2, 3),
+            "ridge_length_m": round(design.total_ridge_length_m, 3),
+            "hip_length_m": round(design.total_hip_length_m, 3),
+            "valley_length_m": round(design.total_valley_length_m, 3),
+            "eaves_perimeter_m": round(design.total_eaves_perimeter_m, 3),
+            "gable_edge_total_m": round(design.total_gable_edge_m, 3),
+        },
+    }
+
+    if args.output is not None:
+        ext = args.output.suffix.lower()
+        if ext == ".json":
+            with open(args.output, "w", encoding="utf-8") as f:
+                json.dump(out, f, indent=2, ensure_ascii=False)
+        elif ext in (".xlsx", ".xlsm"):
+            write_design_report_xlsx(design, args.output, building_names=names,
+                                     building_eaves=eaves,
+                                     material_spec=MaterialSpec())
+        else:
+            print(f"Chyba: neznámý výstupní formát {ext}", file=sys.stderr)
+            return 2
+        if not args.quiet:
+            print(f"Uloženo do: {args.output}", file=sys.stderr)
+    else:
+        json.dump(out, sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+    return 0
+
+
+def _validate_project(data: dict) -> tuple[list[str], list[str]]:
+    """Return (problems, warnings) for a parsed project dict."""
+    from tectora.core.gable import is_valid_gable_edge
+    from tectora.core.geom2d import polygons_overlap
+    from tectora.core.roof_generator import generate_roof
+
+    problems: list[str] = []
+    warnings: list[str] = []
+
+    try:
+        project = Project.from_dict(data)
+    except (ValueError, KeyError, TypeError) as exc:
+        return ([f"Projekt nelze načíst: {exc}"], warnings)
+
+    drawn = []
+    for i, b in enumerate(project.buildings):
+        label = _building_label(b, i)
+        if not (0 < b.pitch_deg < 90):
+            problems.append(f"{label}: sklon musí být 1–89°, je {b.pitch_deg}.")
+        if b.pitch_back_deg is not None and not (0 < b.pitch_back_deg < 90):
+            problems.append(
+                f"{label}: zadní sklon musí být 1–89° nebo null, je {b.pitch_back_deg}.")
+        if b.wall_height_m <= 0:
+            problems.append(f"{label}: výška stěn musí být kladná.")
+        if b.overhang_m < 0 or b.base_height_m < 0 or b.half_hip_m < 0:
+            problems.append(
+                f"{label}: přesah, výška budovy ani polovalba nesmí být záporné.")
+        if b.footprint is None:
+            warnings.append(f"{label}: nemá půdorys (bude přeskočena).")
+            continue
+        drawn.append(b)
+
+        for ei, e in enumerate(b.footprint.edges):
+            if e.type.value == "gable" and not is_valid_gable_edge(b.footprint, ei):
+                problems.append(
+                    f"{label}: hrana {ei} nemůže být štít — štít je platný jen "
+                    f"na konci křídla s kolmými sousedními hranami.")
+
+        try:
+            generate_roof(b.footprint, b.pitch_deg, overhang=b.overhang_m,
+                          half_hip_m=b.half_hip_m, pitch_back=b.pitch_back_deg)
+        except ValueError as exc:
+            problems.append(f"{label}: výpočet selhal: {exc}")
+
+    if not drawn:
+        problems.append("Projekt nemá žádnou budovu s půdorysem.")
+
+    for i in range(len(drawn)):
+        for j in range(i + 1, len(drawn)):
+            if polygons_overlap(list(drawn[i].footprint.vertices),
+                                list(drawn[j].footprint.vertices)):
+                warnings.append(
+                    "Stavby se v půdorysu překrývají — překrytá plocha bude "
+                    "v součtu dvakrát.")
+                break
+        else:
+            continue
+        break
+
+    return (problems, warnings)
+
+
+def _cmd_validate(args) -> int:
+    try:
+        with open(args.file, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        problems, warnings = [f"Soubor nelze načíst jako JSON: {exc}"], []
+    else:
+        problems, warnings = _validate_project(data)
+
+    valid = not problems
+    if args.json:
+        json.dump({"valid": valid, "problems": problems, "warnings": warnings},
+                  sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+    else:
+        for p in problems:
+            print(f"CHYBA: {p}")
+        for w in warnings:
+            print(f"Upozornění: {w}")
+        print("OK — projekt je platný." if valid else "Projekt NENÍ platný.")
+    return 0 if valid else 2
 
 
 def _print_summary(result: RoofResult) -> None:
