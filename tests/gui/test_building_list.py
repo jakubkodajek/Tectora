@@ -70,7 +70,7 @@ def test_row_delete_removes_that_building(tmp_path):
     _draw(c, RECT_B)
     assert len(e._building_rows) == 2
 
-    e._building_rows[0][1].click()       # ✕ on the first building
+    e._building_rows[0][3].click()       # ✕ on the first building (last button)
     assert c.building_count() == 1
     assert len(e._building_rows) == 1
     # The remaining building is the former second one.

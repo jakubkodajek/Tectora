@@ -406,6 +406,86 @@ class Canvas2D(QWidget):
     def set_active_name(self, value: str) -> None:
         self._b.name = str(value)
 
+    def set_building_name(self, bi: int, name: str) -> None:
+        """Rename building *bi* (undoable; refreshes listeners)."""
+        if not (0 <= bi < len(self._buildings)):
+            return
+        name = str(name).strip()
+        if name == self._buildings[bi].name:
+            return
+        self._push_undo()
+        self._buildings[bi].name = name
+        self.update()
+        self.active_changed.emit(self._active)
+
+    def duplicate_building(self, bi: int, dx: Optional[float] = None,
+                           dy: float = 0.0) -> Optional[int]:
+        """Append a copy of building *bi* and make it active.
+
+        The copy keeps all roof parameters and lands right of the original
+        (bbox width + 1 m) so the two don't overlap. Returns the new index.
+        """
+        if not (0 <= bi < len(self._buildings)):
+            return None
+        src = self._buildings[bi]
+        if not src.vertices:
+            return None
+        if dx is None:
+            xs = [v[0] for v in src.vertices]
+            dx = (max(xs) - min(xs)) + 1.0
+        self._push_undo()
+        copy = _CanvasBuilding(
+            vertices=[(x + dx, y + dy) for (x, y) in src.vertices],
+            edge_types=list(src.edge_types),
+            closed=src.closed,
+            skeleton_data=None,
+            overhang=src.overhang, pitch=src.pitch,
+            wall_height=src.wall_height, half_hip=src.half_hip,
+            pitch_back=src.pitch_back, base_height=src.base_height,
+            name=(src.name + tr("copySuffix", self._lang)) if src.name else "",
+        )
+        self._buildings.append(copy)
+        self._active = len(self._buildings) - 1
+        self.update()
+        self.active_changed.emit(self._active)
+        if copy.closed:
+            self.edited.emit()   # live recompute gives the copy its roof
+        return self._active
+
+    def rotate_building(self, bi: int, quarter_turns: int = 1) -> None:
+        """Rotate building *bi* by *quarter_turns* × 90° CCW around its bbox
+        centre, then nudge it back onto the snap grid.
+
+        Rotation preserves the shape (no self-intersection risk) and the
+        edge types stay attached to their edges, so gables remain valid.
+        """
+        if not (0 <= bi < len(self._buildings)):
+            return
+        b = self._buildings[bi]
+        if not b.vertices:
+            return
+        q = quarter_turns % 4
+        if q == 0:
+            return
+        self._push_undo()
+        xs = [v[0] for v in b.vertices]
+        ys = [v[1] for v in b.vertices]
+        cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+        verts = list(b.vertices)
+        for _ in range(q):
+            verts = [(cx - (y - cy), cy + (x - cx)) for (x, y) in verts]
+        # The bbox centre may sit off-grid — translate so the rotated bbox
+        # corner lands back on the grid and further drawing lines up.
+        minx = min(v[0] for v in verts)
+        miny = min(v[1] for v in verts)
+        ddx = round(minx / _GRID_STEP_M) * _GRID_STEP_M - minx
+        ddy = round(miny / _GRID_STEP_M) * _GRID_STEP_M - miny
+        b.vertices = [(x + ddx, y + ddy) for (x, y) in verts]
+        b.skeleton_data = None
+        self.update()
+        if b.closed:
+            self.edited.emit()
+
     # ------------------------------------------------------------------
     # Model API — called by mouse handlers AND by tests
     # ------------------------------------------------------------------

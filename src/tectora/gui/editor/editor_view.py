@@ -397,6 +397,13 @@ class EditorView(QWidget):
 
         layout.addSpacing(10)
 
+        # Rotate the active building by 90° (shape-preserving, undoable).
+        self._rotate_btn = self._make_icon_button(
+            "⟳", tr("rotateBuilding", self._lang), self._on_rotate_building)
+        layout.addWidget(self._rotate_btn)
+
+        layout.addSpacing(10)
+
         # Undo / redo arrow buttons (krok zpět / vpřed) — on-screen, not a menu.
         self._undo_btn = self._make_icon_button("↶", tr("undo", self._lang), self._on_undo)
         self._redo_btn = self._make_icon_button("↷", tr("redo", self._lang), self._on_redo)
@@ -1315,6 +1322,34 @@ class EditorView(QWidget):
         # sync explicitly too in case the signal path is ever bypassed.
         self._sync_params_from_active()
 
+    def _ask_building_name(self, current: str) -> str | None:
+        """Modal name prompt; split out so tests can stub it."""
+        from PySide6.QtWidgets import QInputDialog
+        text, ok = QInputDialog.getText(
+            self, tr("renameBuilding", self._lang), tr("name", self._lang) + ":",
+            text=current,
+        )
+        return text if ok else None
+
+    def _on_rename_building(self, index: int) -> None:
+        """Rename building *index* via a prompt (empty = back to Stavba N)."""
+        canvas = self.canvas
+        if not (0 <= index < canvas.building_count()):
+            return
+        current = canvas._buildings[index].name
+        new = self._ask_building_name(current)
+        if new is None:
+            return
+        canvas.set_building_name(index, new)
+
+    def _on_duplicate_building(self, index: int) -> None:
+        """Duplicate building *index*; the copy becomes active next to it."""
+        self.canvas.duplicate_building(index)
+
+    def _on_rotate_building(self) -> None:
+        """Rotate the ACTIVE building by 90° (toolbar ⟳)."""
+        self.canvas.rotate_building(self.canvas.active_index())
+
     def _on_delete_building(self, index: int | None = None) -> None:
         """Remove building *index* (default: the active one).
 
@@ -1383,21 +1418,33 @@ class EditorView(QWidget):
             sel.clicked.connect(lambda _c=False, k=i: self.canvas.set_active(k))
             h.addWidget(sel, stretch=1)
 
-            rm = QPushButton("✕")
-            rm.setFixedSize(26, 30)
-            rm.setToolTip(tr("removeBuilding", self._lang))
-            rm.setCursor(Qt.CursorShape.PointingHandCursor)
-            rm.setStyleSheet(
-                f"QPushButton {{ background: {theme.CARD}; color: {theme.MUTED};"
-                f" border: 1px solid {theme.BORDER}; border-radius: 7px;"
-                f" font-size: 10pt; }}"
-                f"QPushButton:hover {{ background: {theme.BG}; color: {theme.TEXT}; }}"
-            )
+            def _small_btn(glyph: str, tooltip: str) -> QPushButton:
+                btn = QPushButton(glyph)
+                btn.setFixedSize(26, 30)
+                btn.setToolTip(tooltip)
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setStyleSheet(
+                    f"QPushButton {{ background: {theme.CARD}; color: {theme.MUTED};"
+                    f" border: 1px solid {theme.BORDER}; border-radius: 7px;"
+                    f" font-size: 10pt; }}"
+                    f"QPushButton:hover {{ background: {theme.BG}; color: {theme.TEXT}; }}"
+                )
+                return btn
+
+            ren = _small_btn("✎", tr("renameBuilding", self._lang))
+            ren.clicked.connect(lambda _c=False, k=i: self._on_rename_building(k))
+            h.addWidget(ren, stretch=0)
+
+            dup = _small_btn("⧉", tr("duplicateBuilding", self._lang))
+            dup.clicked.connect(lambda _c=False, k=i: self._on_duplicate_building(k))
+            h.addWidget(dup, stretch=0)
+
+            rm = _small_btn("✕", tr("removeBuilding", self._lang))
             rm.clicked.connect(lambda _c=False, k=i: self._on_delete_building(k))
             h.addWidget(rm, stretch=0)
 
             box.addWidget(row)
-            self._building_rows.append((sel, rm))
+            self._building_rows.append((sel, ren, dup, rm))
 
     def _sync_params_from_active(self) -> None:
         """Load the active building's pitch/overhang/wall into the panel controls.

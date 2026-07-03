@@ -105,6 +105,10 @@ CATALOG: dict[str, dict[str, str]] = {
         "buildingN": "Stavba {n}",
         "emptyBuilding": "(prázdná)",
         "overlapWarning": "Pozor: stavby se v půdorysu překrývají – překrytá plocha je v součtu dvakrát.",
+        "renameBuilding": "Přejmenovat stavbu",
+        "duplicateBuilding": "Duplikovat stavbu",
+        "rotateBuilding": "Otočit stavbu o 90°",
+        "copySuffix": " (kopie)",
     },
     "sk": {
         "new": "Nová zákazka",
@@ -206,6 +210,10 @@ CATALOG: dict[str, dict[str, str]] = {
         "buildingN": "Stavba {n}",
         "emptyBuilding": "(prázdna)",
         "overlapWarning": "Pozor: stavby sa v pôdoryse prekrývajú – prekrytá plocha je v súčte dvakrát.",
+        "renameBuilding": "Premenovať stavbu",
+        "duplicateBuilding": "Duplikovať stavbu",
+        "rotateBuilding": "Otočiť stavbu o 90°",
+        "copySuffix": " (kópia)",
     },
     "en": {
         "new": "New project",
@@ -307,6 +315,10 @@ CATALOG: dict[str, dict[str, str]] = {
         "buildingN": "Building {n}",
         "emptyBuilding": "(empty)",
         "overlapWarning": "Warning: buildings overlap in plan – the shared area is counted twice.",
+        "renameBuilding": "Rename building",
+        "duplicateBuilding": "Duplicate building",
+        "rotateBuilding": "Rotate building 90°",
+        "copySuffix": " (copy)",
     },
 }
 
