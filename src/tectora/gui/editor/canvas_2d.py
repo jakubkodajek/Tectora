@@ -61,6 +61,18 @@ _LEGEND_PAD = 10            # px
 _LEGEND_ROW_H = 18          # px
 _LEGEND_ROWS = 4            # unused; legend height derives from len(_LEGEND_ITEMS)
 
+def _polygon_area(verts: list) -> float:
+    """Unsigned area of a polygon given as [(x, y), ...] (shoelace)."""
+    n = len(verts)
+    if n < 3:
+        return 0.0
+    s = sum(
+        verts[i][0] * verts[(i + 1) % n][1] - verts[(i + 1) % n][0] * verts[i][1]
+        for i in range(n)
+    )
+    return abs(s) / 2.0
+
+
 # Legend items: (i18n_key, COL_key)
 _LEGEND_ITEMS = [
     ("ridge", "ridge"),
@@ -278,20 +290,27 @@ class Canvas2D(QWidget):
     def select_building_at(self, px: float, py: float) -> Optional[int]:
         """If (px, py) is inside a closed building's polygon, make it active.
 
-        Returns the selected index, or None if no building was hit. Topmost
-        (last-drawn) building wins on overlap.
+        Returns the selected index, or None if no building was hit. When the
+        point lies inside SEVERAL buildings (a tower drawn inside a larger
+        base), the SMALLEST one wins — otherwise the nested building could
+        never be selected by clicking. Ties go to the last-drawn (topmost).
         """
+        best: Optional[int] = None
+        best_area: Optional[float] = None
         for i in range(len(self._buildings) - 1, -1, -1):
             b = self._buildings[i]
             if not b.closed or len(b.vertices) < 3:
                 continue
             pts = [self._to_screen(*v) for v in b.vertices]
             if _point_in_polygon(px, py, pts):
-                self._active = i
-                self.update()
-                self.active_changed.emit(self._active)
-                return i
-        return None
+                area = _polygon_area(b.vertices)
+                if best_area is None or area < best_area - 1e-9:
+                    best, best_area = i, area
+        if best is not None:
+            self._active = best
+            self.update()
+            self.active_changed.emit(self._active)
+        return best
 
     # ------------------------------------------------------------------
     # Active-building roof parameters (read/write self._b)
@@ -856,22 +875,37 @@ class Canvas2D(QWidget):
         self.add_point(mx, my)
 
     def _handle_editpoints_press(self, px: float, py: float) -> None:
-        # Clicking inside another building makes it active first, so the edit
-        # then applies to it. A miss leaves the active building unchanged.
-        self.select_building_at(px, py)
-        if not self._vertices:
-            return
-        node_pts = [self._to_screen(v[0], v[1]) for v in self._vertices]
-        idx = hit_test_node(px, py, node_pts, radius=_NODE_RADIUS + 4)
-        self._drag_idx = idx
-        self._move_anchor = None
-        if idx is not None:
+        # 1) NODES first, across ALL buildings — the nearest grabbable corner
+        # wins. Without this the corners of a building drawn inside a larger
+        # one are unreachable: the click also lies inside the outer polygon,
+        # so polygon-selection would steal it for the outer building.
+        best: Optional[tuple[float, int, int]] = None   # (dist², bi, vi)
+        r2 = float((_NODE_RADIUS + 4) ** 2)
+        for bi in range(len(self._buildings) - 1, -1, -1):
+            for vi, v in enumerate(self._buildings[bi].vertices):
+                sx, sy = self._to_screen(*v)
+                d2 = (px - sx) ** 2 + (py - sy) ** 2
+                if d2 <= r2 and (best is None or d2 < best[0] - 1e-9):
+                    best = (d2, bi, vi)
+        if best is not None:
+            _d2, bi, vi = best
+            if bi != self._active:
+                self._active = bi
+                self.active_changed.emit(bi)
             # Snapshot once at the start of the drag (move_vertex itself does
             # not, so the whole drag collapses into a single undo step).
             self._push_undo()
-        elif self._closed and len(self._vertices) >= 3:
-            # Grabbing INSIDE the polygon (not on a node) drags the whole
-            # building — one undo step for the entire move.
+            self._drag_idx = vi
+            self._move_anchor = None
+            self.update()
+            return
+
+        # 2) No node hit — select by containment (smallest building wins) and
+        # start a whole-building drag from inside the polygon.
+        self.select_building_at(px, py)
+        self._drag_idx = None
+        self._move_anchor = None
+        if self._closed and len(self._vertices) >= 3:
             pts = [self._to_screen(*v) for v in self._vertices]
             if _point_in_polygon(px, py, pts):
                 self._push_undo()
