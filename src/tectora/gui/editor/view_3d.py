@@ -107,6 +107,51 @@ def _depth_of_point(
     return rz   # larger rz = closer to viewer
 
 
+def skirt_walls(
+    faces,
+) -> list[list[tuple[float, float, float]]]:
+    """Vertical walls closing the open ends of a set of roof faces.
+
+    An edge used by exactly ONE face is a boundary edge; every boundary edge
+    that is not on the eave plane (z=0) gets a vertical quad dropped to z=0.
+    For a gable this recreates the štít; for a jerkinhead half-hip it closes
+    the trapezoid under the clipped end. Coordinates are roof-local (eave at
+    z=0) — the caller lifts them onto the walls.
+    """
+    from collections import defaultdict
+
+    def key(v) -> tuple:
+        return (round(v[0], 6), round(v[1], 6), round(v[2], 6))
+
+    counts: dict = defaultdict(int)
+    ends: dict = {}
+    for face in faces:
+        vs = face.vertices
+        n = len(vs)
+        for i in range(n):
+            a, b = key(vs[i]), key(vs[(i + 1) % n])
+            if a == b:
+                continue
+            edge = (a, b) if a <= b else (b, a)
+            counts[edge] += 1
+            ends[edge] = (vs[i], vs[(i + 1) % n])
+
+    walls: list[list[tuple[float, float, float]]] = []
+    for edge, c in counts.items():
+        if c != 1:
+            continue
+        a, b = ends[edge]
+        if a[2] <= 1e-9 and b[2] <= 1e-9:
+            continue  # eave-level boundary — sits on the house walls already
+        walls.append([
+            (a[0], a[1], a[2]),
+            (b[0], b[1], b[2]),
+            (b[0], b[1], 0.0),
+            (a[0], a[1], 0.0),
+        ])
+    return walls
+
+
 # ---------------------------------------------------------------------------
 # Face shading helpers
 # ---------------------------------------------------------------------------
@@ -295,8 +340,6 @@ class Roof3DView(QWidget):
             geom.append((verts, False))  # False = roof
 
         # Gable walls (štíty) — vertical triangles at valid gable wing-ends.
-        # Skipped when explicit roof faces are supplied (e.g. a half-hip already
-        # encodes its end geometry, with no full vertical gable).
         if not use_provided:
             from tectora.core.gable import GableNotSupported, gable_wall_triangles
             try:
@@ -305,6 +348,13 @@ class Roof3DView(QWidget):
                     geom.append((lifted, True))  # vertical štít = a wall face
             except GableNotSupported:
                 pass  # invalid gable (shouldn't happen; 2D validates) — just skip
+        else:
+            # Provided faces (half-hip, asymmetric gable) know their own end
+            # geometry; close whatever boundary they leave open with vertical
+            # skirt walls so the roof ends are not hollow.
+            for quad in skirt_walls(faces):
+                lifted = [(v[0], v[1], v[2] + eave_z) for v in quad]
+                geom.append((lifted, True))
 
         return geom
 
