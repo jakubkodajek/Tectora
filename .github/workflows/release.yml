@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package with build tools
+        run: pip install -e .[gui,build]
+
+      - name: Build Tectora.exe
+        run: python packaging/build_exe.py
+
+      # A windowed exe detaches from the console, so run it via Start-Process
+      # and check the real exit code.
+      - name: Smoke-test the exe
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $p = Start-Process -FilePath .\dist\Tectora.exe -ArgumentList "--smoke" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - name: Create GitHub release with the exe
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Tectora.exe
+          generate_release_notes: true

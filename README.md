@@ -29,6 +29,16 @@ Pro zadaný obdélníkový/čtvercový půdorys a typ střechy:
 pip install -e ".[gui,dev]"
 ```
 
+### Windows exe (pro uživatele bez Pythonu)
+
+```bash
+pip install -e ".[gui,build]"
+python packaging/build_exe.py     # → dist/Tectora.exe (jeden soubor, s ikonou)
+```
+
+Release na GitHubu se sestaví automaticky: push tagu `v*` spustí workflow
+`release.yml`, které exe postaví, ověří (`--smoke`) a přiloží k release.
+
 ## Použití — GUI
 
 ```bash
