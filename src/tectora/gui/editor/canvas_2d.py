@@ -565,17 +565,35 @@ class Canvas2D(QWidget):
         self._scale = max(self._SCALE_MIN, self._scale / self._ZOOM_FACTOR)
         self.update()
 
+    def zoom_at(self, px: float, py: float, factor: float) -> None:
+        """Zoom by *factor* keeping the model point under (px, py) fixed.
+
+        Adjusts the pan offset so the cursor stays anchored to the same spot
+        of the drawing while the scale changes (clamped to the scale limits).
+        """
+        new_scale = max(self._SCALE_MIN, min(self._SCALE_MAX, self._scale * factor))
+        if abs(new_scale - self._scale) < 1e-12:
+            return
+        mx, my = self._to_model(px, py)
+        self._scale = new_scale
+        # Invert model_to_screen for the anchor point:
+        #   px = w/2 + pan_x + mx*s   →   pan_x = px - w/2 - mx*s
+        #   py = h/2 + pan_y - my*s   →   pan_y = py - h/2 + my*s
+        self._pan = (
+            px - self.width() / 2.0 - mx * new_scale,
+            py - self.height() / 2.0 + my * new_scale,
+        )
+        self.update()
+
     def wheelEvent(self, event) -> None:  # type: ignore[override]
-        """Zoom canvas with the mouse wheel (centred on widget centre)."""
+        """Zoom canvas with the mouse wheel, anchored at the cursor."""
         delta = event.angleDelta().y()
         if delta == 0:
             super().wheelEvent(event)
             return
         steps = delta / 120.0
-        factor = self._ZOOM_FACTOR ** steps
-        new_scale = self._scale * factor
-        self._scale = max(self._SCALE_MIN, min(self._SCALE_MAX, new_scale))
-        self.update()
+        pos = event.position()
+        self.zoom_at(float(pos.x()), float(pos.y()), self._ZOOM_FACTOR ** steps)
         event.accept()
 
     # ------------------------------------------------------------------
