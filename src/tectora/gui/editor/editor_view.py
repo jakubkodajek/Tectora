@@ -267,6 +267,7 @@ class EditorView(QWidget):
         menu_file.addAction(tr("saveFile", lang), self._on_file_save)
         menu_file.addSeparator()
         menu_file.addAction(tr("exportXls", lang), self._on_export)
+        menu_file.addAction(tr("export3d", lang), self._on_export_3d)
         menu_file.addSeparator()
         menu_file.addAction(tr("exit", lang), window.close)
 
@@ -1621,6 +1622,51 @@ class EditorView(QWidget):
         )
         if path:
             self._export_to(path)
+
+    def export_3d_image(self, path: str, width: int = 1200, height: int = 800) -> bool:
+        """Render the current 3D scene into a PNG at *path*.
+
+        Renders an offscreen copy of the 3D view at a fixed resolution, so the
+        output does not depend on the current window size or visible tab.
+        Returns True when the image was written.
+        """
+        from PySide6.QtGui import QPixmap
+        from tectora.gui.editor.view_3d import Roof3DView
+
+        # Make sure the scene reflects the current drawing even if the user
+        # never opened the 3D tab.
+        self._update_3d_all()
+        if not self.view3d._geom_faces:
+            self._show_toast(tr("drawFirst", self._lang))
+            return False
+
+        snapshot = Roof3DView()
+        snapshot.resize(width, height)
+        snapshot._geom_faces = list(self.view3d._geom_faces)
+        snapshot._azimuth = self.view3d._azimuth
+        snapshot._elevation = self.view3d._elevation
+        snapshot._zoom = self.view3d._zoom
+        pm = QPixmap(snapshot.size())
+        snapshot.render(pm)
+        snapshot.deleteLater()
+        return pm.save(path, "PNG")
+
+    def _on_export_3d(self) -> None:
+        """Open a Save dialog and export the 3D scene as a PNG."""
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            tr("export3d", self._lang),
+            "",
+            "PNG (*.png)",
+        )
+        if not path:
+            return
+        import os
+        if not os.path.splitext(path)[1]:
+            path += ".png"
+        if self.export_3d_image(path):
+            self._show_toast(tr("exportDone", self._lang))
 
     # ------------------------------------------------------------------
     # F4: Open / Save portable .tectora file
