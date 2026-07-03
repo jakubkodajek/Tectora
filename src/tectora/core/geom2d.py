@@ -131,3 +131,94 @@ def dist_point_to_line(p: tuple, a: tuple, b: tuple) -> float:
     # |cross(ab, ap)| / |ab|
     ap = sub(p, a)
     return abs(cross(ab, ap)) / ab_len
+
+
+# ---------------------------------------------------------------------------
+# Polygon overlap
+# ---------------------------------------------------------------------------
+
+def segments_cross(a: tuple, b: tuple, c: tuple, d: tuple) -> bool:
+    """True if segment a–b PROPERLY crosses c–d.
+
+    Touching at an endpoint or running collinearly does NOT count — only a
+    genuine transversal crossing of the two open segments.
+    """
+    o1 = orientation(a, b, c)
+    o2 = orientation(a, b, d)
+    o3 = orientation(c, d, a)
+    o4 = orientation(c, d, b)
+    return o1 * o2 < 0 and o3 * o4 < 0
+
+
+def point_in_polygon(p: tuple, polygon: list) -> bool:
+    """Ray-casting point-in-polygon test (model space)."""
+    x, y = p
+    n = len(polygon)
+    if n < 3:
+        return False
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
+        if (yi > y) != (yj > y):
+            x_int = (xj - xi) * (y - yi) / (yj - yi) + xi
+            if x < x_int:
+                inside = not inside
+        j = i
+    return inside
+
+
+def _in_triangle_strict(p: tuple, a: tuple, b: tuple, c: tuple) -> bool:
+    """True if p lies strictly inside triangle a-b-c (any winding)."""
+    s1 = orientation(a, b, p)
+    s2 = orientation(b, c, p)
+    s3 = orientation(c, a, p)
+    return (s1 > 0 and s2 > 0 and s3 > 0) or (s1 < 0 and s2 < 0 and s3 < 0)
+
+
+def polygon_interior_point(polygon: list) -> tuple:
+    """Return a point strictly inside the simple polygon.
+
+    Classic construction: take the lowest-then-leftmost vertex v (always a
+    convex corner) with neighbours a, b. If no other vertex lies inside the
+    triangle a-v-b, its centroid is interior; otherwise take the contained
+    vertex q closest to v and use the midpoint of v–q.
+    """
+    n = len(polygon)
+    iv = min(range(n), key=lambda i: (polygon[i][1], polygon[i][0]))
+    a = polygon[(iv - 1) % n]
+    v = polygon[iv]
+    b = polygon[(iv + 1) % n]
+
+    best_q = None
+    best_d = None
+    for j in range(n):
+        if j in ((iv - 1) % n, iv, (iv + 1) % n):
+            continue
+        q = polygon[j]
+        if _in_triangle_strict(q, a, v, b):
+            d = (q[0] - v[0]) ** 2 + (q[1] - v[1]) ** 2
+            if best_d is None or d < best_d:
+                best_d, best_q = d, q
+    if best_q is None:
+        return ((a[0] + v[0] + b[0]) / 3.0, (a[1] + v[1] + b[1]) / 3.0)
+    return ((v[0] + best_q[0]) / 2.0, (v[1] + best_q[1]) / 2.0)
+
+
+def polygons_overlap(a: list, b: list) -> bool:
+    """True if the simple polygons a and b overlap with positive area.
+
+    Touching along shared edges or corners does not count as overlap — two
+    buildings standing wall-to-wall are fine. Detected via proper edge
+    crossings plus a containment test (one polygon fully inside the other).
+    """
+    na, nb = len(a), len(b)
+    if na < 3 or nb < 3:
+        return False
+    for i in range(na):
+        for j in range(nb):
+            if segments_cross(a[i], a[(i + 1) % na], b[j], b[(j + 1) % nb]):
+                return True
+    return (point_in_polygon(polygon_interior_point(a), b)
+            or point_in_polygon(polygon_interior_point(b), a))

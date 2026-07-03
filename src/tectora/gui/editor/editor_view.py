@@ -1129,6 +1129,18 @@ class EditorView(QWidget):
             # silently under-reporting the design.
             self._show_toast(tr("someBuildingsFailed", lang))
 
+        # Overlapping footprints double-count the shared plan area in the
+        # totals (and may be intentional, e.g. a raised tower) — warn, don't block.
+        drawn_fps = [canvas.building_footprint(i) for i in range(n)]
+        drawn_fps = [fp for fp in drawn_fps if fp is not None]
+        if len(drawn_fps) >= 2:
+            from tectora.core.geom2d import polygons_overlap
+            if any(
+                polygons_overlap(list(drawn_fps[i].vertices), list(drawn_fps[j].vertices))
+                for i in range(len(drawn_fps)) for j in range(i + 1, len(drawn_fps))
+            ):
+                self._show_toast(tr("overlapWarning", lang))
+
         # last_result tracks the active building (None if it has no footprint),
         # preserving the single-building contract.
         self.last_result = active_result
