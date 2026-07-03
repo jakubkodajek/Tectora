@@ -1606,9 +1606,11 @@ class EditorView(QWidget):
             self._show_toast(tr("drawFirst", lang))
             return
 
+        from tectora.core.materials import MaterialSpec
         design = uc.DesignResult(results)
         write_design_report_xlsx(design, path, building_names=names,
-                                 building_eaves=eaves)
+                                 building_eaves=eaves,
+                                 material_spec=MaterialSpec())
         self._show_toast(tr("exportDone", lang))
 
     def _on_export(self) -> None:

@@ -173,7 +173,7 @@ def write_report_xlsx(result: RoofResult, path: Path) -> None:
 
 
 def write_design_report_xlsx(design, path: Path, building_names=None,
-                             building_eaves=None) -> None:
+                             building_eaves=None, material_spec=None) -> None:
     """Výkaz výměr for a whole multi-building design.
 
     One "Výkaz" worksheet with a per-building "Výsledky" section for each
@@ -184,7 +184,10 @@ def write_design_report_xlsx(design, path: Path, building_names=None,
     (``None``/``""``) fall back to ``Budova N``. ``building_eaves`` is an
     optional aligned list of absolute eave heights above ground (base
     elevation + wall height); when given, each section also reports the eave
-    and ridge heights above ground.
+    and ridge heights above ground. ``material_spec`` is an optional
+    :class:`tectora.core.materials.MaterialSpec`; when given, a
+    "Materiál (odhad)" section with the aggregated takeoff (and its assumed
+    consumption rates) is appended after the design totals.
     """
     wb = Workbook()
     ws = wb.active
@@ -216,7 +219,7 @@ def write_design_report_xlsx(design, path: Path, building_names=None,
         row += 1
 
     # Design totals
-    _write_section(ws, row, "Celkem za návrh", [
+    row = _write_section(ws, row, "Celkem za návrh", [
         ("Celková plocha střechy", round(design.total_area_m2, 2), "m²"),
         ("Obvod okapové hrany", round(design.total_eaves_perimeter_m, 2), "m"),
         ("Délka hřebene", round(design.total_ridge_length_m, 2), "m"),
@@ -224,6 +227,17 @@ def write_design_report_xlsx(design, path: Path, building_names=None,
         ("Délka úžlabí", round(design.total_valley_length_m, 2), "m"),
         ("Krajové tašky — celkem", round(design.total_gable_edge_m, 2), "m"),
     ])
+
+    # Material takeoff (odhad) — quantities from the aggregated measurements.
+    if material_spec is not None:
+        from tectora.core.materials import material_takeoff, spec_note
+        lines = material_takeoff(design.buildings, material_spec)
+        row = _write_section(ws, row + 1, "Materiál (odhad)", [
+            (ln.name, ln.qty, ln.unit) for ln in lines
+        ])
+        note_cell = ws.cell(row=row, column=1, value=spec_note(material_spec))
+        note_cell.font = Font(italic=True, color="808080")
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
 
     ws.column_dimensions["A"].width = 34
     ws.column_dimensions["B"].width = 16
