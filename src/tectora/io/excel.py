@@ -172,7 +172,8 @@ def write_report_xlsx(result: RoofResult, path: Path) -> None:
     wb.save(path)
 
 
-def write_design_report_xlsx(design, path: Path, building_names=None) -> None:
+def write_design_report_xlsx(design, path: Path, building_names=None,
+                             building_eaves=None) -> None:
     """Výkaz výměr for a whole multi-building design.
 
     One "Výkaz" worksheet with a per-building "Výsledky" section for each
@@ -180,7 +181,10 @@ def write_design_report_xlsx(design, path: Path, building_names=None) -> None:
     section with the design totals. ``design`` is a
     :class:`tectora.application.use_cases.DesignResult`; ``building_names`` is an
     optional list aligned with ``design.buildings`` — entries that are falsy
-    (``None``/``""``) fall back to ``Budova N``.
+    (``None``/``""``) fall back to ``Budova N``. ``building_eaves`` is an
+    optional aligned list of absolute eave heights above ground (base
+    elevation + wall height); when given, each section also reports the eave
+    and ridge heights above ground.
     """
     wb = Workbook()
     ws = wb.active
@@ -194,12 +198,21 @@ def write_design_report_xlsx(design, path: Path, building_names=None) -> None:
     row += 2
 
     names = list(building_names) if building_names is not None else []
+    eaves = list(building_eaves) if building_eaves is not None else []
     for i, result in enumerate(design.buildings):
         name = names[i] if i < len(names) else None
         title = (name or "").strip() if isinstance(name, str) else name
         if not title:
             title = f"Budova {i + 1}"
-        row = _write_section(ws, row, title, _result_rows(result))
+        rows = _result_rows(result)
+        if i < len(eaves) and eaves[i] is not None:
+            eave = float(eaves[i])
+            rows = rows + [
+                ("Výška okapu nad terénem", round(eave, 2), "m"),
+                ("Výška hřebene nad terénem",
+                 round(eave + result.apex_height_m, 2), "m"),
+            ]
+        row = _write_section(ws, row, title, rows)
         row += 1
 
     # Design totals

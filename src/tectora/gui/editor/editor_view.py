@@ -1580,6 +1580,7 @@ class EditorView(QWidget):
 
         results: list = []
         names: list = []
+        eaves: list = []
         for i in range(canvas.building_count()):
             fp = canvas.building_footprint(i)
             if fp is None:
@@ -1598,13 +1599,15 @@ class EditorView(QWidget):
                 continue
             results.append(result)
             names.append(b.name)
+            eaves.append(b.eave_height)
 
         if not results:
             self._show_toast(tr("drawFirst", lang))
             return
 
         design = uc.DesignResult(results)
-        write_design_report_xlsx(design, path, building_names=names)
+        write_design_report_xlsx(design, path, building_names=names,
+                                 building_eaves=eaves)
         self._show_toast(tr("exportDone", lang))
 
     def _on_export(self) -> None:
