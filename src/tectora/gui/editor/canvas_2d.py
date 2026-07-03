@@ -133,6 +133,8 @@ class Canvas2D(QWidget):
 
         # editPoints: currently dragged node index
         self._drag_idx: Optional[int] = None
+        # editPoints: last (snapped) model point while dragging a whole building
+        self._move_anchor: Optional[tuple[float, float]] = None
 
         # Hover-height tooltip (eaves/ridges). Painted ridge segments are
         # recorded each repaint as (sx1, sy1, sx2, sy2, height_m).
@@ -466,6 +468,23 @@ class Canvas2D(QWidget):
         if self._closed:
             self.edited.emit()
 
+    def translate_building(self, bi: int, dx: float, dy: float) -> None:
+        """Move ALL vertices of building *bi* by (dx, dy) metres.
+
+        Translation preserves the shape, so no self-intersection guard is
+        needed. Emits ``edited`` on a closed building (live recompute).
+        """
+        if not (0 <= bi < len(self._buildings)):
+            return
+        b = self._buildings[bi]
+        if not b.vertices or (abs(dx) < 1e-12 and abs(dy) < 1e-12):
+            return
+        b.vertices = [(x + dx, y + dy) for (x, y) in b.vertices]
+        b.skeleton_data = None
+        self.update()
+        if b.closed:
+            self.edited.emit()
+
     def toggle_edge_type(self, i: int) -> None:
         """Flip edge *i* between "eave" and "gable"."""
         if not self._edge_types:
@@ -645,6 +664,15 @@ class Canvas2D(QWidget):
             self.move_vertex(self._drag_idx, mx, my)
             return
 
+        # Whole-building drag (editPoints, grabbed inside the polygon): move by
+        # the snapped delta so the building steps along the grid.
+        if tool == "editPoints" and self._move_anchor is not None:
+            ax, ay = self._move_anchor
+            if (mx, my) != (ax, ay):
+                self.translate_building(self._active, mx - ax, my - ay)
+                self._move_anchor = (mx, my)
+            return
+
         # Hover-height tooltip: when the cursor rests on a ridge or eave, show
         # its height after a short delay.
         self._update_hover(px, py, event)
@@ -654,6 +682,9 @@ class Canvas2D(QWidget):
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_idx = None
+            if self._move_anchor is not None:
+                self._move_anchor = None
+                self.setCursor(Qt.CursorShape.CrossCursor)
         elif event.button() == Qt.MouseButton.RightButton and self._pan_anchor is not None:
             self._pan_anchor = None
             self.setCursor(Qt.CursorShape.CrossCursor)
@@ -749,11 +780,20 @@ class Canvas2D(QWidget):
             return
         node_pts = [self._to_screen(v[0], v[1]) for v in self._vertices]
         idx = hit_test_node(px, py, node_pts, radius=_NODE_RADIUS + 4)
+        self._drag_idx = idx
+        self._move_anchor = None
         if idx is not None:
             # Snapshot once at the start of the drag (move_vertex itself does
             # not, so the whole drag collapses into a single undo step).
             self._push_undo()
-        self._drag_idx = idx
+        elif self._closed and len(self._vertices) >= 3:
+            # Grabbing INSIDE the polygon (not on a node) drags the whole
+            # building — one undo step for the entire move.
+            pts = [self._to_screen(*v) for v in self._vertices]
+            if _point_in_polygon(px, py, pts):
+                self._push_undo()
+                self._move_anchor = self._snapped_model(px, py)
+                self.setCursor(Qt.CursorShape.SizeAllCursor)
 
     def _handle_eavegable_click(self, px: float, py: float) -> None:
         # Clicking inside another building makes it active first, so the
