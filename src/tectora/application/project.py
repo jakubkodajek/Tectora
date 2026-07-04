@@ -35,9 +35,15 @@ class Building:
     def to_dict(self) -> dict:
         fp = None
         if self.footprint is not None:
+            edges = []
+            for e in self.footprint.edges:
+                item: dict = {"type": e.type.value}
+                if getattr(e, "half_hip_m", 0.0) > 0:
+                    item["half_hip_m"] = e.half_hip_m
+                edges.append(item)
             fp = {
                 "vertices": [[x, y] for x, y in self.footprint.vertices],
-                "edges": [{"type": e.type.value} for e in self.footprint.edges],
+                "edges": edges,
             }
         return {
             "name": self.name,
@@ -57,6 +63,8 @@ class Building:
             fp = Footprint.from_lists(
                 [(v[0], v[1]) for v in data["footprint"]["vertices"]],
                 [e["type"] for e in data["footprint"]["edges"]],
+                [float(e.get("half_hip_m", 0.0))
+                 for e in data["footprint"]["edges"]],
             )
         return cls(
             footprint=fp,

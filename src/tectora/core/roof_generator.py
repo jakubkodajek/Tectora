@@ -51,11 +51,19 @@ def generate_roof(
     # Drop accidental mid-edge (collinear) points first: they don't change the
     # outline but would break the skeleton's corner-count self-check. This also
     # lets a split rectangle be recognised as a rectangle again.
-    sv, se = drop_collinear_vertices(
-        list(footprint.vertices), [e.type.value for e in footprint.edges]
+    sv, se, sh = drop_collinear_vertices(
+        list(footprint.vertices),
+        [e.type.value for e in footprint.edges],
+        half_hips=[e.half_hip_m for e in footprint.edges],
     )
     if len(sv) != footprint.n:
-        footprint = Footprint.from_lists(sv, se)
+        footprint = Footprint.from_lists(sv, se, sh)
+
+    # Per-edge half-hips (clicked end triangles) need the skeleton fold — the
+    # exact calculator only knows the symmetric building-level clip. This also
+    # covers a single-ended polovalba on a plain rectangle.
+    if any(e.half_hip_m > 0 for e in footprint.edges):
+        return build_roof(footprint, pitch_deg)
 
     # The drawn polygon IS the roof eave outline. ``overhang`` does not affect the
     # roof geometry (it only insets the walls in the 3D view), so it is ignored

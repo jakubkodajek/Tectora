@@ -182,8 +182,14 @@ def build_roof(footprint: Footprint, pitch_deg: float) -> RoofResult:
     # -----------------------------------------------------------------------
     # Totals that don't depend on arc classification.
     # -----------------------------------------------------------------------
-    footprint_area = _shoelace(poly)
-    total_area = footprint_area / cos(radians(pitch_deg))
+    # Per-plane faces are the single source of truth for the area: a half-hip
+    # end face is steeper than the global pitch, so footprint / cos(pitch)
+    # would under-report it. For uniform-pitch roofs the two are identical.
+    faces = build_faces(footprint, pitch_deg)
+    if faces:
+        total_area = sum(f.area_m2 for f in faces)
+    else:
+        total_area = _shoelace(poly) / cos(radians(pitch_deg))
 
     # Eave perimeter excludes gable edges (the gable wall is not an eave).
     eaves_perimeter = sum(
@@ -230,7 +236,7 @@ def build_roof(footprint: Footprint, pitch_deg: float) -> RoofResult:
         gable_edge_right_m=0.0,
         eaves_perimeter_m=eaves_perimeter,
         apex_height_m=apex_height,
-        faces=build_faces(footprint, pitch_deg),
+        faces=faces,
         skeleton_segments=classified,
         notes=[],
     )

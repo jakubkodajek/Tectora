@@ -7,11 +7,24 @@ the skeleton arcs.
 from __future__ import annotations
 
 import math
-from math import atan2, cos, radians, tan
+from math import atan2, cos, degrees, hypot, radians, sqrt, tan
 
 from tectora.core.footprint import Footprint
 from tectora.core.gable import folded_skeleton
 from tectora.core.result import FaceResult
+
+
+def _newell_normal(verts3d: list[tuple]) -> tuple[float, float, float]:
+    """Newell's method: normal of a planar 3-D polygon (length = 2 × area)."""
+    nx = ny = nz = 0.0
+    n = len(verts3d)
+    for i in range(n):
+        x1, y1, z1 = verts3d[i]
+        x2, y2, z2 = verts3d[(i + 1) % n]
+        nx += (y1 - y2) * (z1 + z2)
+        ny += (z1 - z2) * (x1 + x2)
+        nz += (x1 - x2) * (y1 + y2)
+    return nx, ny, nz
 
 # Precision for rounding coordinates to a canonical key
 _ROUND = 5
@@ -195,20 +208,27 @@ def build_faces(footprint: Footprint, pitch_deg: float) -> list[FaceResult]:
 
     # ------------------------------------------------------------------
     # 6. Lift to 3-D and build FaceResult objects.
+    #
+    # Area and slope come from the face's own plane (Newell normal), not
+    # from the global pitch: a half-hip end face is steeper than the main
+    # slopes, so area_2d / cos(pitch) would under-report it.
     # ------------------------------------------------------------------
     results: list[FaceResult] = []
     for i, cycle in enumerate(faces_2d):
-        pts_2d = [coord[k] for k in cycle]
-        area_2d = abs(_signed_shoelace(pts_2d))
-        area_3d = area_2d / cos_pitch
         vertices_3d = [
             (coord[k][0], coord[k][1], get_t((coord[k][0], coord[k][1])) * slope)
             for k in cycle
         ]
+        nx, ny, nz = _newell_normal(vertices_3d)
+        norm = sqrt(nx * nx + ny * ny + nz * nz)
+        if norm < 1e-12:
+            continue
+        area_3d = norm / 2.0
+        slope_face = degrees(atan2(hypot(nx, ny), abs(nz)))
         results.append(FaceResult(
             name=f"rovina {i + 1}",
             area_m2=area_3d,
-            slope_deg=pitch_deg,
+            slope_deg=slope_face,
             vertices=vertices_3d,
         ))
 

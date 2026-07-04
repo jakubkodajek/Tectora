@@ -16,6 +16,10 @@ class EdgeType(str, Enum):
 @dataclass(frozen=True)
 class Edge:
     type: EdgeType
+    # Half-hip (polovalba) clip depth in metres for THIS edge: > 0 turns the
+    # hip end above a rectangular wing-end cap into a half-hip whose ridge is
+    # clipped `half_hip_m` from the edge. Only meaningful on eave cap edges.
+    half_hip_m: float = 0.0
 
 
 def _signed_area(pts: list[Point]) -> float:
@@ -52,7 +56,8 @@ def drop_collinear_vertices(
     vertices: list[Point],
     edge_types: list[str],
     tol: float = 1e-7,
-) -> tuple[list[Point], list[str]]:
+    half_hips: list[float] | None = None,
+):
     """Remove vertices that sit (within *tol*) on the straight line between
     their two neighbours.
 
@@ -61,15 +66,21 @@ def drop_collinear_vertices(
     nor reflex, so the structural self-check fails and the roof is rejected).
     Dropping them lets an accidentally-split rectangle calculate as a rectangle.
 
-    The merged edge keeps the edge type of the kept vertex's outgoing edge.
-    Returns simplified ``(vertices, edge_types)``; falls back to the originals
-    if fewer than 3 vertices would remain.
+    The merged edge keeps the edge type (and half-hip depth, when *half_hips*
+    is given) of the kept vertex's outgoing edge. Returns simplified
+    ``(vertices, edge_types)`` — plus ``half_hips`` as a third element when it
+    was passed in — falling back to the originals if fewer than 3 vertices
+    would remain.
     """
     n = len(vertices)
+    with_hh = half_hips is not None
     if n <= 3:
+        if with_hh:
+            return list(vertices), list(edge_types), list(half_hips)
         return list(vertices), list(edge_types)
     keep_v: list[Point] = []
     keep_e: list[str] = []
+    keep_h: list[float] = []
     for i in range(n):
         prev = vertices[(i - 1) % n]
         cur = vertices[i]
@@ -84,8 +95,14 @@ def drop_collinear_vertices(
             continue
         keep_v.append(cur)
         keep_e.append(edge_types[i] if i < len(edge_types) else "eave")
+        if with_hh:
+            keep_h.append(half_hips[i] if i < len(half_hips) else 0.0)
     if len(keep_v) < 3:
+        if with_hh:
+            return list(vertices), list(edge_types), list(half_hips)
         return list(vertices), list(edge_types)
+    if with_hh:
+        return keep_v, keep_e, keep_h
     return keep_v, keep_e
 
 
@@ -95,14 +112,25 @@ class Footprint:
     edges: tuple[Edge, ...]
 
     @classmethod
-    def from_lists(cls, vertices: list[Point], edge_types: list[str]) -> "Footprint":
+    def from_lists(
+        cls,
+        vertices: list[Point],
+        edge_types: list[str],
+        half_hips: list[float] | None = None,
+    ) -> "Footprint":
         pts = [(float(x), float(y)) for x, y in vertices]
         if len(pts) < 3:
             raise ValueError("Půdorys musí mít alespoň 3 body.")
         if len(edge_types) != len(pts):
             raise ValueError("Počet hran musí odpovídat počtu bodů.")
+        if half_hips is not None and len(half_hips) != len(pts):
+            raise ValueError("Počet hloubek polovalby musí odpovídat počtu hran.")
+        hh = half_hips or [0.0] * len(pts)
         try:
-            edges = tuple(Edge(EdgeType(t)) for t in edge_types)
+            edges = tuple(
+                Edge(EdgeType(t), max(0.0, float(h)))
+                for t, h in zip(edge_types, hh)
+            )
         except ValueError as exc:
             raise ValueError(f"Neplatný typ hrany: {exc}") from exc
         if not _is_simple(pts):

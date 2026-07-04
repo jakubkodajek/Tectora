@@ -128,6 +128,16 @@ _FOOTPRINT_SCHEMA = {
                             "je platný jen na konci křídla s kolmými sousedy."
                         ),
                     },
+                    "half_hip_m": {
+                        "type": "number", "minimum": 0,
+                        "description": (
+                            "Polovalba TÉTO hrany: hloubka useknutí hřebene "
+                            "(m) nad koncem křídla. Jen na eave hraně, která "
+                            "je platným koncem křídla (jako štít). 0/chybí = "
+                            "plná valba. Sklon valbičky = atan(výška hřebene "
+                            "/ hloubka)."
+                        ),
+                    },
                 },
             },
         },

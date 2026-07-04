@@ -178,6 +178,10 @@ class EditorView(QWidget):
                         half_hip=float(b.half_hip_m),
                         pitch_back=b.pitch_back_deg,
                         base_height=float(getattr(b, "base_height_m", 0.0)),
+                        edge_half_hips=[
+                            float(getattr(e, "half_hip_m", 0.0))
+                            for e in b.footprint.edges
+                        ],
                         name=b.name,
                     )
                     for b in drawn

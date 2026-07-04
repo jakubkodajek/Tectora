@@ -97,9 +97,12 @@ class _CanvasBuilding:
     overhang: float = 0.0
     pitch: int = 35
     wall_height: float = 2.5
-    half_hip: float = 0.0      # half-hip (polovalba) clip depth in metres
+    half_hip: float = 0.0      # SYMMETRIC (exact-path) polovalba depth, metres
     pitch_back: Optional[float] = None  # asymmetric gable back-slope pitch
     base_height: float = 0.0   # elevation of the wall base above ground
+    # Per-EDGE polovalba depths (metres), parallel to edge_types — set by
+    # clicking an end triangle; computed via the skeleton fold.
+    edge_half_hips: list = field(default_factory=list)
     name: str = ""
 
     @property
@@ -274,6 +277,13 @@ class Canvas2D(QWidget):
             self._buildings[index].skeleton_data = data
             self.update()
 
+    @staticmethod
+    def _ensure_edge_half_hips(b: "_CanvasBuilding") -> None:
+        """Resize b.edge_half_hips to match the vertex count (pad with 0)."""
+        n = len(b.vertices)
+        if len(b.edge_half_hips) != n:
+            b.edge_half_hips = (list(b.edge_half_hips) + [0.0] * n)[:n]
+
     def building_footprint(self, index: int):
         """Return the Footprint of building *index*, or None."""
         if not (0 <= index < len(self._buildings)):
@@ -282,8 +292,9 @@ class Canvas2D(QWidget):
         if not b.closed or len(b.vertices) < 3:
             return None
         from tectora.core.footprint import Footprint
+        self._ensure_edge_half_hips(b)
         try:
-            return Footprint.from_lists(b.vertices, b.edge_types)
+            return Footprint.from_lists(b.vertices, b.edge_types, b.edge_half_hips)
         except ValueError:
             return None
 
@@ -368,6 +379,7 @@ class Canvas2D(QWidget):
                 b.half_hip,
                 b.pitch_back,
                 b.base_height,
+                list(b.edge_half_hips),
             )
             for b in self._buildings
         )
@@ -380,8 +392,9 @@ class Canvas2D(QWidget):
                 vertices=list(v), edge_types=list(et), closed=cl,
                 skeleton_data=None, overhang=oh, pitch=pi, wall_height=wh,
                 half_hip=hh, name=nm, pitch_back=pb, base_height=bh,
+                edge_half_hips=list(ehh),
             )
-            for (v, et, cl, oh, pi, wh, nm, hh, pb, bh) in buildings
+            for (v, et, cl, oh, pi, wh, nm, hh, pb, bh, ehh) in buildings
         ]
         if not self._buildings:
             self._buildings = [_CanvasBuilding()]
@@ -461,6 +474,7 @@ class Canvas2D(QWidget):
             overhang=src.overhang, pitch=src.pitch,
             wall_height=src.wall_height, half_hip=src.half_hip,
             pitch_back=src.pitch_back, base_height=src.base_height,
+            edge_half_hips=list(src.edge_half_hips),
             name=(src.name + tr("copySuffix", self._lang)) if src.name else "",
         )
         self._buildings.append(copy)
@@ -546,6 +560,7 @@ class Canvas2D(QWidget):
         self._push_undo()
         self._closed = True
         self._edge_types = ["eave"] * len(self._vertices)
+        self._b.edge_half_hips = [0.0] * len(self._vertices)
         self.update()
         # The active building now has a footprint — listeners (building list,
         # panel) refresh their state.
@@ -594,13 +609,17 @@ class Canvas2D(QWidget):
         self._push_undo()
         self._skeleton_data = None
         self._edge_types[i] = "gable" if self._edge_types[i] == "eave" else "eave"
+        # A štít replaces any per-edge polovalba on that edge.
+        if self._edge_types[i] == "gable" and i < len(self._b.edge_half_hips):
+            self._b.edge_half_hips[i] = 0.0
         self.update()
         if self._closed:
             self.edited.emit()
 
     def revert_invalid_gables(self, bi: int) -> int:
-        """Revert any gable edge of building *bi* that is no longer a valid cap
-        (e.g. after a later edit slanted a neighbour) back to eave.
+        """Revert any gable edge — and clear any per-edge polovalba — of
+        building *bi* whose edge is no longer a valid cap (e.g. after a later
+        edit slanted a neighbour).
 
         Returns the number of edges reverted. Lets the calc succeed instead of
         failing with GableNotSupported on a shape the user has since changed.
@@ -615,14 +634,20 @@ class Canvas2D(QWidget):
             return 0
         from tectora.core.gable import is_valid_gable_edge_at
         n = len(b.vertices)
+        self._ensure_edge_half_hips(b)
         reverted = 0
         for i in range(n):
-            if i < len(b.edge_types) and b.edge_types[i] == "gable":
-                a = b.vertices[i]
-                c = b.vertices[(i + 1) % n]
-                if not is_valid_gable_edge_at(fp, a, c):
+            is_gable = i < len(b.edge_types) and b.edge_types[i] == "gable"
+            has_hh = b.edge_half_hips[i] > 0
+            if not (is_gable or has_hh):
+                continue
+            a = b.vertices[i]
+            c = b.vertices[(i + 1) % n]
+            if not is_valid_gable_edge_at(fp, a, c):
+                if is_gable:
                     b.edge_types[i] = "eave"
-                    reverted += 1
+                b.edge_half_hips[i] = 0.0
+                reverted += 1
         if reverted:
             self.update()
         return reverted
@@ -653,8 +678,10 @@ class Canvas2D(QWidget):
         if not self._closed or len(self._vertices) < 3:
             return None
         from tectora.core.footprint import Footprint
+        b = self._b
+        self._ensure_edge_half_hips(b)
         try:
-            return Footprint.from_lists(self._vertices, self._edge_types)
+            return Footprint.from_lists(b.vertices, b.edge_types, b.edge_half_hips)
         except ValueError:
             return None
 
@@ -1541,7 +1568,9 @@ class Canvas2D(QWidget):
         """Record each roof face's clickable centroid for the active building.
 
         *bbox* is the calc-space bbox for the exact (rectangle) path (face
-        vertices are in calc coords there) or None for the SS path (model coords).
+        vertices are in calc coords there) or None for the SS path (model
+        coords). Records both the screen position (hit testing) and the model
+        centroid (identifying the face's base edge on click).
         """
         from tectora.gui.editor.skeleton_render import map_calc_point
         for face in getattr(self._skeleton_data, "faces", None) or []:
@@ -1553,7 +1582,8 @@ class Canvas2D(QWidget):
             if bbox is not None:
                 cx, cy = map_calc_point(cx, cy, bbox)
             sx, sy = self._to_screen(cx, cy)
-            self._face_hits.append((sx, sy, self._active, face.name, face.slope_deg))
+            self._face_hits.append(
+                (sx, sy, self._active, face.name, face.slope_deg, cx, cy))
 
     def _handle_face_pitch_click(self, px: float, py: float) -> None:
         self.select_building_at(px, py)
@@ -1564,21 +1594,23 @@ class Canvas2D(QWidget):
         if not _point_in_polygon(px, py, poly):
             return
         best, best_d = None, None
-        for (sx, sy, bi, name, slope) in self._face_hits:
+        for (sx, sy, bi, name, slope, cx, cy) in self._face_hits:
             if bi != self._active:
                 continue
             d = (px - sx) ** 2 + (py - sy) ** 2
             if best_d is None or d < best_d:
-                best_d, best = d, (sx, sy, name, slope)
+                best_d, best = d, (sx, sy, name, slope, (cx, cy))
         if best is None:
             self._editor._show_toast(tr("calcFirst", self._lang))
             return
-        sx, sy, name, slope = best
-        self._open_pitch_editor(name, slope, sx, sy)
+        sx, sy, name, slope, centroid = best
+        self._open_pitch_editor(name, slope, sx, sy, centroid=centroid)
 
     def _open_pitch_editor(self, face_name: str, slope: float,
-                           lx: float, ly: float) -> None:
+                           lx: float, ly: float,
+                           centroid: Optional[tuple] = None) -> None:
         self._close_pitch_editor()
+        self._pitch_centroid = centroid   # model-space centroid of the face
         ed = QLineEdit(self)
         ed.setText(f"{slope:.0f}")
         ed.selectAll()
@@ -1593,19 +1625,40 @@ class Canvas2D(QWidget):
         ed.show()
         ed.setFocus()
 
-    @staticmethod
-    def _is_hip_end_face(face_name: str) -> bool:
-        """True for the triangular END faces: "valba" (hip) / "valbička"
-        (half-hip). The main slopes of a hip roof are named "… (valbová)" —
-        that suffix does NOT contain the substring "valba", so they fall
-        through to the front/back pitch handling."""
-        n = (face_name or "").lower()
-        return "valbička" in n or "valba" in n
+    def _cap_edge_at_centroid(self, centroid: Optional[tuple]) -> Optional[int]:
+        """Canvas edge index of the face's base edge IF it is a valid wing-end
+        cap, else None.
+
+        The base edge of a roof face is the footprint edge nearest its
+        centroid (each skeleton face grows from exactly one edge). Only cap
+        edges qualify for the end-pitch → half-hip rewrite; clicks on main
+        slopes fall through to the front/back pitch handling.
+        """
+        b = self._b
+        if centroid is None or not b.closed or len(b.vertices) < 3:
+            return None
+        n = len(b.vertices)
+        cx, cy = centroid
+        best_i, best_d = None, None
+        for i in range(n):
+            d = _point_seg_dist(cx, cy, b.vertices[i], b.vertices[(i + 1) % n])
+            if best_d is None or d < best_d:
+                best_d, best_i = d, i
+        if best_i is None:
+            return None
+        fp = self.footprint
+        if fp is None:
+            return None
+        from tectora.core.gable import is_valid_gable_edge_at
+        a = b.vertices[best_i]
+        c = b.vertices[(best_i + 1) % n]
+        return best_i if is_valid_gable_edge_at(fp, a, c) else None
 
     def _apply_pitch_editor(self, face_name: str) -> None:
         if self._pitch_editor is None:
             return
         txt = self._pitch_editor.text().strip().replace(",", ".")
+        centroid = getattr(self, "_pitch_centroid", None)
         self._close_pitch_editor()
         try:
             val = float(txt)
@@ -1613,10 +1666,11 @@ class Canvas2D(QWidget):
             return
         if not (1 <= val <= 89):
             return
-        # Clicking a valba/valbička end triangle re-clips the roof so the end
-        # face gets this pitch → a half-hip (polovalba).
-        if self._is_hip_end_face(face_name):
-            self._set_end_face_pitch(val)
+        # A face whose base edge is a wing-end cap is an END face (valba /
+        # valbička) — setting its pitch re-clips the roof to a half-hip.
+        cap_idx = self._cap_edge_at_centroid(centroid)
+        if cap_idx is not None:
+            self._set_end_face_pitch(val, cap_idx)
             return
         self._push_undo()
         # A "zadní" (back) gable plane sets the back pitch; any other plane sets
@@ -1631,46 +1685,42 @@ class Canvas2D(QWidget):
         if self._b.closed:
             self.edited.emit()                    # live recompute
 
-    def _set_end_face_pitch(self, val: float) -> None:
-        """Turn the end of the roof into a half-hip whose end face has pitch
-        *val* (degrees).
+    def _set_end_face_pitch(self, val: float, edge_idx: int) -> None:
+        """Give the end face above cap edge *edge_idx* the pitch *val* by
+        clipping a half-hip: d = H / tan(val), where H is the ridge height at
+        the cap (H = (w/2)·tan(main pitch), w = cap width).
 
-        Computes the clip depth from the geometry (d = H / tan(val)), marks
-        both cap edges as gables (the exact HALF_HIP mapping needs them) and
-        sets the per-building half-hip depth. The exact model is symmetric,
-        so BOTH ends get the same pitch. Rectangles only.
+        Applies ONLY to the clicked end (per-edge depth; the roof recomputes
+        via the skeleton fold). Legacy compatibility: on a gable-typed cap
+        with the symmetric Polovalba spin active it updates that instead.
         """
         b = self._b
-        result = b.skeleton_data
-        if (result is None or getattr(result, "skeleton_segments", None)
-                or len(b.vertices) != 4):
-            self._editor._show_toast(tr("halfHipOnlyRect", self._lang))
+        n = len(b.vertices)
+        if not (0 <= edge_idx < n):
             return
         if val <= float(b.pitch) + 1e-9:
             self._editor._show_toast(tr("halfHipPitchTooLow", self._lang))
             return
         from tectora.core.roof_generator import half_hip_depth_for_pitch
-        xs = [v[0] for v in b.vertices]
-        ys = [v[1] for v in b.vertices]
-        width = min(max(xs) - min(xs), max(ys) - min(ys))
-        d = half_hip_depth_for_pitch(width, float(b.pitch), val)
+        a = b.vertices[edge_idx]
+        c = b.vertices[(edge_idx + 1) % n]
+        w = ((c[0] - a[0]) ** 2 + (c[1] - a[1]) ** 2) ** 0.5
+        d = half_hip_depth_for_pitch(w, float(b.pitch), val)
 
-        self._push_undo()
-        # Cap edges = the shortest edge and its opposite partner.
-        n = len(b.vertices)
-        lens = [
-            (b.vertices[(i + 1) % n][0] - b.vertices[i][0]) ** 2
-            + (b.vertices[(i + 1) % n][1] - b.vertices[i][1]) ** 2
-            for i in range(n)
-        ]
-        i0 = min(range(n), key=lambda i: lens[i])
-        for i in (i0, (i0 + 2) % n):
-            if i < len(b.edge_types):
-                b.edge_types[i] = "gable"
-        b.half_hip = float(d)
+        if edge_idx < len(b.edge_types) and b.edge_types[edge_idx] == "gable":
+            # The end is a štít with the symmetric (exact-path) polovalba —
+            # its valbička is controlled by the building-level spin.
+            if b.half_hip <= 0:
+                return
+            self._push_undo()
+            b.half_hip = float(d)
+        else:
+            self._push_undo()
+            self._ensure_edge_half_hips(b)
+            b.edge_half_hips[edge_idx] = float(d)
         b.skeleton_data = None
         self.update()
-        self.active_changed.emit(self._active)   # re-sync the Polovalba spin
+        self.active_changed.emit(self._active)   # re-sync the panel spins
         if b.closed:
             self.edited.emit()                    # live recompute
 
@@ -1678,6 +1728,7 @@ class Canvas2D(QWidget):
         if self._pitch_editor is not None:
             self._pitch_editor.deleteLater()
             self._pitch_editor = None
+        self._pitch_centroid = None
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
         px, py = float(event.position().x()), float(event.position().y())

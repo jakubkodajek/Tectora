@@ -1,15 +1,13 @@
-"""Polovalba by clicking the end triangle: set its pitch, get the clip depth.
+"""Polovalba by clicking the end triangle — per edge, on any wing end.
 
-Click a "valba"/"valbička" end face with the Sklon plochy tool and type a
-pitch — the roof re-clips so the end face has exactly that pitch
-(d = H / tan(pitch)). Steeper end = shallower clip; the exact model is
-symmetric so both ends match.
+Clicking a valba end face with the Sklon plochy tool and typing a pitch sets
+a PER-EDGE half-hip depth (d = H / tan(pitch)) on that end only; the roof
+recomputes via the skeleton fold, so it works on rectangles AND on the wing
+ends of L/T/U shapes. The cap edge stays an eave.
 """
 import math
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-import pytest
 
 from tectora.gui.i18n import tr
 
@@ -28,7 +26,8 @@ def _editor(tmp_path):
     return app, w, e
 
 
-RECT = [(2, 2), (12, 2), (12, 8), (2, 8)]        # 10 × 6, off-origin
+RECT = [(2, 2), (12, 2), (12, 8), (2, 8)]     # 10 × 6, off-origin
+L_SHAPE = [(0, 0), (12, 0), (12, 4), (4, 4), (4, 10), (0, 10)]
 
 
 def _draw(c, pts=RECT):
@@ -37,10 +36,20 @@ def _draw(c, pts=RECT):
     c.close_polygon()
 
 
-def _apply_end_pitch(c, face_name, value):
-    c._open_pitch_editor(face_name, 35.0, 100, 100)
+def _click_face(c, pred):
+    """Render (to record face hits), click the face matching *pred*."""
+    from PySide6.QtGui import QPixmap
+    pm = QPixmap(c.size())
+    c.render(pm)
+    hit = next(h for h in c._face_hits if pred(h))
+    c._handle_face_pitch_click(hit[0], hit[1])
+    assert c._pitch_editor is not None
+    return hit
+
+
+def _type_pitch(c, hit, value):
     c._pitch_editor.setText(str(value))
-    c._apply_pitch_editor(face_name)
+    c._apply_pitch_editor(hit[3])
 
 
 def _capture_toasts(e):
@@ -49,75 +58,76 @@ def _capture_toasts(e):
     return toasts
 
 
-# ---------------------------------------------------------------------------
-# Core math
-# ---------------------------------------------------------------------------
-
-def test_depth_formula_matches_calculator_roundtrip():
-    from tectora.core.footprint import Footprint
-    from tectora.core.roof_generator import generate_roof, half_hip_depth_for_pitch
-
-    d = half_hip_depth_for_pitch(6.0, 35.0, 60.0)
-    assert abs(d - 3 * math.tan(math.radians(35)) / math.tan(math.radians(60))) < 1e-9
-
-    fp = Footprint.from_lists([(0, 0), (10, 0), (10, 6), (0, 6)],
-                              ["eave", "gable", "eave", "gable"])
-    result = generate_roof(fp, 35.0, half_hip_m=d)
-    end = next(f for f in result.faces if "valbička" in f.name)
-    assert abs(end.slope_deg - 60.0) < 0.01       # the end face has the asked pitch
-
-
-def test_depth_formula_rejects_shallow_end():
-    from tectora.core.roof_generator import half_hip_depth_for_pitch
-    with pytest.raises(ValueError):
-        half_hip_depth_for_pitch(6.0, 35.0, 35.0)
-    with pytest.raises(ValueError):
-        half_hip_depth_for_pitch(6.0, 35.0, 20.0)
-
-
-# ---------------------------------------------------------------------------
-# GUI flow
-# ---------------------------------------------------------------------------
-
-def test_click_valba_creates_half_hip_with_that_pitch(tmp_path):
+def test_click_valba_clips_that_end_only(tmp_path):
     app, w, e = _editor(tmp_path)
     c = e.canvas
     _draw(c)
-    e._on_calculate()                              # plain hip (all eave)
+    e._on_calculate()                          # plain hip (all eave)
 
-    _apply_end_pitch(c, "levá valba", 60)
+    # The left end triangle: model centroid near x = 2 + 1 = 3.
+    hit = _click_face(c, lambda h: h[5] < 4.0)
+    _type_pitch(c, hit, 60)
     app.processEvents()
 
     b = c._buildings[0]
     expected_d = 3 * math.tan(math.radians(35)) / math.tan(math.radians(60))
-    assert abs(b.half_hip - expected_d) < 1e-6
-    # Cap (short) edges got gable-marked so the HALF_HIP mapping applies.
-    caps = [i for i, t in enumerate(b.edge_types) if t == "gable"]
-    assert len(caps) == 2 and (caps[1] - caps[0]) == 2
-    # Recompute produced a half-hip whose end faces have the asked pitch.
+    carrying = [i for i, d in enumerate(b.edge_half_hips) if d > 0]
+    assert len(carrying) == 1                  # ONE end clipped
+    assert abs(b.edge_half_hips[carrying[0]] - expected_d) < 1e-6
+    assert all(t == "eave" for t in b.edge_types)   # cap stays an eave
+
     e._on_calculate()
-    ends = [f for f in b.skeleton_data.faces if "valbička" in f.name]
-    assert len(ends) == 2
-    assert all(abs(f.slope_deg - 60.0) < 0.01 for f in ends)
-    # Panel spin re-synced.
-    assert abs(e._half_hip_spin.value() - round(expected_d, 1)) < 0.051
+    slopes = sorted(round(f.slope_deg, 2) for f in b.skeleton_data.faces)
+    assert slopes.count(60.0) == 1             # the clipped end
+    assert slopes.count(35.0) == 3             # mains + the untouched end
 
 
-def test_click_valbicka_changes_existing_half_hip(tmp_path):
+def test_click_wing_end_on_l_shape(tmp_path):
+    app, w, e = _editor(tmp_path)
+    c = e.canvas
+    _draw(c, L_SHAPE)
+    e._on_calculate()
+    plain_ridge = e.last_result.ridge_length_m
+
+    # Wing end at x = 12 (cap edge (12,0)–(12,4), width 4): its end face
+    # centroid lies right of x = 10.
+    hit = _click_face(c, lambda h: h[5] > 10.0)
+    _type_pitch(c, hit, 60)
+    app.processEvents()
+    e._on_calculate()
+
+    b = c._buildings[0]
+    h = 2.0 * math.tan(math.radians(35))       # cap width 4 → H = 2·tan(35)
+    expected_d = h / math.tan(math.radians(60))
+    carrying = [i for i, d in enumerate(b.edge_half_hips) if d > 0]
+    assert len(carrying) == 1
+    assert abs(b.edge_half_hips[carrying[0]] - expected_d) < 1e-6
+    # Ridge grew by (w/2 − d) on that wing.
+    assert abs(e.last_result.ridge_length_m
+               - (plain_ridge + 2.0 - expected_d)) < 1e-6
+    beta = math.degrees(math.atan(h / expected_d))
+    assert any(abs(f.slope_deg - beta) < 0.01 for f in b.skeleton_data.faces)
+
+
+def test_reclick_updates_the_same_end(tmp_path):
     app, w, e = _editor(tmp_path)
     c = e.canvas
     _draw(c)
     e._on_calculate()
-    _apply_end_pitch(c, "pravá valba", 60)
+    hit = _click_face(c, lambda h: h[5] < 4.0)
+    _type_pitch(c, hit, 60)
     e._on_calculate()
 
-    _apply_end_pitch(c, "pravá valbička", 45)      # steepness down → deeper clip
+    # The clipped end face (now a valbička plane) — click it again.
+    hit2 = _click_face(c, lambda h: h[5] < 4.0)
+    _type_pitch(c, hit2, 45)
     e._on_calculate()
+
     b = c._buildings[0]
-    expected_d = 3 * math.tan(math.radians(35))    # tan(45) == 1
-    assert abs(b.half_hip - expected_d) < 1e-6
-    ends = [f for f in b.skeleton_data.faces if "valbička" in f.name]
-    assert all(abs(f.slope_deg - 45.0) < 0.01 for f in ends)
+    expected_d = 3 * math.tan(math.radians(35))     # tan(45) == 1
+    carrying = [i for i, d in enumerate(b.edge_half_hips) if d > 0]
+    assert len(carrying) == 1
+    assert abs(b.edge_half_hips[carrying[0]] - expected_d) < 1e-6
 
 
 def test_end_pitch_not_steeper_than_main_is_refused(tmp_path):
@@ -126,33 +136,69 @@ def test_end_pitch_not_steeper_than_main_is_refused(tmp_path):
     _draw(c)
     e._on_calculate()
     toasts = _capture_toasts(e)
-    _apply_end_pitch(c, "levá valba", 30)          # main pitch is 35
+    hit = _click_face(c, lambda h: h[5] < 4.0)
+    _type_pitch(c, hit, 30)                    # main pitch is 35
     b = c._buildings[0]
-    assert b.half_hip == 0.0
-    assert all(t == "eave" for t in b.edge_types)
+    assert all(d == 0 for d in b.edge_half_hips)
     assert tr("halfHipPitchTooLow", "cs") in toasts
 
 
-def test_end_pitch_on_l_shape_is_refused(tmp_path):
-    app, w, e = _editor(tmp_path)
-    c = e.canvas
-    _draw(c, [(0, 0), (6, 0), (6, 3), (3, 3), (3, 6), (0, 6)])
-    e._on_calculate()                              # SS path
-    toasts = _capture_toasts(e)
-    c._open_pitch_editor("valba", 35.0, 100, 100)
-    c._pitch_editor.setText("60")
-    c._apply_pitch_editor("valba")
-    assert c._buildings[0].half_hip == 0.0
-    assert tr("halfHipOnlyRect", "cs") in toasts
-
-
-def test_end_pitch_click_is_undoable(tmp_path):
+def test_main_face_click_still_sets_global_pitch(tmp_path):
     app, w, e = _editor(tmp_path)
     c = e.canvas
     _draw(c)
     e._on_calculate()
-    _apply_end_pitch(c, "levá valba", 55)
-    assert c._buildings[0].half_hip > 0
+    # A main slope: centroid in the middle band (x ≈ 7).
+    hit = _click_face(c, lambda h: 5.0 < h[5] < 9.0)
+    _type_pitch(c, hit, 42)
+    b = c._buildings[0]
+    assert b.pitch == 42
+    assert all(d == 0 for d in b.edge_half_hips)
+
+
+def test_end_click_is_one_undo_step(tmp_path):
+    app, w, e = _editor(tmp_path)
+    c = e.canvas
+    _draw(c)
+    e._on_calculate()
+    hit = _click_face(c, lambda h: h[5] < 4.0)
+    _type_pitch(c, hit, 55)
+    b = c._buildings[0]
+    assert any(d > 0 for d in b.edge_half_hips)
     assert c.undo()
-    assert c._buildings[0].half_hip == 0.0
-    assert all(t == "eave" for t in c._buildings[0].edge_types)
+    assert all(d == 0 for d in c._buildings[0].edge_half_hips)
+
+
+def test_legacy_symmetric_valbicka_click_updates_spin_value(tmp_path):
+    app, w, e = _editor(tmp_path)
+    c = e.canvas
+    _draw(c)
+    n = len(c._vertices)
+    lens = sorted(
+        (((c._vertices[(i + 1) % n][0] - c._vertices[i][0]) ** 2
+          + (c._vertices[(i + 1) % n][1] - c._vertices[i][1]) ** 2), i)
+        for i in range(n)
+    )
+    for (_l, i) in lens[:2]:
+        c.toggle_edge_type(i)                  # both caps → štít
+    e._half_hip_spin.setValue(1.0)             # symmetric exact-path polovalba
+    e._on_calculate()
+
+    hit = _click_face(c, lambda h: "valbička" in h[3])
+    _type_pitch(c, hit, 45)
+    b = c._buildings[0]
+    assert abs(b.half_hip - 3 * math.tan(math.radians(35))) < 1e-6
+    assert all(d == 0 for d in b.edge_half_hips)
+
+
+def test_gable_marking_clears_edge_half_hip(tmp_path):
+    app, w, e = _editor(tmp_path)
+    c = e.canvas
+    _draw(c)
+    e._on_calculate()
+    hit = _click_face(c, lambda h: h[5] < 4.0)
+    _type_pitch(c, hit, 60)
+    b = c._buildings[0]
+    ei = next(i for i, d in enumerate(b.edge_half_hips) if d > 0)
+    c.toggle_edge_type(ei)                     # štít replaces the polovalba
+    assert b.edge_half_hips[ei] == 0.0

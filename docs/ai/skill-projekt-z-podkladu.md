@@ -12,7 +12,8 @@ Postup pro agenta, který dostal projektovou dokumentaci (PDF s půdorysy,
 | Sklon střechy | řez, technická zpráva („sklon 35°") | `pitch_deg` |
 | Štítové stěny | pohledy (svislá trojúhelníková stěna) | `edges[i].type = "gable"` |
 | Výška okapu | řez (okap nad ±0,000) | `wall_height_m` (+ `base_height_m`) |
-| Polovalba | pohled (useknutý štít) | `half_hip_m` |
+| Polovalba (obě strany stejně) | pohled (useknutý štít) | `half_hip_m` na budově |
+| Polovalba (konkrétní konec) | pohled | `edges[i].half_hip_m` na hraně konce křídla |
 | Různé sklony předo/zadní | řez | `pitch_back_deg` |
 | Adresa stavby | razítko / technická zpráva | `--location` u `library add` |
 

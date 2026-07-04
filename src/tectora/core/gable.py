@@ -211,7 +211,16 @@ class FoldedSkeleton:
 
 
 def folded_skeleton(footprint: Footprint) -> FoldedSkeleton:
-    """Compute the hipped skeleton then fold every ``gable`` edge.
+    """Compute the hipped skeleton, then fold every ``gable`` edge and
+    partially fold every edge with a half-hip depth.
+
+    A gable moves the cap apex ``P`` all the way to the perpendicular foot
+    ``M`` on the edge (vertical štít). A half-hip (``edge.half_hip_m > 0``)
+    is the SAME fold stopped early: the apex moves to
+    ``M' = M + d·unit(M→P)`` — the ridge extends by ``|MP| − d``, the two cap
+    arcs become ordinary hips and the cap face becomes a steeper roof plane
+    (β = atan(H/d)). ``d ≥ |MP|`` leaves the plain hip untouched, ``d → 0``
+    approaches the gable. The cap edge stays an EAVE.
 
     Shared by ``roof_from_skeleton.build_roof`` and ``roof_faces.build_faces``
     so both agree on the folded geometry.
@@ -219,8 +228,9 @@ def folded_skeleton(footprint: Footprint) -> FoldedSkeleton:
     Raises
     ------
     GableNotSupported
-        If a footprint edge is typed ``gable`` but fails
-        :func:`is_valid_gable_edge`.
+        If a footprint edge is typed ``gable`` (or carries a half-hip depth)
+        but fails :func:`is_valid_gable_edge`, or if two folded edges share
+        one skeleton apex (e.g. a square).
     """
     poly = list(footprint.vertices)
     graph = polyskel_skeleton(poly)
@@ -236,20 +246,23 @@ def folded_skeleton(footprint: Footprint) -> FoldedSkeleton:
     for k in poly_set:
         node_t[k] = 0.0
 
-    # Identify gable edges; validate each.
+    # Identify folded edges; validate each.
     gable_edges: set = set()
-    # apex_key -> M (the moved position) for every folded apex.
+    # apex_key -> target (the moved position) for every folded apex.
     remap: dict = {}
-    # Undirected keys of the rake arcs we create (A-M and B-M).
+    # Undirected keys of the rake arcs we create (A-M and B-M) — gables only.
     rake_keys: set = set()
 
     for i, edge in enumerate(footprint.edges):
-        if edge.type != EdgeType.GABLE:
+        is_gable = edge.type == EdgeType.GABLE
+        depth = float(getattr(edge, "half_hip_m", 0.0))
+        if not is_gable and depth <= 0.0:
             continue
         if not is_valid_gable_edge(footprint, i):
             raise GableNotSupported(
-                f"Edge {i} is marked 'gable' but is not a Stage-1 rectangular "
-                f"cap (a wing end with two perpendicular neighbour edges)."
+                f"Edge {i} is marked 'gable' (or carries a half-hip) but is "
+                f"not a Stage-1 rectangular cap (a wing end with two "
+                f"perpendicular neighbour edges)."
             )
         a = footprint.vertices[i]
         b = footprint.vertices[(i + 1) % n]
@@ -258,11 +271,31 @@ def folded_skeleton(footprint: Footprint) -> FoldedSkeleton:
         px, py, t_p = apex
         apex_key = _round2((px, py))
         m = _perp_foot((px, py), a, b)
-        remap[apex_key] = m
-        node_t[_round2(m)] = t_p
-        gable_edges.add(i)
-        rake_keys.add(frozenset((_round2(a), _round2(m))))
-        rake_keys.add(frozenset((_round2(b), _round2(m))))
+
+        if is_gable:
+            # Full fold: apex → M on the edge, arcs become rakes (štít).
+            target = m
+        else:
+            # Partial fold: apex → M' at distance `depth` from the edge along
+            # M→P. At or beyond the natural apex there is nothing to clip.
+            mp = g.sub((px, py), m)
+            dist = g.length(mp)
+            if depth >= dist - 1e-9:
+                continue
+            u = g.normalize(mp)
+            target = (m[0] + depth * u[0], m[1] + depth * u[1])
+
+        if apex_key in remap:
+            raise GableNotSupported(
+                f"Edge {i} shares its skeleton apex with another folded edge "
+                f"(e.g. a square footprint) — fold one of them only."
+            )
+        remap[apex_key] = target
+        node_t[_round2(target)] = t_p
+        if is_gable:
+            gable_edges.add(i)
+            rake_keys.add(frozenset((_round2(a), _round2(target))))
+            rake_keys.add(frozenset((_round2(b), _round2(target))))
 
     def remap_pt(pt: tuple) -> tuple:
         k = _round2(pt)
