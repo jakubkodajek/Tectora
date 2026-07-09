@@ -1,4 +1,6 @@
-"""Calc warns when buildings overlap in plan (shared area counted twice)."""
+"""Calc reports overlapping buildings: the covered part of the lower roof is
+deducted from the design total (toast with the amount). Touching wall-to-wall
+is not an overlap."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -34,13 +36,18 @@ def _calc_with_captured_toasts(e):
     return toasts
 
 
-def test_overlapping_buildings_warn(tmp_path):
+def _deduction_prefix(lang="cs"):
+    # "Překrytí staveb: z nižší střechy odečteno {area} m²." without the amount
+    return tr("overlapDeducted", lang).split("{")[0]
+
+
+def test_overlapping_buildings_report_the_deduction(tmp_path):
     app, w, e = _editor(tmp_path)
     _draw(e.canvas, [(0, 0), (10, 0), (10, 6), (0, 6)])
     e._on_new_building()
     _draw(e.canvas, [(5, 3), (12, 3), (12, 9), (5, 9)])
     toasts = _calc_with_captured_toasts(e)
-    assert tr("overlapWarning", "cs") in toasts
+    assert any(t.startswith(_deduction_prefix()) for t in toasts)
 
 
 def test_adjacent_buildings_do_not_warn(tmp_path):
@@ -50,6 +57,7 @@ def test_adjacent_buildings_do_not_warn(tmp_path):
     _draw(e.canvas, [(10, 0), (16, 0), (16, 6), (10, 6)])   # wall-to-wall
     toasts = _calc_with_captured_toasts(e)
     assert tr("overlapWarning", "cs") not in toasts
+    assert not any(t.startswith(_deduction_prefix()) for t in toasts)
 
 
 def test_single_building_never_warns(tmp_path):
@@ -57,3 +65,4 @@ def test_single_building_never_warns(tmp_path):
     _draw(e.canvas, [(0, 0), (10, 0), (10, 6), (0, 6)])
     toasts = _calc_with_captured_toasts(e)
     assert tr("overlapWarning", "cs") not in toasts
+    assert not any(t.startswith(_deduction_prefix()) for t in toasts)
