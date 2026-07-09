@@ -1612,15 +1612,9 @@ class Canvas2D(QWidget):
         ed.show()
         ed.setFocus()
 
-    def _cap_edge_at_centroid(self, centroid: Optional[tuple]) -> Optional[int]:
-        """Canvas edge index of the face's base edge IF it is a valid wing-end
-        cap, else None.
-
-        The base edge of a roof face is the footprint edge nearest its
-        centroid (each skeleton face grows from exactly one edge). Only cap
-        edges qualify for the end-pitch → half-hip rewrite; clicks on main
-        slopes fall through to the front/back pitch handling.
-        """
+    def _nearest_edge_to_centroid(self, centroid: Optional[tuple]) -> Optional[int]:
+        """Canvas edge index of the footprint edge nearest *centroid* — the
+        base edge of the clicked roof face (each face grows from one edge)."""
         b = self._b
         if centroid is None or not b.closed or len(b.vertices) < 3:
             return None
@@ -1631,12 +1625,24 @@ class Canvas2D(QWidget):
             d = _point_seg_dist(cx, cy, b.vertices[i], b.vertices[(i + 1) % n])
             if best_d is None or d < best_d:
                 best_d, best_i = d, i
+        return best_i
+
+    def _cap_edge_at_centroid(self, centroid: Optional[tuple]) -> Optional[int]:
+        """Canvas edge index of the face's base edge IF it is a valid wing-end
+        cap, else None.
+
+        Only cap edges qualify for the end-pitch → half-hip/štít rewrite;
+        clicks on main slopes fall through to the front/back pitch handling.
+        """
+        b = self._b
+        best_i = self._nearest_edge_to_centroid(centroid)
         if best_i is None:
             return None
         fp = self.footprint
         if fp is None:
             return None
         from tectora.core.gable import is_valid_gable_edge_at
+        n = len(b.vertices)
         a = b.vertices[best_i]
         c = b.vertices[(best_i + 1) % n]
         return best_i if is_valid_gable_edge_at(fp, a, c) else None
@@ -1651,13 +1657,23 @@ class Canvas2D(QWidget):
             val = float(txt)
         except ValueError:
             return
-        if not (1 <= val <= 89):
+        if not (1 <= val <= 90):
             return
+        vertical = val >= 90.0 - 1e-9
         # A face whose base edge is a wing-end cap is an END face (valba /
-        # valbička) — setting its pitch re-clips the roof to a half-hip.
+        # valbička) — setting its pitch re-clips the roof to a half-hip;
+        # 90° makes the end a vertical wall (štít).
         cap_idx = self._cap_edge_at_centroid(centroid)
         if cap_idx is not None:
-            self._set_end_face_pitch(val, cap_idx)
+            if vertical:
+                self._set_end_face_gable(cap_idx)
+            else:
+                self._set_end_face_pitch(val, cap_idx)
+            return
+        if vertical:
+            # 90° on a MAIN face: that side becomes a wall and the roof turns
+            # into a pult draining to the opposite eave.
+            self._convert_to_shed(centroid, face_name)
             return
         self._push_undo()
         # A "zadní" (back) gable plane sets the back pitch; any other plane sets
@@ -1671,6 +1687,69 @@ class Canvas2D(QWidget):
         self.active_changed.emit(self._active)   # re-sync the panel spins
         if self._b.closed:
             self.edited.emit()                    # live recompute
+
+    def _set_end_face_gable(self, edge_idx: int) -> None:
+        """90° on an end face: the end becomes a vertical štít (gable wall).
+
+        If the building carried the legacy SYMMETRIC polovalba (which clips
+        BOTH gabled ends), the other end keeps its valbička as a per-edge
+        depth so only the clicked end changes.
+        """
+        b = self._b
+        n = len(b.vertices)
+        if not (0 <= edge_idx < n) or edge_idx >= len(b.edge_types):
+            return
+        self._push_undo()
+        self._ensure_edge_half_hips(b)
+        b.edge_types[edge_idx] = "gable"
+        b.edge_half_hips[edge_idx] = 0.0
+        if b.half_hip > 0:
+            j = (edge_idx + 2) % n
+            if n == 4 and j < len(b.edge_types) and b.edge_types[j] == "gable":
+                b.edge_types[j] = "eave"
+                b.edge_half_hips[j] = float(b.half_hip)
+            b.half_hip = 0.0
+        b.skeleton_data = None
+        self.update()
+        self.active_changed.emit(self._active)   # re-sync the panel spins
+        if b.closed:
+            self.edited.emit()                    # live recompute
+
+    def _convert_to_shed(self, centroid: Optional[tuple], face_name: str) -> None:
+        """90° on a MAIN face: that side becomes a vertical wall and the roof
+        turns into a pult (shed) draining to the opposite eave — the other
+        slope keeps its angle, exactly as if the roof were tilted flat onto it.
+        """
+        b = self._b
+        fp = self.footprint
+        from tectora.core.bridge import is_axis_aligned_rectangle
+        if fp is None or len(b.vertices) != 4 or not is_axis_aligned_rectangle(fp):
+            self._editor._show_toast(tr("shedOnlyRect", self._lang))
+            return
+        idx = self._nearest_edge_to_centroid(centroid)
+        if idx is None:
+            return
+        self._push_undo()
+        # The remaining slope keeps its pitch: clicking the FRONT wall leaves
+        # the back slope (its own pitch when asymmetric), and vice versa.
+        name = (face_name or "").lower()
+        if "zadní" not in name and b.pitch_back:
+            new_pitch = float(b.pitch_back)
+        else:
+            new_pitch = float(b.pitch)
+        opposite = (idx + 2) % 4
+        b.edge_types = ["gable"] * 4
+        b.edge_types[opposite] = "eave"
+        b.edge_half_hips = [0.0] * 4
+        b.half_hip = 0.0
+        b.pitch_back = None
+        b.pitch = int(round(new_pitch))
+        b.skeleton_data = None
+        self.update()
+        self.active_changed.emit(self._active)   # re-sync the panel spins
+        if b.closed:
+            self.edited.emit()                    # live recompute
+        self._editor._show_toast(tr("becameShed", self._lang))
 
     def _set_end_face_pitch(self, val: float, edge_idx: int) -> None:
         """Give the end face above cap edge *edge_idx* the pitch *val* by
