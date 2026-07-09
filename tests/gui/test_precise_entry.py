@@ -64,6 +64,24 @@ def test_edit_edge_length_resizes_edge(tmp_path):
     assert ed.last_result is not None      # roof recomputed live
 
 
+def test_edit_edge_length_grows_up_or_right(tmp_path):
+    """Rewriting a length extends the edge upward / to the right, no matter
+    which direction the edge was drawn in."""
+    app, w, ed = _editor(tmp_path)
+    c = ed.canvas
+    for x, y in [(0, 0), (5, 0), (5, 3), (0, 3)]:
+        c.add_point(x, y)
+    c.close_polygon()
+    # Edge 2 = (5,3)->(0,3) points LEFT; the RIGHT endpoint must move.
+    c.set_edge_length(0, 2, 8.0)
+    assert c._vertices[2] == (8.0, 3.0)
+    assert c._vertices[3] == (0.0, 3.0)
+    # Edge 3 = (0,3)->(0,0) points DOWN; the TOP endpoint must move.
+    c.set_edge_length(0, 3, 8.0)
+    assert c._vertices[3] == (0.0, 8.0)
+    assert c._vertices[0] == (0.0, 0.0)
+
+
 def test_edit_edge_length_inline_editor(tmp_path):
     app, w, ed = _editor(tmp_path)
     c = ed.canvas

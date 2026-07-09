@@ -1521,8 +1521,13 @@ class Canvas2D(QWidget):
             self._len_editor = None
 
     def set_edge_length(self, bi: int, ei: int, new_length: float) -> None:
-        """Resize edge *ei* of building *bi* to *new_length* by moving its end
-        vertex along the edge direction (the start vertex stays fixed)."""
+        """Resize edge *ei* of building *bi* to *new_length*.
+
+        The endpoint that moves is chosen by position, not by draw order: the
+        upper endpoint moves when the edge has any vertical extent, otherwise
+        the right one — so a rewritten length always grows the edge upward or
+        to the right, regardless of the direction it was drawn in.
+        """
         if not (0 <= bi < len(self._buildings)):
             return
         b = self._buildings[bi]
@@ -1535,15 +1540,21 @@ class Canvas2D(QWidget):
         cur = (dx * dx + dy * dy) ** 0.5
         if cur < 1e-9 or new_length <= 0:
             return
-        ux, uy = dx / cur, dy / cur
-        new_vertex = (a[0] + ux * new_length, a[1] + uy * new_length)
+        if abs(a[1] - c[1]) > 1e-9:
+            mover_i = ei if a[1] > c[1] else (ei + 1) % nb
+        else:
+            mover_i = ei if a[0] > c[0] else (ei + 1) % nb
+        anchor, mover = (c, a) if mover_i == ei else (a, c)
+        ux = (mover[0] - anchor[0]) / cur
+        uy = (mover[1] - anchor[1]) / cur
+        new_vertex = (anchor[0] + ux * new_length, anchor[1] + uy * new_length)
 
         # Guard: don't apply a resize that would make the polygon self-intersect
         # (which would silently void the footprint and blank the roof).
         if b.closed and len(b.vertices) >= 3:
             from tectora.core.footprint import is_simple_polygon
             candidate = list(b.vertices)
-            candidate[(ei + 1) % nb] = new_vertex
+            candidate[mover_i] = new_vertex
             if not is_simple_polygon(candidate):
                 self._editor._show_toast(tr("invalidShape", self._lang))
                 return
@@ -1551,7 +1562,7 @@ class Canvas2D(QWidget):
         self._push_undo()
         switched = (self._active != bi)
         self._active = bi
-        b.vertices[(ei + 1) % nb] = new_vertex
+        b.vertices[mover_i] = new_vertex
         b.skeleton_data = None
         self.update()
         if switched:
