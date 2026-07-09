@@ -61,14 +61,14 @@ def test_duplicate_copies_shape_and_params_beside_original(tmp_path):
     c = e.canvas
     _draw(c)
     e._pitch_spin.setValue(42)
-    e._base_height_spin.setValue(3.0)
+    e._eave_height_spin.setValue(3.0)
     c.set_building_name(0, "Dům")
 
     idx = c.duplicate_building(0)
     assert idx == 1 and c.active_index() == 1
     copy = c._buildings[1]
     assert copy.pitch == 42
-    assert copy.base_height == 3.0
+    assert copy.eave_height == 3.0
     assert copy.name == "Dům (kopie)"
     assert copy.closed
     # Placed right of the original: bbox width 10 + 1 m gap.

@@ -25,8 +25,8 @@ knihovny zakázek — a zakázka se objeví na domovské obrazovce GUI.
 4. **Kreslený polygon je obrys STŘECHY** (okapová hrana), ne fasáda. Přesah
    okapu (`overhang_m`) jen odsazuje stěny dovnitř v 3D náhledu.
 5. **Složité střechy skládej z více budov** (kompoziční model): L-ka se
-   dvěma výškami = dvě obdélníkové budovy; věž = menší budova s
-   `base_height_m`. Překryv půdorysů je dovolen (validate ho hlásí jen jako
+   dvěma výškami = dvě obdélníkové budovy; věž = menší budova s vyšším
+   `eave_height_m`. Překryv půdorysů je dovolen (validate ho hlásí jen jako
    upozornění), ale překrytá plocha je v součtech dvakrát.
 6. **Štít (`gable`) jde jen na konec křídla s kolmými sousedními hranami** —
    na obdélníku typicky obě kratší strany. Jinam patří `eave` (výpočet tam

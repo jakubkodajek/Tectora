@@ -31,7 +31,7 @@ def test_schema_project_describes_buildings(capsys):
     schema = json.loads(capsys.readouterr().out)
     assert "buildings" in schema["properties"]
     b = schema["properties"]["buildings"]["items"]["properties"]
-    assert "base_height_m" in b and "half_hip_m" in b and "footprint" in b
+    assert "eave_height_m" in b and "half_hip_m" in b and "footprint" in b
 
 
 def test_schema_without_flag_stays_parametric(capsys):
@@ -47,13 +47,13 @@ def test_schema_without_flag_stays_parametric(capsys):
 def test_calculate_project_outputs_design_json(tmp_path, capsys):
     path = _write_project(tmp_path, [
         _rect_building(RECT_A, pitch_deg=35.0, name="Dům"),
-        _rect_building(RECT_B, pitch_deg=30.0, base_height_m=3.0),
+        _rect_building(RECT_B, pitch_deg=30.0, eave_height_m=5.5),
     ])
     assert main(["calculate", "--project", str(path)]) == 0
     out = json.loads(capsys.readouterr().out)
     assert len(out["buildings"]) == 2
     assert out["buildings"][0]["name"] == "Dům"
-    assert out["buildings"][1]["eave_height_m"] == 5.5   # base 3 + wall 2.5
+    assert out["buildings"][1]["eave_height_m"] == 5.5
     per = sum(b["results"]["total_area_m2"] for b in out["buildings"])
     assert abs(out["totals"]["total_area_m2"] - per) < 0.01
 

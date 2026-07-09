@@ -112,7 +112,7 @@ class EditorView(QWidget):
         self._entry_id = None
         self._current_entry_id = None   # G6: tracks saved entry id (None = unsaved)
         self.pitch: int = 35          # current pitch in degrees; G5 will wire the control
-        self.wall_height: float = 2.5  # wall height in metres
+        self.eave_height: float = 2.5  # eave height above ground in metres
         self.overhang: float = 0.0    # eave overhang in metres (F3)
         self.last_result = None       # last successful RoofResult or None
         self._build_ui()
@@ -145,12 +145,12 @@ class EditorView(QWidget):
         if project is not None:
             pitch = int(round(project.global_pitch_deg))
             self._pitch_spin.setValue(pitch)
-            if hasattr(self, "_wall_height_spin"):
-                wh = getattr(project, "wall_height_m", 2.5)
-                self._wall_height_spin.blockSignals(True)
-                self._wall_height_spin.setValue(float(wh))
-                self._wall_height_spin.blockSignals(False)
-                self.wall_height = float(wh)
+            if hasattr(self, "_eave_height_spin"):
+                eh = getattr(project, "eave_height_m", 2.5)
+                self._eave_height_spin.blockSignals(True)
+                self._eave_height_spin.setValue(float(eh))
+                self._eave_height_spin.blockSignals(False)
+                self.eave_height = float(eh)
             if hasattr(self, "_overhang_spin"):
                 oh = getattr(project, "overhang_m", 0.0)
                 self._overhang_spin.blockSignals(True)
@@ -174,10 +174,9 @@ class EditorView(QWidget):
                         closed=True,
                         overhang=float(b.overhang_m),
                         pitch=int(round(b.pitch_deg)),
-                        wall_height=float(b.wall_height_m),
+                        eave_height=float(b.eave_height_m),
                         half_hip=float(b.half_hip_m),
                         pitch_back=b.pitch_back_deg,
-                        base_height=float(getattr(b, "base_height_m", 0.0)),
                         edge_half_hips=[
                             float(getattr(e, "half_hip_m", 0.0))
                             for e in b.footprint.edges
@@ -204,10 +203,9 @@ class EditorView(QWidget):
                     cb = canvas._buildings[0]
                     cb.pitch = int(round(b0.pitch_deg))
                     cb.overhang = float(b0.overhang_m)
-                    cb.wall_height = float(b0.wall_height_m)
+                    cb.eave_height = float(b0.eave_height_m)
                     cb.half_hip = float(b0.half_hip_m)
                     cb.pitch_back = b0.pitch_back_deg
-                    cb.base_height = float(getattr(b0, "base_height_m", 0.0))
                     self._sync_params_from_active()
                 self.clear_results()
             canvas.reset_history()
@@ -710,20 +708,23 @@ class EditorView(QWidget):
         v.addWidget(pitch_row)
         v.addSpacing(12)
 
-        # Výška stěn (wall height double spin box)
-        _lbl_wall = QLabel(tr("wallHeight", lang))
-        _lbl_wall.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
-        v.addWidget(_lbl_wall)
+        # Výška okapu — the single vertical parameter of a building: the
+        # absolute eave height above the ground plane (walls span ground→eave).
+        _lbl_eave = QLabel(tr("eaveHeight", lang))
+        _lbl_eave.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
+        _lbl_eave.setToolTip(tr("eaveHeightTip", lang))
+        v.addWidget(_lbl_eave)
         v.addSpacing(4)
 
-        self._wall_height_spin = QDoubleSpinBox()
-        self._wall_height_spin.setRange(1.0, 10.0)
-        self._wall_height_spin.setSingleStep(0.5)
-        self._wall_height_spin.setDecimals(1)
-        self._wall_height_spin.setValue(self.wall_height)
-        self._wall_height_spin.setSuffix(" m")
-        self._wall_height_spin.setFixedHeight(34)
-        self._wall_height_spin.setStyleSheet(
+        self._eave_height_spin = QDoubleSpinBox()
+        self._eave_height_spin.setRange(1.0, 50.0)
+        self._eave_height_spin.setSingleStep(0.5)
+        self._eave_height_spin.setDecimals(1)
+        self._eave_height_spin.setValue(self.eave_height)
+        self._eave_height_spin.setSuffix(" m")
+        self._eave_height_spin.setFixedHeight(34)
+        self._eave_height_spin.setToolTip(tr("eaveHeightTip", lang))
+        self._eave_height_spin.setStyleSheet(
             f"QDoubleSpinBox {{"
             f"  background: {theme.CARD}; color: {theme.MID}; border: 1px solid {theme.BORDER};"
             f"  border-radius: 7px; padding: 0 8px; font-size: 10pt;"
@@ -732,37 +733,8 @@ class EditorView(QWidget):
             f"QDoubleSpinBox:focus {{ border-color: {theme.ACCENT}; }}"
             f"QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; }}"
         )
-        self._wall_height_spin.valueChanged.connect(self._on_wall_height_changed)
-        v.addWidget(self._wall_height_spin)
-        v.addSpacing(12)
-
-        # Výška budovy (base elevation) — lifts the whole building above the
-        # ground plane so two overlapping buildings can sit at different levels.
-        _lbl_base = QLabel(tr("baseHeight", lang))
-        _lbl_base.setStyleSheet(f"color: {theme.MID}; font-size: 9pt; background: transparent;")
-        _lbl_base.setToolTip(tr("baseHeightTip", lang))
-        v.addWidget(_lbl_base)
-        v.addSpacing(4)
-
-        self._base_height_spin = QDoubleSpinBox()
-        self._base_height_spin.setRange(0.0, 50.0)
-        self._base_height_spin.setSingleStep(0.5)
-        self._base_height_spin.setDecimals(1)
-        self._base_height_spin.setValue(0.0)
-        self._base_height_spin.setSuffix(" m")
-        self._base_height_spin.setFixedHeight(34)
-        self._base_height_spin.setToolTip(tr("baseHeightTip", lang))
-        self._base_height_spin.setStyleSheet(
-            f"QDoubleSpinBox {{"
-            f"  background: {theme.CARD}; color: {theme.MID}; border: 1px solid {theme.BORDER};"
-            f"  border-radius: 7px; padding: 0 8px; font-size: 10pt;"
-            f"  font-weight: 600;"
-            f"}}"
-            f"QDoubleSpinBox:focus {{ border-color: {theme.ACCENT}; }}"
-            f"QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; }}"
-        )
-        self._base_height_spin.valueChanged.connect(self._on_base_height_changed)
-        v.addWidget(self._base_height_spin)
+        self._eave_height_spin.valueChanged.connect(self._on_eave_height_changed)
+        v.addWidget(self._eave_height_spin)
         v.addSpacing(12)
 
         # Přesah okapu (eave overhang double spin box)
@@ -1208,8 +1180,8 @@ class EditorView(QWidget):
                         faces, (min(xs), min(ys), max(xs), max(ys)))
                 else:
                     roof_faces = faces
-            items.append((bfp, float(bb.pitch), float(bb.wall_height),
-                          float(bb.overhang), roof_faces, float(bb.base_height)))
+            items.append((bfp, float(bb.pitch), float(bb.eave_height),
+                          float(bb.overhang), roof_faces))
         self.view3d.set_design(items)
 
     # ------------------------------------------------------------------
@@ -1228,9 +1200,9 @@ class EditorView(QWidget):
         """Return the current Location (or None) from the Poloha field."""
         return self.location_field.location
 
-    def get_wall_height(self) -> float:
-        """Return the current wall height in metres."""
-        return self.wall_height
+    def get_eave_height(self) -> float:
+        """Return the current eave height (above ground) in metres."""
+        return self.eave_height
 
     def get_overhang(self) -> float:
         """Return the current eave overhang in metres."""
@@ -1479,10 +1451,10 @@ class EditorView(QWidget):
             self._building_rows.append((sel, ren, dup, rm))
 
     def _sync_params_from_active(self) -> None:
-        """Load the active building's pitch/overhang/wall into the panel controls.
+        """Load the active building's pitch/overhang/eave into the panel controls.
 
         Mirrors the values into ``self.pitch`` / ``self.overhang`` /
-        ``self.wall_height`` so the rest of the editor (which reads those) acts
+        ``self.eave_height`` so the rest of the editor (which reads those) acts
         on the active building. Signals are blocked so loading does not trigger
         a recompute or write back onto the building.
         """
@@ -1492,11 +1464,11 @@ class EditorView(QWidget):
 
         pitch = int(canvas.active_pitch())
         overhang = float(canvas._overhang)
-        wall = float(canvas.active_wall_height())
+        eave = float(canvas.active_eave_height())
 
         self.pitch = pitch
         self.overhang = overhang
-        self.wall_height = wall
+        self.eave_height = eave
 
         if hasattr(self, "_pitch_spin"):
             self._pitch_spin.blockSignals(True)
@@ -1506,14 +1478,10 @@ class EditorView(QWidget):
             self._overhang_spin.blockSignals(True)
             self._overhang_spin.setValue(overhang)
             self._overhang_spin.blockSignals(False)
-        if hasattr(self, "_wall_height_spin"):
-            self._wall_height_spin.blockSignals(True)
-            self._wall_height_spin.setValue(wall)
-            self._wall_height_spin.blockSignals(False)
-        if hasattr(self, "_base_height_spin"):
-            self._base_height_spin.blockSignals(True)
-            self._base_height_spin.setValue(float(canvas.active_base_height()))
-            self._base_height_spin.blockSignals(False)
+        if hasattr(self, "_eave_height_spin"):
+            self._eave_height_spin.blockSignals(True)
+            self._eave_height_spin.setValue(eave)
+            self._eave_height_spin.blockSignals(False)
         if hasattr(self, "_half_hip_spin"):
             self._half_hip_spin.blockSignals(True)
             self._half_hip_spin.setValue(float(canvas.active_half_hip()))
@@ -1548,9 +1516,8 @@ class EditorView(QWidget):
             bb = self.canvas._buildings[i]
             buildings.append(Building(
                 footprint=bfp, pitch_deg=float(bb.pitch),
-                overhang_m=float(bb.overhang), wall_height_m=float(bb.wall_height),
+                overhang_m=float(bb.overhang), eave_height_m=float(bb.eave_height),
                 half_hip_m=float(bb.half_hip), pitch_back_deg=bb.pitch_back,
-                base_height_m=float(bb.base_height),
                 name=bb.name,
             ))
         return buildings
@@ -1798,7 +1765,7 @@ class EditorView(QWidget):
             buildings = [Building(
                 footprint=None, pitch_deg=float(self.pitch),
                 overhang_m=float(self.overhang),
-                wall_height_m=float(self.wall_height),
+                eave_height_m=float(self.eave_height),
             )]
         project = Project(
             project_name=self.get_name() or "Bez názvu",
@@ -1845,22 +1812,16 @@ class EditorView(QWidget):
         """Increment the pitch by 1, clamped to the maximum of 89°."""
         self.set_pitch(min(89, self.pitch + 1))
 
-    def _on_wall_height_changed(self, value: float) -> None:
-        """Update wall_height and refresh the 3D view if a result exists."""
-        self.wall_height = float(value)
-        if hasattr(self, "canvas"):
-            self.canvas.set_active_wall_height(self.wall_height)
-        if self.last_result is not None:
-            self._update_3d_all()
+    def _on_eave_height_changed(self, value: float) -> None:
+        """Update the active building's eave height and refresh the 3D view.
 
-    def _on_base_height_changed(self, value: float) -> None:
-        """Update the active building's base elevation and refresh the 3D view.
-
-        Roof measurements do not depend on the elevation, so no recompute is
+        Roof measurements do not depend on the height, so no recompute is
         needed — only the 3D scene (and the hover heights on repaint) change.
         """
-        self.canvas.set_active_base_height(float(value))
-        self.canvas.update()
+        self.eave_height = float(value)
+        if hasattr(self, "canvas"):
+            self.canvas.set_active_eave_height(self.eave_height)
+            self.canvas.update()
         if self.last_result is not None:
             self._update_3d_all()
 

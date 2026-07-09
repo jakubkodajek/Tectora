@@ -158,15 +158,12 @@ _BUILDING_SCHEMA = {
             "type": "number", "minimum": 0,
             "description": "Přesah okapu (m) — stěny se v 3D odsadí dovnitř.",
         },
-        "wall_height_m": {
+        "eave_height_m": {
             "type": "number", "exclusiveMinimum": 0,
-            "description": "Výška stěn (m); okap leží ve výšce base+wall.",
-        },
-        "base_height_m": {
-            "type": "number", "minimum": 0,
             "description": (
-                "Výška budovy = elevace spodku stěn nad terénem (m). "
-                "Umožňuje položit budovu výš (věž/patro nad nižší budovou)."
+                "Výška okapu nad terénem (m) — jediný výškový parametr; "
+                "stěny sahají od země až k okapu. (Starší soubory se "
+                "wall_height_m + base_height_m se načtou jako jejich součet.)"
             ),
         },
         "half_hip_m": {
@@ -423,7 +420,7 @@ def _cmd_calculate_project(args) -> int:
             return 2
         results.append(result)
         names.append(label)
-        eaves.append(b.base_height_m + b.wall_height_m)
+        eaves.append(b.eave_height_m)
 
     if not results:
         print("Chyba: projekt nemá žádnou budovu s půdorysem.", file=sys.stderr)
@@ -489,11 +486,11 @@ def _validate_project(data: dict) -> tuple[list[str], list[str]]:
         if b.pitch_back_deg is not None and not (0 < b.pitch_back_deg < 90):
             problems.append(
                 f"{label}: zadní sklon musí být 1–89° nebo null, je {b.pitch_back_deg}.")
-        if b.wall_height_m <= 0:
-            problems.append(f"{label}: výška stěn musí být kladná.")
-        if b.overhang_m < 0 or b.base_height_m < 0 or b.half_hip_m < 0:
+        if b.eave_height_m <= 0:
+            problems.append(f"{label}: výška okapu musí být kladná.")
+        if b.overhang_m < 0 or b.half_hip_m < 0:
             problems.append(
-                f"{label}: přesah, výška budovy ani polovalba nesmí být záporné.")
+                f"{label}: přesah ani polovalba nesmí být záporné.")
         if b.footprint is None:
             warnings.append(f"{label}: nemá půdorys (bude přeskočena).")
             continue

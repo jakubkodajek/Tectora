@@ -90,7 +90,7 @@ def test_save_to_file_keeps_all_buildings(tmp_path):
     e._on_new_building()
     _draw_rect(c, [(20, 0), (26, 0), (26, 4), (20, 4)])
     e._pitch_spin.setValue(25)
-    e._base_height_spin.setValue(3.0)
+    e._eave_height_spin.setValue(3.0)
 
     path = str(tmp_path / "design.tectora")
     e._save_to_file(path)
@@ -100,7 +100,7 @@ def test_save_to_file_keeps_all_buildings(tmp_path):
     assert len(drawn) == 2
     assert drawn[0].pitch_deg == 40.0
     assert drawn[1].pitch_deg == 25.0
-    assert drawn[1].base_height_m == 3.0
+    assert drawn[1].eave_height_m == 3.0
 
 
 def test_open_file_restores_all_buildings(tmp_path):

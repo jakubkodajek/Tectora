@@ -96,19 +96,15 @@ class _CanvasBuilding:
     skeleton_data: Any = None                         # RoofResult or None
     overhang: float = 0.0
     pitch: int = 35
-    wall_height: float = 2.5
+    # Absolute eave height above the ground plane (z=0) — the ONLY vertical
+    # parameter of a building; its walls always span ground → eave.
+    eave_height: float = 2.5
     half_hip: float = 0.0      # SYMMETRIC (exact-path) polovalba depth, metres
     pitch_back: Optional[float] = None  # asymmetric gable back-slope pitch
-    base_height: float = 0.0   # elevation of the wall base above ground
     # Per-EDGE polovalba depths (metres), parallel to edge_types — set by
     # clicking an end triangle; computed via the skeleton fold.
     edge_half_hips: list = field(default_factory=list)
     name: str = ""
-
-    @property
-    def eave_height(self) -> float:
-        """Absolute eave height above ground: base elevation + wall height."""
-        return float(self.base_height) + float(self.wall_height)
 
 
 class Canvas2D(QWidget):
@@ -333,11 +329,11 @@ class Canvas2D(QWidget):
     def set_active_pitch(self, value: int) -> None:
         self._b.pitch = int(value)
 
-    def active_wall_height(self) -> float:
-        return self._b.wall_height
+    def active_eave_height(self) -> float:
+        return self._b.eave_height
 
-    def set_active_wall_height(self, value: float) -> None:
-        self._b.wall_height = float(value)
+    def set_active_eave_height(self, value: float) -> None:
+        self._b.eave_height = float(value)
 
     def active_half_hip(self) -> float:
         return self._b.half_hip
@@ -350,12 +346,6 @@ class Canvas2D(QWidget):
 
     def set_active_pitch_back(self, value: Optional[float]) -> None:
         self._b.pitch_back = (None if value is None else float(value))
-
-    def active_base_height(self) -> float:
-        return self._b.base_height
-
-    def set_active_base_height(self, value: float) -> None:
-        self._b.base_height = max(0.0, float(value))
 
     # ------------------------------------------------------------------
     # Undo / redo (snapshot-based)
@@ -374,11 +364,10 @@ class Canvas2D(QWidget):
                 b.closed,
                 b.overhang,
                 b.pitch,
-                b.wall_height,
+                b.eave_height,
                 b.name,
                 b.half_hip,
                 b.pitch_back,
-                b.base_height,
                 list(b.edge_half_hips),
             )
             for b in self._buildings
@@ -390,11 +379,11 @@ class Canvas2D(QWidget):
         self._buildings = [
             _CanvasBuilding(
                 vertices=list(v), edge_types=list(et), closed=cl,
-                skeleton_data=None, overhang=oh, pitch=pi, wall_height=wh,
-                half_hip=hh, name=nm, pitch_back=pb, base_height=bh,
+                skeleton_data=None, overhang=oh, pitch=pi, eave_height=eh,
+                half_hip=hh, name=nm, pitch_back=pb,
                 edge_half_hips=list(ehh),
             )
-            for (v, et, cl, oh, pi, wh, nm, hh, pb, bh, ehh) in buildings
+            for (v, et, cl, oh, pi, eh, nm, hh, pb, ehh) in buildings
         ]
         if not self._buildings:
             self._buildings = [_CanvasBuilding()]
@@ -431,6 +420,45 @@ class Canvas2D(QWidget):
         self._undo_stack.append(self._snapshot())
         self._restore(self._redo_stack.pop())
         return True
+
+    # ------------------------------------------------------------------
+    # Esc — cancel the current action (like other drawing apps)
+    # ------------------------------------------------------------------
+
+    def cancel_current_action(self) -> bool:
+        """Cancel whatever is in progress, most specific first: an open inline
+        editor (closes WITHOUT applying), a node/building drag (position
+        reverts to the drag start), or the in-progress unclosed polyline
+        (discarded, undoable). Returns True if something was cancelled."""
+        if self._len_editor is not None or self._pitch_editor is not None:
+            self._close_len_editor()
+            self._close_pitch_editor()
+            return True
+        if self._drag_idx is not None or self._move_anchor is not None:
+            # The drag pushed one snapshot when it started — restoring it
+            # undoes any motion so far without polluting the redo stack.
+            self._drag_idx = None
+            self._move_anchor = None
+            if self._undo_stack:
+                self._restore(self._undo_stack.pop())
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            if self._closed:
+                self.edited.emit()
+            return True
+        if not self._closed and self._vertices:
+            self._push_undo()
+            self._b.vertices = []
+            self._b.edge_types = []
+            self._b.skeleton_data = None
+            self.update()
+            return True
+        return False
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        if event.key() == Qt.Key.Key_Escape and self.cancel_current_action():
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def active_name(self) -> str:
         return self._b.name
@@ -472,8 +500,8 @@ class Canvas2D(QWidget):
             closed=src.closed,
             skeleton_data=None,
             overhang=src.overhang, pitch=src.pitch,
-            wall_height=src.wall_height, half_hip=src.half_hip,
-            pitch_back=src.pitch_back, base_height=src.base_height,
+            eave_height=src.eave_height, half_hip=src.half_hip,
+            pitch_back=src.pitch_back,
             edge_half_hips=list(src.edge_half_hips),
             name=(src.name + tr("copySuffix", self._lang)) if src.name else "",
         )
@@ -1517,8 +1545,14 @@ class Canvas2D(QWidget):
 
     def _close_len_editor(self) -> None:
         if self._len_editor is not None:
-            self._len_editor.deleteLater()
+            ed = self._len_editor
             self._len_editor = None
+            # Block signals first: hide/deleteLater drops focus, which would
+            # otherwise fire editingFinished and apply a value the user
+            # cancelled with Esc.
+            ed.blockSignals(True)
+            ed.hide()
+            ed.deleteLater()
 
     def set_edge_length(self, bi: int, ei: int, new_length: float) -> None:
         """Resize edge *ei* of building *bi* to *new_length*.
@@ -1737,8 +1771,11 @@ class Canvas2D(QWidget):
 
     def _close_pitch_editor(self) -> None:
         if self._pitch_editor is not None:
-            self._pitch_editor.deleteLater()
+            ed = self._pitch_editor
             self._pitch_editor = None
+            ed.blockSignals(True)   # see _close_len_editor
+            ed.hide()
+            ed.deleteLater()
         self._pitch_centroid = None
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]

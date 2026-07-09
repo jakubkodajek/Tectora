@@ -54,7 +54,7 @@ def test_editor_export_passes_heights(tmp_path):
     for (x, y) in RECT:
         e.canvas.add_point(x, y)
     e.canvas.close_polygon()
-    e._base_height_spin.setValue(3.0)      # + default wall 2.5 → eave 5.5
+    e._eave_height_spin.setValue(5.5)
 
     path = str(tmp_path / "vykaz.xlsx")
     e._export_to(path)

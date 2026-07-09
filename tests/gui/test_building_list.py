@@ -29,7 +29,7 @@ def test_fresh_editor_lists_one_empty_building(tmp_path):
     app, w, e = _editor(tmp_path)
     assert len(e._building_rows) == 1
     label = e._building_rows[0][0].text()
-    assert "Stavba 1" in label
+    assert "Plocha 1" in label
     assert "(prázdná)" in label
 
 
@@ -89,4 +89,4 @@ def test_load_project_populates_list(tmp_path):
     labels = [row[0].text() for row in e._building_rows]
     assert len(labels) == 2
     assert labels[0] == "Dům"            # named building keeps its name
-    assert "Stavba 2" in labels[1]       # unnamed falls back to Stavba N
+    assert "Plocha 2" in labels[1]       # unnamed falls back to Plocha N

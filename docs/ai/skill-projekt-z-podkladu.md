@@ -11,7 +11,7 @@ Postup pro agenta, který dostal projektovou dokumentaci (PDF s půdorysy,
 | Kóty délek | půdorys (v mm → přepočti na m!) | rozměry vrcholů |
 | Sklon střechy | řez, technická zpráva („sklon 35°") | `pitch_deg` |
 | Štítové stěny | pohledy (svislá trojúhelníková stěna) | `edges[i].type = "gable"` |
-| Výška okapu | řez (okap nad ±0,000) | `wall_height_m` (+ `base_height_m`) |
+| Výška okapu | řez (okap nad ±0,000) | `eave_height_m` |
 | Polovalba (obě strany stejně) | pohled (useknutý štít) | `half_hip_m` na budově |
 | Polovalba (konkrétní konec) | pohled | `edges[i].half_hip_m` na hraně konce křídla |
 | Různé sklony předo/zadní | řez | `pitch_back_deg` |
@@ -39,7 +39,8 @@ Jedna budova = jedno střešní těleso s JEDNÍM hlavním sklonem. Skládej:
   (úžlabí/nároží dopočítá skeleton sám).
 - **Křídla s různou výškou/sklonem** → dvě obdélníkové budovy vedle sebe
   (společná hrana = v pořádku, dotyk není překryv).
-- **Věž / vyšší část nad nižší** → menší budova s `base_height_m` > 0.
+- **Věž / vyšší část nad nižší** → menší budova s vyšším `eave_height_m`
+  (její stěny sahají od země až k jejímu okapu).
 - Kde si nejsi jistý rozkladem, udělej jednodušší variantu a do `--note`
   napiš, co je potřeba ověřit.
 
@@ -62,8 +63,7 @@ Jedna budova = jedno střešní těleso s JEDNÍM hlavním sklonem. Skládej:
       },
       "pitch_deg": 38.0,
       "overhang_m": 0.5,
-      "wall_height_m": 5.8,
-      "base_height_m": 0.0,
+      "eave_height_m": 5.8,
       "half_hip_m": 0.0,
       "pitch_back_deg": null
     },
@@ -78,7 +78,7 @@ Jedna budova = jedno střešní těleso s JEDNÍM hlavním sklonem. Skládej:
       },
       "pitch_deg": 25.0,
       "overhang_m": 0.4,
-      "wall_height_m": 2.7
+      "eave_height_m": 2.7
     }
   ]
 }
