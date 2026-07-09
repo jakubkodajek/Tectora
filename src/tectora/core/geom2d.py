@@ -206,6 +206,129 @@ def polygon_interior_point(polygon: list) -> tuple:
     return ((v[0] + best_q[0]) / 2.0, (v[1] + best_q[1]) / 2.0)
 
 
+def polygon_area(polygon: list) -> float:
+    """Unsigned area of a simple polygon (shoelace)."""
+    n = len(polygon)
+    if n < 3:
+        return 0.0
+    s = sum(
+        polygon[i][0] * polygon[(i + 1) % n][1]
+        - polygon[(i + 1) % n][0] * polygon[i][1]
+        for i in range(n)
+    )
+    return abs(s) / 2.0
+
+
+def _in_triangle_incl(p: tuple, a: tuple, b: tuple, c: tuple) -> bool:
+    """True if p lies inside OR on the boundary of triangle a-b-c."""
+    s1 = orientation(a, b, p)
+    s2 = orientation(b, c, p)
+    s3 = orientation(c, a, p)
+    return (s1 >= 0 and s2 >= 0 and s3 >= 0) or (s1 <= 0 and s2 <= 0 and s3 <= 0)
+
+
+def triangulate(polygon: list) -> list:
+    """Ear-clipping triangulation of a simple polygon (any winding).
+
+    Returns a list of (a, b, c) vertex triples whose disjoint union covers
+    the polygon. Collinear (zero-area) ears are dropped. The ear test blocks
+    on vertices lying ON the candidate ear's boundary too (a reflex corner
+    exactly on the chord must not be jumped over).
+    """
+    n = len(polygon)
+    if n < 3:
+        return []
+    # Work on a CCW copy.
+    signed = sum(
+        polygon[i][0] * polygon[(i + 1) % n][1]
+        - polygon[(i + 1) % n][0] * polygon[i][1]
+        for i in range(n)
+    )
+    verts = list(polygon) if signed > 0 else list(reversed(polygon))
+
+    triangles: list = []
+    guard = 0
+    while len(verts) > 3 and guard < 10000:
+        guard += 1
+        m = len(verts)
+        for i in range(m):
+            a, v, b = verts[(i - 1) % m], verts[i], verts[(i + 1) % m]
+            if orientation(a, v, b) <= 0:
+                continue  # reflex or collinear corner — not an ear
+            if any(
+                _in_triangle_incl(q, a, v, b)
+                for j, q in enumerate(verts)
+                if j not in ((i - 1) % m, i, (i + 1) % m)
+            ):
+                continue  # another vertex inside/on the ear — not an ear
+            triangles.append((a, v, b))
+            del verts[i]
+            break
+        else:
+            # No ear found (degenerate input) — bail out with what we have.
+            break
+    if len(verts) == 3 and orientation(*verts) != 0:
+        triangles.append(tuple(verts))
+    return triangles
+
+
+def clip_polygon_convex(subject: list, clip: list) -> list:
+    """Sutherland–Hodgman: clip *subject* (any simple polygon) by the CONVEX
+    polygon *clip*. Returns the clipped polygon (possibly empty)."""
+    n = len(clip)
+    if len(subject) < 3 or n < 3:
+        return []
+    # Ensure the clip polygon is CCW so "inside" = left of each edge.
+    signed = sum(
+        clip[i][0] * clip[(i + 1) % n][1] - clip[(i + 1) % n][0] * clip[i][1]
+        for i in range(n)
+    )
+    cp = list(clip) if signed > 0 else list(reversed(clip))
+
+    output = list(subject)
+    for i in range(n):
+        if not output:
+            return []
+        a = cp[i]
+        b = cp[(i + 1) % n]
+        edge = sub(b, a)
+        inp = output
+        output = []
+        for j in range(len(inp)):
+            cur = inp[j]
+            nxt = inp[(j + 1) % len(inp)]
+            cur_in = cross(edge, sub(cur, a)) >= -EPS
+            nxt_in = cross(edge, sub(nxt, a)) >= -EPS
+            if cur_in:
+                output.append(cur)
+                if not nxt_in:
+                    p = line_intersection(cur, sub(nxt, cur), a, edge)
+                    if p is not None:
+                        output.append(p)
+            elif nxt_in:
+                p = line_intersection(cur, sub(nxt, cur), a, edge)
+                if p is not None:
+                    output.append(p)
+    return output
+
+
+def intersection_area(a: list, b: list) -> float:
+    """Area of the intersection of two SIMPLE polygons (any winding).
+
+    *b* is ear-clipped into triangles (always convex), *a* is clipped by each
+    triangle with Sutherland–Hodgman and the piece areas summed — the
+    triangles are disjoint, so the sum is exact for simple polygons.
+    """
+    if len(a) < 3 or len(b) < 3:
+        return 0.0
+    total = 0.0
+    for tri in triangulate(list(b)):
+        piece = clip_polygon_convex(list(a), list(tri))
+        if len(piece) >= 3:
+            total += polygon_area(piece)
+    return total
+
+
 def polygons_overlap(a: list, b: list) -> bool:
     """True if the simple polygons a and b overlap with positive area.
 

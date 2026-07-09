@@ -112,6 +112,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "halfHipOnlyRect": "Sklon valby jde nastavit zatím jen na obdélníkové střeše.",
         "shedOnlyRect": "Pultová střecha zadáním 90° jde zatím jen na obdélníku.",
         "becameShed": "Rovina 90° = svislá stěna — střecha je teď pultová.",
+        "overlapDeducted": "Překrytí staveb: z nižší střechy odečteno {area} m².",
     },
     "sk": {
         "new": "Nová zákazka",
@@ -220,6 +221,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "halfHipOnlyRect": "Sklon valby sa dá nastaviť zatiaľ len na obdĺžnikovej streche.",
         "shedOnlyRect": "Pultová strecha zadaním 90° ide zatiaľ len na obdĺžniku.",
         "becameShed": "Rovina 90° = zvislá stena — strecha je teraz pultová.",
+        "overlapDeducted": "Prekrytie stavieb: z nižšej strechy odčítané {area} m².",
     },
     "en": {
         "new": "New project",
@@ -328,6 +330,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "halfHipOnlyRect": "Setting the hip-end pitch works on rectangular roofs only for now.",
         "shedOnlyRect": "Turning a face into a wall (90°) works on rectangles only for now.",
         "becameShed": "A 90° plane is a vertical wall — the roof is now a shed.",
+        "overlapDeducted": "Overlapping surfaces: {area} m² deducted from the lower roof.",
     },
 }
 

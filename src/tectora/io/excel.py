@@ -218,9 +218,16 @@ def write_design_report_xlsx(design, path: Path, building_names=None,
         row = _write_section(ws, row, title, rows)
         row += 1
 
-    # Design totals
-    row = _write_section(ws, row, "Celkem za návrh", [
+    # Design totals. The total area already excludes roof hidden under higher
+    # overlapping buildings; show the deduction explicitly when present.
+    deduction = float(getattr(design, "overlap_deduction_m2", 0.0) or 0.0)
+    total_rows = [
         ("Celková plocha střechy", round(design.total_area_m2, 2), "m²"),
+    ]
+    if deduction > 1e-9:
+        total_rows.append(
+            ("z toho odečteno překrytí staveb", round(-deduction, 2), "m²"))
+    row = _write_section(ws, row, "Celkem za návrh", total_rows + [
         ("Obvod okapové hrany", round(design.total_eaves_perimeter_m, 2), "m"),
         ("Délka hřebene", round(design.total_ridge_length_m, 2), "m"),
         ("Délka nároží (celkem)", round(design.total_hip_length_m, 2), "m"),

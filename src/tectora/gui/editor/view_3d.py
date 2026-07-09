@@ -107,6 +107,44 @@ def _depth_of_point(
     return rz   # larger rz = closer to viewer
 
 
+def _newell_normal(vertices) -> tuple[float, float, float]:
+    """Newell normal of a 3-D polygon (robust for any simple polygon)."""
+    nx = ny = nz = 0.0
+    m = len(vertices)
+    for i in range(m):
+        ax, ay, az = vertices[i]
+        bx, by, bz = vertices[(i + 1) % m]
+        nx += (ay - by) * (az + bz)
+        ny += (az - bz) * (ax + bx)
+        nz += (ax - bx) * (ay + by)
+    return (nx, ny, nz)
+
+
+def roof_z_at(faces, x: float, y: float):
+    """z of the roof surface over plan point (x, y), or ``None`` outside.
+
+    *faces* are FaceResults with z relative to the eave plane (eave = 0).
+    Where plan projections overlap (ridge lines), the highest surface wins.
+    """
+    from tectora.core.geom2d import point_in_polygon
+
+    best = None
+    for f in faces:
+        vs = f.vertices
+        if len(vs) < 3:
+            continue
+        plan = [(v[0], v[1]) for v in vs]
+        if not point_in_polygon((x, y), plan):
+            continue
+        nx, ny, nz = _newell_normal(vs)
+        if abs(nz) < 1e-9:
+            continue  # vertical face has no plan extent
+        x0, y0, z0 = vs[0]
+        z = z0 - (nx * (x - x0) + ny * (y - y0)) / nz
+        best = z if best is None else max(best, z)
+    return best
+
+
 def skirt_walls(
     faces,
 ) -> list[list[tuple[float, float, float]]]:
@@ -271,32 +309,56 @@ class Roof3DView(QWidget):
         (elevation of the building above the shared ground plane). Buildings
         with ``footprint is None`` are skipped. All buildings share one scene
         and one ground plane at z=0.
+
+        Overlapping buildings merge: a building standing over a LOWER one has
+        its walls cut off at the lower roof surface, so a tower/vestavba sits
+        ON the roof instead of piercing down through the building below.
         """
-        geom: list[tuple[list[tuple[float, float, float]], bool]] = []
+        from tectora.core.roof_faces import build_faces
+
+        resolved = []
         for item in items:
             footprint, pitch_deg, wall_height, overhang = item[0], item[1], item[2], item[3]
             roof_faces = item[4] if len(item) > 4 else None
             base_height = float(item[5]) if len(item) > 5 else 0.0
             if footprint is None:
                 continue
+            if roof_faces is None or len(roof_faces) == 0:
+                try:
+                    roof_faces = build_faces(footprint, pitch_deg)
+                except ValueError:
+                    roof_faces = []   # uncomputable combination → walls only
+            resolved.append(
+                (footprint, pitch_deg, wall_height, overhang, roof_faces,
+                 base_height))
+
+        geom: list[tuple[list[tuple[float, float, float]], bool]] = []
+        for k, (fp, pitch, wall_h, overhang, faces, base) in enumerate(resolved):
+            eave_z = base + wall_h
+            # Roofs of the OTHER buildings whose eave lies below this one —
+            # this building's wall bottoms are cut at those surfaces.
+            cutters = [
+                ([(float(x), float(y)) for x, y in fp2.vertices], faces2,
+                 base2 + wall2)
+                for j, (fp2, _p2, wall2, _o2, faces2, base2) in enumerate(resolved)
+                if j != k and (base2 + wall2) < eave_z - 1e-9 and faces2
+            ]
             geom.extend(self._geometry_for(
-                footprint, pitch_deg, wall_height, overhang, roof_faces,
-                base_height=base_height))
+                fp, pitch, wall_h, overhang, faces,
+                base_height=base, cutters=cutters))
         self._geom_faces = geom
         self._result = None
         self.update()
 
     def _geometry_for(
         self, footprint, pitch_deg: float, wall_height: float, overhang: float,
-        roof_faces=None, base_height: float = 0.0,
+        roof_faces=None, base_height: float = 0.0, cutters=None,
     ) -> list[tuple[list[tuple[float, float, float]], bool]]:
         """Build the (vertices, is_wall) faces for ONE building.
 
         Vertical model: the GROUND is the shared plane z=0. The wall band spans
         ``[base_height, base_height + wall_height]`` and the roof (whose own
-        coordinates start at z=0 on the eave) is lifted onto the wall tops. Two
-        buildings with different wall/base heights therefore stand on the same
-        ground and one can sit visibly higher than the other.
+        coordinates start at z=0 on the eave) is lifted onto the wall tops.
 
         The drawn polygon is the ROOF eave outline, so the roof is built on it
         directly. The overhang insets the WALLS inward (the building sits under
@@ -304,7 +366,13 @@ class Roof3DView(QWidget):
         (e.g. a half-hip or an asymmetric gable computed by the exact
         calculator), they are used as the roof verbatim and gable walls are
         skipped.
+
+        *cutters* is an optional list of ``(plan_vertices, faces, eave_z)`` of
+        LOWER overlapping buildings: wherever a wall point stands over one of
+        them, the wall starts at that building's roof surface instead of the
+        ground — the two volumes visually merge (tower on a wing).
         """
+        from tectora.core.geom2d import point_in_polygon
         from tectora.core.roof_faces import build_faces
 
         use_provided = roof_faces is not None and len(roof_faces) > 0
@@ -321,6 +389,18 @@ class Roof3DView(QWidget):
         geom: list[tuple[list[tuple[float, float, float]], bool]] = []
         eave_z = float(base_height) + float(wall_height)
 
+        def _bottom_at(x: float, y: float) -> float:
+            """Ground, or the highest lower-building roof under (x, y)."""
+            bottom = float(base_height)
+            for (plan, cfaces, ceave) in (cutters or []):
+                if not point_in_polygon((x, y), plan):
+                    continue
+                z = roof_z_at(cfaces, x, y)
+                if z is None:
+                    continue
+                bottom = max(bottom, min(ceave + z, eave_z))
+            return bottom
+
         # Walls sit INWARD of the eave by the overhang.
         wall_verts = [(float(x), float(y)) for x, y in footprint.vertices]
         if overhang > 1e-9:
@@ -334,13 +414,33 @@ class Roof3DView(QWidget):
         for i in range(n):
             ax, ay = wall_verts[i]
             bx, by = wall_verts[(i + 1) % n]
-            quad: list[tuple[float, float, float]] = [
-                (ax, ay, eave_z),
-                (bx, by, eave_z),
-                (bx, by, float(base_height)),
-                (ax, ay, float(base_height)),
-            ]
-            geom.append((quad, True))  # True = wall
+            if not cutters:
+                geom.append(([
+                    (ax, ay, eave_z),
+                    (bx, by, eave_z),
+                    (bx, by, float(base_height)),
+                    (ax, ay, float(base_height)),
+                ], True))
+                continue
+            # Subdivide the wall so its bottom follows the roof profile of the
+            # building(s) below (straight interpolation between samples).
+            edge_len = math.hypot(bx - ax, by - ay)
+            steps = max(1, min(24, int(math.ceil(edge_len / 0.5))))
+            for s in range(steps):
+                t0 = s / steps
+                t1 = (s + 1) / steps
+                x0, y0 = ax + (bx - ax) * t0, ay + (by - ay) * t0
+                x1, y1 = ax + (bx - ax) * t1, ay + (by - ay) * t1
+                z0 = _bottom_at(x0, y0)
+                z1 = _bottom_at(x1, y1)
+                if z0 >= eave_z - 1e-6 and z1 >= eave_z - 1e-6:
+                    continue  # fully swallowed by the lower roof
+                geom.append(([
+                    (x0, y0, eave_z),
+                    (x1, y1, eave_z),
+                    (x1, y1, z1),
+                    (x0, y0, z0),
+                ], True))
 
         # Roof faces (on the drawn polygon), lifted onto the wall tops.
         for face in faces:

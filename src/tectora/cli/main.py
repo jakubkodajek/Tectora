@@ -404,7 +404,7 @@ def _cmd_calculate_project(args) -> int:
         print(f"Chyba: projekt nelze načíst: {exc}", file=sys.stderr)
         return 2
 
-    results, names, eaves = [], [], []
+    results, names, eaves, items = [], [], [], []
     for i, b in enumerate(project.buildings):
         if b.footprint is None:
             continue
@@ -421,12 +421,14 @@ def _cmd_calculate_project(args) -> int:
         results.append(result)
         names.append(label)
         eaves.append(b.eave_height_m)
+        items.append((list(b.footprint.vertices), float(b.eave_height_m), result))
 
     if not results:
         print("Chyba: projekt nemá žádnou budovu s půdorysem.", file=sys.stderr)
         return 2
 
-    design = uc.DesignResult(results)
+    design = uc.DesignResult(
+        results, overlap_deduction_m2=uc.overlap_deduction(items))
     out = {
         "project_name": project.project_name,
         "buildings": [
@@ -436,6 +438,7 @@ def _cmd_calculate_project(args) -> int:
         ],
         "totals": {
             "total_area_m2": round(design.total_area_m2, 3),
+            "overlap_deduction_m2": round(design.overlap_deduction_m2, 3),
             "ridge_length_m": round(design.total_ridge_length_m, 3),
             "hip_length_m": round(design.total_hip_length_m, 3),
             "valley_length_m": round(design.total_valley_length_m, 3),
@@ -522,8 +525,8 @@ def _validate_project(data: dict) -> tuple[list[str], list[str]]:
             if polygons_overlap(list(drawn[i].footprint.vertices),
                                 list(drawn[j].footprint.vertices)):
                 warnings.append(
-                    "Stavby se v půdorysu překrývají — překrytá plocha bude "
-                    "v součtu dvakrát.")
+                    "Stavby se v půdorysu překrývají — plocha nižší střechy "
+                    "pod vyšší stavbou se z celkového součtu odečítá.")
                 break
         else:
             continue

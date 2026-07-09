@@ -1073,6 +1073,7 @@ class EditorView(QWidget):
 
         n = canvas.building_count()
         results: list = []          # per-building RoofResult (computed only)
+        items: list = []            # (vertices, eave_height, result) for overlap
         active_result = None
         active_fp = None
         any_footprint = False
@@ -1112,6 +1113,7 @@ class EditorView(QWidget):
 
             canvas.set_building_skeleton(i, result)
             results.append(result)
+            items.append((list(fp.vertices), float(b.eave_height), result))
             if i == active:
                 active_result = result
                 active_fp = fp
@@ -1125,17 +1127,25 @@ class EditorView(QWidget):
             # silently under-reporting the design.
             self._show_toast(tr("someBuildingsFailed", lang))
 
-        # Overlapping footprints double-count the shared plan area in the
-        # totals (and may be intentional, e.g. a raised tower) — warn, don't block.
-        drawn_fps = [canvas.building_footprint(i) for i in range(n)]
-        drawn_fps = [fp for fp in drawn_fps if fp is not None]
-        if len(drawn_fps) >= 2:
-            from tectora.core.geom2d import polygons_overlap
-            if any(
-                polygons_overlap(list(drawn_fps[i].vertices), list(drawn_fps[j].vertices))
-                for i in range(len(drawn_fps)) for j in range(i + 1, len(drawn_fps))
-            ):
-                self._show_toast(tr("overlapWarning", lang))
+        # Where a HIGHER building's footprint covers a LOWER one's roof (the
+        # tower/vestavba case), the hidden roof does not exist — deduct it
+        # from the design total and tell the user how much.
+        deduction = uc.overlap_deduction(items)
+        if deduction > 1e-9:
+            self._show_toast(
+                tr("overlapDeducted", lang).format(area=f"{deduction:.2f}"))
+        else:
+            drawn_fps = [canvas.building_footprint(i) for i in range(n)]
+            drawn_fps = [fp for fp in drawn_fps if fp is not None]
+            if len(drawn_fps) >= 2:
+                from tectora.core.geom2d import polygons_overlap
+                if any(
+                    polygons_overlap(list(drawn_fps[i].vertices),
+                                     list(drawn_fps[j].vertices))
+                    for i in range(len(drawn_fps))
+                    for j in range(i + 1, len(drawn_fps))
+                ):
+                    self._show_toast(tr("overlapWarning", lang))
 
         # last_result tracks the active building (None if it has no footprint),
         # preserving the single-building contract.
@@ -1143,7 +1153,7 @@ class EditorView(QWidget):
 
         # Results panel = design total. With one building the totals equal that
         # building's values, so existing assertions still hold.
-        design = uc.DesignResult(results)
+        design = uc.DesignResult(results, overlap_deduction_m2=deduction)
         self.set_results_from_design(design)
 
         # Roof-type badge follows the active building; the 3D view shows ALL
@@ -1615,6 +1625,7 @@ class EditorView(QWidget):
         results: list = []
         names: list = []
         eaves: list = []
+        items: list = []
         for i in range(canvas.building_count()):
             fp = canvas.building_footprint(i)
             if fp is None:
@@ -1634,13 +1645,15 @@ class EditorView(QWidget):
             results.append(result)
             names.append(b.name)
             eaves.append(b.eave_height)
+            items.append((list(fp.vertices), float(b.eave_height), result))
 
         if not results:
             self._show_toast(tr("drawFirst", lang))
             return
 
         from tectora.core.materials import MaterialSpec
-        design = uc.DesignResult(results)
+        design = uc.DesignResult(
+            results, overlap_deduction_m2=uc.overlap_deduction(items))
         write_design_report_xlsx(design, path, building_names=names,
                                  building_eaves=eaves,
                                  material_spec=MaterialSpec())
