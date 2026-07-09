@@ -104,6 +104,10 @@ class _CanvasBuilding:
     # Per-EDGE polovalba depths (metres), parallel to edge_types — set by
     # clicking an end triangle; computed via the skeleton fold.
     edge_half_hips: list = field(default_factory=list)
+    # Additional OPEN polylines drawn while sketching the outline (free
+    # drawing): the user parks a chain with Esc, draws elsewhere, and joins
+    # loose ends by clicking them. Always empty once the polygon is closed.
+    extra_chains: list = field(default_factory=list)
     name: str = ""
 
 
@@ -369,6 +373,7 @@ class Canvas2D(QWidget):
                 b.half_hip,
                 b.pitch_back,
                 list(b.edge_half_hips),
+                [list(ch) for ch in b.extra_chains],
             )
             for b in self._buildings
         )
@@ -382,8 +387,9 @@ class Canvas2D(QWidget):
                 skeleton_data=None, overhang=oh, pitch=pi, eave_height=eh,
                 half_hip=hh, name=nm, pitch_back=pb,
                 edge_half_hips=list(ehh),
+                extra_chains=[list(ch) for ch in ec],
             )
-            for (v, et, cl, oh, pi, eh, nm, hh, pb, ehh) in buildings
+            for (v, et, cl, oh, pi, eh, nm, hh, pb, ehh, ec) in buildings
         ]
         if not self._buildings:
             self._buildings = [_CanvasBuilding()]
@@ -446,7 +452,13 @@ class Canvas2D(QWidget):
                 self.edited.emit()
             return True
         if not self._closed and self._vertices:
+            # Finish (park) the polyline being drawn, like ending a polyline
+            # in CAD: it stays on the canvas as a loose chain the user can
+            # continue or join later; the next click starts a new one. A
+            # single stray point is simply discarded.
             self._push_undo()
+            if len(self._vertices) >= 2:
+                self._b.extra_chains.append(list(self._vertices))
             self._b.vertices = []
             self._b.edge_types = []
             self._b.skeleton_data = None
@@ -503,6 +515,9 @@ class Canvas2D(QWidget):
             eave_height=src.eave_height, half_hip=src.half_hip,
             pitch_back=src.pitch_back,
             edge_half_hips=list(src.edge_half_hips),
+            extra_chains=[
+                [(x + dx, y + dy) for (x, y) in ch] for ch in src.extra_chains
+            ],
             name=(src.name + tr("copySuffix", self._lang)) if src.name else "",
         )
         self._buildings.append(copy)
@@ -532,9 +547,14 @@ class Canvas2D(QWidget):
         xs = [v[0] for v in b.vertices]
         ys = [v[1] for v in b.vertices]
         cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
-        verts = list(b.vertices)
-        for _ in range(q):
-            verts = [(cx - (y - cy), cy + (x - cx)) for (x, y) in verts]
+
+        def _rot(pts: list) -> list:
+            out = list(pts)
+            for _ in range(q):
+                out = [(cx - (y - cy), cy + (x - cx)) for (x, y) in out]
+            return out
+
+        verts = _rot(b.vertices)
         # The bbox centre may sit off-grid — translate so the rotated bbox
         # corner lands back on the grid and further drawing lines up.
         minx = min(v[0] for v in verts)
@@ -542,6 +562,9 @@ class Canvas2D(QWidget):
         ddx = round(minx / _GRID_STEP_M) * _GRID_STEP_M - minx
         ddy = round(miny / _GRID_STEP_M) * _GRID_STEP_M - miny
         b.vertices = [(x + ddx, y + ddy) for (x, y) in verts]
+        b.extra_chains = [
+            [(x + ddx, y + ddy) for (x, y) in _rot(ch)] for ch in b.extra_chains
+        ]
         b.skeleton_data = None
         self.update()
         if b.closed:
@@ -552,12 +575,18 @@ class Canvas2D(QWidget):
     # ------------------------------------------------------------------
 
     def add_point(self, mx: float, my: float) -> None:
-        """Append a vertex in model space (metres). Only valid while open."""
+        """Append a vertex in model space (metres). Only valid while open.
+
+        A click on the exact position of the last vertex is ignored (no
+        zero-length segments)."""
         if self._closed:
+            return
+        pt = (float(mx), float(my))
+        if self._vertices and self._vertices[-1] == pt:
             return
         self._push_undo()
         self._skeleton_data = None
-        self._vertices.append((float(mx), float(my)))
+        self._vertices.append(pt)
         self.update()
 
     def add_relative_point(self, dx: float, dy: float) -> None:
@@ -580,6 +609,10 @@ class Canvas2D(QWidget):
         if len(self._vertices) < 3:
             raise ValueError(
                 f"Polygon requires at least 3 vertices; got {len(self._vertices)}."
+            )
+        if self._b.extra_chains:
+            raise ValueError(
+                "Open chains remain; join all drawn segments into one outline first."
             )
         from tectora.core.footprint import is_simple_polygon
         if not is_simple_polygon(self._vertices):
@@ -625,6 +658,9 @@ class Canvas2D(QWidget):
         if not b.vertices or (abs(dx) < 1e-12 and abs(dy) < 1e-12):
             return
         b.vertices = [(x + dx, y + dy) for (x, y) in b.vertices]
+        b.extra_chains = [
+            [(x + dx, y + dy) for (x, y) in ch] for ch in b.extra_chains
+        ]
         b.skeleton_data = None
         self.update()
         if b.closed:
@@ -912,26 +948,77 @@ class Canvas2D(QWidget):
         text, gpos = self._hover_pending
         QToolTip.showText(gpos, text, self)
 
+    def _near_screen(self, px: float, py: float, pt: tuple) -> bool:
+        sx, sy = self._to_screen(*pt)
+        return ((px - sx) ** 2 + (py - sy) ** 2) ** 0.5 <= _CLOSE_SNAP_RADIUS
+
+    def _try_close_active(self) -> None:
+        """Close the active chain into the footprint polygon (with toasts)."""
+        if self._b.extra_chains:
+            self._editor._show_toast(tr("openChainsLeft", self._lang))
+            return
+        try:
+            self.close_polygon()
+        except ValueError:
+            self._editor._show_toast(tr("invalidShape", self._lang))
+
     def _handle_draw_click(self, px: float, py: float) -> None:
         mx, my = self._snapped_model(px, py)
 
         if self._closed:
             # The active building is finished — a click selects another building
             # (loading its parameters) instead of doing nothing. To draw a new
-            # one the user presses "Nová stavba".
+            # one the user presses "Nová plocha".
             self.select_building_at(px, py)
             return
 
-        # If ≥ 3 vertices, check if click is near the first node → close polygon
-        if len(self._vertices) >= 3:
-            sx, sy = self._to_screen(*self._vertices[0])
-            if ((px - sx) ** 2 + (py - sy) ** 2) ** 0.5 <= _CLOSE_SNAP_RADIUS:
-                try:
-                    self.close_polygon()
-                except ValueError:
-                    self._editor._show_toast(tr("invalidShape", self._lang))
-                return
+        b = self._b
 
+        # 1) Click near the active chain's FIRST vertex → close the outline.
+        if len(self._vertices) >= 3 and self._near_screen(px, py, self._vertices[0]):
+            self._try_close_active()
+            return
+
+        # 2) Click near a loose end of a PARKED chain → continue from it, or
+        # join it to the active chain with a connecting segment. Free drawing:
+        # the outline does not have to be drawn vertex-by-vertex around.
+        for ci, chain in enumerate(b.extra_chains):
+            hit_end = None
+            if self._near_screen(px, py, chain[-1]):
+                hit_end = True            # clicked the chain's tail
+            elif self._near_screen(px, py, chain[0]):
+                hit_end = False           # clicked the chain's head
+            if hit_end is None:
+                continue
+            self._push_undo()
+            self._skeleton_data = None
+            # `seq` walks the chain so it ENDS at the clicked endpoint.
+            seq = list(chain) if hit_end else list(reversed(chain))
+            del b.extra_chains[ci]
+            if not self._vertices:
+                # Nothing active — pick the chain up and keep drawing from
+                # the clicked end.
+                b.vertices = seq
+            else:
+                # Join: a segment from the active end to the clicked end,
+                # then the rest of that chain.
+                tail = list(reversed(seq))          # starts at the clicked end
+                if b.vertices[-1] == tail[0]:
+                    tail = tail[1:]                 # ends already touch
+                b.vertices = list(b.vertices) + tail
+                # The join may have brought the outline back to its start —
+                # that closes it (the user connected the last two loose ends).
+                if len(b.vertices) >= 4 and b.vertices[0] == b.vertices[-1]:
+                    b.vertices = b.vertices[:-1]
+                    if not b.extra_chains:
+                        try:
+                            self.close_polygon()
+                        except ValueError:
+                            self._editor._show_toast(tr("invalidShape", self._lang))
+            self.update()
+            return
+
+        # 3) Plain click extends the active chain (or starts a new one).
         self.add_point(mx, my)
 
     def _handle_editpoints_press(self, px: float, py: float) -> None:
@@ -1314,11 +1401,30 @@ class Canvas2D(QWidget):
         self._draw_label_at(p, lx, ly, fmt_len(length), color, bold=True)
 
     def _draw_in_progress(self, p: QPainter) -> None:
-        if self._closed or len(self._vertices) == 0:
+        if self._closed or (len(self._vertices) == 0 and not self._b.extra_chains):
             return
-        # Draw existing open segments
         pen = QPen(QColor(COL["eave"]), 2.0)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+
+        # Parked loose chains (free drawing) — same style, with endpoint dots
+        # marking the clickable loose ends.
+        for chain in self._b.extra_chains:
+            p.setPen(pen)
+            for i in range(len(chain) - 1):
+                ax, ay = self._to_screen(*chain[i])
+                bx, by = self._to_screen(*chain[i + 1])
+                p.drawLine(int(ax), int(ay), int(bx), int(by))
+                self._draw_seg_len_label(p, chain[i], chain[i + 1], TEXT)
+            for pt in (chain[0], chain[-1]):
+                sx, sy = self._to_screen(*pt)
+                p.setPen(QPen(QColor(ACCENT), 1.5))
+                p.setBrush(QColor(CARD))
+                r = 4
+                p.drawEllipse(int(sx - r), int(sy - r), r * 2, r * 2)
+
+        if len(self._vertices) == 0:
+            return
+        # Draw existing open segments of the ACTIVE chain
         p.setPen(pen)
         for i in range(len(self._vertices) - 1):
             ax, ay = self._to_screen(*self._vertices[i])

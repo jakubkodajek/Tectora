@@ -30,7 +30,9 @@ def _press_escape(widget):
     QApplication.sendEvent(widget, ev)
 
 
-def test_esc_discards_in_progress_polyline(tmp_path):
+def test_esc_parks_in_progress_polyline(tmp_path):
+    """Esc finishes the polyline like in CAD: it stays as a loose chain and
+    the next click starts a new one."""
     app, w, ed = _editor(tmp_path)
     c = ed.canvas
     c.add_point(0, 0)
@@ -38,9 +40,20 @@ def test_esc_discards_in_progress_polyline(tmp_path):
     _press_escape(c)
     assert c._vertices == []
     assert not c._closed
-    # Undoable: the discarded outline comes back.
+    assert c._buildings[0].extra_chains == [[(0.0, 0.0), (5.0, 0.0)]]
+    # Undoable: the chain returns to being the active polyline.
     assert c.undo()
     assert c._vertices == [(0.0, 0.0), (5.0, 0.0)]
+    assert c._buildings[0].extra_chains == []
+
+
+def test_esc_discards_a_single_stray_point(tmp_path):
+    app, w, ed = _editor(tmp_path)
+    c = ed.canvas
+    c.add_point(0, 0)
+    _press_escape(c)
+    assert c._vertices == []
+    assert c._buildings[0].extra_chains == []
 
 
 def test_esc_on_closed_polygon_does_nothing(tmp_path):
