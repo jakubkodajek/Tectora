@@ -496,11 +496,17 @@ def _validate_project(data: dict) -> tuple[list[str], list[str]]:
             continue
         drawn.append(b)
 
-        for ei, e in enumerate(b.footprint.edges):
-            if e.type.value == "gable" and not is_valid_gable_edge(b.footprint, ei):
-                problems.append(
-                    f"{label}: hrana {ei} nemůže být štít — štít je platný jen "
-                    f"na konci křídla s kolmými sousedními hranami.")
+        # On an axis-aligned rectangle any edge may be a gable (the exact
+        # calculator handles the supported combinations and generate_roof
+        # below reports the unsupported ones); the wing-end cap rule applies
+        # to general polygons only.
+        from tectora.core.bridge import is_axis_aligned_rectangle
+        if not is_axis_aligned_rectangle(b.footprint):
+            for ei, e in enumerate(b.footprint.edges):
+                if e.type.value == "gable" and not is_valid_gable_edge(b.footprint, ei):
+                    problems.append(
+                        f"{label}: hrana {ei} nemůže být štít — štít je platný jen "
+                        f"na konci křídla s kolmými sousedními hranami.")
 
         try:
             generate_roof(b.footprint, b.pitch_deg, overhang=b.overhang_m,

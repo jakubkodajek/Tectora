@@ -660,12 +660,17 @@ class Canvas2D(QWidget):
         fp = self.building_footprint(bi)
         if fp is None:
             return 0
+        from tectora.core.bridge import is_axis_aligned_rectangle
         from tectora.core.gable import is_valid_gable_edge_at
+        # On a rectangle a gable is legal on ANY edge (the exact calculator
+        # handles every orientation), so only per-edge half-hips — which need
+        # the skeleton cap fold — are checked there.
+        rect = is_axis_aligned_rectangle(fp)
         n = len(b.vertices)
         self._ensure_edge_half_hips(b)
         reverted = 0
         for i in range(n):
-            is_gable = i < len(b.edge_types) and b.edge_types[i] == "gable"
+            is_gable = (not rect) and i < len(b.edge_types) and b.edge_types[i] == "gable"
             has_hh = b.edge_half_hips[i] > 0
             if not (is_gable or has_hh):
                 continue
@@ -995,14 +1000,21 @@ class Canvas2D(QWidget):
             return
 
         # Turning eave -> gable: validate first so we never produce a roof the
-        # core would reject. Turning gable -> eave is always allowed.
+        # core would reject. Turning gable -> eave is always allowed. On an
+        # axis-aligned RECTANGLE any edge may be a gable — the exact calculator
+        # supports every orientation (sedlová on either pair, pultová on any
+        # side); the wing-end cap rule applies to general polygons only.
         current = self._edge_types[idx] if idx < len(self._edge_types) else "eave"
         if current == "eave":
+            from tectora.core.bridge import is_axis_aligned_rectangle
             from tectora.core.gable import is_valid_gable_edge_at
             a = self._vertices[idx]
             b = self._vertices[(idx + 1) % n]
             fp = self.footprint
-            if fp is None or not is_valid_gable_edge_at(fp, a, b):
+            if fp is None or not (
+                is_axis_aligned_rectangle(fp)
+                or is_valid_gable_edge_at(fp, a, b)
+            ):
                 self._editor._show_toast(tr("gableNotHere", self._lang))
                 return
 
@@ -1170,72 +1182,43 @@ class Canvas2D(QWidget):
         if not verts:
             return
 
-        # ── Branch: general polygon (SS path) vs rectangle (exact path) ──
-        if result.skeleton_segments:
-            # SS path: segments are already in model coords (x, y, z)
-            import math
-            from tectora.gui.editor.skeleton_render import fmt_len
-            for kind, a, b in result.skeleton_segments:
-                ax, ay = a[0], a[1]
-                bx, by = b[0], b[1]
-                sx1, sy1 = self._to_screen(ax, ay)
-                sx2, sy2 = self._to_screen(bx, by)
-                color = COL.get(kind, COL["hip"])
-                pen = QPen(QColor(color), 3.0)
-                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-                p.setPen(pen)
-                p.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
-                if kind == "ridge":
-                    # Absolute ridge height = segment z above eave + eave height.
-                    self._painted_ridges.append(
-                        (sx1, sy1, sx2, sy2, a[2] + self._b.eave_height))
-                # Label midpoint with 3D length
-                length3d = math.sqrt(
-                    (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
-                )
-                mid_sx = (sx1 + sx2) / 2.0
-                mid_sy = (sy1 + sy2) / 2.0
-                dx, dy = sx2 - sx1, sy2 - sy1
-                seg_len = (dx * dx + dy * dy) ** 0.5
-                if seg_len > 1e-3:
-                    nx, ny = -dy / seg_len, dx / seg_len
-                    mid_sx += nx * 10
-                    mid_sy += ny * 10
-                label = fmt_len(length3d)
-                self._draw_label_at(p, mid_sx, mid_sy, label, color, bold=True)
-            # Draw footprint edge-length labels (both paths share this)
-            self._draw_edge_length_labels(p)
-            self._draw_ss_face_area_labels(p)
-            self._record_face_hits(None)
-        else:
-            # Exact path (rectangle): use classify_skeleton + map_calc_point
-            from tectora.gui.editor.skeleton_render import (
-                classify_skeleton, face_area_labels, fmt_len, fmt_area, map_calc_point
+        # ONE path: generate_roof emits skeleton_segments in model coordinates
+        # for BOTH the exact-calculator and the straight-skeleton results, so
+        # the canvas never re-derives the placement (2D and 3D always agree).
+        import math
+        from tectora.gui.editor.skeleton_render import fmt_len
+        for kind, a, b in result.skeleton_segments:
+            ax, ay = a[0], a[1]
+            bx, by = b[0], b[1]
+            sx1, sy1 = self._to_screen(ax, ay)
+            sx2, sy2 = self._to_screen(bx, by)
+            color = COL.get(kind, COL["hip"])
+            pen = QPen(QColor(color), 3.0)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            p.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
+            if kind == "ridge":
+                # Absolute ridge height = segment z above eave + eave height.
+                self._painted_ridges.append(
+                    (sx1, sy1, sx2, sy2, a[2] + self._b.eave_height))
+            # Label midpoint with 3D length
+            length3d = math.sqrt(
+                (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
             )
-            xs = [v[0] for v in verts]
-            ys = [v[1] for v in verts]
-            bbox = (min(xs), min(ys), max(xs), max(ys))
+            mid_sx = (sx1 + sx2) / 2.0
+            mid_sy = (sy1 + sy2) / 2.0
+            dx, dy = sx2 - sx1, sy2 - sy1
+            seg_len = (dx * dx + dy * dy) ** 0.5
+            if seg_len > 1e-3:
+                nx, ny = -dy / seg_len, dx / seg_len
+                mid_sx += nx * 10
+                mid_sy += ny * 10
+            label = fmt_len(length3d)
+            self._draw_label_at(p, mid_sx, mid_sy, label, color, bold=True)
 
-            segments = classify_skeleton(result)
-            for kind, (cx1, cy1), (cx2, cy2), length3d in segments:
-                mx1, my1 = map_calc_point(cx1, cy1, bbox)
-                mx2, my2 = map_calc_point(cx2, cy2, bbox)
-                sx1, sy1 = self._to_screen(mx1, my1)
-                sx2, sy2 = self._to_screen(mx2, my2)
-                color = COL.get(kind, COL["hip"])
-                pen = QPen(QColor(color), 3.0)
-                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-                p.setPen(pen)
-                p.drawLine(int(sx1), int(sy1), int(sx2), int(sy2))
-                if kind == "ridge":
-                    self._painted_ridges.append(
-                        (sx1, sy1, sx2, sy2,
-                         result.apex_height_m + self._b.eave_height))
-
-            self._draw_edge_length_labels(p)
-            self._draw_skeleton_length_labels(p, segments, bbox)
-            self._draw_face_area_labels(p, bbox)
-            self._record_face_hits(bbox)
+        self._draw_edge_length_labels(p)
+        self._draw_ss_face_area_labels(p)
+        self._record_face_hits()
 
     def _dim_font(self) -> QFont:
         """Small annotation font for dimension labels."""
@@ -1294,45 +1277,8 @@ class Canvas2D(QWidget):
             self._draw_label_at(p, lx, ly, fmt_len(length), TEXT)
             self._edge_len_hits.append((lx, ly, self._active, i, length))
 
-    def _draw_skeleton_length_labels(
-        self,
-        p: QPainter,
-        segments: list,
-        bbox: tuple,
-    ) -> None:
-        """Draw length annotations near each hip/ridge segment midpoint."""
-        from tectora.gui.editor.skeleton_render import fmt_len, map_calc_point
-        for kind, (cx1, cy1), (cx2, cy2), length3d in segments:
-            mx1, my1 = map_calc_point(cx1, cy1, bbox)
-            mx2, my2 = map_calc_point(cx2, cy2, bbox)
-            # Midpoint in screen space
-            sx1, sy1 = self._to_screen(mx1, my1)
-            sx2, sy2 = self._to_screen(mx2, my2)
-            mid_sx = (sx1 + sx2) / 2.0
-            mid_sy = (sy1 + sy2) / 2.0
-            # Offset slightly perpendicular to segment
-            dx, dy = sx2 - sx1, sy2 - sy1
-            seg_len = (dx * dx + dy * dy) ** 0.5
-            if seg_len > 1e-3:
-                nx, ny = -dy / seg_len, dx / seg_len
-                mid_sx += nx * 10
-                mid_sy += ny * 10
-            color = COL.get(kind, COL["hip"])
-            label = fmt_len(length3d)
-            self._draw_label_at(p, mid_sx, mid_sy, label, color, bold=True)
-
-    def _draw_face_area_labels(self, p: QPainter, bbox: tuple) -> None:
-        """Draw area annotations at each face centroid."""
-        from tectora.gui.editor.skeleton_render import face_area_labels, fmt_area, map_calc_point
-        labels = face_area_labels(self._skeleton_data)
-        for cx, cy, area_m2 in labels:
-            mx, my = map_calc_point(cx, cy, bbox)
-            sx, sy = self._to_screen(mx, my)
-            label = fmt_area(area_m2)
-            self._draw_label_at(p, sx, sy, label, MUTED)
-
     def _draw_ss_face_area_labels(self, p: QPainter) -> None:
-        """Per-plane area labels for the SS path (faces are in model coords)."""
+        """Per-plane area labels (faces are always in model coords)."""
         from tectora.gui.editor.skeleton_render import fmt_area
         result = self._skeleton_data
         for face in getattr(result, "faces", None) or []:
@@ -1609,23 +1555,19 @@ class Canvas2D(QWidget):
     # Per-face pitch (click a roof plane to set its slope)
     # ------------------------------------------------------------------
 
-    def _record_face_hits(self, bbox) -> None:
+    def _record_face_hits(self) -> None:
         """Record each roof face's clickable centroid for the active building.
 
-        *bbox* is the calc-space bbox for the exact (rectangle) path (face
-        vertices are in calc coords there) or None for the SS path (model
-        coords). Records both the screen position (hit testing) and the model
-        centroid (identifying the face's base edge on click).
+        Faces are always in model coordinates (generate_roof maps the exact
+        calculator's frame). Records both the screen position (hit testing)
+        and the model centroid (identifying the face's base edge on click).
         """
-        from tectora.gui.editor.skeleton_render import map_calc_point
         for face in getattr(self._skeleton_data, "faces", None) or []:
             vs = face.vertices
             if not vs:
                 continue
             cx = sum(v[0] for v in vs) / len(vs)
             cy = sum(v[1] for v in vs) / len(vs)
-            if bbox is not None:
-                cx, cy = map_calc_point(cx, cy, bbox)
             sx, sy = self._to_screen(cx, cy)
             self._face_hits.append(
                 (sx, sy, self._active, face.name, face.slope_deg, cx, cy))

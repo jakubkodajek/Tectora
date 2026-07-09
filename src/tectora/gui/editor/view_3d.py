@@ -308,7 +308,15 @@ class Roof3DView(QWidget):
         from tectora.core.roof_faces import build_faces
 
         use_provided = roof_faces is not None and len(roof_faces) > 0
-        faces = roof_faces if use_provided else build_faces(footprint, pitch_deg)
+        if use_provided:
+            faces = roof_faces
+        else:
+            try:
+                faces = build_faces(footprint, pitch_deg)
+            except ValueError:
+                # Uncomputable edge combination (e.g. a gable the skeleton
+                # cannot fold) — render the walls alone rather than crash.
+                faces = []
 
         geom: list[tuple[list[tuple[float, float, float]], bool]] = []
         eave_z = float(base_height) + float(wall_height)
