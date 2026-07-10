@@ -175,6 +175,40 @@ def test_asymmetric_gable_front_is_south_face():
     assert any(abs(v[1] - 8.0) < 1e-6 for v in back.vertices)
 
 
+def _newell_nz(vertices):
+    nz = 0.0
+    m = len(vertices)
+    for i in range(m):
+        ax, ay, _az = vertices[i]
+        bx, by, _bz = vertices[(i + 1) % m]
+        nz += (ax - bx) * (ay + by)
+    return nz
+
+
+def test_every_exact_face_has_an_upward_normal():
+    """The 3D view shades by the face normal — every exact-path face must
+    come out CCW in plan (normal up), whatever the calculator emitted and
+    whichever (possibly reflected) frame placed it."""
+    cases = [
+        (["eave"] * 4, {}),                                   # hip
+        (["eave", "gable", "eave", "gable"], {}),             # gable, short caps
+        (["gable", "eave", "gable", "eave"], {}),             # gable, long sides
+        (["eave", "gable", "eave", "gable"], {"pitch_back": 20}),
+        (["eave", "gable", "eave", "gable"], {"half_hip_m": 1.0}),
+        (["eave", "gable", "gable", "gable"], {}),            # shed south
+        (["gable", "gable", "eave", "gable"], {}),            # shed north
+        (["gable", "gable", "gable", "eave"], {}),            # shed west
+    ]
+    for types, kw in cases:
+        r = generate_roof(_rect(0, 0, 12, 8, types), 35, **kw)
+        for f in r.faces:
+            assert _newell_nz(f.vertices) > 0, (types, kw, f.name)
+    # Square pyramid too.
+    r = generate_roof(_rect(0, 0, 8, 8, ["eave"] * 4), 35)
+    for f in r.faces:
+        assert _newell_nz(f.vertices) > 0, ("pyramid", f.name)
+
+
 def test_half_hip_lands_on_offset_footprint():
     r = generate_roof(_rect(-14, 6, -4, 12, ["eave", "gable", "eave", "gable"]), 35,
                       half_hip_m=1.0)

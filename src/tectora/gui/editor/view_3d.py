@@ -32,13 +32,15 @@ _BG_COLOR = QColor("#1f2430")
 _EDGE_COLOR = QColor(220, 220, 220, 200)
 _PLACEHOLDER_COLOR = QColor(80, 90, 110)
 
-# Face fill colours (light, translucent)
-_FACE_LIGHT = QColor(200, 215, 240, 170)
-_FACE_MID = QColor(170, 185, 210, 150)
-_FACE_DARK = QColor(130, 145, 170, 130)
+# Face fill colours. OPAQUE on purpose: any translucency lets the dark
+# background bleed through wherever nothing is behind a face, which shades
+# identical slopes differently and makes a correct roof read as a hollow box.
+_FACE_LIGHT = QColor(200, 215, 240)
+_FACE_MID = QColor(170, 185, 210)
+_FACE_DARK = QColor(130, 145, 170)
 
 # Wall colours
-_WALL_FILL = QColor(0xD9, 0xDD, 0xE3, 200)   # #d9dde3, slightly translucent
+_WALL_FILL = QColor(0xD9, 0xDD, 0xE3)        # #d9dde3, opaque
 _WALL_EDGE = QColor(0xB0, 0xB5, 0xBD, 220)   # slightly darker edge
 
 
@@ -212,19 +214,37 @@ def _face_normal(vertices: list[tuple[float, float, float]]) -> tuple[float, flo
     return (nx / length, ny / length, nz / length)
 
 
-def _shade_color(normal: tuple[float, float, float]) -> QColor:
-    """Return a face fill QColor based on how much the normal faces the virtual light."""
-    # Light direction: slightly from front-left, elevated (normalised)
-    lx, ly, lz = 0.4, -0.3, 0.85
+def _shade_color(
+    normal: tuple[float, float, float],
+    azimuth: float = 0.0,
+    elevation: float = 0.0,
+) -> QColor:
+    """Face fill colour from a HEADLIGHT-style shade.
+
+    The light is fixed in EYE space (from the viewer, slightly up-left), so
+    faces turned toward the camera are always the brightest — whatever the
+    rotation. A world-fixed light used to point AGAINST the default view,
+    which rendered the nearest roof slopes darkest and made a correct roof
+    read as a hollow box.
+    """
+    # Roof faces always face UP — flip a downward normal (winding artefact)
+    # so the shade never depends on the vertex order a face arrived with.
+    if normal[2] < 0:
+        normal = (-normal[0], -normal[1], -normal[2])
+    # Rotate the normal into eye space (x = screen right, y = screen up,
+    # z = toward the viewer).
+    ex, ey, ez = _rotate_point(normal[0], normal[1], normal[2],
+                               azimuth, elevation)
+    lx, ly, lz = -0.25, 0.55, 0.80
     ll = math.sqrt(lx * lx + ly * ly + lz * lz)
     lx, ly, lz = lx / ll, ly / ll, lz / ll
-    dot = max(0.0, normal[0] * lx + normal[1] * ly + normal[2] * lz)
+    dot = max(0.0, ex * lx + ey * ly + ez * lz)
     # Interpolate between dark and light face colours
     t = 0.35 + 0.65 * dot
     r = int(130 + (200 - 130) * t)
     g = int(145 + (215 - 145) * t)
     b = int(170 + (240 - 170) * t)
-    return QColor(r, g, b, 160)
+    return QColor(r, g, b)
 
 
 # ---------------------------------------------------------------------------
@@ -585,7 +605,7 @@ class Roof3DView(QWidget):
             ) / len(centred)
 
             normal = _face_normal(face.vertices)
-            color = _shade_color(normal)
+            color = _shade_color(normal, self._azimuth, self._elevation)
             projected.append(_ProjectedFace(poly, color, avg_depth))
 
         # Sort furthest-first (smallest depth drawn first)
@@ -649,7 +669,7 @@ class Roof3DView(QWidget):
                 color = _WALL_FILL
             else:
                 normal = _face_normal(face_verts)
-                color = _shade_color(normal)
+                color = _shade_color(normal, self._azimuth, self._elevation)
 
             projected.append(_ProjectedFace(poly, color, avg_depth))
 

@@ -146,20 +146,39 @@ def _interior_segments(faces: list) -> list:
     return segments
 
 
+def _ccw_up(vertices: list) -> list:
+    """Vertex order with an UPWARD normal (CCW in plan view).
+
+    The exact calculator emits faces with mixed windings, and a transposed
+    CalcFrame is a reflection that flips them again — consumers that shade
+    or orient by the face normal (the 3D view) need one convention.
+    Vertical faces (zero plan area) are left untouched.
+    """
+    n = len(vertices)
+    signed = sum(
+        vertices[i][0] * vertices[(i + 1) % n][1]
+        - vertices[(i + 1) % n][0] * vertices[i][1]
+        for i in range(n)
+    )
+    return list(vertices) if signed >= 0 else list(reversed(vertices))
+
+
 def _to_model_frame(result: RoofResult, frame: CalcFrame) -> RoofResult:
     """Map an exact-calculator result into model coordinates.
 
     Transforms every face through *frame* and derives ``skeleton_segments``
     from the shared face edges, so the exact path emits the same model-space
-    geometry contract as the straight-skeleton path. Measurements (areas,
-    lengths) are placement-independent and stay untouched.
+    geometry contract as the straight-skeleton path. Face windings are
+    normalised to upward normals. Measurements (areas, lengths) are
+    placement-independent and stay untouched.
     """
     faces = [
         FaceResult(
             name=f.name,
             area_m2=f.area_m2,
             slope_deg=f.slope_deg,
-            vertices=[(*frame.to_model(v[0], v[1]), v[2]) for v in f.vertices],
+            vertices=_ccw_up(
+                [(*frame.to_model(v[0], v[1]), v[2]) for v in f.vertices]),
         )
         for f in result.faces
     ]
