@@ -133,6 +133,39 @@ def test_90_on_main_face_converts_to_shed(tmp_path):
     assert all(abs(v[1] - 8.0) < 1e-6 for v in lows)
 
 
+def test_main_slope_of_rotated_gable_takes_plain_pitch(tmp_path):
+    """Regression: on a sedlová with štíty on the LONG edges, the main slopes
+    grow from the short (cap-valid) eave edges — clicking one and typing a
+    pitch must set the ROOF pitch, not reroute into the half-hip branch
+    ('Sklon polovalby musí být větší…')."""
+    app, w, e = _editor(tmp_path)
+    c = e.canvas
+    _draw(c)                                   # 10 × 6 rect at (2,2)
+    # Štíty on the two LONG (horizontal) edges → rotated sedlová.
+    for i, (a, bpt) in enumerate(zip(RECT, RECT[1:] + RECT[:1])):
+        if abs(a[1] - bpt[1]) < 1e-9:          # horizontal edges
+            c.toggle_edge_type(i)
+    e._on_calculate()
+    assert c._skeleton_data is not None
+
+    toasts = []
+    e._show_toast = lambda t: toasts.append(t)
+    # Either main slope is a QUAD; type the same pitch first (the reported
+    # case), then a different one.
+    hit = _click_face(c, lambda h: h[7] >= 4)
+    _type_pitch(c, hit, 35)
+    assert tr("halfHipPitchTooLow", "cs") not in toasts
+
+    hit = _click_face(c, lambda h: h[7] >= 4 and "přední" in h[3])
+    _type_pitch(c, hit, 50)
+    app.processEvents()
+    assert tr("halfHipPitchTooLow", "cs") not in toasts
+    b = c._buildings[0]
+    assert b.pitch == 50
+    e._on_calculate()
+    assert any(abs(f.slope_deg - 50) < 0.01 for f in c._skeleton_data.faces)
+
+
 def test_90_on_main_face_of_l_shape_toasts(tmp_path):
     app, w, e = _editor(tmp_path)
     c = e.canvas

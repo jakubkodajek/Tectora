@@ -169,6 +169,8 @@ class Canvas2D(QWidget):
         # (centroid_x, centroid_y, building_index, face_name, slope_deg).
         self._face_hits: list = []
         self._pitch_editor = None  # QLineEdit shown when a face is clicked
+        self._pitch_centroid = None
+        self._pitch_face_nverts = None
 
         # Cursor shape
         self.setMouseTracking(True)
@@ -1676,7 +1678,8 @@ class Canvas2D(QWidget):
             cy = sum(v[1] for v in vs) / len(vs)
             sx, sy = self._to_screen(cx, cy)
             self._face_hits.append(
-                (sx, sy, self._active, face.name, face.slope_deg, cx, cy))
+                (sx, sy, self._active, face.name, face.slope_deg, cx, cy,
+                 len(vs)))
 
     def _handle_face_pitch_click(self, px: float, py: float) -> None:
         self.select_building_at(px, py)
@@ -1687,23 +1690,28 @@ class Canvas2D(QWidget):
         if not _point_in_polygon(px, py, poly):
             return
         best, best_d = None, None
-        for (sx, sy, bi, name, slope, cx, cy) in self._face_hits:
+        for hit in self._face_hits:
+            (sx, sy, bi, name, slope, cx, cy) = hit[:7]
+            nverts = hit[7] if len(hit) > 7 else None
             if bi != self._active:
                 continue
             d = (px - sx) ** 2 + (py - sy) ** 2
             if best_d is None or d < best_d:
-                best_d, best = d, (sx, sy, name, slope, (cx, cy))
+                best_d, best = d, (sx, sy, name, slope, (cx, cy), nverts)
         if best is None:
             self._editor._show_toast(tr("calcFirst", self._lang))
             return
-        sx, sy, name, slope, centroid = best
-        self._open_pitch_editor(name, slope, sx, sy, centroid=centroid)
+        sx, sy, name, slope, centroid, nverts = best
+        self._open_pitch_editor(name, slope, sx, sy, centroid=centroid,
+                                nverts=nverts)
 
     def _open_pitch_editor(self, face_name: str, slope: float,
                            lx: float, ly: float,
-                           centroid: Optional[tuple] = None) -> None:
+                           centroid: Optional[tuple] = None,
+                           nverts: Optional[int] = None) -> None:
         self._close_pitch_editor()
         self._pitch_centroid = centroid   # model-space centroid of the face
+        self._pitch_face_nverts = nverts  # vertex count of the clicked face
         ed = QLineEdit(self)
         ed.setText(f"{slope:.0f}")
         ed.selectAll()
@@ -1758,7 +1766,8 @@ class Canvas2D(QWidget):
             return
         txt = self._pitch_editor.text().strip().replace(",", ".")
         centroid = getattr(self, "_pitch_centroid", None)
-        self._close_pitch_editor()
+        nverts = getattr(self, "_pitch_face_nverts", None)
+        self._close_pitch_editor()   # clears the stored click context
         try:
             val = float(txt)
         except ValueError:
@@ -1766,10 +1775,14 @@ class Canvas2D(QWidget):
         if not (1 <= val <= 90):
             return
         vertical = val >= 90.0 - 1e-9
-        # A face whose base edge is a wing-end cap is an END face (valba /
-        # valbička) — setting its pitch re-clips the roof to a half-hip;
-        # 90° makes the end a vertical wall (štít).
-        cap_idx = self._cap_edge_at_centroid(centroid)
+        # An END face (valba / valbička) is a TRIANGLE growing from a wing-end
+        # cap edge — setting its pitch re-clips the roof to a half-hip, and
+        # 90° makes the end a vertical wall (štít). The triangle test matters:
+        # on a rotated sedlová the MAIN slopes also grow from cap-valid short
+        # edges, but they are quads and must take the plain pitch branch.
+        is_end_triangle = nverts is None or nverts == 3
+        cap_idx = (self._cap_edge_at_centroid(centroid)
+                   if is_end_triangle else None)
         if cap_idx is not None:
             if vertical:
                 self._set_end_face_gable(cap_idx)
@@ -1904,6 +1917,7 @@ class Canvas2D(QWidget):
             ed.hide()
             ed.deleteLater()
         self._pitch_centroid = None
+        self._pitch_face_nverts = None
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
         px, py = float(event.position().x()), float(event.position().y())
