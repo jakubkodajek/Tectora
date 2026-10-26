@@ -8,8 +8,12 @@
 //!   `id u16, group u16, f32 x9 [x, y, length, angle_rad, ?, eave_height,
 //!   overhang, pitch_deg, priority], flags u16`. Bit 0 of `flags` means a half-hip
 //!   record follows; the high byte is the number of window records that follow.
-//! * tag `0x12`, sub `0x10` (16 bytes) — half-hip of the preceding gable wall:
-//!   `u32 ?, f32 height, f32 ?, f32 pitch_deg`.
+//! * tag `0x12`, sub `0x10` (16 bytes) — a further (stacked) roof definition
+//!   of the preceding wall: `u16 ?, u16 material, f32 height, f32 overhang,
+//!   f32 pitch_deg`. On a gable it is the Krüppelwalm, otherwise a pitch
+//!   break.
+//! * tag `0x13`, sub `0x00` (8 bytes) — chimney: `u16 id, f32 height,
+//!   u16 corner count`, followed by that many sub `0x10` records `f32 x, y`.
 //! * tag `0x12`, sub `0x20` (16 bytes) — roof window: `f32 x, y, width, height`.
 //!
 //! Walls of one group that chain into a closed loop form a roof part; open
@@ -21,13 +25,14 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 use crate::geom::Point2;
-use crate::model::{Dormer, EdgeDef, HalfHip, Project, RoofPart, RoofWindow};
+use crate::model::{Chimney, Dormer, EdgeDef, HalfHip, PitchBreak, Project, RoofPart, RoofWindow};
 
 const V1_MAGIC: &[u8] = b"DACAD\x1a";
 const V2_MAGIC: &[u8] = b"\x08DACADV2\x1a";
 const TAG_WALL: u8 = 0x12;
+const TAG_CHIMNEY: u8 = 0x13;
 const SUB_WALL: u8 = 0x00;
-const SUB_HALF_HIP: u8 = 0x10;
+const SUB_STACKED: u8 = 0x10;
 const SUB_WINDOW: u8 = 0x20;
 /// Endpoint matching tolerance when chaining walls, m.
 const CHAIN_TOL: f64 = 0.005;
@@ -57,6 +62,7 @@ pub struct DadWall {
     pub pitch_deg: f64,
     pub priority: u8,
     pub half_hip: Option<HalfHip>,
+    pub breaks: Vec<PitchBreak>,
 }
 
 impl DadWall {
@@ -75,7 +81,7 @@ impl DadWall {
             overhang: self.overhang,
             half_hip: self.half_hip.clone(),
             direction_rad: (self.length <= 1e-6).then_some(self.angle_rad),
-            breaks: Vec::new(),
+            breaks: self.breaks.clone(),
             priority: self.priority,
         }
     }
@@ -87,6 +93,7 @@ pub struct DadFile {
     pub version: String,
     pub walls: Vec<DadWall>,
     pub windows: Vec<RoofWindow>,
+    pub chimneys: Vec<Chimney>,
 }
 
 fn f32_at(b: &[u8], off: usize) -> f64 {
@@ -141,14 +148,17 @@ pub fn parse(bytes: &[u8]) -> Result<DadFile, DadError> {
                     pitch_deg: f32_at(payload, 32),
                     priority: u8::from(f32_at(payload, 36) > 0.5),
                     half_hip: None,
+                    breaks: Vec::new(),
                 });
             }
-            (TAG_WALL, SUB_HALF_HIP) if len == 16 => {
+            (TAG_WALL, SUB_STACKED) if len == 16 => {
                 if let Some(wall) = file.walls.last_mut() {
-                    wall.half_hip = Some(HalfHip {
-                        height: f32_at(payload, 4),
-                        pitch_deg: f32_at(payload, 12),
-                    });
+                    let (height, pitch_deg) = (f32_at(payload, 4), f32_at(payload, 12));
+                    if wall.pitch_deg >= crate::model::GABLE_PITCH_DEG && wall.half_hip.is_none() {
+                        wall.half_hip = Some(HalfHip { height, pitch_deg });
+                    } else {
+                        wall.breaks.push(PitchBreak { height, pitch_deg });
+                    }
                 }
             }
             (TAG_WALL, SUB_WINDOW) if len == 16 => {
@@ -158,6 +168,18 @@ pub fn parse(bytes: &[u8]) -> Result<DadFile, DadError> {
                     width: f32_at(payload, 8),
                     height: f32_at(payload, 12),
                 });
+            }
+            (TAG_CHIMNEY, 0x00) if len == 8 => {
+                file.chimneys.push(Chimney {
+                    corners: Vec::new(),
+                    height: f32_at(payload, 2),
+                });
+            }
+            (TAG_CHIMNEY, 0x10) if len == 8 => {
+                if let Some(c) = file.chimneys.last_mut() {
+                    c.corners
+                        .push(Point2::new(f32_at(payload, 0), f32_at(payload, 4)));
+                }
             }
             _ => {}
         }
@@ -261,6 +283,7 @@ impl DadFile {
             }
         }
         project.windows = self.windows.clone();
+        project.chimneys = self.chimneys.clone();
         project
     }
 }
@@ -329,7 +352,7 @@ mod tests {
         w.wall(3, 1, 10.0, 6.0, 10.0, PI, 40.0, 0x0100);
         w.floats(SUB_WINDOW, [4.0, 5.0, 1.1, 1.1]);
         w.wall(2, 1, 10.0, 0.0, 6.0, FRAC_PI_2, 90.0, 1);
-        w.floats(SUB_HALF_HIP, [0.0, 7.2, 0.0, 50.0]);
+        w.floats(SUB_STACKED, [0.0, 7.2, 0.0, 50.0]);
         w.wall(4, 1, 0.0, 6.0, 6.0, -FRAC_PI_2, 90.0, 0);
         // An open dormer polyline.
         w.wall(5, 2, 3.0, 0.0, 0.0, -FRAC_PI_2, 53.0, 0);

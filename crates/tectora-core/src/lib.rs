@@ -5,6 +5,7 @@
 
 pub mod dad;
 pub mod diff;
+pub mod dormer;
 pub mod examples;
 pub mod geom;
 pub mod model;

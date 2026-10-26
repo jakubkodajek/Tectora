@@ -19,9 +19,13 @@ const TOL: f64 = 1e-9;
 /// to the slope; every oblique side is WS (DACAD cases C32–C36).
 const LEVEL: f64 = 1.0 - 1e-6;
 
-/// Generates every part of the project with its windows and chimneys applied.
+/// Generates every part of the project with its dormers, windows and
+/// chimneys applied.
 pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     let mut geos: Vec<RoofGeometry> = project.parts.iter().map(generate).collect();
+    for d in &project.dormers {
+        crate::dormer::apply_dormer(&mut geos, d);
+    }
     for w in &project.windows {
         apply_window(&mut geos, w);
     }
@@ -34,7 +38,7 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
 }
 
 /// Plan outline of a face.
-fn plan(face: &RoofFace) -> Vec<Point2> {
+pub(crate) fn plan(face: &RoofFace) -> Vec<Point2> {
     face.polygon
         .iter()
         .map(|p| Point2::new(p[0], p[1]))
@@ -42,7 +46,7 @@ fn plan(face: &RoofFace) -> Vec<Point2> {
 }
 
 /// Unit uphill direction in plan and `tan(pitch)` of a face's plane.
-fn slope(face: &RoofFace) -> (Point2, f64) {
+pub(crate) fn slope(face: &RoofFace) -> (Point2, f64) {
     let (mut nx, mut ny, mut nz) = (0.0, 0.0, 0.0);
     let poly = &face.polygon;
     for i in 0..poly.len() {
@@ -61,7 +65,7 @@ fn slope(face: &RoofFace) -> (Point2, f64) {
     (Point2::new(-nx / h, -ny / h), h / nz)
 }
 
-fn inside(poly: &[Point2], p: Point2) -> bool {
+pub(crate) fn inside(poly: &[Point2], p: Point2) -> bool {
     let mut c = false;
     let n = poly.len();
     for i in 0..n {
@@ -101,7 +105,7 @@ fn apply_window(geos: &mut [RoofGeometry], w: &RoofWindow) {
 }
 
 /// Sutherland–Hodgman: `subject` clipped by the convex CCW polygon `clip`.
-fn clip_polygon(subject: &[Point2], clip: &[Point2]) -> Vec<Point2> {
+pub(crate) fn clip_polygon(subject: &[Point2], clip: &[Point2]) -> Vec<Point2> {
     let mut out = subject.to_vec();
     let n = clip.len();
     for i in 0..n {
@@ -157,7 +161,7 @@ fn inside_spans(poly: &[Point2], a: Point2, b: Point2) -> Vec<(f64, f64)> {
         .collect()
 }
 
-fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
+pub(crate) fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     [
         a[0] + t * (b[0] - a[0]),
         a[1] + t * (b[1] - a[1]),
