@@ -38,6 +38,14 @@ class W:
     deg: float
     base: Def
     stacked: list[Def] = field(default_factory=list)
+    # Roof windows on this wall's plane: (x, y, width, height); x, y in plan.
+    windows: list[tuple[float, float, float, float]] = field(default_factory=list)
+
+
+@dataclass
+class Chimney:
+    height: float
+    corners: list[tuple[float, float]]  # plan polygon
 
 
 def rect(lx: float, ly: float, south: Def, east: Def, north: Def, west: Def,
@@ -50,7 +58,11 @@ def rect(lx: float, ly: float, south: Def, east: Def, north: Def, west: Def,
 G = Def(90.0)  # gable wall
 
 
-def cases() -> dict[str, tuple[str, list[W]]]:
+def square(x: float, y: float, a: float) -> list[tuple[float, float]]:
+    return [(x, y), (x + a, y), (x + a, y + a), (x, y + a)]
+
+
+def cases() -> dict[str, tuple]:
     p40, p35 = Def(40.0), Def(35.0)
     def notch(back: float, prio_back: int = 0, prio_sides: int = 0,
               bump: bool = False) -> list[W]:
@@ -60,6 +72,12 @@ def cases() -> dict[str, tuple[str, list[W]]]:
         d1, d2 = (270, 90) if bump else (90, 270)
         return [W(3, 0, side), W(1, d1, G), W(2, 0, b), W(1, d2, G),
                 W(3, 0, side), W(5, 90, Def(30)), W(8, 180, Def(30)), W(5, 270, Def(30))]
+
+    def hip_with(windows: dict[int, list] | None = None) -> list[W]:
+        ws = rect(12, 8, p35, p35, p35, p35)
+        for i, wins in (windows or {}).items():
+            ws[i].windows = wins
+        return ws
 
     return {
         "C01_gable": ("Sedlová 10×8, 40°, bez přesahu", rect(10, 8, p40, G, p40, G)),
@@ -105,6 +123,17 @@ def cases() -> dict[str, tuple[str, list[W]]]:
         "C22_bump20_front1": ("Totéž, čelo výstupku priorita 1", notch(20, prio_back=1, bump=True)),
         "C23_bump20_sides1": ("Totéž, jižní stěny vedle výstupku priorita 1",
                               notch(20, prio_sides=1, bump=True)),
+        # Openings in the C04 hip (12 x 8, 35°, ridge y = 4 from x = 4 to 8).
+        "C24_window": ("Valbová C04 + střešní okno 1,1×1,1 na jižní ploše",
+                       hip_with(windows={0: [(6.0, 1.5, 1.1, 1.1)]})),
+        "C25_window_tall": ("Valbová C04 + střešní okno 0,8×1,4 na jižní ploše",
+                            hip_with(windows={0: [(6.0, 1.5, 0.8, 1.4)]})),
+        "C26_window_small": ("Valbová C04 + malé okno 0,5×0,5 (pod limity norem)",
+                             hip_with(windows={0: [(6.0, 1.5, 0.5, 0.5)]})),
+        "C27_chimney": ("Valbová C04 + komín 0,6×0,6 v jižní ploše, výška 9 m",
+                        hip_with(), [Chimney(9.0, square(5.7, 1.7, 0.6))]),
+        "C28_chimney_ridge": ("Valbová C04 + komín 0,6×0,6 přes hřeben, výška 9 m",
+                              hip_with(), [Chimney(9.0, square(5.7, 3.7, 0.6))]),
     }
 
 
@@ -116,7 +145,8 @@ def _material(d: Def) -> int:
     return 0 if abs(d.pitch - 90.0) < 1e-9 else 1
 
 
-def encode(walls: list[W]) -> bytes:
+def encode(walls: list[W], chimneys: list[Chimney] | None = None) -> bytes:
+    chimneys = chimneys or []
     out = [b"DACAD\x1a",
            _rec(0x0001, b"DACAD V1.13\0"),
            _rec(0x0002, b"$Header: tectora dacad_testcases.py $\0"),
@@ -126,7 +156,7 @@ def encode(walls: list[W]) -> bytes:
            _rec(0x0004, bytes.fromhex("4111d42d")),
            _rec(0x0005, bytes.fromhex("7b247e2e")),
            _rec(0x0006, b"1.29H\0"),
-           _rec(0x0010, struct.pack("<3H", 1, len(walls), 0)),
+           _rec(0x0010, struct.pack("<3H", 1, len(walls), len(chimneys))),
            _rec(0x0011, struct.pack("<3H", 1, 0, 0))]
     x = y = 0.0
     for i, w in enumerate(walls, start=1):
@@ -134,14 +164,21 @@ def encode(walls: list[W]) -> bytes:
         b = w.base
         out.append(_rec(0x0012, struct.pack(
             "<HH4fHH3ffBB", i, 1, x, y, w.length, a, 0, _material(b),
-            b.eave_h, b.overhang, b.pitch, float(b.prio), len(w.stacked), 0)))
+            b.eave_h, b.overhang, b.pitch, float(b.prio), len(w.stacked),
+            len(w.windows))))
         for d in w.stacked:
             out.append(_rec(0x1012, struct.pack("<HH3f", 0, _material(d),
                                                 d.eave_h, d.overhang, d.pitch)))
+        for win in w.windows:
+            out.append(_rec(0x2012, struct.pack("<4f", *win)))
         x += w.length * math.cos(a)
         y += w.length * math.sin(a)
     if math.hypot(x, y) > 1e-6:
         raise ValueError(f"footprint not closed, ends at ({x:.3f}, {y:.3f})")
+    for i, c in enumerate(chimneys, start=1):
+        out.append(_rec(0x0013, struct.pack("<HfH", i, c.height, len(c.corners))))
+        for cx, cy in c.corners:
+            out.append(_rec(0x1013, struct.pack("<2f", cx, cy)))
     out.append(_rec(0xFFFF, b""))
     return b"".join(out)
 
@@ -150,8 +187,8 @@ def main(argv: list[str]) -> int:
     out = Path(argv[0] if argv else "dacad-testcases")
     out.mkdir(parents=True, exist_ok=True)
     index = []
-    for name, (desc, walls) in cases().items():
-        (out / f"{name}.DAD").write_bytes(encode(walls))
+    for name, (desc, walls, *rest) in cases().items():
+        (out / f"{name}.DAD").write_bytes(encode(walls, *rest))
         index.append(f"{name}.DAD  {desc}")
     (out / "README.txt").write_text("\n".join(index) + "\n", encoding="utf-8")
     print("\n".join(index))

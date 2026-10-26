@@ -116,6 +116,27 @@ What the cases settle:
   The horizontal intersection line is reported as type `c`. A 20° back wall
   in a notch (instead of a bump) makes DACAD itself stop with
   "E0002: Kein Durchstoßpunkt durch XY-Ebene für P1".
+* A line rising along a wall from a reflex (inside) footprint corner is K,
+  not a verge: the 1.462 m line on the notch back plane in C18–C20
+  (identified by the Rust engine against these fixtures).
+* Openings on the C04 hip (117.194 m² without openings, no norm group set):
+
+  | Case | Opening | Deducted face | Tile area | Lines added |
+  |---|---|---|---|---|
+  | C24 | window 1.1 × 1.1 | −1.210 | 115.984 | none |
+  | C25 | window 0.8 × 1.4 | −1.120 | 116.074 | none |
+  | C26 | window 0.5 × 0.5 | −0.250 | 116.944 | none |
+  | C27 | chimney 0.6 × 0.6 in the south plane | −0.439 | 116.755 | WV 0.6, WH 0.6, WS 2 × 0.732 |
+  | C28 | chimney 0.6 × 0.6 across the ridge | −0.220 × 2 | 116.755 | WV 2 × 0.6, WS 4 × 0.366; F 4.0 → 3.4 |
+
+  A window's width and height are taken in the roof plane (deduction
+  w · h); its stored x, y are plan coordinates. A chimney is a plan polygon:
+  its deduction is the plan area over cos(pitch) (0.36 / cos 35° = 0.439), WV
+  is its downhill side, WH the uphill side, WS the sloped sides, and the
+  ridge is cut where the chimney crosses it. V1 storage: window `0x2012`
+  (x, y, w, h) after its wall, counted in the wall record's last byte;
+  chimney `0x13` (u16 id, f32 height, u16 corner count) followed by `0x1013`
+  corners (x, y), counted in `0x10`.
 * Files saved by this DACAD build store the footprint clockwise (wall 2 of
   C08 runs from (12, 8) to (12, 0)); the V1 input ran counter-clockwise.
 

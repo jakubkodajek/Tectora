@@ -10,7 +10,7 @@
 # calculated plan is written next to each file as <name>.png.
 #
 # The UI is driven by fixed coordinates of the 1280x1024 layout: Ctrl+B runs
-# the calculation, then menu Data (17,36) -> Save (40,103).
+# the calculation (confirming the roof list if asked), then menu Data (17,36) -> Save (40,103).
 set -euo pipefail
 : "${DACAD_DIR:?set DACAD_DIR to the folder with DACAD DE.exe}"
 export DISPLAY="${DISPLAY:-:7}" WINEDEBUG=-all
@@ -25,7 +25,13 @@ for f in "$@"; do
   done
   sleep 2
   before=$(stat -c %Y "$f")
-  xdotool key ctrl+b; sleep 4
+  xdotool key ctrl+b; sleep 2
+  # With chimneys or dormers DACAD first asks which roofs to recalculate
+  # ("Neu berechnen", Slovak build "Prerátat"); OK keeps all of them.
+  if xdotool search --onlyvisible --name 'Prer|berechnen' >/dev/null 2>&1; then
+    xdotool key Return
+  fi
+  sleep 4
   xdotool key Escape
   xdotool mousemove 17 36 click 1; sleep 1; xdotool mousemove 40 103 click 1
   for _ in $(seq 1 10); do sleep 1; [ "$(stat -c %Y "$f")" != "$before" ] && break; done
