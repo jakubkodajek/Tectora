@@ -20,3 +20,10 @@ Design podle briefu-handoff.zip
 *.SOL
 *.sol
 DACAD*.exe
+
+# Rust
+target/
+
+# DACAD example roofs are COIN GmbH data (do NOT commit)
+*.DAD
+*.dad

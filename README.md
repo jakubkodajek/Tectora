@@ -53,3 +53,18 @@ tectora calculate --type gable --length 12 --width 8 --pitch 35
 - **Fáze 1** (aktuální): desktopová aplikace + CLI pro obdélníkový půdorys
 - **Fáze 2**: CLI režim pro AI — pošleš LLM (Claude/Gemini) technickou zprávu střechy, on vygeneruje JSON spec a Tectora to spočítá
 - **Fáze 3**: obecné polygonální půdorysy (L, T, U tvary) — straight skeleton algoritmus
+
+## Tectora 2 (Rust) — in progress
+
+A rewrite of the core in Rust lives in `crates/`:
+
+- `tectora-core` — roof project model (`.tectora` JSON), geometry, plan quantities,
+  importer for DACAD `.DAD` V1 files.
+- `tectora-cli` — the `tectora` binary (`import-dad`, `info`), JSON output for AI agents.
+
+```bash
+cargo test
+cargo run -p tectora-cli -- info path/to/TRAING01.DAD
+```
+
+DACAD example files are third-party data and are not committed to this repository.
