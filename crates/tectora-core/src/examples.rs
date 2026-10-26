@@ -32,6 +32,7 @@ fn single_part(name: &str, points: &[(f64, f64)], pitches: &[f64]) -> Project {
             overhang: OVERHANG,
             half_hip: None,
             direction_rad: None,
+            breaks: Vec::new(),
         })
         .collect();
     let mut part = RoofPart {
@@ -176,7 +177,11 @@ pub fn standard_roof(
     eave_height: f64,
     overhang: f64,
 ) -> RoofPart {
-    let width = if kind == StandardRoof::Pyramid { length } else { width };
+    let width = if kind == StandardRoof::Pyramid {
+        length
+    } else {
+        width
+    };
     let pts = [(0.0, 0.0), (length, 0.0), (length, width), (0.0, width)];
     let g = crate::model::GABLE_PITCH_DEG.ceil();
     let pitches = match kind {
@@ -198,6 +203,7 @@ pub fn standard_roof(
                 pitch_deg: (pitch_deg + 15.0).min(70.0),
             }),
             direction_rad: None,
+            breaks: Vec::new(),
         })
         .collect();
     RoofPart {
@@ -232,7 +238,10 @@ mod tests {
         for kind in [Gable, Shed, Hip, Pyramid, HalfHip] {
             let part = standard_roof(kind, 10.0, 8.0, 35.0, 3.0, 0.5);
             assert_eq!(part.edges.len(), 4);
-            assert!(roof::generate(&part).quantities().roof_area > 50.0, "{kind:?}");
+            assert!(
+                roof::generate(&part).quantities().roof_area > 50.0,
+                "{kind:?}"
+            );
         }
     }
 

@@ -8,12 +8,18 @@ export interface HalfHip {
   pitch_deg: number;
 }
 
+export interface PitchBreak {
+  height: number;
+  pitch_deg: number;
+}
+
 export interface EdgeDef {
   start: Point2;
   pitch_deg: number;
   eave_height: number;
   overhang: number;
   half_hip?: HalfHip | null;
+  breaks?: PitchBreak[];
   direction_rad?: number | null;
 }
 
@@ -69,12 +75,13 @@ export interface ExampleInfo {
   lines: [[number, number], [number, number]][];
 }
 
-export type LineKind = "eave" | "verge" | "ridge" | "hip" | "valley" | "abutment";
+export type LineKind = "eave" | "verge" | "ridge" | "hip" | "valley" | "pult" | "knick" | "abutment";
 
 export interface RoofLine {
   kind: LineKind;
   a: [number, number, number];
   b: [number, number, number];
+  side?: "left" | "right";
 }
 
 export interface RoofFace {
@@ -93,6 +100,8 @@ export interface RoofQuantities {
   valley_count: number;
   eave_length: number;
   verge_length: number;
+  pult_length: number;
+  knick_length: number;
   abutment_length: number;
   ridge_height: number;
 }

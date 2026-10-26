@@ -23,6 +23,9 @@ in the user's language, e.g. "Pitch of the street side set to 42° per drawing".
   - `overhang` – horizontal eave overhang beyond the wall, m.
   - `half_hip` (gable edges only) – Krüppelwalm / polovalba:
     `{ "height": m above ±0.00 where the hip starts, "pitch_deg": … }`.
+  - `breaks` – pitch breaks (Knick / zlom, e.g. a mansard roof):
+    `[{ "height": m above ±0.00, "pitch_deg": … }]`; from each height on the
+    plane continues at the new pitch.
 - Typical values: pitch 25–45° (tiles), 5–15° (sheet metal / shed roofs),
   eave height 3–7 m, overhang 0.3–0.8 m.
 - Roof types: gable roof = eaves on the long sides + gables on the short
@@ -34,8 +37,11 @@ in the user's language, e.g. "Pitch of the street side set to 42° per drawing".
 
 `calc` returns the roof area and line lengths keyed by DACAD codes:
 T eave (Traufe/okap), F ridge (First/hřeben), G hip (Grat/nároží),
-K valley (Kehle/úžlabí), O verge (Ortgang/štítová hrana),
-W wall abutment (Wandanschluss/napojení na zeď).
+K valley (Kehle/úžlabí), OL/OR verge left/right (Ortgang/štítová hrana),
+P top edge of a shed roof against its wall (Pult), c pitch break (Knick/zlom).
+The rules were checked against roofs calculated by DACAD itself: a step
+between eaves at different heights is a short verge, the lower edge of a
+Krüppelwalm plane counts as eave T, and hips run through a pitch break.
 
 ## Turning a technical drawing into a roof
 

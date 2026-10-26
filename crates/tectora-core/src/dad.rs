@@ -74,6 +74,7 @@ impl DadWall {
             overhang: self.overhang,
             half_hip: self.half_hip.clone(),
             direction_rad: (self.length <= 1e-6).then_some(self.angle_rad),
+            breaks: Vec::new(),
         }
     }
 }

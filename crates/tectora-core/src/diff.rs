@@ -20,7 +20,7 @@ pub enum ChangeKind {
 pub struct Change {
     pub kind: ChangeKind,
     /// `name`, `notes`, `job.<field>`, `part`, `edge`, `vertex`,
-    /// `pitch_deg`, `eave_height`, `overhang`, `half_hip`.
+    /// `pitch_deg`, `eave_height`, `overhang`, `half_hip`, `breaks`.
     pub field: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub part: Option<usize>,
@@ -32,7 +32,14 @@ pub struct Change {
 
 const EPS: f64 = 1e-6;
 
-fn change(kind: ChangeKind, field: &str, part: Option<usize>, edge: Option<usize>, before: Value, after: Value) -> Change {
+fn change(
+    kind: ChangeKind,
+    field: &str,
+    part: Option<usize>,
+    edge: Option<usize>,
+    before: Value,
+    after: Value,
+) -> Change {
     Change {
         kind,
         field: field.to_string(),
@@ -53,10 +60,21 @@ fn same_point(a: &EdgeDef, b: &EdgeDef) -> bool {
 
 fn edge_fields(pi: usize, ei: usize, a: &EdgeDef, b: &EdgeDef, out: &mut Vec<Change>) {
     let m = |field: &str, before: Value, after: Value| {
-        change(ChangeKind::Modified, field, Some(pi), Some(ei), before, after)
+        change(
+            ChangeKind::Modified,
+            field,
+            Some(pi),
+            Some(ei),
+            before,
+            after,
+        )
     };
     if !same_point(a, b) {
-        out.push(m("vertex", json!([a.start.x, a.start.y]), json!([b.start.x, b.start.y])));
+        out.push(m(
+            "vertex",
+            json!([a.start.x, a.start.y]),
+            json!([b.start.x, b.start.y]),
+        ));
     }
     if !same(a.pitch_deg, b.pitch_deg) {
         out.push(m("pitch_deg", json!(a.pitch_deg), json!(b.pitch_deg)));
@@ -70,11 +88,21 @@ fn edge_fields(pi: usize, ei: usize, a: &EdgeDef, b: &EdgeDef, out: &mut Vec<Cha
     if a.half_hip != b.half_hip {
         out.push(m("half_hip", json!(a.half_hip), json!(b.half_hip)));
     }
+    if a.breaks != b.breaks {
+        out.push(m("breaks", json!(a.breaks), json!(b.breaks)));
+    }
 }
 
 fn diff_part(pi: usize, a: &RoofPart, b: &RoofPart, out: &mut Vec<Change>) {
     if a.name != b.name {
-        out.push(change(ChangeKind::Modified, "part_name", Some(pi), None, json!(a.name), json!(b.name)));
+        out.push(change(
+            ChangeKind::Modified,
+            "part_name",
+            Some(pi),
+            None,
+            json!(a.name),
+            json!(b.name),
+        ));
     }
     if a.edges.len() == b.edges.len() {
         for (i, (ea, eb)) in a.edges.iter().zip(&b.edges).enumerate() {
@@ -86,7 +114,12 @@ fn diff_part(pi: usize, a: &RoofPart, b: &RoofPart, out: &mut Vec<Change>) {
     // were inserted or deleted.
     let mut used = vec![false; a.edges.len()];
     for (j, eb) in b.edges.iter().enumerate() {
-        match a.edges.iter().enumerate().position(|(i, ea)| !used[i] && same_point(ea, eb)) {
+        match a
+            .edges
+            .iter()
+            .enumerate()
+            .position(|(i, ea)| !used[i] && same_point(ea, eb))
+        {
             Some(i) => {
                 used[i] = true;
                 edge_fields(pi, j, &a.edges[i], eb, out);
@@ -142,10 +175,24 @@ pub fn diff(before: &Project, after: &Project) -> Vec<Change> {
         diff_part(i, &before.parts[i], &after.parts[i], &mut out);
     }
     for (i, p) in after.parts.iter().enumerate().skip(n) {
-        out.push(change(ChangeKind::Added, "part", Some(i), None, Value::Null, json!(p.name)));
+        out.push(change(
+            ChangeKind::Added,
+            "part",
+            Some(i),
+            None,
+            Value::Null,
+            json!(p.name),
+        ));
     }
     for (i, p) in before.parts.iter().enumerate().skip(n) {
-        out.push(change(ChangeKind::Removed, "part", Some(i), None, json!(p.name), Value::Null));
+        out.push(change(
+            ChangeKind::Removed,
+            "part",
+            Some(i),
+            None,
+            json!(p.name),
+            Value::Null,
+        ));
     }
     out
 }

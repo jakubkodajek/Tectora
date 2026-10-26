@@ -22,6 +22,8 @@
     ridge: 0xd6402f,
     hip: 0x2c9a5b,
     valley: 0x8a46c9,
+    pult: 0xc2417a,
+    knick: 0x1f9aa8,
     abutment: 0x8b5a3c,
   };
 

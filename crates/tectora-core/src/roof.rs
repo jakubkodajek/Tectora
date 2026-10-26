@@ -8,10 +8,17 @@
 //!
 //! The simulation starts on the roof outline (walls pushed out by their
 //! horizontal overhang) at the lowest eave; like DACAD, an edge's eave
-//! height applies at that outer line. An edge whose eave sits higher
-//! stays put like a wall until the wavefront reaches its eave height and
-//! only then starts to move ("activation"); lower roofs meeting that wall
-//! produce wall-abutment lines, as in DACAD.
+//! height applies at that outer line. Each edge moves through its planes
+//! (see [`crate::model::EdgeDef::planes`]): until the first one starts it stays put like a
+//! wall, and at every plane start all vertices on it bend. Checked against
+//! roofs calculated by DACAD itself (`tests/fixtures/dacad_cases`):
+//!
+//! * A plane meeting a still-waiting wall traces a verge (OL/OR), also where
+//!   eaves sit at different heights (case C10), and a horizontal top edge
+//!   against a wall is a Pult line P (shed, C07).
+//! * A clipped gable (Krüppelwalm) waits up to its half-hip height; the
+//!   lower edge of its plane counts as eave T (C08).
+//! * A pitch break leaves a Knick line c and the hips run through it (C14).
 //!
 //! The event loop is a straightforward O(n³) simulation (edge and split
 //! events), which is plenty for building footprints of a few dozen edges.
@@ -19,7 +26,7 @@
 use serde::Serialize;
 
 use crate::geom::Point2;
-use crate::model::{EdgeDef, RoofPart};
+use crate::model::RoofPart;
 
 const EPS: f64 = 1e-9;
 const POS_TOL: f64 = 1e-6;
@@ -34,8 +41,21 @@ pub enum LineKind {
     Ridge,
     Hip,
     Valley,
-    /// Roof meeting a higher wall (DACAD: Wandanschluss).
+    /// Horizontal top edge of a plane against a wall (DACAD: Pult).
+    Pult,
+    /// Pitch break between two planes of one wall (DACAD: Knick).
+    Knick,
+    /// Roof meeting the wall of another building (DACAD: Wandanschluss).
+    /// Not generated yet: within one part DACAD reports verges instead.
     Abutment,
+}
+
+/// Which end of its roof plane a verge lies on, seen from outside the eave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VergeSide {
+    Left,
+    Right,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -43,11 +63,32 @@ pub struct RoofLine {
     pub kind: LineKind,
     pub a: [f64; 3],
     pub b: [f64; 3],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub side: Option<VergeSide>,
 }
 
 impl RoofLine {
+    fn new(kind: LineKind, a: [f64; 3], b: [f64; 3]) -> Self {
+        Self {
+            kind,
+            a,
+            b,
+            side: None,
+        }
+    }
+
     pub fn length(&self) -> f64 {
         dist3(self.a, self.b)
+    }
+
+    /// DACAD's line code, with verges split into OL (left) and OR (right).
+    /// Which side DACAD calls left is not confirmed by an asymmetric case yet.
+    pub fn dacad_code(&self) -> &'static str {
+        match (self.kind, self.side) {
+            (LineKind::Verge, Some(VergeSide::Left)) => "OL",
+            (LineKind::Verge, Some(VergeSide::Right)) => "OR",
+            (kind, _) => kind.dacad_code(),
+        }
     }
 }
 
@@ -80,6 +121,8 @@ pub struct RoofQuantities {
     pub valley_count: usize,
     pub eave_length: f64,
     pub verge_length: f64,
+    pub pult_length: f64,
+    pub knick_length: f64,
     pub abutment_length: f64,
     pub ridge_height: f64,
 }
@@ -95,6 +138,8 @@ impl RoofQuantities {
         self.valley_count += q.valley_count;
         self.eave_length += q.eave_length;
         self.verge_length += q.verge_length;
+        self.pult_length += q.pult_length;
+        self.knick_length += q.knick_length;
         self.abutment_length += q.abutment_length;
         self.ridge_height = self.ridge_height.max(q.ridge_height);
     }
@@ -102,7 +147,8 @@ impl RoofQuantities {
 
 impl LineKind {
     /// DACAD's line code: T Traufe, F First, G Grat, K Kehle, O Ortgang,
-    /// W Wandanschluss. Verges and abutments are not split by side yet.
+    /// P Pult, c Knick, W Wandanschluss. See [`RoofLine::dacad_code`] for
+    /// the verge sides.
     pub fn dacad_code(self) -> &'static str {
         match self {
             LineKind::Eave => "T",
@@ -110,6 +156,8 @@ impl LineKind {
             LineKind::Hip => "G",
             LineKind::Valley => "K",
             LineKind::Verge => "O",
+            LineKind::Pult => "P",
+            LineKind::Knick => "c",
             LineKind::Abutment => "W",
         }
     }
@@ -126,6 +174,8 @@ impl RoofGeometry {
             match l.kind {
                 LineKind::Eave => q.eave_length += len,
                 LineKind::Verge => q.verge_length += len,
+                LineKind::Pult => q.pult_length += len,
+                LineKind::Knick => q.knick_length += len,
                 LineKind::Abutment => q.abutment_length += len,
                 LineKind::Ridge => q.ridge_length += len,
                 LineKind::Hip => {
@@ -143,7 +193,17 @@ impl RoofGeometry {
     }
 }
 
+/// One plane of an edge: from height `t` on, the edge line is `n · p = c + s * t`.
 #[derive(Debug, Clone, Copy)]
+struct Stage {
+    t: f64,
+    /// Horizontal inward travel per metre of height (`1 / tan(pitch)`).
+    s: f64,
+    c: f64,
+    pitch_deg: f64,
+}
+
+#[derive(Debug, Clone)]
 struct Line {
     /// Unit direction of the edge (CCW footprint, interior on the left).
     dir: Point2,
@@ -151,23 +211,48 @@ struct Line {
     n: Point2,
     /// `n · p` of the roof outline (wall line pushed out by the overhang).
     base: f64,
-    /// Horizontal inward travel per metre of height (`1 / tan(pitch)`).
-    s: f64,
-    /// Height at which the edge starts moving (its eave); infinite for gables.
-    t_act: f64,
+    /// The edge's planes by start height; empty for a plain gable.
+    stages: Vec<Stage>,
 }
 
 impl Line {
+    fn new(dir: Point2, n: Point2, base: f64, planes: &[(f64, f64)]) -> Self {
+        let mut stages: Vec<Stage> = Vec::with_capacity(planes.len());
+        let (mut c, mut s) = (base, 0.0);
+        for &(t, pitch_deg) in planes {
+            let s_new = 1.0 / pitch_deg.to_radians().tan();
+            // Continuous at t: c + s t = c' + s' t.
+            c += (s - s_new) * t;
+            s = s_new;
+            stages.push(Stage { t, s, c, pitch_deg });
+        }
+        Self {
+            dir,
+            n,
+            base,
+            stages,
+        }
+    }
+
+    /// Height at which the edge starts moving (its eave); infinite for gables.
+    fn t_act(&self) -> f64 {
+        self.stages.first().map_or(f64::INFINITY, |s| s.t)
+    }
+
     fn active(&self, t: f64) -> bool {
-        t >= self.t_act - EPS
+        t >= self.t_act() - EPS
+    }
+
+    /// Index of the plane valid at height `t`.
+    fn stage_at(&self, t: f64) -> Option<usize> {
+        self.stages.iter().rposition(|s| t >= s.t - EPS)
     }
 
     /// Speed and constant of the line valid from height `t` on, as `n · p = c + s * t`.
     fn params(&self, t: f64) -> (f64, f64) {
-        if self.active(t) {
-            (self.base - self.s * self.t_act, self.s)
-        } else {
-            (self.base, 0.0)
+        match self.stage_at(t) {
+            Some(k) => (self.stages[k].c, self.stages[k].s),
+            None => (self.base, 0.0),
         }
     }
 }
@@ -183,8 +268,9 @@ struct Vertex {
     prev: usize,
     next: usize,
     reflex: bool,
-    /// Traced while one neighbour was a not-yet-active (higher) eave wall.
-    abutment: bool,
+    /// Whether the left / right edge was still a wall (not yet a plane)
+    /// when this vertex started.
+    waiting: [bool; 2],
     alive: bool,
 }
 
@@ -204,7 +290,7 @@ struct Arc {
     left: usize,
     right: usize,
     reflex: bool,
-    abutment: bool,
+    waiting: [bool; 2],
     /// False for face-boundary-only segments of collapsed loops.
     line: bool,
 }
@@ -233,12 +319,13 @@ fn solve2(n1: Point2, s1: f64, n2: Point2, s2: f64) -> Option<Point2> {
     ))
 }
 
-fn speed(e: &EdgeDef) -> f64 {
-    if e.is_gable() {
-        0.0
-    } else {
-        1.0 / e.pitch_deg.to_radians().tan()
-    }
+/// The lower edge of plane `stage` of edge `edge`, from node `a` to `b`.
+#[derive(Debug, Clone, Copy)]
+struct Bottom {
+    a: usize,
+    b: usize,
+    edge: usize,
+    stage: usize,
 }
 
 struct Sim {
@@ -246,11 +333,12 @@ struct Sim {
     verts: Vec<Vertex>,
     nodes: Vec<[f64; 3]>,
     arcs: Vec<Arc>,
-    /// Eave lines as (node, node, edge), recorded when an edge activates.
-    eaves: Vec<(usize, usize, usize)>,
-    activated: Vec<bool>,
-    /// Ridges from collapsed flat loops, as node pairs.
-    ridges: Vec<(usize, usize)>,
+    /// Plane bottoms (eaves and pitch breaks), recorded when an edge bends.
+    bottoms: Vec<Bottom>,
+    /// Number of stages each edge has entered.
+    applied: Vec<usize>,
+    /// Lines from collapsed flat loops (ridges or Pult lines), as node pairs.
+    ridges: Vec<(usize, usize, LineKind)>,
 }
 
 impl Sim {
@@ -260,7 +348,7 @@ impl Sim {
     }
 
     fn velocity(&self, left: usize, right: usize, t: f64) -> Point2 {
-        let (l, r) = (self.lines[left], self.lines[right]);
+        let (l, r) = (&self.lines[left], &self.lines[right]);
         let (sl, sr) = (l.params(t).1, r.params(t).1);
         match solve2(l.n, sl, r.n, sr) {
             Some(v) => v,
@@ -274,8 +362,7 @@ impl Sim {
     fn new_vertex(&mut self, p: Point2, t: f64, node: usize, left: usize, right: usize) -> usize {
         let reflex = cross(self.lines[left].dir, self.lines[right].dir) < -EPS;
         let vel = self.velocity(left, right, t);
-        let waiting = |l: &Line| !l.active(t) && l.t_act.is_finite();
-        let abutment = waiting(&self.lines[left]) || waiting(&self.lines[right]);
+        let waiting = [!self.lines[left].active(t), !self.lines[right].active(t)];
         self.verts.push(Vertex {
             origin: p,
             t0: t,
@@ -286,7 +373,7 @@ impl Sim {
             prev: usize::MAX,
             next: usize::MAX,
             reflex,
-            abutment,
+            waiting,
             alive: true,
         });
         self.verts.len() - 1
@@ -301,7 +388,7 @@ impl Sim {
             left: vx.left,
             right: vx.right,
             reflex: vx.reflex,
-            abutment: vx.abutment,
+            waiting: vx.waiting,
             line: true,
         });
         self.verts[v].alive = false;
@@ -365,7 +452,7 @@ impl Sim {
                 left: e,
                 right: e,
                 reflex: false,
-                abutment: false,
+                waiting: [false; 2],
                 line: false,
             });
         }
@@ -381,7 +468,21 @@ impl Sim {
             }
         }
         if best > POS_TOL {
-            self.ridges.push((nodes[i0], nodes[i1]));
+            // Two planes meeting make a ridge; a single plane ending against
+            // walls makes a Pult line (DACAD case C07).
+            let mut normals: Vec<Point2> = Vec::new();
+            for &v in &members {
+                let l = &self.lines[self.verts[v].right];
+                if l.active(t) && !normals.iter().any(|n| dot(*n, l.n) > 1.0 - 1e-9) {
+                    normals.push(l.n);
+                }
+            }
+            let kind = if normals.len() <= 1 {
+                LineKind::Pult
+            } else {
+                LineKind::Ridge
+            };
+            self.ridges.push((nodes[i0], nodes[i1], kind));
         }
     }
 
@@ -411,8 +512,8 @@ impl Sim {
         if e == vx.left || e == vx.right || ea == v || self.verts[ea].next == v {
             return None;
         }
-        let line = self.lines[e];
-        let (c, s) = line.params(now);
+        let line = &self.lines[e];
+        let (c, s) = self.lines[e].params(now);
         // n·V(t) = c + s t  →  n·(O + vel (t - t0)) = c + s t
         let k = dot(line.n, vx.vel) - s;
         if k > -EPS {
@@ -466,11 +567,11 @@ impl Sim {
                 }
             }
             for (i, l) in self.lines.iter().enumerate() {
-                if l.t_act.is_finite() && !self.activated[i] && self.edge_alive(i) {
-                    let t = l.t_act;
-                    if better(&best, t, 0) {
-                        best = Some((t, Event::Activate(i)));
-                    }
+                if let Some(st) = l.stages.get(self.applied[i])
+                    && self.edge_alive(i)
+                    && better(&best, st.t, 0)
+                {
+                    best = Some((st.t, Event::Bend(i)));
                 }
             }
             let Some((t, event)) = best else {
@@ -497,7 +598,7 @@ impl Sim {
             match event {
                 Event::Edge(a) => self.apply_edge(a, t),
                 Event::Split(v, ea, p) => self.apply_split(v, ea, p, t),
-                Event::Activate(i) => self.apply_activate(i, t),
+                Event::Bend(i) => self.apply_bend(i, t),
             }
         }
     }
@@ -506,10 +607,11 @@ impl Sim {
         self.verts.iter().any(|v| v.alive && v.right == e)
     }
 
-    /// Edge `e` reaches its eave height and starts to move: every vertex on
-    /// it bends here, and its eave line is recorded.
-    fn apply_activate(&mut self, e: usize, t: f64) {
-        self.activated[e] = true;
+    /// Edge `e` reaches the start of its next plane: every vertex on it
+    /// bends here, and the plane's lower edge is recorded.
+    fn apply_bend(&mut self, e: usize, t: f64) {
+        let stage = self.applied[e];
+        self.applied[e] += 1;
         let on_edge: Vec<usize> = (0..self.verts.len())
             .filter(|&v| {
                 self.verts[v].alive && (self.verts[v].left == e || self.verts[v].right == e)
@@ -554,7 +656,12 @@ impl Sim {
             let w = replaced[v];
             if self.verts[w].right == e {
                 let b = self.verts[w].next;
-                self.eaves.push((self.verts[w].node, self.verts[b].node, e));
+                self.bottoms.push(Bottom {
+                    a: self.verts[w].node,
+                    b: self.verts[b].node,
+                    edge: e,
+                    stage,
+                });
             }
         }
     }
@@ -644,7 +751,7 @@ impl Sim {
 }
 
 /// Whether an event at `t` with priority `rank` beats the current best.
-/// Simultaneous events run activations first, then splits, then edges.
+/// Simultaneous events run bends first, then splits, then edges.
 fn better(best: &Option<(f64, Event)>, t: f64, rank: u8) -> bool {
     match best {
         None => true,
@@ -656,13 +763,13 @@ fn better(best: &Option<(f64, Event)>, t: f64, rank: u8) -> bool {
 enum Event {
     Edge(usize),
     Split(usize, usize, Point2),
-    Activate(usize),
+    Bend(usize),
 }
 
 impl Event {
     fn rank(&self) -> u8 {
         match self {
-            Event::Activate(_) => 0,
+            Event::Bend(_) => 0,
             Event::Split(..) => 1,
             Event::Edge(_) => 2,
         }
@@ -689,40 +796,32 @@ pub fn generate(part: &RoofPart) -> RoofGeometry {
             let nrm = Point2::new(-dir.y, dir.x);
             let e = &edges[i];
             // DACAD's eave height is measured at the outer (overhang) line.
-            let t_act = if e.is_gable() {
-                f64::INFINITY
-            } else {
-                e.eave_height
-            };
-            Line {
-                dir,
-                n: nrm,
-                base: dot(nrm, a) - e.overhang,
-                s: speed(e),
-                t_act,
-            }
+            Line::new(dir, nrm, dot(nrm, a) - e.overhang, &e.planes())
         })
         .collect();
-    let start = lines.iter().map(|l| l.t_act).fold(f64::INFINITY, f64::min);
+    let start = lines.iter().map(Line::t_act).fold(f64::INFINITY, f64::min);
     if !start.is_finite() {
         return RoofGeometry::default(); // only gables: no roof planes
     }
 
-    let activated = lines.iter().map(|l| l.active(start)).collect();
+    let applied = lines
+        .iter()
+        .map(|l| l.stages.iter().filter(|s| s.t <= start + EPS).count())
+        .collect();
     let mut sim = Sim {
         lines,
         verts: Vec::new(),
         nodes: Vec::new(),
         arcs: Vec::new(),
-        eaves: Vec::new(),
-        activated,
+        bottoms: Vec::new(),
+        applied,
         ridges: Vec::new(),
     };
     // Initial vertex i sits between edge i-1 (left) and edge i (right),
     // on the roof outline.
     for i in 0..n {
         let (l, r) = ((i + n - 1) % n, i);
-        let (ll, rl) = (sim.lines[l], sim.lines[r]);
+        let (ll, rl) = (&sim.lines[l], &sim.lines[r]);
         let p = solve2(ll.n, ll.base, rl.n, rl.base).unwrap_or(pts[i]);
         let node = sim.add_node(p, start);
         sim.new_vertex(p, start, node, l, r);
@@ -732,7 +831,12 @@ pub fn generate(part: &RoofPart) -> RoofGeometry {
         sim.verts[i].next = (i + 1) % n;
         if sim.lines[i].active(start) {
             let (a, b) = (sim.verts[i].node, sim.verts[(i + 1) % n].node);
-            sim.eaves.push((a, b, i));
+            sim.bottoms.push(Bottom {
+                a,
+                b,
+                edge: i,
+                stage: 0,
+            });
         }
     }
     let initial: Vec<usize> = (0..n).map(|i| sim.verts[i].node).collect();
@@ -779,40 +883,50 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
         })
         .filter(|a| a.a != a.b)
         .collect();
-    let eaves: Vec<(usize, usize, usize)> = sim
-        .eaves
+    let bottoms: Vec<Bottom> = sim
+        .bottoms
         .iter()
-        .map(|&(a, b, e)| (canon[a], canon[b], e))
-        .filter(|&(a, b, _)| a != b)
+        .map(|b| Bottom {
+            a: canon[b.a],
+            b: canon[b.b],
+            ..*b
+        })
+        .filter(|b| b.a != b.b)
         .collect();
 
     let mut geo = RoofGeometry::default();
-    for &(a, b, _) in &eaves {
-        geo.lines.push(RoofLine {
-            kind: LineKind::Eave,
-            a: sim.nodes[a],
-            b: sim.nodes[b],
-        });
+    for b in &bottoms {
+        // A plane starting where the edge was a wall begins at an eave
+        // (also the Krüppel plane of a clipped gable, DACAD case C08);
+        // a later plane of the same wall begins at a pitch break.
+        let kind = if b.stage == 0 {
+            LineKind::Eave
+        } else {
+            LineKind::Knick
+        };
+        geo.lines
+            .push(RoofLine::new(kind, sim.nodes[b.a], sim.nodes[b.b]));
     }
     // Each arc borders two faces; emit it once with its kind.
     let mut seen: Vec<(usize, usize)> = Vec::new();
-    for &(a, b) in &sim.ridges {
+    for &(a, b, kind) in &sim.ridges {
         let (a, b) = (canon[a], canon[b]);
         if a != b {
             seen.push((a.min(b), a.max(b)));
-            geo.lines.push(RoofLine {
-                kind: LineKind::Ridge,
-                a: sim.nodes[a],
-                b: sim.nodes[b],
-            });
+            geo.lines
+                .push(RoofLine::new(kind, sim.nodes[a], sim.nodes[b]));
         }
     }
     let coplanar = |a: usize, b: usize| {
-        let (la, lb) = (sim.lines[a], sim.lines[b]);
+        let (la, lb) = (&sim.lines[a], &sim.lines[b]);
         dot(la.n, lb.n) > 1.0 - 1e-9
             && (la.base - lb.base).abs() < 1e-6
-            && (la.s - lb.s).abs() < 1e-9
-            && (la.t_act - lb.t_act).abs() < 1e-9
+            && la.stages.len() == lb.stages.len()
+            && la
+                .stages
+                .iter()
+                .zip(&lb.stages)
+                .all(|(x, y)| (x.t - y.t).abs() < 1e-9 && (x.s - y.s).abs() < 1e-9)
     };
     for arc in arcs.iter().filter(|a| a.line && !coplanar(a.left, a.right)) {
         let key = (arc.a.min(arc.b), arc.a.max(arc.b));
@@ -821,34 +935,55 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
         }
         seen.push(key);
         let (pa, pb) = (sim.nodes[arc.a], sim.nodes[arc.b]);
-        let kind = if edges[arc.left].is_gable() || edges[arc.right].is_gable() {
-            LineKind::Verge
-        } else if arc.abutment {
-            LineKind::Abutment
-        } else if (pa[2] - pb[2]).abs() < 1e-6 {
-            LineKind::Ridge
-        } else if arc.reflex {
-            LineKind::Valley
-        } else {
-            LineKind::Hip
+        let flat = (pa[2] - pb[2]).abs() < 1e-6;
+        let (kind, side) = match arc.waiting {
+            // A corner between two walls carries no roof.
+            [true, true] => continue,
+            // A plane sliding along a wall: verge, or a Pult line on top.
+            // The plane's start (left edge waiting) is on the left when
+            // facing the roof from outside its eave.
+            [true, false] if flat => (LineKind::Pult, None),
+            [false, true] if flat => (LineKind::Pult, None),
+            [true, false] => (LineKind::Verge, Some(VergeSide::Left)),
+            [false, true] => (LineKind::Verge, Some(VergeSide::Right)),
+            [false, false] if flat => (LineKind::Ridge, None),
+            [false, false] if arc.reflex => (LineKind::Valley, None),
+            [false, false] => (LineKind::Hip, None),
         };
-        geo.lines.push(RoofLine { kind, a: pa, b: pb });
+        geo.lines.push(RoofLine {
+            kind,
+            a: pa,
+            b: pb,
+            side,
+        });
     }
 
-    for &(start, end, i) in &eaves {
-        let t_act = sim.lines[i].t_act;
-        // Arcs traced while the edge was still a wall are not part of its plane.
-        let segs: Vec<(usize, usize)> = arcs
+    // One face per plane: the arcs of its edge between its start height and
+    // the next plane's, closed by the next plane's bottom (a pitch break).
+    for b in &bottoms {
+        let line = &sim.lines[b.edge];
+        let lo = line.stages[b.stage].t;
+        let hi = line.stages.get(b.stage + 1).map_or(f64::INFINITY, |s| s.t);
+        let mut segs: Vec<(usize, usize)> = arcs
             .iter()
-            .filter(|a| (a.left == i || a.right == i) && sim.nodes[a.a][2] >= t_act - 1e-7)
+            .filter(|a| {
+                let z = sim.nodes[a.a][2];
+                (a.left == b.edge || a.right == b.edge) && z >= lo - 1e-7 && z < hi - 1e-7
+            })
             .map(|a| (a.a, a.b))
             .collect();
-        let ring = trace_ring(start, end, segs);
+        segs.extend(
+            bottoms
+                .iter()
+                .filter(|u| u.edge == b.edge && u.stage == b.stage + 1)
+                .map(|u| (u.a, u.b)),
+        );
+        let ring = trace_ring(b.a, b.b, segs);
         let polygon: Vec<[f64; 3]> = ring.iter().map(|&k| sim.nodes[k]).collect();
         let area = area3(&polygon);
         geo.faces.push(RoofFace {
-            edge: i,
-            pitch_deg: edges[i].pitch_deg,
+            edge: b.edge,
+            pitch_deg: line.stages[b.stage].pitch_deg,
             polygon,
             area,
         });
@@ -858,12 +993,20 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
         if !e.is_gable() {
             continue;
         }
+        // The vertical wall below the gable's Krüppel plane, if any.
+        let top = sim.lines[i].t_act();
         let (start, end) = (canon[initial[i]], canon[initial[(i + 1) % n]]);
-        let segs: Vec<(usize, usize)> = arcs
+        let mut segs: Vec<(usize, usize)> = arcs
             .iter()
-            .filter(|a| a.left == i || a.right == i)
+            .filter(|a| (a.left == i || a.right == i) && sim.nodes[a.a][2] < top - 1e-7)
             .map(|a| (a.a, a.b))
             .collect();
+        segs.extend(
+            bottoms
+                .iter()
+                .filter(|u| u.edge == i && u.stage == 0)
+                .map(|u| (u.a, u.b)),
+        );
         let ring = trace_ring(start, end, segs);
         if ring.len() >= 3 {
             geo.gables
@@ -889,6 +1032,7 @@ fn area3(poly: &[[f64; 3]]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::EdgeDef;
     use approx::assert_relative_eq;
 
     fn part(points: &[(f64, f64)], pitch: &[f64]) -> RoofPart {
@@ -902,6 +1046,7 @@ mod tests {
                 overhang: 0.0,
                 half_hip: None,
                 direction_rad: None,
+                breaks: Vec::new(),
             })
             .collect();
         let mut part = RoofPart {

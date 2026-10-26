@@ -114,6 +114,10 @@ pub struct EdgeDef {
     /// Clipped gable (Krüppelwalm) on a gable edge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub half_hip: Option<HalfHip>,
+    /// Pitch breaks (DACAD: Knick) above the eave, e.g. a mansard roof:
+    /// from each break's height on, the plane continues at its pitch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub breaks: Vec<PitchBreak>,
     /// Direction of a zero-length edge (radians). DACAD uses such marker
     /// edges at steps between collinear walls to say how the roof turns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -124,6 +128,42 @@ impl EdgeDef {
     pub fn is_gable(&self) -> bool {
         self.pitch_deg >= GABLE_PITCH_DEG
     }
+
+    /// The sloped planes of this wall from bottom to top, as
+    /// `(start height, pitch)`, like DACAD's stacked roof definitions.
+    /// A gable has none unless it is clipped (Krüppelwalm): then its plane
+    /// starts at the half-hip height. Breaks at or below the previous
+    /// plane's start, and vertical breaks, are ignored.
+    pub fn planes(&self) -> Vec<(f64, f64)> {
+        let mut out: Vec<(f64, f64)> = Vec::new();
+        if !self.is_gable() {
+            out.push((self.eave_height, self.pitch_deg));
+        } else if let Some(h) = &self.half_hip
+            && h.pitch_deg < GABLE_PITCH_DEG
+        {
+            out.push((h.height, h.pitch_deg));
+        }
+        if out.is_empty() {
+            return out;
+        }
+        let mut breaks = self.breaks.clone();
+        breaks.sort_by(|a, b| a.height.total_cmp(&b.height));
+        for b in breaks {
+            let last = out.last().expect("not empty").0;
+            if b.height > last + 1e-6 && b.pitch_deg > 0.0 && b.pitch_deg < GABLE_PITCH_DEG {
+                out.push((b.height, b.pitch_deg));
+            }
+        }
+        out
+    }
+}
+
+/// A change of pitch at a height above the eave (DACAD: Knick).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PitchBreak {
+    /// Height of the break line, m above ground.
+    pub height: f64,
+    pub pitch_deg: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

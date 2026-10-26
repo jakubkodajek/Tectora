@@ -12,4 +12,6 @@ pub mod quantities;
 pub mod roof;
 pub mod store;
 
-pub use model::{Chimney, Dormer, EdgeDef, HalfHip, JobInfo, JobStatus, Project, RoofPart};
+pub use model::{
+    Chimney, Dormer, EdgeDef, HalfHip, JobInfo, JobStatus, PitchBreak, Project, RoofPart,
+};

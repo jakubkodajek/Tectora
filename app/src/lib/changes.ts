@@ -29,6 +29,8 @@ export function describeChange(c: Change, multiPart: boolean): string {
         if (!b) return t("chg.halfHipOff", { n });
         return t("chg.halfHip", { n, h: len(b.height), p: deg(b.pitch_deg) });
       }
+      case "breaks":
+        return t("chg.breaks", { n });
       case "vertex": {
         const [x, y] = c.after as [number, number];
         return t("chg.vertex", { n, x: num(x), y: num(y) });

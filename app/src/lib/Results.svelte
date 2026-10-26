@@ -1,6 +1,6 @@
 <script lang="ts">
   // Results in DACAD's terms: roof areas per part and line lengths by
-  // DACAD line code (T eave, F ridge, G hip, K valley, O verge, W abutment).
+  // DACAD line code (T eave, F ridge, G hip, K valley, O verge, P shed top edge, c pitch break).
   import { m, m2, num } from "./format";
   import { t } from "./i18n.svelte";
   import type { CalcResult } from "./types";
@@ -16,8 +16,10 @@
           { code: "G", color: "var(--line-hip)", label: t("res.hipShort"), value: totals.hip_length, n: totals.hip_count },
           { code: "K", color: "var(--line-valley)", label: t("res.valleyShort"), value: totals.valley_length, n: totals.valley_count },
           { code: "O", color: "var(--line-verge)", label: t("res.verge"), value: totals.verge_length, n: null },
+          { code: "P", color: "var(--line-pult)", label: t("res.pult"), value: totals.pult_length, n: null },
+          { code: "c", color: "var(--line-knick)", label: t("res.knick"), value: totals.knick_length, n: null },
           { code: "W", color: "var(--line-abutment)", label: t("res.abutment"), value: totals.abutment_length, n: null },
-        ]
+        ].filter((r) => r.value >= 0.005 || !["P", "c", "W"].includes(r.code))
       : [],
   );
 </script>

@@ -168,6 +168,8 @@
     ridge: "var(--line-ridge)",
     hip: "var(--line-hip)",
     valley: "var(--line-valley)",
+    pult: "var(--line-pult)",
+    knick: "var(--line-knick)",
     abutment: "var(--line-abutment)",
   };
 

@@ -63,7 +63,7 @@ pub fn dacad_line_totals(project: &Project) -> std::collections::BTreeMap<String
     let mut totals: std::collections::BTreeMap<String, f64> = Default::default();
     for part in &project.parts {
         for line in crate::roof::generate(part).lines {
-            *totals.entry(line.kind.dacad_code().to_string()).or_default() += line.length();
+            *totals.entry(line.dacad_code().to_string()).or_default() += line.length();
         }
     }
     for v in totals.values_mut() {

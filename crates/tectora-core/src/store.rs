@@ -296,7 +296,10 @@ impl Store {
                 ts_ms: now_ms(),
                 actor: actor.to_string(),
                 summary: summary.to_string(),
-                changes: before.as_ref().map(|b| diff(b, project)).unwrap_or_default(),
+                changes: before
+                    .as_ref()
+                    .map(|b| diff(b, project))
+                    .unwrap_or_default(),
                 before,
             },
         )?;
@@ -426,27 +429,38 @@ mod tests {
     fn records_activity_and_reverts() {
         let store = temp_store("activity");
         let a = examples::find("hip").unwrap().project();
-        let id = store.save_as(None, &a, "claude", "Created hip roof").unwrap();
+        let id = store
+            .save_as(None, &a, "claude", "Created hip roof")
+            .unwrap();
         let mut b = a.clone();
         b.parts[0].edges[0].pitch_deg = 45.0;
-        store.save_as(Some(id.clone()), &b, "claude", "Steeper front").unwrap();
+        store
+            .save_as(Some(id.clone()), &b, "claude", "Steeper front")
+            .unwrap();
 
         let log = store.activity(&id);
         assert_eq!(log.len(), 2);
         assert!(log[0].before.is_none());
         assert_eq!(log[1].before.as_ref(), Some(&a));
-        assert_eq!(store.summarize(&id).unwrap().last_activity.unwrap().summary, "Steeper front");
+        assert_eq!(
+            store.summarize(&id).unwrap().last_activity.unwrap().summary,
+            "Steeper front"
+        );
 
         assert_eq!(store.revert_last(&id, USER_ACTOR).unwrap(), a);
         assert_eq!(store.load(&id).unwrap(), a);
 
         // Two agent steps undone together.
-        store.save_as(Some(id.clone()), &b, "claude", "Step 1").unwrap();
+        store
+            .save_as(Some(id.clone()), &b, "claude", "Step 1")
+            .unwrap();
         let first = store.activity(&id).last().unwrap().ts_ms;
         let mut c = b.clone();
         c.parts[0].edges[1].overhang = 0.9;
         std::thread::sleep(std::time::Duration::from_millis(2));
-        store.save_as(Some(id.clone()), &c, "claude", "Step 2").unwrap();
+        store
+            .save_as(Some(id.clone()), &c, "claude", "Step 2")
+            .unwrap();
         assert_eq!(store.revert_to(&id, first, USER_ACTOR).unwrap(), a);
         assert_eq!(store.load(&id).unwrap(), a);
         store.delete(&id).unwrap();

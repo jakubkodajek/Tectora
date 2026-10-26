@@ -1,0 +1,150 @@
+{
+  "source": "C08_half_hip.DAD",
+  "format": "V2",
+  "input": {
+    "walls": [
+      {
+        "start": [
+          12.0,
+          0.0
+        ],
+        "end": [
+          0.0,
+          0.0
+        ],
+        "definitions": [
+          {
+            "pitch_deg": 45.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1
+          }
+        ]
+      },
+      {
+        "start": [
+          12.0,
+          8.0
+        ],
+        "end": [
+          12.0,
+          0.0
+        ],
+        "definitions": [
+          {
+            "pitch_deg": 90.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 0,
+            "roof_no": 1
+          },
+          {
+            "pitch_deg": 60.0,
+            "eave_height_m": 5.5,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1
+          }
+        ]
+      },
+      {
+        "start": [
+          0.0,
+          8.0
+        ],
+        "end": [
+          12.0,
+          8.0
+        ],
+        "definitions": [
+          {
+            "pitch_deg": 45.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1
+          }
+        ]
+      },
+      {
+        "start": [
+          0.0,
+          0.0
+        ],
+        "end": [
+          0.0,
+          8.0
+        ],
+        "definitions": [
+          {
+            "pitch_deg": 90.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 0,
+            "roof_no": 1
+          },
+          {
+            "pitch_deg": 60.0,
+            "eave_height_m": 5.5,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1
+          }
+        ]
+      }
+    ]
+  },
+  "traits": {
+    "roof_numbers": [
+      1
+    ],
+    "stacked_definitions": true,
+    "pitches": [
+      45.0,
+      60.0,
+      90.0
+    ],
+    "eave_heights": [
+      3.0,
+      5.5
+    ],
+    "overhangs": [
+      0.0
+    ]
+  },
+  "dacad_results": {
+    "lines_by_type": {
+      "F": 10.268,
+      "G": 9.1652,
+      "OL": 7.0711,
+      "OR": 7.0711,
+      "T": 30.0
+    },
+    "line_groups": {
+      "91 Predné napojenie -": 0.0,
+      "94 Krajné šikmo -": 0.0,
+      "5 Krajné pravé -": 7.0711,
+      "4 Krajné lavé -": 7.0711,
+      "7 Pult -": 0.0,
+      "3 Úžlabie -": 0.0,
+      "2 Nárožie -": 9.1652,
+      "1 Hreben -": 10.268,
+      "6 Odkvap -": 30.0,
+      "Schlucht -": 0.0,
+      "Zlom -": 0.0,
+      "92 Bocné napojenie -": 0.0,
+      "93 Zadné napojenie -": 0.0
+    },
+    "area_groups": {
+      "Stena : 1": 147.4984,
+      "Solarpanel": 0.0,
+      "Bridlica": 0.0,
+      "Kamen": 0.0,
+      "Plech - ": 0.0,
+      "Škridla - ": 137.2865
+    },
+    "line_count": 35,
+    "face_count": 8
+  }
+}

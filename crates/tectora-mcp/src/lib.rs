@@ -16,7 +16,7 @@ use tectora_core::geom::Point2;
 use tectora_core::model::GABLE_PITCH_DEG;
 use tectora_core::quantities::{dacad_line_totals, roof_totals};
 use tectora_core::store::{LiveStatus, Store, now_ms};
-use tectora_core::{EdgeDef, HalfHip, JobStatus, Project, RoofPart, dad};
+use tectora_core::{EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, dad};
 
 pub const GUIDE: &str = include_str!("guide.md");
 const SUPPORTED_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -81,6 +81,9 @@ fn describe_part(part: &RoofPart) -> Value {
             if let Some(h) = &e.half_hip {
                 v["half_hip"] = json!(h);
             }
+            if !e.breaks.is_empty() {
+                v["breaks"] = json!(e.breaks);
+            }
             v
         })
         .collect();
@@ -136,12 +139,30 @@ fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
         }
         None => {}
     }
+    match v.get("breaks") {
+        Some(Value::Null) => edge.breaks.clear(),
+        Some(b) => {
+            let breaks: Vec<PitchBreak> =
+                serde_json::from_value(b.clone()).map_err(|e| format!("breaks: {e}"))?;
+            if let Some(bad) = breaks
+                .iter()
+                .find(|b| !(0.0 < b.pitch_deg && b.pitch_deg < 90.0))
+            {
+                return Err(format!(
+                    "breaks: pitch_deg {} must be between 0 and 90",
+                    bad.pitch_deg
+                ));
+            }
+            edge.breaks = breaks;
+        }
+        None => {}
+    }
     Ok(())
 }
 
 fn parse_points(v: &Value) -> Result<Vec<Point2>, String> {
-    let pts: Vec<[f64; 2]> =
-        serde_json::from_value(v.clone()).map_err(|_| "`points` must be [[x, y], …]".to_string())?;
+    let pts: Vec<[f64; 2]> = serde_json::from_value(v.clone())
+        .map_err(|_| "`points` must be [[x, y], …]".to_string())?;
     if pts.len() < 3 {
         return Err("a footprint needs at least 3 points".into());
     }
@@ -159,8 +180,13 @@ fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
         overhang: arg_f64(&defaults, "overhang")?.unwrap_or(0.5),
         half_hip: None,
         direction_rad: None,
+        breaks: Vec::new(),
     };
-    let specs = v.get("edges").and_then(Value::as_array).cloned().unwrap_or_default();
+    let specs = v
+        .get("edges")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     if !specs.is_empty() && specs.len() != points.len() {
         return Err(format!(
             "`edges` has {} entries but there are {} points (one edge per point)",
@@ -182,7 +208,13 @@ fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
             .get("name")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .unwrap_or_else(|| if index == 0 { "Main".into() } else { format!("Part {}", index + 1) }),
+            .unwrap_or_else(|| {
+                if index == 0 {
+                    "Main".into()
+                } else {
+                    format!("Part {}", index + 1)
+                }
+            }),
         edges,
     };
     part.normalize_ccw();
@@ -201,7 +233,10 @@ fn edge_indices(v: &Value, n: usize) -> Result<Vec<usize>, String> {
             .map_err(|_| "`indices` must be a list of edge numbers".to_string())?
     };
     if let Some(bad) = list.iter().find(|&&i| i >= n) {
-        return Err(format!("edge {bad} does not exist (the part has {n} edges, 0..{})", n - 1));
+        return Err(format!(
+            "edge {bad} does not exist (the part has {n} edges, 0..{})",
+            n - 1
+        ));
     }
     Ok(list)
 }
@@ -220,6 +255,15 @@ fn edge_props() -> Value {
             "type": ["object", "null"],
             "description": "Gable edges only: Krüppelwalm. null removes it.",
             "properties": { "height": { "type": "number" }, "pitch_deg": { "type": "number" } }
+        },
+        "breaks": {
+            "type": ["array", "null"],
+            "description": "Pitch breaks (Knick, e.g. mansard): from each `height` (m above ±0.00, above the eave) the plane continues at `pitch_deg`. [] or null removes them.",
+            "items": {
+                "type": "object",
+                "properties": { "height": { "type": "number" }, "pitch_deg": { "type": "number" } },
+                "required": ["height", "pitch_deg"]
+            }
         }
     })
 }
@@ -346,7 +390,7 @@ fn tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, O verge, W abutment), per part and in total.",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR verge left/right, P shed top edge, c pitch break), per part and in total.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -385,7 +429,13 @@ impl Server {
     }
 
     /// Saves `project` as a change by the connected client and reports it.
-    fn commit(&self, id: Option<&str>, before: Option<&Project>, project: &Project, summary: &str) -> ToolResult {
+    fn commit(
+        &self,
+        id: Option<&str>,
+        before: Option<&Project>,
+        project: &Project,
+        summary: &str,
+    ) -> ToolResult {
         let id = self
             .store
             .save_as(id.map(str::to_string), project, &self.client, summary)?;
@@ -403,9 +453,10 @@ impl Server {
 
     fn load(&self, args: &Value) -> Result<(String, Project), String> {
         let id = arg_str(args, "id")?.to_string();
-        let project = self.store.load(&id).map_err(|_| {
-            format!("no design with id `{id}`; call list_projects to see the ids")
-        })?;
+        let project = self
+            .store
+            .load(&id)
+            .map_err(|_| format!("no design with id `{id}`; call list_projects to see the ids"))?;
         Ok((id, project))
     }
 
@@ -468,12 +519,16 @@ impl Server {
             }
             "create_standard_roof" => {
                 let kind: StandardRoof = serde_json::from_value(arg(args, "type")?.clone())
-                    .map_err(|_| "type must be gable, shed, hip, pyramid or half_hip".to_string())?;
+                    .map_err(|_| {
+                        "type must be gable, shed, hip, pyramid or half_hip".to_string()
+                    })?;
                 let length = arg_f64(args, "length")?.ok_or("missing `length`")?;
                 let width = arg_f64(args, "width")?.unwrap_or(length);
                 let pitch = arg_f64(args, "pitch_deg")?.ok_or("missing `pitch_deg`")?;
                 if length <= 0.0 || width <= 0.0 || !(0.0 < pitch && pitch < 90.0) {
-                    return Err("length and width must be positive and pitch between 0 and 90".into());
+                    return Err(
+                        "length and width must be positive and pitch between 0 and 90".into(),
+                    );
                 }
                 let mut p = Project::new(arg_str(args, "name")?);
                 p.parts.push(standard_roof(
@@ -495,7 +550,8 @@ impl Server {
                     return Err("at least one part is required".into());
                 }
                 for (i, v) in parts.iter().enumerate() {
-                    p.parts.push(parse_part(v, i).map_err(|m| format!("part {i}: {m}"))?);
+                    p.parts
+                        .push(parse_part(v, i).map_err(|m| format!("part {i}: {m}"))?);
                 }
                 if let Some(job) = args.get("job") {
                     for (key, slot) in [
@@ -526,7 +582,8 @@ impl Server {
                     .ok_or("`changes` must be a list")?;
                 for c in changes {
                     for i in edge_indices(c, part.edges.len())? {
-                        apply_edge_fields(&mut part.edges[i], c).map_err(|m| format!("edge {i}: {m}"))?;
+                        apply_edge_fields(&mut part.edges[i], c)
+                            .map_err(|m| format!("edge {i}: {m}"))?;
                     }
                 }
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
@@ -551,13 +608,20 @@ impl Server {
                     .iter()
                     .enumerate()
                     .map(|(i, pt)| {
-                        let mut e = old.edges.get(i).cloned().unwrap_or_else(|| template.clone());
+                        let mut e = old
+                            .edges
+                            .get(i)
+                            .cloned()
+                            .unwrap_or_else(|| template.clone());
                         e.start = *pt;
                         e.direction_rad = None;
                         e
                     })
                     .collect();
-                let mut part = RoofPart { name: old.name, edges };
+                let mut part = RoofPart {
+                    name: old.name,
+                    edges,
+                };
                 part.normalize_ccw();
                 p.parts[pi] = part;
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
@@ -612,7 +676,12 @@ impl Server {
                     .unwrap_or("DACAD")
                     .to_string();
                 let p = dad::import(&bytes, name).map_err(|e| e.to_string())?;
-                self.commit(None, None, &p, &format!("Imported {} from DACAD", path.display()))
+                self.commit(
+                    None,
+                    None,
+                    &p,
+                    &format!("Imported {} from DACAD", path.display()),
+                )
             }
             _ => Err(format!("unknown tool `{name}`")),
         }
@@ -649,11 +718,15 @@ impl Server {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 Ok(match self.call_tool(name, &args) {
-                    Ok(Value::String(text)) => json!({ "content": [{ "type": "text", "text": text }] }),
+                    Ok(Value::String(text)) => {
+                        json!({ "content": [{ "type": "text", "text": text }] })
+                    }
                     Ok(v) => json!({
                         "content": [{ "type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default() }],
                     }),
-                    Err(e) => json!({ "content": [{ "type": "text", "text": e }], "isError": true }),
+                    Err(e) => {
+                        json!({ "content": [{ "type": "text", "text": e }], "isError": true })
+                    }
                 })
             }
             m if m.starts_with("notifications/") => return None,
@@ -699,7 +772,8 @@ mod tests {
     use super::*;
 
     fn server() -> Server {
-        let dir = std::env::temp_dir().join(format!("tectora-mcp-{}-{}", now_ms(), std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("tectora-mcp-{}-{}", now_ms(), std::process::id()));
         let mut s = Server::new(Store::new(dir).unwrap());
         s.handle(&json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -711,7 +785,9 @@ mod tests {
     #[test]
     fn lists_tools() {
         let mut s = server();
-        let r = s.handle(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" })).unwrap();
+        let r = s
+            .handle(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
+            .unwrap();
         let names: Vec<&str> = r["result"]["tools"]
             .as_array()
             .unwrap()
@@ -752,9 +828,13 @@ mod tests {
         let log = s.store.activity(&id);
         assert_eq!(log.len(), 2);
         assert_eq!(log[1].actor, "test-agent");
-        assert_eq!(s.store.live().unwrap().project_id.as_deref(), Some(id.as_str()));
+        assert_eq!(
+            s.store.live().unwrap().project_id.as_deref(),
+            Some(id.as_str())
+        );
 
-        s.call_tool("revert_last_change", &json!({ "id": id })).unwrap();
+        s.call_tool("revert_last_change", &json!({ "id": id }))
+            .unwrap();
         assert!(!s.store.load(&id).unwrap().parts[0].edges[5].is_gable());
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
