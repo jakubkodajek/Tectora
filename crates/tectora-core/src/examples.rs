@@ -150,6 +150,62 @@ pub const EXAMPLES: &[Example] = &[
     },
 ];
 
+/// Basic roof types of DACAD's "Standard-Dach" dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StandardRoof {
+    /// Satteldach: eaves on the long sides, gables on the short ones.
+    Gable,
+    /// Pultdach: one eave, three gable walls.
+    Shed,
+    /// Walmdach: eaves on all sides.
+    Hip,
+    /// Zeltdach: hip roof on a square.
+    Pyramid,
+    /// Krüppelwalmdach: gable roof with clipped gables.
+    HalfHip,
+}
+
+/// Rectangular `length` × `width` footprint (length along x) with the given
+/// roof type, starting at the origin.
+pub fn standard_roof(
+    kind: StandardRoof,
+    length: f64,
+    width: f64,
+    pitch_deg: f64,
+    eave_height: f64,
+    overhang: f64,
+) -> RoofPart {
+    let width = if kind == StandardRoof::Pyramid { length } else { width };
+    let pts = [(0.0, 0.0), (length, 0.0), (length, width), (0.0, width)];
+    let g = crate::model::GABLE_PITCH_DEG.ceil();
+    let pitches = match kind {
+        StandardRoof::Gable | StandardRoof::HalfHip => [pitch_deg, g, pitch_deg, g],
+        StandardRoof::Shed => [pitch_deg, g, g, g],
+        StandardRoof::Hip | StandardRoof::Pyramid => [pitch_deg; 4],
+    };
+    let rise = width / 2.0 * pitch_deg.to_radians().tan();
+    let edges = pts
+        .iter()
+        .zip(pitches)
+        .map(|(&(x, y), p)| EdgeDef {
+            start: Point2::new(x, y),
+            pitch_deg: p,
+            eave_height,
+            overhang,
+            half_hip: (kind == StandardRoof::HalfHip && p >= g).then(|| HalfHip {
+                height: ((eave_height + 0.7 * rise) * 100.0).round() / 100.0,
+                pitch_deg: (pitch_deg + 15.0).min(70.0),
+            }),
+            direction_rad: None,
+        })
+        .collect();
+    RoofPart {
+        name: "Main".into(),
+        edges,
+    }
+}
+
 pub fn find(id: &str) -> Option<&'static Example> {
     EXAMPLES.iter().find(|e| e.id == id)
 }
@@ -167,6 +223,16 @@ mod tests {
                 let q = roof::generate(part).quantities();
                 assert!(q.roof_area > 10.0, "{} has area {}", ex.id, q.roof_area);
             }
+        }
+    }
+
+    #[test]
+    fn standard_roofs_generate() {
+        use StandardRoof::*;
+        for kind in [Gable, Shed, Hip, Pyramid, HalfHip] {
+            let part = standard_roof(kind, 10.0, 8.0, 35.0, 3.0, 0.5);
+            assert_eq!(part.edges.len(), 4);
+            assert!(roof::generate(&part).quantities().roof_area > 50.0, "{kind:?}");
         }
     }
 

@@ -84,6 +84,37 @@ pub struct RoofQuantities {
     pub ridge_height: f64,
 }
 
+impl RoofQuantities {
+    /// Adds another part's quantities (the ridge height is the maximum).
+    pub fn add(&mut self, q: &RoofQuantities) {
+        self.roof_area += q.roof_area;
+        self.ridge_length += q.ridge_length;
+        self.hip_length += q.hip_length;
+        self.hip_count += q.hip_count;
+        self.valley_length += q.valley_length;
+        self.valley_count += q.valley_count;
+        self.eave_length += q.eave_length;
+        self.verge_length += q.verge_length;
+        self.abutment_length += q.abutment_length;
+        self.ridge_height = self.ridge_height.max(q.ridge_height);
+    }
+}
+
+impl LineKind {
+    /// DACAD's line code: T Traufe, F First, G Grat, K Kehle, O Ortgang,
+    /// W Wandanschluss. Verges and abutments are not split by side yet.
+    pub fn dacad_code(self) -> &'static str {
+        match self {
+            LineKind::Eave => "T",
+            LineKind::Ridge => "F",
+            LineKind::Hip => "G",
+            LineKind::Valley => "K",
+            LineKind::Verge => "O",
+            LineKind::Abutment => "W",
+        }
+    }
+}
+
 impl RoofGeometry {
     pub fn quantities(&self) -> RoofQuantities {
         let mut q = RoofQuantities {

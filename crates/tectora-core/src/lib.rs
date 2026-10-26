@@ -4,10 +4,12 @@
 //! and the MCP server all share exactly the same behaviour.
 
 pub mod dad;
+pub mod diff;
 pub mod examples;
 pub mod geom;
 pub mod model;
 pub mod quantities;
 pub mod roof;
+pub mod store;
 
-pub use model::{Chimney, Dormer, EdgeDef, HalfHip, Project, RoofPart};
+pub use model::{Chimney, Dormer, EdgeDef, HalfHip, JobInfo, JobStatus, Project, RoofPart};

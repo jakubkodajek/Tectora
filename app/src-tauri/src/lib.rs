@@ -1,8 +1,6 @@
 //! Tectora desktop app: Tauri commands over `tectora-core` plus a watcher
 //! that tells the UI when project files change on disk (CLI, MCP, AI agents).
 
-mod store;
-
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -11,9 +9,11 @@ use notify::{RecursiveMode, Watcher};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{Emitter, Manager, State};
+use tectora_core::diff::Change;
+use tectora_core::examples::{StandardRoof, standard_roof};
+use tectora_core::quantities::dacad_line_totals;
+use tectora_core::store::{self, LiveStatus, Store, USER_ACTOR, outlines};
 use tectora_core::{Project, dad, examples, roof};
-
-use store::{Store, outlines};
 
 struct AppState {
     store: Store,
@@ -40,6 +40,51 @@ fn list_projects(state: State<AppState>) -> Vec<store::ProjectSummary> {
     state.store.list()
 }
 
+#[derive(Serialize)]
+struct ActivityItem {
+    ts_ms: u64,
+    actor: String,
+    summary: String,
+    changes: Vec<Change>,
+}
+
+/// Recorded changes of a project, newest first.
+#[tauri::command]
+fn project_activity(state: State<AppState>, id: String) -> Vec<ActivityItem> {
+    let mut out: Vec<ActivityItem> = state
+        .store
+        .activity(&id)
+        .into_iter()
+        .map(|e| ActivityItem {
+            ts_ms: e.ts_ms,
+            actor: e.actor,
+            summary: e.summary,
+            changes: e.changes,
+        })
+        .collect();
+    out.reverse();
+    out
+}
+
+#[tauri::command]
+fn revert_last_change(state: State<AppState>, id: String) -> Result<Project, String> {
+    state.store.revert_last(&id, USER_ACTOR)
+}
+
+#[tauri::command]
+fn live_status(state: State<AppState>) -> Option<LiveStatus> {
+    state.store.live()
+}
+
+/// How to start the MCP server: this executable with the `mcp` argument.
+#[tauri::command]
+fn mcp_command() -> Value {
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "tectora-app".into());
+    json!({ "command": exe, "args": ["mcp"] })
+}
+
 #[tauri::command]
 fn load_project(state: State<AppState>, id: String) -> Result<Project, String> {
     state.store.load(&id)
@@ -60,10 +105,41 @@ fn delete_project(state: State<AppState>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn duplicate_project(state: State<AppState>, id: String) -> Result<String, String> {
+fn duplicate_project(state: State<AppState>, id: String, name: String) -> Result<String, String> {
     let mut project = state.store.load(&id)?;
-    project.name = format!("{} (kopie)", project.name);
+    project.name = name;
     state.store.save(None, &project)
+}
+
+#[tauri::command]
+fn create_standard(
+    state: State<AppState>,
+    name: String,
+    kind: StandardRoof,
+    length: f64,
+    width: f64,
+    pitch_deg: f64,
+    eave_height: f64,
+    overhang: f64,
+) -> Result<String, String> {
+    let mut project = Project::new(name);
+    project
+        .parts
+        .push(standard_roof(kind, length, width, pitch_deg, eave_height, overhang));
+    state.store.save(None, &project)
+}
+
+/// A standard roof part for the "standard roof" dialog in the editor.
+#[tauri::command]
+fn standard_part(
+    kind: StandardRoof,
+    length: f64,
+    width: f64,
+    pitch_deg: f64,
+    eave_height: f64,
+    overhang: f64,
+) -> tectora_core::RoofPart {
+    standard_roof(kind, length, width, pitch_deg, eave_height, overhang)
 }
 
 #[tauri::command]
@@ -125,20 +201,11 @@ fn calc(project: Project) -> Value {
         .map(|part| {
             let geometry = roof::generate(part);
             let q = geometry.quantities();
-            total.roof_area += q.roof_area;
-            total.ridge_length += q.ridge_length;
-            total.hip_length += q.hip_length;
-            total.hip_count += q.hip_count;
-            total.valley_length += q.valley_length;
-            total.valley_count += q.valley_count;
-            total.eave_length += q.eave_length;
-            total.verge_length += q.verge_length;
-            total.abutment_length += q.abutment_length;
-            total.ridge_height = total.ridge_height.max(q.ridge_height);
+            total.add(&q);
             json!({ "name": part.name, "geometry": geometry, "quantities": q })
         })
         .collect();
-    json!({ "parts": parts, "totals": total })
+    json!({ "parts": parts, "totals": total, "codes": dacad_line_totals(&project) })
 }
 
 fn start_watcher(
@@ -149,14 +216,20 @@ fn start_watcher(
     let (tx, rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
     let mut watcher = notify::recommended_watcher(tx)?;
     watcher.watch(&dir, RecursiveMode::NonRecursive)?;
+    let activity = dir.join(store::ACTIVITY_DIR);
+    std::fs::create_dir_all(&activity).map_err(notify::Error::io)?;
+    watcher.watch(&activity, RecursiveMode::NonRecursive)?;
     std::thread::spawn(move || {
         // Debounce bursts (atomic save = create + rename) into one UI event.
         while let Ok(first) = rx.recv() {
             let mut ids: Vec<String> = Vec::new();
+            let mut live = false;
             let mut collect = |res: notify::Result<notify::Event>| {
                 if let Ok(event) = res {
                     for p in event.paths {
-                        if p.extension().and_then(|e| e.to_str()) == Some(store::EXTENSION) {
+                        if p.file_name().and_then(|n| n.to_str()) == Some(store::LIVE_FILE) {
+                            live = true;
+                        } else if p.extension().and_then(|e| e.to_str()) == Some(store::EXTENSION) {
                             if let Some(id) = p.file_stem().and_then(|s| s.to_str()) {
                                 if !ids.iter().any(|i| i == id) {
                                     ids.push(id.to_string());
@@ -173,6 +246,11 @@ fn start_watcher(
             if !ids.is_empty() {
                 let _ = handle.emit("projects-changed", ids);
             }
+            if live {
+                if let Some(status) = handle.state::<AppState>().store.live() {
+                    let _ = handle.emit("live-status", status);
+                }
+            }
         }
     });
     Ok(watcher)
@@ -182,14 +260,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let dir = std::env::var_os("TECTORA_PROJECTS_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    app.path()
-                        .document_dir()
-                        .unwrap_or_else(|_| PathBuf::from("."))
-                        .join("Tectora")
-                });
+            // Same folder as `tectora mcp`, so AI edits show up here.
+            let dir = store::default_dir();
             let store = Store::new(dir.clone())?;
             if store.list().is_empty() {
                 // First run: seed the library with a couple of examples.
@@ -213,6 +285,12 @@ pub fn run() {
             save_project,
             delete_project,
             duplicate_project,
+            project_activity,
+            revert_last_change,
+            live_status,
+            mcp_command,
+            create_standard,
+            standard_part,
             list_examples,
             create_from_example,
             new_project,

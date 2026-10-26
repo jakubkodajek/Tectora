@@ -56,15 +56,22 @@ tectora calculate --type gable --length 12 --width 8 --pitch 35
 
 ## Tectora 2 (Rust) — in progress
 
-A rewrite of the core in Rust lives in `crates/`:
+A rewrite in Rust with a Tauri desktop app (macOS and Windows; UI in Czech,
+Slovak, English and German):
 
-- `tectora-core` — roof project model (`.tectora` JSON), geometry, plan quantities,
-  importer for DACAD `.DAD` V1 files.
-- `tectora-cli` — the `tectora` binary (`import-dad`, `info`), JSON output for AI agents.
+- `crates/tectora-core` — roof project model (`.tectora` JSON), roof generation,
+  quantities by DACAD line code, job library with change log, DACAD `.DAD` V1 import.
+- `crates/tectora-mcp` — MCP server for AI clients (Claude, Gemini, …); see
+  [docs/ai-integration.md](docs/ai-integration.md).
+- `crates/tectora-cli` — the `tectora` binary (`import-dad`, `info`, `calc`, `mcp`).
+- `app/` — the desktop app: job library, DACAD-style editor (plan + 3D, roof
+  definition bar, footprint entry by length and arrow keys, standard roofs) and
+  live review of AI changes.
 
 ```bash
-cargo test
-cargo run -p tectora-cli -- info path/to/TRAING01.DAD
+cargo test --workspace
+cargo run -p tectora-cli -- calc path/to/design.tectora --summary
+cd app && npm ci && npx tauri dev
 ```
 
 DACAD example files are third-party data and are not committed to this repository.

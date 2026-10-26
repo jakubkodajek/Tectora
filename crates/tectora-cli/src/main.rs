@@ -7,7 +7,8 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde_json::json;
-use tectora_core::quantities::plan_quantities;
+use tectora_core::quantities::{dacad_line_totals, plan_quantities};
+use tectora_core::store::Store;
 use tectora_core::{Project, dad, roof};
 
 #[derive(Parser)]
@@ -28,6 +29,12 @@ enum Command {
     },
     /// Print a JSON summary of a .tectora or .DAD file.
     Info { input: PathBuf },
+    /// Run the MCP server on stdin/stdout for AI clients (Claude, ChatGPT, Gemini).
+    Mcp {
+        /// Project library folder (default: $TECTORA_PROJECTS_DIR or Documents/Tectora).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
     /// Generate the roof and print faces, lines and quantities as JSON.
     Calc {
         input: PathBuf,
@@ -58,6 +65,7 @@ fn load(path: &Path) -> Result<Project> {
 
 fn run(cli: Cli) -> Result<serde_json::Value> {
     match cli.command {
+        Command::Mcp { .. } => unreachable!("handled in main"),
         Command::ImportDad { input, output } => {
             let project = load(&input)?;
             let out = output.unwrap_or_else(|| input.with_extension("tectora"));
@@ -109,31 +117,22 @@ fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
-/// Line totals keyed by DACAD's line codes. Verges are not split into
-/// left/right yet (`O` = OL + OR + OS) and abutments not by side (`W`).
-fn dacad_line_totals(project: &Project) -> serde_json::Map<String, serde_json::Value> {
-    let mut totals: std::collections::BTreeMap<&str, f64> = Default::default();
-    for part in &project.parts {
-        for line in roof::generate(part).lines {
-            let code = match line.kind {
-                roof::LineKind::Eave => "T",
-                roof::LineKind::Ridge => "F",
-                roof::LineKind::Hip => "G",
-                roof::LineKind::Valley => "K",
-                roof::LineKind::Verge => "O",
-                roof::LineKind::Abutment => "W",
-            };
-            *totals.entry(code).or_default() += line.length();
-        }
-    }
-    totals
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), json!(round2(v))))
-        .collect()
-}
-
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    let cli = Cli::parse();
+    if let Command::Mcp { dir } = &cli.command {
+        let store = match dir {
+            Some(d) => Store::new(d.clone()),
+            None => Store::open_default(),
+        };
+        return match store.and_then(tectora_mcp::run_stdio) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("tectora mcp: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    match run(cli) {
         Ok(v) => {
             println!(
                 "{}",

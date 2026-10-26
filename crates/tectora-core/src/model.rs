@@ -16,6 +16,9 @@ pub struct Project {
     pub name: String,
     #[serde(default)]
     pub notes: String,
+    /// Job (Auftrag) data shown in the design manager.
+    #[serde(default)]
+    pub job: JobInfo,
     pub parts: Vec<RoofPart>,
     #[serde(default)]
     pub dormers: Vec<Dormer>,
@@ -29,6 +32,7 @@ impl Project {
             schema_version: SCHEMA_VERSION,
             name: name.into(),
             notes: String::new(),
+            job: JobInfo::default(),
             parts: Vec::new(),
             dormers: Vec::new(),
             chimneys: Vec::new(),
@@ -42,6 +46,27 @@ impl Project {
     pub fn from_json(s: &str) -> serde_json::Result<Self> {
         serde_json::from_str(s)
     }
+}
+
+/// Customer and job details of a design, like the job header in DACAD lists.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobInfo {
+    /// Job or offer number.
+    pub number: String,
+    pub customer: String,
+    pub address: String,
+    pub status: JobStatus,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStatus {
+    #[default]
+    Draft,
+    Offer,
+    Ordered,
+    Done,
 }
 
 /// One closed footprint whose edges each carry their own roof definition

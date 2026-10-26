@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/tectora-core", "crates/tectora-cli", "app/src-tauri"]
+members = [
+    "crates/tectora-core",
+    "crates/tectora-mcp",
+    "crates/tectora-cli",
+    "app/src-tauri",
+]
 
 [workspace.package]
 version = "0.1.0"

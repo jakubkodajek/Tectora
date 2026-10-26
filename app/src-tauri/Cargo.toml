@@ -14,6 +14,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 notify = "8"
 tectora-core = { path = "../../crates/tectora-core" }
+tectora-mcp = { version = "0.1.0", path = "../../crates/tectora-mcp" }
 
 [lib]
 name = "tectora_app"

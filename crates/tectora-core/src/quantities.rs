@@ -47,3 +47,27 @@ pub fn plan_quantities(project: &Project) -> PlanQuantities {
     }
     q
 }
+
+/// Roof quantities summed over all parts.
+pub fn roof_totals(project: &Project) -> crate::roof::RoofQuantities {
+    let mut total = crate::roof::RoofQuantities::default();
+    for part in &project.parts {
+        total.add(&crate::roof::generate(part).quantities());
+    }
+    total
+}
+
+/// Line lengths keyed by DACAD's line codes (see `LineKind::dacad_code`),
+/// rounded to centimetres.
+pub fn dacad_line_totals(project: &Project) -> std::collections::BTreeMap<String, f64> {
+    let mut totals: std::collections::BTreeMap<String, f64> = Default::default();
+    for part in &project.parts {
+        for line in crate::roof::generate(part).lines {
+            *totals.entry(line.kind.dacad_code().to_string()).or_default() += line.length();
+        }
+    }
+    for v in totals.values_mut() {
+        *v = (*v * 100.0).round() / 100.0;
+    }
+    totals
+}
