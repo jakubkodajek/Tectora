@@ -24,6 +24,8 @@ pub struct Project {
     pub dormers: Vec<Dormer>,
     #[serde(default)]
     pub chimneys: Vec<Chimney>,
+    #[serde(default)]
+    pub windows: Vec<RoofWindow>,
 }
 
 impl Project {
@@ -36,6 +38,7 @@ impl Project {
             parts: Vec::new(),
             dormers: Vec::new(),
             chimneys: Vec::new(),
+            windows: Vec::new(),
         }
     }
 
@@ -189,11 +192,23 @@ pub struct Dormer {
     pub end: Point2,
 }
 
+/// A chimney (or other penetration) as a convex plan polygon.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Chimney {
-    /// Reference point in plan, m, as stored by DACAD
-    /// (whether this is the centre or a corner is not verified yet).
-    pub position: Point2,
+    #[serde(default)]
+    pub corners: Vec<Point2>,
+    /// Top height, m above ground. Does not affect quantities.
+    #[serde(default)]
+    pub height: f64,
+}
+
+/// A roof window (DACAD: Dachfenster). The position is the plan point of
+/// its lower corner at the start of the eave; width runs along the eave and
+/// height up the slope, both in the roof plane.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoofWindow {
+    pub x: f64,
+    pub y: f64,
     pub width: f64,
-    pub depth: f64,
+    pub height: f64,
 }

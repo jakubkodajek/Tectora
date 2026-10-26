@@ -37,12 +37,21 @@ in the user's language, e.g. "Pitch of the street side set to 42° per drawing".
   gables; pyramid = hip roof on a square; half-hip = gable roof whose gables
   have `half_hip`.
 
+## Roof windows and chimneys
+
+`set_openings` stores roof windows (`x`, `y` = plan point of the lower
+corner at the start of the eave; `width` along the eave, `height` up the
+slope) and chimneys (convex plan `corners`). Like DACAD, a window deducts
+width × height and adds no lines; a chimney deducts its plan area / cos(pitch)
+and adds WV (downhill), WH (uphill) and WS (sloped sides) abutment lines.
+
 ## Results (DACAD line codes)
 
 `calc` returns the roof area and line lengths keyed by DACAD codes:
 T eave (Traufe/okap), F ridge (First/hřeben), G hip (Grat/nároží),
 K valley (Kehle/úžlabí), OL/OR/OS verge left/right/oblique (Ortgang/štítová hrana),
-P top edge of a shed roof against its wall (Pult), c pitch break (Knick/zlom).
+P top edge of a shed roof against its wall (Pult), c pitch break (Knick/zlom),
+WV/WH/WS wall abutment downhill/uphill/side (e.g. around a chimney).
 The rules were checked against roofs calculated by DACAD itself: a step
 between eaves at different heights is a short verge, the lower edge of a
 Krüppelwalm plane counts as eave T, and hips run through a pitch break.

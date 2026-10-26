@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use serde_json::json;
 use tectora_core::quantities::{dacad_line_totals, plan_quantities};
 use tectora_core::store::Store;
-use tectora_core::{Project, dad, roof};
+use tectora_core::{Project, dad};
 
 #[derive(Parser)]
 #[command(name = "tectora", version, about = "Tectora roof design toolkit")]
@@ -84,8 +84,8 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             let parts: Vec<_> = project
                 .parts
                 .iter()
-                .map(|part| {
-                    let geo = roof::generate(part);
+                .zip(tectora_core::openings::generate_project(&project))
+                .map(|(part, geo)| {
                     let q = geo.quantities();
                     if summary {
                         json!({ "name": part.name, "quantities": q })
@@ -95,11 +95,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
                 })
                 .collect();
             let lines_by_type = dacad_line_totals(&project);
-            let area: f64 = project
-                .parts
-                .iter()
-                .map(|p| roof::generate(p).quantities().roof_area)
-                .sum();
+            let area = tectora_core::quantities::roof_totals(&project).roof_area;
             Ok(json!({
                 "ok": true,
                 "name": project.name,

@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use serde_json::Value;
 use tectora_core::geom::Point2;
 use tectora_core::model::GABLE_PITCH_DEG;
-use tectora_core::roof::generate;
-use tectora_core::{EdgeDef, HalfHip, PitchBreak, RoofPart};
+use tectora_core::openings::generate_project;
+use tectora_core::{Chimney, EdgeDef, HalfHip, PitchBreak, Project, RoofPart, RoofWindow};
 
 /// Half a unit of DACAD's 2-decimal output plus float32 noise.
 const TOL: f64 = 0.006;
@@ -103,10 +103,27 @@ fn part(case: &Value) -> RoofPart {
 #[test]
 fn engine_matches_dacad() {
     let cases = fixtures();
-    assert!(cases.len() >= 23, "fixtures missing");
+    assert!(cases.len() >= 28, "fixtures missing");
     let mut failures = Vec::new();
     for (name, case) in cases {
-        let geo = generate(&part(&case));
+        let input = &case["input"];
+        let mut project = Project::new(name.clone());
+        project.parts.push(part(&case));
+        for w in input["windows"].as_array().into_iter().flatten() {
+            project.windows.push(RoofWindow {
+                x: w["x"].as_f64().unwrap(),
+                y: w["y"].as_f64().unwrap(),
+                width: w["width"].as_f64().unwrap(),
+                height: w["height"].as_f64().unwrap(),
+            });
+        }
+        for c in input["chimneys"].as_array().into_iter().flatten() {
+            project.chimneys.push(Chimney {
+                corners: c["corners"].as_array().unwrap().iter().map(pt).collect(),
+                height: c["height_m"].as_f64().unwrap_or(0.0),
+            });
+        }
+        let geo = generate_project(&project).remove(0);
         let mut ours: BTreeMap<String, f64> = BTreeMap::new();
         for l in &geo.lines {
             *ours.entry(l.dacad_code().to_string()).or_default() += l.length();

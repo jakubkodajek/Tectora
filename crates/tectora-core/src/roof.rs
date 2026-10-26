@@ -53,6 +53,12 @@ pub enum LineKind {
     /// Roof meeting the wall of another building (DACAD: Wandanschluss).
     /// Not generated yet: within one part DACAD reports verges instead.
     Abutment,
+    /// Wall abutment on the downhill side, e.g. below a chimney (WV).
+    AbutmentFront,
+    /// Wall abutment on the uphill side (WH).
+    AbutmentBack,
+    /// Wall abutment along the slope (WS).
+    AbutmentSide,
 }
 
 /// Which end of its roof plane a verge lies on, seen from outside the eave.
@@ -107,8 +113,11 @@ pub struct RoofFace {
     pub pitch_deg: f64,
     /// Outline in 3D, counter-clockwise seen from above.
     pub polygon: Vec<[f64; 3]>,
-    /// True sloped area, m².
+    /// True sloped area, m², less windows and chimneys.
     pub area: f64,
+    /// Area deducted for windows and chimneys, m².
+    #[serde(default)]
+    pub deducted: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]
@@ -167,6 +176,9 @@ impl LineKind {
             LineKind::Pult => "P",
             LineKind::Knick => "c",
             LineKind::Abutment => "W",
+            LineKind::AbutmentFront => "WV",
+            LineKind::AbutmentBack => "WH",
+            LineKind::AbutmentSide => "WS",
         }
     }
 }
@@ -184,7 +196,10 @@ impl RoofGeometry {
                 LineKind::Verge => q.verge_length += len,
                 LineKind::Pult => q.pult_length += len,
                 LineKind::Knick => q.knick_length += len,
-                LineKind::Abutment => q.abutment_length += len,
+                LineKind::Abutment
+                | LineKind::AbutmentFront
+                | LineKind::AbutmentBack
+                | LineKind::AbutmentSide => q.abutment_length += len,
                 LineKind::Ridge => q.ridge_length += len,
                 LineKind::Hip => {
                     q.hip_length += len;
@@ -1083,6 +1098,7 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
             pitch_deg: line.stages[b.stage].pitch_deg,
             polygon,
             area,
+            deducted: 0.0,
         });
     }
     let n = edges.len();

@@ -104,10 +104,9 @@ pub fn default_dir() -> PathBuf {
 
 /// Plan view of the inner roof lines (everything except eaves).
 pub fn roof_lines(project: &Project) -> Vec<[[f64; 2]; 2]> {
-    project
-        .parts
-        .iter()
-        .flat_map(|p| roof::generate(p).lines)
+    crate::openings::generate_project(project)
+        .into_iter()
+        .flat_map(|g| g.lines)
         .filter(|l| l.kind != roof::LineKind::Eave)
         .map(|l| [[l.a[0], l.a[1]], [l.b[0], l.b[1]]])
         .collect()
@@ -122,11 +121,7 @@ pub fn outlines(project: &Project) -> Vec<Vec<[f64; 2]>> {
 }
 
 pub fn roof_area(project: &Project) -> f64 {
-    project
-        .parts
-        .iter()
-        .map(|p| roof::generate(p).quantities().roof_area)
-        .sum()
+    crate::quantities::roof_totals(project).roof_area
 }
 
 pub struct Store {

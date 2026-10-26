@@ -25,6 +25,9 @@
     pult: 0xc2417a,
     knick: 0x1f9aa8,
     abutment: 0x8b5a3c,
+    abutment_front: 0x8b5a3c,
+    abutment_back: 0x8b5a3c,
+    abutment_side: 0x8b5a3c,
   };
 
   const dark = () => window.matchMedia("(prefers-color-scheme: dark)").matches;

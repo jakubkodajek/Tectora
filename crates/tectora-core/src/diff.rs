@@ -173,6 +173,12 @@ pub fn diff(before: &Project, after: &Project) -> Vec<Change> {
     if ja.status != jb.status {
         out.push(m("job.status", json!(ja.status), json!(jb.status)));
     }
+    if before.windows != after.windows {
+        out.push(m("windows", json!(before.windows), json!(after.windows)));
+    }
+    if before.chimneys != after.chimneys {
+        out.push(m("chimneys", json!(before.chimneys), json!(after.chimneys)));
+    }
     let n = before.parts.len().min(after.parts.len());
     for i in 0..n {
         diff_part(i, &before.parts[i], &after.parts[i], &mut out);

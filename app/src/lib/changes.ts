@@ -31,6 +31,10 @@ export function describeChange(c: Change, multiPart: boolean): string {
       }
       case "priority":
         return t(Number(c.after) > 0 ? "chg.priorityOn" : "chg.priorityOff", { n });
+      case "windows":
+        return t("chg.windows", { k: (c.after as unknown[]).length });
+      case "chimneys":
+        return t("chg.chimneys", { k: (c.after as unknown[]).length });
       case "breaks":
         return t("chg.breaks", { n });
       case "vertex": {

@@ -46,7 +46,20 @@ export interface Project {
   job: JobInfo;
   parts: RoofPart[];
   dormers: unknown[];
-  chimneys: { position: Point2; width: number; depth: number }[];
+  chimneys: Chimney[];
+  windows?: RoofWindow[];
+}
+
+export interface Chimney {
+  corners: Point2[];
+  height: number;
+}
+
+export interface RoofWindow {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export interface ActivityInfo {
@@ -76,7 +89,7 @@ export interface ExampleInfo {
   lines: [[number, number], [number, number]][];
 }
 
-export type LineKind = "eave" | "verge" | "ridge" | "hip" | "valley" | "pult" | "knick" | "abutment";
+export type LineKind = "eave" | "verge" | "ridge" | "hip" | "valley" | "pult" | "knick" | "abutment" | "abutment_front" | "abutment_back" | "abutment_side";
 
 export interface RoofLine {
   kind: LineKind;
@@ -90,6 +103,7 @@ export interface RoofFace {
   pitch_deg: number;
   polygon: [number, number, number][];
   area: number;
+  deducted?: number;
 }
 
 export interface RoofQuantities {
@@ -155,6 +169,7 @@ export function emptyProject(name: string): Project {
     parts: [],
     dormers: [],
     chimneys: [],
+    windows: [],
   };
 }
 

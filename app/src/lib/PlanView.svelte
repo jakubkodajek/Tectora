@@ -171,6 +171,9 @@
     pult: "var(--line-pult)",
     knick: "var(--line-knick)",
     abutment: "var(--line-abutment)",
+    abutment_front: "var(--line-abutment)",
+    abutment_back: "var(--line-abutment)",
+    abutment_side: "var(--line-abutment)",
   };
 
   function edgeLength(part: number, i: number) {

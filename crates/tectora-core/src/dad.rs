@@ -7,10 +7,10 @@
 //! * tag `0x12`, sub `0x00` (42 bytes) — one wall line with its roof definition:
 //!   `id u16, group u16, f32 x9 [x, y, length, angle_rad, ?, eave_height,
 //!   overhang, pitch_deg, priority], flags u16`. Bit 0 of `flags` means a half-hip
-//!   record follows; the high byte is the number of chimney records that follow.
+//!   record follows; the high byte is the number of window records that follow.
 //! * tag `0x12`, sub `0x10` (16 bytes) — half-hip of the preceding gable wall:
 //!   `u32 ?, f32 height, f32 ?, f32 pitch_deg`.
-//! * tag `0x12`, sub `0x20` (16 bytes) — chimney: `f32 x, y, width, depth`.
+//! * tag `0x12`, sub `0x20` (16 bytes) — roof window: `f32 x, y, width, height`.
 //!
 //! Walls of one group that chain into a closed loop form a roof part; open
 //! chains are dormers. The newer `DACADV2` format (MFC archive) is detected
@@ -21,14 +21,14 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 use crate::geom::Point2;
-use crate::model::{Chimney, Dormer, EdgeDef, HalfHip, Project, RoofPart};
+use crate::model::{Dormer, EdgeDef, HalfHip, Project, RoofPart, RoofWindow};
 
 const V1_MAGIC: &[u8] = b"DACAD\x1a";
 const V2_MAGIC: &[u8] = b"\x08DACADV2\x1a";
 const TAG_WALL: u8 = 0x12;
 const SUB_WALL: u8 = 0x00;
 const SUB_HALF_HIP: u8 = 0x10;
-const SUB_CHIMNEY: u8 = 0x20;
+const SUB_WINDOW: u8 = 0x20;
 /// Endpoint matching tolerance when chaining walls, m.
 const CHAIN_TOL: f64 = 0.005;
 
@@ -86,7 +86,7 @@ impl DadWall {
 pub struct DadFile {
     pub version: String,
     pub walls: Vec<DadWall>,
-    pub chimneys: Vec<Chimney>,
+    pub windows: Vec<RoofWindow>,
 }
 
 fn f32_at(b: &[u8], off: usize) -> f64 {
@@ -151,11 +151,12 @@ pub fn parse(bytes: &[u8]) -> Result<DadFile, DadError> {
                     });
                 }
             }
-            (TAG_WALL, SUB_CHIMNEY) if len == 16 => {
-                file.chimneys.push(Chimney {
-                    position: Point2::new(f32_at(payload, 0), f32_at(payload, 4)),
+            (TAG_WALL, SUB_WINDOW) if len == 16 => {
+                file.windows.push(RoofWindow {
+                    x: f32_at(payload, 0),
+                    y: f32_at(payload, 4),
                     width: f32_at(payload, 8),
-                    depth: f32_at(payload, 12),
+                    height: f32_at(payload, 12),
                 });
             }
             _ => {}
@@ -259,7 +260,7 @@ impl DadFile {
                 project.dormers.push(Dormer { edges, end });
             }
         }
-        project.chimneys = self.chimneys.clone();
+        project.windows = self.windows.clone();
         project
     }
 }
@@ -326,7 +327,7 @@ mod tests {
         // 10 x 6 house, stored out of order, with a half-hipped gable on the east.
         w.wall(1, 1, 0.0, 0.0, 10.0, 0.0, 40.0, 0);
         w.wall(3, 1, 10.0, 6.0, 10.0, PI, 40.0, 0x0100);
-        w.floats(SUB_CHIMNEY, [4.0, 5.0, 1.1, 1.1]);
+        w.floats(SUB_WINDOW, [4.0, 5.0, 1.1, 1.1]);
         w.wall(2, 1, 10.0, 0.0, 6.0, FRAC_PI_2, 90.0, 1);
         w.floats(SUB_HALF_HIP, [0.0, 7.2, 0.0, 50.0]);
         w.wall(4, 1, 0.0, 6.0, 6.0, -FRAC_PI_2, 90.0, 0);
@@ -346,11 +347,11 @@ mod tests {
     }
 
     #[test]
-    fn parses_walls_half_hip_and_chimney() {
+    fn parses_walls_half_hip_and_window() {
         let f = parse(&sample()).unwrap();
         assert_eq!(f.version, "DACAD V1.13");
         assert_eq!(f.walls.len(), 6);
-        assert_eq!(f.chimneys.len(), 1);
+        assert_eq!(f.windows.len(), 1);
         let gable = f.walls.iter().find(|w| w.id == 2).unwrap();
         assert_eq!(
             gable.half_hip,

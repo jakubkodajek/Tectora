@@ -8,10 +8,12 @@ pub mod diff;
 pub mod examples;
 pub mod geom;
 pub mod model;
+pub mod openings;
 pub mod quantities;
 pub mod roof;
 pub mod store;
 
 pub use model::{
     Chimney, Dormer, EdgeDef, HalfHip, JobInfo, JobStatus, PitchBreak, Project, RoofPart,
+    RoofWindow,
 };

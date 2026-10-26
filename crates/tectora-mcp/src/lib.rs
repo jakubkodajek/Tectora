@@ -16,7 +16,9 @@ use tectora_core::geom::Point2;
 use tectora_core::model::GABLE_PITCH_DEG;
 use tectora_core::quantities::{dacad_line_totals, roof_totals};
 use tectora_core::store::{LiveStatus, Store, now_ms};
-use tectora_core::{EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, dad};
+use tectora_core::{
+    Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow, dad,
+};
 
 pub const GUIDE: &str = include_str!("guide.md");
 const SUPPORTED_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -405,6 +407,35 @@ fn tools() -> Value {
             }), &["id", "summary"]),
         },
         {
+            "name": "set_openings",
+            "description": "Replace the roof windows and/or chimneys of a design (omit a list to keep it). Windows deduct width × height from their roof face; chimneys deduct their plan area / cos(pitch) and add wall-abutment lines WV/WH/WS, as in DACAD.",
+            "inputSchema": schema(json!({
+                "id": { "type": "string" },
+                "windows": {
+                    "type": "array",
+                    "description": "Roof windows. x, y = plan point of the lower corner at the start of the eave (left end seen from outside); width along the eave and height up the slope, in the roof plane, m.",
+                    "items": {
+                        "type": "object",
+                        "properties": { "x": { "type": "number" }, "y": { "type": "number" }, "width": { "type": "number" }, "height": { "type": "number" } },
+                        "required": ["x", "y", "width", "height"]
+                    }
+                },
+                "chimneys": {
+                    "type": "array",
+                    "description": "Chimneys as convex plan polygons.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "corners": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 } },
+                            "height": { "type": "number", "description": "Top height, m (display only)." }
+                        },
+                        "required": ["corners"]
+                    }
+                },
+                "summary": summary_prop(),
+            }), &["id", "summary"]),
+        },
+        {
             "name": "calc",
             "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
@@ -526,8 +557,9 @@ impl Server {
                 let parts: Vec<Value> = p
                     .parts
                     .iter()
-                    .map(|part| {
-                        let q = tectora_core::roof::generate(part).quantities();
+                    .zip(tectora_core::openings::generate_project(&p))
+                    .map(|(part, geo)| {
+                        let q = geo.quantities();
                         json!({ "name": part.name, "quantities": q })
                     })
                     .collect();
@@ -669,6 +701,27 @@ impl Server {
                 }
                 if let Some(s) = args.get("status").and_then(Value::as_str) {
                     p.job.status = parse_status(s)?;
+                }
+                self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+            }
+            "set_openings" => {
+                let (id, before) = self.load(args)?;
+                let mut p = before.clone();
+                if let Some(w) = args.get("windows") {
+                    p.windows = serde_json::from_value::<Vec<RoofWindow>>(w.clone())
+                        .map_err(|e| format!("windows: {e}"))?;
+                }
+                if let Some(c) = args.get("chimneys") {
+                    let raw: Vec<Value> = serde_json::from_value(c.clone())
+                        .map_err(|_| "chimneys must be a list".to_string())?;
+                    p.chimneys = raw
+                        .iter()
+                        .map(|c| {
+                            let corners = parse_points(arg(c, "corners")?)?;
+                            let height = arg_f64(c, "height")?.unwrap_or(0.0);
+                            Ok(Chimney { corners, height })
+                        })
+                        .collect::<Result<_, String>>()?;
                 }
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
             }

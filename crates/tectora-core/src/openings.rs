@@ -1,0 +1,236 @@
+//! Roof windows and chimneys, applied to generated roof faces.
+//!
+//! Checked against roofs calculated by DACAD itself (cases C24–C28):
+//!
+//! * A window deducts `width × height` from the face it sits on (both
+//!   measured in the roof plane) and adds no lines.
+//! * A chimney is a plan polygon. Each face loses the part of it inside the
+//!   face, as plan area / cos(pitch). Its sides become wall-abutment lines:
+//!   WV on the downhill side, WH uphill, WS along the slope. Roof lines
+//!   (e.g. the ridge) inside the chimney are removed.
+
+use crate::geom::{Point2, signed_area};
+use crate::model::{Chimney, Project, RoofWindow};
+use crate::roof::{LineKind, RoofFace, RoofGeometry, RoofLine, generate};
+
+const TOL: f64 = 1e-9;
+
+/// Generates every part of the project with its windows and chimneys applied.
+pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
+    let mut geos: Vec<RoofGeometry> = project.parts.iter().map(generate).collect();
+    for w in &project.windows {
+        apply_window(&mut geos, w);
+    }
+    for c in &project.chimneys {
+        for geo in &mut geos {
+            apply_chimney(geo, c);
+        }
+    }
+    geos
+}
+
+/// Plan outline of a face.
+fn plan(face: &RoofFace) -> Vec<Point2> {
+    face.polygon
+        .iter()
+        .map(|p| Point2::new(p[0], p[1]))
+        .collect()
+}
+
+/// Unit uphill direction in plan and `tan(pitch)` of a face's plane.
+fn slope(face: &RoofFace) -> (Point2, f64) {
+    let (mut nx, mut ny, mut nz) = (0.0, 0.0, 0.0);
+    let poly = &face.polygon;
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+        nx += (a[1] - b[1]) * (a[2] + b[2]);
+        ny += (a[2] - b[2]) * (a[0] + b[0]);
+        nz += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    if nz < 0.0 {
+        (nx, ny, nz) = (-nx, -ny, -nz);
+    }
+    let h = nx.hypot(ny);
+    if h < TOL || nz < TOL {
+        return (Point2::new(0.0, 0.0), 0.0);
+    }
+    (Point2::new(-nx / h, -ny / h), h / nz)
+}
+
+fn inside(poly: &[Point2], p: Point2) -> bool {
+    let mut c = false;
+    let n = poly.len();
+    for i in 0..n {
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        if (a.y > p.y) != (b.y > p.y) {
+            let x = a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y);
+            if p.x < x {
+                c = !c;
+            }
+        }
+    }
+    c
+}
+
+/// The window's corner lies on the face's boundary at the eave; test a
+/// point just inside it, up the slope and along the eave.
+fn apply_window(geos: &mut [RoofGeometry], w: &RoofWindow) {
+    for geo in geos.iter_mut() {
+        for face in &mut geo.faces {
+            let (up, _) = slope(face);
+            let along = Point2::new(up.y, -up.x);
+            let probe = |s: f64| {
+                Point2::new(
+                    w.x + 1e-4 * up.x + s * 1e-4 * along.x,
+                    w.y + 1e-4 * up.y + s * 1e-4 * along.y,
+                )
+            };
+            let poly = plan(face);
+            if inside(&poly, probe(1.0)) || inside(&poly, probe(-1.0)) {
+                let d = w.width * w.height;
+                face.area -= d;
+                face.deducted += d;
+                return;
+            }
+        }
+    }
+}
+
+/// Sutherland–Hodgman: `subject` clipped by the convex CCW polygon `clip`.
+fn clip_polygon(subject: &[Point2], clip: &[Point2]) -> Vec<Point2> {
+    let mut out = subject.to_vec();
+    let n = clip.len();
+    for i in 0..n {
+        let (a, b) = (clip[i], clip[(i + 1) % n]);
+        let side = |p: Point2| (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+        let input = std::mem::take(&mut out);
+        let m = input.len();
+        for k in 0..m {
+            let (p, q) = (input[k], input[(k + 1) % m]);
+            let (sp, sq) = (side(p), side(q));
+            if sp >= -TOL {
+                out.push(p);
+            }
+            if (sp >= -TOL) != (sq >= -TOL) {
+                let t = sp / (sp - sq);
+                out.push(Point2::new(p.x + t * (q.x - p.x), p.y + t * (q.y - p.y)));
+            }
+        }
+        if out.is_empty() {
+            break;
+        }
+    }
+    out
+}
+
+/// Parameter intervals of segment `a`–`b` that lie inside `poly`.
+fn inside_spans(poly: &[Point2], a: Point2, b: Point2) -> Vec<(f64, f64)> {
+    let d = Point2::new(b.x - a.x, b.y - a.y);
+    let mut ts = vec![0.0, 1.0];
+    let n = poly.len();
+    for i in 0..n {
+        let (p, q) = (poly[i], poly[(i + 1) % n]);
+        let e = Point2::new(q.x - p.x, q.y - p.y);
+        let den = d.x * e.y - d.y * e.x;
+        if den.abs() < TOL {
+            continue;
+        }
+        let w = Point2::new(p.x - a.x, p.y - a.y);
+        let t = (w.x * e.y - w.y * e.x) / den;
+        let u = (w.x * d.y - w.y * d.x) / den;
+        if (-TOL..=1.0 + TOL).contains(&u) && t > 0.0 && t < 1.0 {
+            ts.push(t);
+        }
+    }
+    ts.sort_by(f64::total_cmp);
+    ts.windows(2)
+        .filter(|s| s[1] - s[0] > 1e-9)
+        .filter(|s| {
+            let m = (s[0] + s[1]) / 2.0;
+            inside(poly, Point2::new(a.x + m * d.x, a.y + m * d.y))
+        })
+        .map(|s| (s[0], s[1]))
+        .collect()
+}
+
+fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
+    [
+        a[0] + t * (b[0] - a[0]),
+        a[1] + t * (b[1] - a[1]),
+        a[2] + t * (b[2] - a[2]),
+    ]
+}
+
+/// Height of a face's plane at a plan point.
+fn height_at(face: &RoofFace, up: Point2, tan: f64, p: Point2) -> f64 {
+    let o = face.polygon[0];
+    o[2] + tan * ((p.x - o[0]) * up.x + (p.y - o[1]) * up.y)
+}
+
+fn apply_chimney(geo: &mut RoofGeometry, c: &Chimney) {
+    let mut corners = c.corners.clone();
+    if corners.len() < 3 {
+        return;
+    }
+    if signed_area(&corners) < 0.0 {
+        corners.reverse();
+    }
+    // Roof lines under the chimney disappear.
+    let mut kept: Vec<RoofLine> = Vec::new();
+    for l in std::mem::take(&mut geo.lines) {
+        let (a, b) = (Point2::new(l.a[0], l.a[1]), Point2::new(l.b[0], l.b[1]));
+        let under = inside_spans(&corners, a, b);
+        let mut t0 = 0.0;
+        for (s, e) in under.iter().copied().chain(std::iter::once((1.0, 1.0))) {
+            if s - t0 > 1e-9 {
+                kept.push(RoofLine {
+                    a: lerp3(l.a, l.b, t0),
+                    b: lerp3(l.a, l.b, s),
+                    ..l.clone()
+                });
+            }
+            t0 = e;
+        }
+    }
+    geo.lines = kept;
+
+    let n = corners.len();
+    for face in &mut geo.faces {
+        let poly = plan(face);
+        let (up, tan) = slope(face);
+        let cut = signed_area(&clip_polygon(&poly, &corners)).abs();
+        if cut < 1e-9 {
+            continue;
+        }
+        let d = cut * (1.0 + tan * tan).sqrt();
+        face.area -= d;
+        face.deducted += d;
+        for i in 0..n {
+            let (a, b) = (corners[i], corners[(i + 1) % n]);
+            let dir = Point2::new(b.x - a.x, b.y - a.y);
+            let len = dir.x.hypot(dir.y);
+            if len < TOL {
+                continue;
+            }
+            // Outward normal of a CCW polygon side.
+            let out = (dir.y / len) * up.x - (dir.x / len) * up.y;
+            let kind = if out < -std::f64::consts::FRAC_1_SQRT_2 {
+                LineKind::AbutmentFront
+            } else if out > std::f64::consts::FRAC_1_SQRT_2 {
+                LineKind::AbutmentBack
+            } else {
+                LineKind::AbutmentSide
+            };
+            for (s, e) in inside_spans(&poly, a, b) {
+                let p = Point2::new(a.x + s * dir.x, a.y + s * dir.y);
+                let q = Point2::new(a.x + e * dir.x, a.y + e * dir.y);
+                geo.lines.push(RoofLine {
+                    kind,
+                    a: [p.x, p.y, height_at(face, up, tan, p)],
+                    b: [q.x, q.y, height_at(face, up, tan, q)],
+                    side: None,
+                });
+            }
+        }
+    }
+}
