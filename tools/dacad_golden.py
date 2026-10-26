@@ -38,6 +38,9 @@ TOL_AREA_M2 = 0.006
 # Line types that matter for a roofer's take-off (Wandlinie etc. excluded).
 TAKEOFF_TYPES = [LINE_TYPES[c] for c in sorted(LINE_TYPES)]
 
+# Coarse codes an engine may print instead of DACAD's split types.
+AGGREGATES = {"O": ["OL", "OR", "OS"], "W": ["WH", "WS", "WV"]}
+
 
 def fixture(pr: DadProject) -> dict:
     roofs = sorted({d.roof_no for w in pr.walls for d in w.definitions})
@@ -112,13 +115,29 @@ def compare(pr: DadProject, got: dict) -> list[str]:
     issues: list[str] = []
     want_lines = pr.line_totals()
     got_lines = got.get("lines_by_type", {})
-    for t in TAKEOFF_TYPES:
+    types = list(TAKEOFF_TYPES)
+    # Engines may report coarser groups until they split them by side/kind.
+    for agg, parts in AGGREGATES.items():
+        if agg in got_lines:
+            want_lines[agg] = sum(want_lines.pop(p, 0.0) for p in parts)
+            types = [t for t in types if t not in parts] + [agg]
+    for t in types:
         w, g = want_lines.get(t, 0.0), float(got_lines.get(t, 0.0))
         if abs(w - g) > TOL_LEN_M:
             issues.append(f"line {t}: DACAD {w:.3f} m, engine {g:.3f} m "
                           f"(Δ {g - w:+.3f})")
-    got_areas = got.get("area_by_material", {})
-    for name in ("Ziegel", "Blech"):
+    got_areas = dict(got.get("area_by_material", {}))
+    if "roof" in got_areas and "Ziegel" not in got_areas:
+        # Engine without materials yet: compare its total to tiles + sheet.
+        if "Ziegel" in pr.area_groups or "Blech" in pr.area_groups:
+            w = pr.area_groups.get("Ziegel", 0.0) + pr.area_groups.get("Blech", 0.0)
+        else:  # DACAD 1.13 only stores "Flächen gesamt" (all roof faces)
+            w = pr.area_groups.get("Flächen gesamt", 0.0)
+        g = float(got_areas["roof"])
+        if abs(w - g) > TOL_AREA_M2:
+            issues.append(f"area roof: DACAD {w:.3f} m², engine {g:.3f} m² "
+                          f"(Δ {g - w:+.3f})")
+    for name in [n for n in ("Ziegel", "Blech") if n in got_areas]:
         if name in pr.area_groups:
             w, g = pr.area_groups[name], float(got_areas.get(name, 0.0))
             if abs(w - g) > TOL_AREA_M2:
