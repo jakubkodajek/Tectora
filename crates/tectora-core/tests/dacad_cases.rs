@@ -11,7 +11,7 @@ use serde_json::Value;
 use tectora_core::geom::Point2;
 use tectora_core::model::GABLE_PITCH_DEG;
 use tectora_core::openings::generate_project;
-use tectora_core::{Chimney, EdgeDef, HalfHip, PitchBreak, Project, RoofPart, RoofWindow};
+use tectora_core::{Chimney, Dormer, EdgeDef, HalfHip, PitchBreak, Project, RoofPart, RoofWindow};
 
 /// Half a unit of DACAD's 2-decimal output plus float32 noise.
 const TOL: f64 = 0.006;
@@ -64,13 +64,16 @@ fn edge(wall: &Value) -> EdgeDef {
     } else {
         None
     };
+    let (start, end) = (pt(&wall["start"]), pt(&wall["end"]));
     EdgeDef {
-        start: pt(&wall["start"]),
+        start,
         pitch_deg,
         eave_height,
         overhang,
         half_hip,
-        direction_rad: None,
+        direction_rad: (start.distance(end) < 1e-6)
+            .then(|| wall["direction_deg"].as_f64().map(f64::to_radians))
+            .flatten(),
         breaks: rest
             .map(|&(p, h, _)| PitchBreak {
                 height: h,
@@ -81,9 +84,18 @@ fn edge(wall: &Value) -> EdgeDef {
     }
 }
 
-/// Chains the walls end to start (DACAD does not store them in order).
+fn roof_no(wall: &Value) -> u64 {
+    wall["definitions"][0]["roof_no"].as_u64().unwrap_or(1)
+}
+
+/// The main roof: the walls of roof 1, chained end to start.
 fn part(case: &Value) -> RoofPart {
-    let walls = case["input"]["walls"].as_array().unwrap();
+    let walls: Vec<&Value> = case["input"]["walls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| roof_no(w) == 1)
+        .collect();
     let mut order = vec![0];
     while order.len() < walls.len() {
         let end = pt(&walls[*order.last().unwrap()]["end"]);
@@ -94,21 +106,39 @@ fn part(case: &Value) -> RoofPart {
     }
     let mut part = RoofPart {
         name: "case".into(),
-        edges: order.iter().map(|&i| edge(&walls[i])).collect(),
+        edges: order.iter().map(|&i| edge(walls[i])).collect(),
     };
     part.normalize_ccw();
     part
 }
 
+/// Dormers: the walls of every other roof number, in authored order.
+fn dormers(case: &Value) -> Vec<Dormer> {
+    let mut by_roof: BTreeMap<u64, Vec<&Value>> = BTreeMap::new();
+    for w in case["input"]["walls"].as_array().unwrap() {
+        if roof_no(w) != 1 {
+            by_roof.entry(roof_no(w)).or_default().push(w);
+        }
+    }
+    by_roof
+        .values()
+        .map(|walls| Dormer {
+            edges: walls.iter().map(|w| edge(w)).collect(),
+            end: pt(&walls.last().unwrap()["end"]),
+        })
+        .collect()
+}
+
 #[test]
 fn engine_matches_dacad() {
     let cases = fixtures();
-    assert!(cases.len() >= 28, "fixtures missing");
+    assert!(cases.len() >= 36, "fixtures missing");
     let mut failures = Vec::new();
     for (name, case) in cases {
         let input = &case["input"];
         let mut project = Project::new(name.clone());
         project.parts.push(part(&case));
+        project.dormers = dormers(&case);
         for w in input["windows"].as_array().into_iter().flatten() {
             project.windows.push(RoofWindow {
                 x: w["x"].as_f64().unwrap(),

@@ -209,8 +209,8 @@ fn calc(project: Project) -> Value {
     let parts: Vec<Value> = project
         .parts
         .iter()
-        .map(|part| {
-            let geometry = roof::generate(part);
+        .zip(tectora_core::openings::generate_project(&project))
+        .map(|(part, geometry)| {
             let q = geometry.quantities();
             total.add(&q);
             json!({ "name": part.name, "geometry": geometry, "quantities": q })

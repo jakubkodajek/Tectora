@@ -6,7 +6,8 @@
 //!   measured in the roof plane) and adds no lines.
 //! * A chimney is a plan polygon. Each face loses the part of it inside the
 //!   face, as plan area / cos(pitch). Its sides become wall-abutment lines:
-//!   WV on the downhill side, WH uphill, WS along the slope. Roof lines
+//!   WV on the downhill side and WH uphill for sides level in the roof
+//!   plane, WS for all others. Roof lines
 //!   (e.g. the ridge) inside the chimney are removed.
 
 use crate::geom::{Point2, signed_area};
@@ -14,6 +15,9 @@ use crate::model::{Chimney, Project, RoofWindow};
 use crate::roof::{LineKind, RoofFace, RoofGeometry, RoofLine, generate};
 
 const TOL: f64 = 1e-9;
+/// A side counts as level in the roof plane (WV/WH) only when it is square
+/// to the slope; every oblique side is WS (DACAD cases C32–C36).
+const LEVEL: f64 = 1.0 - 1e-6;
 
 /// Generates every part of the project with its windows and chimneys applied.
 pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
@@ -214,9 +218,9 @@ fn apply_chimney(geo: &mut RoofGeometry, c: &Chimney) {
             }
             // Outward normal of a CCW polygon side.
             let out = (dir.y / len) * up.x - (dir.x / len) * up.y;
-            let kind = if out < -std::f64::consts::FRAC_1_SQRT_2 {
+            let kind = if out < -LEVEL {
                 LineKind::AbutmentFront
-            } else if out > std::f64::consts::FRAC_1_SQRT_2 {
+            } else if out > LEVEL {
                 LineKind::AbutmentBack
             } else {
                 LineKind::AbutmentSide

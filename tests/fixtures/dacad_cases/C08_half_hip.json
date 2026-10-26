@@ -1,17 +1,19 @@
 {
   "source": "C08_half_hip.DAD",
   "format": "V2",
+  "input_format": "DACAD V1.13",
   "input": {
     "walls": [
       {
         "start": [
-          12.0,
-          0.0
-        ],
-        "end": [
           0.0,
           0.0
         ],
+        "end": [
+          12.0,
+          0.0
+        ],
+        "direction_deg": 0.0,
         "definitions": [
           {
             "pitch_deg": 45.0,
@@ -26,12 +28,13 @@
       {
         "start": [
           12.0,
-          8.0
+          0.0
         ],
         "end": [
           12.0,
-          0.0
+          8.0
         ],
+        "direction_deg": 90.0,
         "definitions": [
           {
             "pitch_deg": 90.0,
@@ -53,13 +56,14 @@
       },
       {
         "start": [
-          0.0,
-          8.0
-        ],
-        "end": [
           12.0,
           8.0
         ],
+        "end": [
+          0.0,
+          8.0
+        ],
+        "direction_deg": 180.0,
         "definitions": [
           {
             "pitch_deg": 45.0,
@@ -74,12 +78,13 @@
       {
         "start": [
           0.0,
-          0.0
+          8.0
         ],
         "end": [
           0.0,
-          8.0
+          0.0
         ],
+        "direction_deg": 270.0,
         "definitions": [
           {
             "pitch_deg": 90.0,
