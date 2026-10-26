@@ -130,7 +130,10 @@ What the cases settle:
   | C28 | chimney 0.6 × 0.6 across the ridge | −0.220 × 2 | 116.755 | WV 2 × 0.6, WS 4 × 0.366; F 4.0 → 3.4 |
 
   A window's width and height are taken in the roof plane (deduction
-  w · h); its stored x, y are plan coordinates. A chimney is a plan polygon:
+  w · h); its stored x, y are the plan position of its lower (eave-side)
+  corner at the plane's start side. Checked on the C25 plan drawing: the
+  0.8 × 1.4 window spans x 6.0–6.8 and y 1.50–2.65 in plan
+  (1.4 · cos 35° = 1.147). A chimney is a plan polygon:
   its deduction is the plan area over cos(pitch) (0.36 / cos 35° = 0.439), WV
   is its downhill side, WH the uphill side, WS the sloped sides, and the
   ridge is cut where the chimney crosses it. V1 storage: window `0x2012`
@@ -170,6 +173,9 @@ The six V1 sample projects still differ for the same engine
 
 ## Next steps
 
+* Fixture inputs list `windows` (x, y, width, height) and `chimneys`
+  (height, plan corners), taken from the V1 originals
+  (`export --inputs`); the V2 window record is not decoded yet.
 * Add cases for each remaining rule (priorities, dormers, windows, chimneys,
   norm deductions) and calculate them with `dacad_wine_calc.sh`.
 * Run `compare` against the Rust engine (`crates/tectora-core`) as soon as its

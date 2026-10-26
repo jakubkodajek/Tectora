@@ -163,7 +163,9 @@
           }
         ]
       }
-    ]
+    ],
+    "windows": [],
+    "chimneys": []
   },
   "traits": {
     "roof_numbers": [

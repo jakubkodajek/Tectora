@@ -77,6 +77,21 @@ class Wall:
 
 
 @dataclass
+class Window:
+    """Roof window: x, y in plan; width and height measured in the roof plane."""
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+@dataclass
+class Chimney:
+    height_m: float
+    corners: list[tuple[float, float]]  # plan polygon
+
+
+@dataclass
 class ResultLine:
     type_code: int
     length_m: float
@@ -97,6 +112,10 @@ class DadProject:
     face_areas: list[float]
     line_groups: dict[str, float]   # DACAD group name → stored total, m
     area_groups: dict[str, float]   # DACAD group name → stored total, m²
+    # Openings are decoded from V1 files only so far (V2 stores windows
+    # relative to the roof face).
+    windows: list[Window] = field(default_factory=list)
+    chimneys: list[Chimney] = field(default_factory=list)
 
     def line_totals(self) -> dict[str, float]:
         """Sum of result line lengths per DACAD type abbreviation."""
@@ -135,6 +154,8 @@ def _read_v1(path: str, data: bytes) -> DadProject:
     faces: list[float] = []
     line_groups: dict[str, float] = {}
     area_groups: dict[str, float] = {}
+    windows: list[Window] = []
+    chimneys: list[Chimney] = []
     version = "V1"
     for tag, d in _v1_records(data):
         if tag == 0x0001:
@@ -157,6 +178,13 @@ def _read_v1(path: str, data: bytes) -> DadProject:
             prev = walls[-1].definitions[-1]
             walls[-1].definitions.append(RoofDefinition(
                 pitch, eave_h, overhang, 1, prev.roof_no))
+        elif tag == 0x2012:
+            windows.append(Window(*struct.unpack_from("<4f", d, 0)))
+        elif tag == 0x0013:
+            _id, height = struct.unpack_from("<Hf", d, 0)
+            chimneys.append(Chimney(height, []))
+        elif tag == 0x1013 and chimneys:
+            chimneys[-1].corners.append(struct.unpack_from("<2f", d, 0))
         elif tag == 0x1021:
             a = struct.unpack_from("<3f", d, 2)
             b = struct.unpack_from("<3f", d, 14)
@@ -171,7 +199,8 @@ def _read_v1(path: str, data: bytes) -> DadProject:
         elif tag == 0x2022:
             name = d[:14].split(b"\0")[0].decode("cp1252")
             area_groups[name] = struct.unpack_from("<f", d, len(d) - 6)[0]
-    return DadProject(path, version, walls, lines, faces, line_groups, area_groups)
+    return DadProject(path, version, walls, lines, faces, line_groups, area_groups,
+                      windows, chimneys)
 
 
 # --------------------------------------------------------------------- V2 ---
