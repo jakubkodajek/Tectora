@@ -28,6 +28,7 @@ class Def:
     pitch: float
     overhang: float = 0.0
     eave_h: float = EAVE_H
+    prio: int = 0  # horizontal priority (help: "Priorität für Horizontale")
 
 
 @dataclass
@@ -51,6 +52,15 @@ G = Def(90.0)  # gable wall
 
 def cases() -> dict[str, tuple[str, list[W]]]:
     p40, p35 = Def(40.0), Def(35.0)
+    def notch(back: float, prio_back: int = 0, prio_sides: int = 0,
+              bump: bool = False) -> list[W]:
+        # 8 x 5 hip with a 2 x 1 notch in the south wall, or a 2 x 1 bump out
+        # of it (the two geometries of DACAD's PRIORITY.DAD).
+        side, b = Def(30, prio=prio_sides), Def(back, prio=prio_back)
+        d1, d2 = (270, 90) if bump else (90, 270)
+        return [W(3, 0, side), W(1, d1, G), W(2, 0, b), W(1, d2, G),
+                W(3, 0, side), W(5, 90, Def(30)), W(8, 180, Def(30)), W(5, 270, Def(30))]
+
     return {
         "C01_gable": ("Sedlová 10×8, 40°, bez přesahu", rect(10, 8, p40, G, p40, G)),
         "C02_gable_overhang_all": ("Sedlová 10×8, 40°, přesah 0,5 na všech stěnách",
@@ -87,6 +97,14 @@ def cases() -> dict[str, tuple[str, list[W]]]:
                                [W(10, 0, Def(25)),
                                 W(math.hypot(2, 6), math.degrees(math.atan2(6, -2)), G),
                                 W(8, 180, G), W(6, 270, G)]),
+        # Horizontal priority between a notch's back wall and its neighbours.
+        "C18_notch50": ("Zářez 2×1 v jižní stěně, zadní stěna 50°, priority 0", notch(50)),
+        "C19_notch50_back1": ("Totéž, zadní stěna zářezu priorita 1", notch(50, prio_back=1)),
+        "C20_notch50_sides1": ("Totéž, jižní stěny vedle zářezu priorita 1", notch(50, prio_sides=1)),
+        "C21_bump20": ("Výstupek 2×1 z jižní stěny, čelo 20°, priority 0", notch(20, bump=True)),
+        "C22_bump20_front1": ("Totéž, čelo výstupku priorita 1", notch(20, prio_back=1, bump=True)),
+        "C23_bump20_sides1": ("Totéž, jižní stěny vedle výstupku priorita 1",
+                              notch(20, prio_sides=1, bump=True)),
     }
 
 
@@ -116,7 +134,7 @@ def encode(walls: list[W]) -> bytes:
         b = w.base
         out.append(_rec(0x0012, struct.pack(
             "<HH4fHH3ffBB", i, 1, x, y, w.length, a, 0, _material(b),
-            b.eave_h, b.overhang, b.pitch, 0.0, len(w.stacked), 0)))
+            b.eave_h, b.overhang, b.pitch, float(b.prio), len(w.stacked), 0)))
         for d in w.stacked:
             out.append(_rec(0x1012, struct.pack("<HH3f", 0, _material(d),
                                                 d.eave_h, d.overhang, d.pitch)))

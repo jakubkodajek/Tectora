@@ -60,6 +60,9 @@ class RoofDefinition:
     overhang_m: float
     material: int          # 0 = none (gable), 1 = tiles (Ziegel), 2 = sheet (Blech)
     roof_no: int = 1
+    # Horizontal priority: decides between two possible horizontal
+    # intersection lines; without one DACAD takes the line at the steeper face.
+    priority: int = 0
 
 
 @dataclass
@@ -137,15 +140,16 @@ def _read_v1(path: str, data: bytes) -> DadProject:
         if tag == 0x0001:
             version = d.split(b"\0")[0].decode("latin-1")
         elif tag == 0x0012:
-            # id, roof no, x, y, length, direction (rad), ?, gable flag?,
-            # eave height, overhang, pitch (deg), ?, knick count, window count
+            # id, roof no, x, y, length, direction (rad), ?, material,
+            # eave height, overhang, pitch (deg), priority (f32), knick count,
+            # window count
             _id, roof_no = struct.unpack_from("<HH", d, 0)
             x, y, length, ang = struct.unpack_from("<4f", d, 4)
-            eave_h, overhang, pitch = struct.unpack_from("<3f", d, 24)
+            eave_h, overhang, pitch, prio = struct.unpack_from("<4f", d, 24)
             end = (x + length * math.cos(ang), y + length * math.sin(ang))
             material = 0 if abs(pitch - 90.0) < 1e-6 else 1
             walls.append(Wall((x, y), end, [RoofDefinition(
-                pitch, eave_h, overhang, material, roof_no)]))
+                pitch, eave_h, overhang, material, roof_no, int(round(prio)))]))
         elif tag == 0x1012 and walls:
             # Stacked definition above the previous one (Krüppelwalm / knick):
             # ?, ?, eave height, overhang, pitch
@@ -268,13 +272,13 @@ def _read_v2(path: str, data: bytes) -> DadProject:
     proj, _ = _fields(proj_payload, 0, len(proj_payload))
 
     # [6] roof definitions: [1] roof no, [2] pitch, [3] eave height,
-    # [4] overhang, [5] material.
+    # [4] overhang, [5] material, [6] priority.
     defs: dict[int, RoofDefinition] = {}
     for oid, f in _objects(proj.get(6, b"")):
         defs[oid] = RoofDefinition(
             pitch_deg=_f32(f.get(2)), eave_height_m=_f32(f.get(3)),
             overhang_m=_f32(f.get(4)), material=_u(f.get(5)),
-            roof_no=_u(f.get(1)))
+            roof_no=_u(f.get(1)), priority=_u(f.get(6)))
 
     # [100][1][2]: wall id → its definition ids (bottom to top).
     rel_payload = proj.get(100, b"")

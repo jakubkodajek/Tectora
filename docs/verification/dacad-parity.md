@@ -98,6 +98,24 @@ What the cases settle:
   that is not square to the eave in plan is OS, not OL/OR: in the trapezoid
   shed C17 the slanted east verge (10, 0, 3) → (8, 6, 5.80) is OS 6.916 m, the
   square west verge OL 6.620 m, the top edge P 8.0 m.
+* Horizontal priority (C18–C23, geometry of DACAD's `PRIORITY.DAD`). It is
+  stored per definition: V1 wall record f32 at offset 36, V2 definition
+  field 6. Without priorities DACAD keeps the intersection line at the
+  steeper face (help: "wählt das Berechnungsmodul immer diejenige
+  Schnittlinie, die bei der steileren Dachfläche liegt"):
+
+  | Case | Priority 1 on | F | G | c | area |
+  |---|---|---|---|---|---|
+  | C18 notch, back wall 50° | none | 3.000 | 15.275 | 2.000 | 44.632 |
+  | C19 | back wall (steeper, same as default) | 3.000 | 15.275 | 2.000 | 44.632 |
+  | C20 | the two 30° walls beside it | 2.611 | 16.049 | 2.121 | 45.126 |
+  | C21 bump, front wall 20° | none | 3.360 | 14.709 | 2.589 | 47.657 |
+  | C22 | front wall (flatter) | 3.000 | 15.275 | 2.000 | 48.008 |
+  | C23 | the two 30° walls beside it (steeper, same as default) | 3.360 | 14.709 | 2.589 | 47.657 |
+
+  The horizontal intersection line is reported as type `c`. A 20° back wall
+  in a notch (instead of a bump) makes DACAD itself stop with
+  "E0002: Kein Durchstoßpunkt durch XY-Ebene für P1".
 * Files saved by this DACAD build store the footprint clockwise (wall 2 of
   C08 runs from (12, 8) to (12, 0)); the V1 input ran counter-clockwise.
 

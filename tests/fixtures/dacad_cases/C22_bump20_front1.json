@@ -1,0 +1,221 @@
+{
+  "source": "C22_bump20_front1.DAD",
+  "format": "V2",
+  "input": {
+    "walls": [
+      {
+        "start": [
+          3.0,
+          0.0
+        ],
+        "end": [
+          0.0,
+          0.0
+        ],
+        "definitions": [
+          {
+            "pitch_deg": 30.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1,
+            "priority": 0
+          }
+        ]
+      },
+      {
+        "start": [
+          3.0,
+          -1.0
+        ],
+        "end": [
+          3.0,
+          0.0
+        ],
+        "definitions": [
+          {
+            "pitch_deg": 90.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 0,
+            "roof_no": 1,
+            "priority": 0
+          }
+        ]
+      },
+      {
+        "start": [
+          5.0,
+          -1.0
+        ],
+        "end": [
+          3.0,
+          -1.0
+        ],
+        "definitions": [
+          {
+            "pitch_deg": 20.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1,
+            "priority": 1
+          }
+        ]
+      },
+      {
+        "start": [
+          5.0,
+          -0.0
+        ],
+        "end": [
+          5.0,
+          -1.0
+        ],
+        "definitions": [
+          {
+            "pitch_deg": 90.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 0,
+            "roof_no": 1,
+            "priority": 0
+          }
+        ]
+      },
+      {
+        "start": [
+          8.0,
+          0.0
+        ],
+        "end": [
+          5.0,
+          0.0
+        ],
+        "definitions": [
+          {
+            "pitch_deg": 30.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1,
+            "priority": 0
+          }
+        ]
+      },
+      {
+        "start": [
+          8.0,
+          5.0
+        ],
+        "end": [
+          8.0,
+          0.0
+        ],
+        "definitions": [
+          {
+            "pitch_deg": 30.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1,
+            "priority": 0
+          }
+        ]
+      },
+      {
+        "start": [
+          0.0,
+          5.0
+        ],
+        "end": [
+          8.0,
+          5.0
+        ],
+        "definitions": [
+          {
+            "pitch_deg": 30.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1,
+            "priority": 0
+          }
+        ]
+      },
+      {
+        "start": [
+          0.0,
+          0.0
+        ],
+        "end": [
+          0.0,
+          5.0
+        ],
+        "definitions": [
+          {
+            "pitch_deg": 30.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1,
+            "priority": 0
+          }
+        ]
+      }
+    ]
+  },
+  "traits": {
+    "roof_numbers": [
+      1
+    ],
+    "stacked_definitions": false,
+    "pitches": [
+      20.0,
+      30.0,
+      90.0
+    ],
+    "eave_heights": [
+      3.0
+    ],
+    "overhangs": [
+      0.0
+    ]
+  },
+  "dacad_results": {
+    "lines_by_type": {
+      "F": 3.0,
+      "G": 15.2752,
+      "K": 3.9392,
+      "OL": 2.8794,
+      "OR": 2.8794,
+      "T": 26.0,
+      "c": 2.0
+    },
+    "line_groups": {
+      "Schlucht -": 0.0,
+      "Zlom -": 2.0,
+      "92 Bocné napojenie -": 0.0,
+      "93 Zadné napojenie -": 0.0,
+      "91 Predné napojenie -": 0.0,
+      "94 Krajné šikmo -": 0.0,
+      "5 Krajné pravé -": 2.8794,
+      "4 Krajné lavé -": 2.8794,
+      "7 Pult -": 0.0,
+      "3 Úžlabie -": 3.9392,
+      "2 Nárožie -": 15.2752,
+      "1 Hreben -": 3.0,
+      "6 Odkvap -": 26.0
+    },
+    "area_groups": {
+      "Plech - ": 0.0,
+      "Škridla - ": 48.0076,
+      "Stena : 1": 84.3637,
+      "Solarpanel": 0.0,
+      "Bridlica": 0.0,
+      "Kamen": 0.0
+    },
+    "line_count": 50,
+    "face_count": 13
+  }
+}

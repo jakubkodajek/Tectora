@@ -70,6 +70,7 @@ def fixture(pr: DadProject) -> dict:
                             "overhang_m": round(d.overhang_m, 4),
                             "material": d.material,
                             "roof_no": d.roof_no,
+                            "priority": d.priority,
                         }
                         for d in w.definitions
                     ],
