@@ -1,17 +1,19 @@
 {
   "source": "C12_L_gable_ends.DAD",
   "format": "V2",
+  "input_format": "DACAD V1.13",
   "input": {
     "walls": [
       {
         "start": [
-          10.0,
-          0.0
-        ],
-        "end": [
           0.0,
           0.0
         ],
+        "end": [
+          10.0,
+          0.0
+        ],
+        "direction_deg": 0.0,
         "definitions": [
           {
             "pitch_deg": 35.0,
@@ -26,12 +28,13 @@
       {
         "start": [
           10.0,
-          4.0
+          0.0
         ],
         "end": [
           10.0,
-          0.0
+          4.0
         ],
+        "direction_deg": 90.0,
         "definitions": [
           {
             "pitch_deg": 90.0,
@@ -45,33 +48,14 @@
       },
       {
         "start": [
-          4.0,
-          4.0
-        ],
-        "end": [
           10.0,
           4.0
         ],
-        "definitions": [
-          {
-            "pitch_deg": 35.0,
-            "eave_height_m": 3.0,
-            "overhang_m": 0.0,
-            "material": 1,
-            "roof_no": 1,
-            "priority": 0
-          }
-        ]
-      },
-      {
-        "start": [
-          4.0,
-          10.0
-        ],
         "end": [
           4.0,
           4.0
         ],
+        "direction_deg": 180.0,
         "definitions": [
           {
             "pitch_deg": 35.0,
@@ -85,13 +69,35 @@
       },
       {
         "start": [
-          0.0,
-          10.0
+          4.0,
+          4.0
         ],
         "end": [
           4.0,
           10.0
         ],
+        "direction_deg": 90.0,
+        "definitions": [
+          {
+            "pitch_deg": 35.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1,
+            "priority": 0
+          }
+        ]
+      },
+      {
+        "start": [
+          4.0,
+          10.0
+        ],
+        "end": [
+          0.0,
+          10.0
+        ],
+        "direction_deg": 180.0,
         "definitions": [
           {
             "pitch_deg": 90.0,
@@ -106,12 +112,13 @@
       {
         "start": [
           0.0,
-          0.0
+          10.0
         ],
         "end": [
           0.0,
-          10.0
+          0.0
         ],
+        "direction_deg": 270.0,
         "definitions": [
           {
             "pitch_deg": 35.0,

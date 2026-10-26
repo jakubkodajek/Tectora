@@ -58,8 +58,28 @@ def rect(lx: float, ly: float, south: Def, east: Def, north: Def, west: Def,
 G = Def(90.0)  # gable wall
 
 
+@dataclass
+class Dormer:
+    """A dormer is its own roof (help: "Gauben werden generell als eigenes
+    Dach"): an open chain of walls from *start*, cut against the main roof.
+    *kind* and *host* are the two values of its 0x11 roof record, copied
+    from DACAD's samples (TRAING01: 1, 3)."""
+    start: tuple[float, float]
+    walls: list[W]
+    kind: int = 1
+    host: int = 3
+
+
 def square(x: float, y: float, a: float) -> list[tuple[float, float]]:
     return [(x, y), (x + a, y), (x + a, y + a), (x, y + a)]
+
+
+def rotated_rect(cx: float, cy: float, a: float, b: float,
+                 deg: float) -> list[tuple[float, float]]:
+    """Plan rectangle a × b centred on (cx, cy), side a turned *deg* from x."""
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    pts = [(-a / 2, -b / 2), (a / 2, -b / 2), (a / 2, b / 2), (-a / 2, b / 2)]
+    return [(cx + x * c - y * s, cy + x * s + y * c) for x, y in pts]
 
 
 def cases() -> dict[str, tuple]:
@@ -134,6 +154,34 @@ def cases() -> dict[str, tuple]:
                         hip_with(), [Chimney(9.0, square(5.7, 1.7, 0.6))]),
         "C28_chimney_ridge": ("Valbová C04 + komín 0,6×0,6 přes hřeben, výška 9 m",
                               hip_with(), [Chimney(9.0, square(5.7, 3.7, 0.6))]),
+        # Gable dormer like TRAING01's: front wall on the eave wall line,
+        # zero-length side walls whose direction sets the side planes.
+        "C29_dormer_gable": ("Sedlová 12×8 40° + sedlový vikýř šířky 2 m, okap 4,0 m, 45°",
+                             rect(12, 8, Def(40), G, Def(40), G), None,
+                             [Dormer((5.0, 0.0), [W(0, 270, Def(45, 0, 4.0)),
+                                                  W(2, 0, Def(90, 0, 4.0)),
+                                                  W(0, 90, Def(45, 0, 4.0))])]),
+        "C30_dormer_gable_setback": ("Totéž, čelo vikýře 1 m za okapovou stěnou",
+                                     rect(12, 8, Def(40), G, Def(40), G), None,
+                                     [Dormer((5.0, 1.0), [W(0, 270, Def(45, 0, 4.0)),
+                                                          W(2, 0, Def(90, 0, 4.0)),
+                                                          W(0, 90, Def(45, 0, 4.0))])]),
+        "C31_dormer_shed": ("Sedlová 12×8 40° + pultový vikýř šířky 3 m, 15°, okap 5,0 m, čelo 1 m za stěnou",
+                            rect(12, 8, Def(40), G, Def(40), G), None,
+                            [Dormer((4.5, 1.0), [W(0, 270, Def(90, 0, 5.0)),
+                                                 W(3, 0, Def(15, 0, 5.0)),
+                                                 W(0, 90, Def(90, 0, 5.0))])]),
+        # Oblique chimneys: which side counts as WV / WH / WS.
+        "C32_chimney_rot30": ("Valbová C04 + komín 0,6×0,6 pootočený o 30°",
+                              hip_with(), [Chimney(9.0, rotated_rect(6.0, 2.0, 0.6, 0.6, 30))]),
+        "C33_chimney_rect_rot40": ("Valbová C04 + komín 1,0×0,4 pootočený o 40°",
+                                   hip_with(), [Chimney(9.0, rotated_rect(6.0, 2.0, 1.0, 0.4, 40))]),
+        "C34_chimney_rect_rot50": ("Valbová C04 + komín 1,0×0,4 pootočený o 50°",
+                                   hip_with(), [Chimney(9.0, rotated_rect(6.0, 2.0, 1.0, 0.4, 50))]),
+        "C35_chimney_rot2": ("Valbová C04 + komín 0,6×0,6 pootočený o 2°",
+                             hip_with(), [Chimney(9.0, rotated_rect(6.0, 2.0, 0.6, 0.6, 2))]),
+        "C36_chimney_rot10": ("Valbová C04 + komín 0,6×0,6 pootočený o 10°",
+                              hip_with(), [Chimney(9.0, rotated_rect(6.0, 2.0, 0.6, 0.6, 10))]),
     }
 
 
@@ -145,8 +193,24 @@ def _material(d: Def) -> int:
     return 0 if abs(d.pitch - 90.0) < 1e-9 else 1
 
 
-def encode(walls: list[W], chimneys: list[Chimney] | None = None) -> bytes:
-    chimneys = chimneys or []
+def _wall_rec(i: int, roof: int, x: float, y: float, w: W) -> list[bytes]:
+    a, b = math.radians(w.deg), w.base
+    out = [_rec(0x0012, struct.pack(
+        "<HH4fHH3ffBB", i, roof, x, y, w.length, a, 0, _material(b),
+        b.eave_h, b.overhang, b.pitch, float(b.prio), len(w.stacked),
+        len(w.windows)))]
+    for d in w.stacked:
+        out.append(_rec(0x1012, struct.pack("<HH3f", 0, _material(d),
+                                            d.eave_h, d.overhang, d.pitch)))
+    for win in w.windows:
+        out.append(_rec(0x2012, struct.pack("<4f", *win)))
+    return out
+
+
+def encode(walls: list[W], chimneys: list[Chimney] | None = None,
+           dormers: list[Dormer] | None = None) -> bytes:
+    chimneys, dormers = chimneys or [], dormers or []
+    n_walls = len(walls) + sum(len(d.walls) for d in dormers)
     out = [b"DACAD\x1a",
            _rec(0x0001, b"DACAD V1.13\0"),
            _rec(0x0002, b"$Header: tectora dacad_testcases.py $\0"),
@@ -156,25 +220,25 @@ def encode(walls: list[W], chimneys: list[Chimney] | None = None) -> bytes:
            _rec(0x0004, bytes.fromhex("4111d42d")),
            _rec(0x0005, bytes.fromhex("7b247e2e")),
            _rec(0x0006, b"1.29H\0"),
-           _rec(0x0010, struct.pack("<3H", 1, len(walls), len(chimneys))),
+           _rec(0x0010, struct.pack("<3H", 1 + len(dormers), n_walls, len(chimneys))),
            _rec(0x0011, struct.pack("<3H", 1, 0, 0))]
+    for r, d in enumerate(dormers, start=2):
+        out.append(_rec(0x0011, struct.pack("<3H", r, d.kind, d.host)))
     x = y = 0.0
     for i, w in enumerate(walls, start=1):
-        a = math.radians(w.deg)
-        b = w.base
-        out.append(_rec(0x0012, struct.pack(
-            "<HH4fHH3ffBB", i, 1, x, y, w.length, a, 0, _material(b),
-            b.eave_h, b.overhang, b.pitch, float(b.prio), len(w.stacked),
-            len(w.windows))))
-        for d in w.stacked:
-            out.append(_rec(0x1012, struct.pack("<HH3f", 0, _material(d),
-                                                d.eave_h, d.overhang, d.pitch)))
-        for win in w.windows:
-            out.append(_rec(0x2012, struct.pack("<4f", *win)))
-        x += w.length * math.cos(a)
-        y += w.length * math.sin(a)
+        out += _wall_rec(i, 1, x, y, w)
+        x += w.length * math.cos(math.radians(w.deg))
+        y += w.length * math.sin(math.radians(w.deg))
     if math.hypot(x, y) > 1e-6:
         raise ValueError(f"footprint not closed, ends at ({x:.3f}, {y:.3f})")
+    i = len(walls)
+    for r, d in enumerate(dormers, start=2):
+        x, y = d.start
+        for w in d.walls:
+            i += 1
+            out += _wall_rec(i, r, x, y, w)
+            x += w.length * math.cos(math.radians(w.deg))
+            y += w.length * math.sin(math.radians(w.deg))
     for i, c in enumerate(chimneys, start=1):
         out.append(_rec(0x0013, struct.pack("<HfH", i, c.height, len(c.corners))))
         for cx, cy in c.corners:

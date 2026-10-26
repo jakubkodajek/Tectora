@@ -140,6 +140,23 @@ What the cases settle:
   (x, y, w, h) after its wall, counted in the wall record's last byte;
   chimney `0x13` (u16 id, f32 height, u16 corner count) followed by `0x1013`
   corners (x, y), counted in `0x10`.
+* Oblique chimneys (C32–C36, rotated 2°, 10°, 30°, 40°, 50°): every side
+  is WS. WV and WH occur only for sides that are horizontal in the roof
+  (parallel to the eave, C27); even 2° makes all four sides WS.
+* Dormers (C29–C31) are separate roofs (help: "Gauben werden generell als
+  eigenes Dach"), cut against the main roof. V1: walls with roof number 2
+  plus a `0x11` record (roof 2, 1, 3 as in TRAING01); the side walls have
+  zero length and only their direction orients their plane.
+
+  | Case | Dormer | DACAD lines (m) | Tile area |
+  |---|---|---|---|
+  | C29 | gable, 2 m wide, 45°, eave 4.0, front on the eave wall | T 24.384 (incl. a **−2.0** T: the main eave under the dormer front), F 14.384, K 3.699, OL/OR 11.857, WS 3.111 | 125.708 |
+  | C30 | same, front 1 m behind the wall | T 24.384, F 13.384, K 3.699, OL/OR 11.857, WV 2.0, WS 0.501 | 125.490 |
+  | C31 | shed, 3 m wide, 15°, eave 5.0, front 1 m behind the wall | T 27.0, F 12.0, OL/OR 12.548, WV 3.0, WS 5.307, c 3.0 | 123.672 |
+
+  The dormer's front wall against the main roof is WV, its cheeks WS, the
+  valleys of a gable dormer K, and the line where a shed dormer meets the
+  main roof `c`. The dormer's own eaves and verges count as T and OL/OR.
 * Files saved by this DACAD build store the footprint clockwise (wall 2 of
   C08 runs from (12, 8) to (12, 0)); the V1 input ran counter-clockwise.
 
@@ -173,9 +190,12 @@ The six V1 sample projects still differ for the same engine
 
 ## Next steps
 
-* Fixture inputs list `windows` (x, y, width, height) and `chimneys`
-  (height, plan corners), taken from the V1 originals
-  (`export --inputs`); the V2 window record is not decoded yet.
+* Fixture inputs are taken from the V1 originals (`export --inputs`):
+  walls counter-clockwise as authored, with `direction_deg` (zero-length
+  dormer side walls are oriented only by it), roof numbers, `windows`
+  (x, y, width, height) and `chimneys` (height, plan corners). DACAD's
+  re-saved V2 file drops wall directions and dormer roof numbers, and its
+  window record is not decoded yet.
 * Add cases for each remaining rule (priorities, dormers, windows, chimneys,
   norm deductions) and calculate them with `dacad_wine_calc.sh`.
 * Run `compare` against the Rust engine (`crates/tectora-core`) as soon as its

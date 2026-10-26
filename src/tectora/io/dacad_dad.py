@@ -70,6 +70,9 @@ class Wall:
     start: tuple[float, float]
     end: tuple[float, float]
     definitions: list[RoofDefinition] = field(default_factory=list)
+    # Stored wall direction (V1 only). Needed for zero-length walls, e.g. the
+    # side walls of a dormer, whose direction alone orients their plane.
+    direction_deg: float | None = None
 
     @property
     def length(self) -> float:
@@ -170,7 +173,8 @@ def _read_v1(path: str, data: bytes) -> DadProject:
             end = (x + length * math.cos(ang), y + length * math.sin(ang))
             material = 0 if abs(pitch - 90.0) < 1e-6 else 1
             walls.append(Wall((x, y), end, [RoofDefinition(
-                pitch, eave_h, overhang, material, roof_no, int(round(prio)))]))
+                pitch, eave_h, overhang, material, roof_no, int(round(prio)))],
+                math.degrees(ang)))
         elif tag == 0x1012 and walls:
             # Stacked definition above the previous one (Krüppelwalm / knick):
             # ?, ?, eave height, overhang, pitch

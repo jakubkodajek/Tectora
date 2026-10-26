@@ -53,18 +53,24 @@ def material_area(pr: DadProject, material: str) -> float | None:
     return sum(found) if found else None
 
 
-def fixture(pr: DadProject, openings: DadProject | None = None) -> dict:
-    """*openings*: project to take windows/chimneys from (a V1 input file)."""
-    op = openings or pr
-    roofs = sorted({d.roof_no for w in pr.walls for d in w.definitions})
+def fixture(pr: DadProject, original: DadProject | None = None) -> dict:
+    """*original*: the V1 input file DACAD calculated. When given, the input
+    side of the fixture comes from it (counter-clockwise walls as authored,
+    wall directions, roof numbers, windows, chimneys); DACAD's re-saved V2
+    file loses wall directions and dormer roof numbers."""
+    op = original or pr
+    roofs = sorted({d.roof_no for w in op.walls for d in w.definitions})
     return {
         "source": Path(pr.path).name,
         "format": pr.version,
+        "input_format": op.version,
         "input": {
             "walls": [
                 {
                     "start": [round(c, 4) for c in w.start],
                     "end": [round(c, 4) for c in w.end],
+                    **({"direction_deg": round(w.direction_deg, 4)}
+                       if w.direction_deg is not None else {}),
                     "definitions": [
                         {
                             "pitch_deg": round(d.pitch_deg, 4),
@@ -77,7 +83,7 @@ def fixture(pr: DadProject, openings: DadProject | None = None) -> dict:
                         for d in w.definitions
                     ],
                 }
-                for w in pr.walls
+                for w in op.walls
             ],
             "windows": [
                 {"x": round(w.x, 4), "y": round(w.y, 4),
@@ -92,12 +98,12 @@ def fixture(pr: DadProject, openings: DadProject | None = None) -> dict:
         },
         "traits": {
             "roof_numbers": roofs,
-            "stacked_definitions": any(len(w.definitions) > 1 for w in pr.walls),
-            "pitches": sorted({round(d.pitch_deg, 2) for w in pr.walls
+            "stacked_definitions": any(len(w.definitions) > 1 for w in op.walls),
+            "pitches": sorted({round(d.pitch_deg, 2) for w in op.walls
                                for d in w.definitions}),
-            "eave_heights": sorted({round(d.eave_height_m, 3) for w in pr.walls
+            "eave_heights": sorted({round(d.eave_height_m, 3) for w in op.walls
                                     for d in w.definitions}),
-            "overhangs": sorted({round(d.overhang_m, 3) for w in pr.walls
+            "overhangs": sorted({round(d.overhang_m, 3) for w in op.walls
                                  for d in w.definitions}),
         },
         "dacad_results": {
@@ -206,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("src", type=Path)
     e.add_argument("out", type=Path)
     e.add_argument("--inputs", type=Path,
-                   help="folder with the V1 originals to take windows/chimneys from")
+                   help="folder with the V1 originals; the fixture input is taken from them")
     c = sub.add_parser("compare")
     c.add_argument("src", type=Path)
     c.add_argument("--engine", required=True)
