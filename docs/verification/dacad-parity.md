@@ -16,6 +16,12 @@ Goal: Tectora's roof quantities must equal DACAD's for the same input.
 * Every footprint wall carries its own roof definition: pitch, eave height
   (Traufenhöhe), eave overhang (Traufenvorsprung, **measured horizontally**),
   material (tiles / sheet / none), priority, roof number.
+* **Traufenhöhe is the height of the eave edge itself**, i.e. at the outer
+  line after the overhang, not at the wall. Evidence: in TRAING04/06/08 every
+  stored T line lies exactly at the stored eave height of its wall, for walls
+  with overhang 0, 0.2, 0.4 and 0.45 m.
+* Zero-length walls occur in the files (markers next to dormers/windows) and
+  carry no roof plane.
 * A wall can stack several definitions (up to 5 in `E008.DAD`): a Krüppelwalm
   is a vertical gable (90°, no material) up to the Krüppel height, then a hip
   plane with its own pitch; a pitch break (Knick) works the same way.
