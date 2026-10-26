@@ -79,6 +79,14 @@ def cases() -> dict[str, tuple[str, list[W]]]:
         "C14_mansard": ("Mansardová valbová 12×8: 60° do 5,0 m, nad tím 30°",
                         rect(12, 8, *(Def(60),) * 4,
                              {k: [Def(30, 0, 5.0)] for k in "SENW"})),
+        # Asymmetric cases to tell OL (verge at the plane's start) from OR.
+        "C15_shed_steep": ("Pultová 10×6, 40°, okap jen na jihu", rect(10, 6, Def(40), G, G, G)),
+        "C16_hip_east_high": ("Valbová 12×8, 35°, východní okap ve výšce 3,5 m",
+                              rect(12, 8, p35, Def(35, 0, 3.5), p35, p35)),
+        "C17_shed_trapezoid": ("Pultová na lichoběžníku (0,0)-(10,0)-(8,6)-(0,6), 25°, okap na jihu",
+                               [W(10, 0, Def(25)),
+                                W(math.hypot(2, 6), math.degrees(math.atan2(6, -2)), G),
+                                W(8, 180, G), W(6, 270, G)]),
     }
 
 

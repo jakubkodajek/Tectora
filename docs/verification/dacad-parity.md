@@ -91,6 +91,13 @@ What the cases settle:
 * Eaves at different heights on one roof leave short OL/OR verges, not wall
   abutments (C10).
 * A pitch break line is type `c` (Knick) and the hips run through it (C14).
+* Verge sides (C15–C17, from the stored line endpoints): OL is the verge on
+  the left, OR on the right, looking at the plane from outside its eave. In
+  C16 (east eave 3.5 m) the 0.872 m step at the north end is OL (it belongs to
+  the north plane, whose left is east), the one at the south end OR. A verge
+  that is not square to the eave in plan is OS, not OL/OR: in the trapezoid
+  shed C17 the slanted east verge (10, 0, 3) → (8, 6, 5.80) is OS 6.916 m, the
+  square west verge OL 6.620 m, the top edge P 8.0 m.
 * Files saved by this DACAD build store the footprint clockwise (wall 2 of
   C08 runs from (12, 8) to (12, 0)); the V1 input ran counter-clockwise.
 
