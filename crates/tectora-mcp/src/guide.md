@@ -37,7 +37,7 @@ in the user's language, e.g. "Pitch of the street side set to 42° per drawing".
 
 `calc` returns the roof area and line lengths keyed by DACAD codes:
 T eave (Traufe/okap), F ridge (First/hřeben), G hip (Grat/nároží),
-K valley (Kehle/úžlabí), OL/OR verge left/right (Ortgang/štítová hrana),
+K valley (Kehle/úžlabí), OL/OR/OS verge left/right/oblique (Ortgang/štítová hrana),
 P top edge of a shed roof against its wall (Pult), c pitch break (Knick/zlom).
 The rules were checked against roofs calculated by DACAD itself: a step
 between eaves at different heights is a short verge, the lower edge of a

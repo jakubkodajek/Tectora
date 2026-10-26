@@ -13,7 +13,8 @@
 //! wall, and at every plane start all vertices on it bend. Checked against
 //! roofs calculated by DACAD itself (`tests/fixtures/dacad_cases`):
 //!
-//! * A plane meeting a still-waiting wall traces a verge (OL/OR), also where
+//! * A plane meeting a still-waiting wall traces a verge (OL/OR, or OS when
+//!   not square to the eave), also where
 //!   eaves sit at different heights (case C10), and a horizontal top edge
 //!   against a wall is a Pult line P (shed, C07).
 //! * A clipped gable (Krüppelwalm) waits up to its half-hip height; the
@@ -56,6 +57,8 @@ pub enum LineKind {
 pub enum VergeSide {
     Left,
     Right,
+    /// Not square to the eave in plan (DACAD: OS).
+    Oblique,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -81,12 +84,13 @@ impl RoofLine {
         dist3(self.a, self.b)
     }
 
-    /// DACAD's line code, with verges split into OL (left) and OR (right).
-    /// Which side DACAD calls left is not confirmed by an asymmetric case yet.
+    /// DACAD's line code, with verges split into OL (left), OR (right) and
+    /// OS (oblique), seen from outside the plane's eave (cases C15–C17).
     pub fn dacad_code(&self) -> &'static str {
         match (self.kind, self.side) {
             (LineKind::Verge, Some(VergeSide::Left)) => "OL",
             (LineKind::Verge, Some(VergeSide::Right)) => "OR",
+            (LineKind::Verge, Some(VergeSide::Oblique)) => "OS",
             (kind, _) => kind.dacad_code(),
         }
     }
@@ -944,8 +948,14 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
             // facing the roof from outside its eave.
             [true, false] if flat => (LineKind::Pult, None),
             [false, true] if flat => (LineKind::Pult, None),
-            [true, false] => (LineKind::Verge, Some(VergeSide::Left)),
-            [false, true] => (LineKind::Verge, Some(VergeSide::Right)),
+            [true, false] => (
+                LineKind::Verge,
+                Some(verge_side(sim, arc.right, pa, pb, VergeSide::Left)),
+            ),
+            [false, true] => (
+                LineKind::Verge,
+                Some(verge_side(sim, arc.left, pa, pb, VergeSide::Right)),
+            ),
             [false, false] if flat => (LineKind::Ridge, None),
             [false, false] if arc.reflex => (LineKind::Valley, None),
             [false, false] => (LineKind::Hip, None),
@@ -1014,6 +1024,19 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
         }
     }
     geo
+}
+
+/// Side of a verge of the plane of edge `plane`: `end` (left at the plane's
+/// start, right at its end) when the verge is square to the eave in plan,
+/// otherwise oblique (DACAD case C17).
+fn verge_side(sim: &Sim, plane: usize, a: [f64; 3], b: [f64; 3], end: VergeSide) -> VergeSide {
+    let d = Point2::new(b[0] - a[0], b[1] - a[1]);
+    let len = d.x.hypot(d.y);
+    if len > POS_TOL && dot(d, sim.lines[plane].dir).abs() / len > 1e-6 {
+        VergeSide::Oblique
+    } else {
+        end
+    }
 }
 
 /// Area of a planar 3D polygon (Newell's method).

@@ -81,7 +81,7 @@ export interface RoofLine {
   kind: LineKind;
   a: [number, number, number];
   b: [number, number, number];
-  side?: "left" | "right";
+  side?: "left" | "right" | "oblique";
 }
 
 export interface RoofFace {

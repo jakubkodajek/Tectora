@@ -390,7 +390,7 @@ fn tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR verge left/right, P shed top edge, c pitch break), per part and in total.",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {

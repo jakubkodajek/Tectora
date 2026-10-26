@@ -101,7 +101,7 @@ fn part(case: &Value) -> RoofPart {
 #[test]
 fn engine_matches_dacad() {
     let cases = fixtures();
-    assert!(cases.len() >= 14, "fixtures missing");
+    assert!(cases.len() >= 17, "fixtures missing");
     let mut failures = Vec::new();
     for (name, case) in cases {
         let geo = generate(&part(&case));
