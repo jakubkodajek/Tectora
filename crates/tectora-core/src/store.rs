@@ -355,6 +355,28 @@ impl Store {
         Ok(before)
     }
 
+    /// Restores the version from before the change recorded at `ts_ms`,
+    /// undoing it and every later change in one step.
+    pub fn revert_to(&self, id: &str, ts_ms: u64, actor: &str) -> Result<Project, String> {
+        let log = self.activity(id);
+        let pos = log
+            .iter()
+            .rposition(|e| e.ts_ms == ts_ms)
+            .ok_or_else(|| format!("{id}: no recorded change at {ts_ms}"))?;
+        let before = log[pos]
+            .before
+            .clone()
+            .ok_or_else(|| format!("{id}: that change created the project"))?;
+        let undone = log.len() - pos;
+        let summary = if undone == 1 {
+            format!("Reverted: {}", log[pos].summary)
+        } else {
+            format!("Reverted {undone} changes since: {}", log[pos].summary)
+        };
+        self.save_as(Some(id.to_string()), &before, actor, &summary)?;
+        Ok(before)
+    }
+
     pub fn delete(&self, id: &str) -> Result<(), String> {
         fs::remove_file(self.path(id)?).map_err(|e| e.to_string())?;
         let _ = fs::remove_file(self.activity_path(id)?);
@@ -416,6 +438,16 @@ mod tests {
         assert_eq!(store.summarize(&id).unwrap().last_activity.unwrap().summary, "Steeper front");
 
         assert_eq!(store.revert_last(&id, USER_ACTOR).unwrap(), a);
+        assert_eq!(store.load(&id).unwrap(), a);
+
+        // Two agent steps undone together.
+        store.save_as(Some(id.clone()), &b, "claude", "Step 1").unwrap();
+        let first = store.activity(&id).last().unwrap().ts_ms;
+        let mut c = b.clone();
+        c.parts[0].edges[1].overhang = 0.9;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store.save_as(Some(id.clone()), &c, "claude", "Step 2").unwrap();
+        assert_eq!(store.revert_to(&id, first, USER_ACTOR).unwrap(), a);
         assert_eq!(store.load(&id).unwrap(), a);
         store.delete(&id).unwrap();
         assert!(store.activity(&id).is_empty());

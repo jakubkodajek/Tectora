@@ -59,7 +59,7 @@
           <span class="who" class:ai><Icon name={ai ? "sparkle" : "cursor"} size={13} />{ai ? actorName(a.actor) : t("ai.you")}</span>
           <time>{relativeTime(a.ts_ms)}</time>
         </div>
-        <p class="summary">{a.summary}</p>
+        <p class="summary">{!ai && a.summary.startsWith("Reverted") ? t("ai.revertedEntry") : a.summary}</p>
         {#if a.changes.length}
           <button class="link" onclick={() => (open[i] = !open[i])}>
             {open[i] ? t("ai.hideChanges") : t("ai.showChanges", { n: a.changes.length })}

@@ -55,12 +55,21 @@
 
   const snapshot = () => JSON.stringify(project);
 
-  /** The newest AI change the user has not accepted yet. */
-  const pending = $derived(activity[0] && isAi(activity[0].actor) && activity[0].ts_ms > accepted ? activity[0] : null);
+  /** AI changes since the user's last own action or accept, newest first. */
+  const pendingList = $derived.by(() => {
+    const out: ActivityItem[] = [];
+    for (const a of activity) {
+      if (!isAi(a.actor) || a.ts_ms <= accepted) break;
+      out.push(a);
+    }
+    return out;
+  });
+  const pending = $derived(pendingList.length ? pendingList[0] : null);
+  const pendingChanges = $derived(pendingList.flatMap((a) => a.changes));
   const highlight = $derived.by(() => {
     if (!project) return new Set<string>();
     if (focusChange) return changedEdges([focusChange], project);
-    return pending ? changedEdges(pending.changes, project) : new Set<string>();
+    return changedEdges(pendingChanges, project);
   });
   const wallCount = $derived(project?.parts.reduce((n, p) => n + p.edges.length, 0) ?? 0);
 
@@ -145,6 +154,7 @@
         at = 0;
         historyLen = 1;
         if (p.parts.length === 0) drawing = [];
+        if (pending) dock = "ai";
       } else {
         // External change (AI agent, CLI): keep it undoable and show it.
         pushHistory();
@@ -174,10 +184,12 @@
     markReviewed(id, pending.ts_ms);
   }
 
-  async function revert() {
+  /** Reverts the pending AI changes from the banner, or the latest one from the AI tab. */
+  async function revert(all = false) {
     try {
       clearTimeout(saveTimer);
-      const p = await api.revertLastChange(id);
+      const oldest = pendingList[pendingList.length - 1];
+      const p = all && oldest ? await api.revertChanges(id, oldest.ts_ms) : await api.revertLastChange(id);
       lastSaved = JSON.stringify(p);
       project = p;
       saveState = "saved";
@@ -397,15 +409,17 @@
           <div class="review" role="status">
             <Icon name="sparkle" size={18} />
             <div class="review-text">
-              <strong>{t("review.title", { who: actorName(pending.actor) })}</strong>
-              <span>{pending.summary}</span>
-              {#if pending.changes.length}
+              <strong>
+                {t("review.title", { who: actorName(pending.actor) })}{#if pendingList.length > 1}<span class="steps">{t("review.steps", { n: pendingList.length })}</span>{/if}
+              </strong>
+              <span>{pendingList.map((a) => a.summary).reverse().join(" → ")}</span>
+              {#if pendingChanges.length}
                 <span class="review-list">
-                  {pending.changes.slice(0, 3).map((c) => describeChange(c, project!.parts.length > 1)).join(" · ")}{pending.changes.length > 3 ? ` · ${t("review.more", { n: pending.changes.length - 3 })}` : ""}
+                  {pendingChanges.slice(0, 4).map((c) => describeChange(c, project!.parts.length > 1)).join(" · ")}{pendingChanges.length > 4 ? ` · ${t("review.more", { n: pendingChanges.length - 4 })}` : ""}
                 </span>
               {/if}
             </div>
-            <button class="btn sm" onclick={revert}><Icon name="undo" size={14} />{t("ai.revert")}</button>
+            <button class="btn sm" onclick={() => revert(true)}><Icon name="undo" size={14} />{pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}</button>
             <button class="btn sm accept" onclick={accept}><Icon name="check" size={14} />{t("review.accept")}</button>
           </div>
         {/if}
@@ -469,7 +483,7 @@
           {#if dock === "results"}
             <Results {result} />
           {:else if dock === "ai"}
-            <AiPanel {id} {project} {activity} onrevert={revert} {onconnect} onfocus={(c) => (focusChange = c)} />
+            <AiPanel {id} {project} {activity} onrevert={() => revert(false)} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
             <JobPanel {project} onchange={commit} />
           {/if}
@@ -673,6 +687,14 @@
     flex-direction: column;
     font-size: 13px;
     color: var(--text);
+  }
+  .steps {
+    margin-left: 8px;
+    padding: 1px 7px;
+    border-radius: 99px;
+    background: color-mix(in srgb, var(--ai) 20%, transparent);
+    font-size: 11.5px;
+    font-weight: 600;
   }
   .review-list {
     color: var(--text-2);

@@ -71,6 +71,12 @@ fn revert_last_change(state: State<AppState>, id: String) -> Result<Project, Str
     state.store.revert_last(&id, USER_ACTOR)
 }
 
+/// Undoes the change recorded at `ts_ms` and everything after it.
+#[tauri::command]
+fn revert_changes(state: State<AppState>, id: String, ts_ms: u64) -> Result<Project, String> {
+    state.store.revert_to(&id, ts_ms, USER_ACTOR)
+}
+
 #[tauri::command]
 fn live_status(state: State<AppState>) -> Option<LiveStatus> {
     state.store.live()
@@ -287,6 +293,7 @@ pub fn run() {
             duplicate_project,
             project_activity,
             revert_last_change,
+            revert_changes,
             live_status,
             mcp_command,
             create_standard,

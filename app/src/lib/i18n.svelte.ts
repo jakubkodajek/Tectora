@@ -212,6 +212,9 @@ const cs: Dict = {
   "conn.how2": "Každé uložení se tady okamžitě projeví: změněné stěny svítí oranžově a nahoře je popis, co AI udělala.",
   "conn.how3": "Vy změnu jen zkontrolujete a přijmete, nebo jedním klikem vrátíte.",
   "conn.follow": "Automaticky otevřít zakázku, na které AI právě pracuje",
+  "review.steps": "{n} kroky",
+  "review.revertAll": "Vrátit vše",
+  "ai.revertedEntry": "Změny AI vráceny zpět",
 };
 
 const sk: Dict = {
@@ -415,6 +418,9 @@ const sk: Dict = {
   "conn.how2": "Každé uloženie sa tu okamžite prejaví: zmenené steny svietia oranžovo a hore je popis, čo AI urobila.",
   "conn.how3": "Vy zmenu len skontrolujete a prijmete, alebo jedným klikom vrátite.",
   "conn.follow": "Automaticky otvoriť zákazku, na ktorej AI práve pracuje",
+  "review.steps": "{n} kroky",
+  "review.revertAll": "Vrátiť všetko",
+  "ai.revertedEntry": "Zmeny AI vrátené späť",
 };
 
 const en: Dict = {
@@ -618,6 +624,9 @@ const en: Dict = {
   "conn.how2": "Every save shows up here instantly: changed walls glow orange and a banner says what the AI did.",
   "conn.how3": "You just review the change and accept it, or revert it with one click.",
   "conn.follow": "Automatically open the job the AI is working on",
+  "review.steps": "{n} steps",
+  "review.revertAll": "Revert all",
+  "ai.revertedEntry": "AI changes reverted",
 };
 
 const de: Dict = {
@@ -821,6 +830,9 @@ const de: Dict = {
   "conn.how2": "Jede Speicherung erscheint sofort: geänderte Wände leuchten orange, oben steht, was die KI getan hat.",
   "conn.how3": "Sie prüfen die Änderung nur und übernehmen sie oder machen sie mit einem Klick rückgängig.",
   "conn.follow": "Auftrag, an dem die KI arbeitet, automatisch öffnen",
+  "review.steps": "{n} Schritte",
+  "review.revertAll": "Alle rückgängig",
+  "ai.revertedEntry": "KI-Änderungen rückgängig gemacht",
 };
 
 const DICTS: Record<Locale, Dict> = { cs, sk, en, de };
