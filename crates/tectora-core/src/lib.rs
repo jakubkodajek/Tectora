@@ -4,6 +4,7 @@
 //! and the MCP server all share exactly the same behaviour.
 
 pub mod dad;
+pub mod examples;
 pub mod geom;
 pub mod model;
 pub mod quantities;

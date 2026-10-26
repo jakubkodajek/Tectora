@@ -7,7 +7,8 @@
 //! neighbouring vertices slide up along them, tracing the verges.
 //!
 //! The simulation starts on the roof outline (walls pushed out by their
-//! horizontal overhang) at the lowest eave. An edge whose eave sits higher
+//! horizontal overhang) at the lowest eave; like DACAD, an edge's eave
+//! height applies at that outer line. An edge whose eave sits higher
 //! stays put like a wall until the wavefront reaches its eave height and
 //! only then starts to move ("activation"); lower roofs meeting that wall
 //! produce wall-abutment lines, as in DACAD.
@@ -592,11 +593,8 @@ pub fn generate(part: &RoofPart) -> RoofGeometry {
             };
             let nrm = Point2::new(-dir.y, dir.x);
             let e = &edges[i];
-            let t_act = if e.is_gable() {
-                f64::INFINITY
-            } else {
-                e.eave_height - e.overhang * e.pitch_deg.to_radians().tan()
-            };
+            // DACAD's eave height is measured at the outer (overhang) line.
+            let t_act = if e.is_gable() { f64::INFINITY } else { e.eave_height };
             Line {
                 dir,
                 n: nrm,
