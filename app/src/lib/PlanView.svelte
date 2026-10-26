@@ -265,6 +265,9 @@
     stroke-width: 5;
     stroke-dasharray: none;
   }
+  svg :global(*:focus) {
+    outline: none;
+  }
   .edge .hit {
     stroke: transparent;
     stroke-width: 14;

@@ -112,7 +112,11 @@
     const c = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3()).length();
     controls.target.copy(c);
-    camera.position.set(c.x + size * 0.9, c.y + size * 0.75, c.z + size * 1.1);
+    // Distance at which the bounding sphere fits the vertical field of view.
+    const fov = (camera.fov * Math.PI) / 180;
+    const dist = (size * 0.6) / Math.tan(fov / 2) / Math.min(1, camera.aspect);
+    const dir = new THREE.Vector3(0.9, 0.75, 1.1).normalize();
+    camera.position.copy(c).addScaledVector(dir, dist);
     camera.near = size / 100;
     camera.far = size * 20;
     camera.updateProjectionMatrix();
