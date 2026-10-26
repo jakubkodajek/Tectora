@@ -41,6 +41,7 @@ fn pt(v: &Value) -> Point2 {
 /// One wall's stacked DACAD definitions as an edge: a gable followed by a
 /// sloped definition is a Krüppelwalm, further definitions are pitch breaks.
 fn edge(wall: &Value) -> EdgeDef {
+    let priority = wall["definitions"][0]["priority"].as_f64().unwrap_or(0.0) > 0.5;
     let defs: Vec<(f64, f64, f64)> = wall["definitions"]
         .as_array()
         .unwrap()
@@ -76,6 +77,7 @@ fn edge(wall: &Value) -> EdgeDef {
                 pitch_deg: p,
             })
             .collect(),
+        priority: u8::from(priority),
     }
 }
 
@@ -101,7 +103,7 @@ fn part(case: &Value) -> RoofPart {
 #[test]
 fn engine_matches_dacad() {
     let cases = fixtures();
-    assert!(cases.len() >= 17, "fixtures missing");
+    assert!(cases.len() >= 23, "fixtures missing");
     let mut failures = Vec::new();
     for (name, case) in cases {
         let geo = generate(&part(&case));

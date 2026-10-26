@@ -18,7 +18,8 @@
             "eave_height_m": 3.0,
             "overhang_m": 0.0,
             "material": 1,
-            "roof_no": 1
+            "roof_no": 1,
+            "priority": 0
           }
         ]
       },
@@ -37,14 +38,16 @@
             "eave_height_m": 3.0,
             "overhang_m": 0.0,
             "material": 0,
-            "roof_no": 1
+            "roof_no": 1,
+            "priority": 0
           },
           {
             "pitch_deg": 60.0,
             "eave_height_m": 5.5,
             "overhang_m": 0.0,
             "material": 1,
-            "roof_no": 1
+            "roof_no": 1,
+            "priority": 0
           }
         ]
       },
@@ -63,7 +66,8 @@
             "eave_height_m": 3.0,
             "overhang_m": 0.0,
             "material": 1,
-            "roof_no": 1
+            "roof_no": 1,
+            "priority": 0
           }
         ]
       },
@@ -82,14 +86,16 @@
             "eave_height_m": 3.0,
             "overhang_m": 0.0,
             "material": 0,
-            "roof_no": 1
+            "roof_no": 1,
+            "priority": 0
           },
           {
             "pitch_deg": 60.0,
             "eave_height_m": 5.5,
             "overhang_m": 0.0,
             "material": 1,
-            "roof_no": 1
+            "roof_no": 1,
+            "priority": 0
           }
         ]
       }

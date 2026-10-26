@@ -84,6 +84,9 @@ fn describe_part(part: &RoofPart) -> Value {
             if !e.breaks.is_empty() {
                 v["breaks"] = json!(e.breaks);
             }
+            if e.priority > 0 {
+                v["priority"] = json!(e.priority);
+            }
             v
         })
         .collect();
@@ -139,6 +142,13 @@ fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
         }
         None => {}
     }
+    if let Some(p) = v.get("priority") {
+        edge.priority = match p.as_u64().or_else(|| p.as_bool().map(u64::from)) {
+            Some(0) => 0,
+            Some(1) => 1,
+            _ => return Err("priority must be 0 or 1".into()),
+        };
+    }
     match v.get("breaks") {
         Some(Value::Null) => edge.breaks.clear(),
         Some(b) => {
@@ -181,6 +191,7 @@ fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
         half_hip: None,
         direction_rad: None,
         breaks: Vec::new(),
+        priority: 0,
     };
     let specs = v
         .get("edges")
@@ -255,6 +266,11 @@ fn edge_props() -> Value {
             "type": ["object", "null"],
             "description": "Gable edges only: Krüppelwalm. null removes it.",
             "properties": { "height": { "type": "number" }, "pitch_deg": { "type": "number" } }
+        },
+        "priority": {
+            "type": "integer",
+            "enum": [0, 1],
+            "description": "DACAD priority. Where this plane meets a parallel plane of another pitch in a horizontal line, the plane with priority 1 ends there; with no priority the steeper plane ends."
         },
         "breaks": {
             "type": ["array", "null"],

@@ -20,6 +20,10 @@
 //! * A clipped gable (Krüppelwalm) waits up to its half-hip height; the
 //!   lower edge of its plane counts as eave T (C08).
 //! * A pitch break leaves a Knick line c and the hips run through it (C14).
+//! * Parallel planes of different pitch (a recessed or projecting wall)
+//!   meet in a horizontal line c; the plane with priority, else the steeper
+//!   one, ends there and its edge continues on the other plane (C18–C23).
+//!   A plane rising from an inside corner along a wall makes a valley K.
 //!
 //! The event loop is a straightforward O(n³) simulation (edge and split
 //! events), which is plenty for building footprints of a few dozen edges.
@@ -217,10 +221,13 @@ struct Line {
     base: f64,
     /// The edge's planes by start height; empty for a plain gable.
     stages: Vec<Stage>,
+    priority: u8,
+    /// Zero-length marker edge (see `EdgeDef::direction_rad`).
+    marker: bool,
 }
 
 impl Line {
-    fn new(dir: Point2, n: Point2, base: f64, planes: &[(f64, f64)]) -> Self {
+    fn new(dir: Point2, n: Point2, base: f64, planes: &[(f64, f64)], priority: u8) -> Self {
         let mut stages: Vec<Stage> = Vec::with_capacity(planes.len());
         let (mut c, mut s) = (base, 0.0);
         for &(t, pitch_deg) in planes {
@@ -235,6 +242,8 @@ impl Line {
             n,
             base,
             stages,
+            priority,
+            marker: false,
         }
     }
 
@@ -500,6 +509,11 @@ impl Sim {
             d,
         );
         let rate = dot(Point2::new(vb.vel.x - va.vel.x, vb.vel.y - va.vel.y), d);
+        // A wall squeezed to nothing between two planes that now move in
+        // step (after an overtake) is gone, even though it no longer shrinks.
+        if len_now <= POS_TOL && rate < EPS && !self.lines[va.right].marker {
+            return Some(now);
+        }
         if rate >= -EPS {
             return None;
         }
@@ -570,6 +584,11 @@ impl Sim {
                     }
                 }
             }
+            if let Some((t, stop, cont)) = self.overtake_event(now)
+                && better(&best, t, 0)
+            {
+                best = Some((t, Event::Overtake(stop, cont)));
+            }
             for (i, l) in self.lines.iter().enumerate() {
                 if let Some(st) = l.stages.get(self.applied[i])
                     && self.edge_alive(i)
@@ -603,8 +622,72 @@ impl Sim {
                 Event::Edge(a) => self.apply_edge(a, t),
                 Event::Split(v, ea, p) => self.apply_split(v, ea, p, t),
                 Event::Bend(i) => self.apply_bend(i, t),
+                Event::Overtake(stop, cont) => {
+                    // From here on the stopped edge runs on the other plane.
+                    let k = self.applied[stop];
+                    let (c, s) = self.lines[cont].params(t);
+                    let cont_line = &self.lines[cont];
+                    let pitch_deg = cont_line.stages[cont_line.stage_at(t).unwrap_or(0)].pitch_deg;
+                    let line = &mut self.lines[stop];
+                    line.stages.truncate(k);
+                    line.stages.push(Stage { t, s, c, pitch_deg });
+                    self.apply_bend(stop, t);
+                }
             }
         }
+    }
+
+    /// Extent of edge `e`'s wavefront at height `t` along its direction.
+    fn extent(&self, e: usize, t: f64) -> Option<(f64, f64)> {
+        let d = self.lines[e].dir;
+        let mut out: Option<(f64, f64)> = None;
+        for v in self.verts.iter().filter(|v| v.alive && v.right == e) {
+            let (a, b) = (v.at(t), self.verts[v.next].at(t));
+            let (pa, pb) = (dot(a, d), dot(b, d));
+            let (lo, hi) = (pa.min(pb), pa.max(pb));
+            out = Some(out.map_or((lo, hi), |(l, h)| (l.min(lo), h.max(hi))));
+        }
+        out
+    }
+
+    /// The next moment two parallel planes of different pitch meet in a
+    /// horizontal line where their wavefronts touch. DACAD ends one of them
+    /// there (a Knick line c): the one with priority, otherwise the steeper
+    /// one (cases C18–C23). Returns `(t, stopping edge, continuing edge)`.
+    fn overtake_event(&self, now: f64) -> Option<(f64, usize, usize)> {
+        let alive: Vec<usize> = (0..self.lines.len())
+            .filter(|&e| self.lines[e].active(now) && self.edge_alive(e))
+            .collect();
+        let mut best: Option<(f64, usize, usize)> = None;
+        for (k, &i) in alive.iter().enumerate() {
+            for &j in &alive[k + 1..] {
+                let (li, lj) = (&self.lines[i], &self.lines[j]);
+                if dot(li.n, lj.n) < 1.0 - 1e-9 {
+                    continue;
+                }
+                let ((ci, si), (cj, sj)) = (li.params(now), lj.params(now));
+                if (si - sj).abs() < 1e-9 {
+                    continue;
+                }
+                let t = (cj - ci) / (si - sj);
+                if t < now - EPS || best.is_some_and(|b| b.0 <= t) {
+                    continue;
+                }
+                let (Some(ei), Some(ej)) = (self.extent(i, t), self.extent(j, t)) else {
+                    continue;
+                };
+                if ei.0 > ej.1 + POS_TOL || ej.0 > ei.1 + POS_TOL {
+                    continue;
+                }
+                let stop_i = match (li.priority > 0, lj.priority > 0) {
+                    (true, false) => true,
+                    (false, true) => false,
+                    _ => si < sj,
+                };
+                best = Some(if stop_i { (t, i, j) } else { (t, j, i) });
+            }
+        }
+        best
     }
 
     fn edge_alive(&self, e: usize) -> bool {
@@ -768,12 +851,13 @@ enum Event {
     Edge(usize),
     Split(usize, usize, Point2),
     Bend(usize),
+    Overtake(usize, usize),
 }
 
 impl Event {
     fn rank(&self) -> u8 {
         match self {
-            Event::Bend(_) => 0,
+            Event::Bend(_) | Event::Overtake(..) => 0,
             Event::Split(..) => 1,
             Event::Edge(_) => 2,
         }
@@ -800,7 +884,9 @@ pub fn generate(part: &RoofPart) -> RoofGeometry {
             let nrm = Point2::new(-dir.y, dir.x);
             let e = &edges[i];
             // DACAD's eave height is measured at the outer (overhang) line.
-            Line::new(dir, nrm, dot(nrm, a) - e.overhang, &e.planes())
+            let mut line = Line::new(dir, nrm, dot(nrm, a) - e.overhang, &e.planes(), e.priority);
+            line.marker = len < POS_TOL;
+            line
         })
         .collect();
     let start = lines.iter().map(Line::t_act).fold(f64::INFINITY, f64::min);
@@ -921,18 +1007,16 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
                 .push(RoofLine::new(kind, sim.nodes[a], sim.nodes[b]));
         }
     }
-    let coplanar = |a: usize, b: usize| {
+    // Edges on one line with the same plane at the arc's height.
+    let coplanar = |a: usize, b: usize, z: f64| {
         let (la, lb) = (&sim.lines[a], &sim.lines[b]);
-        dot(la.n, lb.n) > 1.0 - 1e-9
-            && (la.base - lb.base).abs() < 1e-6
-            && la.stages.len() == lb.stages.len()
-            && la
-                .stages
-                .iter()
-                .zip(&lb.stages)
-                .all(|(x, y)| (x.t - y.t).abs() < 1e-9 && (x.s - y.s).abs() < 1e-9)
+        let ((ca, sa), (cb, sb)) = (la.params(z), lb.params(z));
+        dot(la.n, lb.n) > 1.0 - 1e-9 && (ca - cb).abs() < 1e-6 && (sa - sb).abs() < 1e-9
     };
-    for arc in arcs.iter().filter(|a| a.line && !coplanar(a.left, a.right)) {
+    for arc in arcs
+        .iter()
+        .filter(|a| a.line && !coplanar(a.left, a.right, sim.nodes[a.a][2]))
+    {
         let key = (arc.a.min(arc.b), arc.a.max(arc.b));
         if seen.contains(&key) {
             continue;
@@ -948,6 +1032,9 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
             // facing the roof from outside its eave.
             [true, false] if flat => (LineKind::Pult, None),
             [false, true] if flat => (LineKind::Pult, None),
+            // From an inside corner between a wall and a plane: DACAD
+            // reports a valley (C18–C23).
+            [true, false] | [false, true] if arc.reflex => (LineKind::Valley, None),
             [true, false] => (
                 LineKind::Verge,
                 Some(verge_side(sim, arc.right, pa, pb, VergeSide::Left)),
@@ -1070,6 +1157,7 @@ mod tests {
                 half_hip: None,
                 direction_rad: None,
                 breaks: Vec::new(),
+                priority: 0,
             })
             .collect();
         let mut part = RoofPart {

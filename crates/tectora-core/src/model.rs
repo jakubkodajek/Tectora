@@ -118,10 +118,19 @@ pub struct EdgeDef {
     /// from each break's height on, the plane continues at its pitch.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub breaks: Vec<PitchBreak>,
+    /// DACAD priority (0 or 1). Where this plane and a parallel one meet in a
+    /// horizontal line, the plane with priority ends there; without one, the
+    /// steeper plane ends.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub priority: u8,
     /// Direction of a zero-length edge (radians). DACAD uses such marker
     /// edges at steps between collinear walls to say how the roof turns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direction_rad: Option<f64>,
+}
+
+fn is_zero(v: &u8) -> bool {
+    *v == 0
 }
 
 impl EdgeDef {

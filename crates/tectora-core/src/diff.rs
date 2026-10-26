@@ -20,7 +20,7 @@ pub enum ChangeKind {
 pub struct Change {
     pub kind: ChangeKind,
     /// `name`, `notes`, `job.<field>`, `part`, `edge`, `vertex`,
-    /// `pitch_deg`, `eave_height`, `overhang`, `half_hip`, `breaks`.
+    /// `pitch_deg`, `eave_height`, `overhang`, `half_hip`, `breaks`, `priority`.
     pub field: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub part: Option<usize>,
@@ -87,6 +87,9 @@ fn edge_fields(pi: usize, ei: usize, a: &EdgeDef, b: &EdgeDef, out: &mut Vec<Cha
     }
     if a.half_hip != b.half_hip {
         out.push(m("half_hip", json!(a.half_hip), json!(b.half_hip)));
+    }
+    if a.priority != b.priority {
+        out.push(m("priority", json!(a.priority), json!(b.priority)));
     }
     if a.breaks != b.breaks {
         out.push(m("breaks", json!(a.breaks), json!(b.breaks)));

@@ -29,6 +29,8 @@ export function describeChange(c: Change, multiPart: boolean): string {
         if (!b) return t("chg.halfHipOff", { n });
         return t("chg.halfHip", { n, h: len(b.height), p: deg(b.pitch_deg) });
       }
+      case "priority":
+        return t(Number(c.after) > 0 ? "chg.priorityOn" : "chg.priorityOff", { n });
       case "breaks":
         return t("chg.breaks", { n });
       case "vertex": {

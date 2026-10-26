@@ -23,6 +23,10 @@ in the user's language, e.g. "Pitch of the street side set to 42° per drawing".
   - `overhang` – horizontal eave overhang beyond the wall, m.
   - `half_hip` (gable edges only) – Krüppelwalm / polovalba:
     `{ "height": m above ±0.00 where the hip starts, "pitch_deg": … }`.
+  - `priority` (0 or 1) – where this plane meets a parallel plane with a
+    different pitch (e.g. a recessed or projecting wall section), the plane
+    with priority 1 ends at their horizontal line; without priority the
+    steeper one ends, as in DACAD.
   - `breaks` – pitch breaks (Knick / zlom, e.g. a mansard roof):
     `[{ "height": m above ±0.00, "pitch_deg": … }]`; from each height on the
     plane continues at the new pitch.

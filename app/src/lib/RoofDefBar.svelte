@@ -115,6 +115,13 @@
         </label>
       {/if}
     {/if}
+    {#if !gable}
+      <label class="check" title={t("edge.priorityHint")}>
+        <input type="checkbox" checked={!!edge.priority}
+          onchange={(e) => onchange({ priority: (e.target as HTMLInputElement).checked ? 1 : 0 })} />
+        {t("edge.priority")}
+      </label>
+    {/if}
     <div class="spacer"></div>
     <div class="actions">
       {#if !gable}

@@ -20,6 +20,7 @@ export interface EdgeDef {
   overhang: number;
   half_hip?: HalfHip | null;
   breaks?: PitchBreak[];
+  priority?: number;
   direction_rad?: number | null;
 }
 

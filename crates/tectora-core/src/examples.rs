@@ -33,6 +33,7 @@ fn single_part(name: &str, points: &[(f64, f64)], pitches: &[f64]) -> Project {
             half_hip: None,
             direction_rad: None,
             breaks: Vec::new(),
+            priority: 0,
         })
         .collect();
     let mut part = RoofPart {
@@ -204,6 +205,7 @@ pub fn standard_roof(
             }),
             direction_rad: None,
             breaks: Vec::new(),
+            priority: 0,
         })
         .collect();
     RoofPart {

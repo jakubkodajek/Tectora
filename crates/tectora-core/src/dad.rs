@@ -6,7 +6,7 @@
 //!
 //! * tag `0x12`, sub `0x00` (42 bytes) — one wall line with its roof definition:
 //!   `id u16, group u16, f32 x9 [x, y, length, angle_rad, ?, eave_height,
-//!   overhang, pitch_deg, ?], flags u16`. Bit 0 of `flags` means a half-hip
+//!   overhang, pitch_deg, priority], flags u16`. Bit 0 of `flags` means a half-hip
 //!   record follows; the high byte is the number of chimney records that follow.
 //! * tag `0x12`, sub `0x10` (16 bytes) — half-hip of the preceding gable wall:
 //!   `u32 ?, f32 height, f32 ?, f32 pitch_deg`.
@@ -55,6 +55,7 @@ pub struct DadWall {
     pub eave_height: f64,
     pub overhang: f64,
     pub pitch_deg: f64,
+    pub priority: u8,
     pub half_hip: Option<HalfHip>,
 }
 
@@ -75,6 +76,7 @@ impl DadWall {
             half_hip: self.half_hip.clone(),
             direction_rad: (self.length <= 1e-6).then_some(self.angle_rad),
             breaks: Vec::new(),
+            priority: self.priority,
         }
     }
 }
@@ -137,6 +139,7 @@ pub fn parse(bytes: &[u8]) -> Result<DadFile, DadError> {
                     eave_height: f32_at(payload, 24),
                     overhang: f32_at(payload, 28),
                     pitch_deg: f32_at(payload, 32),
+                    priority: u8::from(f32_at(payload, 36) > 0.5),
                     half_hip: None,
                 });
             }
