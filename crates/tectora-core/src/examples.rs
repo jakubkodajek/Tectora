@@ -34,7 +34,10 @@ fn single_part(name: &str, points: &[(f64, f64)], pitches: &[f64]) -> Project {
             direction_rad: None,
         })
         .collect();
-    let mut part = RoofPart { name: "Main".into(), edges };
+    let mut part = RoofPart {
+        name: "Main".into(),
+        edges,
+    };
     part.normalize_ccw();
     let mut project = Project::new(name);
     project.parts.push(part);
@@ -63,7 +66,10 @@ pub const EXAMPLES: &[Example] = &[
         build: || {
             let mut p = single_part("Polovalbová střecha", &RECT, &[40.0, 90.0, 40.0, 90.0]);
             for e in p.parts[0].edges.iter_mut().filter(|e| e.is_gable()) {
-                e.half_hip = Some(HalfHip { height: 5.5, pitch_deg: 50.0 });
+                e.half_hip = Some(HalfHip {
+                    height: 5.5,
+                    pitch_deg: 50.0,
+                });
             }
             p
         },
@@ -91,7 +97,14 @@ pub const EXAMPLES: &[Example] = &[
         name: "Valbová do L",
         description: "Půdorys L s úžlabím, sklon 38°",
         build: || {
-            let l = [(0.0, 0.0), (14.0, 0.0), (14.0, 7.0), (7.0, 7.0), (7.0, 14.0), (0.0, 14.0)];
+            let l = [
+                (0.0, 0.0),
+                (14.0, 0.0),
+                (14.0, 7.0),
+                (7.0, 7.0),
+                (7.0, 14.0),
+                (0.0, 14.0),
+            ];
             single_part("Valbová do L", &l, &[38.0; 6])
         },
     },
@@ -110,7 +123,11 @@ pub const EXAMPLES: &[Example] = &[
                 (5.0, 7.0),
                 (0.0, 7.0),
             ];
-            single_part("Sedlová do T", &t, &[40.0, 90.0, 40.0, 40.0, 90.0, 40.0, 40.0, 90.0])
+            single_part(
+                "Sedlová do T",
+                &t,
+                &[40.0, 90.0, 40.0, 40.0, 90.0, 40.0, 40.0, 90.0],
+            )
         },
     },
     Example {

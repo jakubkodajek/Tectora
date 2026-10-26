@@ -66,6 +66,8 @@ pub struct RoofFace {
 pub struct RoofGeometry {
     pub faces: Vec<RoofFace>,
     pub lines: Vec<RoofLine>,
+    /// Vertical gable walls above the eave line (for rendering).
+    pub gables: Vec<Vec<[f64; 3]>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]
@@ -416,7 +418,7 @@ impl Sim {
                     continue;
                 }
                 if let Some(t) = self.edge_event_time(v, now)
-                    && best.as_ref().is_none_or(|b| t < b.0 - EPS)
+                    && better(&best, t, 2)
                 {
                     best = Some((t, Event::Edge(v)));
                 }
@@ -424,7 +426,7 @@ impl Sim {
                     let mut ea = self.verts[v].next;
                     while ea != v {
                         if let Some((t, p)) = self.split_event(v, ea, now)
-                            && best.as_ref().is_none_or(|b| t < b.0 - EPS)
+                            && better(&best, t, 1)
                         {
                             best = Some((t, Event::Split(v, ea, p)));
                         }
@@ -435,7 +437,7 @@ impl Sim {
             for (i, l) in self.lines.iter().enumerate() {
                 if l.t_act.is_finite() && !self.activated[i] && self.edge_alive(i) {
                     let t = l.t_act;
-                    if best.as_ref().is_none_or(|b| t < b.0 - EPS) {
+                    if better(&best, t, 0) {
                         best = Some((t, Event::Activate(i)));
                     }
                 }
@@ -547,6 +549,19 @@ impl Sim {
     }
 
     fn apply_split(&mut self, v: usize, ea: usize, p: Point2, t: f64) {
+        // Two reflex vertices arriving at the same point: a vertex event.
+        let other = (0..self.verts.len()).find(|&w| {
+            w != v
+                && self.verts[w].alive
+                && (self.verts[w].reflex || w == ea || w == self.verts[ea].next)
+                && self.verts[w].at(t).approx_eq(p, 1e-6)
+        });
+        if let Some(w) = other {
+            let same_loop = self.loop_members(v).contains(&w);
+            if same_loop && self.verts[w].next != v && self.verts[v].next != w {
+                return self.apply_vertex_event(v, w, p, t);
+            }
+        }
         let node = self.add_node(p, t);
         let e = self.verts[ea].right;
         let eb = self.verts[ea].next;
@@ -565,6 +580,45 @@ impl Sim {
         self.verts[v2].next = next;
         self.verts[next].prev = v2;
     }
+
+    /// Reflex vertices `v` and `w` of one loop meet at `p`; the loop splits
+    /// into `prev(v) → x → next(w)` and `prev(w) → y → next(v)`.
+    fn apply_vertex_event(&mut self, v: usize, w: usize, p: Point2, t: f64) {
+        let node = self.add_node(p, t);
+        let (pv, nv, lv, rv) = (
+            self.verts[v].prev,
+            self.verts[v].next,
+            self.verts[v].left,
+            self.verts[v].right,
+        );
+        let (pw, nw, lw, rw) = (
+            self.verts[w].prev,
+            self.verts[w].next,
+            self.verts[w].left,
+            self.verts[w].right,
+        );
+        self.retire(v, node);
+        self.retire(w, node);
+        let x = self.new_vertex(p, t, node, lv, rw);
+        let y = self.new_vertex(p, t, node, lw, rv);
+        self.verts[pv].next = x;
+        self.verts[x].prev = pv;
+        self.verts[x].next = nw;
+        self.verts[nw].prev = x;
+        self.verts[pw].next = y;
+        self.verts[y].prev = pw;
+        self.verts[y].next = nv;
+        self.verts[nv].prev = y;
+    }
+}
+
+/// Whether an event at `t` with priority `rank` beats the current best.
+/// Simultaneous events run activations first, then splits, then edges.
+fn better(best: &Option<(f64, Event)>, t: f64, rank: u8) -> bool {
+    match best {
+        None => true,
+        Some((bt, ev)) => t < bt - EPS || ((t - bt).abs() <= EPS && rank < ev.rank()),
+    }
 }
 
 #[derive(Debug)]
@@ -572,6 +626,16 @@ enum Event {
     Edge(usize),
     Split(usize, usize, Point2),
     Activate(usize),
+}
+
+impl Event {
+    fn rank(&self) -> u8 {
+        match self {
+            Event::Activate(_) => 0,
+            Event::Split(..) => 1,
+            Event::Edge(_) => 2,
+        }
+    }
 }
 
 /// Generates the roof over one footprint part. The part must be CCW
@@ -594,7 +658,11 @@ pub fn generate(part: &RoofPart) -> RoofGeometry {
             let nrm = Point2::new(-dir.y, dir.x);
             let e = &edges[i];
             // DACAD's eave height is measured at the outer (overhang) line.
-            let t_act = if e.is_gable() { f64::INFINITY } else { e.eave_height };
+            let t_act = if e.is_gable() {
+                f64::INFINITY
+            } else {
+                e.eave_height
+            };
             Line {
                 dir,
                 n: nrm,
@@ -636,11 +704,29 @@ pub fn generate(part: &RoofPart) -> RoofGeometry {
             sim.eaves.push((a, b, i));
         }
     }
+    let initial: Vec<usize> = (0..n).map(|i| sim.verts[i].node).collect();
     sim.run(start);
-    build_geometry(part, &sim)
+    build_geometry(part, &sim, &initial)
 }
 
-fn build_geometry(part: &RoofPart, sim: &Sim) -> RoofGeometry {
+/// Walks from `end` back to `start` through `segs`, returning the ring.
+fn trace_ring(start: usize, end: usize, mut segs: Vec<(usize, usize)>) -> Vec<usize> {
+    let mut ring = vec![start, end];
+    let mut cur = end;
+    while cur != start {
+        let Some(k) = segs.iter().position(|&(x, y)| x == cur || y == cur) else {
+            break;
+        };
+        let (x, y) = segs.swap_remove(k);
+        cur = if x == cur { y } else { x };
+        if cur != start {
+            ring.push(cur);
+        }
+    }
+    ring
+}
+
+fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry {
     let edges = &part.edges;
     // Merge coincident nodes so faces chain cleanly.
     let mut canon: Vec<usize> = (0..sim.nodes.len()).collect();
@@ -690,7 +776,14 @@ fn build_geometry(part: &RoofPart, sim: &Sim) -> RoofGeometry {
             });
         }
     }
-    for arc in arcs.iter().filter(|a| a.line) {
+    let coplanar = |a: usize, b: usize| {
+        let (la, lb) = (sim.lines[a], sim.lines[b]);
+        dot(la.n, lb.n) > 1.0 - 1e-9
+            && (la.base - lb.base).abs() < 1e-6
+            && (la.s - lb.s).abs() < 1e-9
+            && (la.t_act - lb.t_act).abs() < 1e-9
+    };
+    for arc in arcs.iter().filter(|a| a.line && !coplanar(a.left, a.right)) {
         let key = (arc.a.min(arc.b), arc.a.max(arc.b));
         if seen.contains(&key) {
             continue;
@@ -714,24 +807,12 @@ fn build_geometry(part: &RoofPart, sim: &Sim) -> RoofGeometry {
     for &(start, end, i) in &eaves {
         let t_act = sim.lines[i].t_act;
         // Arcs traced while the edge was still a wall are not part of its plane.
-        let mut segs: Vec<(usize, usize)> = arcs
+        let segs: Vec<(usize, usize)> = arcs
             .iter()
             .filter(|a| (a.left == i || a.right == i) && sim.nodes[a.a][2] >= t_act - 1e-7)
             .map(|a| (a.a, a.b))
             .collect();
-        // Walk from the eave end back to its start through skeleton arcs.
-        let mut ring = vec![start, end];
-        let mut cur = end;
-        while cur != start {
-            let Some(k) = segs.iter().position(|&(x, y)| x == cur || y == cur) else {
-                break;
-            };
-            let (x, y) = segs.swap_remove(k);
-            cur = if x == cur { y } else { x };
-            if cur != start {
-                ring.push(cur);
-            }
-        }
+        let ring = trace_ring(start, end, segs);
         let polygon: Vec<[f64; 3]> = ring.iter().map(|&k| sim.nodes[k]).collect();
         let area = area3(&polygon);
         geo.faces.push(RoofFace {
@@ -740,6 +821,23 @@ fn build_geometry(part: &RoofPart, sim: &Sim) -> RoofGeometry {
             polygon,
             area,
         });
+    }
+    let n = edges.len();
+    for (i, e) in edges.iter().enumerate() {
+        if !e.is_gable() {
+            continue;
+        }
+        let (start, end) = (canon[initial[i]], canon[initial[(i + 1) % n]]);
+        let segs: Vec<(usize, usize)> = arcs
+            .iter()
+            .filter(|a| a.left == i || a.right == i)
+            .map(|a| (a.a, a.b))
+            .collect();
+        let ring = trace_ring(start, end, segs);
+        if ring.len() >= 3 {
+            geo.gables
+                .push(ring.iter().map(|&k| sim.nodes[k]).collect());
+        }
     }
     geo
 }
@@ -831,6 +929,26 @@ mod tests {
         // Plan area 64 m² at 45° everywhere.
         assert_relative_eq!(q.roof_area, 64.0 * 2f64.sqrt(), epsilon = 1e-6);
         assert_eq!(geo.faces.len(), 6);
+    }
+
+    #[test]
+    fn t_shape_gables_have_valleys_but_no_hips() {
+        let t = [
+            (0.0, 0.0),
+            (16.0, 0.0),
+            (16.0, 7.0),
+            (11.0, 7.0),
+            (11.0, 14.0),
+            (5.0, 14.0),
+            (5.0, 7.0),
+            (0.0, 7.0),
+        ];
+        let p = [40.0, 90.0, 40.0, 40.0, 90.0, 40.0, 40.0, 90.0];
+        let g = generate(&part(&t, &p));
+        let q = g.quantities();
+        assert_eq!(q.valley_count, 2);
+        assert_eq!(q.hip_count, 0);
+        assert_eq!(g.gables.len(), 3);
     }
 
     #[test]
