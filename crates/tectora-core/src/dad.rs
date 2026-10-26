@@ -73,6 +73,7 @@ impl DadWall {
             eave_height: self.eave_height,
             overhang: self.overhang,
             half_hip: self.half_hip.clone(),
+            direction_rad: (self.length <= 1e-6).then_some(self.angle_rad),
         }
     }
 }
@@ -161,30 +162,55 @@ pub fn parse(bytes: &[u8]) -> Result<DadFile, DadError> {
 }
 
 /// Chains walls end-to-start. Returns (edges, end point, closed?).
+/// When several walls start at the same point, the next one by id wins,
+/// then zero-length marker walls, which always sit between two real walls.
 fn chain(walls: &[&DadWall]) -> Vec<(Vec<EdgeDef>, Point2, bool)> {
+    let is_marker = |w: &DadWall| w.length <= 1e-6;
     let mut used = vec![false; walls.len()];
     let mut chains = Vec::new();
-    while let Some(first) = used.iter().position(|u| !u) {
+    while let Some(first) = (0..walls.len())
+        .find(|&i| !used[i] && !is_marker(walls[i]))
+        .or_else(|| used.iter().position(|u| !u))
+    {
         used[first] = true;
         let origin = walls[first].start;
         let mut edges = vec![walls[first].edge_def()];
-        let mut end = walls[first].end();
+        let mut last = walls[first];
+        let mut end = last.end();
         loop {
-            if end.approx_eq(origin, CHAIN_TOL) && edges.len() >= 3 {
-                break;
-            }
-            let next =
-                (0..walls.len()).find(|&i| !used[i] && walls[i].start.approx_eq(end, CHAIN_TOL));
+            let candidates: Vec<usize> = (0..walls.len())
+                .filter(|&i| !used[i] && walls[i].start.approx_eq(end, CHAIN_TOL))
+                .collect();
+            let closing = end.approx_eq(origin, CHAIN_TOL) && edges.len() >= 3;
+            let next = candidates
+                .iter()
+                .copied()
+                .find(|&i| {
+                    walls[i].id == last.id.wrapping_add(1) && !(closing && !is_marker(walls[i]))
+                })
+                .or_else(|| candidates.iter().copied().find(|&i| is_marker(walls[i])))
+                .or_else(|| {
+                    if closing {
+                        None
+                    } else {
+                        candidates.first().copied()
+                    }
+                });
             match next {
                 Some(i) => {
                     used[i] = true;
                     edges.push(walls[i].edge_def());
-                    end = walls[i].end();
+                    last = walls[i];
+                    end = last.end();
                 }
                 None => break,
             }
         }
-        let closed = edges.len() >= 3 && end.approx_eq(origin, CHAIN_TOL);
+        let real = edges.iter().filter(|e| e.direction_rad.is_none()).count();
+        if real == 0 {
+            continue; // stray markers
+        }
+        let closed = real >= 3 && end.approx_eq(origin, CHAIN_TOL);
         chains.push((edges, end, closed));
     }
     chains
@@ -199,9 +225,12 @@ impl DadFile {
             groups.entry(w.group).or_default().push(w);
         }
         for (group, walls) in groups {
-            // Zero-length walls are DACAD markers; they matter for dormers only.
-            let lines: Vec<&DadWall> = walls.iter().copied().filter(|w| w.length > 1e-6).collect();
-            let chains = chain(&lines);
+            // Zero-length walls are kept: they carry the direction of the
+            // roof at steps between collinear walls.
+            let chains = chain(&walls);
+            if chains.is_empty() {
+                continue;
+            }
             let all_closed = !chains.is_empty() && chains.iter().all(|c| c.2);
             if all_closed {
                 for (i, (edges, _, _)) in chains.into_iter().enumerate() {

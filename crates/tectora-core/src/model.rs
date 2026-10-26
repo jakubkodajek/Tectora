@@ -69,6 +69,7 @@ impl RoofPart {
             for i in (0..n).rev() {
                 let mut e = self.edges[i].clone();
                 e.start = starts[(i + 1) % n];
+                e.direction_rad = e.direction_rad.map(|a| a + std::f64::consts::PI);
                 edges.push(e);
             }
             self.edges = edges;
@@ -88,6 +89,10 @@ pub struct EdgeDef {
     /// Clipped gable (Krüppelwalm) on a gable edge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub half_hip: Option<HalfHip>,
+    /// Direction of a zero-length edge (radians). DACAD uses such marker
+    /// edges at steps between collinear walls to say how the roof turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction_rad: Option<f64>,
 }
 
 impl EdgeDef {

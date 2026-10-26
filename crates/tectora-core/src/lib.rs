@@ -7,5 +7,6 @@ pub mod dad;
 pub mod geom;
 pub mod model;
 pub mod quantities;
+pub mod roof;
 
 pub use model::{Chimney, Dormer, EdgeDef, HalfHip, Project, RoofPart};
