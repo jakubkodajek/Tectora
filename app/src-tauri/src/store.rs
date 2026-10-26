@@ -21,6 +21,19 @@ pub struct ProjectSummary {
     pub parts: usize,
     /// Footprint outlines for the card thumbnail.
     pub outlines: Vec<Vec<[f64; 2]>>,
+    /// Ridge, hip and valley lines in plan for the thumbnail.
+    pub lines: Vec<[[f64; 2]; 2]>,
+}
+
+/// Plan view of the inner roof lines (everything except eaves).
+pub fn roof_lines(project: &Project) -> Vec<[[f64; 2]; 2]> {
+    project
+        .parts
+        .iter()
+        .flat_map(|p| roof::generate(p).lines)
+        .filter(|l| l.kind != roof::LineKind::Eave)
+        .map(|l| [[l.a[0], l.a[1]], [l.b[0], l.b[1]]])
+        .collect()
 }
 
 pub fn outlines(project: &Project) -> Vec<Vec<[f64; 2]>> {
@@ -44,6 +57,7 @@ pub fn summarize(id: String, project: &Project, modified_ms: u64) -> ProjectSumm
             .sum(),
         parts: project.parts.len(),
         outlines: outlines(project),
+        lines: roof_lines(project),
     }
 }
 

@@ -1,18 +1,19 @@
 <script lang="ts">
   import { m, m2, num } from "./format";
   import type { RoofQuantities } from "./types";
+  import { t } from "./i18n.svelte";
 
   let { totals }: { totals: RoofQuantities | null } = $props();
 
   const rows = $derived(
     totals
       ? [
-          { color: "var(--line-eave)", label: "Okapy", value: m(totals.eave_length) },
-          { color: "var(--line-ridge)", label: "Hřebeny", value: m(totals.ridge_length) },
-          { color: "var(--line-hip)", label: `Nároží (${totals.hip_count})`, value: m(totals.hip_length) },
-          { color: "var(--line-valley)", label: `Úžlabí (${totals.valley_count})`, value: m(totals.valley_length) },
-          { color: "var(--line-verge)", label: "Štítové hrany", value: m(totals.verge_length) },
-          { color: "var(--line-abutment)", label: "Napojení na zeď", value: m(totals.abutment_length) },
+          { color: "var(--line-eave)", label: t("res.eave"), value: m(totals.eave_length) },
+          { color: "var(--line-ridge)", label: t("res.ridge"), value: m(totals.ridge_length) },
+          { color: "var(--line-hip)", label: t("res.hip", { n: totals.hip_count }), value: m(totals.hip_length) },
+          { color: "var(--line-valley)", label: t("res.valley", { n: totals.valley_count }), value: m(totals.valley_length) },
+          { color: "var(--line-verge)", label: t("res.verge"), value: m(totals.verge_length) },
+          { color: "var(--line-abutment)", label: t("res.abutment"), value: m(totals.abutment_length) },
         ]
       : [],
   );
@@ -20,9 +21,9 @@
 
 <div class="results">
   <div class="hero">
-    <span class="muted">Plocha střechy</span>
+    <span class="muted">{t("res.area")}</span>
     <strong>{totals ? m2(totals.roof_area) : "—"}</strong>
-    {#if totals}<span class="muted small">Výška hřebene {num(totals.ridge_height)} m</span>{/if}
+    {#if totals}<span class="muted small">{t("res.ridgeHeight", { v: num(totals.ridge_height) })}</span>{/if}
   </div>
   <table>
     <tbody>

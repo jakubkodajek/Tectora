@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { EdgeDef, RoofPart } from "./types";
   import { GABLE_PITCH, isGable } from "./types";
+  import { t } from "./i18n.svelte";
 
   let {
     part,
@@ -44,35 +45,35 @@
 
 <div class="panel">
   <div class="head">
-    <h3>Hrana {index + 1}</h3>
+    <h3>{t("edge.title", { n: index + 1 })}</h3>
     <span class="muted">{part.name}</span>
   </div>
 
-  <div class="seg" role="radiogroup" aria-label="Typ hrany">
-    <button class:on={!gable} role="radio" aria-checked={!gable} onclick={() => setType(false)}>Okap</button>
-    <button class:on={gable} role="radio" aria-checked={gable} onclick={() => setType(true)}>Štít</button>
+  <div class="seg" role="radiogroup" aria-label={t("edge.type")}>
+    <button class:on={!gable} role="radio" aria-checked={!gable} onclick={() => setType(false)}>{t("edge.eave")}</button>
+    <button class:on={gable} role="radio" aria-checked={gable} onclick={() => setType(true)}>{t("edge.gable")}</button>
   </div>
 
   <div class="fields">
     <label>
-      <span>Délka</span>
+      <span>{t("edge.length")}</span>
       <div class="unit"><input type="number" step="0.05" min="0.05" value={length.toFixed(2)}
         onchange={(e) => { const v = num(e); if (v && v > 0) onlength(v); }} /><em>m</em></div>
     </label>
     {#if !gable}
       <label>
-        <span>Sklon</span>
+        <span>{t("edge.pitch")}</span>
         <div class="unit"><input type="number" step="1" min="1" max="89" value={edge.pitch_deg}
           onchange={(e) => { const v = num(e); if (v && v > 0 && v < 90) onchange({ pitch_deg: v }); }} /><em>°</em></div>
       </label>
     {/if}
     <label>
-      <span>Výška okapu</span>
+      <span>{t("edge.eaveHeight")}</span>
       <div class="unit"><input type="number" step="0.05" value={edge.eave_height}
         onchange={(e) => { const v = num(e); if (v !== null) onchange({ eave_height: v }); }} /><em>m</em></div>
     </label>
     <label>
-      <span>Přesah</span>
+      <span>{t("edge.overhang")}</span>
       <div class="unit"><input type="number" step="0.05" min="0" value={edge.overhang}
         onchange={(e) => { const v = num(e); if (v !== null && v >= 0) onchange({ overhang: v }); }} /><em>m</em></div>
     </label>
@@ -82,31 +83,31 @@
     <label class="check">
       <input type="checkbox" checked={!!edge.half_hip}
         onchange={(e) => onchange({ half_hip: (e.target as HTMLInputElement).checked ? { height: edge.eave_height + 2.5, pitch_deg: 50 } : null })} />
-      Polovalba (Krüppelwalm)
+      {t("edge.halfHip")}
     </label>
     {#if edge.half_hip}
       <div class="fields">
         <label>
-          <span>Výška polovalby</span>
+          <span>{t("edge.halfHipHeight")}</span>
           <div class="unit"><input type="number" step="0.05" value={edge.half_hip.height}
             onchange={(e) => { const v = num(e); if (v !== null && edge.half_hip) onchange({ half_hip: { ...edge.half_hip, height: v } }); }} /><em>m</em></div>
         </label>
         <label>
-          <span>Sklon polovalby</span>
+          <span>{t("edge.halfHipPitch")}</span>
           <div class="unit"><input type="number" step="1" min="1" max="89" value={edge.half_hip.pitch_deg}
             onchange={(e) => { const v = num(e); if (v && edge.half_hip) onchange({ half_hip: { ...edge.half_hip, pitch_deg: v } }); }} /><em>°</em></div>
         </label>
       </div>
-      <p class="note">Polovalba se zatím ve výpočtu neprojevuje, doplníme ji podle algoritmu DACADu.</p>
+      <p class="note">{t("edge.halfHipNote")}</p>
     {/if}
   {/if}
 
   <div class="actions">
     {#if !gable}
-      <button class="btn" onclick={() => onapplyall({ pitch_deg: edge.pitch_deg })}>Sklon na všechny okapy</button>
+      <button class="btn" onclick={() => onapplyall({ pitch_deg: edge.pitch_deg })}>{t("edge.pitchAll")}</button>
     {/if}
-    <button class="btn" onclick={() => onapplyall({ eave_height: edge.eave_height, overhang: edge.overhang })}>Výšku a přesah na vše</button>
-    <button class="btn ghost danger" disabled={part.edges.length <= 3} onclick={ondelete}>Smazat bod na začátku hrany</button>
+    <button class="btn" onclick={() => onapplyall({ eave_height: edge.eave_height, overhang: edge.overhang })}>{t("edge.heightAll")}</button>
+    <button class="btn ghost danger" disabled={part.edges.length <= 3} onclick={ondelete}>{t("edge.deleteVertex")}</button>
   </div>
 </div>
 

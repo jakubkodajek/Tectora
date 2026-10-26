@@ -2,6 +2,7 @@
   import Icon from "./Icon.svelte";
   import PlanThumb from "./PlanThumb.svelte";
   import { m2, relativeTime } from "./format";
+  import { t } from "./i18n.svelte";
   import type { ProjectSummary } from "./types";
 
   let {
@@ -22,8 +23,8 @@
 <svelte:window onclick={() => (menuOpen = false)} />
 
 <article class="card" ondblclick={onopen}>
-  <button class="thumb" onclick={onopen} aria-label="Otevřít {project.name}">
-    <PlanThumb outlines={project.outlines} />
+  <button class="thumb" onclick={onopen} aria-label="{t('card.open')} {project.name}">
+    <PlanThumb outlines={project.outlines} lines={project.lines} />
   </button>
   <div class="meta">
     <div class="text">
@@ -33,7 +34,7 @@
     <div class="menu-wrap">
       <button
         class="icon-btn"
-        aria-label="Další akce"
+        aria-label={t("card.more")}
         onclick={(e) => {
           e.stopPropagation();
           menuOpen = !menuOpen;
@@ -43,9 +44,9 @@
       </button>
       {#if menuOpen}
         <div class="menu" role="menu">
-          <button role="menuitem" onclick={onopen}><Icon name="open" size={16} />Otevřít</button>
-          <button role="menuitem" onclick={onduplicate}><Icon name="copy" size={16} />Duplikovat</button>
-          <button role="menuitem" class="danger" onclick={ondelete}><Icon name="trash" size={16} />Smazat</button>
+          <button role="menuitem" onclick={onopen}><Icon name="open" size={16} />{t("card.open")}</button>
+          <button role="menuitem" onclick={onduplicate}><Icon name="copy" size={16} />{t("card.duplicate")}</button>
+          <button role="menuitem" class="danger" onclick={ondelete}><Icon name="trash" size={16} />{t("card.delete")}</button>
         </div>
       {/if}
     </div>

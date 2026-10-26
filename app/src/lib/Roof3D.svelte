@@ -3,6 +3,7 @@
   import * as THREE from "three";
   import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
   import type { CalcResult, Project, Selection } from "./types";
+  import { t } from "./i18n.svelte";
 
   let { project, result, selection }: { project: Project; result: CalcResult | null; selection: Selection } =
     $props();
@@ -178,7 +179,7 @@
 </script>
 
 <div class="host" bind:this={host}>
-  <button class="fit icon-btn" title="Přizpůsobit" aria-label="Přizpůsobit zobrazení" onclick={frame}>
+  <button class="fit icon-btn" title={t("plan.fit")} aria-label={t("plan.fit")} onclick={frame}>
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
   </button>
 </div>

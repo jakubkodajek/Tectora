@@ -10,7 +10,8 @@ export const api = {
   deleteProject: (id: string) => invoke<void>("delete_project", { id }),
   duplicateProject: (id: string) => invoke<string>("duplicate_project", { id }),
   listExamples: () => invoke<ExampleInfo[]>("list_examples"),
-  createFromExample: (exampleId: string) => invoke<string>("create_from_example", { exampleId }),
+  createFromExample: (exampleId: string, name?: string) =>
+    invoke<string>("create_from_example", { exampleId, name: name ?? null }),
   newProject: (name: string) => invoke<string>("new_project", { name }),
   importDad: (path: string) => invoke<string>("import_dad", { path }),
   calc: (project: Project) => invoke<CalcResult>("calc", { project }),

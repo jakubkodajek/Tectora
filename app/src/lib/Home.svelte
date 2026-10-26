@@ -4,6 +4,8 @@
   import PlanThumb from "./PlanThumb.svelte";
   import ProjectCard from "./ProjectCard.svelte";
   import { api } from "./api";
+  import LanguagePicker from "./LanguagePicker.svelte";
+  import { t } from "./i18n.svelte";
   import type { ExampleInfo, ProjectSummary } from "./types";
 
   let {
@@ -36,7 +38,12 @@
   }
 
   async function fromExample(id: string) {
-    const newId = await run(() => api.createFromExample(id));
+    const newId = await run(() => api.createFromExample(id, t(`ex.${id}.name`)));
+    if (newId) onopen(newId);
+  }
+
+  async function newDesign() {
+    const newId = await run(() => api.newProject(t("home.newName")));
     if (newId) onopen(newId);
   }
 
@@ -51,7 +58,7 @@
   }
 
   async function remove(p: ProjectSummary) {
-    if (!confirm(`Smazat návrh „${p.name}“? Tuto akci nelze vrátit.`)) return;
+    if (!confirm(t("home.confirmDelete", { name: p.name }))) return;
     await run(() => api.deleteProject(p.id));
     onchanged();
   }
@@ -75,27 +82,28 @@
     </div>
     <label class="search">
       <Icon name="search" size={16} />
-      <input type="search" placeholder="Hledat návrhy" bind:value={query} />
+      <input type="search" placeholder={t("home.search")} bind:value={query} />
     </label>
     <div class="actions">
-      <button class="btn" onclick={importDad}><Icon name="upload" size={16} />Importovat z DACADu</button>
-      <button class="btn primary" onclick={() => fromExample("gable")}><Icon name="plus" size={16} />Nový návrh</button>
+      <LanguagePicker />
+      <button class="btn" onclick={importDad}><Icon name="upload" size={16} />{t("home.import")}</button>
+      <button class="btn primary" onclick={newDesign}><Icon name="plus" size={16} />{t("home.new")}</button>
     </div>
   </header>
 
   <main>
     <section>
       <div class="section-head">
-        <h2>Začít z příkladu</h2>
-        <p class="muted">Vyberte typ střechy a upravte ho podle svého půdorysu.</p>
+        <h2>{t("home.examples")}</h2>
+        <p class="muted">{t("home.examplesHint")}</p>
       </div>
       <div class="examples">
         {#each examples as ex (ex.id)}
           <button class="example" onclick={() => fromExample(ex.id)}>
-            <div class="ex-thumb"><PlanThumb outlines={ex.outlines} padding={0.12} /></div>
+            <div class="ex-thumb"><PlanThumb outlines={ex.outlines} lines={ex.lines} padding={0.12} /></div>
             <div class="ex-text">
-              <strong>{ex.name}</strong>
-              <span class="muted">{ex.description}</span>
+              <strong>{t(`ex.${ex.id}.name`)}</strong>
+              <span class="muted">{t(`ex.${ex.id}.desc`)}</span>
             </div>
           </button>
         {/each}
@@ -104,16 +112,16 @@
 
     <section>
       <div class="section-head">
-        <h2>Moje návrhy <span class="count">{projects.length}</span></h2>
+        <h2>{t("home.mine")} <span class="count">{projects.length}</span></h2>
         <p class="muted folder" title={dir}><Icon name="folder" size={14} />{dir}</p>
       </div>
       {#if filtered.length === 0}
         <div class="empty">
           {#if projects.length === 0}
             <Icon name="roof" size={36} />
-            <p>Zatím tu nejsou žádné návrhy. Začněte příkladem nahoře nebo importujte soubor z DACADu.</p>
+            <p>{t("home.empty")}</p>
           {:else}
-            <p>Hledání „{query}“ nic nenašlo.</p>
+            <p>{t("home.noMatch", { q: query })}</p>
           {/if}
         </div>
       {:else}

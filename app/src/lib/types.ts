@@ -39,6 +39,7 @@ export interface ProjectSummary {
   roof_area: number;
   parts: number;
   outlines: [number, number][][];
+  lines: [[number, number], [number, number]][];
 }
 
 export interface ExampleInfo {
@@ -46,6 +47,7 @@ export interface ExampleInfo {
   name: string;
   description: string;
   outlines: [number, number][][];
+  lines: [[number, number], [number, number]][];
 }
 
 export type LineKind = "eave" | "verge" | "ridge" | "hip" | "valley" | "abutment";

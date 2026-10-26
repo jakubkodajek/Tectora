@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { CalcResult, Project, Selection } from "./types";
   import { isGable } from "./types";
+  import { t } from "./i18n.svelte";
 
   let {
     project,
@@ -148,7 +149,7 @@
     {width}
     {height}
     role="application"
-    aria-label="Půdorys"
+    aria-label={t("editor.plan")}
     {onpointerdown}
     {onpointermove}
     {onpointerup}
@@ -189,7 +190,7 @@
         {@const sel = selection?.part === pi && selection?.edge === i}
         <g class="edge" class:gable={isGable(e)} class:sel>
           <line class="hit" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)}
-            role="button" tabindex="-1" aria-label="Hrana {i + 1}"
+            role="button" tabindex="-1" aria-label={t("plan.edge", { n: i + 1 })}
             onpointerdown={(ev) => { ev.stopPropagation(); selection = { part: pi, edge: i }; }}
             ondblclick={(ev) => edgeDblClick(ev, pi, i)} />
           <line class="wall" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)} />
@@ -210,14 +211,14 @@
           r="5"
           role="button"
           tabindex="-1"
-          aria-label="Bod {i + 1}"
+          aria-label={t("plan.vertex", { n: i + 1 })}
           onpointerdown={(ev) => startVertexDrag(ev, pi, i)}
         />
       {/each}
     {/each}
   </svg>
-  <div class="hint">Kolečko = zoom · táhnout pozadí = posun · táhnout bod = úprava (Alt = bez přichytávání) · dvojklik na hranu = nový bod</div>
-  <button class="fit icon-btn" title="Přizpůsobit" onclick={fit} aria-label="Přizpůsobit zobrazení">
+  <div class="hint">{t("plan.hint")}</div>
+  <button class="fit icon-btn" title={t("plan.fit")} onclick={fit} aria-label={t("plan.fit")}>
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
   </button>
 </div>

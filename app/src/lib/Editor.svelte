@@ -6,6 +6,8 @@
   import Results from "./Results.svelte";
   import Roof3D from "./Roof3D.svelte";
   import { api, onProjectsChanged } from "./api";
+  import LanguagePicker from "./LanguagePicker.svelte";
+  import { t } from "./i18n.svelte";
   import type { CalcResult, EdgeDef, Project, Selection } from "./types";
 
   let {
@@ -107,7 +109,7 @@
         historyLen = history.length;
         externalFlash = true;
         setTimeout(() => (externalFlash = false), 2500);
-        onnotice("Návrh byl změněn mimo aplikaci a načten znovu. Změnu lze vrátit tlačítkem Zpět.");
+        onnotice(t("editor.externalNotice"));
       }
       recalc();
     } catch (e) {
@@ -212,20 +214,21 @@
 
 <div class="editor">
   <header>
-    <button class="icon-btn" onclick={onback} aria-label="Zpět na návrhy" title="Zpět na návrhy"><Icon name="back" /></button>
+    <button class="icon-btn" onclick={onback} aria-label={t("editor.back")} title={t("editor.back")}><Icon name="back" /></button>
     {#if project}
-      <input class="title" type="text" value={project.name} onchange={rename} aria-label="Název návrhu" />
+      <input class="title" type="text" value={project.name} onchange={rename} aria-label={t("editor.name")} />
     {/if}
     <span class="status" class:flash={externalFlash}>
-      {#if externalFlash}Aktualizováno zvenku{:else if saveState === "saved"}<Icon name="check" size={14} />Uloženo{:else if saveState === "saving"}Ukládám…{:else}Neuložené změny{/if}
+      {#if externalFlash}{t("editor.external")}{:else if saveState === "saved"}<Icon name="check" size={14} />{t("editor.saved")}{:else if saveState === "saving"}{t("editor.saving")}{:else}{t("editor.dirty")}{/if}
     </span>
     <div class="spacer"></div>
-    <button class="icon-btn" onclick={undo} disabled={cursor <= 0} title="Zpět (Ctrl+Z)" aria-label="Zpět"><Icon name="undo" /></button>
-    <button class="icon-btn" onclick={redo} disabled={cursor >= historyLen - 1} title="Znovu (Ctrl+Shift+Z)" aria-label="Znovu"><Icon name="redo" /></button>
-    <div class="seg" role="radiogroup" aria-label="Zobrazení">
-      <button class:on={view === "plan"} onclick={() => (view = "plan")} title="Půdorys"><Icon name="plan" size={16} />2D</button>
-      <button class:on={view === "split"} onclick={() => (view = "split")} title="2D + 3D"><Icon name="split" size={16} /></button>
-      <button class:on={view === "3d"} onclick={() => (view = "3d")} title="3D model"><Icon name="cube" size={16} />3D</button>
+    <button class="icon-btn" onclick={undo} disabled={cursor <= 0} title="{t('editor.undo')} (Ctrl+Z)" aria-label={t("editor.undo")}><Icon name="undo" /></button>
+    <button class="icon-btn" onclick={redo} disabled={cursor >= historyLen - 1} title="{t('editor.redo')} (Ctrl+Shift+Z)" aria-label={t("editor.redo")}><Icon name="redo" /></button>
+    <LanguagePicker />
+    <div class="seg" role="radiogroup" aria-label={t("editor.both")}>
+      <button class:on={view === "plan"} onclick={() => (view = "plan")} title={t("editor.plan")}><Icon name="plan" size={16} />2D</button>
+      <button class:on={view === "split"} onclick={() => (view = "split")} title={t("editor.both")}><Icon name="split" size={16} /></button>
+      <button class:on={view === "3d"} onclick={() => (view = "3d")} title={t("editor.model")}><Icon name="cube" size={16} />3D</button>
     </div>
   </header>
 
@@ -261,13 +264,13 @@
             />
           {:else}
             <div class="tip">
-              <h3>Úprava střechy</h3>
-              <p class="muted">Klikněte na hranu v půdorysu a nastavte, jestli je to okap nebo štít, její sklon, výšku okapu a přesah. Body přetáhnete myší.</p>
+              <h3>{t("editor.tipTitle")}</h3>
+              <p class="muted">{t("editor.tip")}</p>
             </div>
           {/if}
         </section>
         <section>
-          <h3>Výsledky</h3>
+          <h3>{t("editor.results")}</h3>
           <Results totals={result?.totals ?? null} />
         </section>
       </aside>

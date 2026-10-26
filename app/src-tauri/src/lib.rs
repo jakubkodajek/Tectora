@@ -27,6 +27,7 @@ struct ExampleInfo {
     name: &'static str,
     description: &'static str,
     outlines: Vec<Vec<[f64; 2]>>,
+    lines: Vec<[[f64; 2]; 2]>,
 }
 
 #[tauri::command]
@@ -74,15 +75,24 @@ fn list_examples() -> Vec<ExampleInfo> {
             name: e.name,
             description: e.description,
             outlines: outlines(&e.project()),
+            lines: store::roof_lines(&e.project()),
         })
         .collect()
 }
 
 #[tauri::command]
-fn create_from_example(state: State<AppState>, example_id: String) -> Result<String, String> {
+fn create_from_example(
+    state: State<AppState>,
+    example_id: String,
+    name: Option<String>,
+) -> Result<String, String> {
     let example =
         examples::find(&example_id).ok_or_else(|| format!("unknown example {example_id}"))?;
-    state.store.save(None, &example.project())
+    let mut project = example.project();
+    if let Some(name) = name.filter(|n| !n.trim().is_empty()) {
+        project.name = name;
+    }
+    state.store.save(None, &project)
 }
 
 #[tauri::command]

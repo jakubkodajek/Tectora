@@ -1,5 +1,9 @@
 <script lang="ts">
-  let { outlines, padding = 0.08 }: { outlines: [number, number][][]; padding?: number } = $props();
+  let {
+    outlines,
+    lines = [],
+    padding = 0.08,
+  }: { outlines: [number, number][][]; lines?: [[number, number], [number, number]][]; padding?: number } = $props();
 
   const box = $derived.by(() => {
     const pts = outlines.flat();
@@ -23,6 +27,9 @@
   {#each outlines as o}
     <path d={pathFor(o)} vector-effect="non-scaling-stroke" />
   {/each}
+  {#each lines as l}
+    <line x1={l[0][0]} y1={-l[0][1]} x2={l[1][0]} y2={-l[1][1]} vector-effect="non-scaling-stroke" />
+  {/each}
 </svg>
 
 <style>
@@ -36,5 +43,10 @@
     stroke: var(--accent);
     stroke-width: 1.6;
     stroke-linejoin: round;
+  }
+  line {
+    stroke: var(--accent);
+    stroke-width: 1.1;
+    opacity: 0.75;
   }
 </style>
