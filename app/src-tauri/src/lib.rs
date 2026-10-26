@@ -129,9 +129,14 @@ fn create_standard(
     overhang: f64,
 ) -> Result<String, String> {
     let mut project = Project::new(name);
-    project
-        .parts
-        .push(standard_roof(kind, length, width, pitch_deg, eave_height, overhang));
+    project.parts.push(standard_roof(
+        kind,
+        length,
+        width,
+        pitch_deg,
+        eave_height,
+        overhang,
+    ));
     state.store.save(None, &project)
 }
 
