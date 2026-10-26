@@ -9,7 +9,8 @@ Goal: Tectora's roof quantities must equal DACAD's for the same input.
 | `morluto/rea` | Generic reverse-engineering MCP toolkit (Ghidra/Hopper bridge). Contains **no** DACAD formulas; usable only as a tool to decompile `DACAD DE.exe`. | not needed so far |
 | `DACAD.HLP` (German WinHelp, 2003) | Input model, line types, rounding, norm rules. Decoded with a WinHelp/Hall-phrase extractor. | read |
 | `Beispiel/*.DAD` (34 sample projects, 1994–98) | Input **and** DACAD-computed results (every line with type and length, every face area, group totals). | decoded, see below |
-| `tools/dacad_testcases.py` | 14 single-rule projects to be calculated and saved in DACAD. | generated, waiting for a DACAD run |
+| `tools/dacad_testcases.py` | 14 single-rule projects. | calculated by DACAD itself (see below), fixtures in `tests/fixtures/dacad_cases/` |
+| `tools/dacad_wine_calc.sh` | Runs the real `DACAD DE.exe` headless under Wine: opens a file, calculates, saves. Any new case can be checked against DACAD without Windows. | working |
 
 ## DACAD's input model (from the help file)
 
@@ -49,10 +50,52 @@ per-edge engine; the single-rule cases localise failures.
 python tools/dacad_golden.py export  "$TECTORA_DACAD_DIR" out/golden
 python tools/dacad_golden.py compare "$TECTORA_DACAD_DIR" \
     --engine "cargo run -q -p tectora-cli -- calc {file}"
+# Files DACAD re-saved as V2, engine fed the original V1 inputs:
+python tools/dacad_golden.py compare calculated/ --inputs originals/ --engine ...
 ```
 
 Tolerance: 0.006 m / 0.006 m² (half a unit of DACAD's 2-decimal output plus
 float32 noise in the stored totals).
+
+## DACAD under Wine
+
+`DACAD DE.exe` runs on Linux with Wine 9 (32-bit), Mesa GL and Xvfb, given its
+`SftTv32.DLL` and the licence key in the Wine registry. `tools/dacad_wine_calc.sh`
+opens each file, runs the calculation (Ctrl+B) and saves; DACAD writes the
+results back (as a V2 file). The 14 single-rule cases were produced this way.
+
+| Case | DACAD lines (m) | DACAD roof area (m²) | Rust engine 4569e5f |
+|---|---|---|---|
+| C01 gable 10×8 40° | T 20, F 10, OL/OR 10.443 | 104.433 | match |
+| C02 gable, overhang 0.5 on all walls | T 22, F 11, OL/OR 11.749 | 129.235 | match |
+| C03 gable, overhang 0.5 on eaves only | T 20, F 10, OL/OR 11.749 | 117.487 | match |
+| C04 hip 12×8 35° | T 40, F 4, G 25.249 | 117.194 | match |
+| C05 hip, overhang 0.6 | T 44.8, F 4, G 29.036 | 148.251 | match |
+| C06 pyramid 8×8 45° | T 32, G 27.713 | 90.510 | match |
+| C07 shed 10×6 25° | T 10, **P 10**, OL/OR 6.620 | 66.203 | top edge reported as F, verges 18.84 |
+| C08 half-hip, Krüppel from 5.5 m at 60° | T 30, F 10.268, G 9.165, OL/OR 7.071 | 137.286 | no Krüppelwalm (T 24, G 0, 135.76 m²) |
+| C09 hip, sides 30°, ends 50° | T 40, F 8.124, G 20.035 | 117.068 | match |
+| C10 hip, north eave at 3.5 m | T 38.572, F 3.286, G 25.249, **OL/OR 0.872** | 117.194 | step reported as W 1.74 instead of OL/OR |
+| C11 L-hip | T 40, F 12, G 15.781, K 3.156 | 78.130 | match |
+| C12 L with gable ends | T 32, F 16, G 3.156, K 3.156, OL/OR 4.883 | 78.130 | match |
+| C13 gable, 30° / 45° | T 20, F 10, OL/OR 9.998 | 99.975 | match |
+| C14 mansard hip, 60° to 5.0 m, then 30° | T 40, F 4, G 27.713, **c 30.762** | 145.386 | no pitch break (192 m²) |
+
+What the cases settle:
+
+* A gable wall's overhang extends the verge (C02: ridge 11 m, area as if the
+  footprint grew by 0.5 m on every side).
+* The half-hip roof is the Krüppelwalm model: 137.286 m² equals the value
+  derived from the help file's description (137.29 m²). The horizontal lower
+  edge of the Krüppel plane counts as T (2 × 3 m on top of the 2 × 12 m eaves).
+* Eaves at different heights on one roof leave short OL/OR verges, not wall
+  abutments (C10).
+* A pitch break line is type `c` (Knick) and the hips run through it (C14).
+* Files saved by this DACAD build store the footprint clockwise (wall 2 of
+  C08 runs from (12, 8) to (12, 0)); the V1 input ran counter-clockwise.
+
+The six V1 sample projects still differ for the same engine
+(T/F/G/K/O/W and area, up to −142.68 m² in TRAING07).
 
 ## Findings in the Python core (`src/tectora/core`)
 
@@ -64,14 +107,13 @@ float32 noise in the stored totals).
    full-height end triangle from the eave corners with a steeper pitch. DACAD's
    Krüppelwalm keeps a vertical gable up to the Krüppel height and starts the
    hip plane there. Example 12 × 8 m, 45°, eave 3 m, Krüppel from 5.5 m at 60°:
-   the Krüppelwalm geometry gives 137.29 m² (own derivation of DACAD's model,
-   not yet a DACAD output; case `C08`), Tectora gives 158.71 m² for the same
-   ridge clip, or 146.59 m² for the same end pitch.
+   DACAD gives 137.286 m² (case `C08`, calculated by DACAD), Tectora gives
+   158.71 m² for the same ridge clip, or 146.59 m² for the same end pitch.
 3. **Overhang is inconsistent.** `RoofSpec.roof_length/roof_width` add the
    overhang on all four sides (gable 10 × 8, 40°, 0.5 m → 129.24 m², ridge
    11.0 m), while `roof_generator.generate_roof` ignores the overhang. DACAD
-   applies it horizontally per wall; whether a 90° wall's overhang extends the
-   verge is what cases `C02`/`C03` will show.
+   applies it horizontally per wall, and a 90° wall's overhang extends the
+   verge (`C02` 129.235 m², `C03` 117.487 m²).
 4. **Shed top edge counted as eave.** `_calc_shed` returns
    `eaves_perimeter_m = 2·L`; DACAD reports the low edge as T and the top edge
    as P (Pult).
@@ -82,8 +124,8 @@ float32 noise in the stored totals).
 
 ## Next steps
 
-* Run the 14 single-rule cases in DACAD, save, export fixtures, commit them
-  (inputs are ours, results are DACAD's numbers).
+* Add cases for each remaining rule (priorities, dormers, windows, chimneys,
+  norm deductions) and calculate them with `dacad_wine_calc.sh`.
 * Run `compare` against the Rust engine (`crates/tectora-core`) as soon as its
   CLI prints `quantities.lines_by_type` / `area_by_material`.
 * If a rule stays ambiguous after the cases (e.g. priority between

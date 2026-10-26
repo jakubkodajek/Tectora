@@ -1,0 +1,133 @@
+{
+  "source": "C02_gable_overhang_all.DAD",
+  "format": "V2",
+  "input": {
+    "walls": [
+      {
+        "start": [
+          10.0,
+          0.0
+        ],
+        "end": [
+          0.0,
+          0.0
+        ],
+        "definitions": [
+          {
+            "pitch_deg": 40.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.5,
+            "material": 1,
+            "roof_no": 1
+          }
+        ]
+      },
+      {
+        "start": [
+          10.0,
+          8.0
+        ],
+        "end": [
+          10.0,
+          0.0
+        ],
+        "definitions": [
+          {
+            "pitch_deg": 90.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.5,
+            "material": 0,
+            "roof_no": 1
+          }
+        ]
+      },
+      {
+        "start": [
+          0.0,
+          8.0
+        ],
+        "end": [
+          10.0,
+          8.0
+        ],
+        "definitions": [
+          {
+            "pitch_deg": 40.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.5,
+            "material": 1,
+            "roof_no": 1
+          }
+        ]
+      },
+      {
+        "start": [
+          0.0,
+          0.0
+        ],
+        "end": [
+          0.0,
+          8.0
+        ],
+        "definitions": [
+          {
+            "pitch_deg": 90.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.5,
+            "material": 0,
+            "roof_no": 1
+          }
+        ]
+      }
+    ]
+  },
+  "traits": {
+    "roof_numbers": [
+      1
+    ],
+    "stacked_definitions": false,
+    "pitches": [
+      40.0,
+      90.0
+    ],
+    "eave_heights": [
+      3.0
+    ],
+    "overhangs": [
+      0.5
+    ]
+  },
+  "dacad_results": {
+    "lines_by_type": {
+      "F": 11.0,
+      "OL": 11.7487,
+      "OR": 11.7487,
+      "T": 22.0
+    },
+    "line_groups": {
+      "7 Pult -": 0.0,
+      "3 Úžlabie -": 0.0,
+      "2 Nárožie -": 0.0,
+      "1 Hreben -": 11.0,
+      "6 Odkvap -": 22.0,
+      "Schlucht -": 0.0,
+      "Zlom -": 0.0,
+      "92 Bocné napojenie -": 0.0,
+      "93 Zadné napojenie -": 0.0,
+      "91 Predné napojenie -": 0.0,
+      "94 Krajné šikmo -": 0.0,
+      "5 Krajné pravé -": 11.7487,
+      "4 Krajné lavé -": 11.7487
+    },
+    "area_groups": {
+      "Stena : 1": 149.9555,
+      "Solarpanel": 0.0,
+      "Bridlica": 0.0,
+      "Kamen": 0.0,
+      "Plech - ": 0.0,
+      "Škridla - ": 129.2353
+    },
+    "line_count": 27,
+    "face_count": 6
+  }
+}

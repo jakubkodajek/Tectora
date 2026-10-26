@@ -41,6 +41,17 @@ TAKEOFF_TYPES = [LINE_TYPES[c] for c in sorted(LINE_TYPES)]
 # Coarse codes an engine may print instead of DACAD's split types.
 AGGREGATES = {"O": ["OL", "OR", "OS"], "W": ["WH", "WS", "WV"]}
 
+# Area group names differ by DACAD version and UI language (V1 German
+# "Ziegel"/"Blech", V2 Slovak build "Škridla - "/"Plech - ").
+MATERIAL_GROUPS = {"Ziegel": ("Ziegel", "Škridla"), "Blech": ("Blech", "Plech")}
+
+
+def material_area(pr: DadProject, material: str) -> float | None:
+    """DACAD's stored area for a material, or None if the file has no group."""
+    found = [v for k, v in pr.area_groups.items()
+             if k.strip(" -").startswith(MATERIAL_GROUPS[material])]
+    return sum(found) if found else None
+
 
 def fixture(pr: DadProject) -> dict:
     roofs = sorted({d.roof_no for w in pr.walls for d in w.definitions})
@@ -129,8 +140,9 @@ def compare(pr: DadProject, got: dict) -> list[str]:
     got_areas = dict(got.get("area_by_material", {}))
     if "roof" in got_areas and "Ziegel" not in got_areas:
         # Engine without materials yet: compare its total to tiles + sheet.
-        if "Ziegel" in pr.area_groups or "Blech" in pr.area_groups:
-            w = pr.area_groups.get("Ziegel", 0.0) + pr.area_groups.get("Blech", 0.0)
+        tiles, sheet = material_area(pr, "Ziegel"), material_area(pr, "Blech")
+        if tiles is not None or sheet is not None:
+            w = (tiles or 0.0) + (sheet or 0.0)
         else:  # DACAD 1.13 only stores "Flächen gesamt" (all roof faces)
             w = pr.area_groups.get("Flächen gesamt", 0.0)
         g = float(got_areas["roof"])
@@ -138,20 +150,24 @@ def compare(pr: DadProject, got: dict) -> list[str]:
             issues.append(f"area roof: DACAD {w:.3f} m², engine {g:.3f} m² "
                           f"(Δ {g - w:+.3f})")
     for name in [n for n in ("Ziegel", "Blech") if n in got_areas]:
-        if name in pr.area_groups:
-            w, g = pr.area_groups[name], float(got_areas.get(name, 0.0))
+        w = material_area(pr, name)
+        if w is not None:
+            g = float(got_areas.get(name, 0.0))
             if abs(w - g) > TOL_AREA_M2:
                 issues.append(f"area {name}: DACAD {w:.3f} m², engine {g:.3f} m² "
                               f"(Δ {g - w:+.3f})")
     return issues
 
 
-def cmd_compare(src: Path, engine: str) -> int:
+def cmd_compare(src: Path, engine: str, inputs: Path | None = None) -> int:
     passed = failed = errored = 0
     for p in _dad_files(src):
         pr = read_dad(p)
+        # DACAD re-saves calculated files as V2; an engine that only reads V1
+        # can be fed the original V1 input with the same name instead.
+        engine_file = inputs / p.name if inputs else p
         try:
-            got = _engine_quantities(engine, p)
+            got = _engine_quantities(engine, engine_file)
         except Exception as exc:  # noqa: BLE001 — report and continue
             errored += 1
             print(f"ERROR {p.name}: {exc}")
@@ -178,10 +194,12 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("compare")
     c.add_argument("src", type=Path)
     c.add_argument("--engine", required=True)
+    c.add_argument("--inputs", type=Path,
+                   help="folder with the same-named input files to give the engine")
     a = ap.parse_args(argv)
     if a.cmd == "export":
         return cmd_export(a.src, a.out)
-    return cmd_compare(a.src, a.engine)
+    return cmd_compare(a.src, a.engine, a.inputs)
 
 
 if __name__ == "__main__":
