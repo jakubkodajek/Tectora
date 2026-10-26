@@ -22,19 +22,38 @@ export interface RoofPart {
   edges: EdgeDef[];
 }
 
+export type JobStatus = "draft" | "offer" | "ordered" | "done";
+export const JOB_STATUSES: JobStatus[] = ["draft", "offer", "ordered", "done"];
+
+export interface JobInfo {
+  number: string;
+  customer: string;
+  address: string;
+  status: JobStatus;
+}
+
 export interface Project {
   schema_version: number;
   name: string;
   notes: string;
+  job: JobInfo;
   parts: RoofPart[];
   dormers: unknown[];
   chimneys: { position: Point2; width: number; depth: number }[];
+}
+
+export interface ActivityInfo {
+  ts_ms: number;
+  actor: string;
+  summary: string;
 }
 
 export interface ProjectSummary {
   id: string;
   name: string;
   notes: string;
+  job: JobInfo;
+  last_activity: ActivityInfo | null;
   modified_ms: number;
   roof_area: number;
   parts: number;
@@ -81,6 +100,52 @@ export interface RoofQuantities {
 export interface CalcResult {
   parts: { name: string; geometry: { faces: RoofFace[]; lines: RoofLine[]; gables: [number, number, number][][] }; quantities: RoofQuantities }[];
   totals: RoofQuantities;
+  /** Line lengths by DACAD code (T, F, G, K, O, W). */
+  codes: Record<string, number>;
+}
+
+export interface Change {
+  kind: "added" | "removed" | "modified";
+  field: string;
+  part?: number;
+  edge?: number;
+  before: unknown;
+  after: unknown;
+}
+
+export interface ActivityItem extends ActivityInfo {
+  changes: Change[];
+}
+
+export interface LiveStatus {
+  ts_ms: number;
+  actor: string;
+  message: string;
+  project_id: string | null;
+}
+
+export type StandardKind = "gable" | "shed" | "hip" | "pyramid" | "half_hip";
+export const STANDARD_KINDS: StandardKind[] = ["gable", "hip", "half_hip", "shed", "pyramid"];
+
+export interface Presets {
+  pitch_deg: number;
+  eave_height: number;
+  overhang: number;
+}
+
+export const USER_ACTOR = "user";
+export const isAi = (actor: string) => actor !== USER_ACTOR;
+
+export function emptyProject(name: string): Project {
+  return {
+    schema_version: 1,
+    name,
+    notes: "",
+    job: { number: "", customer: "", address: "", status: "draft" },
+    parts: [],
+    dormers: [],
+    chimneys: [],
+  };
 }
 
 export const GABLE_PITCH = 90;

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { CalcResult, Project, Selection } from "./types";
+  import type { CalcResult, Point2, Project, Selection } from "./types";
   import { isGable } from "./types";
   import { t } from "./i18n.svelte";
 
@@ -10,6 +10,12 @@
     onmove,
     onmoveend,
     oninsert,
+    highlight = new Set<string>(),
+    drawing = null,
+    ondrawpoint,
+    ondrawclose,
+    oncursor,
+    showDims = true,
   }: {
     project: Project;
     result: CalcResult | null;
@@ -17,7 +23,17 @@
     onmove: (part: number, vertex: number, x: number, y: number) => void;
     onmoveend: () => void;
     oninsert: (part: number, edge: number, x: number, y: number) => void;
+    /** "part:edge" keys of edges changed by the latest AI edit. */
+    highlight?: Set<string>;
+    /** Points of a footprint being drawn (draw mode), or null. */
+    drawing?: Point2[] | null;
+    ondrawpoint?: (x: number, y: number) => void;
+    ondrawclose?: () => void;
+    oncursor?: (p: Point2 | null) => void;
+    showDims?: boolean;
   } = $props();
+
+  let cursorWorld = $state<Point2 | null>(null);
 
   let svg: SVGSVGElement | undefined = $state();
   let width = $state(800);
@@ -30,8 +46,8 @@
   const GRID = 0.5;
   const SNAP = 0.05;
 
-  function fit() {
-    const pts = project.parts.flatMap((p) => p.edges.map((e) => e.start));
+  export function fit() {
+    const pts = project.parts.flatMap((p) => p.edges.map((e) => e.start)).concat(drawing ?? []);
     if (pts.length === 0 || width < 10) return;
     const xs = pts.map((p) => p.x);
     const ys = pts.map((p) => p.y);
@@ -42,11 +58,20 @@
   }
 
   $effect(() => {
-    if (!fitted && width > 10 && project.parts.length) {
-      fit();
+    if (!fitted && width > 10) {
+      if (project.parts.length) fit();
+      else {
+        scale = 30;
+        center = { x: 8, y: 5 };
+      }
       fitted = true;
     }
   });
+
+  const snapPoint = (px: number, py: number, alt: boolean) => {
+    const snap = alt ? 0.001 : SNAP;
+    return { x: +(Math.round(wx(px) / snap) * snap).toFixed(3), y: +(Math.round(wy(py) / snap) * snap).toFixed(3) };
+  };
 
   const sx = (x: number) => (x - center.x) * scale + width / 2;
   const sy = (y: number) => -(y - center.y) * scale + height / 2;
@@ -79,6 +104,18 @@
   }
 
   function onpointerdown(e: PointerEvent) {
+    if (drawing && e.button === 0) {
+      const p = localPoint(e);
+      const first = drawing[0];
+      // Clicking the first point closes the footprint.
+      if (first && drawing.length >= 3 && Math.hypot(sx(first.x) - p.x, sy(first.y) - p.y) < 10) {
+        ondrawclose?.();
+      } else {
+        const w = snapPoint(p.x, p.y, e.altKey);
+        ondrawpoint?.(w.x, w.y);
+      }
+      return;
+    }
     if (e.button === 1 || e.button === 2 || (e.button === 0 && e.target === svg)) {
       const p = localPoint(e);
       pan = { x: p.x, y: p.y, cx: center.x, cy: center.y };
@@ -89,11 +126,10 @@
 
   function onpointermove(e: PointerEvent) {
     const p = localPoint(e);
+    cursorWorld = snapPoint(p.x, p.y, e.altKey);
+    oncursor?.(cursorWorld);
     if (drag) {
-      const snap = e.altKey ? 0.001 : SNAP;
-      const x = Math.round(wx(p.x) / snap) * snap;
-      const y = Math.round(wy(p.y) / snap) * snap;
-      onmove(drag.part, drag.vertex, +x.toFixed(3), +y.toFixed(3));
+      onmove(drag.part, drag.vertex, cursorWorld.x, cursorWorld.y);
     } else if (pan) {
       center = { x: pan.cx - (p.x - pan.x) / scale, y: pan.cy + (p.y - pan.y) / scale };
     }
@@ -154,6 +190,11 @@
     {onpointermove}
     {onpointerup}
     {onwheel}
+    onpointerleave={() => {
+      cursorWorld = null;
+      oncursor?.(null);
+    }}
+    class:drawing={!!drawing}
     oncontextmenu={(e) => e.preventDefault()}
   >
     {#each gridLines as g}
@@ -188,18 +229,22 @@
       {#each part.edges as e, i}
         {@const b = part.edges[(i + 1) % part.edges.length].start}
         {@const sel = selection?.part === pi && selection?.edge === i}
-        <g class="edge" class:gable={isGable(e)} class:sel>
+        {@const changed = highlight.has(`${pi}:${i}`)}
+        <g class="edge" class:gable={isGable(e)} class:sel class:changed>
+          {#if changed}
+            <line class="glow" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)} />
+          {/if}
           <line class="hit" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)}
             role="button" tabindex="-1" aria-label={t("plan.edge", { n: i + 1 })}
             onpointerdown={(ev) => { ev.stopPropagation(); selection = { part: pi, edge: i }; }}
             ondblclick={(ev) => edgeDblClick(ev, pi, i)} />
           <line class="wall" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)} />
-          {#if scale * edgeLength(pi, i) > 46}
+          {#if showDims && scale * edgeLength(pi, i) > 46}
             <text
               x={(sx(e.start.x) + sx(b.x)) / 2}
               y={(sy(e.start.y) + sy(b.y)) / 2}
               dy="-7"
-              class="dim">{edgeLength(pi, i).toFixed(2)}</text>
+              class="dim"><tspan class="no">{i + 1}</tspan>  {edgeLength(pi, i).toFixed(2)}</text>
           {/if}
         </g>
       {/each}
@@ -216,11 +261,30 @@
         />
       {/each}
     {/each}
+    {#if drawing}
+      {#if drawing.length}
+        <path
+          class="draft"
+          d={"M" + drawing.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") +
+            (cursorWorld ? `L${sx(cursorWorld.x)},${sy(cursorWorld.y)}` : "")}
+        />
+        {#each drawing as p, i}
+          <circle class="draft-pt" class:first={i === 0} cx={sx(p.x)} cy={sy(p.y)} r={i === 0 && drawing.length >= 3 ? 7 : 4} />
+        {/each}
+        {#if cursorWorld}
+          {@const last = drawing[drawing.length - 1]}
+          {@const d = Math.hypot(cursorWorld.x - last.x, cursorWorld.y - last.y)}
+          {#if d > 0.01}
+            <text class="dim draft-dim" x={(sx(last.x) + sx(cursorWorld.x)) / 2} y={(sy(last.y) + sy(cursorWorld.y)) / 2} dy="-8">{d.toFixed(2)}</text>
+          {/if}
+        {/if}
+      {/if}
+      {#if cursorWorld}
+        <path class="crosshair" d="M{sx(cursorWorld.x) - 9},{sy(cursorWorld.y)}h18M{sx(cursorWorld.x)},{sy(cursorWorld.y) - 9}v18" />
+      {/if}
+    {/if}
   </svg>
-  <div class="hint">{t("plan.hint")}</div>
-  <button class="fit icon-btn" title={t("plan.fit")} onclick={fit} aria-label={t("plan.fit")}>
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
-  </button>
+  {#if !drawing}<div class="hint">{t("plan.hint")}</div>{/if}
 </div>
 
 <style>
@@ -259,6 +323,51 @@
   .edge.gable .wall {
     stroke: var(--line-verge);
     stroke-dasharray: 8 5;
+  }
+  .edge .glow {
+    stroke: var(--ai);
+    stroke-width: 12;
+    stroke-linecap: round;
+    opacity: 0.35;
+    pointer-events: none;
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  .edge.changed .wall {
+    stroke: var(--ai);
+    stroke-dasharray: none;
+  }
+  @keyframes pulse {
+    50% {
+      opacity: 0.12;
+    }
+  }
+  svg.drawing {
+    cursor: crosshair;
+  }
+  .draft {
+    fill: color-mix(in srgb, var(--accent) 6%, transparent);
+    stroke: var(--accent);
+    stroke-width: 2.5;
+    stroke-dasharray: 6 4;
+    pointer-events: none;
+  }
+  .draft-pt {
+    fill: var(--surface);
+    stroke: var(--accent);
+    stroke-width: 2;
+    pointer-events: none;
+  }
+  .draft-pt.first {
+    fill: var(--accent);
+  }
+  .crosshair {
+    stroke: var(--text-2);
+    stroke-width: 1;
+    pointer-events: none;
+  }
+  .dim .no {
+    font-weight: 700;
+    fill: var(--text);
   }
   .edge.sel .wall {
     stroke: var(--focus);
@@ -302,12 +411,5 @@
     font-size: 11.5px;
     color: var(--text-3);
     pointer-events: none;
-  }
-  .fit {
-    position: absolute;
-    right: 10px;
-    top: 10px;
-    background: var(--surface);
-    border: 1px solid var(--border);
   }
 </style>

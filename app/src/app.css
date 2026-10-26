@@ -6,16 +6,21 @@
   --text: #171b26;
   --text-2: #5b6377;
   --text-3: #8a91a3;
-  --accent: #e0662e;
-  --accent-2: #c9532a;
-  --accent-soft: #fdebe2;
+  /* Brand: brick red #A8362C, orange #DB8839, grey #5C5B5A (app icon). */
+  --accent: #a8362c;
+  --accent-2: #8f2c24;
+  --accent-soft: #f8e9e6;
+  --ai: #db8839;
+  --ai-strong: #a85f17;
+  --ai-soft: #fcf0e2;
+  --logo-bg: #ffffff;
   --focus: #3b6fe0;
   --danger: #d23d3d;
   --shadow: 0 1px 2px rgba(20, 24, 36, 0.06), 0 4px 16px rgba(20, 24, 36, 0.06);
   --shadow-lg: 0 12px 48px rgba(20, 24, 36, 0.18);
   --radius: 12px;
   --plan-grid: #e6e8ee;
-  --plan-fill: rgba(224, 102, 46, 0.08);
+  --plan-fill: rgba(168, 54, 44, 0.07);
   --line-eave: #2f6fd6;
   --line-verge: #e39b2b;
   --line-ridge: #d6402f;
@@ -34,11 +39,16 @@
     --text: #e9ecf3;
     --text-2: #a3abbd;
     --text-3: #6f788c;
-    --accent-soft: #3a2218;
+    --accent: #d0574b;
+    --accent-2: #b8463b;
+    --accent-soft: #3a1f1c;
+    --ai-strong: #f0a95e;
+    --ai-soft: #35271a;
+    --logo-bg: #f4f2ef;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.25);
     --shadow-lg: 0 12px 48px rgba(0, 0, 0, 0.5);
     --plan-grid: #232838;
-    --plan-fill: rgba(224, 102, 46, 0.12);
+    --plan-fill: rgba(208, 87, 75, 0.12);
     color-scheme: dark;
   }
 }
@@ -124,7 +134,9 @@ button {
 
 input[type="text"],
 input[type="number"],
-input[type="search"] {
+input[type="search"],
+select,
+textarea {
   font: inherit;
   color: var(--text);
   background: var(--surface);
@@ -135,7 +147,18 @@ input[type="search"] {
   outline: none;
   user-select: text;
 }
-input:focus {
+textarea {
+  height: auto;
+  padding: 8px 10px;
+  resize: vertical;
+  line-height: 1.4;
+}
+select {
+  padding-right: 6px;
+}
+input:focus,
+select:focus,
+textarea:focus {
   border-color: var(--focus);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 20%, transparent);
 }
