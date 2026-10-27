@@ -1,4 +1,4 @@
-"""Calculate many .DAD files with DACAD under Wine, several at a time.
+r"""Calculate many .DAD files with DACAD under Wine, several at a time.
 
 Each worker gets its own Xvfb display, Wine prefix and DACAD folder (copied
 from the given ones), and runs tools/dacad_wine_calc.sh on one file at a
@@ -10,6 +10,10 @@ time with a timeout, so a hung error dialog costs one file, not the batch.
 Inputs are copied to OUT_DIR and calculated there; OUT_DIR/status.json
 records ok / not_saved / timeout per file. Files already marked ok are
 skipped, so an interrupted batch can be resumed.
+
+DACAD's roof core reads %TEMP%\<name>.RD2 and writes <name>.SOL/.SO2, which
+DACAD deletes again; with --keep-core they are copied to OUT_DIR/core/ while
+the calculation runs (polled), for diffs below DACAD's post-processing.
 """
 from __future__ import annotations
 
@@ -24,6 +28,23 @@ import time
 from pathlib import Path
 
 CALC = Path(__file__).resolve().parent / "dacad_wine_calc.sh"
+
+
+CORE_EXT = (".RD2", ".SOL", ".SO2")
+
+
+def _keep_core(temp: Path, dst: Path, stem: str, stop: threading.Event) -> None:
+    """Copy the roof core's temp files for *stem* until *stop* is set."""
+    dst.mkdir(parents=True, exist_ok=True)
+    while not stop.is_set():
+        for ext in CORE_EXT:
+            f = temp / (stem + ext)
+            try:
+                if f.stat().st_size:
+                    shutil.copyfile(f, dst / (stem + ext))
+            except OSError:
+                pass
+        stop.wait(0.02)
 
 
 def _worker(n: int, a, q: queue.Queue, status: dict, lock: threading.Lock) -> None:
@@ -45,12 +66,18 @@ def _worker(n: int, a, q: queue.Queue, status: dict, lock: threading.Lock) -> No
             except queue.Empty:
                 return
             t0 = time.time()
+            stop = threading.Event()
+            if a.keep_core:
+                temp = prefix / "drive_c" / "users" / os.environ.get("USER", "root") / "Temp"
+                threading.Thread(target=_keep_core, args=(temp, Path(a.out) / "core", f.stem, stop),
+                                 daemon=True).start()
             try:
                 r = subprocess.run([str(CALC), str(f)], env=env, capture_output=True, text=True,
                                    timeout=a.timeout)
                 st = "ok" if "ok " in r.stdout else "not_saved"
             except subprocess.TimeoutExpired:
                 st = "timeout"
+            stop.set()
             subprocess.run(["wineserver", "-k"], env=env, capture_output=True)
             with lock:
                 status[f.name] = {"status": st, "seconds": round(time.time() - t0, 1)}
@@ -71,6 +98,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--timeout", type=int, default=150)
     ap.add_argument("--display-base", type=int, default=20)
+    ap.add_argument("--keep-core", action="store_true",
+                    help="copy the roof core's RD2/SOL/SO2 files to OUT/core/")
     a = ap.parse_args(argv)
     a.out.mkdir(parents=True, exist_ok=True)
     sp = a.out / "status.json"
