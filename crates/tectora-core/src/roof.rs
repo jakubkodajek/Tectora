@@ -1024,7 +1024,8 @@ pub fn generate(part: &RoofPart) -> RoofGeometry {
     let (off, _) = generate_mode(&part, &vec![false; raised.len()]);
     let mut geo = if raised.contains(&true) {
         let (body, _) = generate_mode(&part, &raised);
-        crate::raised::combine(off, body)
+        let eaves: Vec<f64> = part.edges.iter().map(|e| e.eave_height).collect();
+        crate::raised::combine(off, body, &eaves, &raised)
     } else {
         off
     };

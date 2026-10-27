@@ -6,7 +6,10 @@
 //! overhang that floats: the parts of it outside the body's outline or above
 //! the body's roof. A line is kept where it borders a shown face, that is
 //! where a plane it lies on is shown on one side of it only; lines that both
-//! roofs share are counted once.
+//! roofs share are counted once. Where the floating overhang of a raised
+//! wall lies above a body face of a plane that starts no lower, that body
+//! face is only the wall-line copy of the same roof and is hidden (DACAD
+//! case C59).
 
 use geo::{Area, BooleanOps, MultiPolygon};
 
@@ -23,7 +26,14 @@ struct Shown {
     plane: Plane,
 }
 
-pub fn combine(off: RoofGeometry, body: RoofGeometry) -> RoofGeometry {
+/// `eaves[i]` is the eave height of edge `i`, which the faces name, and
+/// `raised[i]` whether that edge is raised.
+pub fn combine(
+    off: RoofGeometry,
+    body: RoofGeometry,
+    eaves: &[f64],
+    raised: &[bool],
+) -> RoofGeometry {
     let r = off
         .faces
         .iter()
@@ -36,18 +46,12 @@ pub fn combine(off: RoofGeometry, body: RoofGeometry) -> RoofGeometry {
         body.faces.iter().map(|f| (plan(f), Plane::of(f))).collect();
 
     let mut geo = RoofGeometry {
-        faces: body.faces.clone(),
         gables: body.gables.clone(),
         clad_area: body.clad_area,
         ..RoofGeometry::default()
     };
-    let mut shown: Vec<Shown> = body_faces
-        .iter()
-        .map(|(p, pl)| Shown {
-            poly: p.clone(),
-            plane: *pl,
-        })
-        .collect();
+    let mut shown: Vec<Shown> = Vec::new();
+    let mut floating: Vec<(Vec<Point2>, Plane, usize)> = Vec::new();
 
     // Overhang faces where they are not at or below the body.
     for f in &off.faces {
@@ -80,7 +84,51 @@ pub fn combine(off: RoofGeometry, body: RoofGeometry) -> RoofGeometry {
                 area: a * fp.sec(),
                 deducted: 0.0,
             });
+            floating.push((poly.clone(), fp, f.edge));
             shown.push(Shown { poly, plane: fp });
+        }
+    }
+
+    // Body faces, without what floating overhang of a roof starting no
+    // higher hides.
+    let eave = |e: usize| eaves.get(e).copied().unwrap_or(f64::NEG_INFINITY);
+    for (bf, (bp, bpl)) in body.faces.iter().zip(&body_faces) {
+        let mut vis = MultiPolygon::new(vec![to_geo(bp)]);
+        let mut cut = false;
+        for (fp, fpl, fe) in &floating {
+            if !raised.get(*fe).copied().unwrap_or(false) || eave(bf.edge) + EPS < eave(*fe) {
+                continue;
+            }
+            let hp = half_plane(fpl.a - bpl.a, fpl.b - bpl.b, fpl.c - bpl.c, r);
+            if hp.len() < 3 {
+                continue;
+            }
+            let over = to_geo(fp).intersection(&to_geo(&hp));
+            if over.unsigned_area() > 1e-12 {
+                vis = vis.difference(&over);
+                cut = true;
+            }
+        }
+        if !cut {
+            geo.faces.push(bf.clone());
+            shown.push(Shown {
+                poly: bp.clone(),
+                plane: *bpl,
+            });
+            continue;
+        }
+        for piece in &vis.0 {
+            let a = piece.unsigned_area();
+            if a < 1e-9 {
+                continue;
+            }
+            let poly = from_geo(piece);
+            geo.faces.push(RoofFace {
+                polygon: poly.iter().map(|p| [p.x, p.y, bpl.z(*p)]).collect(),
+                area: a * bpl.sec(),
+                ..bf.clone()
+            });
+            shown.push(Shown { poly, plane: *bpl });
         }
     }
 
