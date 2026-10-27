@@ -1,10 +1,12 @@
 """Compare DACAD's results with the engine's for a batch of calculated files.
 
 For every file that tools/dacad_batch.py calculated, runs the engine on the
-original input and checks two things:
+original input and checks:
 
-* every DACAD roof line has an engine line of the same type whose end points
-  lie within --tol of it (either direction), and vice versa;
+* every positive DACAD roof line has an engine line of the same type whose
+  end points lie within --tol of it (either direction), and vice versa;
+* every negative DACAD line (what a hole cuts out of a line) has an engine
+  minus line of the same type and length within --tol, and vice versa;
 * the line totals per DACAD code agree within --tol (verges as OL+OR+OS),
   summing DACAD's lengths with their sign, as its own totals do;
 * the roof area agrees within --area-tol (DACAD: its stored area groups
@@ -58,40 +60,17 @@ def _match(xs, ys, tol):
     return miss
 
 
-def _subtract(lines, tol=1e-3):
-    """Apply DACAD's negative-length lines: a line stored with a negative
-    length deducts its span from the collinear line of the same type that
-    contains it (e.g. a ridge interrupted by a chimney is stored as the
-    whole ridge plus a negative piece over the chimney).
-
-    Returns the resulting positive lines and the deductions that lie on no
-    such line (DACAD still counts them in its totals)."""
-    pos = [(t, a, b) for t, a, b, ln in lines if ln >= 0]
-    loose = []
-    for t, c, d, ln in lines:
-        if ln >= 0:
-            continue
-        for i, (u, a, b) in enumerate(pos):
-            if u != t:
-                continue
-            ab = [q - p for p, q in zip(a, b)]
-            L2 = sum(x * x for x in ab)
-            if L2 < 1e-12:
-                continue
-            def par(pt):
-                return sum((x - y) * z for x, y, z in zip(pt, a, ab)) / L2
-            def off(pt, s):
-                return math.dist(pt, [y + s * z for y, z in zip(a, ab)])
-            s1, s2 = sorted((par(c), par(d)))
-            if off(c, par(c)) > tol or off(d, par(d)) > tol or s1 < -tol or s2 > 1 + tol:
-                continue
-            at = lambda s: tuple(y + s * z for y, z in zip(a, ab))
-            pieces = [(u, a, at(s1)), (u, at(s2), b)]
-            pos[i:i + 1] = [pc for pc in pieces if math.dist(pc[1], pc[2]) > tol]
-            break
+def _match_len(xs, ys, tol):
+    """Deductions (type, length) of xs with no counterpart in ys."""
+    left = list(ys)
+    miss = []
+    for t, ln in xs:
+        j = next((j for j, (u, m) in enumerate(left) if u == t and abs(m - ln) <= tol), None)
+        if j is None:
+            miss.append((t, round(ln, 3)))
         else:
-            loose.append((t, c, d))
-    return pos, loose
+            left.pop(j)
+    return miss
 
 
 def _raised_eave_snap(raw, tol=0.025) -> bool:
@@ -121,16 +100,21 @@ def compare(calc: Path, src: Path, engine: str, tol: float, area_tol: float) -> 
     p = read_dad(str(calc))
     raw = [(_type(LINE_TYPES[ln.type_code]), tuple(ln.a), tuple(ln.b), ln.length_m)
            for ln in p.lines if ln.type_code in LINE_TYPES and math.dist(ln.a, ln.b) > 1e-3]
-    dac, loose = _subtract(raw)
+    # DACAD keeps a line whole and stores what a hole cuts out of it as a
+    # negative line of the same type; the engine does the same (whole lines
+    # plus minus_lines as (code, length)). Compare positives by geometry and
+    # deductions by type and length.
+    dac = [(t, a, b) for t, a, b, ln in raw if ln >= 0]
     if not dac:
         return {"ok": False, "error": "DACAD produced no roof lines"}
+    dmin = [(t, -ln) for t, a, b, ln in raw if ln < 0]
+    emin = [(_type(code), ln) for pt in data["parts"]
+            for code, ln in pt["geometry"].get("minus_lines", [])]
     te, td = Counter(), Counter()
     for t, a, b in eng:
         te[t] += math.dist(a, b)
-    # Engine counterparts of DACAD's loose deductions: (code, length).
-    for pt in data["parts"]:
-        for code, ln in pt["geometry"].get("minus_lines", []):
-            te[_type(code)] -= ln
+    for t, ln in emin:
+        te[t] -= ln
     for t, a, b, ln in raw:
         td[t] += math.copysign(math.dist(a, b), ln)
     totals = {t: (round(td[t], 3), round(te[t], 3)) for t in sorted(set(te) | set(td))
@@ -138,13 +122,15 @@ def compare(calc: Path, src: Path, engine: str, tol: float, area_tol: float) -> 
     only_d, only_e = _match(dac, eng, tol), _match(eng, dac, tol)
     r = lambda ls: [(t, [round(c, 3) for c in a], [round(c, 3) for c in b]) for t, a, b in ls]
     res = {"totals": totals, "only_dacad": r(only_d), "only_engine": r(only_e),
-           "loose_deductions": r(loose)}
+           "minus_only_dacad": _match_len(dmin, emin, tol),
+           "minus_only_engine": _match_len(emin, dmin, tol)}
     ea = sum(pt["quantities"].get("roof_area", 0.0) for pt in data["parts"])
     roof = [v for k, v in p.area_groups.items() if not k.startswith(("Stena", "Wand"))]
     da = sum(roof) if roof else None
     if da is not None and abs(da - ea) > area_tol:
         res["area"] = (round(da, 4), round(ea, 4))
-    res["ok"] = not (totals or only_d or only_e or "area" in res)
+    res["ok"] = not (totals or only_d or only_e or res["minus_only_dacad"]
+                     or res["minus_only_engine"] or "area" in res)
     if not res["ok"] and _raised_eave_snap(raw):
         res["quirk"] = "raised-eave snap"
     return res
