@@ -55,6 +55,38 @@ def _match(xs, ys, tol):
     return miss
 
 
+def _subtract(lines, tol=1e-3):
+    """Apply DACAD's negative-length lines: a line stored with a negative
+    length deducts its span from the collinear line of the same type that
+    contains it (e.g. a ridge interrupted by a chimney is stored as the
+    whole ridge plus a negative piece over the chimney)."""
+    pos = [(t, a, b) for t, a, b, ln in lines if ln >= 0]
+    for t, c, d, ln in lines:
+        if ln >= 0:
+            continue
+        for i, (u, a, b) in enumerate(pos):
+            if u != t:
+                continue
+            ab = [q - p for p, q in zip(a, b)]
+            L2 = sum(x * x for x in ab)
+            if L2 < 1e-12:
+                continue
+            def par(pt):
+                return sum((x - y) * z for x, y, z in zip(pt, a, ab)) / L2
+            def off(pt, s):
+                return math.dist(pt, [y + s * z for y, z in zip(a, ab)])
+            s1, s2 = sorted((par(c), par(d)))
+            if off(c, par(c)) > tol or off(d, par(d)) > tol or s1 < -tol or s2 > 1 + tol:
+                continue
+            at = lambda s: tuple(y + s * z for y, z in zip(a, ab))
+            pieces = [(u, a, at(s1)), (u, at(s2), b)]
+            pos[i:i + 1] = [pc for pc in pieces if math.dist(pc[1], pc[2]) > tol]
+            break
+        else:
+            pos.append((t, c, d))  # unmatched deduction: keep it visible
+    return pos
+
+
 def compare(calc: Path, src: Path, engine: str, tol: float) -> dict:
     argv = [x.replace("{file}", str(src)) for x in shlex.split(engine)]
     r = subprocess.run(argv, capture_output=True, text=True)
@@ -68,8 +100,9 @@ def compare(calc: Path, src: Path, engine: str, tol: float) -> dict:
            for p in data["parts"] for ln in p["geometry"]["lines"]
            if math.dist(ln["a"], ln["b"]) > 1e-3]
     p = read_dad(str(calc))
-    dac = [(_type(LINE_TYPES[ln.type_code]), tuple(ln.a), tuple(ln.b))
-           for ln in p.lines if ln.type_code in LINE_TYPES and math.dist(ln.a, ln.b) > 1e-3]
+    dac = _subtract([(_type(LINE_TYPES[ln.type_code]), tuple(ln.a), tuple(ln.b), ln.length_m)
+                     for ln in p.lines
+                     if ln.type_code in LINE_TYPES and math.dist(ln.a, ln.b) > 1e-3])
     if not dac:
         return {"ok": False, "error": "DACAD produced no roof lines"}
     te, td = Counter(), Counter()
