@@ -19,6 +19,9 @@ pgrep -x Xvfb >/dev/null || { Xvfb "$DISPLAY" -screen 0 1280x1024x24 +extension 
 for f in "$@"; do
   f="$(realpath "$f")"
   wineserver -k 2>/dev/null || true; sleep 1
+  # A killed run leaves DACAD's protocol file (%TEMP%\DACAD<n>); the next
+  # start would then ask (in a box titled "DACAD") whether to restore it.
+  rm -f "${WINEPREFIX:-$HOME/.wine}"/drive_c/users/*/Temp/DACAD[0-9]*
   (cd "$DACAD_DIR" && wine "DACAD DE.exe" "Z:${f//\//\\}" >/dev/null 2>&1 &)
   for _ in $(seq 1 30); do
     sleep 1; xdotool search --onlyvisible --name Grundriss >/dev/null 2>&1 && break
