@@ -217,82 +217,8 @@ pub(crate) fn slope(face: &RoofFace) -> (Point2, f64) {
     (Point2::new(-nx / h, -ny / h), h / nz)
 }
 
-/// A chimney side parallel to a ridge or hip and right beside it, outside
-/// it, still deducts that line: DACAD keeps the line whole and adds a
-/// negative one of the side's length on the chimney side. Fitted to 71
-/// DACAD runs (/mnt/project-files/dacad-chimney-near-line/, mass case
-/// R1_0077); the thresholds are empirical:
-///
-/// * ridge: the side's distance from the ridge on the face is under 12.7 mm
-///   (DACAD: 11.55 mm deducted, 13.9 mm not); a knick the same way (a
-///   chimney 1 cm above one, sweep dacad-chimney-knick case A0);
-/// * hip: seen from the hip's eave end, the side's corners lie within an
-///   angle whose sine, divided by the cosine of the face's pitch, is under
-///   0.0184 (DACAD: 0.01793 deducted, 0.01888 not).
-fn side_by_lines(geo: &mut RoofGeometry, corners: &[Point2]) {
-    const RIDGE_GAP: f64 = 0.0127;
-    const HIP_SINE: f64 = 0.0184;
-    let n = corners.len();
-    let centre = Point2::new(
-        corners.iter().map(|p| p.x).sum::<f64>() / n as f64,
-        corners.iter().map(|p| p.y).sum::<f64>() / n as f64,
-    );
-    let Some(face) = geo.faces.iter().find(|f| inside(&plan(f), centre)) else {
-        return;
-    };
-    let (up, tan) = slope(face);
-    let cos = 1.0 / (1.0 + tan * tan).sqrt();
-    let mut minus = Vec::new();
-    for l in &geo.lines {
-        if !matches!(l.kind, LineKind::Ridge | LineKind::Hip | LineKind::Knick) {
-            continue;
-        }
-        let (a, b) = (Point2::new(l.a[0], l.a[1]), Point2::new(l.b[0], l.b[1]));
-        let len = a.distance(b);
-        if len < TOL {
-            continue;
-        }
-        let d = Point2::new((b.x - a.x) / len, (b.y - a.y) / len);
-        let off = |p: Point2| (p.x - a.x) * d.y - (p.y - a.y) * d.x;
-        let along = |p: Point2| (p.x - a.x) * d.x + (p.y - a.y) * d.y;
-        for i in 0..n {
-            let (p, q) = (corners[i], corners[(i + 1) % n]);
-            let side = p.distance(q);
-            if side < TOL {
-                continue;
-            }
-            let (op, oq) = (off(p), off(q));
-            // Parallel, beside the line but not on it, facing it.
-            if (op - oq).abs() > 1e-4 || op.abs() < 1e-3 {
-                continue;
-            }
-            let inward = corners
-                .iter()
-                .map(|&c| off(c) - op)
-                .find(|v| v.abs() > 1e-6)
-                .unwrap_or(0.0);
-            if inward * op < 0.0 {
-                continue;
-            }
-            let (s, e) = (along(p).min(along(q)), along(p).max(along(q)));
-            if e <= 1e-9 || s >= len - 1e-9 {
-                continue;
-            }
-            let near = if l.kind != LineKind::Hip {
-                op.abs() / cos < RIDGE_GAP
-            } else {
-                let eave = if l.a[2] <= l.b[2] { a } else { b };
-                let sine = |c: Point2| off(c).abs() / eave.distance(c).max(TOL);
-                sine(p).max(sine(q)) / cos < HIP_SINE
-            };
-            if near {
-                let z = |c: Point2| height_at(face, up, tan, c);
-                let len3 = (side * side + (z(p) - z(q)).powi(2)).sqrt();
-                minus.push((l.dacad_code().to_string(), len3));
-            }
-        }
-    }
-    geo.minus_lines.extend(minus);
+fn dist3_(a: [f64; 3], b: [f64; 3]) -> f64 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
 pub(crate) fn inside(poly: &[Point2], p: Point2) -> bool {
@@ -396,43 +322,6 @@ fn inside_spans(poly: &[Point2], a: Point2, b: Point2) -> Vec<(f64, f64)> {
         .collect()
 }
 
-/// Parts of `a`-`b` that lie on a side of `poly` (within 1 mm).
-fn side_spans(poly: &[Point2], a: Point2, b: Point2) -> Vec<(f64, f64)> {
-    let d = Point2::new(b.x - a.x, b.y - a.y);
-    let len2 = d.x * d.x + d.y * d.y;
-    if len2 < TOL {
-        return Vec::new();
-    }
-    let off = |p: Point2, q: Point2, r: Point2| {
-        let e = Point2::new(q.x - p.x, q.y - p.y);
-        ((r.x - p.x) * e.y - (r.y - p.y) * e.x).abs() / e.x.hypot(e.y)
-    };
-    let t = |p: Point2| ((p.x - a.x) * d.x + (p.y - a.y) * d.y) / len2;
-    let n = poly.len();
-    (0..n)
-        .filter_map(|i| {
-            let (p, q) = (poly[i], poly[(i + 1) % n]);
-            if p.distance(q) < 1e-6 || off(p, q, a) > 1e-3 || off(p, q, b) > 1e-3 {
-                return None;
-            }
-            let (s, e) = (t(p).min(t(q)).max(0.0), t(p).max(t(q)).min(1.0));
-            (e - s > 1e-9).then_some((s, e))
-        })
-        .collect()
-}
-
-fn merge_spans(mut spans: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
-    spans.sort_by(|x, y| x.0.total_cmp(&y.0));
-    let mut out: Vec<(f64, f64)> = Vec::new();
-    for (s, e) in spans {
-        match out.last_mut() {
-            Some(last) if s <= last.1 + 1e-9 => last.1 = last.1.max(e),
-            _ => out.push((s, e)),
-        }
-    }
-    out
-}
-
 pub(crate) fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     [
         a[0] + t * (b[0] - a[0]),
@@ -528,151 +417,6 @@ fn snap_sides_to_ridge_ends(geo: &RoofGeometry, corners: &mut [Point2]) {
     }
 }
 
-/// A chimney poking less than 2 cm under a pitch break (Knick).
-struct KnickClip {
-    knick: RoofLine,
-    /// The chimney cut off at the knick.
-    outline: Vec<Point2>,
-    /// The cut along the knick, as an edge of `outline`.
-    chord: Option<(Point2, Point2)>,
-    /// A chord under POINT_EPS: it gets no line and the knick is not
-    /// deducted.
-    tiny: bool,
-}
-
-impl KnickClip {
-    /// The abutment along the chord: the chimney's front below a knick, its
-    /// back below a ridge.
-    fn chord_kind(&self) -> LineKind {
-        if self.knick.kind == LineKind::Ridge {
-            LineKind::AbutmentBack
-        } else {
-            LineKind::AbutmentFront
-        }
-    }
-}
-
-/// DACAD cuts a chimney off at a knick when its lowest corner or edge lies
-/// less than 2 cm below it: the side abutments stop on the knick and the
-/// chord along it is the front abutment (WV). A chord shorter than DACAD's
-/// point tolerance (POINT_EPS, 2 cm) gets neither the WV nor a knick
-/// deduction. Sweep /mnt/project-files/dacad-chimney-knick/ (0.8 cm depth,
-/// chord 1.85 cm: nothing; 0.9 cm, chord 2.08 cm: WV; 2 cm: not cut off;
-/// mass case R1_0254). A corner poking over a ridge is cut off there the
-/// same way, the chord being the back abutment (WH) and taking its piece
-/// off the ridge (sweep /mnt/project-files/dacad-chimney-ridge-end/chr/:
-/// 1 cm over at 26° and 40°, chord 2 cm: WH; 3 mm over: only the clip).
-/// Past a ridge a corner is cut off when it is less than 1 cm past, or
-/// less than 2 cm past and less than 2 cm lower (sweep
-/// /mnt/project-files/dacad-chimney-over-ridge/, 20°–80°; mass case
-/// R1_0170: 1.57 cm past at 52° stays). Which plane's pitch counts where
-/// the two differ is not measured; this takes the far plane's.
-fn knick_clip(geo: &RoofGeometry, corners: &[Point2]) -> Option<KnickClip> {
-    const DEPTH: f64 = 0.02;
-    const POINT_EPS: f64 = 0.02;
-    const VALUE_EPS: f64 = 0.01;
-    let height = |p: Point2| {
-        geo.faces.iter().find(|f| inside(&plan(f), p)).map(|f| {
-            let (up, tan) = slope(f);
-            height_at(f, up, tan, p)
-        })
-    };
-    let n = corners.len() as f64;
-    let centre = Point2::new(
-        corners.iter().map(|p| p.x).sum::<f64>() / n,
-        corners.iter().map(|p| p.y).sum::<f64>() / n,
-    );
-    let lines = geo
-        .lines
-        .iter()
-        .filter(|l| matches!(l.kind, LineKind::Knick | LineKind::Ridge));
-    for l in lines {
-        let (a, b) = (Point2::new(l.a[0], l.a[1]), Point2::new(l.b[0], l.b[1]));
-        let len = a.distance(b);
-        if len < TOL {
-            continue;
-        }
-        let d = Point2::new((b.x - a.x) / len, (b.y - a.y) / len);
-        let off = |p: Point2| d.x * (p.y - a.y) - d.y * (p.x - a.x);
-        // +1 when the side cut off lies to the left of the line: downhill
-        // of a knick, or across a ridge from the chimney.
-        let down = if l.kind == LineKind::Ridge {
-            if off(centre) > 0.0 { -1.0 } else { 1.0 }
-        } else {
-            let mid = Point2::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
-            let side = |s: f64| height(Point2::new(mid.x - d.y * s * 0.05, mid.y + d.x * s * 0.05));
-            let (Some(zl), Some(zr)) = (side(1.0), side(-1.0)) else {
-                continue;
-            };
-            if zl < zr { 1.0 } else { -1.0 }
-        };
-        let deepest = corners
-            .iter()
-            .copied()
-            .max_by(|&p, &q| (down * off(p)).total_cmp(&(down * off(q))))
-            .unwrap_or(a);
-        let depth = down * off(deepest);
-        // A side within 1 mm of the line lies on it (see side_spans).
-        if depth <= 1e-3 {
-            continue;
-        }
-        // Over a ridge a corner more than 1 cm past it is cut off only
-        // while it also drops less than 2 cm down the far plane.
-        // DACAD compares in single precision.
-        let lt = |x: f64, e: f64| (x as f32) < e as f32;
-        if l.kind == LineKind::Ridge {
-            let low = height(deepest).is_some_and(|z| lt(l.a[2] - z, DEPTH));
-            if !(lt(depth, VALUE_EPS) || lt(depth, DEPTH) && low) {
-                continue;
-            }
-        }
-        let above = corners.iter().any(|&c| down * off(c) < -1e-6);
-        let along = |p: Point2| (p.x - a.x) * d.x + (p.y - a.y) * d.y;
-        let over = corners
-            .iter()
-            .any(|&c| (-1e-9..=len + 1e-9).contains(&along(c)));
-        if !(depth < DEPTH && above && over) {
-            continue;
-        }
-        let n = corners.len();
-        // Keep the uphill side: -down·off ≥ 0.
-        let f = |p: Point2| -down * off(p);
-        let mut outline = Vec::new();
-        let mut cuts = Vec::new();
-        for i in 0..n {
-            let (p, q) = (corners[i], corners[(i + 1) % n]);
-            let (fp, fq) = (f(p), f(q));
-            if fp >= 0.0 {
-                outline.push(p);
-            }
-            if (fp >= 0.0) != (fq >= 0.0) {
-                let t = fp / (fp - fq);
-                let x = Point2::new(p.x + t * (q.x - p.x), p.y + t * (q.y - p.y));
-                outline.push(x);
-                cuts.push(outline.len() - 1);
-            }
-        }
-        let m = outline.len();
-        let chord = (cuts.len() == 2).then(|| {
-            // The outline runs counter-clockwise; the chord is the edge
-            // between the two cut points.
-            let (i, j) = (cuts[0], cuts[1]);
-            if (i + 1) % m == j {
-                (outline[i], outline[j])
-            } else {
-                (outline[j], outline[i])
-            }
-        });
-        return Some(KnickClip {
-            knick: l.clone(),
-            outline,
-            chord,
-            tiny: chord.is_some_and(|(p, q)| p.distance(q) < POINT_EPS),
-        });
-    }
-    None
-}
-
 /// Cuts a chimney, or with `hole` a roof opening, out of the faces.
 fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool) {
     let mut corners = c.corners.clone();
@@ -684,38 +428,14 @@ fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool) {
     }
     if !hole {
         snap_sides_to_ridge_ends(geo, &mut corners);
+        cut_chimney(geo, &corners);
+        return;
     }
-    let clip = if hole {
-        None
-    } else {
-        knick_clip(geo, &corners)
-    };
-    // Roof lines under the chimney disappear.
+    // Roof lines under the opening disappear.
     let mut kept: Vec<RoofLine> = Vec::new();
     for l in std::mem::take(&mut geo.lines) {
         let (a, b) = (Point2::new(l.a[0], l.a[1]), Point2::new(l.b[0], l.b[1]));
-        let spared = clip
-            .as_ref()
-            .is_some_and(|k| k.tiny && l.a == k.knick.a && l.b == k.knick.b);
-        let mut under = if spared {
-            Vec::new()
-        } else {
-            inside_spans(&corners, a, b)
-        };
-        // A ridge along a chimney side is cut there too, and the side
-        // abuts as the front of the far face (DACAD TRAING05 chimney 3).
-        if l.kind == LineKind::Ridge && !hole {
-            for (s, e) in side_spans(&corners, a, b) {
-                geo.lines.push(RoofLine {
-                    kind: LineKind::AbutmentFront,
-                    a: lerp3(l.a, l.b, s),
-                    b: lerp3(l.a, l.b, e),
-                    side: None,
-                });
-                under.push((s, e));
-            }
-            under = merge_spans(under);
-        }
+        let under = inside_spans(&corners, a, b);
         for &(s, e) in &under {
             geo.cut_lines
                 .push((l.dacad_code().to_string(), (e - s) * l.length()));
@@ -733,23 +453,7 @@ fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool) {
         }
     }
     geo.lines = kept;
-    if !hole {
-        side_by_lines(geo, &corners);
-    }
-
-    // The abutment follows the chimney, cut off at a knick it pokes under.
-    let outline = clip.as_ref().map_or(corners.clone(), |k| k.outline.clone());
-    if let Some(k) = &clip
-        && !k.tiny
-        && let Some((p, q)) = k.chord
-    {
-        geo.lines.push(RoofLine {
-            kind: k.chord_kind(),
-            a: [p.x, p.y, k.knick.a[2]],
-            b: [q.x, q.y, k.knick.a[2]],
-            side: None,
-        });
-    }
+    let outline = corners.clone();
     let mut total = 0.0;
     let n = outline.len();
     for face in &mut geo.faces {
@@ -767,7 +471,7 @@ fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool) {
             let (a, b) = (outline[i], outline[(i + 1) % n]);
             let dir = Point2::new(b.x - a.x, b.y - a.y);
             let len = dir.x.hypot(dir.y);
-            if len < TOL || clip.as_ref().is_some_and(|k| k.chord == Some((a, b))) {
+            if len < TOL {
                 continue;
             }
             // Outward normal of a CCW polygon side.
@@ -816,6 +520,301 @@ fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool) {
             area: total,
         });
     }
+}
+
+/// One side of a chimney hole in one face.
+struct HoleEdge {
+    c: [f64; 3],
+    d: [f64; 3],
+    face: usize,
+    shared: bool,
+}
+
+/// A chimney as DACAD's core cuts it (decompiled FUN_00da5160 and its
+/// callers): every face gets its own hole, the chimney clipped by the face,
+/// with corners closer than POINT_EPS in every coordinate (or VALUE_EPS in
+/// plan) merged; a hole left with fewer than three corners is dropped
+/// (DACAD sweep dacad-chimney-across-line, V45_02 against H45_02). Roof
+/// lines stay whole. A hole edge lying on a roof line (see [`on_line`])
+/// becomes a negative line of that line's kind; a hole edge of only one
+/// face is also an abutment, unless the line is a verge, Pult or eave.
+fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2]) {
+    let mut corners = corners.to_vec();
+    for _ in 0..corners.len() {
+        if !pivot_corner(geo, &mut corners) {
+            break;
+        }
+    }
+    let mut edges: Vec<HoleEdge> = Vec::new();
+    let mut total = 0.0;
+    for fi in 0..geo.faces.len() {
+        let Some((pts, _)) = face_hole(&geo.faces[fi], &corners) else {
+            continue;
+        };
+        let face = &mut geo.faces[fi];
+        let (_, tan) = slope(face);
+        let cut = signed_area(&clip_polygon(&plan(face), &corners)).abs();
+        let d = cut * (1.0 + tan * tan).sqrt();
+        face.area -= d;
+        face.deducted += d;
+        total += d;
+        for i in 0..pts.len() {
+            edges.push(HoleEdge {
+                c: pts[i],
+                d: pts[(i + 1) % pts.len()],
+                face: fi,
+                shared: false,
+            });
+        }
+    }
+    // An edge two holes share lies on the line between their faces; the
+    // hole of the lower face keeps it.
+    let on_edge = |p: [f64; 3], e: &HoleEdge| {
+        let (a, b) = (Point2::new(e.c[0], e.c[1]), Point2::new(e.d[0], e.d[1]));
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let l2 = dx * dx + dy * dy;
+        if l2 < TOL {
+            return false;
+        }
+        let t = ((p[0] - a.x) * dx + (p[1] - a.y) * dy) / l2;
+        (-1e-9..=1.0 + 1e-9).contains(&t) && dist3_(p, lerp3(e.c, e.d, t)) < 1e-4
+    };
+    let mut drop = vec![false; edges.len()];
+    for i in 0..edges.len() {
+        let mid = lerp3(edges[i].c, edges[i].d, 0.5);
+        if let Some(j) =
+            (0..edges.len()).find(|&j| edges[j].face != edges[i].face && on_edge(mid, &edges[j]))
+        {
+            drop[i] = edges[i].face > edges[j].face;
+            edges[i].shared = true;
+        }
+    }
+    let mut keep = drop.iter().map(|d| !d);
+    edges.retain(|_| keep.next().unwrap());
+    // Lines whole, as DACAD keeps them; ours may still be in pieces. Wall
+    // abutments count too (mass case R1_0745: −WS along a step).
+    let mut roof = geo.lines.clone();
+    merge_collinear(&mut roof);
+    for e in &edges {
+        // An edge shorter than POINT_EPS gives no line (ck2 B1; the chord
+        // under a knick, dacad-chimney-knick).
+        if dist3_(e.c, e.d) < 0.02 {
+            continue;
+        }
+        let on = roof.iter().find(|r| on_line(r, e.c, e.d));
+        if let Some(r) = on {
+            geo.minus_lines
+                .push((r.dacad_code().to_string(), dist3_(e.c, e.d)));
+        }
+        let edge_of_roof =
+            on.is_some_and(|r| matches!(r.kind, LineKind::Verge | LineKind::Pult | LineKind::Eave));
+        if e.shared || edge_of_roof {
+            continue;
+        }
+        let face = &geo.faces[e.face];
+        let (up, _) = slope(face);
+        let (dx, dy) = (e.d[0] - e.c[0], e.d[1] - e.c[1]);
+        let len = dx.hypot(dy);
+        if len < TOL {
+            continue;
+        }
+        // Outward normal of a CCW hole side.
+        let out = (dy / len) * up.x - (dx / len) * up.y;
+        let kind = if out < -LEVEL {
+            LineKind::AbutmentFront
+        } else if out > LEVEL {
+            LineKind::AbutmentBack
+        } else {
+            LineKind::AbutmentSide
+        };
+        geo.lines.push(RoofLine {
+            kind,
+            a: e.c,
+            b: e.d,
+            side: None,
+        });
+    }
+    if total > 0.0 {
+        geo.openings.push(Opening {
+            kind: OpeningKind::Chimney,
+            area: total,
+        });
+    }
+}
+
+/// A corner dropped from a hole: the corner's index, the point it merged
+/// into and whether that point lies on the side after the corner.
+type Merge = (usize, Point2, bool);
+
+/// The chimney's hole in one face, CCW, in 3D: the chimney clipped by the
+/// face, without a corner next to the point where a neighbouring side
+/// leaves the face that lies near it (every coordinate within POINT_EPS)
+/// or within VALUE_EPS of the face's outline in plan. `None` when under three corners are left (DACAD sweeps
+/// dacad-chimney-across-line V45_02, dacad-chimney-over-ridge; points where
+/// sides cross the face's edge never merge, ck2 B1).
+fn face_hole(face: &RoofFace, corners: &[Point2]) -> Option<(Vec<[f64; 3]>, Vec<Merge>)> {
+    const POINT_EPS: f32 = 0.02;
+    const VALUE_EPS: f32 = 0.01;
+    let near = |p: [f64; 3], q: [f64; 3]| (0..3).all(|i| ((p[i] - q[i]) as f32).abs() < POINT_EPS);
+    // Plan distance from the face's outline.
+    let outline = plan(face);
+    let off_edge = |p: Point2| {
+        let m = outline.len();
+        (0..m)
+            .map(|i| {
+                let (a, b) = (outline[i], outline[(i + 1) % m]);
+                let (dx, dy) = (b.x - a.x, b.y - a.y);
+                let l2 = dx * dx + dy * dy;
+                let t = if l2 < TOL {
+                    0.0
+                } else {
+                    (((p.x - a.x) * dx + (p.y - a.y) * dy) / l2).clamp(0.0, 1.0)
+                };
+                (p.x - a.x - t * dx).hypot(p.y - a.y - t * dy)
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    // Degenerate faces the sweep leaves along a line are not DACAD faces.
+    if signed_area(&plan(face)).abs() < 1e-6 {
+        return None;
+    }
+    let mut hole = clip_polygon(&plan(face), corners);
+    hole.dedup_by(|a, b| a.distance(*b) < 1e-9);
+    while hole.len() > 1 && hole[0].distance(hole[hole.len() - 1]) < 1e-9 {
+        hole.pop();
+    }
+    let cut = signed_area(&hole);
+    if cut.abs() < 1e-9 {
+        return None;
+    }
+    if cut < 0.0 {
+        hole.reverse();
+    }
+    let (up, tan) = slope(face);
+    let pts: Vec<[f64; 3]> = hole
+        .iter()
+        .map(|&p| [p.x, p.y, height_at(face, up, tan, p)])
+        .collect();
+    // A corner on the outline is where its sides leave the face.
+    let corner = |p: Point2| {
+        corners
+            .iter()
+            .position(|c| c.distance(p) < 1e-9)
+            .filter(|_| off_edge(p) > 1e-9)
+    };
+    let n = pts.len();
+    let mut merges = Vec::new();
+    let mut keep = vec![true; n];
+    for i in 0..n {
+        let Some(k) = corner(hole[i]) else {
+            continue;
+        };
+        for (j, next) in [((i + 1) % n, true), ((i + n - 1) % n, false)] {
+            if corner(hole[j]).is_none()
+                && (near(pts[i], pts[j]) || (off_edge(hole[i]) as f32) < VALUE_EPS)
+            {
+                keep[i] = false;
+                merges.push((k, hole[j], next));
+                break;
+            }
+        }
+    }
+    let pts: Vec<[f64; 3]> = pts
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(p, k)| k.then_some(p))
+        .collect();
+    (pts.len() >= 3).then_some((pts, merges))
+}
+
+/// Where a chimney corner merges into the point its neighbouring side
+/// leaves a face at (see [`face_hole`]), DACAD turns the corner's other
+/// side to run through that point, pivoting on the side's eave crossing
+/// (mass case R1_0681). Returns whether a corner moved.
+fn pivot_corner(geo: &RoofGeometry, corners: &mut [Point2]) -> bool {
+    let n = corners.len();
+    for face in &geo.faces {
+        let Some((_, merges)) = face_hole(face, corners) else {
+            continue;
+        };
+        let Some(&(k, w, next)) = merges.first() else {
+            continue;
+        };
+        // The side that turns runs from corner r to corner k.
+        let (r, rr) = if next {
+            ((k + n - 1) % n, (k + n - 2) % n)
+        } else {
+            ((k + 1) % n, (k + 2) % n)
+        };
+        let has = |p: [f64; 3]| {
+            face.polygon
+                .iter()
+                .any(|q| (0..3).all(|i| (p[i] - q[i]).abs() < 1e-6))
+        };
+        let flat = |p: [f64; 3]| Point2::new(p[0], p[1]);
+        let eave = geo
+            .lines
+            .iter()
+            .filter(|l| l.kind == LineKind::Eave && has(l.a) && has(l.b))
+            .find_map(|l| {
+                let (a, b) = (flat(l.a), flat(l.b));
+                let x = cross_lines(corners[r], corners[k], a, b)?;
+                let len = a.distance(b);
+                let t = ((x.x - a.x) * (b.x - a.x) + (x.y - a.y) * (b.y - a.y)) / len;
+                (-TOL..=len + TOL).contains(&t).then_some(x)
+            });
+        if let Some(e) = eave
+            && let Some(x) = cross_lines(e, w, corners[rr], corners[r])
+        {
+            corners[r] = x;
+        }
+        corners[k] = w;
+        return true;
+    }
+    false
+}
+
+/// DACAD's test whether hole edge C→D lies on roof line A→B: the ends
+/// agree within VALUE_EPS, or the unit vectors B−A, C−A and D−C agree in
+/// every coordinate within VALUE_EPS (either sign) with C and D inside the
+/// line's box grown by VALUE_EPS; all in f32. The line is measured from
+/// its lower end (DACAD stores it in face order; not modelled).
+fn on_line(r: &RoofLine, c: [f64; 3], d: [f64; 3]) -> bool {
+    const VALUE_EPS: f32 = 0.01;
+    let (a, b) = if r.a[2] <= r.b[2] {
+        (r.a, r.b)
+    } else {
+        (r.b, r.a)
+    };
+    let eq = |p: [f64; 3], q: [f64; 3]| {
+        (0..3).all(|i| ((p[i] as f32) - (q[i] as f32)).abs() < VALUE_EPS)
+    };
+    if (eq(a, c) && eq(b, d)) || (eq(a, d) && eq(b, c)) {
+        return true;
+    }
+    let unit = |p: [f64; 3], q: [f64; 3]| -> [f32; 3] {
+        let v = [0, 1, 2].map(|i| (q[i] as f32) - (p[i] as f32));
+        let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if len > 0.0 { v.map(|x| x / len) } else { v }
+    };
+    let parallel = |u: [f32; 3], v: [f32; 3]| {
+        (0..3).all(|i| (u[i] - v[i]).abs() < VALUE_EPS)
+            || (0..3).all(|i| (u[i] + v[i]).abs() < VALUE_EPS)
+    };
+    let inside_box = |p: [f64; 3]| {
+        (0..3).all(|i| {
+            let (lo, hi) = (a[i].min(b[i]) as f32, a[i].max(b[i]) as f32);
+            let x = p[i] as f32;
+            x >= lo - VALUE_EPS && x <= hi + VALUE_EPS
+        })
+    };
+    if !inside_box(c) || !inside_box(d) {
+        return false;
+    }
+    // [no source — extrapolation] an edge starting at A is measured from D.
+    let uc = if eq(a, c) { unit(a, d) } else { unit(a, c) };
+    let (ub, ud) = (unit(a, b), unit(c, d));
+    parallel(ub, uc) && parallel(ud, uc) && parallel(ub, ud)
 }
 
 #[cfg(test)]

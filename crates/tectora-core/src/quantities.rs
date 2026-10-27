@@ -146,7 +146,7 @@ pub fn norm_totals(project: &Project, norm: Norm) -> NormTotals {
                 *lines.entry(code.clone()).or_default() += len;
             }
         }
-        // [no source — extrapolation] treated like a cut piece under a norm.
+        // Treated like a cut piece under a norm (DACAD C28_chimney_ridge).
         for (code, len) in &geo.minus_lines {
             if *len > norm.line_limit() + EPS {
                 *lines.entry(code.clone()).or_default() -= len;
