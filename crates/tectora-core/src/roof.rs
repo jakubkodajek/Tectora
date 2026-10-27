@@ -976,11 +976,18 @@ impl Sim {
             (self.verts[w].prev, self.verts[n].next)
         };
         // The kept plane covers the swallowed edge at once: the level
-        // stretch it sweeps ends in the air above it, an eave (DACAD C69).
+        // stretch it sweeps ends in the air above a wall, an eave (DACAD
+        // C69), or meets a swallowed plane in a knick line c (mass cases
+        // R1_0604, R1_0664: a flatter plane overtaking a notch's).
+        let kind = if self.lines[slow].sloped(t) {
+            LineKind::Knick
+        } else {
+            LineKind::Eave
+        };
         self.retire(n, node);
         if let Some(arc) = self.arcs.last_mut() {
             arc.line = false;
-            self.ridges.push((arc.a, arc.b, LineKind::Eave));
+            self.ridges.push((arc.a, arc.b, kind));
         }
         self.retire(w, node);
         if prev == w || next == n {
