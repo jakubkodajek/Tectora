@@ -35,8 +35,9 @@ const TAG_CHIMNEY: u8 = 0x13;
 const SUB_WALL: u8 = 0x00;
 const SUB_STACKED: u8 = 0x10;
 const SUB_WINDOW: u8 = 0x20;
-/// Endpoint matching tolerance when chaining walls, m.
-const CHAIN_TOL: f64 = 0.005;
+/// Endpoint matching tolerance when chaining walls, m: DACAD closes
+/// outlines with gaps up to a centimetre (samples 92091101, 3314_A).
+const CHAIN_TOL: f64 = 0.011;
 
 #[derive(Debug, Error, PartialEq)]
 pub enum DadError {
