@@ -46,9 +46,20 @@ for f in "$@"; do
   # An error in the roof core (e.g. E0002 "Nicht geschlossene Fläche(n)")
   # opens a message box titled just "DACAD" over the status window and the
   # calculation stops there: report it instead of waiting for the timeout.
-  quiet=0; failed=0
+  # With DACAD_ACCEPT_WARNINGS=1 such a box is confirmed with OK and the
+  # calculation goes on (warnings like "Nicht konvexer Schornstein ... wird
+  # ignoriert" let it finish); a screenshot of each box is kept.
+  quiet=0; failed=0; warned=0
   for _ in $(seq 1 900); do
-    if xdotool search --onlyvisible --name '^DACAD$' >/dev/null 2>&1; then
+    box=$(xdotool search --onlyvisible --name '^DACAD$' 2>/dev/null | head -1 || true)
+    if [ -n "$box" ]; then
+      if [ "${DACAD_ACCEPT_WARNINGS:-0}" = 1 ] && [ $warned -lt 10 ]; then
+        warned=$((warned + 1))
+        import -window root "${f%.*}.warn$warned.png"
+        echo "DACAD WARNING $f" >&2
+        xdotool windowfocus --sync "$box" || true; sleep 0.5; xdotool key Return
+        quiet=0; sleep 1; continue
+      fi
       failed=1; break
     fi
     if xdotool search --onlyvisible --name 'Berechnungsstatus|Modellverschnitt' >/dev/null 2>&1; then
