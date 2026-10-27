@@ -39,29 +39,25 @@ pub fn chimney_holes(c: &mut Core) -> Result<(), CoreError> {
 /// segments, which the pipeline subtracts from `counters[ctr::LINES]`.
 /// Dump point: `after_merge`.
 pub fn collinear_merge(c: &mut Core) -> Result<i32, CoreError> {
-    let _ = c;
-    Err(CoreError::Unimplemented("S4 collinear merge"))
+    super::post::collinear_merge(c)
 }
 
 /// S4: segment origins and the global edge table (`da4210`), run for every
 /// processed model, also a failed one. Dump point: `after_edgetab`.
 pub fn edge_table(c: &mut Core) -> Result<(), CoreError> {
-    let _ = c;
-    Err(CoreError::Unimplemented("S4 edge table"))
+    super::post::edge_table(c)
 }
 
 /// S4: face areas (`e56460`), only after a successful model. Dump point:
 /// `after_area`.
 pub fn areas(c: &mut Core) -> Result<(), CoreError> {
-    let _ = c;
-    Err(CoreError::Unimplemented("S4 face areas"))
+    super::post::areas(c)
 }
 
 /// S4: the foot outline of every `g` model (`d9be40`). Dump point:
 /// `after_dormer`.
 pub fn dormer_feet(c: &mut Core) -> Result<(), CoreError> {
-    let _ = c;
-    Err(CoreError::Unimplemented("S4 dormer feet"))
+    super::post::dormer_feet(c)
 }
 
 /// S5: line codes of D/N/W-origin edges (`da2710`). Dump point:

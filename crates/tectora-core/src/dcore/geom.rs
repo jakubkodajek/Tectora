@@ -158,3 +158,37 @@ pub fn line_line(l1: &Line, l2: &Line, in_slab: Option<(f32, f32)>, t: &Tol) -> 
     }
     (false, out)
 }
+
+/// Whether two collinear segments share an end and continue each other:
+/// 0 when either is degenerate (VALUE_EPS), when the two directions and
+/// the offset between the start points are not all parallel, or when no
+/// end is shared; otherwise, with `u` the direction of the first and `v`
+/// of the second, both pointing away from the shared end, -1 when they
+/// point the same way (one folds back over the other) and 1 when they
+/// differ (the second continues the first).
+pub fn collinear_join(p1: V3, q1: V3, p2: V3, q2: V3, t: &Tol) -> i32 {
+    let ve = t.value;
+    if num::peq(p1, q1, ve) || num::peq(p2, q2, ve) {
+        return 0;
+    }
+    let d1 = num::sub(q1, p1);
+    let d2 = num::sub(q2, p2);
+    let off = num::sub(p2, p1);
+    if num::par(d1, off, t) == 0 || num::par(d2, off, t) == 0 || num::par(d1, d2, t) == 0 {
+        return 0;
+    }
+    let (u, v) = if num::peq(p1, p2, ve) {
+        (num::sub(q1, p1), num::sub(q2, p2))
+    } else if num::peq(p1, q2, ve) {
+        (num::sub(q1, p1), num::sub(p2, q2))
+    } else if num::peq(q1, p2, ve) {
+        (num::sub(p1, q1), num::sub(q2, p2))
+    } else if num::peq(q1, q2, ve) {
+        (num::sub(p1, q1), num::sub(p2, q2))
+    } else {
+        return 0;
+    };
+    let u = num::norm(u, t);
+    let v = num::norm(v, t);
+    if num::pne(u, v, ve) { 1 } else { -1 }
+}

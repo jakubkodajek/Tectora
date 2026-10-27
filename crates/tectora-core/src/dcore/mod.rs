@@ -6,10 +6,12 @@
 
 pub mod dump;
 pub mod error;
+pub mod faceops;
 pub mod geom;
 pub mod num;
 pub mod out;
 pub mod pipeline;
+pub mod post;
 pub mod rd2;
 pub mod s1;
 pub mod stages;

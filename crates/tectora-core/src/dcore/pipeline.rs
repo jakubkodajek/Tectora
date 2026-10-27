@@ -104,6 +104,9 @@ impl<'a> Run<'a> {
             }
             m = self.core.model(mi).next;
         }
+        // The loop variable is the current-model global: null after the
+        // last model, the failed model after a break.
+        self.core.g.cur_model = m;
         if self.core.g.ok == 0 {
             // progress 0xa10; DACAD (and the emulator) cancel there.
             return Err(CoreError::NoSolution(MSG_NO_SOLUTION));

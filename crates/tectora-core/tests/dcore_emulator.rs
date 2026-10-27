@@ -204,6 +204,68 @@ fn s1_from_entry(name: &str, doc: &dump::DumpDoc, t: &mut Tallies) {
     }
 }
 
+/// S4 in isolation: each stage of each model started from the emulator's
+/// state before it (`after_holes` → merge → `after_merge` → edge table →
+/// `after_edgetab` → areas → `after_area`; the last `after_area` → dormer
+/// feet → `after_dormer`).
+fn s4_slices(name: &str, doc: &dump::DumpDoc, t: &mut Tallies) {
+    use dcore::state::{Core, ctr};
+    use dcore::{CoreError, post};
+    let holes = doc.stage("after_holes");
+    let merge = doc.stage("after_merge");
+    let edget = doc.stage("after_edgetab");
+    let area = doc.stage("after_area");
+    let load = |v: &Value| dump::from_json(v).map_err(|e| e.to_string());
+    let mut check = |stage: &str,
+                     label: &str,
+                     from: &Value,
+                     want: Option<&Value>,
+                     f: &dyn Fn(&mut Core) -> Result<(), CoreError>| {
+        let Some(want) = want else { return };
+        let mut c = match load(from) {
+            Ok(c) => c,
+            Err(e) => return tally(t, stage, label, vec![e]),
+        };
+        let d = match f(&mut c) {
+            Ok(()) => dump::compare(want, &dump::to_json(&c), 6),
+            Err(e) => vec![e.to_string()],
+        };
+        tally(t, stage, label, d);
+    };
+    for (k, h) in holes.iter().enumerate() {
+        let label = format!("{name} model {k}");
+        // the merge runs only after a successful cut; only the last model can lack it
+        let has_merge = k < merge.len();
+        if has_merge {
+            check("s4 merge", &label, h, Some(merge[k]), &|c| {
+                let n = post::collinear_merge(c)?;
+                c.g.counters[ctr::LINES] -= n;
+                Ok(())
+            });
+        }
+        let from = if has_merge { merge[k] } else { h };
+        check("s4 edge table", &label, from, edget.get(k).copied(), &|c| {
+            post::edge_table(c)
+        });
+        if let Some(e) = edget.get(k) {
+            check("s4 areas", &label, e, area.get(k).copied(), &|c| {
+                post::areas(c)
+            });
+        }
+    }
+    if let (Some(last), Some(want)) = (area.last(), doc.stage("after_dormer").first()) {
+        check("s4 dormer feet", name, last, Some(want), &|c| {
+            let m = c.g.cur_model.unwrap();
+            if c.model(m).typ == b'G' {
+                c.g.n_g_models += 1;
+            }
+            // the model loop ran to the end of the list
+            c.g.cur_model = None;
+            post::dormer_feet(c)
+        });
+    }
+}
+
 fn first_diff(a: &[u8], b: &[u8]) -> String {
     let i = a
         .iter()
@@ -289,6 +351,7 @@ fn run_case(rd2: &Path, dir: &Path, t: &mut Tallies) -> bool {
         run_from_rd2(&name, dir, &bytes, &doc, t);
     }
     s1_from_entry(&name, &doc, t);
+    s4_slices(&name, &doc, t);
     writers(&name, dir, &doc, t);
     true
 }
@@ -320,6 +383,11 @@ fn emulator_dumps() {
         }
     }
     println!("{n} cases");
+    // DCORE_REPORT=prefix limits the report to the tallies of some stages
+    // (e.g. `s4` for dump sets made with only the S4 snapshots).
+    if let Ok(p) = std::env::var("DCORE_REPORT") {
+        t.retain(|k, _| k.starts_with(&p));
+    }
     assert!(!report(&t, 5));
 }
 
