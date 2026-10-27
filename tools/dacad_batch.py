@@ -35,21 +35,46 @@ from tectora.io.dacad_dad import read_dad  # noqa: E402
 CALC = Path(__file__).resolve().parent / "dacad_wine_calc.sh"
 
 
-CORE_EXT = (".RD2", ".SOL", ".SO2")
+CORE_EXT = (".RD2", ".SOL", ".SO2", ".INT", ".W3D")
 
 
 def _keep_core(temp: Path, dst: Path, stem: str, stop: threading.Event) -> None:
-    """Copy the roof core's temp files for *stem* until *stop* is set."""
+    """Copy the roof core's temp files for *stem* until *stop* is set.
+
+    A file is copied once it is unchanged over two polls; a copy that a
+    later one extends was a partial write (DACAD writes in 4 KiB chunks)
+    and is replaced; dst/<stem><ext> is the last such version, and each earlier
+    distinct one (e.g. the core's .SOL before the multi-roof stage rewrites
+    it) is kept as dst/<stem>.v<n><ext>."""
     dst.mkdir(parents=True, exist_ok=True)
+    seen: dict[str, tuple] = {}
+    kept: dict[str, list[bytes]] = {}
     while not stop.is_set():
         for ext in CORE_EXT:
             f = temp / (stem + ext)
             try:
-                if f.stat().st_size:
-                    shutil.copyfile(f, dst / (stem + ext))
+                st = f.stat()
             except OSError:
-                pass
-        stop.wait(0.02)
+                continue
+            key = (st.st_size, st.st_mtime_ns)
+            if not st.st_size or seen.get(ext) != key:
+                seen[ext] = key
+                continue
+            try:
+                data = f.read_bytes()
+            except OSError:
+                continue
+            versions = kept.setdefault(ext, [])
+            if versions and versions[-1] == data:
+                continue
+            if versions and data.startswith(versions[-1]):
+                versions[-1] = data  # the earlier copy caught a partial write
+            else:
+                if versions:
+                    (dst / f"{stem}.v{len(versions)}{ext}").write_bytes(versions[-1])
+                versions.append(data)
+            (dst / (stem + ext)).write_bytes(data)
+        stop.wait(0.01)
 
 
 def _worker(n: int, a, q: queue.Queue, status: dict, lock: threading.Lock) -> None:
