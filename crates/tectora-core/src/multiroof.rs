@@ -296,7 +296,24 @@ fn part_faces(part: &RoofPart, pm: &PartMap, geo: &RoofGeometry, rd2: &Rd2) -> V
         let e = &part.edges[f.edge];
         push(ring_wall(f.edge), plane_sub(e, f), &f.polygon);
     }
+    // DACAD's core keeps a vertical face only where it closes the roof
+    // between two or more sloped faces (a gable under a ridge); the walls
+    // of a shed roof, under one plane only, get no face record.
+    let near = |p: [f64; 3], q: [f64; 3]| dist(p, q) < 1e-4;
     for g in &geo.gables {
+        let touching = geo
+            .faces
+            .iter()
+            .filter(|f| {
+                g.iter()
+                    .filter(|&&p| f.polygon.iter().any(|&q| near(p, q)))
+                    .count()
+                    >= 2
+            })
+            .count();
+        if touching < 2 {
+            continue;
+        }
         if let Some(i) = gable_edge(part, g) {
             push(ring_wall(i), 0, g);
         }
