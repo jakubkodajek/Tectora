@@ -21,6 +21,8 @@ Design podle briefu-handoff.zip
 *.sol
 # Expected outputs of our own synthetic Modellverschnitt cases
 !tests/fixtures/modell/*.SOL
+# Expected outputs of the core SOL / INT / W3D writer cases
+!tests/fixtures/coresol/*.SOL
 DACAD*.exe
 
 # Rust
