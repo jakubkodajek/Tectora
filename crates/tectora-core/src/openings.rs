@@ -104,6 +104,15 @@ pub(crate) fn merge_collinear(lines: &mut Vec<RoofLine>) {
         (p[0] - q[0]).abs() < 1e-6 && (p[1] - q[1]).abs() < 1e-6 && (p[2] - q[2]).abs() < 1e-6
     };
     lines.retain(|l| l.length() > 1e-6);
+    // Two walls' eaves stay apart where another line starts between them,
+    // even on one straight line (mass case R1_0229).
+    let ends: Vec<[f64; 3]> = lines
+        .iter()
+        .filter(|l| l.kind != LineKind::Eave)
+        .flat_map(|l| [l.a, l.b])
+        .collect();
+    let split =
+        |l: &RoofLine, p: [f64; 3]| l.kind == LineKind::Eave && ends.iter().any(|&e| near(e, p));
     loop {
         let mut joined = false;
         'outer: for i in 0..lines.len() {
@@ -114,8 +123,14 @@ pub(crate) fn merge_collinear(lines: &mut Vec<RoofLine>) {
                 let (di, dj) = (dir(&lines[i]), dir(&lines[j]));
                 let cos = di[0] * dj[0] + di[1] * dj[1] + di[2] * dj[2];
                 if cos > 1.0 - 1e-9 && near(lines[i].b, lines[j].a) {
+                    if split(&lines[i], lines[i].b) {
+                        continue;
+                    }
                     lines[i].b = lines[j].b;
                 } else if cos < -1.0 + 1e-9 && near(lines[i].b, lines[j].b) {
+                    if split(&lines[i], lines[i].b) {
+                        continue;
+                    }
                     lines[i].b = lines[j].a;
                 } else {
                     continue;

@@ -1295,7 +1295,81 @@ pub fn generate(part: &RoofPart) -> RoofGeometry {
     drop_eaves_on_ridges(&mut geo);
     one_sided_ridges(&mut geo);
     drop_short_ridges(&mut geo);
+    snap_raised_corners(&mut geo, &part);
     geo
+}
+
+/// Where a higher wall's eave meets the neighbour's hip less than 1.7 cm from
+/// the neighbour's wall line, DACAD moves the hip's lower end onto that
+/// line, where the two planes meet there, and runs the neighbour's verge on
+/// to it (sweep /mnt/project-files/dacad-raised-eave/: snapped at 1.47 cm,
+/// not at 2.43 cm; case C51: not at 1.96 cm; mass cases R1_0114, R1_0193). The faces are left as they
+/// are: DACAD's areas there are not reproducible yet.
+fn snap_raised_corners(geo: &mut RoofGeometry, part: &RoofPart) {
+    const SNAP: f64 = 0.017;
+    let n = part.edges.len();
+    let pts = part.outline();
+    for i in (0..n).filter(|&i| !part.edges[i].is_gable()) {
+        for (corner, j) in [(pts[i], (i + n - 1) % n), (pts[(i + 1) % n], (i + 1) % n)] {
+            let (e, f) = (&part.edges[i], &part.edges[j]);
+            if f.is_gable() || f.eave_height > e.eave_height - 1e-6 {
+                continue;
+            }
+            // The neighbour's wall line through the corner.
+            let (a, b) = (pts[j], pts[(j + 1) % n]);
+            let l = a.distance(b);
+            if l < POS_TOL {
+                continue;
+            }
+            let d = Point2::new((b.x - a.x) / l, (b.y - a.y) / l);
+            let off = |p: [f64; 3]| (p[0] - corner.x) * d.y - (p[1] - corner.y) * d.x;
+            let eave = part.edges[i].eave_height;
+            // The hip end on the raised eave near the corner.
+            let near_end = |p: [f64; 3]| {
+                (p[2] - eave).abs() < 1e-6
+                    && off(p).abs() > 1e-6
+                    && off(p).abs() < SNAP
+                    && Point2::new(p[0], p[1]).distance(corner)
+                        < 2.0 * part.edges[i].overhang + SNAP
+            };
+            let Some((h, at_a)) = geo.lines.iter().enumerate().find_map(|(k, l)| {
+                (l.kind == LineKind::Hip)
+                    .then(|| {
+                        if near_end(l.a) {
+                            Some((k, true))
+                        } else if near_end(l.b) {
+                            Some((k, false))
+                        } else {
+                            None
+                        }
+                    })
+                    .flatten()
+            }) else {
+                continue;
+            };
+            let hip = geo.lines[h].clone();
+            let p = if at_a { hip.a } else { hip.b };
+            // Slide a line's end `p` along the line to the wall line.
+            let onto = |p: [f64; 3], q: [f64; 3]| {
+                let (op, oq) = (off(p), off(q));
+                let t = op / (op - oq);
+                std::array::from_fn(|k| p[k] + (q[k] - p[k]) * t)
+            };
+            let new_end = onto(p, if at_a { hip.b } else { hip.a });
+            if at_a {
+                geo.lines[h].a = new_end;
+            } else {
+                geo.lines[h].b = new_end;
+            }
+            for l in geo.lines.iter_mut().filter(|l| l.kind == LineKind::Verge) {
+                if dist3(l.a, p) < 1e-6 {
+                    l.a = onto(l.a, l.b);
+                } else if dist3(l.b, p) < 1e-6 {
+                    l.b = onto(l.b, l.a);
+                }
+            }
+        }
+    }
 }
 
 /// DACAD has no ridge shorter than about 3.5 cm (kept from 40 mm, dropped
