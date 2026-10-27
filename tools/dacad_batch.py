@@ -8,7 +8,8 @@ time with a timeout, so a hung error dialog costs one file, not the batch.
         --workers 4 --out OUT_DIR IN_DIR/*.DAD
 
 Inputs are copied to OUT_DIR and calculated there; OUT_DIR/status.json
-records ok / not_saved / timeout per file. Files already marked ok are
+records ok / dacad_error (DACAD's own error box, e.g. E0002) / not_saved /
+timeout per file. Files already marked ok are
 skipped, so an interrupted batch can be resumed.
 
 DACAD's roof core reads %TEMP%\<name>.RD2 and writes <name>.SOL/.SO2, which
@@ -74,7 +75,8 @@ def _worker(n: int, a, q: queue.Queue, status: dict, lock: threading.Lock) -> No
             try:
                 r = subprocess.run([str(CALC), str(f)], env=env, capture_output=True, text=True,
                                    timeout=a.timeout)
-                st = "ok" if "ok " in r.stdout else "not_saved"
+                st = ("ok" if "ok " in r.stdout else
+                      "dacad_error" if "DACAD ERROR" in r.stderr else "not_saved")
             except subprocess.TimeoutExpired:
                 st = "timeout"
             stop.set()

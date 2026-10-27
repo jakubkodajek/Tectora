@@ -40,8 +40,14 @@ for f in "$@"; do
   # Large projects calculate for a while, then intersect the models
   # ("Modellverschnitt"); Escape would cancel. Wait until no status window
   # has been open for 4 s in a row.
-  quiet=0
+  # An error in the roof core (e.g. E0002 "Nicht geschlossene Fläche(n)")
+  # opens a message box titled just "DACAD" over the status window and the
+  # calculation stops there: report it instead of waiting for the timeout.
+  quiet=0; failed=0
   for _ in $(seq 1 900); do
+    if xdotool search --onlyvisible --name '^DACAD$' >/dev/null 2>&1; then
+      failed=1; break
+    fi
     if xdotool search --onlyvisible --name 'Berechnungsstatus|Modellverschnitt' >/dev/null 2>&1; then
       quiet=0
     else
@@ -49,6 +55,12 @@ for f in "$@"; do
     fi
     sleep 1
   done
+  if [ $failed = 1 ]; then
+    echo "DACAD ERROR $f" >&2
+    import -window root "${f%.*}.png"
+    wineserver -k 2>/dev/null || true
+    continue
+  fi
   xdotool key Escape
   xdotool mousemove 17 36 click 1; sleep 1; xdotool mousemove 40 103 click 1
   for _ in $(seq 1 4); do sleep 1; [ "$(stat -c %Y "$f")" != "$before" ] && break; done
