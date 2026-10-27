@@ -254,6 +254,29 @@ def cases() -> dict[str, tuple]:
                                     rect(10, 8, Def(40), Def(90, 0.4), Def(40), Def(90, 0.4)), None,
                                     [Dormer((10.2, 3.0), [W(2.8, 0, G), W(2, 90, Def(20, 0.2, 3.5)), W(2.8, 180, G),
                                                           W(2, 270, Def(90, 0.1))], kind=0, host=0)]),
+        # ZWEIPULT roof 3: a lean-to box inside a shed roof's gable overhang.
+        "C55_box_in_gable_overhang": ("Pultová 10×8 20° (okap jih, přesah 0,5; štíty 0,5; horní štít sever přesah 1,0) + box 2×1 v přesahu (x 6–8, y 8–9), západní stěna 45° okap 4,0",
+                                      rect(10, 8, Def(20, 0.5), Def(90, 0.5), Def(90, 1.0), Def(90, 0.5)), None,
+                                      [Dormer((6.0, 9.0), [W(1, 270, Def(45, 0, 4.0)), W(2, 0, G), W(1, 90, G),
+                                                           W(2, 180, G)], kind=0, host=0)]),
+        "C56_box_beyond_overhang": ("Jako C55, ale severní přesah 0,5 (box z poloviny mimo přesah)",
+                                    rect(10, 8, Def(20, 0.5), Def(90, 0.5), Def(90, 0.5), Def(90, 0.5)), None,
+                                    [Dormer((6.0, 9.0), [W(1, 270, Def(45, 0, 4.0)), W(2, 0, G), W(1, 90, G),
+                                                         W(2, 180, G)], kind=0, host=0)]),
+        # STEFFNER: higher wall (eave 4.33, overhang 0.6) then a lower one
+        # (eave 3.35) at a reflex corner.
+        "C57_reflex_higher_wall_ov0": ("L 12×10, výřez 6×4 vpravo dole; stěna nad výřezem okap 4,33 přesah 0,6, navazující nižší okap 3,35 přesah 0; 35°",
+                                       [W(6, 0, Def(35, 0.6, 4.33)), W(4, 270, Def(35, 0, 3.35)), W(6, 0, Def(35, 0, 3.35)),
+                                        W(10, 90, Def(35, 0, 3.35)), W(12, 180, Def(35, 0, 3.35)), W(6, 270, Def(35, 0.6, 4.33))]),
+        "C58_reflex_higher_wall_ov06": ("Jako C57, nižší stěny s přesahem 0,6",
+                                        [W(6, 0, Def(35, 0.6, 4.33)), W(4, 270, Def(35, 0.6, 3.35)), W(6, 0, Def(35, 0.6, 3.35)),
+                                         W(10, 90, Def(35, 0.6, 3.35)), W(12, 180, Def(35, 0.6, 3.35)), W(6, 270, Def(35, 0.6, 4.33))]),
+        # TRAING09: gable between 25° markers next to a raised wall.
+        "C59_gable_markers_raised": ("Okap y 0 (okap 4,79, 50°, přesah 0,3): 4 m, značka 25°, štít 2 m, značka 25°, 1 m; pak nižší křídlo (okap 3,0) přes vnitřní roh",
+                                     [W(4, 0, Def(50, 0.3, 4.79)), W(0, 270, Def(25, 0.3, 4.79)), W(2, 0, Def(90, 0.3, 4.79)),
+                                      W(0, 90, Def(25, 0.3, 4.79)), W(1, 0, Def(50, 0.3, 4.79)), W(1.5, 270, Def(55, 0.3, 3.0)),
+                                      W(5, 0, Def(90, 0.3, 3.0)), W(9.5, 90, Def(55, 0.3, 3.0)), W(12, 180, Def(50, 0.3, 3.0)),
+                                      W(8, 270, Def(55, 0.3, 3.0))]),
     }
 
 

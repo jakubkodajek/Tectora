@@ -316,3 +316,11 @@ The eight 90° notch side walls in PRIORITY have material 1 (tiles), not "kein".
 ## Cases C52–C54 (wing against a gable)
 
 A shed wing that overlaps the gable wall by 1 m (C52), touches it (C53) or stands under its overhang (C54) leaves the main gable's OL/OR intact. In HINT04 the north gable's OL/OR disappear because of wing roof 5 (confirmed by recalculating HINT04 with roofs 1+5 and with 1–4 only), and they stay missing when the wing's overhangs are 0, its pitch is 35° or the main roof's other two gables are made slopes. The trigger is still unknown.
+
+## Cases C55–C59
+
+| Case | Result | Rule |
+|---|---|---|
+| C55/C56 box under a shed roof's gable overhang | Box keeps its own T 1.0 / OL / OR / P; main P unbroken | A separate box does not extend to the host's overhang line. ZWEIPULT's extension comes from the main loop's zero-length wall 2 at (7.99, 7.7), which carries the same 45.96° plane as the box. |
+| C57/C58 higher wall (eave 4.33, ov 0.6) then lower wall at a reflex corner | Higher T runs along its overhang line past the corner to the lower plane (K from there), WS 2.441 along the higher wall's line over the lower roof | Same with the lower walls' overhang 0 or 0.6. |
+| C59 gable between 25° markers next to a raised wall (TRAING09) | Raised T runs past the corner to 7.95, WS from the lower wall's overhang line (6.7) to 8.2, no T/WS stub at the corner | Same rule as C57. |
