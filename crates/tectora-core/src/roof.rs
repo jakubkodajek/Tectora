@@ -36,6 +36,15 @@ use crate::model::{EdgeDef, RoofPart};
 const EPS: f64 = 1e-9;
 /// Walls narrower than this between planes moving in step are dropped.
 const MERGE_TOL: f64 = 2e-3;
+/// DACAD's general tolerance (VALUE_EPS, 1 cm): heights closer than this
+/// are one level.
+const VALUE_EPS: f64 = 0.01;
+
+/// Whether DACAD, which works in single precision, sees two heights as
+/// one level: ridges 1 cm apart are not (sweep J02: 6.00 and 6.01 m).
+fn same_level(a: f64, b: f64) -> bool {
+    ((a as f32) - (b as f32)).abs() < VALUE_EPS as f32
+}
 const POS_TOL: f64 = 1e-6;
 /// Guards against runaway simulations on degenerate input.
 const MAX_EVENTS: usize = 10_000;
@@ -1304,7 +1313,8 @@ pub fn generate(part: &RoofPart) -> RoofGeometry {
 /// dropped by DACAD, and every hip running to an end of the higher ridge
 /// stops at the lower ridge's height; the ridges keep their ends and the
 /// gap gets no line (sweep /mnt/project-files/dacad-short-hip/: dropped at
-/// 17.3 mm, kept from 26 mm).
+/// 17.3 mm, kept from 26 mm). Ridges less than DACAD's VALUE_EPS apart in
+/// height count as one level: the hip is dropped, and see below.
 fn drop_short_junction_hips(geo: &mut RoofGeometry) {
     const MIN_HIP: f64 = 0.02;
     let near = |p: [f64; 3], q: [f64; 3]| dist3(p, q) < 1e-6;
@@ -1331,6 +1341,42 @@ fn drop_short_junction_hips(geo: &mut RoofGeometry) {
         };
         let ends = [geo.lines[r].a, geo.lines[r].b];
         geo.lines.remove(k);
+        if same_level(hi[2], lo[2]) {
+            // Both ridges are one level. DACAD takes the ridges in wall
+            // order, and the last one decides where the hips and valleys
+            // at the junction end: they rise or drop to its height (jp P2,
+            // P3).
+            let walls = |l: &RoofLine| {
+                let on = |f: &RoofFace, p: [f64; 3]| f.polygon.iter().any(|&q| dist3(p, q) < 1e-6);
+                geo.faces
+                    .iter()
+                    .filter(|f| on(f, l.a) && on(f, l.b))
+                    .map(|f| f.edge)
+                    .max()
+            };
+            let r_lo = ridge_at(&geo.lines, lo).unwrap_or(r);
+            let last = if walls(&geo.lines[r]) >= walls(&geo.lines[r_lo]) {
+                r
+            } else {
+                r_lo
+            };
+            let z = geo.lines[last].a[2];
+            for l in geo.lines.iter_mut().filter(|l| l.kind != LineKind::Ridge) {
+                let (top, bottom) = if near(l.a, lo) || near(l.a, hi) {
+                    (&mut l.a, l.b)
+                } else if near(l.b, lo) || near(l.b, hi) {
+                    (&mut l.b, l.a)
+                } else {
+                    continue;
+                };
+                if (top[2] - bottom[2]).abs() < 1e-9 {
+                    continue;
+                }
+                let t = (z - bottom[2]) / (top[2] - bottom[2]);
+                *top = std::array::from_fn(|i| bottom[i] + (top[i] - bottom[i]) * t);
+            }
+            continue;
+        }
         for l in geo.lines.iter_mut().filter(|l| l.kind == LineKind::Hip) {
             for e in ends {
                 let (top, bottom) = if near(l.a, e) {
