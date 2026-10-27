@@ -475,7 +475,11 @@ pub fn join(geos: &mut [RoofGeometry], parts: &[RoofPart]) {
                     let ts = splits(a, b, &all_polys, &all_planes);
                     let segs = keep_parts(a, b, &ts, |p, z| {
                         let o = Point2::new(p.x + out.x * 1e-4, p.y + out.y * 1e-4);
+                        let inn = Point2::new(p.x - out.x * 1e-4, p.y - out.y * 1e-4);
+                        // A roof that ends at the wall with its own gable
+                        // keeps its verges and pult there (TRAING03).
                         covers(fp, p)
+                            && covers(fp, inn)
                             && bi.plane_at(o) == Some(*fpl)
                             && bj.roof_z(p).is_some_and(|zj| zj > z + EPS)
                             && !hidden(i, o, fpl.z(o))
