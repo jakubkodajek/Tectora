@@ -236,6 +236,43 @@ fn inside_spans(poly: &[Point2], a: Point2, b: Point2) -> Vec<(f64, f64)> {
         .collect()
 }
 
+/// Parts of `a`-`b` that lie on a side of `poly` (within 1 mm).
+fn side_spans(poly: &[Point2], a: Point2, b: Point2) -> Vec<(f64, f64)> {
+    let d = Point2::new(b.x - a.x, b.y - a.y);
+    let len2 = d.x * d.x + d.y * d.y;
+    if len2 < TOL {
+        return Vec::new();
+    }
+    let off = |p: Point2, q: Point2, r: Point2| {
+        let e = Point2::new(q.x - p.x, q.y - p.y);
+        ((r.x - p.x) * e.y - (r.y - p.y) * e.x).abs() / e.x.hypot(e.y)
+    };
+    let t = |p: Point2| ((p.x - a.x) * d.x + (p.y - a.y) * d.y) / len2;
+    let n = poly.len();
+    (0..n)
+        .filter_map(|i| {
+            let (p, q) = (poly[i], poly[(i + 1) % n]);
+            if p.distance(q) < 1e-6 || off(p, q, a) > 1e-3 || off(p, q, b) > 1e-3 {
+                return None;
+            }
+            let (s, e) = (t(p).min(t(q)).max(0.0), t(p).max(t(q)).min(1.0));
+            (e - s > 1e-9).then_some((s, e))
+        })
+        .collect()
+}
+
+fn merge_spans(mut spans: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    spans.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for (s, e) in spans {
+        match out.last_mut() {
+            Some(last) if s <= last.1 + 1e-9 => last.1 = last.1.max(e),
+            _ => out.push((s, e)),
+        }
+    }
+    out
+}
+
 pub(crate) fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     [
         a[0] + t * (b[0] - a[0]),
@@ -262,7 +299,21 @@ fn apply_chimney(geo: &mut RoofGeometry, c: &Chimney) {
     let mut kept: Vec<RoofLine> = Vec::new();
     for l in std::mem::take(&mut geo.lines) {
         let (a, b) = (Point2::new(l.a[0], l.a[1]), Point2::new(l.b[0], l.b[1]));
-        let under = inside_spans(&corners, a, b);
+        let mut under = inside_spans(&corners, a, b);
+        // A ridge along a chimney side is cut there too, and the side
+        // abuts as the front of the far face (DACAD TRAING05 chimney 3).
+        if l.kind == LineKind::Ridge {
+            for (s, e) in side_spans(&corners, a, b) {
+                geo.lines.push(RoofLine {
+                    kind: LineKind::AbutmentFront,
+                    a: lerp3(l.a, l.b, s),
+                    b: lerp3(l.a, l.b, e),
+                    side: None,
+                });
+                under.push((s, e));
+            }
+            under = merge_spans(under);
+        }
         for &(s, e) in &under {
             geo.cut_lines
                 .push((l.dacad_code().to_string(), (e - s) * l.length()));
