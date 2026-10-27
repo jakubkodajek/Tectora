@@ -140,6 +140,10 @@ pub struct RoofGeometry {
     /// Line lengths removed by chimneys and dormers, by DACAD code.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cut_lines: Vec<(String, f64)>,
+    /// Negative lines DACAD adds where a chimney side runs right beside a
+    /// ridge or hip, by DACAD code; the line itself stays whole.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub minus_lines: Vec<(String, f64)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

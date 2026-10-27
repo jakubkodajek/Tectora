@@ -295,6 +295,9 @@ fn compare_tol(cases: Vec<(String, Value)>, tol: fn(f64) -> f64) -> Vec<String> 
         for l in geos.iter().flat_map(|g| &g.lines) {
             *ours.entry(l.dacad_code().to_string()).or_default() += l.length();
         }
+        for (code, len) in geos.iter().flat_map(|g| &g.minus_lines) {
+            *ours.entry(code.clone()).or_default() -= len;
+        }
         ours.retain(|_, v| *v > TOL);
         let results = &case["dacad_results"];
         let theirs: BTreeMap<String, f64> = results["lines_by_type"]

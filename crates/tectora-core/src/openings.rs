@@ -65,6 +65,7 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
             geo.clad_area += g.clad_area;
             geo.openings.extend(g.openings);
             geo.cut_lines.extend(g.cut_lines);
+            geo.minus_lines.extend(g.minus_lines);
         }
         geos.push(geo);
     }
@@ -155,6 +156,83 @@ pub(crate) fn slope(face: &RoofFace) -> (Point2, f64) {
         return (Point2::new(0.0, 0.0), 0.0);
     }
     (Point2::new(-nx / h, -ny / h), h / nz)
+}
+
+/// A chimney side parallel to a ridge or hip and right beside it, outside
+/// it, still deducts that line: DACAD keeps the line whole and adds a
+/// negative one of the side's length on the chimney side. Fitted to 71
+/// DACAD runs (/mnt/project-files/dacad-chimney-near-line/, mass case
+/// R1_0077); the thresholds are empirical:
+///
+/// * ridge: the side's distance from the ridge on the face is under 12.7 mm
+///   (DACAD: 11.55 mm deducted, 13.9 mm not);
+/// * hip: seen from the hip's eave end, the side's corners lie within an
+///   angle whose sine, divided by the cosine of the face's pitch, is under
+///   0.0184 (DACAD: 0.01793 deducted, 0.01888 not).
+fn side_by_lines(geo: &mut RoofGeometry, corners: &[Point2]) {
+    const RIDGE_GAP: f64 = 0.0127;
+    const HIP_SINE: f64 = 0.0184;
+    let n = corners.len();
+    let centre = Point2::new(
+        corners.iter().map(|p| p.x).sum::<f64>() / n as f64,
+        corners.iter().map(|p| p.y).sum::<f64>() / n as f64,
+    );
+    let Some(face) = geo.faces.iter().find(|f| inside(&plan(f), centre)) else {
+        return;
+    };
+    let (up, tan) = slope(face);
+    let cos = 1.0 / (1.0 + tan * tan).sqrt();
+    let mut minus = Vec::new();
+    for l in &geo.lines {
+        if !matches!(l.kind, LineKind::Ridge | LineKind::Hip) {
+            continue;
+        }
+        let (a, b) = (Point2::new(l.a[0], l.a[1]), Point2::new(l.b[0], l.b[1]));
+        let len = a.distance(b);
+        if len < TOL {
+            continue;
+        }
+        let d = Point2::new((b.x - a.x) / len, (b.y - a.y) / len);
+        let off = |p: Point2| (p.x - a.x) * d.y - (p.y - a.y) * d.x;
+        let along = |p: Point2| (p.x - a.x) * d.x + (p.y - a.y) * d.y;
+        for i in 0..n {
+            let (p, q) = (corners[i], corners[(i + 1) % n]);
+            let side = p.distance(q);
+            if side < TOL {
+                continue;
+            }
+            let (op, oq) = (off(p), off(q));
+            // Parallel, beside the line but not on it, facing it.
+            if (op - oq).abs() > 1e-4 || op.abs() < 1e-3 {
+                continue;
+            }
+            let inward = corners
+                .iter()
+                .map(|&c| off(c) - op)
+                .find(|v| v.abs() > 1e-6)
+                .unwrap_or(0.0);
+            if inward * op < 0.0 {
+                continue;
+            }
+            let (s, e) = (along(p).min(along(q)), along(p).max(along(q)));
+            if e <= 1e-9 || s >= len - 1e-9 {
+                continue;
+            }
+            let near = if l.kind == LineKind::Ridge {
+                op.abs() / cos < RIDGE_GAP
+            } else {
+                let eave = if l.a[2] <= l.b[2] { a } else { b };
+                let sine = |c: Point2| off(c).abs() / eave.distance(c).max(TOL);
+                sine(p).max(sine(q)) / cos < HIP_SINE
+            };
+            if near {
+                let z = |c: Point2| height_at(face, up, tan, c);
+                let len3 = (side * side + (z(p) - z(q)).powi(2)).sqrt();
+                minus.push((l.dacad_code().to_string(), len3));
+            }
+        }
+    }
+    geo.minus_lines.extend(minus);
 }
 
 pub(crate) fn inside(poly: &[Point2], p: Point2) -> bool {
@@ -354,6 +432,9 @@ fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool) {
         }
     }
     geo.lines = kept;
+    if !hole {
+        side_by_lines(geo, &corners);
+    }
 
     let mut total = 0.0;
     let n = corners.len();

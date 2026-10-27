@@ -65,6 +65,9 @@ pub fn dacad_line_totals(project: &Project) -> std::collections::BTreeMap<String
         for line in geo.lines {
             *totals.entry(line.dacad_code().to_string()).or_default() += line.length();
         }
+        for (code, len) in geo.minus_lines {
+            *totals.entry(code).or_default() -= len;
+        }
     }
     for v in totals.values_mut() {
         *v = (*v * 100.0).round() / 100.0;
@@ -141,6 +144,12 @@ pub fn norm_totals(project: &Project, norm: Norm) -> NormTotals {
         for (code, len) in &geo.cut_lines {
             if *len <= norm.line_limit() + EPS {
                 *lines.entry(code.clone()).or_default() += len;
+            }
+        }
+        // [no source — extrapolation] treated like a cut piece under a norm.
+        for (code, len) in &geo.minus_lines {
+            if *len > norm.line_limit() + EPS {
+                *lines.entry(code.clone()).or_default() -= len;
             }
         }
     }
