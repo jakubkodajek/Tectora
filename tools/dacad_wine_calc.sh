@@ -34,7 +34,14 @@ for f in "$@"; do
   sleep 4
   xdotool key Escape
   xdotool mousemove 17 36 click 1; sleep 1; xdotool mousemove 40 103 click 1
-  for _ in $(seq 1 10); do sleep 1; [ "$(stat -c %Y "$f")" != "$before" ] && break; done
+  for _ in $(seq 1 4); do sleep 1; [ "$(stat -c %Y "$f")" != "$before" ] && break; done
+  # Files from old DACAD versions open "Save as" (name preset) and then ask
+  # to overwrite: accept both.
+  if [ "$(stat -c %Y "$f")" = "$before" ]; then
+    xdotool key Return; sleep 2
+    [ "$(stat -c %Y "$f")" = "$before" ] && { xdotool key alt+y; sleep 1; xdotool key Return; }
+    for _ in $(seq 1 6); do sleep 1; [ "$(stat -c %Y "$f")" != "$before" ] && break; done
+  fi
   if [ "$(stat -c %Y "$f")" = "$before" ]; then echo "NOT SAVED $f" >&2; else echo "ok $f"; fi
   import -window root "${f%.*}.png"
   wineserver -k 2>/dev/null || true
