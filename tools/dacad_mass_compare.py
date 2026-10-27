@@ -94,6 +94,18 @@ def _subtract(lines, tol=1e-3):
     return pos, loose
 
 
+def _raised_eave_snap(raw, tol=0.025) -> bool:
+    """DACAD quirk: where a raised eave meets a lower neighbour's hip within
+    ~2 cm of the neighbour's wall corner, DACAD snaps the hip end to that
+    corner (sweep /mnt/project-files/dacad-raised-eave/), leaving a hip end
+    a few mm to 2.5 cm from the eave end, and its face areas there are not
+    even symmetric. Such failures are labelled, still counted as failures."""
+    hips = [e for t, a, b, _ in raw if t == "G" for e in (a, b)]
+    eaves = [e for t, a, b, _ in raw if t == "T" for e in (a, b)]
+    return any(1e-3 < math.dist(g[:2], e[:2]) < tol and abs(g[2] - e[2]) < 0.02
+               for g in hips for e in eaves)
+
+
 def compare(calc: Path, src: Path, engine: str, tol: float, area_tol: float) -> dict:
     argv = [x.replace("{file}", str(src)) for x in shlex.split(engine)]
     r = subprocess.run(argv, capture_output=True, text=True)
@@ -133,6 +145,8 @@ def compare(calc: Path, src: Path, engine: str, tol: float, area_tol: float) -> 
     if da is not None and abs(da - ea) > area_tol:
         res["area"] = (round(da, 4), round(ea, 4))
     res["ok"] = not (totals or only_d or only_e or "area" in res)
+    if not res["ok"] and _raised_eave_snap(raw):
+        res["quirk"] = "raised-eave snap"
     return res
 
 
@@ -146,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", type=Path)
     a = ap.parse_args(argv)
     status = json.loads((a.calc / "status.json").read_text())
-    report, n_ok, n_fail, skipped = {}, 0, 0, Counter()
+    report, n_ok, n_fail, n_quirk, skipped = {}, 0, 0, 0, Counter()
     for name, st in sorted(status.items()):
         if st["status"] != "ok":
             skipped[st["status"]] += 1
@@ -156,13 +170,15 @@ def main(argv: list[str] | None = None) -> int:
         if res["ok"]:
             n_ok += 1
         else:
+            n_quirk += "quirk" in res
             n_fail += 1
             if "error" in res:
                 print(f"FAIL {name}: {res['error']}")
             else:
-                print(f"FAIL {name}: totals {res['totals']} area {res.get('area')} "
+                print(f"FAIL {name}: [{res.get('quirk', '')}] totals {res['totals']} area {res.get('area')} "
                       f"only DACAD {len(res['only_dacad'])}, only engine {len(res['only_engine'])}")
-    print(f"compared {n_ok + n_fail}: {n_ok} identical, {n_fail} different; "
+    print(f"compared {n_ok + n_fail}: {n_ok} identical, {n_fail} different "
+          f"({n_quirk} of them the raised-eave snap); "
           f"not calculated by DACAD: {dict(skipped)}")
     if a.json:
         a.json.write_text(json.dumps(report, indent=1))
