@@ -654,6 +654,8 @@ struct HoleEdge {
     d: [f64; 3],
     face: usize,
     shared: bool,
+    /// The same edge in the neighbouring face's hole, when dropped.
+    twin: Option<([f64; 3], [f64; 3])>,
 }
 
 /// A chimney as DACAD's core cuts it (decompiled FUN_00da5160 and its
@@ -720,6 +722,9 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2], walls: &[(Point2, Poi
             );
             drop[i] = li < lj - 1e-6 || (li <= lj + 1e-6 && edges[i].face > edges[j].face);
             edges[i].shared = true;
+            if drop[i] && li > lj - 1e-6 {
+                edges[j].twin = Some((edges[i].c, edges[i].d));
+            }
         }
     }
     // DACAD also holes the dormer's footprint face on the host plane
@@ -751,9 +756,11 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2], walls: &[(Point2, Poi
         if dist3_(e.c, e.d) < 0.02 {
             continue;
         }
-        let on = roof
-            .iter()
-            .find(|r| on_line((r.a, r.b), e.c, e.d) || on_line((r.b, r.a), e.c, e.d));
+        let on = roof.iter().find(|r| {
+            std::iter::once((e.c, e.d))
+                .chain(e.twin)
+                .any(|(c, d)| lies_on(r, c, d))
+        });
         let abutment = on.is_some_and(|r| {
             matches!(
                 r.kind,
@@ -824,6 +831,7 @@ fn push_edges(edges: &mut Vec<HoleEdge>, pts: &[[f64; 3]], face: usize) {
             d: pts[(i + 1) % pts.len()],
             face,
             shared: false,
+            twin: None,
         });
     }
 }
@@ -1009,6 +1017,25 @@ fn pivot_corner(geo: &RoofGeometry, corners: &mut [Point2]) -> bool {
         return true;
     }
     false
+}
+
+/// Whether a hole edge lies on roof line `r` by DACAD's test [`on_line`].
+/// DACAD measures from the line's start as its edge table stores it: the
+/// edge's direction in the first face listing it, and faces run either way
+/// (SOL files of the mass test). Not modelled; a sloped line is measured
+/// from its lower end, which DACAD's sweep dacad-chimney-near-line/near3
+/// needs (P0a–P1b: from the upper end a side 6.5 cm off a hip near the
+/// eave would pass). Mass case R1_0808 needs the upper end and fails. The
+/// edge may run either way [no source — extrapolation]. A level line is
+/// tried from both ends.
+fn lies_on(r: &RoofLine, c: [f64; 3], d: [f64; 3]) -> bool {
+    let (lo, hi) = if r.a[2] <= r.b[2] {
+        (r.a, r.b)
+    } else {
+        (r.b, r.a)
+    };
+    let from = |a, b| on_line((a, b), c, d) || on_line((a, b), d, c);
+    from(lo, hi) || ((hi[2] - lo[2]) as f32) < 0.01 && from(hi, lo)
 }
 
 /// DACAD's test whether hole edge C→D lies on roof line A→B: the ends
