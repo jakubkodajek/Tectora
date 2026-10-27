@@ -115,6 +115,12 @@ def _dist_to_outline(pts, x, y) -> float:
     return best
 
 
+def _near_window(x: float, y: float, win, margin: float = 1.0) -> bool:
+    """Whether a chimney drawn at (x, y) could overlap the roof window."""
+    wx, wy, ww, wh = win
+    return wx - margin < x < wx + ww + margin and wy - margin < y < wy + wh + margin
+
+
 def generate(seed: int, index: int) -> tuple[bytes, dict]:
     rng = random.Random(seed * 1_000_003 + index)
     shape, steps, ends = None, None, None
@@ -168,7 +174,8 @@ def generate(seed: int, index: int) -> tuple[bytes, dict]:
             x, y = _q(rng, 0.5, 18), _q(rng, 0.5, 14)
             a, b = _q(rng, 0.4, 1.0), _q(rng, 0.4, 1.0)
             if _inside(pts, x, y) and _dist_to_outline(pts, x, y) > 1.2 and \
-                    all(math.hypot(x - c.corners[0][0], y - c.corners[0][1]) > 2 for c in chimneys):
+                    all(math.hypot(x - c.corners[0][0], y - c.corners[0][1]) > 2 for c in chimneys) and \
+                    not any(_near_window(x, y, w) for w in w0.windows):
                 rot = rng.choice([0, 0, 0, 30, 45])
                 corners = [(round(cx, 4), round(cy, 4)) for cx, cy in rotated_rect(x, y, a, b, rot)]
                 chimneys.append(Chimney(round(eave + 12, 2), corners))
