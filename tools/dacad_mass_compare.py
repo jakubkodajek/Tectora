@@ -115,6 +115,10 @@ def compare(calc: Path, src: Path, engine: str, tol: float, area_tol: float) -> 
     te, td = Counter(), Counter()
     for t, a, b in eng:
         te[t] += math.dist(a, b)
+    # Engine counterparts of DACAD's loose deductions: (code, length).
+    for pt in data["parts"]:
+        for code, ln in pt["geometry"].get("minus_lines", []):
+            te[_type(code)] -= ln
     for t, a, b, ln in raw:
         td[t] += math.copysign(math.dist(a, b), ln)
     totals = {t: (round(td[t], 3), round(te[t], 3)) for t in sorted(set(te) | set(td))
