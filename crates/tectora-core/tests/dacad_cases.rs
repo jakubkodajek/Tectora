@@ -9,10 +9,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use serde_json::Value;
+use tectora_core::dad::{DadFile, DadWall};
 use tectora_core::geom::Point2;
 use tectora_core::model::GABLE_PITCH_DEG;
 use tectora_core::openings::generate_project;
-use tectora_core::{Chimney, Dormer, EdgeDef, HalfHip, PitchBreak, Project, RoofPart, RoofWindow};
+use tectora_core::{Chimney, HalfHip, PitchBreak, Project, RoofWindow};
 
 /// Half a unit of DACAD's 2-decimal output plus float32 noise.
 const TOL: f64 = 0.006;
@@ -24,10 +25,15 @@ fn fixtures() -> Vec<(String, Value)> {
 }
 
 fn fixtures_in(sub: &str) -> Vec<(String, Value)> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures")
-        .join(sub);
-    let mut out: Vec<(String, Value)> = std::fs::read_dir(&dir)
+    read_fixtures(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures")
+            .join(sub),
+    )
+}
+
+fn read_fixtures(dir: &std::path::Path) -> Vec<(String, Value)> {
+    let mut out: Vec<(String, Value)> = std::fs::read_dir(dir)
         .expect("fixture dir")
         .map(|e| e.expect("entry").path())
         .filter(|p| p.extension().is_some_and(|x| x == "json"))
@@ -45,104 +51,64 @@ fn pt(v: &Value) -> Point2 {
     Point2::new(v[0].as_f64().unwrap(), v[1].as_f64().unwrap())
 }
 
-/// One wall's stacked DACAD definitions as an edge: a gable followed by a
-/// sloped definition is a Krüppelwalm, further definitions are pitch breaks.
-fn edge(wall: &Value) -> EdgeDef {
-    let priority = wall["definitions"][0]["priority"].as_f64().unwrap_or(0.0) > 0.5;
-    let defs: Vec<(f64, f64, f64)> = wall["definitions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|d| {
-            (
-                d["pitch_deg"].as_f64().unwrap(),
-                d["eave_height_m"].as_f64().unwrap(),
-                d["overhang_m"].as_f64().unwrap(),
-            )
-        })
-        .collect();
-    let (pitch_deg, eave_height, overhang) = defs[0];
+/// One wall with its stacked DACAD definitions, as the V1 importer reads
+/// it: a gable followed by a sloped definition is a Krüppelwalm, further
+/// definitions are pitch breaks.
+fn wall(id: usize, w: &Value) -> DadWall {
+    let defs = w["definitions"].as_array().unwrap();
+    let d0 = &defs[0];
+    let pitch_deg = d0["pitch_deg"].as_f64().unwrap();
+    let stacked = |d: &Value| PitchBreak {
+        height: d["eave_height_m"].as_f64().unwrap(),
+        pitch_deg: d["pitch_deg"].as_f64().unwrap(),
+    };
     let mut rest = defs[1..].iter();
     let half_hip = if pitch_deg >= GABLE_PITCH_DEG {
-        rest.next().map(|&(p, h, _)| HalfHip {
-            height: h,
-            pitch_deg: p,
+        rest.next().map(|d| {
+            let b = stacked(d);
+            HalfHip {
+                height: b.height,
+                pitch_deg: b.pitch_deg,
+            }
         })
     } else {
         None
     };
-    let (start, end) = (pt(&wall["start"]), pt(&wall["end"]));
-    EdgeDef {
-        start,
-        pitch_deg,
-        eave_height,
-        overhang,
-        half_hip,
-        direction_rad: (start.distance(end) < 1e-6)
-            .then(|| wall["direction_deg"].as_f64().map(f64::to_radians))
-            .flatten(),
-        breaks: rest
-            .map(|&(p, h, _)| PitchBreak {
-                height: h,
-                pitch_deg: p,
-            })
-            .collect(),
-        priority: u8::from(priority),
-    }
-}
-
-fn roof_no(wall: &Value) -> u64 {
-    wall["definitions"][0]["roof_no"].as_u64().unwrap_or(1)
-}
-
-/// The main roof: the walls of roof 1, chained end to start.
-fn part(case: &Value) -> RoofPart {
-    let walls: Vec<&Value> = case["input"]["walls"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|w| roof_no(w) == 1)
-        .collect();
-    let mut order = vec![0];
-    while order.len() < walls.len() {
-        let end = pt(&walls[*order.last().unwrap()]["end"]);
-        let next = (0..walls.len())
-            .find(|&i| !order.contains(&i) && pt(&walls[i]["start"]).approx_eq(end, 1e-6))
-            .expect("closed wall chain");
-        order.push(next);
-    }
-    let mut part = RoofPart {
-        name: "case".into(),
-        edges: order.iter().map(|&i| edge(walls[i])).collect(),
+    let (start, end) = (pt(&w["start"]), pt(&w["end"]));
+    let length = start.distance(end);
+    let angle_rad = if length > 1e-6 {
+        (end.y - start.y).atan2(end.x - start.x)
+    } else {
+        w["direction_deg"].as_f64().unwrap_or(0.0).to_radians()
     };
-    part.normalize_ccw();
-    part
-}
-
-/// Dormers: the walls of every other roof number, in authored order.
-fn dormers(case: &Value) -> Vec<Dormer> {
-    let mut by_roof: BTreeMap<u64, Vec<&Value>> = BTreeMap::new();
-    for w in case["input"]["walls"].as_array().unwrap() {
-        if roof_no(w) != 1 {
-            by_roof.entry(roof_no(w)).or_default().push(w);
-        }
+    DadWall {
+        id: id as u16 + 1,
+        group: d0["roof_no"].as_u64().unwrap_or(1) as u16,
+        start,
+        length,
+        angle_rad,
+        eave_height: d0["eave_height_m"].as_f64().unwrap(),
+        overhang: d0["overhang_m"].as_f64().unwrap(),
+        pitch_deg,
+        priority: u8::from(d0["priority"].as_f64().unwrap_or(0.0) > 0.5),
+        half_hip,
+        breaks: rest.map(stacked).collect(),
     }
-    by_roof
-        .values()
-        .map(|walls| Dormer {
-            edges: walls.iter().map(|w| edge(w)).collect(),
-            end: pt(&walls.last().unwrap()["end"]),
-        })
-        .collect()
 }
 
+/// The case as the V1 importer would turn it into a project: closed wall
+/// loops become roof parts, open chains dormers.
 fn project(name: &str, case: &Value) -> Project {
     let input = &case["input"];
-    let mut project = Project::new(name);
-    project.parts.push(part(case));
-    project.dormers = dormers(case);
+    let mut file = DadFile {
+        version: "test".into(),
+        ..DadFile::default()
+    };
+    for (i, w) in input["walls"].as_array().unwrap().iter().enumerate() {
+        file.walls.push(wall(i, w));
+    }
     for w in input["windows"].as_array().into_iter().flatten() {
-        project.windows.push(RoofWindow {
+        file.windows.push(RoofWindow {
             x: w["x"].as_f64().unwrap(),
             y: w["y"].as_f64().unwrap(),
             width: w["width"].as_f64().unwrap(),
@@ -150,12 +116,12 @@ fn project(name: &str, case: &Value) -> Project {
         });
     }
     for c in input["chimneys"].as_array().into_iter().flatten() {
-        project.chimneys.push(Chimney {
+        file.chimneys.push(Chimney {
             corners: c["corners"].as_array().unwrap().iter().map(pt).collect(),
             height: c["height_m"].as_f64().unwrap_or(0.0),
         });
     }
-    project
+    file.to_project(name)
 }
 
 /// DACAD's line group names in this (Slovak) build and their codes.
@@ -226,12 +192,89 @@ fn norm_groups_match_dacad() {
 fn engine_matches_dacad() {
     let cases = fixtures();
     assert!(cases.len() >= 42, "fixtures missing");
+    let failures = compare(cases);
+    assert!(
+        failures.is_empty(),
+        "differences from DACAD:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// DACAD's own sample roofs, recalculated with the current DACAD. They are
+/// derived from third-party files and stay outside the repository; point
+/// `DACAD_SAMPLES` at their directory to run this.
+#[test]
+#[ignore]
+fn samples_match_dacad() {
+    let dir = std::env::var("DACAD_SAMPLES").expect("DACAD_SAMPLES");
+    let cases = read_fixtures(std::path::Path::new(&dir));
+    let only = std::env::var("DACAD_ONLY").ok();
+    let mut bad = Vec::new();
+    let mut total = 0;
+    for (name, case) in cases {
+        if only
+            .as_deref()
+            .is_some_and(|o| !o.split(',').any(|x| x == name))
+        {
+            continue;
+        }
+        total += 1;
+        let n = name.clone();
+        let Ok(f) = std::panic::catch_unwind(move || compare_tol(vec![(n, case)], sample_tol))
+        else {
+            println!("{name}: not supported");
+            bad.push(name);
+            continue;
+        };
+        if f.is_empty() {
+            println!("{name}: ok");
+        } else {
+            println!("{}", f.join("\n"));
+            bad.push(name);
+        }
+    }
+    println!("{} of {total} match", total - bad.len());
+    assert!(bad.is_empty(), "{bad:?}");
+}
+
+fn compare(cases: Vec<(String, Value)>) -> Vec<String> {
+    compare_tol(cases, |_| TOL)
+}
+
+/// DACAD snaps the vertices of joined buildings to whole centimetres, which
+/// the engine does not yet; allow for it on the samples.
+fn sample_tol(v: f64) -> f64 {
+    std::env::var("DACAD_TOL")
+        .ok()
+        .and_then(|t| t.parse().ok())
+        .unwrap_or(0.03f64)
+        .max(v.abs() * 0.002)
+}
+
+fn compare_tol(cases: Vec<(String, Value)>, tol: fn(f64) -> f64) -> Vec<String> {
     let mut failures = Vec::new();
     for (name, case) in cases {
         let project = project(&name, &case);
-        let geo = generate_project(&project).remove(0);
+        let geos = generate_project(&project);
+        if std::env::var("DACAD_DUMP").is_ok() {
+            for (gi, g) in geos.iter().enumerate() {
+                for l in &g.lines {
+                    let f = |p: [f64; 3]| format!("({:.3},{:.3},{:.3})", p[0], p[1], p[2]);
+                    println!(
+                        "{gi} {:3} {:7.3} {} {}",
+                        l.dacad_code(),
+                        l.length(),
+                        f(l.a),
+                        f(l.b)
+                    );
+                }
+                for f in &g.faces {
+                    println!("{gi} face edge {} area {:.4}", f.edge, f.area);
+                }
+            }
+        }
         let mut ours: BTreeMap<String, f64> = BTreeMap::new();
-        for l in &geo.lines {
+        for l in geos.iter().flat_map(|g| &g.lines) {
             *ours.entry(l.dacad_code().to_string()).or_default() += l.length();
         }
         ours.retain(|_, v| *v > TOL);
@@ -247,19 +290,15 @@ fn engine_matches_dacad() {
         for code in codes {
             let a = ours.get(code).copied().unwrap_or(0.0);
             let b = theirs.get(code).copied().unwrap_or(0.0);
-            if (a - b).abs() > TOL {
+            if (a - b).abs() > tol(b) {
                 failures.push(format!("{name}: {code} ours {a:.4} DACAD {b:.4}"));
             }
         }
-        let area: f64 = geo.faces.iter().map(|f| f.area).sum();
+        let area: f64 = geos.iter().flat_map(|g| &g.faces).map(|f| f.area).sum();
         let dacad_area = results["area_groups"][TILES].as_f64().unwrap();
-        if (area - dacad_area).abs() > TOL {
+        if (area - dacad_area).abs() > tol(dacad_area) {
             failures.push(format!("{name}: area ours {area:.4} DACAD {dacad_area:.4}"));
         }
     }
-    assert!(
-        failures.is_empty(),
-        "differences from DACAD:\n{}",
-        failures.join("\n")
-    );
+    failures
 }

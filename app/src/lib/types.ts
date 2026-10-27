@@ -89,7 +89,7 @@ export interface ExampleInfo {
   lines: [[number, number], [number, number]][];
 }
 
-export type LineKind = "eave" | "verge" | "ridge" | "hip" | "valley" | "pult" | "knick" | "abutment" | "abutment_front" | "abutment_back" | "abutment_side";
+export type LineKind = "eave" | "verge" | "ridge" | "hip" | "valley" | "pult" | "knick" | "gorge" | "abutment" | "abutment_front" | "abutment_back" | "abutment_side";
 
 export interface RoofLine {
   kind: LineKind;
@@ -117,6 +117,7 @@ export interface RoofQuantities {
   verge_length: number;
   pult_length: number;
   knick_length: number;
+  gorge_length: number;
   abutment_length: number;
   ridge_height: number;
 }

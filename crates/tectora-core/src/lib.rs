@@ -11,8 +11,10 @@ pub mod geom;
 pub mod model;
 pub mod openings;
 pub mod quantities;
+pub mod raised;
 pub mod roof;
 pub mod store;
+pub mod union;
 
 pub use model::{
     Chimney, Dormer, EdgeDef, HalfHip, JobInfo, JobStatus, PitchBreak, Project, RoofPart,

@@ -51,7 +51,11 @@ and adds WV (downhill), WH (uphill) and WS (sloped sides) abutment lines.
 T eave (Traufe/okap), F ridge (First/hřeben), G hip (Grat/nároží),
 K valley (Kehle/úžlabí), OL/OR/OS verge left/right/oblique (Ortgang/štítová hrana),
 P top edge of a shed roof against its wall (Pult), c pitch break (Knick/zlom),
-WV/WH/WS wall abutment downhill/uphill/side (e.g. around a chimney).
+S horizontal valley between two buildings (Schlucht),
+WV/WH/WS wall abutment downhill/uphill/side (around a chimney, or where a
+lower roof meets a higher building's wall).
+Several parts are joined like solids: a roof is hidden inside another
+part's walls below that part's roof, and roofs that cross meet in valleys.
 The rules were checked against roofs calculated by DACAD itself: a step
 between eaves at different heights is a short verge, the lower edge of a
 Krüppelwalm plane counts as eave T, and hips run through a pitch break.

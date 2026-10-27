@@ -18,8 +18,9 @@
           { code: "O", color: "var(--line-verge)", label: t("res.verge"), value: totals.verge_length, n: null },
           { code: "P", color: "var(--line-pult)", label: t("res.pult"), value: totals.pult_length, n: null },
           { code: "c", color: "var(--line-knick)", label: t("res.knick"), value: totals.knick_length, n: null },
+          { code: "S", color: "var(--line-gorge)", label: t("res.gorge"), value: totals.gorge_length ?? 0, n: null },
           { code: "W", color: "var(--line-abutment)", label: t("res.abutment"), value: totals.abutment_length, n: null },
-        ].filter((r) => r.value >= 0.005 || !["P", "c", "W"].includes(r.code))
+        ].filter((r) => r.value >= 0.005 || !["P", "c", "S", "W"].includes(r.code))
       : [],
   );
 </script>

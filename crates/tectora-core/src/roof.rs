@@ -31,7 +31,7 @@
 use serde::Serialize;
 
 use crate::geom::Point2;
-use crate::model::RoofPart;
+use crate::model::{EdgeDef, RoofPart};
 
 const EPS: f64 = 1e-9;
 const POS_TOL: f64 = 1e-6;
@@ -50,6 +50,8 @@ pub enum LineKind {
     Pult,
     /// Pitch break between two planes of one wall (DACAD: Knick).
     Knick,
+    /// Horizontal valley where two roofs meet (DACAD: Schlucht).
+    Gorge,
     /// Roof meeting the wall of another building (DACAD: Wandanschluss).
     /// Not generated yet: within one part DACAD reports verges instead.
     Abutment,
@@ -161,6 +163,8 @@ pub struct RoofQuantities {
     pub verge_length: f64,
     pub pult_length: f64,
     pub knick_length: f64,
+    #[serde(default)]
+    pub gorge_length: f64,
     pub abutment_length: f64,
     pub ridge_height: f64,
 }
@@ -178,6 +182,7 @@ impl RoofQuantities {
         self.verge_length += q.verge_length;
         self.pult_length += q.pult_length;
         self.knick_length += q.knick_length;
+        self.gorge_length += q.gorge_length;
         self.abutment_length += q.abutment_length;
         self.ridge_height = self.ridge_height.max(q.ridge_height);
     }
@@ -185,7 +190,7 @@ impl RoofQuantities {
 
 impl LineKind {
     /// DACAD's line code: T Traufe, F First, G Grat, K Kehle, O Ortgang,
-    /// P Pult, c Knick, W Wandanschluss. See [`RoofLine::dacad_code`] for
+    /// P Pult, c Knick, S Schlucht, W Wandanschluss. See [`RoofLine::dacad_code`] for
     /// the verge sides.
     pub fn dacad_code(self) -> &'static str {
         match self {
@@ -196,6 +201,7 @@ impl LineKind {
             LineKind::Verge => "O",
             LineKind::Pult => "P",
             LineKind::Knick => "c",
+            LineKind::Gorge => "S",
             LineKind::Abutment => "W",
             LineKind::AbutmentFront => "WV",
             LineKind::AbutmentBack => "WH",
@@ -217,6 +223,7 @@ impl RoofGeometry {
                 LineKind::Verge => q.verge_length += len,
                 LineKind::Pult => q.pult_length += len,
                 LineKind::Knick => q.knick_length += len,
+                LineKind::Gorge => q.gorge_length += len,
                 LineKind::Abutment
                 | LineKind::AbutmentFront
                 | LineKind::AbutmentBack
@@ -260,6 +267,9 @@ struct Line {
     priority: u8,
     /// Zero-length marker edge (see `EdgeDef::direction_rad`).
     marker: bool,
+    /// A wall with a higher eave than the lowest, waiting at its wall line
+    /// (see [`generate`]).
+    raised: bool,
 }
 
 impl Line {
@@ -280,6 +290,7 @@ impl Line {
             stages,
             priority,
             marker: false,
+            raised: false,
         }
     }
 
@@ -900,13 +911,45 @@ impl Event {
     }
 }
 
+/// Walls with an overhang whose eave is higher than the lowest eave of the
+/// part. Gables (and their Krüppel planes) never count.
+fn raised_edges(part: &RoofPart) -> Vec<bool> {
+    let first = |e: &EdgeDef| e.planes().first().map(|p| p.0);
+    let low = part
+        .edges
+        .iter()
+        .filter_map(first)
+        .fold(f64::INFINITY, f64::min);
+    part.edges
+        .iter()
+        .map(|e| !e.is_gable() && e.overhang > EPS && first(e).is_some_and(|t| t > low + 1e-6))
+        .collect()
+}
+
 /// Generates the roof over one footprint part. The part must be CCW
 /// (see [`RoofPart::normalize_ccw`]).
+///
+/// A wall whose eave is higher than the lowest stands at its wall line until
+/// its plane leaves the wall top; its overhang floats above the neighbouring
+/// roof, which runs on to the wall (DACAD sample 90062001). Such parts are
+/// generated twice, with every wall at its overhang line and with the raised
+/// walls at their wall lines, and the two are combined
+/// ([`crate::raised::combine`]).
 pub fn generate(part: &RoofPart) -> RoofGeometry {
+    let raised = raised_edges(part);
+    let (off, _) = generate_mode(part, &vec![false; raised.len()]);
+    if !raised.contains(&true) {
+        return off;
+    }
+    let (body, _) = generate_mode(part, &raised);
+    crate::raised::combine(off, body)
+}
+
+fn generate_mode(part: &RoofPart, raised: &[bool]) -> (RoofGeometry, Vec<Point2>) {
     let edges = &part.edges;
     let n = edges.len();
     if n < 3 {
-        return RoofGeometry::default();
+        return (RoofGeometry::default(), Vec::new());
     }
     let pts = part.outline();
     let lines: Vec<Line> = (0..n)
@@ -922,12 +965,19 @@ pub fn generate(part: &RoofPart) -> RoofGeometry {
             // DACAD's eave height is measured at the outer (overhang) line.
             let mut line = Line::new(dir, nrm, dot(nrm, a) - e.overhang, &e.planes(), e.priority);
             line.marker = len < POS_TOL;
+            if raised[i] {
+                // Same plane, but a wall at the wall line until the plane
+                // reaches the wall top.
+                line.base += e.overhang;
+                line.stages[0].t += e.overhang / line.stages[0].s;
+                line.raised = true;
+            }
             line
         })
         .collect();
     let start = lines.iter().map(Line::t_act).fold(f64::INFINITY, f64::min);
     if !start.is_finite() {
-        return RoofGeometry::default(); // only gables: no roof planes
+        return (RoofGeometry::default(), Vec::new()); // only gables: no roof planes
     }
 
     let applied = lines
@@ -966,8 +1016,12 @@ pub fn generate(part: &RoofPart) -> RoofGeometry {
         }
     }
     let initial: Vec<usize> = (0..n).map(|i| sim.verts[i].node).collect();
+    let outline = initial
+        .iter()
+        .map(|&k| Point2::new(sim.nodes[k][0], sim.nodes[k][1]))
+        .collect();
     sim.run(start);
-    build_geometry(part, &sim, &initial)
+    (build_geometry(part, &sim, &initial), outline)
 }
 
 /// Walks from `end` back to `start` through `segs`, returning the ring.
@@ -1068,6 +1122,14 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
             // facing the roof from outside its eave.
             [true, false] if flat => (LineKind::Pult, None),
             [false, true] if flat => (LineKind::Pult, None),
+            // A plane against a raised wall from an inside corner abuts it
+            // (DACAD sample 90062001).
+            [true, false] if arc.reflex && sim.lines[arc.left].raised => {
+                (LineKind::AbutmentSide, None)
+            }
+            [false, true] if arc.reflex && sim.lines[arc.right].raised => {
+                (LineKind::AbutmentSide, None)
+            }
             // From an inside corner between a wall and a plane: DACAD
             // reports a valley (C18–C23).
             [true, false] | [false, true] if arc.reflex => (LineKind::Valley, None),
@@ -1164,7 +1226,7 @@ fn verge_side(sim: &Sim, plane: usize, a: [f64; 3], b: [f64; 3], end: VergeSide)
 }
 
 /// Area of a planar 3D polygon (Newell's method).
-fn area3(poly: &[[f64; 3]]) -> f64 {
+pub(crate) fn area3(poly: &[[f64; 3]]) -> f64 {
     let n = poly.len();
     let (mut x, mut y, mut z) = (0.0, 0.0, 0.0);
     for i in 0..n {

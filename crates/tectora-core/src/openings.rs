@@ -23,6 +23,7 @@ const LEVEL: f64 = 1.0 - 1e-6;
 /// chimneys applied.
 pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     let mut geos: Vec<RoofGeometry> = project.parts.iter().map(generate).collect();
+    crate::union::join(&mut geos, &project.parts);
     for d in &project.dormers {
         crate::dormer::apply_dormer(&mut geos, d);
     }

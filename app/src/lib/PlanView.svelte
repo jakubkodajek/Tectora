@@ -170,6 +170,7 @@
     valley: "var(--line-valley)",
     pult: "var(--line-pult)",
     knick: "var(--line-knick)",
+    gorge: "var(--line-gorge)",
     abutment: "var(--line-abutment)",
     abutment_front: "var(--line-abutment)",
     abutment_back: "var(--line-abutment)",
