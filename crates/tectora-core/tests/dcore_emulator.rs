@@ -512,3 +512,71 @@ fn geom_all_vectors() {
     }
     assert!(bad.is_empty());
 }
+
+/// The S2/S3 segment primitives against the emulator (`seg_vectors.py`).
+fn seg_vectors(path: &Path) -> (usize, Vec<String>) {
+    use dcore::geom;
+    use dcore::num;
+    let t = num::Tol::default();
+    let mut bad = Vec::new();
+    let mut n = 0;
+    for line in std::fs::read_to_string(path).unwrap().lines() {
+        let c: Vec<&str> = line.split('\t').collect();
+        let words = |s: &str| -> Vec<u32> {
+            s.split_whitespace()
+                .map(|w| u32::from_str_radix(w, 16).unwrap())
+                .collect()
+        };
+        let fl: Vec<f32> = words(c[1]).into_iter().map(f32::from_bits).collect();
+        let eax: i64 = c[2].parse().unwrap();
+        let out = words(c[3]);
+        let v3 = |k: usize| -> [f32; 3] { [fl[k], fl[k + 1], fl[k + 2]] };
+        let ab = || ((v3(0), v3(3)), (v3(6), v3(9)));
+        let ok = match c[0] {
+            m if m.starts_with("segseg") => {
+                let mode: u32 = m[6..].parse().unwrap();
+                let (a, b) = ab();
+                let (r, x) = geom::seg_seg(a, b, mode, &t);
+                i64::from(r) == eax && x.map(f32::to_bits).to_vec() == out
+            }
+            "cjoin" => {
+                let (a, b) = ab();
+                i64::from(geom::collinear_join(a, b, &t)) == eax
+            }
+            "seg_on" => {
+                let (a, b) = ab();
+                i64::from(geom::seg_on_seg(a, b, &t)) == eax
+            }
+            "ovl" => {
+                let (a, b) = ab();
+                i64::from(geom::seg_overlap(a, b, &t)) == eax
+            }
+            "sdir" => i64::from(geom::same_dir_within(v3(0), v3(3), &t)) == eax,
+            other => panic!("unknown vector kind {other}"),
+        };
+        n += 1;
+        if !ok {
+            bad.push(line.to_string());
+        }
+    }
+    (n, bad)
+}
+
+#[test]
+fn seg_fixture_vectors() {
+    let (n, bad) = seg_vectors(&fixture_dir().join("geom_seg.tsv"));
+    assert!(n > 0);
+    assert!(bad.is_empty(), "{n} vectors, wrong: {bad:#?}");
+}
+
+#[test]
+#[ignore]
+fn seg_all_vectors() {
+    let p = std::env::var("DCORE_SEG").expect("DCORE_SEG=file");
+    let (n, bad) = seg_vectors(Path::new(&p));
+    println!("{n} vectors, {} wrong", bad.len());
+    for b in bad.iter().take(20) {
+        println!("{b}");
+    }
+    assert!(bad.is_empty());
+}
