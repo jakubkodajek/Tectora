@@ -865,6 +865,71 @@ impl Sim {
         self.verts[n].next = next;
         self.verts[prev].next = n;
         self.verts[next].prev = n;
+        self.absorb(n, t);
+    }
+
+    /// A plane that has just caught up with a parallel wall beside it (the
+    /// wall in line with its wavefront, DACAD case C69) covers the wall at
+    /// once: the wall's edge collapses to where the plane meets the edge
+    /// beyond it.
+    fn absorb(&mut self, n: usize, t: f64) {
+        let (left, right) = (self.verts[n].left, self.verts[n].right);
+        let (l, r) = (&self.lines[left], &self.lines[right]);
+        if dot(l.n, r.n) < 1.0 - 1e-9 {
+            return;
+        }
+        let (sl, sr) = (l.params(t).1, r.params(t).1);
+        if (sl - sr).abs() < EPS {
+            return;
+        }
+        // The slower edge is swallowed; `w` is its vertex on the far side.
+        let (w, keep, beyond) = if sr < sl {
+            let w = self.verts[n].next;
+            (w, left, self.verts[w].right)
+        } else {
+            let w = self.verts[n].prev;
+            (w, right, self.verts[w].left)
+        };
+        if w == n || beyond == keep {
+            return;
+        }
+        let (lk, lb) = (&self.lines[keep], &self.lines[beyond]);
+        let Some(p) = solve2(
+            lk.n,
+            lk.params(t).0 + lk.params(t).1 * t,
+            lb.n,
+            lb.params(t).0 + lb.params(t).1 * t,
+        ) else {
+            return;
+        };
+        let node = self.add_node(p, t);
+        let (prev, next) = if sr < sl {
+            (self.verts[n].prev, self.verts[w].next)
+        } else {
+            (self.verts[w].prev, self.verts[n].next)
+        };
+        // The kept plane covers the swallowed edge at once: the level
+        // stretch it sweeps ends in the air above it, an eave (DACAD C69).
+        self.retire(n, node);
+        if let Some(arc) = self.arcs.last_mut() {
+            arc.line = false;
+            self.ridges.push((arc.a, arc.b, LineKind::Eave));
+        }
+        self.retire(w, node);
+        if prev == w || next == n {
+            return;
+        }
+        let (a, b) = if sr < sl {
+            (keep, beyond)
+        } else {
+            (beyond, keep)
+        };
+        let m = self.new_vertex(p, t, node, a, b);
+        self.verts[m].prev = prev;
+        self.verts[m].next = next;
+        self.verts[prev].next = m;
+        self.verts[next].prev = m;
+        self.absorb(m, t);
     }
 
     fn apply_split(&mut self, v: usize, ea: usize, p: Point2, t: f64) {
@@ -898,6 +963,10 @@ impl Sim {
         self.verts[v2].prev = ea;
         self.verts[v2].next = next;
         self.verts[next].prev = v2;
+        self.absorb(v1, t);
+        if self.verts[v2].alive {
+            self.absorb(v2, t);
+        }
     }
 
     /// Reflex vertices `v` and `w` of one loop meet at `p`; the loop splits
@@ -1034,8 +1103,29 @@ pub fn generate(part: &RoofPart) -> RoofGeometry {
             f.edge = i;
         }
     }
+    drop_eaves_on_ridges(&mut geo);
     one_sided_ridges(&mut geo);
     geo
+}
+
+/// A plane that covers a gable at the moment it meets the opposite plane
+/// makes a ridge there, not an eave (DACAD case C43).
+fn drop_eaves_on_ridges(geo: &mut RoofGeometry) {
+    let on = |p: [f64; 3], l: &RoofLine| {
+        let d: [f64; 3] = std::array::from_fn(|i| l.b[i] - l.a[i]);
+        let len2: f64 = d.iter().map(|x| x * x).sum();
+        let k = (0..3).map(|i| (p[i] - l.a[i]) * d[i]).sum::<f64>() / len2;
+        let foot: [f64; 3] = std::array::from_fn(|i| l.a[i] + d[i] * k);
+        len2 > 0.0 && (-1e-6..=1.0 + 1e-6).contains(&k) && dist3(p, foot) < POS_TOL
+    };
+    let ridges: Vec<RoofLine> = geo
+        .lines
+        .iter()
+        .filter(|l| l.kind == LineKind::Ridge)
+        .cloned()
+        .collect();
+    geo.lines
+        .retain(|l| l.kind != LineKind::Eave || !ridges.iter().any(|r| on(l.a, r) && on(l.b, r)));
 }
 
 /// A stretch of ridge with a roof face on one side only, e.g. over an
