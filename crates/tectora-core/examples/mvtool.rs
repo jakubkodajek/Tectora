@@ -119,7 +119,10 @@ fn main() {
             let neg = args.get(2).is_some_and(|a| a == "neg");
             for name in names {
                 n += 1;
-                let int = format!("{base}/core/{name}.INT");
+                let int = match std::env::var("MR3_INTDIR") {
+                    Ok(d) => format!("{d}/{name}.INT"),
+                    Err(_) => format!("{base}/core/{name}.INT"),
+                };
                 if !std::path::Path::new(&int).exists() {
                     println!("{name}: no INT");
                     continue;
@@ -162,6 +165,73 @@ fn main() {
                 }
             }
             println!("{ok}/{n}");
+        }
+        "cmp" => {
+            // cmp INT W3D|- GOLDEN.json: modell sums (positive lines) vs DACAD.
+            let int = read(&args[2]);
+            let w3d = (args[3] != "-").then(|| read(&args[3]));
+            let out = modell::run(&int, w3d.as_deref()).unwrap();
+            let mut s: BTreeMap<String, f64> = BTreeMap::new();
+            for l in &out.lines {
+                if l.sign > 0 {
+                    *s.entry(code_name(l.code)).or_default() += l.p1.sub(l.p2).length();
+                }
+            }
+            let mut area = 0.0;
+            let mut k = 0;
+            for f in &out.state.faces {
+                let n = f.pieces.len() + f.cutters.len();
+                if (f.rec.angle - 90.0).abs() > 1e-3 {
+                    area += out.faces[k..k + n].iter().map(|o| o.area).sum::<f64>();
+                }
+                k += n;
+            }
+            let g: serde_json::Value = serde_json::from_str(&read(&args[4])).unwrap();
+            let r = &g["dacad_results"];
+            let mut keys: Vec<String> = s.keys().filter(|k| !k.starts_with('#')).cloned().collect();
+            keys.extend(r["lines_by_type"].as_object().unwrap().keys().cloned());
+            keys.sort();
+            keys.dedup();
+            let mut bad = Vec::new();
+            for k in keys {
+                let a = s.get(&k).copied().unwrap_or(0.0);
+                let b = r["lines_by_type"][&k].as_f64().unwrap_or(0.0);
+                if (a - b).abs() > 0.03 {
+                    bad.push(format!("{k} {a:.2}/{b:.2}"));
+                }
+            }
+            let ga = r["area_groups"]["Škridla - "].as_f64().unwrap_or(0.0);
+            if (area - ga).abs() > 0.03 {
+                bad.push(format!("area {area:.2}/{ga:.2}"));
+            }
+            println!("{}", if bad.is_empty() { "ok".to_string() } else { bad.join(", ") });
+        }
+        "dadwalls" => {
+            let f = tectora_core::dad::parse(&std::fs::read(&args[2]).unwrap()).unwrap();
+            for w in &f.walls {
+                println!("{} g{} ({:.4},{:.4}) len {:.5} ang {:.4}", w.id, w.group, w.start.x, w.start.y, w.length, w.angle_rad.to_degrees());
+            }
+            println!("roofs {:?}", f.roofs);
+        }
+        "files" => {
+            // files OUTDIR CASE.DAD...: our RD2/INT/W3D for each case.
+            let dir = &args[2];
+            for f in &args[3..] {
+                let name = std::path::Path::new(f).file_stem().unwrap().to_string_lossy().into_owned();
+                let mut p = tectora_core::dad::import(&std::fs::read(f).unwrap(), &name).unwrap();
+                for part in &mut p.parts {
+                    part.normalize_ccw();
+                }
+                let Some(fs) = tectora_core::multiroof::files_with(&p, &tectora_core::multiroof::SweepProducer) else {
+                    println!("{name}: no files");
+                    continue;
+                };
+                std::fs::write(format!("{dir}/{name}.RD2"), fs.rd2).unwrap();
+                std::fs::write(format!("{dir}/{name}.INT"), fs.int).unwrap();
+                if let Some(w) = fs.w3d {
+                    std::fs::write(format!("{dir}/{name}.W3D"), w).unwrap();
+                }
+            }
         }
         _ => panic!("?"),
     }

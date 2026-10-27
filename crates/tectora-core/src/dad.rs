@@ -91,6 +91,13 @@ impl DadWall {
             breaks: self.breaks.clone(),
             priority: self.priority,
             clad: self.clad,
+            source: Some(crate::model::WallSource {
+                id: self.id,
+                roof: self.group,
+                start: self.start,
+                length: self.length,
+                angle_deg: self.angle_rad.to_degrees(),
+            }),
         }
     }
 }

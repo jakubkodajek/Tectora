@@ -60,16 +60,30 @@ pub fn applies(project: &Project) -> bool {
 
 /// The RD2 text of the project's roofs and holes, and where each part
 /// went. Parts are written last first (DACAD's core reads its models in
-/// reverse), walls numbered from 1 in part order. The parts must be
-/// counter-clockwise (see [`RoofPart::normalize_ccw`]).
+/// reverse). A part imported from DACAD lists its walls as recorded, in
+/// file order with their own numbers, lengths and directions; other parts
+/// get the next free numbers and their edges as they are. The parts must
+/// be counter-clockwise (see [`RoofPart::normalize_ccw`]).
 pub fn write_rd2(project: &Project) -> (String, Rd2Map) {
     let mut map = Rd2Map::default();
-    let mut no = 0;
+    let sourced = |p: &RoofPart| p.edges.iter().all(|e| e.source.is_some());
+    let mut no = project
+        .parts
+        .iter()
+        .filter(|p| sourced(p))
+        .flat_map(|p| p.edges.iter().filter_map(|e| e.source.as_ref().map(|s| s.id as i32)))
+        .max()
+        .unwrap_or(0);
     for (pi, part) in project.parts.iter().enumerate() {
-        let walls = (0..part.edges.len())
-            .map(|_| {
-                no += 1;
-                no
+        let walls = part
+            .edges
+            .iter()
+            .map(|e| match &e.source {
+                Some(s) if sourced(part) => s.id as i32,
+                _ => {
+                    no += 1;
+                    no
+                }
             })
             .collect();
         map.parts.push(PartMap {
@@ -80,23 +94,28 @@ pub fn write_rd2(project: &Project) -> (String, Rd2Map) {
     let mut s = String::from("0\n");
     for (part, pm) in project.parts.iter().zip(&map.parts).rev() {
         let n = part.edges.len();
-        for (i, e) in part.edges.iter().enumerate() {
-            let next = part.edges[(i + 1) % n].start;
-            let len = e.start.distance(next);
-            let angle = match e.direction_rad {
-                Some(a) if len <= 1e-6 => a.to_degrees(),
-                _ => (next.y - e.start.y).atan2(next.x - e.start.x).to_degrees(),
+        let mut order: Vec<usize> = (0..n).collect();
+        if sourced(part) {
+            order.sort_by_key(|&i| pm.walls[i]);
+        }
+        for i in order {
+            let e = &part.edges[i];
+            let (start, len, angle) = match &e.source {
+                Some(src) if sourced(part) => (src.start, src.length, src.angle_deg),
+                _ => {
+                    let next = part.edges[(i + 1) % n].start;
+                    let len = e.start.distance(next);
+                    let angle = match e.direction_rad {
+                        Some(a) if len <= 1e-6 => a.to_degrees(),
+                        _ => (next.y - e.start.y).atan2(next.x - e.start.x).to_degrees(),
+                    };
+                    (e.start, len, angle)
+                }
             };
             let _ = writeln!(
                 s,
                 "W {:2} {:2} {:.4} {:.4}{:10.5}{:10.4}{:5.1}",
-                pm.model,
-                pm.walls[i],
-                e.start.x,
-                e.start.y,
-                len,
-                angle,
-                e.priority as f64
+                pm.model, pm.walls[i], start.x, start.y, len, angle, e.priority as f64
             );
             for (letter, sub, flag, h, ov, pitch) in records(e) {
                 let _ = writeln!(
@@ -126,10 +145,12 @@ pub fn write_rd2(project: &Project) -> (String, Rd2Map) {
 /// half-hip and the pitch breaks.
 fn records(e: &EdgeDef) -> Vec<(char, i32, i32, f64, f64, f64)> {
     let roofed = |p: f64| i32::from(p < crate::model::GABLE_PITCH_DEG);
+    // The flag says the wall carries roof material: every sloped wall, and
+    // a gable only when it is clad.
     let mut out = vec![(
         'D',
         0,
-        i32::from(!e.is_gable()),
+        i32::from(!e.is_gable() || e.clad),
         e.eave_height,
         e.overhang,
         e.pitch_deg,

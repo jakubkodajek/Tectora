@@ -189,6 +189,24 @@ pub struct EdgeDef {
     /// material): its area above the eave counts as roof area.
     #[serde(default, skip_serializing_if = "is_false")]
     pub clad: bool,
+    /// The DACAD wall record this edge was imported from. DACAD's core
+    /// takes each wall as recorded (its own length and direction, in file
+    /// order), which matters where the walls of a file do not quite meet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<WallSource>,
+}
+
+/// A wall record of an imported DACAD file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WallSource {
+    /// Wall number in the file, from 1; walls are listed in this order.
+    pub id: u16,
+    /// Roof number.
+    pub roof: u16,
+    pub start: Point2,
+    pub length: f64,
+    /// Direction, degrees.
+    pub angle_deg: f64,
 }
 
 fn finite_point(p: Point2) -> bool {

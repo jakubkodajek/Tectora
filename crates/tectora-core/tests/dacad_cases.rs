@@ -269,6 +269,20 @@ fn compare_tol(cases: Vec<(String, Value)>, tol: fn(f64) -> f64) -> Vec<String> 
     for (name, case) in cases {
         let project = project(&name, &case);
         let geos = generate_project(&project);
+        if let Ok(dir) = std::env::var("DACAD_FILES") {
+            let mut p = project.clone();
+            for part in &mut p.parts {
+                part.normalize_ccw();
+            }
+            let producer = tectora_core::multiroof::SweepProducer;
+            if let Some(f) = tectora_core::multiroof::files_with(&p, &producer) {
+                std::fs::write(format!("{dir}/{name}.RD2"), f.rd2).unwrap();
+                std::fs::write(format!("{dir}/{name}.INT"), f.int).unwrap();
+                if let Some(w) = f.w3d {
+                    std::fs::write(format!("{dir}/{name}.W3D"), w).unwrap();
+                }
+            }
+        }
         if std::env::var("DACAD_PARTS").is_ok() {
             for p in &project.parts {
                 println!("part {}", p.name);
