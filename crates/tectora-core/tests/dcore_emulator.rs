@@ -217,9 +217,20 @@ fn writers(name: &str, dir: &Path, doc: &dump::DumpDoc, t: &mut Tallies) {
     }
 }
 
+/// `DIR/state.json`, or the gzipped `DIR/state.json.gz` of the committed fixtures.
+fn load_doc(dir: &Path) -> Option<dump::DumpDoc> {
+    if let Ok(doc) = dump::DumpDoc::load(&dir.join("state.json")) {
+        return Some(doc);
+    }
+    let gz = std::fs::File::open(dir.join("state.json.gz")).ok()?;
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(gz), &mut bytes).ok()?;
+    Some(dump::DumpDoc::from_slice(&bytes).unwrap())
+}
+
 fn run_case(rd2: &Path, dir: &Path, t: &mut Tallies) -> bool {
     let name = rd2.file_stem().unwrap().to_string_lossy().to_string();
-    let Ok(doc) = dump::DumpDoc::load(&dir.join("state.json")) else {
+    let Some(doc) = load_doc(dir) else {
         return false;
     };
     if let Ok(bytes) = std::fs::read(rd2) {
@@ -264,7 +275,7 @@ fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/dcore")
 }
 
-/// The committed cases: `tests/fixtures/dcore/CASE/{CASE.RD2,state.json,CASE.SO2,CASE.INT}`.
+/// The committed cases: `tests/fixtures/dcore/CASE/{CASE.RD2,state.json.gz,CASE.SO2,CASE.INT}`.
 #[test]
 fn fixtures() {
     let mut t = Tallies::new();

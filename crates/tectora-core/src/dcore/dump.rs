@@ -601,8 +601,13 @@ pub struct DumpDoc {
 
 impl DumpDoc {
     pub fn load(path: &std::path::Path) -> Result<DumpDoc, DumpError> {
-        let s = std::fs::read_to_string(path).map_err(|e| DumpError(format!("{}: {e}", path.display())))?;
-        let doc = serde_json::from_str(&s).map_err(|e| DumpError(format!("{}: {e}", path.display())))?;
+        let s = std::fs::read(path).map_err(|e| DumpError(format!("{}: {e}", path.display())))?;
+        DumpDoc::from_slice(&s).map_err(|e| DumpError(format!("{}: {}", path.display(), e.0)))
+    }
+
+    /// A document from the bytes of a `state.json`.
+    pub fn from_slice(bytes: &[u8]) -> Result<DumpDoc, DumpError> {
+        let doc = serde_json::from_slice(bytes).map_err(|e| DumpError(e.to_string()))?;
         Ok(DumpDoc { doc })
     }
 
