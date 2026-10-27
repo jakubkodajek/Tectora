@@ -244,7 +244,7 @@ pub fn write_sol(c: &mut Core) -> Result<Vec<u8>, CoreError> {
 
 /// Removes a face's segments that reach the top (z >= 100) and, unless the
 /// face is closed, closes its outline (the closing with growing point
-/// tolerance is part of S5; only its trivial outcomes are here).
+/// tolerance is part of S3; only its trivial outcomes are here).
 pub fn close_face(c: &mut Core, f: FaceId, _retry: bool) -> Result<bool, CoreError> {
     let tol = c.g.tol;
     // Drop segments at the top.
@@ -275,7 +275,7 @@ pub fn close_face(c: &mut Core, f: FaceId, _retry: bool) -> Result<bool, CoreErr
     if n < 3 {
         return Ok(false);
     }
-    Err(CoreError::Unimplemented("polygon closing (S5)"))
+    Err(CoreError::Unimplemented("polygon closing (S3)"))
 }
 
 /// The edge flag of the INT: 1 when the segment borders a hidden wall face
@@ -464,6 +464,10 @@ pub fn write_int(c: &mut Core) -> Result<Vec<u8>, CoreError> {
     }
     Ok(text.into_bytes())
 }
+
+/// The SOL the driver writes before reading the RD2; a run that ends with
+/// a fatal or cut error leaves it behind.
+pub const PLACEHOLDER_SOL: &[u8] = b"0 0";
 
 /// The fallback SOL of a broken wall chain: one line along the wall the
 /// chain sort stopped at.

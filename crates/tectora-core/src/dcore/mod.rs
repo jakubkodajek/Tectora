@@ -11,6 +11,7 @@ pub mod out;
 pub mod pipeline;
 pub mod rd2;
 pub mod s1;
+pub mod stages;
 pub mod state;
 pub mod x87;
 

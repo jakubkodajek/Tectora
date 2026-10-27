@@ -35,22 +35,89 @@ fn tally(t: &mut Tallies, stage: &str, name: &str, diffs: Vec<String>) {
     }
 }
 
+/// Stages of the run from the RD2 compared by `run_from_rd2`, in run order.
+const RD2_STAGES: [&str; 4] = ["after_read", "s1_ring", "s1_frames", "s1_end"];
+
+/// The emulator's outcome: (pipeline code, message id) of its first error.
+fn emu_error(doc: &dump::DumpDoc) -> Option<(String, u64, Option<u32>)> {
+    let e = doc.doc["errors"].as_array()?.first()?;
+    let id = e["msg_id"].as_str().map(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16).unwrap());
+    Some((e["kind"].as_str()?.to_string(), e["code"].as_u64()?, id))
+}
+
+/// How the port's run ended compared with the emulator's: fatal errors
+/// (RD2, interval, broken wall chain with its fallback SOL) must match now;
+/// cut errors and the final SO2 are checked once the stages before them
+/// stop returning `Unimplemented`.
+fn outcome(
+    name: &str,
+    dir: &Path,
+    doc: &dump::DumpDoc,
+    res: &Result<dcore::pipeline::Outputs, dcore::CoreError>,
+    t: &mut Tallies,
+) {
+    use dcore::CoreError as E;
+    let so2 = std::fs::read(dir.join(format!("{name}.SO2"))).unwrap_or_default();
+    let mut d = Vec::new();
+    match (emu_error(doc), res) {
+        (_, Err(E::Unimplemented(_))) => return,
+        (Some((k, 3, _)), Ok(o)) if k == "fatal" => {
+            if o.code != 3 {
+                d.push(format!("code {} instead of 3", o.code));
+            }
+            if o.sol != so2 {
+                d.push(first_diff(&so2, &o.sol));
+            }
+        }
+        (Some((k, code, id)), Err(E::Fatal { code: c, msg })) if k == "fatal" => {
+            if (code, id) != (u64::from(*c), msg.id) {
+                d.push(format!("emulator {code}/{id:x?}, port {c}/{:x?} {msg}", msg.id));
+            }
+            if so2 != dcore::out::PLACEHOLDER_SOL {
+                d.push("emulator SO2 is not the placeholder".into());
+            }
+        }
+        (Some((k, code, id)), Err(E::Cut { code: c, msg })) if k == "cut" => {
+            if (code, id) != (u64::from(*c), msg.id) {
+                d.push(format!("emulator {code}/{id:x?}, port {c}/{:x?} {msg}", msg.id));
+            }
+        }
+        (None, Ok(o)) => {
+            if o.sol != so2 {
+                d.push(first_diff(&so2, &o.sol));
+            }
+            if doc.doc["int"] == true {
+                let want = std::fs::read(dir.join(format!("{name}.INT"))).unwrap_or_default();
+                if o.int.as_deref() != Some(&want[..]) {
+                    d.push("INT differs".into());
+                }
+            }
+        }
+        (e, r) => d.push(format!("emulator {e:?}, port {:?}", r.as_ref().map(|o| o.code))),
+    }
+    tally(t, "outcome", name, d);
+}
+
 /// Stages of the run from the RD2 (only the first model reaches S1 until
 /// S2 is ported).
-fn run_from_rd2(name: &str, rd2: &[u8], doc: &dump::DumpDoc, t: &mut Tallies) {
+fn run_from_rd2(name: &str, dir: &Path, rd2: &[u8], doc: &dump::DumpDoc, t: &mut Tallies) {
     let mut snaps: Vec<(String, Value)> = Vec::new();
     let mut run = dcore::pipeline::Run::new(doc.flags());
+    run.want_int = doc.doc["int"] == true;
     run.hook = Some(Box::new(|stage: &str, c: &dcore::Core| {
         snaps.push((stage.to_string(), dump::to_json(c)));
     }));
     let res = run.run(rd2);
     drop(run);
-    for stage in ["after_read", "s1_ring", "s1_frames", "s1_end"] {
+    for (k, stage) in RD2_STAGES.iter().enumerate() {
         let want = doc.stage(stage);
-        let got = snaps.iter().find(|s| s.0 == stage);
+        let got = snaps.iter().find(|s| s.0 == *stage);
+        // A dump made with --only lacks stages the emulator did pass.
+        let later = RD2_STAGES[k + 1..].iter().any(|l| !doc.stage(l).is_empty());
         match (want.first(), got) {
             (Some(w), Some(g)) => tally(t, &format!("rd2 {stage}"), name, dump::compare(w, &g.1, 6)),
             (None, None) => {}
+            (None, Some(_)) if later => {}
             (w, g) => tally(
                 t,
                 &format!("rd2 {stage}"),
@@ -64,6 +131,7 @@ fn run_from_rd2(name: &str, rd2: &[u8], doc: &dump::DumpDoc, t: &mut Tallies) {
             ),
         }
     }
+    outcome(name, dir, doc, &res, t);
     // The uninitialised local guarding the hole relink must never be 1.
     for s in doc.stage("s1_ring") {
         if s["g"]["relink_slot"] == 1 {
@@ -155,7 +223,7 @@ fn run_case(rd2: &Path, dir: &Path, t: &mut Tallies) -> bool {
         return false;
     };
     if let Ok(bytes) = std::fs::read(rd2) {
-        run_from_rd2(&name, &bytes, &doc, t);
+        run_from_rd2(&name, dir, &bytes, &doc, t);
     }
     s1_from_entry(&name, &doc, t);
     writers(&name, dir, &doc, t);
