@@ -68,6 +68,11 @@ class Dormer:
     walls: list[W]
     kind: int = 1
     host: int = 3
+    # Roof number of an existing roof to add this chain to as another wall
+    # loop (no 0x11 record of its own). DACAD rejects that with "Kein
+    # geschlossener Grundriss"; a separate building is its own roof with
+    # kind = host = 0 (TRAING07).
+    roof: int | None = None
 
 
 def square(x: float, y: float, a: float) -> list[tuple[float, float]]:
@@ -208,6 +213,34 @@ def cases() -> dict[str, tuple]:
                                   [Dormer((5.0, 2.0), [W(0, 270, Def(45, 0, 6.5)),
                                                        W(2, 0, Def(90, 0, 6.5)),
                                                        W(0, 90, Def(45, 0, 6.5))])]),
+        # Rules found in TRAING07 (see docs/verification/dacad-parity.md).
+        "C43_zero_wall_step": ("Sedlová 10×8 40°, přesah 0,5; západní štít: 4 m s přesahem 0,6, nulová stěna, 4 m bez přesahu",
+                               [W(10, 0, Def(40, 0.5)), W(8, 90, Def(90, 0.5)), W(10, 180, Def(40, 0.5)),
+                                W(4, 270, Def(90, 0.6)), W(0, 0, Def(90)), W(4, 270, Def(90))]),
+        "C44_half_hip_partial_wall": ("Polovalba C08 (12×8 45°, valbička od 5,5 m 60°) jen na severních 5 m západního štítu",
+                                      [W(12, 0, Def(45)), W(8, 90, G, [Def(60, 0, 5.5)]), W(12, 180, Def(45)),
+                                       W(5, 270, G, [Def(60, 0, 5.5)]), W(3, 270, G)]),
+        "C45_bump_higher_eave": ("Sedlová 12×8 40° přesah 0,5 + výstupek 4×2 z jižní stěny, okap 3,6, štít vpředu",
+                                 [W(4, 0, Def(40, 0.5)), W(2, 270, Def(40, 0.5, 3.6)), W(4, 0, Def(90, 0.5, 3.6)),
+                                  W(2, 90, Def(40, 0.5, 3.6)), W(4, 0, Def(40, 0.5)), W(8, 90, Def(90, 0.5)),
+                                  W(12, 180, Def(40, 0.5)), W(8, 270, Def(90, 0.5))]),
+        # Several wall loops (help: separate buildings are separate roofs).
+        "C46_cross_two_roofs": ("Dva překrývající se obdélníky 12×6 a 6×12 (kříž), valbová 35°, střechy č. 1 a 2",
+                                rect(12, 6, p35, p35, p35, p35), None,
+                                [Dormer((3.0, -3.0), rect(6, 12, p35, p35, p35, p35), kind=0, host=0)]),
+        "C47_cross_higher_eave": ("Jako C46, druhý obdélník s okapem 4,0 m",
+                                  rect(12, 6, p35, p35, p35, p35), None,
+                                  [Dormer((3.0, -3.0), rect(6, 12, *(Def(35, 0, 4.0),) * 4), kind=0, host=0)]),
+        "C48_touching_wall": ("Valbové 8×6 a 6×6 vedle sebe, společná stěna x = 8, 35°",
+                              rect(8, 6, p35, p35, p35, p35), None,
+                              [Dormer((8.0, 0.0), rect(6, 6, p35, p35, p35, p35), kind=0, host=0)]),
+        "C49_overhang_under_higher": ("Valbová 8×6 okap 3,0 přesah 0,5 vedle valbové 6×8 (od y −1) okap 4,5 přesah 0,5, 35°",
+                                      rect(8, 6, *(Def(35, 0.5),) * 4), None,
+                                      [Dormer((8.0, -1.0), rect(6, 8, *(Def(35, 0.5, 4.5),) * 4), kind=0, host=0)]),
+        "C50_hip_unequal_overhang": ("Valbová 10×8 30°, přesah 0,5 na dlouhých a 0,2 na krátkých stěnách",
+                                     rect(10, 8, Def(30, 0.5), Def(30, 0.2), Def(30, 0.5), Def(30, 0.2))),
+        "C51_hip_higher_short_eaves": ("Valbová 10×8 30°, přesah 0,5, krátké stěny okap 3,3",
+                                       rect(10, 8, Def(30, 0.5), Def(30, 0.5, 3.3), Def(30, 0.5), Def(30, 0.5, 3.3))),
     }
 
 
@@ -237,6 +270,8 @@ def encode(walls: list[W], chimneys: list[Chimney] | None = None,
            dormers: list[Dormer] | None = None) -> bytes:
     chimneys, dormers = chimneys or [], dormers or []
     n_walls = len(walls) + sum(len(d.walls) for d in dormers)
+    own = [d for d in dormers if d.roof is None]
+    roofs = [d.roof if d.roof is not None else 2 + own.index(d) for d in dormers]
     out = [b"DACAD\x1a",
            _rec(0x0001, b"DACAD V1.13\0"),
            _rec(0x0002, b"$Header: tectora dacad_testcases.py $\0"),
@@ -246,10 +281,11 @@ def encode(walls: list[W], chimneys: list[Chimney] | None = None,
            _rec(0x0004, bytes.fromhex("4111d42d")),
            _rec(0x0005, bytes.fromhex("7b247e2e")),
            _rec(0x0006, b"1.29H\0"),
-           _rec(0x0010, struct.pack("<3H", 1 + len(dormers), n_walls, len(chimneys))),
+           _rec(0x0010, struct.pack("<3H", 1 + len(own), n_walls, len(chimneys))),
            _rec(0x0011, struct.pack("<3H", 1, 0, 0))]
-    for r, d in enumerate(dormers, start=2):
-        out.append(_rec(0x0011, struct.pack("<3H", r, d.kind, d.host)))
+    for r, d in zip(roofs, dormers):
+        if d.roof is None:
+            out.append(_rec(0x0011, struct.pack("<3H", r, d.kind, d.host)))
     x = y = 0.0
     for i, w in enumerate(walls, start=1):
         out += _wall_rec(i, 1, x, y, w)
@@ -258,7 +294,7 @@ def encode(walls: list[W], chimneys: list[Chimney] | None = None,
     if math.hypot(x, y) > 1e-6:
         raise ValueError(f"footprint not closed, ends at ({x:.3f}, {y:.3f})")
     i = len(walls)
-    for r, d in enumerate(dormers, start=2):
+    for r, d in zip(roofs, dormers):
         x, y = d.start
         for w in d.walls:
             i += 1

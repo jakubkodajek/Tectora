@@ -114,6 +114,10 @@ def fixture(pr: DadProject, original: DadProject | None = None) -> dict:
             "area_groups": {k: round(v, 4) for k, v in pr.area_groups.items()},
             "line_count": len(pr.lines),
             "face_count": len(pr.face_areas),
+            "lines": [{"type": ln.type, "length": round(ln.length_m, 4),
+                       "a": [round(c, 4) for c in ln.a] if ln.a else None,
+                       "b": [round(c, 4) for c in ln.b] if ln.b else None}
+                      for ln in pr.lines],
         },
     }
 

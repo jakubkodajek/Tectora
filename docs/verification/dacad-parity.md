@@ -276,3 +276,23 @@ match. Bisecting TRAING08 with `tools/dacad_variants.py` and
 * If a rule stays ambiguous after the cases (e.g. priority between
   intersecting planes), decompile the calculation in `DACAD DE.exe` with
   Ghidra (rea can drive it).
+
+## Cases C43–C51 (rules from TRAING07 and adjacent buildings)
+
+All calculated by DACAD under Wine with NormCountry = 1; fixtures in `tests/fixtures/dacad_cases/`.
+
+| Case | DACAD result | Rule |
+|---|---|---|
+| C43 zero-length wall step | P 0.6 + F 10.5 | A zero-length wall only joins the neighbours' offset lines (outline step). A ridge segment over an overhang strip with a face on one side only is P. |
+| C44 half hip on part of a split gable | T 3.0 at x = 0, y 2.5–5.5 | The Krüppel plane is a lower envelope across collinear walls, not clipped to its own wall's span. |
+| C45 bump with higher eave (3.6 vs 3.0) | WS 1.59 at each bump wall line, main T 4.5 to the wall line | The lower roof runs under the higher overhang to the wall line and abuts it (WS); no valley at the overhang edge. |
+| C46 two crossing roofs (no. 1 and 2), equal eaves | K 4 × 4.734, T 12 × 3.0 | Overlapping buildings are unioned; crossing faces give K. |
+| C47 as C46, second eave 4.0 | WS 4 × 1.745, K 4 × 2.478, F 2 × 1.57 | Same WS rule between separate roofs. |
+| C48 two hips sharing the wall x = 8 | S 6.0, T 2 × 14.0, F 2.0 | Shared wall: hips vanish, eaves merge, the horizontal valley is S. |
+| C49 lower roof (eave 3.0, overhang 0.5) beside higher (4.5) | WH 6.0 at x = 8, WS 2 × 0.61, T 8.5 | The lower roof ends at the higher building's wall: WH where its hip/top meets the wall horizontally, WS across its overhang. |
+| C50 hip, overhang 0.5 long / 0.2 short walls | plain hips, F 1.4 | Unequal overhangs alone produce no W lines. |
+| C51 hip, short-wall eaves 3.3 | OL/OR 1.2, no W lines | Higher eave inside one loop with equal overhangs: short verges only. |
+
+Two wall loops with the **same** roof number are rejected by DACAD ("Kein geschlossener Grundriss"); a separate building is its own roof with 0x11 = (r, 0, 0), a dormer (r, 1, 3). V2 files written by DACAD drop roof numbers, so loops read from V2 all appear as roof 1.
+
+DACAD snaps computed vertex plan coordinates to 0.01 m before measuring lines (3D_TIH: Krüppel base y 7.6177 stored as 7.62; ridge 8.7 vs unrounded 8.6925). Per-line lists of the 34 samples are in `/mnt/project-files/dacad-golden-current/*.json` under `dacad_results.lines`.
