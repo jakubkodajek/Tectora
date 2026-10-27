@@ -5,6 +5,7 @@
 
 pub mod coresol;
 pub mod dad;
+pub mod dcore;
 pub mod diff;
 pub mod dormer;
 pub mod examples;
