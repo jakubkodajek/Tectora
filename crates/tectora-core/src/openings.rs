@@ -1127,9 +1127,8 @@ fn lies_on(r: &RoofLine, c: [f64; 3], d: [f64; 3]) -> bool {
 /// DACAD's test whether hole edge C→D lies on roof line A→B: the ends
 /// agree within VALUE_EPS, or the unit vectors B−A, C−A and D−C agree in
 /// every coordinate within VALUE_EPS (either sign) with C and D inside the
-/// line's box grown by VALUE_EPS; all in f32. Callers try the line from
-/// either end: its stored direction is not modelled, and mass cases R1_0077
-/// and R1_0808 each need a different end of a hip.
+/// line's box grown by VALUE_EPS; all in f32. See [`lies_on`] for which
+/// end is A.
 fn on_line((a, b): ([f64; 3], [f64; 3]), c: [f64; 3], d: [f64; 3]) -> bool {
     const VALUE_EPS: f32 = 0.01;
     let eq = |p: [f64; 3], q: [f64; 3]| {
