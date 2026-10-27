@@ -38,6 +38,7 @@ pub fn combine(off: RoofGeometry, body: RoofGeometry) -> RoofGeometry {
     let mut geo = RoofGeometry {
         faces: body.faces.clone(),
         gables: body.gables.clone(),
+        clad_area: body.clad_area,
         ..RoofGeometry::default()
     };
     let mut shown: Vec<Shown> = body_faces

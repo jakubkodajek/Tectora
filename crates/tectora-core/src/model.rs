@@ -130,6 +130,14 @@ pub struct EdgeDef {
     /// edges at steps between collinear walls to say how the roof turns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direction_rad: Option<f64>,
+    /// A gable covered with the roof material (DACAD: a 90° wall with a
+    /// material): its area above the eave counts as roof area.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub clad: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 fn is_zero(v: &u8) -> bool {

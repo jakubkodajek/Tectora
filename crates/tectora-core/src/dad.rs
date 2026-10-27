@@ -63,6 +63,8 @@ pub struct DadWall {
     pub priority: u8,
     pub half_hip: Option<HalfHip>,
     pub breaks: Vec<PitchBreak>,
+    /// The wall is a gable covered with roof material (V2 files only).
+    pub clad: bool,
 }
 
 impl DadWall {
@@ -83,6 +85,7 @@ impl DadWall {
             direction_rad: (self.length <= 1e-6).then_some(self.angle_rad),
             breaks: self.breaks.clone(),
             priority: self.priority,
+            clad: self.clad,
         }
     }
 }
@@ -149,6 +152,7 @@ pub fn parse(bytes: &[u8]) -> Result<DadFile, DadError> {
                     priority: u8::from(f32_at(payload, 36) > 0.5),
                     half_hip: None,
                     breaks: Vec::new(),
+                    clad: false,
                 });
             }
             (TAG_WALL, SUB_STACKED) if len == 16 => {

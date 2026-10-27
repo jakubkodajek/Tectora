@@ -194,6 +194,7 @@ fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
         direction_rad: None,
         breaks: Vec::new(),
         priority: 0,
+        clad: false,
     };
     let specs = v
         .get("edges")

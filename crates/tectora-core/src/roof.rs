@@ -130,6 +130,10 @@ pub struct RoofGeometry {
     pub lines: Vec<RoofLine>,
     /// Vertical gable walls above the eave line (for rendering).
     pub gables: Vec<Vec<[f64; 3]>>,
+    /// Area of the clad gables above their eave (see [`EdgeDef::clad`]),
+    /// part of the roof area.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub clad_area: f64,
     /// Area deducted per window, chimney and dormer (for norm rules).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub openings: Vec<Opening>,
@@ -215,7 +219,7 @@ impl LineKind {
 impl RoofGeometry {
     pub fn quantities(&self) -> RoofQuantities {
         let mut q = RoofQuantities {
-            roof_area: self.faces.iter().map(|f| f.area).sum(),
+            roof_area: self.faces.iter().map(|f| f.area).sum::<f64>() + self.clad_area,
             ..Default::default()
         };
         for l in &self.lines {
@@ -1190,6 +1194,7 @@ fn envelope(defs: Vec<&EdgeDef>) -> EdgeDef {
     let mut e = defs[0].clone();
     e.direction_rad = None;
     e.priority = defs.iter().map(|d| d.priority).max().unwrap_or(0);
+    e.clad = defs.iter().any(|d| d.clad);
     e.breaks.clear();
     let all_gables = defs.iter().all(|d| d.is_gable());
     let mut rest = out.iter();
@@ -1485,8 +1490,11 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
         );
         let ring = trace_ring(start, end, segs);
         if ring.len() >= 3 {
-            geo.gables
-                .push(ring.iter().map(|&k| sim.nodes[k]).collect());
+            let poly: Vec<[f64; 3]> = ring.iter().map(|&k| sim.nodes[k]).collect();
+            if e.clad {
+                geo.clad_area += area3(&poly);
+            }
+            geo.gables.push(poly);
         }
     }
     geo
@@ -1503,6 +1511,10 @@ fn verge_side(sim: &Sim, plane: usize, a: [f64; 3], b: [f64; 3], end: VergeSide)
     } else {
         end
     }
+}
+
+fn is_zero_f64(v: &f64) -> bool {
+    *v == 0.0
 }
 
 /// Area of a planar 3D polygon (Newell's method).
@@ -1537,6 +1549,7 @@ mod tests {
                 direction_rad: None,
                 breaks: Vec::new(),
                 priority: 0,
+                clad: false,
             })
             .collect();
         let mut part = RoofPart {

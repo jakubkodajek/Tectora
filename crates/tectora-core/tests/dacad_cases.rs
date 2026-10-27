@@ -93,6 +93,7 @@ fn wall(id: usize, w: &Value) -> DadWall {
         priority: u8::from(d0["priority"].as_f64().unwrap_or(0.0) > 0.5),
         half_hip,
         breaks: rest.map(stacked).collect(),
+        clad: pitch_deg >= GABLE_PITCH_DEG && d0["material"].as_u64().unwrap_or(0) != 0,
     }
 }
 
@@ -294,7 +295,10 @@ fn compare_tol(cases: Vec<(String, Value)>, tol: fn(f64) -> f64) -> Vec<String> 
                 failures.push(format!("{name}: {code} ours {a:.4} DACAD {b:.4}"));
             }
         }
-        let area: f64 = geos.iter().flat_map(|g| &g.faces).map(|f| f.area).sum();
+        let area: f64 = geos
+            .iter()
+            .map(|g| g.faces.iter().map(|f| f.area).sum::<f64>() + g.clad_area)
+            .sum();
         let dacad_area = results["area_groups"][TILES].as_f64().unwrap();
         if (area - dacad_area).abs() > tol(dacad_area) {
             failures.push(format!("{name}: area ours {area:.4} DACAD {dacad_area:.4}"));

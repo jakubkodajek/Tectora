@@ -21,6 +21,8 @@ export interface EdgeDef {
   half_hip?: HalfHip | null;
   breaks?: PitchBreak[];
   priority?: number;
+  /** Gable covered with roof material: its area above the eave is roof area. */
+  clad?: boolean;
   direction_rad?: number | null;
 }
 
