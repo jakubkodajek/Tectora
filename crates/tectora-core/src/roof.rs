@@ -1093,11 +1093,29 @@ fn raised_edges(part: &RoofPart) -> Vec<bool> {
                 return false;
             }
             let t = height(i);
-            let lower = |j: usize| !part.edges[j].is_gable() && height(j) < t - 1e-6;
+            // Millimetres are DACAD rounding, not a raised wall (sample HPS01).
+            let lower = |j: usize| !part.edges[j].is_gable() && height(j) < t - MERGE_TOL;
             let (prev, next) = ((i + n - 1) % n, (i + 1) % n);
             (lower(prev) && reflex(dir(prev), dir(i))) || (lower(next) && reflex(dir(i), dir(next)))
         })
         .collect()
+}
+
+/// Makes marker walls (with a direction) that DACAD's centimetre snapping
+/// left a few millimetres long zero-length again: the next wall starts
+/// where the marker does (sample HPS01).
+fn snap_markers(part: &RoofPart) -> RoofPart {
+    let mut out = part.clone();
+    let n = out.edges.len();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (a, b) = (out.edges[i].start, out.edges[j].start);
+        let d = a.distance(b);
+        if out.edges[i].direction_rad.is_some() && d > 0.0 && d < 0.005 {
+            out.edges[j].start = a;
+        }
+    }
+    out
 }
 
 /// Generates the roof over one footprint part. The part must be CCW
@@ -1110,7 +1128,7 @@ fn raised_edges(part: &RoofPart) -> Vec<bool> {
 /// walls at their wall lines, and the two are combined
 /// ([`crate::raised::combine`]).
 pub fn generate(part: &RoofPart) -> RoofGeometry {
-    let (part, map) = merge_collinear_walls(part);
+    let (part, map) = merge_collinear_walls(&snap_markers(part));
     let raised = raised_edges(&part);
     let (off, _) = generate_mode(&part, &vec![false; raised.len()]);
     let mut geo = if raised.contains(&true) {
