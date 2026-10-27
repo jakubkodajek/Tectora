@@ -22,7 +22,8 @@ def _v1_record(tag: int, payload: bytes) -> bytes:
 
 def _v1_wall(wid: int, x: float, y: float, length: float, ang: float,
              eave_h: float, overhang: float, pitch: float) -> bytes:
-    return (struct.pack("<HH4fHH3ff", wid, 1, x, y, length, ang, 0, 1,
+    material = 0 if pitch == 90.0 else 1  # gable: material "kein"
+    return (struct.pack("<HH4fHH3ff", wid, 1, x, y, length, ang, 0, material,
                         eave_h, overhang, pitch, 0.0) + b"\0\0")
 
 

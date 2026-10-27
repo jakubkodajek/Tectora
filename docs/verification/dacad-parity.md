@@ -304,3 +304,15 @@ In the V2 wall object, geometry field [1] is the **start** and [2] the end, [3] 
 ## Gable walls with a roofing material (PRIORITY)
 
 The eight 90° notch side walls in PRIORITY have material 1 (tiles), not "kein". DACAD splits each such wall into the wall face below the eave (counted in "Stena") and the triangle above it (0.49 or 0.56 m² here), which is counted in the wall's material. That is the 4.1957 m² gap between the sum of the sloped faces (185.4299) and the tile group (189.6256).
+
+## V2 openings, dormer flag and V1 material
+
+- V2 windows ([11], linked from the wall by [100][1][3]): [2] definition index on the wall, [3] distance along the wall from its start, [4] height of the window's top edge, [5] (width, height). Converted to V1's plan corner they match all V1 originals (TRAING01/04/06, C24–C26, C37, C38).
+- V2 chimneys: [12] {[1] number, [2] height}; edges in [14] (geometry [1] start), linked by [100][1][5]. Same polygons as V1, but DACAD re-saves them counter-clockwise from another start corner.
+- Dormer flag: a roof listed as a key in [100][1][4] is a dormer (V1 0x11 kind 1); HINT04, ZWEIPULT and TRAING03/07 have none, MANDEMO roofs 2 and 3 are dormers.
+- V1 wall record: u16 at offset 22 is the first definition's material, u16 at offset 2 of 0x1012 the stacked one's.
+- Line type 17 is the outline of a vertical (90°) face. It is never in a group total.
+
+## Cases C52–C54 (wing against a gable)
+
+A shed wing that overlaps the gable wall by 1 m (C52), touches it (C53) or stands under its overhang (C54) leaves the main gable's OL/OR intact. In HINT04 the north gable's OL/OR disappear because of wing roof 5 (confirmed by recalculating HINT04 with roofs 1+5 and with 1–4 only), and they stay missing when the wing's overhangs are 0, its pitch is 35° or the main roof's other two gables are made slopes. The trigger is still unknown.

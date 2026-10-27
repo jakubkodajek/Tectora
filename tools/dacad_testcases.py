@@ -241,6 +241,19 @@ def cases() -> dict[str, tuple]:
                                      rect(10, 8, Def(30, 0.5), Def(30, 0.2), Def(30, 0.5), Def(30, 0.2))),
         "C51_hip_higher_short_eaves": ("Valbová 10×8 30°, přesah 0,5, krátké stěny okap 3,3",
                                        rect(10, 8, Def(30, 0.5), Def(30, 0.5, 3.3), Def(30, 0.5), Def(30, 0.5, 3.3))),
+        # HINT04: a shed wing against a gable. Main: gable 10 x 8, 40°, gable overhang 0.4.
+        "C52_wing_into_gable": ("Sedlová 10×8 40° (přesah štítů 0,4) + pultové křídlo 3×2 zasahující 1 m do domu přes východní štít",
+                                rect(10, 8, Def(40), Def(90, 0.4), Def(40), Def(90, 0.4)), None,
+                                [Dormer((9.0, 3.0), [W(3, 0, G), W(2, 90, Def(20, 0.2, 3.5)), W(3, 180, G),
+                                                     W(2, 270, Def(90, 0.1))], kind=0, host=0)]),
+        "C53_wing_touching_gable": ("Jako C52, křídlo začíná přesně na štítové stěně (x 10–13)",
+                                    rect(10, 8, Def(40), Def(90, 0.4), Def(40), Def(90, 0.4)), None,
+                                    [Dormer((10.0, 3.0), [W(3, 0, G), W(2, 90, Def(20, 0.2, 3.5)), W(3, 180, G),
+                                                          W(2, 270, Def(90, 0.1))], kind=0, host=0)]),
+        "C54_wing_under_overhang": ("Jako C52, křídlo 0,2 m od štítu, pod jeho přesahem (x 10,2–13)",
+                                    rect(10, 8, Def(40), Def(90, 0.4), Def(40), Def(90, 0.4)), None,
+                                    [Dormer((10.2, 3.0), [W(2.8, 0, G), W(2, 90, Def(20, 0.2, 3.5)), W(2.8, 180, G),
+                                                          W(2, 270, Def(90, 0.1))], kind=0, host=0)]),
     }
 
 

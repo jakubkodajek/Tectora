@@ -174,7 +174,17 @@
       }
     ],
     "windows": [],
-    "chimneys": []
+    "chimneys": [],
+    "roofs": {
+      "1": {
+        "kind": 0,
+        "host": 0
+      },
+      "2": {
+        "kind": 0,
+        "host": 0
+      }
+    }
   },
   "traits": {
     "roof_numbers": [

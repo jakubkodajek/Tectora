@@ -38,8 +38,7 @@ def encode_project(p: DadProject, walls=None, chimneys=None) -> bytes:
            _rec(0x0006, b"1.29H\0"),
            _rec(0x0010, struct.pack("<3H", len(roofs), len(walls), len(chimneys)))]
     for r in roofs:
-        # Dormer roofs as in TRAING01 (kind 1, host 3).
-        out.append(_rec(0x0011, struct.pack("<3H", r, *((0, 0) if r == 1 else (1, 3)))))
+        out.append(_rec(0x0011, struct.pack("<3H", r, *p.roofs.get(r, (0, 0)))))
     for i, w in enumerate(walls, start=1):
         d = w.definitions[0]
         direction = w.direction_deg if w.direction_deg is not None else math.degrees(

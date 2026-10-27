@@ -96,6 +96,10 @@ def fixture(pr: DadProject, original: DadProject | None = None) -> dict:
                  "corners": [[round(v, 4) for v in pt] for pt in c.corners]}
                 for c in op.chimneys
             ],
+            # Roof number -> kind (1 = dormer, 0 = building) and the third
+            # value of V1's 0x11 record.
+            "roofs": {str(r): {"kind": k, "host": h}
+                      for r, (k, h) in sorted(op.roofs.items())},
         },
         "traits": {
             "roof_numbers": roofs,

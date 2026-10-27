@@ -115,10 +115,10 @@ class DadProject:
     face_areas: list[float]
     line_groups: dict[str, float]   # DACAD group name → stored total, m
     area_groups: dict[str, float]   # DACAD group name → stored total, m²
-    # Openings are decoded from V1 files only so far (V2 stores windows
-    # relative to the roof face).
     windows: list[Window] = field(default_factory=list)
     chimneys: list[Chimney] = field(default_factory=list)
+    # Roof number → (kind, third value) of V1's 0x11 record; kind 1 = dormer.
+    roofs: dict[int, tuple[int, int]] = field(default_factory=dict)
 
     def line_totals(self) -> dict[str, float]:
         """Sum of result line lengths per DACAD type abbreviation."""
@@ -159,6 +159,7 @@ def _read_v1(path: str, data: bytes) -> DadProject:
     area_groups: dict[str, float] = {}
     windows: list[Window] = []
     chimneys: list[Chimney] = []
+    roofs: dict[int, tuple[int, int]] = {}
     version = "V1"
     for tag, d in _v1_records(data):
         if tag == 0x0001:
@@ -169,19 +170,24 @@ def _read_v1(path: str, data: bytes) -> DadProject:
             # window count
             _id, roof_no = struct.unpack_from("<HH", d, 0)
             x, y, length, ang = struct.unpack_from("<4f", d, 4)
+            material = struct.unpack_from("<H", d, 22)[0]
             eave_h, overhang, pitch, prio = struct.unpack_from("<4f", d, 24)
             end = (x + length * math.cos(ang), y + length * math.sin(ang))
-            material = 0 if abs(pitch - 90.0) < 1e-6 else 1
             walls.append(Wall((x, y), end, [RoofDefinition(
                 pitch, eave_h, overhang, material, roof_no, int(round(prio)))],
                 math.degrees(ang)))
         elif tag == 0x1012 and walls:
             # Stacked definition above the previous one (Krüppelwalm / knick):
-            # ?, ?, eave height, overhang, pitch
+            # ?, material, eave height, overhang, pitch
+            material = struct.unpack_from("<H", d, 2)[0]
             eave_h, overhang, pitch = struct.unpack_from("<3f", d, 4)
             prev = walls[-1].definitions[-1]
             walls[-1].definitions.append(RoofDefinition(
-                pitch, eave_h, overhang, 1, prev.roof_no))
+                pitch, eave_h, overhang, material, prev.roof_no))
+        elif tag == 0x0011:
+            # roof no, kind (1 = dormer), third value (host?)
+            r, kind, host = struct.unpack_from("<3H", d, 0)
+            roofs[r] = (kind, host)
         elif tag == 0x2012:
             windows.append(Window(*struct.unpack_from("<4f", d, 0)))
         elif tag == 0x0013:
@@ -204,7 +210,7 @@ def _read_v1(path: str, data: bytes) -> DadProject:
             name = d[:14].split(b"\0")[0].decode("cp1252")
             area_groups[name] = struct.unpack_from("<f", d, len(d) - 6)[0]
     return DadProject(path, version, walls, lines, faces, line_groups, area_groups,
-                      windows, chimneys)
+                      windows, chimneys, roofs)
 
 
 # --------------------------------------------------------------------- V2 ---
@@ -321,8 +327,8 @@ def _read_v2(path: str, data: bytes) -> DadProject:
     # [100][1][1]: footprint loops (ordered wall ids per roof).
     loops = _id_lists(rel1.get(1, b""))
 
-    # [4] roofs: [1] roof no, [2] third value of V1's 0x11 record. V1's
-    # second value (dormer flag) has no V2 field found yet.
+    # [4] roofs: [1] roof no, [2] third value of V1's 0x11 record (the
+    # dormer flag is in [100][1][4], see below).
     # [5] walls: [2] geometry {[1] start, [2] end, [3] length,
     # [4] direction (rad)}. Same orientation and order as V1.
     walls_by_id: dict[int, Wall] = {}
@@ -358,4 +364,59 @@ def _read_v2(path: str, data: bytes) -> DadProject:
                    for _oid, f in _objects(proj.get(9, b""))}
     area_groups = {_pstr(f.get(2, b"")): _f32(f.get(6))
                    for _oid, f in _objects(proj.get(10, b""))}
-    return DadProject(path, "V2", walls, lines, faces, line_groups, area_groups)
+    windows = _v2_windows(proj, rel1, walls_by_id)
+    chimneys = _v2_chimneys(proj, rel1)
+    # [100][1][4]: dormer roof id → host id(s); a roof listed there is a
+    # dormer (V1 kind 1), the others are buildings (kind 0).
+    dormer_ids = set(_id_lists(rel1.get(4, b"")))
+    roofs = {_u(f.get(1)): (int(oid in dormer_ids), _u(f.get(2)))
+             for oid, f in _objects(proj.get(4, b""))}
+    return DadProject(path, "V2", walls, lines, faces, line_groups, area_groups,
+                      windows, chimneys, roofs)
+
+
+def _v2_windows(proj: dict, rel1: dict, walls_by_id: dict[int, Wall]) -> list[Window]:
+    # [100][1][3]: wall id → its window ids. [11] windows: [1] number,
+    # [2] definition index on the wall (1-based), [3] distance along the
+    # wall from its start to the window's start-side edge, [4] height of the
+    # window's top edge, [5] (width, height) in the roof plane. Converted
+    # back to V1's plan position of the lower start-side corner.
+    objs = dict(_objects(proj.get(11, b"")))
+    out: list[Window] = []
+    for wall_id, ids in _id_lists(rel1.get(3, b"")).items():
+        w = walls_by_id.get(wall_id)
+        if w is None or w.direction_deg is None:
+            continue
+        a = math.radians(w.direction_deg)
+        ux, uy = math.cos(a), math.sin(a)
+        for wid in ids:
+            f = objs.get(wid)
+            if f is None:
+                continue
+            d = w.definitions[max(_u(f.get(2)), 1) - 1]
+            width, height = _pt2(f[5])
+            p = math.radians(d.pitch_deg)
+            z_low = _f32(f.get(4)) - height * math.sin(p)
+            # Plane height: eave height at the overhang edge, rising inwards.
+            inward = (z_low - d.eave_height_m) / math.tan(p) - d.overhang_m
+            along = _f32(f.get(3))
+            out.append(Window(w.start[0] + along * ux - inward * uy,
+                              w.start[1] + along * uy + inward * ux,
+                              width, height))
+    return out
+
+
+def _v2_chimneys(proj: dict, rel1: dict) -> list[Chimney]:
+    # [12] chimneys: [1] number, [2] height. [100][1][5]: chimney id → its
+    # edge ids in order. [14] edges: [2] geometry {[1] start, [2] end}.
+    edges = {}
+    for oid, f in _objects(proj.get(14, b"")):
+        geo, _ = _fields(f.get(2, b""), 0, len(f.get(2, b"")))
+        if 1 in geo:
+            edges[oid] = _pt2(geo[1])
+    heights = {oid: _f32(f.get(2)) for oid, f in _objects(proj.get(12, b""))}
+    out = []
+    for cid, ids in _id_lists(rel1.get(5, b"")).items():
+        if cid in heights:
+            out.append(Chimney(heights[cid], [edges[e] for e in ids if e in edges]))
+    return out
