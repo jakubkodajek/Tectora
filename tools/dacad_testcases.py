@@ -335,6 +335,29 @@ def cases() -> dict[str, tuple]:
              W(2.5, 90, Def(90, 0.5, 2.434)), W(0, 180, Def(30, 0, 2.8)), W(5.5, 90, Def(30, 0.5, 2.434)),
              W(6, 180, Def(90, 0.5, 2.434)), W(5.5, 270, Def(30, 0.5, 2.434)), W(0, 180, Def(30, 0, 2.8)),
              W(2.5, 270, Def(90, 0.5, 2.434)), W(5, 180, Def(30, 1.0, 3.3)), W(12, 270, Def(90, 1.0, 3.3))]),
+        # 91021421: raised wall at an inside corner where a ridge reaches the valley.
+        "C74_raised_wall_inside_corner_prio": ("L 12×12 valbová 30°, přesah 0,5: východní křídlo okap 3,0 (severní stěna priorita 1), u vnitřního rohu zvýšená stěna okap 4,6, západní část okap 3,8",
+            [W(12, 0, Def(30, 0.5, 3.0)), W(8, 90, Def(30, 0.5, 3.0)), W(5, 180, Def(30, 0.5, 3.0, prio=1)),
+             W(4, 90, Def(30, 0.5, 4.6)), W(7, 180, Def(30, 0.5, 3.8)), W(12, 270, Def(30, 0.5, 3.8))]),
+        "C75_raised_wall_inside_corner": ("Jako C74 bez priority",
+            [W(12, 0, Def(30, 0.5, 3.0)), W(8, 90, Def(30, 0.5, 3.0)), W(5, 180, Def(30, 0.5, 3.0, prio=0)),
+             W(4, 90, Def(30, 0.5, 4.6)), W(7, 180, Def(30, 0.5, 3.8)), W(12, 270, Def(30, 0.5, 3.8))]),
+        # 91021421 roof 3: dormer whose gable front has a Krüppel.
+        "C76_dormer_half_hip_front": ("Sedlová 12×8 40° + sedlový vikýř jako C30 (čelo y 1, okap 4,0), čelo se zvalbením 60° od 4,6 m",
+                                      rect(12, 8, Def(40), G, Def(40), G), None,
+                                      [Dormer((5.0, 1.0), [W(0, 270, Def(45, 0, 4.0)),
+                                                           W(2, 0, Def(90, 0, 4.0), [Def(60, 0, 4.6)]),
+                                                           W(0, 90, Def(45, 0, 4.0))])]),
+        "C77_dormer_half_hip_front_host_pitch": ("Jako C76, zvalbení čela 40° (stejný sklon jako hlavní plocha)",
+                                                 rect(12, 8, Def(40), G, Def(40), G), None,
+                                                 [Dormer((5.0, 1.0), [W(0, 270, Def(45, 0, 4.0)),
+                                                                      W(2, 0, Def(90, 0, 4.0), [Def(40, 0, 4.6)]),
+                                                                      W(0, 90, Def(45, 0, 4.0))])]),
+        "C78_dormer_half_hip_front_on_face": ("Jako C76, okap vikýře 3,8391 = čelo stojí přímo na hlavní ploše",
+                                              rect(12, 8, Def(40), G, Def(40), G), None,
+                                              [Dormer((5.0, 1.0), [W(0, 270, Def(45, 0, 3.8391)),
+                                                                   W(2, 0, Def(90, 0, 3.8391), [Def(60, 0, 4.6)]),
+                                                                   W(0, 90, Def(45, 0, 3.8391))])]),
     }
 
 

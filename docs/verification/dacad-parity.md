@@ -338,3 +338,8 @@ HINT04 bisection (DACAD-calculated variants in `/mnt/project-files/dacad-hint04-
 | C66 same-plane box (1 m deep) reaching the east gable's overhang line | T continuous 11.0; no extra lines | |
 | C67 same-plane box 3.99 m deep (1 cm short of the ridge) | T continuous; the whole ridge becomes P 11.0 instead of F | Probably cm snapping of the box top onto the ridge. |
 | C71 dormer whose front wall has pitch 100° (leans outward) | front plane slants out: OS 2 × 1.4252 from the base corners to the ridge tip (6, 1.8237), F runs to it; no WV at the base | A pitch over 90° is an ordinary plane leaning outward (material none), not a vertical wall. ZACH1's dormer front is 115°. |
+| C72 wing side wall: 90° stub, marker on the host plane, then slope | host face continues to the marker line between the stub verges (OL/OR 1.732); wing valleys K 2 × 5.346 meet the wing ridge at (8, 11, 4.4547) | |
+| C73 as C72, marker 0.366 m above the host plane | marker plane becomes its own face: T 2 × 0.634, WS 2 × 0.732 against the wing slopes, extra K/OL/OR | |
+| C74/C75 raised wall (eave 4.6) at an inside corner, with/without priority on the lower wall | identical results | Priority has no effect here. |
+| C76/C77 gable dormer with a Krüppel on its front (60° / 40°), dormer eave above the host face | Krüppel lower edge T 0.8 | |
+| C78 as C76 with the dormer eave exactly on the host face | Krüppel lower edge c 0.4782 | A dormer front standing on the host face turns the Krüppel's lower edge into c (91021421). |
