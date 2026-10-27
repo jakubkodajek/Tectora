@@ -16,9 +16,6 @@ use tectora_core::openings::generate_project;
 use tectora_core::roof::RoofGeometry;
 use tectora_core::{Chimney, EdgeDef, Project, RoofPart, RoofWindow};
 
-/// Relative tolerance for comparing totals of the same roof entered twice.
-const REL: f64 = 1e-6;
-
 fn edge(start: Point2, pitch_deg: f64, eave_height: f64, overhang: f64) -> EdgeDef {
     EdgeDef {
         start,
@@ -111,10 +108,6 @@ fn finite(geos: &[RoofGeometry]) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn close(a: f64, b: f64, scale: f64) -> bool {
-    (a - b).abs() <= REL * scale.max(1.0) + 1e-7
 }
 
 /// Totals of one roof entered in two ways may differ by DACAD's own
