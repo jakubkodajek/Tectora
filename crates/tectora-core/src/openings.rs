@@ -9,10 +9,16 @@
 //!   WV on the downhill side and WH uphill for sides level in the roof
 //!   plane, WS for all others. Roof lines
 //!   (e.g. the ridge) inside the chimney are removed.
+//! * A roof opening (DACAD: Öffnung) is cut like a chimney, but per DACAD.HLP
+//!   (topic "Öffnung") its sides are roof edges: the uphill side is an eave
+//!   of the roof above, the downhill side a Pult of the roof below and the
+//!   others verges. Not yet checked against a DACAD run.
 
 use crate::geom::{Point2, signed_area};
 use crate::model::{Chimney, Project, RoofPart, RoofWindow};
-use crate::roof::{LineKind, Opening, OpeningKind, RoofFace, RoofGeometry, RoofLine, generate};
+use crate::roof::{
+    LineKind, Opening, OpeningKind, RoofFace, RoofGeometry, RoofLine, VergeSide, generate,
+};
 
 const TOL: f64 = 1e-9;
 /// A side counts as level in the roof plane (WV/WH) only when it is square
@@ -68,7 +74,12 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     }
     for c in &project.chimneys {
         for geo in &mut geos {
-            apply_chimney(geo, c);
+            apply_cutout(geo, c, false);
+        }
+    }
+    for o in &project.roof_openings {
+        for geo in &mut geos {
+            apply_cutout(geo, o, true);
         }
     }
     for geo in &mut geos {
@@ -296,7 +307,8 @@ fn height_at(face: &RoofFace, up: Point2, tan: f64, p: Point2) -> f64 {
     o[2] + tan * ((p.x - o[0]) * up.x + (p.y - o[1]) * up.y)
 }
 
-fn apply_chimney(geo: &mut RoofGeometry, c: &Chimney) {
+/// Cuts a chimney, or with `hole` a roof opening, out of the faces.
+fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool) {
     let mut corners = c.corners.clone();
     if corners.len() < 3 {
         return;
@@ -311,7 +323,7 @@ fn apply_chimney(geo: &mut RoofGeometry, c: &Chimney) {
         let mut under = inside_spans(&corners, a, b);
         // A ridge along a chimney side is cut there too, and the side
         // abuts as the front of the far face (DACAD TRAING05 chimney 3).
-        if l.kind == LineKind::Ridge {
+        if l.kind == LineKind::Ridge && !hole {
             for (s, e) in side_spans(&corners, a, b) {
                 geo.lines.push(RoofLine {
                     kind: LineKind::AbutmentFront,
@@ -363,12 +375,27 @@ fn apply_chimney(geo: &mut RoofGeometry, c: &Chimney) {
             }
             // Outward normal of a CCW polygon side.
             let out = (dir.y / len) * up.x - (dir.x / len) * up.y;
-            let kind = if out < -LEVEL {
-                LineKind::AbutmentFront
+            let (kind, side) = if hole {
+                // Outward normal across the slope, + to the right looking uphill.
+                let across = (dir.y / len) * up.y + (dir.x / len) * up.x;
+                if out < -LEVEL {
+                    (LineKind::Pult, None)
+                } else if out > LEVEL {
+                    (LineKind::Eave, None)
+                } else if across > LEVEL {
+                    // The roof right of the hole ends here on its left.
+                    (LineKind::Verge, Some(VergeSide::Left))
+                } else if across < -LEVEL {
+                    (LineKind::Verge, Some(VergeSide::Right))
+                } else {
+                    (LineKind::Verge, Some(VergeSide::Oblique))
+                }
+            } else if out < -LEVEL {
+                (LineKind::AbutmentFront, None)
             } else if out > LEVEL {
-                LineKind::AbutmentBack
+                (LineKind::AbutmentBack, None)
             } else {
-                LineKind::AbutmentSide
+                (LineKind::AbutmentSide, None)
             };
             for (s, e) in inside_spans(&poly, a, b) {
                 let p = Point2::new(a.x + s * dir.x, a.y + s * dir.y);
@@ -377,15 +404,75 @@ fn apply_chimney(geo: &mut RoofGeometry, c: &Chimney) {
                     kind,
                     a: [p.x, p.y, height_at(face, up, tan, p)],
                     b: [q.x, q.y, height_at(face, up, tan, q)],
-                    side: None,
+                    side,
                 });
             }
         }
     }
     if total > 0.0 {
         geo.openings.push(Opening {
-            kind: OpeningKind::Chimney,
+            kind: if hole {
+                OpeningKind::Hole
+            } else {
+                OpeningKind::Chimney
+            },
             area: total,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 10 × 8 m gable roof, 45°, eave 3 m, no overhang; ridge along x at y = 4.
+    fn gable() -> Project {
+        let e = |x: f64, y: f64, pitch: f64| {
+            serde_json::json!({ "start": { "x": x, "y": y }, "pitch_deg": pitch,
+                "eave_height": 3.0, "overhang": 0.0 })
+        };
+        let part = serde_json::json!({ "name": "A", "edges": [
+            e(0.0, 0.0, 45.0), e(10.0, 0.0, 90.0), e(10.0, 8.0, 45.0), e(0.0, 8.0, 90.0)] });
+        let mut p = Project::new("t");
+        p.parts.push(serde_json::from_value(part).unwrap());
+        p
+    }
+
+    fn square(x: f64, y: f64, w: f64, d: f64) -> Chimney {
+        let c = |x, y| Point2::new(x, y);
+        Chimney {
+            corners: vec![c(x, y), c(x + w, y), c(x + w, y + d), c(x, y + d)],
+            height: 0.0,
+        }
+    }
+
+    fn total(geo: &RoofGeometry, code: &str) -> f64 {
+        geo.lines
+            .iter()
+            .filter(|l| l.dacad_code() == code)
+            .map(|l| l.length())
+            .sum()
+    }
+
+    #[test]
+    fn roof_opening_sides_are_roof_edges() {
+        let mut p = gable();
+        let before = generate_project(&p)[0]
+            .faces
+            .iter()
+            .map(|f| f.area)
+            .sum::<f64>();
+        p.roof_openings.push(square(4.0, 1.0, 1.0, 2.0));
+        let geo = &generate_project(&p)[0];
+        let s = 2f64.sqrt();
+        // Uphill side is an eave, downhill side a Pult, the sides verges.
+        assert!((total(geo, "T") - 21.0).abs() < 1e-6);
+        assert!((total(geo, "P") - 1.0).abs() < 1e-6);
+        assert!((total(geo, "OL") - (8.0 * s + 2.0 * s)).abs() < 1e-6);
+        assert!((total(geo, "OR") - (8.0 * s + 2.0 * s)).abs() < 1e-6);
+        assert!(total(geo, "WV") + total(geo, "WH") + total(geo, "WS") < 1e-9);
+        let after = geo.faces.iter().map(|f| f.area).sum::<f64>();
+        assert!((before - after - 2.0 * s).abs() < 1e-6);
+        assert_eq!(geo.openings[0].kind, OpeningKind::Hole);
     }
 }

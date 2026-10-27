@@ -1,11 +1,16 @@
-// Chimneys and roof windows (DACAD: Schornstein, Dachfenster) as the
-// editor places and edits them.
+// Chimneys, roof windows and roof openings (DACAD: Schornstein,
+// Dachfenster, Öffnung) as the editor places and edits them.
 
-import type { CalcResult, Chimney, Point2, RoofWindow } from "./types";
+import type { CalcResult, Chimney, Point2, Project, RoofWindow } from "./types";
 import { slopeAt } from "./dormers";
 
-export type OpeningKind = "chimney" | "window";
+export type OpeningKind = "chimney" | "window" | "hole";
 export type OpeningSel = { kind: OpeningKind; index: number } | null;
+
+/** The project's list of openings of a kind. */
+export function openingList(project: Project, kind: OpeningKind): (Chimney | RoofWindow)[] {
+  return kind === "chimney" ? project.chimneys : kind === "window" ? (project.windows ?? []) : (project.roof_openings ?? []);
+}
 
 /** A rectangular chimney: corner, size and rotation (degrees). */
 export interface ChimneyRect {

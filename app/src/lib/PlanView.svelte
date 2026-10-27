@@ -2,7 +2,7 @@
   import type { CalcResult, Point2, Project, Selection } from "./types";
   import { isGable } from "./types";
   import { t } from "./i18n.svelte";
-  import { windowOutline, type OpeningSel } from "./openings";
+  import { windowOutline, type OpeningKind, type OpeningSel } from "./openings";
 
   let {
     project,
@@ -38,10 +38,10 @@
     showDims?: boolean;
     /** Index of the selected dormer, or null. */
     dormerSel?: number | null;
-    /** What the next click places: a dormer's front corner, a chimney or a window. */
-    placing?: false | "dormer" | "chimney" | "window";
+    /** What the next click places: a dormer's front corner, a chimney, a window or a roof opening. */
+    placing?: false | "dormer" | "chimney" | "window" | "hole";
     onplace?: (x: number, y: number) => void;
-    /** The selected chimney or roof window, or null. */
+    /** The selected chimney, roof window or roof opening, or null. */
     openSel?: OpeningSel;
   } = $props();
 
@@ -177,7 +177,7 @@
     svg!.setPointerCapture(e.pointerId);
   }
 
-  function pickOpening(ev: PointerEvent, kind: "chimney" | "window", index: number) {
+  function pickOpening(ev: PointerEvent, kind: OpeningKind, index: number) {
     if (placing || drawing) return;
     ev.stopPropagation();
     openSel = { kind, index };
@@ -321,6 +321,12 @@
         role="button" tabindex="-1" aria-label={t("opening.chimneyN", { n: ci + 1 })}
         onpointerdown={(ev) => pickOpening(ev, "chimney", ci)} />
     {/each}
+    {#each project.roof_openings ?? [] as c, hi}
+      <path class="opening hole" class:sel={openSel?.kind === "hole" && openSel.index === hi}
+        d={"M" + c.corners.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
+        role="button" tabindex="-1" aria-label={t("opening.holeN", { n: hi + 1 })}
+        onpointerdown={(ev) => pickOpening(ev, "hole", hi)} />
+    {/each}
     {#each project.windows ?? [] as w, wi}
       <path class="opening window" class:sel={openSel?.kind === "window" && openSel.index === wi}
         d={"M" + windowOutline(result, w).map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
@@ -353,7 +359,7 @@
       {/if}
     {/if}
   </svg>
-  {#if placing}<div class="hint">{t(placing === "dormer" ? "plan.placeDormer" : placing === "chimney" ? "plan.placeChimney" : "plan.placeWindow")}</div>{:else if !drawing}<div class="hint">{t("plan.hint")}</div>{/if}
+  {#if placing}<div class="hint">{t(placing === "dormer" ? "plan.placeDormer" : placing === "chimney" ? "plan.placeChimney" : placing === "hole" ? "plan.placeHole" : "plan.placeWindow")}</div>{:else if !drawing}<div class="hint">{t("plan.hint")}</div>{/if}
 </div>
 
 <style>
@@ -405,6 +411,10 @@
   }
   .opening.chimney {
     fill: color-mix(in srgb, var(--text-3) 35%, transparent);
+  }
+  .opening.hole {
+    fill: var(--surface);
+    stroke-dasharray: 4 3;
   }
   .opening.window {
     fill: color-mix(in srgb, var(--line-valley) 22%, transparent);

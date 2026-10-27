@@ -1,9 +1,9 @@
 <script lang="ts">
-  // The selected chimney or roof window, docked like the wall bar.
+  // The selected chimney, roof window or roof opening, docked like the wall bar.
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
   import type { Chimney, Project, RoofWindow } from "./types";
-  import { chimneyFromRect, rectFromChimney, type ChimneyRect, type OpeningSel } from "./openings";
+  import { chimneyFromRect, openingList, rectFromChimney, type ChimneyRect, type OpeningSel } from "./openings";
 
   let {
     project,
@@ -19,8 +19,9 @@
     ondelete: () => void;
   } = $props();
 
-  const list = $derived(sel ? (sel.kind === "chimney" ? project.chimneys : (project.windows ?? [])) : []);
-  const chimney = $derived(sel?.kind === "chimney" ? project.chimneys[sel.index] : null);
+  const list = $derived(sel ? openingList(project, sel.kind) : []);
+  // A roof opening has a chimney's shape, without a top.
+  const chimney = $derived(sel && sel.kind !== "window" ? (list[sel.index] as Chimney | undefined) ?? null : null);
   const rect = $derived(chimney ? rectFromChimney(chimney) : null);
   const win = $derived(sel?.kind === "window" ? (project.windows ?? [])[sel.index] : null);
 
@@ -47,12 +48,12 @@
   </label>
 {/snippet}
 
-<div class="bar" role="toolbar" aria-label={sel?.kind === "window" ? t("opening.window") : t("opening.chimney")}>
+<div class="bar" role="toolbar" aria-label={t(`opening.${sel?.kind ?? "chimney"}`)}>
   {#if sel}
     <div class="nav">
       <button class="icon-btn" onclick={() => step(-1)} aria-label={t("opening.prev")}><Icon name="left" /></button>
       <div class="which">
-        <strong>{t(sel.kind === "window" ? "opening.windowN" : "opening.chimneyN", { n: sel.index + 1 })}</strong>
+        <strong>{t(`opening.${sel.kind}N`, { n: sel.index + 1 })}</strong>
         <span>{t("def.of", { n: list.length })}</span>
       </div>
       <button class="icon-btn" onclick={() => step(1)} aria-label={t("opening.next")}><Icon name="right" /></button>
@@ -67,7 +68,11 @@
       {:else}
         <p class="tip">{t("opening.polygon", { n: chimney.corners.length })}</p>
       {/if}
-      {@render field(t("opening.top"), chimney.height, "m", (v) => onchimney({ ...$state.snapshot(chimney), height: v }))}
+      {#if sel.kind === "chimney"}
+        {@render field(t("opening.top"), chimney.height, "m", (v) => onchimney({ ...$state.snapshot(chimney), height: v }))}
+      {:else}
+        <p class="tip">{t("opening.holeHint")}</p>
+      {/if}
     {:else if win}
       {@render field("X", win.x, "m", (v) => onwindow({ ...win, x: v }))}
       {@render field("Y", win.y, "m", (v) => onwindow({ ...win, y: v }))}

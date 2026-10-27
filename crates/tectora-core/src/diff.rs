@@ -189,6 +189,13 @@ pub fn diff(before: &Project, after: &Project) -> Vec<Change> {
     if before.chimneys != after.chimneys {
         out.push(m("chimneys", json!(before.chimneys), json!(after.chimneys)));
     }
+    if before.roof_openings != after.roof_openings {
+        out.push(m(
+            "roof_openings",
+            json!(before.roof_openings),
+            json!(after.roof_openings),
+        ));
+    }
     if before.dormers != after.dormers {
         out.push(m("dormers", json!(before.dormers), json!(after.dormers)));
     }

@@ -50,6 +50,8 @@ export interface Project {
   dormers: Dormer[];
   chimneys: Chimney[];
   windows?: RoofWindow[];
+  /** Holes in the roof (DACAD: Öffnung), shaped like chimneys. */
+  roof_openings?: Chimney[];
 }
 
 /** A dormer as DACAD stores it: an open wall chain (cheek, front, cheek). */

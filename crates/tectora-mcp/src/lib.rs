@@ -409,7 +409,7 @@ fn tools() -> Value {
         },
         {
             "name": "set_openings",
-            "description": "Replace the roof windows and/or chimneys of a design (omit a list to keep it). Windows deduct width × height from their roof face; chimneys deduct their plan area / cos(pitch) and add wall-abutment lines WV/WH/WS, as in DACAD.",
+            "description": "Replace the roof windows, chimneys and/or roof openings of a design (omit a list to keep it). Windows deduct width × height from their roof face; chimneys deduct their plan area / cos(pitch) and add wall-abutment lines WV/WH/WS, as in DACAD; roof openings (holes) deduct like chimneys but their sides become an eave (uphill), a Pult (downhill) and verges.",
             "inputSchema": schema(json!({
                 "id": { "type": "string" },
                 "windows": {
@@ -429,6 +429,17 @@ fn tools() -> Value {
                         "properties": {
                             "corners": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 } },
                             "height": { "type": "number", "description": "Top height, m (display only)." }
+                        },
+                        "required": ["corners"]
+                    }
+                },
+                "roof_openings": {
+                    "type": "array",
+                    "description": "Holes in the roof (DACAD: Öffnung) as convex plan polygons.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "corners": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 } }
                         },
                         "required": ["corners"]
                     }
@@ -548,6 +559,7 @@ impl Server {
                     "job": p.job,
                     "parts": p.parts.iter().map(describe_part).collect::<Vec<_>>(),
                     "chimneys": p.chimneys,
+                    "roof_openings": p.roof_openings,
                     "dormers": p.dormers.len(),
                     "quantities": quantities(&p),
                 }))
@@ -721,6 +733,20 @@ impl Server {
                             let corners = parse_points(arg(c, "corners")?)?;
                             let height = arg_f64(c, "height")?.unwrap_or(0.0);
                             Ok(Chimney { corners, height })
+                        })
+                        .collect::<Result<_, String>>()?;
+                }
+                if let Some(o) = args.get("roof_openings") {
+                    let raw: Vec<Value> = serde_json::from_value(o.clone())
+                        .map_err(|_| "roof_openings must be a list".to_string())?;
+                    p.roof_openings = raw
+                        .iter()
+                        .map(|o| {
+                            let corners = parse_points(arg(o, "corners")?)?;
+                            Ok(Chimney {
+                                corners,
+                                height: 0.0,
+                            })
                         })
                         .collect::<Result<_, String>>()?;
                 }

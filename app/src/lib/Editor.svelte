@@ -14,7 +14,7 @@
   import RoofDefBar from "./RoofDefBar.svelte";
   import DormerBar from "./DormerBar.svelte";
   import OpeningBar from "./OpeningBar.svelte";
-  import { chimneyFromRect, type OpeningSel } from "./openings";
+  import { chimneyFromRect, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, roofHeightAt } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
   import StandardRoofForm from "./StandardRoofForm.svelte";
@@ -44,7 +44,7 @@
   let dock = $state<"results" | "ai" | "job">("results");
   let drawing = $state<Point2[] | null>(null);
   let dormerSel = $state<number | null>(null);
-  let placing = $state<false | "dormer" | "chimney" | "window">(false);
+  let placing = $state<false | "dormer" | "chimney" | "window" | "hole">(false);
   let openSel = $state<OpeningSel>(null);
   // Undo or an AI edit can remove the selected dormer or opening.
   $effect(() => {
@@ -52,8 +52,7 @@
   });
   $effect(() => {
     if (!openSel) return;
-    const n = openSel.kind === "chimney" ? project?.chimneys.length : project?.windows?.length;
-    if (openSel.index >= (n ?? 0)) openSel = null;
+    if (!project || openSel.index >= openingList(project, openSel.kind).length) openSel = null;
   });
   let cursor = $state<Point2 | null>(null);
   let showDims = $state(true);
@@ -368,6 +367,19 @@
     if (placing === "dormer") placeDormer(x, y);
     else if (placing === "chimney") placeChimney(x, y);
     else if (placing === "window") placeWindow(x, y);
+    else if (placing === "hole") placeHole(x, y);
+  }
+
+  /** Places a roof opening with its first corner at the click (DACAD: Öffnung). */
+  function placeHole(x: number, y: number) {
+    if (!project) return;
+    placing = false;
+    project.roof_openings ??= [];
+    // 1 × 1 m square along the nearest wall [no source: placeholder size].
+    const angle = nearestWallAngle(project.parts, { x, y });
+    project.roof_openings.push(chimneyFromRect({ x, y, width: 1, depth: 1, rotation: +((angle * 180) / Math.PI).toFixed(2), height: 0 }));
+    selectOpening({ kind: "hole", index: project.roof_openings.length - 1 });
+    commit();
   }
 
   /** Places a chimney with its first corner at the click (DACAD: Schornstein). */
@@ -400,8 +412,9 @@
   }
 
   function setChimney(c: Chimney) {
-    if (!project || openSel?.kind !== "chimney") return;
-    project.chimneys[openSel.index] = c;
+    if (!project || !openSel || openSel.kind === "window") return;
+    if (openSel.kind === "chimney") project.chimneys[openSel.index] = c;
+    else if (project.roof_openings) project.roof_openings[openSel.index] = c;
     commit();
   }
 
@@ -414,12 +427,13 @@
   function deleteOpening() {
     if (!project || !openSel) return;
     if (openSel.kind === "chimney") project.chimneys.splice(openSel.index, 1);
+    else if (openSel.kind === "hole") project.roof_openings?.splice(openSel.index, 1);
     else project.windows?.splice(openSel.index, 1);
     openSel = null;
     commit();
   }
 
-  function togglePlacing(kind: "dormer" | "chimney" | "window") {
+  function togglePlacing(kind: "dormer" | "chimney" | "window" | "hole") {
     placing = placing === kind ? false : kind;
     drawing = null;
   }
@@ -584,6 +598,7 @@
       <button class="tool" class:on={placing === "dormer"} disabled={!project?.parts.length} onclick={() => togglePlacing("dormer")} title={t("tool.dormerHint")}><Icon name="roof" /><span>{t("tool.dormer")}</span></button>
       <button class="tool" class:on={placing === "chimney"} disabled={!project?.parts.length} onclick={() => togglePlacing("chimney")} title={t("tool.chimneyHint")}><Icon name="chimney" /><span>{t("tool.chimney")}</span></button>
       <button class="tool" class:on={placing === "window"} disabled={!project?.parts.length} onclick={() => togglePlacing("window")} title={t("tool.windowHint")}><Icon name="window" /><span>{t("tool.window")}</span></button>
+      <button class="tool" class:on={placing === "hole"} disabled={!project?.parts.length} onclick={() => togglePlacing("hole")} title={t("tool.holeHint")}><Icon name="hole" /><span>{t("tool.hole")}</span></button>
       <button class="tool" disabled={!selection || (project?.parts.length ?? 0) < 2} onclick={deletePart} title={t("tool.deletePartHint")}><Icon name="trash" /><span>{t("tool.deletePart")}</span></button>
     </div>
     <div class="group">

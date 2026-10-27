@@ -26,6 +26,9 @@ pub struct Project {
     pub chimneys: Vec<Chimney>,
     #[serde(default)]
     pub windows: Vec<RoofWindow>,
+    /// Holes cut into the roof (DACAD: Öffnung), as convex plan polygons.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roof_openings: Vec<Chimney>,
 }
 
 impl Project {
@@ -39,6 +42,7 @@ impl Project {
             dormers: Vec::new(),
             chimneys: Vec::new(),
             windows: Vec::new(),
+            roof_openings: Vec::new(),
         }
     }
 

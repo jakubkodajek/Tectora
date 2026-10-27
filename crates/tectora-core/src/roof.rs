@@ -148,6 +148,8 @@ pub enum OpeningKind {
     Window,
     Chimney,
     Dormer,
+    /// A hole in the roof (DACAD: Öffnung).
+    Hole,
 }
 
 /// Roof area one opening took away, m².
