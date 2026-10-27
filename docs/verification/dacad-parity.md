@@ -328,3 +328,8 @@ A shed wing that overlaps the gable wall by 1 m (C52), touches it (C53) or stand
 | C61 same box outside, beyond the east gable | T 12.5 continuous; main OR split at y = 1 (3.9162 + 1.9581 at x = 12) with P 1.5 along the box top | Coplanar faces of separate buildings merge across the gable. |
 
 HINT04 bisection (DACAD-calculated variants in `/mnt/project-files/dacad-hint04-variants/`): the north OL/OR vanish only when wing 5 overlaps the main building (moving its inner wall to the gable wall line restores them) and the main roof is HINT04's own construction, whose sloped faces come from 0.1 m corner walls next to 90° long walls. With a plain gable main of the same size and the same wing (variant S) the verges stay.
+
+| Case | Result | Note |
+|---|---|---|
+| C62 same-plane box from the eave to 1 cm past the ridge | no WS; south T split 4.5 + 4.5 (the 2 m in front of the box is missing); tiles +0.0261 m² | |
+| C63 same box ending exactly on the ridge | no WS; T split 4.5 + 4.5 as in C62; tiles as C60 | Compare C60 (box 1 m deep): T continuous 11.0. |

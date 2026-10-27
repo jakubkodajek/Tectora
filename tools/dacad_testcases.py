@@ -286,6 +286,14 @@ def cases() -> dict[str, tuple]:
                                        rect(10, 8, Def(40, 0.5), Def(90, 0.5), Def(40, 0.5), Def(90, 0.5)), None,
                                        [Dormer((10.0, 0.0), [W(2, 0, Def(40, 0.5)), W(1, 90, G), W(2, 180, G),
                                                              W(1, 270, G)], kind=0, host=0)]),
+        "C62_box_same_plane_past_ridge": ("Jako C60, box sahá od jižní stěny 1 cm za hřeben (y 0–4,01)",
+                                          rect(10, 8, Def(40, 0.5), Def(90, 0.5), Def(40, 0.5), Def(90, 0.5)), None,
+                                          [Dormer((4.0, 0.0), [W(2, 0, Def(40, 0.5)), W(4.01, 90, G), W(2, 180, G),
+                                                               W(4.01, 270, G)], kind=0, host=0)]),
+        "C63_box_same_plane_to_ridge": ("Jako C62, box končí přesně na hřebeni (y 0–4)",
+                                        rect(10, 8, Def(40, 0.5), Def(90, 0.5), Def(40, 0.5), Def(90, 0.5)), None,
+                                        [Dormer((4.0, 0.0), [W(2, 0, Def(40, 0.5)), W(4, 90, G), W(2, 180, G),
+                                                             W(4, 270, G)], kind=0, host=0)]),
     }
 
 
