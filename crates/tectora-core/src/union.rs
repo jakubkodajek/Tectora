@@ -110,6 +110,15 @@ pub(crate) fn strictly_inside(poly: &[Point2], p: Point2) -> bool {
 
 /// Whether building `j` hides a point of building `i`'s roof.
 fn hides(j: usize, b: &Building, i: usize, p: Point2, z: f64) -> bool {
+    // An earlier roof running on in the same plane, also over its overhang
+    // (DACAD cases C60, C61).
+    if j < i
+        && b.faces
+            .iter()
+            .any(|(f, pl)| strictly_inside(f, p) && (pl.z(p) - z).abs() <= EPS)
+    {
+        return true;
+    }
     if !strictly_inside(&b.walls, p) {
         return false;
     }
@@ -305,7 +314,11 @@ pub fn join(geos: &mut [RoofGeometry], parts: &[RoofPart]) {
                         }
                         to_geo(gp).intersection(&to_geo(&hp))
                     };
-                    let cut = higher.intersection(&walls);
+                    let cut = if gpl.same(&fp) {
+                        higher
+                    } else {
+                        higher.intersection(&walls)
+                    };
                     if cut.unsigned_area() > 1e-12 {
                         vis = vis.difference(&cut);
                         touched = true;
@@ -351,7 +364,24 @@ pub fn join(geos: &mut [RoofGeometry], parts: &[RoofPart]) {
         let mut kept = Vec::new();
         for l in std::mem::take(&mut g.lines) {
             let ts = splits(l.a, l.b, &all_polys, &all_planes);
-            let parts = keep_parts(l.a, l.b, &ts, |p, z| !hidden(i, p, z));
+            let d = unit(Point2::new(l.b[0] - l.a[0], l.b[1] - l.a[1]));
+            let nrm = Point2::new(-d.y, d.x);
+            // A line between two roofs running on in one plane is no line
+            // (DACAD case C61).
+            let seam = |m: Point2, z: f64| {
+                let planes = |k: f64| -> Vec<(usize, Plane)> {
+                    let o = Point2::new(m.x + nrm.x * k, m.y + nrm.y * k);
+                    bs.iter()
+                        .enumerate()
+                        .filter_map(|(j, b)| b.plane_at(o).map(|pl| (j, pl)))
+                        .filter(|(_, pl)| (pl.z(m) - z).abs() < 1e-6)
+                        .collect()
+                };
+                let (p1, p2) = (planes(1e-4), planes(-1e-4));
+                p1.iter()
+                    .any(|(j, x)| p2.iter().any(|(k, y)| j != k && x.same(y)))
+            };
+            let parts = keep_parts(l.a, l.b, &ts, |p, z| !hidden(i, p, z) && !seam(p, z));
             let shown: f64 = parts.iter().map(|(a, b)| len3(*a, *b)).sum();
             if l.length() - shown > 1e-9 {
                 g.cut_lines
@@ -513,6 +543,17 @@ pub fn join(geos: &mut [RoofGeometry], parts: &[RoofPart]) {
         }
     }
 
+    // A line an earlier roof already has is counted once (C60).
+    let mut seen: Vec<RoofLine> = Vec::new();
+    for lines in new_lines.iter_mut() {
+        let mut own = Vec::new();
+        for l in std::mem::take(lines) {
+            let before = seen.len();
+            crate::raised::push_once(&mut seen, l);
+            own.extend(seen[before..].iter().cloned());
+        }
+        *lines = own;
+    }
     for ((g, faces), lines) in geos.iter_mut().zip(new_faces).zip(new_lines) {
         g.faces = faces;
         g.lines = lines;
