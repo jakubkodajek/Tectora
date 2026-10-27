@@ -3,8 +3,9 @@
 // that an inscribed polygon approximates a circular arc ending at the overhang
 // tips (DACAD.HLP topic "Runddach", RNDROOF dialog bitmap). The numbers follow
 // DACAD runs RD1-RD4 (/mnt/project-files/dacad-round/): the default arc spans
-// 45° on each side, a side gets ceil(arc / 11.25°) segments, and segment k has
-// the pitch (k + ½)·arc / n.
+// 45° on each side, a side gets ceil(arc / 11.25°) segments (15° steps when
+// such a segment's chord would be under 0.4 m, Rundgaube runs RGa-RGs in
+// dacad-round/rundgaube/), and segment k has the pitch (k + ½)·arc / n.
 
 import type { EdgeDef, PitchBreak, Point2 } from "./types";
 import { isMarker } from "./types";
@@ -13,8 +14,11 @@ export type ArcMode = "default" | "radius" | "ridge" | "length";
 
 /** DACAD's default arc on each side of the ridge, degrees. */
 const DEFAULT_ARC = 45;
-/** DACAD's largest segment angle, degrees. */
+/** DACAD's segment angle, degrees, and the coarser one for short segments. */
 const SEGMENT_ARC = 11.25;
+const SHORT_SEGMENT_ARC = 15;
+/** Below this chord, m, DACAD takes the coarser steps (between 0.388 and 0.402 in its runs). */
+const MIN_CHORD = 0.4;
 
 export interface ArcInput {
   /** Distance between the two wall lines, m. */
@@ -46,7 +50,12 @@ export const defaultRadius = (span: number, overhang: number) =>
   minRadius(span, overhang) / Math.sin((DEFAULT_ARC * Math.PI) / 180);
 
 /** DACAD's segment count for an arc of `deg` degrees on one side. */
-export const segmentsFor = (deg: number) => Math.max(1, Math.ceil(deg / SEGMENT_ARC - 1e-9));
+export function segmentsFor(deg: number, radius: number): number {
+  const steps = (arc: number) => Math.max(1, Math.ceil(deg / arc - 1e-9));
+  const n = steps(SEGMENT_ARC);
+  const chord = 2 * radius * Math.sin(((deg / n) * Math.PI) / 360);
+  return chord < MIN_CHORD ? steps(SHORT_SEGMENT_ARC) : n;
+}
 
 /** The arc for the input, or null when the value is out of range. */
 export function arcFor(a: ArcInput): Arc | null {
@@ -74,7 +83,7 @@ export function arcFor(a: ArcInput): Arc | null {
     r = (lo + hi) / 2;
   }
   const half = Math.asin(Math.min(1, c / r));
-  const n = a.segments || segmentsFor((half * 180) / Math.PI);
+  const n = a.segments || segmentsFor((half * 180) / Math.PI, r);
   const centre = a.eave_height - Math.sqrt(Math.max(0, r * r - c * c));
   // Vertices at equal angles from the vertical; a chord's pitch is the angle
   // of the radius to its middle.
