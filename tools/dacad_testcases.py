@@ -277,6 +277,15 @@ def cases() -> dict[str, tuple]:
                                       W(0, 90, Def(25, 0.3, 4.79)), W(1, 0, Def(50, 0.3, 4.79)), W(1.5, 270, Def(55, 0.3, 3.0)),
                                       W(5, 0, Def(90, 0.3, 3.0)), W(9.5, 90, Def(55, 0.3, 3.0)), W(12, 180, Def(50, 0.3, 3.0)),
                                       W(8, 270, Def(55, 0.3, 3.0))]),
+        # ZWEIPULT boxes 2/3: a separate box whose sloped wall repeats a plane of the main roof.
+        "C60_box_same_plane_inside": ("Sedlová 10×8 40° (okapy přesah 0,5, štíty 0,5) + box 2×1 uvnitř u jižní stěny, jeho jižní stěna = stejná rovina (40°, okap 3,0, přesah 0,5)",
+                                      rect(10, 8, Def(40, 0.5), Def(90, 0.5), Def(40, 0.5), Def(90, 0.5)), None,
+                                      [Dormer((4.0, 0.0), [W(2, 0, Def(40, 0.5)), W(1, 90, G), W(2, 180, G),
+                                                           W(1, 270, G)], kind=0, host=0)]),
+        "C61_box_same_plane_outside": ("Jako C60, box 2×1 vně za východním štítem (x 10–12), jižní stěna v linii a rovině hlavního okapu",
+                                       rect(10, 8, Def(40, 0.5), Def(90, 0.5), Def(40, 0.5), Def(90, 0.5)), None,
+                                       [Dormer((10.0, 0.0), [W(2, 0, Def(40, 0.5)), W(1, 90, G), W(2, 180, G),
+                                                             W(1, 270, G)], kind=0, host=0)]),
     }
 
 
