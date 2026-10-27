@@ -1295,8 +1295,56 @@ pub fn generate(part: &RoofPart) -> RoofGeometry {
     drop_eaves_on_ridges(&mut geo);
     one_sided_ridges(&mut geo);
     drop_short_ridges(&mut geo);
+    drop_short_junction_hips(&mut geo);
     snap_raised_corners(&mut geo, &part);
     geo
+}
+
+/// A hip under 2 cm joining the ends of two ridges at different heights is
+/// dropped by DACAD, and every hip running to an end of the higher ridge
+/// stops at the lower ridge's height; the ridges keep their ends and the
+/// gap gets no line (sweep /mnt/project-files/dacad-short-hip/: dropped at
+/// 17.3 mm, kept from 26 mm).
+fn drop_short_junction_hips(geo: &mut RoofGeometry) {
+    const MIN_HIP: f64 = 0.02;
+    let near = |p: [f64; 3], q: [f64; 3]| dist3(p, q) < 1e-6;
+    let ridge_at = |lines: &[RoofLine], p: [f64; 3]| {
+        lines
+            .iter()
+            .position(|l| l.kind == LineKind::Ridge && (near(l.a, p) || near(l.b, p)))
+    };
+    let mut k = 0;
+    while k < geo.lines.len() {
+        let h = geo.lines[k].clone();
+        if h.kind != LineKind::Hip || h.length() >= MIN_HIP || (h.a[2] - h.b[2]).abs() < 1e-9 {
+            k += 1;
+            continue;
+        }
+        let (lo, hi) = if h.a[2] < h.b[2] {
+            (h.a, h.b)
+        } else {
+            (h.b, h.a)
+        };
+        let (Some(_), Some(r)) = (ridge_at(&geo.lines, lo), ridge_at(&geo.lines, hi)) else {
+            k += 1;
+            continue;
+        };
+        let ends = [geo.lines[r].a, geo.lines[r].b];
+        geo.lines.remove(k);
+        for l in geo.lines.iter_mut().filter(|l| l.kind == LineKind::Hip) {
+            for e in ends {
+                let (top, bottom) = if near(l.a, e) {
+                    (&mut l.a, l.b)
+                } else if near(l.b, e) {
+                    (&mut l.b, l.a)
+                } else {
+                    continue;
+                };
+                let t = (lo[2] - bottom[2]) / (top[2] - bottom[2]);
+                *top = std::array::from_fn(|i| bottom[i] + (top[i] - bottom[i]) * t);
+            }
+        }
+    }
 }
 
 /// Where a higher wall's eave meets the neighbour's hip less than 1.7 cm from
