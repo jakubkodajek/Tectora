@@ -38,7 +38,9 @@ fn tally(t: &mut Tallies, stage: &str, name: &str, diffs: Vec<String>) {
 }
 
 /// Each stage with the snapshot before and after it.
-const STAGES: [(&str, &str, fn(&mut Core)); 5] = [
+type Stage = (&'static str, &'static str, fn(&mut Core));
+
+const STAGES: [Stage; 5] = [
     ("after_dormer", "after_classify", classify::classify),
     ("after_classify", "after_codes1", classify::codes),
     ("after_codes1", "after_merge17", classify::merge_d17),
