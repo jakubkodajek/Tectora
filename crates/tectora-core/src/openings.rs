@@ -11,7 +11,7 @@
 //!   (e.g. the ridge) inside the chimney are removed.
 
 use crate::geom::{Point2, signed_area};
-use crate::model::{Chimney, Project, RoofWindow};
+use crate::model::{Chimney, Project, RoofPart, RoofWindow};
 use crate::roof::{LineKind, Opening, OpeningKind, RoofFace, RoofGeometry, RoofLine, generate};
 
 const TOL: f64 = 1e-9;
@@ -22,8 +22,34 @@ const LEVEL: f64 = 1.0 - 1e-6;
 /// Generates every part of the project with its dormers, windows and
 /// chimneys applied.
 pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
-    let mut geos: Vec<RoofGeometry> = project.parts.iter().map(generate).collect();
-    crate::union::join(&mut geos, &project.parts);
+    // Parts with standing gables are joined as several buildings.
+    let cuts: Vec<crate::gable_wall::Pieces> =
+        project.parts.iter().map(crate::gable_wall::cut).collect();
+    let pieces: Vec<RoofPart> = cuts.iter().flat_map(|c| c.parts.clone()).collect();
+    let mut all: Vec<RoofGeometry> = pieces.iter().map(generate).collect();
+    crate::union::join(&mut all, &pieces);
+    let mut geos = Vec::with_capacity(cuts.len());
+    let mut rest = all.into_iter();
+    for c in &cuts {
+        let mut mine: Vec<RoofGeometry> = rest.by_ref().take(c.parts.len()).collect();
+        for &(lo, hi, a, b) in &c.cuts {
+            let higher = mine[hi].clone();
+            crate::gable_wall::abut(&mut mine[lo], &higher, a, b);
+        }
+        let mut geo = RoofGeometry::default();
+        for (g, map) in mine.into_iter().zip(&c.edges) {
+            geo.faces.extend(g.faces.into_iter().map(|mut f| {
+                f.edge = map[f.edge];
+                f
+            }));
+            geo.lines.extend(g.lines);
+            geo.gables.extend(g.gables);
+            geo.clad_area += g.clad_area;
+            geo.openings.extend(g.openings);
+            geo.cut_lines.extend(g.cut_lines);
+        }
+        geos.push(geo);
+    }
     for d in &project.dormers {
         crate::dormer::apply_dormer(&mut geos, d);
     }

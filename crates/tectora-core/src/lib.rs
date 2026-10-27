@@ -7,6 +7,7 @@ pub mod dad;
 pub mod diff;
 pub mod dormer;
 pub mod examples;
+mod gable_wall;
 pub mod geom;
 pub mod model;
 pub mod openings;
