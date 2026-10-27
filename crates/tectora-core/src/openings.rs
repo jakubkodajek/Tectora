@@ -32,9 +32,10 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     let mut rest = all.into_iter();
     for c in &cuts {
         let mut mine: Vec<RoofGeometry> = rest.by_ref().take(c.parts.len()).collect();
-        for &(lo, hi, a, b) in &c.cuts {
-            let higher = mine[hi].clone();
-            crate::gable_wall::abut(&mut mine[lo], &higher, a, b);
+        for &(lo, hi, a, b, top) in &c.cuts {
+            let mut higher = std::mem::take(&mut mine[hi]);
+            crate::gable_wall::abut(&mut mine[lo], &mut higher, a, b, top);
+            mine[hi] = higher;
         }
         let mut geo = RoofGeometry::default();
         for (g, map) in mine.into_iter().zip(&c.edges) {

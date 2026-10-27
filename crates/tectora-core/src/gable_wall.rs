@@ -1,12 +1,12 @@
 //! Gables that stand as walls above a lower roof.
 //!
-//! A 90° gable at an inside corner whose eave is higher than the wall it
-//! meets there stands as a vertical wall, and the wall goes on along its
+//! A 90° gable at an inside corner whose eave reaches the lower roof all
+//! along its line stands as a vertical wall, and the wall goes on along its
 //! line through the building (DACAD sample KRUPA006, variants K0-K8). The
 //! roof on the gable's side is a roof of its own, with the gable and its
 //! overhang; the lower roof on the other side runs into the wall and abuts
-//! it (WV, WS). With the gable eave no higher than the wall it meets, the
-//! roofs simply intersect (K1, K2) and nothing here applies.
+//! it (WV, WS). With the gable eave below the lower roof, the roofs simply
+//! meet (K1, K2) and nothing here applies.
 //!
 //! The part is cut along the gable's line into two pieces that are
 //! generated as separate buildings and joined ([`crate::union::join`]).
@@ -22,8 +22,8 @@ pub(crate) struct Pieces {
     pub parts: Vec<RoofPart>,
     /// For each piece, the original edge of each of its edges.
     pub edges: Vec<Vec<usize>>,
-    /// Cuts as (lower piece, higher piece, start, end).
-    pub cuts: Vec<(usize, usize, Point2, Point2)>,
+    /// Cuts as (lower piece, higher piece, start, end, gable eave).
+    pub cuts: Vec<(usize, usize, Point2, Point2, f64)>,
 }
 
 /// Cuts a CCW part along the lines of its standing gables.
@@ -36,7 +36,7 @@ pub(crate) fn cut(part: &RoofPart) -> Pieces {
     // Each cut removes a reflex corner, so this ends.
     let mut k = 0;
     while k < out.parts.len() {
-        let Some((a, b, s, e)) = cut_once(&out.parts[k]) else {
+        let Some((a, b, s, e, z)) = cut_once(&out.parts[k]) else {
             k += 1;
             continue;
         };
@@ -51,14 +51,14 @@ pub(crate) fn cut(part: &RoofPart) -> Pieces {
         out.edges[k] = ma;
         out.parts.push(b.0);
         out.edges.push(mb);
-        out.cuts.push((lo, hi, s, e));
+        out.cuts.push((lo, hi, s, e, z));
     }
     out
 }
 
 type Piece = (RoofPart, Vec<usize>);
 
-fn cut_once(part: &RoofPart) -> Option<(Piece, Piece, Point2, Point2)> {
+fn cut_once(part: &RoofPart) -> Option<(Piece, Piece, Point2, Point2, f64)> {
     let n = part.edges.len();
     let pts = part.outline();
     let dir = |i: usize| {
@@ -110,7 +110,11 @@ fn cut_once(part: &RoofPart) -> Option<(Piece, Piece, Point2, Point2)> {
                 j = (j + 1) % n;
             }
             lo.push((wall(g, pts[i]), i));
-            return Some((piece(part, hi), piece(part, lo), pts[i], hit));
+            let lo = piece(part, lo);
+            if stands(g, &lo.0, pts[i], hit) {
+                return Some((piece(part, hi), lo, pts[i], hit, g.eave_height));
+            }
+            continue;
         }
         // The gable's end at an inside corner: the wall goes on forwards.
         let q = (i + 1) % n;
@@ -146,10 +150,38 @@ fn cut_once(part: &RoofPart) -> Option<(Piece, Piece, Point2, Point2)> {
                 j = (j + 1) % n;
             }
             lo.push((wall(g, hit), i));
-            return Some((piece(part, hi), piece(part, lo), hit, pts[q]));
+            let lo = piece(part, lo);
+            if stands(g, &lo.0, hit, pts[q]) {
+                return Some((piece(part, hi), lo, hit, pts[q], g.eave_height));
+            }
         }
     }
     None
+}
+
+/// Whether the gable's eave reaches the lower roof all along the wall,
+/// which runs from `a` to `b` on the lower piece (DACAD: K0, K6 stand; K1,
+/// K2 with the eave below the lower roof do not).
+fn stands(g: &EdgeDef, lower: &RoofPart, a: Point2, b: Point2) -> bool {
+    let roof = crate::roof::generate(lower);
+    let d = unit(Point2::new(b.x - a.x, b.y - a.y));
+    let inside = Point2::new(-d.y, d.x);
+    let faces: Vec<(Vec<Point2>, Plane)> =
+        roof.faces.iter().map(|f| (plan(f), Plane::of(f))).collect();
+    let low = (0..=32)
+        .filter_map(|k| {
+            let t = k as f64 / 32.0;
+            let m = Point2::new(
+                a.x + (b.x - a.x) * t + inside.x * 1e-3,
+                a.y + (b.y - a.y) * t + inside.y * 1e-3,
+            );
+            faces
+                .iter()
+                .find(|(f, _)| covers(f, m))
+                .map(|(_, pl)| pl.z(m))
+        })
+        .fold(f64::INFINITY, f64::min);
+    low.is_finite() && g.eave_height >= low - 1e-3
 }
 
 /// The standing wall as an edge of the lower piece: no roof, no overhang.
@@ -210,8 +242,15 @@ fn ray(
 
 /// Lines of the lower roof along a cut, under the higher roof, abut the
 /// wall: the top of a plane rising to it (WV), a plane falling to it (WH)
-/// and one sloping along it (WS).
-pub(crate) fn abut(lower: &mut RoofGeometry, higher: &RoofGeometry, a: Point2, b: Point2) {
+/// and one sloping along it (WS). A verge of the higher roof on the wall
+/// itself (no overhang) ends at the wall top, the gable's eave (DACAD K4).
+pub(crate) fn abut(
+    lower: &mut RoofGeometry,
+    higher: &mut RoofGeometry,
+    a: Point2,
+    b: Point2,
+    top: f64,
+) {
     let d = unit(Point2::new(b.x - a.x, b.y - a.y));
     // The higher piece is on the right of the cut as the lower piece runs
     // it (the lower piece is CCW, so its inside is on the left).
@@ -250,4 +289,29 @@ pub(crate) fn abut(lower: &mut RoofGeometry, higher: &RoofGeometry, a: Point2, b
         };
         l.side = None;
     }
+    let mut kept = Vec::with_capacity(higher.lines.len());
+    for l in std::mem::take(&mut higher.lines) {
+        if l.kind != LineKind::Verge || !on(l.a) || !on(l.b) || (l.a[2] - l.b[2]).abs() < 1e-9 {
+            kept.push(l);
+            continue;
+        }
+        let (lo, hi) = if l.a[2] < l.b[2] {
+            (l.a, l.b)
+        } else {
+            (l.b, l.a)
+        };
+        if lo[2] >= top - 1e-6 {
+            kept.push(l);
+        } else if hi[2] > top + 1e-6 {
+            let k = (top - lo[2]) / (hi[2] - lo[2]);
+            let cut: [f64; 3] = std::array::from_fn(|i| lo[i] + (hi[i] - lo[i]) * k);
+            let (a, b) = if l.a[2] < l.b[2] {
+                (cut, l.b)
+            } else {
+                (l.a, cut)
+            };
+            kept.push(crate::roof::RoofLine { a, b, ..l });
+        }
+    }
+    higher.lines = kept;
 }

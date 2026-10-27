@@ -893,6 +893,23 @@ impl Sim {
         if w == n || beyond == keep {
             return;
         }
+        // A plane with priority ends at the wall instead and runs on as the
+        // wall (a Knick line c, DACAD KRUPA006 variants K1, K2).
+        let slow = if sr < sl { right } else { left };
+        if self.lines[keep].priority > 0 && self.lines[slow].priority == 0 {
+            let k = self.applied[keep];
+            let (c, s) = self.lines[slow].params(t);
+            let line = &mut self.lines[keep];
+            line.stages.truncate(k);
+            line.stages.push(Stage {
+                t,
+                s,
+                c,
+                pitch_deg: 90.0,
+            });
+            self.apply_bend(keep, t);
+            return;
+        }
         let (lk, lb) = (&self.lines[keep], &self.lines[beyond]);
         let Some(p) = solve2(
             lk.n,
