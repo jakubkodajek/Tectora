@@ -4,11 +4,12 @@
 
 import type { CalcResult, Dormer, EdgeDef, Point2 } from "./types";
 import { GABLE_PITCH, isGable } from "./types";
+import { arcFor } from "./roundroof";
 
-export type DormerKind = "gable" | "pointed" | "hip" | "half_hip" | "shed" | "trapezoid" | "general";
+export type DormerKind = "gable" | "pointed" | "hip" | "half_hip" | "shed" | "trapezoid" | "round" | "general";
 
 /** Kinds that can be placed; "general" is any other chain, kept as it is. */
-export const DORMER_KINDS: DormerKind[] = ["gable", "pointed", "hip", "half_hip", "shed", "trapezoid"];
+export const DORMER_KINDS: DormerKind[] = ["gable", "pointed", "hip", "half_hip", "shed", "trapezoid", "round"];
 
 export interface DormerParams {
   kind: DormerKind;
@@ -26,6 +27,8 @@ export interface DormerParams {
   /** Krüppelwalm: height and pitch of the clipped part of the front. */
   half_hip_height: number;
   half_hip_pitch_deg: number;
+  /** Rundgaube: polygon segments per cheek of the semicircular roof. */
+  segments: number;
 }
 
 export function defaultParams(kind: DormerKind, start: Point2, angle: number, eave: number): DormerParams {
@@ -40,6 +43,7 @@ export function defaultParams(kind: DormerKind, start: Point2, angle: number, ea
     overhang: 0,
     half_hip_height: 0.6,
     half_hip_pitch_deg: 60,
+    segments: 8,
   };
 }
 
@@ -49,11 +53,17 @@ export function buildDormer(p: DormerParams): Dormer {
   const sloped = p.kind !== "shed";
   const frontSloped = p.kind === "hip" || p.kind === "shed" || p.kind === "trapezoid";
   const base = { eave_height: p.eave_height, overhang: p.overhang };
+  // A Rundgaube is a gable dormer whose cheeks follow a semicircle (DACAD.HLP, Runddach).
+  const arc =
+    p.kind === "round"
+      ? arcFor({ span: p.width, overhang: p.overhang, eave_height: p.eave_height, segments: p.segments, mode: "half", value: 0 })
+      : null;
   const cheek = (dir: number, start: Point2): EdgeDef => ({
     ...base,
     start: { ...start },
-    pitch_deg: sloped ? p.pitch_deg : GABLE_PITCH,
+    pitch_deg: arc ? arc.pitch_deg : sloped ? p.pitch_deg : GABLE_PITCH,
     direction_rad: norm(dir),
+    ...(arc ? { breaks: arc.breaks.map((b) => ({ ...b })) } : {}),
   });
   const front: EdgeDef = {
     ...base,
@@ -86,6 +96,9 @@ export function parseDormer(d: Dormer): DormerParams {
   }
   if (!cheeksSloped) return p;
   p.pitch_deg = a.pitch_deg;
+  if (isGable(f) && (a.breaks?.length ?? 0) > 0) {
+    return { ...p, kind: "round", segments: (a.breaks?.length ?? 0) + 1 };
+  }
   if (isGable(f)) {
     if (f.half_hip) {
       return { ...p, kind: "half_hip", half_hip_height: +(f.half_hip.height - f.eave_height).toFixed(3), half_hip_pitch_deg: f.half_hip.pitch_deg };

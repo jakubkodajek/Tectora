@@ -110,7 +110,14 @@
         <div class="unit"><input type="number" step="0.05" value={params.eave_height} disabled={kind === "pointed"}
           onchange={(e) => { const v = num(e); if (v !== null) set({ eave_height: v }); }} /><em>m</em></div>
       </label>
-      {#if kind !== "shed"}
+      {#if kind === "round"}
+        <label>
+          <span>{t("round.segments")}</span>
+          <input type="number" step="1" min="1" max="30" value={params.segments}
+            onchange={(e) => { const v = num(e); if (v && v >= 1) set({ segments: Math.round(v) }); }} />
+        </label>
+      {/if}
+      {#if kind !== "shed" && kind !== "round"}
         <label>
           <span>{kind === "trapezoid" ? t("dormer.cheekPitch") : t("edge.pitch")}</span>
           <div class="unit"><input type="number" step="1" min="1" max="89" value={params.pitch_deg}
