@@ -362,12 +362,22 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer) {
         // Every face of the host roof loses what lies under the dormer
         // (DACAD case C42: a dormer through the ridge also cuts the far face).
         if c.under.len() >= 3 {
+            let mut left = signed_area(&c.under).abs();
             for f in &mut geos[c.host.0].faces {
                 let cut = signed_area(&clip_polygon(&plan(f), &c.under)).abs();
                 if cut > 1e-12 {
                     f.area -= cut * Plane::of(f).sec();
                     removed += cut * Plane::of(f).sec();
+                    left -= cut;
                 }
+            }
+            // DACAD deducts the whole footprint, also where it runs past the
+            // roof's outline, measured on the host plane (mass case R1_0018).
+            if left > 1e-9 {
+                let host = &mut geos[c.host.0].faces[c.host.1];
+                let d = left * Plane::of(host).sec();
+                host.area -= d;
+                removed += d;
             }
         }
         if !hosts.contains(&c.host) {
