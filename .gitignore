@@ -19,6 +19,8 @@ Design podle briefu-handoff.zip
 *.exe
 *.SOL
 *.sol
+# Expected outputs of our own synthetic Modellverschnitt cases
+!tests/fixtures/modell/*.SOL
 DACAD*.exe
 
 # Rust
