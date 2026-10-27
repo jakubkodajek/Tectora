@@ -1,12 +1,13 @@
 <script lang="ts">
   // DACAD's calculation helpers for the selected wall: pitch from a simple
   // triangle, two facing walls meeting in a ridge, a point in space the plane
-  // must reach, and merging parallel planes into one (DACAD.HLP: Neigungen /
-  // Traufenhöhen / Vorsprünge berechnen). The result is a patch per wall.
+  // must reach, merging parallel planes into one and pitches from a hip or
+  // valley (DACAD.HLP: Neigungen / Traufenhöhen / Vorsprünge / Lage
+  // berechnen). "position" moves walls instead. The result is a patch per wall.
   import { num } from "./format";
   import { t } from "./i18n.svelte";
   import { oppositeWall, spanBetween } from "./roundroof";
-  import { inward, meeting, mergeOnto, parallels, rafter, roofPoints, sameWay, solve, triangle, type CalcTarget } from "./roofcalc";
+  import { combine, hipPitches, inward, meeting, mergeOnto, moveWall, parallels, rafter, roofPoints, sameWay, shiftFor, solve, triangle, type CalcTarget } from "./roofcalc";
   import type { CalcResult, EdgeDef, RoofPart } from "./types";
 
   let {
@@ -16,9 +17,10 @@
     patches = $bindable(null),
   }: { part: RoofPart; edge: number; result: CalcResult | null; patches: Map<number, Partial<EdgeDef>> | null } = $props();
 
-  type Tool = "triangle" | "parallel" | "point" | "merge";
+  type Tool = "triangle" | "parallel" | "point" | "merge" | "hip";
+  type Target = CalcTarget | "position";
   let tool = $state<Tool>("triangle");
-  let target = $state<CalcTarget>("pitch");
+  let target = $state<Target>("pitch");
 
   const es = $derived(part.edges);
   const e = $derived(es[edge]);
@@ -29,7 +31,8 @@
   let triWidth = $state<number | null>(null);
   let triRafter = $state<number | null>(null);
   let triRise = $state<number | null>(null);
-  let triWithOv = $state(false);
+  // DACAD checks "Grundrissbreite inkl. Traufenvorsprung" by default.
+  let triWithOv = $state(true);
   const tri = $derived(
     triangle(e, { width: triWidth ?? undefined, rafter: triRafter ?? undefined, rise: triRise ?? undefined }, triWithOv),
   );
@@ -40,7 +43,15 @@
   let parH = $state<number | null>(null);
   const par = $derived.by(() => {
     if (opp === null || !current) return null;
-    return parallels(e, es[opp], { span, widthA: parW ?? current.w, ridge: parH ?? current.h, target });
+    if (target === "position") {
+      // The ridge stays in place in plan; both walls move to reach its height.
+      const h = parH ?? current.h;
+      const sa = shiftFor(e, current.w, h);
+      const sb = shiftFor(es[opp], span - current.w, h);
+      return sa === null || sb === null ? null : combine(moveWall(es, edge, sa), moveWall(es, opp, sb));
+    }
+    const pp = parallels(e, es[opp], { span, widthA: parW ?? current.w, ridge: parH ?? current.h, target });
+    return pp && new Map([[edge, pp[0]], [opp, pp[1]]]);
   });
 
   // Punkt im Raum: a computed roof point or one typed in.
@@ -56,7 +67,16 @@
     const z = pz ?? q?.[2];
     return x != null && y != null && z != null ? { x, y, z } : null;
   });
-  const pt = $derived(point ? solve(e, inward(es, edge, point), point.z, target) : null);
+  const pt = $derived.by(() => {
+    if (!point) return null;
+    const d = inward(es, edge, point);
+    if (target === "position") {
+      const sh = shiftFor(e, d, point.z);
+      return sh === null ? null : moveWall(es, edge, sh);
+    }
+    const p = solve(e, d, point.z, target);
+    return p && new Map([[edge, p]]);
+  });
 
   // Flächen zusammenfassen: parallel walls take this wall's plane.
   const mates = $derived(sameWay(es, edge).filter((k) => k !== edge));
@@ -64,7 +84,29 @@
   $effect(() => {
     chosen = new Set(mates);
   });
-  const merged = $derived(target === "pitch" ? null : mergeOnto(es, edge, [...chosen], target));
+  const merged = $derived.by(() => {
+    if (target === "pitch") return null;
+    if (target !== "position") return mergeOnto(es, edge, [...chosen], target);
+    // Each wall moves until its eave (at its overhang) lies on this wall's plane.
+    const tr = Math.tan((e.pitch_deg * Math.PI) / 180);
+    if (!(tr > 0)) return null;
+    const moves = [...chosen].map((k) => {
+      const s = inward(es, edge, es[k].start);
+      const want = (es[k].eave_height - e.eave_height) / tr + es[k].overhang - e.overhang;
+      return combine(moveWall(es, k, want - s), new Map([[k, { pitch_deg: e.pitch_deg }]]));
+    });
+    return combine(...moves);
+  });
+
+  // Grat/Kehle: hip or valley length and both rafter lengths.
+  let side = $state<"next" | "prev">("next");
+  const neighbour = $derived(side === "next" ? (edge + 1) % es.length : (edge - 1 + es.length) % es.length);
+  let hipLen = $state<number | null>(null);
+  let raf1 = $state<number | null>(null);
+  let raf2 = $state<number | null>(null);
+  const hip = $derived(
+    hipLen !== null && raf1 !== null && raf2 !== null ? hipPitches(es, edge, neighbour, hipLen, raf1, raf2) : null,
+  );
 
   $effect(() => {
     let next: Map<number, Partial<EdgeDef>> | null = null;
@@ -76,42 +118,73 @@
         : { pitch_deg: tri.pitch_deg };
       next = new Map([[edge, patch]]);
     }
-    else if (tool === "parallel" && par && opp !== null) next = new Map([[edge, par[0]], [opp, par[1]]]);
-    else if (tool === "point" && pt) next = new Map([[edge, pt]]);
+    else if (tool === "parallel" && par) next = par;
+    else if (tool === "point" && pt) next = pt;
     else if (tool === "merge" && merged && merged.size) next = merged;
-    patches = next;
+    else if (tool === "hip" && hip) next = hip;
+    // Leave out fields that would not change.
+    if (next) {
+      const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
+      next = new Map(
+        [...next]
+          .map(([k, patch]) => [k, Object.fromEntries(Object.entries(patch).filter(([f, v]) => !same(es[k][f as keyof EdgeDef], v)))] as const)
+          .filter(([, patch]) => Object.keys(patch).length > 0),
+      );
+    }
+    unchanged = next !== null && next.size === 0;
+    patches = next && next.size ? next : null;
   });
+
+  /** The inputs give the current state: nothing to apply. */
+  let unchanged = $state(false);
+  /** Whether the inputs are complete enough to say there is no result. */
+  const touched = $derived(
+    (tool !== "triangle" && tool !== "hip" && (tool !== "merge" || mates.length)) ||
+      (tool === "triangle" && (triWidth !== null || triRafter !== null || triRise !== null)) ||
+      (tool === "hip" && hipLen !== null && raf1 !== null && raf2 !== null),
+  );
 
   function n(v: string): number | null {
     const x = parseFloat(v.replace(",", "."));
     return Number.isFinite(x) ? x : null;
   }
   const fmt = (k: string, v: unknown) =>
-    k === "breaks"
+    k === "start"
+      ? `X ${num((v as { x: number }).x)} · Y ${num((v as { y: number }).y)}`
+      : k === "breaks"
       ? (v as { height: number; pitch_deg: number }[]).map((b) => `${num(b.height)} m / ${num(b.pitch_deg)}°`).join(", ")
       : k === "pitch_deg"
         ? `${num(v as number)}°`
         : `${num(v as number)} m`;
   const label = (k: string) =>
-    k === "pitch_deg" ? t("edge.pitch") : k === "eave_height" ? t("edge.eaveHeight") : k === "breaks" ? t("edge.breaks") : t("edge.overhang");
+    k === "pitch_deg"
+      ? t("edge.pitch")
+      : k === "eave_height"
+        ? t("edge.eaveHeight")
+        : k === "breaks"
+          ? t("edge.breaks")
+          : k === "start"
+            ? t("calc.start")
+            : t("edge.overhang");
 </script>
 
 <div class="form">
   <div class="tabs" role="tablist">
-    {#each ["triangle", "parallel", "point", "merge"] as const as k}
+    {#each ["triangle", "parallel", "point", "merge", "hip"] as const as k}
       <button role="tab" class:on={tool === k} aria-selected={tool === k} disabled={k === "parallel" && opp === null}
-        onclick={() => { tool = k; if (k === "triangle") target = "pitch"; else if (k === "merge" && target === "pitch") target = "eave"; }}>{t(`calc.${k}`)}</button>
+        onclick={() => { tool = k; if (k === "triangle" || k === "hip") target = "pitch"; else if (k === "merge" && target === "pitch") target = "eave"; }}>{t(`calc.${k}`)}</button>
     {/each}
   </div>
   <p class="tip">{t(`calc.${tool}Hint`)}</p>
 
-  {#if tool !== "triangle"}
+  {#if tool !== "triangle" && tool !== "hip"}
     <label class="target">
       <span>{t("calc.target")}</span>
       <select bind:value={target}>
         {#if tool !== "merge"}<option value="pitch">{t("edge.pitch")}</option>{/if}
         <option value="eave">{t("edge.eaveHeight")}</option>
         <option value="overhang">{t("edge.overhang")}</option>
+        <option value="position">{t("calc.position")}</option>
       </select>
     </label>
   {/if}
@@ -125,8 +198,10 @@
     </div>
   {:else if tool === "parallel" && current}
     <div class="grid">
+      {#if target !== "position"}
       <label><span>{t("calc.widthA")}</span><div class="unit"><input type="number" step="0.05" value={+(parW ?? current.w).toFixed(3)} onchange={(ev) => (parW = n(ev.currentTarget.value))} /><em>m</em></div></label>
       <label><span>{t("calc.widthB")}</span><div class="unit"><input type="number" step="0.05" value={+(span - (parW ?? current.w)).toFixed(3)} onchange={(ev) => { const v = n(ev.currentTarget.value); parW = v === null ? null : span - v; }} /><em>m</em></div></label>
+      {/if}
       <label><span>{t("calc.ridge")}</span><div class="unit"><input type="number" step="0.05" value={+(parH ?? current.h).toFixed(3)} onchange={(ev) => (parH = n(ev.currentTarget.value))} /><em>m</em></div></label>
     </div>
     <p class="tip">{t("round.span", { s: num(span) })}</p>
@@ -158,8 +233,22 @@
     {:else}
       <p class="err">{t("calc.noMates")}</p>
     {/if}
+  {:else if tool === "hip"}
+    <div class="grid">
+      <label class="wide">
+        <span>{t("calc.neighbour")}</span>
+        <select bind:value={side}>
+          <option value="next">{t("calc.wall", { n: ((edge + 1) % es.length) + 1 })}</option>
+          <option value="prev">{t("calc.wall", { n: ((edge - 1 + es.length) % es.length) + 1 })}</option>
+        </select>
+      </label>
+      <label><span>{t("calc.hipLength")}</span><div class="unit"><input type="number" step="0.05" value={hipLen ?? ""} oninput={(ev) => (hipLen = n(ev.currentTarget.value))} /><em>m</em></div></label>
+      <label><span>{t("calc.rafterThis")}</span><div class="unit"><input type="number" step="0.05" value={raf1 ?? ""} oninput={(ev) => (raf1 = n(ev.currentTarget.value))} /><em>m</em></div></label>
+      <label><span>{t("calc.rafterOther")}</span><div class="unit"><input type="number" step="0.05" value={raf2 ?? ""} oninput={(ev) => (raf2 = n(ev.currentTarget.value))} /><em>m</em></div></label>
+    </div>
   {/if}
 
+  {#if (patches && patches.size) || touched}
   <div class="result">
     {#if patches && patches.size}
       {#each [...patches] as [k, patch]}
@@ -168,15 +257,18 @@
           {#each Object.entries(patch) as [field, v]}
             <span>{label(field)}: {fmt(field, es[k][field as keyof EdgeDef])} → <b>{fmt(field, v)}</b></span>
           {/each}
-          {#if tool === "parallel" && current && !es[k].breaks?.length}
+          {#if tool === "parallel" && target !== "position" && current && !es[k].breaks?.length}
             <span class="muted">{t("calc.rafter")}: {num(rafter({ ...es[k], ...patch } as EdgeDef, k === edge ? (parW ?? current.w) : span - (parW ?? current.w)))} m</span>
           {/if}
         </div>
       {/each}
-    {:else if (tool !== "triangle" && (tool !== "merge" || mates.length)) || triWidth !== null || triRafter !== null || triRise !== null}
+    {:else if unchanged}
+      <p class="tip">{t("calc.noChange")}</p>
+    {:else}
       <p class="err">{t("calc.noResult")}</p>
     {/if}
   </div>
+  {/if}
 </div>
 
 <style>

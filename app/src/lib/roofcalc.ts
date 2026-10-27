@@ -201,3 +201,95 @@ export function roofPoints(result: CalcResult | null): { p: [number, number, num
   }
   return [...seen.values()].sort((x, y) => y.p[2] - x.p[2]);
 }
+
+/** Inward shift of wall `e` that makes its roof reach height `z` at inward distance `d` (DACAD: Lage berechnen). */
+export function shiftFor(e: EdgeDef, d: number, z: number): number | null {
+  if (isGable(e)) return null;
+  const segs = profile(e);
+  const s = [...segs].reverse().find((g) => z >= g.z) ?? segs[0];
+  if (!(s.t > 0) || z < segs[0].z) return null;
+  return d - (s.x + (z - s.z) / s.t - e.overhang);
+}
+
+/**
+ * Moves wall `i` parallel by `delta` inward; its ends slide along the
+ * neighbouring walls (or move with it where a neighbour is parallel).
+ * Zero-length marker walls at a moved corner move with it.
+ */
+export function moveWall(edges: EdgeDef[], i: number, delta: number): Map<number, Partial<EdgeDef>> {
+  const n = edges.length;
+  const at = (k: number) => edges[((k % n) + n) % n].start;
+  const short = (k: number) => Math.hypot(at(k + 1).x - at(k).x, at(k + 1).y - at(k).y) < 1e-6;
+  const f = wallFrame(edges, i);
+  const a = { x: f.a.x + f.n.x * delta, y: f.a.y + f.n.y * delta };
+  const meet = (p: Point2, q: Point2, fallback: Point2) => {
+    // The moved line (through a, direction u) meets the line p→q.
+    const v = { x: q.x - p.x, y: q.y - p.y };
+    const den = f.u.x * v.y - f.u.y * v.x;
+    if (Math.abs(den) < 1e-9 * Math.max(1e-9, Math.hypot(v.x, v.y))) return fallback;
+    const t = ((p.x - a.x) * v.y - (p.y - a.y) * v.x) / den;
+    return { x: round(a.x + f.u.x * t, 3), y: round(a.y + f.u.y * t, 3) };
+  };
+  const shifted = (p: Point2) => ({ x: round(p.x + f.n.x * delta, 3), y: round(p.y + f.n.y * delta, 3) });
+  const out = new Map<number, Partial<EdgeDef>>();
+  // Start corner: the previous real wall, skipping markers that share the corner.
+  const startIdx = [i];
+  let k = i - 1;
+  while (short(k) && startIdx.length < n) startIdx.push(k--);
+  const s = meet(at(k), at(k + 1), shifted(at(i)));
+  for (const j of startIdx) out.set(((j % n) + n) % n, { start: s });
+  // End corner: the next real wall, likewise.
+  const endIdx = [i + 1];
+  k = i + 1;
+  while (short(k) && endIdx.length < n) endIdx.push(++k);
+  const e = meet(at(k), at(k + 1), shifted(at(i + 1)));
+  for (const j of endIdx) out.set(((j % n) + n) % n, { start: e });
+  return out;
+}
+
+/** Merges patch maps; later fields win. */
+export function combine(...maps: Map<number, Partial<EdgeDef>>[]): Map<number, Partial<EdgeDef>> {
+  const out = new Map<number, Partial<EdgeDef>>();
+  for (const m of maps) for (const [k, v] of m) out.set(k, { ...(out.get(k) ?? {}), ...v });
+  return out;
+}
+
+/**
+ * Grat/Kehle: from the natural measures of an existing roof (hip or valley
+ * length and the two rafter lengths, both from the eave lines) the pitches
+ * of two neighbouring walls `i` and `j` with the same eave height.
+ */
+export function hipPitches(edges: EdgeDef[], i: number, j: number, hip: number, r1: number, r2: number): Map<number, Partial<EdgeDef>> | null {
+  const n = edges.length;
+  // Order so that wall `first` ends where wall `second` starts.
+  const [first, second, ra, rb] = (i + 1) % n === j ? [i, j, r1, r2] : [j, i, r2, r1];
+  if ((first + 1) % n !== second) return null;
+  const e1 = edges[first];
+  const e2 = edges[second];
+  if (isGable(e1) || isGable(e2) || Math.abs(e1.eave_height - e2.eave_height) > 1e-3) return null;
+  const u1 = wallFrame(edges, first).u;
+  const u2 = wallFrame(edges, second).u;
+  // Interior angle at the corner; above 180° the line is a valley.
+  const alpha = Math.PI - Math.atan2(u1.x * u2.y - u1.y * u2.x, u1.x * u2.x + u1.y * u2.y);
+  const s2 = Math.sin(alpha) ** 2;
+  if (s2 < 1e-9) return null;
+  const f = (h: number) => {
+    const d1 = Math.sqrt(Math.max(0, ra * ra - h * h));
+    const d2 = Math.sqrt(Math.max(0, rb * rb - h * h));
+    return (d1 * d1 + d2 * d2 + 2 * d1 * d2 * Math.cos(alpha)) / s2 + h * h - hip * hip;
+  };
+  let lo = 0;
+  let hi = Math.min(ra, rb);
+  if (!(hi > 0) || f(lo) < 0 || f(hi) > 0) return null;
+  for (let k = 0; k < 200; k++) {
+    const mid = (lo + hi) / 2;
+    if (f(mid) > 0) lo = mid;
+    else hi = mid;
+  }
+  const h = (lo + hi) / 2;
+  const pitch = (r: number) => round(atanDeg(h / Math.sqrt(r * r - h * h)));
+  return new Map([
+    [first, { pitch_deg: pitch(ra) }],
+    [second, { pitch_deg: pitch(rb) }],
+  ]);
+}
