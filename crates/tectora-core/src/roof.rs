@@ -1118,6 +1118,49 @@ fn snap_markers(part: &RoofPart) -> RoofPart {
     out
 }
 
+/// Gable walls on one line, even with other walls between them, are one
+/// gable to DACAD: a clipped gable (Krüppel) on one clips them all (sample
+/// TRAING01).
+fn share_half_hips(part: &RoofPart) -> RoofPart {
+    let mut out = part.clone();
+    let n = out.edges.len();
+    let pts = part.outline();
+    let line = |i: usize| {
+        let (a, b) = (pts[i], pts[(i + 1) % n]);
+        let l = a.distance(b);
+        (l > POS_TOL).then(|| {
+            let d = Point2::new((b.x - a.x) / l, (b.y - a.y) / l);
+            (d, d.y * a.x - d.x * a.y)
+        })
+    };
+    for i in 0..n {
+        let e = &part.edges[i];
+        let (Some(h), Some((d, c))) = (e.half_hip.clone(), line(i)) else {
+            continue;
+        };
+        if !e.is_gable() {
+            continue;
+        }
+        for j in (0..n).filter(|&j| j != i) {
+            let f = &part.edges[j];
+            if !f.is_gable()
+                || f.half_hip.is_some()
+                || (f.eave_height - e.eave_height).abs() > 1e-6
+                || (f.overhang - e.overhang).abs() > 1e-6
+            {
+                continue;
+            }
+            if let Some((dj, cj)) = line(j)
+                && dot(d, dj) > 1.0 - 1e-9
+                && (c - cj).abs() < 1e-6
+            {
+                out.edges[j].half_hip = Some(h.clone());
+            }
+        }
+    }
+    out
+}
+
 /// Generates the roof over one footprint part. The part must be CCW
 /// (see [`RoofPart::normalize_ccw`]).
 ///
@@ -1128,7 +1171,7 @@ fn snap_markers(part: &RoofPart) -> RoofPart {
 /// walls at their wall lines, and the two are combined
 /// ([`crate::raised::combine`]).
 pub fn generate(part: &RoofPart) -> RoofGeometry {
-    let (part, map) = merge_collinear_walls(&snap_markers(part));
+    let (part, map) = merge_collinear_walls(&share_half_hips(&snap_markers(part)));
     let raised = raised_edges(&part);
     let (off, _) = generate_mode(&part, &vec![false; raised.len()]);
     let mut geo = if raised.contains(&true) {
