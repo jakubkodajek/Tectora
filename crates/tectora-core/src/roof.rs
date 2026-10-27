@@ -2259,6 +2259,9 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
 
     // One face per plane: the arcs of its edge between its start height and
     // the next plane's, closed by the next plane's bottom (a pitch break).
+    // Two bottoms of one plane can trace the same ring (mass case R1_0325:
+    // one collapsed to a node); the face counts once.
+    let mut traced: Vec<(usize, usize, Vec<usize>)> = Vec::new();
     for b in bottoms
         .iter()
         .filter(|b| sim.lines[b.edge].stages[b.stage].s > 1e-12)
@@ -2281,6 +2284,12 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
                 .map(|u| (u.a, u.b)),
         );
         let ring = trace_ring(b.a, b.b, segs);
+        let mut key = ring.clone();
+        key.sort_unstable();
+        if ring.len() >= 3 && traced.iter().any(|t| t.0 == b.edge && t.1 == b.stage && t.2 == key) {
+            continue;
+        }
+        traced.push((b.edge, b.stage, key));
         let polygon: Vec<[f64; 3]> = ring.iter().map(|&k| sim.nodes[k]).collect();
         let area = area3(&polygon);
         geo.faces.push(RoofFace {
