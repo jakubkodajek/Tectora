@@ -103,7 +103,9 @@ pub fn combine(off: RoofGeometry, body: RoofGeometry) -> RoofGeometry {
             let s1 = Point2::new(m.x + nrm.x * 1e-4, m.y + nrm.y * 1e-4);
             let s2 = Point2::new(m.x - nrm.x * 1e-4, m.y - nrm.y * 1e-4);
             let (p1, p2) = (planes_at(s1), planes_at(s2));
-            let on = |pl: &Plane| (pl.z(m) - z).abs() < 1e-5;
+            // Faces of walls merged within MERGE_TOL are planar only to
+            // about 1e-5 (TRAING06).
+            let on = |pl: &Plane| (pl.z(m) - z).abs() < 1e-4;
             // The line must border a shown face: one it lies on that is on
             // one side only.
             let one_side =

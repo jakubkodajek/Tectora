@@ -450,7 +450,8 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer) {
                     && home_polys.iter().any(|f| inside(f, outside))
                     && pieces.iter().any(|pc| covers(&pc.poly, p))
             });
-            let level = (dir.x * up.x + dir.y * up.y).abs() < 1e-6;
+            // Level within float noise of the host plane (TRAING06).
+            let level = (dir.x * up.x + dir.y * up.y).abs() < 1e-4;
             let facing = out.x * up.x + out.y * up.y;
             let kind = match (level, facing < 0.0) {
                 (true, true) => LineKind::AbutmentFront,
