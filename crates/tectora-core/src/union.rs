@@ -438,7 +438,11 @@ pub fn join(geos: &mut [RoofGeometry], parts: &[RoofPart]) {
                         if len3(p, q) < 1e-6 {
                             continue;
                         }
-                        let kind = match (same_way, (p[2] - q[2]).abs() < 1e-6) {
+                        // Flat as in the roof engine: a rise under 0.5% of
+                        // the run is float noise (TRAING09).
+                        let run = (p[0] - q[0]).hypot(p[1] - q[1]);
+                        let flat = (p[2] - q[2]).abs() < 1e-6f64.max(0.005 * run);
+                        let kind = match (same_way, flat) {
                             (true, true) => LineKind::Knick,
                             (false, true) => LineKind::Gorge,
                             _ => LineKind::Valley,
