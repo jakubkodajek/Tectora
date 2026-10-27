@@ -9,8 +9,8 @@ time with a timeout, so a hung error dialog costs one file, not the batch.
 
 Inputs are copied to OUT_DIR and calculated there; OUT_DIR/status.json
 records ok / dacad_error (DACAD's own error box, e.g. E0002) / not_saved /
-timeout per file. Files already marked ok are
-skipped, so an interrupted batch can be resumed.
+no_result (saved without roof lines) / timeout per file. Files already
+marked ok are skipped, so an interrupted batch can be resumed.
 
 DACAD's roof core reads %TEMP%\<name>.RD2 and writes <name>.SOL/.SO2, which
 DACAD deletes again; with --keep-core they are copied to OUT_DIR/core/ while
@@ -24,9 +24,13 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from tectora.io.dacad_dad import read_dad  # noqa: E402
 
 CALC = Path(__file__).resolve().parent / "dacad_wine_calc.sh"
 
@@ -77,6 +81,9 @@ def _worker(n: int, a, q: queue.Queue, status: dict, lock: threading.Lock) -> No
                                    timeout=a.timeout)
                 st = ("ok" if "ok " in r.stdout else
                       "dacad_error" if "DACAD ERROR" in r.stderr else "not_saved")
+                # A lost Ctrl+B saves the file without results (s1 R1_0554).
+                if st == "ok" and not read_dad(str(f)).lines:
+                    st = "no_result"
             except subprocess.TimeoutExpired:
                 st = "timeout"
             stop.set()
