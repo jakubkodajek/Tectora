@@ -171,3 +171,61 @@ fn fixtures() {
     }
     assert!(!report(&t, 20));
 }
+
+/// Emulator vectors of the segment primitives (`segseg`: seg_seg with a
+/// mode; `segon`: seg_on_seg): `fn TAB inputs TAB eax TAB outputs`, words in hex.
+fn s5_vectors(path: &Path) -> (usize, Vec<String>) {
+    use tectora_core::dcore::{geom, num::Tol};
+    let t = Tol::default();
+    let text = std::fs::read_to_string(path).unwrap();
+    let mut bad = Vec::new();
+    let mut n = 0;
+    for line in text.lines().filter(|l| !l.is_empty()) {
+        let cols: Vec<&str> = line.split('\t').collect();
+        let words = |s: &str| -> Vec<u32> {
+            s.split_whitespace()
+                .map(|w| u32::from_str_radix(w, 16).unwrap())
+                .collect()
+        };
+        let ins = words(cols[1]);
+        let f = |i: usize| f32::from_bits(ins[i]);
+        let v3 = |i: usize| [f(i), f(i + 1), f(i + 2)];
+        let eax: i64 = cols[2].parse().unwrap();
+        let outs = words(cols.get(3).copied().unwrap_or(""));
+        let (got, got_out) = match cols[0] {
+            "segseg" => {
+                let (m, o) = geom::seg_seg((v3(0), v3(3)), (v3(6), v3(9)), ins[12], &t);
+                (i64::from(m), o.iter().map(|x| x.to_bits()).collect::<Vec<_>>())
+            }
+            "segon" => (
+                i64::from(geom::seg_on_seg(v3(0), v3(3), v3(6), v3(9), &t)),
+                vec![],
+            ),
+            other => panic!("unknown vector kind {other}"),
+        };
+        n += 1;
+        // The output point only matters when the lines meet.
+        let out_ok = cols[0] != "segseg" || eax == 0 || got_out == outs;
+        if got != eax || !out_ok {
+            bad.push(format!("{line}\n      got {got} {got_out:08x?}"));
+        }
+    }
+    (n, bad)
+}
+
+#[test]
+fn fixture_vectors() {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/dcore/s5.tsv");
+    let (n, bad) = s5_vectors(&p);
+    assert!(n > 0);
+    assert!(bad.is_empty(), "{} of {n} differ:\n{}", bad.len(), bad[..bad.len().min(10)].join("\n"));
+}
+
+#[test]
+#[ignore]
+fn all_vectors() {
+    let p = std::env::var("DCORE_S5VEC").expect("DCORE_S5VEC=file");
+    let (n, bad) = s5_vectors(Path::new(&p));
+    println!("{n} vectors, {} differ", bad.len());
+    assert!(bad.is_empty(), "{}", bad[..bad.len().min(10)].join("\n"));
+}
