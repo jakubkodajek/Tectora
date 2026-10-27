@@ -28,7 +28,7 @@ use crate::coresol::{
 use crate::geom::Point2;
 use crate::model::{EdgeDef, Project, RoofPart};
 use crate::modell::{self, FaceKind};
-use crate::roof::{LineKind, RoofFace, RoofGeometry, RoofLine, VergeSide};
+use crate::roof::{LineKind, Opening, OpeningKind, RoofFace, RoofGeometry, RoofLine, VergeSide};
 
 /// Where each part of the project went in the RD2.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -59,14 +59,19 @@ pub fn applies(project: &Project) -> bool {
 }
 
 /// Whether the sweep builds this roof the way DACAD's core does, face by
-/// face: every sloped wall rises from one eave level, no wall has
+/// face: every sloped wall (marker walls of no length aside) rises from
+/// one eave level, no wall has
 /// priority and no standing gable splits the part.
 pub fn sweep_fits(part: &RoofPart) -> bool {
     let mut eaves = part
         .edges
         .iter()
-        .filter(|e| !e.is_gable())
-        .map(|e| e.eave_height as f32);
+        .enumerate()
+        .filter(|(i, e)| {
+            let next = part.edges[(i + 1) % part.edges.len()].start;
+            !e.is_gable() && e.start.distance(next) > 1e-6
+        })
+        .map(|(_, e)| e.eave_height as f32);
     let first = eaves.next();
     let level = first.is_none_or(|h| eaves.all(|x| (x - h).abs() < 0.01));
     level
@@ -636,6 +641,7 @@ pub fn to_geometries(project: &Project, map: &Rd2Map, out: &modell::Output) -> V
             });
         }
     }
+    let mut holes: std::collections::BTreeMap<(usize, i32, i32), f64> = Default::default();
     let mut k = 0;
     for f in &out.state.faces {
         let n = f.pieces.len() + f.cutters.len();
@@ -677,6 +683,23 @@ pub fn to_geometries(project: &Project, map: &Rd2Map, out: &modell::Output) -> V
             face.area += cut;
             face.deducted -= cut;
         }
+        // The chimneys and openings cut out of this face, for the norms.
+        let cuts = mine.iter().filter(|o| matches!(o.kind, FaceKind::Cut(_)));
+        for (o, src) in cuts.zip(&f.cut_src) {
+            if matches!(src.kind as u8, b'L' | b'T') {
+                *holes.entry((pi, src.kind, src.sub)).or_default() -= o.area;
+            }
+        }
+    }
+    for ((pi, kind, _), area) in holes {
+        geos[pi].openings.push(Opening {
+            kind: if kind as u8 == b'T' {
+                OpeningKind::Chimney
+            } else {
+                OpeningKind::Hole
+            },
+            area,
+        });
     }
     geos
 }
