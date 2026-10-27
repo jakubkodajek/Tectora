@@ -26,6 +26,9 @@ use crate::openings::{inside, lerp3, plan, slope};
 use crate::roof::{LineKind, RoofFace, RoofGeometry, RoofLine};
 
 pub(crate) const EPS: f64 = 1e-6;
+/// DACAD snaps outline points to whole centimetres, so roofs meant to meet
+/// at one height can miss each other by millimetres (TRAING07).
+const SNAP: f64 = 5e-3;
 /// Two uphill directions closer than this count as the same (cos).
 const SAME_WAY: f64 = 1.0 - 1e-6;
 
@@ -443,7 +446,8 @@ pub fn join(geos: &mut [RoofGeometry], parts: &[RoofPart]) {
                         let o = Point2::new(m.x + nrm.x * k, m.y + nrm.y * k);
                         !bs[i].faces.iter().any(|(f, _)| covers(f, o))
                             && bs.iter().enumerate().any(|(j, bj)| {
-                                j != i && bj.plane_at(o).is_some_and(|pl| (pl.z(m) - z).abs() < EPS)
+                                j != i
+                                    && bj.plane_at(o).is_some_and(|pl| (pl.z(m) - z).abs() < SNAP)
                             })
                     })
                 };
