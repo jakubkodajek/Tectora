@@ -461,14 +461,14 @@ struct KnickClip {
 
 /// DACAD cuts a chimney off at a knick when its lowest corner or edge lies
 /// less than 2 cm below it: the side abutments stop on the knick and the
-/// chord along it is the front abutment (WV). A cut-off corner under about
-/// 7.5 mm gets neither the WV nor a knick deduction; a cut-off edge parallel
-/// to the knick keeps both. Sweep /mnt/project-files/dacad-chimney-knick/
-/// (0.5 cm: nothing, 1 cm: WV, 2 cm: not cut off; mass case R1_0254);
-/// [no source — my estimate] for the 7.5 mm between the swept depths.
+/// chord along it is the front abutment (WV). A chord shorter than DACAD's
+/// point tolerance (POINT_EPS, 2 cm) gets neither the WV nor a knick
+/// deduction. Sweep /mnt/project-files/dacad-chimney-knick/ (0.8 cm depth,
+/// chord 1.85 cm: nothing; 0.9 cm, chord 2.08 cm: WV; 2 cm: not cut off;
+/// mass case R1_0254).
 fn knick_clip(geo: &RoofGeometry, corners: &[Point2]) -> Option<KnickClip> {
     const DEPTH: f64 = 0.02;
-    const TINY: f64 = 0.0075;
+    const POINT_EPS: f64 = 0.02;
     let height = |p: Point2| {
         geo.faces.iter().find(|f| inside(&plan(f), p)).map(|f| {
             let (up, tan) = slope(f);
@@ -503,10 +503,6 @@ fn knick_clip(geo: &RoofGeometry, corners: &[Point2]) -> Option<KnickClip> {
             continue;
         }
         let n = corners.len();
-        let parallel = (0..n).any(|i| {
-            let (p, q) = (corners[i], corners[(i + 1) % n]);
-            down * off(p) > 1e-9 && (off(p) - off(q)).abs() < 1e-6
-        });
         // Keep the uphill side: -down·off ≥ 0.
         let f = |p: Point2| -down * off(p);
         let mut outline = Vec::new();
@@ -539,7 +535,7 @@ fn knick_clip(geo: &RoofGeometry, corners: &[Point2]) -> Option<KnickClip> {
             knick: l.clone(),
             outline,
             chord,
-            tiny: !parallel && depth < TINY,
+            tiny: chord.is_some_and(|(p, q)| p.distance(q) < POINT_EPS),
         });
     }
     None
