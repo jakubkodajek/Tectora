@@ -379,6 +379,7 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer) {
                 geos[c.host.0].faces[c.host.1].area -= left * sec;
             }
             removed += signed_area(&c.under).abs() * sec;
+            geos[c.host.0].footprints.push(c.under.clone());
         }
         if !hosts.contains(&c.host) {
             hosts.push(c.host);

@@ -153,6 +153,9 @@ pub struct RoofGeometry {
     /// line, by DACAD code; the line itself stays whole.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub minus_lines: Vec<(String, f64)>,
+    /// Plan outlines of the dormers cut into this roof.
+    #[serde(skip)]
+    pub footprints: Vec<Vec<Point2>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

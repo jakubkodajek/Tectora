@@ -16,11 +16,14 @@
 //!   sloped area is deducted under every norm. Checked against DACAD runs
 //!   OP1-OP4 (/mnt/project-files/dacad-round/openings/).
 
+use geo::{Area, BooleanOps, MultiPolygon};
+
 use crate::geom::{Point2, signed_area};
 use crate::model::{Chimney, Project, RoofPart, RoofWindow};
 use crate::roof::{
     LineKind, Opening, OpeningKind, RoofFace, RoofGeometry, RoofLine, VergeSide, generate,
 };
+use crate::union::to_geo;
 
 const TOL: f64 = 1e-9;
 /// A side counts as level in the roof plane (WV/WH) only when it is square
@@ -551,9 +554,16 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2]) {
         let Some((pts, _)) = face_hole(&geo.faces[fi], &corners) else {
             continue;
         };
+        // The roof under a dormer is already gone (DACAD variants of mass
+        // case R1_0398).
         let face = &mut geo.faces[fi];
         let (_, tan) = slope(face);
-        let cut = signed_area(&clip_polygon(&plan(face), &corners)).abs();
+        let mut under = MultiPolygon::new(vec![to_geo(&clip_polygon(&plan(face), &corners))]);
+        // Dormer faces have no footprint edge.
+        for f in geo.footprints.iter().filter(|_| face.edge != usize::MAX) {
+            under = under.difference(&MultiPolygon::new(vec![to_geo(f)]));
+        }
+        let cut = under.unsigned_area();
         let d = cut * (1.0 + tan * tan).sqrt();
         face.area -= d;
         face.deducted += d;
