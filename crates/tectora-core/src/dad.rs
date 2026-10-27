@@ -111,6 +111,14 @@ fn f32_at(b: &[u8], off: usize) -> f64 {
     (f64::from(v) * 1e4).round() / 1e4
 }
 
+fn angle_at(b: &[u8], off: usize) -> f64 {
+    let v = f32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]]);
+    // An f32 angle is off by up to 4e-8 rad, which a zero-length dormer
+    // side carries far back (TRAING01: -90° lost the dormers); round to
+    // 1e-4 degrees.
+    ((f64::from(v).to_degrees() * 1e4).round() / 1e4).to_radians()
+}
+
 fn u16_at(b: &[u8], off: usize) -> u16 {
     u16::from_le_bytes([b[off], b[off + 1]])
 }
@@ -149,9 +157,7 @@ pub fn parse(bytes: &[u8]) -> Result<DadFile, DadError> {
                     group: u16_at(payload, 2),
                     start: Point2::new(f32_at(payload, 4), f32_at(payload, 8)),
                     length: f32_at(payload, 12),
-                    angle_rad: f64::from(f32::from_le_bytes(
-                        payload[16..20].try_into().expect("4 bytes"),
-                    )),
+                    angle_rad: angle_at(payload, 16),
                     eave_height: f32_at(payload, 24),
                     overhang: f32_at(payload, 28),
                     pitch_deg: f32_at(payload, 32),
@@ -417,6 +423,12 @@ mod tests {
         assert_eq!(part.edges.len(), 4);
         assert!(crate::geom::signed_area(&part.outline()) > 0.0);
         assert_eq!(part.edges.iter().filter(|e| e.is_gable()).count(), 2);
+    }
+
+    #[test]
+    fn f32_angles_are_snapped() {
+        let b = (-std::f32::consts::FRAC_PI_2).to_le_bytes();
+        assert_eq!(angle_at(&b, 0), -std::f64::consts::FRAC_PI_2);
     }
 
     #[test]
