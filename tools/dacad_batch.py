@@ -33,7 +33,7 @@ def _worker(n: int, a, q: queue.Queue, status: dict, lock: threading.Lock) -> No
         base.mkdir(parents=True, exist_ok=True)
         shutil.copytree(a.prefix, prefix, symlinks=True)
         shutil.copytree(a.dacad, dacad)
-    display = f":{20 + n}"
+    display = f":{a.display_base + n}"
     xvfb = subprocess.Popen(["Xvfb", display, "-screen", "0", "1280x1024x24", "+extension", "GLX"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2)
@@ -70,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--workdir", default="/tmp/claude-0/wine/workers")
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--timeout", type=int, default=150)
+    ap.add_argument("--display-base", type=int, default=20)
     a = ap.parse_args(argv)
     a.out.mkdir(parents=True, exist_ok=True)
     sp = a.out / "status.json"
