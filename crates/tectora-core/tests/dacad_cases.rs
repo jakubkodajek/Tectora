@@ -257,6 +257,22 @@ fn compare_tol(cases: Vec<(String, Value)>, tol: fn(f64) -> f64) -> Vec<String> 
     for (name, case) in cases {
         let project = project(&name, &case);
         let geos = generate_project(&project);
+        if std::env::var("DACAD_PARTS").is_ok() {
+            for p in &project.parts {
+                println!("part {}", p.name);
+                for e in &p.edges {
+                    println!(
+                        "  ({:.3},{:.3}) {:.2} eave {:.4} ov {:.2} dir {:?}",
+                        e.start.x,
+                        e.start.y,
+                        e.pitch_deg,
+                        e.eave_height,
+                        e.overhang,
+                        e.direction_rad
+                    );
+                }
+            }
+        }
         if std::env::var("DACAD_DUMP").is_ok() {
             for (gi, g) in geos.iter().enumerate() {
                 for l in &g.lines {

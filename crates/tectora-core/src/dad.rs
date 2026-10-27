@@ -223,13 +223,19 @@ fn chain(walls: &[&DadWall]) -> Vec<(Vec<EdgeDef>, Point2, bool)> {
                 .filter(|&i| !used[i] && walls[i].start.approx_eq(end, CHAIN_TOL))
                 .collect();
             let closing = end.approx_eq(origin, CHAIN_TOL) && edges.len() >= 3;
+            // A marker at this corner comes before the next wall, even when
+            // the file lists it elsewhere (ZWEIPULT).
             let next = candidates
                 .iter()
                 .copied()
-                .find(|&i| {
-                    walls[i].id == last.id.wrapping_add(1) && !(closing && !is_marker(walls[i]))
-                })
+                .find(|&i| walls[i].id == last.id.wrapping_add(1) && is_marker(walls[i]))
                 .or_else(|| candidates.iter().copied().find(|&i| is_marker(walls[i])))
+                .or_else(|| {
+                    candidates
+                        .iter()
+                        .copied()
+                        .find(|&i| walls[i].id == last.id.wrapping_add(1) && !closing)
+                })
                 .or_else(|| {
                     if closing {
                         None
