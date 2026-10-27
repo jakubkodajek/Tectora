@@ -561,12 +561,16 @@ impl KnickClip {
 /// mass case R1_0254). A corner poking over a ridge is cut off there the
 /// same way, the chord being the back abutment (WH) and taking its piece
 /// off the ridge (sweep /mnt/project-files/dacad-chimney-ridge-end/chr/:
-/// 1 cm over at 26° and 40°, chord 2 cm: WH; 3 mm over: only the clip;
-/// mass case R1_0170: 1.57 cm over at 52° stays). Measuring that depth
-/// down the far plane against 2 cm is [no source — my estimate].
+/// 1 cm over at 26° and 40°, chord 2 cm: WH; 3 mm over: only the clip).
+/// Past a ridge a corner is cut off when it is less than 1 cm past, or
+/// less than 2 cm past and less than 2 cm lower (sweep
+/// /mnt/project-files/dacad-chimney-over-ridge/, 20°–80°; mass case
+/// R1_0170: 1.57 cm past at 52° stays). Which plane's pitch counts where
+/// the two differ is not measured; this takes the far plane's.
 fn knick_clip(geo: &RoofGeometry, corners: &[Point2]) -> Option<KnickClip> {
     const DEPTH: f64 = 0.02;
     const POINT_EPS: f64 = 0.02;
+    const VALUE_EPS: f64 = 0.01;
     let height = |p: Point2| {
         geo.faces.iter().find(|f| inside(&plan(f), p)).map(|f| {
             let (up, tan) = slope(f);
@@ -607,16 +611,20 @@ fn knick_clip(geo: &RoofGeometry, corners: &[Point2]) -> Option<KnickClip> {
             .copied()
             .max_by(|&p, &q| (down * off(p)).total_cmp(&(down * off(q))))
             .unwrap_or(a);
-        let mut depth = down * off(deepest);
+        let depth = down * off(deepest);
         // A side within 1 mm of the line lies on it (see side_spans).
         if depth <= 1e-3 {
             continue;
         }
-        // Over a ridge the distance counts down the far plane.
-        if l.kind == LineKind::Ridge
-            && let Some(z) = height(deepest)
-        {
-            depth = depth.hypot(l.a[2] - z);
+        // Over a ridge a corner more than 1 cm past it is cut off only
+        // while it also drops less than 2 cm down the far plane.
+        // DACAD compares in single precision.
+        let lt = |x: f64, e: f64| (x as f32) < e as f32;
+        if l.kind == LineKind::Ridge {
+            let low = height(deepest).is_some_and(|z| lt(l.a[2] - z, DEPTH));
+            if !(lt(depth, VALUE_EPS) || lt(depth, DEPTH) && low) {
+                continue;
+            }
         }
         let above = corners.iter().any(|&c| down * off(c) < -1e-6);
         let along = |p: Point2| (p.x - a.x) * d.x + (p.y - a.y) * d.y;
