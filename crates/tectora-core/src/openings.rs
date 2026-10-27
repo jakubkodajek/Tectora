@@ -726,7 +726,9 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2]) {
         if dist3_(e.c, e.d) < 0.02 {
             continue;
         }
-        let on = roof.iter().find(|r| on_line(r, e.c, e.d));
+        let on = roof
+            .iter()
+            .find(|r| on_line((r.a, r.b), e.c, e.d) || on_line((r.b, r.a), e.c, e.d));
         if let Some(r) = on {
             geo.minus_lines
                 .push((r.dacad_code().to_string(), dist3_(e.c, e.d)));
@@ -902,15 +904,11 @@ fn pivot_corner(geo: &RoofGeometry, corners: &mut [Point2]) -> bool {
 /// DACAD's test whether hole edge C→D lies on roof line A→B: the ends
 /// agree within VALUE_EPS, or the unit vectors B−A, C−A and D−C agree in
 /// every coordinate within VALUE_EPS (either sign) with C and D inside the
-/// line's box grown by VALUE_EPS; all in f32. The line is measured from
-/// its lower end (DACAD stores it in face order; not modelled).
-fn on_line(r: &RoofLine, c: [f64; 3], d: [f64; 3]) -> bool {
+/// line's box grown by VALUE_EPS; all in f32. Callers try the line from
+/// either end: its stored direction is not modelled, and mass cases R1_0077
+/// and R1_0808 each need a different end of a hip.
+fn on_line((a, b): ([f64; 3], [f64; 3]), c: [f64; 3], d: [f64; 3]) -> bool {
     const VALUE_EPS: f32 = 0.01;
-    let (a, b) = if r.a[2] <= r.b[2] {
-        (r.a, r.b)
-    } else {
-        (r.b, r.a)
-    };
     let eq = |p: [f64; 3], q: [f64; 3]| {
         (0..3).all(|i| ((p[i] as f32) - (q[i] as f32)).abs() < VALUE_EPS)
     };
