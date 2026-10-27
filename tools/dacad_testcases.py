@@ -294,6 +294,22 @@ def cases() -> dict[str, tuple]:
                                         rect(10, 8, Def(40, 0.5), Def(90, 0.5), Def(40, 0.5), Def(90, 0.5)), None,
                                         [Dormer((4.0, 0.0), [W(2, 0, Def(40, 0.5)), W(4, 90, G), W(2, 180, G),
                                                              W(4, 270, G)], kind=0, host=0)]),
+        "C64_box_same_plane_across_ridge": ("Jako C62, box přesahuje hřeben o 0,5 m (y 0–4,5)",
+                                            rect(10, 8, Def(40, 0.5), Def(90, 0.5), Def(40, 0.5), Def(90, 0.5)), None,
+                                            [Dormer((4.0, 0.0), [W(2, 0, Def(40, 0.5)), W(4.5, 90, G), W(2, 180, G),
+                                                                 W(4.5, 270, G)], kind=0, host=0)]),
+        "C65_box_same_plane_ov1_across_ridge": ("Jako C64, šikmá stěna boxu i hlavní okap s přesahem 1,0",
+                                                rect(10, 8, Def(40, 1.0), Def(90, 0.5), Def(40, 1.0), Def(90, 0.5)), None,
+                                                [Dormer((4.0, 0.0), [W(2, 0, Def(40, 1.0)), W(4.5, 90, G), W(2, 180, G),
+                                                                     W(4.5, 270, G)], kind=0, host=0)]),
+        "C66_box_same_plane_to_gable_edge": ("Jako C60 (hloubka 1 m), box x 9–10,5 až k přesahu východního štítu",
+                                             rect(10, 8, Def(40, 0.5), Def(90, 0.5), Def(40, 0.5), Def(90, 0.5)), None,
+                                             [Dormer((9.0, 0.0), [W(1.5, 0, Def(40, 0.5)), W(1, 90, G), W(1.5, 180, G),
+                                                                  W(1, 270, G)], kind=0, host=0)]),
+        "C67_box_same_plane_short_of_ridge": ("Jako C63, hloubka boxu 3,99 m (1 cm pod hřebenem)",
+                                              rect(10, 8, Def(40, 0.5), Def(90, 0.5), Def(40, 0.5), Def(90, 0.5)), None,
+                                              [Dormer((4.0, 0.0), [W(2, 0, Def(40, 0.5)), W(3.99, 90, G), W(2, 180, G),
+                                                                   W(3.99, 270, G)], kind=0, host=0)]),
     }
 
 

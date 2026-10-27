@@ -333,3 +333,7 @@ HINT04 bisection (DACAD-calculated variants in `/mnt/project-files/dacad-hint04-
 |---|---|---|
 | C62 same-plane box from the eave to 1 cm past the ridge | no WS; south T split 4.5 + 4.5 (the 2 m in front of the box is missing); tiles +0.0261 m² | |
 | C63 same box ending exactly on the ridge | no WS; T split 4.5 + 4.5 as in C62; tiles as C60 | Compare C60 (box 1 m deep): T continuous 11.0. |
+| C64 same-plane box crossing the ridge by 0.5 m | box gables stand above the north face: WS 2 × 0.6527, WV 2.0 at y = 4.5, P 2.0 box top, OL/OR 0.6527; F split 4.5 + 4.5; south T split 4.5 + 4.5 | Explains ZWEIPULT's WS around boxes 2 and 3. |
+| C65 as C64 with overhang 1.0 | same pattern | |
+| C66 same-plane box (1 m deep) reaching the east gable's overhang line | T continuous 11.0; no extra lines | |
+| C67 same-plane box 3.99 m deep (1 cm short of the ridge) | T continuous; the whole ridge becomes P 11.0 instead of F | Probably cm snapping of the box top onto the ridge. |
