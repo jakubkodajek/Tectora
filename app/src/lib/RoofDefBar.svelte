@@ -3,8 +3,8 @@
   // one row, with previous/next wall buttons, docked under the views.
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
-  import type { EdgeDef, Project, Selection } from "./types";
-  import { GABLE_PITCH, isGable } from "./types";
+  import type { EdgeDef, PitchBreak, Project, Selection } from "./types";
+  import { GABLE_PITCH, isGable, isMarker } from "./types";
 
   let {
     project,
@@ -13,6 +13,7 @@
     onapplyall,
     onlength,
     ondelete,
+    onmarker,
   }: {
     project: Project;
     selection: Selection;
@@ -20,6 +21,7 @@
     onapplyall: (patch: Partial<EdgeDef>) => void;
     onlength: (len: number) => void;
     ondelete: () => void;
+    onmarker: () => void;
   } = $props();
 
   const part = $derived(selection ? project.parts[selection.part] : null);
@@ -30,6 +32,10 @@
     return Math.hypot(next.start.x - edge.start.x, next.start.y - edge.start.y);
   });
   const gable = $derived(!!edge && isGable(edge));
+  const marker = $derived(!!edge && isMarker(edge));
+  const realWalls = $derived(part ? part.edges.filter((e) => !isMarker(e)).length : 0);
+  const directionDeg = $derived(edge?.direction_rad != null ? +(((edge.direction_rad * 180) / Math.PI + 360) % 360).toFixed(2) : 0);
+  const breaks = $derived(edge?.breaks ?? []);
   let lastPitch = 40;
 
   /** Steps through all walls of all parts, like DACAD's NEXT/PREV buttons. */
@@ -43,6 +49,26 @@
   function num(e: Event): number | null {
     const v = parseFloat((e.target as HTMLInputElement).value.replace(",", "."));
     return Number.isFinite(v) ? v : null;
+  }
+
+  function setDirection(deg: number) {
+    onchange({ direction_rad: (((deg % 360) + 360) % 360) * (Math.PI / 180) });
+  }
+
+  /** A pitch for an eave plane: under 90°, or over 90° for a plane leaning out. */
+  function setPitch(v: number | null) {
+    if (v && v > 0 && v < 180 && Math.abs(v - GABLE_PITCH) > 0.001) onchange({ pitch_deg: v });
+  }
+
+  function setBreak(i: number, patch: Partial<PitchBreak>) {
+    onchange({ breaks: breaks.map((b, j) => (j === i ? { ...b, ...patch } : { ...b })) });
+  }
+
+  function addBreak() {
+    if (!edge) return;
+    const top = breaks.reduce((h, b) => Math.max(h, b.height), edge.eave_height);
+    const last = breaks.length ? breaks[breaks.length - 1].pitch_deg : edge.pitch_deg;
+    onchange({ breaks: [...breaks.map((b) => ({ ...b })), { height: +(top + 1.5).toFixed(2), pitch_deg: Math.max(5, Math.min(85, last - 20)) }] });
   }
 
   function setType(toGable: boolean) {
@@ -72,19 +98,29 @@
   </div>
 
   {#if edge && part}
-    <div class="seg" role="radiogroup" aria-label={t("edge.type")}>
-      <button class:on={!gable} role="radio" aria-checked={!gable} onclick={() => setType(false)}>{t("edge.eave")}</button>
-      <button class:on={gable} role="radio" aria-checked={gable} onclick={() => setType(true)}>{t("edge.gable")}</button>
-    </div>
-    <label>
-      <span>{t("edge.length")}</span>
-      <div class="unit"><input type="number" step="0.05" min="0.05" value={length.toFixed(2)}
-        onchange={(e) => { const v = num(e); if (v && v > 0) onlength(v); }} /><em>m</em></div>
-    </label>
-    <label class:off={gable}>
+    {#if marker}
+      <div class="kind" title={t("edge.markerHint")}>{t("edge.marker")}</div>
+      <label>
+        <span>{t("edge.direction")}</span>
+        <div class="unit"><input type="number" step="1" value={directionDeg}
+          onchange={(e) => { const v = num(e); if (v !== null) setDirection(v); }} /><em>°</em></div>
+      </label>
+      <button class="icon-btn" onclick={() => setDirection(directionDeg + 180)} title={t("edge.flip")} aria-label={t("edge.flip")}><Icon name="refresh" /></button>
+    {:else}
+      <div class="seg" role="radiogroup" aria-label={t("edge.type")}>
+        <button class:on={!gable} role="radio" aria-checked={!gable} onclick={() => setType(false)}>{t("edge.eave")}</button>
+        <button class:on={gable} role="radio" aria-checked={gable} onclick={() => setType(true)}>{t("edge.gable")}</button>
+      </div>
+      <label>
+        <span>{t("edge.length")}</span>
+        <div class="unit"><input type="number" step="0.05" min="0.05" value={length.toFixed(2)}
+          onchange={(e) => { const v = num(e); if (v && v > 0) onlength(v); }} /><em>m</em></div>
+      </label>
+    {/if}
+    <label class:off={gable} title={edge.pitch_deg > GABLE_PITCH && !gable ? t("edge.leaningHint") : undefined}>
       <span>{t("edge.pitch")}</span>
-      <div class="unit"><input type="number" step="1" min="1" max="89" disabled={gable} value={gable ? "" : edge.pitch_deg}
-        onchange={(e) => { const v = num(e); if (v && v > 0 && v < 90) onchange({ pitch_deg: v }); }} /><em>°</em></div>
+      <div class="unit"><input type="number" step="1" min="1" max="179" disabled={gable} value={gable ? "" : edge.pitch_deg}
+        onchange={(e) => setPitch(num(e))} /><em>°</em></div>
     </label>
     <label>
       <span>{t("edge.eaveHeight")}</span>
@@ -97,6 +133,11 @@
         onchange={(e) => { const v = num(e); if (v !== null && v >= 0) onchange({ overhang: v }); }} /><em>m</em></div>
     </label>
     {#if gable}
+      <label class="check" title={t("edge.cladHint")}>
+        <input type="checkbox" checked={!!edge.clad}
+          onchange={(e) => onchange({ clad: (e.target as HTMLInputElement).checked })} />
+        {t("edge.clad")}
+      </label>
       <label class="check">
         <input type="checkbox" checked={!!edge.half_hip}
           onchange={(e) => onchange({ half_hip: (e.target as HTMLInputElement).checked ? { height: edge.eave_height + 2.5, pitch_deg: 50 } : null })} />
@@ -122,13 +163,35 @@
         {t("edge.priority")}
       </label>
     {/if}
+    {#if !gable || edge.half_hip}
+      {#each breaks as b, i}
+        <div class="break">
+          <label>
+            <span>{t("edge.breakHeight", { n: i + 1 })}</span>
+            <div class="unit"><input type="number" step="0.05" value={b.height}
+              onchange={(e) => { const v = num(e); if (v !== null) setBreak(i, { height: v }); }} /><em>m</em></div>
+          </label>
+          <label>
+            <span>{t("edge.breakPitch")}</span>
+            <div class="unit"><input type="number" step="1" min="1" max="90" value={b.pitch_deg}
+              onchange={(e) => { const v = num(e); if (v && v > 0 && v <= 90) setBreak(i, { pitch_deg: v }); }} /><em>°</em></div>
+          </label>
+          <button class="icon-btn" onclick={() => onchange({ breaks: breaks.filter((_, j) => j !== i).map((x) => ({ ...x })) })}
+            title={t("edge.removeBreak")} aria-label={t("edge.removeBreak")}><Icon name="x" /></button>
+        </div>
+      {/each}
+      <button class="btn sm" onclick={addBreak} title={t("edge.addBreakHint")}><Icon name="plus" /> {t("edge.addBreak")}</button>
+    {/if}
     <div class="spacer"></div>
     <div class="actions">
-      {#if !gable}
+      {#if !gable && !marker}
         <button class="btn sm" onclick={() => onapplyall({ pitch_deg: edge.pitch_deg })} title={t("edge.pitchAllHint")}>{t("edge.pitchAll")}</button>
       {/if}
       <button class="btn sm" onclick={() => onapplyall({ eave_height: edge.eave_height, overhang: edge.overhang })}>{t("edge.heightAll")}</button>
-      <button class="icon-btn danger" disabled={part.edges.length <= 3} onclick={ondelete} title={t("edge.deleteVertex")} aria-label={t("edge.deleteVertex")}><Icon name="trash" /></button>
+      {#if !marker}
+        <button class="btn sm" onclick={onmarker} title={t("edge.addMarkerHint")}>{t("edge.addMarker")}</button>
+      {/if}
+      <button class="icon-btn danger" disabled={!marker && realWalls <= 3} onclick={ondelete} title={t("edge.deleteVertex")} aria-label={t("edge.deleteVertex")}><Icon name="trash" /></button>
     </div>
   {:else}
     <p class="tip">{t("editor.tip")}</p>
@@ -216,13 +279,29 @@
   }
   .check {
     display: flex;
+    flex-shrink: 0;
     align-items: center;
     gap: 6px;
     height: 34px;
     white-space: nowrap;
   }
+  .check input {
+    width: auto;
+  }
   .spacer {
     flex: 1;
+  }
+  .kind {
+    align-self: center;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .break {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    padding-left: 10px;
+    border-left: 1px solid var(--border);
   }
   .actions {
     display: flex;

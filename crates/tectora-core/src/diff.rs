@@ -94,6 +94,12 @@ fn edge_fields(pi: usize, ei: usize, a: &EdgeDef, b: &EdgeDef, out: &mut Vec<Cha
     if a.breaks != b.breaks {
         out.push(m("breaks", json!(a.breaks), json!(b.breaks)));
     }
+    if a.clad != b.clad {
+        out.push(m("clad", json!(a.clad), json!(b.clad)));
+    }
+    if a.direction_rad != b.direction_rad {
+        out.push(m("direction", json!(a.direction_rad), json!(b.direction_rad)));
+    }
 }
 
 fn diff_part(pi: usize, a: &RoofPart, b: &RoofPart, out: &mut Vec<Change>) {
@@ -178,6 +184,9 @@ pub fn diff(before: &Project, after: &Project) -> Vec<Change> {
     }
     if before.chimneys != after.chimneys {
         out.push(m("chimneys", json!(before.chimneys), json!(after.chimneys)));
+    }
+    if before.dormers != after.dormers {
+        out.push(m("dormers", json!(before.dormers), json!(after.dormers)));
     }
     let n = before.parts.len().min(after.parts.len());
     for i in 0..n {

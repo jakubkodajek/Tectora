@@ -177,6 +177,9 @@ export function emptyProject(name: string): Project {
 }
 
 export const GABLE_PITCH = 90;
-export const isGable = (e: EdgeDef) => e.pitch_deg >= 89.999;
+/** A vertical wall (pitch 90°, as the engine's GABLE_PITCH_DEG tolerance). */
+export const isGable = (e: EdgeDef) => Math.abs(e.pitch_deg - 90) <= 0.001;
+/** A zero-length wall that only carries a roof direction (DACAD: Richtungswechsel). */
+export const isMarker = (e: EdgeDef) => e.direction_rad != null;
 
 export type Selection = { part: number; edge: number } | null;

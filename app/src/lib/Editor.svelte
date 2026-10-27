@@ -21,7 +21,7 @@
   import { actorName, isFresh, live } from "./live.svelte";
   import { markReviewed, prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
   import type { ActivityItem, CalcResult, Change, EdgeDef, Point2, Project, RoofPart, Selection } from "./types";
-  import { isAi } from "./types";
+  import { isAi, isGable, isMarker } from "./types";
 
   let {
     id,
@@ -213,7 +213,7 @@
   function applyAll(patch: Partial<EdgeDef>) {
     if (!project || !selection) return;
     for (const e of project.parts[selection.part].edges) {
-      if ("pitch_deg" in patch && e.pitch_deg >= 89.999) continue;
+      if ("pitch_deg" in patch && (isGable(e) || isMarker(e))) continue;
       Object.assign(e, patch);
     }
     commit();
@@ -234,7 +234,7 @@
   function deleteVertex() {
     if (!project || !selection) return;
     const es = project.parts[selection.part].edges;
-    if (es.length <= 3) return;
+    if (!isMarker(es[selection.edge]) && es.filter((e) => !isMarker(e)).length <= 3) return;
     es.splice(selection.edge, 1);
     selection = null;
     commit();
@@ -255,6 +255,26 @@
     const copy: EdgeDef = { ...$state.snapshot(es[edge]), start: { x, y }, half_hip: null, direction_rad: null };
     es.splice(edge + 1, 0, copy);
     selection = { part, edge: edge + 1 };
+    commit();
+  }
+
+  /** Inserts a direction change (DACAD: Richtungswechsel) at the start of the selected wall. */
+  function insertMarker() {
+    if (!project || !selection) return;
+    const es = project.parts[selection.part].edges;
+    const e = es[selection.edge];
+    const next = es[(selection.edge + 1) % es.length].start;
+    const ang = Math.atan2(next.y - e.start.y, next.x - e.start.x) + Math.PI / 2;
+    const marker: EdgeDef = {
+      ...$state.snapshot(e),
+      start: { ...e.start },
+      half_hip: null,
+      breaks: [],
+      clad: false,
+      pitch_deg: isGable(e) ? presets.pitch_deg : e.pitch_deg,
+      direction_rad: (ang + 2 * Math.PI) % (2 * Math.PI),
+    };
+    es.splice(selection.edge, 0, marker);
     commit();
   }
 
@@ -467,6 +487,7 @@
             onapplyall={applyAll}
             onlength={setLength}
             ondelete={deleteVertex}
+            onmarker={insertMarker}
           />
         {/if}
       </div>

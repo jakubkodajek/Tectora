@@ -4,7 +4,7 @@ import { num } from "./format";
 import { t } from "./i18n.svelte";
 import type { Change, HalfHip, Project } from "./types";
 
-const GABLE = 89.999;
+const isVertical = (p: number) => Math.abs(p - 90) <= 0.001;
 const deg = (v: unknown) => `${num(Number(v)).replace(/[.,]00$/, "")}°`;
 const len = (v: unknown) => `${num(Number(v))} m`;
 
@@ -16,8 +16,8 @@ export function describeChange(c: Change, multiPart: boolean): string {
       case "pitch_deg": {
         const a = Number(c.before);
         const b = Number(c.after);
-        if (b >= GABLE) return t("chg.toGable", { n });
-        if (a >= GABLE) return t("chg.toEave", { n, b: deg(b) });
+        if (isVertical(b)) return t("chg.toGable", { n });
+        if (isVertical(a)) return t("chg.toEave", { n, b: deg(b) });
         return t("chg.pitch", { n, a: deg(a), b: deg(b) });
       }
       case "eave_height":
@@ -37,6 +37,12 @@ export function describeChange(c: Change, multiPart: boolean): string {
         return t("chg.chimneys", { k: (c.after as unknown[]).length });
       case "breaks":
         return t("chg.breaks", { n });
+      case "clad":
+        return t(c.after ? "chg.cladOn" : "chg.cladOff", { n });
+      case "direction":
+        return c.after == null ? t("chg.directionOff", { n }) : t("chg.direction", { n, b: deg(((Number(c.after) * 180) / Math.PI + 360) % 360) });
+      case "dormers":
+        return t("chg.dormers", { k: (c.after as unknown[]).length });
       case "vertex": {
         const [x, y] = c.after as [number, number];
         return t("chg.vertex", { n, x: num(x), y: num(y) });
