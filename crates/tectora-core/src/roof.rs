@@ -1172,7 +1172,8 @@ pub(crate) fn snap_in_step_planes(part: &RoofPart) -> RoofPart {
 
 /// Gable walls on one line, even with other walls between them, are one
 /// gable to DACAD: a clipped gable (Krüppel) on one clips them all (sample
-/// TRAING01).
+/// TRAING01). Only when the building runs on between them: the gable ends
+/// of two wings across a notch keep their own (mass case R1_0050).
 fn share_half_hips(part: &RoofPart) -> RoofPart {
     let mut out = part.clone();
     let n = out.edges.len();
@@ -1183,6 +1184,29 @@ fn share_half_hips(part: &RoofPart) -> RoofPart {
         (l > POS_TOL).then(|| {
             let d = Point2::new((b.x - a.x) / l, (b.y - a.y) / l);
             (d, d.y * a.x - d.x * a.y)
+        })
+    };
+    // Whether the footprint continues just inside the line between the two
+    // collinear walls.
+    let joined = |i: usize, j: usize| {
+        let (a, b) = (pts[i], pts[(i + 1) % n]);
+        let l = a.distance(b);
+        let d = Point2::new((b.x - a.x) / l, (b.y - a.y) / l);
+        let t = |p: Point2| (p.x - a.x) * d.x + (p.y - a.y) * d.y;
+        let (tj0, tj1) = (t(pts[j]), t(pts[(j + 1) % n]));
+        let (lo, hi) = if tj0.min(tj1) >= l {
+            (l, tj0.min(tj1))
+        } else {
+            (tj0.max(tj1), 0.0)
+        };
+        if hi - lo < POS_TOL {
+            return true;
+        }
+        // The roof rises to the left of a wall (counter-clockwise outline).
+        (1..10).all(|k| {
+            let s = lo + (hi - lo) * k as f64 / 10.0;
+            let p = Point2::new(a.x + d.x * s - d.y * 1e-3, a.y + d.y * s + d.x * 1e-3);
+            crate::openings::inside(&pts, p)
         })
     };
     for i in 0..n {
@@ -1205,6 +1229,7 @@ fn share_half_hips(part: &RoofPart) -> RoofPart {
             if let Some((dj, cj)) = line(j)
                 && dot(d, dj) > 1.0 - 1e-9
                 && (c - cj).abs() < 1e-6
+                && joined(i, j)
             {
                 out.edges[j].half_hip = Some(h.clone());
             }
@@ -1785,6 +1810,32 @@ mod tests {
     use super::*;
     use crate::model::EdgeDef;
     use approx::assert_relative_eq;
+
+    /// Two wings of a U, both ending in a gable on y = 13.3 (mass case
+    /// R1_0050): DACAD clips only the gable that has the Krüppel.
+    #[test]
+    fn krueppel_stays_on_its_own_wing() {
+        let mut p = part(
+            &[
+                (0.0, 0.0),
+                (12.95, 0.0),
+                (12.95, 13.3),
+                (7.65, 13.3),
+                (7.65, 6.65),
+                (5.3, 6.65),
+                (5.3, 13.3),
+                (0.0, 13.3),
+            ],
+            &[55.0, 55.0, 90.0, 35.0, 57.0, 55.0, 90.0, 28.0],
+        );
+        p.edges[6].half_hip = Some(crate::model::HalfHip {
+            height: 1.7,
+            pitch_deg: 62.0,
+        });
+        let shared = share_half_hips(&p);
+        assert!(shared.edges[2].half_hip.is_none());
+        assert!(shared.edges[6].half_hip.is_some());
+    }
 
     fn part(points: &[(f64, f64)], pitch: &[f64]) -> RoofPart {
         let edges = points
