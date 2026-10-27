@@ -363,6 +363,13 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer, host: Option<&(EdgeDe
     for df in &roof.faces {
         let dp = Plane::of(df);
         let dpoly = plan(df);
+        if std::env::var("DORMER_DEBUG").is_ok() {
+            eprintln!(
+                "dormer face pitch {} poly {:?}",
+                df.pitch_deg,
+                dpoly.iter().map(|p| (p.x, p.y)).collect::<Vec<_>>()
+            );
+        }
         for &(gi, fi, hp) in &host_faces {
             {
                 let above = clip_half(&dpoly, dp.a - hp.a, dp.b - hp.b, dp.c - hp.c);
@@ -454,7 +461,12 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer, host: Option<&(EdgeDe
         if c.under.len() >= 3 {
             let sec = Plane::of(&geos[c.host.0].faces[c.host.1]).sec();
             let mut left = signed_area(&c.under).abs();
-            for f in &mut geos[c.host.0].faces {
+            // Faces of other dormers keep their area (D101_0097).
+            for f in geos[c.host.0]
+                .faces
+                .iter_mut()
+                .filter(|f| f.edge != usize::MAX)
+            {
                 let cut = signed_area(&clip_polygon(&plan(f), &c.under)).abs();
                 if cut > 1e-12 {
                     f.area -= cut * sec;
@@ -488,11 +500,13 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer, host: Option<&(EdgeDe
         .iter()
         .map(|w| w.2.eave_height)
         .fold(f64::INFINITY, f64::min);
-    let on_face = wall_segs.iter().any(|&(a, _)| {
-        geos[home]
+    let host_plane = host.and_then(|(def, end)| wall_plane(def, *end));
+    let on_face = wall_segs.iter().any(|&(a, _)| match host_plane {
+        Some(hp) => (hp.z(a) - eave).abs() < 2e-3,
+        None => geos[home]
             .faces
             .iter()
-            .any(|f| covers(&plan(f), a) && (Plane::of(f).z(a) - eave).abs() < 2e-3)
+            .any(|f| covers(&plan(f), a) && (Plane::of(f).z(a) - eave).abs() < 2e-3),
     });
     // Dormer lines where the dormer shows.
     let mut lines: Vec<RoofLine> = Vec::new();
