@@ -340,10 +340,14 @@ def _read_v2(path: str, data: bytes) -> DadProject:
             _pt2(geo[1]), _pt2(geo[2]),
             [defs[d] for d in wall_defs.get(oid, []) if d in defs],
             math.degrees(_f32(geo[4])) if 4 in geo else None)
-    # The loop key is the roof number; the definitions' own roof field is
-    # not reliable in files DACAD saved.
+    # The loop key is the id of the roof object in [4], whose [1] is the
+    # roof number (the two often but not always coincide); the definitions'
+    # own roof field is not reliable in files DACAD saved.
+    roof_objs = dict(_objects(proj.get(4, b"")))
+    roof_no = {oid: _u(f.get(1)) for oid, f in roof_objs.items()}
     ordered = [replace(walls_by_id[w], definitions=[
-                   replace(d, roof_no=roof) for d in walls_by_id[w].definitions])
+                   replace(d, roof_no=roof_no.get(roof, roof))
+                   for d in walls_by_id[w].definitions])
                for roof, ids in sorted(loops.items()) for w in ids
                if w in walls_by_id]
     walls = ordered or list(walls_by_id.values())
@@ -369,8 +373,8 @@ def _read_v2(path: str, data: bytes) -> DadProject:
     # [100][1][4]: dormer roof id → host id(s); a roof listed there is a
     # dormer (V1 kind 1), the others are buildings (kind 0).
     dormer_ids = set(_id_lists(rel1.get(4, b"")))
-    roofs = {_u(f.get(1)): (int(oid in dormer_ids), _u(f.get(2)))
-             for oid, f in _objects(proj.get(4, b""))}
+    roofs = {roof_no[oid]: (int(oid in dormer_ids), _u(f.get(2)))
+             for oid, f in roof_objs.items()}
     return DadProject(path, "V2", walls, lines, faces, line_groups, area_groups,
                       windows, chimneys, roofs)
 
