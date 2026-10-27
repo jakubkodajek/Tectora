@@ -35,7 +35,48 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
             apply_chimney(geo, c);
         }
     }
+    for geo in &mut geos {
+        merge_collinear(&mut geo.lines);
+    }
     geos
+}
+
+/// Joins lines of the same kind that continue each other, as DACAD lists
+/// them: cutting roofs against each other leaves them in pieces.
+pub(crate) fn merge_collinear(lines: &mut Vec<RoofLine>) {
+    let dir = |l: &RoofLine| {
+        let d = [l.b[0] - l.a[0], l.b[1] - l.a[1], l.b[2] - l.a[2]];
+        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-12);
+        [d[0] / n, d[1] / n, d[2] / n]
+    };
+    let near = |p: [f64; 3], q: [f64; 3]| {
+        (p[0] - q[0]).abs() < 1e-6 && (p[1] - q[1]).abs() < 1e-6 && (p[2] - q[2]).abs() < 1e-6
+    };
+    loop {
+        let mut joined = false;
+        'outer: for i in 0..lines.len() {
+            for j in 0..lines.len() {
+                if i == j || lines[i].dacad_code() != lines[j].dacad_code() {
+                    continue;
+                }
+                let (di, dj) = (dir(&lines[i]), dir(&lines[j]));
+                let cos = di[0] * dj[0] + di[1] * dj[1] + di[2] * dj[2];
+                if cos > 1.0 - 1e-9 && near(lines[i].b, lines[j].a) {
+                    lines[i].b = lines[j].b;
+                } else if cos < -1.0 + 1e-9 && near(lines[i].b, lines[j].b) {
+                    lines[i].b = lines[j].a;
+                } else {
+                    continue;
+                }
+                lines.swap_remove(j);
+                joined = true;
+                break 'outer;
+            }
+        }
+        if !joined {
+            break;
+        }
+    }
 }
 
 /// Plan outline of a face.

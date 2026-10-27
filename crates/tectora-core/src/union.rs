@@ -13,6 +13,9 @@
 //!   abutment line: WV, WH or WS by how the wall lies in the roof plane, as
 //!   at a chimney.
 //!
+//! * an eave where another roof goes on at the same height, e.g. along a
+//!   wall two buildings share, is the gutter between them: a Schlucht S.
+//!
 //! Where two roofs coincide, the one of the earlier building is kept.
 
 use geo::{Area, BooleanOps, Coord, LineString, MultiPolygon, Polygon};
@@ -337,6 +340,7 @@ pub fn join(geos: &mut [RoofGeometry], parts: &[RoofPart]) {
 
     // Own lines where they show.
     let mut new_lines: Vec<Vec<RoofLine>> = Vec::with_capacity(geos.len());
+    let mut gorges: Vec<RoofLine> = Vec::new();
     for (i, g) in geos.iter_mut().enumerate() {
         let mut kept = Vec::new();
         for l in std::mem::take(&mut g.lines) {
@@ -348,10 +352,46 @@ pub fn join(geos: &mut [RoofGeometry], parts: &[RoofPart]) {
                     .push((l.dacad_code().to_string(), l.length() - shown));
             }
             for (a, b) in parts {
-                kept.push(RoofLine { a, b, ..l.clone() });
+                if l.kind != LineKind::Eave {
+                    kept.push(RoofLine { a, b, ..l.clone() });
+                    continue;
+                }
+                // An eave where another roof goes on at the same height is
+                // the gutter between the two: a Schlucht S, counted once
+                // (DACAD case C48).
+                let d = unit(Point2::new(b[0] - a[0], b[1] - a[1]));
+                let nrm = Point2::new(-d.y, d.x);
+                let shared = |m: Point2, z: f64| {
+                    [1e-4, -1e-4].iter().any(|&k| {
+                        let o = Point2::new(m.x + nrm.x * k, m.y + nrm.y * k);
+                        !bs[i].faces.iter().any(|(f, _)| covers(f, o))
+                            && bs.iter().enumerate().any(|(j, bj)| {
+                                j != i && bj.plane_at(o).is_some_and(|pl| (pl.z(m) - z).abs() < EPS)
+                            })
+                    })
+                };
+                let ts = splits(a, b, &all_polys, &[]);
+                for (p, q) in keep_parts(a, b, &ts, |m, z| !shared(m, z)) {
+                    kept.push(RoofLine {
+                        a: p,
+                        b: q,
+                        ..l.clone()
+                    });
+                }
+                for (p, q) in keep_parts(a, b, &ts, shared) {
+                    gorges.push(RoofLine {
+                        kind: LineKind::Gorge,
+                        a: p,
+                        b: q,
+                        side: None,
+                    });
+                }
             }
         }
         new_lines.push(kept);
+    }
+    for l in gorges {
+        crate::raised::push_once(&mut new_lines[0], l);
     }
 
     // Where two roofs cross.

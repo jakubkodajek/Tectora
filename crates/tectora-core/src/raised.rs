@@ -118,7 +118,7 @@ pub fn combine(off: RoofGeometry, body: RoofGeometry) -> RoofGeometry {
 
 /// Adds `l` without the stretches an existing line of the same code already
 /// covers.
-fn push_once(lines: &mut Vec<RoofLine>, l: RoofLine) {
+pub(crate) fn push_once(lines: &mut Vec<RoofLine>, l: RoofLine) {
     let len = len3(l.a, l.b);
     if len < 1e-6 {
         return;

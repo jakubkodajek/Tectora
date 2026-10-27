@@ -191,7 +191,7 @@ fn norm_groups_match_dacad() {
 #[test]
 fn engine_matches_dacad() {
     let cases = fixtures();
-    assert!(cases.len() >= 42, "fixtures missing");
+    assert!(cases.len() >= 51, "fixtures missing");
     let failures = compare(cases);
     assert!(
         failures.is_empty(),

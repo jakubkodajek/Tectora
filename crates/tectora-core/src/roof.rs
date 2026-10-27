@@ -34,6 +34,8 @@ use crate::geom::Point2;
 use crate::model::{EdgeDef, RoofPart};
 
 const EPS: f64 = 1e-9;
+/// Walls narrower than this between planes moving in step are dropped.
+const MERGE_TOL: f64 = 2e-3;
 const POS_TOL: f64 = 1e-6;
 /// Guards against runaway simulations on degenerate input.
 const MAX_EVENTS: usize = 10_000;
@@ -557,8 +559,11 @@ impl Sim {
         );
         let rate = dot(Point2::new(vb.vel.x - va.vel.x, vb.vel.y - va.vel.y), d);
         // A wall squeezed to nothing between two planes that now move in
-        // step (after an overtake) is gone, even though it no longer shrinks.
-        if len_now <= POS_TOL && rate < EPS && !self.lines[va.right].marker {
+        // step (after an overtake, or planes that coincide) is gone, even
+        // though it no longer shrinks. DACAD stores heights to the
+        // millimetre, so planes that coincide may leave a sliver that thin
+        // (sample TRAING08: eaves 3.25 and 2.529 1.2 m apart at 31°).
+        if len_now <= MERGE_TOL && rate.abs() < EPS && !self.lines[va.right].marker {
             return Some(now);
         }
         if rate >= -EPS {
@@ -911,18 +916,50 @@ impl Event {
     }
 }
 
-/// Walls with an overhang whose eave is higher than the lowest eave of the
-/// part. Gables (and their Krüppel planes) never count.
+/// Walls with an overhang standing at an inside corner next to a sloped wall
+/// whose eave is lower. Gables (and their Krüppel planes) never count, and
+/// zero-length marker walls are looked through.
 fn raised_edges(part: &RoofPart) -> Vec<bool> {
-    let first = |e: &EdgeDef| e.planes().first().map(|p| p.0);
-    let low = part
-        .edges
-        .iter()
-        .filter_map(first)
-        .fold(f64::INFINITY, f64::min);
-    part.edges
-        .iter()
-        .map(|e| !e.is_gable() && e.overhang > EPS && first(e).is_some_and(|t| t > low + 1e-6))
+    let n = part.edges.len();
+    let pts = part.outline();
+    let first = |e: &EdgeDef| {
+        (!e.is_gable())
+            .then(|| e.planes().first().map(|p| p.0))
+            .flatten()
+    };
+    let dir = |i: usize| {
+        let (a, b) = (pts[i], pts[(i + 1) % n]);
+        let l = a.distance(b);
+        (l > POS_TOL).then(|| Point2::new((b.x - a.x) / l, (b.y - a.y) / l))
+    };
+    // The next real wall from `i` going forward (+1) or back (n - 1).
+    let next_real = |i: usize, step: usize| {
+        let mut k = (i + step) % n;
+        for _ in 0..n {
+            if dir(k).is_some() {
+                return Some(k);
+            }
+            k = (k + step) % n;
+        }
+        None
+    };
+    (0..n)
+        .map(|i| {
+            let (e, Some(di)) = (&part.edges[i], dir(i)) else {
+                return false;
+            };
+            let Some(t) = first(e).filter(|_| e.overhang > EPS) else {
+                return false;
+            };
+            let lower = |j: usize| first(&part.edges[j]).is_some_and(|tj| tj < t - 1e-6);
+            // Inside corner: the outline turns right (it is CCW).
+            let reflex = |a: Point2, b: Point2| a.x * b.y - a.y * b.x < -1e-9;
+            let before = next_real(i, n - 1)
+                .is_some_and(|j| lower(j) && dir(j).is_some_and(|dj| reflex(dj, di)));
+            let after = next_real(i, 1)
+                .is_some_and(|j| lower(j) && dir(j).is_some_and(|dj| reflex(di, dj)));
+            before || after
+        })
         .collect()
 }
 
@@ -936,13 +973,197 @@ fn raised_edges(part: &RoofPart) -> Vec<bool> {
 /// walls at their wall lines, and the two are combined
 /// ([`crate::raised::combine`]).
 pub fn generate(part: &RoofPart) -> RoofGeometry {
-    let raised = raised_edges(part);
-    let (off, _) = generate_mode(part, &vec![false; raised.len()]);
-    if !raised.contains(&true) {
-        return off;
+    let (part, map) = merge_collinear_walls(part);
+    let raised = raised_edges(&part);
+    let (off, _) = generate_mode(&part, &vec![false; raised.len()]);
+    let mut geo = if raised.contains(&true) {
+        let (body, _) = generate_mode(&part, &raised);
+        crate::raised::combine(off, body)
+    } else {
+        off
+    };
+    for f in &mut geo.faces {
+        if let Some(&i) = map.get(f.edge) {
+            f.edge = i;
+        }
     }
-    let (body, _) = generate_mode(part, &raised);
-    crate::raised::combine(off, body)
+    one_sided_ridges(&mut geo);
+    geo
+}
+
+/// A stretch of ridge with a roof face on one side only, e.g. over an
+/// overhang strip that only one plane has, is a Pult line (DACAD case C43).
+fn one_sided_ridges(geo: &mut RoofGeometry) {
+    use crate::union::{covers, keep_parts, splits, unit};
+    let polys: Vec<Vec<Point2>> = geo.faces.iter().map(crate::openings::plan).collect();
+    let refs: Vec<&[Point2]> = polys.iter().map(Vec::as_slice).collect();
+    let mut out = Vec::with_capacity(geo.lines.len());
+    for l in std::mem::take(&mut geo.lines) {
+        if l.kind != LineKind::Ridge {
+            out.push(l);
+            continue;
+        }
+        let d = unit(Point2::new(l.b[0] - l.a[0], l.b[1] - l.a[1]));
+        let nrm = Point2::new(-d.y, d.x);
+        let both = |m: Point2| {
+            let side = |k: f64| {
+                let p = Point2::new(m.x + nrm.x * k, m.y + nrm.y * k);
+                polys.iter().any(|f| covers(f, p))
+            };
+            side(1e-4) && side(-1e-4)
+        };
+        let ts = splits(l.a, l.b, &refs, &[]);
+        let two = keep_parts(l.a, l.b, &ts, |m, _| both(m));
+        let one = keep_parts(l.a, l.b, &ts, |m, _| !both(m));
+        if one.is_empty() {
+            out.push(l);
+            continue;
+        }
+        for (a, b) in two {
+            out.push(RoofLine { a, b, ..l.clone() });
+        }
+        for (a, b) in one {
+            out.push(RoofLine {
+                kind: LineKind::Pult,
+                a,
+                b,
+                side: None,
+            });
+        }
+    }
+    geo.lines = out;
+}
+
+/// Inward distance of a wall's roof line from its outline at height `t`.
+fn reach(planes: &[(f64, f64)], t: f64) -> f64 {
+    let mut d = 0.0;
+    for (k, &(t0, p)) in planes.iter().enumerate() {
+        if t <= t0 {
+            break;
+        }
+        let t1 = planes.get(k + 1).map_or(f64::INFINITY, |q| q.0);
+        d += (t.min(t1) - t0) / p.to_radians().tan();
+    }
+    d
+}
+
+/// Consecutive walls on one straight line with the same overhang act as one
+/// wall whose roof is the lowest of their planes at every height, e.g. a
+/// Krüppel plane over only part of a gable spans the whole gable (DACAD case
+/// C44). Returns the merged part and, per merged wall, its first wall's
+/// index.
+fn merge_collinear_walls(part: &RoofPart) -> (RoofPart, Vec<usize>) {
+    let n = part.edges.len();
+    let pts = part.outline();
+    let dir = |i: usize| {
+        let (a, b) = (pts[i], pts[(i + 1) % n]);
+        let l = a.distance(b);
+        (l > POS_TOL).then(|| Point2::new((b.x - a.x) / l, (b.y - a.y) / l))
+    };
+    let joins = |i: usize| {
+        // Edge i continues edge i-1.
+        let j = (i + n - 1) % n;
+        match (dir(j), dir(i)) {
+            (Some(a), Some(b)) => {
+                dot(a, b) > 1.0 - 1e-9
+                    && (part.edges[i].overhang - part.edges[j].overhang).abs() < 1e-9
+            }
+            _ => false,
+        }
+    };
+    if n < 4 || !(0..n).any(joins) {
+        return (part.clone(), (0..n).collect());
+    }
+    // Start at an edge that does not continue its predecessor.
+    let Some(first) = (0..n).find(|&i| !joins(i)) else {
+        return (part.clone(), (0..n).collect());
+    };
+    let mut edges: Vec<EdgeDef> = Vec::new();
+    let mut map = Vec::new();
+    let mut k = 0;
+    while k < n {
+        let i = (first + k) % n;
+        let mut run = vec![i];
+        while k + run.len() < n && joins((first + k + run.len()) % n) {
+            run.push((first + k + run.len()) % n);
+        }
+        k += run.len();
+        map.push(i);
+        if run.len() == 1 {
+            edges.push(part.edges[i].clone());
+            continue;
+        }
+        edges.push(envelope(run.iter().map(|&r| &part.edges[r]).collect()));
+    }
+    (
+        RoofPart {
+            name: part.name.clone(),
+            edges,
+        },
+        map,
+    )
+}
+
+/// One wall standing for collinear walls `defs`: at every height its roof
+/// line is the furthest in of theirs.
+fn envelope(defs: Vec<&EdgeDef>) -> EdgeDef {
+    let planes: Vec<Vec<(f64, f64)>> = defs.iter().map(|e| e.planes()).collect();
+    let mut ts: Vec<f64> = planes.iter().flatten().map(|p| p.0).collect();
+    ts.sort_by(f64::total_cmp);
+    ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+    let far = |t: f64| planes.iter().map(|p| reach(p, t)).fold(0.0f64, f64::max);
+    // Refine by bisecting crossings between breakpoints.
+    let mut cuts: Vec<f64> = ts.clone();
+    for w in ts.windows(2) {
+        let (lo, hi) = (w[0], w[1]);
+        // Within (lo, hi) each line is straight; the max changes at most at
+        // pairwise crossings.
+        for a in &planes {
+            for b in &planes {
+                let (da0, da1) = (reach(a, lo), reach(a, hi));
+                let (db0, db1) = (reach(b, lo), reach(b, hi));
+                let (f0, f1) = (da0 - db0, da1 - db1);
+                if f0 * f1 < 0.0 {
+                    cuts.push(lo + (hi - lo) * f0 / (f0 - f1));
+                }
+            }
+        }
+    }
+    cuts.sort_by(f64::total_cmp);
+    cuts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+    // Slope of the envelope on each interval, as planes.
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for (k, &t0) in cuts.iter().enumerate() {
+        let t1 = cuts.get(k + 1).copied().unwrap_or(t0 + 1.0);
+        let rate = (far(t1) - far(t0)) / (t1 - t0);
+        if rate <= 1e-12 {
+            continue;
+        }
+        let pitch = (1.0 / rate).atan().to_degrees();
+        if out.last().is_some_and(|l| (l.1 - pitch).abs() < 1e-9) {
+            continue;
+        }
+        out.push((t0, pitch));
+    }
+    let mut e = defs[0].clone();
+    e.direction_rad = None;
+    e.priority = defs.iter().map(|d| d.priority).max().unwrap_or(0);
+    e.breaks.clear();
+    let all_gables = defs.iter().all(|d| d.is_gable());
+    let mut rest = out.iter();
+    if all_gables {
+        e.half_hip = rest
+            .next()
+            .map(|&(height, pitch_deg)| crate::model::HalfHip { height, pitch_deg });
+    } else if let Some(&(t, p)) = rest.next() {
+        e.eave_height = t;
+        e.pitch_deg = p;
+        e.half_hip = None;
+    }
+    e.breaks = rest
+        .map(|&(height, pitch_deg)| crate::model::PitchBreak { height, pitch_deg })
+        .collect();
+    e
 }
 
 fn generate_mode(part: &RoofPart, raised: &[bool]) -> (RoofGeometry, Vec<Point2>) {
@@ -1101,7 +1322,7 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
     let coplanar = |a: usize, b: usize, z: f64| {
         let (la, lb) = (&sim.lines[a], &sim.lines[b]);
         let ((ca, sa), (cb, sb)) = (la.params(z), lb.params(z));
-        dot(la.n, lb.n) > 1.0 - 1e-9 && (ca - cb).abs() < 1e-6 && (sa - sb).abs() < 1e-9
+        dot(la.n, lb.n) > 1.0 - 1e-9 && (ca - cb).abs() < MERGE_TOL && (sa - sb).abs() < 1e-9
     };
     for arc in arcs
         .iter()
