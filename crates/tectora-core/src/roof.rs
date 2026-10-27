@@ -917,48 +917,52 @@ impl Event {
 }
 
 /// Walls with an overhang standing at an inside corner next to a sloped wall
-/// whose eave is lower. Gables (and their Krüppel planes) never count, and
-/// zero-length marker walls are looked through.
+/// whose eave is lower. A gable stands as high as the higher eave beside it
+/// (sample TRAING04; not between coinciding planes as in TRAING08).
+/// Zero-length marker walls count by their direction.
 fn raised_edges(part: &RoofPart) -> Vec<bool> {
     let n = part.edges.len();
     let pts = part.outline();
-    let first = |e: &EdgeDef| {
-        (!e.is_gable())
-            .then(|| e.planes().first().map(|p| p.0))
-            .flatten()
+    let first = |e: &EdgeDef| e.planes().first().map_or(f64::INFINITY, |p| p.0);
+    let height = |i: usize| {
+        let e = &part.edges[i];
+        if !e.is_gable() {
+            return first(e);
+        }
+        let beside = [(i + n - 1) % n, (i + 1) % n]
+            .iter()
+            .map(|&j| &part.edges[j])
+            .filter(|ej| !ej.is_gable())
+            .map(first)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if beside.is_finite() {
+            beside
+        } else {
+            f64::INFINITY
+        }
     };
     let dir = |i: usize| {
         let (a, b) = (pts[i], pts[(i + 1) % n]);
         let l = a.distance(b);
-        (l > POS_TOL).then(|| Point2::new((b.x - a.x) / l, (b.y - a.y) / l))
-    };
-    // The next real wall from `i` going forward (+1) or back (n - 1).
-    let next_real = |i: usize, step: usize| {
-        let mut k = (i + step) % n;
-        for _ in 0..n {
-            if dir(k).is_some() {
-                return Some(k);
-            }
-            k = (k + step) % n;
+        if l > POS_TOL {
+            Point2::new((b.x - a.x) / l, (b.y - a.y) / l)
+        } else {
+            let ang = part.edges[i].direction_rad.unwrap_or(0.0);
+            Point2::new(ang.cos(), ang.sin())
         }
-        None
     };
+    // Inside corner: the outline turns right (it is CCW).
+    let reflex = |a: Point2, b: Point2| a.x * b.y - a.y * b.x < -1e-9;
     (0..n)
         .map(|i| {
-            let (e, Some(di)) = (&part.edges[i], dir(i)) else {
+            let e = &part.edges[i];
+            if e.overhang <= EPS {
                 return false;
-            };
-            let Some(t) = first(e).filter(|_| e.overhang > EPS) else {
-                return false;
-            };
-            let lower = |j: usize| first(&part.edges[j]).is_some_and(|tj| tj < t - 1e-6);
-            // Inside corner: the outline turns right (it is CCW).
-            let reflex = |a: Point2, b: Point2| a.x * b.y - a.y * b.x < -1e-9;
-            let before = next_real(i, n - 1)
-                .is_some_and(|j| lower(j) && dir(j).is_some_and(|dj| reflex(dj, di)));
-            let after = next_real(i, 1)
-                .is_some_and(|j| lower(j) && dir(j).is_some_and(|dj| reflex(di, dj)));
-            before || after
+            }
+            let t = height(i);
+            let lower = |j: usize| !part.edges[j].is_gable() && height(j) < t - 1e-6;
+            let (prev, next) = ((i + n - 1) % n, (i + 1) % n);
+            (lower(prev) && reflex(dir(prev), dir(i))) || (lower(next) && reflex(dir(i), dir(next)))
         })
         .collect()
 }
@@ -1190,7 +1194,9 @@ fn generate_mode(part: &RoofPart, raised: &[bool]) -> (RoofGeometry, Vec<Point2>
                 // Same plane, but a wall at the wall line until the plane
                 // reaches the wall top.
                 line.base += e.overhang;
-                line.stages[0].t += e.overhang / line.stages[0].s;
+                if let Some(st) = line.stages.first_mut() {
+                    st.t += e.overhang / st.s;
+                }
                 line.raised = true;
             }
             line

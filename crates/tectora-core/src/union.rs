@@ -285,6 +285,7 @@ pub fn join(geos: &mut [RoofGeometry], parts: &[RoofPart]) {
         for f in &g.faces {
             let fp = Plane::of(f);
             let mut vis = MultiPolygon::new(vec![to_geo(&plan(f))]);
+            let mut touched = false;
             for (j, b) in bs.iter().enumerate() {
                 if j == i {
                     continue;
@@ -307,8 +308,13 @@ pub fn join(geos: &mut [RoofGeometry], parts: &[RoofPart]) {
                     let cut = higher.intersection(&walls);
                     if cut.unsigned_area() > 1e-12 {
                         vis = vis.difference(&cut);
+                        touched = true;
                     }
                 }
+            }
+            if !touched {
+                faces.push(f.clone());
+                continue;
             }
             let total = vis.unsigned_area();
             if total < 1e-9 {

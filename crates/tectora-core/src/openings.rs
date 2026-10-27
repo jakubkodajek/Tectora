@@ -52,6 +52,7 @@ pub(crate) fn merge_collinear(lines: &mut Vec<RoofLine>) {
     let near = |p: [f64; 3], q: [f64; 3]| {
         (p[0] - q[0]).abs() < 1e-6 && (p[1] - q[1]).abs() < 1e-6 && (p[2] - q[2]).abs() < 1e-6
     };
+    lines.retain(|l| l.length() > 1e-6);
     loop {
         let mut joined = false;
         'outer: for i in 0..lines.len() {
