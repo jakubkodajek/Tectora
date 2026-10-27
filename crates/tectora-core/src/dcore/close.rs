@@ -526,8 +526,8 @@ pub fn merge_faces(c: &mut Core, f1: FaceId, f2: FaceId) -> Result<(), CoreError
         let mut b = c.face(f2).segs;
         while let Some(s4) = b {
             let (g3, g4) = (c.seg(s3).clone(), c.seg(s4).clone());
-            if !geom::seg_on_seg((g3.p, g3.q), (g4.p, g4.q), &tol) {
-                if geom::seg_on_seg((g4.p, g4.q), (g3.p, g3.q), &tol) {
+            if !geom::seg_on_seg(g3.p, g3.q, g4.p, g4.q, &tol) {
+                if geom::seg_on_seg(g4.p, g4.q, g3.p, g3.q, &tol) {
                     fit_pair(c, f1, f2, s3, s4);
                     unlink(c, f1, s3);
                 }

@@ -545,7 +545,7 @@ fn seg_vectors(path: &Path) -> (usize, Vec<String>) {
             }
             "seg_on" => {
                 let (a, b) = ab();
-                i64::from(geom::seg_on_seg(a, b, &t)) == eax
+                i64::from(geom::seg_on_seg(a.0, a.1, b.0, b.1, &t)) == eax
             }
             "ovl" => {
                 let (a, b) = ab();
