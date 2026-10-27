@@ -123,6 +123,17 @@ fn project(name: &str, case: &Value) -> Project {
             height: c["height_m"].as_f64().unwrap_or(0.0),
         });
     }
+    // In V1 files the roof record names a dormer's host wall; the V2
+    // export's record means something else.
+    if case["input_format"]
+        .as_str()
+        .is_some_and(|f| f.contains("V1"))
+    {
+        for (r, roof) in input["roofs"].as_object().into_iter().flatten() {
+            let host = roof["kind"].as_u64().unwrap_or(0) as u16;
+            file.roofs.push((r.parse().unwrap_or(0), host));
+        }
+    }
     file.to_project(name)
 }
 

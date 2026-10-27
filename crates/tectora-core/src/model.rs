@@ -297,6 +297,12 @@ pub struct HalfHip {
 pub struct Dormer {
     pub edges: Vec<EdgeDef>,
     pub end: Point2,
+    /// The main-roof wall (start and end point) whose roof plane the dormer
+    /// sits on. DACAD cuts the dormer with that plane wherever the dormer
+    /// stands (V1 roof record, DACAD cases D101_0013, D101_0020); without
+    /// it the faces under the dormer's walls are the hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_wall: Option<[Point2; 2]>,
 }
 
 /// A chimney (or other penetration) as a convex plan polygon.
