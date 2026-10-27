@@ -5,8 +5,9 @@
 //! terminated by `ff ff`. The records Tectora uses:
 //!
 //! * tag `0x12`, sub `0x00` (42 bytes) — one wall line with its roof definition:
-//!   `id u16, group u16, f32 x9 [x, y, length, angle_rad, ?, eave_height,
-//!   overhang, pitch_deg, priority], flags u16`. Bit 0 of `flags` means a half-hip
+//!   `id u16, group u16, f32 x4 [x, y, length, angle_rad], u16 ?,
+//!   u16 material, f32 x4 [eave_height, overhang, pitch_deg, priority],
+//!   flags u16`. Bit 0 of `flags` means a half-hip
 //!   record follows; the high byte is the number of window records that follow.
 //! * tag `0x12`, sub `0x10` (16 bytes) — a further (stacked) roof definition
 //!   of the preceding wall: `u16 ?, u16 material, f32 height, f32 overhang,
@@ -63,7 +64,7 @@ pub struct DadWall {
     pub priority: u8,
     pub half_hip: Option<HalfHip>,
     pub breaks: Vec<PitchBreak>,
-    /// The wall is a gable covered with roof material (V2 files only).
+    /// The wall is a gable covered with roof material.
     pub clad: bool,
 }
 
@@ -152,7 +153,8 @@ pub fn parse(bytes: &[u8]) -> Result<DadFile, DadError> {
                     priority: u8::from(f32_at(payload, 36) > 0.5),
                     half_hip: None,
                     breaks: Vec::new(),
-                    clad: false,
+                    clad: f32_at(payload, 32) >= crate::model::GABLE_PITCH_DEG
+                        && u16_at(payload, 22) != 0,
                 });
             }
             (TAG_WALL, SUB_STACKED) if len == 16 => {
