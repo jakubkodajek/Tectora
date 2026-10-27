@@ -1579,14 +1579,16 @@ fn drop_short_junction_hips(geo: &mut RoofGeometry) {
     }
 }
 
-/// Where a higher wall's eave meets the neighbour's hip less than 1.7 cm from
-/// the neighbour's wall line, DACAD moves the hip's lower end onto that
+/// Where a higher wall's eave meets the neighbour's hip close to the
+/// neighbour's wall line (within DACAD's point tolerance), DACAD moves the hip's lower end onto that
 /// line, where the two planes meet there, and runs the neighbour's verge on
 /// to it (sweep /mnt/project-files/dacad-raised-eave/: snapped at 1.47 cm,
-/// not at 2.43 cm; case C51: not at 1.96 cm; mass cases R1_0114, R1_0193). The faces are left as they
+/// not at 2.43 cm; case C51: not at 1.96 cm; mass cases R1_0114, R1_0193).
+/// The faces are left as they
 /// are: DACAD's areas there are not reproducible yet.
 fn snap_raised_corners(geo: &mut RoofGeometry, part: &RoofPart) {
-    const SNAP: f64 = 0.017;
+    // Prefilter only; the merge test below decides.
+    const SNAP: f64 = 0.03;
     let n = part.edges.len();
     let pts = part.outline();
     for i in (0..n).filter(|&i| !part.edges[i].is_gable()) {
@@ -1628,14 +1630,23 @@ fn snap_raised_corners(geo: &mut RoofGeometry, part: &RoofPart) {
                 continue;
             };
             let hip = geo.lines[h].clone();
-            let p = if at_a { hip.a } else { hip.b };
+            let (p, q) = if at_a { (hip.a, hip.b) } else { (hip.b, hip.a) };
             // Slide a line's end `p` along the line to the wall line.
             let onto = |p: [f64; 3], q: [f64; 3]| {
                 let (op, oq) = (off(p), off(q));
                 let t = op / (op - oq);
                 std::array::from_fn(|k| p[k] + (q[k] - p[k]) * t)
             };
-            let new_end = onto(p, if at_a { hip.b } else { hip.a });
+            let new_end = onto(p, q);
+            // DACAD's point merge: 0.02 per plan coordinate (f32 difference,
+            // as for chimney corners) and 0.01 in height. Sweep R395/R420:
+            // 1.24 cm higher or lower, not merged; R400–R410 merged; R1_0364
+            // and R1_0766 (1.6 cm in height) not merged.
+            let close = (0..2).all(|k| ((new_end[k] - p[k]).abs() as f32) < 0.02f32)
+                && (new_end[2] - p[2]).abs() < 0.01;
+            if !close {
+                continue;
+            }
             if at_a {
                 geo.lines[h].a = new_end;
             } else {
