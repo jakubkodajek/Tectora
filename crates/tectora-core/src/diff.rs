@@ -98,7 +98,11 @@ fn edge_fields(pi: usize, ei: usize, a: &EdgeDef, b: &EdgeDef, out: &mut Vec<Cha
         out.push(m("clad", json!(a.clad), json!(b.clad)));
     }
     if a.direction_rad != b.direction_rad {
-        out.push(m("direction", json!(a.direction_rad), json!(b.direction_rad)));
+        out.push(m(
+            "direction",
+            json!(a.direction_rad),
+            json!(b.direction_rad),
+        ));
     }
 }
 
