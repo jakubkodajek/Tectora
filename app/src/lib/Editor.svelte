@@ -19,6 +19,7 @@
   import Roof3D from "./Roof3D.svelte";
   import StandardRoofForm from "./StandardRoofForm.svelte";
   import RoundRoofForm from "./RoundRoofForm.svelte";
+  import RoofCalcForm from "./RoofCalcForm.svelte";
   import { oppositeWall, spanBetween, type Arc } from "./roundroof";
   import { api, onProjectsChanged } from "./api";
   import { changedEdges, describeChange } from "./changes";
@@ -230,6 +231,17 @@
     } catch (e) {
       onerror(String(e));
     }
+  }
+
+  // Calculation helpers on the selected wall.
+  let calc = $state<{ part: number; edge: number; patches: Map<number, Partial<EdgeDef>> | null } | null>(null);
+
+  function applyCalc() {
+    if (!project || !calc?.patches) return;
+    const es = project.parts[calc.part].edges;
+    for (const [k, patch] of calc.patches) Object.assign(es[k], patch);
+    calc = null;
+    commit();
   }
 
   function openRound() {
@@ -658,6 +670,7 @@
             ondelete={deleteVertex}
             onmarker={insertMarker}
             onround={opposite !== null ? openRound : undefined}
+            oncalc={() => selection && (calc = { part: selection.part, edge: selection.edge, patches: null })}
           />
         {/if}
       </div>
@@ -694,6 +707,16 @@
     </footer>
   {/if}
 </div>
+
+{#if calc && project}
+  <Modal title={t("calc.title")} width={640} onclose={() => (calc = null)}>
+    <RoofCalcForm part={project.parts[calc.part]} edge={calc.edge} {result} bind:patches={calc.patches} />
+    {#snippet footer()}
+      <button class="btn" onclick={() => (calc = null)}>{t("common.cancel")}</button>
+      <button class="btn primary" disabled={!calc?.patches} onclick={applyCalc}>{t("common.ok")}</button>
+    {/snippet}
+  </Modal>
+{/if}
 
 {#if round}
   <Modal title={t("round.title")} width={600} onclose={() => (round = null)}>

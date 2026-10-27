@@ -15,6 +15,7 @@
     ondelete,
     onmarker,
     onround,
+    oncalc,
   }: {
     project: Project;
     selection: Selection;
@@ -25,6 +26,8 @@
     onmarker: () => void;
     /** Opens the round-roof helper; absent when the wall has no opposite wall. */
     onround?: () => void;
+    /** Opens the pitch / eave / overhang calculations for the wall. */
+    oncalc?: () => void;
   } = $props();
 
   const part = $derived(selection ? project.parts[selection.part] : null);
@@ -191,6 +194,9 @@
         <button class="btn sm" onclick={() => onapplyall({ pitch_deg: edge.pitch_deg })} title={t("edge.pitchAllHint")}>{t("edge.pitchAll")}</button>
       {/if}
       <button class="btn sm" onclick={() => onapplyall({ eave_height: edge.eave_height, overhang: edge.overhang })}>{t("edge.heightAll")}</button>
+      {#if oncalc && !marker && !gable}
+        <button class="btn sm" onclick={oncalc} title={t("calc.buttonHint")}>{t("calc.button")}</button>
+      {/if}
       {#if onround && !marker}
         <button class="btn sm" onclick={onround} title={t("round.hint")}>{t("round.button")}</button>
       {/if}
