@@ -18,6 +18,8 @@
   import { buildDormer, defaultParams, nearestWallAngle, roofHeightAt } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
   import StandardRoofForm from "./StandardRoofForm.svelte";
+  import RoundRoofForm from "./RoundRoofForm.svelte";
+  import { oppositeWall, spanBetween, type Arc } from "./roundroof";
   import { api, onProjectsChanged } from "./api";
   import { changedEdges, describeChange } from "./changes";
   import { m2, num } from "./format";
@@ -59,6 +61,13 @@
   let focusChange = $state<Change | null>(null);
   let std = $state<{ part: RoofPart | null; mode: "add" | "replace" } | null>(null);
   let plan: PlanView | undefined = $state();
+  // Round-roof helper on the selected wall and the one facing it.
+  let round = $state<{ part: number; a: number; b: number; span: number; eave: number; overhang: number; arc: Arc | null } | null>(null);
+  const opposite = $derived(
+    project && selection && !isMarker(project.parts[selection.part].edges[selection.edge])
+      ? oppositeWall(project.parts[selection.part].edges, selection.edge)
+      : null,
+  );
 
   // Undo history of serialized projects; `cursor` points at the current one.
   let history: string[] = [];
@@ -221,6 +230,38 @@
     } catch (e) {
       onerror(String(e));
     }
+  }
+
+  function openRound() {
+    if (!project || !selection || opposite === null) return;
+    const es = project.parts[selection.part].edges;
+    const e = es[selection.edge];
+    round = {
+      part: selection.part,
+      a: selection.edge,
+      b: opposite,
+      span: spanBetween(es, selection.edge, opposite),
+      eave: e.eave_height,
+      overhang: e.overhang,
+      arc: null,
+    };
+  }
+
+  /** Sets both walls to the arc's pitch and breaks (DACAD: Runddach). */
+  function applyRound() {
+    if (!project || !round?.arc) return;
+    const es = project.parts[round.part].edges;
+    for (const k of [round.a, round.b]) {
+      Object.assign(es[k], {
+        pitch_deg: round.arc.pitch_deg,
+        eave_height: round.eave,
+        overhang: round.overhang,
+        half_hip: null,
+        breaks: round.arc.breaks.map((b) => ({ ...b })),
+      });
+    }
+    round = null;
+    commit();
   }
 
   function patchEdge(patch: Partial<EdgeDef>) {
@@ -616,6 +657,7 @@
             onlength={setLength}
             ondelete={deleteVertex}
             onmarker={insertMarker}
+            onround={opposite !== null ? openRound : undefined}
           />
         {/if}
       </div>
@@ -652,6 +694,16 @@
     </footer>
   {/if}
 </div>
+
+{#if round}
+  <Modal title={t("round.title")} width={600} onclose={() => (round = null)}>
+    <RoundRoofForm span={round.span} bind:eave={round.eave} bind:overhang={round.overhang} bind:arc={round.arc} />
+    {#snippet footer()}
+      <button class="btn" onclick={() => (round = null)}>{t("common.cancel")}</button>
+      <button class="btn primary" disabled={!round?.arc} onclick={applyRound}>{t("common.ok")}</button>
+    {/snippet}
+  </Modal>
+{/if}
 
 {#if std}
   <Modal title={t("std.title")} width={640} onclose={() => (std = null)}>
