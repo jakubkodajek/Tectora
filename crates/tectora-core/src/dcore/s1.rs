@@ -287,7 +287,10 @@ pub fn relink_holes(c: &mut Core) {
 /// wall, `u` up the slope with the rise of the pitch.
 pub fn face_frame(c: &mut Core, f: FaceId) -> Result<(), CoreError> {
     let tol = c.g.tol;
-    let pid = c.face(f).prev.ok_or(fault("roof face without predecessor"))?;
+    let pid = c
+        .face(f)
+        .prev
+        .ok_or(fault("roof face without predecessor"))?;
     let pf = c.face(pid).clone();
     let fd = f64::from;
     let mut x0 = pf.o[0];

@@ -31,7 +31,8 @@ fn tally(t: &mut Tallies, stage: &str, name: &str, diffs: Vec<String>) {
     if diffs.is_empty() {
         e.ok += 1;
     } else {
-        e.bad.push(format!("{name}:\n      {}", diffs.join("\n      ")));
+        e.bad
+            .push(format!("{name}:\n      {}", diffs.join("\n      ")));
     }
 }
 
@@ -41,7 +42,9 @@ const RD2_STAGES: [&str; 4] = ["after_read", "s1_ring", "s1_frames", "s1_end"];
 /// The emulator's outcome: (pipeline code, message id) of its first error.
 fn emu_error(doc: &dump::DumpDoc) -> Option<(String, u64, Option<u32>)> {
     let e = doc.doc["errors"].as_array()?.first()?;
-    let id = e["msg_id"].as_str().map(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16).unwrap());
+    let id = e["msg_id"]
+        .as_str()
+        .map(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16).unwrap());
     Some((e["kind"].as_str()?.to_string(), e["code"].as_u64()?, id))
 }
 
@@ -71,7 +74,10 @@ fn outcome(
         }
         (Some((k, code, id)), Err(E::Fatal { code: c, msg })) if k == "fatal" => {
             if (code, id) != (u64::from(*c), msg.id) {
-                d.push(format!("emulator {code}/{id:x?}, port {c}/{:x?} {msg}", msg.id));
+                d.push(format!(
+                    "emulator {code}/{id:x?}, port {c}/{:x?} {msg}",
+                    msg.id
+                ));
             }
             if so2 != dcore::out::PLACEHOLDER_SOL {
                 d.push("emulator SO2 is not the placeholder".into());
@@ -79,7 +85,10 @@ fn outcome(
         }
         (Some((k, code, id)), Err(E::Cut { code: c, msg })) if k == "cut" => {
             if (code, id) != (u64::from(*c), msg.id) {
-                d.push(format!("emulator {code}/{id:x?}, port {c}/{:x?} {msg}", msg.id));
+                d.push(format!(
+                    "emulator {code}/{id:x?}, port {c}/{:x?} {msg}",
+                    msg.id
+                ));
             }
         }
         (None, Ok(o)) => {
@@ -93,7 +102,10 @@ fn outcome(
                 }
             }
         }
-        (e, r) => d.push(format!("emulator {e:?}, port {:?}", r.as_ref().map(|o| o.code))),
+        (e, r) => d.push(format!(
+            "emulator {e:?}, port {:?}",
+            r.as_ref().map(|o| o.code)
+        )),
     }
     tally(t, "outcome", name, d);
 }
@@ -115,7 +127,9 @@ fn run_from_rd2(name: &str, dir: &Path, rd2: &[u8], doc: &dump::DumpDoc, t: &mut
         // A dump made with --only lacks stages the emulator did pass.
         let later = RD2_STAGES[k + 1..].iter().any(|l| !doc.stage(l).is_empty());
         match (want.first(), got) {
-            (Some(w), Some(g)) => tally(t, &format!("rd2 {stage}"), name, dump::compare(w, &g.1, 6)),
+            (Some(w), Some(g)) => {
+                tally(t, &format!("rd2 {stage}"), name, dump::compare(w, &g.1, 6))
+            }
             (None, None) => {}
             (None, Some(_)) if later => {}
             (w, g) => tally(
@@ -160,17 +174,30 @@ fn s1_from_entry(name: &str, doc: &dump::DumpDoc, t: &mut Tallies) {
         drop(hook);
         let call = e["call"].clone();
         for stage in ["s1_ring", "s1_frames", "s1_end"] {
-            let want = doc.snaps().iter().find(|s| s["stage"] == stage && s["call"] == call);
+            let want = doc
+                .snaps()
+                .iter()
+                .find(|s| s["stage"] == stage && s["call"] == call);
             let got = snaps.iter().find(|s| s.0 == stage);
             let label = format!("{name} model {k}");
             match (want, got) {
-                (Some(w), Some(g)) => tally(t, &format!("entry {stage}"), &label, dump::compare(w, &g.1, 6)),
+                (Some(w), Some(g)) => tally(
+                    t,
+                    &format!("entry {stage}"),
+                    &label,
+                    dump::compare(w, &g.1, 6),
+                ),
                 (None, None) => {}
                 (w, g) => tally(
                     t,
                     &format!("entry {stage}"),
                     &label,
-                    vec![format!("stage reached: emulator {} port {} ({:?})", w.is_some(), g.is_some(), res)],
+                    vec![format!(
+                        "stage reached: emulator {} port {} ({:?})",
+                        w.is_some(),
+                        g.is_some(),
+                        res
+                    )],
                 ),
             }
         }
@@ -178,8 +205,15 @@ fn s1_from_entry(name: &str, doc: &dump::DumpDoc, t: &mut Tallies) {
 }
 
 fn first_diff(a: &[u8], b: &[u8]) -> String {
-    let i = a.iter().zip(b).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()));
-    let ctx = |s: &[u8]| String::from_utf8_lossy(&s[i.saturating_sub(40).min(s.len())..(i + 40).min(s.len())]).to_string();
+    let i = a
+        .iter()
+        .zip(b)
+        .position(|(x, y)| x != y)
+        .unwrap_or(a.len().min(b.len()));
+    let ctx = |s: &[u8]| {
+        String::from_utf8_lossy(&s[i.saturating_sub(40).min(s.len())..(i + 40).min(s.len())])
+            .to_string()
+    };
     format!("differs at byte {i}: want {:?} got {:?}", ctx(a), ctx(b))
 }
 
@@ -190,10 +224,19 @@ fn writers(name: &str, dir: &Path, doc: &dump::DumpDoc, t: &mut Tallies) {
         match out::write_sol(&mut c) {
             Ok(b) => {
                 let want = std::fs::read(dir.join(format!("{name}.SO2"))).unwrap_or_default();
-                let d = if b == want { vec![] } else { vec![first_diff(&want, &b)] };
+                let d = if b == want {
+                    vec![]
+                } else {
+                    vec![first_diff(&want, &b)]
+                };
                 tally(t, "SO2 bytes", name, d);
                 if let Some(w) = doc.stage("after_sol").first() {
-                    tally(t, "SO2 state", name, dump::compare(w, &dump::to_json(&c), 6));
+                    tally(
+                        t,
+                        "SO2 state",
+                        name,
+                        dump::compare(w, &dump::to_json(&c), 6),
+                    );
                 }
             }
             Err(e) => tally(t, "SO2 bytes", name, vec![e.to_string()]),
@@ -206,10 +249,19 @@ fn writers(name: &str, dir: &Path, doc: &dump::DumpDoc, t: &mut Tallies) {
         match out::write_int(&mut c) {
             Ok(b) => {
                 let want = std::fs::read(dir.join(format!("{name}.INT"))).unwrap_or_default();
-                let d = if b == want { vec![] } else { vec![first_diff(&want, &b)] };
+                let d = if b == want {
+                    vec![]
+                } else {
+                    vec![first_diff(&want, &b)]
+                };
                 tally(t, "INT bytes", name, d);
                 if let Some(w) = doc.stage("after_int").first() {
-                    tally(t, "INT state", name, dump::compare(w, &dump::to_json(&c), 6));
+                    tally(
+                        t,
+                        "INT state",
+                        name,
+                        dump::compare(w, &dump::to_json(&c), 6),
+                    );
                 }
             }
             Err(e) => tally(t, "INT bytes", name, vec![e.to_string()]),
@@ -286,7 +338,10 @@ fn fixtures() {
             continue;
         }
         let name = dir.file_name().unwrap().to_string_lossy().to_string();
-        assert!(run_case(&dir.join(format!("{name}.RD2")), &dir, &mut t), "{name}");
+        assert!(
+            run_case(&dir.join(format!("{name}.RD2")), &dir, &mut t),
+            "{name}"
+        );
         n += 1;
     }
     assert!(n > 0);
@@ -364,14 +419,27 @@ fn geom_vectors(path: &Path) -> (usize, Vec<String>) {
     let mut n = 0;
     for line in std::fs::read_to_string(path).unwrap().lines() {
         let c: Vec<&str> = line.split('\t').collect();
-        let words = |s: &str| -> Vec<u32> { s.split_whitespace().map(|w| u32::from_str_radix(w, 16).unwrap()).collect() };
+        let words = |s: &str| -> Vec<u32> {
+            s.split_whitespace()
+                .map(|w| u32::from_str_radix(w, 16).unwrap())
+                .collect()
+        };
         let fl: Vec<f32> = words(c[1]).into_iter().map(f32::from_bits).collect();
         let eax: i64 = c[2].parse().unwrap();
         let out = words(c[3]);
         let v3 = |k: usize| -> [f32; 3] { [fl[k], fl[k + 1], fl[k + 2]] };
         let bits = |v: &[f32]| -> Vec<u32> { v.iter().map(|x| x.to_bits()).collect() };
-        let plane = |k: usize| Plane { o: [0.0; 3], u: [0.0; 3], w: [0.0; 3], n: v3(k), d: fl[k + 3] };
-        let ln = |k: usize| Line { p: v3(k), d: v3(k + 3) };
+        let plane = |k: usize| Plane {
+            o: [0.0; 3],
+            u: [0.0; 3],
+            w: [0.0; 3],
+            n: v3(k),
+            d: fl[k + 3],
+        };
+        let ln = |k: usize| Line {
+            p: v3(k),
+            d: v3(k + 3),
+        };
         let ok = match c[0] {
             "cross" => bits(&geom::cross(v3(0), v3(3))) == out,
             "norm" => {
@@ -401,7 +469,13 @@ fn geom_vectors(path: &Path) -> (usize, Vec<String>) {
                 (eax == 1) == r.is_some() && bits(&[l.p, l.d].concat()) == out
             }
             "lp" => {
-                let f = Plane { o: v3(0), u: v3(3), w: v3(6), n: [0.0; 3], d: 0.0 };
+                let f = Plane {
+                    o: v3(0),
+                    u: v3(3),
+                    w: v3(6),
+                    n: [0.0; 3],
+                    d: 0.0,
+                };
                 let r = geom::line_plane(&f, &ln(9), &t);
                 (eax == 1) == r.is_ok() && bits(&r.unwrap_or_else(|p| p)) == out
             }

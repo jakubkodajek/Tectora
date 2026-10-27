@@ -232,7 +232,11 @@ impl X80 {
         let neg = se & 0x8000 != 0;
         let e = (se & 0x7fff) as i32;
         if mant == 0 {
-            return X80 { neg, mant: 0, exp: 0 };
+            return X80 {
+                neg,
+                mant: 0,
+                exp: 0,
+            };
         }
         X80 {
             neg,
@@ -244,7 +248,11 @@ impl X80 {
     fn from_dd(d: DD) -> X80 {
         let (neg, m, e) = add_exact(split(d.hi), split(d.lo), 64);
         if m == 0 {
-            return X80 { neg, mant: 0, exp: 0 };
+            return X80 {
+                neg,
+                mant: 0,
+                exp: 0,
+            };
         }
         let lz = (m as u64).leading_zeros();
         X80 {
@@ -388,7 +396,10 @@ fn reduce66(x: f64) -> (DD, u32) {
     if x.abs() <= std::f64::consts::FRAC_PI_4 {
         return (DD::new(x), 0);
     }
-    assert!(x.abs() < 1e9, "x87 argument reduction outside the modelled range");
+    assert!(
+        x.abs() < 1e9,
+        "x87 argument reduction outside the modelled range"
+    );
     // Work in units of 2^-65 (pi66/2 = PI66_N * 2^-65).
     let (neg, m, e) = split(x);
     let sh = e + 65;

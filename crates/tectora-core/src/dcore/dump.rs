@@ -142,8 +142,24 @@ fn globals_json(c: &Core, n: &Names) -> Value {
     put("scratch100", json!(g.scratch100));
     put("scratch0fc", json!(g.scratch0fc));
     let names = [
-        "code_none", "code_t", "code_f", "code_g", "code_k", "code_p", "code_vl", "code_vr", "code_os",
-        "code_14", "code_wv", "code_wh", "code_ws", "code_c", "code_13", "code_s", "code_17", "code_wall",
+        "code_none",
+        "code_t",
+        "code_f",
+        "code_g",
+        "code_k",
+        "code_p",
+        "code_vl",
+        "code_vr",
+        "code_os",
+        "code_14",
+        "code_wv",
+        "code_wh",
+        "code_ws",
+        "code_c",
+        "code_13",
+        "code_s",
+        "code_17",
+        "code_wall",
     ];
     for (k, v) in names.iter().zip(g.codes.to_array()) {
         put(k, json!(v));
@@ -160,7 +176,12 @@ fn globals_json(c: &Core, n: &Names) -> Value {
 /// The state as a snapshot document (`{g, recs}`).
 pub fn to_json(c: &Core) -> Value {
     let n = Names {
-        eave_of: c.walls.iter().enumerate().map(|(i, w)| (w.eave.0, i as u32)).collect(),
+        eave_of: c
+            .walls
+            .iter()
+            .enumerate()
+            .map(|(i, w)| (w.eave.0, i as u32))
+            .collect(),
     };
     let mut recs = Vec::new();
     for (i, x) in c.faces.iter().enumerate() {
@@ -262,10 +283,14 @@ struct R<'a> {
 
 impl R<'_> {
     fn v(&self, k: &str) -> Result<&Value, DumpError> {
-        self.o.get(k).ok_or_else(|| DumpError(format!("missing field {k}")))
+        self.o
+            .get(k)
+            .ok_or_else(|| DumpError(format!("missing field {k}")))
     }
     fn i(&self, k: &str) -> Result<i64, DumpError> {
-        self.v(k)?.as_i64().ok_or_else(|| DumpError(format!("field {k} not an integer")))
+        self.v(k)?
+            .as_i64()
+            .ok_or_else(|| DumpError(format!("field {k} not an integer")))
     }
     fn i32(&self, k: &str) -> Result<i32, DumpError> {
         Ok(self.i(k)? as i32)
@@ -280,8 +305,15 @@ impl R<'_> {
         Ok(f32::from_bits(self.u32(k)?))
     }
     fn f3(&self, k: &str) -> Result<V3, DumpError> {
-        let a = self.v(k)?.as_array().ok_or_else(|| DumpError(format!("field {k} not an array")))?;
-        let g = |i: usize| a.get(i).and_then(Value::as_u64).map(|b| f32::from_bits(b as u32));
+        let a = self
+            .v(k)?
+            .as_array()
+            .ok_or_else(|| DumpError(format!("field {k} not an array")))?;
+        let g = |i: usize| {
+            a.get(i)
+                .and_then(Value::as_u64)
+                .map(|b| f32::from_bits(b as u32))
+        };
         match (g(0), g(1), g(2)) {
             (Some(x), Some(y), Some(z)) => Ok([x, y, z]),
             _ => err(format!("field {k} not a float triple")),
@@ -344,18 +376,26 @@ fn read_face(r: &R) -> Result<Face, DumpError> {
 /// Builds a [`Core`] from a snapshot (`{g, recs}`), e.g. one stage of an
 /// emulator dump. Record order within each kind follows the dump.
 pub fn from_json(snap: &Value) -> Result<Core, DumpError> {
-    let recs = snap["recs"].as_array().ok_or_else(|| DumpError("no recs".into()))?;
+    let recs = snap["recs"]
+        .as_array()
+        .ok_or_else(|| DumpError("no recs".into()))?;
     let mut c = Core::default();
     for _ in 0..3 {
         c.faces.push(Face::blank());
     }
     // Pass 1: assign indices.
-    let mut ids = Ids { map: HashMap::new() };
+    let mut ids = Ids {
+        map: HashMap::new(),
+    };
     let mut count: HashMap<&str, u32> = HashMap::new();
     let mut wall_eave: HashMap<String, u32> = HashMap::new();
     for r in recs {
-        let id = r["id"].as_str().ok_or_else(|| DumpError("record without id".into()))?;
-        let t = r["t"].as_str().ok_or_else(|| DumpError("record without type".into()))?;
+        let id = r["id"]
+            .as_str()
+            .ok_or_else(|| DumpError("record without id".into()))?;
+        let t = r["t"]
+            .as_str()
+            .ok_or_else(|| DumpError("record without type".into()))?;
         let ix = match id {
             "SFACE#1" => 0,
             "SFACE#2" => 1,
@@ -415,8 +455,12 @@ pub fn from_json(snap: &Value) -> Result<Core, DumpError> {
                     x58: r.u32("x58")?,
                     x5c: r.u32("x5c")?,
                     next: r.model("next")?,
-                    gface: r.face("gface")?.ok_or_else(|| DumpError("model without gface".into()))?,
-                    gface2: r.face("gface2")?.ok_or_else(|| DumpError("model without gface2".into()))?,
+                    gface: r
+                        .face("gface")?
+                        .ok_or_else(|| DumpError("model without gface".into()))?,
+                    gface2: r
+                        .face("gface2")?
+                        .ok_or_else(|| DumpError("model without gface2".into()))?,
                 })
             }
             "WALL" => {
@@ -518,7 +562,9 @@ pub fn from_json(snap: &Value) -> Result<Core, DumpError> {
     c.levels = levels.into_iter().map(Option::unwrap).collect();
     c.edges = edges.into_iter().map(Option::unwrap).collect();
 
-    let go = snap["g"].as_object().ok_or_else(|| DumpError("no globals".into()))?;
+    let go = snap["g"]
+        .as_object()
+        .ok_or_else(|| DumpError("no globals".into()))?;
     let r = R { o: go, ids: &ids };
     let g = &mut c.g;
     g.flags = r.u32("flags")?;
@@ -559,7 +605,10 @@ pub fn from_json(snap: &Value) -> Result<Core, DumpError> {
     g.seg_cur = r.seg("seg_cur")?;
     g.seg_cur2 = r.seg("seg_cur2")?;
     g.hole_cur = r.node("hole_cur")?;
-    let tl = r.v("tmp_line")?.as_array().ok_or_else(|| DumpError("tmp_line".into()))?;
+    let tl = r
+        .v("tmp_line")?
+        .as_array()
+        .ok_or_else(|| DumpError("tmp_line".into()))?;
     for (k, x) in g.tmp_line.iter_mut().enumerate() {
         *x = f32::from_bits(tl.get(k).and_then(Value::as_u64).unwrap_or(0) as u32);
     }
@@ -569,8 +618,24 @@ pub fn from_json(snap: &Value) -> Result<Core, DumpError> {
     g.scratch100 = r.u32("scratch100")?;
     g.scratch0fc = r.u32("scratch0fc")?;
     let names = [
-        "code_none", "code_t", "code_f", "code_g", "code_k", "code_p", "code_vl", "code_vr", "code_os",
-        "code_14", "code_wv", "code_wh", "code_ws", "code_c", "code_13", "code_s", "code_17", "code_wall",
+        "code_none",
+        "code_t",
+        "code_f",
+        "code_g",
+        "code_k",
+        "code_p",
+        "code_vl",
+        "code_vr",
+        "code_os",
+        "code_14",
+        "code_wv",
+        "code_wh",
+        "code_ws",
+        "code_c",
+        "code_13",
+        "code_s",
+        "code_17",
+        "code_wall",
     ];
     let mut codes = [0; 18];
     for (x, k) in codes.iter_mut().zip(names) {
@@ -584,7 +649,10 @@ pub fn from_json(snap: &Value) -> Result<Core, DumpError> {
         point: r.f("point_eps")?,
         intsct: r.f("intsct_eps")?,
     };
-    let cs = r.v("counters")?.as_array().ok_or_else(|| DumpError("counters".into()))?;
+    let cs = r
+        .v("counters")?
+        .as_array()
+        .ok_or_else(|| DumpError("counters".into()))?;
     for (k, x) in g.counters.iter_mut().enumerate() {
         *x = cs.get(k).and_then(Value::as_i64).unwrap_or(0) as i32;
     }
@@ -616,7 +684,10 @@ impl DumpDoc {
     }
 
     pub fn snaps(&self) -> &[Value] {
-        self.doc["snaps"].as_array().map(Vec::as_slice).unwrap_or(&[])
+        self.doc["snaps"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// The snapshots of one stage, in run order.
@@ -693,8 +764,15 @@ fn canon(snap: &Value) -> (Canon, HashMap<String, &Map<String, Value>>) {
         queue.push_back(s.into());
     }
     while let Some(id) = queue.pop_front() {
-        let Some(r) = by_id.get(&id).copied() else { continue };
-        let base = c.order.iter().find(|x| x.1 == id).map(|x| x.2.clone()).unwrap_or_default();
+        let Some(r) = by_id.get(&id).copied() else {
+            continue;
+        };
+        let base = c
+            .order
+            .iter()
+            .find(|x| x.1 == id)
+            .map(|x| x.2.clone())
+            .unwrap_or_default();
         for (k, s) in ptr_fields(r) {
             visit(&mut c, s, format!("{base}.{k}"), &mut queue);
         }
@@ -715,9 +793,35 @@ fn show(v: &Value, k: &str) -> String {
     };
     let float_field = matches!(
         k,
-        "o" | "x14" | "u" | "w" | "n" | "d" | "pitch" | "h" | "ov" | "zlo" | "zhi" | "s0" | "s" | "e"
-            | "s_orig" | "e_orig" | "extra" | "p" | "q" | "len" | "area" | "x" | "lo" | "hi" | "z_lo"
-            | "z_hi" | "lvl_lo" | "z_top" | "llx" | "tmp_line"
+        "o" | "x14"
+            | "u"
+            | "w"
+            | "n"
+            | "d"
+            | "pitch"
+            | "h"
+            | "ov"
+            | "zlo"
+            | "zhi"
+            | "s0"
+            | "s"
+            | "e"
+            | "s_orig"
+            | "e_orig"
+            | "extra"
+            | "p"
+            | "q"
+            | "len"
+            | "area"
+            | "x"
+            | "lo"
+            | "hi"
+            | "z_lo"
+            | "z_hi"
+            | "lvl_lo"
+            | "z_top"
+            | "llx"
+            | "tmp_line"
     );
     if !float_field {
         return v.to_string();
@@ -781,7 +885,11 @@ pub fn compare(want: &Value, got: &Value, limit: usize) -> Vec<String> {
             let vb = b.get(k).unwrap_or(&Value::Null);
             let (x, y) = (lab(&ca, va), lab(&cb, vb));
             if x != y {
-                push(format!("{l} ({path}).{k}: want {} got {}", show(&x, k), show(&y, k)));
+                push(format!(
+                    "{l} ({path}).{k}: want {} got {}",
+                    show(&x, k),
+                    show(&y, k)
+                ));
             }
         }
     }

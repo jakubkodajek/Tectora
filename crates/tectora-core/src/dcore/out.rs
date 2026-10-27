@@ -97,7 +97,9 @@ fn wall_written(c: &Core, w: WallId) -> bool {
 /// `t` face's head node changes sign.
 pub fn write_sol(c: &mut Core) -> Result<Vec<u8>, CoreError> {
     if c.g.flags & 0x20 == 0 {
-        return Err(CoreError::Unimplemented("core SOL without wall faces (flag 0x20)"));
+        return Err(CoreError::Unimplemented(
+            "core SOL without wall faces (flag 0x20)",
+        ));
     }
     let tol = c.g.tol;
     // Lines: the edge table, written in list order.
@@ -119,12 +121,16 @@ pub fn write_sol(c: &mut Core) -> Result<Vec<u8>, CoreError> {
     ];
     // coresol writes line n first and line 1 last: the table must be in that order.
     if edges.len() != n {
-        return Err(CoreError::Unimplemented("edge table length differs from the line count"));
+        return Err(CoreError::Unimplemented(
+            "edge table length differs from the line count",
+        ));
     }
     for (k, &ei) in edges.iter().enumerate() {
         let s = c.seg(c.edges[ei.ix()].seg.ok_or(fault("edge without segment"))?);
         if s.line as usize != n - k {
-            return Err(CoreError::Unimplemented("edge table not in descending line order"));
+            return Err(CoreError::Unimplemented(
+                "edge table not in descending line order",
+            ));
         }
         lines[n - k - 1] = SolLine {
             p: pz3(s.p),
@@ -237,7 +243,11 @@ pub fn write_sol(c: &mut Core) -> Result<Vec<u8>, CoreError> {
         .write();
         let at = head.len() - "00000\r\n\r\n".len();
         let old = format!("{written:05}\r\n\r\n");
-        text = format!("{}{count:05}\r\n\r\n{}", &text[..at], &text[at + old.len()..]);
+        text = format!(
+            "{}{count:05}\r\n\r\n{}",
+            &text[..at],
+            &text[at + old.len()..]
+        );
     }
     Ok(text.into_bytes())
 }
@@ -285,7 +295,8 @@ fn int_flag(c: &Core, s: SegId) -> i32 {
     if sg.kind == b'T' {
         return 0;
     }
-    let hidden = |f: Option<FaceId>| f.is_some_and(|f| c.face(f).typ == b'W' && c.face(f).sub == -1);
+    let hidden =
+        |f: Option<FaceId>| f.is_some_and(|f| c.face(f).typ == b'W' && c.face(f).sub == -1);
     i32::from(hidden(sg.fa) || hidden(sg.fb))
 }
 
@@ -358,7 +369,9 @@ fn rd2_view(c: &Core) -> coresol::Rd2 {
         let points = if odd || seq.is_empty() {
             seq
         } else {
-            std::iter::once(seq[0]).chain(seq[1..].iter().rev().copied()).collect()
+            std::iter::once(seq[0])
+                .chain(seq[1..].iter().rev().copied())
+                .collect()
         };
         holes.push(coresol::Hole {
             no: c.node(hi).no,
@@ -453,9 +466,13 @@ pub fn write_int(c: &mut Core) -> Result<Vec<u8>, CoreError> {
                 .any(|(w, _)| !matches!(w.letter, b'G' | b'T' | b'g' | b't' | b'w') && !w.zero)
         })
         .count()
-        + footprints.iter().filter(|f| f.as_ref().is_some_and(|v| !v.is_empty())).count();
+        + footprints
+            .iter()
+            .filter(|f| f.as_ref().is_some_and(|v| !v.is_empty()))
+            .count();
     let g = IntGeometry { faces, footprints };
-    let mut text = coresol::write_int_geometry(&rd2, &g).map_err(|_| CoreError::Fault("INT face lookup"))?;
+    let mut text =
+        coresol::write_int_geometry(&rd2, &g).map_err(|_| CoreError::Fault("INT face lookup"))?;
     if recs != n_models {
         // The model count of the header is the number of D and g models.
         let old = format!("000 Version\r\n\r\n{recs} Modelle\r\n");

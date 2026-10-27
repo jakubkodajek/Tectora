@@ -206,7 +206,9 @@ pub fn read(c: &mut Core, bytes: &[u8]) -> Result<(), CoreError> {
                     return Err(CoreError::fatal(1, MSG_ROOF_DEF));
                 }
                 let _ = unused;
-                let lw = c.g.last_wall.ok_or(CoreError::Fault("roof record before any wall"))?;
+                let lw =
+                    c.g.last_wall
+                        .ok_or(CoreError::Fault("roof record before any wall"))?;
                 let wt = c.wall(lw).typ;
                 if wt == b'T' && ch == b'D' {
                     t_height = h;
@@ -223,7 +225,9 @@ pub fn read(c: &mut Core, bytes: &[u8]) -> Result<(), CoreError> {
                 } else if ch == b'D' {
                     c.wall_mut(lw).h = h;
                 }
-                let lf = c.g.last_face.ok_or(CoreError::Fault("roof record before any wall"))?;
+                let lf =
+                    c.g.last_face
+                        .ok_or(CoreError::Fault("roof record before any wall"))?;
                 let f = c.new_face(NewFace {
                     typ: ch,
                     sub,
@@ -252,7 +256,8 @@ pub fn read(c: &mut Core, bytes: &[u8]) -> Result<(), CoreError> {
                     c.g.n_t_models += 1;
                 }
                 if header == 0
-                    && scan!(sc; int mno, int wno, float x, float y, float len, float pdeg, float extra) != 7
+                    && scan!(sc; int mno, int wno, float x, float y, float len, float pdeg, float extra)
+                        != 7
                 {
                     return Err(CoreError::fatal(1, MSG_WALL_DEF));
                 }
@@ -347,7 +352,11 @@ pub fn read(c: &mut Core, bytes: &[u8]) -> Result<(), CoreError> {
                 if scan!(sc; int no, float hh, int n) != 3 {
                     return Err(CoreError::fatal(1, MSG_HOLE_DEF));
                 }
-                let facep = if num::zero(hh, tol.value) { SFACE1 } else { SFACE2 };
+                let facep = if num::zero(hh, tol.value) {
+                    SFACE1
+                } else {
+                    SFACE2
+                };
                 c.g.hole_chain = None;
                 let (mut px, mut py) = (0f32, 0f32);
                 if scan!(sc; float px, float py) != 2 {
@@ -367,7 +376,16 @@ pub fn read(c: &mut Core, bytes: &[u8]) -> Result<(), CoreError> {
                     prev = p;
                     k -= 1;
                 }
-                let s = c.new_seg(b'L', 0, first, prev, None, c.g.hole_chain, Some(facep), None);
+                let s = c.new_seg(
+                    b'L',
+                    0,
+                    first,
+                    prev,
+                    None,
+                    c.g.hole_chain,
+                    Some(facep),
+                    None,
+                );
                 c.g.seg_cur = Some(s);
                 let node = c.new_node(no, 0.0, Some(s), c.g.holes);
                 c.node_mut(node).x04 = hh.to_bits();

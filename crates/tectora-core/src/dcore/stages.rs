@@ -20,7 +20,9 @@ use super::state::Core;
 /// with it. Dump point after it: `after_cut`.
 pub fn sweep(c: &mut Core) -> Result<i32, CoreError> {
     let _ = c;
-    Err(CoreError::Unimplemented("S2/S3 height sweep and face closing"))
+    Err(CoreError::Unimplemented(
+        "S2/S3 height sweep and face closing",
+    ))
 }
 
 /// S6: chimney holes (`da3dc0` → `da53f0`), only with flag 0x8: clips each

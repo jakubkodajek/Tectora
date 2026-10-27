@@ -267,7 +267,11 @@ pub fn rise(pitch: f32, s: f32, t: &Tol) -> f64 {
     if eq(pitch, 0.0, t.angle) || eq(pitch, HALF_PI_F, t.angle) {
         return 0.0;
     }
-    let sign = if gt(pitch, HALF_PI_F, t.angle) { -1.0 } else { 1.0 };
+    let sign = if gt(pitch, HALF_PI_F, t.angle) {
+        -1.0
+    } else {
+        1.0
+    };
     let q = x87::fcos(f64::from(pitch)).fdivr(f64::from(s));
     let s = f64::from(s);
     sign * (q * q - s * s).sqrt()
@@ -307,7 +311,10 @@ mod tests {
         let t = Tol::default();
         let a = [2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 4.0];
         assert_eq!(solve3(&a, [2.0, 6.0, 12.0], &t), Some([1.0, 2.0, 3.0]));
-        assert_eq!(solve2(&[2.0, 0.0, 0.0, 4.0], [2.0, 8.0], &t), Some([1.0, 2.0]));
+        assert_eq!(
+            solve2(&[2.0, 0.0, 0.0, 4.0], [2.0, 8.0], &t),
+            Some([1.0, 2.0])
+        );
         assert_eq!(solve3(&[0.0; 9], [1.0; 3], &t), None);
     }
 }

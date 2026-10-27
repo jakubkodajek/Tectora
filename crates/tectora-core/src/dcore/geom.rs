@@ -79,7 +79,10 @@ pub fn coplanar(a: &Plane, b: &Plane, t: &Tol) -> bool {
 /// [`NO_POINT`], direction the normalised cross product).
 pub fn plane_plane(a: &Plane, b: &Plane, t: &Tol) -> (Option<Line>, Line) {
     let dir = num::norm(cross(a.n, b.n), t);
-    let mut l = Line { p: NO_POINT, d: dir };
+    let mut l = Line {
+        p: NO_POINT,
+        d: dir,
+    };
     if num::vzero(dir, t.value) {
         return (None, l);
     }

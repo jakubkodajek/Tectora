@@ -316,7 +316,9 @@ impl Codes {
         let v: [i32; 18] = if flags & 1 == 0 {
             [0, 1, 2, 3, 4, 5, 6, 7, 8, 14, 9, 10, 11, 12, 13, 15, 17, 18]
         } else {
-            [1, 14, 3, 2, 5, 13, 4, 12, 6, 31, 36, 44, 38, 15, 31, 46, 9, 23]
+            [
+                1, 14, 3, 2, 5, 13, 4, 12, 6, 31, 36, 44, 38, 15, 31, 46, 9, 23,
+            ]
         };
         Codes::from_array(v)
     }
@@ -346,8 +348,8 @@ impl Codes {
 
     pub fn to_array(self) -> [i32; 18] {
         [
-            self.none, self.t, self.f, self.g, self.k, self.p, self.vl, self.vr, self.os,
-            self.c14, self.wv, self.wh, self.ws, self.c, self.c13, self.s, self.c17, self.wall,
+            self.none, self.t, self.f, self.g, self.k, self.p, self.vl, self.vr, self.os, self.c14,
+            self.wv, self.wh, self.ws, self.c, self.c13, self.s, self.c17, self.wall,
         ]
     }
 }
@@ -634,7 +636,13 @@ impl Core {
     }
 
     /// Node constructor (`no`, area, segment chain, next).
-    pub fn new_node(&mut self, no: i32, area: f32, segs: Option<SegId>, next: Option<NodeId>) -> NodeId {
+    pub fn new_node(
+        &mut self,
+        no: i32,
+        area: f32,
+        segs: Option<SegId>,
+        next: Option<NodeId>,
+    ) -> NodeId {
         let id = NodeId(self.nodes.len() as u32);
         self.nodes.push(Node {
             no,
