@@ -439,7 +439,10 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer) {
     let mut cuts: Vec<&[Point2]> = piece_polys.clone();
     cuts.extend(home_polys.iter().map(Vec::as_slice));
     let n = part.edges.len();
-    for i in (0..n).filter(|&i| i != back) {
+    // A front leaning outward (pitch over 90°) stands on the host with its
+    // eave and abuts nothing (DACAD case C71).
+    let leaning = |i: usize| part.edges[i].pitch_deg > 90.0 + 1e-9;
+    for i in (0..n).filter(|&i| i != back && !leaning(i)) {
         let (a, b) = (part.edges[i].start, part.edges[(i + 1) % n].start);
         let dir = unit(Point2::new(b.x - a.x, b.y - a.y));
         let out = Point2::new(dir.y, -dir.x);

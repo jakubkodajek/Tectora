@@ -283,7 +283,7 @@ impl Line {
         let mut stages: Vec<Stage> = Vec::with_capacity(planes.len());
         let (mut c, mut s) = (base, 0.0);
         for &(t, pitch_deg) in planes {
-            let s_new = if pitch_deg >= 90.0 - 1e-9 {
+            let s_new = if (pitch_deg - 90.0).abs() <= 1e-9 {
                 0.0
             } else {
                 1.0 / pitch_deg.to_radians().tan()
@@ -316,7 +316,10 @@ impl Line {
     /// A plane at height `t`: active and not turned vertical (a gable above
     /// a hip, DACAD sample DACHBRUC).
     fn sloped(&self, t: f64) -> bool {
-        self.active(t) && self.stage_at(t).is_some_and(|k| self.stages[k].s > 1e-12)
+        self.active(t)
+            && self
+                .stage_at(t)
+                .is_some_and(|k| self.stages[k].s.abs() > 1e-12)
     }
 
     /// Index of the plane valid at height `t`.
@@ -1462,7 +1465,16 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
         .collect();
 
     let mut geo = RoofGeometry::default();
-    for b in &bottoms {
+    // A plane leaning outward (pitch over 90°) carries no roofing: it has no
+    // face and no eave, and roof planes end against it in verges (C71).
+    let bare = |e: usize, z: f64| {
+        let l = &sim.lines[e];
+        l.stage_at(z).is_some_and(|k| l.stages[k].s < -1e-12)
+    };
+    for b in bottoms
+        .iter()
+        .filter(|b| sim.lines[b.edge].stages[b.stage].s >= -1e-12)
+    {
         // A plane starting where the edge was a wall begins at an eave
         // (also the Krüppel plane of a clipped gable, DACAD case C08);
         // a later plane of the same wall begins at a pitch break.
@@ -1504,7 +1516,12 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
         // where several planes nearly meet in one point (sample HOFSTTN).
         let run = (pa[0] - pb[0]).hypot(pa[1] - pb[1]);
         let flat = (pa[2] - pb[2]).abs() < 1e-6f64.max(0.005 * run);
-        let (kind, side) = match arc.waiting {
+        let z = (pa[2] + pb[2]) / 2.0;
+        let waiting = [
+            arc.waiting[0] || bare(arc.left, z),
+            arc.waiting[1] || bare(arc.right, z),
+        ];
+        let (kind, side) = match waiting {
             // A corner between two walls carries no roof.
             [true, true] => continue,
             // A plane sliding along a wall: verge, or a Pult line on top.

@@ -100,6 +100,11 @@ pub struct DadFile {
     pub chimneys: Vec<Chimney>,
 }
 
+/// A gable wall; a pitch over 90° is a plane leaning outward (C71).
+fn is_vertical(pitch_deg: f64) -> bool {
+    (pitch_deg - 90.0).abs() <= 90.0 - crate::model::GABLE_PITCH_DEG
+}
+
 fn f32_at(b: &[u8], off: usize) -> f64 {
     let v = f32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]]);
     // Values are stored as f32; round to 0.1 mm to drop float noise.
@@ -153,14 +158,13 @@ pub fn parse(bytes: &[u8]) -> Result<DadFile, DadError> {
                     priority: u8::from(f32_at(payload, 36) > 0.5),
                     half_hip: None,
                     breaks: Vec::new(),
-                    clad: f32_at(payload, 32) >= crate::model::GABLE_PITCH_DEG
-                        && u16_at(payload, 22) != 0,
+                    clad: is_vertical(f32_at(payload, 32)) && u16_at(payload, 22) != 0,
                 });
             }
             (TAG_WALL, SUB_STACKED) if len == 16 => {
                 if let Some(wall) = file.walls.last_mut() {
                     let (height, pitch_deg) = (f32_at(payload, 4), f32_at(payload, 12));
-                    if wall.pitch_deg >= crate::model::GABLE_PITCH_DEG && wall.half_hip.is_none() {
+                    if is_vertical(wall.pitch_deg) && wall.half_hip.is_none() {
                         wall.half_hip = Some(HalfHip { height, pitch_deg });
                     } else {
                         wall.breaks.push(PitchBreak { height, pitch_deg });

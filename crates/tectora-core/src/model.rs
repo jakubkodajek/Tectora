@@ -145,8 +145,10 @@ fn is_zero(v: &u8) -> bool {
 }
 
 impl EdgeDef {
+    /// A vertical wall. A pitch over 90° is a plane leaning outward, not a
+    /// gable (DACAD case C71).
     pub fn is_gable(&self) -> bool {
-        self.pitch_deg >= GABLE_PITCH_DEG
+        (self.pitch_deg - 90.0).abs() <= 90.0 - GABLE_PITCH_DEG
     }
 
     /// The sloped planes of this wall from bottom to top, as
