@@ -189,8 +189,7 @@ pub fn read(c: &mut Core, bytes: &[u8]) -> Result<(), CoreError> {
     let (mut x, mut y, mut len, mut extra) = (0f32, 0f32, 0f32, 0f32);
     // The direction of the last hidden wall face (copied into roof faces).
     let mut hidden_w: num::V3 = ZERO3;
-    loop {
-        let Some(ch) = sc.char() else { break };
+    while let Some(ch) = sc.char() {
         match ch {
             b';' => {
                 while let Some(k) = sc.getc() {
@@ -273,16 +272,16 @@ pub fn read(c: &mut Core, bytes: &[u8]) -> Result<(), CoreError> {
                 let a = f64::from(angle) * DEG2RAD;
                 let end = if !num::zero(len, tol.value) {
                     [
-                        (x87::fcos(a).mul(f64::from(len)) + f64::from(x)) as f32,
-                        (x87::fsin(a).mul(f64::from(len)) + f64::from(y)) as f32,
+                        (x87::fcos(a).fmul(f64::from(len)) + f64::from(x)) as f32,
+                        (x87::fsin(a).fmul(f64::from(len)) + f64::from(y)) as f32,
                         0.0,
                     ]
                 } else {
                     start
                 };
                 hidden_w = [
-                    (x87::fcos(a).add(f64::from(x)) - f64::from(x)) as f32,
-                    (x87::fsin(a).add(f64::from(y)) - f64::from(y)) as f32,
+                    (x87::fcos(a).fadd(f64::from(x)) - f64::from(x)) as f32,
+                    (x87::fsin(a).fadd(f64::from(y)) - f64::from(y)) as f32,
                     0.0,
                 ];
                 let hid = c.new_face(NewFace {

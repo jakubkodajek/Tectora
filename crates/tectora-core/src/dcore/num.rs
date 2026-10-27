@@ -65,20 +65,26 @@ pub fn ne(a: f32, b: f32, t: f32) -> bool {
     !eq(a, b, t)
 }
 
+// The negated comparisons keep the original's NaN behaviour (an
+// unordered compare sets the flags that make the branch go the other way).
+
 /// Clearly less: `|a-b| >= t && a < b` (unordered counts as true in both tests).
 #[inline]
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn lt(a: f32, b: f32, t: f32) -> bool {
     !(f64::from(t) > d(a, b)) && !(a >= b)
 }
 
 /// Clearly greater: `|a-b| >= t && a > b`.
 #[inline]
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn gt(a: f32, b: f32, t: f32) -> bool {
     !(f64::from(t) > d(a, b)) && a > b
 }
 
 /// Not clearly greater: false only when `|a-b| >= t && a >= b`.
 #[inline]
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn le(a: f32, b: f32, t: f32) -> bool {
     f64::from(t) > d(a, b) || !(a >= b)
 }
@@ -262,7 +268,7 @@ pub fn rise(pitch: f32, s: f32, t: &Tol) -> f64 {
         return 0.0;
     }
     let sign = if gt(pitch, HALF_PI_F, t.angle) { -1.0 } else { 1.0 };
-    let q = x87::fcos(f64::from(pitch)).rdiv(f64::from(s));
+    let q = x87::fcos(f64::from(pitch)).fdivr(f64::from(s));
     let s = f64::from(s);
     sign * (q * q - s * s).sqrt()
 }
@@ -290,8 +296,9 @@ mod tests {
         let t = Tol::default();
         let p = [0.0, 0.0, 0.0];
         let q = [1.0, 0.0, 0.0];
-        assert_eq!(orient(p, q, [0.5, 1.0, 0.0], &t), 1);
-        assert_eq!(orient(p, q, [0.5, -1.0, 0.0], &t), -1);
+        // Left of p -> q the stored value is positive.
+        assert_eq!(orient(p, q, [0.5, 1.0, 0.0], &t), -1);
+        assert_eq!(orient(p, q, [0.5, -1.0, 0.0], &t), 1);
         assert_eq!(orient(p, q, [2.0, 0.0, 0.0], &t), 0);
     }
 

@@ -297,7 +297,7 @@ pub fn face_frame(c: &mut Core, f: FaceId) -> Result<(), CoreError> {
     let mut o = me.o;
     if me.typ == b'K' {
         if num::ne(pf.pitch, HALF_PI_F, tol.angle) {
-            let q = x87::fptan(fd(pf.pitch)).rdiv(fd(me.h) - fd(pf.h));
+            let q = x87::fptan(fd(pf.pitch)).fdivr(fd(me.h) - fd(pf.h));
             let t = q / num::hypot(fd(pf.w[1]), fd(pf.w[0]));
             o[0] = (fd(x0) - t * fd(pf.w[1])) as f32;
             x0 = o[0];

@@ -182,7 +182,7 @@ impl X80 {
     }
 
     /// `fmul` with a double operand at 53-bit precision.
-    pub fn mul(self, b: f64) -> f64 {
+    pub fn fmul(self, b: f64) -> f64 {
         let (bn, bm, be) = split(b);
         let m = self.mant as u128 * bm as u128;
         let (m, e) = round_bits(m, self.exp + be, 53, false);
@@ -190,24 +190,24 @@ impl X80 {
     }
 
     /// `self / b` at 53-bit precision.
-    pub fn div(self, b: f64) -> f64 {
+    pub fn fdiv(self, b: f64) -> f64 {
         div_parts(self.parts(), split(b))
     }
 
     /// `a / self` at 53-bit precision (`fdivr`).
-    pub fn rdiv(self, a: f64) -> f64 {
+    pub fn fdivr(self, a: f64) -> f64 {
         div_parts(split(a), self.parts())
     }
 
     /// `self + b` at 53-bit precision.
-    pub fn add(self, b: f64) -> f64 {
+    pub fn fadd(self, b: f64) -> f64 {
         let (n, m, e) = add_exact(self.parts(), split(b), 53);
         make_f64(n, m, e)
     }
 
     /// `self - b` at 53-bit precision.
-    pub fn sub(self, b: f64) -> f64 {
-        self.add(-b)
+    pub fn fsub(self, b: f64) -> f64 {
+        self.fadd(-b)
     }
 
     /// The 10-byte memory image (`fstp tword`).
@@ -454,7 +454,7 @@ pub fn fptan(x: f64) -> X80 {
 
 /// pi/2 in three parts (about 160 bits), for the reduction inside `fpatan`.
 const PIO2: [f64; 3] = [
-    1.5707963267948966,
+    std::f64::consts::FRAC_PI_2,
     6.123233995736766e-17,
     -1.4973849048591698e-33,
 ];
@@ -532,7 +532,7 @@ mod tests {
             mant: 0x8000_0000_0000_0401,
             exp: -63,
         }; // 1 + 2^-53 + 2^-63
-        assert_eq!(c.mul(1.0), 1.0 + f64::EPSILON); // rounds up because of the 2^-63 bit
+        assert_eq!(c.fmul(1.0), 1.0 + f64::EPSILON); // rounds up because of the 2^-63 bit
         assert_eq!(c.to_f64(), 1.0 + f64::EPSILON);
         let c2 = X80 {
             neg: false,
@@ -541,9 +541,9 @@ mod tests {
         }; // exact tie: to even
         assert_eq!(c2.to_f64(), 1.0);
         assert_eq!(X80::from_f64(0.1).to_f64(), 0.1);
-        assert_eq!(X80::from_f64(3.0).add(-3.0), 0.0);
-        assert_eq!(X80::from_f64(1.5).div(3.0), 0.5);
-        assert_eq!(X80::from_f64(3.0).rdiv(1.5), 0.5);
+        assert_eq!(X80::from_f64(3.0).fadd(-3.0), 0.0);
+        assert_eq!(X80::from_f64(1.5).fdiv(3.0), 0.5);
+        assert_eq!(X80::from_f64(3.0).fdivr(1.5), 0.5);
     }
 
     #[test]

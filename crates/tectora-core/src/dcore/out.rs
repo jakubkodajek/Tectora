@@ -178,7 +178,7 @@ pub fn write_sol(c: &mut Core) -> Result<Vec<u8>, CoreError> {
                 let head = fc.head.ok_or(fault("face without head node"))?;
                 if kind != 0 {
                     let a = c.node(head).area;
-                    c.node_mut(head).area = (f64::from(a) * -1.0) as f32;
+                    c.node_mut(head).area = -a;
                 }
                 let segs = chain(c, fc.segs);
                 faces.push(SolFace {
