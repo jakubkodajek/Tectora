@@ -1118,6 +1118,54 @@ fn snap_markers(part: &RoofPart) -> RoofPart {
     out
 }
 
+/// Planes in step closer than this are one plane to DACAD.
+const SAME_PLANE: f64 = 1e-2;
+
+/// Parallel walls of one pitch whose roof planes are in step less than a
+/// centimetre apart roof one plane to DACAD: the later wall's eave moves
+/// onto the earlier wall's plane (sample 91021421, a raised wall 5 mm
+/// under the plane of a wall further along).
+fn snap_in_step_planes(part: &RoofPart) -> RoofPart {
+    let mut out = part.clone();
+    let n = out.edges.len();
+    let pts = part.outline();
+    let line = |i: usize| {
+        let (a, b) = (pts[i], pts[(i + 1) % n]);
+        let l = a.distance(b);
+        (l > POS_TOL).then(|| {
+            let d = Point2::new((b.x - a.x) / l, (b.y - a.y) / l);
+            // The wall line's offset along its outward normal.
+            (d, d.y * a.x - d.x * a.y)
+        })
+    };
+    let sloped = |e: &EdgeDef| !e.is_gable() && e.pitch_deg > 0.0 && e.breaks.is_empty();
+    for j in 0..n {
+        let Some((dj, cj)) = line(j) else { continue };
+        if !sloped(&out.edges[j]) {
+            continue;
+        }
+        for i in 0..j {
+            let (e, f) = (&out.edges[i], &out.edges[j]);
+            let Some((di, ci)) = line(i) else { continue };
+            if !sloped(e)
+                || dot(di, dj) < 1.0 - 1e-9
+                || (e.pitch_deg - f.pitch_deg).abs() > 1e-9
+                || (ci - cj).abs() < POS_TOL
+            {
+                continue;
+            }
+            let tan = e.pitch_deg.to_radians().tan();
+            let want = e.eave_height + tan * (e.overhang + ci - cj);
+            let have = f.eave_height + tan * f.overhang;
+            if (want - have).abs() > EPS && (want - have).abs() < SAME_PLANE {
+                out.edges[j].eave_height += want - have;
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// Gable walls on one line, even with other walls between them, are one
 /// gable to DACAD: a clipped gable (Krüppel) on one clips them all (sample
 /// TRAING01).
@@ -1171,7 +1219,8 @@ fn share_half_hips(part: &RoofPart) -> RoofPart {
 /// walls at their wall lines, and the two are combined
 /// ([`crate::raised::combine`]).
 pub fn generate(part: &RoofPart) -> RoofGeometry {
-    let (part, map) = merge_collinear_walls(&share_half_hips(&snap_markers(part)));
+    let (part, map) =
+        merge_collinear_walls(&share_half_hips(&snap_in_step_planes(&snap_markers(part))));
     let raised = raised_edges(&part);
     let (off, _) = generate_mode(&part, &vec![false; raised.len()]);
     let mut geo = if raised.contains(&true) {
