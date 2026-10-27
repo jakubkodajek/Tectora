@@ -48,6 +48,8 @@ pub enum DadError {
     UnsupportedV2,
     #[error("truncated record at byte {0}")]
     Truncated(usize),
+    #[error("record at byte {0} holds a number that is not finite")]
+    NotFinite(usize),
     #[error("wall record at byte {offset} has unexpected length {len}")]
     BadWallRecord { offset: usize, len: usize },
 }
@@ -147,6 +149,16 @@ pub fn parse(bytes: &[u8]) -> Result<DadFile, DadError> {
         let payload = bytes
             .get(start..start + len)
             .ok_or(DadError::Truncated(p))?;
+        let num = |off: usize| {
+            Some(f32_at(payload, off))
+                .filter(|v| v.is_finite())
+                .ok_or(DadError::NotFinite(p))
+        };
+        let angle = |off: usize| {
+            Some(angle_at(payload, off))
+                .filter(|v| v.is_finite())
+                .ok_or(DadError::NotFinite(p))
+        };
         match (tag, sub) {
             (0x01, _) => {
                 file.version = String::from_utf8_lossy(payload)
@@ -163,21 +175,21 @@ pub fn parse(bytes: &[u8]) -> Result<DadFile, DadError> {
                 file.walls.push(DadWall {
                     id: u16_at(payload, 0),
                     group: u16_at(payload, 2),
-                    start: Point2::new(f32_at(payload, 4), f32_at(payload, 8)),
-                    length: f32_at(payload, 12),
-                    angle_rad: angle_at(payload, 16),
-                    eave_height: f32_at(payload, 24),
-                    overhang: f32_at(payload, 28),
-                    pitch_deg: f32_at(payload, 32),
-                    priority: u8::from(f32_at(payload, 36) > 0.5),
+                    start: Point2::new(num(4)?, num(8)?),
+                    length: num(12)?,
+                    angle_rad: angle(16)?,
+                    eave_height: num(24)?,
+                    overhang: num(28)?,
+                    pitch_deg: num(32)?,
+                    priority: u8::from(num(36)? > 0.5),
                     half_hip: None,
                     breaks: Vec::new(),
-                    clad: is_vertical(f32_at(payload, 32)) && u16_at(payload, 22) != 0,
+                    clad: is_vertical(num(32)?) && u16_at(payload, 22) != 0,
                 });
             }
             (TAG_WALL, SUB_STACKED) if len == 16 => {
                 if let Some(wall) = file.walls.last_mut() {
-                    let (height, pitch_deg) = (f32_at(payload, 4), f32_at(payload, 12));
+                    let (height, pitch_deg) = (num(4)?, num(12)?);
                     if is_vertical(wall.pitch_deg) && wall.half_hip.is_none() {
                         wall.half_hip = Some(HalfHip { height, pitch_deg });
                     } else {
@@ -187,22 +199,21 @@ pub fn parse(bytes: &[u8]) -> Result<DadFile, DadError> {
             }
             (TAG_WALL, SUB_WINDOW) if len == 16 => {
                 file.windows.push(RoofWindow {
-                    x: f32_at(payload, 0),
-                    y: f32_at(payload, 4),
-                    width: f32_at(payload, 8),
-                    height: f32_at(payload, 12),
+                    x: num(0)?,
+                    y: num(4)?,
+                    width: num(8)?,
+                    height: num(12)?,
                 });
             }
             (TAG_CHIMNEY, 0x00) if len == 8 => {
                 file.chimneys.push(Chimney {
                     corners: Vec::new(),
-                    height: f32_at(payload, 2),
+                    height: num(2)?,
                 });
             }
             (TAG_CHIMNEY, 0x10) if len == 8 => {
                 if let Some(c) = file.chimneys.last_mut() {
-                    c.corners
-                        .push(Point2::new(f32_at(payload, 0), f32_at(payload, 4)));
+                    c.corners.push(Point2::new(num(0)?, num(4)?));
                 }
             }
             _ => {}

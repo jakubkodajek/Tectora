@@ -1170,6 +1170,21 @@ fn snap_markers(part: &RoofPart) -> RoofPart {
             out.edges[j].start = a;
         }
     }
+    // A zero-length wall without a direction (a doubled corner) carries on
+    // the wall before it.
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (a, b) = (out.edges[i].start, out.edges[j].start);
+        if out.edges[i].direction_rad.is_some() || a.distance(b) >= POS_TOL {
+            continue;
+        }
+        out.edges[j].start = a;
+        let prev = (1..n).map(|k| (i + n - k) % n).find_map(|k| {
+            let (p, q) = (out.edges[k].start, out.edges[(k + 1) % n].start);
+            (p.distance(q) >= POS_TOL).then(|| (q.y - p.y).atan2(q.x - p.x))
+        });
+        out.edges[i].direction_rad = prev;
+    }
     out
 }
 

@@ -31,8 +31,64 @@ const TOL: f64 = 1e-9;
 const LEVEL: f64 = 1.0 - 1e-6;
 
 /// Generates every part of the project with its dormers, windows and
-/// chimneys applied.
+/// chimneys applied, one geometry per part.
+///
+/// Parts entered clockwise are generated as their counter-clockwise
+/// equivalent (face edge indices still refer to the part as given). Input
+/// that [`Project::validate`] rejects is left out instead of producing NaN:
+/// an invalid part gets an empty geometry.
 pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
+    let mut clean = project.clone();
+    clean.parts.clear();
+    // For each part: its index in `clean` and, if reversed, its edge count.
+    let mut slots: Vec<Option<(usize, Option<usize>)>> = Vec::new();
+    for part in &project.parts {
+        let mut alone = Project::new("");
+        alone.parts.push(part.clone());
+        if alone.validate().is_err() {
+            slots.push(None);
+            continue;
+        }
+        let mut p = part.clone();
+        let reversed = signed_area(&p.outline()) < 0.0;
+        p.normalize_ccw();
+        slots.push(Some((clean.parts.len(), reversed.then_some(p.edges.len()))));
+        clean.parts.push(p);
+    }
+    clean.dormers.retain(|d| {
+        d.end.x.is_finite()
+            && d.end.y.is_finite()
+            && d.edges.iter().all(|e| e.problems().next().is_none())
+    });
+    let ok_poly = |c: &Chimney| {
+        c.corners.len() >= 3 && c.corners.iter().all(|v| v.x.is_finite() && v.y.is_finite())
+    };
+    clean.chimneys.retain(ok_poly);
+    clean.roof_openings.retain(ok_poly);
+    clean.windows.retain(|w| {
+        [w.x, w.y, w.width, w.height].iter().all(|v| v.is_finite())
+            && w.width > 0.0
+            && w.height > 0.0
+    });
+    let mut geos = generate_valid(&clean);
+    slots
+        .into_iter()
+        .map(|slot| match slot {
+            None => RoofGeometry::default(),
+            Some((i, reversed)) => {
+                let mut g = std::mem::take(&mut geos[i]);
+                if let Some(n) = reversed {
+                    for f in &mut g.faces {
+                        f.edge = n - 1 - f.edge;
+                    }
+                }
+                g
+            }
+        })
+        .collect()
+}
+
+fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
     // Parts with standing gables are joined as several buildings.
     let cuts: Vec<crate::gable_wall::Pieces> = project
         .parts
@@ -89,14 +145,30 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     for w in &project.windows {
         apply_window(&mut geos, w);
     }
-    for c in &project.chimneys {
-        for geo in &mut geos {
-            apply_cutout(geo, c, false);
-        }
+    let walls: Vec<(Point2, Point2)> = project
+        .parts
+        .iter()
+        .flat_map(|p| {
+            let o = p.outline();
+            (0..o.len()).map(move |i| (o[i], o[(i + 1) % o.len()]))
+        })
+        .collect();
+    // A non-convex chimney or opening makes DACAD's core give up
+    // (FUN_00da53f0: "Nicht konvexer Schornstein/Öffnung %d wird
+    // ignoriert!") and the calculation yields no roof at all, whatever the
+    // order (DACAD runs dacad-penetrations P1a–P1c).
+    let cutouts: Vec<(&Chimney, bool)> = project
+        .chimneys
+        .iter()
+        .map(|c| (c, false))
+        .chain(project.roof_openings.iter().map(|o| (o, true)))
+        .collect();
+    if cutouts.iter().any(|(c, _)| !dacad_convex(&c.corners)) {
+        return vec![RoofGeometry::default(); geos.len()];
     }
-    for o in &project.roof_openings {
-        for geo in &mut geos {
-            apply_cutout(geo, o, true);
+    for geo in &mut geos {
+        for &(c, hole) in &cutouts {
+            apply_cutout(geo, c, hole, &walls);
         }
     }
     for geo in &mut geos {
@@ -109,6 +181,28 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
         split_verges_at_knicks(&mut geo.lines);
     }
     geos
+}
+
+/// DACAD's convexity test for a chimney (FUN_00da6920): no two turns of
+/// opposite sign between its consecutive sides, in f32 input. Like DACAD
+/// it skips the turn back into the first corner.
+pub fn dacad_convex(corners: &[Point2]) -> bool {
+    let p: Vec<(f64, f64)> = corners
+        .iter()
+        .map(|c| (c.x as f32 as f64, c.y as f32 as f64))
+        .collect();
+    let n = p.len();
+    let (mut left, mut right) = (0, 0);
+    for i in 0..n.saturating_sub(1) {
+        let (a, b, c) = (p[i], p[i + 1], p[(i + 2) % n]);
+        let turn = (c.1 - b.1) * (b.0 - a.0) - (c.0 - b.0) * (b.1 - a.1);
+        if turn > 0.0 {
+            left += 1;
+        } else if turn < 0.0 {
+            right += 1;
+        }
+    }
+    left == 0 || right == 0
 }
 
 /// A piece of a ridge, hip, valley or knick with one of its own planes on
@@ -547,7 +641,7 @@ fn snap_sides_to_ridge_ends(geo: &RoofGeometry, corners: &mut [Point2]) {
 }
 
 /// Cuts a chimney, or with `hole` a roof opening, out of the faces.
-fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool) {
+fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool, walls: &[(Point2, Point2)]) {
     let mut corners = c.corners.clone();
     if corners.len() < 3 {
         return;
@@ -557,7 +651,7 @@ fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool) {
     }
     if !hole {
         snap_sides_to_ridge_ends(geo, &mut corners);
-        cut_chimney(geo, &corners);
+        cut_chimney(geo, &corners, walls);
         return;
     }
     // Roof lines under the opening disappear.
@@ -657,6 +751,8 @@ struct HoleEdge {
     d: [f64; 3],
     face: usize,
     shared: bool,
+    /// The same edge in the neighbouring face's hole, when dropped.
+    twin: Option<([f64; 3], [f64; 3])>,
 }
 
 /// A chimney as DACAD's core cuts it (decompiled FUN_00da5160 and its
@@ -667,7 +763,7 @@ struct HoleEdge {
 /// lines stay whole. A hole edge lying on a roof line (see [`on_line`])
 /// becomes a negative line of that line's kind; a hole edge of only one
 /// face is also an abutment, unless the line is a verge, Pult or eave.
-fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2]) {
+fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2], walls: &[(Point2, Point2)]) {
     let mut corners = corners.to_vec();
     for _ in 0..corners.len() {
         if !pivot_corner(geo, &mut corners) {
@@ -694,15 +790,9 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2]) {
         face.area -= d;
         face.deducted += d;
         total += d;
-        for i in 0..pts.len() {
-            edges.push(HoleEdge {
-                c: pts[i],
-                d: pts[(i + 1) % pts.len()],
-                face: fi,
-                shared: false,
-            });
-        }
+        push_edges(&mut edges, &pts, fi);
     }
+    join_coplanar_edges(&geo.faces, &mut edges);
     // An edge two holes share lies on the line between their faces; the
     // hole of the lower face keeps it.
     let on_edge = |p: [f64; 3], e: &HoleEdge| {
@@ -721,8 +811,34 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2]) {
         if let Some(j) =
             (0..edges.len()).find(|&j| edges[j].face != edges[i].face && on_edge(mid, &edges[j]))
         {
-            drop[i] = edges[i].face > edges[j].face;
+            // A shorter edge lying on a longer one is DACAD's code 17
+            // (FUN_00da5060; R1_0745).
+            let (li, lj) = (
+                dist3_(edges[i].c, edges[i].d),
+                dist3_(edges[j].c, edges[j].d),
+            );
+            drop[i] = li < lj - 1e-6 || (li <= lj + 1e-6 && edges[i].face > edges[j].face);
             edges[i].shared = true;
+            if drop[i] && li > lj - 1e-6 {
+                edges[j].twin = Some((edges[i].c, edges[i].d));
+            }
+        }
+    }
+    // DACAD also holes the dormer's footprint face on the host plane
+    // (see `dormer`): a dormer face's hole edge along the footprint's
+    // outline is shared with that hole (mass case R1_0440: −K, no WS).
+    for e in edges.iter_mut() {
+        if geo.faces[e.face].edge != usize::MAX {
+            continue;
+        }
+        let (c, d) = (Point2::new(e.c[0], e.c[1]), Point2::new(e.d[0], e.d[1]));
+        if geo.footprints.iter().any(|f| {
+            (0..f.len()).any(|i| {
+                let (a, b) = (f[i], f[(i + 1) % f.len()]);
+                seg_dist(a, b, c) < 1e-4 && seg_dist(a, b, d) < 1e-4
+            })
+        }) {
+            e.shared = true;
         }
     }
     let mut keep = drop.iter().map(|d| !d);
@@ -737,15 +853,40 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2]) {
         if dist3_(e.c, e.d) < 0.02 {
             continue;
         }
-        let on = roof
-            .iter()
-            .find(|r| on_line((r.a, r.b), e.c, e.d) || on_line((r.b, r.a), e.c, e.d));
+        let on = roof.iter().find(|r| {
+            std::iter::once((e.c, e.d))
+                .chain(e.twin)
+                .any(|(c, d)| lies_on(r, c, d))
+        });
+        let abutment = on.is_some_and(|r| {
+            matches!(
+                r.kind,
+                LineKind::AbutmentFront | LineKind::AbutmentBack | LineKind::AbutmentSide
+            )
+        });
+        // Along a wall, building or dormer cheek, the hole edge lies on the
+        // wall's own edge and is DACAD's code 17 (FUN_00da5060; xm case
+        // Q398_xp030_yp00): no line at all.
+        let (c, d) = (Point2::new(e.c[0], e.c[1]), Point2::new(e.d[0], e.d[1]));
+        let along = |a: Point2, b: Point2| seg_dist(a, b, c) < 1e-4 && seg_dist(a, b, d) < 1e-4;
+        let on_wall = walls.iter().any(|&(a, b)| along(a, b))
+            || geo
+                .footprints
+                .iter()
+                .any(|f| (0..f.len()).any(|i| along(f[i], f[(i + 1) % f.len()])));
+        if abutment && on_wall {
+            continue;
+        }
         if let Some(r) = on {
             geo.minus_lines
                 .push((r.dacad_code().to_string(), dist3_(e.c, e.d)));
         }
-        let edge_of_roof =
-            on.is_some_and(|r| matches!(r.kind, LineKind::Verge | LineKind::Pult | LineKind::Eave));
+        // On an abutment off any wall DACAD's copy comes back as code 0, no
+        // line (mass case R1_0745: −WS along a step, no +WS).
+        let edge_of_roof = abutment
+            || on.is_some_and(|r| {
+                matches!(r.kind, LineKind::Verge | LineKind::Pult | LineKind::Eave)
+            });
         if e.shared || edge_of_roof {
             continue;
         }
@@ -778,6 +919,69 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2]) {
             area: total,
         });
     }
+}
+
+fn push_edges(edges: &mut Vec<HoleEdge>, pts: &[[f64; 3]], face: usize) {
+    for i in 0..pts.len() {
+        edges.push(HoleEdge {
+            c: pts[i],
+            d: pts[(i + 1) % pts.len()],
+            face,
+            shared: false,
+            twin: None,
+        });
+    }
+}
+
+/// Ours may keep a plane in pieces where DACAD has one face (an overhang
+/// piece beside a step, mass case R1_0745: one hole edge along the whole
+/// valley). Hole edges of two pieces of one plane that continue each other
+/// in a straight line become one edge.
+fn join_coplanar_edges(faces: &[RoofFace], edges: &mut Vec<HoleEdge>) {
+    const EPS: f64 = 1e-6;
+    let coplanar = |i: usize, j: usize| {
+        let (f, g) = (&faces[i], &faces[j]);
+        let ((u, t), (v, w)) = (slope(f), slope(g));
+        f.edge == g.edge
+            && f.edge != usize::MAX
+            && (t - w).abs() < EPS
+            && u.distance(v) < EPS
+            && g.polygon
+                .iter()
+                .all(|p| (height_at(f, u, t, Point2::new(p[0], p[1])) - p[2]).abs() < EPS)
+    };
+    let straight = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+        let (ab, bc) = (dist3_(a, b), dist3_(b, c));
+        ab > EPS && bc > EPS && (ab + bc - dist3_(a, c)).abs() < EPS
+    };
+    'again: loop {
+        for i in 0..edges.len() {
+            for j in 0..edges.len() {
+                let (e, f) = (&edges[i], &edges[j]);
+                if i == j || e.face == f.face || dist3_(e.d, f.c) > EPS {
+                    continue;
+                }
+                if straight(e.c, e.d, f.d) && coplanar(e.face, f.face) {
+                    edges[i].d = edges[j].d;
+                    edges.remove(j);
+                    continue 'again;
+                }
+            }
+        }
+        break;
+    }
+}
+
+/// Plan distance from `p` to segment A→B.
+fn seg_dist(a: Point2, b: Point2, p: Point2) -> f64 {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 < TOL {
+        0.0
+    } else {
+        (((p.x - a.x) * dx + (p.y - a.y) * dy) / l2).clamp(0.0, 1.0)
+    };
+    (p.x - a.x - t * dx).hypot(p.y - a.y - t * dy)
 }
 
 /// A corner dropped from a hole: the corner's index, the point it merged
@@ -912,12 +1116,30 @@ fn pivot_corner(geo: &RoofGeometry, corners: &mut [Point2]) -> bool {
     false
 }
 
+/// Whether a hole edge lies on roof line `r` by DACAD's test [`on_line`].
+/// DACAD measures from the line's start as its edge table stores it: the
+/// edge's direction in the first face listing it, and faces run either way
+/// (SOL files of the mass test). Not modelled; a sloped line is measured
+/// from its lower end, which DACAD's sweep dacad-chimney-near-line/near3
+/// needs (P0a–P1b: from the upper end a side 6.5 cm off a hip near the
+/// eave would pass). Mass case R1_0808 needs the upper end and fails. The
+/// edge may run either way [no source — extrapolation]. A level line is
+/// tried from both ends.
+fn lies_on(r: &RoofLine, c: [f64; 3], d: [f64; 3]) -> bool {
+    let (lo, hi) = if r.a[2] <= r.b[2] {
+        (r.a, r.b)
+    } else {
+        (r.b, r.a)
+    };
+    let from = |a, b| on_line((a, b), c, d) || on_line((a, b), d, c);
+    from(lo, hi) || ((hi[2] - lo[2]) as f32) < 0.01 && from(hi, lo)
+}
+
 /// DACAD's test whether hole edge C→D lies on roof line A→B: the ends
 /// agree within VALUE_EPS, or the unit vectors B−A, C−A and D−C agree in
 /// every coordinate within VALUE_EPS (either sign) with C and D inside the
-/// line's box grown by VALUE_EPS; all in f32. Callers try the line from
-/// either end: its stored direction is not modelled, and mass cases R1_0077
-/// and R1_0808 each need a different end of a hip.
+/// line's box grown by VALUE_EPS; all in f32. See [`lies_on`] for which
+/// end is A.
 fn on_line((a, b): ([f64; 3], [f64; 3]), c: [f64; 3], d: [f64; 3]) -> bool {
     const VALUE_EPS: f32 = 0.01;
     let eq = |p: [f64; 3], q: [f64; 3]| {
@@ -982,6 +1204,35 @@ mod tests {
             .filter(|l| l.dacad_code() == code)
             .map(|l| l.length())
             .sum()
+    }
+
+    #[test]
+    fn non_convex_chimney_leaves_no_roof() {
+        let l_shape = Chimney {
+            corners: [
+                (4.0, 2.0),
+                (5.2, 2.0),
+                (5.2, 2.6),
+                (4.6, 2.6),
+                (4.6, 3.2),
+                (4.0, 3.2),
+            ]
+            .iter()
+            .map(|&(x, y)| Point2::new(x, y))
+            .collect(),
+            ..square(0.0, 0.0, 1.0, 1.0)
+        };
+        assert!(!dacad_convex(&l_shape.corners));
+        assert!(dacad_convex(&square(6.0, 2.0, 0.6, 0.6).corners));
+        for chimneys in [
+            vec![l_shape.clone()],
+            vec![square(6.0, 2.0, 0.6, 0.6), l_shape],
+        ] {
+            let mut p = gable();
+            p.chimneys = chimneys;
+            let geo = &generate_project(&p)[0];
+            assert!(geo.faces.is_empty() && geo.lines.is_empty());
+        }
     }
 
     #[test]
