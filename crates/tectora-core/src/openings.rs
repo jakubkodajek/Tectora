@@ -86,14 +86,22 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
             (0..o.len()).map(move |i| (o[i], o[(i + 1) % o.len()]))
         })
         .collect();
-    for c in &project.chimneys {
-        for geo in &mut geos {
-            apply_cutout(geo, c, false, &walls);
-        }
-    }
-    for o in &project.roof_openings {
-        for geo in &mut geos {
-            apply_cutout(geo, o, true, &walls);
+    // DACAD's core cuts the holes roof by roof, each chimney and opening in
+    // turn, and gives up at the first non-convex one (FUN_00da53f0: "Nicht
+    // konvexer Schornstein/Öffnung %d wird ignoriert!"): that one, every
+    // later one and every later roof get no hole.
+    let cutouts: Vec<(&Chimney, bool)> = project
+        .chimneys
+        .iter()
+        .map(|c| (c, false))
+        .chain(project.roof_openings.iter().map(|o| (o, true)))
+        .collect();
+    'roofs: for geo in &mut geos {
+        for &(c, hole) in &cutouts {
+            if !dacad_convex(&c.corners) {
+                break 'roofs;
+            }
+            apply_cutout(geo, c, hole, &walls);
         }
     }
     for geo in &mut geos {
@@ -106,6 +114,28 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
         split_verges_at_knicks(&mut geo.lines);
     }
     geos
+}
+
+/// DACAD's convexity test for a chimney (FUN_00da6920): no two turns of
+/// opposite sign between its consecutive sides, in f32 input. Like DACAD
+/// it skips the turn back into the first corner.
+pub fn dacad_convex(corners: &[Point2]) -> bool {
+    let p: Vec<(f64, f64)> = corners
+        .iter()
+        .map(|c| (c.x as f32 as f64, c.y as f32 as f64))
+        .collect();
+    let n = p.len();
+    let (mut left, mut right) = (0, 0);
+    for i in 0..n.saturating_sub(1) {
+        let (a, b, c) = (p[i], p[i + 1], p[(i + 2) % n]);
+        let turn = (c.1 - b.1) * (b.0 - a.0) - (c.0 - b.0) * (b.1 - a.1);
+        if turn > 0.0 {
+            left += 1;
+        } else if turn < 0.0 {
+            right += 1;
+        }
+    }
+    left == 0 || right == 0
 }
 
 /// A piece of a ridge, hip, valley or knick with one of its own planes on
@@ -1108,6 +1138,42 @@ mod tests {
             .filter(|l| l.dacad_code() == code)
             .map(|l| l.length())
             .sum()
+    }
+
+    #[test]
+    fn non_convex_chimney_stops_dacads_hole_treatment() {
+        let l_shape = Chimney {
+            corners: [
+                (3.0, 2.0),
+                (4.2, 2.0),
+                (4.2, 2.6),
+                (3.6, 2.6),
+                (3.6, 3.2),
+                (3.0, 3.2),
+            ]
+            .iter()
+            .map(|&(x, y)| Point2::new(x, y))
+            .collect(),
+            ..square(0.0, 0.0, 1.0, 1.0)
+        };
+        assert!(!dacad_convex(&l_shape.corners));
+        assert!(dacad_convex(&square(6.0, 2.0, 0.6, 0.6).corners));
+        let deducted = |chimneys: Vec<Chimney>| {
+            let mut p = gable();
+            p.chimneys = chimneys;
+            generate_project(&p)[0]
+                .faces
+                .iter()
+                .map(|f| f.deducted)
+                .sum::<f64>()
+        };
+        let one = deducted(vec![square(6.0, 2.0, 0.6, 0.6)]);
+        assert!(one > 0.0);
+        assert_eq!(
+            deducted(vec![square(6.0, 2.0, 0.6, 0.6), l_shape.clone()]),
+            one
+        );
+        assert_eq!(deducted(vec![l_shape, square(6.0, 2.0, 0.6, 0.6)]), 0.0);
     }
 
     #[test]
