@@ -1269,7 +1269,95 @@ pub fn generate(part: &RoofPart) -> RoofGeometry {
     }
     drop_eaves_on_ridges(&mut geo);
     one_sided_ridges(&mut geo);
+    drop_short_ridges(&mut geo);
     geo
+}
+
+/// DACAD has no ridge shorter than about 3.5 cm (kept from 40 mm, dropped
+/// up to 30 mm; sweep in /mnt/project-files/dacad-short-ridge/, mass cases
+/// R1_0135, R1_0179). The face of the lower-numbered wall below it becomes
+/// a triangle: its two hips run on to where they meet. The other face's
+/// hips keep their ends. [no source — extrapolation] for which face that is.
+fn drop_short_ridges(geo: &mut RoofGeometry) {
+    const MIN_RIDGE: f64 = 0.035;
+    let near = |p: [f64; 3], q: [f64; 3]| dist3(p, q) < 1e-6;
+    let mut k = 0;
+    while k < geo.lines.len() {
+        let r = geo.lines[k].clone();
+        if r.kind != LineKind::Ridge || r.length() >= MIN_RIDGE {
+            k += 1;
+            continue;
+        }
+        // Faces with the ridge as an edge, lowest wall first.
+        let mut faces: Vec<usize> = (0..geo.faces.len())
+            .filter(|&f| {
+                let poly = &geo.faces[f].polygon;
+                let n = poly.len();
+                (0..n).any(|i| {
+                    let (p, q) = (poly[i], poly[(i + 1) % n]);
+                    (near(p, r.a) && near(q, r.b)) || (near(p, r.b) && near(q, r.a))
+                })
+            })
+            .collect();
+        faces.sort_by_key(|&f| geo.faces[f].edge);
+        let Some(&f) = faces.first() else {
+            k += 1;
+            continue;
+        };
+        // The face's hips at the two ridge ends.
+        let poly = geo.faces[f].polygon.clone();
+        let hip_at = |end: [f64; 3]| {
+            geo.lines.iter().position(|l| {
+                l.kind == LineKind::Hip
+                    && (near(l.a, end) || near(l.b, end))
+                    && poly
+                        .iter()
+                        .any(|&p| near(p, if near(l.a, end) { l.b } else { l.a }))
+            })
+        };
+        let (Some(ha), Some(hb)) = (hip_at(r.a), hip_at(r.b)) else {
+            k += 1;
+            continue;
+        };
+        let far = |l: &RoofLine, end: [f64; 3]| if near(l.a, end) { l.b } else { l.a };
+        let (fa, fb) = (far(&geo.lines[ha], r.a), far(&geo.lines[hb], r.b));
+        let Some(top) = meet3(fa, r.a, fb, r.b) else {
+            k += 1;
+            continue;
+        };
+        for (h, end) in [(ha, r.a), (hb, r.b)] {
+            let l = &mut geo.lines[h];
+            if near(l.a, end) {
+                l.a = top;
+            } else {
+                l.b = top;
+            }
+        }
+        let face = &mut geo.faces[f];
+        let mut out: Vec<[f64; 3]> = Vec::new();
+        for &p in &face.polygon {
+            let q = if near(p, r.a) || near(p, r.b) { top } else { p };
+            if out.last().is_none_or(|&l| !near(l, q)) {
+                out.push(q);
+            }
+        }
+        if out.len() > 1 && near(out[0], out[out.len() - 1]) {
+            out.pop();
+        }
+        face.polygon = out;
+        geo.lines.remove(k);
+    }
+}
+
+/// Where the lines p→p2 and q→q2 (in one plane) meet, from plan.
+fn meet3(p: [f64; 3], p2: [f64; 3], q: [f64; 3], q2: [f64; 3]) -> Option<[f64; 3]> {
+    let (d, e) = ([p2[0] - p[0], p2[1] - p[1]], [q2[0] - q[0], q2[1] - q[1]]);
+    let den = d[0] * e[1] - d[1] * e[0];
+    if den.abs() < 1e-12 {
+        return None;
+    }
+    let t = ((q[0] - p[0]) * e[1] - (q[1] - p[1]) * e[0]) / den;
+    Some(std::array::from_fn(|i| p[i] + (p2[i] - p[i]) * t))
 }
 
 /// A plane that covers a gable at the moment it meets the opposite plane
