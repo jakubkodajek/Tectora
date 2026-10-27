@@ -21,8 +21,10 @@ Goal: Tectora's roof quantities must equal DACAD's for the same input.
   line after the overhang, not at the wall. Evidence: in TRAING04/06/08 every
   stored T line lies exactly at the stored eave height of its wall, for walls
   with overhang 0, 0.2, 0.4 and 0.45 m.
-* Zero-length walls occur in the files (markers next to dormers/windows) and
-  carry no roof plane.
+* Zero-length walls occur in the files. They are not inert: dropping the
+  two zero-length walls (overhang 0.2 between walls with 0.45) from TRAING08
+  changes DACAD's own result (K 18.646 → 22.571 m). A dormer's side walls
+  are zero-length too and are oriented only by their stored direction.
 * A wall can stack several definitions (up to 5 in `E008.DAD`): a Krüppelwalm
   is a vertical gable (90°, no material) up to the Krüppel height, then a hip
   plane with its own pitch; a pitch break (Knick) works the same way.
@@ -203,8 +205,36 @@ the file; the help says it is printed in a separate table of the listing.
 * Files saved by this DACAD build store the footprint clockwise (wall 2 of
   C08 runs from (12, 8) to (12, 0)); the V1 input ran counter-clockwise.
 
-The six V1 sample projects still differ for the same engine
-(T/F/G/K/O/W and area, up to −142.68 m² in TRAING07).
+### The sample projects, recalculated
+
+The results stored in the sample files come from older DACAD versions
+(1994–2006). Recalculated by the current DACAD (Wine, all 34 samples), 13
+differ from what is stored, e.g. TRAING07 T 49.359 → 47.980 m plus a new
+S 1.4 m, HINT04 OL/OR 39.11 → 30.38 m, E010 OS 33.63 → 45.44 m and
+K 36.62 → 23.59 m, TRAING06 F 27.89 → 28.29 m, ZWEIPULT area 248.704 →
+248.605 m². The current DACAD is the reference, so the sample fixtures are
+re-exported from the recalculated files
+(`/mnt/project-files/dacad-golden-current/`, not committed: the inputs are
+DACAD's sample data).
+
+All 42 single-rule cases reproduce exactly when recalculated.
+
+Rust engine d2a5408 against the six V1 samples (current DACAD): 0 of 6
+match. Bisecting TRAING08 with `tools/dacad_variants.py` and
+`tools/dacad_linediff.py`:
+
+* Coplanar planes merge. Walls 5 and 7 (north, 31°) have eave heights 3.25
+  and 2.53 m and are 1.2 m apart in plan, so their planes coincide; the
+  90° wall 6 between them yields only a 1.399 m step (OL at x 5.35, OR at
+  x 0.15) and the main hip runs on unbroken (G 9.264 m from (0.15, 14.6) to
+  (6.18, 8.57)). The engine instead builds a separate gable there (verge
+  7.464 m, valley 6.064 m).
+* A chimney sitting on a hip line (TRAING08's 0.5 × 0.5 m at x 4.5–5.0,
+  y 7.0–7.5) leaves the hip uncut (G 5.187 m through it) and adds WV
+  0.5 + 0.4, WS 0.117 + 0.583 + 0.466, WH 0.1 and a G 0.614 inside the
+  chimney outline.
+* The 30.2°/30.4° bay walls move ridge points by about 0.01 m against
+  DACAD (ridge 4.0 vs 3.99 m, valley 8.343 vs 8.336 m).
 
 ## Findings in the Python core (`src/tectora/core`)
 

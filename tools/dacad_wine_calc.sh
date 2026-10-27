@@ -25,13 +25,30 @@ for f in "$@"; do
   done
   sleep 2
   before=$(stat -c %Y "$f")
-  xdotool key ctrl+b; sleep 2
+  xdotool key ctrl+b
   # With chimneys or dormers DACAD first asks which roofs to recalculate
-  # ("Neu berechnen", Slovak build "Prerátat"); OK keeps all of them.
-  if xdotool search --onlyvisible --name 'Prer|berechnen' >/dev/null 2>&1; then
-    xdotool key Return
-  fi
-  sleep 4
+  # ("Neu berechnen", Slovak build "Prerátat"); OK keeps all of them. The
+  # dialog must have the focus or the key goes to the main window.
+  for _ in $(seq 1 5); do
+    sleep 1
+    dlg=$(xdotool search --name 'Prer|berechnen' 2>/dev/null | head -1 || true)
+    if [ -n "$dlg" ]; then
+      # No window manager on Xvfb, so focus (not activate) the dialog.
+      xdotool windowfocus --sync "$dlg" || true; sleep 0.5; xdotool key Return; break
+    fi
+  done
+  # Large projects calculate for a while, then intersect the models
+  # ("Modellverschnitt"); Escape would cancel. Wait until no status window
+  # has been open for 4 s in a row.
+  quiet=0
+  for _ in $(seq 1 900); do
+    if xdotool search --onlyvisible --name 'Berechnungsstatus|Modellverschnitt' >/dev/null 2>&1; then
+      quiet=0
+    else
+      quiet=$((quiet + 1)); [ $quiet -ge 4 ] && break
+    fi
+    sleep 1
+  done
   xdotool key Escape
   xdotool mousemove 17 36 click 1; sleep 1; xdotool mousemove 40 103 click 1
   for _ in $(seq 1 4); do sleep 1; [ "$(stat -c %Y "$f")" != "$before" ] && break; done
