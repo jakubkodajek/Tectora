@@ -7,12 +7,16 @@
 //!
 //! * The dormer roof is generated like any roof, with its side walls
 //!   extended far back and closed by a gable, then kept only where it lies
-//!   above the host face it sits on. The host face loses that area.
-//! * Where the dormer planes leave the host face they make valleys K, or a
+//!   above the plane of the host face under its front. That plane counts
+//!   beyond the face, e.g. past the ridge (C42).
+//! * The host roof loses the area under the dormer inside its walls, on
+//!   every face (C42), but not under the dormer's overhang (C40).
+//! * Where the dormer planes leave the host plane they make valleys K, or a
 //!   Knick line c when the two planes are parallel (shed dormer).
-//! * The dormer's walls meet the host face in wall-abutment lines: WS along
+//! * The dormer's walls meet the host plane in wall-abutment lines: WS along
 //!   the cheeks, WV below a front wall set back from the eave. A front on the
-//!   host's eave removes that stretch of eave instead.
+//!   host's eave removes that stretch of eave instead; other host lines under
+//!   the dormer stay (C41, C42).
 
 use crate::geom::{Point2, signed_area};
 use crate::model::{Dormer, EdgeDef, GABLE_PITCH_DEG, RoofPart};
@@ -233,55 +237,59 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer) {
     };
     let roof = generate(&part);
 
-    // Host faces: those under a point just behind each real dormer wall.
-    let mut hosts: Vec<(usize, usize)> = Vec::new();
+    // Seeds: points just behind each real dormer wall.
+    let mut seeds: Vec<Point2> = Vec::new();
     for (s, e, _) in walls(d) {
         if s.distance(e) < 1e-6 {
             continue;
         }
         let dir = unit(Point2::new(e.x - s.x, e.y - s.y));
-        let m = Point2::new(
+        seeds.push(Point2::new(
             (s.x + e.x) / 2.0 - dir.y * 1e-3,
             (s.y + e.y) / 2.0 + dir.x * 1e-3,
-        );
-        for (gi, g) in geos.iter().enumerate() {
-            for (fi, f) in g.faces.iter().enumerate() {
-                if inside(&plan(f), m) && !hosts.contains(&(gi, fi)) {
-                    hosts.push((gi, fi));
-                }
-            }
-        }
+        ));
     }
-    let Some(&(home, _)) = hosts.first() else {
+    let Some(home) = geos.iter().position(|g| {
+        g.faces
+            .iter()
+            .any(|f| seeds.iter().any(|&m| inside(&plan(f), m)))
+    }) else {
         return;
     };
+    // The host loses roof only inside the dormer's walls, not under its
+    // overhang (DACAD case C40).
+    let walls_poly = part.outline();
 
-    // Visible pieces: dormer face ∩ host face, where the dormer is higher.
-    let mut pieces: Vec<Piece> = Vec::new();
-    let mut chords: Vec<RoofLine> = Vec::new();
+    // Candidate pieces: each dormer face where it is above the host plane.
+    struct Candidate {
+        piece: Piece,
+        host: (usize, usize),
+        /// Plan region inside the dormer walls covered by this piece.
+        under: Vec<Point2>,
+        chord: Option<RoofLine>,
+    }
+    let mut cands: Vec<Candidate> = Vec::new();
     for df in &roof.faces {
         let dp = Plane::of(df);
         let dpoly = plan(df);
-        for &(gi, fi) in &hosts {
-            let hf = &geos[gi].faces[fi];
-            let hp = Plane::of(hf);
-            let common = clip_polygon(&plan(hf), &dpoly);
-            if common.len() < 3 {
-                continue;
-            }
-            let above = clip_half(&common, dp.a - hp.a, dp.b - hp.b, dp.c - hp.c);
-            let area = signed_area(&above).abs();
-            if above.len() < 3 || area < 1e-9 {
-                continue;
-            }
-            geos[gi].faces[fi].area -= area * hp.sec();
-            // The edge of the piece where the planes meet.
-            let on: Vec<Point2> = above
-                .iter()
-                .copied()
-                .filter(|&p| (dp.z(p) - hp.z(p)).abs() < 1e-6)
-                .collect();
-            if on.len() >= 2 {
+        for (gi, g) in geos.iter().enumerate() {
+            for (fi, hf) in g.faces.iter().enumerate() {
+                if !seeds.iter().any(|&m| inside(&plan(hf), m)) {
+                    continue;
+                }
+                let hp = Plane::of(hf);
+                let above = clip_half(&dpoly, dp.a - hp.a, dp.b - hp.b, dp.c - hp.c);
+                if above.len() < 3 || signed_area(&above).abs() < 1e-9 {
+                    continue;
+                }
+                let under = clip_polygon(&above, &walls_poly);
+                // The edge of the piece where the planes meet.
+                let on: Vec<Point2> = above
+                    .iter()
+                    .copied()
+                    .filter(|&p| (dp.z(p) - hp.z(p)).abs() < 1e-6)
+                    .collect();
+                let mut chord = None;
                 let (mut i0, mut i1, mut best) = (0, 0, 0.0);
                 for i in 0..on.len() {
                     for j in i + 1..on.len() {
@@ -299,31 +307,98 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer) {
                     } else {
                         LineKind::Valley
                     };
-                    chords.push(RoofLine {
+                    chord = Some(RoofLine {
                         kind,
                         a: [a.x, a.y, za],
                         b: [b.x, b.y, zb],
                         side: None,
                     });
                 }
+                cands.push(Candidate {
+                    piece: Piece {
+                        poly: above,
+                        plane: dp,
+                        pitch_deg: df.pitch_deg,
+                    },
+                    host: (gi, fi),
+                    under,
+                    chord,
+                });
             }
-            pieces.push(Piece {
-                poly: above,
-                plane: dp,
-                pitch_deg: df.pitch_deg,
-            });
         }
+    }
+    // Keep the pieces connected to the dormer's front: further back the
+    // dormer may come out of the roof again, which DACAD does not do.
+    let touches = |a: &Piece, b: &Piece| {
+        a.poly.iter().any(|&p| covers(&b.poly, p)) || b.poly.iter().any(|&p| covers(&a.poly, p))
+    };
+    let mut keep: Vec<bool> = cands
+        .iter()
+        .map(|c| seeds.iter().any(|&m| covers(&c.piece.poly, m)))
+        .collect();
+    loop {
+        let mut grew = false;
+        for i in 0..cands.len() {
+            if !keep[i]
+                && (0..cands.len()).any(|j| keep[j] && touches(&cands[i].piece, &cands[j].piece))
+            {
+                keep[i] = true;
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    let mut pieces: Vec<Piece> = Vec::new();
+    let mut chords: Vec<RoofLine> = Vec::new();
+    let mut hosts: Vec<(usize, usize)> = Vec::new();
+    for (c, k) in cands.into_iter().zip(keep) {
+        if !k {
+            continue;
+        }
+        // Every face of the host roof loses what lies under the dormer
+        // (DACAD case C42: a dormer through the ridge also cuts the far face).
+        if c.under.len() >= 3 {
+            for f in &mut geos[c.host.0].faces {
+                let cut = signed_area(&clip_polygon(&plan(f), &c.under)).abs();
+                if cut > 1e-12 {
+                    f.area -= cut * Plane::of(f).sec();
+                }
+            }
+        }
+        if !hosts.contains(&c.host) {
+            hosts.push(c.host);
+        }
+        chords.extend(c.chord);
+        pieces.push(c.piece);
     }
     let piece_polys: Vec<&[Point2]> = pieces.iter().map(|p| p.poly.as_slice()).collect();
 
-    // Host lines under the dormer disappear.
+    // A host line under a dormer wall disappears (a front on the eave, C29);
+    // lines merely covered by the dormer stay (C41, C42).
+    let wall_segs: Vec<(Point2, Point2)> = walls(d)
+        .into_iter()
+        .filter(|(s, e, _)| s.distance(*e) > 1e-6)
+        .map(|(s, e, _)| (s, e))
+        .collect();
+    let on_wall = |p: Point2| {
+        wall_segs.iter().any(|&(a, b)| {
+            let (dx, dy) = (b.x - a.x, b.y - a.y);
+            let len2 = dx * dx + dy * dy;
+            let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+            (-1e-9..=1.0 + 1e-9).contains(&t)
+                && Point2::new(a.x + t * dx, a.y + t * dy).distance(p) < 1e-6
+        })
+    };
     for g in geos.iter_mut() {
         let mut kept = Vec::new();
         for l in std::mem::take(&mut g.lines) {
             for (a, b) in split_keep(l.a, l.b, &piece_polys, |p, z| {
-                !pieces
-                    .iter()
-                    .any(|pc| covers(&pc.poly, p) && pc.plane.z(p) > z + 1e-6)
+                !(on_wall(p)
+                    && pieces
+                        .iter()
+                        .any(|pc| covers(&pc.poly, p) && pc.plane.z(p) > z + 1e-6))
             }) {
                 kept.push(RoofLine { a, b, ..l.clone() });
             }
@@ -343,25 +418,28 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer) {
     lines.extend(chords);
 
     // Wall abutments: dormer walls standing on a host face.
-    let host_polys: Vec<(Vec<Point2>, Plane, Point2)> = hosts
+    let host_planes: Vec<(Plane, Point2)> = hosts
         .iter()
         .map(|&(gi, fi)| {
             let f = &geos[gi].faces[fi];
-            (plan(f), Plane::of(f), slope(f).0)
+            (Plane::of(f), slope(f).0)
         })
         .collect();
+    // The host plane counts beyond its face (DACAD case C42), but only over
+    // the host roof.
+    let home_polys: Vec<Vec<Point2>> = geos[home].faces.iter().map(plan).collect();
     let mut cuts: Vec<&[Point2]> = piece_polys.clone();
-    cuts.extend(host_polys.iter().map(|h| h.0.as_slice()));
+    cuts.extend(home_polys.iter().map(Vec::as_slice));
     let n = part.edges.len();
     for i in (0..n).filter(|&i| i != back) {
         let (a, b) = (part.edges[i].start, part.edges[(i + 1) % n].start);
         let dir = unit(Point2::new(b.x - a.x, b.y - a.y));
         let out = Point2::new(dir.y, -dir.x);
-        for (hpoly, hp, up) in &host_polys {
+        for (hp, up) in &host_planes {
             let segs = split_keep([a.x, a.y, hp.z(a)], [b.x, b.y, hp.z(b)], &cuts, |p, _| {
                 let outside = Point2::new(p.x + out.x * 1e-4, p.y + out.y * 1e-4);
-                covers(hpoly, p)
-                    && inside(hpoly, outside)
+                home_polys.iter().any(|f| covers(f, p))
+                    && home_polys.iter().any(|f| inside(f, outside))
                     && pieces.iter().any(|pc| covers(&pc.poly, p))
             });
             let level = (dir.x * up.x + dir.y * up.y).abs() < 1e-6;

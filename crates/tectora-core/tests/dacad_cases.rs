@@ -132,7 +132,7 @@ fn dormers(case: &Value) -> Vec<Dormer> {
 #[test]
 fn engine_matches_dacad() {
     let cases = fixtures();
-    assert!(cases.len() >= 36, "fixtures missing");
+    assert!(cases.len() >= 42, "fixtures missing");
     let mut failures = Vec::new();
     for (name, case) in cases {
         let input = &case["input"];
