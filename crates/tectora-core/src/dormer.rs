@@ -414,13 +414,40 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer) {
         g.lines = kept;
     }
 
+    // A dormer whose eave lies on the host face: the lower edge of a clipped
+    // gable above it is a Knick line c, not an eave (DACAD cases C76-C78).
+    let eave = walls(d)
+        .iter()
+        .map(|w| w.2.eave_height)
+        .fold(f64::INFINITY, f64::min);
+    let on_face = wall_segs.iter().any(|&(a, _)| {
+        geos[home]
+            .faces
+            .iter()
+            .any(|f| covers(&plan(f), a) && (Plane::of(f).z(a) - eave).abs() < 2e-3)
+    });
     // Dormer lines where the dormer shows.
     let mut lines: Vec<RoofLine> = Vec::new();
     for l in &roof.lines {
+        let kink = walls(d).iter().any(|w| {
+            w.2.half_hip.as_ref().is_some_and(|h| {
+                (l.a[2] - h.height).abs() < 1e-6 && (l.b[2] - h.height).abs() < 1e-6
+            })
+        });
+        let kind = if on_face && l.kind == LineKind::Eave && kink {
+            LineKind::Knick
+        } else {
+            l.kind
+        };
         for (a, b) in split_keep(l.a, l.b, &piece_polys, |p, _| {
             pieces.iter().any(|pc| covers(&pc.poly, p))
         }) {
-            lines.push(RoofLine { a, b, ..l.clone() });
+            lines.push(RoofLine {
+                kind,
+                a,
+                b,
+                ..l.clone()
+            });
         }
     }
     lines.extend(chords);

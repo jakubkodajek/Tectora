@@ -493,7 +493,9 @@ impl Sim {
         out
     }
 
-    /// A loop is flat when its mean thickness (2·area / perimeter) is ~0.
+    /// A loop is flat when its mean thickness (2·area / perimeter) is ~0,
+    /// allowing for DACAD's inputs rounded to 0.1 mm: planes meant to be one
+    /// can then stay a few hundredths of a millimetre apart (case C72).
     fn loop_is_flat(&self, start: usize, t: f64) -> bool {
         let pts: Vec<Point2> = self
             .loop_members(start)
@@ -501,7 +503,7 @@ impl Sim {
             .map(|&v| self.verts[v].at(t))
             .collect();
         let per = crate::geom::perimeter(&pts);
-        per < POS_TOL || 2.0 * crate::geom::signed_area(&pts).abs() / per < 1e-5
+        per < POS_TOL || 2.0 * crate::geom::signed_area(&pts).abs() / per < 1e-4
     }
 
     /// Retires a flat loop: its wavefront segments become face boundaries and
@@ -1471,6 +1473,11 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
         let l = &sim.lines[e];
         l.stage_at(z).is_some_and(|k| l.stages[k].s < -1e-12)
     };
+    // A sloped plane that has not started yet at height `z`.
+    let later = |e: usize, z: f64| {
+        let l = &sim.lines[e];
+        !l.active(z) && l.stages.first().is_some_and(|s| s.s.abs() > 1e-12)
+    };
     for b in bottoms
         .iter()
         .filter(|b| sim.lines[b.edge].stages[b.stage].s >= -1e-12)
@@ -1537,6 +1544,11 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
             [false, true] if arc.reflex && sim.lines[arc.right].raised => {
                 (LineKind::AbutmentSide, None)
             }
+            // From an inside corner against a plane that starts higher up
+            // (a marker wall with a higher eave), the lower plane abuts the
+            // step below it (DACAD case C73).
+            [true, false] if arc.reflex && later(arc.left, z) => (LineKind::AbutmentSide, None),
+            [false, true] if arc.reflex && later(arc.right, z) => (LineKind::AbutmentSide, None),
             // From an inside corner between a wall and a plane: DACAD
             // reports a valley (C18–C23).
             [true, false] | [false, true] if arc.reflex => (LineKind::Valley, None),
