@@ -310,6 +310,15 @@ def cases() -> dict[str, tuple]:
                                               rect(10, 8, Def(40, 0.5), Def(90, 0.5), Def(40, 0.5), Def(90, 0.5)), None,
                                               [Dormer((4.0, 0.0), [W(2, 0, Def(40, 0.5)), W(3.99, 90, G), W(2, 180, G),
                                                                    W(3.99, 270, G)], kind=0, host=0)]),
+        # KRUPA006: gable of the main roof (overhang 1.0) beside a lower wing at a reflex corner.
+        "C68_raised_gable_high_eave": ("L jako KRUPA006: hlavní 30° okap 4,0, západní křídlo okap 4,3 se šikmou stěnou 38° a štítovým schodem; štít hlavní střechy (3 m) přesah 1,0, okap štítu 6,0 (pod hřebenem 6,89)",
+            [W(10, 0, Def(30, 0, 4.0)), W(10, 90, Def(90, 1.0, 4.0)), W(16, 180, Def(30, 0, 4.0)),
+             W(5, 270, Def(90, 0, 4.3)), W(4, 0, Def(30, 0, 4.3)), W(2, 270, Def(38, 0, 4.3)),
+             W(2, 0, Def(90, 0, 4.3)), W(3, 270, Def(90, 1.0, 6.0))]),
+        "C69_raised_gable_level_eave": ("Jako C68, okap štítu 4,3 (stejně jako křídlo)",
+            [W(10, 0, Def(30, 0, 4.0)), W(10, 90, Def(90, 1.0, 4.0)), W(16, 180, Def(30, 0, 4.0)),
+             W(5, 270, Def(90, 0, 4.3)), W(4, 0, Def(30, 0, 4.3)), W(2, 270, Def(38, 0, 4.3)),
+             W(2, 0, Def(90, 0, 4.3)), W(3, 270, Def(90, 1.0, 4.3))]),
     }
 
 
