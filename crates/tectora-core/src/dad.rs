@@ -195,8 +195,16 @@ fn chain(walls: &[&DadWall]) -> Vec<(Vec<EdgeDef>, Point2, bool)> {
     let is_marker = |w: &DadWall| w.length <= 1e-6;
     let mut used = vec![false; walls.len()];
     let mut chains = Vec::new();
+    // An open chain (a dormer) must start at its first wall: one that no
+    // other wall leads to.
+    let head = |i: usize, used: &[bool]| {
+        !(0..walls.len())
+            .any(|j| j != i && !used[j] && walls[j].end().approx_eq(walls[i].start, CHAIN_TOL))
+    };
     while let Some(first) = (0..walls.len())
-        .find(|&i| !used[i] && !is_marker(walls[i]))
+        .find(|&i| !used[i] && !is_marker(walls[i]) && head(i, &used))
+        .or_else(|| (0..walls.len()).find(|&i| !used[i] && head(i, &used)))
+        .or_else(|| (0..walls.len()).find(|&i| !used[i] && !is_marker(walls[i])))
         .or_else(|| used.iter().position(|u| !u))
     {
         used[first] = true;
@@ -258,28 +266,26 @@ impl DadFile {
             if chains.is_empty() {
                 continue;
             }
-            let all_closed = !chains.is_empty() && chains.iter().all(|c| c.2);
-            if all_closed {
-                for (i, (edges, _, _)) in chains.into_iter().enumerate() {
-                    let suffix = if i == 0 {
+            // Closed loops are buildings, open chains dormers. Files saved
+            // by DACAD 2 keep no roof numbers, so both can share a group.
+            let mut k = 0;
+            for (edges, end, closed) in chains {
+                if closed {
+                    let suffix = if k == 0 {
                         String::new()
                     } else {
-                        format!(".{}", i + 1)
+                        format!(".{}", k + 1)
                     };
+                    k += 1;
                     let mut part = RoofPart {
                         name: format!("Part {group}{suffix}"),
                         edges,
                     };
                     part.normalize_ccw();
                     project.parts.push(part);
+                } else {
+                    project.dormers.push(Dormer { edges, end });
                 }
-            } else {
-                let edges: Vec<EdgeDef> = walls.iter().map(|w| w.edge_def()).collect();
-                let end = walls
-                    .last()
-                    .map(|w| w.end())
-                    .unwrap_or(Point2::new(0.0, 0.0));
-                project.dormers.push(Dormer { edges, end });
             }
         }
         project.windows = self.windows.clone();

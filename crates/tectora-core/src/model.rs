@@ -145,7 +145,8 @@ impl EdgeDef {
     /// `(start height, pitch)`, like DACAD's stacked roof definitions.
     /// A gable has none unless it is clipped (Krüppelwalm): then its plane
     /// starts at the half-hip height. Breaks at or below the previous
-    /// plane's start, and vertical breaks, are ignored.
+    /// plane's start are ignored; a vertical break ends the planes (the
+    /// wall is a gable above it).
     pub fn planes(&self) -> Vec<(f64, f64)> {
         let mut out: Vec<(f64, f64)> = Vec::new();
         if !self.is_gable() {
@@ -162,8 +163,12 @@ impl EdgeDef {
         breaks.sort_by(|a, b| a.height.total_cmp(&b.height));
         for b in breaks {
             let last = out.last().expect("not empty").0;
-            if b.height > last + 1e-6 && b.pitch_deg > 0.0 && b.pitch_deg < GABLE_PITCH_DEG {
-                out.push((b.height, b.pitch_deg));
+            if b.height > last + 1e-6 && b.pitch_deg > 0.0 {
+                // A vertical break turns the plane into a gable from there.
+                out.push((b.height, b.pitch_deg.min(90.0)));
+                if b.pitch_deg >= GABLE_PITCH_DEG {
+                    break;
+                }
             }
         }
         out

@@ -279,7 +279,11 @@ impl Line {
         let mut stages: Vec<Stage> = Vec::with_capacity(planes.len());
         let (mut c, mut s) = (base, 0.0);
         for &(t, pitch_deg) in planes {
-            let s_new = 1.0 / pitch_deg.to_radians().tan();
+            let s_new = if pitch_deg >= 90.0 - 1e-9 {
+                0.0
+            } else {
+                1.0 / pitch_deg.to_radians().tan()
+            };
             // Continuous at t: c + s t = c' + s' t.
             c += (s - s_new) * t;
             s = s_new;
@@ -303,6 +307,12 @@ impl Line {
 
     fn active(&self, t: f64) -> bool {
         t >= self.t_act() - EPS
+    }
+
+    /// A plane at height `t`: active and not turned vertical (a gable above
+    /// a hip, DACAD sample DACHBRUC).
+    fn sloped(&self, t: f64) -> bool {
+        self.active(t) && self.stage_at(t).is_some_and(|k| self.stages[k].s > 1e-12)
     }
 
     /// Index of the plane valid at height `t`.
@@ -424,7 +434,7 @@ impl Sim {
     fn new_vertex(&mut self, p: Point2, t: f64, node: usize, left: usize, right: usize) -> usize {
         let reflex = cross(self.lines[left].dir, self.lines[right].dir) < -EPS;
         let vel = self.velocity(left, right, t);
-        let waiting = [!self.lines[left].active(t), !self.lines[right].active(t)];
+        let waiting = [!self.lines[left].sloped(t), !self.lines[right].sloped(t)];
         self.verts.push(Vertex {
             origin: p,
             t0: t,
@@ -535,7 +545,7 @@ impl Sim {
             let mut normals: Vec<Point2> = Vec::new();
             for &v in &members {
                 let l = &self.lines[self.verts[v].right];
-                if l.active(t) && !normals.iter().any(|n| dot(*n, l.n) > 1.0 - 1e-9) {
+                if l.sloped(t) && !normals.iter().any(|n| dot(*n, l.n) > 1.0 - 1e-9) {
                     normals.push(l.n);
                 }
             }
@@ -708,7 +718,7 @@ impl Sim {
     /// one (cases C18–C23). Returns `(t, stopping edge, continuing edge)`.
     fn overtake_event(&self, now: f64) -> Option<(f64, usize, usize)> {
         let alive: Vec<usize> = (0..self.lines.len())
-            .filter(|&e| self.lines[e].active(now) && self.edge_alive(e))
+            .filter(|&e| self.lines[e].sloped(now) && self.edge_alive(e))
             .collect();
         let mut best: Option<(f64, usize, usize)> = None;
         for (k, &i) in alive.iter().enumerate() {
@@ -1382,7 +1392,10 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
 
     // One face per plane: the arcs of its edge between its start height and
     // the next plane's, closed by the next plane's bottom (a pitch break).
-    for b in &bottoms {
+    for b in bottoms
+        .iter()
+        .filter(|b| sim.lines[b.edge].stages[b.stage].s > 1e-12)
+    {
         let line = &sim.lines[b.edge];
         let lo = line.stages[b.stage].t;
         let hi = line.stages.get(b.stage + 1).map_or(f64::INFINITY, |s| s.t);
