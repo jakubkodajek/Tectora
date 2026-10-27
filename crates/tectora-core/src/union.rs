@@ -387,6 +387,47 @@ pub fn join(geos: &mut [RoofGeometry], parts: &[RoofPart]) {
                 g.cut_lines
                     .push((l.dacad_code().to_string(), l.length() - shown));
             }
+            // Where two roofs in one plane share an eave and the narrower
+            // one reaches at least as far up as the wider, DACAD drops the
+            // shared eave (cases C63-C65; not C60, C66).
+            let cancel = |m: Point2, z: f64| {
+                let faces_at = |b: &Building| -> Vec<(Vec<Point2>, Plane)> {
+                    [1e-4, -1e-4]
+                        .iter()
+                        .filter_map(|&k| {
+                            let o = Point2::new(m.x + nrm.x * k, m.y + nrm.y * k);
+                            b.faces.iter().find(|(f, _)| covers(f, o)).cloned()
+                        })
+                        .filter(|(_, pl)| (pl.z(m) - z).abs() < 1e-6)
+                        .collect()
+                };
+                let span = |f: &[Point2], v: Point2| {
+                    f.iter()
+                        .map(|p| p.x * v.x + p.y * v.y)
+                        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), t| {
+                            (lo.min(t), hi.max(t))
+                        })
+                };
+                let own = faces_at(&bs[i]);
+                bs.iter().enumerate().any(|(k, b)| {
+                    k != i
+                        && faces_at(b).iter().any(|(g, gpl)| {
+                            own.iter().any(|(f, fpl)| {
+                                if !fpl.same(gpl) {
+                                    return false;
+                                }
+                                let up = unit(Point2::new(fpl.a, fpl.b));
+                                let (wf, wg) = (span(f, d), span(g, d));
+                                let (rf, rg) = (span(f, up).1, span(g, up).1);
+                                if wf.1 - wf.0 < wg.1 - wg.0 {
+                                    rf >= rg - EPS
+                                } else {
+                                    rg >= rf - EPS
+                                }
+                            })
+                        })
+                })
+            };
             for (a, b) in parts {
                 if l.kind != LineKind::Eave {
                     kept.push(RoofLine { a, b, ..l.clone() });
@@ -407,14 +448,14 @@ pub fn join(geos: &mut [RoofGeometry], parts: &[RoofPart]) {
                     })
                 };
                 let ts = splits(a, b, &all_polys, &[]);
-                for (p, q) in keep_parts(a, b, &ts, |m, z| !shared(m, z)) {
+                for (p, q) in keep_parts(a, b, &ts, |m, z| !shared(m, z) && !cancel(m, z)) {
                     kept.push(RoofLine {
                         a: p,
                         b: q,
                         ..l.clone()
                     });
                 }
-                for (p, q) in keep_parts(a, b, &ts, shared) {
+                for (p, q) in keep_parts(a, b, &ts, |m, z| shared(m, z) && !cancel(m, z)) {
                     gorges.push(RoofLine {
                         kind: LineKind::Gorge,
                         a: p,
