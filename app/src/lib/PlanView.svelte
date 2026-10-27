@@ -2,6 +2,7 @@
   import type { CalcResult, Point2, Project, Selection } from "./types";
   import { isGable } from "./types";
   import { t } from "./i18n.svelte";
+  import { windowOutline, type OpeningSel } from "./openings";
 
   let {
     project,
@@ -19,6 +20,7 @@
     dormerSel = $bindable(null),
     placing = false,
     onplace,
+    openSel = $bindable(null),
   }: {
     project: Project;
     result: CalcResult | null;
@@ -36,9 +38,11 @@
     showDims?: boolean;
     /** Index of the selected dormer, or null. */
     dormerSel?: number | null;
-    /** Placing a dormer: the next click gives its front's left corner. */
-    placing?: boolean;
+    /** What the next click places: a dormer's front corner, a chimney or a window. */
+    placing?: false | "dormer" | "chimney" | "window";
     onplace?: (x: number, y: number) => void;
+    /** The selected chimney or roof window, or null. */
+    openSel?: OpeningSel;
   } = $props();
 
   let cursorWorld = $state<Point2 | null>(null);
@@ -136,6 +140,7 @@
       if (e.button === 0) {
         selection = null;
         dormerSel = null;
+        openSel = null;
       }
       svg!.setPointerCapture(e.pointerId);
     }
@@ -170,6 +175,14 @@
     e.stopPropagation();
     drag = { part, vertex };
     svg!.setPointerCapture(e.pointerId);
+  }
+
+  function pickOpening(ev: PointerEvent, kind: "chimney" | "window", index: number) {
+    if (placing || drawing) return;
+    ev.stopPropagation();
+    openSel = { kind, index };
+    selection = null;
+    dormerSel = null;
   }
 
   function edgeDblClick(e: MouseEvent, part: number, edge: number) {
@@ -259,7 +272,7 @@
           {/if}
           <line class="hit" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)}
             role="button" tabindex="-1" aria-label={t("plan.edge", { n: i + 1 })}
-            onpointerdown={(ev) => { ev.stopPropagation(); selection = { part: pi, edge: i }; dormerSel = null; }}
+            onpointerdown={(ev) => { ev.stopPropagation(); selection = { part: pi, edge: i }; dormerSel = null; openSel = null; }}
             ondblclick={(ev) => edgeDblClick(ev, pi, i)} />
           <line class="wall" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)} />
           {#if showDims && scale * edgeLength(pi, i) > 46}
@@ -297,10 +310,22 @@
           {/each}
           <line class="hit" x1={sx(fs.x)} y1={sy(fs.y)} x2={sx(d.end.x)} y2={sy(d.end.y)}
             role="button" tabindex="-1" aria-label={t("plan.dormer", { n: di + 1 })}
-            onpointerdown={(ev) => { if (placing) return; ev.stopPropagation(); dormerSel = di; selection = null; }} />
+            onpointerdown={(ev) => { if (placing) return; ev.stopPropagation(); dormerSel = di; selection = null; openSel = null; }} />
           <line class="front" x1={sx(fs.x)} y1={sy(fs.y)} x2={sx(d.end.x)} y2={sy(d.end.y)} />
         </g>
       {/if}
+    {/each}
+    {#each project.chimneys as c, ci}
+      <path class="opening chimney" class:sel={openSel?.kind === "chimney" && openSel.index === ci}
+        d={"M" + c.corners.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
+        role="button" tabindex="-1" aria-label={t("opening.chimneyN", { n: ci + 1 })}
+        onpointerdown={(ev) => pickOpening(ev, "chimney", ci)} />
+    {/each}
+    {#each project.windows ?? [] as w, wi}
+      <path class="opening window" class:sel={openSel?.kind === "window" && openSel.index === wi}
+        d={"M" + windowOutline(result, w).map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
+        role="button" tabindex="-1" aria-label={t("opening.windowN", { n: wi + 1 })}
+        onpointerdown={(ev) => pickOpening(ev, "window", wi)} />
     {/each}
     {#if placing && cursorWorld}
       <path class="crosshair" d="M{sx(cursorWorld.x) - 9},{sy(cursorWorld.y)}h18M{sx(cursorWorld.x)},{sy(cursorWorld.y) - 9}v18" />
@@ -328,7 +353,7 @@
       {/if}
     {/if}
   </svg>
-  {#if placing}<div class="hint">{t("plan.placeDormer")}</div>{:else if !drawing}<div class="hint">{t("plan.hint")}</div>{/if}
+  {#if placing}<div class="hint">{t(placing === "dormer" ? "plan.placeDormer" : placing === "chimney" ? "plan.placeChimney" : "plan.placeWindow")}</div>{:else if !drawing}<div class="hint">{t("plan.hint")}</div>{/if}
 </div>
 
 <style>
@@ -372,6 +397,21 @@
   }
   .fill {
     fill: var(--plan-fill);
+  }
+  .opening {
+    stroke: var(--text-2);
+    stroke-width: 1.5;
+    cursor: pointer;
+  }
+  .opening.chimney {
+    fill: color-mix(in srgb, var(--text-3) 35%, transparent);
+  }
+  .opening.window {
+    fill: color-mix(in srgb, var(--line-valley) 22%, transparent);
+  }
+  .opening.sel {
+    stroke: var(--accent);
+    stroke-width: 2.5;
   }
   .roofline {
     stroke-width: 1.8;

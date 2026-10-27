@@ -156,3 +156,22 @@ export function nearestWallAngle(parts: { edges: EdgeDef[] }[], p: Point2): numb
   }
   return best.a;
 }
+
+/** Uphill direction (unit, plan) and pitch tangent of the roof face at `p`. */
+export function slopeAt(result: CalcResult | null, p: Point2): { up: Point2; tan: number } | null {
+  if (!result) return null;
+  let best: { z: number; up: Point2; tan: number } | null = null;
+  for (const part of result.parts) {
+    for (const f of part.geometry.faces) {
+      const poly = f.polygon;
+      if (poly.length < 3 || !inside(poly, p)) continue;
+      const z = planeZ(poly, p);
+      if (z === null || (best && z <= best.z)) continue;
+      const zx = (planeZ(poly, { x: p.x + 1, y: p.y }) ?? z) - z;
+      const zy = (planeZ(poly, { x: p.x, y: p.y + 1 }) ?? z) - z;
+      const tan = Math.hypot(zx, zy);
+      best = { z, up: tan > 1e-9 ? { x: zx / tan, y: zy / tan } : { x: 0, y: 1 }, tan };
+    }
+  }
+  return best && { up: best.up, tan: best.tan };
+}

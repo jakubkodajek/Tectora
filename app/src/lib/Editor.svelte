@@ -13,6 +13,8 @@
   import Results from "./Results.svelte";
   import RoofDefBar from "./RoofDefBar.svelte";
   import DormerBar from "./DormerBar.svelte";
+  import OpeningBar from "./OpeningBar.svelte";
+  import { chimneyFromRect, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, roofHeightAt } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
   import StandardRoofForm from "./StandardRoofForm.svelte";
@@ -22,7 +24,7 @@
   import { t } from "./i18n.svelte";
   import { actorName, isFresh, live } from "./live.svelte";
   import { markReviewed, prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
-  import type { ActivityItem, CalcResult, Change, Dormer, EdgeDef, Point2, Project, RoofPart, Selection } from "./types";
+  import type { ActivityItem, CalcResult, Change, Chimney, Dormer, EdgeDef, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
   import { isAi, isGable, isMarker } from "./types";
 
   let {
@@ -39,10 +41,16 @@
   let dock = $state<"results" | "ai" | "job">("results");
   let drawing = $state<Point2[] | null>(null);
   let dormerSel = $state<number | null>(null);
-  let placing = $state(false);
-  // Undo or an AI edit can remove the selected dormer.
+  let placing = $state<false | "dormer" | "chimney" | "window">(false);
+  let openSel = $state<OpeningSel>(null);
+  // Undo or an AI edit can remove the selected dormer or opening.
   $effect(() => {
     if (dormerSel !== null && (!project || dormerSel >= project.dormers.length)) dormerSel = null;
+  });
+  $effect(() => {
+    if (!openSel) return;
+    const n = openSel.kind === "chimney" ? project?.chimneys.length : project?.windows?.length;
+    if (openSel.index >= (n ?? 0)) openSel = null;
   });
   let cursor = $state<Point2 | null>(null);
   let showDims = $state(true);
@@ -298,8 +306,69 @@
     const eave = +((host ?? presets.eave_height) + 1).toFixed(2);
     project.dormers.push(buildDormer(defaultParams("gable", { x, y }, angle, eave)));
     selection = null;
+    openSel = null;
     dormerSel = project.dormers.length - 1;
     commit();
+  }
+
+  function place(x: number, y: number) {
+    if (placing === "dormer") placeDormer(x, y);
+    else if (placing === "chimney") placeChimney(x, y);
+    else if (placing === "window") placeWindow(x, y);
+  }
+
+  /** Places a chimney with its first corner at the click (DACAD: Schornstein). */
+  function placeChimney(x: number, y: number) {
+    if (!project) return;
+    placing = false;
+    // 0.6 m square, top 1 m above the roof there [no source: common size].
+    const top = +((roofHeightAt(result, { x: x + 0.3, y: y + 0.3 }) ?? presets.eave_height) + 1).toFixed(2);
+    const angle = nearestWallAngle(project.parts, { x, y });
+    project.chimneys.push(chimneyFromRect({ x, y, width: 0.6, depth: 0.6, rotation: +((angle * 180) / Math.PI).toFixed(2), height: top }));
+    selectOpening({ kind: "chimney", index: project.chimneys.length - 1 });
+    commit();
+  }
+
+  /** Places a roof window with its lower left corner at the click (DACAD: Dachfenster). */
+  function placeWindow(x: number, y: number) {
+    if (!project) return;
+    placing = false;
+    project.windows ??= [];
+    // 0.78 x 1.18 m, a common skylight size [no source: common size].
+    project.windows.push({ x, y, width: 0.78, height: 1.18 });
+    selectOpening({ kind: "window", index: project.windows.length - 1 });
+    commit();
+  }
+
+  function selectOpening(s: OpeningSel) {
+    selection = null;
+    dormerSel = null;
+    openSel = s;
+  }
+
+  function setChimney(c: Chimney) {
+    if (!project || openSel?.kind !== "chimney") return;
+    project.chimneys[openSel.index] = c;
+    commit();
+  }
+
+  function setWindow(w: RoofWindow) {
+    if (!project || openSel?.kind !== "window" || !project.windows) return;
+    project.windows[openSel.index] = w;
+    commit();
+  }
+
+  function deleteOpening() {
+    if (!project || !openSel) return;
+    if (openSel.kind === "chimney") project.chimneys.splice(openSel.index, 1);
+    else project.windows?.splice(openSel.index, 1);
+    openSel = null;
+    commit();
+  }
+
+  function togglePlacing(kind: "dormer" | "chimney" | "window") {
+    placing = placing === kind ? false : kind;
+    drawing = null;
   }
 
   function setDormer(d: Dormer) {
@@ -327,6 +396,7 @@
   function startDraw() {
     selection = null;
     dormerSel = null;
+    openSel = null;
     placing = false;
     drawing = [];
   }
@@ -414,8 +484,11 @@
     } else if (e.key === "Escape" && !drawing) {
       selection = null;
       dormerSel = null;
+      openSel = null;
     } else if (e.key === "Delete" && dormerSel !== null && !drawing) {
       deleteDormer();
+    } else if (e.key === "Delete" && openSel && !drawing) {
+      deleteOpening();
     } else if (e.key === "Delete" && selection && !drawing) {
       deleteVertex();
     }
@@ -455,7 +528,9 @@
     <div class="group">
       <button class="tool" class:on={!!std} onclick={() => (std = { part: null, mode: project?.parts.length ? "replace" : "add" })} title={t("tool.standardHint")}><Icon name="house" /><span>{t("tool.standard")}</span></button>
       <button class="tool" class:on={!!drawing} onclick={startDraw} title="{t('tool.drawHint')} (Insert)"><Icon name="draw" /><span>{t("tool.draw")}</span></button>
-      <button class="tool" class:on={placing} disabled={!project?.parts.length} onclick={() => { placing = !placing; drawing = null; }} title={t("tool.dormerHint")}><Icon name="roof" /><span>{t("tool.dormer")}</span></button>
+      <button class="tool" class:on={placing === "dormer"} disabled={!project?.parts.length} onclick={() => togglePlacing("dormer")} title={t("tool.dormerHint")}><Icon name="roof" /><span>{t("tool.dormer")}</span></button>
+      <button class="tool" class:on={placing === "chimney"} disabled={!project?.parts.length} onclick={() => togglePlacing("chimney")} title={t("tool.chimneyHint")}><Icon name="chimney" /><span>{t("tool.chimney")}</span></button>
+      <button class="tool" class:on={placing === "window"} disabled={!project?.parts.length} onclick={() => togglePlacing("window")} title={t("tool.windowHint")}><Icon name="window" /><span>{t("tool.window")}</span></button>
       <button class="tool" disabled={!selection || (project?.parts.length ?? 0) < 2} onclick={deletePart} title={t("tool.deletePartHint")}><Icon name="trash" /><span>{t("tool.deletePart")}</span></button>
     </div>
     <div class="group">
@@ -501,8 +576,9 @@
                 {showDims}
                 bind:selection
                 bind:dormerSel
+                bind:openSel
                 {placing}
-                onplace={placeDormer}
+                onplace={place}
                 onmove={moveVertex}
                 onmoveend={commit}
                 oninsert={insertVertex}
@@ -529,6 +605,8 @@
           />
         {:else if dormerSel !== null}
           <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} />
+        {:else if openSel}
+          <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening} />
         {:else}
           <RoofDefBar
             {project}
