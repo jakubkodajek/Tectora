@@ -784,6 +784,14 @@ impl Sim {
                 if ei.0 > ej.1 + POS_TOL || ej.0 > ei.1 + POS_TOL {
                     continue;
                 }
+                // Planes that only touch end to end across a real wall do not
+                // meet: that wall's plane goes on between them, e.g. a short
+                // wall whose neighbours' overhang lines coincide (mass case
+                // R1_0229). Across a marker or a gable they do (DACAD case C18).
+                let touching = ei.0.max(ej.0) >= ei.1.min(ej.1) - POS_TOL;
+                if touching && self.wall_between(i, j, t) {
+                    continue;
+                }
                 let stop_i = match (li.priority > 0, lj.priority > 0) {
                     (true, false) => true,
                     (false, true) => false,
@@ -793,6 +801,23 @@ impl Sim {
             }
         }
         best
+    }
+
+    /// Whether edges `i` and `j` are joined through one live sloped edge
+    /// that is not a marker.
+    fn wall_between(&self, i: usize, j: usize, now: f64) -> bool {
+        self.verts.iter().any(|v| {
+            if !v.alive {
+                return false;
+            }
+            let w = &self.verts[v.next];
+            let m = v.right;
+            ((v.left == i && w.right == j) || (v.left == j && w.right == i))
+                && m != i
+                && m != j
+                && !self.lines[m].marker
+                && self.lines[m].sloped(now)
+        })
     }
 
     fn edge_alive(&self, e: usize) -> bool {
@@ -1902,6 +1927,37 @@ mod tests {
     use super::*;
     use crate::model::EdgeDef;
     use approx::assert_relative_eq;
+
+    /// A 0.8 m bump wall between two parallel walls whose overhang lines
+    /// coincide keeps its plane, which runs on to the main ridge (mass case
+    /// R1_0229, DACAD G 12.08 m and a Pult on the west gable).
+    #[test]
+    fn short_wall_between_coinciding_eaves_keeps_its_plane() {
+        let mut p = part(
+            &[
+                (0.0, 0.0),
+                (2.55, 0.0),
+                (2.55, -0.8),
+                (4.35, -0.8),
+                (4.35, 0.0),
+                (9.25, 0.0),
+                (9.25, 10.05),
+                (0.0, 10.05),
+            ],
+            &[51.0, 51.0, 57.0, 51.0, 26.0, 90.0, 51.0, 90.0],
+        );
+        p.edges[4].overhang = 0.8;
+        let geo = generate(&p);
+        let hips: f64 = geo
+            .lines
+            .iter()
+            .filter(|l| l.kind == LineKind::Hip)
+            .map(|l| l.length())
+            .sum();
+        assert!((hips - 12.08).abs() < 0.01, "{hips}");
+        assert!(geo.lines.iter().any(|l| l.kind == LineKind::Pult));
+        assert!(!geo.lines.iter().any(|l| l.kind == LineKind::Knick));
+    }
 
     /// Two wings of a U, both ending in a gable on y = 13.3 (mass case
     /// R1_0050): DACAD clips only the gable that has the Krüppel.
