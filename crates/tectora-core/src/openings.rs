@@ -86,21 +86,21 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
             (0..o.len()).map(move |i| (o[i], o[(i + 1) % o.len()]))
         })
         .collect();
-    // DACAD's core cuts the holes roof by roof, each chimney and opening in
-    // turn, and gives up at the first non-convex one (FUN_00da53f0: "Nicht
-    // konvexer Schornstein/Öffnung %d wird ignoriert!"): that one, every
-    // later one and every later roof get no hole.
+    // A non-convex chimney or opening makes DACAD's core give up
+    // (FUN_00da53f0: "Nicht konvexer Schornstein/Öffnung %d wird
+    // ignoriert!") and the calculation yields no roof at all, whatever the
+    // order (DACAD runs dacad-penetrations P1a–P1c).
     let cutouts: Vec<(&Chimney, bool)> = project
         .chimneys
         .iter()
         .map(|c| (c, false))
         .chain(project.roof_openings.iter().map(|o| (o, true)))
         .collect();
-    'roofs: for geo in &mut geos {
+    if cutouts.iter().any(|(c, _)| !dacad_convex(&c.corners)) {
+        return vec![RoofGeometry::default(); geos.len()];
+    }
+    for geo in &mut geos {
         for &(c, hole) in &cutouts {
-            if !dacad_convex(&c.corners) {
-                break 'roofs;
-            }
             apply_cutout(geo, c, hole, &walls);
         }
     }
@@ -1141,15 +1141,15 @@ mod tests {
     }
 
     #[test]
-    fn non_convex_chimney_stops_dacads_hole_treatment() {
+    fn non_convex_chimney_leaves_no_roof() {
         let l_shape = Chimney {
             corners: [
-                (3.0, 2.0),
-                (4.2, 2.0),
-                (4.2, 2.6),
-                (3.6, 2.6),
-                (3.6, 3.2),
-                (3.0, 3.2),
+                (4.0, 2.0),
+                (5.2, 2.0),
+                (5.2, 2.6),
+                (4.6, 2.6),
+                (4.6, 3.2),
+                (4.0, 3.2),
             ]
             .iter()
             .map(|&(x, y)| Point2::new(x, y))
@@ -1158,22 +1158,15 @@ mod tests {
         };
         assert!(!dacad_convex(&l_shape.corners));
         assert!(dacad_convex(&square(6.0, 2.0, 0.6, 0.6).corners));
-        let deducted = |chimneys: Vec<Chimney>| {
+        for chimneys in [
+            vec![l_shape.clone()],
+            vec![square(6.0, 2.0, 0.6, 0.6), l_shape],
+        ] {
             let mut p = gable();
             p.chimneys = chimneys;
-            generate_project(&p)[0]
-                .faces
-                .iter()
-                .map(|f| f.deducted)
-                .sum::<f64>()
-        };
-        let one = deducted(vec![square(6.0, 2.0, 0.6, 0.6)]);
-        assert!(one > 0.0);
-        assert_eq!(
-            deducted(vec![square(6.0, 2.0, 0.6, 0.6), l_shape.clone()]),
-            one
-        );
-        assert_eq!(deducted(vec![l_shape, square(6.0, 2.0, 0.6, 0.6)]), 0.0);
+            let geo = &generate_project(&p)[0];
+            assert!(geo.faces.is_empty() && geo.lines.is_empty());
+        }
     }
 
     #[test]

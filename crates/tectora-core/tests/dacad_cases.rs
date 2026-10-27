@@ -319,7 +319,8 @@ fn compare_tol(cases: Vec<(String, Value)>, tol: fn(f64) -> f64) -> Vec<String> 
             .iter()
             .map(|g| g.faces.iter().map(|f| f.area).sum::<f64>() + g.clad_area)
             .sum();
-        let dacad_area = results["area_groups"][TILES].as_f64().unwrap();
+        // No tiles group when DACAD gave no roof (non-convex chimney).
+        let dacad_area = results["area_groups"][TILES].as_f64().unwrap_or(0.0);
         if (area - dacad_area).abs() > tol(dacad_area) {
             failures.push(format!("{name}: area ours {area:.4} DACAD {dacad_area:.4}"));
         }
