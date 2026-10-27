@@ -87,6 +87,7 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     }
     for geo in &mut geos {
         merge_collinear(&mut geo.lines);
+        split_verges_at_knicks(&mut geo.lines);
     }
     geos
 }
@@ -128,6 +129,49 @@ pub(crate) fn merge_collinear(lines: &mut Vec<RoofLine>) {
             break;
         }
     }
+}
+
+/// DACAD ends a verge where a pitch break (Knick) meets it, even when both
+/// definitions have the same pitch and the verge runs on straight (mass
+/// cases R1_0166, R1_0197).
+fn split_verges_at_knicks(lines: &mut Vec<RoofLine>) {
+    let ends: Vec<[f64; 3]> = lines
+        .iter()
+        .filter(|l| l.kind == LineKind::Knick)
+        .flat_map(|l| [l.a, l.b])
+        .collect();
+    let mut out = Vec::with_capacity(lines.len());
+    for l in lines.drain(..) {
+        if l.kind != LineKind::Verge {
+            out.push(l);
+            continue;
+        }
+        let len = l.length();
+        let mut ts: Vec<f64> = ends
+            .iter()
+            .filter_map(|&p| {
+                let t = (0..3)
+                    .map(|k| (p[k] - l.a[k]) * (l.b[k] - l.a[k]))
+                    .sum::<f64>()
+                    / (len * len);
+                let foot = lerp3(l.a, l.b, t);
+                let d = (0..3).map(|k| (p[k] - foot[k]).powi(2)).sum::<f64>().sqrt();
+                (t * len > 1e-6 && (1.0 - t) * len > 1e-6 && d < 1e-6).then_some(t)
+            })
+            .collect();
+        ts.sort_by(f64::total_cmp);
+        ts.dedup_by(|x, y| (*x - *y).abs() * len < 1e-6);
+        let mut t0 = 0.0;
+        for t in ts.into_iter().chain(std::iter::once(1.0)) {
+            out.push(RoofLine {
+                a: lerp3(l.a, l.b, t0),
+                b: lerp3(l.a, l.b, t),
+                ..l.clone()
+            });
+            t0 = t;
+        }
+    }
+    *lines = out;
 }
 
 /// Plan outline of a face.
