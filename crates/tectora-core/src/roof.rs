@@ -528,8 +528,36 @@ impl Sim {
                 line: false,
             });
         }
-        // The ridge is the extent of the flat loop.
         let pts: Vec<[f64; 3]> = nodes.iter().map(|&k| self.nodes[k]).collect();
+        // A flat loop that branches (ridges crossing, sample HINT04) runs
+        // along each ridge twice, once on either side: each such pair of
+        // wavefront segments is a ridge.
+        let segs: Vec<(usize, usize, usize)> = (0..m)
+            .filter(|&k| dist3(pts[k], pts[(k + 1) % m]) > POS_TOL)
+            .map(|k| (k, (k + 1) % m, self.verts[members[k]].right))
+            .collect();
+        let twin = |&(a, b, _): &(usize, usize, usize)| {
+            segs.iter().position(|&(c, d, _)| {
+                dist3(pts[a], pts[d]) < POS_TOL && dist3(pts[b], pts[c]) < POS_TOL
+            })
+        };
+        if segs.len() > 2 && segs.iter().all(|s| twin(s).is_some()) {
+            for (i, s) in segs.iter().enumerate() {
+                let j = twin(s).expect("checked");
+                if j < i {
+                    continue;
+                }
+                let (l1, l2) = (&self.lines[s.2], &self.lines[segs[j].2]);
+                let kind = if l1.sloped(t) && l2.sloped(t) && dot(l1.n, l2.n) < 1.0 - 1e-9 {
+                    LineKind::Ridge
+                } else {
+                    LineKind::Pult
+                };
+                self.ridges.push((nodes[s.0], nodes[s.1], kind));
+            }
+            return;
+        }
+        // The ridge is the extent of the flat loop.
         let (mut i0, mut i1, mut best) = (0, 0, -1.0);
         for i in 0..m {
             for j in i + 1..m {
@@ -1263,6 +1291,16 @@ fn generate_mode(part: &RoofPart, raised: &[bool]) -> (RoofGeometry, Vec<Point2>
 
 /// Walks from `end` back to `start` through `segs`, returning the ring.
 fn trace_ring(start: usize, end: usize, mut segs: Vec<(usize, usize)>) -> Vec<usize> {
+    if start == end {
+        // A plane whose eave shrank to a point (sample HINT04): walk round
+        // from that point.
+        let Some(k) = segs.iter().position(|&(x, y)| x == start || y == start) else {
+            return vec![start];
+        };
+        let (x, y) = segs.swap_remove(k);
+        let next = if x == start { y } else { x };
+        return trace_ring(start, next, segs);
+    }
     let mut ring = vec![start, end];
     let mut cur = end;
     while cur != start {
@@ -1308,7 +1346,6 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
             b: canon[b.b],
             ..*b
         })
-        .filter(|b| b.a != b.b)
         .collect();
 
     let mut geo = RoofGeometry::default();
@@ -1350,7 +1387,10 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
         }
         seen.push(key);
         let (pa, pb) = (sim.nodes[arc.a], sim.nodes[arc.b]);
-        let flat = (pa[2] - pb[2]).abs() < 1e-6;
+        // Level, allowing for the millimetres DACAD's rounded inputs leave
+        // where several planes nearly meet in one point (sample HOFSTTN).
+        let run = (pa[0] - pb[0]).hypot(pa[1] - pb[1]);
+        let flat = (pa[2] - pb[2]).abs() < 1e-6f64.max(0.005 * run);
         let (kind, side) = match arc.waiting {
             // A corner between two walls carries no roof.
             [true, true] => continue,
