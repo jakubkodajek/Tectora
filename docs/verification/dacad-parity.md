@@ -337,3 +337,4 @@ HINT04 bisection (DACAD-calculated variants in `/mnt/project-files/dacad-hint04-
 | C65 as C64 with overhang 1.0 | same pattern | |
 | C66 same-plane box (1 m deep) reaching the east gable's overhang line | T continuous 11.0; no extra lines | |
 | C67 same-plane box 3.99 m deep (1 cm short of the ridge) | T continuous; the whole ridge becomes P 11.0 instead of F | Probably cm snapping of the box top onto the ridge. |
+| C71 dormer whose front wall has pitch 100° (leans outward) | front plane slants out: OS 2 × 1.4252 from the base corners to the ridge tip (6, 1.8237), F runs to it; no WV at the base | A pitch over 90° is an ordinary plane leaning outward (material none), not a vertical wall. ZACH1's dormer front is 115°. |

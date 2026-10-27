@@ -319,6 +319,11 @@ def cases() -> dict[str, tuple]:
             [W(10, 0, Def(30, 0, 4.0)), W(10, 90, Def(90, 1.0, 4.0)), W(16, 180, Def(30, 0, 4.0)),
              W(5, 270, Def(90, 0, 4.3)), W(4, 0, Def(30, 0, 4.3)), W(2, 270, Def(38, 0, 4.3)),
              W(2, 0, Def(90, 0, 4.3)), W(3, 270, Def(90, 1.0, 4.3))]),
+        # ZACH1: dormer whose front wall leans outwards (pitch over 90°).
+        "C71_dormer_front_100": ("Sedlová 12×8 40° + valbový vikýř 2 m (boky 45°, okap 4,678 = na ploše hlavní střechy), čelo se sklonem 100° (přečnívá ven). Se 115° DACAD hlásí E0002.",
+                                 rect(12, 8, Def(40), G, Def(40), G), None,
+                                 [Dormer((5.0, 2.0), [W(0, 270, Def(45, 0, 4.6782)), W(2, 0, Def(100, 0, 4.6782)),
+                                                      W(0, 90, Def(45, 0, 4.6782))])]),
     }
 
 
@@ -327,7 +332,7 @@ def _rec(tag: int, payload: bytes) -> bytes:
 
 
 def _material(d: Def) -> int:
-    return 0 if abs(d.pitch - 90.0) < 1e-9 else 1
+    return 0 if d.pitch >= 90.0 - 1e-9 else 1
 
 
 def _wall_rec(i: int, roof: int, x: float, y: float, w: W) -> list[bytes]:
