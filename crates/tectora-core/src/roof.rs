@@ -1291,6 +1291,7 @@ fn share_half_hips(part: &RoofPart) -> RoofPart {
 /// walls at their wall lines, and the two are combined
 /// ([`crate::raised::combine`]).
 pub fn generate(part: &RoofPart) -> RoofGeometry {
+    let input = part;
     let (part, map) = merge_collinear_walls(&share_half_hips(&snap_markers(part)));
     let raised = raised_edges(&part);
     let (off, _) = generate_mode(&part, &vec![false; raised.len()]);
@@ -1309,9 +1310,158 @@ pub fn generate(part: &RoofPart) -> RoofGeometry {
     drop_eaves_on_ridges(&mut geo);
     one_sided_ridges(&mut geo);
     drop_short_ridges(&mut geo);
+    ridge_priority(&mut geo, input);
     drop_short_junction_hips(&mut geo);
     snap_raised_corners(&mut geo, &part);
     geo
+}
+
+/// Plane `n · p = d` of a face, as `[n, d]`.
+fn face_plane(f: &RoofFace) -> [f64; 4] {
+    let p = &f.polygon;
+    let mut n = [0.0; 3];
+    for i in 0..p.len() {
+        let (a, b) = (p[i], p[(i + 1) % p.len()]);
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    let d = n[0] * p[0][0] + n[1] * p[0][1] + n[2] * p[0][2];
+    [n[0], n[1], n[2], d]
+}
+
+/// The point where three planes meet.
+fn meet_planes(a: [f64; 4], b: [f64; 4], c: [f64; 4]) -> Option<[f64; 3]> {
+    let det = |m: [[f64; 3]; 3]| {
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+    };
+    let rows = [a, b, c];
+    let m: [[f64; 3]; 3] = std::array::from_fn(|i| [rows[i][0], rows[i][1], rows[i][2]]);
+    let dm = det(m);
+    if dm.abs() < 1e-12 {
+        return None;
+    }
+    Some(std::array::from_fn(|k| {
+        let mut mk = m;
+        for i in 0..3 {
+            mk[i][k] = rows[i][3];
+        }
+        det(mk) / dm
+    }))
+}
+
+/// Where two opposite planes meet in a ridge, DACAD ends the ridge with
+/// the shorter of the two planes' pieces, unless the other plane has
+/// priority: then the plane with priority ends there, and the other one
+/// takes over its neighbour beyond the ridge's end (junction sweep A01,
+/// A11; mass cases R1_0124, R1_0295, checked against DACAD's core output).
+/// The skeleton ends the ridge with the shorter piece, so where the plane
+/// it keeps has priority over the one it ends, the junction is turned
+/// round here.
+fn ridge_priority(geo: &mut RoofGeometry, part: &RoofPart) {
+    let near = |p: [f64; 3], q: [f64; 3]| dist3(p, q) < 1e-6;
+    let planes: Vec<[f64; 4]> = geo.faces.iter().map(face_plane).collect();
+    let prio = |f: usize| part.edges.get(geo.faces[f].edge).map_or(0, |e| e.priority);
+    let faces_on = |p: [f64; 3]| -> Vec<usize> {
+        (0..geo.faces.len())
+            .filter(|&f| geo.faces[f].polygon.iter().any(|&q| near(p, q)))
+            .collect()
+    };
+    let faces_of = |l: &RoofLine| -> Vec<usize> {
+        let (a, b) = (faces_on(l.a), faces_on(l.b));
+        a.into_iter().filter(|f| b.contains(f)).collect()
+    };
+    let sides: Vec<Vec<usize>> = geo.lines.iter().map(faces_of).collect();
+    let same = |s: &[usize], x: usize, y: usize| s.len() == 2 && s.contains(&x) && s.contains(&y);
+    let mut edits: Vec<(usize, [f64; 3], [f64; 3])> = Vec::new();
+    let mut swaps: Vec<(usize, [f64; 3], [f64; 3])> = Vec::new();
+    for (r, ridge) in geo.lines.iter().enumerate() {
+        if ridge.kind != LineKind::Ridge
+            || (ridge.a[2] - ridge.b[2]).abs() > 1e-9
+            || sides[r].len() != 2
+        {
+            continue;
+        }
+        for p in [ridge.a, ridge.b] {
+            let at_p = faces_on(p);
+            let Some(&g) = at_p.iter().find(|f| !sides[r].contains(f)) else {
+                continue;
+            };
+            if at_p.len() != 3 {
+                continue;
+            }
+            // The line the skeleton runs on from the ridge's end, between
+            // the plane it keeps (x) and the third plane.
+            let Some(u) = (0..geo.lines.len()).find(|&u| {
+                let l = &geo.lines[u];
+                let other = if near(l.a, p) {
+                    l.b
+                } else if near(l.b, p) {
+                    l.a
+                } else {
+                    return false;
+                };
+                other[2] > p[2] + 1e-9 && sides[u].len() == 2 && sides[u].contains(&g)
+            }) else {
+                continue;
+            };
+            let x = sides[u].iter().copied().find(|&f| f != g).unwrap_or(g);
+            let Some(&y) = sides[r].iter().find(|&&f| f != x) else {
+                continue;
+            };
+            if !sides[r].contains(&x) || prio(x) <= prio(y) {
+                continue;
+            }
+            let q = if near(geo.lines[u].a, p) {
+                geo.lines[u].b
+            } else {
+                geo.lines[u].a
+            };
+            let at_q = faces_on(q);
+            let Some(&h) = at_q.iter().find(|&&f| f != x && f != g) else {
+                continue;
+            };
+            if at_q.len() != 3 {
+                continue;
+            }
+            let (Some(p2), Some(q2)) = (
+                meet_planes(planes[x], planes[y], planes[h]),
+                meet_planes(planes[y], planes[g], planes[h]),
+            ) else {
+                continue;
+            };
+            if dist3(p2, p) > 0.1 || dist3(q2, q) > 0.1 {
+                continue;
+            }
+            edits.push((r, p, p2));
+            for (k, s) in sides.iter().enumerate() {
+                if same(s, y, g) {
+                    edits.push((k, p, q2));
+                }
+                if same(s, x, h) {
+                    edits.push((k, q, p2));
+                }
+                if same(s, g, h) {
+                    edits.push((k, q, q2));
+                }
+            }
+            swaps.push((u, p2, q2));
+        }
+    }
+    for (k, from, to) in edits {
+        let l = &mut geo.lines[k];
+        if near(l.a, from) {
+            l.a = to;
+        } else if near(l.b, from) {
+            l.b = to;
+        }
+    }
+    for (u, a, b) in swaps {
+        geo.lines[u].a = a;
+        geo.lines[u].b = b;
+    }
 }
 
 /// A hip under 2 cm joining the ends of two ridges at different heights is
