@@ -31,8 +31,64 @@ const TOL: f64 = 1e-9;
 const LEVEL: f64 = 1.0 - 1e-6;
 
 /// Generates every part of the project with its dormers, windows and
-/// chimneys applied.
+/// chimneys applied, one geometry per part.
+///
+/// Parts entered clockwise are generated as their counter-clockwise
+/// equivalent (face edge indices still refer to the part as given). Input
+/// that [`Project::validate`] rejects is left out instead of producing NaN:
+/// an invalid part gets an empty geometry.
 pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
+    let mut clean = project.clone();
+    clean.parts.clear();
+    // For each part: its index in `clean` and, if reversed, its edge count.
+    let mut slots: Vec<Option<(usize, Option<usize>)>> = Vec::new();
+    for part in &project.parts {
+        let mut alone = Project::new("");
+        alone.parts.push(part.clone());
+        if alone.validate().is_err() {
+            slots.push(None);
+            continue;
+        }
+        let mut p = part.clone();
+        let reversed = signed_area(&p.outline()) < 0.0;
+        p.normalize_ccw();
+        slots.push(Some((clean.parts.len(), reversed.then_some(p.edges.len()))));
+        clean.parts.push(p);
+    }
+    clean.dormers.retain(|d| {
+        d.end.x.is_finite()
+            && d.end.y.is_finite()
+            && d.edges.iter().all(|e| e.problems().next().is_none())
+    });
+    let ok_poly = |c: &Chimney| {
+        c.corners.len() >= 3 && c.corners.iter().all(|v| v.x.is_finite() && v.y.is_finite())
+    };
+    clean.chimneys.retain(ok_poly);
+    clean.roof_openings.retain(ok_poly);
+    clean.windows.retain(|w| {
+        [w.x, w.y, w.width, w.height].iter().all(|v| v.is_finite())
+            && w.width > 0.0
+            && w.height > 0.0
+    });
+    let mut geos = generate_valid(&clean);
+    slots
+        .into_iter()
+        .map(|slot| match slot {
+            None => RoofGeometry::default(),
+            Some((i, reversed)) => {
+                let mut g = std::mem::take(&mut geos[i]);
+                if let Some(n) = reversed {
+                    for f in &mut g.faces {
+                        f.edge = n - 1 - f.edge;
+                    }
+                }
+                g
+            }
+        })
+        .collect()
+}
+
+fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
     // Parts with standing gables are joined as several buildings.
     let cuts: Vec<crate::gable_wall::Pieces> = project
         .parts

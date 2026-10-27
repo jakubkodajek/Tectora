@@ -46,6 +46,57 @@ impl Project {
         }
     }
 
+    /// Checks the input the roof engine cannot work with: non-finite
+    /// numbers, parts with fewer than three edges, pitches outside
+    /// (0°, 180°) and negative overhangs. Returns one message per problem.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+        for (pi, part) in self.parts.iter().enumerate() {
+            let at = format!("part {} ({})", pi + 1, part.name);
+            if part.edges.len() < 3 {
+                errors.push(format!("{at}: needs at least 3 edges"));
+            }
+            for (ei, e) in part.edges.iter().enumerate() {
+                errors.extend(e.problems().map(|p| format!("{at}, edge {}: {p}", ei + 1)));
+            }
+        }
+        for (di, d) in self.dormers.iter().enumerate() {
+            if !finite_point(d.end) {
+                errors.push(format!("dormer {}: end point is not a number", di + 1));
+            }
+            for (ei, e) in d.edges.iter().enumerate() {
+                errors.extend(
+                    e.problems()
+                        .map(|p| format!("dormer {}, edge {}: {p}", di + 1, ei + 1)),
+                );
+            }
+        }
+        for (ci, c) in self.chimneys.iter().chain(&self.roof_openings).enumerate() {
+            if c.corners.len() < 3 || !c.corners.iter().all(|&v| finite_point(v)) {
+                errors.push(format!(
+                    "chimney/opening {}: needs 3 or more finite corners",
+                    ci + 1
+                ));
+            }
+        }
+        for (wi, w) in self.windows.iter().enumerate() {
+            let ok = [w.x, w.y, w.width, w.height].iter().all(|v| v.is_finite())
+                && w.width > 0.0
+                && w.height > 0.0;
+            if !ok {
+                errors.push(format!(
+                    "window {}: needs a finite position and a positive size",
+                    wi + 1
+                ));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
     pub fn to_json(&self) -> serde_json::Result<String> {
         serde_json::to_string_pretty(self)
     }
@@ -140,6 +191,10 @@ pub struct EdgeDef {
     pub clad: bool,
 }
 
+fn finite_point(p: Point2) -> bool {
+    p.x.is_finite() && p.y.is_finite()
+}
+
 fn is_false(v: &bool) -> bool {
     !*v
 }
@@ -149,6 +204,38 @@ fn is_zero(v: &u8) -> bool {
 }
 
 impl EdgeDef {
+    /// What makes this edge unusable for the engine (see [`Project::validate`]).
+    pub(crate) fn problems(&self) -> impl Iterator<Item = &'static str> {
+        let stacked = self
+            .half_hip
+            .iter()
+            .map(|h| (h.height, h.pitch_deg))
+            .chain(self.breaks.iter().map(|b| (b.height, b.pitch_deg)));
+        let checks = [
+            (!finite_point(self.start), "start point is not a number"),
+            (
+                !(self.pitch_deg > 0.0 && self.pitch_deg < 180.0),
+                "pitch must be between 0° and 180°",
+            ),
+            (!self.eave_height.is_finite(), "eave height is not a number"),
+            (
+                !(self.overhang >= 0.0 && self.overhang.is_finite()),
+                "overhang must be zero or positive",
+            ),
+            (
+                self.direction_rad.is_some_and(|a| !a.is_finite()),
+                "direction is not a number",
+            ),
+            (
+                stacked
+                    .into_iter()
+                    .any(|(h, p)| !h.is_finite() || !p.is_finite()),
+                "half-hip or pitch break is not a number",
+            ),
+        ];
+        checks.into_iter().filter(|c| c.0).map(|c| c.1)
+    }
+
     /// A vertical wall. A pitch over 90° is a plane leaning outward, not a
     /// gable (DACAD case C71).
     pub fn is_gable(&self) -> bool {
@@ -166,6 +253,7 @@ impl EdgeDef {
         if !self.is_gable() {
             out.push((self.eave_height, self.pitch_deg));
         } else if let Some(h) = &self.half_hip
+            && h.pitch_deg > 0.0
             && h.pitch_deg < GABLE_PITCH_DEG
         {
             out.push((h.height, h.pitch_deg));
