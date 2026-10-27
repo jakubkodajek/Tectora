@@ -27,7 +27,7 @@ export interface DormerParams {
   /** Krüppelwalm: height and pitch of the clipped part of the front. */
   half_hip_height: number;
   half_hip_pitch_deg: number;
-  /** Rundgaube: polygon segments per cheek of the semicircular roof. */
+  /** Rundgaube: polygon segments per cheek; 0 = DACAD's count. */
   segments: number;
 }
 
@@ -43,7 +43,7 @@ export function defaultParams(kind: DormerKind, start: Point2, angle: number, ea
     overhang: 0,
     half_hip_height: 0.6,
     half_hip_pitch_deg: 60,
-    segments: 8,
+    segments: 0,
   };
 }
 
@@ -53,10 +53,11 @@ export function buildDormer(p: DormerParams): Dormer {
   const sloped = p.kind !== "shed";
   const frontSloped = p.kind === "hip" || p.kind === "shed" || p.kind === "trapezoid";
   const base = { eave_height: p.eave_height, overhang: p.overhang };
-  // A Rundgaube is a gable dormer whose cheeks follow a semicircle (DACAD.HLP, Runddach).
+  // A Rundgaube is a gable dormer whose cheeks follow the Runddach arc (DACAD.HLP);
+  // DACAD's default arc is assumed, its dormer dialog is not verified yet.
   const arc =
     p.kind === "round"
-      ? arcFor({ span: p.width, overhang: p.overhang, eave_height: p.eave_height, segments: p.segments, mode: "half", value: 0 })
+      ? arcFor({ span: p.width, overhang: p.overhang, eave_height: p.eave_height, segments: p.segments, mode: "default", value: 0 })
       : null;
   const cheek = (dir: number, start: Point2): EdgeDef => ({
     ...base,

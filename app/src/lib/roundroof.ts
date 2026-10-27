@@ -1,20 +1,27 @@
 // DACAD's Runddach helper (Parameter > Neigungen berechnen > Runddach): on
 // two parallel walls with the same eave height it sets pitches and Knicke so
-// that an inscribed polygon approximates a circular arc. The arc ends at the
-// overhang tips; by default it is a semicircle (Tonnendach). Source: DACAD.HLP
-// topic "Runddach" and the RNDROOF dialog bitmap.
+// that an inscribed polygon approximates a circular arc ending at the overhang
+// tips (DACAD.HLP topic "Runddach", RNDROOF dialog bitmap). The numbers follow
+// DACAD runs RD1-RD4 (/mnt/project-files/dacad-round/): the default arc spans
+// 45° on each side, a side gets ceil(arc / 11.25°) segments, and segment k has
+// the pitch (k + ½)·arc / n.
 
 import type { EdgeDef, PitchBreak, Point2 } from "./types";
 import { isMarker } from "./types";
 
-export type ArcMode = "half" | "radius" | "ridge" | "length";
+export type ArcMode = "default" | "radius" | "ridge" | "length";
+
+/** DACAD's default arc on each side of the ridge, degrees. */
+const DEFAULT_ARC = 45;
+/** DACAD's largest segment angle, degrees. */
+const SEGMENT_ARC = 11.25;
 
 export interface ArcInput {
   /** Distance between the two wall lines, m. */
   span: number;
   overhang: number;
   eave_height: number;
-  /** Segments of the polygon on each side of the ridge. */
+  /** Segments of the polygon on each side of the ridge; 0 = DACAD's count. */
   segments: number;
   mode: ArcMode;
   /** The radius, ridge height or developed length, by mode. */
@@ -26,49 +33,58 @@ export interface Arc {
   ridge: number;
   /** Developed length of the whole arc, eave tip to eave tip. */
   length: number;
+  segments: number;
   pitch_deg: number;
   breaks: PitchBreak[];
 }
 
-/** Radius of the semicircle over the span; any arc needs at least this. */
+/** Half chord of the arc (half the span plus the overhang); the smallest radius. */
 export const minRadius = (span: number, overhang: number) => span / 2 + overhang;
+
+/** Radius of DACAD's default arc. */
+export const defaultRadius = (span: number, overhang: number) =>
+  minRadius(span, overhang) / Math.sin((DEFAULT_ARC * Math.PI) / 180);
+
+/** DACAD's segment count for an arc of `deg` degrees on one side. */
+export const segmentsFor = (deg: number) => Math.max(1, Math.ceil(deg / SEGMENT_ARC - 1e-9));
 
 /** The arc for the input, or null when the value is out of range. */
 export function arcFor(a: ArcInput): Arc | null {
-  const r0 = minRadius(a.span, a.overhang);
-  if (!(r0 > 0) || a.segments < 1) return null;
-  let r = r0;
+  const c = minRadius(a.span, a.overhang);
+  if (!(c > 0) || a.segments < 0) return null;
+  let r = defaultRadius(a.span, a.overhang);
   if (a.mode === "radius") {
-    if (a.value < r0 - 1e-9) return null;
+    if (a.value < c - 1e-9) return null;
     r = a.value;
   } else if (a.mode === "ridge") {
-    // Rise above the eave tips: r - sqrt(r² - r0²) = rise.
+    // Rise above the eave tips h: r = (c² + h²) / 2h.
     const rise = a.value - a.eave_height;
-    if (!(rise > 0) || rise > r0 + 1e-9) return null;
-    r = (rise * rise + r0 * r0) / (2 * rise);
+    if (!(rise > 0) || rise > c + 1e-9) return null;
+    r = (rise * rise + c * c) / (2 * rise);
   } else if (a.mode === "length") {
-    // Developed length 2·r·asin(r0/r) falls from π·r0 towards 2·r0 as r grows.
-    if (a.value > Math.PI * r0 + 1e-9 || a.value <= 2 * r0) return null;
-    let lo = r0;
-    let hi = r0 * 1e4;
+    // Developed length 2·r·asin(c/r) falls from π·c towards 2·c as r grows.
+    if (a.value > Math.PI * c + 1e-9 || a.value <= 2 * c) return null;
+    let lo = c;
+    let hi = c * 1e4;
     for (let k = 0; k < 200; k++) {
       const mid = (lo + hi) / 2;
-      if (2 * mid * Math.asin(r0 / mid) > a.value) lo = mid;
+      if (2 * mid * Math.asin(c / mid) > a.value) lo = mid;
       else hi = mid;
     }
     r = (lo + hi) / 2;
   }
-  const half = Math.asin(Math.min(1, r0 / r));
-  const centre = a.eave_height - Math.sqrt(Math.max(0, r * r - r0 * r0));
-  // Vertices at equal angles; a chord's pitch is the angle of the radius to
-  // its middle, measured from the vertical.
-  const at = (k: number) => half * (1 - k / a.segments);
-  const pitch = (k: number) => +(((at(k) + at(k + 1)) / 2) * (180 / Math.PI)).toFixed(3);
+  const half = Math.asin(Math.min(1, c / r));
+  const n = a.segments || segmentsFor((half * 180) / Math.PI);
+  const centre = a.eave_height - Math.sqrt(Math.max(0, r * r - c * c));
+  // Vertices at equal angles from the vertical; a chord's pitch is the angle
+  // of the radius to its middle.
+  const at = (k: number) => half * (1 - k / n);
+  const pitch = (k: number) => +(((at(k) + at(k + 1)) / 2) * (180 / Math.PI)).toFixed(4);
   const breaks: PitchBreak[] = [];
-  for (let k = 1; k < a.segments; k++) {
-    breaks.push({ height: +(centre + r * Math.cos(at(k))).toFixed(3), pitch_deg: pitch(k) });
+  for (let k = 1; k < n; k++) {
+    breaks.push({ height: +(centre + r * Math.cos(at(k))).toFixed(4), pitch_deg: pitch(k) });
   }
-  return { radius: r, ridge: centre + r, length: 2 * r * half, pitch_deg: pitch(0), breaks };
+  return { radius: r, ridge: centre + r, length: 2 * r * half, segments: n, pitch_deg: pitch(0), breaks };
 }
 
 /** Index of the wall facing edge `i` across the part (anti-parallel, overlapping), or null. */

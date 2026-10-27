@@ -1,7 +1,7 @@
 <script lang="ts">
   // DACAD's Runddach dialog: span, overhang and eave come from the two walls;
-  // the arc is a semicircle or is given by radius, ridge height or developed
-  // length. A cross-section shows the polygon that will be built.
+  // the arc is DACAD's default or is given by radius, ridge height or
+  // developed length. A cross-section shows the polygon that will be built.
   import { num } from "./format";
   import { t } from "./i18n.svelte";
   import { arcFor, minRadius, type Arc, type ArcMode } from "./roundroof";
@@ -13,16 +13,17 @@
     arc = $bindable(null),
   }: { span: number; eave: number; overhang: number; arc: Arc | null } = $props();
 
-  let mode = $state<ArcMode>("half");
-  // Provisional default until DACAD runs show its segment count [no source].
-  let segments = $state(8);
+  let mode = $state<ArcMode>("default");
+  // 0 = DACAD's own count, ceil(arc / 11.25°) per side.
+  let segments = $state(0);
   let value = $state(0);
 
   const r0 = $derived(minRadius(span, overhang));
-  // Suggest the semicircle's value whenever the mode changes.
+  // Suggest DACAD's default arc whenever the mode changes.
   function setMode(m: ArcMode) {
     mode = m;
-    value = m === "radius" ? +r0.toFixed(3) : m === "ridge" ? +(eave + r0).toFixed(3) : m === "length" ? +(Math.PI * r0).toFixed(3) : 0;
+    const d = arcFor({ span, overhang, eave_height: eave, segments: 0, mode: "default", value: 0 });
+    value = !d ? 0 : m === "radius" ? +d.radius.toFixed(3) : m === "ridge" ? +d.ridge.toFixed(3) : m === "length" ? +d.length.toFixed(3) : 0;
   }
 
   $effect(() => {
@@ -66,19 +67,23 @@
       <label>
         <span>{t("round.mode")}</span>
         <select value={mode} onchange={(e) => setMode((e.target as HTMLSelectElement).value as ArcMode)}>
-          <option value="half">{t("round.half")}</option>
+          <option value="default">{t("round.default")}</option>
           <option value="radius">{t("round.radius")}</option>
           <option value="ridge">{t("round.ridge")}</option>
           <option value="length">{t("round.length")}</option>
         </select>
       </label>
-      {#if mode !== "half"}
+      {#if mode !== "default"}
         <label>
           <span>{t(`round.${mode}`)}</span>
           <div class="unit"><input type="number" step="0.05" bind:value /><em>m</em></div>
         </label>
       {/if}
-      <label><span>{t("round.segments")}</span><input type="number" step="1" min="1" max="30" bind:value={segments} /></label>
+      <label>
+        <span>{t("round.segments")}</span>
+        <input type="number" step="1" min="1" max="30" value={segments || (arc?.segments ?? "")}
+          onchange={(e) => { const v = Math.round(+(e.target as HTMLInputElement).value); segments = v >= 1 ? v : 0; }} />
+      </label>
     </div>
     <div class="preview">
       {#if shape && arc}
