@@ -125,8 +125,10 @@ pub fn norm_totals(project: &Project, norm: Norm) -> NormTotals {
     for geo in crate::openings::generate_project(project) {
         area += geo.faces.iter().map(|f| f.area).sum::<f64>() + geo.clad_area;
         for o in &geo.openings {
+            // DACAD deducts roof openings in full under every norm (OP3/OP4).
             let counts = match o.kind {
                 crate::roof::OpeningKind::Dormer => norm == Norm::Din,
+                crate::roof::OpeningKind::Hole => false,
                 _ => true,
             };
             if counts && o.area <= norm.area_limit() + EPS {

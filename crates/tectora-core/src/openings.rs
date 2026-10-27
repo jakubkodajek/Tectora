@@ -12,7 +12,9 @@
 //! * A roof opening (DACAD: Öffnung) is cut like a chimney, but per DACAD.HLP
 //!   (topic "Öffnung") its sides are roof edges: the uphill side is an eave
 //!   of the roof above, the downhill side a Pult of the roof below and the
-//!   others verges. Not yet checked against a DACAD run.
+//!   others verges (OL/OR when square to the eave, otherwise OS). Its full
+//!   sloped area is deducted under every norm. Checked against DACAD runs
+//!   OP1-OP4 (/mnt/project-files/dacad-round/openings/).
 
 use crate::geom::{Point2, signed_area};
 use crate::model::{Chimney, Project, RoofPart, RoofWindow};
@@ -474,5 +476,47 @@ mod tests {
         let after = geo.faces.iter().map(|f| f.area).sum::<f64>();
         assert!((before - after - 2.0 * s).abs() < 1e-6);
         assert_eq!(geo.openings[0].kind, OpeningKind::Hole);
+    }
+
+    /// DACAD run OP1: 12 × 8 m hip roof, 35°, eave 3 m, opening 5..6 × 1..2.
+    #[test]
+    fn roof_opening_matches_dacad_op1() {
+        let e = |x: f64, y: f64| {
+            serde_json::json!({ "start": { "x": x, "y": y }, "pitch_deg": 35.0,
+                "eave_height": 3.0, "overhang": 0.0 })
+        };
+        let part = serde_json::json!({ "name": "A", "edges": [
+            e(0.0, 0.0), e(12.0, 0.0), e(12.0, 8.0), e(0.0, 8.0)] });
+        let mut p = Project::new("op1");
+        p.parts.push(serde_json::from_value(part).unwrap());
+        p.roof_openings.push(square(5.0, 1.0, 1.0, 1.0));
+        let geo = &generate_project(&p)[0];
+        let area = geo.faces.iter().map(|f| f.area).sum::<f64>();
+        assert!((area - 115.974).abs() < 1e-3, "{area}");
+        assert!((total(geo, "P") - 1.0).abs() < 1e-6);
+        assert!((total(geo, "OL") - 1.221).abs() < 1e-3);
+        assert!((total(geo, "OR") - 1.221).abs() < 1e-3);
+        let west = geo.lines.iter().find(|l| l.dacad_code() == "OR").unwrap();
+        assert!((west.a[0] - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rotated_roof_opening_has_only_oblique_verges() {
+        let mut p = gable();
+        let c = Point2::new(5.0, 2.0);
+        let (s, co) = (30f64.to_radians().sin(), 30f64.to_radians().cos());
+        let mut corners = Vec::new();
+        for (u, v) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+            corners.push(Point2::new(c.x + u * co - v * s, c.y + u * s + v * co));
+        }
+        p.roof_openings.push(Chimney {
+            corners,
+            height: 0.0,
+        });
+        let geo = &generate_project(&p)[0];
+        // Base gable: T 20, OL = OR = 8√2; the opening adds four OS sides.
+        assert!((total(geo, "T") - 20.0).abs() < 1e-6);
+        assert!(total(geo, "P") < 1e-9);
+        assert!(total(geo, "OS") > 4.0);
     }
 }
