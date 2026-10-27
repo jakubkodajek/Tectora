@@ -62,3 +62,27 @@ export function windowOutline(result: CalcResult | null, w: RoofWindow): Point2[
     { x: o.x + s.up.x * h, y: o.y + s.up.y * h },
   ];
 }
+
+/** True when a plan polygon turns the same way at every corner. DACAD
+ *  calculates no roof at all once a chimney or roof opening is non-convex. */
+export function isConvex(corners: Point2[]): boolean {
+  const n = corners.length;
+  if (n < 3) return false;
+  let sign = 0;
+  for (let i = 0; i < n; i++) {
+    const a = corners[i], b = corners[(i + 1) % n], c = corners[(i + 2) % n];
+    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (Math.abs(cross) < 1e-9) continue;
+    if (sign === 0) sign = Math.sign(cross);
+    else if (Math.sign(cross) !== sign) return false;
+  }
+  return sign !== 0;
+}
+
+/** Chimneys and roof openings that keep DACAD from calculating the roof. */
+export function nonConvexOpenings(project: Project): { kind: OpeningKind; index: number }[] {
+  const bad: { kind: OpeningKind; index: number }[] = [];
+  project.chimneys.forEach((c, index) => isConvex(c.corners) || bad.push({ kind: "chimney", index }));
+  (project.roof_openings ?? []).forEach((c, index) => isConvex(c.corners) || bad.push({ kind: "hole", index }));
+  return bad;
+}

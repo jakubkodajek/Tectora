@@ -14,7 +14,7 @@
   import RoofDefBar from "./RoofDefBar.svelte";
   import DormerBar from "./DormerBar.svelte";
   import OpeningBar from "./OpeningBar.svelte";
-  import { chimneyFromRect, openingList, type OpeningSel } from "./openings";
+  import { chimneyFromRect, nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, roofHeightAt } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
   import StandardRoofForm from "./StandardRoofForm.svelte";
@@ -90,6 +90,8 @@
     return out;
   });
   const pending = $derived(pendingList.length ? pendingList[0] : null);
+  // DACAD calculates no roof once a chimney or roof opening is non-convex.
+  const nonConvex = $derived(project ? nonConvexOpenings(project) : []);
   const pendingChanges = $derived(pendingList.flatMap((a) => a.changes));
   const highlight = $derived.by(() => {
     if (!project) return new Set<string>();
@@ -631,6 +633,13 @@
             <button class="btn sm accept" onclick={accept}><Icon name="check" size={14} />{t("review.accept")}</button>
           </div>
         {/if}
+        {#if nonConvex.length}
+          <div class="warn-bar" role="alert">
+            <Icon name="warning" size={18} />
+            <span>{t("opening.nonConvexAll", { n: nonConvex.length })}</span>
+            <button class="btn sm" onclick={() => (openSel = nonConvex[0])}>{t("opening.show")}</button>
+          </div>
+        {/if}
         <div class="views" class:split={prefs.layout === "split"}>
           {#if prefs.layout !== "3d"}
             <div class="view">
@@ -909,6 +918,19 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
+  }
+  .warn-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+    border-bottom: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+    color: var(--danger);
+    font-size: 13.5px;
+  }
+  .warn-bar span {
+    flex: 1;
   }
   .review {
     display: flex;
