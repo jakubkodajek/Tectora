@@ -12,7 +12,7 @@
 
 use crate::geom::{Point2, signed_area};
 use crate::model::{Chimney, Project, RoofWindow};
-use crate::roof::{LineKind, RoofFace, RoofGeometry, RoofLine, generate};
+use crate::roof::{LineKind, Opening, OpeningKind, RoofFace, RoofGeometry, RoofLine, generate};
 
 const TOL: f64 = 1e-9;
 /// A side counts as level in the roof plane (WV/WH) only when it is square
@@ -84,7 +84,7 @@ pub(crate) fn inside(poly: &[Point2], p: Point2) -> bool {
 /// point just inside it, up the slope and along the eave.
 fn apply_window(geos: &mut [RoofGeometry], w: &RoofWindow) {
     for geo in geos.iter_mut() {
-        for face in &mut geo.faces {
+        let hit = geo.faces.iter().position(|face| {
             let (up, _) = slope(face);
             let along = Point2::new(up.y, -up.x);
             let probe = |s: f64| {
@@ -94,12 +94,17 @@ fn apply_window(geos: &mut [RoofGeometry], w: &RoofWindow) {
                 )
             };
             let poly = plan(face);
-            if inside(&poly, probe(1.0)) || inside(&poly, probe(-1.0)) {
-                let d = w.width * w.height;
-                face.area -= d;
-                face.deducted += d;
-                return;
-            }
+            inside(&poly, probe(1.0)) || inside(&poly, probe(-1.0))
+        });
+        if let Some(k) = hit {
+            let d = w.width * w.height;
+            geo.faces[k].area -= d;
+            geo.faces[k].deducted += d;
+            geo.openings.push(Opening {
+                kind: OpeningKind::Window,
+                area: d,
+            });
+            return;
         }
     }
 }
@@ -188,6 +193,10 @@ fn apply_chimney(geo: &mut RoofGeometry, c: &Chimney) {
     for l in std::mem::take(&mut geo.lines) {
         let (a, b) = (Point2::new(l.a[0], l.a[1]), Point2::new(l.b[0], l.b[1]));
         let under = inside_spans(&corners, a, b);
+        for &(s, e) in &under {
+            geo.cut_lines
+                .push((l.dacad_code().to_string(), (e - s) * l.length()));
+        }
         let mut t0 = 0.0;
         for (s, e) in under.iter().copied().chain(std::iter::once((1.0, 1.0))) {
             if s - t0 > 1e-9 {
@@ -202,6 +211,7 @@ fn apply_chimney(geo: &mut RoofGeometry, c: &Chimney) {
     }
     geo.lines = kept;
 
+    let mut total = 0.0;
     let n = corners.len();
     for face in &mut geo.faces {
         let poly = plan(face);
@@ -213,6 +223,7 @@ fn apply_chimney(geo: &mut RoofGeometry, c: &Chimney) {
         let d = cut * (1.0 + tan * tan).sqrt();
         face.area -= d;
         face.deducted += d;
+        total += d;
         for i in 0..n {
             let (a, b) = (corners[i], corners[(i + 1) % n]);
             let dir = Point2::new(b.x - a.x, b.y - a.y);
@@ -240,5 +251,11 @@ fn apply_chimney(geo: &mut RoofGeometry, c: &Chimney) {
                 });
             }
         }
+    }
+    if total > 0.0 {
+        geo.openings.push(Opening {
+            kind: OpeningKind::Chimney,
+            area: total,
+        });
     }
 }

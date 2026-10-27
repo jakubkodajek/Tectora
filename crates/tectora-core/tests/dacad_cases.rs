@@ -2,7 +2,8 @@
 //!
 //! Each fixture in `tests/fixtures/dacad_cases` holds the walls with their
 //! stacked roof definitions and the line and area totals the real DACAD
-//! (`DACAD DE.exe` under Wine) computed for them.
+//! (`DACAD DE.exe` under Wine) computed for them. `tests/fixtures/dacad_norms`
+//! holds the same cases measured to DIN, ÖNORM and SIA.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -19,7 +20,13 @@ const TOL: f64 = 0.006;
 const TILES: &str = "Škridla - ";
 
 fn fixtures() -> Vec<(String, Value)> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/dacad_cases");
+    fixtures_in("dacad_cases")
+}
+
+fn fixtures_in(sub: &str) -> Vec<(String, Value)> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures")
+        .join(sub);
     let mut out: Vec<(String, Value)> = std::fs::read_dir(&dir)
         .expect("fixture dir")
         .map(|e| e.expect("entry").path())
@@ -129,30 +136,99 @@ fn dormers(case: &Value) -> Vec<Dormer> {
         .collect()
 }
 
+fn project(name: &str, case: &Value) -> Project {
+    let input = &case["input"];
+    let mut project = Project::new(name);
+    project.parts.push(part(case));
+    project.dormers = dormers(case);
+    for w in input["windows"].as_array().into_iter().flatten() {
+        project.windows.push(RoofWindow {
+            x: w["x"].as_f64().unwrap(),
+            y: w["y"].as_f64().unwrap(),
+            width: w["width"].as_f64().unwrap(),
+            height: w["height"].as_f64().unwrap(),
+        });
+    }
+    for c in input["chimneys"].as_array().into_iter().flatten() {
+        project.chimneys.push(Chimney {
+            corners: c["corners"].as_array().unwrap().iter().map(pt).collect(),
+            height: c["height_m"].as_f64().unwrap_or(0.0),
+        });
+    }
+    project
+}
+
+/// DACAD's line group names in this (Slovak) build and their codes.
+const LINE_GROUPS: [(&str, &str); 13] = [
+    ("1 Hreben -", "F"),
+    ("2 Nárožie -", "G"),
+    ("3 Úžlabie -", "K"),
+    ("4 Krajné lavé -", "OL"),
+    ("5 Krajné pravé -", "OR"),
+    ("6 Odkvap -", "T"),
+    ("7 Pult -", "P"),
+    ("91 Predné napojenie -", "WV"),
+    ("92 Bocné napojenie -", "WS"),
+    ("93 Zadné napojenie -", "WH"),
+    ("94 Krajné šikmo -", "OS"),
+    ("Zlom -", "c"),
+    ("Schlucht -", "S"),
+];
+
+#[test]
+fn norm_groups_match_dacad() {
+    use tectora_core::quantities::{Norm, norm_totals};
+    let mut failures = Vec::new();
+    let mut count = 0;
+    for (dir, norm) in [
+        ("DIN", Norm::Din),
+        ("ONORM", Norm::Onorm),
+        ("SIA", Norm::Sia),
+    ] {
+        for (name, case) in fixtures_in(&format!("dacad_norms/{dir}")) {
+            count += 1;
+            let ours = norm_totals(&project(&name, &case), norm);
+            let r = &case["dacad_results"];
+            // DACAD stores a "-Norm" group only when it differs from the base.
+            let group = |base: &Value, key: &str| {
+                base.get(format!("{key}-Norm"))
+                    .or_else(|| base.get(key))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0)
+            };
+            let area = group(&r["area_groups"], TILES);
+            if (ours.roof_area - area).abs() > TOL {
+                failures.push(format!(
+                    "{dir} {name}: area ours {:.4} DACAD {area:.4}",
+                    ours.roof_area
+                ));
+            }
+            for (key, code) in LINE_GROUPS {
+                let want = group(&r["line_groups"], key);
+                let got = ours.lines_by_type.get(code).copied().unwrap_or(0.0);
+                if (got - want).abs() > 0.011 {
+                    failures.push(format!(
+                        "{dir} {name}: {code} ours {got:.4} DACAD {want:.4}"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(count >= 33, "norm fixtures missing");
+    assert!(
+        failures.is_empty(),
+        "differences from DACAD:\n{}",
+        failures.join("\n")
+    );
+}
+
 #[test]
 fn engine_matches_dacad() {
     let cases = fixtures();
     assert!(cases.len() >= 42, "fixtures missing");
     let mut failures = Vec::new();
     for (name, case) in cases {
-        let input = &case["input"];
-        let mut project = Project::new(name.clone());
-        project.parts.push(part(&case));
-        project.dormers = dormers(&case);
-        for w in input["windows"].as_array().into_iter().flatten() {
-            project.windows.push(RoofWindow {
-                x: w["x"].as_f64().unwrap(),
-                y: w["y"].as_f64().unwrap(),
-                width: w["width"].as_f64().unwrap(),
-                height: w["height"].as_f64().unwrap(),
-            });
-        }
-        for c in input["chimneys"].as_array().into_iter().flatten() {
-            project.chimneys.push(Chimney {
-                corners: c["corners"].as_array().unwrap().iter().map(pt).collect(),
-                height: c["height_m"].as_f64().unwrap_or(0.0),
-            });
-        }
+        let project = project(&name, &case);
         let geo = generate_project(&project).remove(0);
         let mut ours: BTreeMap<String, f64> = BTreeMap::new();
         for l in &geo.lines {

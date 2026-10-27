@@ -21,7 +21,7 @@
 use crate::geom::{Point2, signed_area};
 use crate::model::{Dormer, EdgeDef, GABLE_PITCH_DEG, RoofPart};
 use crate::openings::{clip_polygon, inside, lerp3, plan, slope};
-use crate::roof::{LineKind, RoofFace, RoofGeometry, RoofLine, generate};
+use crate::roof::{LineKind, Opening, OpeningKind, RoofFace, RoofGeometry, RoofLine, generate};
 
 const TOL: f64 = 1e-7;
 
@@ -353,6 +353,7 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer) {
     let mut pieces: Vec<Piece> = Vec::new();
     let mut chords: Vec<RoofLine> = Vec::new();
     let mut hosts: Vec<(usize, usize)> = Vec::new();
+    let mut removed = 0.0;
     for (c, k) in cands.into_iter().zip(keep) {
         if !k {
             continue;
@@ -364,6 +365,7 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer) {
                 let cut = signed_area(&clip_polygon(&plan(f), &c.under)).abs();
                 if cut > 1e-12 {
                     f.area -= cut * Plane::of(f).sec();
+                    removed += cut * Plane::of(f).sec();
                 }
             }
         }
@@ -394,13 +396,18 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer) {
     for g in geos.iter_mut() {
         let mut kept = Vec::new();
         for l in std::mem::take(&mut g.lines) {
+            let mut left = l.length();
             for (a, b) in split_keep(l.a, l.b, &piece_polys, |p, z| {
                 !(on_wall(p)
                     && pieces
                         .iter()
                         .any(|pc| covers(&pc.poly, p) && pc.plane.z(p) > z + 1e-6))
             }) {
+                left -= dist3(a, b);
                 kept.push(RoofLine { a, b, ..l.clone() });
+            }
+            if left > 1e-9 {
+                g.cut_lines.push((l.dacad_code().to_string(), left));
             }
         }
         g.lines = kept;
@@ -472,4 +479,8 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer) {
         });
     }
     target.lines.extend(lines);
+    target.openings.push(Opening {
+        kind: OpeningKind::Dormer,
+        area: removed,
+    });
 }

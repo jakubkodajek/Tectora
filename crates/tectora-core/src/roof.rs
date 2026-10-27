@@ -126,6 +126,27 @@ pub struct RoofGeometry {
     pub lines: Vec<RoofLine>,
     /// Vertical gable walls above the eave line (for rendering).
     pub gables: Vec<Vec<[f64; 3]>>,
+    /// Area deducted per window, chimney and dormer (for norm rules).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub openings: Vec<Opening>,
+    /// Line lengths removed by chimneys and dormers, by DACAD code.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cut_lines: Vec<(String, f64)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpeningKind {
+    Window,
+    Chimney,
+    Dormer,
+}
+
+/// Roof area one opening took away, m².
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Opening {
+    pub kind: OpeningKind,
+    pub area: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]
