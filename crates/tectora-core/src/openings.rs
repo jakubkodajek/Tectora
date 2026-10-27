@@ -78,14 +78,22 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     for w in &project.windows {
         apply_window(&mut geos, w);
     }
+    let walls: Vec<(Point2, Point2)> = project
+        .parts
+        .iter()
+        .flat_map(|p| {
+            let o = p.outline();
+            (0..o.len()).map(move |i| (o[i], o[(i + 1) % o.len()]))
+        })
+        .collect();
     for c in &project.chimneys {
         for geo in &mut geos {
-            apply_cutout(geo, c, false);
+            apply_cutout(geo, c, false, &walls);
         }
     }
     for o in &project.roof_openings {
         for geo in &mut geos {
-            apply_cutout(geo, o, true);
+            apply_cutout(geo, o, true, &walls);
         }
     }
     for geo in &mut geos {
@@ -536,7 +544,7 @@ fn snap_sides_to_ridge_ends(geo: &RoofGeometry, corners: &mut [Point2]) {
 }
 
 /// Cuts a chimney, or with `hole` a roof opening, out of the faces.
-fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool) {
+fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool, walls: &[(Point2, Point2)]) {
     let mut corners = c.corners.clone();
     if corners.len() < 3 {
         return;
@@ -546,7 +554,7 @@ fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool) {
     }
     if !hole {
         snap_sides_to_ridge_ends(geo, &mut corners);
-        cut_chimney(geo, &corners);
+        cut_chimney(geo, &corners, walls);
         return;
     }
     // Roof lines under the opening disappear.
@@ -656,7 +664,7 @@ struct HoleEdge {
 /// lines stay whole. A hole edge lying on a roof line (see [`on_line`])
 /// becomes a negative line of that line's kind; a hole edge of only one
 /// face is also an abutment, unless the line is a verge, Pult or eave.
-fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2]) {
+fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2], walls: &[(Point2, Point2)]) {
     let mut corners = corners.to_vec();
     for _ in 0..corners.len() {
         if !pivot_corner(geo, &mut corners) {
@@ -683,15 +691,9 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2]) {
         face.area -= d;
         face.deducted += d;
         total += d;
-        for i in 0..pts.len() {
-            edges.push(HoleEdge {
-                c: pts[i],
-                d: pts[(i + 1) % pts.len()],
-                face: fi,
-                shared: false,
-            });
-        }
+        push_edges(&mut edges, &pts, fi);
     }
+    join_coplanar_edges(&geo.faces, &mut edges);
     // An edge two holes share lies on the line between their faces; the
     // hole of the lower face keeps it.
     let on_edge = |p: [f64; 3], e: &HoleEdge| {
@@ -710,8 +712,31 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2]) {
         if let Some(j) =
             (0..edges.len()).find(|&j| edges[j].face != edges[i].face && on_edge(mid, &edges[j]))
         {
-            drop[i] = edges[i].face > edges[j].face;
+            // A shorter edge lying on a longer one is DACAD's code 17
+            // (FUN_00da5060; R1_0745).
+            let (li, lj) = (
+                dist3_(edges[i].c, edges[i].d),
+                dist3_(edges[j].c, edges[j].d),
+            );
+            drop[i] = li < lj - 1e-6 || (li <= lj + 1e-6 && edges[i].face > edges[j].face);
             edges[i].shared = true;
+        }
+    }
+    // DACAD also holes the dormer's footprint face on the host plane
+    // (see `dormer`): a dormer face's hole edge along the footprint's
+    // outline is shared with that hole (mass case R1_0440: −K, no WS).
+    for e in edges.iter_mut() {
+        if geo.faces[e.face].edge != usize::MAX {
+            continue;
+        }
+        let (c, d) = (Point2::new(e.c[0], e.c[1]), Point2::new(e.d[0], e.d[1]));
+        if geo.footprints.iter().any(|f| {
+            (0..f.len()).any(|i| {
+                let (a, b) = (f[i], f[(i + 1) % f.len()]);
+                seg_dist(a, b, c) < 1e-4 && seg_dist(a, b, d) < 1e-4
+            })
+        }) {
+            e.shared = true;
         }
     }
     let mut keep = drop.iter().map(|d| !d);
@@ -729,12 +754,35 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2]) {
         let on = roof
             .iter()
             .find(|r| on_line((r.a, r.b), e.c, e.d) || on_line((r.b, r.a), e.c, e.d));
+        let abutment = on.is_some_and(|r| {
+            matches!(
+                r.kind,
+                LineKind::AbutmentFront | LineKind::AbutmentBack | LineKind::AbutmentSide
+            )
+        });
+        // Along a wall, building or dormer cheek, the hole edge lies on the
+        // wall's own edge and is DACAD's code 17 (FUN_00da5060; xm case
+        // Q398_xp030_yp00): no line at all.
+        let (c, d) = (Point2::new(e.c[0], e.c[1]), Point2::new(e.d[0], e.d[1]));
+        let along = |a: Point2, b: Point2| seg_dist(a, b, c) < 1e-4 && seg_dist(a, b, d) < 1e-4;
+        let on_wall = walls.iter().any(|&(a, b)| along(a, b))
+            || geo
+                .footprints
+                .iter()
+                .any(|f| (0..f.len()).any(|i| along(f[i], f[(i + 1) % f.len()])));
+        if abutment && on_wall {
+            continue;
+        }
         if let Some(r) = on {
             geo.minus_lines
                 .push((r.dacad_code().to_string(), dist3_(e.c, e.d)));
         }
-        let edge_of_roof =
-            on.is_some_and(|r| matches!(r.kind, LineKind::Verge | LineKind::Pult | LineKind::Eave));
+        // On an abutment off any wall DACAD's copy comes back as code 0, no
+        // line (mass case R1_0745: −WS along a step, no +WS).
+        let edge_of_roof = abutment
+            || on.is_some_and(|r| {
+                matches!(r.kind, LineKind::Verge | LineKind::Pult | LineKind::Eave)
+            });
         if e.shared || edge_of_roof {
             continue;
         }
@@ -767,6 +815,68 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2]) {
             area: total,
         });
     }
+}
+
+fn push_edges(edges: &mut Vec<HoleEdge>, pts: &[[f64; 3]], face: usize) {
+    for i in 0..pts.len() {
+        edges.push(HoleEdge {
+            c: pts[i],
+            d: pts[(i + 1) % pts.len()],
+            face,
+            shared: false,
+        });
+    }
+}
+
+/// Ours may keep a plane in pieces where DACAD has one face (an overhang
+/// piece beside a step, mass case R1_0745: one hole edge along the whole
+/// valley). Hole edges of two pieces of one plane that continue each other
+/// in a straight line become one edge.
+fn join_coplanar_edges(faces: &[RoofFace], edges: &mut Vec<HoleEdge>) {
+    const EPS: f64 = 1e-6;
+    let coplanar = |i: usize, j: usize| {
+        let (f, g) = (&faces[i], &faces[j]);
+        let ((u, t), (v, w)) = (slope(f), slope(g));
+        f.edge == g.edge
+            && f.edge != usize::MAX
+            && (t - w).abs() < EPS
+            && u.distance(v) < EPS
+            && g.polygon
+                .iter()
+                .all(|p| (height_at(f, u, t, Point2::new(p[0], p[1])) - p[2]).abs() < EPS)
+    };
+    let straight = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+        let (ab, bc) = (dist3_(a, b), dist3_(b, c));
+        ab > EPS && bc > EPS && (ab + bc - dist3_(a, c)).abs() < EPS
+    };
+    'again: loop {
+        for i in 0..edges.len() {
+            for j in 0..edges.len() {
+                let (e, f) = (&edges[i], &edges[j]);
+                if i == j || e.face == f.face || dist3_(e.d, f.c) > EPS {
+                    continue;
+                }
+                if straight(e.c, e.d, f.d) && coplanar(e.face, f.face) {
+                    edges[i].d = edges[j].d;
+                    edges.remove(j);
+                    continue 'again;
+                }
+            }
+        }
+        break;
+    }
+}
+
+/// Plan distance from `p` to segment A→B.
+fn seg_dist(a: Point2, b: Point2, p: Point2) -> f64 {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 < TOL {
+        0.0
+    } else {
+        (((p.x - a.x) * dx + (p.y - a.y) * dy) / l2).clamp(0.0, 1.0)
+    };
+    (p.x - a.x - t * dx).hypot(p.y - a.y - t * dy)
 }
 
 /// A corner dropped from a hole: the corner's index, the point it merged
