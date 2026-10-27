@@ -1228,7 +1228,6 @@ pub(crate) fn snap_in_step_planes(part: &RoofPart) -> RoofPart {
             if !sloped(e)
                 || dot(di, dj) < 1.0 - 1e-9
                 || (e.pitch_deg - f.pitch_deg).abs() > 1e-9
-                || (ci - cj).abs() < POS_TOL
             {
                 continue;
             }
@@ -1236,7 +1235,20 @@ pub(crate) fn snap_in_step_planes(part: &RoofPart) -> RoofPart {
             let want = e.eave_height + tan * (e.overhang + ci - cj);
             let have = f.eave_height + tan * f.overhang;
             if (want - have).abs() > EPS && (want - have).abs() < SAME_PLANE {
-                out.edges[j].eave_height += want - have;
+                if (ci - cj).abs() < POS_TOL {
+                    // On one wall line a higher eave would make the wall a
+                    // raised one; DACAD keeps the eave and roofs on in the
+                    // earlier wall's plane (mass case R2_0519, 7 mm). Below
+                    // MERGE_TOL the walls join as they are (sample HPS01).
+                    // DACAD merges the planes only within its 2 cm plan
+                    // tolerance (R2_0641: 2.01 cm apart, kept as they are).
+                    if (want - have).abs() < MERGE_TOL || (want - have).abs() / tan >= 0.02 {
+                        continue;
+                    }
+                    out.edges[j].overhang += (want - have) / tan;
+                } else {
+                    out.edges[j].eave_height += want - have;
+                }
                 break;
             }
         }
