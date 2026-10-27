@@ -23,8 +23,17 @@ const LEVEL: f64 = 1.0 - 1e-6;
 /// chimneys applied.
 pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     // Parts with standing gables are joined as several buildings.
-    let cuts: Vec<crate::gable_wall::Pieces> =
-        project.parts.iter().map(crate::gable_wall::cut).collect();
+    let cuts: Vec<crate::gable_wall::Pieces> = project
+        .parts
+        .iter()
+        .map(|part| {
+            let mut c = crate::gable_wall::cut(part);
+            if c.cuts.is_empty() {
+                c.parts[0] = crate::roof::snap_in_step_planes(part);
+            }
+            c
+        })
+        .collect();
     let pieces: Vec<RoofPart> = cuts.iter().flat_map(|c| c.parts.clone()).collect();
     let mut all: Vec<RoofGeometry> = pieces.iter().map(generate).collect();
     crate::union::join(&mut all, &pieces);

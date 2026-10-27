@@ -1124,8 +1124,10 @@ const SAME_PLANE: f64 = 1e-2;
 /// Parallel walls of one pitch whose roof planes are in step less than a
 /// centimetre apart roof one plane to DACAD: the later wall's eave moves
 /// onto the earlier wall's plane (sample 91021421, a raised wall 5 mm
-/// under the plane of a wall further along).
-fn snap_in_step_planes(part: &RoofPart) -> RoofPart {
+/// under the plane of a wall further along; TRAING09). Only for a part
+/// that stays one building: across a standing gable DACAD keeps the
+/// planes apart (KRUPA006).
+pub(crate) fn snap_in_step_planes(part: &RoofPart) -> RoofPart {
     let mut out = part.clone();
     let n = out.edges.len();
     let pts = part.outline();
@@ -1219,8 +1221,7 @@ fn share_half_hips(part: &RoofPart) -> RoofPart {
 /// walls at their wall lines, and the two are combined
 /// ([`crate::raised::combine`]).
 pub fn generate(part: &RoofPart) -> RoofGeometry {
-    let (part, map) =
-        merge_collinear_walls(&share_half_hips(&snap_in_step_planes(&snap_markers(part))));
+    let (part, map) = merge_collinear_walls(&share_half_hips(&snap_markers(part)));
     let raised = raised_edges(&part);
     let (off, _) = generate_mode(&part, &vec![false; raised.len()]);
     let mut geo = if raised.contains(&true) {
