@@ -81,6 +81,9 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
         }
         Command::Calc { input, summary } => {
             let project = load(&input)?;
+            if let Err(errors) = project.validate() {
+                bail!("invalid project:\n{}", errors.join("\n"));
+            }
             let parts: Vec<_> = project
                 .parts
                 .iter()

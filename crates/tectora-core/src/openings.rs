@@ -31,8 +31,64 @@ const TOL: f64 = 1e-9;
 const LEVEL: f64 = 1.0 - 1e-6;
 
 /// Generates every part of the project with its dormers, windows and
-/// chimneys applied.
+/// chimneys applied, one geometry per part.
+///
+/// Parts entered clockwise are generated as their counter-clockwise
+/// equivalent (face edge indices still refer to the part as given). Input
+/// that [`Project::validate`] rejects is left out instead of producing NaN:
+/// an invalid part gets an empty geometry.
 pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
+    let mut clean = project.clone();
+    clean.parts.clear();
+    // For each part: its index in `clean` and, if reversed, its edge count.
+    let mut slots: Vec<Option<(usize, Option<usize>)>> = Vec::new();
+    for part in &project.parts {
+        let mut alone = Project::new("");
+        alone.parts.push(part.clone());
+        if alone.validate().is_err() {
+            slots.push(None);
+            continue;
+        }
+        let mut p = part.clone();
+        let reversed = signed_area(&p.outline()) < 0.0;
+        p.normalize_ccw();
+        slots.push(Some((clean.parts.len(), reversed.then_some(p.edges.len()))));
+        clean.parts.push(p);
+    }
+    clean.dormers.retain(|d| {
+        d.end.x.is_finite()
+            && d.end.y.is_finite()
+            && d.edges.iter().all(|e| e.problems().next().is_none())
+    });
+    let ok_poly = |c: &Chimney| {
+        c.corners.len() >= 3 && c.corners.iter().all(|v| v.x.is_finite() && v.y.is_finite())
+    };
+    clean.chimneys.retain(ok_poly);
+    clean.roof_openings.retain(ok_poly);
+    clean.windows.retain(|w| {
+        [w.x, w.y, w.width, w.height].iter().all(|v| v.is_finite())
+            && w.width > 0.0
+            && w.height > 0.0
+    });
+    let mut geos = generate_valid(&clean);
+    slots
+        .into_iter()
+        .map(|slot| match slot {
+            None => RoofGeometry::default(),
+            Some((i, reversed)) => {
+                let mut g = std::mem::take(&mut geos[i]);
+                if let Some(n) = reversed {
+                    for f in &mut g.faces {
+                        f.edge = n - 1 - f.edge;
+                    }
+                }
+                g
+            }
+        })
+        .collect()
+}
+
+fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
     // Parts with standing gables are joined as several buildings.
     let cuts: Vec<crate::gable_wall::Pieces> = project
         .parts
@@ -1071,9 +1127,8 @@ fn lies_on(r: &RoofLine, c: [f64; 3], d: [f64; 3]) -> bool {
 /// DACAD's test whether hole edge C→D lies on roof line A→B: the ends
 /// agree within VALUE_EPS, or the unit vectors B−A, C−A and D−C agree in
 /// every coordinate within VALUE_EPS (either sign) with C and D inside the
-/// line's box grown by VALUE_EPS; all in f32. Callers try the line from
-/// either end: its stored direction is not modelled, and mass cases R1_0077
-/// and R1_0808 each need a different end of a hip.
+/// line's box grown by VALUE_EPS; all in f32. See [`lies_on`] for which
+/// end is A.
 fn on_line((a, b): ([f64; 3], [f64; 3]), c: [f64; 3], d: [f64; 3]) -> bool {
     const VALUE_EPS: f32 = 0.01;
     let eq = |p: [f64; 3], q: [f64; 3]| {
