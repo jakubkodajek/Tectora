@@ -22,7 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from tectora.io.dacad_dad import LINE_TYPES, read_dad  # noqa: E402
 
 # Engine kinds that map one-to-one to a DACAD code.
-KIND = {"eave": "T", "ridge": "F", "hip": "G", "valley": "K"}
+KIND = {"eave": "T", "ridge": "F", "hip": "G", "valley": "K", "knick": "c",
+        "pult": "P", "abutment_front": "WV", "abutment_side": "WS",
+        "abutment_back": "WH"}
+# Engine kinds that cover several DACAD codes.
+KIND_ANY = {"verge": {"OL", "OR", "OS"}}
 
 
 def _key(a, b) -> tuple:
@@ -47,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{'DACAD':5} {'engine':16} {'length':>7}  end points")
     for k in sorted(set(dac) | set(eng)):
         d, e = dac.get(k), eng.get(k)
-        if d and e and KIND.get(e, e) == d:
+        if d and e and (KIND.get(e, e) == d or d in KIND_ANY.get(e, ())):
             continue
         print(f"{d or '-':5} {e or '-':16} {math.dist(*k):7.3f}  {k}")
     return 0
