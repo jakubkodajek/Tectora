@@ -58,6 +58,22 @@ pub fn applies(project: &Project) -> bool {
     project.parts.len() >= 2
 }
 
+/// Whether the sweep builds this roof the way DACAD's core does, face by
+/// face: every sloped wall rises from one eave level, no wall has
+/// priority and no standing gable splits the part.
+pub fn sweep_fits(part: &RoofPart) -> bool {
+    let mut eaves = part
+        .edges
+        .iter()
+        .filter(|e| !e.is_gable())
+        .map(|e| e.eave_height as f32);
+    let first = eaves.next();
+    let level = first.is_none_or(|h| eaves.all(|x| (x - h).abs() < 0.01));
+    level
+        && part.edges.iter().all(|e| e.priority == 0)
+        && crate::gable_wall::cut(part).cuts.is_empty()
+}
+
 /// The RD2 text of the project's roofs and holes, and where each part
 /// went. Parts are written last first (DACAD's core reads its models in
 /// reverse). A part imported from DACAD lists its walls as recorded, in
@@ -182,6 +198,19 @@ pub struct Produced {
 /// Builds the roof of every model of an RD2 on its own.
 pub trait CoreProducer {
     fn produce(&self, project: &Project, rd2: &Rd2, map: &Rd2Map) -> Option<Produced>;
+
+    /// Whether the producer builds this roof face by face as DACAD's core
+    /// does; when it cannot for some part, the project is not joined this
+    /// way.
+    fn builds(&self, _part: &RoofPart) -> bool {
+        true
+    }
+
+    /// Whether the producer hands over dormers (`G`/`g` models with their
+    /// faces and ground plans).
+    fn builds_dormers(&self) -> bool {
+        true
+    }
 }
 
 /// The producer with Tectora's sweep engine: each part is generated as if
@@ -190,6 +219,15 @@ pub trait CoreProducer {
 pub struct SweepProducer;
 
 impl CoreProducer for SweepProducer {
+    fn builds(&self, part: &RoofPart) -> bool {
+        sweep_fits(part)
+    }
+
+    /// Not yet: the sweep cuts dormers into the finished roof.
+    fn builds_dormers(&self) -> bool {
+        false
+    }
+
     fn produce(&self, project: &Project, rd2: &Rd2, map: &Rd2Map) -> Option<Produced> {
         let mut by_model: HashMap<i32, Vec<IntFace>> = HashMap::new();
         for (part, pm) in project.parts.iter().zip(&map.parts) {
@@ -240,30 +278,108 @@ fn part_faces(part: &RoofPart, pm: &PartMap, geo: &RoofGeometry, rd2: &Rd2) -> V
         pm.walls[e]
     };
     let mut out = Vec::new();
+    let mut push = |wall: i32, sub: i32, poly: &[[f64; 3]]| {
+        let poly = dacad_order(rd2, wall, sub, poly);
+        if poly.len() >= 3 {
+            out.push(IntFace {
+                ch: b'W',
+                wall,
+                sub,
+                edges: ring(&poly),
+            });
+        }
+    };
     for f in &geo.faces {
-        if f.edge >= n || f.polygon.len() < 3 {
+        if f.edge >= n {
             continue;
         }
         let e = &part.edges[f.edge];
-        out.push(IntFace {
-            ch: b'W',
-            wall: ring_wall(f.edge),
-            sub: plane_sub(e, f),
-            edges: ring(&f.polygon),
-        });
+        push(ring_wall(f.edge), plane_sub(e, f), &f.polygon);
     }
     for g in &geo.gables {
-        let Some(i) = gable_edge(part, g) else {
-            continue;
-        };
-        out.push(IntFace {
-            ch: b'W',
-            wall: ring_wall(i),
-            sub: 0,
-            edges: ring(g),
-        });
+        if let Some(i) = gable_edge(part, g) {
+            push(ring_wall(i), 0, g);
+        }
     }
     out
+}
+
+/// A face polygon in the vertex order of DACAD's core, as observed in its
+/// INT files (in the face's frame, `s` along the eave, `t` up the slope):
+/// a polygon of four or more corners runs clockwise from the top corner
+/// with the smallest `s`; a triangle starts at a bottom corner and runs to
+/// the apex first, from the corner with the larger `s` (anticlockwise),
+/// except on the last wall of its ring, where it runs clockwise from the
+/// smaller one. Repeated corners are dropped.
+fn dacad_order(rd2: &Rd2, wall: i32, sub: i32, poly: &[[f64; 3]]) -> Vec<[f64; 3]> {
+    let mut pts: Vec<[f64; 3]> = Vec::with_capacity(poly.len());
+    for &p in poly {
+        if pts.last().is_none_or(|&q| dist(p, q) > 1e-6) {
+            pts.push(p);
+        }
+    }
+    while pts.len() > 1 && dist(pts[0], pts[pts.len() - 1]) <= 1e-6 {
+        pts.pop();
+    }
+    let Some((mi, ri)) = rd2.find_wall(b'W', wall) else {
+        return pts;
+    };
+    let m = &rd2.models[mi];
+    let w = &m.walls[m.ring[ri].wall];
+    let Some(rf) = w.faces.iter().skip(1).find(|x| x.sub == sub) else {
+        return pts;
+    };
+    let last = ri + 1 == m.ring.len();
+    let (o, ev) = (rf.o.map(f64::from), rf.w.map(f64::from));
+    let up = if rf.pitch_deg as f64 >= crate::model::GABLE_PITCH_DEG && (rf.pitch_deg as f64) < 90.001
+    {
+        [0.0, 0.0, 1.0]
+    } else {
+        rf.u.map(f64::from)
+    };
+    let loc = |p: [f64; 3]| {
+        let d = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];
+        (
+            d[0] * ev[0] + d[1] * ev[1] + d[2] * ev[2],
+            d[0] * up[0] + d[1] * up[1] + d[2] * up[2],
+        )
+    };
+    let n = pts.len();
+    if n < 3 {
+        return pts;
+    }
+    let l: Vec<(f64, f64)> = pts.iter().map(|&p| loc(p)).collect();
+    let area: f64 = (0..n)
+        .map(|i| l[i].0 * l[(i + 1) % n].1 - l[(i + 1) % n].0 * l[i].1)
+        .sum();
+    let want_cw = n != 3 || last;
+    if (area < 0.0) != want_cw {
+        pts.reverse();
+    }
+    let l: Vec<(f64, f64)> = pts.iter().map(|&p| loc(p)).collect();
+    let (tmin, tmax) = l
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| (a.min(p.1), b.max(p.1)));
+    let pick = |level: f64, smallest: bool| {
+        (0..n)
+            .filter(|&k| (l[k].1 - level).abs() < 1e-4)
+            .min_by(|&a, &b| {
+                let c = l[a].0.total_cmp(&l[b].0);
+                if smallest { c } else { c.reverse() }
+            })
+            .unwrap_or(0)
+    };
+    let start = if n == 3 {
+        pick(tmin, last)
+    } else {
+        pick(tmax, true)
+    };
+    pts.rotate_left(start);
+    pts
+}
+
+fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
 /// The `D`/`K` record a face of wall `e` belongs to: the plane with its
@@ -400,7 +516,10 @@ pub fn generate(project: &Project) -> Option<Vec<RoofGeometry>> {
 
 /// [`generate`] with another producer of the single roofs.
 pub fn generate_with(project: &Project, producer: &dyn CoreProducer) -> Option<Vec<RoofGeometry>> {
-    if !applies(project) || !project.dormers.is_empty() {
+    if !applies(project)
+        || !project.parts.iter().all(|p| producer.builds(p))
+        || (!project.dormers.is_empty() && !producer.builds_dormers())
+    {
         return None;
     }
     let files = files_with(project, producer)?;

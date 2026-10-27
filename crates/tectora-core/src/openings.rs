@@ -144,8 +144,8 @@ pub(crate) fn build_roofs(project: &Project) -> Vec<RoofGeometry> {
     geos
 }
 
-/// Dormers, windows and chimneys, then the line clean-up.
-fn apply_extras(project: &Project, geos: &mut Vec<RoofGeometry>) {
+/// The project's dormers, cut into the roofs they sit on.
+pub(crate) fn apply_dormers(project: &Project, geos: &mut [RoofGeometry]) {
     for d in &project.dormers {
         let host = d.host_wall.and_then(|[a, b]| {
             project.parts.iter().find_map(|part| {
@@ -160,6 +160,11 @@ fn apply_extras(project: &Project, geos: &mut Vec<RoofGeometry>) {
         });
         crate::dormer::apply_dormer(geos, d, host.as_ref());
     }
+}
+
+/// Dormers, windows and chimneys, then the line clean-up.
+fn apply_extras(project: &Project, geos: &mut Vec<RoofGeometry>) {
+    apply_dormers(project, geos);
     for w in &project.windows {
         apply_window(geos, w);
     }
