@@ -599,8 +599,14 @@ impl Sim {
         if best > POS_TOL {
             // Two planes meeting make a ridge; a single plane ending against
             // walls makes a Pult line (DACAD case C07).
+            // Only planes with a stretch of the loop count: a plane that
+            // reaches it in a single point (a hip ending at the loop's end)
+            // borders no part of the line (S03, DACAD P 6.02 in any order).
             let mut normals: Vec<Point2> = Vec::new();
-            for &v in &members {
+            for (k, &v) in members.iter().enumerate() {
+                if dist3(pts[k], pts[(k + 1) % m]) <= POS_TOL {
+                    continue;
+                }
                 let l = &self.lines[self.verts[v].right];
                 if l.sloped(t) && !normals.iter().any(|n| dot(*n, l.n) > 1.0 - 1e-9) {
                     normals.push(l.n);
@@ -1646,18 +1652,21 @@ fn snap_raised_corners(geo: &mut RoofGeometry, part: &RoofPart) {
     }
 }
 
-/// DACAD has no ridge shorter than about 3.5 cm (kept from 40 mm, dropped
-/// up to 30 mm; sweep in /mnt/project-files/dacad-short-ridge/, mass cases
-/// R1_0135, R1_0179). The face of the lower-numbered wall below it becomes
+/// DACAD drops a very short ridge when the point where the hips below it
+/// meet lies within its point tolerance of both ridge ends (sweep in
+/// /mnt/project-files/dacad-short-ridge/: 30 mm dropped, 40 mm kept; mass
+/// cases R1_0135, R1_0179; a 26 mm ridge between planes of 58° and 12° is
+/// kept, core-stress S01). The face of the lower-numbered wall below it becomes
 /// a triangle: its two hips run on to where they meet. The other face's
 /// hips keep their ends. [no source — extrapolation] for which face that is.
 fn drop_short_ridges(geo: &mut RoofGeometry) {
-    const MIN_RIDGE: f64 = 0.035;
+    // Longer ridges cannot merge (see below); this only skips the search.
+    const MAX_MERGED: f64 = 0.1;
     let near = |p: [f64; 3], q: [f64; 3]| dist3(p, q) < 1e-6;
     let mut k = 0;
     while k < geo.lines.len() {
         let r = geo.lines[k].clone();
-        if r.kind != LineKind::Ridge || r.length() >= MIN_RIDGE {
+        if r.kind != LineKind::Ridge || r.length() >= MAX_MERGED {
             k += 1;
             continue;
         }
@@ -1698,6 +1707,14 @@ fn drop_short_ridges(geo: &mut RoofGeometry) {
             k += 1;
             continue;
         };
+        // DACAD merges points within 0.02 per coordinate, the f64
+        // difference taken as f32 (as for chimney corners): the ridge goes
+        // only if the hips' meeting point merges with both its ends.
+        let merges = |p: [f64; 3]| (0..3).all(|i| ((top[i] - p[i]).abs() as f32) < 0.02f32);
+        if !merges(r.a) || !merges(r.b) {
+            k += 1;
+            continue;
+        }
         for (h, end) in [(ha, r.a), (hb, r.b)] {
             let l = &mut geo.lines[h];
             if near(l.a, end) {
