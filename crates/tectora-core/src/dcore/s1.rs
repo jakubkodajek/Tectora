@@ -4,6 +4,7 @@
 //! the per-model core routine, up to its first height slab).
 
 use super::error::*;
+use super::geom;
 use super::num::{self, HALF_PI_F, V3};
 use super::state::*;
 use super::x87;
@@ -454,25 +455,10 @@ pub fn ranges(c: &mut Core) -> Result<(), CoreError> {
     Ok(())
 }
 
-/// The line-plane intersection: the plane of `f` (origin, `u`, `w`) with
-/// the line `p + t d`. `None` (and the sentinel point) when parallel.
+/// The line-plane intersection with the plane of `f` (see
+/// [`geom::line_plane`]); `None` when parallel.
 pub fn line_plane(c: &Core, f: FaceId, p: V3, d: V3) -> Option<V3> {
-    let fc = c.face(f);
-    let a = [
-        fc.u[0], fc.w[0], -d[0], fc.u[1], fc.w[1], -d[1], fc.u[2], fc.w[2], -d[2],
-    ];
-    let b = [
-        (f64::from(p[0]) - f64::from(fc.o[0])) as f32,
-        (f64::from(p[1]) - f64::from(fc.o[1])) as f32,
-        (f64::from(p[2]) - f64::from(fc.o[2])) as f32,
-    ];
-    let r = num::solve3(&a, b, &c.g.tol)?;
-    let t = f64::from(r[2]);
-    Some([
-        (t * f64::from(d[0]) + f64::from(p[0])) as f32,
-        (t * f64::from(d[1]) + f64::from(p[1])) as f32,
-        (t * f64::from(d[2]) + f64::from(p[2])) as f32,
-    ])
+    geom::line_plane(&c.face(f).into(), &geom::Line { p, d }, &c.g.tol).ok()
 }
 
 /// Eave heights: a wall's height is where its first roof face (in front

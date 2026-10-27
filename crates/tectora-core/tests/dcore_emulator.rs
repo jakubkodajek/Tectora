@@ -353,3 +353,88 @@ fn x87_all_vectors() {
     }
     assert!(bad.is_empty());
 }
+
+/// The S0 primitives against the emulator's results on random inputs
+/// (`geom_vectors.py`: fn, input words, eax, output words).
+fn geom_vectors(path: &Path) -> (usize, Vec<String>) {
+    use dcore::geom::{self, Line, Plane};
+    use dcore::num;
+    let t = num::Tol::default();
+    let mut bad = Vec::new();
+    let mut n = 0;
+    for line in std::fs::read_to_string(path).unwrap().lines() {
+        let c: Vec<&str> = line.split('\t').collect();
+        let words = |s: &str| -> Vec<u32> { s.split_whitespace().map(|w| u32::from_str_radix(w, 16).unwrap()).collect() };
+        let fl: Vec<f32> = words(c[1]).into_iter().map(f32::from_bits).collect();
+        let eax: i64 = c[2].parse().unwrap();
+        let out = words(c[3]);
+        let v3 = |k: usize| -> [f32; 3] { [fl[k], fl[k + 1], fl[k + 2]] };
+        let bits = |v: &[f32]| -> Vec<u32> { v.iter().map(|x| x.to_bits()).collect() };
+        let plane = |k: usize| Plane { o: [0.0; 3], u: [0.0; 3], w: [0.0; 3], n: v3(k), d: fl[k + 3] };
+        let ln = |k: usize| Line { p: v3(k), d: v3(k + 3) };
+        let ok = match c[0] {
+            "cross" => bits(&geom::cross(v3(0), v3(3))) == out,
+            "norm" => {
+                let r = num::norm(v3(0), &t);
+                bits(&r) == out && (eax == 1) == !num::zero(num::len(v3(0)) as f32, t.value)
+            }
+            "par" => i64::from(num::par(v3(0), v3(3), &t)) == eax,
+            "orient" => i64::from(num::orient(v3(0), v3(3), v3(6), &t)) == eax,
+            "solve2" => {
+                let r = num::solve2(&[fl[0], fl[1], fl[2], fl[3]], [fl[4], fl[5]], &t);
+                match r {
+                    Some(x) => eax == 0 && bits(&x) == out,
+                    None => eax == -1,
+                }
+            }
+            "solve3" => {
+                let a: [f32; 9] = fl[..9].try_into().unwrap();
+                match num::solve3(&a, v3(9), &t) {
+                    Some(x) => eax == 0 && bits(&x) == out,
+                    None => eax == -1,
+                }
+            }
+            "horiz" => i64::from(geom::horizontal(&ln(0), &t)) == eax,
+            "copl" => i64::from(geom::coplanar(&plane(0), &plane(4), &t)) == eax,
+            "pp" => {
+                let (r, l) = geom::plane_plane(&plane(0), &plane(4), &t);
+                (eax == 1) == r.is_some() && bits(&[l.p, l.d].concat()) == out
+            }
+            "lp" => {
+                let f = Plane { o: v3(0), u: v3(3), w: v3(6), n: [0.0; 3], d: 0.0 };
+                let r = geom::line_plane(&f, &ln(9), &t);
+                (eax == 1) == r.is_ok() && bits(&r.unwrap_or_else(|p| p)) == out
+            }
+            "ll" | "ll_slab" => {
+                let slab = (c[0] == "ll_slab").then(|| (fl[12], fl[13]));
+                let (found, p) = geom::line_line(&ln(0), &ln(6), slab, &t);
+                (eax == 1) == found && bits(&p) == out
+            }
+            other => panic!("unknown vector kind {other}"),
+        };
+        n += 1;
+        if !ok {
+            bad.push(line.to_string());
+        }
+    }
+    (n, bad)
+}
+
+#[test]
+fn geom_fixture_vectors() {
+    let (n, bad) = geom_vectors(&fixture_dir().join("geom.tsv"));
+    assert!(n > 0);
+    assert!(bad.is_empty(), "{n} vectors, wrong: {bad:#?}");
+}
+
+#[test]
+#[ignore]
+fn geom_all_vectors() {
+    let p = std::env::var("DCORE_GEOM").expect("DCORE_GEOM=file");
+    let (n, bad) = geom_vectors(Path::new(&p));
+    println!("{n} vectors, {} wrong", bad.len());
+    for b in bad.iter().take(20) {
+        println!("{b}");
+    }
+    assert!(bad.is_empty());
+}
