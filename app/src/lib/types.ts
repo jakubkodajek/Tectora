@@ -47,9 +47,15 @@ export interface Project {
   notes: string;
   job: JobInfo;
   parts: RoofPart[];
-  dormers: unknown[];
+  dormers: Dormer[];
   chimneys: Chimney[];
   windows?: RoofWindow[];
+}
+
+/** A dormer as DACAD stores it: an open wall chain (cheek, front, cheek). */
+export interface Dormer {
+  edges: EdgeDef[];
+  end: Point2;
 }
 
 export interface Chimney {

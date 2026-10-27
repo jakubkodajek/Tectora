@@ -12,6 +12,8 @@
   import PlanView from "./PlanView.svelte";
   import Results from "./Results.svelte";
   import RoofDefBar from "./RoofDefBar.svelte";
+  import DormerBar from "./DormerBar.svelte";
+  import { buildDormer, defaultParams, nearestWallAngle, roofHeightAt } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
   import StandardRoofForm from "./StandardRoofForm.svelte";
   import { api, onProjectsChanged } from "./api";
@@ -20,7 +22,7 @@
   import { t } from "./i18n.svelte";
   import { actorName, isFresh, live } from "./live.svelte";
   import { markReviewed, prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
-  import type { ActivityItem, CalcResult, Change, EdgeDef, Point2, Project, RoofPart, Selection } from "./types";
+  import type { ActivityItem, CalcResult, Change, Dormer, EdgeDef, Point2, Project, RoofPart, Selection } from "./types";
   import { isAi, isGable, isMarker } from "./types";
 
   let {
@@ -36,6 +38,12 @@
   let saveState = $state<"saved" | "saving" | "dirty">("saved");
   let dock = $state<"results" | "ai" | "job">("results");
   let drawing = $state<Point2[] | null>(null);
+  let dormerSel = $state<number | null>(null);
+  let placing = $state(false);
+  // Undo or an AI edit can remove the selected dormer.
+  $effect(() => {
+    if (dormerSel !== null && (!project || dormerSel >= project.dormers.length)) dormerSel = null;
+  });
   let cursor = $state<Point2 | null>(null);
   let showDims = $state(true);
   let activity = $state<ActivityItem[]>([]);
@@ -105,7 +113,10 @@
     const json = snapshot();
     try {
       await api.saveProject(id, JSON.parse(json));
-      lastSaved = JSON.stringify(JSON.parse(json));
+      // The store writes its own canonical form (no nulls, empty lists or
+      // defaults); remember that, or the file-change event would come back
+      // as an external edit and break undo.
+      lastSaved = JSON.stringify(await api.loadProject(id));
       saveState = "saved";
     } catch (e) {
       saveState = "dirty";
@@ -278,6 +289,32 @@
     commit();
   }
 
+  /** Places a gable dormer with its front's left corner at the click (DACAD: Gaube plazieren). */
+  function placeDormer(x: number, y: number) {
+    if (!project) return;
+    placing = false;
+    const angle = nearestWallAngle(project.parts, { x, y });
+    const host = roofHeightAt(result, { x: x - Math.sin(angle) * 0.01, y: y + Math.cos(angle) * 0.01 });
+    const eave = +((host ?? presets.eave_height) + 1).toFixed(2);
+    project.dormers.push(buildDormer(defaultParams("gable", { x, y }, angle, eave)));
+    selection = null;
+    dormerSel = project.dormers.length - 1;
+    commit();
+  }
+
+  function setDormer(d: Dormer) {
+    if (!project || dormerSel === null) return;
+    project.dormers[dormerSel] = d;
+    commit();
+  }
+
+  function deleteDormer() {
+    if (!project || dormerSel === null) return;
+    project.dormers.splice(dormerSel, 1);
+    dormerSel = null;
+    commit();
+  }
+
   function deletePart() {
     if (!project || !selection) return;
     if (!confirm(t("editor.confirmDeletePart", { name: project.parts[selection.part].name }))) return;
@@ -289,6 +326,8 @@
   // Drawing a new footprint.
   function startDraw() {
     selection = null;
+    dormerSel = null;
+    placing = false;
     drawing = [];
   }
 
@@ -370,8 +409,13 @@
       setLayout(prefs.layout === "3d" ? "split" : "3d");
     } else if (e.key === "Insert") {
       startDraw();
+    } else if (e.key === "Escape" && placing) {
+      placing = false;
     } else if (e.key === "Escape" && !drawing) {
       selection = null;
+      dormerSel = null;
+    } else if (e.key === "Delete" && dormerSel !== null && !drawing) {
+      deleteDormer();
     } else if (e.key === "Delete" && selection && !drawing) {
       deleteVertex();
     }
@@ -411,6 +455,7 @@
     <div class="group">
       <button class="tool" class:on={!!std} onclick={() => (std = { part: null, mode: project?.parts.length ? "replace" : "add" })} title={t("tool.standardHint")}><Icon name="house" /><span>{t("tool.standard")}</span></button>
       <button class="tool" class:on={!!drawing} onclick={startDraw} title="{t('tool.drawHint')} (Insert)"><Icon name="draw" /><span>{t("tool.draw")}</span></button>
+      <button class="tool" class:on={placing} disabled={!project?.parts.length} onclick={() => { placing = !placing; drawing = null; }} title={t("tool.dormerHint")}><Icon name="roof" /><span>{t("tool.dormer")}</span></button>
       <button class="tool" disabled={!selection || (project?.parts.length ?? 0) < 2} onclick={deletePart} title={t("tool.deletePartHint")}><Icon name="trash" /><span>{t("tool.deletePart")}</span></button>
     </div>
     <div class="group">
@@ -455,6 +500,9 @@
                 {drawing}
                 {showDims}
                 bind:selection
+                bind:dormerSel
+                {placing}
+                onplace={placeDormer}
                 onmove={moveVertex}
                 onmoveend={commit}
                 oninsert={insertVertex}
@@ -479,6 +527,8 @@
             onclose={finishDraw}
             oncancel={() => (drawing = null)}
           />
+        {:else if dormerSel !== null}
+          <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} />
         {:else}
           <RoofDefBar
             {project}

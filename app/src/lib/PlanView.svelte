@@ -16,6 +16,9 @@
     ondrawclose,
     oncursor,
     showDims = true,
+    dormerSel = $bindable(null),
+    placing = false,
+    onplace,
   }: {
     project: Project;
     result: CalcResult | null;
@@ -31,6 +34,11 @@
     ondrawclose?: () => void;
     oncursor?: (p: Point2 | null) => void;
     showDims?: boolean;
+    /** Index of the selected dormer, or null. */
+    dormerSel?: number | null;
+    /** Placing a dormer: the next click gives its front's left corner. */
+    placing?: boolean;
+    onplace?: (x: number, y: number) => void;
   } = $props();
 
   let cursorWorld = $state<Point2 | null>(null);
@@ -104,6 +112,12 @@
   }
 
   function onpointerdown(e: PointerEvent) {
+    if (placing && e.button === 0) {
+      const p = localPoint(e);
+      const w = snapPoint(p.x, p.y, e.altKey);
+      onplace?.(w.x, w.y);
+      return;
+    }
     if (drawing && e.button === 0) {
       const p = localPoint(e);
       const first = drawing[0];
@@ -119,7 +133,10 @@
     if (e.button === 1 || e.button === 2 || (e.button === 0 && e.target === svg)) {
       const p = localPoint(e);
       pan = { x: p.x, y: p.y, cx: center.x, cy: center.y };
-      if (e.button === 0) selection = null;
+      if (e.button === 0) {
+        selection = null;
+        dormerSel = null;
+      }
       svg!.setPointerCapture(e.pointerId);
     }
   }
@@ -200,7 +217,7 @@
       cursorWorld = null;
       oncursor?.(null);
     }}
-    class:drawing={!!drawing}
+    class:drawing={!!drawing || placing}
     oncontextmenu={(e) => e.preventDefault()}
   >
     {#each gridLines as g}
@@ -242,7 +259,7 @@
           {/if}
           <line class="hit" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)}
             role="button" tabindex="-1" aria-label={t("plan.edge", { n: i + 1 })}
-            onpointerdown={(ev) => { ev.stopPropagation(); selection = { part: pi, edge: i }; }}
+            onpointerdown={(ev) => { ev.stopPropagation(); selection = { part: pi, edge: i }; dormerSel = null; }}
             ondblclick={(ev) => edgeDblClick(ev, pi, i)} />
           <line class="wall" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)} />
           {#if showDims && scale * edgeLength(pi, i) > 46}
@@ -267,6 +284,27 @@
         />
       {/each}
     {/each}
+    {#each project.dormers as d, di}
+      {@const fs = d.edges.find((x) => x.direction_rad == null)?.start ?? d.edges[0]?.start}
+      {#if fs}
+        <g class="dormer" class:sel={dormerSel === di}>
+          {#each d.edges as x, k}
+            {#if x.direction_rad != null}
+              {@const s0 = k === 0 ? -0.8 : 0.8}
+              <line class="cheek" x1={sx(x.start.x)} y1={sy(x.start.y)}
+                x2={sx(x.start.x + Math.cos(x.direction_rad) * s0)} y2={sy(x.start.y + Math.sin(x.direction_rad) * s0)} />
+            {/if}
+          {/each}
+          <line class="hit" x1={sx(fs.x)} y1={sy(fs.y)} x2={sx(d.end.x)} y2={sy(d.end.y)}
+            role="button" tabindex="-1" aria-label={t("plan.dormer", { n: di + 1 })}
+            onpointerdown={(ev) => { if (placing) return; ev.stopPropagation(); dormerSel = di; selection = null; }} />
+          <line class="front" x1={sx(fs.x)} y1={sy(fs.y)} x2={sx(d.end.x)} y2={sy(d.end.y)} />
+        </g>
+      {/if}
+    {/each}
+    {#if placing && cursorWorld}
+      <path class="crosshair" d="M{sx(cursorWorld.x) - 9},{sy(cursorWorld.y)}h18M{sx(cursorWorld.x)},{sy(cursorWorld.y) - 9}v18" />
+    {/if}
     {#if drawing}
       {#if drawing.length}
         <path
@@ -290,7 +328,7 @@
       {/if}
     {/if}
   </svg>
-  {#if !drawing}<div class="hint">{t("plan.hint")}</div>{/if}
+  {#if placing}<div class="hint">{t("plan.placeDormer")}</div>{:else if !drawing}<div class="hint">{t("plan.hint")}</div>{/if}
 </div>
 
 <style>
@@ -312,6 +350,25 @@
   }
   .grid.major {
     stroke: color-mix(in srgb, var(--plan-grid) 60%, var(--text-3));
+  }
+  .dormer .front {
+    stroke: var(--text);
+    stroke-width: 3;
+    stroke-linecap: round;
+    pointer-events: none;
+  }
+  .dormer .cheek {
+    stroke: var(--text-2);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 3;
+  }
+  .dormer .hit {
+    stroke: transparent;
+    stroke-width: 14;
+    cursor: pointer;
+  }
+  .dormer.sel .front {
+    stroke: var(--accent);
   }
   .fill {
     fill: var(--plan-fill);
