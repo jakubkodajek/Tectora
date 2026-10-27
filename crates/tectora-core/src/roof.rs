@@ -433,6 +433,8 @@ struct Sim {
     applied: Vec<usize>,
     /// Lines from collapsed flat loops (ridges or Pult lines), as node pairs.
     ridges: Vec<(usize, usize, LineKind)>,
+    /// Heights of the events that change the roof's topology.
+    levels: Vec<f64>,
 }
 
 impl Sim {
@@ -732,6 +734,9 @@ impl Sim {
                 eprintln!("t={t:.4} alive={alive} {event:?}");
             }
             now = t;
+            if !matches!(event, Event::Bend(_)) {
+                self.levels.push(t);
+            }
             match event {
                 Event::Edge(a) => self.apply_edge(a, t),
                 Event::Split(v, ea, p) => self.apply_split(v, ea, p, t),
@@ -1798,6 +1803,7 @@ fn generate_mode(part: &RoofPart, raised: &[bool]) -> (RoofGeometry, Vec<Point2>
         bottoms: Vec::new(),
         applied,
         ridges: Vec::new(),
+        levels: Vec::new(),
     };
     // Initial vertex i sits between edge i-1 (left) and edge i (right),
     // on the roof outline.
@@ -1827,10 +1833,51 @@ fn generate_mode(part: &RoofPart, raised: &[bool]) -> (RoofGeometry, Vec<Point2>
         .map(|&k| Point2::new(sim.nodes[k][0], sim.nodes[k][1]))
         .collect();
     sim.run(start);
-    (build_geometry(part, &sim, &initial), outline)
+    let mut geo = build_geometry(part, &sim, &initial);
+    snap_bends_to_levels(&mut geo, &sim);
+    (geo, outline)
 }
 
 /// Walks from `end` back to `start` through `segs`, returning the ring.
+/// DACAD sweeps the roof level by level, and a plane starting less than
+/// VALUE_EPS above an event is handled on that event's level: the lines at
+/// the corners of the plane's lower edge end at that level's height, while
+/// the edge itself stays where the plane starts (mass case R1_0301: a half
+/// hip 7.5 mm above a ridge elsewhere on the roof).
+fn snap_bends_to_levels(geo: &mut RoofGeometry, sim: &Sim) {
+    for b in &sim.bottoms {
+        let h = sim.lines[b.edge].stages[b.stage].t;
+        let Some(level) = sim
+            .levels
+            .iter()
+            .copied()
+            .filter(|&l| l < h - 1e-9 && same_level(l, h))
+            .reduce(f64::min)
+        else {
+            continue;
+        };
+        for corner in [sim.nodes[b.a], sim.nodes[b.b]] {
+            for l in geo.lines.iter_mut() {
+                let (end, other) = if dist3(l.a, corner) < 1e-6 {
+                    (&mut l.a, l.b)
+                } else if dist3(l.b, corner) < 1e-6 {
+                    (&mut l.b, l.a)
+                } else {
+                    continue;
+                };
+                if dist3(other, sim.nodes[b.a]) < 1e-6
+                    || dist3(other, sim.nodes[b.b]) < 1e-6
+                    || (end[2] - other[2]).abs() < 1e-9
+                {
+                    continue; // the lower edge itself, or a level line
+                }
+                let t = (level - other[2]) / (end[2] - other[2]);
+                *end = std::array::from_fn(|i| other[i] + (end[i] - other[i]) * t);
+            }
+        }
+    }
+}
+
 fn trace_ring(start: usize, end: usize, mut segs: Vec<(usize, usize)>) -> Vec<usize> {
     if start == end {
         // A plane whose eave shrank to a point (sample HINT04): walk round
