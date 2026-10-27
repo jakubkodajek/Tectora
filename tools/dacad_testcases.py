@@ -324,6 +324,17 @@ def cases() -> dict[str, tuple]:
                                  rect(12, 8, Def(40), G, Def(40), G), None,
                                  [Dormer((5.0, 2.0), [W(0, 270, Def(45, 0, 4.6782)), W(2, 0, Def(100, 0, 4.6782)),
                                                       W(0, 90, Def(45, 0, 4.6782))])]),
+        # HPS01: wing side walls split into a 90° stub, a zero-length marker and a slope.
+        "C72_wing_stub_marker_coplanar": ("Sedlová 15×12 30° (okap 3,3, přesah 1,0) + křídlo 6×8 na severu: boční stěny 2,5 m štít (přesah 0,5), značka 30° v rovině hlavní severní plochy (okap 2,434), pak svah 30° okap 2,434",
+            [W(15, 0, Def(30, 1.0, 3.3)), W(12, 90, Def(90, 1.0, 3.3)), W(4, 180, Def(30, 1.0, 3.3)),
+             W(2.5, 90, Def(90, 0.5, 2.434)), W(0, 180, Def(30, 0, 2.434)), W(5.5, 90, Def(30, 0.5, 2.434)),
+             W(6, 180, Def(90, 0.5, 2.434)), W(5.5, 270, Def(30, 0.5, 2.434)), W(0, 180, Def(30, 0, 2.434)),
+             W(2.5, 270, Def(90, 0.5, 2.434)), W(5, 180, Def(30, 1.0, 3.3)), W(12, 270, Def(90, 1.0, 3.3))]),
+        "C73_wing_stub_marker_offplane": ("Jako C72, značka s okapem 2,8 (mimo rovinu hlavní plochy)",
+            [W(15, 0, Def(30, 1.0, 3.3)), W(12, 90, Def(90, 1.0, 3.3)), W(4, 180, Def(30, 1.0, 3.3)),
+             W(2.5, 90, Def(90, 0.5, 2.434)), W(0, 180, Def(30, 0, 2.8)), W(5.5, 90, Def(30, 0.5, 2.434)),
+             W(6, 180, Def(90, 0.5, 2.434)), W(5.5, 270, Def(30, 0.5, 2.434)), W(0, 180, Def(30, 0, 2.8)),
+             W(2.5, 270, Def(90, 0.5, 2.434)), W(5, 180, Def(30, 1.0, 3.3)), W(12, 270, Def(90, 1.0, 3.3))]),
     }
 
 
