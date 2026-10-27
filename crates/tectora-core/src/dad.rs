@@ -30,6 +30,7 @@ use crate::model::{Chimney, Dormer, EdgeDef, HalfHip, PitchBreak, Project, RoofP
 
 const V1_MAGIC: &[u8] = b"DACAD\x1a";
 const V2_MAGIC: &[u8] = b"\x08DACADV2\x1a";
+const TAG_ROOF: u8 = 0x11;
 const TAG_WALL: u8 = 0x12;
 const TAG_CHIMNEY: u8 = 0x13;
 const SUB_WALL: u8 = 0x00;
@@ -99,6 +100,9 @@ pub struct DadFile {
     pub walls: Vec<DadWall>,
     pub windows: Vec<RoofWindow>,
     pub chimneys: Vec<Chimney>,
+    /// Roof records `0x11`: roof number and, for a dormer, the id of the
+    /// wall it sits on (DACAD takes the dormer's host plane from it).
+    pub roofs: Vec<(u16, u16)>,
 }
 
 /// A gable wall; a pitch over 90° is a plane leaning outward (C71).
@@ -148,6 +152,9 @@ pub fn parse(bytes: &[u8]) -> Result<DadFile, DadError> {
                 file.version = String::from_utf8_lossy(payload)
                     .trim_end_matches('\0')
                     .to_string();
+            }
+            (TAG_ROOF, 0x00) if len >= 4 => {
+                file.roofs.push((u16_at(payload, 0), u16_at(payload, 2)));
             }
             (TAG_WALL, SUB_WALL) => {
                 if len != 42 {
@@ -307,7 +314,17 @@ impl DadFile {
                     part.normalize_ccw();
                     project.parts.push(part);
                 } else {
-                    project.dormers.push(Dormer { edges, end });
+                    let host_wall = self
+                        .roofs
+                        .iter()
+                        .find(|r| r.0 == group && r.1 != 0)
+                        .and_then(|r| self.walls.iter().find(|w| w.id == r.1 && w.group != group))
+                        .map(|w| [w.start, w.end()]);
+                    project.dormers.push(Dormer {
+                        edges,
+                        end,
+                        host_wall,
+                    });
                 }
             }
         }

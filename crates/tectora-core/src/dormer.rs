@@ -53,6 +53,11 @@ impl Plane {
         (self.a - o.a).abs() < 1e-6 && (self.b - o.b).abs() < 1e-6 && (self.c - o.c).abs() < 1e-6
     }
 
+    /// The same plane within float noise of the wall data.
+    fn near(&self, o: &Plane) -> bool {
+        (self.a - o.a).abs() < 1e-4 && (self.b - o.b).abs() < 1e-4 && (self.c - o.c).abs() < 1e-3
+    }
+
     fn sec(&self) -> f64 {
         (1.0 + self.a * self.a + self.b * self.b).sqrt()
     }
@@ -147,20 +152,6 @@ fn split_keep(
         }
     }
     out
-}
-
-/// Parameter on `a`-`b` where it crosses segment `p`-`q`, strictly inside.
-fn cross_t(a: Point2, b: Point2, p: Point2, q: Point2) -> Option<f64> {
-    let d = Point2::new(b.x - a.x, b.y - a.y);
-    let e = Point2::new(q.x - p.x, q.y - p.y);
-    let den = d.x * e.y - d.y * e.x;
-    if den.abs() < 1e-12 {
-        return None;
-    }
-    let w = Point2::new(p.x - a.x, p.y - a.y);
-    let t = (w.x * e.y - w.y * e.x) / den;
-    let u = (w.x * d.y - w.y * d.x) / den;
-    ((-1e-9..=1.0 + 1e-9).contains(&u) && t > 0.0 && t < 1.0).then_some(t)
 }
 
 /// DACAD's test for an edge lying on another (FUN_00d99590): parallel unit
@@ -273,7 +264,24 @@ fn footprint(d: &Dormer, reach: f64) -> Option<(RoofPart, usize)> {
     Some((part, back))
 }
 
-pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer) {
+/// The roof plane of a main-roof wall (`def` from its start to `end`).
+fn wall_plane(def: &EdgeDef, end: Point2) -> Option<Plane> {
+    if def.pitch_deg >= 90.0 - 1e-9 {
+        return None;
+    }
+    let dir = unit(Point2::new(end.x - def.start.x, end.y - def.start.y));
+    let (nx, ny) = (-dir.y, dir.x);
+    let t = def.pitch_deg.to_radians().tan();
+    Some(Plane {
+        a: nx * t,
+        b: ny * t,
+        c: def.eave_height + def.overhang * t - (nx * def.start.x + ny * def.start.y) * t,
+    })
+}
+
+/// Cuts dormer `d` into the roofs. `host` is the main-roof wall (definition
+/// and end point) whose plane carries the dormer, as DACAD stores it.
+pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer, host: Option<&(EdgeDef, Point2)>) {
     // Far enough to pass any host face.
     let reach = geos
         .iter()
@@ -330,6 +338,26 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer) {
             if !host_faces.iter().any(|&(_, _, q)| q.same(&hp)) {
                 host_faces.push((gi, fi, hp));
             }
+        }
+    }
+    // DACAD closes the dormer with its host wall's plane only, wherever the
+    // dormer stands (D101_0013: past the ridge, D101_0020).
+    if let Some(hp) = host.and_then(|(def, end)| wall_plane(def, *end)) {
+        let face = host_faces
+            .iter()
+            .find(|f| f.2.near(&hp))
+            .map(|f| (f.0, f.1))
+            .or_else(|| {
+                geos.iter().enumerate().find_map(|(gi, g)| {
+                    g.faces
+                        .iter()
+                        .position(|f| Plane::of(f).near(&hp))
+                        .map(|fi| (gi, fi))
+                })
+            })
+            .or_else(|| host_faces.first().map(|f| (f.0, f.1)));
+        if let Some((gi, fi)) = face {
+            host_faces = vec![(gi, fi, hp)];
         }
     }
     for df in &roof.faces {
@@ -495,9 +523,9 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer) {
     // Wall abutments: dormer walls standing on a host face.
     let host_planes: Vec<(Plane, Point2)> = hosts
         .iter()
-        .map(|&(gi, fi)| {
-            let f = &geos[gi].faces[fi];
-            (Plane::of(f), slope(f).0)
+        .filter_map(|&(gi, fi)| {
+            let (_, _, hp) = *host_faces.iter().find(|f| (f.0, f.1) == (gi, fi))?;
+            Some((hp, unit(Point2::new(hp.a, hp.b))))
         })
         .collect();
     // The host plane counts beyond its face (DACAD case C42), but only over
@@ -508,45 +536,22 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer) {
     let host_lines: Vec<RoofLine> = geos.iter().flat_map(|g| g.lines.iter().cloned()).collect();
     let mut minus: Vec<(String, f64)> = Vec::new();
     let n = part.edges.len();
-    // A front leaning outward (pitch over 90°) stands on the host with its
-    // eave and abuts nothing (DACAD case C71).
-    let leaning = |i: usize| part.edges[i].pitch_deg > 90.0 + 1e-9;
-    for i in (0..n).filter(|&i| i != back && !leaning(i)) {
+    // A front leaning outward (pitch over 90°) abuts only where its wall
+    // rises above the host plane: none with its eave on the host face (DACAD
+    // case C71), along the whole front with the eave higher (D101_0057).
+    for i in (0..n).filter(|&i| i != back) {
+        let e = &part.edges[i];
+        let walled = |z: f64| e.pitch_deg <= 90.0 + 1e-9 || e.eave_height - z > 0.01;
         let (a, b) = (part.edges[i].start, part.edges[(i + 1) % n].start);
         let dir = unit(Point2::new(b.x - a.x, b.y - a.y));
         let out = Point2::new(dir.y, -dir.x);
         for (hp, up) in &host_planes {
-            // DACAD cuts the dormer's hole per host face: one edge per face
-            // the wall stands on, and one where it runs past the roof (R1_0997).
-            let face_of = |p: Point2| home_polys.iter().position(|f| covers(f, p));
-            let (wa, wb) = ([a.x, a.y, hp.z(a)], [b.x, b.y, hp.z(b)]);
-            let mut keys: Vec<Option<usize>> = Vec::new();
-            let mut ts = vec![0.0, 1.0];
-            for poly in &cuts {
-                let k = poly.len();
-                for j in 0..k {
-                    if let Some(t) = cross_t(a, b, poly[j], poly[(j + 1) % k]) {
-                        ts.push(t);
-                    }
-                }
-            }
-            ts.sort_by(f64::total_cmp);
-            for w in ts.windows(2) {
-                let m = Point2::new(
-                    a.x + (b.x - a.x) * (w[0] + w[1]) / 2.0,
-                    a.y + (b.y - a.y) * (w[0] + w[1]) / 2.0,
-                );
-                let k = face_of(m);
-                if w[1] - w[0] > 1e-9 && !keys.contains(&k) {
-                    keys.push(k);
-                }
-            }
-            let mut segs = Vec::new();
-            for k in keys {
-                segs.extend(split_keep(wa, wb, &cuts, |p, _| {
-                    face_of(p) == k && pieces.iter().any(|pc| covers(&pc.poly, p))
-                }));
-            }
+            // The hole edge runs along the whole wall where the dormer shows,
+            // on the host plane also past the host face or the roof outline
+            // (R1_0997, D101_0053).
+            let segs = split_keep([a.x, a.y, hp.z(a)], [b.x, b.y, hp.z(b)], &cuts, |p, z| {
+                walled(z) && pieces.iter().any(|pc| covers(&pc.poly, p))
+            });
             // Level within float noise of the host plane (TRAING06).
             let level = (dir.x * up.x + dir.y * up.y).abs() < 1e-4;
             let facing = out.x * up.x + out.y * up.y;

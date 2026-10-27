@@ -73,7 +73,18 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
         geos.push(geo);
     }
     for d in &project.dormers {
-        crate::dormer::apply_dormer(&mut geos, d);
+        let host = d.host_wall.and_then(|[a, b]| {
+            project.parts.iter().find_map(|part| {
+                let n = part.edges.len();
+                (0..n).find_map(|i| {
+                    let e = &part.edges[i];
+                    let next = part.edges[(i + 1) % n].start;
+                    (e.start.distance(a) < 1e-3 && next.distance(b) < 1e-3)
+                        .then(|| (e.clone(), next))
+                })
+            })
+        });
+        crate::dormer::apply_dormer(&mut geos, d, host.as_ref());
     }
     for w in &project.windows {
         apply_window(&mut geos, w);
