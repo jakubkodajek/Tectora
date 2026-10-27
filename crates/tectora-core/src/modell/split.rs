@@ -164,15 +164,22 @@ fn list_mut(st: &mut State, f: usize, cut: bool) -> &mut Vec<Poly> {
 
 /// Splits every edge of every face polygon (pieces, then cutters) by the
 /// edges of all other face polygons.
+///
+/// The box a polygon's neighbours are tested against is only taken for
+/// pieces: a cutter is tested with the box of its face's last piece (or,
+/// with no piece, whatever box came last before).
 pub fn split_all(st: &mut State, tol: &Tol) {
     let t = tol.t01;
+    let mut bb_p = [0.0; 4];
     for a in 0..st.faces.len() {
         for la in [false, true] {
             for p in 0..list(st, a, la).len() {
                 if list(st, a, la)[p].is_empty() {
                     continue;
                 }
-                let bb_p = bbox(&list(st, a, la)[p]);
+                if !la {
+                    bb_p = bbox(&list(st, a, la)[p]);
+                }
                 let mut i = 0;
                 while i < list(st, a, la)[p].len() {
                     let mut e = list(st, a, la)[p].edges[i];

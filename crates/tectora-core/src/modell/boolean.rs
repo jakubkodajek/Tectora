@@ -405,7 +405,7 @@ pub fn union(a: &Poly, b: &Poly, tol: f64, gap: f64, m: &Mat) -> Poly {
     if !l[0].p1.same(l[n - 1].p2) {
         return empty;
     }
-    with_attrs(a, l.iter().map(|e| lift(e, &back)).collect(), a.sign)
+    with_attrs(a, l.iter().map(|e| lift(e, &back)).collect(), 1.0)
 }
 
 /// Chains free edges into one loop, lifting the points; empty when the
