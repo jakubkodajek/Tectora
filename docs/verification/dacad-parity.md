@@ -296,3 +296,11 @@ All calculated by DACAD under Wine with NormCountry = 1; fixtures in `tests/fixt
 Two wall loops with the **same** roof number are rejected by DACAD ("Kein geschlossener Grundriss"); a separate building is its own roof with 0x11 = (r, 0, 0), a dormer (r, 1, 3). V2 files written by DACAD drop roof numbers, so loops read from V2 all appear as roof 1.
 
 DACAD snaps computed vertex plan coordinates to 0.01 m before measuring lines (3D_TIH: Krüppel base y 7.6177 stored as 7.62; ridge 8.7 vs unrounded 8.6925). Per-line lists of the 34 samples are in `/mnt/project-files/dacad-golden-current/*.json` under `dacad_results.lines`.
+
+## V2 wall geometry and roof numbers (reader fix)
+
+In the V2 wall object, geometry field [1] is the **start** and [2] the end, [3] the length and [4] the direction in radians, including for zero-length walls. With that, DACAD-saved V2 files have the same orientation, order and zero-wall directions as their V1 originals (checked on TRAING07, wall by wall). The earlier note that V2 stores footprints clockwise was a reader bug. The key of each footprint loop in [100][1][1] is the roof number. Project field [4] holds the roofs: [1] roof number, [2] the third value of V1's 0x11 record.
+
+## Gable walls with a roofing material (PRIORITY)
+
+The eight 90° notch side walls in PRIORITY have material 1 (tiles), not "kein". DACAD splits each such wall into the wall face below the eave (counted in "Stena") and the triangle above it (0.49 or 0.56 m² here), which is counted in the wall's material. That is the 4.1957 m² gap between the sum of the sloped faces (185.4299) and the tile group (189.6256).

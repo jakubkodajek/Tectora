@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import math
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 # DACAD line-type codes (identical in V1 and V2) → DACAD's own abbreviations
@@ -70,8 +70,8 @@ class Wall:
     start: tuple[float, float]
     end: tuple[float, float]
     definitions: list[RoofDefinition] = field(default_factory=list)
-    # Stored wall direction (V1 only). Needed for zero-length walls, e.g. the
-    # side walls of a dormer, whose direction alone orients their plane.
+    # Stored wall direction. Needed for zero-length walls, e.g. the side
+    # walls of a dormer, whose direction alone orients their plane.
     direction_deg: float | None = None
 
     @property
@@ -321,16 +321,24 @@ def _read_v2(path: str, data: bytes) -> DadProject:
     # [100][1][1]: footprint loops (ordered wall ids per roof).
     loops = _id_lists(rel1.get(1, b""))
 
-    # [5] walls: [2] geometry {[2] start, [1] end, [4] direction, [3] length}.
+    # [4] roofs: [1] roof no, [2] third value of V1's 0x11 record. V1's
+    # second value (dormer flag) has no V2 field found yet.
+    # [5] walls: [2] geometry {[1] start, [2] end, [3] length,
+    # [4] direction (rad)}. Same orientation and order as V1.
     walls_by_id: dict[int, Wall] = {}
     for oid, f in _objects(proj.get(5, b"")):
         geo, _ = _fields(f.get(2, b""), 0, len(f.get(2, b"")))
         if 1 not in geo or 2 not in geo:
             continue
         walls_by_id[oid] = Wall(
-            _pt2(geo[2]), _pt2(geo[1]),
-            [defs[d] for d in wall_defs.get(oid, []) if d in defs])
-    ordered = [walls_by_id[w] for ids in loops.values() for w in ids
+            _pt2(geo[1]), _pt2(geo[2]),
+            [defs[d] for d in wall_defs.get(oid, []) if d in defs],
+            math.degrees(_f32(geo[4])) if 4 in geo else None)
+    # The loop key is the roof number; the definitions' own roof field is
+    # not reliable in files DACAD saved.
+    ordered = [replace(walls_by_id[w], definitions=[
+                   replace(d, roof_no=roof) for d in walls_by_id[w].definitions])
+               for roof, ids in sorted(loops.items()) for w in ids
                if w in walls_by_id]
     walls = ordered or list(walls_by_id.values())
 
