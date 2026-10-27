@@ -49,7 +49,8 @@ MATERIAL_GROUPS = {"Ziegel": ("Ziegel", "Škridla"), "Blech": ("Blech", "Plech")
 def material_area(pr: DadProject, material: str) -> float | None:
     """DACAD's stored area for a material, or None if the file has no group."""
     found = [v for k, v in pr.area_groups.items()
-             if k.strip(" -").startswith(MATERIAL_GROUPS[material])]
+             if k.strip(" -").startswith(MATERIAL_GROUPS[material])
+             and not k.endswith("Norm")]  # "<material>-Norm": norm group
     return sum(found) if found else None
 
 
@@ -121,11 +122,16 @@ def _dad_files(folder: Path) -> list[Path]:
     return sorted(p for p in folder.iterdir() if p.suffix.lower() == ".dad")
 
 
-def cmd_export(src: Path, out: Path, inputs: Path | None = None) -> int:
+def cmd_export(src: Path, out: Path, inputs: Path | None = None,
+               norm: str | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     for p in _dad_files(src):
         orig = inputs / p.name if inputs else None
         fx = fixture(read_dad(p), read_dad(orig) if orig and orig.exists() else None)
+        if norm:
+            # DACAD's norm setting when it calculated the file. Norm groups
+            # ("...-Norm") are only stored when they differ from the base group.
+            fx["norm"] = norm
         (out / (p.stem + ".json")).write_text(
             json.dumps(fx, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"{p.name}: {len(fx['input']['walls'])} walls")
@@ -211,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     e = sub.add_parser("export")
     e.add_argument("src", type=Path)
     e.add_argument("out", type=Path)
+    e.add_argument("--norm", help="label of the DACAD norm setting used (DIN, ONORM, SIA)")
     e.add_argument("--inputs", type=Path,
                    help="folder with the V1 originals; the fixture input is taken from them")
     c = sub.add_parser("compare")
@@ -220,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="folder with the same-named input files to give the engine")
     a = ap.parse_args(argv)
     if a.cmd == "export":
-        return cmd_export(a.src, a.out, a.inputs)
+        return cmd_export(a.src, a.out, a.inputs, a.norm)
     return cmd_compare(a.src, a.engine, a.inputs)
 
 

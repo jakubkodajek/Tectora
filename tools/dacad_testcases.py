@@ -182,6 +182,32 @@ def cases() -> dict[str, tuple]:
                              hip_with(), [Chimney(9.0, rotated_rect(6.0, 2.0, 0.6, 0.6, 2))]),
         "C36_chimney_rot10": ("Valbová C04 + komín 0,6×0,6 pootočený o 10°",
                               hip_with(), [Chimney(9.0, rotated_rect(6.0, 2.0, 0.6, 0.6, 10))]),
+        # Openings around the norm limits (DIN 2.5 m², ÖNORM 4 m², SIA 1 m²).
+        "C37_window_3m2": ("Valbová C04 + okno 2,0×1,6 (3,2 m²)",
+                           hip_with(windows={0: [(5.0, 0.8, 2.0, 1.6)]})),
+        "C38_window_5m2": ("Valbová C04 + okno 2,4×2,0 (4,8 m²)",
+                           hip_with(windows={0: [(4.8, 0.5, 2.4, 2.0)]})),
+        # More dormers (main: gable 12 x 8, 40°, unless noted).
+        "C39_dormer_hip": ("Valbový vikýř 2 m, 45°, okap 4,0 m, čelo 1 m za stěnou",
+                           rect(12, 8, Def(40), G, Def(40), G), None,
+                           [Dormer((5.0, 1.0), [W(0, 270, Def(45, 0, 4.0)),
+                                                W(2, 0, Def(45, 0, 4.0)),
+                                                W(0, 90, Def(45, 0, 4.0))])]),
+        "C40_dormer_overhang": ("Sedlový vikýř jako C30, přesah 0,3 na všech stěnách vikýře",
+                                rect(12, 8, Def(40), G, Def(40), G), None,
+                                [Dormer((5.0, 1.0), [W(0, 270, Def(45, 0.3, 4.0)),
+                                                     W(2, 0, Def(90, 0.3, 4.0)),
+                                                     W(0, 90, Def(45, 0.3, 4.0))])]),
+        "C41_dormer_over_hip": ("Valbová C04 + sedlový vikýř 2 m přes nároží (x 2–4, čelo y 1, okap 3,8)",
+                                hip_with(), None,
+                                [Dormer((2.0, 1.0), [W(0, 270, Def(45, 0, 3.8)),
+                                                     W(2, 0, Def(90, 0, 3.8)),
+                                                     W(0, 90, Def(45, 0, 3.8))])]),
+        "C42_dormer_over_ridge": ("Sedlová 12×8 40° + sedlový vikýř přes hřeben (čelo y 2, okap 6,5)",
+                                  rect(12, 8, Def(40), G, Def(40), G), None,
+                                  [Dormer((5.0, 2.0), [W(0, 270, Def(45, 0, 6.5)),
+                                                       W(2, 0, Def(90, 0, 6.5)),
+                                                       W(0, 90, Def(45, 0, 6.5))])]),
     }
 
 

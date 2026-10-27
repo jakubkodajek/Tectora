@@ -157,6 +157,49 @@ What the cases settle:
   The dormer's front wall against the main roof is WV, its cheeks WS, the
   valleys of a gable dormer K, and the line where a shed dormer meets the
   main roof `c`. The dormer's own eaves and verges count as T and OL/OR.
+
+  More dormers (C39–C42):
+
+  | Case | Dormer | DACAD lines (m) | Tile area |
+  |---|---|---|---|
+  | C39 | hip dormer, 45°, eave 4.0, front 1 m back | T 26.384, F 12.384, G 3.464, K 3.699, OL/OR 10.443, WV 2.0, WS 0.501 | 125.490 |
+  | C40 | C30 with 0.3 overhang on every dormer wall | T 24.984, F 14.041, K 4.808, OL/OR 12.282, WV 2.0, WS 1.434 | 126.986 |
+  | C41 | gable dormer across a hip line of the C04 hip (x 2–4, eave 3.8) | T 40.285, F 5.571, G 25.249, K 4.020, OL/OR 1.414, WV 2.0, WS 0.348 | 117.526 |
+  | C42 | gable dormer through the ridge (front y 2, eave 6.5) | T 28.342, F 15.363, K 3.699, OL/OR 11.857, WV 2.0, WS 5.668 | 125.921 |
+
+## Norm groups
+
+DACAD takes the norm from the registry (`HKCU\Software\COIN\DACAD\Default`,
+`NormCountry`: 49 DIN 18338, 43 ÖNORM B 2219, 41 SIA 124, 0 or anything else
+none), not from the project. With a norm set it adds a "-Norm" group per
+line and area group, but stores it only when it differs from the base group
+(help: groups identical to an earlier one are suppressed); a missing Norm
+group therefore equals the base group. Fixtures:
+`tests/fixtures/dacad_norms/{DIN,ONORM,SIA}/` (C04, C24–C31, C37, C38).
+
+Tile area, base → Norm (m²); "=" means no Norm group stored:
+
+| Case | Opening | DIN (≤ 2.5 m²) | ÖNORM (≤ 4 m², windows and chimneys only) | SIA (≤ 1 m²) |
+|---|---|---|---|---|
+| C24 | window 1.21 m² | 117.194 | 117.194 | = |
+| C25 | window 1.12 m² | 117.194 | 117.194 | = |
+| C26 | window 0.25 m² | 117.194 | 117.194 | 117.194 |
+| C27 | chimney 0.439 m² | 117.194 | 117.194 | 117.194 |
+| C28 | chimney across the ridge | 117.194 | 117.194 | 117.194 |
+| C29 | gable dormer on the eave (4.667 m² removed) | = | = | = |
+| C30 | gable dormer set back (2.057 m² removed) | 127.547 | = | = |
+| C31 | shed dormer | = | = | = |
+| C37 | window 3.2 m² | = | 117.194 | = |
+| C38 | window 4.8 m² | = | = | = |
+
+So an opening at or below the limit is added back in full. DIN also adds back
+the host area removed under a small dormer (C30); ÖNORM does not, matching its
+text ("Fenster- und Schornstein-Abzugsflächen"). Lines: deductions up to the
+limit are ignored in the Norm line groups. C28's ridge is 4.0 in "First-Norm"
+under DIN and ÖNORM (0.6 m gap). C29's −2.0 m eave piece is ignored only
+under ÖNORM (limit 2 m; "Traufe-Norm" 26.383), not under DIN (limit 1 m).
+SIA has no line rule. The ÖNORM "Beideckung" surcharge is not stored in
+the file; the help says it is printed in a separate table of the listing.
 * Files saved by this DACAD build store the footprint clockwise (wall 2 of
   C08 runs from (12, 8) to (12, 0)); the V1 input ran counter-clockwise.
 
