@@ -5,6 +5,7 @@
 //! conventions and how to test a slice against the emulator dumps.
 
 pub mod dump;
+pub mod close;
 pub mod error;
 pub mod geom;
 pub mod num;
@@ -14,6 +15,7 @@ pub mod rd2;
 pub mod s1;
 pub mod stages;
 pub mod state;
+pub mod sweep;
 pub mod x87;
 
 pub use error::CoreError;

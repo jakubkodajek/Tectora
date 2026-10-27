@@ -38,6 +38,13 @@ msgs! {
     MSG_SINGLE_FACE = Some(0xa02), "Einzelne Fläche vorhanden";
     MSG_EAVE_CUT = Some(0xa09), "Schnittfehler";
     MSG_OPEN_FACES = Some(0xa0f), "Nicht geschlossene Fläche(n) vorhanden";
+    MSG_NO_CUT_LINE = Some(0xa04), "Keine Schnittgerade berechenbar";
+    MSG_NO_XY_P1 = Some(0xa09), "Kein Durchstoßpunkt durch XY-Ebene für P1";
+    MSG_NO_XY_P2 = Some(0xa0a), "Kein Durchstoßpunkt durch XY-Ebene für P2";
+    MSG_NO_X_A1 = Some(0xa0b), "Kein Schnittpunkt berechenbar (P1)";
+    MSG_NO_X_A2 = Some(0xa0c), "Kein Schnittpunkt berechenbar (P2)";
+    MSG_NO_X_B1 = Some(0xa0d), "Kein Schnittpunkt berechenbar (P1)";
+    MSG_NO_X_B2 = Some(0xa0e), "Kein Schnittpunkt berechenbar (P2)";
     MSG_NO_SOLUTION = Some(0xa10), "Keine Lösung gefunden";
     MSG_WRITE = Some(0xf126), "Beim Schreiben ist ein unerwarteter Fehler aufgetreten";
     MSG_INTERVAL = None, "Intervallfehler";
@@ -64,6 +71,10 @@ pub enum CoreError {
     /// The original would fault here (null pointer, missing record).
     #[error("dcore: the original faults: {0}")]
     Fault(&'static str),
+    /// The original never returns here (an endless loop); the port stops
+    /// after an iteration limit.
+    #[error("dcore: the original does not terminate: {0}")]
+    Hang(&'static str),
 }
 
 impl CoreError {
