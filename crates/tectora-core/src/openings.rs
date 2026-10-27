@@ -224,7 +224,8 @@ pub(crate) fn slope(face: &RoofFace) -> (Point2, f64) {
 /// R1_0077); the thresholds are empirical:
 ///
 /// * ridge: the side's distance from the ridge on the face is under 12.7 mm
-///   (DACAD: 11.55 mm deducted, 13.9 mm not);
+///   (DACAD: 11.55 mm deducted, 13.9 mm not); a knick the same way (a
+///   chimney 1 cm above one, sweep dacad-chimney-knick case A0);
 /// * hip: seen from the hip's eave end, the side's corners lie within an
 ///   angle whose sine, divided by the cosine of the face's pitch, is under
 ///   0.0184 (DACAD: 0.01793 deducted, 0.01888 not).
@@ -243,7 +244,7 @@ fn side_by_lines(geo: &mut RoofGeometry, corners: &[Point2]) {
     let cos = 1.0 / (1.0 + tan * tan).sqrt();
     let mut minus = Vec::new();
     for l in &geo.lines {
-        if !matches!(l.kind, LineKind::Ridge | LineKind::Hip) {
+        if !matches!(l.kind, LineKind::Ridge | LineKind::Hip | LineKind::Knick) {
             continue;
         }
         let (a, b) = (Point2::new(l.a[0], l.a[1]), Point2::new(l.b[0], l.b[1]));
@@ -277,7 +278,7 @@ fn side_by_lines(geo: &mut RoofGeometry, corners: &[Point2]) {
             if e <= 1e-9 || s >= len - 1e-9 {
                 continue;
             }
-            let near = if l.kind == LineKind::Ridge {
+            let near = if l.kind != LineKind::Hip {
                 op.abs() / cos < RIDGE_GAP
             } else {
                 let eave = if l.a[2] <= l.b[2] { a } else { b };
@@ -446,6 +447,104 @@ fn height_at(face: &RoofFace, up: Point2, tan: f64, p: Point2) -> f64 {
     o[2] + tan * ((p.x - o[0]) * up.x + (p.y - o[1]) * up.y)
 }
 
+/// A chimney poking less than 2 cm under a pitch break (Knick).
+struct KnickClip {
+    knick: RoofLine,
+    /// The chimney cut off at the knick.
+    outline: Vec<Point2>,
+    /// The cut along the knick, as an edge of `outline`.
+    chord: Option<(Point2, Point2)>,
+    /// A corner under 7.5 mm deep: the chord gets no line and the knick is
+    /// not deducted.
+    tiny: bool,
+}
+
+/// DACAD cuts a chimney off at a knick when its lowest corner or edge lies
+/// less than 2 cm below it: the side abutments stop on the knick and the
+/// chord along it is the front abutment (WV). A cut-off corner under about
+/// 7.5 mm gets neither the WV nor a knick deduction; a cut-off edge parallel
+/// to the knick keeps both. Sweep /mnt/project-files/dacad-chimney-knick/
+/// (0.5 cm: nothing, 1 cm: WV, 2 cm: not cut off; mass case R1_0254);
+/// [no source — my estimate] for the 7.5 mm between the swept depths.
+fn knick_clip(geo: &RoofGeometry, corners: &[Point2]) -> Option<KnickClip> {
+    const DEPTH: f64 = 0.02;
+    const TINY: f64 = 0.0075;
+    let height = |p: Point2| {
+        geo.faces.iter().find(|f| inside(&plan(f), p)).map(|f| {
+            let (up, tan) = slope(f);
+            height_at(f, up, tan, p)
+        })
+    };
+    for l in geo.lines.iter().filter(|l| l.kind == LineKind::Knick) {
+        let (a, b) = (Point2::new(l.a[0], l.a[1]), Point2::new(l.b[0], l.b[1]));
+        let len = a.distance(b);
+        if len < TOL {
+            continue;
+        }
+        let d = Point2::new((b.x - a.x) / len, (b.y - a.y) / len);
+        let off = |p: Point2| d.x * (p.y - a.y) - d.y * (p.x - a.x);
+        let mid = Point2::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+        let side = |s: f64| height(Point2::new(mid.x - d.y * s * 0.05, mid.y + d.x * s * 0.05));
+        let (Some(zl), Some(zr)) = (side(1.0), side(-1.0)) else {
+            continue;
+        };
+        // +1 when downhill lies to the left of the knick.
+        let down = if zl < zr { 1.0 } else { -1.0 };
+        let depth = corners
+            .iter()
+            .map(|&c| down * off(c))
+            .fold(f64::NEG_INFINITY, f64::max);
+        let above = corners.iter().any(|&c| down * off(c) < -1e-6);
+        let along = |p: Point2| (p.x - a.x) * d.x + (p.y - a.y) * d.y;
+        let over = corners
+            .iter()
+            .any(|&c| (-1e-9..=len + 1e-9).contains(&along(c)));
+        if !(depth > 1e-9 && depth < DEPTH && above && over) {
+            continue;
+        }
+        let n = corners.len();
+        let parallel = (0..n).any(|i| {
+            let (p, q) = (corners[i], corners[(i + 1) % n]);
+            down * off(p) > 1e-9 && (off(p) - off(q)).abs() < 1e-6
+        });
+        // Keep the uphill side: -down·off ≥ 0.
+        let f = |p: Point2| -down * off(p);
+        let mut outline = Vec::new();
+        let mut cuts = Vec::new();
+        for i in 0..n {
+            let (p, q) = (corners[i], corners[(i + 1) % n]);
+            let (fp, fq) = (f(p), f(q));
+            if fp >= 0.0 {
+                outline.push(p);
+            }
+            if (fp >= 0.0) != (fq >= 0.0) {
+                let t = fp / (fp - fq);
+                let x = Point2::new(p.x + t * (q.x - p.x), p.y + t * (q.y - p.y));
+                outline.push(x);
+                cuts.push(outline.len() - 1);
+            }
+        }
+        let m = outline.len();
+        let chord = (cuts.len() == 2).then(|| {
+            // The outline runs counter-clockwise; the chord is the edge
+            // between the two cut points.
+            let (i, j) = (cuts[0], cuts[1]);
+            if (i + 1) % m == j {
+                (outline[i], outline[j])
+            } else {
+                (outline[j], outline[i])
+            }
+        });
+        return Some(KnickClip {
+            knick: l.clone(),
+            outline,
+            chord,
+            tiny: !parallel && depth < TINY,
+        });
+    }
+    None
+}
+
 /// Cuts a chimney, or with `hole` a roof opening, out of the faces.
 fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool) {
     let mut corners = c.corners.clone();
@@ -455,11 +554,23 @@ fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool) {
     if signed_area(&corners) < 0.0 {
         corners.reverse();
     }
+    let clip = if hole {
+        None
+    } else {
+        knick_clip(geo, &corners)
+    };
     // Roof lines under the chimney disappear.
     let mut kept: Vec<RoofLine> = Vec::new();
     for l in std::mem::take(&mut geo.lines) {
         let (a, b) = (Point2::new(l.a[0], l.a[1]), Point2::new(l.b[0], l.b[1]));
-        let mut under = inside_spans(&corners, a, b);
+        let spared = clip
+            .as_ref()
+            .is_some_and(|k| k.tiny && l.a == k.knick.a && l.b == k.knick.b);
+        let mut under = if spared {
+            Vec::new()
+        } else {
+            inside_spans(&corners, a, b)
+        };
         // A ridge along a chimney side is cut there too, and the side
         // abuts as the front of the far face (DACAD TRAING05 chimney 3).
         if l.kind == LineKind::Ridge && !hole {
@@ -495,8 +606,21 @@ fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool) {
         side_by_lines(geo, &corners);
     }
 
+    // The abutment follows the chimney, cut off at a knick it pokes under.
+    let outline = clip.as_ref().map_or(corners.clone(), |k| k.outline.clone());
+    if let Some(k) = &clip
+        && !k.tiny
+        && let Some((p, q)) = k.chord
+    {
+        geo.lines.push(RoofLine {
+            kind: LineKind::AbutmentFront,
+            a: [p.x, p.y, k.knick.a[2]],
+            b: [q.x, q.y, k.knick.a[2]],
+            side: None,
+        });
+    }
     let mut total = 0.0;
-    let n = corners.len();
+    let n = outline.len();
     for face in &mut geo.faces {
         let poly = plan(face);
         let (up, tan) = slope(face);
@@ -509,10 +633,10 @@ fn apply_cutout(geo: &mut RoofGeometry, c: &Chimney, hole: bool) {
         face.deducted += d;
         total += d;
         for i in 0..n {
-            let (a, b) = (corners[i], corners[(i + 1) % n]);
+            let (a, b) = (outline[i], outline[(i + 1) % n]);
             let dir = Point2::new(b.x - a.x, b.y - a.y);
             let len = dir.x.hypot(dir.y);
-            if len < TOL {
+            if len < TOL || clip.as_ref().is_some_and(|k| k.chord == Some((a, b))) {
                 continue;
             }
             // Outward normal of a CCW polygon side.
