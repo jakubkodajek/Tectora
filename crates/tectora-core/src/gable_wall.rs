@@ -78,8 +78,10 @@ fn cut_once(part: &RoofPart) -> Option<(Piece, Piece, Point2, Point2, f64)> {
         if let Some(dp) = dir(p)
             && reflex(dp, d)
             && g.eave_height > part.edges[p].eave_height + 1e-6
-            && let Some((h, hit)) = ray(&pts, pts[i], Point2::new(-d.x, -d.y), i, p)
+            && let Some((k, hit, at_start)) = ray(&pts, pts[i], Point2::new(-d.x, -d.y), i, p)
         {
+            // A hit on a corner ends the gable side with the edge before it.
+            let h = if at_start { (k + n - 1) % n } else { k };
             // Gable side: hit -> (gable) -> ... -> edge h -> hit.
             let mut hi = vec![(
                 EdgeDef {
@@ -100,11 +102,11 @@ fn cut_once(part: &RoofPart) -> Option<(Piece, Piece, Point2, Point2, f64)> {
             let mut lo = vec![(
                 EdgeDef {
                     start: hit,
-                    ..part.edges[h].clone()
+                    ..part.edges[k].clone()
                 },
-                h,
+                k,
             )];
-            let mut j = (h + 1) % n;
+            let mut j = (k + 1) % n;
             while j != i {
                 lo.push((part.edges[j].clone(), j));
                 j = (j + 1) % n;
@@ -121,7 +123,7 @@ fn cut_once(part: &RoofPart) -> Option<(Piece, Piece, Point2, Point2, f64)> {
         if let Some(dq) = dir(q)
             && reflex(d, dq)
             && g.eave_height > part.edges[q].eave_height + 1e-6
-            && let Some((h, hit)) = ray(&pts, pts[q], d, i, q)
+            && let Some((h, hit, at_start)) = ray(&pts, pts[q], d, i, q)
         {
             // Gable side: (gable) -> hit -> (rest of edge h) -> ... -> start.
             let mut hi = vec![
@@ -140,11 +142,13 @@ fn cut_once(part: &RoofPart) -> Option<(Piece, Piece, Point2, Point2, f64)> {
                 j = (j + 1) % n;
             }
             // Other side: corner -> ... -> edge h -> hit -> (wall) -> corner.
+            // A hit on a corner ends this side with the edge before it.
+            let last = if at_start { (h + n - 1) % n } else { h };
             let mut lo = Vec::new();
             let mut j = q;
             loop {
                 lo.push((part.edges[j].clone(), j));
-                if j == h {
+                if j == last {
                     break;
                 }
                 j = (j + 1) % n;
@@ -210,16 +214,17 @@ fn piece(part: &RoofPart, edges: Vec<(EdgeDef, usize)>) -> Piece {
 }
 
 /// First outline edge (not `skip_a`, `skip_b`) the ray from `o` along `u`
-/// crosses, and where.
+/// crosses, where, and whether it hits the edge's start corner (a corner
+/// counts for the edge it starts).
 fn ray(
     pts: &[Point2],
     o: Point2,
     u: Point2,
     skip_a: usize,
     skip_b: usize,
-) -> Option<(usize, Point2)> {
+) -> Option<(usize, Point2, bool)> {
     let n = pts.len();
-    let mut best: Option<(f64, usize, Point2)> = None;
+    let mut best: Option<(f64, usize, Point2, bool)> = None;
     for k in 0..n {
         if k == skip_a || k == skip_b {
             continue;
@@ -233,11 +238,27 @@ fn ray(
         let w = Point2::new(a.x - o.x, a.y - o.y);
         let s = (w.x * e.y - w.y * e.x) / den;
         let t = (w.x * u.y - w.y * u.x) / den;
-        if s > 1e-6 && (1e-9..1.0 - 1e-9).contains(&t) && best.is_none_or(|b| s < b.0) {
-            best = Some((s, k, Point2::new(o.x + u.x * s, o.y + u.y * s)));
+        // A corner counts only inside a straight wall (a collinear point):
+        // there the result must be as without the point (stress case S11).
+        // At a real corner DACAD's wall does not go on (TRAING01, TRAING04).
+        let pa = pts[(k + n - 1) % n];
+        let ep = Point2::new(a.x - pa.x, a.y - pa.y);
+        let straight = ep.x * e.y - ep.y * e.x == 0.0
+            || (ep.x * e.y - ep.y * e.x).abs() <= 1e-9 * ep.x.hypot(ep.y) * e.x.hypot(e.y);
+        let at_start = t.abs() <= 1e-9 && straight && ep.x * e.x + ep.y * e.y > 0.0;
+        if s > 1e-6
+            && (at_start || (1e-9..1.0 - 1e-9).contains(&t))
+            && best.is_none_or(|b| s < b.0 - 1e-9)
+        {
+            let p = if at_start {
+                a
+            } else {
+                Point2::new(o.x + u.x * s, o.y + u.y * s)
+            };
+            best = Some((s, k, p, at_start));
         }
     }
-    best.map(|(_, k, p)| (k, p))
+    best.map(|(_, k, p, at)| (k, p, at))
 }
 
 /// Lines of the lower roof along a cut, under the higher roof, abut the
@@ -289,9 +310,20 @@ pub(crate) fn abut(
         };
         l.side = None;
     }
+    // A verge on the wall's line that reaches over the cut ends at the wall
+    // top all along, also where it lies on the gable itself (stress case
+    // S11: the verge runs from the gable on into the cut).
+    let along = |p: [f64; 3]| {
+        let w = Point2::new(p[0] - a.x, p[1] - a.y);
+        ((w.x * d.y - w.y * d.x).abs() < 1e-6).then_some(w.x * d.x + w.y * d.y)
+    };
+    let over_cut = |l: &crate::roof::RoofLine| match (along(l.a), along(l.b)) {
+        (Some(s), Some(t)) => s.max(t) > 1e-6 && s.min(t) < len - 1e-6,
+        _ => false,
+    };
     let mut kept = Vec::with_capacity(higher.lines.len());
     for l in std::mem::take(&mut higher.lines) {
-        if l.kind != LineKind::Verge || !on(l.a) || !on(l.b) || (l.a[2] - l.b[2]).abs() < 1e-9 {
+        if l.kind != LineKind::Verge || !over_cut(&l) || (l.a[2] - l.b[2]).abs() < 1e-9 {
             kept.push(l);
             continue;
         }

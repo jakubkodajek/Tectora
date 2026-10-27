@@ -1061,6 +1061,22 @@ fn face_hole(face: &RoofFace, corners: &[Point2]) -> Option<(Vec<[f64; 3]>, Vec<
             }
         }
     }
+    // A sliver of a hole whose face corner lies on a crossing beside it
+    // closes to nothing (mass case R2_0610: a triangle with a 1.3 mm side;
+    // in larger holes the corner stays, R2_0537).
+    let face_corner = |p: Point2| outline.iter().any(|q| q.distance(p) < 1e-9);
+    if keep.iter().filter(|&&k| k).count() == 3 {
+        let sliver = (0..n).any(|i| {
+            keep[i]
+                && face_corner(hole[i])
+                && [(i + 1) % n, (i + n - 1) % n].iter().any(|&j| {
+                    keep[j] && corner(hole[j]).is_none() && !face_corner(hole[j]) && near(pts[i], pts[j])
+                })
+        });
+        if sliver {
+            return None;
+        }
+    }
     let pts: Vec<[f64; 3]> = pts
         .into_iter()
         .zip(keep)
