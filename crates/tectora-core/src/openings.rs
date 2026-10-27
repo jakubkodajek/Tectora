@@ -89,10 +89,125 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
         }
     }
     for geo in &mut geos {
+        // With more than one roof DACAD's C++ model intersection derives
+        // the lines again and gives the covered remainder back (TRAING06).
+        if project.parts.len() == 1 {
+            drop_covered_lines(geo);
+        }
         merge_collinear(&mut geo.lines);
         split_verges_at_knicks(&mut geo.lines);
     }
     geos
+}
+
+/// A piece of a ridge, hip, valley or knick with one of its own planes on
+/// top on both sides is no roof line: there that plane passes over the other, and
+/// DACAD's merge pass (FUN_00da4ec0) makes the lower face's edge code 17
+/// (DACAD variants of mass case R1_0368: a bay's ridge under the higher
+/// roof's overhang). Under a dormer face the host's lines stay (R1_0398
+/// variants).
+fn drop_covered_lines(geo: &mut RoofGeometry) {
+    use crate::union::Plane;
+    let faces: Vec<(Vec<Point2>, Plane, bool)> = geo
+        .faces
+        .iter()
+        .filter(|f| signed_area(&plan(f)).abs() > 1e-6)
+        .map(|f| (plan(f), Plane::of(f), f.edge == usize::MAX))
+        .collect();
+    let top = |p: Point2| {
+        faces
+            .iter()
+            .filter(|(poly, _, _)| inside(poly, p))
+            .max_by(|a, b| a.1.z(p).total_cmp(&b.1.z(p)))
+            .filter(|f| !f.2)
+            .map(|f| (&f.1, f as *const _))
+    };
+    // DACAD's merge keeps the shorter edge, of the plane on top, only where
+    // the lower face's edge touches an abutment.
+    let abutments: Vec<[f64; 3]> = geo
+        .lines
+        .iter()
+        .filter(|l| {
+            matches!(
+                l.kind,
+                LineKind::AbutmentFront | LineKind::AbutmentBack | LineKind::AbutmentSide
+            )
+        })
+        .flat_map(|l| [l.a, l.b])
+        .collect();
+    let mut out = Vec::with_capacity(geo.lines.len());
+    for l in std::mem::take(&mut geo.lines) {
+        let (a, b) = (Point2::new(l.a[0], l.a[1]), Point2::new(l.b[0], l.b[1]));
+        let len = a.distance(b);
+        let touches = abutments
+            .iter()
+            .any(|&p| dist3_(p, l.a) < 0.02 || dist3_(p, l.b) < 0.02);
+        if !matches!(
+            l.kind,
+            LineKind::Ridge | LineKind::Hip | LineKind::Valley | LineKind::Knick
+        ) || len < 1e-6
+            || !touches
+        {
+            out.push(l);
+            continue;
+        }
+        // Pieces between the face corners on the line.
+        let (ux, uy) = ((b.x - a.x) / len, (b.y - a.y) / len);
+        let mut ts = vec![0.0, 1.0];
+        for (poly, _, _) in &faces {
+            for q in poly {
+                let t = ((q.x - a.x) * ux + (q.y - a.y) * uy) / len;
+                let off = ((q.x - a.x) * -uy + (q.y - a.y) * ux).abs();
+                if off < 1e-6 && t > 1e-9 && t < 1.0 - 1e-9 {
+                    ts.push(t);
+                }
+            }
+        }
+        ts.sort_by(f64::total_cmp);
+        ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+        let mut keep: Vec<(f64, f64)> = Vec::new();
+        for w in ts.windows(2) {
+            let t = (w[0] + w[1]) / 2.0;
+            let m = Point2::new(a.x + t * len * ux, a.y + t * len * uy);
+            const D: f64 = 1e-4;
+            let (pl, pr) = (
+                Point2::new(m.x - D * uy, m.y + D * ux),
+                Point2::new(m.x + D * uy, m.y - D * ux),
+            );
+            let (left, right) = (top(pl), top(pr));
+            // ... over a face below it.
+            let under = |p: Point2, over: Option<(&Plane, *const (Vec<Point2>, Plane, bool))>| {
+                over.is_some_and(|(o, _)| {
+                    faces
+                        .iter()
+                        .any(|(poly, q, _)| inside(poly, p) && !q.same(o) && q.z(p) < o.z(p) - 1e-9)
+                })
+            };
+            let passes = under(pl, left) || under(pr, right);
+            // The plane on top must be one of the line's own planes.
+            let z = lerp3(l.a, l.b, t)[2];
+            // Two faces of that plane: one face around the line is a flaw
+            // of ours, not a plane passing over.
+            let covered = matches!((left, right),
+                (Some((p, f)), Some((q, g))) if f != g && p.same(q) && (p.z(m) - z).abs() < 1e-4)
+                && passes;
+            if covered {
+                continue;
+            }
+            match keep.last_mut() {
+                Some(k) if (k.1 - w[0]).abs() < 1e-9 => k.1 = w[1],
+                _ => keep.push((w[0], w[1])),
+            }
+        }
+        for (s, e) in keep {
+            out.push(RoofLine {
+                a: lerp3(l.a, l.b, s),
+                b: lerp3(l.a, l.b, e),
+                ..l.clone()
+            });
+        }
+    }
+    geo.lines = out;
 }
 
 /// Joins lines of the same kind that continue each other, as DACAD lists
