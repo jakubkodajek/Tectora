@@ -3,7 +3,7 @@
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
   import type { Chimney, Project, RoofWindow } from "./types";
-  import { chimneyFromRect, openingList, rectFromChimney, type ChimneyRect, type OpeningSel } from "./openings";
+  import { chimneyFromRect, isConvex, openingList, rectFromChimney, type ChimneyRect, type OpeningSel } from "./openings";
 
   let {
     project,
@@ -67,6 +67,9 @@
         {@render field(t("opening.rotation"), rect.rotation, "°", (v) => setRect({ rotation: v }))}
       {:else}
         <p class="tip">{t("opening.polygon", { n: chimney.corners.length })}</p>
+      {/if}
+      {#if !isConvex(chimney.corners)}
+        <p class="tip warn">{t("opening.nonConvex")}</p>
       {/if}
       {#if sel.kind === "chimney"}
         {@render field(t("opening.top"), chimney.height, "m", (v) => onchimney({ ...$state.snapshot(chimney), height: v }))}
@@ -145,6 +148,10 @@
   }
   .danger {
     color: var(--danger);
+  }
+  .tip.warn {
+    color: var(--danger);
+    font-weight: 600;
   }
   .tip {
     align-self: center;

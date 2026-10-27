@@ -12,3 +12,4 @@ thiserror = "2.0.21"
 
 [dev-dependencies]
 approx = "0.5.1"
+proptest = "1"

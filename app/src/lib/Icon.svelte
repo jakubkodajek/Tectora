@@ -37,6 +37,7 @@
     chart: "M5 20V10M12 20V4M19 20v-7",
     close: "M5 12l7-7 7 7",
     cursor: "M5 3l6 17 2.5-7.5L21 10z",
+    warning: "M12 3l10 18H2zM12 10v5M12 18h.01",
   };
   let { name, size = 18 }: { name: string; size?: number } = $props();
 </script>
