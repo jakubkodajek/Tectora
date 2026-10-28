@@ -123,10 +123,42 @@ fn features(doc: &dump::DumpDoc, t: &mut Tallies, name: &str) {
     }
 }
 
+/// The port's own run from the RD2 (S1 to S3 and the holes, as far as the
+/// ported stages reach): its `after_holes` snapshots against the emulator's.
+fn from_rd2(name: &str, rd2: &Path, doc: &dump::DumpDoc, t: &mut Tallies) {
+    let Ok(bytes) = std::fs::read(rd2) else {
+        return;
+    };
+    let mut snaps: Vec<Value> = Vec::new();
+    let mut run = dcore::pipeline::Run::new(doc.flags());
+    run.want_int = doc.doc["int"] == true;
+    run.hook = Some(Box::new(|stage: &str, c: &dcore::Core| {
+        if stage == "after_holes" {
+            snaps.push(dump::to_json(c));
+        }
+    }));
+    let _ = run.run(&bytes);
+    drop(run);
+    for (k, (w, g)) in doc.stage("after_holes").iter().zip(&snaps).enumerate() {
+        tally(
+            t,
+            "from RD2: after_holes",
+            &format!("{name} model {k}"),
+            dump::compare(w, g, 6),
+        );
+    }
+}
+
 fn run_case(name: &str, dir: &Path, t: &mut Tallies) -> bool {
     let Some(doc) = load_doc(dir) else {
         return false;
     };
+    for ext in ["RD2", "rd2"] {
+        let p = dir.join(format!("{name}.{ext}"));
+        if p.exists() {
+            from_rd2(name, &p, &doc, t);
+        }
+    }
     if doc.flags() & 0x8 != 0 {
         isolated(
             name,
@@ -174,7 +206,11 @@ fn hole_dumps() {
         for line in std::fs::read_to_string(list).unwrap().lines() {
             let rd2 = PathBuf::from(line.split('\t').next().unwrap());
             let stem = rd2.file_stem().unwrap().to_string_lossy().to_string();
-            n += usize::from(run_case(&stem, &Path::new(dir).join(&stem), &mut t));
+            let d = Path::new(dir).join(&stem);
+            if !d.join(format!("{stem}.RD2")).exists() {
+                let _ = std::fs::copy(&rd2, d.join(format!("{stem}.RD2")));
+            }
+            n += usize::from(run_case(&stem, &d, &mut t));
         }
     }
     println!("{n} cases");

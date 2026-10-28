@@ -233,7 +233,20 @@ matches.
 
 - `chimney_holes` runs only with flag 0x8; the default flags 0x4a8 include it.
 - `hole_edges` runs after the D/D and L/G code-17 stages.
-- The clipper needs VC6 `qsort` (map §7.3).
+- The clipper needs VC6 `qsort` (map §7.3). It is `holes::crt_qsort`: the CRT version without
+  median of three (middle element as pivot, selection sort up to 8 elements). The map's
+  "median-of-three + insertion sort" is wrong for this binary. Replacing it with a stable sort
+  changes nothing on any dump set, so no case has ties that matter yet.
+- Ported in `holes.rs`; isolated test `tests/dcore_holes.rs` (`after_cut` → `after_holes`,
+  `after_mergeLG` → `after_holeedge`, plus `after_holes` of the port's own run from the RD2).
+- Two globals were raw addresses in the dumps. `scratch100` is now a face pointer (the hole
+  outline's face, the `fa` of every hole piece segment). `scratch0fc` is the heap address of the
+  clipper's last vertex node, so it is dumped and kept as 0/1. The dump harness needs the matching
+  change in `GLOBALS` (`('scratch100', P, …)`, and `'nz'` for `scratch0fc`). A working copy is
+  `/tmp/claude-0/coreS6/dump_state.py`. `from_json` and `compare` accept the old dumps.
+- A non-convex hole outline shows the warning box 0xa25, and the next progress call cancels the
+  run. `chimney_holes` returns `Fatal { code: 0 }` after the `after_holes` hook (the emulator
+  records the cancel as a fatal error with code 0; the core returns 1 and leaves `0 0`).
 
 **Writers (S7).**
 
