@@ -204,6 +204,58 @@ fn s1_from_entry(name: &str, doc: &dump::DumpDoc, t: &mut Tallies) {
     }
 }
 
+/// S2/S3 of every model, each started from the emulator's state at the
+/// first slab (`s1_end`) and compared with its state after the plane cut
+/// (`after_cut`, taken at the cut error when there is one). The cut error
+/// sites are tallied as pairs of the emulator's and the port's site names.
+fn sweep_from_s1_end(name: &str, doc: &dump::DumpDoc, t: &mut Tallies) {
+    let snaps = doc.snaps();
+    for (k, (i, e)) in snaps
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s["stage"] == "s1_end")
+        .enumerate()
+    {
+        let label = format!("{name} model {k}");
+        let Some(want) = snaps[i + 1..]
+            .iter()
+            .take_while(|s| s["stage"] != "s1_end")
+            .find(|s| s["stage"] == "after_cut")
+        else {
+            continue;
+        };
+        let mut c = match dump::from_json(e) {
+            Ok(c) => c,
+            Err(err) => {
+                tally(t, "sweep load", &label, vec![err.to_string()]);
+                continue;
+            }
+        };
+        let res = dcore::sweep::sweep(&mut c);
+        let last = !snaps[i + 1..].iter().any(|s| s["stage"] == "s1_end");
+        let emu = if last { emu_error(doc) } else { None };
+        let mut d = Vec::new();
+        match (&emu, &res) {
+            (None, Ok(_)) => {}
+            (Some((kind, code, id)), Err(dcore::CoreError::Cut { code: c2, msg })) if kind == "cut" => {
+                if (*code, *id) != (u64::from(*c2), msg.id) {
+                    d.push(format!("emulator {code}/{id:x?}, port {c2}/{:x?}", msg.id));
+                }
+                let site = doc.doc["errors"][0]["site"].as_str().unwrap_or("").to_string();
+                tally(
+                    t,
+                    &format!("sweep site {site} = {}", dcore::sweep::last_cut_site()),
+                    &label,
+                    vec![],
+                );
+            }
+            (e, r) => d.push(format!("emulator {e:?}, port {r:?}")),
+        }
+        d.extend(dump::compare(want, &dump::to_json(&c), 6));
+        tally(t, "sweep after_cut", &label, d);
+    }
+}
+
 fn first_diff(a: &[u8], b: &[u8]) -> String {
     let i = a
         .iter()
@@ -289,6 +341,7 @@ fn run_case(rd2: &Path, dir: &Path, t: &mut Tallies) -> bool {
         run_from_rd2(&name, dir, &bytes, &doc, t);
     }
     s1_from_entry(&name, &doc, t);
+    sweep_from_s1_end(&name, &doc, t);
     writers(&name, dir, &doc, t);
     true
 }
