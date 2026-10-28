@@ -22,9 +22,10 @@ use super::num::{self, HALF_PI_F, V3};
 use super::s1;
 use super::state::{ctr, Core, Cut, CutId, Face, FaceId, WallId, TFACE};
 
-/// Inner sweep iterations after which the port gives up (the original
-/// loops forever on some inputs).
-const MAX_ITER: u32 = 100_000;
+/// Sweep iterations (both passes) after which the port gives up: the
+/// original loops forever on some inputs, adding segments every round.
+/// Real models need at most a few dozen.
+const MAX_ITER: u32 = 200;
 
 thread_local! {
     static LAST_SITE: Cell<&'static str> = const { Cell::new("") };

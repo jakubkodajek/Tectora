@@ -231,7 +231,12 @@ fn sweep_from_s1_end(name: &str, doc: &dump::DumpDoc, t: &mut Tallies) {
                 continue;
             }
         };
-        let res = dcore::sweep::sweep(&mut c);
+        let mut iters = 0u32;
+        let res = dcore::sweep::sweep_with(&mut c, &mut |id, _| iters += u32::from(id == 0xa16));
+        let e = t.entry("sweep max iterations".into()).or_default();
+        if iters as usize > e.ok {
+            e.ok = iters as usize;
+        }
         let last = !snaps[i + 1..].iter().any(|s| s["stage"] == "s1_end");
         let emu = if last { emu_error(doc) } else { None };
         let mut d = Vec::new();
@@ -632,4 +637,31 @@ fn seg_all_vectors() {
         println!("{b}");
     }
     assert!(bad.is_empty());
+}
+
+/// Runs the port on the RD2s in `DCORE_RD2` (space separated) and prints
+/// each outcome (for cases without dumps, e.g. one the original never
+/// finishes).
+#[test]
+#[ignore]
+fn run_rd2() {
+    let files = std::env::var("DCORE_RD2").expect("DCORE_RD2=files");
+    let flags = std::env::var("DCORE_FLAGS")
+        .ok()
+        .map(|f| u32::from_str_radix(f.trim_start_matches("0x"), 16).unwrap())
+        .unwrap_or(0x4a8);
+    for f in files.split_whitespace() {
+        let bytes = std::fs::read(f).unwrap();
+        let t0 = std::time::Instant::now();
+        let mut stages = Vec::new();
+        let mut run = dcore::pipeline::Run::new(flags);
+        run.hook = Some(Box::new(|stage: &str, _: &dcore::Core| stages.push(stage.to_string())));
+        let r = run.run(&bytes);
+        drop(run);
+        println!(
+            "{f}: {:?} after {:?}, stages {stages:?}",
+            r.map(|o| o.code),
+            t0.elapsed()
+        );
+    }
 }
