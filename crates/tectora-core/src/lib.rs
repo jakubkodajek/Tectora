@@ -13,6 +13,7 @@ mod gable_wall;
 pub mod geom;
 pub mod model;
 pub mod modell;
+pub mod multiroof;
 pub mod openings;
 pub mod quantities;
 pub mod raised;

@@ -265,6 +265,7 @@ fn footprint(d: &Dormer, reach: f64) -> Option<(RoofPart, usize)> {
         breaks: Vec::new(),
         priority: 0,
         clad: false,
+        source: None,
     });
     let mut part = RoofPart {
         name: "dormer".into(),
@@ -830,6 +831,7 @@ mod tests {
             priority: 0,
             direction_rad: None,
             clad: false,
+            source: None,
         }
     }
 
