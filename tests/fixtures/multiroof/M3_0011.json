@@ -1,0 +1,293 @@
+{
+ "source": "Tectora mr3 random multi-roof case M3_0011 (row3), calculated by DACAD",
+ "input_format": "V2",
+ "input": {
+  "walls": [
+   {
+    "start": [
+     0.0,
+     0.0
+    ],
+    "end": [
+     9.33,
+     0.0
+    ],
+    "direction_deg": 0.0,
+    "definitions": [
+     {
+      "pitch_deg": 50.0,
+      "eave_height_m": 3.81,
+      "overhang_m": 0.3,
+      "material": 1,
+      "roof_no": 1,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     9.33,
+     0.0
+    ],
+    "end": [
+     9.33,
+     9.84
+    ],
+    "direction_deg": 90.0,
+    "definitions": [
+     {
+      "pitch_deg": 50.0,
+      "eave_height_m": 3.81,
+      "overhang_m": 0.3,
+      "material": 1,
+      "roof_no": 1,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     9.33,
+     9.84
+    ],
+    "end": [
+     0.0,
+     9.84
+    ],
+    "direction_deg": 180.0,
+    "definitions": [
+     {
+      "pitch_deg": 50.0,
+      "eave_height_m": 3.81,
+      "overhang_m": 0.3,
+      "material": 1,
+      "roof_no": 1,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     0.0,
+     9.84
+    ],
+    "end": [
+     0.0,
+     0.0
+    ],
+    "direction_deg": 270.0,
+    "definitions": [
+     {
+      "pitch_deg": 50.0,
+      "eave_height_m": 3.81,
+      "overhang_m": 0.3,
+      "material": 1,
+      "roof_no": 1,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     9.33,
+     0.0
+    ],
+    "end": [
+     13.84,
+     0.0
+    ],
+    "direction_deg": 0.0,
+    "definitions": [
+     {
+      "pitch_deg": 49.0,
+      "eave_height_m": 3.84,
+      "overhang_m": 0.04,
+      "material": 1,
+      "roof_no": 2,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     13.84,
+     0.0
+    ],
+    "end": [
+     13.84,
+     9.84
+    ],
+    "direction_deg": 90.0,
+    "definitions": [
+     {
+      "pitch_deg": 60.0,
+      "eave_height_m": 3.84,
+      "overhang_m": 0.0,
+      "material": 1,
+      "roof_no": 2,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     13.84,
+     9.84
+    ],
+    "end": [
+     9.33,
+     9.84
+    ],
+    "direction_deg": 180.0,
+    "definitions": [
+     {
+      "pitch_deg": 43.0,
+      "eave_height_m": 3.84,
+      "overhang_m": 0.66,
+      "material": 1,
+      "roof_no": 2,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     9.33,
+     9.84
+    ],
+    "end": [
+     9.33,
+     0.0
+    ],
+    "direction_deg": 270.0,
+    "definitions": [
+     {
+      "pitch_deg": 49.0,
+      "eave_height_m": 3.84,
+      "overhang_m": 0.3,
+      "material": 1,
+      "roof_no": 2,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     13.84,
+     0.0
+    ],
+    "end": [
+     22.42,
+     0.0
+    ],
+    "direction_deg": 0.0,
+    "definitions": [
+     {
+      "pitch_deg": 18.0,
+      "eave_height_m": 3.81,
+      "overhang_m": 0.5,
+      "material": 1,
+      "roof_no": 3,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     22.42,
+     0.0
+    ],
+    "end": [
+     22.42,
+     9.84
+    ],
+    "direction_deg": 90.0,
+    "definitions": [
+     {
+      "pitch_deg": 90.0,
+      "eave_height_m": 3.81,
+      "overhang_m": 0.3,
+      "material": 0,
+      "roof_no": 3,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     22.42,
+     9.84
+    ],
+    "end": [
+     13.84,
+     9.84
+    ],
+    "direction_deg": 180.0,
+    "definitions": [
+     {
+      "pitch_deg": 44.0,
+      "eave_height_m": 3.81,
+      "overhang_m": 0.5,
+      "material": 1,
+      "roof_no": 3,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     13.84,
+     9.84
+    ],
+    "end": [
+     13.84,
+     0.0
+    ],
+    "direction_deg": 270.0,
+    "definitions": [
+     {
+      "pitch_deg": 25.0,
+      "eave_height_m": 3.81,
+      "overhang_m": 0.5,
+      "material": 1,
+      "roof_no": 3,
+      "priority": 0
+     }
+    ]
+   }
+  ],
+  "windows": [],
+  "chimneys": [],
+  "roofs": {
+   "1": {
+    "kind": 0,
+    "host": 0
+   },
+   "2": {
+    "kind": 0,
+    "host": 0
+   },
+   "3": {
+    "kind": 0,
+    "host": 0
+   }
+  }
+ },
+ "dacad_results": {
+  "lines_by_type": {
+   "F": 8.32,
+   "G": 74.2236,
+   "K": 0.7282,
+   "OL": 3.7977,
+   "OR": 8.5274,
+   "OS": 4.5104,
+   "S": 9.741,
+   "T": 66.67,
+   "WH": 9.595,
+   "WS": 2.0149
+  },
+  "area_groups": {
+   "Škridla - ": 344.9661
+  }
+ }
+}

@@ -2438,6 +2438,7 @@ mod tests {
                 breaks: Vec::new(),
                 priority: 0,
                 clad: false,
+                source: None,
             })
             .collect();
         let mut part = RoofPart {

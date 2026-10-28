@@ -265,3 +265,105 @@ pub fn seg_seg(s1: (V3, V3), s2: (V3, V3), mode: u32, t: &Tol) -> (u32, V3) {
     }
     (r, o)
 }
+
+// ---------------------------------------------------------------------------
+// S2/S3: segment primitives of the sweep and the closing (each the original
+// routine with its compare helpers; vectors in `geom_seg.tsv`; the segment
+// intersection and `seg_on_seg` above are shared with S5).
+
+/// A segment `p -> q`.
+pub type Seg2 = (V3, V3);
+
+/// Whether two segments are collinear and share an end: 1 when they lie
+/// on opposite sides of the shared end (a join), -1 when they overlap from
+/// it, 0 otherwise (also for equal segments' first ends).
+pub fn collinear_join(a: Seg2, b: Seg2, t: &Tol) -> i32 {
+    let v = t.value;
+    let (p1, q1, p2, q2) = (a.0, a.1, b.0, b.1);
+    if num::peq(p1, q1, v) || num::peq(p2, q2, v) {
+        return 0;
+    }
+    let d1 = num::sub(q1, p1);
+    let d2 = num::sub(q2, p2);
+    let d3 = num::sub(p2, p1);
+    if num::par(d1, d3, t) == 0 || num::par(d2, d3, t) == 0 || num::par(d1, d2, t) == 0 {
+        return 0;
+    }
+    let (e1, e2) = if num::peq(p1, p2, v) {
+        (num::sub(q1, p1), num::sub(q2, p2))
+    } else if num::peq(p1, q2, v) {
+        (num::sub(q1, p1), num::sub(p2, q2))
+    } else if num::peq(q1, p2, v) {
+        (num::sub(p1, q1), num::sub(q2, p2))
+    } else if num::peq(q1, q2, v) {
+        (num::sub(p1, q1), num::sub(p2, q2))
+    } else {
+        return 0;
+    };
+    if num::pne(num::norm(e1, t), num::norm(e2, t), v) {
+        1
+    } else {
+        -1
+    }
+}
+
+/// Whether the three difference vectors of two segments are collinear
+/// (each non-zero pair parallel), the common start of the two box tests.
+fn collinear3(a: Seg2, b: Seg2, t: &Tol) -> bool {
+    let v = t.value;
+    let d1 = num::sub(a.1, a.0);
+    let d2 = num::sub(b.1, b.0);
+    let d3 = num::sub(b.0, a.0);
+    let bad = |x: V3, y: V3| !num::vzero(x, v) && !num::vzero(y, v) && num::par(x, y, t) == 0;
+    !(bad(d1, d3) || bad(d2, d3) || bad(d1, d2))
+}
+
+/// Whether segment `b` overlaps segment `a`: collinear and both ends of
+/// `b` inside `a`'s box, strictly inside in one axis. The original's upper
+/// z bound is the y maximum (it drops the z maximum it computes).
+pub fn seg_overlap(a: Seg2, b: Seg2, t: &Tol) -> bool {
+    let v = t.value;
+    let lo = |k: usize| {
+        if num::lt(a.0[k], a.1[k], v) {
+            a.0[k]
+        } else {
+            a.1[k]
+        }
+    };
+    let hi = |k: usize| {
+        if num::gt(a.0[k], a.1[k], v) {
+            a.0[k]
+        } else {
+            a.1[k]
+        }
+    };
+    let l = [lo(0), lo(1), lo(2)];
+    let h = [hi(0), hi(1), hi(1)];
+    if !collinear3(a, b, t) {
+        return false;
+    }
+    let within = |x: f32, k: usize| num::ge(x, l[k], v) && num::le(x, h[k], v);
+    let strict = |x: f32, k: usize| num::gt(x, l[k], v) && num::lt(x, h[k], v);
+    (0..3).any(|s| {
+        [b.0, b.1].iter().all(|p| {
+            (0..3).all(|k| {
+                if k == s {
+                    strict(p[k], k)
+                } else {
+                    within(p[k], k)
+                }
+            })
+        })
+    })
+}
+
+/// Whether `b` points the same way as `a` (normalised within VALUE_EPS)
+/// and is not clearly longer.
+pub fn same_dir_within(a: V3, b: V3, t: &Tol) -> bool {
+    let (na, nb) = (num::norm(a, t), num::norm(b, t));
+    let (la, lb) = (num::len(a) as f32, num::len(b) as f32);
+    if num::pne(na, nb, t.value) {
+        return false;
+    }
+    num::le(lb, la, t.value)
+}
