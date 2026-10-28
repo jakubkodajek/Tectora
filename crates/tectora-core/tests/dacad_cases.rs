@@ -76,16 +76,24 @@ fn wall(id: usize, w: &Value) -> DadWall {
     };
     let (start, end) = (pt(&w["start"]), pt(&w["end"]));
     let length = start.distance(end);
+    // The direction as DACAD stored it (e.g. 270 rather than -90), which
+    // it writes into the RD2.
+    let stored = w["direction_deg"].as_f64();
     let angle_rad = if length > 1e-6 {
-        (end.y - start.y).atan2(end.x - start.x)
+        let a = (end.y - start.y).atan2(end.x - start.x);
+        stored
+            .map(f64::to_radians)
+            .filter(|s| ((s - a).rem_euclid(std::f64::consts::TAU) + 1e-4) % std::f64::consts::TAU < 2e-4)
+            .unwrap_or(a)
     } else {
-        w["direction_deg"].as_f64().unwrap_or(0.0).to_radians()
+        stored.unwrap_or(0.0).to_radians()
     };
     DadWall {
         id: id as u16 + 1,
         group: d0["roof_no"].as_u64().unwrap_or(1) as u16,
         start,
         length,
+        stored_length: length as f32 as f64,
         angle_rad,
         eave_height: d0["eave_height_m"].as_f64().unwrap(),
         overhang: d0["overhang_m"].as_f64().unwrap(),
@@ -312,20 +320,19 @@ fn compare_tol(cases: Vec<(String, Value)>, tol: fn(f64) -> f64) -> Vec<String> 
     for (name, case) in cases {
         let project = project(&name, &case);
         let geos = generate_project(&project);
-        // DACAD_FILES=<dir> writes the RD2, INT and W3D Tectora hands to
-        // the Modellverschnitt, for comparing with DACAD's.
+        // DACAD_FILES=<dir> writes the RD2 the engine hands to DACAD's
+        // core, for comparing with DACAD's.
         if let Ok(dir) = std::env::var("DACAD_FILES") {
             let mut p = project.clone();
             for part in &mut p.parts {
                 part.normalize_ccw();
             }
-            let producer = tectora_core::multiroof::SweepProducer;
-            if let Some(f) = tectora_core::multiroof::files_with(&p, &producer) {
-                std::fs::write(format!("{dir}/{name}.RD2"), f.rd2).unwrap();
-                std::fs::write(format!("{dir}/{name}.INT"), f.int).unwrap();
-                if let Some(w) = f.w3d {
-                    std::fs::write(format!("{dir}/{name}.W3D"), w).unwrap();
-                }
+            match tectora_core::engine::rd2_text(&p) {
+                Ok((rd2, _)) => std::fs::write(format!("{dir}/{name}.RD2"), rd2).unwrap(),
+                Err(e) => println!("{name}: no RD2: {e}"),
+            }
+            if let Err(e) = tectora_core::engine::generate(&p) {
+                println!("{name}: {e}");
             }
         }
         if std::env::var("DACAD_PARTS").is_ok() {

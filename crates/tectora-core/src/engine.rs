@@ -164,13 +164,27 @@ fn plan(points: &[[f64; 3]]) -> Vec<Point2> {
     points.iter().map(|p| Point2::new(p[0], p[1])).collect()
 }
 
-/// The main-roof wall each dormer sits on: the wall of the topmost roof
-/// face just behind the dormer's front, from a core run on the roofs alone
-/// (DACAD knows the faces from its own calculation). `None` for a dormer
-/// on no roof face.
+/// The main-roof wall each dormer sits on. A dormer imported from DACAD
+/// names it (the V1 roof record; DACAD's `T` record takes that wall,
+/// TRAING04: wall 8). Otherwise it is the wall of the topmost roof face
+/// just behind the dormer's front, from a core run on the roofs alone
+/// (DACAD knows the faces from its own calculation).
 pub fn dormer_hosts(project: &Project) -> Result<Vec<Option<DormerHost>>, Failure> {
-    if project.dormers.is_empty() {
-        return Ok(Vec::new());
+    let recorded = |d: &crate::model::Dormer| {
+        let [a, b] = d.host_wall?;
+        project.parts.iter().enumerate().find_map(|(pi, part)| {
+            let n = part.edges.len();
+            (0..n)
+                .find(|&i| {
+                    part.edges[i].start.distance(a) < 1e-3
+                        && part.edges[(i + 1) % n].start.distance(b) < 1e-3
+                })
+                .map(|edge| DormerHost { part: pi, edge })
+        })
+    };
+    let mut hosts: Vec<Option<DormerHost>> = project.dormers.iter().map(recorded).collect();
+    if hosts.iter().all(Option::is_some) {
+        return Ok(hosts);
     }
     let mut bare = project.clone();
     bare.dormers.clear();
@@ -179,7 +193,7 @@ pub fn dormer_hosts(project: &Project) -> Result<Vec<Option<DormerHost>>, Failur
     let (text, map) = write_rd2_with(&bare, &[]);
     let rd2 = Rd2::parse(&text).map_err(|e| Failure::Ours(format!("RD2: {e}")))?;
     let sol = parse_sol(&run_core(&text, FLAGS_SOL)?)?;
-    // Sloped faces as (plan polygon, plane, part, edge, level).
+    // Sloped faces as (plan polygon, plane, host).
     let mut faces = Vec::new();
     for f in &sol.faces {
         if f.ch != b'W' || f.sub < 0 {
@@ -205,16 +219,17 @@ pub fn dormer_hosts(project: &Project) -> Result<Vec<Option<DormerHost>>, Failur
         if poly.len() < 3 || signed_area(&poly).abs() < 1e-9 {
             continue;
         }
-        faces.push((poly, f.plane, part, edge, f.sub.max(0) as usize));
+        faces.push((poly, f.plane, DormerHost { part, edge }));
     }
     let z = |pl: [f32; 4], p: Point2| {
         (pl[3] as f64 - pl[0] as f64 * p.x - pl[1] as f64 * p.y) / pl[2] as f64
     };
-    let mut hosts = Vec::with_capacity(project.dormers.len());
-    for d in &project.dormers {
-        let n = d.edges.len();
+    for (d, host) in project.dormers.iter().zip(hosts.iter_mut()) {
+        if host.is_some() {
+            continue;
+        }
         let mut best: Option<(f64, DormerHost)> = None;
-        for i in 0..n {
+        for i in 0..d.edges.len() {
             let s = d.edges[i].start;
             let e = d.edges.get(i + 1).map_or(d.end, |x| x.start);
             let len = s.distance(e);
@@ -227,22 +242,15 @@ pub fn dormer_hosts(project: &Project) -> Result<Vec<Option<DormerHost>>, Failur
             let top = faces
                 .iter()
                 .filter(|f| inside(&f.0, seed))
-                .map(|f| (z(f.1, seed), f))
+                .map(|f| (z(f.1, seed), f.2))
                 .max_by(|a, b| a.0.total_cmp(&b.0));
-            if let Some((zt, f)) = top
+            if let Some((zt, h)) = top
                 && best.is_none_or(|b| zt < b.0)
             {
-                best = Some((
-                    zt,
-                    DormerHost {
-                        part: f.2,
-                        edge: f.3,
-                        level: f.4,
-                    },
-                ));
+                best = Some((zt, h));
             }
         }
-        hosts.push(best.map(|b| b.1));
+        *host = best.map(|b| b.1);
     }
     if hosts.iter().any(Option::is_none) {
         return Err(Failure::Ours("a dormer on no roof face".into()));

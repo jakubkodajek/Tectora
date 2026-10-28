@@ -61,6 +61,9 @@ pub struct DadWall {
     pub group: u16,
     pub start: Point2,
     pub length: f64,
+    /// The length as the file stores it (a float, not rounded), which
+    /// DACAD writes into the RD2 to five decimals.
+    pub stored_length: f64,
     pub angle_rad: f64,
     pub eave_height: f64,
     pub overhang: f64,
@@ -95,7 +98,7 @@ impl DadWall {
                 id: self.id,
                 roof: self.group,
                 start: self.start,
-                length: self.length,
+                length: self.stored_length,
                 angle_deg: self.angle_rad.to_degrees(),
             }),
         }
@@ -184,6 +187,12 @@ pub fn parse(bytes: &[u8]) -> Result<DadFile, DadError> {
                     group: u16_at(payload, 2),
                     start: Point2::new(num(4)?, num(8)?),
                     length: num(12)?,
+                    stored_length: f64::from(f32::from_le_bytes([
+                        payload[12],
+                        payload[13],
+                        payload[14],
+                        payload[15],
+                    ])),
                     angle_rad: angle(16)?,
                     eave_height: num(24)?,
                     overhang: num(28)?,

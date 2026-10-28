@@ -91,8 +91,6 @@ impl Rd2Map {
 pub struct DormerHost {
     pub part: usize,
     pub edge: usize,
-    /// The `D`/`K` record of the wall whose plane carries the dormer.
-    pub level: usize,
 }
 
 /// Whether DACAD joins the roofs of this project in its Modellverschnitt:
@@ -186,10 +184,35 @@ pub fn write_rd2_with(project: &Project, hosts: &[Option<DormerHost>]) -> (Strin
             })
             .collect()
     };
+    // Model numbers: DACAD's roof numbers when every roof and dormer was
+    // imported from DACAD with a roof number of its own, else 1, 2, ...
+    let roof_no = |edges: &[EdgeDef]| {
+        sourced(edges)
+            .then(|| edges.first().and_then(|e| e.source.as_ref()).map(|s| s.roof as i32))
+            .flatten()
+    };
+    let mut models: Vec<Option<i32>> = project
+        .parts
+        .iter()
+        .map(|p| roof_no(&p.edges))
+        .chain(
+            written
+                .iter()
+                .map(|&(di, _)| roof_no(&project.dormers[di].edges)),
+        )
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    if !models
+        .iter()
+        .all(|m| m.is_some_and(|m| m > 0 && seen.insert(m)))
+    {
+        models = (1..=models.len() as i32).map(Some).collect();
+    }
+    let models: Vec<i32> = models.into_iter().flatten().collect();
     for (pi, part) in project.parts.iter().enumerate() {
         let walls = numbers(&part.edges);
         map.parts.push(PartMap {
-            model: pi as i32 + 1,
+            model: models[pi],
             walls,
         });
     }
@@ -197,16 +220,23 @@ pub fn write_rd2_with(project: &Project, hosts: &[Option<DormerHost>]) -> (Strin
         let walls = numbers(&project.dormers[di].edges);
         map.dormers.push(DormerMap {
             dormer: di,
-            model: (project.parts.len() + k) as i32 + 1,
+            model: models[project.parts.len() + k],
             part: h.part,
             walls,
         });
     }
     let mut s = String::from("0\n");
-    for (dm, &(_, h)) in map.dormers.iter().zip(&written).rev() {
-        write_dormer(&mut s, project, dm, h, &map.parts[h.part]);
-    }
-    for (part, pm) in project.parts.iter().zip(&map.parts).rev() {
+    // From the highest model number down (DACAD's order for V1 files).
+    let mut order: Vec<usize> = (0..models.len()).collect();
+    order.sort_by_key(|&k| std::cmp::Reverse(models[k]));
+    for k in order {
+        if k >= project.parts.len() {
+            let j = k - project.parts.len();
+            let (dm, h) = (&map.dormers[j], written[j].1);
+            write_dormer(&mut s, project, dm, h, &map.parts[h.part]);
+            continue;
+        }
+        let (part, pm) = (&project.parts[k], &map.parts[k]);
         let n = part.edges.len();
         let mut order: Vec<usize> = (0..n).collect();
         if sourced(&part.edges) {
@@ -240,11 +270,31 @@ pub fn write_rd2_with(project: &Project, hosts: &[Option<DormerHost>]) -> (Strin
         let _ = write!(s, "L {:2} ", k + 1);
         put_f(&mut s, h as f32 as f64, 4, 1);
         let _ = writeln!(s, " {:2}", c.corners.len());
-        for p in &c.corners {
+        for p in dacad_corners(&c.corners) {
             let _ = writeln!(s, "  {:.4} {:.4}", p.x, p.y);
         }
     }
     (s, map)
+}
+
+/// A hole's corners as DACAD writes them: counter-clockwise from the
+/// lowest corner (smallest y, then x), whatever order they were entered
+/// in (TRAING01, TRAING04, TRAING07, TRAING08).
+fn dacad_corners(corners: &[Point2]) -> Vec<Point2> {
+    let mut c = corners.to_vec();
+    if crate::geom::signed_area(&c) < 0.0 {
+        c.reverse();
+    }
+    let lowest = (0..c.len()).min_by(|&i, &j| {
+        let (p, q) = (c[i], c[j]);
+        (p.y as f32)
+            .total_cmp(&(q.y as f32))
+            .then((p.x as f32).total_cmp(&(q.x as f32)))
+    });
+    if let Some(k) = lowest {
+        c.rotate_left(k);
+    }
+    c
 }
 
 /// Every wall was imported from DACAD: the walls are written as recorded.
@@ -329,7 +379,15 @@ fn write_dormer(s: &mut String, project: &Project, dm: &DormerMap, h: DormerHost
         };
         levels.push((k as i32, r.2, d0, r.3, r.5));
     }
-    let level = h.level.min(levels.len().saturating_sub(1));
+    // The plane at the front: the last sloped one starting at or before
+    // it (E008: above a vertical and a 135° one), else the first sloped.
+    let sloped = |k: &usize| (levels[*k].4 - 90.0).abs() > 90.0 - crate::model::GABLE_PITCH_DEG;
+    let level = (0..levels.len())
+        .filter(sloped)
+        .filter(|&k| levels[k].2 <= dist(front) + 1e-9)
+        .last()
+        .or_else(|| (0..levels.len()).find(sloped))
+        .unwrap_or(0);
     let (_, _, d0, z0, p0) = levels[level];
     let h_front = z0 + (dist(front) - d0) * p0.to_radians().tan();
     let back = if hangle < 180.0 {
@@ -342,7 +400,7 @@ fn write_dormer(s: &mut String, project: &Project, dm: &DormerMap, h: DormerHost
         let _ = writeln!(
             s,
             "{letter} {:2} {:2} {:.4} {:.4}{:10.5}{:10.4}{:5.1}",
-            dm.model, host_wall, front.x, front.y, hlen, back, 0.0
+            dm.model, host_wall, front.x, front.y, hlen, back, he.priority as f64
         );
         for (j, &(sub, flag, _, z, p)) in levels.iter().enumerate().skip(level) {
             let (letter, z) = if j == level { ('D', h_front) } else { ('K', z) };
