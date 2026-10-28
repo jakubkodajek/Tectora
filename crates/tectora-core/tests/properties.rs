@@ -552,7 +552,7 @@ face_tests!(faces_uniform_overhang, uniform: true, []);
 face_tests!(
     faces_mixed_overhang,
     uniform: false,
-    [ignore = "known bug #22: unequal overhangs at sharp corners bend faces"]
+    [ignore = "DACAD-dependent: with unequal overhangs at sharp corners DACAD's core writes faces bounded by a single line (confirmed: SO2 byte-identical to DACAD's)"]
 );
 
 /// Invariance tests, instantiated for a generator; `$attr` lets known bugs
