@@ -159,36 +159,211 @@ pub fn line_line(l1: &Line, l2: &Line, in_slab: Option<(f32, f32)>, t: &Tol) -> 
     (false, out)
 }
 
-/// Whether two collinear segments share an end and continue each other:
-/// 0 when either is degenerate (VALUE_EPS), when the two directions and
-/// the offset between the start points are not all parallel, or when no
-/// end is shared; otherwise, with `u` the direction of the first and `v`
-/// of the second, both pointing away from the shared end, -1 when they
-/// point the same way (one folds back over the other) and 1 when they
-/// differ (the second continues the first).
-pub fn collinear_join(p1: V3, q1: V3, p2: V3, q2: V3, t: &Tol) -> i32 {
-    let ve = t.value;
-    if num::peq(p1, q1, ve) || num::peq(p2, q2, ve) {
+/// Whether segment `b` lies on segment `a` (VALUE_EPS): the three
+/// difference vectors `a.q - a.p`, `b.q - b.p` and `b.p - a.p` are pairwise
+/// parallel (a zero vector passes) and both ends of `b` are inside the
+/// bounding box of `a`. The box bounds take `a.p` only when it is clearly
+/// below (min) or clearly above (max) `a.q`.
+pub fn seg_on_seg(ap: V3, aq: V3, bp: V3, bq: V3, t: &Tol) -> bool {
+    let v = t.value;
+    let mut lo = [0.0f32; 3];
+    let mut hi = [0.0f32; 3];
+    for k in 0..3 {
+        lo[k] = if num::lt(ap[k], aq[k], v) {
+            ap[k]
+        } else {
+            aq[k]
+        };
+        hi[k] = if num::gt(ap[k], aq[k], v) {
+            ap[k]
+        } else {
+            aq[k]
+        };
+    }
+    let da = num::sub(aq, ap);
+    let db = num::sub(bq, bp);
+    let dab = num::sub(bp, ap);
+    let skew = |x: V3, y: V3| !num::vzero(x, v) && !num::vzero(y, v) && num::par(x, y, t) == 0;
+    if skew(da, dab) || skew(db, dab) || skew(da, db) {
+        return false;
+    }
+    (0..3).all(|k| {
+        num::ge(bp[k], lo[k], v)
+            && num::le(bp[k], hi[k], v)
+            && num::ge(bq[k], lo[k], v)
+            && num::le(bq[k], hi[k], v)
+    })
+}
+
+/// The intersection of two segments (as lines, see [`line_line`]) with a
+/// bit mask of where the point lies (VALUE_EPS). `mode` 8 returns 1 for any
+/// line intersection. Otherwise the point must be inside the bounding box
+/// of segment 1 (skipped with mode bit 2) and of segment 2 (bit 4), else 0.
+/// Bit 1 of the result: inside the box of segment 1 (with mode bit 1), or
+/// strictly inside it in one coordinate and inside in the other two; bit 2
+/// the same for segment 2. Returns the mask and the output point.
+pub fn seg_seg(s1: (V3, V3), s2: (V3, V3), mode: u32, t: &Tol) -> (u32, V3) {
+    let v = t.value;
+    let l1 = Line {
+        p: s1.0,
+        d: num::sub(s1.1, s1.0),
+    };
+    let l2 = Line {
+        p: s2.0,
+        d: num::sub(s2.1, s2.0),
+    };
+    let (hit, o) = line_line(&l1, &l2, None, t);
+    if !hit {
+        return (0, o);
+    }
+    if mode == 8 {
+        return (1, o);
+    }
+    // Plain float compares; an unordered pair takes q for the minimum and
+    // p for the maximum.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    let bbox = |p: V3, q: V3| {
+        let mut lo = [0.0f32; 3];
+        let mut hi = [0.0f32; 3];
+        for k in 0..3 {
+            lo[k] = if !(q[k] > p[k]) { q[k] } else { p[k] };
+            hi[k] = if !(q[k] >= p[k]) { p[k] } else { q[k] };
+        }
+        (lo, hi)
+    };
+    let b1 = bbox(s1.0, s1.1);
+    let b2 = bbox(s2.0, s2.1);
+    let inside = |(lo, hi): ([f32; 3], [f32; 3])| {
+        (0..3).all(|k| !num::lt(o[k], lo[k], v)) && (0..3).all(|k| !num::gt(o[k], hi[k], v))
+    };
+    if !(mode & 2 != 0 || inside(b1)) || !(mode & 4 != 0 || inside(b2)) {
+        return (0, o);
+    }
+    let within =
+        |lo: &[f32; 3], hi: &[f32; 3], k: usize| num::le(lo[k], o[k], v) && num::ge(hi[k], o[k], v);
+    let strict =
+        |lo: &[f32; 3], hi: &[f32; 3], k: usize| num::lt(lo[k], o[k], v) && num::gt(hi[k], o[k], v);
+    let bit = |(lo, hi): ([f32; 3], [f32; 3])| {
+        let all = (0..3).all(|k| within(&lo, &hi, k));
+        let one = (0..3).any(|j| {
+            (0..3).all(|k| {
+                if k == j {
+                    strict(&lo, &hi, k)
+                } else {
+                    within(&lo, &hi, k)
+                }
+            })
+        });
+        (mode & 1 != 0 && all) || one
+    };
+    let mut r = 0;
+    if bit(b1) {
+        r |= 1;
+    }
+    if bit(b2) {
+        r |= 2;
+    }
+    (r, o)
+}
+
+// ---------------------------------------------------------------------------
+// S2/S3: segment primitives of the sweep and the closing (each the original
+// routine with its compare helpers; vectors in `geom_seg.tsv`; the segment
+// intersection and `seg_on_seg` above are shared with S5).
+
+/// A segment `p -> q`.
+pub type Seg2 = (V3, V3);
+
+/// Whether two segments are collinear and share an end: 1 when they lie
+/// on opposite sides of the shared end (a join), -1 when they overlap from
+/// it, 0 otherwise (also for equal segments' first ends).
+pub fn collinear_join(a: Seg2, b: Seg2, t: &Tol) -> i32 {
+    let v = t.value;
+    let (p1, q1, p2, q2) = (a.0, a.1, b.0, b.1);
+    if num::peq(p1, q1, v) || num::peq(p2, q2, v) {
         return 0;
     }
     let d1 = num::sub(q1, p1);
     let d2 = num::sub(q2, p2);
-    let off = num::sub(p2, p1);
-    if num::par(d1, off, t) == 0 || num::par(d2, off, t) == 0 || num::par(d1, d2, t) == 0 {
+    let d3 = num::sub(p2, p1);
+    if num::par(d1, d3, t) == 0 || num::par(d2, d3, t) == 0 || num::par(d1, d2, t) == 0 {
         return 0;
     }
-    let (u, v) = if num::peq(p1, p2, ve) {
+    let (e1, e2) = if num::peq(p1, p2, v) {
         (num::sub(q1, p1), num::sub(q2, p2))
-    } else if num::peq(p1, q2, ve) {
+    } else if num::peq(p1, q2, v) {
         (num::sub(q1, p1), num::sub(p2, q2))
-    } else if num::peq(q1, p2, ve) {
+    } else if num::peq(q1, p2, v) {
         (num::sub(p1, q1), num::sub(q2, p2))
-    } else if num::peq(q1, q2, ve) {
+    } else if num::peq(q1, q2, v) {
         (num::sub(p1, q1), num::sub(p2, q2))
     } else {
         return 0;
     };
-    let u = num::norm(u, t);
-    let v = num::norm(v, t);
-    if num::pne(u, v, ve) { 1 } else { -1 }
+    if num::pne(num::norm(e1, t), num::norm(e2, t), v) {
+        1
+    } else {
+        -1
+    }
+}
+
+/// Whether the three difference vectors of two segments are collinear
+/// (each non-zero pair parallel), the common start of the two box tests.
+fn collinear3(a: Seg2, b: Seg2, t: &Tol) -> bool {
+    let v = t.value;
+    let d1 = num::sub(a.1, a.0);
+    let d2 = num::sub(b.1, b.0);
+    let d3 = num::sub(b.0, a.0);
+    let bad = |x: V3, y: V3| !num::vzero(x, v) && !num::vzero(y, v) && num::par(x, y, t) == 0;
+    !(bad(d1, d3) || bad(d2, d3) || bad(d1, d2))
+}
+
+/// Whether segment `b` overlaps segment `a`: collinear and both ends of
+/// `b` inside `a`'s box, strictly inside in one axis. The original's upper
+/// z bound is the y maximum (it drops the z maximum it computes).
+pub fn seg_overlap(a: Seg2, b: Seg2, t: &Tol) -> bool {
+    let v = t.value;
+    let lo = |k: usize| {
+        if num::lt(a.0[k], a.1[k], v) {
+            a.0[k]
+        } else {
+            a.1[k]
+        }
+    };
+    let hi = |k: usize| {
+        if num::gt(a.0[k], a.1[k], v) {
+            a.0[k]
+        } else {
+            a.1[k]
+        }
+    };
+    let l = [lo(0), lo(1), lo(2)];
+    let h = [hi(0), hi(1), hi(1)];
+    if !collinear3(a, b, t) {
+        return false;
+    }
+    let within = |x: f32, k: usize| num::ge(x, l[k], v) && num::le(x, h[k], v);
+    let strict = |x: f32, k: usize| num::gt(x, l[k], v) && num::lt(x, h[k], v);
+    (0..3).any(|s| {
+        [b.0, b.1].iter().all(|p| {
+            (0..3).all(|k| {
+                if k == s {
+                    strict(p[k], k)
+                } else {
+                    within(p[k], k)
+                }
+            })
+        })
+    })
+}
+
+/// Whether `b` points the same way as `a` (normalised within VALUE_EPS)
+/// and is not clearly longer.
+pub fn same_dir_within(a: V3, b: V3, t: &Tol) -> bool {
+    let (na, nb) = (num::norm(a, t), num::norm(b, t));
+    let (la, lb) = (num::len(a) as f32, num::len(b) as f32);
+    if num::pne(na, nb, t.value) {
+        return false;
+    }
+    num::le(lb, la, t.value)
 }

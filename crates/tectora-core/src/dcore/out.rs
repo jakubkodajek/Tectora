@@ -253,39 +253,9 @@ pub fn write_sol(c: &mut Core) -> Result<Vec<u8>, CoreError> {
 }
 
 /// Removes a face's segments that reach the top (z >= 100) and, unless the
-/// face is closed, closes its outline (the closing with growing point
-/// tolerance is part of S3; only its trivial outcomes are here).
-pub fn close_face(c: &mut Core, f: FaceId, _retry: bool) -> Result<bool, CoreError> {
-    let tol = c.g.tol;
-    // Drop segments at the top.
-    let mut s = c.face(f).segs;
-    while let Some(si) = s {
-        let sg = c.seg(si).clone();
-        if num::ge(sg.p[2], 100.0, tol.value) || num::ge(sg.q[2], 100.0, tol.value) {
-            match sg.prev {
-                // The original updates the face in the cursor global here.
-                None => {
-                    let cf = c.g.cur_face.ok_or(fault("no current face"))?;
-                    c.face_mut(cf).segs = sg.next;
-                }
-                Some(p) => c.seg_mut(p).next = sg.next,
-            }
-            if let Some(n) = sg.next {
-                c.seg_mut(n).prev = sg.prev;
-            }
-            c.face_mut(f).closed = 0;
-        }
-        s = sg.next;
-    }
-    if c.face(f).closed != 0 {
-        return Ok(true);
-    }
-    let n = chain(c, c.face(f).segs).len();
-    c.g.seg_cur = None;
-    if n < 3 {
-        return Ok(false);
-    }
-    Err(CoreError::Unimplemented("polygon closing (S3)"))
+/// face is closed, closes its outline (see [`super::close::close_face`]).
+pub fn close_face(c: &mut Core, f: FaceId, retry: bool) -> Result<bool, CoreError> {
+    super::close::close_face(c, f, retry)
 }
 
 /// The edge flag of the INT: 1 when the segment borders a hidden wall face

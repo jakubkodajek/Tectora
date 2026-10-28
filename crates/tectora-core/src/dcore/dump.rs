@@ -139,7 +139,7 @@ fn globals_json(c: &Core, n: &Names) -> Value {
     put("llx", f3(g.llx));
     put("x05d0", json!(g.x05d0));
     put("x02ec", json!(g.x02ec));
-    put("scratch100", json!(g.scratch100));
+    put("scratch100", n.face(g.scratch100));
     put("scratch0fc", json!(g.scratch0fc));
     let names = [
         "code_none",
@@ -615,8 +615,13 @@ pub fn from_json(snap: &Value) -> Result<Core, DumpError> {
     g.llx = r.f3("llx")?;
     g.x05d0 = r.u32("x05d0")?;
     g.x02ec = r.u32("x02ec")?;
-    g.scratch100 = r.u32("scratch100")?;
-    g.scratch0fc = r.u32("scratch0fc")?;
+    // Dumps written before the hole port hold the raw address of the
+    // pointer and of the clipper node.
+    g.scratch100 = match r.v("scratch100")? {
+        Value::String(_) => r.face("scratch100")?,
+        _ => None,
+    };
+    g.scratch0fc = r.u32("scratch0fc")?.min(1);
     let names = [
         "code_none",
         "code_t",
@@ -858,6 +863,10 @@ pub fn compare(want: &Value, got: &Value, limit: usize) -> Vec<String> {
     for (k, va) in ga {
         // A probe of the dump harness, not state.
         if k == "relink_slot" {
+            continue;
+        }
+        // Raw addresses in dumps written before the hole port.
+        if (k == "scratch100" && va.is_number()) || (k == "scratch0fc" && va.as_u64() > Some(1)) {
             continue;
         }
         let vb = gb.get(k).unwrap_or(&Value::Null);

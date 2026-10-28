@@ -4,10 +4,12 @@
 //! See `PORTING.md` next to this file for the state model, the arithmetic
 //! conventions and how to test a slice against the emulator dumps.
 
+pub mod classify;
+pub mod close;
 pub mod dump;
 pub mod error;
-pub mod faceops;
 pub mod geom;
+pub mod holes;
 pub mod num;
 pub mod out;
 pub mod pipeline;
@@ -16,6 +18,7 @@ pub mod rd2;
 pub mod s1;
 pub mod stages;
 pub mod state;
+pub mod sweep;
 pub mod x87;
 
 pub use error::CoreError;

@@ -130,10 +130,15 @@ impl<'a> Run<'a> {
 
     /// The model's stages after the plane cut up to the edge table.
     fn model_post(&mut self) -> Result<(), CoreError> {
-        if self.core.g.flags & 0x8 != 0 {
-            stages::chimney_holes(&mut self.core)?;
-        }
+        // A non-convex hole cancels the run at the next progress call, after
+        // the snapshot.
+        let holes = if self.core.g.flags & 0x8 != 0 {
+            stages::chimney_holes(&mut self.core)
+        } else {
+            Ok(())
+        };
         self.at("after_holes");
+        holes?;
         if self.core.g.ok != 0 {
             let n = stages::collinear_merge(&mut self.core)?;
             self.core.g.counters[ctr::LINES] -= n;

@@ -183,6 +183,15 @@ pub fn angle(a: V3, b: V3) -> x87::X80 {
     x87::crt_acos(q)
 }
 
+/// The angle between two vectors as the core's vector routine computes it:
+/// the dot product and `|a|` are stored as floats, then
+/// `acos(dot / (|b| * |a|))` with the CRT acos; the 64-bit result.
+pub fn angle_stored(a: V3, b: V3) -> x87::X80 {
+    let d = dot(a, b) as f32;
+    let la = len(a) as f32;
+    x87::crt_acos(f64::from(d) / (len(b) * f64::from(la)))
+}
+
 /// Parallel test of two directions: 1 same, -1 opposite, 0 neither
 /// (normalised components within VALUE_EPS).
 pub fn par(a: V3, b: V3, t: &Tol) -> i32 {

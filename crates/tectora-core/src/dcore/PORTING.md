@@ -16,9 +16,8 @@ against the emulator.
 | `state` | arenas and typed ids for every record kind, `Globals`, the code table, `ctr` counter indices, constructors | data model |
 | `rd2` | the RD2 reader (fscanf semantics, list prepends, cursor globals) | S1 |
 | `s1` | ring sort and collinear merge, hole relink, frames and planes, eave faces, validity ranges, eave heights, levels (`model_start`) | S1 |
-| `stages` | **stubs** for S2, S3, S5, S6 (S4 calls `post`), one per routine of the driver | S2–S6 |
+| `stages` | one entry point per routine of the driver (S4's call `post`) | S2–S6 |
 | `post` | collinear merge, segment origins and edge table, face areas, dormer feet | S4 |
-| `faceops` | segment insertion `add_seg`, `trim_crossings`, `seg_cross`, `ends_at`, the closing test `close_face`, `drop_sentinel` (non-wall faces; used by the dormer pass) | S3 (part) |
 | `pipeline` | the driver (`Run`): per-model loop, global stages, writers, hooks | — |
 | `out` | core SOL, INT, fallback SOL, `PLACEHOLDER_SOL`; they fill `coresol::CoreSol` / `IntGeometry` | S7 |
 | `dump` | the emulator's `state.json` format: `to_json`, `from_json`, structural `compare` | testing |
@@ -242,16 +241,19 @@ snapshots for per-level checks.
   all-vertical normal raises fatal 2 with 0xa12 "Flächeninhalt konnte nicht berechnet werden".
   The three `fcos` there are in section EXTRA, which the stock emulator does not route to the
   x87 model; see the validation note below.
-- Dormer feet call the S3 routines `da1210` (segment insertion) and `da20f0` (closing) on the
-  model's 'G' face. `faceops` ports the paths a non-wall face takes, including `da1c40`
-  (trimming at crossings, `d98830` seg/seg in all modes but only mode 0 checked) and `e56170`.
-  Two quirks are kept: `close_face` leaves POINT_EPS grown when a retry closes the face, and
-  `drop_sentinel` writes the list head of `g.cur_face` (the sweep's face) when it unlinks a first
-  segment. The hidden wall face branch of `da1210` returns `Unimplemented`.
+- Dormer feet call the S3 routines `close::add_seg` (`da1210`) and `close::close_face`
+  (`da20f0`, retry on) on the model's 'G' face; the face's counters are those of the `g` model,
+  loaded and left in the globals. A grown POINT_EPS stays when a retry closes the face.
 - `geom::collinear_join` (`d99110`): segments sharing their *start* points never join (the
   offset between the starts is the zero vector, which `par` rejects).
 - `out::write_sol` checks that the edge list is in descending line order and as long as
   `g.n_lines`.
+- Validation (S4 slices, all equal): samples 34 cases / 135 models, dacad-core 107 / 149,
+  s1 615 / 567 (plus the 174 cut-error cases dumped with `--on-error=continue`: 200 edge
+  tables, including the failed models'), mr3 350 / 750, s2 dormer cases 117 / 251; 1005
+  dormer passes, 176 `g` models with a closed foot face. The emulator copy with the three EXTRA
+  `fcos` routed to the 64-bit x87 model gives the same areas and SO2 on all 1223 cases, so
+  `face_area` uses `x87::fcos` (the hardware value) and both emulators agree.
 
 **S5: classification.** Hook points: `after_classify` to `after_codes2`. The writers already
 produce the bytes from the emulator's `after_codes2` state, so once S5 matches the state, the SO2
@@ -261,7 +263,20 @@ matches.
 
 - `chimney_holes` runs only with flag 0x8; the default flags 0x4a8 include it.
 - `hole_edges` runs after the D/D and L/G code-17 stages.
-- The clipper needs VC6 `qsort` (map §7.3).
+- The clipper needs VC6 `qsort` (map §7.3). It is `holes::crt_qsort`: the CRT version without
+  median of three (middle element as pivot, selection sort up to 8 elements). The map's
+  "median-of-three + insertion sort" is wrong for this binary. Replacing it with a stable sort
+  changes nothing on any dump set, so no case has ties that matter yet.
+- Ported in `holes.rs`; isolated test `tests/dcore_holes.rs` (`after_cut` → `after_holes`,
+  `after_mergeLG` → `after_holeedge`, plus `after_holes` of the port's own run from the RD2).
+- Two globals were raw addresses in the dumps. `scratch100` is now a face pointer (the hole
+  outline's face, the `fa` of every hole piece segment). `scratch0fc` is the heap address of the
+  clipper's last vertex node, so it is dumped and kept as 0/1. The dump harness needs the matching
+  change in `GLOBALS` (`('scratch100', P, …)`, and `'nz'` for `scratch0fc`). A working copy is
+  `/tmp/claude-0/coreS6/dump_state.py`. `from_json` and `compare` accept the old dumps.
+- A non-convex hole outline shows the warning box 0xa25, and the next progress call cancels the
+  run. `chimney_holes` returns `Fatal { code: 0 }` after the `after_holes` hook (the emulator
+  records the cancel as a fatal error with code 0; the core returns 1 and leaves `0 0`).
 
 **Writers (S7).**
 

@@ -19,10 +19,7 @@ use super::state::Core;
 /// the pipeline then runs the model's remaining stages and ends the run
 /// with it. Dump point after it: `after_cut`.
 pub fn sweep(c: &mut Core) -> Result<i32, CoreError> {
-    let _ = c;
-    Err(CoreError::Unimplemented(
-        "S2/S3 height sweep and face closing",
-    ))
+    super::sweep::sweep(c)
 }
 
 /// S6: chimney holes (`da3dc0` → `da53f0`), only with flag 0x8: clips each
@@ -30,8 +27,7 @@ pub fn sweep(c: &mut Core) -> Result<i32, CoreError> {
 /// hangs the pieces on the faces. Dump point: `after_holes` (reached also
 /// when the flag is off).
 pub fn chimney_holes(c: &mut Core) -> Result<(), CoreError> {
-    let _ = c;
-    Err(CoreError::Unimplemented("S6 chimney holes"))
+    super::holes::chimney_holes(c)
 }
 
 /// S4: collinear merge of consecutive segments of every closed face
@@ -63,33 +59,32 @@ pub fn dormer_feet(c: &mut Core) -> Result<(), CoreError> {
 /// S5: line codes of D/N/W-origin edges (`da2710`). Dump point:
 /// `after_classify`.
 pub fn classify(c: &mut Core) -> Result<(), CoreError> {
-    let _ = c;
-    Err(CoreError::Unimplemented("S5 classification"))
+    super::classify::classify(c);
+    Ok(())
 }
 
 /// S5: codes of G/L-origin edges and refinements (`da3a10`). Runs twice;
 /// dump points `after_codes1` and `after_codes2`.
 pub fn codes(c: &mut Core) -> Result<(), CoreError> {
-    let _ = c;
-    Err(CoreError::Unimplemented("S5 G/L codes"))
+    super::classify::codes(c);
+    Ok(())
 }
 
 /// S5: a D edge lying on another D edge gets code 17 (`da4ec0`). Dump
 /// point: `after_merge17`.
 pub fn merge_d17(c: &mut Core) -> Result<(), CoreError> {
-    let _ = c;
-    Err(CoreError::Unimplemented("S5 D/D code 17"))
+    super::classify::merge_d17(c);
+    Ok(())
 }
 
 /// S5: an L/G edge lying on another L/G edge gets code 17 (`da5060`). Dump
 /// point: `after_mergeLG`.
 pub fn merge_lg17(c: &mut Core) -> Result<(), CoreError> {
-    let _ = c;
-    Err(CoreError::Unimplemented("S5 L/G code 17"))
+    super::classify::merge_lg17(c);
+    Ok(())
 }
 
 /// S6: hole edges on roof edges (`da5160`). Dump point: `after_holeedge`.
 pub fn hole_edges(c: &mut Core) -> Result<(), CoreError> {
-    let _ = c;
-    Err(CoreError::Unimplemented("S6 hole edges"))
+    super::holes::hole_edges(c)
 }

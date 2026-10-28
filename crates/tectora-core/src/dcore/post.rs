@@ -9,8 +9,8 @@
 //! - [`areas`]: the area of every face, from the face's own segment list;
 //! - [`dormer_feet`]: the foot outline of every `g` model.
 
+use super::close;
 use super::error::{CoreError, Msg};
-use super::faceops;
 use super::geom;
 use super::num::{self, V3};
 use super::state::*;
@@ -73,7 +73,7 @@ pub fn collinear_merge(c: &mut Core) -> Result<i32, CoreError> {
                     continue;
                 }
                 let (a, b) = (c.seg(s), c.seg(o));
-                match geom::collinear_join(a.p, a.q, b.p, b.q, &t) {
+                match geom::collinear_join((a.p, a.q), (b.p, b.q), &t) {
                     1 => {
                         if nx.is_none() {
                             // the last segment joins the first one
@@ -666,7 +666,7 @@ pub fn dormer_feet(c: &mut Core) -> Result<(), CoreError> {
                             });
                             if !shared {
                                 let gf = c.model(mi).gface;
-                                faceops::add_seg(
+                                close::add_seg(
                                     c,
                                     true,
                                     gf,
@@ -685,7 +685,7 @@ pub fn dormer_feet(c: &mut Core) -> Result<(), CoreError> {
                 k += 1;
             }
             let gf = c.model(mi).gface;
-            faceops::close_face(c, gf, 1)?;
+            close::close_face(c, gf, true)?;
         }
         m = c.model(mi).next;
     }

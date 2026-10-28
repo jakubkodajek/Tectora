@@ -1,0 +1,202 @@
+{
+ "source": "Tectora mr3 random multi-roof case M3_0013 (knife), calculated by DACAD",
+ "input_format": "V2",
+ "input": {
+  "walls": [
+   {
+    "start": [
+     0.0,
+     0.0
+    ],
+    "end": [
+     13.95,
+     0.0
+    ],
+    "direction_deg": 0.0,
+    "definitions": [
+     {
+      "pitch_deg": 30.0,
+      "eave_height_m": 3.0,
+      "overhang_m": 0.0,
+      "material": 1,
+      "roof_no": 1,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     13.95,
+     0.0
+    ],
+    "end": [
+     13.95,
+     9.54
+    ],
+    "direction_deg": 90.0,
+    "definitions": [
+     {
+      "pitch_deg": 36.0,
+      "eave_height_m": 3.0,
+      "overhang_m": 0.0,
+      "material": 1,
+      "roof_no": 1,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     13.95,
+     9.54
+    ],
+    "end": [
+     0.0,
+     9.54
+    ],
+    "direction_deg": 180.0,
+    "definitions": [
+     {
+      "pitch_deg": 40.0,
+      "eave_height_m": 3.0,
+      "overhang_m": 0.0,
+      "material": 1,
+      "roof_no": 1,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     0.0,
+     9.54
+    ],
+    "end": [
+     0.0,
+     0.0
+    ],
+    "direction_deg": 270.0,
+    "definitions": [
+     {
+      "pitch_deg": 44.0,
+      "eave_height_m": 3.0,
+      "overhang_m": 0.0,
+      "material": 1,
+      "roof_no": 1,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     6.22,
+     4.77
+    ],
+    "end": [
+     9.87,
+     4.77
+    ],
+    "direction_deg": 0.0,
+    "definitions": [
+     {
+      "pitch_deg": 50.0,
+      "eave_height_m": 3.0,
+      "overhang_m": 0.5,
+      "material": 1,
+      "roof_no": 2,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     9.87,
+     4.77
+    ],
+    "end": [
+     9.87,
+     11.9
+    ],
+    "direction_deg": 90.0,
+    "definitions": [
+     {
+      "pitch_deg": 50.0,
+      "eave_height_m": 3.0,
+      "overhang_m": 0.5,
+      "material": 1,
+      "roof_no": 2,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     9.87,
+     11.9
+    ],
+    "end": [
+     6.22,
+     11.9
+    ],
+    "direction_deg": 180.0,
+    "definitions": [
+     {
+      "pitch_deg": 50.0,
+      "eave_height_m": 3.0,
+      "overhang_m": 0.0,
+      "material": 1,
+      "roof_no": 2,
+      "priority": 0
+     }
+    ]
+   },
+   {
+    "start": [
+     6.22,
+     11.9
+    ],
+    "end": [
+     6.22,
+     4.77
+    ],
+    "direction_deg": 270.0,
+    "definitions": [
+     {
+      "pitch_deg": 50.0,
+      "eave_height_m": 3.0,
+      "overhang_m": 0.5,
+      "material": 1,
+      "roof_no": 2,
+      "priority": 0
+     }
+    ]
+   }
+  ],
+  "windows": [],
+  "chimneys": [],
+  "roofs": {
+   "1": {
+    "kind": 0,
+    "host": 0
+   },
+   "2": {
+    "kind": 0,
+    "host": 0
+   }
+  }
+ },
+ "dacad_results": {
+  "lines_by_type": {
+   "F": 9.07,
+   "G": 37.2605,
+   "K": 9.1786,
+   "OS": 0.2351,
+   "S": 0.286,
+   "T": 52.7,
+   "WS": 1.8537
+  },
+  "area_groups": {
+   "Škridla - ": 184.4077
+  }
+ }
+}

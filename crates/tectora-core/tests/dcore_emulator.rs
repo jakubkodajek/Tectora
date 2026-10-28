@@ -266,6 +266,68 @@ fn s4_slices(name: &str, doc: &dump::DumpDoc, t: &mut Tallies) {
     }
 }
 
+/// S2/S3 of every model, each started from the emulator's state at the
+/// first slab (`s1_end`) and compared with its state after the plane cut
+/// (`after_cut`, taken at the cut error when there is one). The cut error
+/// sites are tallied as pairs of the emulator's and the port's site names.
+fn sweep_from_s1_end(name: &str, doc: &dump::DumpDoc, t: &mut Tallies) {
+    let snaps = doc.snaps();
+    for (k, (i, e)) in snaps
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s["stage"] == "s1_end")
+        .enumerate()
+    {
+        let label = format!("{name} model {k}");
+        let Some(want) = snaps[i + 1..]
+            .iter()
+            .take_while(|s| s["stage"] != "s1_end")
+            .find(|s| s["stage"] == "after_cut")
+        else {
+            continue;
+        };
+        let mut c = match dump::from_json(e) {
+            Ok(c) => c,
+            Err(err) => {
+                tally(t, "sweep load", &label, vec![err.to_string()]);
+                continue;
+            }
+        };
+        let mut iters = 0u32;
+        let res = dcore::sweep::sweep_with(&mut c, &mut |id, _| iters += u32::from(id == 0xa16));
+        let e = t.entry("sweep max iterations".into()).or_default();
+        if iters as usize > e.ok {
+            e.ok = iters as usize;
+        }
+        let last = !snaps[i + 1..].iter().any(|s| s["stage"] == "s1_end");
+        let emu = if last { emu_error(doc) } else { None };
+        let mut d = Vec::new();
+        match (&emu, &res) {
+            (None, Ok(_)) => {}
+            (Some((kind, code, id)), Err(dcore::CoreError::Cut { code: c2, msg }))
+                if kind == "cut" =>
+            {
+                if (*code, *id) != (u64::from(*c2), msg.id) {
+                    d.push(format!("emulator {code}/{id:x?}, port {c2}/{:x?}", msg.id));
+                }
+                let site = doc.doc["errors"][0]["site"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                tally(
+                    t,
+                    &format!("sweep site {site} = {}", dcore::sweep::last_cut_site()),
+                    &label,
+                    vec![],
+                );
+            }
+            (e, r) => d.push(format!("emulator {e:?}, port {r:?}")),
+        }
+        d.extend(dump::compare(want, &dump::to_json(&c), 6));
+        tally(t, "sweep after_cut", &label, d);
+    }
+}
+
 fn first_diff(a: &[u8], b: &[u8]) -> String {
     let i = a
         .iter()
@@ -351,6 +413,7 @@ fn run_case(rd2: &Path, dir: &Path, t: &mut Tallies) -> bool {
         run_from_rd2(&name, dir, &bytes, &doc, t);
     }
     s1_from_entry(&name, &doc, t);
+    sweep_from_s1_end(&name, &doc, t);
     s4_slices(&name, &doc, t);
     writers(&name, dir, &doc, t);
     true
@@ -383,10 +446,10 @@ fn emulator_dumps() {
         }
     }
     println!("{n} cases");
-    // DCORE_REPORT=prefix limits the report to the tallies of some stages
+    // DCORE_REPORT=prefix,... limits the report to the tallies of some stages
     // (e.g. `s4` for dump sets made with only the S4 snapshots).
     if let Ok(p) = std::env::var("DCORE_REPORT") {
-        t.retain(|k, _| k.starts_with(&p));
+        t.retain(|k, _| p.split(',').any(|x| k.starts_with(x)));
     }
     assert!(!report(&t, 5));
 }
@@ -579,4 +642,101 @@ fn geom_all_vectors() {
         println!("{b}");
     }
     assert!(bad.is_empty());
+}
+
+/// The S2/S3 segment primitives against the emulator (`seg_vectors.py`).
+fn seg_vectors(path: &Path) -> (usize, Vec<String>) {
+    use dcore::geom;
+    use dcore::num;
+    let t = num::Tol::default();
+    let mut bad = Vec::new();
+    let mut n = 0;
+    for line in std::fs::read_to_string(path).unwrap().lines() {
+        let c: Vec<&str> = line.split('\t').collect();
+        let words = |s: &str| -> Vec<u32> {
+            s.split_whitespace()
+                .map(|w| u32::from_str_radix(w, 16).unwrap())
+                .collect()
+        };
+        let fl: Vec<f32> = words(c[1]).into_iter().map(f32::from_bits).collect();
+        let eax: i64 = c[2].parse().unwrap();
+        let out = words(c[3]);
+        let v3 = |k: usize| -> [f32; 3] { [fl[k], fl[k + 1], fl[k + 2]] };
+        let ab = || ((v3(0), v3(3)), (v3(6), v3(9)));
+        let ok = match c[0] {
+            m if m.starts_with("segseg") => {
+                let mode: u32 = m[6..].parse().unwrap();
+                let (a, b) = ab();
+                let (r, x) = geom::seg_seg(a, b, mode, &t);
+                i64::from(r) == eax && x.map(f32::to_bits).to_vec() == out
+            }
+            "cjoin" => {
+                let (a, b) = ab();
+                i64::from(geom::collinear_join(a, b, &t)) == eax
+            }
+            "seg_on" => {
+                let (a, b) = ab();
+                i64::from(geom::seg_on_seg(a.0, a.1, b.0, b.1, &t)) == eax
+            }
+            "ovl" => {
+                let (a, b) = ab();
+                i64::from(geom::seg_overlap(a, b, &t)) == eax
+            }
+            "sdir" => i64::from(geom::same_dir_within(v3(0), v3(3), &t)) == eax,
+            other => panic!("unknown vector kind {other}"),
+        };
+        n += 1;
+        if !ok {
+            bad.push(line.to_string());
+        }
+    }
+    (n, bad)
+}
+
+#[test]
+fn seg_fixture_vectors() {
+    let (n, bad) = seg_vectors(&fixture_dir().join("geom_seg.tsv"));
+    assert!(n > 0);
+    assert!(bad.is_empty(), "{n} vectors, wrong: {bad:#?}");
+}
+
+#[test]
+#[ignore]
+fn seg_all_vectors() {
+    let p = std::env::var("DCORE_SEG").expect("DCORE_SEG=file");
+    let (n, bad) = seg_vectors(Path::new(&p));
+    println!("{n} vectors, {} wrong", bad.len());
+    for b in bad.iter().take(20) {
+        println!("{b}");
+    }
+    assert!(bad.is_empty());
+}
+
+/// Runs the port on the RD2s in `DCORE_RD2` (space separated) and prints
+/// each outcome (for cases without dumps, e.g. one the original never
+/// finishes).
+#[test]
+#[ignore]
+fn run_rd2() {
+    let files = std::env::var("DCORE_RD2").expect("DCORE_RD2=files");
+    let flags = std::env::var("DCORE_FLAGS")
+        .ok()
+        .map(|f| u32::from_str_radix(f.trim_start_matches("0x"), 16).unwrap())
+        .unwrap_or(0x4a8);
+    for f in files.split_whitespace() {
+        let bytes = std::fs::read(f).unwrap();
+        let t0 = std::time::Instant::now();
+        let mut stages = Vec::new();
+        let mut run = dcore::pipeline::Run::new(flags);
+        run.hook = Some(Box::new(|stage: &str, _: &dcore::Core| {
+            stages.push(stage.to_string())
+        }));
+        let r = run.run(&bytes);
+        drop(run);
+        println!(
+            "{f}: {:?} after {:?}, stages {stages:?}",
+            r.map(|o| o.code),
+            t0.elapsed()
+        );
+    }
 }
