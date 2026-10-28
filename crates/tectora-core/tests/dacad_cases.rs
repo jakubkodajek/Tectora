@@ -83,7 +83,9 @@ fn wall(id: usize, w: &Value) -> DadWall {
         let a = (end.y - start.y).atan2(end.x - start.x);
         stored
             .map(f64::to_radians)
-            .filter(|s| ((s - a).rem_euclid(std::f64::consts::TAU) + 1e-4) % std::f64::consts::TAU < 2e-4)
+            .filter(|s| {
+                ((s - a).rem_euclid(std::f64::consts::TAU) + 1e-4) % std::f64::consts::TAU < 2e-4
+            })
             .unwrap_or(a)
     } else {
         stored.unwrap_or(0.0).to_radians()
@@ -101,8 +103,7 @@ fn wall(id: usize, w: &Value) -> DadWall {
         priority: u8::from(d0["priority"].as_f64().unwrap_or(0.0) > 0.5),
         half_hip,
         breaks: rest.map(stacked).collect(),
-        clad: pitch_deg >= GABLE_PITCH_DEG
-            && d0["material"].as_u64().unwrap_or(0) != 0,
+        clad: pitch_deg >= GABLE_PITCH_DEG && d0["material"].as_u64().unwrap_or(0) != 0,
     }
 }
 

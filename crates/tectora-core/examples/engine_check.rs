@@ -32,7 +32,10 @@ fn main() {
             println!("{name}: unreadable");
             continue;
         };
-        let imported = if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+        let imported = if p
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+        {
             serde_json::from_slice(&bytes).map_err(|e| e.to_string())
         } else {
             tectora_core::dad::import(&bytes, name.clone()).map_err(|e| e.to_string())
@@ -66,10 +69,8 @@ fn main() {
                     .iter()
                     .map(|g| g.faces.iter().map(|f| f.area).sum::<f64>() + g.clad_area)
                     .sum();
-                let lines: Vec<String> = totals
-                    .iter()
-                    .map(|(c, v)| format!("{c} {v:.4}"))
-                    .collect();
+                let lines: Vec<String> =
+                    totals.iter().map(|(c, v)| format!("{c} {v:.4}")).collect();
                 println!("{name}: core, area {area:.4}, {}", lines.join(", "));
             }
             Err(Failure::Dacad(e)) => {

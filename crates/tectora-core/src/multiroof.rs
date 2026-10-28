@@ -188,7 +188,12 @@ pub fn write_rd2_with(project: &Project, hosts: &[Option<DormerHost>]) -> (Strin
     // imported from DACAD with a roof number of its own, else 1, 2, ...
     let roof_no = |edges: &[EdgeDef]| {
         sourced(edges)
-            .then(|| edges.first().and_then(|e| e.source.as_ref()).map(|s| s.roof as i32))
+            .then(|| {
+                edges
+                    .first()
+                    .and_then(|e| e.source.as_ref())
+                    .map(|s| s.roof as i32)
+            })
             .flatten()
     };
     let mut models: Vec<Option<i32>> = project
@@ -387,8 +392,7 @@ fn write_dormer(s: &mut String, project: &Project, dm: &DormerMap, h: DormerHost
     let sloped = |k: &usize| (levels[*k].4 - 90.0).abs() > 90.0 - crate::model::GABLE_PITCH_DEG;
     let level = (0..levels.len())
         .filter(sloped)
-        .filter(|&k| levels[k].2 <= dist(front) + 1e-9)
-        .last()
+        .rfind(|&k| levels[k].2 <= dist(front) + 1e-9)
         .or_else(|| (0..levels.len()).find(sloped))
         .unwrap_or(0);
     let (_, _, d0, z0, p0) = levels[level];
