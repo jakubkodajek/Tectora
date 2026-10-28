@@ -185,8 +185,9 @@ pub struct EdgeDef {
     /// edges at steps between collinear walls to say how the roof turns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direction_rad: Option<f64>,
-    /// A gable covered with the roof material (DACAD: a 90° wall with a
-    /// material): its area above the eave counts as roof area.
+    /// A gable, or a wall leaning outward (over 90°), covered with the roof
+    /// material (DACAD: such a wall with a material): its area counts as
+    /// roof area. Walls sloped below 90° always carry the material.
     #[serde(default, skip_serializing_if = "is_false")]
     pub clad: bool,
     /// The DACAD wall record this edge was imported from. DACAD's core

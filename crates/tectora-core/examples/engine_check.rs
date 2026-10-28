@@ -1,7 +1,7 @@
 //! Which way the engine calculates each project: DACAD's core, a DACAD
 //! error, or the sweep fallback (with the reason).
 //!
-//! Usage: `engine_check [--rd2 DIR] FILE.DAD...` (or `-` to read the paths
+//! Usage: `engine_check [--rd2 DIR] FILE.DAD|PROJECT.json...` (or `-` to read the paths
 //! from stdin). With `--rd2` the RD2 the engine writes for each project is
 //! saved as `DIR/NAME.RD2`, for comparing with the one DACAD wrote.
 
@@ -32,7 +32,12 @@ fn main() {
             println!("{name}: unreadable");
             continue;
         };
-        let mut project = match tectora_core::dad::import(&bytes, name.clone()) {
+        let imported = if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+            serde_json::from_slice(&bytes).map_err(|e| e.to_string())
+        } else {
+            tectora_core::dad::import(&bytes, name.clone()).map_err(|e| e.to_string())
+        };
+        let mut project: tectora_core::Project = match imported {
             Ok(x) => x,
             Err(e) => {
                 println!("{name}: import {e}");

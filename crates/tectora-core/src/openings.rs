@@ -1313,7 +1313,8 @@ mod tests {
         assert!((total(geo, "OR") - (8.0 * s + 2.0 * s)).abs() < 1e-6);
         assert!(total(geo, "WV") + total(geo, "WH") + total(geo, "WS") < 1e-9);
         let after = geo.faces.iter().map(|f| f.area).sum::<f64>();
-        assert!((before - after - 2.0 * s).abs() < 1e-6);
+        // DACAD's core writes its areas as f32.
+        assert!((before - after - 2.0 * s).abs() < 1e-5);
         assert_eq!(geo.openings[0].kind, OpeningKind::Hole);
     }
 

@@ -355,17 +355,20 @@ fn write_dormer(s: &mut String, project: &Project, dm: &DormerMap, h: DormerHost
     let (hstart, hlen, hangle) = wall_geometry(he, hnext, sourced(&part.edges));
     let dsourced = sourced(&d.edges);
     let next = |i: usize| d.edges.get(i + 1).map_or(d.end, |e| e.start);
-    // The front: the dormer's wall start lowest down the host plane.
+    // The front: the start of a dormer wall (of non-zero length) lowest
+    // down the host plane, the last of equally low ones (ZACH1; E008's
+    // zero-length side walls do not count).
     let rad = hangle.to_radians();
     let inward = Point2::new(-rad.sin(), rad.cos());
     let dist = |p: Point2| (p.x - hstart.x) * inward.x + (p.y - hstart.y) * inward.y;
-    let mut front = d.edges.first().map_or(d.end, |e| e.start);
+    let mut front: Option<Point2> = None;
     for (i, e) in d.edges.iter().enumerate() {
-        let (p, _, _) = wall_geometry(e, next(i), dsourced);
-        if dist(p) < dist(front) - 1e-6 {
-            front = p;
+        let (p, len, _) = wall_geometry(e, next(i), dsourced);
+        if len > 1e-6 && front.is_none_or(|f| dist(p) <= dist(f) + 1e-6) {
+            front = Some(p);
         }
     }
+    let front = front.unwrap_or_else(|| d.edges.first().map_or(d.end, |e| e.start));
     // The host's planes as (sub, flag, distance from the wall line and
     // height where each starts, pitch).
     let mut levels: Vec<(i32, i32, f64, f64, f64)> = Vec::new();
@@ -420,7 +423,8 @@ fn write_dormer(s: &mut String, project: &Project, dm: &DormerMap, h: DormerHost
         record(s, ('D', -1, 0, h_front, 0.0, 90.0));
         if !e.is_gable() {
             let z = e.eave_height + e.overhang * e.pitch_deg.to_radians().tan();
-            record(s, ('K', 0, 1, z, 0.0, e.pitch_deg));
+            let flag = i32::from(e.pitch_deg < crate::model::GABLE_PITCH_DEG || e.clad);
+            record(s, ('K', 0, flag, z, 0.0, e.pitch_deg));
         }
     }
 }
@@ -433,12 +437,13 @@ type Record = (char, i32, i32, f64, f64, f64);
 /// half-hip and the pitch breaks.
 fn records(e: &EdgeDef) -> Vec<Record> {
     let roofed = |p: f64| i32::from(p < crate::model::GABLE_PITCH_DEG);
-    // The flag says the wall carries roof material: every sloped wall, and
-    // a gable only when it is clad.
+    // The flag says the wall carries roof material: every wall sloped
+    // below the vertical, and a gable or a wall leaning outward only when
+    // it has a material (C71, ZACH1).
     let mut out = vec![(
         'D',
         0,
-        i32::from(!e.is_gable() || e.clad),
+        i32::from(e.pitch_deg < crate::model::GABLE_PITCH_DEG || e.clad),
         e.eave_height,
         e.overhang,
         e.pitch_deg,
@@ -896,8 +901,23 @@ pub fn to_geometries(project: &Project, map: &Rd2Map, out: &modell::Output) -> V
         let mine = &out.faces[k..k + n];
         k += n;
         let part = map.find(f.rec.model, f.rec.face);
-        let clad =
-            part.is_some_and(|(pi, ei)| project.parts[pi].edges.get(ei).is_some_and(|e| e.clad));
+        // The RD2 flag of the face's record: whether it carries roof
+        // material. A dormer's faces carry it unless they are vertical.
+        let dormer_edge = || {
+            let d = map.dormers.iter().find(|d| d.model == f.rec.model)?;
+            let i = d.walls.iter().position(|&w| w == f.rec.face)?;
+            project.dormers.get(d.dormer)?.edges.get(i)
+        };
+        let edge = part
+            .and_then(|(pi, ei)| project.parts[pi].edges.get(ei))
+            .or_else(dormer_edge);
+        let clad = match edge {
+            Some(e) => records(e)
+                .iter()
+                .find(|r| r.1 == f.rec.sub)
+                .map_or(e.clad, |r| r.2 == 1),
+            None => (f.rec.angle - 90.0).abs() > 90.0 - crate::model::GABLE_PITCH_DEG,
+        };
         let mut face = SolResultFace {
             model: f.rec.model,
             wall: f.rec.face,
@@ -950,7 +970,8 @@ pub struct SolResultFace {
     pub model: i32,
     pub wall: i32,
     pub pitch_deg: f64,
-    /// A vertical face that carries roof material (a clad gable).
+    /// The face carries roof material (its RD2 record's flag): every
+    /// sloped face but a pitch break written with flag 0, and clad gables.
     pub clad: bool,
     /// Pieces as line references (0-based index, +1 or -1 for the
     /// direction) with their areas.
@@ -1031,8 +1052,12 @@ pub fn sol_geometries(project: &Project, map: &Rd2Map, res: &SolResult) -> Vec<R
                 .collect()
         };
         let cut: f64 = f.cuts.iter().map(|c| c.0).sum();
-        if (f.pitch_deg - 90.0).abs() <= 90.0 - crate::model::GABLE_PITCH_DEG {
-            if f.clad {
+        let vertical = (f.pitch_deg - 90.0).abs() <= 90.0 - crate::model::GABLE_PITCH_DEG;
+        // Faces without roof material (unclad gables, a pitch break past
+        // the vertical written with flag 0) are walls: DACAD's area leaves
+        // them out.
+        if vertical || !f.clad {
+            if vertical && f.clad {
                 geo.clad_area += f.surfaces.iter().map(|s| s.1).sum::<f64>() + cut;
             }
             for (edges, _) in &f.surfaces {

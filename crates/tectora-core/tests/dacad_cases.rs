@@ -101,7 +101,7 @@ fn wall(id: usize, w: &Value) -> DadWall {
         priority: u8::from(d0["priority"].as_f64().unwrap_or(0.0) > 0.5),
         half_hip,
         breaks: rest.map(stacked).collect(),
-        clad: (pitch_deg - 90.0).abs() <= 90.0 - GABLE_PITCH_DEG
+        clad: pitch_deg >= GABLE_PITCH_DEG
             && d0["material"].as_u64().unwrap_or(0) != 0,
     }
 }

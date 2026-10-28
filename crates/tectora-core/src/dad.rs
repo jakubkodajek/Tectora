@@ -200,7 +200,8 @@ pub fn parse(bytes: &[u8]) -> Result<DadFile, DadError> {
                     priority: u8::from(num(36)? > 0.5),
                     half_hip: None,
                     breaks: Vec::new(),
-                    clad: is_vertical(num(32)?) && u16_at(payload, 22) != 0,
+                    clad: num(32)? >= crate::model::GABLE_PITCH_DEG
+                        && u16_at(payload, 22) != 0,
                 });
             }
             (TAG_WALL, SUB_STACKED) if len == 16 => {
