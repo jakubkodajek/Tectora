@@ -84,10 +84,13 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             if let Err(errors) = project.validate() {
                 bail!("invalid project:\n{}", errors.join("\n"));
             }
+            let geos = tectora_core::openings::generate_project(&project);
+            // DACAD refused the roof: its error is the result, no quantities.
+            let dacad_error = geos.iter().find_map(|g| g.error.clone());
             let parts: Vec<_> = project
                 .parts
                 .iter()
-                .zip(tectora_core::openings::generate_project(&project))
+                .zip(geos)
                 .map(|(part, geo)| {
                     let q = geo.quantities();
                     if summary {
@@ -99,7 +102,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
                 .collect();
             let lines_by_type = dacad_line_totals(&project);
             let area = tectora_core::quantities::roof_totals(&project).roof_area;
-            Ok(json!({
+            let mut out = json!({
                 "ok": true,
                 "name": project.name,
                 "parts": parts,
@@ -107,7 +110,15 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
                     "lines_by_type": lines_by_type,
                     "area_by_material": { "roof": round2(area) },
                 },
-            }))
+            });
+            if let Some(e) = dacad_error {
+                out["dacad_error"] = json!({
+                    "code": e.code,
+                    "message_id": e.message_id,
+                    "message": e.message,
+                });
+            }
+            Ok(out)
         }
     }
 }
