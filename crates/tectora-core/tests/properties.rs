@@ -88,6 +88,18 @@ fn totals(geos: &[RoofGeometry]) -> (BTreeMap<String, f64>, f64) {
     (lines, area)
 }
 
+/// Runs the engine and rejects the case when DACAD itself reports an
+/// error for it (the roof then has no faces or lines): the properties
+/// below are about roofs DACAD calculates. Which inputs DACAD refuses is
+/// its own behaviour, checked in `dacad_cases.rs`.
+fn roof(p: &Project) -> Result<Vec<RoofGeometry>, TestCaseError> {
+    let geos = run(p).map_err(|e| fail(p, e))?;
+    if let Some(e) = geos.iter().find_map(|g| g.error.as_ref()) {
+        return Err(TestCaseError::reject(format!("DACAD error {e}")));
+    }
+    Ok(geos)
+}
+
 fn fail(p: &Project, e: String) -> TestCaseError {
     TestCaseError::fail(format!("{e}\ninput:\n{}", describe(p)))
 }
@@ -116,6 +128,10 @@ fn finite(geos: &[RoofGeometry]) -> Result<(), String> {
 /// tolerances are taken in input order (see core-stress/findings.md).
 const LINE_TOL: f64 = 0.011;
 const AREA_TOL: f64 = 0.02;
+
+/// Relative tolerance of closed-form quantities: DACAD's core reads the
+/// RD2 with four decimals and writes its results as f32.
+const CLOSED_TOL: f64 = 3e-4;
 
 /// Compares two totals; `swap` exchanges OL and OR (a mirrored roof).
 fn same_totals(
@@ -475,7 +491,7 @@ macro_rules! face_tests {
             #[test]
             $(#[$attr])*
             fn faces_are_flat_at_their_pitch(p in tidy_project($uniform)) {
-                let geos = run(&p).map_err(|e| fail(&p, e))?;
+                let geos = roof(&p)?;
                 for f in geos.iter().flat_map(|g| &g.faces) {
                     // Collapsed faces (zero area, two points) carry nothing.
                     if f.pitch_deg >= 89.0 || f.area < 1e-3 {
@@ -501,7 +517,7 @@ macro_rules! face_tests {
             #[test]
             $(#[$attr])*
             fn faces_lie_in_their_edge_planes(p in tidy_project($uniform)) {
-                let geos = run(&p).map_err(|e| fail(&p, e))?;
+                let geos = roof(&p)?;
                 let edges = &p.parts[0].edges;
                 let ovs = edges.iter().map(|e| e.overhang);
                 let step = ovs.clone().fold(0.0, f64::max) - ovs.fold(f64::MAX, f64::min);
@@ -542,7 +558,7 @@ face_tests!(
 /// Invariance tests, instantiated for a generator; `$attr` lets known bugs
 /// be ignored for one generator only.
 macro_rules! invariance_tests {
-    ($name:ident, $gen:expr, order: [$($order:meta),*], placement: [$($place:meta),*]) => {
+    ($name:ident, $gen:expr, order: [$($order:meta),*], placement: [$($place:meta),*], moved: [$($moved:meta),*]) => {
         mod $name {
             use super::*;
 
@@ -553,11 +569,11 @@ macro_rules! invariance_tests {
             #[test]
             $(#[$order])*
             fn start_vertex_does_not_matter(p in $gen, k in 1usize..12) {
-                let a = totals(&run(&p).map_err(|e| fail(&p, e))?);
+                let a = totals(&roof(&p)?);
                 let mut q = p.clone();
                 let n = q.parts[0].edges.len();
                 q.parts[0].edges.rotate_left(k % n);
-                let b = totals(&run(&q).map_err(|e| fail(&p, e))?);
+                let b = totals(&roof(&q)?);
                 same_totals(&a, &b, false).map_err(|e| fail(&p, e))?;
             }
 
@@ -565,7 +581,7 @@ macro_rules! invariance_tests {
             #[test]
             $(#[$place])*
             fn orientation_does_not_matter(p in $gen) {
-                let a = totals(&run(&p).map_err(|e| fail(&p, e))?);
+                let a = totals(&roof(&p)?);
                 let mut q = p.clone();
                 let part = &mut q.parts[0];
                 let n = part.edges.len();
@@ -578,7 +594,7 @@ macro_rules! invariance_tests {
                 }
                 part.edges = edges;
                 part.normalize_ccw();
-                let b = totals(&run(&q).map_err(|e| fail(&p, e))?);
+                let b = totals(&roof(&q)?);
                 same_totals(&a, &b, false).map_err(|e| fail(&p, e))?;
             }
 
@@ -586,15 +602,15 @@ macro_rules! invariance_tests {
             /// the engine snaps in absolute f32 like DACAD, so at ~1000 m a merge
             /// can flip (DACAD's own areas drift there too) and that is not a bug.
             #[test]
-            $(#[$place])*
+            $(#[$moved])*
             fn translation_does_not_matter(
                 p in $gen,
                 dx in -50.0..50.0f64,
                 dy in -50.0..50.0f64,
             ) {
-                let a = totals(&run(&p).map_err(|e| fail(&p, e))?);
+                let a = totals(&roof(&p)?);
                 let q = transform(&p, |v| Point2::new(v.x + dx, v.y + dy), |a| a);
-                let b = totals(&run(&q).map_err(|e| fail(&p, e))?);
+                let b = totals(&roof(&q)?);
                 same_totals(&a, &b, false).map_err(|e| fail(&p, e))?;
             }
 
@@ -602,10 +618,10 @@ macro_rules! invariance_tests {
             #[test]
             $(#[$order])*
             fn rotation_does_not_matter(p in $gen, deg in prop_oneof![Just(90.0), Just(180.0), Just(270.0), 0.0..360.0f64]) {
-                let a = totals(&run(&p).map_err(|e| fail(&p, e))?);
+                let a = totals(&roof(&p)?);
                 let (s, c) = deg.to_radians().sin_cos();
                 let q = transform(&p, |v| Point2::new(v.x * c - v.y * s, v.x * s + v.y * c), |a| a + deg.to_radians());
-                let b = totals(&run(&q).map_err(|e| fail(&p, e))?);
+                let b = totals(&roof(&q)?);
                 same_totals(&a, &b, false).map_err(|e| fail(&p, e))?;
             }
 
@@ -617,8 +633,8 @@ macro_rules! invariance_tests {
                 // mirror-symmetric; leave windows out.
                 let mut p = p;
                 p.windows.clear();
-                let a = totals(&run(&p).map_err(|e| fail(&p, e))?);
-                let b = totals(&run(&mirrored(&p)).map_err(|e| fail(&p, e))?);
+                let a = totals(&roof(&p)?);
+                let b = totals(&roof(&mirrored(&p))?);
                 same_totals(&a, &b, true).map_err(|e| fail(&p, e))?;
             }
 
@@ -626,13 +642,13 @@ macro_rules! invariance_tests {
             /// not compared: the engine drops pieces below DACAD's centimetre
             /// thresholds, which do not scale.
             #[test]
-            $(#[$place])*
+            $(#[$moved])*
             fn scaling(p in $gen, k in 0.5..3.0f64) {
                 // Chimneys near a line follow absolute DACAD thresholds.
                 let mut p = p;
                 p.chimneys.clear();
                 p.windows.clear();
-                let a = totals(&run(&p).map_err(|e| fail(&p, e))?);
+                let a = totals(&roof(&p)?);
                 let mut q = transform(&p, |v| Point2::new(v.x * k, v.y * k), |a| a);
                 for e in q.parts.iter_mut().flat_map(|p| &mut p.edges) {
                     e.eave_height *= k;
@@ -642,7 +658,7 @@ macro_rules! invariance_tests {
                     w.width *= k;
                     w.height *= k;
                 }
-                let b = totals(&run(&q).map_err(|e| fail(&p, e))?);
+                let b = totals(&roof(&q)?);
                 let want = a.1 * k * k;
                 // Merges at DACAD's absolute tolerance shift the area by mm².
                 prop_assert!(
@@ -662,12 +678,18 @@ macro_rules! invariance_tests {
 // are per coordinate and its sweep takes near-simultaneous events in input
 // order (core-stress S02, P3), so failures near the centimetre threshold
 // are expected; larger ones need a DACAD run before they count as bugs.
-// The "placement" tests (translation, orientation, scale) must hold.
+// Orientation must hold. The "moved" tests (translation, scale) do not
+// hold for DACAD either: its core reads the RD2 coordinates with four
+// decimals and merges at absolute tolerances, and confirmed DACAD runs of
+// failing cases give the same totals as ours (a 7-wall hip roof moved by
+// (39.68, -15.09): 123.0159 and 123.0571 m², as in DACAD's SO2; RD2s
+// identical). They stay to be run with --ignored.
 invariance_tests!(
     regular,
     regular_project(),
     order: [ignore = "DACAD-dependent: ~1 cm differences at the merge tolerance remain"],
-    placement: []
+    placement: [],
+    moved: [ignore = "DACAD-dependent: its tolerances are absolute, so moved or scaled roofs differ (confirmed in DACAD)"]
 );
 invariance_tests!(
     regular_with_openings,
@@ -678,20 +700,23 @@ invariance_tests!(
             p
         }),
     order: [ignore = "DACAD-dependent: chimney side tests use the line's stored direction"],
-    placement: []
+    placement: [],
+    moved: [ignore = "DACAD-dependent: its tolerances are absolute, so moved or scaled roofs differ (confirmed in DACAD)"]
 );
 invariance_tests!(
     level_eaves,
     level_project(),
     order: [ignore = "DACAD-dependent: near-simultaneous events follow input order"],
-    placement: []
+    placement: [],
+    moved: [ignore = "DACAD-dependent: its tolerances are absolute, so moved or scaled roofs differ (confirmed in DACAD)"]
 );
 // Mixed eave heights (raised eaves, walls standing above the roof).
 invariance_tests!(
     mixed_eaves,
     any_project(),
     order: [ignore = "DACAD-dependent: near-simultaneous events follow input order"],
-    placement: [ignore = "known bug: raised eaves give position dependent faces"]
+    placement: [ignore = "known bug: raised eaves give position dependent faces"],
+    moved: [ignore = "DACAD-dependent: its tolerances are absolute, so moved or scaled roofs differ (confirmed in DACAD)"]
 );
 
 proptest! {
@@ -702,6 +727,7 @@ proptest! {
     /// face's area is its plan area / cos(pitch), and the eave runs round
     /// the pushed-out outline.
     #[test]
+    #[ignore = "DACAD-dependent: at low pitch with a small overhang DACAD's core lets hips cross (confirmed in DACAD: a 4-gon at 15 deg, overhang 0.025, gives G 14.546 and 14.675 m2 instead of 10.29)"]
     fn uniform_hip_on_convex_outline(
         pts in convex_outline(),
         pitch in 15.0..65.0f64,
@@ -709,15 +735,15 @@ proptest! {
         ov in 0.0..1.2f64,
     ) {
         let p = project(pts.iter().map(|&v| edge(v, pitch, eave, ov)).collect());
-        let geos = run(&p).map_err(|e| fail(&p, e))?;
+        let geos = roof(&p)?;
         let (lines, area) = totals(&geos);
         let off = offset(&p.parts[0].outline(), ov);
         let plan = signed_area(&off);
         let want = plan / pitch.to_radians().cos();
-        prop_assert!((area - want).abs() < 1e-6 * want.max(1.0), "area {area} want {want}");
+        prop_assert!((area - want).abs() < CLOSED_TOL * want.max(1.0), "area {area} want {want}");
         let eave_len: f64 = (0..off.len()).map(|i| off[i].distance(off[(i + 1) % off.len()])).sum();
         let t = lines.get("T").copied().unwrap_or(0.0);
-        prop_assert!((t - eave_len).abs() < 1e-6 * eave_len, "T {t} want {eave_len}");
+        prop_assert!((t - eave_len).abs() < CLOSED_TOL * eave_len.max(1.0), "T {t} want {eave_len}");
         for code in ["K", "OL", "OR", "OS", "WV", "WH", "WS", "P", "c", "S"] {
             // Pieces below DACAD's line resolution are tolerated.
             let len = lines.get(code).copied().unwrap_or(0.0);
@@ -736,6 +762,7 @@ proptest! {
     /// Orthogonal outline with notches, uniform hip roof: mitred offset area
     /// is A + o·P + 4o² and the eave is P + 8o.
     #[test]
+    #[ignore = "DACAD-dependent: DACAD's core lets hips cross on long narrow roofs and refuses some notches (confirmed in DACAD: 4 x 15.09 m at 15 deg, overhang 0.03, gives 127.40 m2 instead of 63.69)"]
     fn uniform_hip_on_orthogonal_outline(
         pts in orthogonal_outline(),
         pitch in 15.0..65.0f64,
@@ -744,7 +771,7 @@ proptest! {
         ov in 0.0..0.45f64,
     ) {
         let p = project(pts.iter().map(|&v| edge(v, pitch, eave, ov)).collect());
-        let geos = run(&p).map_err(|e| fail(&p, e))?;
+        let geos = roof(&p)?;
         let (lines, area) = totals(&geos);
         let outline = p.parts[0].outline();
         let a = signed_area(&outline);
@@ -758,6 +785,7 @@ proptest! {
 
     /// Gable roof on a rectangle: closed forms for every quantity.
     #[test]
+    #[ignore = "DACAD-dependent: DACAD's core shortens overhangs of about a centimetre (confirmed in DACAD: 2 x 2 m at 10 deg, eave overhang 0.0115, gives 4.0851 m2 instead of 4.1085)"]
     fn gable_rectangle_closed_form(
         w in 2.0..20.0f64,
         d in 2.0..14.0f64,
@@ -775,19 +803,19 @@ proptest! {
             }
         }).collect();
         let p = project(edges);
-        let geos = run(&p).map_err(|e| fail(&p, e))?;
+        let geos = roof(&p)?;
         let (lines, area) = totals(&geos);
         let c = pitch.to_radians().cos();
         let len = w + 2.0 * ov_gable;
         let slope = (d / 2.0 + ov_eave) / c;
         let want_area = 2.0 * len * slope;
-        prop_assert!((area - want_area).abs() < 1e-6 * want_area, "area {area} want {want_area}");
+        prop_assert!((area - want_area).abs() < CLOSED_TOL * want_area.max(1.0), "area {area} want {want_area}");
         let get = |k: &str| lines.get(k).copied().unwrap_or(0.0);
-        prop_assert!((get("F") - len).abs() < 1e-6 * len, "F {} want {len}", get("F"));
-        prop_assert!((get("T") - 2.0 * len).abs() < 1e-6 * len, "T {} want {}", get("T"), 2.0 * len);
+        prop_assert!((get("F") - len).abs() < CLOSED_TOL * len.max(1.0), "F {} want {len}", get("F"));
+        prop_assert!((get("T") - 2.0 * len).abs() < CLOSED_TOL * len.max(1.0), "T {} want {}", get("T"), 2.0 * len);
         let verges = get("OL") + get("OR");
-        prop_assert!((verges - 4.0 * slope).abs() < 1e-6 * slope, "verges {verges} want {}", 4.0 * slope);
-        prop_assert!((get("OL") - get("OR")).abs() < 1e-6 * slope, "OL {} OR {}", get("OL"), get("OR"));
+        prop_assert!((verges - 4.0 * slope).abs() < CLOSED_TOL * slope.max(1.0), "verges {verges} want {}", 4.0 * slope);
+        prop_assert!((get("OL") - get("OR")).abs() < CLOSED_TOL * slope.max(1.0), "OL {} OR {}", get("OL"), get("OR"));
         prop_assert!(get("G") == 0.0 && get("K") == 0.0, "{lines:?}");
     }
 
@@ -806,15 +834,15 @@ proptest! {
             edge(Point2::new(0.0, d), 90.0, 3.0, ov),
         ];
         let p = project(edges);
-        let geos = run(&p).map_err(|e| fail(&p, e))?;
+        let geos = roof(&p)?;
         let (lines, area) = totals(&geos);
         let c = pitch.to_radians().cos();
         let len = w + 2.0 * ov;
         let slope = (d + 2.0 * ov) / c;
-        prop_assert!((area - len * slope).abs() < 1e-6 * area, "area {area} want {}", len * slope);
+        prop_assert!((area - len * slope).abs() < CLOSED_TOL * area.max(1.0), "area {area} want {}", len * slope);
         let get = |k: &str| lines.get(k).copied().unwrap_or(0.0);
-        prop_assert!((get("T") - len).abs() < 1e-6 * len, "{lines:?}");
-        prop_assert!((get("P") - len).abs() < 1e-6 * len, "{lines:?}");
+        prop_assert!((get("T") - len).abs() < CLOSED_TOL * len.max(1.0), "{lines:?}");
+        prop_assert!((get("P") - len).abs() < CLOSED_TOL * len.max(1.0), "{lines:?}");
     }
 
     /// Adding a chimney or window never adds roof area.
@@ -823,8 +851,8 @@ proptest! {
         let mut bare = p.clone();
         bare.chimneys.clear();
         bare.windows.clear();
-        let with = totals(&run(&p).map_err(|e| fail(&p, e))?).1;
-        let without = totals(&run(&bare).map_err(|e| fail(&p, e))?).1;
+        let with = totals(&roof(&p)?).1;
+        let without = totals(&roof(&bare)?).1;
         prop_assert!(with <= without + 1e-6, "with openings {with} > without {without}");
     }
 }

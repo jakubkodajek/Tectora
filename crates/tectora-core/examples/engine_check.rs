@@ -53,9 +53,24 @@ fn main() {
             std::fs::write(dir.join(format!("{name}.RD2")), text).unwrap();
         }
         match engine::generate(&project) {
-            Ok(_) => {
+            Ok(geos) => {
                 core += 1;
-                println!("{name}: core");
+                let mut totals: std::collections::BTreeMap<&str, f64> = Default::default();
+                for l in geos.iter().flat_map(|g| &g.lines) {
+                    *totals.entry(l.dacad_code()).or_default() += l.length();
+                }
+                for (code, len) in geos.iter().flat_map(|g| &g.minus_lines) {
+                    *totals.entry(code.as_str()).or_default() -= len;
+                }
+                let area: f64 = geos
+                    .iter()
+                    .map(|g| g.faces.iter().map(|f| f.area).sum::<f64>() + g.clad_area)
+                    .sum();
+                let lines: Vec<String> = totals
+                    .iter()
+                    .map(|(c, v)| format!("{c} {v:.4}"))
+                    .collect();
+                println!("{name}: core, area {area:.4}, {}", lines.join(", "));
             }
             Err(Failure::Dacad(e)) => {
                 dacad += 1;
