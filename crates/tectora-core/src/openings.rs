@@ -89,6 +89,19 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
 }
 
 fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
+    // With two or more roofs DACAD joins the roofs it built one by one in
+    // its "Modellverschnitt" stage, which replaces everything below.
+    if let Some(geos) = crate::multiroof::generate(project) {
+        return geos;
+    }
+    let mut geos = build_roofs(project);
+    apply_extras(project, &mut geos);
+    geos
+}
+
+/// The roof of every part, joined where the parts touch, without dormers,
+/// windows and chimneys.
+pub(crate) fn build_roofs(project: &Project) -> Vec<RoofGeometry> {
     // Parts with standing gables are joined as several buildings.
     let cuts: Vec<crate::gable_wall::Pieces> = project
         .parts
@@ -128,6 +141,11 @@ fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
         }
         geos.push(geo);
     }
+    geos
+}
+
+/// The project's dormers, cut into the roofs they sit on.
+fn apply_dormers(project: &Project, geos: &mut [RoofGeometry]) {
     for d in &project.dormers {
         let host = d.host_wall.and_then(|[a, b]| {
             project.parts.iter().find_map(|part| {
@@ -140,10 +158,15 @@ fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
                 })
             })
         });
-        crate::dormer::apply_dormer(&mut geos, d, host.as_ref());
+        crate::dormer::apply_dormer(geos, d, host.as_ref());
     }
+}
+
+/// Dormers, windows and chimneys, then the line clean-up.
+fn apply_extras(project: &Project, geos: &mut Vec<RoofGeometry>) {
+    apply_dormers(project, geos);
     for w in &project.windows {
-        apply_window(&mut geos, w);
+        apply_window(geos, w);
     }
     let walls: Vec<(Point2, Point2)> = project
         .parts
@@ -164,14 +187,15 @@ fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
         .chain(project.roof_openings.iter().map(|o| (o, true)))
         .collect();
     if cutouts.iter().any(|(c, _)| !dacad_convex(&c.corners)) {
-        return vec![RoofGeometry::default(); geos.len()];
+        *geos = vec![RoofGeometry::default(); geos.len()];
+        return;
     }
-    for geo in &mut geos {
+    for geo in geos.iter_mut() {
         for &(c, hole) in &cutouts {
             apply_cutout(geo, c, hole, &walls);
         }
     }
-    for geo in &mut geos {
+    for geo in geos.iter_mut() {
         // With more than one roof DACAD's C++ model intersection derives
         // the lines again and gives the covered remainder back (TRAING06).
         if project.parts.len() == 1 {
@@ -180,7 +204,6 @@ fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
         merge_collinear(&mut geo.lines);
         split_verges_at_knicks(&mut geo.lines);
     }
-    geos
 }
 
 /// DACAD's convexity test for a chimney (FUN_00da6920): no two turns of
@@ -461,7 +484,7 @@ pub(crate) fn inside(poly: &[Point2], p: Point2) -> bool {
 
 /// The window's corner lies on the face's boundary at the eave; test a
 /// point just inside it, up the slope and along the eave.
-fn apply_window(geos: &mut [RoofGeometry], w: &RoofWindow) {
+pub(crate) fn apply_window(geos: &mut [RoofGeometry], w: &RoofWindow) {
     for geo in geos.iter_mut() {
         let hit = geo.faces.iter().position(|face| {
             let (up, _) = slope(face);

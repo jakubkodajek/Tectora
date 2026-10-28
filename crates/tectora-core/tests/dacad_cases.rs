@@ -213,6 +213,49 @@ fn engine_matches_dacad() {
     );
 }
 
+/// Random projects of two or three roofs of our own (the mr3 stress set),
+/// calculated by DACAD: joined by the Modellverschnitt.
+#[test]
+fn joined_roofs_match_dacad() {
+    let cases = fixtures_in("multiroof");
+    assert!(cases.len() >= 17, "fixtures missing");
+    let failures = compare(cases);
+    assert!(
+        failures.is_empty(),
+        "differences from DACAD:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// The INT Tectora hands to the Modellverschnitt for three of them is the
+/// one DACAD's core wrote, to the last printed digit but for signs of zero
+/// and float noise.
+#[test]
+fn int_matches_dacad() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/multiroof");
+    let mut n = 0;
+    for (name, case) in fixtures_in("multiroof") {
+        let Ok(want) = std::fs::read_to_string(dir.join(format!("{name}.INT"))) else {
+            continue;
+        };
+        let mut p = project(&name, &case);
+        for part in &mut p.parts {
+            part.normalize_ccw();
+        }
+        let files =
+            tectora_core::multiroof::files_with(&p, &tectora_core::multiroof::SweepProducer)
+                .expect("files");
+        if let Err(d) = tectora_core::modell::compare_sol(&files.int, &want, 2e-5) {
+            panic!(
+                "{name}: INT differs at token {}: ours {:?} DACAD {:?}",
+                d.token, d.a, d.b
+            );
+        }
+        n += 1;
+    }
+    assert_eq!(n, 3);
+}
+
 /// DACAD's own sample roofs, recalculated with the current DACAD. They are
 /// derived from third-party files and stay outside the repository; point
 /// `DACAD_SAMPLES` at their directory to run this.
@@ -269,6 +312,22 @@ fn compare_tol(cases: Vec<(String, Value)>, tol: fn(f64) -> f64) -> Vec<String> 
     for (name, case) in cases {
         let project = project(&name, &case);
         let geos = generate_project(&project);
+        // DACAD_FILES=<dir> writes the RD2, INT and W3D Tectora hands to
+        // the Modellverschnitt, for comparing with DACAD's.
+        if let Ok(dir) = std::env::var("DACAD_FILES") {
+            let mut p = project.clone();
+            for part in &mut p.parts {
+                part.normalize_ccw();
+            }
+            let producer = tectora_core::multiroof::SweepProducer;
+            if let Some(f) = tectora_core::multiroof::files_with(&p, &producer) {
+                std::fs::write(format!("{dir}/{name}.RD2"), f.rd2).unwrap();
+                std::fs::write(format!("{dir}/{name}.INT"), f.int).unwrap();
+                if let Some(w) = f.w3d {
+                    std::fs::write(format!("{dir}/{name}.W3D"), w).unwrap();
+                }
+            }
+        }
         if std::env::var("DACAD_PARTS").is_ok() {
             for p in &project.parts {
                 println!("part {}", p.name);
