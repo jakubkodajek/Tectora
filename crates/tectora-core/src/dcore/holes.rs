@@ -24,6 +24,7 @@
 //! `f64` (53-bit precision), angles come from [`x87::fpatan`].
 
 use super::error::{CoreError, Msg};
+use super::geom;
 use super::num::{self, Tol, V3};
 use super::state::*;
 use super::x87::{self, X80};
@@ -56,6 +57,7 @@ const MAX_HITS: usize = 100;
 
 /// `|b-a| <= t`; unordered counts as true.
 #[inline]
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn eqle(a: f32, b: f32, t: f32) -> bool {
     let d = (f64::from(b) - f64::from(a)).abs();
     !(d > f64::from(t))
@@ -307,7 +309,11 @@ fn sort_hits(hits: &mut [Vtx], p: V3, q: V3) {
 /// through `b` with direction `e`, in xy; None when nearly parallel.
 fn cross_point(a: V3, d: [f32; 2], b: V3, e: [f32; 2]) -> Option<V3> {
     let det = w(e[0]) * w(d[1]) - w(e[1]) * w(d[0]);
-    let mag = if det <= 0.0 || det.is_nan() { -det } else { det };
+    let mag = if det <= 0.0 || det.is_nan() {
+        -det
+    } else {
+        det
+    };
     if mag < PAR_EPS || mag.is_nan() {
         return None;
     }
@@ -372,7 +378,9 @@ fn clip(
     let mut hits: Vec<Vtx> = Vec::new();
     let push_hit = |hits: &mut Vec<Vtx>, h: Vtx| -> Result<(), CoreError> {
         if hits.len() >= MAX_HITS {
-            return Err(CoreError::Fault("hole clipper: more than 100 intersection points"));
+            return Err(CoreError::Fault(
+                "hole clipper: more than 100 intersection points",
+            ));
         }
         hits.push(h);
         Ok(())
@@ -393,7 +401,10 @@ fn clip(
         } else {
             if sp != 0 && sc != 0 {
                 // the edge crosses the line
-                let e = [(w(pv.p[0]) - w(cv.p[0])) as f32, (w(pv.p[1]) - w(cv.p[1])) as f32];
+                let e = [
+                    (w(pv.p[0]) - w(cv.p[0])) as f32,
+                    (w(pv.p[1]) - w(cv.p[1])) as f32,
+                ];
                 if let Some(xp) = cross_point(p, d, pv.p, e) {
                     stale = Some(xp);
                 }
@@ -609,8 +620,16 @@ fn store_piece(c: &mut Core, face: FaceId, last: &mut Option<NodeId>, poly: &mut
             len: 0.0,
             fa: c.g.scratch100,
             fb,
-            prev: if k == 0 { None } else { Some(SegId(base + k - 1)) },
-            next: if k + 1 == cnt { None } else { Some(SegId(base + k + 1)) },
+            prev: if k == 0 {
+                None
+            } else {
+                Some(SegId(base + k - 1))
+            },
+            next: if k + 1 == cnt {
+                None
+            } else {
+                Some(SegId(base + k + 1))
+            },
         });
     }
     let node = NodeId(c.nodes.len() as u32);
@@ -751,33 +770,6 @@ pub fn seg_same(a: (V3, V3), b: (V3, V3), t: &Tol) -> bool {
         || (num::peq(a.0, b.1, t.value) && num::peq(a.1, b.0, t.value))
 }
 
-/// Segment `b` lies on segment `a`: the directions of `a`, `b` and of
-/// `a.0 -> b.0` are parallel (each test skipped when one of its vectors is
-/// zero) and both ends of `b` are inside the bounding box of `a` (VALUE_EPS).
-pub fn seg_on_seg(a: (V3, V3), b: (V3, V3), t: &Tol) -> bool {
-    let e = t.value;
-    let (a1, a2, b1, b2) = (a.0, a.1, b.0, b.1);
-    let mut lo = [0.0f32; 3];
-    let mut hi = [0.0f32; 3];
-    for k in 0..3 {
-        lo[k] = if num::lt(a1[k], a2[k], e) { a1[k] } else { a2[k] };
-        hi[k] = if num::gt(a1[k], a2[k], e) { a1[k] } else { a2[k] };
-    }
-    let da = num::sub(a2, a1);
-    let db = num::sub(b2, b1);
-    let dab = num::sub(b1, a1);
-    let not_par = |u: V3, v: V3| !num::vzero(u, e) && !num::vzero(v, e) && num::par(u, v, t) == 0;
-    if not_par(da, dab) || not_par(db, dab) || not_par(da, db) {
-        return false;
-    }
-    (0..3).all(|k| {
-        num::ge(b1[k], lo[k], e)
-            && num::le(b1[k], hi[k], e)
-            && num::ge(b2[k], lo[k], e)
-            && num::le(b2[k], hi[k], e)
-    })
-}
-
 /// S6, once after the code-17 merges: an `'L'`/`'G'` edge equal to or lying
 /// on a `'D'` edge takes its code and a negative length; an `'L'`/`'G'`
 /// edge with a single segment on a roof edge that is not an eave, verge or
@@ -802,7 +794,7 @@ pub fn hole_edges(c: &mut Core) -> Result<(), CoreError> {
                     let rg = c.seg(rs);
                     if rg.org == b'D' && rg.code != k.c17 {
                         let rsp = (rg.p, rg.q);
-                        if seg_same(rsp, hs, &t) || seg_on_seg(rsp, hs, &t) {
+                        if seg_same(rsp, hs, &t) || geom::seg_on_seg(rsp.0, rsp.1, hs.0, hs.1, &t) {
                             let code = rg.code;
                             if c.edges[ei.ix()].cnt == 1
                                 && code != k.vl
