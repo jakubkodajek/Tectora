@@ -158,3 +158,110 @@ pub fn line_line(l1: &Line, l2: &Line, in_slab: Option<(f32, f32)>, t: &Tol) -> 
     }
     (false, out)
 }
+
+/// Whether segment `b` lies on segment `a` (VALUE_EPS): the three
+/// difference vectors `a.q - a.p`, `b.q - b.p` and `b.p - a.p` are pairwise
+/// parallel (a zero vector passes) and both ends of `b` are inside the
+/// bounding box of `a`. The box bounds take `a.p` only when it is clearly
+/// below (min) or clearly above (max) `a.q`.
+pub fn seg_on_seg(ap: V3, aq: V3, bp: V3, bq: V3, t: &Tol) -> bool {
+    let v = t.value;
+    let mut lo = [0.0f32; 3];
+    let mut hi = [0.0f32; 3];
+    for k in 0..3 {
+        lo[k] = if num::lt(ap[k], aq[k], v) {
+            ap[k]
+        } else {
+            aq[k]
+        };
+        hi[k] = if num::gt(ap[k], aq[k], v) {
+            ap[k]
+        } else {
+            aq[k]
+        };
+    }
+    let da = num::sub(aq, ap);
+    let db = num::sub(bq, bp);
+    let dab = num::sub(bp, ap);
+    let skew = |x: V3, y: V3| !num::vzero(x, v) && !num::vzero(y, v) && num::par(x, y, t) == 0;
+    if skew(da, dab) || skew(db, dab) || skew(da, db) {
+        return false;
+    }
+    (0..3).all(|k| {
+        num::ge(bp[k], lo[k], v)
+            && num::le(bp[k], hi[k], v)
+            && num::ge(bq[k], lo[k], v)
+            && num::le(bq[k], hi[k], v)
+    })
+}
+
+/// The intersection of two segments (as lines, see [`line_line`]) with a
+/// bit mask of where the point lies (VALUE_EPS). `mode` 8 returns 1 for any
+/// line intersection. Otherwise the point must be inside the bounding box
+/// of segment 1 (skipped with mode bit 2) and of segment 2 (bit 4), else 0.
+/// Bit 1 of the result: inside the box of segment 1 (with mode bit 1), or
+/// strictly inside it in one coordinate and inside in the other two; bit 2
+/// the same for segment 2. Returns the mask and the output point.
+pub fn seg_seg(s1: (V3, V3), s2: (V3, V3), mode: u32, t: &Tol) -> (u32, V3) {
+    let v = t.value;
+    let l1 = Line {
+        p: s1.0,
+        d: num::sub(s1.1, s1.0),
+    };
+    let l2 = Line {
+        p: s2.0,
+        d: num::sub(s2.1, s2.0),
+    };
+    let (hit, o) = line_line(&l1, &l2, None, t);
+    if !hit {
+        return (0, o);
+    }
+    if mode == 8 {
+        return (1, o);
+    }
+    // Plain float compares; an unordered pair takes q for the minimum and
+    // p for the maximum.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    let bbox = |p: V3, q: V3| {
+        let mut lo = [0.0f32; 3];
+        let mut hi = [0.0f32; 3];
+        for k in 0..3 {
+            lo[k] = if !(q[k] > p[k]) { q[k] } else { p[k] };
+            hi[k] = if !(q[k] >= p[k]) { p[k] } else { q[k] };
+        }
+        (lo, hi)
+    };
+    let b1 = bbox(s1.0, s1.1);
+    let b2 = bbox(s2.0, s2.1);
+    let inside = |(lo, hi): ([f32; 3], [f32; 3])| {
+        (0..3).all(|k| !num::lt(o[k], lo[k], v)) && (0..3).all(|k| !num::gt(o[k], hi[k], v))
+    };
+    if !(mode & 2 != 0 || inside(b1)) || !(mode & 4 != 0 || inside(b2)) {
+        return (0, o);
+    }
+    let within =
+        |lo: &[f32; 3], hi: &[f32; 3], k: usize| num::le(lo[k], o[k], v) && num::ge(hi[k], o[k], v);
+    let strict =
+        |lo: &[f32; 3], hi: &[f32; 3], k: usize| num::lt(lo[k], o[k], v) && num::gt(hi[k], o[k], v);
+    let bit = |(lo, hi): ([f32; 3], [f32; 3])| {
+        let all = (0..3).all(|k| within(&lo, &hi, k));
+        let one = (0..3).any(|j| {
+            (0..3).all(|k| {
+                if k == j {
+                    strict(&lo, &hi, k)
+                } else {
+                    within(&lo, &hi, k)
+                }
+            })
+        });
+        (mode & 1 != 0 && all) || one
+    };
+    let mut r = 0;
+    if bit(b1) {
+        r |= 1;
+    }
+    if bit(b2) {
+        r |= 2;
+    }
+    (r, o)
+}

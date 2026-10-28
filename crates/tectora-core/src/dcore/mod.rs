@@ -4,6 +4,7 @@
 //! See `PORTING.md` next to this file for the state model, the arithmetic
 //! conventions and how to test a slice against the emulator dumps.
 
+pub mod classify;
 pub mod dump;
 pub mod error;
 pub mod geom;
