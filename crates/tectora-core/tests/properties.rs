@@ -687,7 +687,7 @@ macro_rules! invariance_tests {
 invariance_tests!(
     regular,
     regular_project(),
-    order: [ignore = "DACAD-dependent: ~1 cm differences at the merge tolerance remain"],
+    order: [ignore = "DACAD-dependent (12 mirrored failures run in the emulator: SO2 byte-equal to ours in both orientations): G/K differ by up to 10 cm, and DACAD leaves one WS segment uncoded (00) in one orientation, so WS differs by up to 2 m"],
     placement: [],
     moved: [ignore = "DACAD-dependent: its tolerances are absolute, so moved or scaled roofs differ (confirmed in DACAD)"]
 );
