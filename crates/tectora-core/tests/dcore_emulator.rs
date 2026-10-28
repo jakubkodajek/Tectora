@@ -242,11 +242,16 @@ fn sweep_from_s1_end(name: &str, doc: &dump::DumpDoc, t: &mut Tallies) {
         let mut d = Vec::new();
         match (&emu, &res) {
             (None, Ok(_)) => {}
-            (Some((kind, code, id)), Err(dcore::CoreError::Cut { code: c2, msg })) if kind == "cut" => {
+            (Some((kind, code, id)), Err(dcore::CoreError::Cut { code: c2, msg }))
+                if kind == "cut" =>
+            {
                 if (*code, *id) != (u64::from(*c2), msg.id) {
                     d.push(format!("emulator {code}/{id:x?}, port {c2}/{:x?}", msg.id));
                 }
-                let site = doc.doc["errors"][0]["site"].as_str().unwrap_or("").to_string();
+                let site = doc.doc["errors"][0]["site"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
                 tally(
                     t,
                     &format!("sweep site {site} = {}", dcore::sweep::last_cut_site()),
@@ -655,7 +660,9 @@ fn run_rd2() {
         let t0 = std::time::Instant::now();
         let mut stages = Vec::new();
         let mut run = dcore::pipeline::Run::new(flags);
-        run.hook = Some(Box::new(|stage: &str, _: &dcore::Core| stages.push(stage.to_string())));
+        run.hook = Some(Box::new(|stage: &str, _: &dcore::Core| {
+            stages.push(stage.to_string())
+        }));
         let r = run.run(&bytes);
         drop(run);
         println!(

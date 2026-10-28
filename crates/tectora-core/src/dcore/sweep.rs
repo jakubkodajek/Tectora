@@ -20,7 +20,7 @@ use super::error::*;
 use super::geom::{self, Line, NO_POINT};
 use super::num::{self, HALF_PI_F, V3};
 use super::s1;
-use super::state::{ctr, Core, Cut, CutId, Face, FaceId, WallId, TFACE};
+use super::state::{Core, Cut, CutId, Face, FaceId, TFACE, WallId, ctr};
 
 /// Sweep iterations (both passes) after which the port gives up: the
 /// original loops forever on some inputs, adding segments every round.
@@ -929,6 +929,7 @@ fn cut_lines(c: &mut Core) -> Result<(bool, bool), CoreError> {
         let par = if geom::horizontal(&l, &tol) {
             let z = l.p[2];
             // A plain compare: an unordered result counts as "less".
+            #[allow(clippy::neg_cmp_op_on_partial_ord)]
             if !any_h || !(z >= minz) {
                 minz = z;
             }

@@ -11,7 +11,7 @@
 use super::error::CoreError;
 use super::geom;
 use super::num::{self, V3, ZERO3};
-use super::state::{ctr, Core, FaceId, SegId};
+use super::state::{Core, FaceId, SegId, ctr};
 
 fn fault(what: &'static str) -> CoreError {
     CoreError::Fault(what)
@@ -420,8 +420,7 @@ pub fn close_face(c: &mut Core, f: FaceId, retry: bool) -> Result<bool, CoreErro
             if !retry {
                 break;
             }
-            c.g.tol.point =
-                (f64::from(e0) * f64::from(0.2f32) + f64::from(c.g.tol.point)) as f32;
+            c.g.tol.point = (f64::from(e0) * f64::from(0.2f32) + f64::from(c.g.tol.point)) as f32;
         }
         if order(c, f, c.g.tol.point) {
             let fm = c.face_mut(f);
