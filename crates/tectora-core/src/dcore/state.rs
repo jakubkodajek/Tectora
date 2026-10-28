@@ -413,7 +413,11 @@ pub struct Globals {
     pub llx: V3,
     pub x05d0: u32,
     pub x02ec: u32,
-    pub scratch100: u32,
+    /// The face of the hole outline the clipper works on (the first hole
+    /// segment's face, a static hole face); the face of every hole piece segment.
+    pub scratch100: Option<FaceId>,
+    /// The clipper's last vertex node: a heap address in the original; here
+    /// 1 once a vertex was allocated, else 0 (the dump writes it the same way).
     pub scratch0fc: u32,
     pub codes: Codes,
     pub tol: Tol,
@@ -465,7 +469,7 @@ impl Default for Globals {
             llx: ZERO3,
             x05d0: 0,
             x02ec: 0,
-            scratch100: 0,
+            scratch100: None,
             scratch0fc: 0,
             codes: Codes::for_flags(0),
             tol: Tol::default(),

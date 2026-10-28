@@ -7,6 +7,7 @@
 pub mod dump;
 pub mod error;
 pub mod geom;
+pub mod holes;
 pub mod num;
 pub mod out;
 pub mod pipeline;

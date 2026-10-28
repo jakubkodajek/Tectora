@@ -30,8 +30,7 @@ pub fn sweep(c: &mut Core) -> Result<i32, CoreError> {
 /// hangs the pieces on the faces. Dump point: `after_holes` (reached also
 /// when the flag is off).
 pub fn chimney_holes(c: &mut Core) -> Result<(), CoreError> {
-    let _ = c;
-    Err(CoreError::Unimplemented("S6 chimney holes"))
+    super::holes::chimney_holes(c)
 }
 
 /// S4: collinear merge of consecutive segments of every closed face
@@ -94,6 +93,5 @@ pub fn merge_lg17(c: &mut Core) -> Result<(), CoreError> {
 
 /// S6: hole edges on roof edges (`da5160`). Dump point: `after_holeedge`.
 pub fn hole_edges(c: &mut Core) -> Result<(), CoreError> {
-    let _ = c;
-    Err(CoreError::Unimplemented("S6 hole edges"))
+    super::holes::hole_edges(c)
 }
