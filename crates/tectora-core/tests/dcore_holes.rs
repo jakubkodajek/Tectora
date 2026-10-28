@@ -6,7 +6,10 @@
 //! - hole edges: `after_mergeLG` → `after_holeedge`.
 //!
 //! `fixtures` runs the committed cases in `tests/fixtures/dcore_holes`
-//! (own chimney cases); `hole_dumps` (ignored) runs local dump sets:
+//! (own cases: C27, s1 R1_0815 with three models, the chimney sweep case
+//! V70_0930 with hole-edge copies, P1a with a non-convex chimney, and the
+//! mr3 joint case M3_0348 dumped with `--flags=0x4a8 --noint` so that its
+//! chimney is cut in the core); `hole_dumps` (ignored) runs local dump sets:
 //!
 //! ```text
 //! DCORE_HOLES="list.txt=dumps/dir;..." \
