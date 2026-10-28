@@ -1,8 +1,8 @@
 //! S5 (line codes) against the emulator, stage by stage: each stage is
 //! started from the emulator's state before it and compared with the
 //! emulator's state after it. The chain runs the four stages in a row from
-//! `after_dormer` (taking the emulator's `after_holeedge` when the hole
-//! edges, not ported here, changed anything) and writes the SO2.
+//! `after_dormer` (with the S6 hole edges between the L/G merge and the
+//! second code pass) and writes the SO2.
 //!
 //! `fixtures` runs the committed cases; `s5_dumps` (ignored) runs local
 //! dump sets made with the S5 stages (see `src/dcore/PORTING.md`):
@@ -17,7 +17,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
-use tectora_core::dcore::{Core, classify, dump, out};
+use tectora_core::dcore::{self, Core, classify, dump, out};
 
 #[derive(Default)]
 struct Tally {
@@ -94,32 +94,25 @@ fn run_case(name: &str, dir: &Path, t: &mut Tallies) -> bool {
     let d = dump::compare(lg, &dump::to_json(&c), 6);
     let clean = d.is_empty();
     tally(t, "chain after_mergeLG", name, d);
-    let holes = !dump::compare(lg, he, 1).is_empty();
-    if holes {
-        c = dump::from_json(he).unwrap();
-    }
+    dcore::stages::hole_edges(&mut c).unwrap();
+    let d = dump::compare(he, &dump::to_json(&c), 6);
+    let clean = clean && d.is_empty();
+    tally(t, "chain after_holeedge", name, d);
     classify::codes(&mut c);
+    let d = dump::compare(end, &dump::to_json(&c), 6);
+    let clean = clean && d.is_empty();
+    tally(t, "chain after_codes2", name, d);
     tally(
         t,
-        "chain after_codes2",
-        name,
-        dump::compare(end, &dump::to_json(&c), 6),
-    );
-    tally(
-        t,
-        if holes {
-            "SO2 via emulator hole edges"
-        } else {
-            "SO2 end to end"
-        },
+        "SO2 end to end",
         name,
         match out::write_sol(&mut c) {
             Ok(b) => {
                 let want = std::fs::read(dir.join(format!("{name}.SO2"))).unwrap_or_default();
-                if b == want && (clean || holes) {
+                if b == want && clean {
                     vec![]
                 } else if b == want {
-                    vec!["SO2 equal, state before the hole edges differs".into()]
+                    vec!["SO2 equal, state differs".into()]
                 } else {
                     vec!["SO2 differs".into()]
                 }
