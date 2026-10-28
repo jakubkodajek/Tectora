@@ -46,6 +46,8 @@ use crate::roof::{LineKind, Opening, OpeningKind, RoofFace, RoofGeometry, RoofLi
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Rd2Map {
     pub parts: Vec<PartMap>,
+    /// The dormers written to the RD2.
+    pub dormers: Vec<DormerMap>,
 }
 
 /// The RD2 model of a part and the wall number of each of its edges.
@@ -55,13 +57,41 @@ pub struct PartMap {
     pub walls: Vec<i32>,
 }
 
+/// The RD2 models of a dormer (`T`/`G` and `t`/`g` records share the
+/// number) and the wall number of each of its edges.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DormerMap {
+    /// Index into the project's dormers.
+    pub dormer: usize,
+    pub model: i32,
+    /// The part the dormer sits on: its faces belong to that part.
+    pub part: usize,
+    pub walls: Vec<i32>,
+}
+
 impl Rd2Map {
-    /// The part and edge index of a wall.
+    /// The part and edge index of a wall. A dormer's walls give the part it
+    /// sits on and [`usize::MAX`] for the edge.
     pub fn find(&self, model: i32, wall: i32) -> Option<(usize, usize)> {
-        let pi = self.parts.iter().position(|p| p.model == model)?;
-        let ei = self.parts[pi].walls.iter().position(|&w| w == wall)?;
-        Some((pi, ei))
+        if let Some(pi) = self.parts.iter().position(|p| p.model == model) {
+            let ei = self.parts[pi].walls.iter().position(|&w| w == wall)?;
+            return Some((pi, ei));
+        }
+        self.dormers
+            .iter()
+            .find(|d| d.model == model)
+            .map(|d| (d.part, usize::MAX))
     }
+}
+
+/// The main-roof wall a dormer sits on, as DACAD writes it into the
+/// dormer's `T` record.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DormerHost {
+    pub part: usize,
+    pub edge: usize,
+    /// The `D`/`K` record of the wall whose plane carries the dormer.
+    pub level: usize,
 }
 
 /// Whether DACAD joins the roofs of this project in its Modellverschnitt:
@@ -92,74 +122,98 @@ pub fn sweep_fits(part: &RoofPart) -> bool {
 }
 
 /// The RD2 text of the project's roofs and holes, and where each part
-/// went. Parts are written last first (DACAD's core reads its models in
-/// reverse). A part imported from DACAD lists its walls as recorded, in
-/// file order with their own numbers, lengths and directions; other parts
-/// get the next free numbers and their edges as they are. The parts must
-/// be counter-clockwise (see [`RoofPart::normalize_ccw`]).
+/// went, without dormers (see [`write_rd2_with`]).
 pub fn write_rd2(project: &Project) -> (String, Rd2Map) {
+    write_rd2_with(project, &[])
+}
+
+/// The RD2 text of the project's roofs, dormers and holes, and where each
+/// part went. Parts are models 1, 2, ... in project order, the dormers
+/// with a host in `hosts` (by dormer index) follow; models are written
+/// from the highest number down (DACAD's core reads its models in
+/// reverse). A part or dormer imported from DACAD lists its walls as
+/// recorded, in file order with their own numbers, lengths and
+/// directions; others get the next free numbers and their edges as they
+/// are. The parts must be counter-clockwise (see
+/// [`RoofPart::normalize_ccw`]).
+///
+/// A dormer is written as DACAD writes it (captured RD2s of TRAING01,
+/// E008, 92091101 and the s1/s2 mass sets): a `T` wall, the host roof
+/// plane as a wall through the dormer's front, followed by the dormer's
+/// walls as `G` walls; then the same as `t`/`g` walls, where every wall is
+/// a cheek (`D -1`, vertical, at the height of the host plane) with the
+/// wall's own sloped plane as `K 0`, its eave moved onto the wall line.
+pub fn write_rd2_with(project: &Project, hosts: &[Option<DormerHost>]) -> (String, Rd2Map) {
     let mut map = Rd2Map::default();
-    let sourced = |p: &RoofPart| p.edges.iter().all(|e| e.source.is_some());
+    let written: Vec<(usize, DormerHost)> = project
+        .dormers
+        .iter()
+        .enumerate()
+        .filter_map(|(di, _)| hosts.get(di).copied().flatten().map(|h| (di, h)))
+        .filter(|(_, h)| {
+            project
+                .parts
+                .get(h.part)
+                .is_some_and(|p| h.edge < p.edges.len())
+        })
+        .collect();
     let mut no = project
         .parts
         .iter()
-        .filter(|p| sourced(p))
-        .flat_map(|p| {
-            p.edges
+        .map(|p| p.edges.as_slice())
+        .chain(
+            written
                 .iter()
-                .filter_map(|e| e.source.as_ref().map(|s| s.id as i32))
-        })
+                .map(|&(di, _)| project.dormers[di].edges.as_slice()),
+        )
+        .filter(|e| sourced(e))
+        .flat_map(|e| e.iter().filter_map(|e| e.source.as_ref().map(|s| s.id as i32)))
         .max()
         .unwrap_or(0);
-    for (pi, part) in project.parts.iter().enumerate() {
-        let walls = part
-            .edges
+    let mut numbers = |edges: &[EdgeDef]| -> Vec<i32> {
+        edges
             .iter()
             .map(|e| match &e.source {
-                Some(s) if sourced(part) => s.id as i32,
+                Some(s) if sourced(edges) => s.id as i32,
                 _ => {
                     no += 1;
                     no
                 }
             })
-            .collect();
+            .collect()
+    };
+    for (pi, part) in project.parts.iter().enumerate() {
+        let walls = numbers(&part.edges);
         map.parts.push(PartMap {
             model: pi as i32 + 1,
             walls,
         });
     }
+    for (k, &(di, h)) in written.iter().enumerate() {
+        let walls = numbers(&project.dormers[di].edges);
+        map.dormers.push(DormerMap {
+            dormer: di,
+            model: (project.parts.len() + k) as i32 + 1,
+            part: h.part,
+            walls,
+        });
+    }
     let mut s = String::from("0\n");
+    for (dm, &(_, h)) in map.dormers.iter().zip(&written).rev() {
+        write_dormer(&mut s, project, dm, h, &map.parts[h.part]);
+    }
     for (part, pm) in project.parts.iter().zip(&map.parts).rev() {
         let n = part.edges.len();
         let mut order: Vec<usize> = (0..n).collect();
-        if sourced(part) {
+        if sourced(&part.edges) {
             order.sort_by_key(|&i| pm.walls[i]);
         }
         for i in order {
             let e = &part.edges[i];
-            let (start, len, angle) = match &e.source {
-                Some(src) if sourced(part) => (src.start, src.length, src.angle_deg),
-                _ => {
-                    let next = part.edges[(i + 1) % n].start;
-                    let len = e.start.distance(next);
-                    let angle = match e.direction_rad {
-                        Some(a) if len <= 1e-6 => a.to_degrees(),
-                        _ => (next.y - e.start.y).atan2(next.x - e.start.x).to_degrees(),
-                    };
-                    (e.start, len, angle)
-                }
-            };
-            let _ = writeln!(
-                s,
-                "W {:2} {:2} {:.4} {:.4}{:10.5}{:10.4}{:5.1}",
-                pm.model, pm.walls[i], start.x, start.y, len, angle, e.priority as f64
-            );
-            for (letter, sub, flag, h, ov, pitch) in records(e) {
-                let _ = writeln!(
-                    s,
-                    "{letter} {sub:2} {:2} {flag:2}{h:10.4} {ov:.4}{pitch:10.4}",
-                    0
-                );
+            let next = part.edges[(i + 1) % n].start;
+            wall_line(&mut s, 'W', pm.model, pm.walls[i], e, next, sourced(&part.edges));
+            for r in records(e) {
+                record(&mut s, r);
             }
         }
     }
@@ -177,10 +231,133 @@ pub fn write_rd2(project: &Project) -> (String, Rd2Map) {
     (s, map)
 }
 
+/// Every wall was imported from DACAD: the walls are written as recorded.
+fn sourced(edges: &[EdgeDef]) -> bool {
+    edges.iter().all(|e| e.source.is_some())
+}
+
+/// Start, length and direction (degrees) of wall `e` running to `next`,
+/// as recorded when imported from DACAD.
+fn wall_geometry(e: &EdgeDef, next: Point2, sourced: bool) -> (Point2, f64, f64) {
+    match &e.source {
+        Some(src) if sourced => (src.start, src.length, src.angle_deg),
+        _ => {
+            let len = e.start.distance(next);
+            let angle = match e.direction_rad {
+                Some(a) if len <= 1e-6 => a.to_degrees(),
+                _ => (next.y - e.start.y).atan2(next.x - e.start.x).to_degrees(),
+            };
+            (e.start, len, angle)
+        }
+    }
+}
+
+/// A wall record `c model wall x y len angle priority`.
+fn wall_line(
+    s: &mut String,
+    letter: char,
+    model: i32,
+    wall: i32,
+    e: &EdgeDef,
+    next: Point2,
+    sourced: bool,
+) {
+    let (start, len, angle) = wall_geometry(e, next, sourced);
+    let _ = writeln!(
+        s,
+        "{letter} {:2} {:2} {:.4} {:.4}{:10.5}{:10.4}{:5.1}",
+        model, wall, start.x, start.y, len, angle, e.priority as f64
+    );
+}
+
+/// One `D`/`K` record.
+fn record(s: &mut String, (letter, sub, flag, h, ov, pitch): Record) {
+    let _ = writeln!(
+        s,
+        "{letter} {sub:2} {:2} {flag:2}{h:10.4} {ov:.4}{pitch:10.4}",
+        0
+    );
+}
+
+/// The `T`/`G` and `t`/`g` models of a dormer.
+fn write_dormer(s: &mut String, project: &Project, dm: &DormerMap, h: DormerHost, host: &PartMap) {
+    let d = &project.dormers[dm.dormer];
+    let part = &project.parts[h.part];
+    let n = part.edges.len();
+    let he = &part.edges[h.edge];
+    let hnext = part.edges[(h.edge + 1) % n].start;
+    let (hstart, hlen, hangle) = wall_geometry(he, hnext, sourced(&part.edges));
+    let dsourced = sourced(&d.edges);
+    let next = |i: usize| d.edges.get(i + 1).map_or(d.end, |e| e.start);
+    // The front: the dormer's wall start lowest down the host plane.
+    let rad = hangle.to_radians();
+    let inward = Point2::new(-rad.sin(), rad.cos());
+    let dist = |p: Point2| (p.x - hstart.x) * inward.x + (p.y - hstart.y) * inward.y;
+    let mut front = d.edges.first().map_or(d.end, |e| e.start);
+    for (i, e) in d.edges.iter().enumerate() {
+        let (p, _, _) = wall_geometry(e, next(i), dsourced);
+        if dist(p) < dist(front) - 1e-6 {
+            front = p;
+        }
+    }
+    // The host's planes as (sub, flag, distance from the wall line and
+    // height where each starts, pitch).
+    let mut levels: Vec<(i32, i32, f64, f64, f64)> = Vec::new();
+    for (k, r) in records(he).iter().enumerate() {
+        let d0 = match levels.last() {
+            None => -r.4,
+            Some(&(_, _, dp, zp, pp)) if (pp - 90.0).abs() > 1e-9 => {
+                dp + (r.3 - zp) / pp.to_radians().tan()
+            }
+            Some(&(_, _, dp, _, _)) => dp,
+        };
+        levels.push((k as i32, r.2, d0, r.3, r.5));
+    }
+    let level = h.level.min(levels.len().saturating_sub(1));
+    let (_, _, d0, z0, p0) = levels[level];
+    let h_front = z0 + (dist(front) - d0) * p0.to_radians().tan();
+    let back = if hangle < 180.0 {
+        hangle + 180.0
+    } else {
+        hangle - 180.0
+    };
+    let host_wall = host.walls[h.edge];
+    let t_block = |s: &mut String, letter: char| {
+        let _ = writeln!(
+            s,
+            "{letter} {:2} {:2} {:.4} {:.4}{:10.5}{:10.4}{:5.1}",
+            dm.model, host_wall, front.x, front.y, hlen, back, 0.0
+        );
+        for (j, &(sub, flag, _, z, p)) in levels.iter().enumerate().skip(level) {
+            let (letter, z) = if j == level { ('D', h_front) } else { ('K', z) };
+            record(s, (letter, sub, flag, z, 0.0, 180.0 - p));
+        }
+    };
+    t_block(s, 'T');
+    for (i, e) in d.edges.iter().enumerate() {
+        wall_line(s, 'G', dm.model, dm.walls[i], e, next(i), dsourced);
+        for r in records(e) {
+            record(s, r);
+        }
+    }
+    t_block(s, 't');
+    for (i, e) in d.edges.iter().enumerate() {
+        wall_line(s, 'g', dm.model, dm.walls[i], e, next(i), dsourced);
+        record(s, ('D', -1, 0, h_front, 0.0, 90.0));
+        if !e.is_gable() {
+            let z = e.eave_height + e.overhang * e.pitch_deg.to_radians().tan();
+            record(s, ('K', 0, 1, z, 0.0, e.pitch_deg));
+        }
+    }
+}
+
+/// A `D`/`K` record: `(letter, sub, flag, height, overhang, pitch)`.
+type Record = (char, i32, i32, f64, f64, f64);
+
 /// The `D`/`K` records of a wall: `(letter, sub, flag, height, overhang,
 /// pitch)`. The first is the wall's own definition, the others the
 /// half-hip and the pitch breaks.
-fn records(e: &EdgeDef) -> Vec<(char, i32, i32, f64, f64, f64)> {
+fn records(e: &EdgeDef) -> Vec<Record> {
     let roofed = |p: f64| i32::from(p < crate::model::GABLE_PITCH_DEG);
     // The flag says the wall carries roof material: every sloped wall, and
     // a gable only when it is clad.
@@ -627,75 +804,179 @@ pub fn line_kind(code: i32) -> Option<(LineKind, Option<VergeSide>)> {
 /// their areas (less the cut-outs inside them) and, for clad gables, the
 /// area of their vertical faces.
 pub fn to_geometries(project: &Project, map: &Rd2Map, out: &modell::Output) -> Vec<RoofGeometry> {
-    let mut geos = vec![RoofGeometry::default(); project.parts.len()];
     let p3 = |v: modell::V3| [v.x, v.y, v.z];
-    // The part of each line: that of the first face piece using it.
-    let mut owner: HashMap<usize, usize> = HashMap::new();
-    let mut k = 0;
-    for f in &out.state.faces {
-        let n = f.pieces.len() + f.cutters.len();
-        let part = map.find(f.rec.model, f.rec.face);
-        for of in &out.faces[k..k + n] {
-            if let (Some((pi, _)), FaceKind::Surface) = (part, of.kind) {
-                for &(li, _) in &of.edges {
-                    owner.entry(li).or_insert(pi);
-                }
-            }
-        }
-        k += n;
-    }
-    for (i, l) in out.lines.iter().enumerate() {
-        if l.sign < 0 {
-            continue;
-        }
-        let Some((kind, side)) = line_kind(l.code) else {
-            continue;
-        };
-        let pi = owner.get(&i).copied().unwrap_or(0);
-        if let Some(g) = geos.get_mut(pi) {
-            g.lines.push(RoofLine {
-                kind,
-                a: p3(l.p1),
-                b: p3(l.p2),
-                side,
-            });
-        }
-    }
-    let mut holes: std::collections::BTreeMap<(usize, i32, i32), f64> = Default::default();
+    let lines = out
+        .lines
+        .iter()
+        .map(|l| SolResultLine {
+            a: p3(l.p1),
+            b: p3(l.p2),
+            code: l.code,
+            negative: l.sign < 0,
+        })
+        .collect();
+    let mut faces = Vec::new();
     let mut k = 0;
     for f in &out.state.faces {
         let n = f.pieces.len() + f.cutters.len();
         let mine = &out.faces[k..k + n];
         k += n;
-        let Some((pi, ei)) = map.find(f.rec.model, f.rec.face) else {
+        let part = map.find(f.rec.model, f.rec.face);
+        let clad = part.is_some_and(|(pi, ei)| {
+            project.parts[pi].edges.get(ei).is_some_and(|e| e.clad)
+        });
+        let mut face = SolResultFace {
+            model: f.rec.model,
+            wall: f.rec.face,
+            pitch_deg: f.rec.angle,
+            clad,
+            surfaces: Vec::new(),
+            cuts: Vec::new(),
+        };
+        for o in mine.iter().filter(|o| o.kind == FaceKind::Surface) {
+            face.surfaces.push((o.edges.clone(), o.area));
+        }
+        // The chimneys and openings cut out of this face, for the norms.
+        let mut src = f.cut_src.iter();
+        for o in mine.iter().filter(|o| matches!(o.kind, FaceKind::Cut(_))) {
+            let opening = src.next().and_then(|s| match s.kind as u8 {
+                b'T' => Some((OpeningKind::Chimney, s.sub as i64)),
+                b'L' => Some((OpeningKind::Hole, s.sub as i64)),
+                _ => None,
+            });
+            face.cuts.push((o.area, opening));
+        }
+        faces.push(face);
+    }
+    sol_geometries(
+        project,
+        map,
+        &SolResult {
+            lines,
+            faces,
+            negative_lines: NegativeLines::Drop,
+        },
+    )
+}
+
+/// A roof line of a SOL (the core's or the Modellverschnitt's).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SolResultLine {
+    pub a: [f64; 3],
+    pub b: [f64; 3],
+    /// DACAD's line code.
+    pub code: i32,
+    /// DACAD writes the length negative.
+    pub negative: bool,
+}
+
+/// A face of a SOL: its visible pieces and what was cut out of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SolResultFace {
+    /// The RD2 model and wall the face belongs to.
+    pub model: i32,
+    pub wall: i32,
+    pub pitch_deg: f64,
+    /// A vertical face that carries roof material (a clad gable).
+    pub clad: bool,
+    /// Pieces as line references (0-based index, +1 or -1 for the
+    /// direction) with their areas.
+    pub surfaces: Vec<(Vec<(usize, i32)>, f64)>,
+    /// Cut-outs: the (negative) area and, for a chimney, opening or dormer,
+    /// its kind and a key telling them apart.
+    pub cuts: Vec<(f64, Option<(OpeningKind, i64)>)>,
+}
+
+/// How DACAD's totals treat the lines it writes with a negative length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NegativeLines {
+    /// Left out (the Modellverschnitt's SOL).
+    Drop,
+    /// Subtracted (the core SOL: a chimney edge on a roof line).
+    Subtract,
+}
+
+/// The lines and faces of a SOL, ready to be turned into geometries.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SolResult {
+    pub lines: Vec<SolResultLine>,
+    pub faces: Vec<SolResultFace>,
+    pub negative_lines: NegativeLines,
+}
+
+/// One geometry per part from the lines and faces of a SOL: each line goes
+/// to the part of the first face using it, each sloped face piece becomes
+/// a face of its wall's part (a dormer's faces are its host part's, with
+/// edge [`usize::MAX`]), clad vertical faces count as `clad_area`, other
+/// vertical faces are gables. The cut-outs inside a face are deducted from
+/// its first piece and recorded as openings for the norms.
+pub fn sol_geometries(project: &Project, map: &Rd2Map, res: &SolResult) -> Vec<RoofGeometry> {
+    let mut geos = vec![RoofGeometry::default(); project.parts.len()];
+    let mut owner: HashMap<usize, usize> = HashMap::new();
+    for f in &res.faces {
+        if let Some((pi, _)) = map.find(f.model, f.wall) {
+            for (edges, _) in &f.surfaces {
+                for &(li, _) in edges {
+                    owner.entry(li).or_insert(pi);
+                }
+            }
+        }
+    }
+    for (i, l) in res.lines.iter().enumerate() {
+        let Some((kind, side)) = line_kind(l.code) else {
+            continue;
+        };
+        let pi = owner.get(&i).copied().unwrap_or(0);
+        let Some(g) = geos.get_mut(pi) else {
+            continue;
+        };
+        let line = RoofLine {
+            kind,
+            a: l.a,
+            b: l.b,
+            side,
+        };
+        match (l.negative, res.negative_lines) {
+            (false, _) => g.lines.push(line),
+            (true, NegativeLines::Drop) => {}
+            (true, NegativeLines::Subtract) => g
+                .minus_lines
+                .push((line.dacad_code().to_string(), line.length())),
+        }
+    }
+    let mut holes: std::collections::BTreeMap<(usize, u8, i64), (OpeningKind, f64)> =
+        Default::default();
+    for f in &res.faces {
+        let Some((pi, ei)) = map.find(f.model, f.wall) else {
             continue;
         };
         let geo = &mut geos[pi];
-        let vertical = (f.rec.angle - 90.0).abs() < 1e-3;
-        let cut: f64 = mine
-            .iter()
-            .filter(|o| matches!(o.kind, FaceKind::Cut(_)))
-            .map(|o| o.area)
-            .sum();
-        if vertical {
-            if project.parts[pi].edges[ei].clad {
-                geo.clad_area += mine.iter().map(|o| o.area).sum::<f64>();
+        let polygon = |edges: &[(usize, i32)]| -> Vec<[f64; 3]> {
+            edges
+                .iter()
+                .filter_map(|&(li, s)| res.lines.get(li).map(|l| if s > 0 { l.a } else { l.b }))
+                .collect()
+        };
+        let cut: f64 = f.cuts.iter().map(|c| c.0).sum();
+        if (f.pitch_deg - 90.0).abs() <= 90.0 - crate::model::GABLE_PITCH_DEG {
+            if f.clad {
+                geo.clad_area += f.surfaces.iter().map(|s| s.1).sum::<f64>() + cut;
+            }
+            for (edges, _) in &f.surfaces {
+                let p = polygon(edges);
+                if p.len() >= 3 {
+                    geo.gables.push(p);
+                }
             }
             continue;
         }
         let first = geo.faces.len();
-        for o in mine.iter().filter(|o| o.kind == FaceKind::Surface) {
-            let polygon = o
-                .edges
-                .iter()
-                .filter_map(|&(li, s)| out.lines.get(li).map(|l| if s > 0 { l.p1 } else { l.p2 }))
-                .map(p3)
-                .collect();
+        for (edges, area) in &f.surfaces {
             geo.faces.push(RoofFace {
                 edge: ei,
-                pitch_deg: f.rec.angle,
-                polygon,
-                area: o.area,
+                pitch_deg: f.pitch_deg,
+                polygon: polygon(edges),
+                area: *area,
                 deducted: 0.0,
             });
         }
@@ -703,23 +984,20 @@ pub fn to_geometries(project: &Project, map: &Rd2Map, out: &modell::Output) -> V
             face.area += cut;
             face.deducted -= cut;
         }
-        // The chimneys and openings cut out of this face, for the norms.
-        let cuts = mine.iter().filter(|o| matches!(o.kind, FaceKind::Cut(_)));
-        for (o, src) in cuts.zip(&f.cut_src) {
-            if matches!(src.kind as u8, b'L' | b'T') {
-                *holes.entry((pi, src.kind, src.sub)).or_default() -= o.area;
+        for &(area, opening) in &f.cuts {
+            if let Some((kind, key)) = opening {
+                let tag = match kind {
+                    OpeningKind::Chimney => 0,
+                    OpeningKind::Hole => 1,
+                    OpeningKind::Dormer => 2,
+                    OpeningKind::Window => 3,
+                };
+                holes.entry((pi, tag, key)).or_insert((kind, 0.0)).1 -= area;
             }
         }
     }
-    for ((pi, kind, _), area) in holes {
-        geos[pi].openings.push(Opening {
-            kind: if kind as u8 == b'T' {
-                OpeningKind::Chimney
-            } else {
-                OpeningKind::Hole
-            },
-            area,
-        });
+    for ((pi, _, _), (kind, area)) in holes {
+        geos[pi].openings.push(Opening { kind, area });
     }
     geos
 }

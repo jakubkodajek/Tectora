@@ -156,6 +156,33 @@ pub struct RoofGeometry {
     /// Plan outlines of the dormers cut into this roof.
     #[serde(skip)]
     pub footprints: Vec<Vec<Point2>>,
+    /// Set when DACAD's calculation ends with an error for this project:
+    /// DACAD then gives no roof, and neither does the geometry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<CalcError>,
+}
+
+/// An error DACAD's roof calculation ends with, as DACAD reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CalcError {
+    /// The error code DACAD shows (`E00002` for every cut error and for a
+    /// roof without solution), if it shows one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// The id of the message in DACAD's string table, if it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<u32>,
+    /// DACAD's message (German, as DACAD shows it).
+    pub message: String,
+}
+
+impl std::fmt::Display for CalcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.code {
+            Some(c) => write!(f, "{c}: {}", self.message),
+            None => f.write_str(&self.message),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
