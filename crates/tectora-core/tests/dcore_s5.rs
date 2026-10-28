@@ -190,7 +190,10 @@ fn s5_vectors(path: &Path) -> (usize, Vec<String>) {
         let (got, got_out) = match cols[0] {
             "segseg" => {
                 let (m, o) = geom::seg_seg((v3(0), v3(3)), (v3(6), v3(9)), ins[12], &t);
-                (i64::from(m), o.iter().map(|x| x.to_bits()).collect::<Vec<_>>())
+                (
+                    i64::from(m),
+                    o.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+                )
             }
             "segon" => (
                 i64::from(geom::seg_on_seg(v3(0), v3(3), v3(6), v3(9), &t)),
@@ -213,7 +216,12 @@ fn fixture_vectors() {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/dcore/s5.tsv");
     let (n, bad) = s5_vectors(&p);
     assert!(n > 0);
-    assert!(bad.is_empty(), "{} of {n} differ:\n{}", bad.len(), bad[..bad.len().min(10)].join("\n"));
+    assert!(
+        bad.is_empty(),
+        "{} of {n} differ:\n{}",
+        bad.len(),
+        bad[..bad.len().min(10)].join("\n")
+    );
 }
 
 #[test]

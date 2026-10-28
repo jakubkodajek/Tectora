@@ -8,6 +8,7 @@ pub mod dad;
 pub mod dcore;
 pub mod diff;
 pub mod dormer;
+pub mod engine;
 pub mod examples;
 mod gable_wall;
 pub mod geom;

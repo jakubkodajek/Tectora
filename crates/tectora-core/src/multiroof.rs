@@ -34,6 +34,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
+use crate::coresol::num::put_f;
 use crate::coresol::{
     CoreSol, IntEdge, IntFace, IntGeometry, Rd2, SolFace, SolLine, wall_stage, write_int_geometry,
 };
@@ -167,7 +168,10 @@ pub fn write_rd2_with(project: &Project, hosts: &[Option<DormerHost>]) -> (Strin
                 .map(|&(di, _)| project.dormers[di].edges.as_slice()),
         )
         .filter(|e| sourced(e))
-        .flat_map(|e| e.iter().filter_map(|e| e.source.as_ref().map(|s| s.id as i32)))
+        .flat_map(|e| {
+            e.iter()
+                .filter_map(|e| e.source.as_ref().map(|s| s.id as i32))
+        })
         .max()
         .unwrap_or(0);
     let mut numbers = |edges: &[EdgeDef]| -> Vec<i32> {
@@ -211,7 +215,15 @@ pub fn write_rd2_with(project: &Project, hosts: &[Option<DormerHost>]) -> (Strin
         for i in order {
             let e = &part.edges[i];
             let next = part.edges[(i + 1) % n].start;
-            wall_line(&mut s, 'W', pm.model, pm.walls[i], e, next, sourced(&part.edges));
+            wall_line(
+                &mut s,
+                'W',
+                pm.model,
+                pm.walls[i],
+                e,
+                next,
+                sourced(&part.edges),
+            );
             for r in records(e) {
                 record(&mut s, r);
             }
@@ -223,9 +235,13 @@ pub fn write_rd2_with(project: &Project, hosts: &[Option<DormerHost>]) -> (Strin
         .map(|c| (c, c.height))
         .chain(project.roof_openings.iter().map(|c| (c, 0.0)));
     for (k, (c, h)) in holes.enumerate() {
-        let _ = writeln!(s, "L {:2} {h:4.1} {:2}", k + 1, c.corners.len());
+        // DACAD prints the float it stores, ties rounded up (14.65 is
+        // 14.6, 15.25 is 15.3).
+        let _ = write!(s, "L {:2} ", k + 1);
+        put_f(&mut s, h as f32 as f64, 4, 1);
+        let _ = writeln!(s, " {:2}", c.corners.len());
         for p in &c.corners {
-            let _ = writeln!(s, "{:8.4} {:.4}", p.x, p.y);
+            let _ = writeln!(s, "  {:.4} {:.4}", p.x, p.y);
         }
     }
     (s, map)
@@ -822,9 +838,8 @@ pub fn to_geometries(project: &Project, map: &Rd2Map, out: &modell::Output) -> V
         let mine = &out.faces[k..k + n];
         k += n;
         let part = map.find(f.rec.model, f.rec.face);
-        let clad = part.is_some_and(|(pi, ei)| {
-            project.parts[pi].edges.get(ei).is_some_and(|e| e.clad)
-        });
+        let clad =
+            part.is_some_and(|(pi, ei)| project.parts[pi].edges.get(ei).is_some_and(|e| e.clad));
         let mut face = SolResultFace {
             model: f.rec.model,
             wall: f.rec.face,

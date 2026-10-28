@@ -1252,10 +1252,7 @@ pub(crate) fn snap_in_step_planes(part: &RoofPart) -> RoofPart {
         for i in 0..j {
             let (e, f) = (&out.edges[i], &out.edges[j]);
             let Some((di, ci)) = line(i) else { continue };
-            if !sloped(e)
-                || dot(di, dj) < 1.0 - 1e-9
-                || (e.pitch_deg - f.pitch_deg).abs() > 1e-9
-            {
+            if !sloped(e) || dot(di, dj) < 1.0 - 1e-9 || (e.pitch_deg - f.pitch_deg).abs() > 1e-9 {
                 continue;
             }
             let tan = e.pitch_deg.to_radians().tan();
@@ -2313,7 +2310,11 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
         let ring = trace_ring(b.a, b.b, segs);
         let mut key = ring.clone();
         key.sort_unstable();
-        if ring.len() >= 3 && traced.iter().any(|t| t.0 == b.edge && t.1 == b.stage && t.2 == key) {
+        if ring.len() >= 3
+            && traced
+                .iter()
+                .any(|t| t.0 == b.edge && t.1 == b.stage && t.2 == key)
+        {
             continue;
         }
         traced.push((b.edge, b.stage, key));

@@ -17,13 +17,20 @@ fn sibling(p: &Path, ext: &str) -> Option<PathBuf> {
 }
 
 fn first_diff(a: &[u8], b: &[u8]) -> usize {
-    a.iter().zip(b).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()))
+    a.iter()
+        .zip(b)
+        .position(|(x, y)| x != y)
+        .unwrap_or(a.len().min(b.len()))
 }
 
 fn main() {
     let mut paths: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).collect();
     if paths.len() == 1 && paths[0] == Path::new("-") {
-        paths = std::io::stdin().lock().lines().map(|l| PathBuf::from(l.unwrap())).collect();
+        paths = std::io::stdin()
+            .lock()
+            .lines()
+            .map(|l| PathBuf::from(l.unwrap()))
+            .collect();
     }
     let (mut equal, mut differ, mut no_ref, mut errors) = (0, 0, 0, 0);
     for rd2 in &paths {

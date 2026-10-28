@@ -78,7 +78,8 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
             Some((i, reversed)) => {
                 let mut g = std::mem::take(&mut geos[i]);
                 if let Some(n) = reversed {
-                    for f in &mut g.faces {
+                    // Dormer faces (edge usize::MAX) belong to no edge.
+                    for f in g.faces.iter_mut().filter(|f| f.edge < n) {
                         f.edge = n - 1 - f.edge;
                     }
                 }
@@ -89,6 +90,23 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
 }
 
 fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
+    // DACAD's own core on the project's RD2 (joined in the
+    // Modellverschnitt when there are two or more roofs). Its errors are
+    // DACAD's errors: no roof, and the message. Only where the core path
+    // fails for a reason of ours does the sweep below take over.
+    match crate::engine::generate(project) {
+        Ok(geos) => return geos,
+        Err(crate::engine::Failure::Dacad(e)) => {
+            return vec![
+                RoofGeometry {
+                    error: Some(e),
+                    ..RoofGeometry::default()
+                };
+                project.parts.len()
+            ];
+        }
+        Err(crate::engine::Failure::Ours(_)) => {}
+    }
     // With two or more roofs DACAD joins the roofs it built one by one in
     // its "Modellverschnitt" stage, which replaces everything below.
     if let Some(geos) = crate::multiroof::generate(project) {
@@ -539,7 +557,7 @@ pub(crate) fn clip_polygon(subject: &[Point2], clip: &[Point2]) -> Vec<Point2> {
 }
 
 /// Parameter intervals of segment `a`–`b` that lie inside `poly`.
-fn inside_spans(poly: &[Point2], a: Point2, b: Point2) -> Vec<(f64, f64)> {
+pub(crate) fn inside_spans(poly: &[Point2], a: Point2, b: Point2) -> Vec<(f64, f64)> {
     let d = Point2::new(b.x - a.x, b.y - a.y);
     let mut ts = vec![0.0, 1.0];
     let n = poly.len();
@@ -1093,7 +1111,10 @@ fn face_hole(face: &RoofFace, corners: &[Point2]) -> Option<(Vec<[f64; 3]>, Vec<
             keep[i]
                 && face_corner(hole[i])
                 && [(i + 1) % n, (i + n - 1) % n].iter().any(|&j| {
-                    keep[j] && corner(hole[j]).is_none() && !face_corner(hole[j]) && near(pts[i], pts[j])
+                    keep[j]
+                        && corner(hole[j]).is_none()
+                        && !face_corner(hole[j])
+                        && near(pts[i], pts[j])
                 })
         });
         if sliver {
