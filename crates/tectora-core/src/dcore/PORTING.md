@@ -16,7 +16,9 @@ against the emulator.
 | `state` | arenas and typed ids for every record kind, `Globals`, the code table, `ctr` counter indices, constructors | data model |
 | `rd2` | the RD2 reader (fscanf semantics, list prepends, cursor globals) | S1 |
 | `s1` | ring sort and collinear merge, hole relink, frames and planes, eave faces, validity ranges, eave heights, levels (`model_start`) | S1 |
-| `stages` | **stubs** for S2–S6, one per routine of the driver | S2–S6 |
+| `stages` | **stubs** for S2, S3, S5, S6 (S4 calls `post`), one per routine of the driver | S2–S6 |
+| `post` | collinear merge, segment origins and edge table, face areas, dormer feet | S4 |
+| `faceops` | segment insertion `add_seg`, `trim_crossings`, `seg_cross`, `ends_at`, the closing test `close_face`, `drop_sentinel` (non-wall faces; used by the dormer pass) | S3 (part) |
 | `pipeline` | the driver (`Run`): per-model loop, global stages, writers, hooks | — |
 | `out` | core SOL, INT, fallback SOL, `PLACEHOLDER_SOL`; they fill `coresol::CoreSol` / `IntGeometry` | S7 |
 | `dump` | the emulator's `state.json` format: `to_json`, `from_json`, structural `compare` | testing |
@@ -221,7 +223,33 @@ snapshots for per-level checks.
 
 **S4: merge, edge table, areas, dormer feet.**
 
-- Hook points: `after_merge`, `after_edgetab`, `after_area`, `after_dormer`.
+- Hook points: `after_merge`, `after_edgetab`, `after_area`, `after_dormer`. Ported in `post`;
+  the test `s4_slices` runs each stage of each model from the emulator's state before it
+  (`after_holes` → merge, `after_merge` (or `after_holes` for a failed model) → edge table,
+  `after_edgetab` → areas, the last `after_area` → dormer feet). Dump sets for it need only
+  `--only=after_holes,after_merge,after_edgetab,after_area,after_dormer`; run the test with
+  `DCORE_REPORT=s4` to leave out the tallies of stages such dumps lack.
+- The model loop variable is the current-model global: it is null after the last model (the
+  pipeline sets it), which `after_dormer` shows.
+- Merge: the absorbed segment's successor keeps its stale `prev`; the last segment joining the
+  first is cut off by `prev.next = null` without moving the list head.
+- Edge table: the representative swap and the two face-exchange blocks use the values read from
+  the representative *before* the swap (faces, kind); `same_line` and the direction use
+  POINT_EPS. Hole pieces join only 'L'/'G' edges.
+- Areas: the angles to the y and x axes are `acos(f32(n.y or n.x) / |n|)` (the dot is stored, the
+  axis length is not used), the pitch is the face field; each is folded to `pi - a` when clearly
+  above pi/2 (VALUE_EPS); the smallest picks the projection (ties: pitch, then x, then y). An
+  all-vertical normal raises fatal 2 with 0xa12 "Flächeninhalt konnte nicht berechnet werden".
+  The three `fcos` there are in section EXTRA, which the stock emulator does not route to the
+  x87 model; see the validation note below.
+- Dormer feet call the S3 routines `da1210` (segment insertion) and `da20f0` (closing) on the
+  model's 'G' face. `faceops` ports the paths a non-wall face takes, including `da1c40`
+  (trimming at crossings, `d98830` seg/seg in all modes but only mode 0 checked) and `e56170`.
+  Two quirks are kept: `close_face` leaves POINT_EPS grown when a retry closes the face, and
+  `drop_sentinel` writes the list head of `g.cur_face` (the sweep's face) when it unlinks a first
+  segment. The hidden wall face branch of `da1210` returns `Unimplemented`.
+- `geom::collinear_join` (`d99110`): segments sharing their *start* points never join (the
+  offset between the starts is the zero vector, which `par` rejects).
 - `out::write_sol` checks that the edge list is in descending line order and as long as
   `g.n_lines`.
 
