@@ -154,7 +154,7 @@ fn main() {
                 for k in keys {
                     let a = s.get(&k).copied().unwrap_or(0.0);
                     let b = d.get(&k).and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    if (a - b).abs() > 0.03 {
+                    if (a - b).abs() > 0.001 {
                         diff.push(format!("{k} {a:.2}/{b:.2}"));
                     }
                 }
@@ -196,7 +196,7 @@ fn main() {
             for k in keys {
                 let a = s.get(&k).copied().unwrap_or(0.0);
                 let b = r["lines_by_type"][&k].as_f64().unwrap_or(0.0);
-                if (a - b).abs() > 0.03 {
+                if (a - b).abs() > 0.001 {
                     bad.push(format!("{k} {a:.2}/{b:.2}"));
                 }
             }
