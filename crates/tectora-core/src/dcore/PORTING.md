@@ -254,6 +254,10 @@ snapshots for per-level checks.
   dormer passes, 176 `g` models with a closed foot face. The emulator copy with the three EXTRA
   `fcos` routed to the 64-bit x87 model gives the same areas and SO2 on all 1223 cases, so
   `face_area` uses `x87::fcos` (the hardware value) and both emulators agree.
+- End to end (RD2 → SO2/INT, S1–S7 native, after merging S2/S3, S5, S6): outcome equal on
+  samples 34/34 (17 INT), dacad-core 107/107 (17 INT, 1 cut error), s1 615/615 (174 cut errors;
+  R1_0340 not dumpable, the emulator loops), mr3 350/350 (all INT), chimney sweeps 188/188,
+  core-stress results 36/36 (10 cut errors), s2 dormer cases 117/117 (43 cut errors).
 
 **S5: classification.** Hook points: `after_classify` to `after_codes2`. The writers already
 produce the bytes from the emulator's `after_codes2` state, so once S5 matches the state, the SO2
