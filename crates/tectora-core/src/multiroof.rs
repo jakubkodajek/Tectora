@@ -18,6 +18,18 @@
 //! Windows are applied afterwards, as DACAD deducts them from the result;
 //! chimneys and openings go into the RD2 as holes and are cut by the
 //! Modellverschnitt itself.
+//!
+//! A producer says which roofs it can build face by face as DACAD's core
+//! does ([`CoreProducer::builds`]); for a project with another roof, or
+//! with dormers the producer does not hand over, the engine keeps its own
+//! join ([`crate::union`]). The sweep builds DACAD's faces for roofs on one
+//! eave level without priorities and standing gables, and no dormers yet:
+//! on other roofs its faces differ from the core's (raised eaves, the
+//! priority plane ending at a step, edges bordering a hidden wall face).
+//!
+//! Lines are left with flag 0: DACAD flags an edge that borders a wall's
+//! hidden wall face, which happens on the raised roofs the sweep does not
+//! take; on the cases it takes the flags of DACAD's INT are all 0.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -92,7 +104,11 @@ pub fn write_rd2(project: &Project) -> (String, Rd2Map) {
         .parts
         .iter()
         .filter(|p| sourced(p))
-        .flat_map(|p| p.edges.iter().filter_map(|e| e.source.as_ref().map(|s| s.id as i32)))
+        .flat_map(|p| {
+            p.edges
+                .iter()
+                .filter_map(|e| e.source.as_ref().map(|s| s.id as i32))
+        })
         .max()
         .unwrap_or(0);
     for (pi, part) in project.parts.iter().enumerate() {
@@ -238,7 +254,9 @@ impl CoreProducer for SweepProducer {
         for (part, pm) in project.parts.iter().zip(&map.parts) {
             let mut alone = Project::new("");
             alone.parts.push(part.clone());
-            let geo = crate::openings::build_roofs(&alone).pop().unwrap_or_default();
+            let geo = crate::openings::build_roofs(&alone)
+                .pop()
+                .unwrap_or_default();
             by_model.insert(pm.model, part_faces(part, pm, &geo, rd2));
         }
         let mut faces = Vec::new();
@@ -353,12 +371,12 @@ fn dacad_order(rd2: &Rd2, wall: i32, sub: i32, poly: &[[f64; 3]]) -> Vec<[f64; 3
     };
     let last = ri + 1 == m.ring.len();
     let (o, ev) = (rf.o.map(f64::from), rf.w.map(f64::from));
-    let up = if rf.pitch_deg as f64 >= crate::model::GABLE_PITCH_DEG && (rf.pitch_deg as f64) < 90.001
-    {
-        [0.0, 0.0, 1.0]
-    } else {
-        rf.u.map(f64::from)
-    };
+    let up =
+        if rf.pitch_deg as f64 >= crate::model::GABLE_PITCH_DEG && (rf.pitch_deg as f64) < 90.001 {
+            [0.0, 0.0, 1.0]
+        } else {
+            rf.u.map(f64::from)
+        };
     let loc = |p: [f64; 3]| {
         let d = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];
         (
@@ -381,7 +399,9 @@ fn dacad_order(rd2: &Rd2, wall: i32, sub: i32, poly: &[[f64; 3]]) -> Vec<[f64; 3
     let l: Vec<(f64, f64)> = pts.iter().map(|&p| loc(p)).collect();
     let (tmin, tmax) = l
         .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| (a.min(p.1), b.max(p.1)));
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
+            (a.min(p.1), b.max(p.1))
+        });
     let pick = |level: f64, smallest: bool| {
         (0..n)
             .filter(|&k| (l[k].1 - level).abs() < 1e-4)

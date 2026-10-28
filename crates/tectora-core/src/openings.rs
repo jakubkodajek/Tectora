@@ -145,7 +145,7 @@ pub(crate) fn build_roofs(project: &Project) -> Vec<RoofGeometry> {
 }
 
 /// The project's dormers, cut into the roofs they sit on.
-pub(crate) fn apply_dormers(project: &Project, geos: &mut [RoofGeometry]) {
+fn apply_dormers(project: &Project, geos: &mut [RoofGeometry]) {
     for d in &project.dormers {
         let host = d.host_wall.and_then(|[a, b]| {
             project.parts.iter().find_map(|part| {
