@@ -29,6 +29,85 @@ pub struct Project {
     /// Holes cut into the roof (DACAD: Öffnung), as convex plan polygons.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roof_openings: Vec<Chimney>,
+    /// Lines drawn by hand on the calculated roof (DACAD: Dachlinieneingabe).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub manual_lines: Vec<ManualLine>,
+    /// Roof faces added by hand (DACAD: Neue Dachfläche).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub manual_faces: Vec<ManualFace>,
+}
+
+/// A line drawn by hand on the calculated roof (DACAD: Dachlinieneingabe).
+/// DACAD takes its ends from the roof points it snaps to (z included, else
+/// 0), lets the user pick its type, length and label, and counts it in the
+/// line totals of its type. Unlike DACAD, which drops such lines when the
+/// roof is recalculated, Tectora keeps them in the project.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ManualLine {
+    pub a: [f64; 3],
+    pub b: [f64; 3],
+    /// DACAD line code: T, F, G, K, OL, OR, OS, P, c, S, WV, WH, WS count in
+    /// the line totals; M (dimension line), X (division) and the rest do not.
+    pub code: String,
+    /// Length typed in by hand instead of the measured one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<f64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+}
+
+/// DACAD line codes that count in the line totals.
+pub const COUNTED_LINE_CODES: [&str; 13] = [
+    "T", "F", "G", "K", "OL", "OR", "OS", "P", "c", "S", "WV", "WH", "WS",
+];
+
+impl ManualLine {
+    /// The line's length: the one typed in, else the 3D distance of its ends.
+    pub fn length(&self) -> f64 {
+        self.length.unwrap_or_else(|| {
+            let d = [
+                self.b[0] - self.a[0],
+                self.b[1] - self.a[1],
+                self.b[2] - self.a[2],
+            ];
+            (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+        })
+    }
+
+    /// Whether the line counts in the line totals of its code.
+    pub fn counted(&self) -> bool {
+        COUNTED_LINE_CODES.contains(&self.code.as_str())
+    }
+}
+
+/// A roof face added by hand (DACAD: Neue Dachfläche): a plan polygon and
+/// the pitch DACAD asks for. Its area is the plan area over the cosine of
+/// the pitch (Tectora's reading; not yet checked against DACAD's numbers).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ManualFace {
+    pub points: Vec<Point2>,
+    pub pitch_deg: f64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+}
+
+impl ManualFace {
+    /// Sloped area, m².
+    pub fn area(&self) -> f64 {
+        let n = self.points.len();
+        if n < 3 || !(self.pitch_deg >= 0.0 && self.pitch_deg < 90.0) {
+            return 0.0;
+        }
+        let plan: f64 = (0..n)
+            .map(|i| {
+                let (p, q) = (self.points[i], self.points[(i + 1) % n]);
+                p.x * q.y - q.x * p.y
+            })
+            .sum::<f64>()
+            .abs()
+            / 2.0;
+        plan / self.pitch_deg.to_radians().cos()
+    }
 }
 
 impl Project {
@@ -43,6 +122,8 @@ impl Project {
             chimneys: Vec::new(),
             windows: Vec::new(),
             roof_openings: Vec::new(),
+            manual_lines: Vec::new(),
+            manual_faces: Vec::new(),
         }
     }
 

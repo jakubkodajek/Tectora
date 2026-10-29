@@ -3,6 +3,7 @@
   import { isGable } from "./types";
   import { t } from "./i18n.svelte";
   import { windowOutline, type OpeningKind, type OpeningSel } from "./openings";
+  import { codeKind, lineLength, type ManualSel } from "./manual";
 
   let {
     project,
@@ -21,6 +22,8 @@
     placing = false,
     onplace,
     openSel = $bindable(null),
+    manualSel = $bindable(null),
+    manualDraft = [],
   }: {
     project: Project;
     result: CalcResult | null;
@@ -39,10 +42,14 @@
     /** Index of the selected dormer, or null. */
     dormerSel?: number | null;
     /** What the next click places: a dormer's front corner, a chimney, a window or a roof opening. */
-    placing?: false | "dormer" | "chimney" | "window" | "hole";
+    placing?: false | "dormer" | "chimney" | "window" | "hole" | "line" | "face";
     onplace?: (x: number, y: number) => void;
     /** The selected chimney, roof window or roof opening, or null. */
     openSel?: OpeningSel;
+    /** The selected hand-drawn line or face, or null. */
+    manualSel?: ManualSel;
+    /** Points picked so far for a line or face being added. */
+    manualDraft?: [number, number, number][];
   } = $props();
 
   let cursorWorld = $state<Point2 | null>(null);
@@ -141,6 +148,7 @@
         selection = null;
         dormerSel = null;
         openSel = null;
+        manualSel = null;
       }
       svg!.setPointerCapture(e.pointerId);
     }
@@ -172,6 +180,7 @@
   }
 
   function startVertexDrag(e: PointerEvent, part: number, vertex: number) {
+    if (placing) return;
     e.stopPropagation();
     drag = { part, vertex };
     svg!.setPointerCapture(e.pointerId);
@@ -183,6 +192,16 @@
     openSel = { kind, index };
     selection = null;
     dormerSel = null;
+    manualSel = null;
+  }
+
+  function pickManual(ev: PointerEvent, kind: "line" | "face", index: number) {
+    if (placing || drawing) return;
+    ev.stopPropagation();
+    manualSel = { kind, index };
+    selection = null;
+    dormerSel = null;
+    openSel = null;
   }
 
   function edgeDblClick(e: MouseEvent, part: number, edge: number) {
@@ -272,7 +291,7 @@
           {/if}
           <line class="hit" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)}
             role="button" tabindex="-1" aria-label={t("plan.edge", { n: i + 1 })}
-            onpointerdown={(ev) => { ev.stopPropagation(); selection = { part: pi, edge: i }; dormerSel = null; openSel = null; }}
+            onpointerdown={(ev) => { if (placing) return; ev.stopPropagation(); selection = { part: pi, edge: i }; dormerSel = null; openSel = null; manualSel = null; }}
             ondblclick={(ev) => edgeDblClick(ev, pi, i)} />
           <line class="wall" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)} />
           {#if showDims && scale * edgeLength(pi, i) > 46}
@@ -310,7 +329,7 @@
           {/each}
           <line class="hit" x1={sx(fs.x)} y1={sy(fs.y)} x2={sx(d.end.x)} y2={sy(d.end.y)}
             role="button" tabindex="-1" aria-label={t("plan.dormer", { n: di + 1 })}
-            onpointerdown={(ev) => { if (placing) return; ev.stopPropagation(); dormerSel = di; selection = null; openSel = null; }} />
+            onpointerdown={(ev) => { if (placing) return; ev.stopPropagation(); dormerSel = di; selection = null; openSel = null; manualSel = null; }} />
           <line class="front" x1={sx(fs.x)} y1={sy(fs.y)} x2={sx(d.end.x)} y2={sy(d.end.y)} />
         </g>
       {/if}
@@ -333,6 +352,32 @@
         role="button" tabindex="-1" aria-label={t("opening.windowN", { n: wi + 1 })}
         onpointerdown={(ev) => pickOpening(ev, "window", wi)} />
     {/each}
+    {#each project.manual_faces ?? [] as f, fi}
+      <path class="manual-face" class:sel={manualSel?.kind === "face" && manualSel.index === fi}
+        d={"M" + f.points.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
+        role="button" tabindex="-1" aria-label={t("manual.faceN", { n: fi + 1 })}
+        onpointerdown={(ev) => pickManual(ev, "face", fi)} />
+    {/each}
+    {#each project.manual_lines ?? [] as l, li}
+      {@const sel = manualSel?.kind === "line" && manualSel.index === li}
+      <g class="manual-line" class:sel>
+        <line class="hit" x1={sx(l.a[0])} y1={sy(l.a[1])} x2={sx(l.b[0])} y2={sy(l.b[1])}
+          role="button" tabindex="-1" aria-label={t("manual.lineN", { n: li + 1 })}
+          onpointerdown={(ev) => pickManual(ev, "line", li)} />
+        <line class="stroke" class:measure={!codeKind[l.code]} x1={sx(l.a[0])} y1={sy(l.a[1])} x2={sx(l.b[0])} y2={sy(l.b[1])}
+          stroke={codeKind[l.code] ? lineColor[codeKind[l.code]] : undefined} />
+        {#if showDims}
+          <text class="dim" x={(sx(l.a[0]) + sx(l.b[0])) / 2} y={(sy(l.a[1]) + sy(l.b[1])) / 2} dy="-6">{l.label ? `${l.label} ` : ""}{lineLength(l).toFixed(2)}</text>
+        {/if}
+      </g>
+    {/each}
+    {#if manualDraft.length}
+      <path class="draft" d={"M" + manualDraft.map((p) => `${sx(p[0])},${sy(p[1])}`).join("L") +
+        (cursorWorld ? `L${sx(cursorWorld.x)},${sy(cursorWorld.y)}` : "")} />
+      {#each manualDraft as p, i}
+        <circle class="draft-pt" class:first={i === 0} cx={sx(p[0])} cy={sy(p[1])} r="4" />
+      {/each}
+    {/if}
     {#if placing && cursorWorld}
       <path class="crosshair" d="M{sx(cursorWorld.x) - 9},{sy(cursorWorld.y)}h18M{sx(cursorWorld.x)},{sy(cursorWorld.y) - 9}v18" />
     {/if}
@@ -359,7 +404,7 @@
       {/if}
     {/if}
   </svg>
-  {#if placing}<div class="hint">{t(placing === "dormer" ? "plan.placeDormer" : placing === "chimney" ? "plan.placeChimney" : placing === "hole" ? "plan.placeHole" : "plan.placeWindow")}</div>{:else if !drawing}<div class="hint">{t("plan.hint")}</div>{/if}
+  {#if placing}<div class="hint">{t(placing === "dormer" ? "plan.placeDormer" : placing === "chimney" ? "plan.placeChimney" : placing === "hole" ? "plan.placeHole" : placing === "line" ? (manualDraft.length ? "plan.placeLineEnd" : "plan.placeLine") : placing === "face" ? "plan.placeFace" : "plan.placeWindow")}</div>{:else if !drawing}<div class="hint">{t("plan.hint")}</div>{/if}
 </div>
 
 <style>
@@ -422,6 +467,35 @@
   .opening.sel {
     stroke: var(--accent);
     stroke-width: 2.5;
+  }
+  .manual-face {
+    fill: color-mix(in srgb, var(--accent) 10%, transparent);
+    stroke: var(--accent);
+    stroke-width: 1.2;
+    stroke-dasharray: 2 3;
+    cursor: pointer;
+  }
+  .manual-face.sel {
+    stroke-width: 2.5;
+    stroke-dasharray: none;
+  }
+  .manual-line .stroke {
+    stroke-width: 2.2;
+    stroke-dasharray: 7 3 1.5 3;
+    pointer-events: none;
+  }
+  .manual-line .stroke.measure {
+    stroke: var(--text-2);
+    stroke-width: 1.2;
+  }
+  .manual-line .hit {
+    stroke: transparent;
+    stroke-width: 12;
+    cursor: pointer;
+  }
+  .manual-line.sel .stroke {
+    stroke: var(--focus);
+    stroke-width: 3.5;
   }
   .roofline {
     stroke-width: 1.8;

@@ -14,6 +14,8 @@
   import RoofDefBar from "./RoofDefBar.svelte";
   import DormerBar from "./DormerBar.svelte";
   import OpeningBar from "./OpeningBar.svelte";
+  import ManualBar from "./ManualBar.svelte";
+  import { snapToRoof, type ManualSel } from "./manual";
   import { chimneyFromRect, nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, roofHeightAt } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
@@ -27,7 +29,7 @@
   import { t } from "./i18n.svelte";
   import { actorName, isFresh, live } from "./live.svelte";
   import { markReviewed, prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
-  import type { ActivityItem, CalcResult, Change, Chimney, Dormer, EdgeDef, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
+  import type { ActivityItem, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
   import { isAi, isGable, isMarker } from "./types";
 
   let {
@@ -44,7 +46,19 @@
   let dock = $state<"results" | "ai" | "job">("results");
   let drawing = $state<Point2[] | null>(null);
   let dormerSel = $state<number | null>(null);
-  let placing = $state<false | "dormer" | "chimney" | "window" | "hole">(false);
+  let placing = $state<false | "dormer" | "chimney" | "window" | "hole" | "line" | "face">(false);
+  // Hand-drawn roof lines and faces (DACAD: Dachlinieneingabe, Neue Dachfläche).
+  let manualSel = $state<ManualSel>(null);
+  /** Points picked so far for the line or face being added. */
+  let manualDraft = $state<[number, number, number][]>([]);
+  $effect(() => {
+    if (!manualSel || !project) return;
+    const list = manualSel.kind === "line" ? project.manual_lines : project.manual_faces;
+    if (manualSel.index >= (list?.length ?? 0)) manualSel = null;
+  });
+  $effect(() => {
+    if (placing !== "line" && placing !== "face") manualDraft = [];
+  });
   let openSel = $state<OpeningSel>(null);
   // Undo or an AI edit can remove the selected dormer or opening.
   $effect(() => {
@@ -370,6 +384,76 @@
     else if (placing === "chimney") placeChimney(x, y);
     else if (placing === "window") placeWindow(x, y);
     else if (placing === "hole") placeHole(x, y);
+    else if (placing === "line") placeLinePoint(x, y);
+    else if (placing === "face") placeFacePoint(x, y);
+  }
+
+  // Snap radius to the calculated roof's points, m [no source: picked to
+  // match a few pixels at the usual plan zoom].
+  const ROOF_SNAP = 0.25;
+
+  /** First click: the line's start; second: its end (DACAD: Dachlinieneingabe). */
+  function placeLinePoint(x: number, y: number) {
+    if (!project) return;
+    const p = snapToRoof(result, { x, y }, ROOF_SNAP);
+    if (!manualDraft.length) {
+      manualDraft = [p];
+      return;
+    }
+    const a = manualDraft[0];
+    if (Math.hypot(p[0] - a[0], p[1] - a[1], p[2] - a[2]) < 1e-6) return;
+    project.manual_lines ??= [];
+    // DACAD's default type is a dimension line.
+    project.manual_lines.push({ a, b: p, code: "M" });
+    manualDraft = [];
+    placing = false;
+    selectManual({ kind: "line", index: project.manual_lines.length - 1 });
+    commit();
+  }
+
+  /** Clicks add corners; clicking the first one again closes the face (DACAD: Neue Dachfläche). */
+  function placeFacePoint(x: number, y: number) {
+    if (!project) return;
+    const p = snapToRoof(result, { x, y }, ROOF_SNAP);
+    const first = manualDraft[0];
+    if (first && manualDraft.length >= 3 && Math.hypot(p[0] - first[0], p[1] - first[1]) < ROOF_SNAP) {
+      project.manual_faces ??= [];
+      // DACAD asks for the pitch with 30° filled in.
+      project.manual_faces.push({ points: manualDraft.map((q) => ({ x: q[0], y: q[1] })), pitch_deg: 30 });
+      manualDraft = [];
+      placing = false;
+      selectManual({ kind: "face", index: project.manual_faces.length - 1 });
+      commit();
+      return;
+    }
+    manualDraft = [...manualDraft, p];
+  }
+
+  function selectManual(s: ManualSel) {
+    selection = null;
+    dormerSel = null;
+    openSel = null;
+    manualSel = s;
+  }
+
+  function setManualLine(l: ManualLine) {
+    if (!project || manualSel?.kind !== "line" || !project.manual_lines) return;
+    project.manual_lines[manualSel.index] = l;
+    commit();
+  }
+
+  function setManualFace(f: ManualFace) {
+    if (!project || manualSel?.kind !== "face" || !project.manual_faces) return;
+    project.manual_faces[manualSel.index] = f;
+    commit();
+  }
+
+  function deleteManual() {
+    if (!project || !manualSel) return;
+    if (manualSel.kind === "line") project.manual_lines?.splice(manualSel.index, 1);
+    else project.manual_faces?.splice(manualSel.index, 1);
+    manualSel = null;
+    commit();
   }
 
   /** Places a roof opening with its first corner at the click (DACAD: Öffnung). */
@@ -410,6 +494,7 @@
   function selectOpening(s: OpeningSel) {
     selection = null;
     dormerSel = null;
+    manualSel = null;
     openSel = s;
   }
 
@@ -435,7 +520,7 @@
     commit();
   }
 
-  function togglePlacing(kind: "dormer" | "chimney" | "window" | "hole") {
+  function togglePlacing(kind: "dormer" | "chimney" | "window" | "hole" | "line" | "face") {
     placing = placing === kind ? false : kind;
     drawing = null;
   }
@@ -554,10 +639,13 @@
       selection = null;
       dormerSel = null;
       openSel = null;
+      manualSel = null;
     } else if (e.key === "Delete" && dormerSel !== null && !drawing) {
       deleteDormer();
     } else if (e.key === "Delete" && openSel && !drawing) {
       deleteOpening();
+    } else if (e.key === "Delete" && manualSel && !drawing) {
+      deleteManual();
     } else if (e.key === "Delete" && selection && !drawing) {
       deleteVertex();
     }
@@ -601,6 +689,8 @@
       <button class="tool" class:on={placing === "chimney"} disabled={!project?.parts.length} onclick={() => togglePlacing("chimney")} title={t("tool.chimneyHint")}><Icon name="chimney" /><span>{t("tool.chimney")}</span></button>
       <button class="tool" class:on={placing === "window"} disabled={!project?.parts.length} onclick={() => togglePlacing("window")} title={t("tool.windowHint")}><Icon name="window" /><span>{t("tool.window")}</span></button>
       <button class="tool" class:on={placing === "hole"} disabled={!project?.parts.length} onclick={() => togglePlacing("hole")} title={t("tool.holeHint")}><Icon name="hole" /><span>{t("tool.hole")}</span></button>
+      <button class="tool" class:on={placing === "line"} disabled={!result} onclick={() => togglePlacing("line")} title={t("tool.lineHint")}><Icon name="line" /><span>{t("tool.line")}</span></button>
+      <button class="tool" class:on={placing === "face"} disabled={!result} onclick={() => togglePlacing("face")} title={t("tool.faceHint")}><Icon name="face" /><span>{t("tool.face")}</span></button>
       <button class="tool" disabled={!selection || (project?.parts.length ?? 0) < 2} onclick={deletePart} title={t("tool.deletePartHint")}><Icon name="trash" /><span>{t("tool.deletePart")}</span></button>
     </div>
     <div class="group">
@@ -654,6 +744,8 @@
                 bind:selection
                 bind:dormerSel
                 bind:openSel
+                bind:manualSel
+                {manualDraft}
                 {placing}
                 onplace={place}
                 onmove={moveVertex}
@@ -684,6 +776,8 @@
           <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} />
         {:else if openSel}
           <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening} />
+        {:else if manualSel}
+          <ManualBar {project} bind:sel={manualSel} online={setManualLine} onface={setManualFace} ondelete={deleteManual} />
         {:else}
           <RoofDefBar
             {project}

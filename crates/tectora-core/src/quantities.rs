@@ -54,6 +54,7 @@ pub fn roof_totals(project: &Project) -> crate::roof::RoofQuantities {
     for geo in crate::openings::generate_project(project) {
         total.add(&geo.quantities());
     }
+    total.add(&manual_quantities(project));
     total
 }
 
@@ -69,10 +70,42 @@ pub fn dacad_line_totals(project: &Project) -> std::collections::BTreeMap<String
             *totals.entry(code).or_default() -= len;
         }
     }
+    for line in project.manual_lines.iter().filter(|l| l.counted()) {
+        *totals.entry(line.code.clone()).or_default() += line.length();
+    }
     for v in totals.values_mut() {
         *v = (*v * 100.0).round() / 100.0;
     }
     totals
+}
+
+/// Quantities of the lines and faces added by hand, to add to the roof's.
+pub fn manual_quantities(project: &Project) -> crate::roof::RoofQuantities {
+    let mut q = crate::roof::RoofQuantities {
+        roof_area: project.manual_faces.iter().map(|f| f.area()).sum(),
+        ..Default::default()
+    };
+    for line in project.manual_lines.iter().filter(|l| l.counted()) {
+        let len = line.length();
+        match line.code.as_str() {
+            "T" => q.eave_length += len,
+            "F" => q.ridge_length += len,
+            "G" => {
+                q.hip_length += len;
+                q.hip_count += 1;
+            }
+            "K" => {
+                q.valley_length += len;
+                q.valley_count += 1;
+            }
+            "OL" | "OR" | "OS" => q.verge_length += len,
+            "P" => q.pult_length += len,
+            "c" => q.knick_length += len,
+            "S" => q.gorge_length += len,
+            _ => q.abutment_length += len,
+        }
+    }
+    q
 }
 
 /// Measuring standard for openings and line deductions, as in DACAD's
@@ -160,5 +193,64 @@ pub fn norm_totals(project: &Project, norm: Norm) -> NormTotals {
         norm,
         roof_area: area,
         lines_by_type: lines,
+    }
+}
+
+#[cfg(test)]
+mod manual_tests {
+    use super::*;
+    use crate::model::{ManualFace, ManualLine};
+
+    // DACAD case DL2 (2026-10-29): a hand-drawn line typed as hip (G) on the
+    // 10 x 8 gable roof counts 4.0 m in the hip totals; a dimension line
+    // counts nowhere.
+    #[test]
+    fn manual_lines_count_in_their_type() {
+        let mut p = Project::new("DL2");
+        p.parts.push(crate::examples::standard_roof(
+            crate::examples::StandardRoof::Gable,
+            10.0,
+            8.0,
+            40.0,
+            3.0,
+            0.5,
+        ));
+        let before = dacad_line_totals(&p);
+        p.manual_lines.push(ManualLine {
+            a: [5.0, 0.0, 0.0],
+            b: [5.0, 4.0, 0.0],
+            code: "G".into(),
+            length: None,
+            label: String::new(),
+        });
+        p.manual_lines.push(ManualLine {
+            a: [0.0, 0.0, 0.0],
+            b: [1.0, 0.0, 0.0],
+            code: "M".into(),
+            length: None,
+            label: String::new(),
+        });
+        let after = dacad_line_totals(&p);
+        assert_eq!(
+            after.get("G").copied().unwrap_or(0.0) - before.get("G").copied().unwrap_or(0.0),
+            4.0
+        );
+        assert!(after.get("M").is_none());
+        let q = manual_quantities(&p);
+        assert_eq!((q.hip_length, q.hip_count), (4.0, 1));
+    }
+
+    #[test]
+    fn manual_face_area_is_plan_over_cos_pitch() {
+        let f = ManualFace {
+            points: vec![
+                crate::geom::Point2 { x: 0.0, y: 0.0 },
+                crate::geom::Point2 { x: 2.0, y: 0.0 },
+                crate::geom::Point2 { x: 2.0, y: 3.0 },
+            ],
+            pitch_deg: 60.0,
+            label: String::new(),
+        };
+        assert!((f.area() - 6.0).abs() < 1e-9);
     }
 }

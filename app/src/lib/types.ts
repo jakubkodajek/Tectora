@@ -52,6 +52,27 @@ export interface Project {
   windows?: RoofWindow[];
   /** Holes in the roof (DACAD: Öffnung), shaped like chimneys. */
   roof_openings?: Chimney[];
+  /** Lines drawn by hand on the calculated roof (DACAD: Dachlinieneingabe). */
+  manual_lines?: ManualLine[];
+  /** Roof faces added by hand (DACAD: Neue Dachfläche). */
+  manual_faces?: ManualFace[];
+}
+
+/** A line drawn by hand on the roof; `code` is DACAD's line code. */
+export interface ManualLine {
+  a: [number, number, number];
+  b: [number, number, number];
+  code: string;
+  /** Length typed in instead of the measured one. */
+  length?: number | null;
+  label?: string;
+}
+
+/** A roof face added by hand: plan polygon and pitch. */
+export interface ManualFace {
+  points: Point2[];
+  pitch_deg: number;
+  label?: string;
 }
 
 /** A dormer as DACAD stores it: an open wall chain (cheek, front, cheek). */

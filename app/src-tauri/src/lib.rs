@@ -216,6 +216,8 @@ fn calc(project: Project) -> Value {
             json!({ "name": part.name, "geometry": geometry, "quantities": q })
         })
         .collect();
+    // Lines and faces added by hand (DACAD: Dachlinieneingabe, Neue Dachfläche).
+    total.add(&tectora_core::quantities::manual_quantities(&project));
     json!({ "parts": parts, "totals": total, "codes": dacad_line_totals(&project) })
 }
 
