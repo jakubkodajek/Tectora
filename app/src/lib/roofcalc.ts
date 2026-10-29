@@ -30,47 +30,278 @@ export function inward(edges: EdgeDef[], i: number, p: Point2): number {
 }
 
 /**
- * Einfaches Dreieck: two of plan width (wall to top, overhang included when
- * `withOverhang`), rafter length and rise give the pitch (Pythagoras).
+ * Einfaches Dreieck (measured in DACAD 2026-10-29): two of plan width (wall
+ * to top; the overhang added unless `withOverhang`), rafter length (from the
+ * eave, overhang included) and ridge height (absolute, not the rise) give the
+ * pitch. With pitch breaks DACAD takes the last break as a plane of its own
+ * starting at the break height at the wall's overhang line, not where the
+ * lower plane really reaches that height (DACAD case Te: 29.05°).
  */
 export function triangle(
   e: EdgeDef,
-  given: { width?: number; rafter?: number; rise?: number },
+  given: { width?: number; rafter?: number; ridge?: number },
   withOverhang: boolean,
-): { pitch_deg: number; width: number; rafter: number; rise: number } | null {
+): { pitch_deg: number; width: number; rafter: number; ridge: number } | null {
+  const bs = e.breaks ?? [];
+  const base = bs.length ? Math.max(...bs.map((b) => b.height)) : e.eave_height;
   const ov = withOverhang ? 0 : e.overhang;
-  let { width, rafter, rise } = given;
-  if (width != null) width += ov;
-  if (width != null && rise != null) rafter = Math.hypot(width, rise);
-  else if (width != null && rafter != null) {
-    if (rafter <= width) return null;
-    rise = Math.sqrt(rafter * rafter - width * width);
+  let run = given.width != null ? given.width + ov : undefined;
+  let rafter = given.rafter;
+  let rise = given.ridge != null ? given.ridge - base : undefined;
+  if (run != null && rise != null) rafter = Math.hypot(run, rise);
+  else if (run != null && rafter != null) {
+    if (rafter <= run) return null;
+    rise = Math.sqrt(rafter * rafter - run * run);
   } else if (rafter != null && rise != null) {
     if (rafter <= rise) return null;
-    width = Math.sqrt(rafter * rafter - rise * rise);
+    run = Math.sqrt(rafter * rafter - rise * rise);
   } else return null;
-  if (!(width! > 0) || !(rise! > 0)) return null;
-  return { pitch_deg: round(atanDeg(rise! / width!)), width: width! - ov, rafter: rafter!, rise: rise! };
+  if (!(run! > 0) || !(rise! > 0)) return null;
+  return { pitch_deg: round(atanDeg(rise! / run!)), width: run! - ov, rafter: rafter!, ridge: rise! + base };
 }
 
-export interface ParallelInput {
-  /** Distance between the two wall lines. */
-  span: number;
-  /** Plan width from wall A to the ridge, without overhang. */
-  widthA: number;
-  ridge: number;
-  target: CalcTarget;
+/** The pitch patch of a triangle result: with breaks, the top break's pitch. */
+export function trianglePatch(e: EdgeDef, pitch_deg: number): Partial<EdgeDef> {
+  const bs = e.breaks ?? [];
+  if (!bs.length) return { pitch_deg };
+  const top = bs.reduce((k, b, i) => (b.height > bs[k].height ? i : k), 0);
+  return { breaks: bs.map((b, i) => (i === top ? { ...b, pitch_deg } : { ...b })) };
 }
 
 /**
- * 2 Parallele: two facing walls meet in a ridge at `widthA` from wall A and
- * height `ridge`; solves both walls for the target, keeping the rest.
+ * 2 Parallele: DACAD's one dialog for pitch, eave height, overhang and wall
+ * position (measured 2026-10-29). Two facing walls `span` apart; wall A's
+ * roof meets wall B's at a ridge, or at two ridges `top` apart (a flat
+ * strip). `wA`, `wB` are the plan runs from each wall line to its ridge
+ * (overhang not included), `H` the ridge height.
  */
-export function parallels(a: EdgeDef, b: EdgeDef, p: ParallelInput): [Partial<EdgeDef>, Partial<EdgeDef>] | null {
-  const runs = [p.widthA, p.span - p.widthA];
-  if (!(runs[0] > 0) || !(runs[1] > 0)) return null;
-  const out = [a, b].map((e, k) => solve(e, runs[k], p.ridge, p.target));
-  return out[0] && out[1] ? [out[0], out[1]] : null;
+export interface ParallelState {
+  span: number;
+  top: number;
+  wA: number;
+  wB: number;
+  H: number;
+  a: { pitch_deg: number; eave_height: number; overhang: number };
+  b: { pitch_deg: number; eave_height: number; overhang: number };
+  /** Inward shifts of the walls (target "position"). */
+  shiftA: number;
+  shiftB: number;
+  /** Rafter lengths typed in, for the circle intersection. */
+  rA?: number;
+  rB?: number;
+}
+
+export type ParallelField = "widthA" | "widthB" | "rafterA" | "rafterB" | "ridge" | "top";
+export type ParallelTarget = CalcTarget | "position";
+
+export function parallelStart(a: EdgeDef, b: EdgeDef, span: number, at: { w: number; h: number }): ParallelState {
+  const pick = (e: EdgeDef) => ({ pitch_deg: e.pitch_deg, eave_height: e.eave_height, overhang: e.overhang });
+  return { span, top: 0, wA: at.w, wB: span - at.w, H: at.h, a: pick(a), b: pick(b), shiftA: 0, shiftB: 0 };
+}
+
+/** Rafter length of side `s` (eave to ridge, overhang included). */
+export function parallelRafter(st: ParallelState, side: "a" | "b"): number {
+  const d = st[side];
+  const w = side === "a" ? st.wA : st.wB;
+  return Math.hypot(w + d.overhang, st.H - d.eave_height);
+}
+
+/**
+ * Applies one typed value to the dialog state the way DACAD does for the
+ * target. Widths are typed with or without the overhang (`withOv`).
+ */
+export function parallelEdit(
+  st0: ParallelState,
+  field: ParallelField,
+  v: number,
+  target: ParallelTarget,
+  withOv: boolean,
+): ParallelState | null {
+  const st: ParallelState = { ...st0, a: { ...st0.a }, b: { ...st0.b } };
+  const ta = tan(st.a.pitch_deg);
+  const tb = tan(st.b.pitch_deg);
+  const run = (s: "a" | "b") => (s === "a" ? st.wA : st.wB) + st[s].overhang;
+  const setRun = (s: "a" | "b", w: number, free: number) => {
+    if (s === "a") {
+      st.wA = w;
+      st.wB = free - w;
+    } else {
+      st.wB = w;
+      st.wA = free - w;
+    }
+  };
+  // Pitches from the runs and the ridge height.
+  const pitches = () => {
+    for (const s of ["a", "b"] as const) {
+      const rise = st.H - st[s].eave_height;
+      if (!(rise > 0) || !(run(s) > 0)) return false;
+      st[s].pitch_deg = atanDeg(rise / run(s));
+    }
+    return true;
+  };
+  const eaves = () => {
+    st.a.eave_height = st.H - ta * run("a");
+    st.b.eave_height = st.H - tb * run("b");
+  };
+  const overhangs = () => {
+    if (!(ta > 0) || !(tb > 0)) return false;
+    st.a.overhang = (st.H - st.a.eave_height) / ta - st.wA;
+    st.b.overhang = (st.H - st.b.eave_height) / tb - st.wB;
+    return st.a.overhang >= -1e-9 && st.b.overhang >= -1e-9;
+  };
+  // Both walls move; the ridge stays in place in plan.
+  const move = () => {
+    if (!(ta > 0) || !(tb > 0)) return false;
+    const wA = (st.H - st.a.eave_height) / ta - st.a.overhang;
+    const wB = (st.H - st.b.eave_height) / tb - st.b.overhang;
+    st.shiftA += st.wA - wA;
+    st.shiftB += st.wB - wB;
+    st.span += wA - st.wA + wB - st.wB;
+    st.wA = wA;
+    st.wB = wB;
+    return wA > 0 && wB > 0;
+  };
+  const free = st.span - st.top;
+  if (field === "top") {
+    // The strip takes its width from both sides; slopes stay, the ridge follows.
+    if (!(v >= 0) || v >= st.span) return null;
+    const d = (v - st.top) / 2;
+    st.wA -= d;
+    st.wB -= d;
+    st.top = v;
+    st.H = st.a.eave_height + ta * run("a");
+    return st.wA > 0 && st.wB > 0 ? st : null;
+  }
+  if (field === "widthA" || field === "widthB") {
+    const side = field === "widthA" ? "a" : "b";
+    const w = v - (withOv ? st[side].overhang : 0);
+    if (target === "overhang") {
+      // DACAD keeps the wall runs and the sum of both widths with overhang
+      // (case Oa), even where the planes then miss the ridge.
+      if (!withOv) return null;
+      const total = st.wA + st.a.overhang + st.wB + st.b.overhang;
+      const other = side === "a" ? "b" : "a";
+      st[side].overhang = v - (side === "a" ? st.wA : st.wB);
+      st[other].overhang = total - v - (other === "a" ? st.wA : st.wB);
+      return st.a.overhang >= -1e-9 && st.b.overhang >= -1e-9 ? st : null;
+    }
+    if (target === "position") {
+      // A new width sets the ridge height; both walls follow (case Lb).
+      st.H = st[side].eave_height + tan(st[side].pitch_deg) * (w + st[side].overhang);
+      return move() ? st : null;
+    }
+    if (!(w > 0) || !(w < free)) return null;
+    setRun(side, w, free);
+    if (target === "pitch") return pitches() ? st : null;
+    eaves();
+    return st;
+  }
+  if (field === "ridge") {
+    if (target === "eave") {
+      st.a.eave_height += v - st.H;
+      st.b.eave_height += v - st.H;
+      st.H = v;
+      return st;
+    }
+    st.H = v;
+    if (target === "pitch") return pitches() ? st : null;
+    if (target === "overhang") return overhangs() ? st : null;
+    return move() ? st : null;
+  }
+  // A rafter length.
+  const side = field === "rafterA" ? "a" : "b";
+  if (side === "a") st.rA = v;
+  else st.rB = v;
+  if (target === "pitch") {
+    const rise = (r: number, x: number) => Math.sqrt(Math.max(0, r * r - x * x));
+    const sum = free + st.a.overhang + st.b.overhang;
+    if (st.rA != null && st.rB != null) {
+      // Both rafters: the ridge where the two circles meet (case P2c).
+      const rA = st.rA;
+      const rB = st.rB;
+      const f = (xA: number) => st.a.eave_height + rise(rA, xA) - (st.b.eave_height + rise(rB, sum - xA));
+      let lo = Math.max(0, sum - rB);
+      let hi = Math.min(rA, sum);
+      if (!(lo < hi) || f(lo) * f(hi) > 0) return null;
+      for (let k = 0; k < 200; k++) {
+        const mid = (lo + hi) / 2;
+        if (f(mid) * f(lo) > 0) lo = mid;
+        else hi = mid;
+      }
+      const xA = (lo + hi) / 2;
+      st.H = st.a.eave_height + rise(rA, xA);
+      setRun("a", xA - st.a.overhang, free);
+    } else {
+      // One rafter: the ridge height stays, the ridge moves along.
+      const x = Math.sqrt(v * v - (st.H - st[side].eave_height) ** 2);
+      if (!(x > 0)) return null;
+      setRun(side, x - st[side].overhang, free);
+    }
+    return st.wA > 0 && st.wB > 0 && pitches() ? st : null;
+  }
+  // Eave, overhang and position keep the pitches: the rafter fixes the ridge height.
+  const d = st[side];
+  const sp = Math.sin(d.pitch_deg * DEG);
+  const cp = Math.cos(d.pitch_deg * DEG);
+  st.H = d.eave_height + v * sp;
+  if (target === "eave") {
+    // The rafter's own eave stays (case Ec).
+    const w = v * cp - d.overhang;
+    if (!(w > 0) || !(w < free)) return null;
+    setRun(side, w, free);
+    eaves();
+    return st;
+  }
+  // Overhangs from the ridge height (case Oc), or both walls move.
+  if (target === "overhang") return overhangs() ? st : null;
+  return move() ? st : null;
+}
+
+/** The wall patches of a parallel state for `target` (not "position"). */
+export function parallelPatches(st: ParallelState, target: CalcTarget): [Partial<EdgeDef>, Partial<EdgeDef>] {
+  const f = (d: ParallelState["a"]): Partial<EdgeDef> =>
+    target === "pitch"
+      ? { pitch_deg: round(d.pitch_deg) }
+      : target === "eave"
+        ? { eave_height: round(d.eave_height) }
+        : { overhang: round(Math.max(0, d.overhang)) };
+  return [f(st.a), f(st.b)];
+}
+
+/**
+ * DACAD refuses (the dialog's OK does nothing) an eave height below the eave
+ * of a neighbouring gable (measured: cases Eb, Ef, Eh; accepted on a hip roof).
+ */
+export function eaveBelowGable(edges: EdgeDef[], i: number, eave: number): boolean {
+  const n = edges.length;
+  return [edges[(i - 1 + n) % n], edges[(i + 1) % n]].some((g) => isGable(g) && eave < g.eave_height - 1e-9);
+}
+
+export type BuildUpEave = "normal" | "horizontal" | "vertical";
+
+/**
+ * Um Aufbaudicke korrigieren: a build-up of thickness `d` (negative takes it
+ * off) lifts the plane by `d` square to it; the eave is finished square to
+ * the plane ("normal"), level ("horizontal") or plumb ("vertical"). Measured
+ * in DACAD (40°, d 0.2): normal eave +d·cos, overhang +d·sin; horizontal
+ * overhang +d/sin; vertical eave +d/cos.
+ */
+export function buildUp(e: EdgeDef, d: number, eave: BuildUpEave): Partial<EdgeDef> | null {
+  if (isGable(e) || !(e.pitch_deg > 0)) return null;
+  const p = e.pitch_deg * DEG;
+  const dz = eave === "normal" ? d * Math.cos(p) : eave === "vertical" ? d / Math.cos(p) : 0;
+  const dov = eave === "normal" ? d * Math.sin(p) : eave === "horizontal" ? d / Math.sin(p) : 0;
+  const patch: Partial<EdgeDef> = {};
+  if (dz) {
+    patch.eave_height = round(e.eave_height + dz);
+    if (e.breaks?.length) patch.breaks = e.breaks.map((b) => ({ ...b, height: round(b.height + dz) }));
+  }
+  if (dov) {
+    const ov = e.overhang + dov;
+    if (ov < -1e-9) return null;
+    patch.overhang = round(Math.max(0, ov));
+  }
+  return patch;
 }
 
 /**
@@ -292,4 +523,30 @@ export function hipPitches(edges: EdgeDef[], i: number, j: number, hip: number, 
     [first, { pitch_deg: pitch(ra) }],
     [second, { pitch_deg: pitch(rb) }],
   ]);
+}
+
+/**
+ * Grat/Kehle with the eave pieces instead of the rafters (DACAD offers both):
+ * `e1`, `e2` are the plan lengths along each eave line from the corner to
+ * the foot of the rafter through the hip's top end. Measured in DACAD (hip
+ * 7.5, pieces 5 and 4.5 on a square corner: 36.39° and 33.56°).
+ */
+export function hipPitchesFromEaves(edges: EdgeDef[], i: number, j: number, hip: number, e1: number, e2: number): Map<number, Partial<EdgeDef>> | null {
+  const n = edges.length;
+  const [first, second, ea, eb] = (i + 1) % n === j ? [i, j, e1, e2] : [j, i, e2, e1];
+  if ((first + 1) % n !== second) return null;
+  const f1 = wallFrame(edges, first);
+  const f2 = wallFrame(edges, second);
+  // Corner at the origin: the top end P lies `ea` back along the first wall
+  // and `eb` on along the second one: P·u1 = -ea, P·u2 = eb.
+  const det = f1.u.x * f2.u.y - f1.u.y * f2.u.x;
+  if (Math.abs(det) < 1e-9) return null;
+  const px = (-ea * f2.u.y - eb * f1.u.y) / det;
+  const py = (f1.u.x * eb + f2.u.x * ea) / det;
+  const d1 = px * f1.n.x + py * f1.n.y;
+  const d2 = px * f2.n.x + py * f2.n.y;
+  const h2 = hip * hip - (px * px + py * py);
+  if (!(d1 > 0) || !(d2 > 0) || !(h2 > 0)) return null;
+  const h = Math.sqrt(h2);
+  return hipPitches(edges, first, second, hip, Math.hypot(d1, h), Math.hypot(d2, h));
 }

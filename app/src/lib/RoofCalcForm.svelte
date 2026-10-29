@@ -1,13 +1,15 @@
 <script lang="ts">
   // DACAD's calculation helpers for the selected wall: pitch from a simple
   // triangle, two facing walls meeting in a ridge, a point in space the plane
-  // must reach, merging parallel planes into one and pitches from a hip or
+  // must reach, merging parallel planes into one, pitches from a hip or
   // valley (DACAD.HLP: Neigungen / Traufenhöhen / Vorsprünge / Lage
-  // berechnen). "position" moves walls instead. The result is a patch per wall.
+  // berechnen) and the build-up correction (Um Aufbaudicke korrigieren).
+  // "position" moves walls instead. The result is a patch per wall. The
+  // rules were measured in DACAD itself (roofcalc.test.ts).
   import { num } from "./format";
   import { t } from "./i18n.svelte";
   import { oppositeWall, spanBetween } from "./roundroof";
-  import { combine, hipPitches, inward, meeting, mergeOnto, moveWall, parallels, rafter, roofPoints, sameWay, shiftFor, solve, triangle, type CalcTarget } from "./roofcalc";
+  import { buildUp, combine, eaveBelowGable, hipPitches, hipPitchesFromEaves, inward, meeting, mergeOnto, moveWall, parallelEdit, parallelPatches, parallelRafter, parallelStart, roofPoints, sameWay, shiftFor, solve, triangle, trianglePatch, type BuildUpEave, type CalcTarget, type ParallelField } from "./roofcalc";
   import type { CalcResult, EdgeDef, RoofPart } from "./types";
 
   let {
@@ -17,7 +19,7 @@
     patches = $bindable(null),
   }: { part: RoofPart; edge: number; result: CalcResult | null; patches: Map<number, Partial<EdgeDef>> | null } = $props();
 
-  type Tool = "triangle" | "parallel" | "point" | "merge" | "hip";
+  type Tool = "triangle" | "parallel" | "point" | "merge" | "hip" | "buildup";
   type Target = CalcTarget | "position";
   let tool = $state<Tool>("triangle");
   let target = $state<Target>("pitch");
@@ -27,32 +29,53 @@
   const opp = $derived(oppositeWall(es, edge));
   const span = $derived(opp !== null ? spanBetween(es, edge, opp) : 0);
 
-  // Einfaches Dreieck: two of three measures.
+  // Einfaches Dreieck: two of width, rafter and ridge height (absolute).
   let triWidth = $state<number | null>(null);
   let triRafter = $state<number | null>(null);
-  let triRise = $state<number | null>(null);
-  // DACAD checks "Grundrissbreite inkl. Traufenvorsprung" by default.
-  let triWithOv = $state(true);
+  let triRidge = $state<number | null>(null);
+  // DACAD's dialog opens with "Breite inkl. Traufenvorsprung" off.
+  let triWithOv = $state(false);
   const tri = $derived(
-    triangle(e, { width: triWidth ?? undefined, rafter: triRafter ?? undefined, rise: triRise ?? undefined }, triWithOv),
+    triangle(e, { width: triWidth ?? undefined, rafter: triRafter ?? undefined, ridge: triRidge ?? undefined }, triWithOv),
   );
 
-  // 2 Parallele: ridge position and height, starting from the current ridge.
+  // 2 Parallele: the values typed in, applied in order as DACAD's dialog does.
   const current = $derived(opp !== null ? meeting(e, es[opp], span) : null);
-  let parW = $state<number | null>(null);
-  let parH = $state<number | null>(null);
-  const par = $derived.by(() => {
-    if (opp === null || !current) return null;
-    if (target === "position") {
-      // The ridge stays in place in plan; both walls move to reach its height.
-      const h = parH ?? current.h;
-      const sa = shiftFor(e, current.w, h);
-      const sb = shiftFor(es[opp], span - current.w, h);
-      return sa === null || sb === null ? null : combine(moveWall(es, edge, sa), moveWall(es, opp, sb));
-    }
-    const pp = parallels(e, es[opp], { span, widthA: parW ?? current.w, ridge: parH ?? current.h, target });
-    return pp && new Map([[edge, pp[0]], [opp, pp[1]]]);
+  const parBreaks = $derived(opp !== null && !!(e.breaks?.length || es[opp].breaks?.length));
+  // DACAD's dialog opens with "Grundrissbreite inkl. Traufenvorsprung" on.
+  let parWithOv = $state(true);
+  let parEdits = $state<[ParallelField, number][]>([]);
+  $effect(() => {
+    void edge;
+    void target;
+    void parWithOv;
+    parEdits = [];
   });
+  const parState = $derived.by(() => {
+    if (opp === null || !current || parBreaks) return null;
+    let st = parallelStart(e, es[opp], span, current);
+    for (const [f, v] of parEdits) {
+      const next = parallelEdit(st, f, v, target, parWithOv);
+      if (!next) return null;
+      st = next;
+    }
+    return st;
+  });
+  const parRefused = $derived.by(() => {
+    if (opp === null || !parState || target !== "eave") return false;
+    const [pa, pb] = parallelPatches(parState, "eave");
+    return eaveBelowGable(es, edge, pa.eave_height!) || eaveBelowGable(es, opp, pb.eave_height!);
+  });
+  const par = $derived.by(() => {
+    if (opp === null || !parState || !parEdits.length || parRefused) return null;
+    if (target === "position") return combine(moveWall(es, edge, parState.shiftA), moveWall(es, opp, parState.shiftB));
+    const [pa, pb] = parallelPatches(parState, target);
+    return new Map([[edge, pa], [opp, pb]]);
+  });
+  const parSet = (f: ParallelField, v: string) => {
+    const x = n(v);
+    if (x !== null) parEdits = [...parEdits, [f, x]];
+  };
 
   // Punkt im Raum: a computed roof point or one typed in.
   const points = $derived(roofPoints(result));
@@ -101,27 +124,29 @@
   // Grat/Kehle: hip or valley length and both rafter lengths.
   let side = $state<"next" | "prev">("next");
   const neighbour = $derived(side === "next" ? (edge + 1) % es.length : (edge - 1 + es.length) % es.length);
+  let hipBy = $state<"rafters" | "eaves">("rafters");
   let hipLen = $state<number | null>(null);
   let raf1 = $state<number | null>(null);
   let raf2 = $state<number | null>(null);
   const hip = $derived(
-    hipLen !== null && raf1 !== null && raf2 !== null ? hipPitches(es, edge, neighbour, hipLen, raf1, raf2) : null,
+    hipLen !== null && raf1 !== null && raf2 !== null
+      ? (hipBy === "rafters" ? hipPitches : hipPitchesFromEaves)(es, edge, neighbour, hipLen, raf1, raf2)
+      : null,
   );
+
+  // Um Aufbaudicke korrigieren.
+  let thick = $state<number | null>(null);
+  let eaveForm = $state<BuildUpEave>("normal");
+  const built = $derived(thick !== null ? buildUp(e, thick, eaveForm) : null);
 
   $effect(() => {
     let next: Map<number, Partial<EdgeDef>> | null = null;
-    if (tool === "triangle" && tri) {
-      // With breaks the triangle is that of the last break (DACAD.HLP).
-      const bs = e.breaks ?? [];
-      const patch: Partial<EdgeDef> = bs.length
-        ? { breaks: bs.map((b, i) => (i === bs.length - 1 ? { ...b, pitch_deg: tri.pitch_deg } : { ...b })) }
-        : { pitch_deg: tri.pitch_deg };
-      next = new Map([[edge, patch]]);
-    }
+    if (tool === "triangle" && tri) next = new Map([[edge, trianglePatch(e, tri.pitch_deg)]]);
     else if (tool === "parallel" && par) next = par;
     else if (tool === "point" && pt) next = pt;
     else if (tool === "merge" && merged && merged.size) next = merged;
     else if (tool === "hip" && hip) next = hip;
+    else if (tool === "buildup" && built) next = new Map([[edge, built]]);
     // Leave out fields that would not change.
     if (next) {
       const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
@@ -139,8 +164,10 @@
   let unchanged = $state(false);
   /** Whether the inputs are complete enough to say there is no result. */
   const touched = $derived(
-    (tool !== "triangle" && tool !== "hip" && (tool !== "merge" || mates.length)) ||
-      (tool === "triangle" && (triWidth !== null || triRafter !== null || triRise !== null)) ||
+    (tool === "point" || (tool === "merge" && mates.length)) ||
+      (tool === "parallel" && parEdits.length > 0) ||
+      (tool === "buildup" && thick !== null) ||
+      (tool === "triangle" && (triWidth !== null || triRafter !== null || triRidge !== null)) ||
       (tool === "hip" && hipLen !== null && raf1 !== null && raf2 !== null),
   );
 
@@ -170,14 +197,14 @@
 
 <div class="form">
   <div class="tabs" role="tablist">
-    {#each ["triangle", "parallel", "point", "merge", "hip"] as const as k}
+    {#each ["triangle", "parallel", "point", "merge", "hip", "buildup"] as const as k}
       <button role="tab" class:on={tool === k} aria-selected={tool === k} disabled={k === "parallel" && opp === null}
-        onclick={() => { tool = k; if (k === "triangle" || k === "hip") target = "pitch"; else if (k === "merge" && target === "pitch") target = "eave"; }}>{t(`calc.${k}`)}</button>
+        onclick={() => { tool = k; if (k === "triangle" || k === "hip" || k === "buildup") target = "pitch"; else if (k === "merge" && target === "pitch") target = "eave"; }}>{t(`calc.${k}`)}</button>
     {/each}
   </div>
   <p class="tip">{t(`calc.${tool}Hint`)}</p>
 
-  {#if tool !== "triangle" && tool !== "hip"}
+  {#if tool !== "triangle" && tool !== "hip" && tool !== "buildup"}
     <label class="target">
       <span>{t("calc.target")}</span>
       <select bind:value={target}>
@@ -193,18 +220,28 @@
     <div class="grid">
       <label><span>{t("calc.width")}</span><div class="unit"><input type="number" step="0.05" value={triWidth ?? ""} oninput={(ev) => (triWidth = n(ev.currentTarget.value))} /><em>m</em></div></label>
       <label><span>{t("calc.rafter")}</span><div class="unit"><input type="number" step="0.05" value={triRafter ?? ""} oninput={(ev) => (triRafter = n(ev.currentTarget.value))} /><em>m</em></div></label>
-      <label><span>{t("calc.rise")}</span><div class="unit"><input type="number" step="0.05" value={triRise ?? ""} oninput={(ev) => (triRise = n(ev.currentTarget.value))} /><em>m</em></div></label>
+      <label><span>{t("calc.ridge")}</span><div class="unit"><input type="number" step="0.05" value={triRidge ?? ""} oninput={(ev) => (triRidge = n(ev.currentTarget.value))} /><em>m</em></div></label>
       <label class="check"><input type="checkbox" bind:checked={triWithOv} />{t("calc.withOverhang")}</label>
     </div>
   {:else if tool === "parallel" && current}
+    {#if parBreaks}
+      <p class="err">{t("calc.noBreaks")}</p>
+    {:else}
+    {@const st = parState}
+    {@const ovA = parWithOv && st ? st.a.overhang : 0}
+    {@const ovB = parWithOv && st ? st.b.overhang : 0}
     <div class="grid">
-      {#if target !== "position"}
-      <label><span>{t("calc.widthA")}</span><div class="unit"><input type="number" step="0.05" value={+(parW ?? current.w).toFixed(3)} onchange={(ev) => (parW = n(ev.currentTarget.value))} /><em>m</em></div></label>
-      <label><span>{t("calc.widthB")}</span><div class="unit"><input type="number" step="0.05" value={+(span - (parW ?? current.w)).toFixed(3)} onchange={(ev) => { const v = n(ev.currentTarget.value); parW = v === null ? null : span - v; }} /><em>m</em></div></label>
-      {/if}
-      <label><span>{t("calc.ridge")}</span><div class="unit"><input type="number" step="0.05" value={+(parH ?? current.h).toFixed(3)} onchange={(ev) => (parH = n(ev.currentTarget.value))} /><em>m</em></div></label>
+      <label><span>{t("calc.widthA")}</span><div class="unit"><input type="number" step="0.05" value={st ? +(st.wA + ovA).toFixed(3) : ""} onchange={(ev) => parSet("widthA", ev.currentTarget.value)} /><em>m</em></div></label>
+      <label><span>{t("calc.widthB")}</span><div class="unit"><input type="number" step="0.05" value={st ? +(st.wB + ovB).toFixed(3) : ""} onchange={(ev) => parSet("widthB", ev.currentTarget.value)} /><em>m</em></div></label>
+      <label><span>{t("calc.ridge")}</span><div class="unit"><input type="number" step="0.05" value={st ? +st.H.toFixed(3) : ""} onchange={(ev) => parSet("ridge", ev.currentTarget.value)} /><em>m</em></div></label>
+      <label><span>{t("calc.rafterA")}</span><div class="unit"><input type="number" step="0.05" value={st ? +parallelRafter(st, "a").toFixed(3) : ""} onchange={(ev) => parSet("rafterA", ev.currentTarget.value)} /><em>m</em></div></label>
+      <label><span>{t("calc.rafterB")}</span><div class="unit"><input type="number" step="0.05" value={st ? +parallelRafter(st, "b").toFixed(3) : ""} onchange={(ev) => parSet("rafterB", ev.currentTarget.value)} /><em>m</em></div></label>
+      <label><span>{t("calc.top")}</span><div class="unit"><input type="number" step="0.05" min="0" value={st ? +st.top.toFixed(3) : ""} onchange={(ev) => parSet("top", ev.currentTarget.value)} /><em>m</em></div></label>
+      <label class="check wide"><input type="checkbox" bind:checked={parWithOv} />{t("calc.withOverhang")}</label>
     </div>
     <p class="tip">{t("round.span", { s: num(span) })}</p>
+    {#if parRefused}<p class="err">{t("calc.eaveBelowGable")}</p>{/if}
+    {/if}
   {:else if tool === "point"}
     <div class="grid">
       <label class="wide">
@@ -242,9 +279,26 @@
           <option value="prev">{t("calc.wall", { n: ((edge - 1 + es.length) % es.length) + 1 })}</option>
         </select>
       </label>
+      <label class="wide">
+        <span>{t("calc.hipBy")}</span>
+        <select bind:value={hipBy}>
+          <option value="rafters">{t("calc.hipByRafters")}</option>
+          <option value="eaves">{t("calc.hipByEaves")}</option>
+        </select>
+      </label>
       <label><span>{t("calc.hipLength")}</span><div class="unit"><input type="number" step="0.05" value={hipLen ?? ""} oninput={(ev) => (hipLen = n(ev.currentTarget.value))} /><em>m</em></div></label>
-      <label><span>{t("calc.rafterThis")}</span><div class="unit"><input type="number" step="0.05" value={raf1 ?? ""} oninput={(ev) => (raf1 = n(ev.currentTarget.value))} /><em>m</em></div></label>
-      <label><span>{t("calc.rafterOther")}</span><div class="unit"><input type="number" step="0.05" value={raf2 ?? ""} oninput={(ev) => (raf2 = n(ev.currentTarget.value))} /><em>m</em></div></label>
+      <label><span>{t(hipBy === "rafters" ? "calc.rafterThis" : "calc.eaveThis")}</span><div class="unit"><input type="number" step="0.05" value={raf1 ?? ""} oninput={(ev) => (raf1 = n(ev.currentTarget.value))} /><em>m</em></div></label>
+      <label><span>{t(hipBy === "rafters" ? "calc.rafterOther" : "calc.eaveOther")}</span><div class="unit"><input type="number" step="0.05" value={raf2 ?? ""} oninput={(ev) => (raf2 = n(ev.currentTarget.value))} /><em>m</em></div></label>
+    </div>
+  {:else if tool === "buildup"}
+    <div class="grid">
+      <label><span>{t("calc.thickness")}</span><div class="unit"><input type="number" step="0.01" value={thick ?? ""} oninput={(ev) => (thick = n(ev.currentTarget.value))} /><em>m</em></div></label>
+      <label class="wide">
+        <span>{t("calc.eaveForm")}</span>
+        <select bind:value={eaveForm}>
+          {#each ["normal", "horizontal", "vertical"] as const as f}<option value={f}>{t(`calc.eave.${f}`)}</option>{/each}
+        </select>
+      </label>
     </div>
   {/if}
 
@@ -257,9 +311,6 @@
           {#each Object.entries(patch) as [field, v]}
             <span>{label(field)}: {fmt(field, es[k][field as keyof EdgeDef])} → <b>{fmt(field, v)}</b></span>
           {/each}
-          {#if tool === "parallel" && target !== "position" && current && !es[k].breaks?.length}
-            <span class="muted">{t("calc.rafter")}: {num(rafter({ ...es[k], ...patch } as EdgeDef, k === edge ? (parW ?? current.w) : span - (parW ?? current.w)))} m</span>
-          {/if}
         </div>
       {/each}
     {:else if unchanged}
@@ -367,9 +418,6 @@
     flex-wrap: wrap;
     gap: 4px 14px;
     padding: 3px 0;
-  }
-  .muted {
-    color: var(--text-2);
   }
   .tip,
   .err {
