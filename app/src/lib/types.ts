@@ -56,6 +56,8 @@ export interface Project {
   manual_lines?: ManualLine[];
   /** Roof faces added by hand (DACAD: Neue Dachfläche). */
   manual_faces?: ManualFace[];
+  /** Calculate as a flat roof at the highest eave (DACAD: Flachdach). */
+  flat_roof?: boolean;
 }
 
 /** A line drawn by hand on the roof; `code` is DACAD's line code. */

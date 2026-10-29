@@ -38,6 +38,9 @@ const LEVEL: f64 = 1.0 - 1e-6;
 /// that [`Project::validate`] rejects is left out instead of producing NaN:
 /// an invalid part gets an empty geometry.
 pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
+    if project.flat_roof {
+        return crate::flat::generate_project(project);
+    }
     let mut clean = project.clone();
     clean.parts.clear();
     // For each part: its index in `clean` and, if reversed, its edge count.

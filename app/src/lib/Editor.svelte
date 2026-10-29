@@ -429,6 +429,13 @@
     manualDraft = [...manualDraft, p];
   }
 
+  /** DACAD: Berechnung › Flachdach; dormers are left out of such a roof. */
+  function toggleFlat() {
+    if (!project) return;
+    project.flat_roof = !project.flat_roof;
+    commit();
+  }
+
   function selectManual(s: ManualSel) {
     selection = null;
     dormerSel = null;
@@ -691,6 +698,7 @@
       <button class="tool" class:on={placing === "hole"} disabled={!project?.parts.length} onclick={() => togglePlacing("hole")} title={t("tool.holeHint")}><Icon name="hole" /><span>{t("tool.hole")}</span></button>
       <button class="tool" class:on={placing === "line"} disabled={!result} onclick={() => togglePlacing("line")} title={t("tool.lineHint")}><Icon name="line" /><span>{t("tool.line")}</span></button>
       <button class="tool" class:on={placing === "face"} disabled={!result} onclick={() => togglePlacing("face")} title={t("tool.faceHint")}><Icon name="face" /><span>{t("tool.face")}</span></button>
+      <button class="tool" class:on={!!project?.flat_roof} disabled={!project?.parts.length} onclick={toggleFlat} title={t("tool.flatHint")}><Icon name="flat" /><span>{t("tool.flat")}</span></button>
       <button class="tool" disabled={!selection || (project?.parts.length ?? 0) < 2} onclick={deletePart} title={t("tool.deletePartHint")}><Icon name="trash" /><span>{t("tool.deletePart")}</span></button>
     </div>
     <div class="group">

@@ -10,6 +10,7 @@ pub mod diff;
 pub mod dormer;
 pub mod engine;
 pub mod examples;
+pub mod flat;
 mod gable_wall;
 pub mod geom;
 pub mod model;

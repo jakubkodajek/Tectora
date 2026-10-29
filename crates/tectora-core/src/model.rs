@@ -35,6 +35,10 @@ pub struct Project {
     /// Roof faces added by hand (DACAD: Neue Dachfläche).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub manual_faces: Vec<ManualFace>,
+    /// Calculate as a flat roof at the highest eave (DACAD: Berechnung ›
+    /// Flachdach); see [`crate::flat`].
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub flat_roof: bool,
 }
 
 /// A line drawn by hand on the calculated roof (DACAD: Dachlinieneingabe).
@@ -124,6 +128,7 @@ impl Project {
             roof_openings: Vec::new(),
             manual_lines: Vec::new(),
             manual_faces: Vec::new(),
+            flat_roof: false,
         }
     }
 

@@ -40,6 +40,7 @@
     warning: "M12 3l10 18H2zM12 10v5M12 18h.01",
     line: "M5 19L19 5M3 21l4-4M17 7l4-4",
     face: "M4 18l5-12 11 3-4 10z",
+    flat: "M3 9h18M5 9v10h14V9",
   };
   let { name, size = 18 }: { name: string; size?: number } = $props();
 </script>
