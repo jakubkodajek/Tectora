@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 
 # (foreground, background, kind). kind: "text" 4.5, "large" 3.0, "ui" 3.0.
+# "a|b" uses token a when the theme defines it, else b. Pairs whose tokens a
+# theme does not define are skipped.
 PAIRS: list[tuple[str, str, str]] = [
     ("text", "bg", "text"),
     ("text", "surface", "text"),
@@ -33,7 +35,9 @@ PAIRS: list[tuple[str, str, str]] = [
     ("text-3", "surface", "large"),
     ("accent", "surface", "text"),
     ("accent", "accent-soft", "text"),
-    ("#ffffff", "accent", "text"),
+    ("#ffffff", "accent-fill|accent", "text"),
+    ("on-ai", "ai", "text"),
+    ("#ffffff", "danger-fill", "text"),
     ("ai-strong", "ai-soft", "text"),
     ("ai-strong", "surface", "text"),
     ("danger", "surface", "text"),
@@ -116,11 +120,21 @@ def themes(css: str) -> dict[str, dict[str, str]]:
     return result
 
 
+def resolve(name: str, tokens: dict[str, str]) -> tuple[str, str | None]:
+    """The token used for `name` ("a|b" = first one defined) and its value."""
+    if name.startswith("#"):
+        return name, name
+    for option in name.split("|"):
+        if option in tokens:
+            return option, tokens[option]
+    return name, None
+
+
 def check(tokens: dict[str, str]) -> list[dict[str, object]]:
     rows = []
     for fg, bg, kind in PAIRS:
-        fv = fg if fg.startswith("#") else tokens.get(fg)
-        bv = bg if bg.startswith("#") else tokens.get(bg)
+        fg, fv = resolve(fg, tokens)
+        bg, bv = resolve(bg, tokens)
         if not fv or not bv or not HEX.match(fv) or not HEX.match(bv):
             continue  # token missing or not a plain hex value
         r = ratio(fv, bv)
