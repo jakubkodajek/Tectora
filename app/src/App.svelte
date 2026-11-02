@@ -3,7 +3,7 @@
   import AiConnect from "./lib/AiConnect.svelte";
   import Editor from "./lib/Editor.svelte";
   import Home from "./lib/Home.svelte";
-  import Settings from "./lib/Settings.svelte";
+  import SettingsDialog from "./lib/SettingsDialog.svelte";
   import { api, onLiveStatus, onProjectsChanged, onSettingsChanged } from "./lib/api";
   import { t } from "./lib/i18n.svelte";
   import { actorName, live } from "./lib/live.svelte";
@@ -110,7 +110,7 @@
 {/if}
 
 {#if settingsOpen}
-  <Settings onclose={() => (settingsOpen = false)} onlibrarychanged={libraryChanged} />
+  <SettingsDialog onclose={() => (settingsOpen = false)} onlibrarychanged={libraryChanged} />
 {/if}
 
 {#if connect}
