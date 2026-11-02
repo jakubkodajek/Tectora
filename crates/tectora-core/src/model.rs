@@ -152,33 +152,54 @@ impl Project {
     /// numbers, parts with fewer than three edges, pitches outside
     /// (0°, 180°) and negative overhangs. Returns one message per problem.
     pub fn validate(&self) -> Result<(), Vec<String>> {
-        let mut errors = Vec::new();
-        for (pi, part) in self.parts.iter().enumerate() {
-            let at = format!("part {} ({})", pi + 1, part.name);
-            if part.edges.len() < 3 {
-                errors.push(format!("{at}: needs at least 3 edges"));
+        let errors: Vec<String> = self.problems().iter().map(|p| self.describe(p)).collect();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// The problems [`Project::validate`] reports, as data (for a
+    /// translated message in the app).
+    pub fn problems(&self) -> Vec<Problem> {
+        let mut out = Vec::new();
+        let mut edges = |item, index, list: &[EdgeDef]| {
+            for (ei, e) in list.iter().enumerate() {
+                out.extend(e.problems().map(|(code, _)| Problem {
+                    item,
+                    index,
+                    edge: Some(ei),
+                    code,
+                }));
             }
-            for (ei, e) in part.edges.iter().enumerate() {
-                errors.extend(e.problems().map(|p| format!("{at}, edge {}: {p}", ei + 1)));
+        };
+        for (pi, part) in self.parts.iter().enumerate() {
+            edges(ProblemItem::Part, pi, &part.edges);
+        }
+        for (di, d) in self.dormers.iter().enumerate() {
+            edges(ProblemItem::Dormer, di, &d.edges);
+        }
+        for (pi, part) in self.parts.iter().enumerate() {
+            if part.edges.len() < 3 {
+                out.push(Problem::of(ProblemItem::Part, pi, "too_few_edges"));
             }
         }
         for (di, d) in self.dormers.iter().enumerate() {
             if !finite_point(d.end) {
-                errors.push(format!("dormer {}: end point is not a number", di + 1));
-            }
-            for (ei, e) in d.edges.iter().enumerate() {
-                errors.extend(
-                    e.problems()
-                        .map(|p| format!("dormer {}, edge {}: {p}", di + 1, ei + 1)),
-                );
+                out.push(Problem::of(ProblemItem::Dormer, di, "end_nan"));
             }
         }
-        for (ci, c) in self.chimneys.iter().chain(&self.roof_openings).enumerate() {
-            if c.corners.len() < 3 || !c.corners.iter().all(|&v| finite_point(v)) {
-                errors.push(format!(
-                    "chimney/opening {}: needs 3 or more finite corners",
-                    ci + 1
-                ));
+        let corners =
+            |c: &Chimney| c.corners.len() < 3 || !c.corners.iter().all(|&v| finite_point(v));
+        for (ci, c) in self.chimneys.iter().enumerate() {
+            if corners(c) {
+                out.push(Problem::of(ProblemItem::Chimney, ci, "bad_corners"));
+            }
+        }
+        for (ci, c) in self.roof_openings.iter().enumerate() {
+            if corners(c) {
+                out.push(Problem::of(ProblemItem::Opening, ci, "bad_corners"));
             }
         }
         for (wi, w) in self.windows.iter().enumerate() {
@@ -186,16 +207,43 @@ impl Project {
                 && w.width > 0.0
                 && w.height > 0.0;
             if !ok {
-                errors.push(format!(
-                    "window {}: needs a finite position and a positive size",
-                    wi + 1
-                ));
+                out.push(Problem::of(ProblemItem::Window, wi, "bad_size"));
             }
         }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
+        out.sort_by_key(|p| (p.item, p.index, p.edge));
+        out
+    }
+
+    /// The English message of a problem (CLI, MCP).
+    fn describe(&self, p: &Problem) -> String {
+        let n = p.index + 1;
+        let at = match p.item {
+            ProblemItem::Part => format!(
+                "part {n} ({})",
+                self.parts
+                    .get(p.index)
+                    .map(|x| x.name.as_str())
+                    .unwrap_or("")
+            ),
+            ProblemItem::Dormer => format!("dormer {n}"),
+            ProblemItem::Chimney => format!("chimney {n}"),
+            ProblemItem::Opening => format!("roof opening {n}"),
+            ProblemItem::Window => format!("window {n}"),
+        };
+        let what = EdgeDef::PROBLEMS
+            .iter()
+            .find(|(c, _)| *c == p.code)
+            .map(|(_, m)| *m)
+            .unwrap_or(match p.code {
+                "too_few_edges" => "needs at least 3 edges",
+                "end_nan" => "end point is not a number",
+                "bad_corners" => "needs 3 or more finite corners",
+                "bad_size" => "needs a finite position and a positive size",
+                other => other,
+            });
+        match p.edge {
+            Some(e) => format!("{at}, edge {}: {what}", e + 1),
+            None => format!("{at}: {what}"),
         }
     }
 
@@ -205,6 +253,43 @@ impl Project {
 
     pub fn from_json(s: &str) -> serde_json::Result<Self> {
         serde_json::from_str(s)
+    }
+}
+
+/// What a problem found by [`Project::problems`] is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProblemItem {
+    Part,
+    Dormer,
+    Chimney,
+    Opening,
+    Window,
+}
+
+/// One input the roof engine cannot work with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Problem {
+    pub item: ProblemItem,
+    /// Index of the part, dormer, chimney, opening or window (from 0).
+    pub index: usize,
+    /// Index of the edge within the part or dormer (from 0), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edge: Option<usize>,
+    /// A stable code: `too_few_edges`, `start_nan`, `pitch_range`,
+    /// `eave_nan`, `overhang_negative`, `direction_nan`, `stacked_nan`,
+    /// `end_nan`, `bad_corners` or `bad_size`.
+    pub code: &'static str,
+}
+
+impl Problem {
+    fn of(item: ProblemItem, index: usize, code: &'static str) -> Problem {
+        Problem {
+            item,
+            index,
+            edge: None,
+            code,
+        }
     }
 }
 
@@ -355,35 +440,39 @@ fn is_zero(v: &u8) -> bool {
 
 impl EdgeDef {
     /// What makes this edge unusable for the engine (see [`Project::validate`]).
-    pub(crate) fn problems(&self) -> impl Iterator<Item = &'static str> {
+    /// Codes and English messages of [`EdgeDef::problems`].
+    pub const PROBLEMS: [(&'static str, &'static str); 6] = [
+        ("start_nan", "start point is not a number"),
+        ("pitch_range", "pitch must be between 0° and 180°"),
+        ("eave_nan", "eave height is not a number"),
+        ("overhang_negative", "overhang must be zero or positive"),
+        ("direction_nan", "direction is not a number"),
+        ("stacked_nan", "half-hip or pitch break is not a number"),
+    ];
+
+    /// What keeps the roof engine from using this edge, as
+    /// `(code, English message)`.
+    pub(crate) fn problems(&self) -> impl Iterator<Item = (&'static str, &'static str)> {
         let stacked = self
             .half_hip
             .iter()
             .map(|h| (h.height, h.pitch_deg))
             .chain(self.breaks.iter().map(|b| (b.height, b.pitch_deg)));
         let checks = [
-            (!finite_point(self.start), "start point is not a number"),
-            (
-                !(self.pitch_deg > 0.0 && self.pitch_deg < 180.0),
-                "pitch must be between 0° and 180°",
-            ),
-            (!self.eave_height.is_finite(), "eave height is not a number"),
-            (
-                !(self.overhang >= 0.0 && self.overhang.is_finite()),
-                "overhang must be zero or positive",
-            ),
-            (
-                self.direction_rad.is_some_and(|a| !a.is_finite()),
-                "direction is not a number",
-            ),
-            (
-                stacked
-                    .into_iter()
-                    .any(|(h, p)| !h.is_finite() || !p.is_finite()),
-                "half-hip or pitch break is not a number",
-            ),
+            !finite_point(self.start),
+            !(self.pitch_deg > 0.0 && self.pitch_deg < 180.0),
+            !self.eave_height.is_finite(),
+            !(self.overhang >= 0.0 && self.overhang.is_finite()),
+            self.direction_rad.is_some_and(|a| !a.is_finite()),
+            stacked
+                .into_iter()
+                .any(|(h, p)| !h.is_finite() || !p.is_finite()),
         ];
-        checks.into_iter().filter(|c| c.0).map(|c| c.1)
+        checks
+            .into_iter()
+            .zip(Self::PROBLEMS)
+            .filter(|c| c.0)
+            .map(|c| c.1)
     }
 
     /// A vertical wall. A pitch over 90° is a plane leaning outward, not a

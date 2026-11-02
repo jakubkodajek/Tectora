@@ -128,6 +128,120 @@ pub struct Store {
     pub dir: PathBuf,
 }
 
+/// Why a library operation failed. Each variant has a stable [`code`]
+/// (`StoreError::code`) so the app can show a translated message; the
+/// `Display` text is English for the CLI, the MCP server and logs.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum StoreError {
+    /// The id is empty or would leave the library folder.
+    #[error("invalid project id: {0}")]
+    InvalidId(String),
+    /// No project file with this id.
+    #[error("{0}: project not found")]
+    NotFound(String),
+    /// The file exists but is not a valid Tectora project.
+    #[error("{id}: the project file is damaged ({detail})")]
+    Unreadable { id: String, detail: String },
+    /// The operating system refused to read or write a file.
+    #[error("{}{detail}", id.as_deref().map(|i| format!("{i}: ")).unwrap_or_default())]
+    Io {
+        id: Option<String>,
+        kind: IoKind,
+        detail: String,
+    },
+    /// Revert asked for, but no change has been recorded.
+    #[error("{0}: no recorded change to revert")]
+    NothingToRevert(String),
+    /// The change to revert created the project; there is no earlier version.
+    #[error("{0}: that change created the project")]
+    RevertCreated(String),
+    /// No recorded change has this timestamp (the log moved on).
+    #[error("{id}: no recorded change at {ts_ms}")]
+    NoSuchChange { id: String, ts_ms: u64 },
+}
+
+/// The kinds of file system failure the app explains differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IoKind {
+    PermissionDenied,
+    DiskFull,
+    Other,
+}
+
+impl StoreError {
+    /// A stable, machine-readable code (`snake_case`).
+    pub fn code(&self) -> &'static str {
+        match self {
+            StoreError::InvalidId(_) => "invalid_id",
+            StoreError::NotFound(_) => "not_found",
+            StoreError::Unreadable { .. } => "unreadable",
+            StoreError::Io {
+                kind: IoKind::PermissionDenied,
+                ..
+            } => "permission_denied",
+            StoreError::Io {
+                kind: IoKind::DiskFull,
+                ..
+            } => "disk_full",
+            StoreError::Io { .. } => "io",
+            StoreError::NothingToRevert(_) => "nothing_to_revert",
+            StoreError::RevertCreated(_) => "revert_created",
+            StoreError::NoSuchChange { .. } => "no_such_change",
+        }
+    }
+
+    /// The project the error is about, if any.
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            StoreError::InvalidId(id)
+            | StoreError::NotFound(id)
+            | StoreError::NothingToRevert(id)
+            | StoreError::RevertCreated(id) => Some(id),
+            StoreError::Unreadable { id, .. } | StoreError::NoSuchChange { id, .. } => Some(id),
+            StoreError::Io { id, .. } => id.as_deref(),
+        }
+    }
+
+    /// The underlying message (OS or parser error), if any.
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            StoreError::Unreadable { detail, .. } | StoreError::Io { detail, .. } => Some(detail),
+            _ => None,
+        }
+    }
+
+    fn io(id: Option<&str>, e: std::io::Error) -> StoreError {
+        let kind = match e.kind() {
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
+                IoKind::PermissionDenied
+            }
+            std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded => IoKind::DiskFull,
+            _ => IoKind::Other,
+        };
+        StoreError::Io {
+            id: id.map(str::to_string),
+            kind,
+            detail: e.to_string(),
+        }
+    }
+}
+
+/// The MCP server and the CLI pass errors on as text.
+impl From<StoreError> for String {
+    fn from(e: StoreError) -> String {
+        e.to_string()
+    }
+}
+
+/// A project file in the library folder that could not be read.
+#[derive(Debug, Clone, Serialize)]
+pub struct BrokenFile {
+    pub id: String,
+    pub code: &'static str,
+    pub detail: String,
+}
+
 fn modified_ms(path: &Path) -> u64 {
     fs::metadata(path)
         .and_then(|m| m.modified())
@@ -138,10 +252,12 @@ fn modified_ms(path: &Path) -> u64 {
 }
 
 /// Writes via a temporary file so a watcher never sees a half-written file.
-fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
+fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
-    fs::write(&tmp, contents).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, path).map_err(|e| e.to_string())
+    fs::write(&tmp, contents)?;
+    fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = fs::remove_file(&tmp);
+    })
 }
 
 /// File-name friendly id derived from a project name.
@@ -192,9 +308,9 @@ impl Store {
         Self::new(default_dir())
     }
 
-    pub fn path(&self, id: &str) -> Result<PathBuf, String> {
+    pub fn path(&self, id: &str) -> Result<PathBuf, StoreError> {
         if id.is_empty() || id.contains(['/', '\\']) || id.starts_with('.') {
-            return Err(format!("invalid project id: {id}"));
+            return Err(StoreError::InvalidId(id.to_string()));
         }
         Ok(self.dir.join(format!("{id}.{EXTENSION}")))
     }
@@ -203,7 +319,7 @@ impl Store {
         self.dir.join(ACTIVITY_DIR)
     }
 
-    fn activity_path(&self, id: &str) -> Result<PathBuf, String> {
+    fn activity_path(&self, id: &str) -> Result<PathBuf, StoreError> {
         self.path(id)?;
         Ok(self.activity_dir().join(format!("{id}.jsonl")))
     }
@@ -212,7 +328,7 @@ impl Store {
         self.path(id).is_ok_and(|p| p.exists())
     }
 
-    pub fn summarize(&self, id: &str) -> Result<ProjectSummary, String> {
+    pub fn summarize(&self, id: &str) -> Result<ProjectSummary, StoreError> {
         let project = self.load(id)?;
         Ok(ProjectSummary {
             id: id.to_string(),
@@ -229,23 +345,56 @@ impl Store {
     }
 
     pub fn list(&self) -> Vec<ProjectSummary> {
-        let Ok(entries) = fs::read_dir(&self.dir) else {
-            return Vec::new();
-        };
-        let mut out: Vec<ProjectSummary> = entries
+        self.scan().map(|(ok, _)| ok).unwrap_or_default()
+    }
+
+    /// Every project in the library, newest first, and the project files
+    /// that could not be read (so the app can say so instead of hiding
+    /// them). Fails only when the folder itself cannot be read.
+    pub fn scan(&self) -> Result<(Vec<ProjectSummary>, Vec<BrokenFile>), StoreError> {
+        let entries = fs::read_dir(&self.dir).map_err(|e| StoreError::io(None, e))?;
+        let mut ok = Vec::new();
+        let mut broken = Vec::new();
+        let ids = entries
             .flatten()
             .map(|e| e.path())
             .filter(|p| p.extension().and_then(|e| e.to_str()) == Some(EXTENSION))
-            .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(str::to_string))
-            .filter_map(|id| self.summarize(&id).ok())
-            .collect();
-        out.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
-        out
+            .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(str::to_string));
+        for id in ids {
+            // One bad design must not take the whole library down.
+            let summary =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.summarize(&id)));
+            match summary {
+                Ok(Ok(s)) => ok.push(s),
+                Ok(Err(e)) => broken.push(BrokenFile {
+                    id,
+                    code: e.code(),
+                    detail: e.detail().unwrap_or_default().to_string(),
+                }),
+                Err(panic) => broken.push(BrokenFile {
+                    id,
+                    code: "internal",
+                    detail: panic_message(&*panic),
+                }),
+            }
+        }
+        ok.sort_by_key(|s| std::cmp::Reverse(s.modified_ms));
+        broken.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok((ok, broken))
     }
 
-    pub fn load(&self, id: &str) -> Result<Project, String> {
-        let text = fs::read_to_string(self.path(id)?).map_err(|e| format!("{id}: {e}"))?;
-        Project::from_json(&text).map_err(|e| e.to_string())
+    pub fn load(&self, id: &str) -> Result<Project, StoreError> {
+        let text = fs::read_to_string(self.path(id)?).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                StoreError::NotFound(id.to_string())
+            } else {
+                StoreError::io(Some(id), e)
+            }
+        })?;
+        Project::from_json(&text).map_err(|e| StoreError::Unreadable {
+            id: id.to_string(),
+            detail: e.to_string(),
+        })
     }
 
     /// Picks an unused id based on the project name.
@@ -261,12 +410,14 @@ impl Store {
     }
 
     /// Saves without recording activity (app autosave of its own edits).
-    pub fn save(&self, id: Option<String>, project: &Project) -> Result<String, String> {
+    pub fn save(&self, id: Option<String>, project: &Project) -> Result<String, StoreError> {
         let id = id.unwrap_or_else(|| self.new_id(&project.name));
-        write_atomic(
-            &self.path(&id)?,
-            &project.to_json().map_err(|e| e.to_string())?,
-        )?;
+        let path = self.path(&id)?;
+        let json = project.to_json().map_err(|e| StoreError::Unreadable {
+            id: id.clone(),
+            detail: e.to_string(),
+        })?;
+        write_atomic(&path, &json).map_err(|e| StoreError::io(Some(&id), e))?;
         Ok(id)
     }
 
@@ -278,7 +429,7 @@ impl Store {
         project: &Project,
         actor: &str,
         summary: &str,
-    ) -> Result<String, String> {
+    ) -> Result<String, StoreError> {
         let before = id.as_deref().and_then(|id| self.load(id).ok());
         if before.as_ref() == Some(project) {
             return Ok(id.unwrap_or_default());
@@ -301,11 +452,12 @@ impl Store {
         self.save(Some(id.clone()), project)
     }
 
-    fn append_activity(&self, id: &str, entry: ActivityEntry) -> Result<(), String> {
-        fs::create_dir_all(self.activity_dir()).map_err(|e| e.to_string())?;
+    fn append_activity(&self, id: &str, entry: ActivityEntry) -> Result<(), StoreError> {
+        let io = |e| StoreError::io(Some(id), e);
+        fs::create_dir_all(self.activity_dir()).map_err(io)?;
         let path = self.activity_path(id)?;
         let mut entries = self.activity(id);
-        let line = serde_json::to_string(&entry).map_err(|e| e.to_string())?;
+        let line = serde_json::to_string(&entry).map_err(|e| io(e.into()))?;
         if entries.len() >= ACTIVITY_KEEP {
             entries.push(entry);
             let keep = &entries[entries.len() - ACTIVITY_KEEP..];
@@ -313,14 +465,14 @@ impl Store {
                 .iter()
                 .filter_map(|e| serde_json::to_string(e).ok())
                 .collect();
-            return write_atomic(&path, &(text.join("\n") + "\n"));
+            return write_atomic(&path, &(text.join("\n") + "\n")).map_err(io);
         }
         let mut f = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
-            .map_err(|e| e.to_string())?;
-        writeln!(f, "{line}").map_err(|e| e.to_string())
+            .map_err(io)?;
+        writeln!(f, "{line}").map_err(io)
     }
 
     /// Recorded changes of a project, oldest first.
@@ -336,14 +488,14 @@ impl Store {
     }
 
     /// Restores the version before the latest recorded change.
-    pub fn revert_last(&self, id: &str, actor: &str) -> Result<Project, String> {
+    pub fn revert_last(&self, id: &str, actor: &str) -> Result<Project, StoreError> {
         let last = self
             .activity(id)
             .pop()
-            .ok_or_else(|| format!("{id}: no recorded change to revert"))?;
+            .ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
         let before = last
             .before
-            .ok_or_else(|| format!("{id}: the latest change created the project"))?;
+            .ok_or_else(|| StoreError::RevertCreated(id.to_string()))?;
         self.save_as(
             Some(id.to_string()),
             &before,
@@ -355,16 +507,19 @@ impl Store {
 
     /// Restores the version from before the change recorded at `ts_ms`,
     /// undoing it and every later change in one step.
-    pub fn revert_to(&self, id: &str, ts_ms: u64, actor: &str) -> Result<Project, String> {
+    pub fn revert_to(&self, id: &str, ts_ms: u64, actor: &str) -> Result<Project, StoreError> {
         let log = self.activity(id);
-        let pos = log
-            .iter()
-            .rposition(|e| e.ts_ms == ts_ms)
-            .ok_or_else(|| format!("{id}: no recorded change at {ts_ms}"))?;
+        let pos =
+            log.iter()
+                .rposition(|e| e.ts_ms == ts_ms)
+                .ok_or_else(|| StoreError::NoSuchChange {
+                    id: id.to_string(),
+                    ts_ms,
+                })?;
         let before = log[pos]
             .before
             .clone()
-            .ok_or_else(|| format!("{id}: that change created the project"))?;
+            .ok_or_else(|| StoreError::RevertCreated(id.to_string()))?;
         let undone = log.len() - pos;
         let summary = if undone == 1 {
             format!("Reverted: {}", log[pos].summary)
@@ -375,8 +530,14 @@ impl Store {
         Ok(before)
     }
 
-    pub fn delete(&self, id: &str) -> Result<(), String> {
-        fs::remove_file(self.path(id)?).map_err(|e| e.to_string())?;
+    pub fn delete(&self, id: &str) -> Result<(), StoreError> {
+        fs::remove_file(self.path(id)?).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                StoreError::NotFound(id.to_string())
+            } else {
+                StoreError::io(Some(id), e)
+            }
+        })?;
         let _ = fs::remove_file(self.activity_path(id)?);
         Ok(())
     }
@@ -395,6 +556,15 @@ impl Store {
     }
 }
 
+/// The text of a caught panic payload.
+pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +573,38 @@ mod tests {
     fn temp_store(name: &str) -> Store {
         let dir = std::env::temp_dir().join(format!("tectora-test-{name}-{}", now_ms()));
         Store::new(dir).unwrap()
+    }
+
+    #[test]
+    fn errors_have_stable_codes() {
+        let store = temp_store("errors");
+        assert_eq!(store.load("nope").unwrap_err().code(), "not_found");
+        assert_eq!(store.load("../x").unwrap_err().code(), "invalid_id");
+        assert_eq!(store.delete("nope").unwrap_err().code(), "not_found");
+        fs::write(store.dir.join("bad.tectora"), "{ not json").unwrap();
+        let e = store.load("bad").unwrap_err();
+        assert_eq!(e.code(), "unreadable");
+        assert_eq!(e.id(), Some("bad"));
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn scan_reports_unreadable_files_instead_of_hiding_them() {
+        let store = temp_store("scan");
+        let id = store
+            .save(None, &crate::examples::find("gable").unwrap().project())
+            .unwrap();
+        fs::write(store.dir.join("broken.tectora"), "{").unwrap();
+        let (ok, broken) = store.scan().unwrap();
+        assert_eq!(
+            ok.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            [id.as_str()]
+        );
+        assert_eq!(broken.len(), 1);
+        assert_eq!(broken[0].id, "broken");
+        assert_eq!(broken[0].code, "unreadable");
+        assert_eq!(store.list().len(), 1);
+        let _ = fs::remove_dir_all(&store.dir);
     }
 
     #[test]

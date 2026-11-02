@@ -3,31 +3,28 @@
   import AiConnect from "./lib/AiConnect.svelte";
   import Editor from "./lib/Editor.svelte";
   import Home from "./lib/Home.svelte";
+  import Toasts from "./lib/Toasts.svelte";
   import { api, onLiveStatus, onProjectsChanged } from "./lib/api";
   import { t } from "./lib/i18n.svelte";
   import { actorName, live } from "./lib/live.svelte";
+  import { info, notifyError } from "./lib/notify.svelte";
   import { prefs } from "./lib/settings.svelte";
-  import type { ExampleInfo, LiveStatus, ProjectSummary } from "./lib/types";
+  import type { BrokenFile, ExampleInfo, LiveStatus, ProjectSummary } from "./lib/types";
 
   let openId = $state<string | null>(null);
   let projects = $state<ProjectSummary[]>([]);
+  let broken = $state<BrokenFile[]>([]);
   let examples = $state<ExampleInfo[]>([]);
   let dir = $state("");
   let connect = $state(false);
-  let toast = $state<{ text: string; error: boolean } | null>(null);
-  let toastTimer: ReturnType<typeof setTimeout> | undefined;
-
-  function show(text: string, error = false) {
-    toast = { text, error };
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => (toast = null), error ? 6000 : 4000);
-  }
 
   async function refresh() {
     try {
-      projects = await api.listProjects();
+      const lib = await api.listProjects();
+      projects = lib.projects;
+      broken = lib.broken;
     } catch (e) {
-      show(String(e), true);
+      notifyError(e, "list");
     }
   }
 
@@ -38,14 +35,27 @@
     live.now = Date.now();
     if (!fresh || !s.project_id || !prefs.followAi || s.project_id === openId) return;
     openId = s.project_id;
-    show(t("ai.followed", { who: actorName(s.actor) }));
+    info(t("ai.followed", { who: actorName(s.actor) }));
+  }
+
+  /** Last resort: anything that slipped through still reaches the user. */
+  function onUnexpected(e: unknown) {
+    notifyError(e);
   }
 
   onMount(() => {
+    const onError = (e: ErrorEvent) => onUnexpected(e.error ?? e.message);
+    const onRejection = (e: PromiseRejectionEvent) => onUnexpected(e.reason);
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onRejection);
     refresh();
-    api.listExamples().then((x) => (examples = x));
-    api.projectsDir().then((d) => (dir = d));
-    api.liveStatus().then((s) => (live.status = s));
+    api.listExamples().then((x) => (examples = x), (e) => notifyError(e, "list"));
+    api.projectsDir().then((d) => (dir = d), () => {});
+    api.liveStatus().then((s) => (live.status = s), () => {});
+    api.startupWarnings().then(
+      (ws) => ws.forEach((w) => notifyError(w)),
+      () => {},
+    );
     // New or changed designs from the CLI / AI agents appear immediately.
     const un = onProjectsChanged(() => refresh());
     const unLive = onLiveStatus(onLive);
@@ -54,6 +64,8 @@
       un.then((f) => f());
       unLive.then((f) => f());
       clearInterval(tick);
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onRejection);
     };
   });
 </script>
@@ -66,7 +78,6 @@
         openId = null;
         refresh();
       }}
-      onerror={(m) => show(m, true)}
       onconnect={() => (connect = true)}
     />
   {/key}
@@ -77,7 +88,7 @@
     {dir}
     onopen={(id) => (openId = id)}
     onchanged={refresh}
-    onerror={(m) => show(m, true)}
+    {broken}
     onconnect={() => (connect = true)}
   />
 {/if}
@@ -86,27 +97,4 @@
   <AiConnect onclose={() => (connect = false)} />
 {/if}
 
-{#if toast}
-  <div class="toast" class:error={toast.error} role="status">{toast.text}</div>
-{/if}
-
-<style>
-  .toast {
-    position: fixed;
-    left: 50%;
-    bottom: 40px;
-    transform: translateX(-50%);
-    max-width: 560px;
-    padding: 10px 16px;
-    border-radius: 10px;
-    background: var(--text);
-    color: var(--surface);
-    box-shadow: var(--shadow-lg);
-    font-size: 13px;
-    z-index: 100;
-  }
-  .toast.error {
-    background: var(--danger);
-    color: #fff;
-  }
-</style>
+<Toasts />

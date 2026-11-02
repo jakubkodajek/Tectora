@@ -19,6 +19,7 @@ pub mod multiroof;
 pub mod openings;
 pub mod quantities;
 pub mod raised;
+pub mod report;
 pub mod roof;
 pub mod store;
 pub mod union;

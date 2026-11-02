@@ -16,7 +16,8 @@
   const isWin = navigator.userAgent.includes("Windows");
 
   onMount(() => {
-    api.mcpCommand().then((c) => (cmd = c));
+    // On failure the default command stays; it works when the app is on PATH.
+    api.mcpCommand().then((c) => (cmd = c), () => {});
   });
 
   const json = $derived(JSON.stringify({ mcpServers: { tectora: { command: cmd.command, args: cmd.args } } }, null, 2));

@@ -169,3 +169,9 @@ textarea:focus {
 .muted {
   color: var(--text-2);
 }
+
+.btn.sm {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 13px;
+}

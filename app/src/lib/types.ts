@@ -162,11 +162,56 @@ export interface RoofQuantities {
   area_by_material?: [number, number][];
 }
 
+/** The error DACAD's roof calculation ends with (no roof then). */
+export interface CalcError {
+  kind: "open_faces" | "no_solution" | "non_convex_opening" | "cut" | "geometry" | "no_end";
+  /** DACAD's error code, e.g. E00002. */
+  code?: string;
+  message_id?: number;
+  /** DACAD's message, in German as DACAD shows it. */
+  message: string;
+}
+
+/** An input the roof engine cannot work with (that part is not calculated). */
+export interface Problem {
+  item: "part" | "dormer" | "chimney" | "opening" | "window";
+  index: number;
+  edge?: number;
+  code:
+    | "too_few_edges"
+    | "start_nan"
+    | "pitch_range"
+    | "eave_nan"
+    | "overhang_negative"
+    | "direction_nan"
+    | "stacked_nan"
+    | "end_nan"
+    | "bad_corners"
+    | "bad_size";
+}
+
 export interface CalcResult {
-  parts: { name: string; geometry: { faces: RoofFace[]; lines: RoofLine[]; gables: [number, number, number][][] }; quantities: RoofQuantities }[];
+  parts: {
+    name: string;
+    geometry: { faces: RoofFace[]; lines: RoofLine[]; gables: [number, number, number][][]; error?: CalcError };
+    quantities: RoofQuantities;
+  }[];
   totals: RoofQuantities;
   /** Line lengths by DACAD code (T, F, G, K, O, W). */
   codes: Record<string, number>;
+  problems: Problem[];
+}
+
+/** A project file in the library folder that could not be read. */
+export interface BrokenFile {
+  id: string;
+  code: string;
+  detail: string;
+}
+
+export interface Library {
+  projects: ProjectSummary[];
+  broken: BrokenFile[];
 }
 
 export interface Change {

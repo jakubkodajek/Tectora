@@ -1,6 +1,8 @@
 //! Tectora desktop app: Tauri commands over `tectora-core` plus a watcher
 //! that tells the UI when project files change on disk (CLI, MCP, AI agents).
 
+mod error;
+
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -11,15 +13,21 @@ use serde_json::{Value, json};
 use tauri::{Emitter, Manager, State};
 use tectora_core::diff::Change;
 use tectora_core::examples::{StandardRoof, standard_roof};
-use tectora_core::quantities::dacad_line_totals;
-use tectora_core::store::{self, LiveStatus, Store, USER_ACTOR, outlines};
-use tectora_core::{Project, dad, examples, roof};
+use tectora_core::store::{self, BrokenFile, LiveStatus, Store, USER_ACTOR, outlines};
+use tectora_core::{Project, dad, examples};
+
+use error::{AppError, guard};
 
 struct AppState {
     store: Store,
     /// Keeps the file watcher alive for the lifetime of the app.
     _watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    /// Why the folder watcher could not start (AI and CLI edits then do not
+    /// show up live).
+    watcher_error: Option<String>,
 }
+
+type CmdResult<T> = Result<T, AppError>;
 
 #[derive(Serialize)]
 struct ExampleInfo {
@@ -35,9 +43,29 @@ fn projects_dir(state: State<AppState>) -> String {
     state.store.dir.display().to_string()
 }
 
+#[derive(Serialize)]
+struct Library {
+    projects: Vec<store::ProjectSummary>,
+    /// Project files in the folder that could not be read.
+    broken: Vec<BrokenFile>,
+}
+
 #[tauri::command]
-fn list_projects(state: State<AppState>) -> Vec<store::ProjectSummary> {
-    state.store.list()
+fn list_projects(state: State<AppState>) -> CmdResult<Library> {
+    guard(|| {
+        let (projects, broken) = state.store.scan()?;
+        Ok(Library { projects, broken })
+    })
+}
+
+/// Problems found at startup that the user should know about.
+#[tauri::command]
+fn startup_warnings(state: State<AppState>) -> Vec<AppError> {
+    state
+        .watcher_error
+        .iter()
+        .map(|d| AppError::new("watcher").detail(d.clone()))
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -67,14 +95,14 @@ fn project_activity(state: State<AppState>, id: String) -> Vec<ActivityItem> {
 }
 
 #[tauri::command]
-fn revert_last_change(state: State<AppState>, id: String) -> Result<Project, String> {
-    state.store.revert_last(&id, USER_ACTOR)
+fn revert_last_change(state: State<AppState>, id: String) -> CmdResult<Project> {
+    guard(|| Ok(state.store.revert_last(&id, USER_ACTOR)?))
 }
 
 /// Undoes the change recorded at `ts_ms` and everything after it.
 #[tauri::command]
-fn revert_changes(state: State<AppState>, id: String, ts_ms: u64) -> Result<Project, String> {
-    state.store.revert_to(&id, ts_ms, USER_ACTOR)
+fn revert_changes(state: State<AppState>, id: String, ts_ms: u64) -> CmdResult<Project> {
+    guard(|| Ok(state.store.revert_to(&id, ts_ms, USER_ACTOR)?))
 }
 
 #[tauri::command]
@@ -92,29 +120,27 @@ fn mcp_command() -> Value {
 }
 
 #[tauri::command]
-fn load_project(state: State<AppState>, id: String) -> Result<Project, String> {
-    state.store.load(&id)
+fn load_project(state: State<AppState>, id: String) -> CmdResult<Project> {
+    guard(|| Ok(state.store.load(&id)?))
 }
 
 #[tauri::command]
-fn save_project(
-    state: State<AppState>,
-    id: Option<String>,
-    project: Project,
-) -> Result<String, String> {
-    state.store.save(id, &project)
+fn save_project(state: State<AppState>, id: Option<String>, project: Project) -> CmdResult<String> {
+    guard(|| Ok(state.store.save(id, &project)?))
 }
 
 #[tauri::command]
-fn delete_project(state: State<AppState>, id: String) -> Result<(), String> {
-    state.store.delete(&id)
+fn delete_project(state: State<AppState>, id: String) -> CmdResult<()> {
+    guard(|| Ok(state.store.delete(&id)?))
 }
 
 #[tauri::command]
-fn duplicate_project(state: State<AppState>, id: String, name: String) -> Result<String, String> {
-    let mut project = state.store.load(&id)?;
-    project.name = name;
-    state.store.save(None, &project)
+fn duplicate_project(state: State<AppState>, id: String, name: String) -> CmdResult<String> {
+    guard(|| {
+        let mut project = state.store.load(&id)?;
+        project.name = name;
+        Ok(state.store.save(None, &project)?)
+    })
 }
 
 #[tauri::command]
@@ -127,17 +153,19 @@ fn create_standard(
     pitch_deg: f64,
     eave_height: f64,
     overhang: f64,
-) -> Result<String, String> {
-    let mut project = Project::new(name);
-    project.parts.push(standard_roof(
-        kind,
-        length,
-        width,
-        pitch_deg,
-        eave_height,
-        overhang,
-    ));
-    state.store.save(None, &project)
+) -> CmdResult<String> {
+    guard(|| {
+        let mut project = Project::new(name);
+        project.parts.push(standard_roof(
+            kind,
+            length,
+            width,
+            pitch_deg,
+            eave_height,
+            overhang,
+        ));
+        Ok(state.store.save(None, &project)?)
+    })
 }
 
 /// A standard roof part for the "standard roof" dialog in the editor.
@@ -149,8 +177,17 @@ fn standard_part(
     pitch_deg: f64,
     eave_height: f64,
     overhang: f64,
-) -> tectora_core::RoofPart {
-    standard_roof(kind, length, width, pitch_deg, eave_height, overhang)
+) -> CmdResult<tectora_core::RoofPart> {
+    guard(|| {
+        Ok(standard_roof(
+            kind,
+            length,
+            width,
+            pitch_deg,
+            eave_height,
+            overhang,
+        ))
+    })
 }
 
 #[tauri::command]
@@ -172,53 +209,54 @@ fn create_from_example(
     state: State<AppState>,
     example_id: String,
     name: Option<String>,
-) -> Result<String, String> {
-    let example =
-        examples::find(&example_id).ok_or_else(|| format!("unknown example {example_id}"))?;
-    let mut project = example.project();
-    if let Some(name) = name.filter(|n| !n.trim().is_empty()) {
+) -> CmdResult<String> {
+    guard(|| {
+        let example = examples::find(&example_id)
+            .ok_or_else(|| AppError::new("unknown_example").detail(example_id.clone()))?;
+        let mut project = example.project();
+        if let Some(name) = name.filter(|n| !n.trim().is_empty()) {
+            project.name = name;
+        }
+        Ok(state.store.save(None, &project)?)
+    })
+}
+
+#[tauri::command]
+fn new_project(state: State<AppState>, name: String) -> CmdResult<String> {
+    guard(|| {
+        let mut project = examples::find("gable").expect("built-in example").project();
         project.name = name;
-    }
-    state.store.save(None, &project)
+        Ok(state.store.save(None, &project)?)
+    })
 }
 
 #[tauri::command]
-fn new_project(state: State<AppState>, name: String) -> Result<String, String> {
-    let mut project = examples::find("gable").expect("built-in example").project();
-    project.name = name;
-    state.store.save(None, &project)
+fn import_dad(state: State<AppState>, path: String) -> CmdResult<String> {
+    guard(|| {
+        let path = PathBuf::from(path);
+        let bytes = std::fs::read(&path).map_err(|e| {
+            let code = match e.kind() {
+                std::io::ErrorKind::NotFound => "file_not_found",
+                std::io::ErrorKind::PermissionDenied => "permission_denied",
+                _ => "io",
+            };
+            AppError::new(code).detail(format!("{}: {e}", path.display()))
+        })?;
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("DACAD")
+            .to_string();
+        let project = dad::import(&bytes, name)?;
+        Ok(state.store.save(None, &project)?)
+    })
 }
 
+/// Roof geometry and quantities for every part, plus totals, and what
+/// kept parts from being calculated.
 #[tauri::command]
-fn import_dad(state: State<AppState>, path: String) -> Result<String, String> {
-    let path = PathBuf::from(path);
-    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-    let name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("DACAD")
-        .to_string();
-    let project = dad::import(&bytes, name).map_err(|e| e.to_string())?;
-    state.store.save(None, &project)
-}
-
-/// Roof geometry and quantities for every part, plus totals.
-#[tauri::command]
-fn calc(project: Project) -> Value {
-    let mut total = roof::RoofQuantities::default();
-    let parts: Vec<Value> = project
-        .parts
-        .iter()
-        .zip(tectora_core::openings::generate_project(&project))
-        .map(|(part, geometry)| {
-            let q = geometry.quantities();
-            total.add(&q);
-            json!({ "name": part.name, "geometry": geometry, "quantities": q })
-        })
-        .collect();
-    // Lines and faces added by hand (DACAD: Dachlinieneingabe, Neue Dachfläche).
-    total.add(&tectora_core::quantities::manual_quantities(&project));
-    json!({ "parts": parts, "totals": total, "codes": dacad_line_totals(&project) })
+fn calc(project: Project) -> CmdResult<Value> {
+    guard(|| Ok(tectora_core::report::calc(&project)))
 }
 
 fn start_watcher(
@@ -275,7 +313,22 @@ pub fn run() {
         .setup(|app| {
             // Same folder as `tectora mcp`, so AI edits show up here.
             let dir = store::default_dir();
-            let store = Store::new(dir.clone())?;
+            let store = match Store::new(dir.clone()) {
+                Ok(store) => store,
+                Err(e) => {
+                    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+                    app.dialog()
+                        .message(format!(
+                            "Tectora cannot open its project folder:\n{}\n\n{e}\n\n\
+                             Set TECTORA_PROJECTS_DIR to a folder you can write to.",
+                            dir.display()
+                        ))
+                        .title("Tectora")
+                        .kind(MessageDialogKind::Error)
+                        .blocking_show();
+                    return Err(e.into());
+                }
+            };
             if store.list().is_empty() {
                 // First run: seed the library with a couple of examples.
                 for id in ["gable", "l-shape"] {
@@ -284,16 +337,24 @@ pub fn run() {
                     }
                 }
             }
-            let watcher = start_watcher(app.handle(), dir).ok();
+            let (watcher, watcher_error) = match start_watcher(app.handle(), dir) {
+                Ok(w) => (Some(w), None),
+                Err(e) => {
+                    eprintln!("tectora: cannot watch the project folder: {e}");
+                    (None, Some(e.to_string()))
+                }
+            };
             app.manage(AppState {
                 store,
                 _watcher: Mutex::new(watcher),
+                watcher_error,
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             projects_dir,
             list_projects,
+            startup_warnings,
             load_project,
             save_project,
             delete_project,

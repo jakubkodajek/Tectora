@@ -171,6 +171,8 @@ pub struct RoofGeometry {
 /// An error DACAD's roof calculation ends with, as DACAD reports it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CalcError {
+    /// What went wrong, for a translated explanation in the app.
+    pub kind: CalcErrorKind,
     /// The error code DACAD shows (`E00002` for every cut error and for a
     /// roof without solution), if it shows one.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -180,6 +182,24 @@ pub struct CalcError {
     pub message_id: Option<u32>,
     /// DACAD's message (German, as DACAD shows it).
     pub message: String,
+}
+
+/// The groups of DACAD calculation errors the app explains to the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CalcErrorKind {
+    /// "Nicht geschlossene Fläche(n) vorhanden": roof faces do not close.
+    OpenFaces,
+    /// "Keine Lösung gefunden": no roof fits the walls and pitches.
+    NoSolution,
+    /// A chimney or roof opening is not convex.
+    NonConvexOpening,
+    /// Any other cut error of the roof planes (no intersection point/line).
+    Cut,
+    /// An error of the geometry (interval, area) DACAD stops with.
+    Geometry,
+    /// DACAD's calculation would not finish.
+    NoEnd,
 }
 
 impl std::fmt::Display for CalcError {
