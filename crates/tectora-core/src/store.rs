@@ -20,10 +20,21 @@ use crate::roof;
 pub const EXTENSION: &str = "tectora";
 pub const ACTIVITY_DIR: &str = ".activity";
 pub const LIVE_FILE: &str = "live.json";
+/// Files attached to a job (drawings, photos), in `.files/<id>/`.
+pub const FILES_DIR: &str = ".files";
 /// The actor name used for edits made in the desktop app.
 pub const USER_ACTOR: &str = "user";
 /// Activity entries kept per project (each holds a full previous version).
 const ACTIVITY_KEEP: usize = 50;
+
+/// A file attached to a job.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Attachment {
+    pub name: String,
+    /// Bytes.
+    pub size: u64,
+    pub modified_ms: u64,
+}
 
 #[derive(Debug, Serialize)]
 pub struct ProjectSummary {
@@ -203,7 +214,7 @@ impl Store {
         self.dir.join(ACTIVITY_DIR)
     }
 
-    fn activity_path(&self, id: &str) -> Result<PathBuf, String> {
+    pub(crate) fn activity_path(&self, id: &str) -> Result<PathBuf, String> {
         self.path(id)?;
         Ok(self.activity_dir().join(format!("{id}.jsonl")))
     }
@@ -378,6 +389,92 @@ impl Store {
     pub fn delete(&self, id: &str) -> Result<(), String> {
         fs::remove_file(self.path(id)?).map_err(|e| e.to_string())?;
         let _ = fs::remove_file(self.activity_path(id)?);
+        let _ = fs::remove_dir_all(self.files_dir(id)?);
+        Ok(())
+    }
+
+    /// Folder of the files attached to job `id`.
+    pub fn files_dir(&self, id: &str) -> Result<PathBuf, String> {
+        self.path(id)?;
+        Ok(self.dir.join(FILES_DIR).join(id))
+    }
+
+    /// Path of attachment `name` of job `id`.
+    pub fn attachment_path(&self, id: &str, name: &str) -> Result<PathBuf, String> {
+        if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
+            return Err(format!("invalid file name: {name}"));
+        }
+        Ok(self.files_dir(id)?.join(name))
+    }
+
+    /// The files attached to job `id`, by name.
+    pub fn attachments(&self, id: &str) -> Vec<Attachment> {
+        let Ok(dir) = self.files_dir(id) else {
+            return Vec::new();
+        };
+        let mut out: Vec<Attachment> = fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                (!name.starts_with('.')).then(|| Attachment {
+                    size: e.metadata().map_or(0, |m| m.len()),
+                    modified_ms: modified_ms(&e.path()),
+                    name,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// Stores `bytes` as an attachment of job `id` under `name`, or under
+    /// `name (2)` etc. when that name is taken. Returns the name used.
+    pub fn add_attachment(&self, id: &str, name: &str, bytes: &[u8]) -> Result<String, String> {
+        if !self.exists(id) {
+            return Err(format!("no project with id {id}"));
+        }
+        let name = name.trim();
+        self.attachment_path(id, name)?;
+        let (stem, ext) = match name.rfind('.') {
+            Some(i) if i > 0 => (&name[..i], &name[i..]),
+            _ => (name, ""),
+        };
+        let mut used = name.to_string();
+        let mut n = 2;
+        while self.attachment_path(id, &used)?.exists() {
+            used = format!("{stem} ({n}){ext}");
+            n += 1;
+        }
+        let path = self.attachment_path(id, &used)?;
+        fs::create_dir_all(path.parent().expect("has a parent")).map_err(|e| e.to_string())?;
+        fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        Ok(used)
+    }
+
+    /// Copies a file from disk into job `id`'s attachments.
+    pub fn attach_file(&self, id: &str, src: &Path) -> Result<String, String> {
+        let bytes = fs::read(src).map_err(|e| format!("{}: {e}", src.display()))?;
+        let name = src
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| format!("{}: not a file", src.display()))?;
+        self.add_attachment(id, name, &bytes)
+    }
+
+    pub fn remove_attachment(&self, id: &str, name: &str) -> Result<(), String> {
+        fs::remove_file(self.attachment_path(id, name)?).map_err(|e| e.to_string())
+    }
+
+    /// Copies all attachments of job `from` to job `to`.
+    pub fn copy_attachments(&self, from: &str, to: &str) -> Result<(), String> {
+        for a in self.attachments(from) {
+            let bytes =
+                fs::read(self.attachment_path(from, &a.name)?).map_err(|e| e.to_string())?;
+            self.add_attachment(to, &a.name, &bytes)?;
+        }
         Ok(())
     }
 

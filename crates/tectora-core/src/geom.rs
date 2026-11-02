@@ -1,8 +1,9 @@
 //! Small 2D geometry helpers (metres).
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Point2 {
     pub x: f64,
     pub y: f64,
