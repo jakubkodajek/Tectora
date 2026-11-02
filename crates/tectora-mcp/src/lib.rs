@@ -516,6 +516,7 @@ impl Server {
         project: &Project,
         summary: &str,
     ) -> ToolResult {
+        project.check_limits()?;
         let id = self
             .store
             .save_as(id.map(str::to_string), project, &self.client, summary)?;
@@ -537,10 +538,19 @@ impl Server {
             .store
             .load(&id)
             .map_err(|_| format!("no design with id `{id}`; call list_projects to see the ids"))?;
+        project.check_limits().map_err(|e| {
+            format!("design `{id}` cannot be calculated: {e}; ask the user to fix it in the app")
+        })?;
         Ok((id, project))
     }
 
+    /// Runs a tool; a panic in the geometry kernel becomes a tool error
+    /// instead of ending the server for the rest of the session.
     pub fn call_tool(&self, name: &str, args: &Value) -> ToolResult {
+        tectora_core::model::guarded(|| self.call_tool_unguarded(name, args))?
+    }
+
+    fn call_tool_unguarded(&self, name: &str, args: &Value) -> ToolResult {
         match name {
             "tectora_guide" => Ok(json!(GUIDE)),
             "list_projects" => {
@@ -786,13 +796,7 @@ impl Server {
             }
             "import_dad" => {
                 let path = std::path::PathBuf::from(arg_str(args, "path")?);
-                let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("DACAD")
-                    .to_string();
-                let p = dad::import(&bytes, name).map_err(|e| e.to_string())?;
+                let p = dad::import_file(&path).map_err(|e| e.to_string())?;
                 self.commit(
                     None,
                     None,
@@ -889,8 +893,14 @@ mod tests {
     use super::*;
 
     fn server() -> Server {
-        let dir =
-            std::env::temp_dir().join(format!("tectora-mcp-{}-{}", now_ms(), std::process::id()));
+        // Tests run in parallel and remove their folder, so each needs its own.
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tectora-mcp-{}-{}-{n}",
+            now_ms(),
+            std::process::id()
+        ));
         let mut s = Server::new(Store::new(dir).unwrap());
         s.handle(&json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -966,5 +976,33 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(r["result"]["isError"], true);
+    }
+
+    #[test]
+    fn absurd_values_and_non_files_are_rejected() {
+        let s = server();
+        let err = s
+            .call_tool(
+                "create_project",
+                &json!({
+                    "name": "x", "summary": "x",
+                    "parts": [{ "points": [[0, 0], [1e300, 0], [10, 8]] }]
+                }),
+            )
+            .unwrap_err();
+        assert!(err.contains("out of range"), "{err}");
+        assert!(s.list_projects_empty());
+        let dir = std::env::temp_dir().display().to_string();
+        let err = s
+            .call_tool("import_dad", &json!({ "path": dir }))
+            .unwrap_err();
+        assert!(err.contains("not a regular file"), "{err}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    impl Server {
+        fn list_projects_empty(&self) -> bool {
+            self.store.list().is_empty()
+        }
     }
 }

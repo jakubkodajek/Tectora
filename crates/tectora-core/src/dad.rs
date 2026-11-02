@@ -52,7 +52,15 @@ pub enum DadError {
     NotFinite(usize),
     #[error("wall record at byte {offset} has unexpected length {len}")]
     BadWallRecord { offset: usize, len: usize },
+    #[error("{0}")]
+    OutOfRange(String),
+    #[error("{path}: {message}")]
+    File { path: String, message: String },
 }
+
+/// DACAD V1 files are a few kilobytes; anything far bigger is not one, and
+/// reading it whole (or a device such as `/dev/zero`) would exhaust memory.
+pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// A wall line exactly as stored in the file.
 #[derive(Debug, Clone, PartialEq)]
@@ -370,7 +378,36 @@ impl DadFile {
 
 /// Parses a `.DAD` file and converts it to a project in one step.
 pub fn import(bytes: &[u8], name: impl Into<String>) -> Result<Project, DadError> {
-    Ok(parse(bytes)?.to_project(name))
+    let project = parse(bytes)?.to_project(name);
+    project.check_limits().map_err(DadError::OutOfRange)?;
+    Ok(project)
+}
+
+/// Reads and imports a `.DAD` file from disk, named after the file. Only
+/// regular files up to [`MAX_FILE_BYTES`] are read, because the path may
+/// come from an AI client over MCP.
+pub fn import_file(path: &std::path::Path) -> Result<Project, DadError> {
+    let file_err = |message: String| DadError::File {
+        path: path.display().to_string(),
+        message,
+    };
+    let meta = std::fs::metadata(path).map_err(|e| file_err(e.to_string()))?;
+    if !meta.is_file() {
+        return Err(file_err("not a regular file".into()));
+    }
+    if meta.len() > MAX_FILE_BYTES {
+        return Err(file_err(format!(
+            "{} bytes is too large for a DACAD file",
+            meta.len()
+        )));
+    }
+    let bytes = std::fs::read(path).map_err(|e| file_err(e.to_string()))?;
+    let name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("DACAD")
+        .to_string();
+    import(&bytes, name)
 }
 
 #[cfg(test)]
@@ -488,5 +525,26 @@ mod tests {
         let mut bytes = sample();
         bytes.truncate(bytes.len() - 10);
         assert!(matches!(parse(&bytes), Err(DadError::Truncated(_))));
+    }
+
+    #[test]
+    fn absurd_coordinates_are_rejected() {
+        let mut w = Writer::new();
+        w.wall(1, 1, 0.0, 0.0, 1.0e30, 0.0, 40.0, 0);
+        assert!(matches!(
+            import(&w.finish(), "x"),
+            Err(DadError::OutOfRange(_))
+        ));
+    }
+
+    #[test]
+    fn import_file_reads_only_regular_files() {
+        let dir = std::env::temp_dir();
+        assert!(matches!(import_file(&dir), Err(DadError::File { .. })));
+        let path = dir.join(format!("tectora-dad-{}.DAD", std::process::id()));
+        std::fs::write(&path, sample()).unwrap();
+        let p = import_file(&path).unwrap();
+        assert!(p.name.starts_with("tectora-dad-"));
+        let _ = std::fs::remove_file(&path);
     }
 }

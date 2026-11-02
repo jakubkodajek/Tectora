@@ -206,6 +206,66 @@ impl Project {
     pub fn from_json(s: &str) -> serde_json::Result<Self> {
         serde_json::from_str(s)
     }
+
+    /// Rejects designs with a number no real roof has (see
+    /// [`MAX_ABS_VALUE`]). Such values come from a typo or a broken file,
+    /// and the geometry kernel can spend minutes on them or panic, so
+    /// callers check before calculating or saving input from outside.
+    pub fn check_limits(&self) -> Result<(), String> {
+        let value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        match first_out_of_range(&value, &mut String::new()) {
+            Some((path, v)) => Err(format!(
+                "value {v} at `{path}` is out of range (allowed ±{MAX_ABS_VALUE})"
+            )),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Largest absolute number accepted anywhere in a design: 100 km in
+/// metres, far above any building and far below where f64 geometry breaks.
+pub const MAX_ABS_VALUE: f64 = 1.0e5;
+
+fn first_out_of_range(v: &serde_json::Value, path: &mut String) -> Option<(String, f64)> {
+    use serde_json::Value;
+    match v {
+        Value::Number(n) => n
+            .as_f64()
+            .filter(|f| !f.is_finite() || f.abs() > MAX_ABS_VALUE)
+            .map(|f| (path.clone(), f)),
+        Value::Array(items) => items.iter().enumerate().find_map(|(i, item)| {
+            let len = path.len();
+            path.push_str(&format!("[{i}]"));
+            let found = first_out_of_range(item, path);
+            path.truncate(len);
+            found
+        }),
+        Value::Object(map) => map.iter().find_map(|(key, item)| {
+            let len = path.len();
+            if !path.is_empty() {
+                path.push('.');
+            }
+            path.push_str(key);
+            let found = first_out_of_range(item, path);
+            path.truncate(len);
+            found
+        }),
+        _ => None,
+    }
+}
+
+/// Runs `f` and turns a panic into an error, so one bad design cannot take
+/// down the app or the MCP server. The geometry kernel is a port of DACAD's
+/// core and still has `expect`s on cases DACAD itself aborts on.
+pub fn guarded<T>(f: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|e| {
+        let msg = e
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| e.downcast_ref::<&str>().copied())
+            .unwrap_or("unknown error");
+        format!("roof calculation failed: {msg}")
+    })
 }
 
 /// Customer and job details of a design, like the job header in DACAD lists.
@@ -474,4 +534,25 @@ pub struct RoofWindow {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_limits_reports_the_bad_value() {
+        let mut p = crate::examples::find("gable").unwrap().project();
+        assert!(p.check_limits().is_ok());
+        p.parts[0].edges[1].overhang = 1e300;
+        let err = p.check_limits().unwrap_err();
+        assert!(err.contains("parts[0].edges[1].overhang"), "{err}");
+    }
+
+    #[test]
+    fn guarded_turns_a_panic_into_an_error() {
+        assert_eq!(guarded(|| 2), Ok(2));
+        let err = guarded(|| -> u8 { panic!("boom") }).unwrap_err();
+        assert!(err.contains("boom"), "{err}");
+    }
 }

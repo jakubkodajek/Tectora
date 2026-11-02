@@ -35,7 +35,9 @@ fn projects_dir(state: State<AppState>) -> String {
     state.store.dir.display().to_string()
 }
 
-#[tauri::command]
+/// Runs off the main thread: summarising computes every roof, and the
+/// window must stay responsive while it does.
+#[tauri::command(async)]
 fn list_projects(state: State<AppState>) -> Vec<store::ProjectSummary> {
     state.store.list()
 }
@@ -189,27 +191,29 @@ fn new_project(state: State<AppState>, name: String) -> Result<String, String> {
     state.store.save(None, &project)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn import_dad(state: State<AppState>, path: String) -> Result<String, String> {
-    let path = PathBuf::from(path);
-    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-    let name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("DACAD")
-        .to_string();
-    let project = dad::import(&bytes, name).map_err(|e| e.to_string())?;
+    let project = dad::import_file(&PathBuf::from(path)).map_err(|e| e.to_string())?;
     state.store.save(None, &project)
 }
 
 /// Roof geometry and quantities for every part, plus totals.
-#[tauri::command]
-fn calc(project: Project) -> Value {
+///
+/// Runs off the main thread so a slow roof never freezes the window, and
+/// reports out-of-range input or a kernel panic as an error instead of
+/// crashing the app (a panic on the main thread aborts it).
+#[tauri::command(async)]
+fn calc(project: Project) -> Result<Value, String> {
+    project.check_limits()?;
+    tectora_core::model::guarded(|| calc_unguarded(&project))
+}
+
+fn calc_unguarded(project: &Project) -> Value {
     let mut total = roof::RoofQuantities::default();
     let parts: Vec<Value> = project
         .parts
         .iter()
-        .zip(tectora_core::openings::generate_project(&project))
+        .zip(tectora_core::openings::generate_project(project))
         .map(|(part, geometry)| {
             let q = geometry.quantities();
             total.add(&q);
@@ -217,8 +221,8 @@ fn calc(project: Project) -> Value {
         })
         .collect();
     // Lines and faces added by hand (DACAD: Dachlinieneingabe, Neue Dachfläche).
-    total.add(&tectora_core::quantities::manual_quantities(&project));
-    json!({ "parts": parts, "totals": total, "codes": dacad_line_totals(&project) })
+    total.add(&tectora_core::quantities::manual_quantities(project));
+    json!({ "parts": parts, "totals": total, "codes": dacad_line_totals(project) })
 }
 
 fn start_watcher(

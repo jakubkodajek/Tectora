@@ -96,7 +96,9 @@
   }
 
   async function remove(p: ProjectSummary) {
-    if (!confirm(t("home.confirmDelete", { name: p.name }))) return;
+    // Tauri's dialog plugin replaces window.confirm with an async version
+    // (a Promise is always truthy), so the answer must be awaited.
+    if (!(await confirm(t("home.confirmDelete", { name: p.name })))) return;
     await run(() => api.deleteProject(p.id));
     if (selectedId === p.id) selectedId = null;
     onchanged();

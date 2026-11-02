@@ -569,10 +569,16 @@
     commit();
   }
 
-  function deletePart() {
+  async function deletePart() {
     if (!project || !selection) return;
-    if (!confirm(t("editor.confirmDeletePart", { name: project.parts[selection.part].name }))) return;
-    project.parts.splice(selection.part, 1);
+    const index = selection.part;
+    const part = project.parts[index];
+    // Tauri's dialog plugin replaces window.confirm with an async version
+    // (a Promise is always truthy), so the answer must be awaited.
+    if (!(await confirm(t("editor.confirmDeletePart", { name: part.name })))) return;
+    // The project may have been reloaded (AI edit) while the dialog was open.
+    if (!project || project.parts[index] !== part) return;
+    project.parts.splice(index, 1);
     selection = null;
     commit();
   }
