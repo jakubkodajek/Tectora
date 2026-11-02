@@ -4,7 +4,7 @@
   import Editor from "./lib/Editor.svelte";
   import Home from "./lib/Home.svelte";
   import Toasts from "./lib/Toasts.svelte";
-  import { api, onLiveStatus, onProjectsChanged } from "./lib/api";
+  import { api, onLiveStatus, onOpenProject, onProjectsChanged } from "./lib/api";
   import { t } from "./lib/i18n.svelte";
   import { actorName, live } from "./lib/live.svelte";
   import { info, notifyError } from "./lib/notify.svelte";
@@ -59,10 +59,18 @@
     // New or changed designs from the CLI / AI agents appear immediately.
     const un = onProjectsChanged(() => refresh());
     const unLive = onLiveStatus(onLive);
+    // A .tectora / .tectorajob file opened from the system (double-click).
+    const openFile = (id: string) => {
+      refresh();
+      openId = id;
+    };
+    api.takePendingOpen().then((id) => id && openFile(id));
+    const unOpen = onOpenProject(openFile);
     const tick = setInterval(() => (live.now = Date.now()), 5000);
     return () => {
       un.then((f) => f());
       unLive.then((f) => f());
+      unOpen.then((f) => f());
       clearInterval(tick);
       window.removeEventListener("error", onError);
       window.removeEventListener("unhandledrejection", onRejection);

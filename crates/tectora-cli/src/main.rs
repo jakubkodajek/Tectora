@@ -7,9 +7,9 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde_json::json;
+use tectora_core::Project;
 use tectora_core::quantities::{dacad_line_totals, plan_quantities};
 use tectora_core::store::Store;
-use tectora_core::{Project, dad};
 
 #[derive(Parser)]
 #[command(name = "tectora", version, about = "Tectora roof design toolkit")]
@@ -20,14 +20,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Convert a DACAD .DAD file into a .tectora project.
-    ImportDad {
-        input: PathBuf,
-        /// Output path (default: input with .tectora extension).
-        #[arg(short, long)]
-        output: Option<PathBuf>,
+    /// Print the JSON Schema of the .tectora project file.
+    Schema,
+    /// Write a library job to a .tectorajob bundle (project, files, history, preview).
+    ExportJob {
+        id: String,
+        output: PathBuf,
+        /// Project library folder (default: $TECTORA_PROJECTS_DIR or Documents/Tectora).
+        #[arg(long)]
+        dir: Option<PathBuf>,
     },
-    /// Print a JSON summary of a .tectora or .DAD file.
+    /// Add a .tectorajob bundle or a .tectora file to the library as a new job.
+    ImportJob {
+        input: PathBuf,
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// Print a JSON summary of a .tectora file.
     Info { input: PathBuf },
     /// Run the MCP server on stdin/stdout for AI clients (Claude, ChatGPT, Gemini).
     Mcp {
@@ -46,34 +55,31 @@ enum Command {
 
 fn load(path: &Path) -> Result<Project> {
     let bytes = fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
-    let name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Untitled")
-        .to_string();
-    let is_dad = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("dad"));
-    if is_dad {
-        Ok(dad::import(&bytes, name)?)
-    } else {
-        let text = String::from_utf8(bytes).context("project file is not UTF-8")?;
-        Ok(Project::from_json(&text)?)
-    }
+    let text = String::from_utf8(bytes).context("project file is not UTF-8")?;
+    Ok(Project::from_json(&text)?)
+}
+
+fn library(dir: Option<PathBuf>) -> Result<Store> {
+    Ok(match dir {
+        Some(d) => Store::new(d)?,
+        None => Store::open_default()?,
+    })
 }
 
 fn run(cli: Cli) -> Result<serde_json::Value> {
     match cli.command {
         Command::Mcp { .. } => unreachable!("handled in main"),
-        Command::ImportDad { input, output } => {
-            let project = load(&input)?;
-            let out = output.unwrap_or_else(|| input.with_extension("tectora"));
-            if out == input {
-                bail!("output would overwrite the input file");
-            }
-            fs::write(&out, project.to_json()?)?;
-            Ok(json!({ "ok": true, "output": out, "quantities": plan_quantities(&project) }))
+        Command::Schema => Ok(tectora_core::model::json_schema()),
+        Command::ExportJob { id, output, dir } => {
+            let store = library(dir)?;
+            let manifest =
+                tectora_core::bundle::export(&store, &id, &output).map_err(anyhow::Error::msg)?;
+            Ok(json!({ "ok": true, "output": output, "manifest": manifest }))
+        }
+        Command::ImportJob { input, dir } => {
+            let store = library(dir)?;
+            let id = tectora_core::bundle::open_path(&store, &input).map_err(anyhow::Error::msg)?;
+            Ok(json!({ "ok": true, "id": id }))
         }
         Command::Info { input } => {
             let project = load(&input)?;

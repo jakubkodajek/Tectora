@@ -26,7 +26,7 @@ describe("describeError", () => {
   it("translates a backend error code and keeps the detail", () => {
     setLocale("en");
     const d = describeError({ code: "not_found", id: "dum", detail: "dum: project not found" }, "load");
-    expect(d.title).toBe("Could not open the design");
+    expect(d.title).toBe("Could not open the job");
     expect(d.message).toContain("no longer in the folder");
     expect(d.detail).toBe("dum: project not found");
   });

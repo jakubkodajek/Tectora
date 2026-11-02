@@ -1,0 +1,548 @@
+{
+  "$defs": {
+    "Chimney": {
+      "description": "A chimney (or other penetration) as a convex plan polygon.",
+      "properties": {
+        "corners": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Point2"
+          },
+          "type": "array"
+        },
+        "height": {
+          "default": 0.0,
+          "description": "Top height, m above ground. Does not affect quantities.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "Dormer": {
+      "description": "A dormer stored as its open wall polyline (front edge plus cheeks).",
+      "properties": {
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/EdgeDef"
+          },
+          "type": "array"
+        },
+        "end": {
+          "$ref": "#/$defs/Point2"
+        },
+        "host_wall": {
+          "description": "The main-roof wall (start and end point) whose roof plane the dormer\nsits on. DACAD cuts the dormer with that plane wherever the dormer\nstands (V1 roof record, DACAD cases D101_0013, D101_0020); without\nit the faces under the dormer's walls are the hosts.",
+          "items": {
+            "$ref": "#/$defs/Point2"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "edges",
+        "end"
+      ],
+      "type": "object"
+    },
+    "EdgeDef": {
+      "properties": {
+        "breaks": {
+          "description": "Pitch breaks (DACAD: Knick) above the eave, e.g. a mansard roof:\nfrom each break's height on, the plane continues at its pitch.",
+          "items": {
+            "$ref": "#/$defs/PitchBreak"
+          },
+          "type": "array"
+        },
+        "clad": {
+          "description": "A gable, or a wall leaning outward (over 90°), covered with the roof\nmaterial (DACAD: such a wall with a material): its area counts as\nroof area. Walls sloped below 90° always carry the material.",
+          "type": "boolean"
+        },
+        "direction_rad": {
+          "description": "Direction of a zero-length edge (radians). DACAD uses such marker\nedges at steps between collinear walls to say how the roof turns.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "eave_height": {
+          "description": "Height of the eave line above ground, m.",
+          "format": "double",
+          "type": "number"
+        },
+        "half_hip": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HalfHip"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Clipped gable (Krüppelwalm) on a gable edge."
+        },
+        "material": {
+          "description": "Roof material of the wall's faces (DACAD: Material in the roof\ndefinition), numbered as in DACAD's material list from 1: 1 tiles,\n2 sheet metal, 3 stone, 4 slate, 5 solar panels (DACAD.exe string\ntable 1601-1605; 1600 is \"no material\"). Whether a gable carries it\nis [`EdgeDef::clad`]; DACAD's core only sees that flag, so the\nnumber only splits the roof area by material.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "overhang": {
+          "description": "Horizontal eave overhang beyond the wall, m.",
+          "format": "double",
+          "type": "number"
+        },
+        "pitch_deg": {
+          "description": "Roof pitch in degrees; 90 means a gable (vertical wall, no roof plane).",
+          "format": "double",
+          "type": "number"
+        },
+        "priority": {
+          "description": "DACAD priority (0 or 1). Where this plane and a parallel one meet in a\nhorizontal line, the plane with priority ends there; without one, the\nsteeper plane ends.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WallSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The DACAD wall record this edge was imported from. DACAD's core\ntakes each wall as recorded (its own length and direction, in file\norder), which matters where the walls of a file do not quite meet."
+        },
+        "start": {
+          "$ref": "#/$defs/Point2"
+        }
+      },
+      "required": [
+        "start",
+        "pitch_deg",
+        "eave_height",
+        "overhang"
+      ],
+      "type": "object"
+    },
+    "HalfHip": {
+      "properties": {
+        "height": {
+          "description": "Height at which the hipped part starts, m above ground.",
+          "format": "double",
+          "type": "number"
+        },
+        "pitch_deg": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "height",
+        "pitch_deg"
+      ],
+      "type": "object"
+    },
+    "JobInfo": {
+      "description": "Customer and job details of a design, like the job header in DACAD lists.",
+      "properties": {
+        "address": {
+          "default": "",
+          "type": "string"
+        },
+        "customer": {
+          "default": "",
+          "type": "string"
+        },
+        "number": {
+          "default": "",
+          "description": "Job or offer number.",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/JobStatus",
+          "default": "draft"
+        }
+      },
+      "type": "object"
+    },
+    "JobStatus": {
+      "enum": [
+        "draft",
+        "offer",
+        "ordered",
+        "done"
+      ],
+      "type": "string"
+    },
+    "ManualFace": {
+      "description": "A roof face added by hand (DACAD: Neue Dachfläche): a plan polygon and\nthe pitch DACAD asks for. Its area is the plan area over the cosine of\nthe pitch (Tectora's reading; not yet checked against DACAD's numbers).",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "pitch_deg": {
+          "format": "double",
+          "type": "number"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/Point2"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "points",
+        "pitch_deg"
+      ],
+      "type": "object"
+    },
+    "ManualLine": {
+      "description": "A line drawn by hand on the calculated roof (DACAD: Dachlinieneingabe).\nDACAD takes its ends from the roof points it snaps to (z included, else\n0), lets the user pick its type, length and label, and counts it in the\nline totals of its type. Unlike DACAD, which drops such lines when the\nroof is recalculated, Tectora keeps them in the project.",
+      "properties": {
+        "a": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "b": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "code": {
+          "description": "DACAD line code: T, F, G, K, OL, OR, OS, P, c, S, WV, WH, WS count in\nthe line totals; M (dimension line), X (division) and the rest do not.",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "length": {
+          "description": "Length typed in by hand instead of the measured one.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "a",
+        "b",
+        "code"
+      ],
+      "type": "object"
+    },
+    "MaterialArea": {
+      "properties": {
+        "area": {
+          "description": "m²",
+          "format": "double",
+          "type": "number"
+        },
+        "material": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "material",
+        "area"
+      ],
+      "type": "object"
+    },
+    "PitchBreak": {
+      "description": "A change of pitch at a height above the eave (DACAD: Knick).",
+      "properties": {
+        "height": {
+          "description": "Height of the break line, m above ground.",
+          "format": "double",
+          "type": "number"
+        },
+        "pitch_deg": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "height",
+        "pitch_deg"
+      ],
+      "type": "object"
+    },
+    "Point2": {
+      "properties": {
+        "x": {
+          "format": "double",
+          "type": "number"
+        },
+        "y": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "type": "object"
+    },
+    "ResultSnapshot": {
+      "properties": {
+        "area_by_material": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MaterialArea"
+          },
+          "type": "array"
+        },
+        "engine_version": {
+          "description": "Roof engine version that calculated the result.",
+          "type": "string"
+        },
+        "lines_by_code": {
+          "additionalProperties": {
+            "format": "double",
+            "type": "number"
+          },
+          "description": "Line lengths by line code, m.",
+          "type": "object"
+        },
+        "ridge_height": {
+          "description": "Ridge height, m.",
+          "format": "double",
+          "type": "number"
+        },
+        "roof_area": {
+          "description": "Roof area, m².",
+          "format": "double",
+          "type": "number"
+        },
+        "taken_ms": {
+          "description": "When it was stored, ms since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "engine_version",
+        "taken_ms",
+        "roof_area",
+        "ridge_height",
+        "lines_by_code"
+      ],
+      "type": "object"
+    },
+    "RoofPart": {
+      "description": "One closed footprint whose edges each carry their own roof definition\n(like DACAD: every wall line has pitch, eave height and overhang).",
+      "properties": {
+        "edges": {
+          "description": "Edges in order; edge `i` runs from `edges[i].start` to `edges[i+1].start`.",
+          "items": {
+            "$ref": "#/$defs/EdgeDef"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "edges"
+      ],
+      "type": "object"
+    },
+    "RoofWindow": {
+      "description": "A roof window (DACAD: Dachfenster). The position is the plan point of\nits lower corner at the start of the eave; width runs along the eave and\nheight up the slope, both in the roof plane.",
+      "properties": {
+        "height": {
+          "format": "double",
+          "type": "number"
+        },
+        "width": {
+          "format": "double",
+          "type": "number"
+        },
+        "x": {
+          "format": "double",
+          "type": "number"
+        },
+        "y": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "type": "object"
+    },
+    "WallSource": {
+      "description": "A wall record of an imported DACAD file.",
+      "properties": {
+        "angle_deg": {
+          "description": "Direction, degrees.",
+          "format": "double",
+          "type": "number"
+        },
+        "id": {
+          "description": "Wall number in the file, from 1; walls are listed in this order.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "length": {
+          "format": "double",
+          "type": "number"
+        },
+        "roof": {
+          "description": "Roof number.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "$ref": "#/$defs/Point2"
+        }
+      },
+      "required": [
+        "id",
+        "roof",
+        "start",
+        "length",
+        "angle_deg"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/jakubkodajek/tectora/blob/main/docs/tectora.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "chimneys": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Chimney"
+      },
+      "type": "array"
+    },
+    "dormers": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Dormer"
+      },
+      "type": "array"
+    },
+    "flat_roof": {
+      "description": "Calculate as a flat roof at the highest eave (DACAD: Berechnung ›\nFlachdach); see [`crate::flat`].",
+      "type": "boolean"
+    },
+    "job": {
+      "$ref": "#/$defs/JobInfo",
+      "default": {
+        "address": "",
+        "customer": "",
+        "number": "",
+        "status": "draft"
+      },
+      "description": "Job (Auftrag) data shown in the design manager."
+    },
+    "manual_faces": {
+      "description": "Roof faces added by hand (DACAD: Neue Dachfläche).",
+      "items": {
+        "$ref": "#/$defs/ManualFace"
+      },
+      "type": "array"
+    },
+    "manual_lines": {
+      "description": "Lines drawn by hand on the calculated roof (DACAD: Dachlinieneingabe).",
+      "items": {
+        "$ref": "#/$defs/ManualLine"
+      },
+      "type": "array"
+    },
+    "material_names": {
+      "description": "Own names of the roof materials (DACAD: Materialnamen), index 0 for\nmaterial 1. A missing or empty name keeps DACAD's default name.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "name": {
+      "type": "string"
+    },
+    "notes": {
+      "default": "",
+      "type": "string"
+    },
+    "parts": {
+      "items": {
+        "$ref": "#/$defs/RoofPart"
+      },
+      "type": "array"
+    },
+    "result_snapshot": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ResultSnapshot"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The result as it was when the job left the draft status (the figures\nan offer was made with), with the engine version that calculated it."
+    },
+    "roof_openings": {
+      "description": "Holes cut into the roof (DACAD: Öffnung), as convex plan polygons.",
+      "items": {
+        "$ref": "#/$defs/Chimney"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "windows": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RoofWindow"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "name",
+    "parts"
+  ],
+  "title": "Tectora project",
+  "type": "object"
+}

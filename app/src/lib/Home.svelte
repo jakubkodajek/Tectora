@@ -93,13 +93,17 @@
     }
   }
 
-  async function importDad() {
+  /** Adds a job from a .tectorajob bundle or a .tectora file. */
+  async function importJob() {
     const path = await run("import", () =>
-      open({ multiple: false, filters: [{ name: "DAD", extensions: ["dad", "DAD"] }] }),
+      open({ multiple: false, filters: [{ name: "Tectora", extensions: ["tectorajob", "tectora"] }] }),
     );
     if (typeof path !== "string") return;
-    const id = await run("import", () => api.importDad(path));
-    if (id) onopen(id);
+    const id = await run("import", () => api.importJob(path));
+    if (id) {
+      onchanged();
+      onopen(id);
+    }
   }
 
   async function remove(p: ProjectSummary) {
@@ -142,7 +146,7 @@
         {#if isFresh() && live.status}{actorName(live.status.actor)}: {live.status.message}{:else}{t("ai.connect")}{/if}
       </button>
       <LanguagePicker />
-      <button class="btn" onclick={importDad}><Icon name="upload" size={16} />{t("home.import")}</button>
+      <button class="btn" onclick={importJob} title={t("home.importJobHint")}><Icon name="upload" size={16} />{t("home.importJob")}</button>
       <button class="btn primary" onclick={() => (newJob = { example: null })}><Icon name="plus" size={16} />{t("lib.new")}</button>
     </div>
   </header>

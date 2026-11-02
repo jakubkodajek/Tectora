@@ -6,12 +6,11 @@
 //! the operating system or parser) under "Details" for support.
 
 use serde::Serialize;
-use tectora_core::dad::DadError;
 use tectora_core::store::{StoreError, panic_message};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AppError {
-    /// Stable machine-readable code, e.g. `not_found`, `dad_invalid`.
+    /// Stable machine-readable code, e.g. `not_found`, `unreadable`.
     pub code: &'static str,
     /// The project the error is about, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -59,16 +58,10 @@ impl From<StoreError> for AppError {
     }
 }
 
-impl From<DadError> for AppError {
-    fn from(e: DadError) -> Self {
-        let code = match e {
-            DadError::NotDacad => "dad_invalid",
-            DadError::UnsupportedV2 => "dad_unsupported_v2",
-            DadError::Truncated(_) | DadError::NotFinite(_) | DadError::BadWallRecord { .. } => {
-                "dad_damaged"
-            }
-        };
-        AppError::new(code).detail(e.to_string())
+/// Errors that are still plain text (bundles, attachments).
+impl From<String> for AppError {
+    fn from(detail: String) -> Self {
+        AppError::new("unknown").detail(detail)
     }
 }
 
@@ -94,12 +87,6 @@ mod tests {
         let v = serde_json::to_value(&e).unwrap();
         assert_eq!(v["code"], "not_found");
         assert_eq!(v["id"], "dum");
-    }
-
-    #[test]
-    fn dad_errors_map_to_codes() {
-        assert_eq!(AppError::from(DadError::NotDacad).code, "dad_invalid");
-        assert_eq!(AppError::from(DadError::Truncated(12)).code, "dad_damaged");
     }
 
     #[test]

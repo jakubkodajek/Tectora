@@ -13,6 +13,7 @@
     redo: "M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3",
     back: "M15 18l-6-6 6-6",
     upload: "M12 16V4M7 9l5-5 5 5M5 20h14",
+    download: "M12 4v12M7 11l5 5 5-5M5 20h14",
     open: "M5 12h14M13 6l6 6-6 6",
     folder: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
     split: "M4 5h16v14H4zM12 5v14",

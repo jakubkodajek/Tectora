@@ -22,7 +22,9 @@ export type Action =
   | "import"
   | "revert"
   | "calc"
-  | "preview";
+  | "preview"
+  | "files"
+  | "export";
 
 export interface Described {
   /** One sentence: what failed. */
@@ -60,10 +62,8 @@ const KNOWN = new Set([
   "revert_created",
   "no_such_change",
   "unknown_example",
+  "open_failed",
   "file_not_found",
-  "dad_invalid",
-  "dad_unsupported_v2",
-  "dad_damaged",
   "invalid_input",
   "not_allowed",
   "watcher",

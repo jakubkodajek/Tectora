@@ -11,15 +11,18 @@ use notify::{RecursiveMode, Watcher};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 use tectora_core::diff::Change;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::store::{self, BrokenFile, LiveStatus, Store, USER_ACTOR, outlines};
-use tectora_core::{Project, dad, examples};
+use tectora_core::{Project, bundle, examples, snapshot};
 
 use error::{AppError, guard};
 
 struct AppState {
     store: Store,
+    /// A job opened from a file (double-click) before the UI asked for it.
+    pending_open: Mutex<Option<String>>,
     /// Keeps the file watcher alive for the lifetime of the app.
     _watcher: Mutex<Option<notify::RecommendedWatcher>>,
     /// Why the folder watcher could not start (AI and CLI edits then do not
@@ -134,13 +137,76 @@ fn delete_project(state: State<AppState>, id: String) -> CmdResult<()> {
     guard(|| Ok(state.store.delete(&id)?))
 }
 
+/// A copy is a new variant: draft, no stored result, the same files.
 #[tauri::command]
 fn duplicate_project(state: State<AppState>, id: String, name: String) -> CmdResult<String> {
     guard(|| {
         let mut project = state.store.load(&id)?;
         project.name = name;
-        Ok(state.store.save(None, &project)?)
+        project.job.status = tectora_core::JobStatus::Draft;
+        project.result_snapshot = None;
+        let new_id = state.store.save(None, &project)?;
+        state.store.copy_attachments(&id, &new_id)?;
+        Ok(new_id)
     })
+}
+
+#[tauri::command]
+fn list_attachments(state: State<AppState>, id: String) -> Vec<store::Attachment> {
+    state.store.attachments(&id)
+}
+
+#[tauri::command]
+fn attach_files(state: State<AppState>, id: String, paths: Vec<String>) -> CmdResult<Vec<String>> {
+    guard(|| {
+        Ok(paths
+            .iter()
+            .map(|p| state.store.attach_file(&id, &PathBuf::from(p)))
+            .collect::<Result<_, _>>()?)
+    })
+}
+
+#[tauri::command]
+fn remove_attachment(state: State<AppState>, id: String, name: String) -> CmdResult<()> {
+    guard(|| Ok(state.store.remove_attachment(&id, &name)?))
+}
+
+/// Opens an attached file in the system's default app.
+#[tauri::command]
+fn open_attachment(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    id: String,
+    name: String,
+) -> CmdResult<()> {
+    guard(|| {
+        let path = state.store.attachment_path(&id, &name)?;
+        app.opener()
+            .open_path(path.display().to_string(), None::<&str>)
+            .map_err(|e| AppError::new("open_failed").detail(e.to_string()))
+    })
+}
+
+#[tauri::command]
+fn export_job(state: State<AppState>, id: String, path: String) -> CmdResult<()> {
+    guard(|| Ok(bundle::export(&state.store, &id, &PathBuf::from(path)).map(|_| ())?))
+}
+
+#[tauri::command]
+fn import_job(state: State<AppState>, path: String) -> CmdResult<String> {
+    guard(|| Ok(bundle::open_path(&state.store, &PathBuf::from(path))?))
+}
+
+/// The current result, to store as the job's result.
+#[tauri::command]
+fn take_snapshot(project: Project) -> snapshot::ResultSnapshot {
+    snapshot::take(&project)
+}
+
+/// The job opened from a file at start-up, once.
+#[tauri::command]
+fn take_pending_open(state: State<AppState>) -> Option<String> {
+    state.pending_open.lock().ok()?.take()
 }
 
 #[tauri::command]
@@ -230,33 +296,16 @@ fn new_project(state: State<AppState>, name: String) -> CmdResult<String> {
     })
 }
 
-#[tauri::command]
-fn import_dad(state: State<AppState>, path: String) -> CmdResult<String> {
-    guard(|| {
-        let path = PathBuf::from(path);
-        let bytes = std::fs::read(&path).map_err(|e| {
-            let code = match e.kind() {
-                std::io::ErrorKind::NotFound => "file_not_found",
-                std::io::ErrorKind::PermissionDenied => "permission_denied",
-                _ => "io",
-            };
-            AppError::new(code).detail(format!("{}: {e}", path.display()))
-        })?;
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("DACAD")
-            .to_string();
-        let project = dad::import(&bytes, name)?;
-        Ok(state.store.save(None, &project)?)
-    })
-}
-
-/// Roof geometry and quantities for every part, plus totals, and what
-/// kept parts from being calculated.
+/// Roof geometry and quantities for every part, plus totals, what kept
+/// parts from being calculated, and the stored result's status.
 #[tauri::command]
 fn calc(project: Project) -> CmdResult<Value> {
-    guard(|| Ok(tectora_core::report::calc(&project)))
+    guard(|| {
+        let mut v = tectora_core::report::calc(&project);
+        v["stored_result"] =
+            serde_json::to_value(snapshot::status(&project)).unwrap_or(Value::Null);
+        Ok(v)
+    })
 }
 
 fn start_watcher(
@@ -307,9 +356,54 @@ fn start_watcher(
     Ok(watcher)
 }
 
+/// Opens files given on the command line or by the OS (double-click on a
+/// `.tectora` or `.tectorajob` file): each becomes a library job, the last
+/// one is shown.
+fn open_files(app: &tauri::AppHandle, paths: impl IntoIterator<Item = PathBuf>) {
+    let state = app.state::<AppState>();
+    let mut last = None;
+    for p in paths {
+        match bundle::open_path(&state.store, &p) {
+            Ok(id) => last = Some(id),
+            Err(e) => eprintln!("open {}: {e}", p.display()),
+        }
+    }
+    if let Some(id) = last {
+        if let Ok(mut pending) = state.pending_open.lock() {
+            *pending = Some(id.clone());
+        }
+        let _ = app.emit("open-project", id);
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+        }
+    }
+}
+
+/// Command-line arguments that name Tectora files.
+fn file_args(args: impl IntoIterator<Item = String>) -> Vec<PathBuf> {
+    args.into_iter()
+        .map(PathBuf::from)
+        .filter(|p| {
+            let ext = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            (ext == store::EXTENSION || ext == bundle::EXTENSION) && p.is_file()
+        })
+        .collect()
+}
+
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        // A second launch (double-click while the app runs) hands its files
+        // to this instance instead of opening another window.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            open_files(app, file_args(argv.into_iter().skip(1)));
+        }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Same folder as `tectora mcp`, so AI edits show up here.
             let dir = store::default_dir();
@@ -346,9 +440,11 @@ pub fn run() {
             };
             app.manage(AppState {
                 store,
+                pending_open: Mutex::new(None),
                 _watcher: Mutex::new(watcher),
                 watcher_error,
             });
+            open_files(app.handle(), file_args(std::env::args().skip(1)));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -369,9 +465,23 @@ pub fn run() {
             list_examples,
             create_from_example,
             new_project,
-            import_dad,
-            calc
+            calc,
+            list_attachments,
+            attach_files,
+            remove_attachment,
+            open_attachment,
+            export_job,
+            import_job,
+            take_snapshot,
+            take_pending_open
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Tectora");
+        .build(tauri::generate_context!())
+        .expect("error while building Tectora");
+    app.run(|_app, _event| {
+        // macOS hands double-clicked files to a running app as an event.
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Opened { urls } = _event {
+            open_files(_app, urls.into_iter().filter_map(|u| u.to_file_path().ok()));
+        }
+    });
 }
