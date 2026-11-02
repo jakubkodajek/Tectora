@@ -42,9 +42,9 @@ const CHAIN_TOL: f64 = 0.011;
 
 #[derive(Debug, Error, PartialEq)]
 pub enum DadError {
-    #[error("not a DACAD file")]
+    #[error("not a .DAD file")]
     NotDacad,
-    #[error("DACAD V2 files are not supported yet")]
+    #[error(".DAD V2 files are not supported yet")]
     UnsupportedV2,
     #[error("truncated record at byte {0}")]
     Truncated(usize),

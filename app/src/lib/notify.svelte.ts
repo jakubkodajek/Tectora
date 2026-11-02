@@ -7,6 +7,8 @@ import { describeError, type Action } from "./errors";
 export interface Toast {
   id: number;
   kind: "info" | "warning" | "error";
+  /** Machine code shown small (e.g. permission_denied). */
+  code?: string;
   title: string;
   message?: string;
   detail?: string;
@@ -69,5 +71,11 @@ export const info = (title: string) => notify({ kind: "info", title });
 export function notifyError(e: unknown, action?: Action): number {
   const d = describeError(e, action);
   console.error(`[tectora] ${action ?? "error"}:`, e);
-  return notify({ kind: d.code === "watcher" ? "warning" : "error", title: d.title, message: d.message, detail: d.detail });
+  return notify({
+    kind: d.code === "watcher" ? "warning" : "error",
+    code: d.code,
+    title: d.title,
+    message: d.message,
+    detail: d.detail,
+  });
 }

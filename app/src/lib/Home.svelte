@@ -95,7 +95,7 @@
 
   async function importDad() {
     const path = await run("import", () =>
-      open({ multiple: false, filters: [{ name: "DACAD", extensions: ["dad", "DAD"] }] }),
+      open({ multiple: false, filters: [{ name: "DAD", extensions: ["dad", "DAD"] }] }),
     );
     if (typeof path !== "string") return;
     const id = await run("import", () => api.importDad(path));
@@ -187,14 +187,14 @@
 
         {#if broken.length}
           <div class="broken" role="alert">
-            <Icon name="warning" size={18} />
+            <i class="dot"></i>
             <div class="broken-text">
               <strong>{t("lib.broken", { n: broken.length })}</strong>
               <span>{t("lib.brokenHint")}</span>
               {#if showBroken}
                 <ul>
                   {#each broken as b (b.id)}
-                    <li><code>{b.id}.tectora</code> — {t(`err.${b.code === "unreadable" || b.code === "permission_denied" || b.code === "internal" ? b.code : "io"}`, { id: b.id })}{#if b.detail}<small>{b.detail}</small>{/if}</li>
+                    <li><code>{b.id}.tectora</code> {t(`err.${b.code === "unreadable" || b.code === "permission_denied" || b.code === "internal" ? b.code : "io"}`, { id: b.id })}{#if b.detail}<small>{b.detail}</small>{/if}</li>
                   {/each}
                 </ul>
               {/if}
@@ -461,12 +461,19 @@
     align-items: flex-start;
     gap: 12px;
     margin-bottom: 14px;
-    padding: 12px 14px;
-    border-radius: 10px;
-    border: 1px solid color-mix(in srgb, var(--ai) 45%, var(--border));
-    background: var(--ai-soft);
-    color: var(--ai-strong);
+    padding: 10px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
     font-size: 13px;
+  }
+  .broken .dot {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    margin-top: 6px;
+    border-radius: 1px;
+    background: var(--ai);
   }
   .broken-text {
     flex: 1;
@@ -474,18 +481,30 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    color: var(--text);
+  }
+  .broken-text strong {
+    font-weight: 600;
   }
   .broken-text > span {
     color: var(--text-2);
   }
   .broken ul {
     margin: 8px 0 0;
-    padding-left: 18px;
+    padding: 0;
+    list-style: none;
     color: var(--text-2);
   }
   .broken li + li {
-    margin-top: 4px;
+    margin-top: 6px;
+  }
+  .broken code,
+  .broken small {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
+  }
+  .broken code {
+    color: var(--text);
+    margin-right: 6px;
   }
   .broken small {
     display: block;

@@ -61,7 +61,7 @@ const KNOWN = new Set([
   "no_such_change",
   "unknown_example",
   "file_not_found",
-  "dad_not_dacad",
+  "dad_invalid",
   "dad_unsupported_v2",
   "dad_damaged",
   "invalid_input",
@@ -82,13 +82,9 @@ export function describeError(e: unknown, action?: Action): Described {
   };
 }
 
-/** DACAD's calculation error in the user's language, with DACAD's own text. */
-export function describeCalcError(e: CalcError): { title: string; hint: string; original: string } {
-  return {
-    title: t(`calc.err.${e.kind}`),
-    hint: t(`calc.hint.${e.kind}`),
-    original: e.code ? `${e.code}: ${e.message.replace(/^E\d+ : /, "")}` : e.message,
-  };
+/** The roof calculation's error in the user's language. */
+export function describeCalcError(e: CalcError): { title: string; hint: string; code: string } {
+  return { title: t(`calc.err.${e.kind}`), hint: t(`calc.hint.${e.kind}`), code: e.kind };
 }
 
 /** One input problem, e.g. "Part 2 „Garage“, wall 3: pitch must be between 0° and 180°". */

@@ -11,7 +11,7 @@ use tectora_core::store::{StoreError, panic_message};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AppError {
-    /// Stable machine-readable code, e.g. `not_found`, `dad_not_dacad`.
+    /// Stable machine-readable code, e.g. `not_found`, `dad_invalid`.
     pub code: &'static str,
     /// The project the error is about, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -62,7 +62,7 @@ impl From<StoreError> for AppError {
 impl From<DadError> for AppError {
     fn from(e: DadError) -> Self {
         let code = match e {
-            DadError::NotDacad => "dad_not_dacad",
+            DadError::NotDacad => "dad_invalid",
             DadError::UnsupportedV2 => "dad_unsupported_v2",
             DadError::Truncated(_) | DadError::NotFinite(_) | DadError::BadWallRecord { .. } => {
                 "dad_damaged"
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn dad_errors_map_to_codes() {
-        assert_eq!(AppError::from(DadError::NotDacad).code, "dad_not_dacad");
+        assert_eq!(AppError::from(DadError::NotDacad).code, "dad_invalid");
         assert_eq!(AppError::from(DadError::Truncated(12)).code, "dad_damaged");
     }
 

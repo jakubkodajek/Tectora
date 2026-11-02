@@ -13,6 +13,13 @@ describe("translations", () => {
       expect(missing, loc).toEqual([]);
     }
   });
+
+  it("never names DACAD in the UI", () => {
+    for (const [loc, dict] of Object.entries(DICTS)) {
+      const hits = Object.entries(dict).filter(([, v]) => /dacad/i.test(v)).map(([k]) => k);
+      expect(hits, loc).toEqual([]);
+    }
+  });
 });
 
 describe("describeError", () => {
@@ -39,7 +46,7 @@ describe("describeError", () => {
 });
 
 describe("calculation errors", () => {
-  it("explains DACAD's error and keeps its original text", () => {
+  it("explains the calculation error in the user's language only", () => {
     setLocale("de");
     const d = describeCalcError({
       kind: "open_faces",
@@ -48,7 +55,8 @@ describe("calculation errors", () => {
       message: "E00002 : Nicht geschlossene Fläche(n) vorhanden",
     });
     expect(d.title).toContain("Flächen sind nicht geschlossen");
-    expect(d.original).toBe("E00002: Nicht geschlossene Fläche(n) vorhanden");
+    expect(d.code).toBe("open_faces");
+    expect(JSON.stringify(d)).not.toContain("DACAD");
   });
 
   it("names the part and wall of an input problem", () => {

@@ -25,23 +25,27 @@
       onmouseenter={() => hold(toast.id, true)}
       onmouseleave={() => hold(toast.id, false)}
     >
-      <span class="icon"><Icon name={toast.kind === "info" ? "check" : "warning"} size={18} /></span>
-      <div class="body">
-        <strong>{toast.title}{#if toast.count > 1}<span class="count">×{toast.count}</span>{/if}</strong>
-        {#if toast.message}<p>{toast.message}</p>{/if}
-        {#if toast.detail}
-          <button class="link" onclick={() => (open = open === toast.id ? null : toast.id)} aria-expanded={open === toast.id}>
-            {open === toast.id ? t("err.hideDetails") : t("err.details")}
-          </button>
-          {#if open === toast.id}
-            <div class="detail">
-              <code>{toast.detail}</code>
-              <button class="link" onclick={() => copy(toast.id, toast.detail ?? "")}>{copied === toast.id ? t("err.copied") : t("err.copy")}</button>
-            </div>
-          {/if}
-        {/if}
+      <div class="head">
+        <i class="dot"></i>
+        <strong>{toast.title}</strong>
+        {#if toast.count > 1}<span class="mono">×{toast.count}</span>{/if}
+        <button class="close" onclick={() => dismiss(toast.id)} aria-label={t("err.close")} title={t("err.close")}><Icon name="x" size={14} /></button>
       </div>
-      <button class="close" onclick={() => dismiss(toast.id)} aria-label={t("err.close")} title={t("err.close")}><Icon name="x" size={16} /></button>
+      {#if toast.message}<p>{toast.message}</p>{/if}
+      {#if toast.code || toast.detail}
+        <div class="foot">
+          {#if toast.code}<span class="mono">{toast.code}</span>{/if}
+          {#if toast.detail}
+            <button class="link" onclick={() => (open = open === toast.id ? null : toast.id)} aria-expanded={open === toast.id}>
+              {open === toast.id ? t("err.hideDetails") : t("err.details")}
+            </button>
+            {#if open === toast.id}
+              <button class="link" onclick={() => copy(toast.id, toast.detail ?? "")}>{copied === toast.id ? t("err.copied") : t("err.copy")}</button>
+            {/if}
+          {/if}
+        </div>
+        {#if open === toast.id && toast.detail}<pre>{toast.detail}</pre>{/if}
+      {/if}
     </div>
   {/each}
 </div>
@@ -49,119 +53,104 @@
 <style>
   .stack {
     position: fixed;
-    right: 20px;
-    bottom: 44px;
+    right: 16px;
+    bottom: 40px;
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 10px;
+    gap: 8px;
     z-index: 100;
     pointer-events: none;
   }
   .toast {
     pointer-events: auto;
-    display: grid;
-    grid-template-columns: auto 1fr auto;
-    align-items: start;
-    gap: 10px;
-    width: min(420px, calc(100vw - 40px));
-    padding: 12px 10px 12px 14px;
-    border-radius: 10px;
+    width: min(380px, calc(100vw - 32px));
+    padding: 10px 12px;
+    border-radius: 6px;
     background: var(--surface);
     color: var(--text);
     border: 1px solid var(--border);
-    border-left: 4px solid var(--text-3);
-    box-shadow: var(--shadow-lg);
+    box-shadow: 0 4px 16px rgba(20, 24, 36, 0.08);
     font-size: 13px;
-    animation: rise 0.18s ease-out;
   }
-  .toast.info {
-    border-left-color: #2c9a5b;
-  }
-  .toast.info .icon {
-    color: #2c9a5b;
-  }
-  .toast.warning {
-    border-left-color: var(--ai);
-  }
-  .toast.warning .icon {
-    color: var(--ai-strong);
-  }
-  .toast.error {
-    border-left-color: var(--danger);
-  }
-  .toast.error .icon {
-    color: var(--danger);
-  }
-  .icon {
+  .head {
     display: flex;
-    padding-top: 1px;
+    align-items: center;
+    gap: 8px;
   }
-  .body {
-    min-width: 0;
+  .dot {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+    background: var(--text-3);
+  }
+  .error .dot {
+    background: var(--danger);
+  }
+  .warning .dot {
+    background: var(--ai);
+  }
+  .info .dot {
+    background: #2c9a5b;
   }
   strong {
-    display: block;
+    flex: 1;
+    min-width: 0;
     font-weight: 600;
-    line-height: 1.35;
-  }
-  .count {
-    margin-left: 6px;
-    font-weight: 500;
-    color: var(--text-3);
   }
   p {
-    margin: 3px 0 0;
+    margin: 4px 0 0 14px;
     color: var(--text-2);
     line-height: 1.45;
   }
+  .foot {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 8px 0 0 14px;
+  }
+  .mono,
+  pre {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: var(--text-3);
+  }
   .link {
-    margin-top: 6px;
     padding: 0;
     border: 0;
     background: none;
     color: var(--text-2);
     font: inherit;
     font-size: 12px;
-    text-decoration: underline;
     cursor: pointer;
   }
   .link:hover {
     color: var(--text);
+    text-decoration: underline;
   }
-  .detail {
-    margin-top: 6px;
-    padding: 8px;
-    border-radius: 6px;
-    background: var(--surface-2);
-  }
-  code {
-    display: block;
+  pre {
+    margin: 6px 0 0 14px;
+    padding: 6px 8px;
     max-height: 120px;
     overflow: auto;
-    font-size: 11.5px;
-    line-height: 1.4;
+    border-radius: 4px;
+    background: var(--surface-2);
+    color: var(--text-2);
     white-space: pre-wrap;
     word-break: break-word;
     user-select: text;
   }
   .close {
     display: flex;
-    padding: 4px;
+    padding: 2px;
     border: 0;
-    border-radius: 6px;
+    border-radius: 4px;
     background: none;
     color: var(--text-3);
     cursor: pointer;
   }
   .close:hover {
-    background: var(--surface-2);
     color: var(--text);
-  }
-  @keyframes rise {
-    from {
-      opacity: 0;
-      transform: translateY(8px);
-    }
   }
 </style>

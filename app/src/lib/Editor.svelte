@@ -730,6 +730,7 @@
     <LanguagePicker />
   </header>
 
+  {#if !loadError}
   <div class="toolbar" role="toolbar">
     <div class="group">
       <button class="tool" onclick={undo} disabled={at <= 0} title="{t('editor.undo')} (Ctrl+Z)"><Icon name="undo" /><span>{t("editor.undo")}</span></button>
@@ -756,6 +757,7 @@
       <button class="tool" class:on={showDims} onclick={() => (showDims = !showDims)}><Icon name="eye" /><span>{t("tool.dims")}</span></button>
     </div>
   </div>
+  {/if}
 
   {#if project}
     <div class="body">
@@ -780,24 +782,25 @@
         {/if}
         {#if calcError}
           {@const d = describeCalcError(calcError)}
-          <div class="warn-bar calc-error" role="alert">
-            <Icon name="warning" size={18} />
+          <div class="warn-bar" role="alert">
+            <i class="dot"></i>
             <div class="warn-text">
               <strong>{d.title}</strong>
               <span>{d.hint}</span>
-              <small title={t("calc.dacadSays")}>DACAD: {d.original}</small>
             </div>
+            <code>{d.code}</code>
             {#if at > 0}<button class="btn sm" onclick={undo}><Icon name="undo" size={14} />{t("editor.undo")}</button>{/if}
           </div>
         {/if}
         {#if result?.problems?.length}
           {@const first = result.problems[0]}
           <div class="warn-bar" role="alert">
-            <Icon name="warning" size={18} />
+            <i class="dot"></i>
             <div class="warn-text">
               <strong>{t("prob.title", { n: result.problems.length })}</strong>
               <span>{describeProblem(first, project)}{#if result.problems.length > 1} · {t("review.more", { n: result.problems.length - 1 })}{/if}</span>
             </div>
+            <code>{first.code}</code>
             {#if first.item === "part" && first.edge !== undefined}
               <button class="btn sm" onclick={() => (selection = { part: first.index, edge: first.edge! })}>{t("opening.show")}</button>
             {/if}
@@ -805,7 +808,7 @@
         {/if}
         {#if nonConvex.length}
           <div class="warn-bar" role="alert">
-            <Icon name="warning" size={18} />
+            <i class="dot"></i>
             <span>{t("opening.nonConvexAll", { n: nonConvex.length })}</span>
             <button class="btn sm" onclick={() => (openSel = nonConvex[0])}>{t("opening.show")}</button>
           </div>
@@ -901,15 +904,15 @@
       {#if result}<span>{t("res.area")}: <b>{m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save">
-        {#if saveState === "saved"}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><Icon name="warning" size={13} />{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
+        {#if saveState === "saved"}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
       </span>
     </footer>
   {:else if loadError}
     <div class="load-error" role="alert">
-      <span class="load-icon"><Icon name="warning" size={28} /></span>
+      <code class="code">{loadErrorCode}</code>
       <h2>{loadError.title}</h2>
       <p>{loadError.message}</p>
-      {#if loadError.detail}<code>{loadError.detail}</code>{/if}
+      {#if loadError.detail}<pre>{loadError.detail}</pre>{/if}
       <div class="load-actions">
         <button class="btn" onclick={onback}><Icon name="back" size={16} />{t("editor.back")}</button>
         {#if loadErrorCode !== "not_found" && loadErrorCode !== "unreadable"}
@@ -1121,36 +1124,52 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 10px 14px;
-    background: color-mix(in srgb, var(--danger) 12%, var(--surface));
-    border-bottom: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
-    color: var(--danger);
-    font-size: 13.5px;
+    padding: 9px 14px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font-size: 13px;
   }
   .warn-bar > span {
     flex: 1;
+  }
+  .warn-bar .dot {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+    background: var(--danger);
+  }
+  .warn-bar code,
+  .load-error .code {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: var(--text-3);
   }
   .warn-text {
     flex: 1;
     min-width: 0;
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    flex-wrap: wrap;
+    column-gap: 10px;
+    row-gap: 2px;
   }
   .warn-text strong {
     font-weight: 600;
   }
   .warn-text span {
-    color: var(--text);
-  }
-  .warn-text small {
     color: var(--text-2);
-    font-size: 12px;
+  }
+  .save-failed .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+    background: var(--danger);
   }
   .save-failed {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
     color: var(--danger);
     font-weight: 600;
   }
@@ -1158,7 +1177,7 @@
     margin-left: 6px;
     padding: 0 8px;
     height: 20px;
-    border-radius: 5px;
+    border-radius: 4px;
     border: 1px solid var(--border);
     background: var(--surface);
     font: inherit;
@@ -1171,44 +1190,39 @@
     flex: 1;
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
-    gap: 10px;
-    padding: 40px;
-    text-align: center;
-  }
-  .load-icon {
-    display: grid;
-    place-items: center;
-    width: 56px;
-    height: 56px;
-    border-radius: 50%;
-    background: color-mix(in srgb, var(--danger) 12%, var(--surface));
-    color: var(--danger);
+    gap: 8px;
+    width: min(560px, 100% - 48px);
+    margin: 0 auto;
   }
   .load-error h2 {
-    margin: 6px 0 0;
-    font-size: 18px;
+    margin: 0;
+    font-size: 17px;
+    font-weight: 600;
   }
   .load-error p {
     margin: 0;
-    max-width: 460px;
     color: var(--text-2);
     line-height: 1.5;
   }
-  .load-error code {
-    max-width: 560px;
+  .load-error pre {
+    align-self: stretch;
+    margin: 4px 0 0;
     padding: 8px 10px;
-    border-radius: 6px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
     background: var(--surface-2);
     color: var(--text-2);
-    font-size: 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    white-space: pre-wrap;
     word-break: break-word;
     user-select: text;
   }
   .load-actions {
     display: flex;
-    gap: 10px;
+    gap: 8px;
     margin-top: 8px;
   }
   .review {
