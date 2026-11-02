@@ -232,6 +232,30 @@
     const b = es[(i + 1) % es.length].start;
     return Math.hypot(b.x - a.x, b.y - a.y);
   }
+
+  /** Screen position of a wall's dimension label: beside the wall, on the
+   * outside of the part, so the wall line never runs through the text. */
+  function dimPos(part: number, i: number) {
+    const es = project.parts[part].edges;
+    const a = es[i].start;
+    const b = es[(i + 1) % es.length].start;
+    // Shoelace sign: > 0 means counter-clockwise (y up), outside is right of travel.
+    let area2 = 0;
+    for (let k = 0; k < es.length; k++) {
+      const p = es[k].start;
+      const q = es[(k + 1) % es.length].start;
+      area2 += p.x * q.y - q.x * p.y;
+    }
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const side = area2 >= 0 ? 1 : -1;
+    // Outward normal in world space, then flipped to screen space (y down).
+    const nx = (side * (b.y - a.y)) / len;
+    const ny = (-side * -(b.x - a.x)) / len;
+    const label = `${i + 1}  ${edgeLength(part, i).toFixed(2)}`;
+    const halfW = label.length * 3.3;
+    const off = 9 + Math.abs(nx) * halfW + Math.abs(ny) * 4;
+    return { x: (sx(a.x) + sx(b.x)) / 2 + nx * off, y: (sy(a.y) + sy(b.y)) / 2 + ny * off };
+  }
 </script>
 
 <div class="wrap" bind:clientWidth={width} bind:clientHeight={height}>
@@ -295,11 +319,8 @@
             ondblclick={(ev) => edgeDblClick(ev, pi, i)} />
           <line class="wall" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)} />
           {#if showDims && scale * edgeLength(pi, i) > 46}
-            <text
-              x={(sx(e.start.x) + sx(b.x)) / 2}
-              y={(sy(e.start.y) + sy(b.y)) / 2}
-              dy="-7"
-              class="dim"><tspan class="no">{i + 1}</tspan>  {edgeLength(pi, i).toFixed(2)}</text>
+            {@const lp = dimPos(pi, i)}
+            <text x={lp.x} y={lp.y} class="dim edge-dim"><tspan class="no">{i + 1}</tspan>  {edgeLength(pi, i).toFixed(2)}</text>
           {/if}
         </g>
       {/each}
@@ -552,6 +573,9 @@
     stroke-width: 1;
     pointer-events: none;
   }
+  .edge-dim {
+    dominant-baseline: central;
+  }
   .dim .no {
     font-weight: 700;
     fill: var(--text);
@@ -593,10 +617,17 @@
   }
   .hint {
     position: absolute;
-    left: 12px;
-    bottom: 10px;
+    left: 10px;
+    right: 10px;
+    bottom: 8px;
+    width: fit-content;
+    max-width: calc(100% - 20px);
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
     font-size: 11.5px;
-    color: var(--text-3);
+    line-height: 1.4;
+    color: var(--text-2);
     pointer-events: none;
   }
 </style>

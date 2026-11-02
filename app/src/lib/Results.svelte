@@ -66,7 +66,7 @@
       {#each rows as r}
         <tr class:zero={r.value < 0.005}>
           <td class="code"><i style="background:{r.color}"></i>{r.code}</td>
-          <td>{r.label}{#if r.n}<span class="n"> ×{r.n}</span>{/if}</td>
+          <td>{r.label}{#if r.n}<span class="n">×{r.n}</span>{/if}</td>
           <td class="v">{m(r.value)}</td>
         </tr>
       {/each}
@@ -133,7 +133,9 @@
     vertical-align: middle;
   }
   .n {
+    margin-left: 5px;
     color: var(--text-3);
+    font-size: 12px;
   }
   .v {
     text-align: right;

@@ -169,3 +169,8 @@ textarea:focus {
 .muted {
   color: var(--text-2);
 }
+
+/* Icons sit in flex rows next to text that may be truncated; never squash them. */
+svg.icon {
+  flex-shrink: 0;
+}
