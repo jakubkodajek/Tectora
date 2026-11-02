@@ -22,3 +22,12 @@ target/
 # DACAD example roofs are COIN GmbH data (do NOT commit)
 *.DAD
 *.dad
+
+# Claude Code personal files
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Environment
+.env
+.env.*
+!.env.example
