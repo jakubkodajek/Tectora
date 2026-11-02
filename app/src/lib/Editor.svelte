@@ -1110,7 +1110,7 @@
   .btn.accept {
     background: var(--ai);
     border-color: var(--ai);
-    color: #fff;
+    color: var(--on-ai);
   }
   .views {
     flex: 1;
