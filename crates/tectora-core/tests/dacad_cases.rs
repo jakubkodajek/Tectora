@@ -9,10 +9,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use serde_json::Value;
-use tectora_core::dad::{DadFile, DadWall};
 use tectora_core::geom::Point2;
 use tectora_core::model::GABLE_PITCH_DEG;
 use tectora_core::openings::generate_project;
+use tectora_core::walls::{PlanWall, WallList};
 use tectora_core::{Chimney, HalfHip, PitchBreak, Project, RoofWindow};
 
 /// Half a unit of DACAD's 2-decimal output plus float32 noise.
@@ -54,7 +54,7 @@ fn pt(v: &Value) -> Point2 {
 /// One wall with its stacked DACAD definitions, as the V1 importer reads
 /// it: a gable followed by a sloped definition is a Krüppelwalm, further
 /// definitions are pitch breaks.
-fn wall(id: usize, w: &Value) -> DadWall {
+fn wall(id: usize, w: &Value) -> PlanWall {
     let defs = w["definitions"].as_array().unwrap();
     let d0 = &defs[0];
     let pitch_deg = d0["pitch_deg"].as_f64().unwrap();
@@ -90,7 +90,7 @@ fn wall(id: usize, w: &Value) -> DadWall {
     } else {
         stored.unwrap_or(0.0).to_radians()
     };
-    DadWall {
+    PlanWall {
         id: id as u16 + 1,
         group: d0["roof_no"].as_u64().unwrap_or(1) as u16,
         start,
@@ -112,10 +112,7 @@ fn wall(id: usize, w: &Value) -> DadWall {
 /// loops become roof parts, open chains dormers.
 fn project(name: &str, case: &Value) -> Project {
     let input = &case["input"];
-    let mut file = DadFile {
-        version: "test".into(),
-        ..DadFile::default()
-    };
+    let mut file = WallList::default();
     for (i, w) in input["walls"].as_array().unwrap().iter().enumerate() {
         file.walls.push(wall(i, w));
     }

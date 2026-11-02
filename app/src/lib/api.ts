@@ -2,11 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ActivityItem,
+  Attachment,
   CalcResult,
   ExampleInfo,
   LiveStatus,
   Project,
   ProjectSummary,
+  ResultSnapshot,
   RoofPart,
   StandardKind,
 } from "./types";
@@ -37,9 +39,21 @@ export const api = {
   listExamples: () => invoke<ExampleInfo[]>("list_examples"),
   createFromExample: (exampleId: string, name?: string) =>
     invoke<string>("create_from_example", { exampleId, name: name ?? null }),
-  importDad: (path: string) => invoke<string>("import_dad", { path }),
   calc: (project: Project) => invoke<CalcResult>("calc", { project }),
+  listAttachments: (id: string) => invoke<Attachment[]>("list_attachments", { id }),
+  attachFiles: (id: string, paths: string[]) => invoke<string[]>("attach_files", { id, paths }),
+  removeAttachment: (id: string, name: string) => invoke<void>("remove_attachment", { id, name }),
+  openAttachment: (id: string, name: string) => invoke<void>("open_attachment", { id, name }),
+  exportJob: (id: string, path: string) => invoke<void>("export_job", { id, path }),
+  importJob: (path: string) => invoke<string>("import_job", { path }),
+  takeSnapshot: (project: Project) => invoke<ResultSnapshot>("take_snapshot", { project }),
+  takePendingOpen: () => invoke<string | null>("take_pending_open"),
 };
+
+/** Fires with the id of a job opened from a file (double-click). */
+export function onOpenProject(cb: (id: string) => void): Promise<UnlistenFn> {
+  return listen<string>("open-project", (e) => cb(e.payload));
+}
 
 /** Fires with the ids of project files that changed on disk. */
 export function onProjectsChanged(cb: (ids: string[]) => void): Promise<UnlistenFn> {

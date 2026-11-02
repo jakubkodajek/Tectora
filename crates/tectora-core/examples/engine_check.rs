@@ -10,6 +10,9 @@ use std::path::PathBuf;
 
 use tectora_core::engine::{self, Failure};
 
+#[path = "support/dad_v1.rs"]
+mod dad_v1;
+
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut rd2_dir = None;
@@ -38,7 +41,7 @@ fn main() {
         {
             serde_json::from_slice(&bytes).map_err(|e| e.to_string())
         } else {
-            tectora_core::dad::import(&bytes, name.clone()).map_err(|e| e.to_string())
+            dad_v1::import(&bytes, name.clone()).map_err(|e| e.to_string())
         };
         let mut project: tectora_core::Project = match imported {
             Ok(x) => x,

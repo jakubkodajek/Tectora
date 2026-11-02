@@ -6,7 +6,23 @@
   import { materialName } from "./materials";
   import type { CalcResult, Project, RoofWarning } from "./types";
 
-  let { result, project = null }: { result: CalcResult | null; project?: Project | null } = $props();
+  let {
+    result,
+    project = null,
+    onstore,
+  }: { result: CalcResult | null; project?: Project | null; onstore?: () => void } = $props();
+
+  /** The stored result (figures of the offer) against the current one. */
+  const stored = $derived(result?.stored_result ?? null);
+  const diffLabel = (key: string) =>
+    key === "roof_area"
+      ? t("res.area")
+      : key === "ridge_height"
+        ? t("snap.ridge")
+        : key.startsWith("line:")
+          ? key.slice(5)
+          : materialName(project, Number(key.slice(9)));
+  const fmtDiff = (key: string, v: number) => (key === "ridge_height" || key.startsWith("line:") ? m(v) : m2(v));
 
   /** Area per material, shown once the roof has more than one material or a non-default one. */
   const materials = $derived(
@@ -94,6 +110,34 @@
     </tbody>
   </table>
   <p class="note">{t("res.note")}</p>
+
+  {#if stored}
+    <h4>{t("snap.title")}</h4>
+    <div class="snap" class:changed={stored.differences.length > 0}>
+      <div class="snap-head">
+        <i class="sq"></i>
+        <span>
+          {stored.differences.length ? t("snap.changed") : t("snap.same")}
+          · {new Date(stored.stored.taken_ms).toLocaleDateString()}
+        </span>
+      </div>
+      {#if stored.differences.length}
+        <table class="diff">
+          <tbody>
+            {#each stored.differences as d}
+              <tr><td>{diffLabel(d.key)}</td><td class="v">{fmtDiff(d.key, d.stored)}</td><td class="v">{fmtDiff(d.key, d.current)}</td></tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+      {#if stored.engine_changed}
+        <p class="mono">{t("snap.engine", { v: stored.stored.engine_version })}</p>
+      {/if}
+      {#if stored.differences.length && onstore}
+        <button class="btn sm" onclick={onstore}>{t("snap.store")}</button>
+      {/if}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -186,6 +230,44 @@
   .warn code {
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     font-size: 11.5px;
+  }
+  .snap {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    font-size: 12.5px;
+  }
+  .snap-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .sq {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: var(--text-3);
+  }
+  .snap.changed .sq {
+    background: var(--danger);
+  }
+  .diff td {
+    padding: 4px 0;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+  }
+  .mono {
+    margin: 0;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    color: var(--text-2);
+  }
+  .btn.sm {
+    align-self: flex-start;
   }
   .note {
     margin: 0;

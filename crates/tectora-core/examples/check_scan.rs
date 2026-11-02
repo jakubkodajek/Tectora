@@ -1,9 +1,12 @@
 //! Prints the plausibility measures (`tectora_core::check::measure`) of
 //! every part of the given projects, for choosing the check tolerances.
 //!
-//! Usage: `check_scan FILE.DAD|PROJECT.json...` (or `-` to read paths from stdin).
+//! Usage: `check_scan FILE.DAD|PROJECT.json...` (DACAD V1 samples only) (or `-` to read paths from stdin).
 
 use std::io::BufRead;
+
+#[path = "support/dad_v1.rs"]
+mod dad_v1;
 use std::path::PathBuf;
 
 fn main() {
@@ -30,7 +33,7 @@ fn main() {
                 Err(_) => continue,
             }
         } else {
-            match tectora_core::dad::import(&bytes, name.clone()) {
+            match dad_v1::import(&bytes, name.clone()) {
                 Ok(x) => x,
                 Err(_) => continue,
             }

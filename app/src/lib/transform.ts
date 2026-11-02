@@ -103,7 +103,10 @@ export function mapPart(part: RoofPart, m: PlanMap, name = part.name): RoofPart 
 
 export function mapDormer(d: Dormer, m: PlanMap): Dormer {
   const { edges, end } = mapChain(d.edges, d.end, m);
-  return { ...clone(d), edges, end };
+  const out: Dormer = { ...clone(d), edges, end };
+  // The host wall moves with the dormer (as tectora-core edit::transform).
+  if (d.host_wall) out.host_wall = [m.apply(d.host_wall[0]), m.apply(d.host_wall[1])];
+  return out;
 }
 
 export function mapChimney(c: Chimney, m: PlanMap): Chimney {
