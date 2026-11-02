@@ -23,8 +23,14 @@ jobs:
         env:
           PROPTEST_CASES: ${{ inputs.cases || '20000' }}
         run: cargo test --release -p tectora-core --test properties
+      - name: Geometric invariants and fuzzing
+        env:
+          PROPTEST_CASES: ${{ inputs.cases || '20000' }}
+        run: cargo test --release -p tectora-core --test invariants --test analytic
       - name: Known bugs (informational)
         continue-on-error: true
         env:
           PROPTEST_CASES: "2000"
-        run: cargo test --release -p tectora-core --test properties -- --ignored
+        run: |
+          cargo test --release -p tectora-core --test properties -- --ignored
+          cargo test --release -p tectora-core --test invariants roof_stays -- --ignored
