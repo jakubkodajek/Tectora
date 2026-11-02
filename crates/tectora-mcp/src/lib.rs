@@ -20,6 +20,8 @@ use tectora_core::{
     Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow,
 };
 
+mod more;
+
 pub const GUIDE: &str = include_str!("guide.md");
 const SUPPORTED_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
@@ -308,11 +310,28 @@ fn edge_props() -> Value {
     })
 }
 
+/// Edge fields plus the selection of edges, for `update_edges`.
+fn edge_change_props() -> Value {
+    let mut p = edge_props();
+    p["indices"] = json!({ "type": "array", "items": { "type": "integer" } });
+    p["index"] = json!({ "type": "integer" });
+    p["all"] = json!({ "type": "boolean" });
+    p
+}
+
 fn summary_prop() -> Value {
     json!({ "type": "string", "description": "One sentence for the user on what you changed and why (shown in the app)." })
 }
 
 fn tools() -> Value {
+    let mut list = base_tools();
+    if let Value::Array(a) = &mut list {
+        a.extend(more::tools());
+    }
+    list
+}
+
+fn base_tools() -> Value {
     let part_schema = json!({
         "type": "object",
         "properties": {
@@ -376,7 +395,7 @@ fn tools() -> Value {
         },
         {
             "name": "update_edges",
-            "description": "Change roof definitions of edges (pitch, gable, eave height, overhang, half-hip). Select edges with `indices`, `index` or `all`.",
+            "description": "Change roof definitions of edges (pitch, gable, eave height, overhang, half-hip, breaks, priority, material). Select edges with `indices`, `index` or `all`.",
             "inputSchema": schema(json!({
                 "id": { "type": "string" },
                 "part": { "type": "integer", "description": "Part index (default 0)." },
@@ -384,14 +403,7 @@ fn tools() -> Value {
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "properties": {
-                            "indices": { "type": "array", "items": { "type": "integer" } },
-                            "index": { "type": "integer" },
-                            "all": { "type": "boolean" },
-                            "pitch_deg": { "type": "number" }, "gable": { "type": "boolean" },
-                            "eave_height": { "type": "number" }, "overhang": { "type": "number" },
-                            "half_hip": { "type": ["object", "null"] }
-                        }
+                        "properties": edge_change_props()
                     }
                 },
                 "summary": summary_prop(),
@@ -419,7 +431,7 @@ fn tools() -> Value {
         },
         {
             "name": "update_job",
-            "description": "Change the design name, notes or job data (number, customer, address, status: draft | offer | ordered | done).",
+            "description": "Change the design name, notes or job data (number, customer, address, status: draft | offer | ordered | done). When the status leaves draft, the current result is stored as the job's result (see store_result).",
             "inputSchema": schema(json!({
                 "id": { "type": "string" },
                 "name": { "type": "string" }, "notes": { "type": "string" },
@@ -444,14 +456,15 @@ fn tools() -> Value {
                 },
                 "chimneys": {
                     "type": "array",
-                    "description": "Chimneys as convex plan polygons.",
+                    "description": "Chimneys as convex plan polygons (`corners`), or as a rectangle: corner `x`, `y`, `width`, `depth` and `rotation_deg`.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "corners": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 } },
+                            "x": { "type": "number" }, "y": { "type": "number" },
+                            "width": { "type": "number" }, "depth": { "type": "number" }, "rotation_deg": { "type": "number" },
                             "height": { "type": "number", "description": "Top height, m (display only)." }
-                        },
-                        "required": ["corners"]
+                        }
                     }
                 },
                 "roof_openings": {
@@ -575,8 +588,15 @@ impl Server {
                     "job": p.job,
                     "parts": p.parts.iter().map(describe_part).collect::<Vec<_>>(),
                     "chimneys": p.chimneys,
+                    "windows": p.windows,
                     "roof_openings": p.roof_openings,
-                    "dormers": p.dormers.len(),
+                    "dormers": p.dormers.iter().enumerate().map(|(i, d)| more::describe_dormer(i, d)).collect::<Vec<_>>(),
+                    "manual_lines": p.manual_lines,
+                    "manual_faces": p.manual_faces,
+                    "flat_roof": p.flat_roof,
+                    "materials": (1..=tectora_core::model::DACAD_MATERIALS).map(|m| json!({ "material": m, "name": p.material_name(m) })).collect::<Vec<_>>(),
+                    "files": self.store.attachments(&id).iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
+                    "stored_result": tectora_core::snapshot::status(&p),
                     "quantities": quantities(&p),
                 }))
             }
@@ -592,7 +612,13 @@ impl Server {
                         json!({ "name": part.name, "quantities": q })
                     })
                     .collect();
-                Ok(json!({ "id": id, "total": quantities(&p), "parts": parts }))
+                Ok(json!({
+                    "id": id,
+                    "total": quantities(&p),
+                    "parts": parts,
+                    "engine_version": tectora_core::snapshot::ENGINE_VERSION,
+                    "stored_result": tectora_core::snapshot::status(&p),
+                }))
             }
             "create_standard_roof" => {
                 let kind: StandardRoof = serde_json::from_value(arg(args, "type")?.clone())
@@ -729,7 +755,7 @@ impl Server {
                     }
                 }
                 if let Some(s) = args.get("status").and_then(Value::as_str) {
-                    p.job.status = parse_status(s)?;
+                    p.set_status(parse_status(s)?);
                 }
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
             }
@@ -746,8 +772,22 @@ impl Server {
                     p.chimneys = raw
                         .iter()
                         .map(|c| {
-                            let corners = parse_points(arg(c, "corners")?)?;
                             let height = arg_f64(c, "height")?.unwrap_or(0.0);
+                            if c.get("corners").is_none() {
+                                let (w, d) = (arg_f64(c, "width")?, arg_f64(c, "depth")?);
+                                let (Some(w), Some(d)) = (w, d) else {
+                                    return Err("a chimney needs `corners` or `x`, `y`, `width` and `depth`".to_string());
+                                };
+                                return Ok(tectora_core::edit::probe::chimney_from_rect(
+                                    arg_f64(c, "x")?.unwrap_or(0.0),
+                                    arg_f64(c, "y")?.unwrap_or(0.0),
+                                    w,
+                                    d,
+                                    arg_f64(c, "rotation_deg")?.unwrap_or(0.0),
+                                    height,
+                                ));
+                            }
+                            let corners = parse_points(arg(c, "corners")?)?;
                             Ok(Chimney { corners, height })
                         })
                         .collect::<Result<_, String>>()?;
@@ -779,7 +819,9 @@ impl Server {
                 self.live("Reverted the latest change".into(), Some(&id));
                 Ok(json!({ "id": id, "reverted": true, "quantities": quantities(&p) }))
             }
-            _ => Err(format!("unknown tool `{name}`")),
+            _ => self
+                .call_more(name, args)
+                .unwrap_or_else(|| Err(format!("unknown tool `{name}`"))),
         }
     }
 

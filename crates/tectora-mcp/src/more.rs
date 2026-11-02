@@ -1,0 +1,1247 @@
+//! The tools that give agents every operation of the editor: walls and
+//! parts, transforms, dormers, hand-drawn lines and faces, roof options, the
+//! calculation helpers, history, the library, attached files, job bundles,
+//! the stored result and the file schema. The geometry comes from
+//! [`tectora_core::edit`], the same code the app's dialogs use.
+
+use std::path::PathBuf;
+
+use serde_json::{Value, json};
+use tectora_core::edit::calc::{self as hc, BuildUpEave, ParallelField, Target};
+use tectora_core::edit::dormers::{self, DormerKind, DormerParams};
+use tectora_core::edit::probe::{roof_corner_points, roof_height_at, snap_to_roof};
+use tectora_core::edit::round::{ArcInput, ArcMode, arc_for, opposite_wall, span_between};
+use tectora_core::edit::transform::{
+    PlanMap, offset_wall, part_centre, regular_polygon, transform_part,
+};
+use tectora_core::edit::{EdgePatch, Patches, apply_patches, plain_edge};
+use tectora_core::examples::{EXAMPLES, StandardRoof, standard_roof};
+use tectora_core::geom::Point2;
+use tectora_core::model::{ManualFace, ManualLine};
+use tectora_core::{Project, RoofPart, bundle, snapshot};
+
+use super::{Server, ToolResult, arg, arg_f64, arg_str, round, schema, summary_prop};
+
+/// Snap radius to the calculated roof's points, m (as the editor).
+const ROOF_SNAP: f64 = 0.25;
+
+fn opt<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> Result<Option<T>, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => serde_json::from_value(v.clone())
+            .map(Some)
+            .map_err(|e| format!("`{key}`: {e}")),
+    }
+}
+
+fn req<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> Result<T, String> {
+    opt(args, key)?.ok_or_else(|| format!("missing argument `{key}`"))
+}
+
+fn point(args: &Value, key: &str) -> Result<Option<Point2>, String> {
+    Ok(opt::<Vec<f64>>(args, key)?.map(|v| {
+        Point2::new(
+            v.first().copied().unwrap_or(0.0),
+            v.get(1).copied().unwrap_or(0.0),
+        )
+    }))
+}
+
+fn part_index(args: &Value, p: &Project) -> Result<usize, String> {
+    let pi = args.get("part").and_then(Value::as_u64).unwrap_or(0) as usize;
+    if pi >= p.parts.len() {
+        return Err(format!(
+            "part {pi} does not exist (the design has {} parts)",
+            p.parts.len()
+        ));
+    }
+    Ok(pi)
+}
+
+fn edge_index(args: &Value, key: &str, n: usize) -> Result<usize, String> {
+    let i = args
+        .get(key)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("missing argument `{key}`"))? as usize;
+    if i >= n {
+        return Err(format!(
+            "edge {i} does not exist (the part has {n} edges, 0..{})",
+            n - 1
+        ));
+    }
+    Ok(i)
+}
+
+/// A dormer as the parameters of the dormer dialog.
+pub(crate) fn describe_dormer(index: usize, d: &tectora_core::Dormer) -> Value {
+    let p = dormers::parse_dormer(d);
+    let mut v = json!({
+        "index": index,
+        "kind": p.kind,
+        "start": [p.start.x, p.start.y],
+        "end": [d.end.x, d.end.y],
+        "width": round(p.width, 3),
+        "angle_deg": round(p.angle.to_degrees(), 2),
+        "eave_height": p.eave_height,
+        "overhang": p.overhang,
+    });
+    match p.kind {
+        DormerKind::Gable | DormerKind::Pointed | DormerKind::Hip | DormerKind::Round => {
+            v["pitch_deg"] = json!(p.pitch_deg)
+        }
+        DormerKind::HalfHip => {
+            v["pitch_deg"] = json!(p.pitch_deg);
+            v["half_hip_height"] = json!(p.half_hip_height);
+            v["half_hip_pitch_deg"] = json!(p.half_hip_pitch_deg);
+        }
+        DormerKind::Shed => v["front_pitch_deg"] = json!(p.front_pitch_deg),
+        DormerKind::Trapezoid => {
+            v["pitch_deg"] = json!(p.pitch_deg);
+            v["front_pitch_deg"] = json!(p.front_pitch_deg);
+        }
+        DormerKind::General => v["edges"] = json!(d.edges),
+    }
+    if p.kind == DormerKind::Round {
+        v["segments"] = json!(p.segments);
+    }
+    if p.material != tectora_core::model::DEFAULT_MATERIAL {
+        v["material"] = json!(p.material);
+    }
+    v
+}
+
+fn dormer_props() -> Value {
+    json!({
+        "kind": { "type": "string", "enum": ["gable", "pointed", "hip", "half_hip", "shed", "trapezoid", "round"], "description": "Dormer type: gable (Satteldach), pointed (Spitzgaube), hip (Walm), half_hip (Krüppelwalm), shed (Schleppgaube), trapezoid, round (Rundgaube)." },
+        "start": { "type": "array", "items": { "type": "number" }, "description": "Plan point [x, y] of the front's left corner seen from outside, on the roof." },
+        "width": { "type": "number", "description": "Front width, m (default 2)." },
+        "angle_deg": { "type": "number", "description": "Direction of the front wall, degrees; the dormer roof rises to its left. Default: along the nearest eave wall." },
+        "eave_height": { "type": "number", "description": "Dormer eave height, m. Default: roof height at `start` + 1 m." },
+        "pitch_deg": { "type": "number", "description": "Pitch of the cheek planes (gable, pointed, hip, half_hip, trapezoid), default 45." },
+        "front_pitch_deg": { "type": "number", "description": "Pitch of the front plane (shed, trapezoid), default 15." },
+        "overhang": { "type": "number", "description": "Default 0." },
+        "half_hip_height": { "type": "number", "description": "half_hip: height of the clipped part above the dormer eave, default 0.6." },
+        "half_hip_pitch_deg": { "type": "number", "description": "half_hip: its pitch, default 60." },
+        "segments": { "type": "integer", "description": "round: polygon segments per side; 0 = automatic." },
+        "material": { "type": "integer", "minimum": 1, "description": "Roof material number, default 1." }
+    })
+}
+
+fn apply_dormer_fields(p: &mut DormerParams, args: &Value) -> Result<(), String> {
+    if let Some(k) = opt::<DormerKind>(args, "kind")? {
+        if k == DormerKind::General {
+            return Err(
+                "kind must be one of gable, pointed, hip, half_hip, shed, trapezoid, round".into(),
+            );
+        }
+        p.kind = k;
+    }
+    if let Some(s) = point(args, "start")? {
+        p.start = s;
+    }
+    if let Some(a) = arg_f64(args, "angle_deg")? {
+        p.angle = a.to_radians();
+    }
+    for (key, slot) in [
+        ("width", &mut p.width),
+        ("eave_height", &mut p.eave_height),
+        ("pitch_deg", &mut p.pitch_deg),
+        ("front_pitch_deg", &mut p.front_pitch_deg),
+        ("overhang", &mut p.overhang),
+        ("half_hip_height", &mut p.half_hip_height),
+        ("half_hip_pitch_deg", &mut p.half_hip_pitch_deg),
+    ] {
+        if let Some(v) = arg_f64(args, key)? {
+            *slot = v;
+        }
+    }
+    if let Some(s) = opt::<u32>(args, "segments")? {
+        p.segments = s;
+    }
+    if let Some(m) = opt::<u8>(args, "material")? {
+        p.material = m.max(1);
+    }
+    if !(p.width > 0.0) {
+        return Err("width must be positive".into());
+    }
+    for (name, v) in [
+        ("pitch_deg", p.pitch_deg),
+        ("front_pitch_deg", p.front_pitch_deg),
+    ] {
+        if !(0.0 < v && v < 90.0) {
+            return Err(format!("{name} must be between 0 and 90"));
+        }
+    }
+    Ok(())
+}
+
+fn patches_json(patches: &Patches) -> Value {
+    json!(
+        patches
+            .iter()
+            .map(|(k, p)| json!({ "edge": k, "set": p }))
+            .collect::<Vec<_>>()
+    )
+}
+
+fn manual_line(v: &Value, geos: &[tectora_core::roof::RoofGeometry]) -> Result<ManualLine, String> {
+    let end = |key: &str| -> Result<[f64; 3], String> {
+        let c: Vec<f64> = req(v, key)?;
+        match c.as_slice() {
+            [x, y, z] => Ok([*x, *y, *z]),
+            [x, y] => Ok(snap_to_roof(geos, Point2::new(*x, *y), ROOF_SNAP)),
+            _ => Err(format!("`{key}` must be [x, y] or [x, y, z]")),
+        }
+    };
+    let code = v
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or("M")
+        .to_string();
+    const CODES: [&str; 15] = [
+        "M", "T", "F", "G", "K", "P", "OL", "OR", "OS", "c", "S", "WV", "WH", "WS", "X",
+    ];
+    if !CODES.contains(&code.as_str()) {
+        return Err(format!("code `{code}` is not one of {}", CODES.join(", ")));
+    }
+    Ok(ManualLine {
+        a: end("a")?,
+        b: end("b")?,
+        code,
+        length: arg_f64(v, "length")?,
+        label: v
+            .get("label")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    })
+}
+
+pub(crate) fn tools() -> Vec<Value> {
+    let id = json!({ "type": "string" });
+    let part = json!({ "type": "integer", "description": "Part index (default 0)." });
+    let target = |list: &[&str]| json!({ "type": "string", "enum": list });
+    vec![
+        json!({
+            "name": "edit_walls",
+            "description": "Edit the walls of a part step by step, as in the plan editor. Operations, applied in order: move_point {index, x, y}; insert_point {after, x, y} (new corner on wall `after`, which keeps its roof definition); delete_point {index} (a part keeps at least 3 walls); set_length {index, length} (moves the wall's end point along it); insert_direction_change {index} (a zero-length marker wall at the wall's start that turns the roof, DACAD Richtungswechsel); shift_wall {index, distance} (moves the wall parallel, + outward, its neighbours stretched); rename {name}.",
+            "inputSchema": schema(json!({
+                "id": id, "part": part,
+                "operations": { "type": "array", "items": { "type": "object", "properties": {
+                    "op": { "type": "string", "enum": ["move_point", "insert_point", "delete_point", "set_length", "insert_direction_change", "shift_wall", "rename"] },
+                    "index": { "type": "integer" }, "after": { "type": "integer" },
+                    "x": { "type": "number" }, "y": { "type": "number" },
+                    "length": { "type": "number" }, "distance": { "type": "number" }, "name": { "type": "string" }
+                }, "required": ["op"] } },
+                "summary": summary_prop(),
+            }), &["id", "operations", "summary"]),
+        }),
+        json!({
+            "name": "transform_part",
+            "description": "Move, rotate or mirror a part together with the dormers, chimneys, roof windows, openings and hand-drawn lines and faces on it; with `copies` > 0 the part stays and that many copies are added, each one the transform applied once more (copy, copy-rotate, copy-mirror).",
+            "inputSchema": schema(json!({
+                "id": id, "part": part,
+                "op": { "type": "string", "enum": ["move", "rotate", "mirror"] },
+                "dx": { "type": "number" }, "dy": { "type": "number" },
+                "centre": { "type": "array", "items": { "type": "number" }, "description": "rotate/mirror: pivot or a point on the mirror line [x, y]; default the part's centre." },
+                "deg": { "type": "number", "description": "rotate: angle, counter-clockwise; mirror: direction of the mirror line." },
+                "copies": { "type": "integer", "minimum": 0 },
+                "summary": summary_prop(),
+            }), &["id", "op", "summary"]),
+        }),
+        json!({
+            "name": "add_shape_part",
+            "description": "Add a part from a shape: a standard roof on a rectangle (gable, shed, hip, pyramid, half_hip) or a regular polygon with a hip roof on every wall. Without `at`, a standard roof is placed 2 m right of the existing parts (as in the app). With `replace_part` it replaces that part instead.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "shape": { "type": "string", "enum": ["gable", "shed", "hip", "pyramid", "half_hip", "regular_polygon"] },
+                "length": { "type": "number" }, "width": { "type": "number" },
+                "sides": { "type": "integer", "minimum": 3, "description": "regular_polygon: number of walls." },
+                "side": { "type": "number", "description": "regular_polygon: wall length, m." },
+                "rotation_deg": { "type": "number" },
+                "at": { "type": "array", "items": { "type": "number" }, "description": "Standard roof: its first corner; polygon: its centre [x, y]." },
+                "pitch_deg": { "type": "number" }, "eave_height": { "type": "number" }, "overhang": { "type": "number" },
+                "name": { "type": "string" },
+                "replace_part": { "type": "integer" },
+                "summary": summary_prop(),
+            }), &["id", "shape", "summary"]),
+        }),
+        json!({
+            "name": "delete_items",
+            "description": "Delete parts, dormers, chimneys, roof windows, roof openings, hand-drawn lines or faces by index (indices as get_project lists them).",
+            "inputSchema": schema(json!({
+                "id": id,
+                "items": { "type": "array", "items": { "type": "object", "properties": {
+                    "kind": { "type": "string", "enum": ["part", "dormer", "chimney", "window", "roof_opening", "manual_line", "manual_face"] },
+                    "index": { "type": "integer" }
+                }, "required": ["kind", "index"] } },
+                "summary": summary_prop(),
+            }), &["id", "items", "summary"]),
+        }),
+        json!({
+            "name": "add_dormer",
+            "description": "Place a dormer on the roof (DACAD Gauben). The front's left corner is `start`; get_project lists dormers with these parameters.",
+            "inputSchema": schema({
+                let mut p = dormer_props();
+                p["id"] = id.clone();
+                p["summary"] = summary_prop();
+                p
+            }, &["id", "kind", "start", "summary"]),
+        }),
+        json!({
+            "name": "update_dormer",
+            "description": "Change a dormer: any of the add_dormer parameters; the rest is kept. Changing `kind` converts it.",
+            "inputSchema": schema({
+                let mut p = dormer_props();
+                p["id"] = id.clone();
+                p["index"] = json!({ "type": "integer" });
+                p["summary"] = summary_prop();
+                p
+            }, &["id", "index", "summary"]),
+        }),
+        json!({
+            "name": "set_manual",
+            "description": "Replace the lines and/or faces drawn by hand on the calculated roof (omit a list to keep it). A line end given as [x, y] snaps to the nearest roof point within 0.25 m, else lies at height 0 (as DACAD); [x, y, z] is taken as it is. A line of a counted code adds to that code's totals; M (dimension) and X do not. A face is a plan polygon with its pitch (default 30°) and adds its sloped area.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "lines": { "type": "array", "items": { "type": "object", "properties": {
+                    "a": { "type": "array", "items": { "type": "number" } },
+                    "b": { "type": "array", "items": { "type": "number" } },
+                    "code": { "type": "string", "enum": ["M", "T", "F", "G", "K", "P", "OL", "OR", "OS", "c", "S", "WV", "WH", "WS", "X"] },
+                    "length": { "type": "number", "description": "Length to count instead of the measured one." },
+                    "label": { "type": "string" }
+                }, "required": ["a", "b"] } },
+                "faces": { "type": "array", "items": { "type": "object", "properties": {
+                    "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } },
+                    "pitch_deg": { "type": "number" }, "label": { "type": "string" }
+                }, "required": ["points"] } },
+                "summary": summary_prop(),
+            }), &["id", "summary"]),
+        }),
+        json!({
+            "name": "set_roof_options",
+            "description": "Whole-roof options: `flat_roof` (calculate as a flat roof at the highest eave; dormers are left out) and `material_names` (own names of materials 1, 2, …; an empty name keeps the default).",
+            "inputSchema": schema(json!({
+                "id": id,
+                "flat_roof": { "type": "boolean" },
+                "material_names": { "type": "array", "items": { "type": "string" } },
+                "summary": summary_prop(),
+            }), &["id", "summary"]),
+        }),
+        json!({
+            "name": "roof_helper",
+            "description": "The calculation helpers of the roof definition, for wall `edge` of a part. Returns the values they would set; with `apply: true` it also saves them. Tools: triangle (pitch from two of width, rafter, ridge height; with breaks, the top break's pitch); parallel (two facing walls meeting in a ridge: type values in `steps` as in the dialog, solve for pitch, eave, overhang or position); point (the plane through a 3D point: `point` [x, y, z] or `point_index` into the roof corner list it returns); merge (walls parallel to this one take its plane; eave, overhang or position); hip (pitches of this wall and its neighbour from a hip or valley length and both rafters or eave pieces); build_up (correct for a build-up thickness); round_roof (this wall and the facing one get the polygon of a circular arc: default, radius, ridge or length).",
+            "inputSchema": schema(json!({
+                "id": id, "part": part,
+                "edge": { "type": "integer" },
+                "tool": { "type": "string", "enum": ["triangle", "parallel", "point", "merge", "hip", "build_up", "round_roof"] },
+                "target": target(&["pitch", "eave", "overhang", "position"]),
+                "width": { "type": "number" }, "rafter": { "type": "number" }, "ridge": { "type": "number" },
+                "width_includes_overhang": { "type": "boolean", "description": "triangle (default false) and parallel (default true)." },
+                "steps": { "type": "array", "items": { "type": "object", "properties": {
+                    "field": { "type": "string", "enum": ["width_a", "width_b", "rafter_a", "rafter_b", "ridge", "top"], "description": "a = this wall, b = the facing wall; top = width of a flat strip between two ridges." },
+                    "value": { "type": "number" }
+                }, "required": ["field", "value"] } },
+                "point": { "type": "array", "items": { "type": "number" } },
+                "point_index": { "type": "integer" },
+                "walls": { "type": "array", "items": { "type": "integer" }, "description": "merge: walls to merge (default all parallel walls facing the same way)." },
+                "neighbour": { "type": "string", "enum": ["next", "prev"] },
+                "hip": { "type": "number" },
+                "by": { "type": "string", "enum": ["rafters", "eaves"] },
+                "first": { "type": "number", "description": "hip: rafter or eave piece of this wall." },
+                "second": { "type": "number", "description": "hip: rafter or eave piece of the neighbour." },
+                "thickness": { "type": "number" },
+                "eave": { "type": "string", "enum": ["normal", "horizontal", "vertical"] },
+                "mode": { "type": "string", "enum": ["default", "radius", "ridge", "length"] },
+                "value": { "type": "number" },
+                "segments": { "type": "integer" },
+                "apply": { "type": "boolean" },
+                "summary": summary_prop(),
+            }), &["id", "edge", "tool"]),
+        }),
+        json!({
+            "name": "get_history",
+            "description": "The change log of a design: who changed what and when (ts_ms), newest first.",
+            "inputSchema": schema(json!({ "id": id }), &["id"]),
+        }),
+        json!({
+            "name": "revert_to",
+            "description": "Undo every change of a design made at or after `ts_ms` (from get_history).",
+            "inputSchema": schema(json!({ "id": id, "ts_ms": { "type": "integer" } }), &["id", "ts_ms"]),
+        }),
+        json!({
+            "name": "list_examples",
+            "description": "The example roofs a new design can start from.",
+            "inputSchema": schema(json!({}), &[]),
+        }),
+        json!({
+            "name": "create_from_example",
+            "description": "Create a new design from an example roof.",
+            "inputSchema": schema(json!({ "example_id": { "type": "string" }, "name": { "type": "string" }, "summary": summary_prop() }), &["example_id", "summary"]),
+        }),
+        json!({
+            "name": "duplicate_project",
+            "description": "Copy a design (with its attached files) under a new name.",
+            "inputSchema": schema(json!({ "id": id, "name": { "type": "string" } }), &["id", "name"]),
+        }),
+        json!({
+            "name": "delete_project",
+            "description": "Delete a design with its history and attached files. Only when the user asked for it.",
+            "inputSchema": schema(json!({ "id": id }), &["id"]),
+        }),
+        json!({
+            "name": "list_files",
+            "description": "Files attached to a job (drawings, photos), with their paths on this computer.",
+            "inputSchema": schema(json!({ "id": id }), &["id"]),
+        }),
+        json!({
+            "name": "attach_file",
+            "description": "Attach a file from this computer (e.g. the technical drawing the roof was made from) to a job.",
+            "inputSchema": schema(json!({ "id": id, "path": { "type": "string" } }), &["id", "path"]),
+        }),
+        json!({
+            "name": "remove_file",
+            "description": "Remove an attached file from a job.",
+            "inputSchema": schema(json!({ "id": id, "name": { "type": "string" } }), &["id", "name"]),
+        }),
+        json!({
+            "name": "export_job",
+            "description": "Write a job to a .tectorajob file (project, attached files, history and a plan preview in one ZIP) at `path`.",
+            "inputSchema": schema(json!({ "id": id, "path": { "type": "string" } }), &["id", "path"]),
+        }),
+        json!({
+            "name": "import_job",
+            "description": "Add a job from a .tectorajob file, or a .tectora project file from outside the library, as a new design.",
+            "inputSchema": schema(json!({ "path": { "type": "string" } }), &["path"]),
+        }),
+        json!({
+            "name": "store_result",
+            "description": "Store the current result as the job's result (the figures for the offer), replacing the stored one. The result is stored by itself when the job leaves the draft status.",
+            "inputSchema": schema(json!({ "id": id, "summary": summary_prop() }), &["id", "summary"]),
+        }),
+        json!({
+            "name": "get_schema",
+            "description": "JSON Schema of the .tectora project file.",
+            "inputSchema": schema(json!({}), &[]),
+        }),
+    ]
+}
+
+impl Server {
+    /// The tools of this module; `None` for a name it does not know.
+    pub(crate) fn call_more(&self, name: &str, args: &Value) -> Option<ToolResult> {
+        Some(match name {
+            "edit_walls" => self.edit_walls(args),
+            "transform_part" => self.transform(args),
+            "add_shape_part" => self.add_shape_part(args),
+            "delete_items" => self.delete_items(args),
+            "add_dormer" | "update_dormer" => self.dormer(args, name == "add_dormer"),
+            "set_manual" => self.set_manual(args),
+            "set_roof_options" => self.set_roof_options(args),
+            "roof_helper" => self.roof_helper(args),
+            "get_history" => self.load(args).map(|(id, _)| {
+                json!(self.store.activity(&id).iter().rev().map(|e| e.info()).collect::<Vec<_>>())
+            }),
+            "revert_to" => (|| {
+                let (id, _) = self.load(args)?;
+                let ts: u64 = req(args, "ts_ms")?;
+                let p = self.store.revert_to(&id, ts, &self.client)?;
+                self.live("Reverted changes".into(), Some(&id));
+                Ok(json!({ "id": id, "reverted": true, "quantities": super::quantities(&p) }))
+            })(),
+            "list_examples" => Ok(json!(EXAMPLES
+                .iter()
+                .map(|e| json!({ "id": e.id, "name": e.name, "description": e.description }))
+                .collect::<Vec<_>>())),
+            "create_from_example" => (|| {
+                let ex_id = arg_str(args, "example_id")?;
+                let ex = tectora_core::examples::find(ex_id).ok_or_else(|| format!("no example `{ex_id}`; see list_examples"))?;
+                let mut p = ex.project();
+                if let Some(n) = args.get("name").and_then(Value::as_str) {
+                    p.name = n.to_string();
+                }
+                self.commit(None, None, &p, arg_str(args, "summary")?)
+            })(),
+            "duplicate_project" => (|| {
+                let (id, mut p) = self.load(args)?;
+                p.name = arg_str(args, "name")?.to_string();
+                p.job.status = tectora_core::JobStatus::Draft;
+                p.result_snapshot = None;
+                let new_id = self.store.save_as(None, &p, &self.client, &format!("Copy of {id}"))?;
+                self.store.copy_attachments(&id, &new_id)?;
+                self.live(format!("Copied “{}”", p.name), Some(&new_id));
+                Ok(json!({ "id": new_id }))
+            })(),
+            "delete_project" => (|| {
+                let (id, p) = self.load(args)?;
+                self.store.delete(&id)?;
+                self.live(format!("Deleted “{}”", p.name), None);
+                Ok(json!({ "id": id, "deleted": true }))
+            })(),
+            "list_files" => self.load(args).map(|(id, _)| {
+                json!(self
+                    .store
+                    .attachments(&id)
+                    .iter()
+                    .map(|a| json!({
+                        "name": a.name, "size": a.size, "modified_ms": a.modified_ms,
+                        "path": self.store.attachment_path(&id, &a.name).map(|p| p.display().to_string()).unwrap_or_default(),
+                    }))
+                    .collect::<Vec<_>>())
+            }),
+            "attach_file" => (|| {
+                let (id, _) = self.load(args)?;
+                let name = self.store.attach_file(&id, &PathBuf::from(arg_str(args, "path")?))?;
+                self.live(format!("Attached {name}"), Some(&id));
+                Ok(json!({ "id": id, "name": name }))
+            })(),
+            "remove_file" => (|| {
+                let (id, _) = self.load(args)?;
+                let name = arg_str(args, "name")?;
+                self.store.remove_attachment(&id, name)?;
+                self.live(format!("Removed {name}"), Some(&id));
+                Ok(json!({ "id": id, "removed": name }))
+            })(),
+            "export_job" => (|| {
+                let (id, _) = self.load(args)?;
+                let path = PathBuf::from(arg_str(args, "path")?);
+                let m = bundle::export(&self.store, &id, &path)?;
+                Ok(json!({ "id": id, "path": path.display().to_string(), "manifest": m }))
+            })(),
+            "import_job" => (|| {
+                let path = PathBuf::from(arg_str(args, "path")?);
+                let id = bundle::open_path(&self.store, &path)?;
+                self.live(format!("Imported {}", path.display()), Some(&id));
+                Ok(json!({ "id": id }))
+            })(),
+            "store_result" => (|| {
+                let (id, before) = self.load(args)?;
+                let mut p = before.clone();
+                p.result_snapshot = Some(snapshot::take(&p));
+                self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+            })(),
+            "get_schema" => Ok(tectora_core::model::json_schema()),
+            _ => return None,
+        })
+    }
+
+    fn edit_walls(&self, args: &Value) -> ToolResult {
+        let (id, before) = self.load(args)?;
+        let mut p = before.clone();
+        let pi = part_index(args, &p)?;
+        let ops = arg(args, "operations")?
+            .as_array()
+            .ok_or("`operations` must be a list")?;
+        for (k, op) in ops.iter().enumerate() {
+            let at = |m: String| format!("operation {k}: {m}");
+            let part = &mut p.parts[pi];
+            let n = part.edges.len();
+            let xy = || -> Result<Point2, String> {
+                Ok(Point2::new(
+                    arg_f64(op, "x")?.ok_or("missing `x`")?,
+                    arg_f64(op, "y")?.ok_or("missing `y`")?,
+                ))
+            };
+            match arg_str(op, "op").map_err(at)? {
+                "move_point" => {
+                    let i = edge_index(op, "index", n).map_err(at)?;
+                    part.edges[i].start = xy().map_err(at)?;
+                }
+                "insert_point" => {
+                    let i = edge_index(op, "after", n).map_err(at)?;
+                    let mut e = part.edges[i].clone();
+                    e.start = xy().map_err(at)?;
+                    e.half_hip = None;
+                    e.direction_rad = None;
+                    e.source = None;
+                    part.edges.insert(i + 1, e);
+                }
+                "delete_point" => {
+                    let i = edge_index(op, "index", n).map_err(at)?;
+                    let real = part
+                        .edges
+                        .iter()
+                        .filter(|e| e.direction_rad.is_none())
+                        .count();
+                    if part.edges[i].direction_rad.is_none() && real <= 3 {
+                        return Err(at("a part keeps at least 3 walls".into()));
+                    }
+                    part.edges.remove(i);
+                }
+                "set_length" => {
+                    let i = edge_index(op, "index", n).map_err(at)?;
+                    let len = arg_f64(op, "length")?
+                        .filter(|l| *l > 0.0)
+                        .ok_or_else(|| at("`length` must be positive".into()))?;
+                    let a = part.edges[i].start;
+                    let b = part.edges[(i + 1) % n].start;
+                    let cur = a.distance(b).max(1e-9);
+                    part.edges[(i + 1) % n].start = Point2::new(
+                        round(a.x + (b.x - a.x) * len / cur, 3),
+                        round(a.y + (b.y - a.y) * len / cur, 3),
+                    );
+                }
+                "insert_direction_change" => {
+                    let i = edge_index(op, "index", n).map_err(at)?;
+                    let e = part.edges[i].clone();
+                    let next = part.edges[(i + 1) % n].start;
+                    let ang = (next.y - e.start.y).atan2(next.x - e.start.x)
+                        + std::f64::consts::FRAC_PI_2;
+                    let mut marker = plain_edge(
+                        e.start,
+                        if e.is_gable() { 40.0 } else { e.pitch_deg },
+                        e.eave_height,
+                        e.overhang,
+                    );
+                    marker.material = e.material;
+                    marker.direction_rad = Some(ang.rem_euclid(std::f64::consts::TAU));
+                    part.edges.insert(i, marker);
+                }
+                "shift_wall" => {
+                    let i = edge_index(op, "index", n).map_err(at)?;
+                    let d =
+                        arg_f64(op, "distance")?.ok_or_else(|| at("missing `distance`".into()))?;
+                    if !offset_wall(part, i, d) {
+                        return Err(at(
+                            "a neighbouring wall runs parallel; no corner can be found".into(),
+                        ));
+                    }
+                }
+                "rename" => part.name = arg_str(op, "name").map_err(at)?.to_string(),
+                other => return Err(at(format!("unknown op `{other}`"))),
+            }
+        }
+        self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+    }
+
+    fn transform(&self, args: &Value) -> ToolResult {
+        let (id, before) = self.load(args)?;
+        let mut p = before.clone();
+        let pi = part_index(args, &p)?;
+        let centre = point(args, "centre")?.unwrap_or_else(|| part_centre(&p.parts[pi]));
+        let m = match arg_str(args, "op")? {
+            "move" => PlanMap::Move {
+                dx: arg_f64(args, "dx")?.unwrap_or(0.0),
+                dy: arg_f64(args, "dy")?.unwrap_or(0.0),
+            },
+            "rotate" => PlanMap::Rotate {
+                centre,
+                deg: arg_f64(args, "deg")?.ok_or("missing `deg`")?,
+            },
+            "mirror" => PlanMap::Mirror {
+                centre,
+                deg: arg_f64(args, "deg")?.ok_or("missing `deg`")?,
+            },
+            other => return Err(format!("unknown op `{other}`")),
+        };
+        let copies: u32 = opt(args, "copies")?.unwrap_or(0);
+        transform_part(&mut p, pi, m, copies);
+        self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+    }
+
+    fn add_shape_part(&self, args: &Value) -> ToolResult {
+        let (id, before) = self.load(args)?;
+        let mut p = before.clone();
+        let pitch = arg_f64(args, "pitch_deg")?.unwrap_or(40.0);
+        let eave = arg_f64(args, "eave_height")?.unwrap_or(3.0);
+        let overhang = arg_f64(args, "overhang")?.unwrap_or(0.5);
+        if !(0.0 < pitch && pitch < 90.0) || overhang < 0.0 {
+            return Err("pitch must be between 0 and 90 and the overhang not negative".into());
+        }
+        let at = point(args, "at")?;
+        let shape = arg_str(args, "shape")?;
+        let mut part = if shape == "regular_polygon" {
+            let sides: usize = req(args, "sides")?;
+            let side = arg_f64(args, "side")?.ok_or("missing `side`")?;
+            if sides < 3 || !(side > 0.0) {
+                return Err("a polygon needs 3 or more sides of positive length".into());
+            }
+            let c = at.unwrap_or(Point2::new(0.0, 0.0));
+            let pts = regular_polygon(
+                c,
+                sides,
+                side,
+                arg_f64(args, "rotation_deg")?.unwrap_or(0.0),
+            );
+            RoofPart {
+                name: String::new(),
+                edges: pts
+                    .into_iter()
+                    .map(|q| plain_edge(q, pitch, eave, overhang))
+                    .collect(),
+            }
+        } else {
+            let kind: StandardRoof = serde_json::from_value(json!(shape))
+                .map_err(|_| format!("unknown shape `{shape}`"))?;
+            let length = arg_f64(args, "length")?.ok_or("missing `length`")?;
+            let width = arg_f64(args, "width")?.unwrap_or(length);
+            if !(length > 0.0 && width > 0.0) {
+                return Err("length and width must be positive".into());
+            }
+            let mut part = standard_roof(kind, length, width, pitch, eave, overhang);
+            let (dx, dy) = match at {
+                Some(q) => (q.x, q.y),
+                None if args.get("replace_part").is_none() => {
+                    let max_x = p
+                        .parts
+                        .iter()
+                        .flat_map(|q| q.edges.iter().map(|e| e.start.x))
+                        .reduce(f64::max);
+                    (max_x.map_or(0.0, |x| x + 2.0), 0.0)
+                }
+                None => (0.0, 0.0),
+            };
+            for e in &mut part.edges {
+                e.start = Point2::new(round(e.start.x + dx, 3), round(e.start.y + dy, 3));
+            }
+            part
+        };
+        let replace: Option<usize> = opt(args, "replace_part")?;
+        part.name = match (args.get("name").and_then(Value::as_str), replace) {
+            (Some(n), _) => n.to_string(),
+            (None, Some(r)) => p.parts.get(r).map(|q| q.name.clone()).unwrap_or_default(),
+            (None, None) if p.parts.is_empty() => "Main".into(),
+            (None, None) => format!("Part {}", p.parts.len() + 1),
+        };
+        part.normalize_ccw();
+        match replace {
+            Some(r) if r < p.parts.len() => p.parts[r] = part,
+            Some(r) => return Err(format!("part {r} does not exist")),
+            None => p.parts.push(part),
+        }
+        self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+    }
+
+    fn delete_items(&self, args: &Value) -> ToolResult {
+        let (id, before) = self.load(args)?;
+        let mut p = before.clone();
+        let items: Vec<Value> = req(args, "items")?;
+        let mut list: Vec<(String, usize)> = items
+            .iter()
+            .map(|v| Ok((arg_str(v, "kind")?.to_string(), req::<usize>(v, "index")?)))
+            .collect::<Result<_, String>>()?;
+        // Highest index first, so the others keep theirs.
+        list.sort_by(|a, b| b.1.cmp(&a.1));
+        list.dedup();
+        for (kind, i) in list {
+            fn take<T>(v: &mut Vec<T>, i: usize, kind: &str) -> Result<(), String> {
+                if i >= v.len() {
+                    return Err(format!("{kind} {i} does not exist"));
+                }
+                v.remove(i);
+                Ok(())
+            }
+            match kind.as_str() {
+                "part" => take(&mut p.parts, i, &kind)?,
+                "dormer" => take(&mut p.dormers, i, &kind)?,
+                "chimney" => take(&mut p.chimneys, i, &kind)?,
+                "window" => take(&mut p.windows, i, &kind)?,
+                "roof_opening" => take(&mut p.roof_openings, i, &kind)?,
+                "manual_line" => take(&mut p.manual_lines, i, &kind)?,
+                "manual_face" => take(&mut p.manual_faces, i, &kind)?,
+                other => return Err(format!("unknown kind `{other}`")),
+            }
+        }
+        self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+    }
+
+    fn dormer(&self, args: &Value, add: bool) -> ToolResult {
+        let (id, before) = self.load(args)?;
+        let mut p = before.clone();
+        let (index, mut params) = if add {
+            let start = point(args, "start")?.ok_or("missing `start`")?;
+            let kind: DormerKind = req(args, "kind")?;
+            let angle = dormers::nearest_wall_angle(&p.parts, start);
+            // The roof height just inside the front, as the editor places it.
+            let geos = tectora_core::openings::generate_project(&p);
+            let inside = Point2::new(start.x - angle.sin() * 0.01, start.y + angle.cos() * 0.01);
+            let host = roof_height_at(&geos, inside).unwrap_or(3.0);
+            (
+                p.dormers.len(),
+                dormers::default_params(kind, start, angle, round(host + 1.0, 2)),
+            )
+        } else {
+            let i: usize = req(args, "index")?;
+            let d = p
+                .dormers
+                .get(i)
+                .ok_or_else(|| format!("dormer {i} does not exist"))?;
+            let mut params = dormers::parse_dormer(d);
+            if params.kind == DormerKind::General && args.get("kind").is_none() {
+                return Err(format!(
+                    "dormer {i} is not one of the standard kinds; give `kind` to rebuild it"
+                ));
+            }
+            if params.kind == DormerKind::General {
+                params.kind = DormerKind::Gable;
+            }
+            (i, params)
+        };
+        apply_dormer_fields(&mut params, args)?;
+        let mut d = dormers::build_dormer(&params);
+        if let Some(old) = p.dormers.get(index) {
+            d.host_wall = old.host_wall;
+            p.dormers[index] = d;
+        } else {
+            p.dormers.push(d);
+        }
+        let mut out = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
+        out["dormer"] = describe_dormer(index, &p.dormers[index]);
+        Ok(out)
+    }
+
+    fn set_manual(&self, args: &Value) -> ToolResult {
+        let (id, before) = self.load(args)?;
+        let mut p = before.clone();
+        if let Some(lines) = opt::<Vec<Value>>(args, "lines")? {
+            // Snap to the roof as it is without the hand-drawn lines.
+            let geos = tectora_core::openings::generate_project(&p);
+            p.manual_lines = lines
+                .iter()
+                .enumerate()
+                .map(|(i, v)| manual_line(v, &geos).map_err(|m| format!("line {i}: {m}")))
+                .collect::<Result<_, _>>()?;
+        }
+        if let Some(faces) = opt::<Vec<Value>>(args, "faces")? {
+            p.manual_faces = faces
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let points = super::parse_points(arg(v, "points")?)
+                        .map_err(|m| format!("face {i}: {m}"))?;
+                    let pitch_deg = arg_f64(v, "pitch_deg")?.unwrap_or(30.0);
+                    if !(0.0..90.0).contains(&pitch_deg) {
+                        return Err(format!("face {i}: pitch_deg must be between 0 and 90"));
+                    }
+                    Ok(ManualFace {
+                        points,
+                        pitch_deg,
+                        label: v
+                            .get("label")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                    })
+                })
+                .collect::<Result<_, String>>()?;
+        }
+        self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+    }
+
+    fn set_roof_options(&self, args: &Value) -> ToolResult {
+        let (id, before) = self.load(args)?;
+        let mut p = before.clone();
+        if let Some(f) = opt::<bool>(args, "flat_roof")? {
+            p.flat_roof = f;
+        }
+        if let Some(names) = opt::<Vec<String>>(args, "material_names")? {
+            p.material_names = names;
+            while p.material_names.last().is_some_and(|n| n.trim().is_empty()) {
+                p.material_names.pop();
+            }
+        }
+        self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+    }
+
+    fn roof_helper(&self, args: &Value) -> ToolResult {
+        let (id, before) = self.load(args)?;
+        let pi = part_index(args, &before)?;
+        let es = &before.parts[pi].edges;
+        let edge = edge_index(args, "edge", es.len())?;
+        let e = &es[edge];
+        let target: Option<Target> = opt(args, "target")?;
+        let need_target = || {
+            target.ok_or_else(|| "missing `target` (pitch, eave, overhang or position)".to_string())
+        };
+        let single = |patch: EdgePatch| Patches::from([(edge, patch)]);
+        let mut extra = json!({});
+        let patches: Patches = match arg_str(args, "tool")? {
+            "triangle" => {
+                let t = hc::triangle(
+                    e,
+                    arg_f64(args, "width")?,
+                    arg_f64(args, "rafter")?,
+                    arg_f64(args, "ridge")?,
+                    opt(args, "width_includes_overhang")?.unwrap_or(false),
+                )
+                .ok_or("give two of width, rafter and ridge that make a triangle")?;
+                extra = json!({ "triangle": t });
+                single(hc::triangle_patch(e, t.pitch_deg))
+            }
+            "parallel" => {
+                let target = need_target()?;
+                let opp = opposite_wall(es, edge).ok_or("this wall has no facing wall")?;
+                if !e.breaks.is_empty() || !es[opp].breaks.is_empty() {
+                    return Err("not available on walls with pitch breaks".into());
+                }
+                let span = span_between(es, edge, opp);
+                let (w, h) = hc::meeting(e, &es[opp], span).ok_or("the two planes do not meet")?;
+                let mut st = hc::parallel_start(e, &es[opp], span, w, h);
+                let with_ov = opt(args, "width_includes_overhang")?.unwrap_or(true);
+                let steps: Vec<Value> = req(args, "steps")?;
+                for (k, s) in steps.iter().enumerate() {
+                    let field: ParallelField = req(s, "field")?;
+                    let v = arg_f64(s, "value")?.ok_or("missing `value`")?;
+                    st = hc::parallel_edit(&st, field, v, target, with_ov)
+                        .ok_or_else(|| format!("step {k}: no solution for this value"))?;
+                }
+                extra = json!({ "opposite_edge": opp, "state": st });
+                if target == Target::Position {
+                    tectora_core::edit::combine([
+                        &hc::move_wall(es, edge, st.shift_a),
+                        &hc::move_wall(es, opp, st.shift_b),
+                    ])
+                } else {
+                    let (pa, pb) = hc::parallel_patches(&st, target);
+                    if target == Target::Eave
+                        && (hc::eave_below_gable(es, edge, pa.eave_height.unwrap_or(0.0))
+                            || hc::eave_below_gable(es, opp, pb.eave_height.unwrap_or(0.0)))
+                    {
+                        return Err(
+                            "the eave would end up below the eave of a neighbouring gable".into(),
+                        );
+                    }
+                    Patches::from([(edge, pa), (opp, pb)])
+                }
+            }
+            "point" => {
+                let target = need_target()?;
+                let geos = tectora_core::openings::generate_project(&before);
+                let corners = roof_corner_points(&geos);
+                let q = match (
+                    opt::<Vec<f64>>(args, "point")?,
+                    opt::<usize>(args, "point_index")?,
+                ) {
+                    (Some(v), _) if v.len() == 3 => [v[0], v[1], v[2]],
+                    (Some(_), _) => return Err("`point` must be [x, y, z]".into()),
+                    (None, Some(i)) => *corners
+                        .get(i)
+                        .ok_or_else(|| format!("point_index {i} out of range"))?,
+                    (None, None) => return Ok(json!({ "roof_points": corners })),
+                };
+                let d = hc::inward(es, edge, Point2::new(q[0], q[1]));
+                if target == Target::Position {
+                    let sh =
+                        hc::shift_for(e, d, q[2]).ok_or("no wall position reaches that point")?;
+                    hc::move_wall(es, edge, sh)
+                } else {
+                    single(
+                        hc::solve(e, d, q[2], target)
+                            .ok_or("no plane of this wall reaches that point")?,
+                    )
+                }
+            }
+            "merge" => {
+                let target = need_target()?;
+                let walls: Vec<usize> =
+                    opt(args, "walls")?.unwrap_or_else(|| hc::same_way(es, edge));
+                match target {
+                    Target::Pitch => {
+                        return Err("merge solves for eave, overhang or position".into());
+                    }
+                    Target::Position => {
+                        hc::merge_by_moving(es, edge, &walls).ok_or("this wall has no slope")?
+                    }
+                    t => hc::merge_onto(es, edge, &walls, t),
+                }
+            }
+            "hip" => {
+                let n = es.len();
+                let other = match args
+                    .get("neighbour")
+                    .and_then(Value::as_str)
+                    .unwrap_or("next")
+                {
+                    "prev" => (edge + n - 1) % n,
+                    _ => (edge + 1) % n,
+                };
+                let hip = arg_f64(args, "hip")?.ok_or("missing `hip`")?;
+                let a = arg_f64(args, "first")?.ok_or("missing `first`")?;
+                let b = arg_f64(args, "second")?.ok_or("missing `second`")?;
+                let f = if args.get("by").and_then(Value::as_str) == Some("eaves") {
+                    hc::hip_pitches_from_eaves
+                } else {
+                    hc::hip_pitches
+                };
+                f(es, edge, other, hip, a, b).ok_or("no pitches fit these lengths (both walls need a slope and the same eave height)")?
+            }
+            "build_up" => {
+                let d = arg_f64(args, "thickness")?.ok_or("missing `thickness`")?;
+                let eave: BuildUpEave = opt(args, "eave")?.unwrap_or_default();
+                single(hc::build_up(e, d, eave).ok_or("not possible on this wall")?)
+            }
+            "round_roof" => {
+                let opp = opposite_wall(es, edge).ok_or("this wall has no facing wall")?;
+                let arc = arc_for(&ArcInput {
+                    span: span_between(es, edge, opp),
+                    overhang: e.overhang,
+                    eave_height: e.eave_height,
+                    segments: opt(args, "segments")?.unwrap_or(0),
+                    mode: opt::<ArcMode>(args, "mode")?.unwrap_or_default(),
+                    value: arg_f64(args, "value")?.unwrap_or(0.0),
+                })
+                .ok_or("the value is out of range for this span")?;
+                let patch = EdgePatch {
+                    pitch_deg: Some(arc.pitch_deg),
+                    eave_height: Some(e.eave_height),
+                    overhang: Some(e.overhang),
+                    breaks: Some(arc.breaks.clone()),
+                    half_hip: Some(None),
+                    ..EdgePatch::default()
+                };
+                extra = json!({ "opposite_edge": opp, "arc": arc });
+                Patches::from([(edge, patch.clone()), (opp, patch)])
+            }
+            other => return Err(format!("unknown tool `{other}`")),
+        };
+        let mut p = before.clone();
+        let applied = apply_patches(&mut p.parts[pi].edges, &patches);
+        let mut out = if args.get("apply").and_then(Value::as_bool) == Some(true)
+            && !applied.is_empty()
+        {
+            self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?
+        } else {
+            json!({ "id": id, "saved": false, "note": "Not saved; call again with apply: true to save." })
+        };
+        out["patches"] = patches_json(&applied);
+        if let Value::Object(m) = extra {
+            for (k, v) in m {
+                out[k] = v;
+            }
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tectora_core::store::{Store, now_ms};
+
+    fn setup() -> (Server, String) {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tectora-mcp-more-{}-{}-{n}",
+            now_ms(),
+            std::process::id()
+        ));
+        let s = Server::new(Store::new(dir).unwrap());
+        let r = s
+            .call_tool(
+                "create_standard_roof",
+                &json!({ "name": "Test", "type": "gable", "length": 10, "width": 8, "pitch_deg": 40, "summary": "start" }),
+            )
+            .unwrap();
+        let id = r["id"].as_str().unwrap().to_string();
+        (s, id)
+    }
+
+    fn call(s: &Server, name: &str, args: Value) -> Value {
+        s.call_tool(name, &args)
+            .unwrap_or_else(|e| panic!("{name}: {e}"))
+    }
+
+    #[test]
+    fn every_tool_has_a_schema_and_a_handler() {
+        let (s, _) = setup();
+        for t in tools() {
+            let name = t["name"].as_str().unwrap();
+            assert!(t["inputSchema"]["type"] == "object", "{name}");
+            // A call with no arguments is an error message or a result, never "unknown tool".
+            if let Err(e) = s.call_tool(name, &json!({})) {
+                assert!(!e.starts_with("unknown tool"), "{name}: {e}");
+            }
+        }
+    }
+
+    #[test]
+    fn walls_transform_and_shapes() {
+        let (s, id) = setup();
+        call(
+            &s,
+            "edit_walls",
+            json!({ "id": id, "summary": "s", "operations": [
+                { "op": "insert_point", "after": 0, "x": 5, "y": 0 },
+                { "op": "move_point", "index": 1, "x": 5, "y": -1 },
+                { "op": "delete_point", "index": 1 },
+                { "op": "set_length", "index": 0, "length": 12 },
+                { "op": "shift_wall", "index": 2, "distance": 1 },
+                { "op": "rename", "name": "House" }
+            ]}),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(p.parts[0].name, "House");
+        assert_eq!(p.parts[0].edges.len(), 4);
+        assert_eq!(p.parts[0].edges[1].start, Point2::new(12.0, 0.0));
+        call(
+            &s,
+            "transform_part",
+            json!({ "id": id, "op": "mirror", "deg": 90, "centre": [-1, 0], "copies": 1, "summary": "s" }),
+        );
+        call(
+            &s,
+            "add_shape_part",
+            json!({ "id": id, "shape": "regular_polygon", "sides": 6, "side": 3, "at": [0, 20], "summary": "s" }),
+        );
+        call(
+            &s,
+            "add_shape_part",
+            json!({ "id": id, "shape": "hip", "length": 6, "width": 5, "summary": "s" }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(p.parts.len(), 4);
+        assert!(p.parts[1].edges.iter().all(|e| e.start.x <= -2.0 + 1e-9));
+        assert_eq!(p.parts[2].edges.len(), 6);
+        call(
+            &s,
+            "delete_items",
+            json!({ "id": id, "items": [{ "kind": "part", "index": 3 }, { "kind": "part", "index": 2 }], "summary": "s" }),
+        );
+        assert_eq!(s.store.load(&id).unwrap().parts.len(), 2);
+    }
+
+    #[test]
+    fn dormers_manual_lines_and_options() {
+        let (s, id) = setup();
+        let r = call(
+            &s,
+            "add_dormer",
+            json!({ "id": id, "kind": "hip", "start": [4, 1], "summary": "s" }),
+        );
+        assert_eq!(r["dormer"]["kind"], "hip");
+        assert!(r["dormer"]["eave_height"].as_f64().unwrap() > 3.0);
+        let r = call(
+            &s,
+            "update_dormer",
+            json!({ "id": id, "index": 0, "kind": "shed", "width": 3, "summary": "s" }),
+        );
+        assert_eq!(r["dormer"]["kind"], "shed");
+        assert_eq!(r["dormer"]["width"], 3.0);
+        call(
+            &s,
+            "set_manual",
+            json!({ "id": id, "summary": "s",
+            "lines": [{ "a": [0, 0], "b": [10, 0, 3], "code": "T" }],
+            "faces": [{ "points": [[0, 0], [1, 0], [1, 1]] }] }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(p.manual_faces[0].pitch_deg, 30.0);
+        call(
+            &s,
+            "set_roof_options",
+            json!({ "id": id, "flat_roof": true, "material_names": ["Bramac", ""], "summary": "s" }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert!(p.flat_roof);
+        assert_eq!(p.material_names, vec!["Bramac"]);
+    }
+
+    #[test]
+    fn helpers_preview_and_apply() {
+        let (s, id) = setup();
+        // Edge 0 is the south eave of the 10 x 8 gable roof.
+        let r = call(
+            &s,
+            "roof_helper",
+            json!({ "id": id, "edge": 0, "tool": "triangle", "width": 4, "ridge": 6 }),
+        );
+        assert_eq!(r["saved"], false);
+        assert_eq!(s.store.load(&id).unwrap().parts[0].edges[0].pitch_deg, 40.0);
+        let r = call(
+            &s,
+            "roof_helper",
+            json!({ "id": id, "edge": 0, "tool": "parallel", "target": "pitch",
+            "steps": [{ "field": "ridge", "value": 7.5 }], "apply": true, "summary": "Ridge 7.5 m" }),
+        );
+        assert_eq!(r["saved"], true);
+        assert_eq!(r["patches"].as_array().unwrap().len(), 2);
+        let r = call(
+            &s,
+            "roof_helper",
+            json!({ "id": id, "edge": 0, "tool": "point", "target": "pitch" }),
+        );
+        assert!(!r["roof_points"].as_array().unwrap().is_empty());
+        let r = call(
+            &s,
+            "roof_helper",
+            json!({ "id": id, "edge": 0, "tool": "round_roof", "apply": true, "summary": "Round roof" }),
+        );
+        assert!(r["arc"]["segments"].as_u64().unwrap() >= 1);
+        let p = s.store.load(&id).unwrap();
+        assert!(!p.parts[0].edges[0].breaks.is_empty());
+        call(
+            &s,
+            "roof_helper",
+            json!({ "id": id, "edge": 0, "tool": "build_up", "thickness": 0.2 }),
+        );
+    }
+
+    #[test]
+    fn library_files_bundle_and_stored_result() {
+        let (s, id) = setup();
+        let dir = s.store.dir.clone();
+        let drawing = dir.join("plan.pdf");
+        std::fs::write(&drawing, b"%PDF").unwrap();
+        call(&s, "attach_file", json!({ "id": id, "path": drawing }));
+        assert_eq!(
+            call(&s, "list_files", json!({ "id": id }))[0]["name"],
+            "plan.pdf"
+        );
+        call(
+            &s,
+            "update_job",
+            json!({ "id": id, "status": "offer", "summary": "Offer sent" }),
+        );
+        let r = call(&s, "calc", json!({ "id": id }));
+        assert_eq!(
+            r["stored_result"]["differences"].as_array().unwrap().len(),
+            0
+        );
+        call(
+            &s,
+            "update_edges",
+            json!({ "id": id, "changes": [{ "index": 0, "pitch_deg": 45 }], "summary": "s" }),
+        );
+        let r = call(&s, "calc", json!({ "id": id }));
+        assert!(
+            !r["stored_result"]["differences"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let out = dir.join("job.tectorajob");
+        call(&s, "export_job", json!({ "id": id, "path": out }));
+        let new_id = call(&s, "import_job", json!({ "path": out }))["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            call(&s, "list_files", json!({ "id": new_id }))
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let copy = call(&s, "duplicate_project", json!({ "id": id, "name": "Copy" }))["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(s.store.load(&copy).unwrap().result_snapshot.is_none());
+        assert!(
+            call(&s, "get_history", json!({ "id": id }))
+                .as_array()
+                .unwrap()
+                .len()
+                >= 2
+        );
+        call(&s, "delete_project", json!({ "id": copy }));
+        assert!(!s.store.exists(&copy));
+        assert!(
+            call(&s, "get_schema", json!({}))["$defs"]
+                .get("EdgeDef")
+                .is_some()
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
