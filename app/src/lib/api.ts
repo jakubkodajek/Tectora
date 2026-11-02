@@ -37,7 +37,6 @@ export const api = {
   listExamples: () => invoke<ExampleInfo[]>("list_examples"),
   createFromExample: (exampleId: string, name?: string) =>
     invoke<string>("create_from_example", { exampleId, name: name ?? null }),
-  importDad: (path: string) => invoke<string>("import_dad", { path }),
   calc: (project: Project) => invoke<CalcResult>("calc", { project }),
 };
 

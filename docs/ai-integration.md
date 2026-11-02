@@ -22,7 +22,7 @@ ready-to-paste configuration for Claude Desktop, Claude Code and Gemini CLI.
 | `list_projects`, `get_project`, `calc` | Read designs, edge tables and quantities by DACAD line code |
 | `create_standard_roof`, `create_project`, `add_part` | Create designs |
 | `update_edges`, `set_outline`, `update_job` | Edit designs |
-| `revert_last_change`, `show_project`, `import_dad` | Undo, focus in the app, import DACAD V1 files |
+| `revert_last_change`, `show_project` | Undo, focus in the app |
 
 Every write requires a `summary` sentence for the user.
 

@@ -13,7 +13,6 @@ type Dict = Record<string, string>;
 
 const cs: Dict = {
   "home.search": "Hledat návrhy",
-  "home.import": "Importovat z DACADu",
   "home.new": "Nový návrh",
   "home.examples": "Vzory střech",
   "home.examplesHint": "Vyberte typ střechy a upravte ho podle svého půdorysu.",
@@ -453,7 +452,6 @@ const cs: Dict = {
 
 const sk: Dict = {
   "home.search": "Hľadať návrhy",
-  "home.import": "Importovať z DACADu",
   "home.new": "Nový návrh",
   "home.examples": "Vzory striech",
   "home.examplesHint": "Vyberte typ strechy a upravte ho podľa svojho pôdorysu.",
@@ -893,7 +891,6 @@ const sk: Dict = {
 
 const en: Dict = {
   "home.search": "Search designs",
-  "home.import": "Import from DACAD",
   "home.new": "New design",
   "home.examples": "Example roofs",
   "home.examplesHint": "Pick a roof type and adapt it to your floor plan.",
@@ -1333,7 +1330,6 @@ const en: Dict = {
 
 const de: Dict = {
   "home.search": "Entwürfe suchen",
-  "home.import": "Aus DACAD importieren",
   "home.new": "Neuer Entwurf",
   "home.examples": "Beispieldächer",
   "home.examplesHint": "Wählen Sie eine Dachform und passen Sie sie an Ihren Grundriss an.",

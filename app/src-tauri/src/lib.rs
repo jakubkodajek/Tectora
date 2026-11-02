@@ -13,7 +13,7 @@ use tectora_core::diff::Change;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::quantities::dacad_line_totals;
 use tectora_core::store::{self, LiveStatus, Store, USER_ACTOR, outlines};
-use tectora_core::{Project, dad, examples, roof};
+use tectora_core::{Project, examples, roof};
 
 struct AppState {
     store: Store,
@@ -189,19 +189,6 @@ fn new_project(state: State<AppState>, name: String) -> Result<String, String> {
     state.store.save(None, &project)
 }
 
-#[tauri::command]
-fn import_dad(state: State<AppState>, path: String) -> Result<String, String> {
-    let path = PathBuf::from(path);
-    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-    let name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("DACAD")
-        .to_string();
-    let project = dad::import(&bytes, name).map_err(|e| e.to_string())?;
-    state.store.save(None, &project)
-}
-
 /// Roof geometry and quantities for every part, plus totals.
 #[tauri::command]
 fn calc(project: Project) -> Value {
@@ -308,7 +295,6 @@ pub fn run() {
             list_examples,
             create_from_example,
             new_project,
-            import_dad,
             calc
         ])
         .run(tauri::generate_context!())

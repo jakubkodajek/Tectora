@@ -13,10 +13,10 @@ English and German.
 - `crates/tectora-core` — roof project model (`.tectora` JSON), DACAD's roof
   core (`dcore`) and multi-roof join (`modell`), dormers, chimneys, roof
   windows and openings, quantities by DACAD line code and by material, job
-  library with change log, DACAD `.DAD` V1 import.
+  library with change log.
 - `crates/tectora-mcp` — MCP server for AI clients (Claude, Gemini, …); see
   [docs/ai-integration.md](docs/ai-integration.md).
-- `crates/tectora-cli` — the `tectora` binary (`import-dad`, `info`, `calc`, `mcp`).
+- `crates/tectora-cli` — the `tectora` binary (`info`, `calc`, `mcp`).
 - `app/` — the desktop app: job library, DACAD-style editor (plan + 3D and
   front / back / side / top views, roof definition bar, standard roofs and
   regular polygons, dormers, chimneys, roof windows, openings, calculation

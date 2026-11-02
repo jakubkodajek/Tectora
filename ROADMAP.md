@@ -18,11 +18,10 @@ The list below is DACAD's menu (DACAD.exe string table) against the app.
 - Flat roof, hand-drawn roof lines and new roof faces.
 - Move, rotate, mirror and copy parts; shift a wall in parallel.
 - Front, back, side and top views; area by material; material names.
-- DACAD `.DAD` V1 import, MCP server and CLI.
+- MCP server and CLI.
 
 ## Next
 
-- `.DAD` V2 import.
 - Post-processing: trapezoid split (Trapezzerlegung), sheet layout
   (Bahnenteilung, Rollbahnenteilung), rafters (Sparreneingabe).
 - Help points and lines, extra text (Hilfspunkte, Hilfslinien, Zusatztext),

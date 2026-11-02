@@ -17,7 +17,7 @@ use tectora_core::model::GABLE_PITCH_DEG;
 use tectora_core::quantities::{dacad_line_totals, roof_totals};
 use tectora_core::store::{LiveStatus, Store, now_ms};
 use tectora_core::{
-    Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow, dad,
+    Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow,
 };
 
 pub const GUIDE: &str = include_str!("guide.md");
@@ -483,11 +483,6 @@ fn tools() -> Value {
             "description": "Undo the latest recorded change of a design.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
-        {
-            "name": "import_dad",
-            "description": "Import a DACAD .DAD file (V1.x) from a local path into the library.",
-            "inputSchema": schema(json!({ "path": { "type": "string" } }), &["path"]),
-        },
     ])
 }
 
@@ -783,22 +778,6 @@ impl Server {
                 let p = self.store.revert_last(&id, &self.client)?;
                 self.live("Reverted the latest change".into(), Some(&id));
                 Ok(json!({ "id": id, "reverted": true, "quantities": quantities(&p) }))
-            }
-            "import_dad" => {
-                let path = std::path::PathBuf::from(arg_str(args, "path")?);
-                let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("DACAD")
-                    .to_string();
-                let p = dad::import(&bytes, name).map_err(|e| e.to_string())?;
-                self.commit(
-                    None,
-                    None,
-                    &p,
-                    &format!("Imported {} from DACAD", path.display()),
-                )
             }
             _ => Err(format!("unknown tool `{name}`")),
         }
