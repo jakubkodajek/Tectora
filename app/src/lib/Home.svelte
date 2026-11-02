@@ -1,6 +1,7 @@
 <script lang="ts">
   // Job library (design manager): all roofs the user has made, with job
   // data, status filters, sorting, a detail pane and the example gallery.
+  import { open } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
   import LanguagePicker from "./LanguagePicker.svelte";
   import Logo from "./Logo.svelte";
@@ -87,6 +88,17 @@
     }
   }
 
+  /** Adds a job from a .tectorajob bundle or a .tectora file. */
+  async function importJob() {
+    const path = await open({ multiple: false, filters: [{ name: "Tectora", extensions: ["tectorajob", "tectora"] }] });
+    if (typeof path !== "string") return;
+    const id = await run(() => api.importJob(path));
+    if (id) {
+      onchanged();
+      onopen(id);
+    }
+  }
+
   async function remove(p: ProjectSummary) {
     if (!confirm(t("home.confirmDelete", { name: p.name }))) return;
     await run(() => api.deleteProject(p.id));
@@ -127,6 +139,7 @@
         {#if isFresh() && live.status}{actorName(live.status.actor)}: {live.status.message}{:else}{t("ai.connect")}{/if}
       </button>
       <LanguagePicker />
+      <button class="btn" onclick={importJob} title={t("home.importJobHint")}><Icon name="upload" size={16} />{t("home.importJob")}</button>
       <button class="btn primary" onclick={() => (newJob = { example: null })}><Icon name="plus" size={16} />{t("lib.new")}</button>
     </div>
   </header>

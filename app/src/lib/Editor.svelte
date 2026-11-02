@@ -315,6 +315,17 @@
     commit();
   }
 
+  /** Makes the current result the job's stored result (the offer's figures). */
+  async function storeResult() {
+    if (!project) return;
+    try {
+      project.result_snapshot = await api.takeSnapshot(JSON.parse(JSON.stringify(project)));
+      commit();
+    } catch (e) {
+      onerror(String(e));
+    }
+  }
+
   function patchEdge(patch: Partial<EdgeDef>) {
     if (!project || !selection) return;
     Object.assign(project.parts[selection.part].edges[selection.edge], patch);
@@ -837,11 +848,11 @@
         </div>
         <div class="dock">
           {#if dock === "results"}
-            <Results {result} {project} />
+            <Results {result} {project} onstore={storeResult} />
           {:else if dock === "ai"}
             <AiPanel {id} {project} {activity} onrevert={() => revert(false)} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
-            <JobPanel {project} onchange={commit} />
+            <JobPanel {id} {project} onchange={commit} onsave={save} {onerror} />
           {/if}
         </div>
       </aside>

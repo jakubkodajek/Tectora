@@ -18,7 +18,14 @@ The list below is DACAD's menu (DACAD.exe string table) against the app.
 - Flat roof, hand-drawn roof lines and new roof faces.
 - Move, rotate, mirror and copy parts; shift a wall in parallel.
 - Front, back, side and top views; area by material; material names.
-- MCP server and CLI.
+- MCP server with a tool for every editor operation, and the CLI.
+- Job files: attached drawings and photos, `.tectorajob` bundles (project,
+  files, history, plan preview) for hand-over and archive.
+- Stored result: the figures an offer was made with, kept with the engine
+  version; the app and the MCP show any later difference.
+- File format: JSON Schema (`docs/tectora.schema.json`), format versions with
+  migrations on load; newer files are refused.
+- `.tectora` and `.tectorajob` open by double-click on macOS and Windows.
 
 ## Next
 

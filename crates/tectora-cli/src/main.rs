@@ -20,6 +20,22 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Print the JSON Schema of the .tectora project file.
+    Schema,
+    /// Write a library job to a .tectorajob bundle (project, files, history, preview).
+    ExportJob {
+        id: String,
+        output: PathBuf,
+        /// Project library folder (default: $TECTORA_PROJECTS_DIR or Documents/Tectora).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// Add a .tectorajob bundle or a .tectora file to the library as a new job.
+    ImportJob {
+        input: PathBuf,
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
     /// Print a JSON summary of a .tectora file.
     Info { input: PathBuf },
     /// Run the MCP server on stdin/stdout for AI clients (Claude, ChatGPT, Gemini).
@@ -43,9 +59,28 @@ fn load(path: &Path) -> Result<Project> {
     Ok(Project::from_json(&text)?)
 }
 
+fn library(dir: Option<PathBuf>) -> Result<Store> {
+    Ok(match dir {
+        Some(d) => Store::new(d)?,
+        None => Store::open_default()?,
+    })
+}
+
 fn run(cli: Cli) -> Result<serde_json::Value> {
     match cli.command {
         Command::Mcp { .. } => unreachable!("handled in main"),
+        Command::Schema => Ok(tectora_core::model::json_schema()),
+        Command::ExportJob { id, output, dir } => {
+            let store = library(dir)?;
+            let manifest =
+                tectora_core::bundle::export(&store, &id, &output).map_err(anyhow::Error::msg)?;
+            Ok(json!({ "ok": true, "output": output, "manifest": manifest }))
+        }
+        Command::ImportJob { input, dir } => {
+            let store = library(dir)?;
+            let id = tectora_core::bundle::open_path(&store, &input).map_err(anyhow::Error::msg)?;
+            Ok(json!({ "ok": true, "id": id }))
+        }
         Command::Info { input } => {
             let project = load(&input)?;
             Ok(json!({ "ok": true, "name": project.name, "quantities": plan_quantities(&project) }))

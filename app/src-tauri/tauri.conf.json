@@ -19,11 +19,40 @@
         "minHeight": 620
       }
     ],
-    "security": { "csp": null }
+    "security": {
+      "csp": null
+    }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico", "icons/icon.png"]
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "tectora"
+        ],
+        "name": "Tectora project",
+        "description": "Tectora roof project",
+        "role": "Editor",
+        "mimeType": "application/x-tectora"
+      },
+      {
+        "ext": [
+          "tectorajob"
+        ],
+        "name": "Tectora job",
+        "description": "Tectora job with drawings and history",
+        "role": "Editor",
+        "mimeType": "application/x-tectorajob"
+      }
+    ]
   }
 }

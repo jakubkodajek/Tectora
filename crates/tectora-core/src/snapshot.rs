@@ -108,6 +108,10 @@ pub fn compare(stored: &ResultSnapshot, current: &ResultSnapshot) -> Vec<Differe
         .chain(&current.area_by_material)
         .map(|m| m.material)
         .collect();
+    // One default material is the roof area again; only a split says more.
+    if mats.iter().all(|&m| m == crate::model::DEFAULT_MATERIAL) {
+        return out;
+    }
     for m in mats {
         let get = |s: &ResultSnapshot| {
             s.area_by_material
