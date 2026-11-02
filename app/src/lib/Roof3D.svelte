@@ -223,6 +223,7 @@
     height: 100%;
     background: linear-gradient(180deg, color-mix(in srgb, var(--focus) 8%, var(--surface)) 0%, var(--surface) 70%);
     overflow: hidden;
+    container-type: inline-size;
   }
   .host :global(canvas) {
     display: block;
@@ -263,5 +264,17 @@
     z-index: 2;
     background: var(--surface);
     border: 1px solid var(--border);
+  }
+  /* Small 3D view (half-screen split): view buttons stay inside the view. */
+  @container (max-width: 420px) {
+    .views {
+      max-width: calc(100% - 16px);
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .views button {
+      padding: 4px 6px;
+      font-size: 11px;
+    }
   }
 </style>

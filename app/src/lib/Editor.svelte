@@ -46,6 +46,13 @@
   let selection = $state<Selection>(null);
   let saveState = $state<"saved" | "saving" | "dirty">("saved");
   let dock = $state<"results" | "ai" | "job">("results");
+  /** Narrow windows only: whether the side panel is expanded over the views. */
+  let dockOpen = $state(false);
+
+  function showDock(d: typeof dock) {
+    dockOpen = dock !== d || !dockOpen;
+    dock = d;
+  }
   let drawing = $state<Point2[] | null>(null);
   let dormerSel = $state<number | null>(null);
   let placing = $state<false | "dormer" | "chimney" | "window" | "hole" | "line" | "face">(false);
@@ -697,7 +704,7 @@
       {/if}
     </div>
     <div class="spacer"></div>
-    <button class="ai-pill" class:active={isFresh()} onclick={() => (dock = "ai")} title={t("ai.title")}>
+    <button class="ai-pill" class:active={isFresh()} onclick={() => { dock = "ai"; dockOpen = true; }} title={t("ai.title")}>
       <span class="dot"></span>
       {#if isFresh() && live.status}
         <strong>{actorName(live.status.actor)}</strong><span class="msg">{live.status.message}</span>
@@ -727,11 +734,11 @@
       <button class="tool" disabled={!selection || (project?.parts.length ?? 0) < 2} onclick={deletePart} title={t("tool.deletePartHint")}><Icon name="trash" /><span>{t("tool.deletePart")}</span></button>
     </div>
     <div class="group">
-      <button class="tool" class:on={prefs.layout === "plan"} onclick={() => setLayout("plan")}><Icon name="plan" /><span>{t("editor.plan")}</span></button>
-      <button class="tool" class:on={prefs.layout === "split"} onclick={() => setLayout("split")}><Icon name="split" /><span>{t("editor.both")}</span></button>
+      <button class="tool" class:on={prefs.layout === "plan"} onclick={() => setLayout("plan")} title={t("editor.plan")}><Icon name="plan" /><span>{t("editor.plan")}</span></button>
+      <button class="tool" class:on={prefs.layout === "split"} onclick={() => setLayout("split")} title={t("editor.both")}><Icon name="split" /><span>{t("editor.both")}</span></button>
       <button class="tool" class:on={prefs.layout === "3d"} onclick={() => setLayout("3d")} title="F3"><Icon name="cube" /><span>{t("editor.model")}</span></button>
-      <button class="tool" onclick={() => plan?.fit()} disabled={prefs.layout === "3d"}><Icon name="fit" /><span>{t("plan.fit")}</span></button>
-      <button class="tool" class:on={showDims} onclick={() => (showDims = !showDims)}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
+      <button class="tool" onclick={() => plan?.fit()} disabled={prefs.layout === "3d"} title={t("plan.fit")}><Icon name="fit" /><span>{t("plan.fit")}</span></button>
+      <button class="tool" class:on={showDims} onclick={() => (showDims = !showDims)} title={t("tool.dims")}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
     </div>
   </div>
 
@@ -827,15 +834,16 @@
         {/if}
       </div>
 
-      <aside>
+      <aside class:open={dockOpen}>
         <div class="tabs" role="tablist">
-          <button role="tab" aria-selected={dock === "results"} class:on={dock === "results"} onclick={() => (dock = "results")}><Icon name="chart" size={15} />{t("dock.results")}</button>
-          <button role="tab" aria-selected={dock === "ai"} class:on={dock === "ai"} onclick={() => (dock = "ai")}>
-            <Icon name="sparkle" size={15} />{t("dock.ai")}{#if pending}<i class="badge"></i>{/if}
+          <button role="tab" aria-selected={dock === "results"} class:on={dock === "results"} onclick={() => showDock("results")} title={t("dock.results")}><Icon name="chart" size={15} /><span class="tab-label">{t("dock.results")}</span></button>
+          <button role="tab" aria-selected={dock === "ai"} class:on={dock === "ai"} onclick={() => showDock("ai")} title={t("dock.ai")}>
+            <Icon name="sparkle" size={15} /><span class="tab-label">{t("dock.ai")}</span>{#if pending}<i class="badge"></i>{/if}
           </button>
-          <button role="tab" aria-selected={dock === "job"} class:on={dock === "job"} onclick={() => (dock = "job")}><Icon name="briefcase" size={15} />{t("dock.job")}</button>
+          <button role="tab" aria-selected={dock === "job"} class:on={dock === "job"} onclick={() => showDock("job")} title={t("dock.job")}><Icon name="briefcase" size={15} /><span class="tab-label">{t("dock.job")}</span></button>
         </div>
         <div class="dock">
+          <button class="icon-btn dock-close" onclick={() => (dockOpen = false)} aria-label={t("common.close")} title={t("common.close")}><Icon name="x" size={16} /></button>
           {#if dock === "results"}
             <Results {result} {project} />
           {:else if dock === "ai"}
@@ -849,8 +857,8 @@
 
     <footer class="statusbar">
       <span class="coords">{cursor ? `X ${num(cursor.x)}   Y ${num(cursor.y)}` : "X —   Y —"}</span>
-      <span>{t("status.snap")}</span>
-      <span>{t("status.walls", { n: wallCount, p: project.parts.length })}</span>
+      <span class="opt">{t("status.snap")}</span>
+      <span class="opt">{t("status.walls", { n: wallCount, p: project.parts.length })}</span>
       {#if result}<span>{t("res.area")}: <b>{m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save">
@@ -939,7 +947,7 @@
     background: var(--surface-2);
   }
   .title {
-    width: 280px;
+    width: clamp(110px, 24vw, 280px);
     border-color: transparent;
     background: transparent;
     font-weight: 600;
@@ -963,7 +971,8 @@
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    max-width: 420px;
+    max-width: min(420px, 32vw);
+    min-width: 0;
     height: 30px;
     padding: 0 12px;
     border: 1px solid var(--border);
@@ -1016,6 +1025,7 @@
     border-right: none;
   }
   .tool {
+    position: relative;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1142,6 +1152,7 @@
     pointer-events: none;
   }
   aside {
+    position: relative;
     width: 330px;
     flex: none;
     display: flex;
@@ -1188,10 +1199,15 @@
     overflow: auto;
     padding: 16px;
   }
+  .dock-close {
+    display: none;
+  }
   .statusbar {
     display: flex;
     align-items: center;
     gap: 18px;
+    overflow: hidden;
+    white-space: nowrap;
     height: 26px;
     padding: 0 12px;
     background: var(--surface-2);
@@ -1200,7 +1216,7 @@
     color: var(--text-2);
   }
   .coords {
-    min-width: 150px;
+    min-width: 130px;
     font-variant-numeric: tabular-nums;
   }
   .save {
@@ -1218,5 +1234,162 @@
     display: flex;
     align-items: center;
     gap: 6px;
+  }
+
+  /* Edit bars below the views never take more than about half of a low window. */
+  .main > :global(.bar) {
+    flex: none;
+    max-height: 46vh;
+    overflow-y: auto;
+  }
+
+  /* ---- Responsive: half-screen and smaller windows ---- */
+  @media (max-width: 1440px) {
+    .tool {
+      min-width: 0;
+      padding: 0 7px;
+    }
+  }
+  /* Narrow or low window: the toolbar collapses to icons (tooltips keep the names). */
+  @media (max-width: 1220px), (max-height: 640px) {
+    .tool {
+      width: 36px;
+      height: 36px;
+      padding: 0;
+    }
+    .tool span {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+    }
+    .group {
+      padding-right: 4px;
+      margin-right: 2px;
+    }
+  }
+  @media (max-width: 1100px) {
+    aside {
+      width: 290px;
+    }
+    .statusbar {
+      gap: 12px;
+    }
+  }
+  /* Half-screen: the side panel becomes a rail of tabs that opens over the views. */
+  @media (max-width: 900px) {
+    header {
+      gap: 4px;
+      padding: 6px 8px;
+    }
+    .toolbar {
+      flex-wrap: wrap;
+      overflow: visible;
+      row-gap: 2px;
+    }
+    aside {
+      width: 44px;
+    }
+    .tabs {
+      flex: 1;
+      flex-direction: column;
+      justify-content: flex-start;
+      padding: 6px 4px;
+      border-bottom: none;
+    }
+    .tabs button {
+      flex: none;
+      height: 36px;
+      border-bottom: none;
+      border-radius: 8px;
+    }
+    .tabs button .tab-label {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+    }
+    .tabs button.on {
+      background: var(--surface-2);
+    }
+    aside.open .tabs button.on {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    .badge {
+      top: 5px;
+      right: 5px;
+    }
+    .dock {
+      display: none;
+    }
+    aside.open .dock {
+      display: block;
+      position: absolute;
+      z-index: 20;
+      top: 0;
+      right: 100%;
+      bottom: 0;
+      width: min(340px, calc(100vw - 60px));
+      padding-top: 40px;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      box-shadow: var(--shadow-lg);
+    }
+    .dock-close {
+      display: inline-grid;
+      position: absolute;
+      top: 6px;
+      right: 8px;
+    }
+    .opt {
+      display: none;
+    }
+  }
+  @media (max-width: 700px) {
+    .crumb,
+    .crumbs > span:not(.jobno) {
+      display: none;
+    }
+  }
+  /* Taller than wide (e.g. left/right half of a screen): plan above 3D instead of side by side. */
+  @media (orientation: portrait) {
+    .views.split {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr 1fr;
+    }
+  }
+  /* Small plan: keep the plan hint to one line so it does not cover the drawing. */
+  @media (max-height: 640px), (max-width: 900px) {
+    .view :global(.hint) {
+      max-width: calc(100% - 20px);
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+  }
+  /* Very low window: keep the views usable; toolbar scrolls instead of wrapping. */
+  @media (max-height: 520px) {
+    header {
+      padding-top: 3px;
+      padding-bottom: 3px;
+    }
+    .toolbar {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      padding-top: 2px;
+      padding-bottom: 2px;
+    }
+    .main > :global(.bar) {
+      max-height: 36vh;
+    }
+  }
+  @media (max-height: 640px) {
+    .review,
+    .warn-bar {
+      padding: 6px 12px;
+    }
   }
 </style>
