@@ -182,7 +182,7 @@ impl Project {
             }
         }
         for (wi, w) in self.windows.iter().enumerate() {
-            let ok = [w.x, w.y, w.width, w.height].iter().all(|v| v.is_finite())
+            let ok = [w.x, w.y, w.width, w.height].iter().all(|&v| sane(v))
                 && w.width > 0.0
                 && w.height > 0.0;
             if !ok {
@@ -323,8 +323,18 @@ pub struct WallSource {
     pub angle_deg: f64,
 }
 
+/// Largest coordinate, height or overhang the engine accepts, m. Finite
+/// values beyond it (e.g. `1e308` in a hand-edited file) overflow in the
+/// engine's arithmetic and give NaN geometry; no roof is 1000 km away.
+pub const MAX_COORD: f64 = 1e6;
+
+/// A finite number within [`MAX_COORD`].
+fn sane(v: f64) -> bool {
+    v.is_finite() && v.abs() <= MAX_COORD
+}
+
 fn finite_point(p: Point2) -> bool {
-    p.x.is_finite() && p.y.is_finite()
+    sane(p.x) && sane(p.y)
 }
 
 /// DACAD's default material names (DACAD.exe strings 1601-1605, German
@@ -367,9 +377,9 @@ impl EdgeDef {
                 !(self.pitch_deg > 0.0 && self.pitch_deg < 180.0),
                 "pitch must be between 0° and 180°",
             ),
-            (!self.eave_height.is_finite(), "eave height is not a number"),
+            (!sane(self.eave_height), "eave height is not a number"),
             (
-                !(self.overhang >= 0.0 && self.overhang.is_finite()),
+                !(self.overhang >= 0.0 && sane(self.overhang)),
                 "overhang must be zero or positive",
             ),
             (
@@ -377,9 +387,7 @@ impl EdgeDef {
                 "direction is not a number",
             ),
             (
-                stacked
-                    .into_iter()
-                    .any(|(h, p)| !h.is_finite() || !p.is_finite()),
+                stacked.into_iter().any(|(h, p)| !sane(h) || !p.is_finite()),
                 "half-hip or pitch break is not a number",
             ),
         ];

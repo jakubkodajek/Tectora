@@ -371,7 +371,9 @@ pub fn check_structure_fit(c: &mut Case<'_>, roof: &Roof, plan: f64, fit: Fit) {
     // Merged corners leave slivers of overlap or gap along the face sides.
     let tiling = match fit {
         Fit::Exact => 1e-4 * plan.max(1.0),
-        Fit::Dacad => 1e-4 * plan.max(1.0) + 2e-4 * sides,
+        // Up to 1 mm on average along every side; the largest seen, each
+        // byte-identical to DACAD in its core emulator, is 0.6 mm.
+        Fit::Dacad => 1e-4 * plan.max(1.0) + 1e-3 * sides,
     };
     c.eq_tol("plan tiling", plan_sum, plan, tiling);
     let gables = roof.geos.iter().any(|g| !g.gables.is_empty());

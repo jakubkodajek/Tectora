@@ -84,12 +84,12 @@ within those tolerances of each other are skipped by the envelope properties
    above the envelope. This is DACAD's behaviour: 477 mixed-overhang captures
    are byte-identical. With one overhang and pitch, or no overhangs, the roof
    is the envelope.
-2. **Candidate: hips outside the building (C1, C3).** About 1 in 3 000 roofs
-   with mixed overhangs and pitches gets hips running outside the eave outline
-   or overlapping faces (C1: 60.35 m² on a 35.2 m² roof). Both go through the
-   DACAD core port, not a fallback. Needs a DACAD run to tell a port bug from
-   DACAD behaviour; test `roof_stays_inside_its_eave_outline` is ignored until
-   then.
+2. **Hips outside the building (C1, C3), DACAD's own.** About 1 in 3 000
+   roofs with mixed overhangs and pitches gets hips running outside the eave
+   outline or overlapping faces (C1: 60.35 m² on a 35.2 m² roof). Run in the
+   DACAD core emulator, both are byte-identical to DACAD, so the port is
+   faithful; test `roof_stays_inside_its_eave_outline` stays ignored as
+   DACAD-dependent.
 3. **Reported area vs. face polygons (C2, C5).** DACAD takes each face's area
    from its own edge list, not from the merged corners. Mostly the difference
    is under 0.3 %, in C2 the total is 1.2 % above the exact roof while the
@@ -100,12 +100,24 @@ within those tolerances of each other are skipped by the envelope properties
    (`analytic.rs::far_from_origin_precision`). Shifting the project to the
    origin before the calculation would remove this, at the cost of byte parity
    with DACAD for such files.
-5. **Face orientation.** `RoofFace::polygon` is documented as
+5. **Huge coordinates (fixed).** A finite but huge value (x = −1e308 in a
+   hand-edited project) passed validation, could not be written to the RD2,
+   and overflowed in the fallback sweep: a panic in debug builds, NaN
+   geometry in release. `Project::validate` now rejects coordinates,
+   heights and overhangs beyond ±1 000 km (`model::MAX_COORD`), so such a
+   part gives no roof (`huge_coordinates_are_rejected`).
+6. **Face orientation.** `RoofFace::polygon` is documented as
    counter-clockwise, but faces come in either orientation (as in DACAD's
    SO2). The 3D view draws both sides, so nothing shows; the doc comment is
    wrong.
 
-The candidate cases (project JSON and the RD2 the engine writes) are in the
+Every deviation from exact geometry found so far (73 roofs: the census's
+worst 60, C1–C5, D1–D7 from property failures under other seeds) was run in
+the DACAD core emulator and is SO2 byte-identical to DACAD. The property
+tests run with a fixed seed (`invariants.rs::SEED`) so CI does not depend on
+which rare DACAD artefact a random seed hits; `PROPTEST_RNG_SEED` explores.
+
+The cases (project JSON, the RD2 the engine writes, DACAD's SO2) are in the
 project files under `core-tests/dacad-candidates/`, the census's worst cases
 under `core-tests/census/`. To check one in the DACAD core emulator:
 `core_run.py C1_hips_outside.RD2 OUT/`, then
