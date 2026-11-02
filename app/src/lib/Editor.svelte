@@ -22,6 +22,8 @@
   import StandardRoofForm from "./StandardRoofForm.svelte";
   import RoundRoofForm from "./RoundRoofForm.svelte";
   import RoofCalcForm from "./RoofCalcForm.svelte";
+  import TransformForm from "./TransformForm.svelte";
+  import { offsetWall, transformPart, type TransformMode, type TransformOp } from "./transform";
   import { oppositeWall, spanBetween, type Arc } from "./roundroof";
   import { api, onProjectsChanged } from "./api";
   import { changedEdges, describeChange } from "./changes";
@@ -250,6 +252,28 @@
 
   // Calculation helpers on the selected wall.
   let calc = $state<{ part: number; edge: number; patches: Map<number, Partial<EdgeDef>> | null } | null>(null);
+
+  /** The move / rotate / mirror / copy dialog for the selected part (DACAD: Bearbeiten). */
+  let xform = $state<{ part: number; edge: number | null; mode: TransformMode; op: TransformOp | null } | null>(null);
+
+  function openTransform() {
+    if (!project || !selection) return;
+    xform = { part: selection.part, edge: selection.edge, mode: "move", op: null };
+  }
+
+  function applyTransform() {
+    if (!project || !xform?.op) return;
+    const op = xform.op;
+    if (op.kind === "wall") {
+      if (!offsetWall(project.parts[xform.part], op.edge, op.dist)) return;
+    } else {
+      const parts = transformPart(project, xform.part, op.map, op.copies);
+      if (parts.length) selection = { part: parts[parts.length - 1], edge: 0 };
+    }
+    xform = null;
+    commit();
+    setTimeout(() => plan?.fit(), 0);
+  }
 
   function applyCalc() {
     if (!project || !calc?.patches) return;
@@ -699,6 +723,7 @@
       <button class="tool" class:on={placing === "line"} disabled={!result} onclick={() => togglePlacing("line")} title={t("tool.lineHint")}><Icon name="line" /><span>{t("tool.line")}</span></button>
       <button class="tool" class:on={placing === "face"} disabled={!result} onclick={() => togglePlacing("face")} title={t("tool.faceHint")}><Icon name="face" /><span>{t("tool.face")}</span></button>
       <button class="tool" class:on={!!project?.flat_roof} disabled={!project?.parts.length} onclick={toggleFlat} title={t("tool.flatHint")}><Icon name="flat" /><span>{t("tool.flat")}</span></button>
+      <button class="tool" class:on={!!xform} disabled={!selection} onclick={openTransform} title={t("tool.transformHint")}><Icon name="move" /><span>{t("tool.transform")}</span></button>
       <button class="tool" disabled={!selection || (project?.parts.length ?? 0) < 2} onclick={deletePart} title={t("tool.deletePartHint")}><Icon name="trash" /><span>{t("tool.deletePart")}</span></button>
     </div>
     <div class="group">
@@ -793,6 +818,7 @@
             onchange={patchEdge}
             onapplyall={applyAll}
             onlength={setLength}
+            onpoint={(x, y) => { if (selection) { moveVertex(selection.part, selection.edge, x, y); commit(); } }}
             ondelete={deleteVertex}
             onmarker={insertMarker}
             onround={opposite !== null ? openRound : undefined}
@@ -811,7 +837,7 @@
         </div>
         <div class="dock">
           {#if dock === "results"}
-            <Results {result} />
+            <Results {result} {project} />
           {:else if dock === "ai"}
             <AiPanel {id} {project} {activity} onrevert={() => revert(false)} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
@@ -850,6 +876,16 @@
     {#snippet footer()}
       <button class="btn" onclick={() => (round = null)}>{t("common.cancel")}</button>
       <button class="btn primary" disabled={!round?.arc} onclick={applyRound}>{t("common.ok")}</button>
+    {/snippet}
+  </Modal>
+{/if}
+
+{#if xform && project}
+  <Modal title={t("xf.title")} width={560} onclose={() => (xform = null)}>
+    <TransformForm part={project.parts[xform.part]} edge={xform.edge} bind:mode={xform.mode} bind:op={xform.op} />
+    {#snippet footer()}
+      <button class="btn" onclick={() => (xform = null)}>{t("common.cancel")}</button>
+      <button class="btn primary" disabled={!xform?.op} onclick={applyTransform}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}

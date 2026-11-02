@@ -85,6 +85,11 @@ pub fn manual_quantities(project: &Project) -> crate::roof::RoofQuantities {
         roof_area: project.manual_faces.iter().map(|f| f.area()).sum(),
         ..Default::default()
     };
+    if q.roof_area != 0.0 {
+        // DACAD gives a new face no wall, so it takes the first material.
+        q.area_by_material
+            .push((crate::model::DEFAULT_MATERIAL, q.roof_area));
+    }
     for line in project.manual_lines.iter().filter(|l| l.counted()) {
         let len = line.length();
         match line.code.as_str() {
@@ -252,5 +257,67 @@ mod manual_tests {
             label: String::new(),
         };
         assert!((f.area() - 6.0).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod material_tests {
+    use super::*;
+
+    fn split(project: &Project) -> (f64, Vec<(u8, f64)>) {
+        let t = roof_totals(project);
+        (t.roof_area, t.area_by_material)
+    }
+
+    #[test]
+    fn one_material_takes_the_whole_area() {
+        let p = crate::examples::find("l-shape").unwrap().project();
+        let (area, by) = split(&p);
+        assert_eq!(by.len(), 1);
+        assert_eq!(by[0].0, crate::model::DEFAULT_MATERIAL);
+        assert!((by[0].1 - area).abs() < 1e-9);
+    }
+
+    #[test]
+    fn faces_take_their_walls_material() {
+        let mut p = crate::examples::find("hip").unwrap().project();
+        let before = roof_totals(&p).roof_area;
+        p.parts[0].edges[0].material = 2;
+        let (area, by) = split(&p);
+        // The material does not change the roof, only splits its area.
+        assert!((area - before).abs() < 1e-9);
+        assert_eq!(by.iter().map(|e| e.0).collect::<Vec<_>>(), vec![1, 2]);
+        assert!((by.iter().map(|e| e.1).sum::<f64>() - area).abs() < 1e-9);
+        let face: f64 = crate::openings::generate_project(&p)[0]
+            .faces
+            .iter()
+            .filter(|f| f.edge == 0)
+            .map(|f| f.area)
+            .sum();
+        assert!((by[1].1 - face).abs() < 1e-9);
+    }
+
+    #[test]
+    fn clad_gable_counts_for_its_material() {
+        let mut p = crate::examples::find("gable").unwrap().project();
+        let gable = p.parts[0].edges.iter().position(|e| e.is_gable()).unwrap();
+        p.parts[0].edges[gable].clad = true;
+        p.parts[0].edges[gable].material = 4;
+        let geo = &crate::openings::generate_project(&p)[0];
+        assert!(geo.clad_area > 0.0);
+        let (area, by) = split(&p);
+        let slate = by.iter().find(|e| e.0 == 4).map(|e| e.1).unwrap();
+        assert!((slate - geo.clad_area).abs() < 1e-9);
+        assert!((by.iter().map(|e| e.1).sum::<f64>() - area).abs() < 1e-9);
+    }
+
+    #[test]
+    fn material_names_default_to_dacad() {
+        let mut p = Project::new("x");
+        assert_eq!(p.material_name(2), "Blech");
+        p.material_names = vec![String::new(), "Plech Lindab".into()];
+        assert_eq!(p.material_name(1), "Ziegel");
+        assert_eq!(p.material_name(2), "Plech Lindab");
+        assert_eq!(p.material_name(9), "Material 9");
     }
 }

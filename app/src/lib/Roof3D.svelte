@@ -112,7 +112,24 @@
     if (!framed && result) frame();
   }
 
-  function frame() {
+  /**
+   * Camera directions of DACAD's views (Ansicht › Neue Vorder-, Hinter-,
+   * linke / rechte Seiten-, Grundrissansicht) in three.js axes: the front
+   * view looks north, from the plan's -y side.
+   */
+  const VIEWS = {
+    iso: [0.9, 0.75, 1.1],
+    front: [0, 0.06, 1],
+    back: [0, 0.06, -1],
+    left: [-1, 0.06, 0],
+    right: [1, 0.06, 0],
+    top: [0, 1, 0.0001],
+  } as const;
+  type View = keyof typeof VIEWS;
+  let view = $state<View>("iso");
+
+  function frame(v: View = view) {
+    view = v;
     const box = new THREE.Box3().setFromObject(content);
     if (box.isEmpty()) return;
     const c = box.getCenter(new THREE.Vector3());
@@ -121,7 +138,7 @@
     // Distance at which the bounding sphere fits the vertical field of view.
     const fov = (camera.fov * Math.PI) / 180;
     const dist = (size * 0.6) / Math.tan(fov / 2) / Math.min(1, camera.aspect);
-    const dir = new THREE.Vector3(0.9, 0.75, 1.1).normalize();
+    const dir = new THREE.Vector3(...VIEWS[v]).normalize();
     camera.position.copy(c).addScaledVector(dir, dist);
     camera.near = size / 100;
     camera.far = size * 20;
@@ -189,7 +206,12 @@
 </script>
 
 <div class="host" bind:this={host}>
-  <button class="fit icon-btn" title={t("plan.fit")} aria-label={t("plan.fit")} onclick={frame}>
+  <div class="views" role="radiogroup" aria-label={t("view.title")}>
+    {#each Object.keys(VIEWS) as v}
+      <button class:on={view === v} role="radio" aria-checked={view === v} onclick={() => frame(v as View)} title={t(`view.${v}Hint`)}>{t(`view.${v}`)}</button>
+    {/each}
+  </div>
+  <button class="fit icon-btn" title={t("plan.fit")} aria-label={t("plan.fit")} onclick={() => frame()}>
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
   </button>
 </div>
@@ -204,6 +226,35 @@
   }
   .host :global(canvas) {
     display: block;
+  }
+  .views {
+    position: absolute;
+    left: 50%;
+    bottom: 10px;
+    transform: translateX(-50%);
+    z-index: 2;
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--surface);
+  }
+  .views button {
+    padding: 4px 9px;
+    border: 0;
+    background: transparent;
+    color: var(--text-2);
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .views button + button {
+    border-left: 1px solid var(--border);
+  }
+  .views button.on {
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
   }
   .fit {
     position: absolute;

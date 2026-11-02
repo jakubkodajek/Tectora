@@ -83,6 +83,13 @@ impl Rd2Map {
             .find(|d| d.model == model)
             .map(|d| (d.part, usize::MAX))
     }
+
+    /// The project's dormer and its edge index for a dormer wall.
+    pub fn dormer_wall(&self, model: i32, wall: i32) -> Option<(usize, usize)> {
+        let d = self.dormers.iter().find(|d| d.model == model)?;
+        let ei = d.walls.iter().position(|&w| w == wall)?;
+        Some((d.dormer, ei))
+    }
 }
 
 /// The main-roof wall a dormer sits on, as DACAD writes it into the
@@ -1056,13 +1063,33 @@ pub fn sol_geometries(project: &Project, map: &Rd2Map, res: &SolResult) -> Vec<R
                 .collect()
         };
         let cut: f64 = f.cuts.iter().map(|c| c.0).sum();
+        // The face's material is its wall's (a dormer face: the dormer
+        // wall's, else the dormer front's).
+        let material = if ei == usize::MAX {
+            map.dormer_wall(f.model, f.wall)
+                .and_then(|(di, wi)| project.dormers.get(di)?.edges.get(wi))
+                .map(|e| e.material)
+                .or_else(|| {
+                    let d = map.dormers.iter().find(|d| d.model == f.model)?;
+                    let edges = &project.dormers.get(d.dormer)?.edges;
+                    edges.get(edges.len() / 2).map(|e| e.material)
+                })
+                .unwrap_or(crate::model::DEFAULT_MATERIAL)
+        } else {
+            project.parts[pi]
+                .edges
+                .get(ei)
+                .map_or(crate::model::DEFAULT_MATERIAL, |e| e.material)
+        };
         let vertical = (f.pitch_deg - 90.0).abs() <= 90.0 - crate::model::GABLE_PITCH_DEG;
         // Faces without roof material (unclad gables, a pitch break past
         // the vertical written with flag 0) are walls: DACAD's area leaves
         // them out.
         if vertical || !f.clad {
             if vertical && f.clad {
-                geo.clad_area += f.surfaces.iter().map(|s| s.1).sum::<f64>() + cut;
+                let area = f.surfaces.iter().map(|s| s.1).sum::<f64>() + cut;
+                geo.clad_area += area;
+                crate::roof::add_material_area(&mut geo.clad_materials, material, area);
             }
             for (edges, _) in &f.surfaces {
                 let p = polygon(edges);
@@ -1080,6 +1107,7 @@ pub fn sol_geometries(project: &Project, map: &Rd2Map, res: &SolResult) -> Vec<R
                 polygon: polygon(edges),
                 area: *area,
                 deducted: 0.0,
+                material,
             });
         }
         if let Some(face) = geo.faces.get_mut(first) {

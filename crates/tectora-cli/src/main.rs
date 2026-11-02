@@ -101,14 +101,19 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
                 })
                 .collect();
             let lines_by_type = dacad_line_totals(&project);
-            let area = tectora_core::quantities::roof_totals(&project).roof_area;
+            let totals = tectora_core::quantities::roof_totals(&project);
+            let mut by_material = serde_json::Map::new();
+            for &(m, a) in &totals.area_by_material {
+                by_material.insert(project.material_name(m), json!(round2(a)));
+            }
             let mut out = json!({
                 "ok": true,
                 "name": project.name,
                 "parts": parts,
                 "quantities": {
                     "lines_by_type": lines_by_type,
-                    "area_by_material": { "roof": round2(area) },
+                    "roof_area": round2(totals.roof_area),
+                    "area_by_material": by_material,
                 },
             });
             if let Some(e) = dacad_error {

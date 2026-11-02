@@ -104,6 +104,7 @@ fn wall(id: usize, w: &Value) -> DadWall {
         half_hip,
         breaks: rest.map(stacked).collect(),
         clad: pitch_deg >= GABLE_PITCH_DEG && d0["material"].as_u64().unwrap_or(0) != 0,
+        material: tectora_core::model::DEFAULT_MATERIAL,
     }
 }
 

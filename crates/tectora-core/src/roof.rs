@@ -131,6 +131,8 @@ pub struct RoofFace {
     /// Area deducted for windows and chimneys, m².
     #[serde(default)]
     pub deducted: f64,
+    /// Roof material of the wall the face belongs to ([`crate::EdgeDef::material`]).
+    pub material: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]
@@ -143,6 +145,10 @@ pub struct RoofGeometry {
     /// part of the roof area.
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub clad_area: f64,
+    /// Part of `clad_area` per roof material, where the producer knows the
+    /// walls; the rest is the first material's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clad_materials: Vec<(u8, f64)>,
     /// Area deducted per window, chimney and dormer (for norm rules).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub openings: Vec<Opening>,
@@ -218,6 +224,18 @@ pub struct RoofQuantities {
     pub gorge_length: f64,
     pub abutment_length: f64,
     pub ridge_height: f64,
+    /// Roof area per material number, sorted by number (DACAD's result
+    /// faces list each face's material).
+    #[serde(default)]
+    pub area_by_material: Vec<(u8, f64)>,
+}
+
+/// Adds `area` to `material`'s entry of a list sorted by material.
+pub fn add_material_area(list: &mut Vec<(u8, f64)>, material: u8, area: f64) {
+    match list.binary_search_by_key(&material, |e| e.0) {
+        Ok(i) => list[i].1 += area,
+        Err(i) => list.insert(i, (material, area)),
+    }
 }
 
 impl RoofQuantities {
@@ -236,6 +254,9 @@ impl RoofQuantities {
         self.gorge_length += q.gorge_length;
         self.abutment_length += q.abutment_length;
         self.ridge_height = self.ridge_height.max(q.ridge_height);
+        for &(m, a) in &q.area_by_material {
+            add_material_area(&mut self.area_by_material, m, a);
+        }
     }
 }
 
@@ -267,6 +288,21 @@ impl RoofGeometry {
             roof_area: self.faces.iter().map(|f| f.area).sum::<f64>() + self.clad_area,
             ..Default::default()
         };
+        for f in &self.faces {
+            add_material_area(&mut q.area_by_material, f.material, f.area);
+        }
+        let mut clad_rest = self.clad_area;
+        for &(m, a) in &self.clad_materials {
+            add_material_area(&mut q.area_by_material, m, a);
+            clad_rest -= a;
+        }
+        if clad_rest.abs() > 1e-9 {
+            add_material_area(
+                &mut q.area_by_material,
+                crate::model::DEFAULT_MATERIAL,
+                clad_rest,
+            );
+        }
         for l in &self.lines {
             let len = l.length();
             match l.kind {
@@ -2326,6 +2362,7 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
             polygon,
             area,
             deducted: 0.0,
+            material: edges[b.edge].material,
         });
     }
     let n = edges.len();
@@ -2351,7 +2388,9 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
         if ring.len() >= 3 {
             let poly: Vec<[f64; 3]> = ring.iter().map(|&k| sim.nodes[k]).collect();
             if e.clad {
-                geo.clad_area += area3(&poly);
+                let area = area3(&poly);
+                geo.clad_area += area;
+                add_material_area(&mut geo.clad_materials, e.material, area);
             }
             geo.gables.push(poly);
         }
@@ -2467,6 +2506,7 @@ mod tests {
                 priority: 0,
                 clad: false,
                 source: None,
+                material: crate::model::DEFAULT_MATERIAL,
             })
             .collect();
         let mut part = RoofPart {

@@ -4,6 +4,7 @@
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
   import type { CalcResult, Dormer, Project } from "./types";
+  import { materialIds, materialName } from "./materials";
   import { DORMER_KINDS, buildDormer, defaultParams, parseDormer, roofHeightAt, type DormerKind, type DormerParams } from "./dormers";
 
   let {
@@ -109,6 +110,14 @@
         <span>{t("edge.eaveHeight")}</span>
         <div class="unit"><input type="number" step="0.05" value={params.eave_height} disabled={kind === "pointed"}
           onchange={(e) => { const v = num(e); if (v !== null) set({ eave_height: v }); }} /><em>m</em></div>
+      </label>
+      <label title={t("edge.materialHint")}>
+        <span>{t("edge.material")}</span>
+        <select value={params.material} onchange={(e) => set({ material: +(e.target as HTMLSelectElement).value })}>
+          {#each materialIds(project) as m}
+            <option value={m}>{materialName(project, m)}</option>
+          {/each}
+        </select>
       </label>
       {#if kind === "round"}
         <label>

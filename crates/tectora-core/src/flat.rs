@@ -123,6 +123,10 @@ fn part(project: &Project, part: &RoofPart) -> RoofGeometry {
         polygon: poly.iter().map(|&p| p3(p)).collect(),
         area: signed_area(&poly).abs() - deducted,
         deducted,
+        material: part
+            .edges
+            .first()
+            .map_or(crate::model::DEFAULT_MATERIAL, |e| e.material),
     });
     geo
 }
@@ -144,6 +148,7 @@ mod tests {
             direction_rad: None,
             clad: false,
             source: None,
+            material: crate::model::DEFAULT_MATERIAL,
         }
     }
 

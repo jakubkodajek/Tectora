@@ -354,6 +354,7 @@ pub fn join(geos: &mut [RoofGeometry], parts: &[RoofPart]) {
                     polygon: poly.iter().map(|p| [p.x, p.y, fp.z(*p)]).collect(),
                     area: gross * (1.0 - share),
                     deducted: gross * share,
+                    material: f.material,
                 });
             }
         }

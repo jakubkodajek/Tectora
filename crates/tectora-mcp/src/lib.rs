@@ -89,6 +89,9 @@ fn describe_part(part: &RoofPart) -> Value {
             if e.priority > 0 {
                 v["priority"] = json!(e.priority);
             }
+            if e.material != tectora_core::model::DEFAULT_MATERIAL {
+                v["material"] = json!(e.material);
+            }
             v
         })
         .collect();
@@ -103,6 +106,11 @@ fn quantities(project: &Project) -> Value {
         "hip_count": t.hip_count,
         "valley_count": t.valley_count,
         "lines_by_dacad_code_m": dacad_line_totals(project),
+        "area_by_material_m2": t
+            .area_by_material
+            .iter()
+            .map(|&(m, a)| json!({ "material": m, "name": project.material_name(m), "area": round(a, 2) }))
+            .collect::<Vec<_>>(),
     })
 }
 
@@ -143,6 +151,12 @@ fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
             edge.half_hip = Some(hh);
         }
         None => {}
+    }
+    if let Some(m) = v.get("material") {
+        edge.material = match m.as_u64() {
+            Some(m @ 1..=255) => m as u8,
+            _ => return Err("material must be a material number from 1 (1 tiles, 2 sheet metal, 3 stone, 4 slate, 5 solar panels)".into()),
+        };
     }
     if let Some(p) = v.get("priority") {
         edge.priority = match p.as_u64().or_else(|| p.as_bool().map(u64::from)) {
@@ -195,6 +209,7 @@ fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
         breaks: Vec::new(),
         priority: 0,
         clad: false,
+        material: tectora_core::model::DEFAULT_MATERIAL,
         source: None,
     };
     let specs = v
@@ -275,6 +290,11 @@ fn edge_props() -> Value {
             "type": "integer",
             "enum": [0, 1],
             "description": "DACAD priority. Where this plane meets a parallel plane of another pitch in a horizontal line, the plane with priority 1 ends there; with no priority the steeper plane ends."
+        },
+        "material": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Roof material of the wall's faces, DACAD numbering: 1 tiles (default), 2 sheet metal, 3 stone, 4 slate, 5 solar panels. Splits the roof area by material."
         },
         "breaks": {
             "type": ["array", "null"],

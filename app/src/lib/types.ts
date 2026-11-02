@@ -23,6 +23,8 @@ export interface EdgeDef {
   priority?: number;
   /** Gable covered with roof material: its area above the eave is roof area. */
   clad?: boolean;
+  /** Roof material number, DACAD's list from 1 (1 = tiles, the default). */
+  material?: number;
   direction_rad?: number | null;
 }
 
@@ -58,6 +60,8 @@ export interface Project {
   manual_faces?: ManualFace[];
   /** Calculate as a flat roof at the highest eave (DACAD: Flachdach). */
   flat_roof?: boolean;
+  /** Own names of the roof materials, index 0 = material 1 (DACAD: Materialnamen). */
+  material_names?: string[];
 }
 
 /** A line drawn by hand on the roof; `code` is DACAD's line code. */
@@ -137,6 +141,7 @@ export interface RoofFace {
   polygon: [number, number, number][];
   area: number;
   deducted?: number;
+  material?: number;
 }
 
 export interface RoofQuantities {
@@ -153,6 +158,8 @@ export interface RoofQuantities {
   gorge_length: number;
   abutment_length: number;
   ridge_height: number;
+  /** Roof area per material number, sorted by number. */
+  area_by_material?: [number, number][];
 }
 
 export interface CalcResult {

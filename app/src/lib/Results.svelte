@@ -3,9 +3,15 @@
   // DACAD line code (T eave, F ridge, G hip, K valley, O verge, P shed top edge, c pitch break).
   import { m, m2, num } from "./format";
   import { t } from "./i18n.svelte";
-  import type { CalcResult } from "./types";
+  import { materialName } from "./materials";
+  import type { CalcResult, Project } from "./types";
 
-  let { result }: { result: CalcResult | null } = $props();
+  let { result, project = null }: { result: CalcResult | null; project?: Project | null } = $props();
+
+  /** Area per material, shown once the roof has more than one material or a non-default one. */
+  const materials = $derived(
+    (result?.totals.area_by_material ?? []).filter(([, a]) => Math.abs(a) >= 0.005),
+  );
 
   const totals = $derived(result?.totals ?? null);
   const rows = $derived(
@@ -38,6 +44,17 @@
       <tbody>
         {#each result.parts as p}
           <tr><td>{p.name}</td><td class="v">{m2(p.quantities.roof_area)}</td></tr>
+        {/each}
+      </tbody>
+    </table>
+  {/if}
+
+  {#if materials.length > 1 || (materials.length === 1 && materials[0][0] !== 1)}
+    <h4>{t("res.byMaterial")}</h4>
+    <table>
+      <tbody>
+        {#each materials as [mat, a]}
+          <tr><td>{materialName(project, mat)}</td><td class="v">{m2(a)}</td></tr>
         {/each}
       </tbody>
     </table>

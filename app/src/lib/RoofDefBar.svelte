@@ -5,6 +5,7 @@
   import { t } from "./i18n.svelte";
   import type { EdgeDef, PitchBreak, Project, Selection } from "./types";
   import { GABLE_PITCH, isGable, isMarker } from "./types";
+  import { materialIds, materialName } from "./materials";
 
   let {
     project,
@@ -12,6 +13,7 @@
     onchange,
     onapplyall,
     onlength,
+    onpoint,
     ondelete,
     onmarker,
     onround,
@@ -22,6 +24,8 @@
     onchange: (patch: Partial<EdgeDef>) => void;
     onapplyall: (patch: Partial<EdgeDef>) => void;
     onlength: (len: number) => void;
+    /** Moves the wall's start point to typed coordinates (DACAD: Punkt verschieben). */
+    onpoint?: (x: number, y: number) => void;
     ondelete: () => void;
     onmarker: () => void;
     /** Opens the round-roof helper; absent when the wall has no opposite wall. */
@@ -123,6 +127,18 @@
           onchange={(e) => { const v = num(e); if (v && v > 0) onlength(v); }} /><em>m</em></div>
       </label>
     {/if}
+    {#if onpoint}
+      <label class="xy" title={t("edge.startHint")}>
+        <span>{t("edge.startX")}</span>
+        <div class="unit"><input type="number" step="0.05" value={+edge.start.x.toFixed(3)}
+          onchange={(e) => { const v = num(e); if (v !== null) onpoint(v, edge.start.y); }} /><em>m</em></div>
+      </label>
+      <label class="xy" title={t("edge.startHint")}>
+        <span>{t("edge.startY")}</span>
+        <div class="unit"><input type="number" step="0.05" value={+edge.start.y.toFixed(3)}
+          onchange={(e) => { const v = num(e); if (v !== null) onpoint(edge.start.x, v); }} /><em>m</em></div>
+      </label>
+    {/if}
     <label class:off={gable} title={edge.pitch_deg > GABLE_PITCH && !gable ? t("edge.leaningHint") : undefined}>
       <span>{t("edge.pitch")}</span>
       <div class="unit"><input type="number" step="1" min="1" max="179" disabled={gable} value={gable ? "" : edge.pitch_deg}
@@ -138,6 +154,17 @@
       <div class="unit"><input type="number" step="0.05" min="0" value={edge.overhang}
         onchange={(e) => { const v = num(e); if (v !== null && v >= 0) onchange({ overhang: v }); }} /><em>m</em></div>
     </label>
+    {#if !gable || edge.clad}
+      <label title={t("edge.materialHint")}>
+        <span>{t("edge.material")}</span>
+        <select value={edge.material ?? 1}
+          onchange={(e) => onchange({ material: +(e.target as HTMLSelectElement).value })}>
+          {#each materialIds(project) as m}
+            <option value={m}>{materialName(project, m)}</option>
+          {/each}
+        </select>
+      </label>
+    {/if}
     {#if gable}
       <label class="check" title={t("edge.cladHint")}>
         <input type="checkbox" checked={!!edge.clad}
@@ -194,6 +221,9 @@
         <button class="btn sm" onclick={() => onapplyall({ pitch_deg: edge.pitch_deg })} title={t("edge.pitchAllHint")}>{t("edge.pitchAll")}</button>
       {/if}
       <button class="btn sm" onclick={() => onapplyall({ eave_height: edge.eave_height, overhang: edge.overhang })}>{t("edge.heightAll")}</button>
+      {#if !gable || edge.clad}
+        <button class="btn sm" onclick={() => onapplyall({ material: edge.material ?? 1 })} title={t("edge.materialAllHint")}>{t("edge.materialAll")}</button>
+      {/if}
       {#if oncalc && !marker && !gable}
         <button class="btn sm" onclick={oncalc} title={t("calc.buttonHint")}>{t("calc.button")}</button>
       {/if}

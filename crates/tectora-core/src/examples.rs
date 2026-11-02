@@ -35,6 +35,7 @@ fn single_part(name: &str, points: &[(f64, f64)], pitches: &[f64]) -> Project {
             breaks: Vec::new(),
             priority: 0,
             clad: false,
+            material: crate::model::DEFAULT_MATERIAL,
             source: None,
         })
         .collect();
@@ -209,6 +210,7 @@ pub fn standard_roof(
             breaks: Vec::new(),
             priority: 0,
             clad: false,
+            material: crate::model::DEFAULT_MATERIAL,
             source: None,
         })
         .collect();

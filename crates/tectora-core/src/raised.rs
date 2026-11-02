@@ -48,6 +48,7 @@ pub fn combine(
     let mut geo = RoofGeometry {
         gables: body.gables.clone(),
         clad_area: body.clad_area,
+        clad_materials: body.clad_materials.clone(),
         ..RoofGeometry::default()
     };
     let mut shown: Vec<Shown> = Vec::new();
@@ -83,6 +84,7 @@ pub fn combine(
                 polygon: poly.iter().map(|p| [p.x, p.y, fp.z(*p)]).collect(),
                 area: a * fp.sec(),
                 deducted: 0.0,
+                material: f.material,
             });
             floating.push((poly.clone(), fp, f.edge));
             shown.push(Shown { poly, plane: fp });

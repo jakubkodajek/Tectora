@@ -28,6 +28,7 @@ fn edge(start: Point2, pitch_deg: f64, eave_height: f64, overhang: f64) -> EdgeD
         direction_rad: None,
         clad: false,
         source: None,
+        material: tectora_core::model::DEFAULT_MATERIAL,
     }
 }
 

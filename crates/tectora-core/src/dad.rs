@@ -73,6 +73,8 @@ pub struct DadWall {
     pub breaks: Vec<PitchBreak>,
     /// The wall is a gable covered with roof material.
     pub clad: bool,
+    /// DACAD's material number of the wall (0 none).
+    pub material: u8,
 }
 
 impl DadWall {
@@ -94,6 +96,7 @@ impl DadWall {
             breaks: self.breaks.clone(),
             priority: self.priority,
             clad: self.clad,
+            material: self.material,
             source: Some(crate::model::WallSource {
                 id: self.id,
                 roof: self.group,
@@ -201,6 +204,10 @@ pub fn parse(bytes: &[u8]) -> Result<DadFile, DadError> {
                     half_hip: None,
                     breaks: Vec::new(),
                     clad: num(32)? >= crate::model::GABLE_PITCH_DEG && u16_at(payload, 22) != 0,
+                    material: match u16_at(payload, 22) {
+                        0 => crate::model::DEFAULT_MATERIAL,
+                        m => u8::try_from(m).unwrap_or(crate::model::DEFAULT_MATERIAL),
+                    },
                 });
             }
             (TAG_WALL, SUB_STACKED) if len == 16 => {

@@ -208,6 +208,14 @@ fn unit(v: Point2) -> Point2 {
 
 /// The dormer's walls as `(start, end, definition)`, with zero-length side
 /// walls oriented by their direction.
+/// The material of a dormer's roof: its front wall's (the middle wall of
+/// the chain), as the dormer roof planes belong to it.
+fn dormer_material(d: &Dormer) -> u8 {
+    d.edges
+        .get(d.edges.len() / 2)
+        .map_or(crate::model::DEFAULT_MATERIAL, |e| e.material)
+}
+
 fn walls(d: &Dormer) -> Vec<(Point2, Point2, &EdgeDef)> {
     let n = d.edges.len();
     (0..n)
@@ -265,6 +273,7 @@ fn footprint(d: &Dormer, reach: f64) -> Option<(RoofPart, usize)> {
         breaks: Vec::new(),
         priority: 0,
         clad: false,
+        material: d0.material,
         source: None,
     });
     let mut part = RoofPart {
@@ -794,6 +803,7 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer, host: Option<&(EdgeDe
             polygon: pc.poly.iter().map(|p| [p.x, p.y, pc.plane.z(*p)]).collect(),
             area: signed_area(&pc.poly).abs() * pc.plane.sec(),
             deducted: 0.0,
+            material: dormer_material(d),
         });
     }
     target.lines.extend(lines);
@@ -832,6 +842,7 @@ mod tests {
             direction_rad: None,
             clad: false,
             source: None,
+            material: crate::model::DEFAULT_MATERIAL,
         }
     }
 

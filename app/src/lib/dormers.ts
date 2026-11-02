@@ -29,6 +29,8 @@ export interface DormerParams {
   half_hip_pitch_deg: number;
   /** Rundgaube: polygon segments per cheek; 0 = DACAD's count. */
   segments: number;
+  /** Roof material of all the dormer's walls. */
+  material: number;
 }
 
 export function defaultParams(kind: DormerKind, start: Point2, angle: number, eave: number): DormerParams {
@@ -44,6 +46,7 @@ export function defaultParams(kind: DormerKind, start: Point2, angle: number, ea
     half_hip_height: 0.6,
     half_hip_pitch_deg: 60,
     segments: 0,
+    material: 1,
   };
 }
 
@@ -52,7 +55,7 @@ export function buildDormer(p: DormerParams): Dormer {
   const end = { x: +(p.start.x + u.x * p.width).toFixed(3), y: +(p.start.y + u.y * p.width).toFixed(3) };
   const sloped = p.kind !== "shed";
   const frontSloped = p.kind === "hip" || p.kind === "shed" || p.kind === "trapezoid";
-  const base = { eave_height: p.eave_height, overhang: p.overhang };
+  const base = { eave_height: p.eave_height, overhang: p.overhang, ...(p.material !== 1 ? { material: p.material } : {}) };
   // A Rundgaube is a gable dormer whose cheeks follow the Runddach arc (DACAD.HLP);
   // DACAD's default arc is assumed, its dormer dialog is not verified yet.
   const arc =
@@ -88,6 +91,7 @@ export function parseDormer(d: Dormer): DormerParams {
     ...defaultParams("general", start, angle, f?.eave_height ?? d.edges[0]?.eave_height ?? 0),
     width: Math.hypot(d.end.x - start.x, d.end.y - start.y),
     overhang: f?.overhang ?? 0,
+    material: f?.material ?? 1,
   };
   if (d.edges.length !== 3 || a.direction_rad == null || b.direction_rad == null || f.direction_rad != null) return p;
   const cheeksGable = isGable(a) && isGable(b);

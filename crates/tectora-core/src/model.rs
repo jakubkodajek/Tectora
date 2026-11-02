@@ -39,6 +39,10 @@ pub struct Project {
     /// Flachdach); see [`crate::flat`].
     #[serde(default, skip_serializing_if = "is_false")]
     pub flat_roof: bool,
+    /// Own names of the roof materials (DACAD: Materialnamen), index 0 for
+    /// material 1. A missing or empty name keeps DACAD's default name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub material_names: Vec<String>,
 }
 
 /// A line drawn by hand on the calculated roof (DACAD: Dachlinieneingabe).
@@ -115,6 +119,17 @@ impl ManualFace {
 }
 
 impl Project {
+    /// The name of roof material `m`: the project's own name, else DACAD's.
+    pub fn material_name(&self, m: u8) -> String {
+        let i = usize::from(m.max(1) - 1);
+        match self.material_names.get(i).map(|s| s.trim()) {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => DACAD_MATERIAL_NAMES
+                .get(i)
+                .map_or_else(|| format!("Material {m}"), |s| (*s).to_string()),
+        }
+    }
+
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
@@ -129,6 +144,7 @@ impl Project {
             manual_lines: Vec::new(),
             manual_faces: Vec::new(),
             flat_roof: false,
+            material_names: Vec::new(),
         }
     }
 
@@ -276,6 +292,17 @@ pub struct EdgeDef {
     /// roof area. Walls sloped below 90° always carry the material.
     #[serde(default, skip_serializing_if = "is_false")]
     pub clad: bool,
+    /// Roof material of the wall's faces (DACAD: Material in the roof
+    /// definition), numbered as in DACAD's material list from 1: 1 tiles,
+    /// 2 sheet metal, 3 stone, 4 slate, 5 solar panels (DACAD.exe string
+    /// table 1601-1605; 1600 is "no material"). Whether a gable carries it
+    /// is [`EdgeDef::clad`]; DACAD's core only sees that flag, so the
+    /// number only splits the roof area by material.
+    #[serde(
+        default = "default_material",
+        skip_serializing_if = "is_default_material"
+    )]
+    pub material: u8,
     /// The DACAD wall record this edge was imported from. DACAD's core
     /// takes each wall as recorded (its own length and direction, in file
     /// order), which matters where the walls of a file do not quite meet.
@@ -298,6 +325,24 @@ pub struct WallSource {
 
 fn finite_point(p: Point2) -> bool {
     p.x.is_finite() && p.y.is_finite()
+}
+
+/// DACAD's default material names (DACAD.exe strings 1601-1605, German
+/// build), material 1 first.
+pub const DACAD_MATERIAL_NAMES: [&str; DACAD_MATERIALS as usize] =
+    ["Ziegel", "Blech", "Stein", "Schiefer", "Solarpanel"];
+
+/// DACAD's first material (tiles), the material of a new wall.
+pub const DEFAULT_MATERIAL: u8 = 1;
+/// Materials in DACAD's default material list (DACAD.exe strings 1601-1605).
+pub const DACAD_MATERIALS: u8 = 5;
+
+fn default_material() -> u8 {
+    DEFAULT_MATERIAL
+}
+
+fn is_default_material(v: &u8) -> bool {
+    *v == DEFAULT_MATERIAL
 }
 
 fn is_false(v: &bool) -> bool {
