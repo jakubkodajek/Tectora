@@ -20,6 +20,7 @@ pub mod openings;
 pub mod quantities;
 pub mod raised;
 pub mod roof;
+pub mod settings;
 pub mod store;
 pub mod union;
 

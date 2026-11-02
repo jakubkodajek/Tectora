@@ -76,3 +76,11 @@ Krüppelwalm plane counts as eave T, and hips run through a pitch break.
 6. Tell the user what you assumed (e.g. "overhang not dimensioned, used 0.5 m").
 
 Never invent dimensions you cannot read; ask the user instead.
+
+## Settings and the drawings folder
+
+`get_settings` returns the user's settings, including `effective.drawings_dir`:
+the inbox where the user puts technical drawings to build roofs from. Use the
+`roof_defaults` (pitch, eave height, overhang) when a drawing does not give a
+value, and say so in the summary. `update_settings` changes the same values as
+the app's Settings screen; ask before moving the projects folder.

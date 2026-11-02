@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isDark, ui } from "./theme.svelte";
   import { onMount } from "svelte";
   import * as THREE from "three";
   import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
@@ -31,7 +32,7 @@
     abutment_side: 0x8b5a3c,
   };
 
-  const dark = () => window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const dark = isDark;
 
   // Plan (x, y) with height z maps to three.js (x, z, -y): y-up world.
   const v3 = (p: [number, number, number]) => new THREE.Vector3(p[0], p[2], -p[1]);
@@ -201,6 +202,7 @@
     void project;
     void result;
     void selection;
+    void ui.dark;
     build();
   });
 </script>

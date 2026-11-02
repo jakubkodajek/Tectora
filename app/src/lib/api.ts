@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ActivityItem,
+  AppSettingsView,
   CalcResult,
   ExampleInfo,
   LiveStatus,
@@ -39,7 +40,15 @@ export const api = {
     invoke<string>("create_from_example", { exampleId, name: name ?? null }),
   importDad: (path: string) => invoke<string>("import_dad", { path }),
   calc: (project: Project) => invoke<CalcResult>("calc", { project }),
+  getSettings: () => invoke<AppSettingsView>("get_settings"),
+  updateSettings: (patch: Record<string, unknown>) => invoke<AppSettingsView>("update_settings", { patch }),
+  openFolder: (which: "projects" | "drawings" | "settings") => invoke<void>("open_folder", { which }),
 };
+
+/** Fires when the settings file changes (e.g. an AI agent changed a setting). */
+export function onSettingsChanged(cb: (v: AppSettingsView) => void): Promise<UnlistenFn> {
+  return listen<AppSettingsView>("settings-changed", (e) => cb(e.payload));
+}
 
 /** Fires with the ids of project files that changed on disk. */
 export function onProjectsChanged(cb: (ids: string[]) => void): Promise<UnlistenFn> {

@@ -91,15 +91,10 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// `TECTORA_PROJECTS_DIR`, otherwise `Documents/Tectora`.
+/// The library folder: `TECTORA_PROJECTS_DIR`, then the folder chosen in
+/// the app settings, then `Documents/Tectora`.
 pub fn default_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("TECTORA_PROJECTS_DIR") {
-        return PathBuf::from(dir);
-    }
-    dirs::document_dir()
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("Tectora")
+    crate::settings::Settings::load().projects_dir()
 }
 
 /// Plan view of the inner roof lines (everything except eaves).
