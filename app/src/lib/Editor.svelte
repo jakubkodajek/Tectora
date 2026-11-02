@@ -1361,14 +1361,12 @@
       grid-template-rows: 1fr 1fr;
     }
   }
-  /* Small plan: keep the plan hint to one line so it does not cover the drawing. */
-  @media (max-height: 640px), (max-width: 900px) {
-    .view :global(.hint) {
-      max-width: calc(100% - 20px);
-      overflow: hidden;
-      white-space: nowrap;
-      text-overflow: ellipsis;
-    }
+  /* Keep the plan hint to one line so it does not cover the drawing in smaller views. */
+  .view :global(.hint) {
+    max-width: calc(100% - 20px);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
   /* Very low window: keep the views usable; toolbar scrolls instead of wrapping. */
   @media (max-height: 520px) {
