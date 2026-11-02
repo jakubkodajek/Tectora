@@ -74,6 +74,10 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
             && w.height > 0.0
     });
     let mut geos = generate_valid(&clean);
+    let warnings = crate::check::check(&clean.parts, &geos);
+    for (geo, w) in geos.iter_mut().zip(warnings) {
+        geo.warnings = w;
+    }
     slots
         .into_iter()
         .map(|slot| match slot {

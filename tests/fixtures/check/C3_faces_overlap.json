@@ -1,0 +1,56 @@
+{
+ "schema_version": 1,
+ "name": "C3_faces_overlap",
+ "parts": [
+  {
+   "name": "A",
+   "edges": [
+    {
+     "start": {
+      "x": 6.957,
+      "y": 0.261
+     },
+     "pitch_deg": 24.94,
+     "eave_height": 2.0,
+     "overhang": 0.0
+    },
+    {
+     "start": {
+      "x": 6.048,
+      "y": 1.5
+     },
+     "pitch_deg": 53.37,
+     "eave_height": 2.0,
+     "overhang": 0.512
+    },
+    {
+     "start": {
+      "x": -2.388,
+      "y": 2.819
+     },
+     "pitch_deg": 45.9,
+     "eave_height": 2.0,
+     "overhang": 0.139
+    },
+    {
+     "start": {
+      "x": -4.005,
+      "y": 2.457
+     },
+     "pitch_deg": 16.62,
+     "eave_height": 2.0,
+     "overhang": 0.371
+    },
+    {
+     "start": {
+      "x": -6.957,
+      "y": -0.261
+     },
+     "pitch_deg": 59.32,
+     "eave_height": 2.0,
+     "overhang": 0.0
+    }
+   ]
+  }
+ ]
+}

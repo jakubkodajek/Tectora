@@ -292,6 +292,13 @@ pub fn check_structure_fit(c: &mut Case<'_>, roof: &Roof, plan: f64, fit: Fit) {
         Fit::Exact => (2e-3, 0.0),
         Fit::Dacad => (0.025, 0.02),
     };
+    // A sound roof gets no plausibility warning (tectora_core::check).
+    for g in &roof.geos {
+        c.ok(
+            &format!("plausibility warnings {:?}", g.warnings),
+            g.warnings.is_empty(),
+        );
+    }
     let mut plan_sum = 0.0;
     let mut sides = 0.0;
     let mut segs: Vec<([f64; 3], [f64; 3])> = Vec::new();

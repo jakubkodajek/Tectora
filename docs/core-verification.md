@@ -15,6 +15,7 @@ output, and geometry derived from first principles.
 | DACAD-order properties | `tests/properties.rs` | invariances DACAD keeps | every `cargo test`, nightly |
 | Fuzzing | `invariants.rs` (polygon soups, mutated project JSON), `properties.rs` (DAD bytes) | no panic, finite output | every `cargo test`, nightly |
 | Census | `invariants.rs::census_of_area_artefacts` (ignored) | exact envelope | by hand |
+| Plausibility warnings | `src/check.rs`, `tests/check_cases.rs`, `invariants.rs::roofs_leaving_their_outline_are_flagged` | walls, overhangs, the faces' own corners | every `cargo test`, nightly |
 
 ### Closed forms (`analytic.rs`)
 
@@ -88,8 +89,7 @@ within those tolerances of each other are skipped by the envelope properties
    roofs with mixed overhangs and pitches gets hips running outside the eave
    outline or overlapping faces (C1: 60.35 m² on a 35.2 m² roof). Run in the
    DACAD core emulator, both are byte-identical to DACAD, so the port is
-   faithful; test `roof_stays_inside_its_eave_outline` stays ignored as
-   DACAD-dependent.
+   faithful. The engine keeps DACAD's result and warns (see below).
 3. **Reported area vs. face polygons (C2, C5).** DACAD takes each face's area
    from its own edge list, not from the merged corners. Mostly the difference
    is under 0.3 %, in C2 the total is 1.2 % above the exact roof while the
@@ -124,10 +124,43 @@ under `core-tests/census/`. To check one in the DACAD core emulator:
 `cargo run --release -p tectora-core --example dcore_check -- OUT/C1_hips_outside.RD2`
 with DACAD's SO2 next to it.
 
+## Plausibility warnings
+
+The engine stays 1:1 with DACAD, including the faulty roofs above. Instead
+of changing the result, `tectora_core::check` measures every calculated
+roof against its walls and the app and MCP show a warning (`RoofGeometry::warnings`):
+
+| Warning | Measure | Tolerance |
+|---|---|---|
+| `outside_outline` | largest distance of a face corner outside the eave outline (each wall's strip out to its overhang, mitred; for joined roofs every building's) | 5 cm |
+| `overlapping_faces` | plan area where two faces pass through each other or coincide; a face lying above another one (an overhang over a lower roof) is sound | 0.25 m² |
+| `area_mismatch` | relative difference of the reported face areas (plus deductions) to the faces' own 3D polygons; single roofs only, joined roofs book their pieces by DACAD's own rules | 1 % |
+
+Tolerances were set on 2 779 roofs: every DACAD-calculated `.DAD` in the
+project files (golden, samples, mass s1/s2, mr3, core-stress, variants), the
+census's worst 60 and the candidates. Sound roofs stay below 1 cm outside
+and 0.06 m² overlap; 13 roofs get a warning, all of them geometrically
+wrong:
+
+- outside and overlapping: C1 (and the same roof in the census), mass s2
+  R2_0152, R2_0250, R2_0909 (faces of up to 7 000 m² on a 150 m² building);
+- overlapping only: C3, C4 (DACAD's mixed-overhang model folds two faces
+  through each other; the same roof with the walls moved out is sound),
+  mass s2 R2_0236;
+- area only: C2 (and the census's copy), the near-pyramid hip S02 1000 m
+  from the origin in three variants (10–26 %, single precision).
+
+`roofs_leaving_their_outline_are_flagged` checks on random mixed-overhang
+roofs, against the convex outline's own half-planes, that every roof more
+than 10 cm outside is flagged and no roof within 3 cm is (120 000 cases over
+six seeds pass). The closed-form and invariant tests require that no sound
+roof gets a warning.
+
 ## Running
 
 ```sh
-cargo test --release -p tectora-core --test analytic --test invariants
+cargo test --release -p tectora-core --test analytic --test invariants --test check_cases
+cargo run --release -p tectora-core --example check_scan -- FILE.DAD|PROJECT.json...
 PROPTEST_CASES=20000 cargo test --release -p tectora-core --test invariants
 CENSUS_CASES=3000 TECTORA_CENSUS_DIR=out \
   cargo test --release -p tectora-core --test invariants census -- --ignored --nocapture

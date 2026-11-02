@@ -33,4 +33,3 @@ jobs:
           PROPTEST_CASES: "2000"
         run: |
           cargo test --release -p tectora-core --test properties -- --ignored
-          cargo test --release -p tectora-core --test invariants roof_stays -- --ignored

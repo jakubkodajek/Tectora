@@ -25,6 +25,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use proptest::prelude::*;
+use tectora_core::check::WarningKind;
 use tectora_core::geom::{Point2, signed_area};
 use tectora_core::openings::generate_project;
 use tectora_core::{EdgeDef, HalfHip, PitchBreak, Project};
@@ -531,31 +532,45 @@ proptest! {
         })?;
     }
 
-    /// Whatever DACAD does with overhangs, a roof stays above its building:
-    /// every face corner lies inside the eave outline and the faces do not
-    /// overlap (their plan areas add up to at most the outline's).
+    /// DACAD's roof can leave its building: with mixed overhangs and
+    /// pitches about 1 roof in 3000 gets hips outside the eave outline and
+    /// overlapping faces (C1: 60.35 m2 on a 35.2 m2 roof; confirmed in the
+    /// DACAD core emulator, SO2 byte-identical to DACAD's). The engine keeps
+    /// DACAD's result, and `tectora_core::check` must flag every such roof
+    /// and no other. The reference here is the convex eave outline's own
+    /// half-planes, independent of the check's outline.
     #[test]
-    #[ignore = "DACAD-dependent: with mixed overhangs and pitches about 1 roof in 3000 gets hips outside the building and overlapping faces (C1: 60.35 m2 on a 35.2 m2 roof); confirmed in the DACAD core emulator, SO2 byte-identical to DACAD's"]
-    fn roof_stays_inside_its_eave_outline((p, eaves) in convex_roof(15.0, Overhangs::Mixed)) {
+    fn roofs_leaving_their_outline_are_flagged((p, eaves) in convex_roof(15.0, Overhangs::Mixed)) {
         let roof = calc(&p);
         let plan = signed_area(&eaves);
         let n = eaves.len();
-        verdict(&p, &roof, |c| {
-            let mut sum = 0.0;
-            for f in roof.faces() {
-                sum += plan_of(&f.polygon);
-                for v in &f.polygon {
-                    // Distance inside every eave line (negative = outside).
-                    let inside = (0..n)
-                        .map(|i| {
-                            let (a, b) = (eaves[i], eaves[(i + 1) % n]);
-                            ((v[0] - a.x) * -(b.y - a.y) + (v[1] - a.y) * (b.x - a.x)) / a.distance(b)
-                        })
-                        .fold(f64::MAX, f64::min);
-                    c.ok(&format!("face {} corner {v:?} {:.3} m outside", f.edge, -inside), inside > -EPS);
-                }
+        let mut outside: f64 = 0.0;
+        let mut sum = 0.0;
+        for f in roof.faces() {
+            sum += plan_of(&f.polygon);
+            for v in &f.polygon {
+                // Distance inside every eave line (negative = outside).
+                let inside = (0..n)
+                    .map(|i| {
+                        let (a, b) = (eaves[i], eaves[(i + 1) % n]);
+                        ((v[0] - a.x) * -(b.y - a.y) + (v[1] - a.y) * (b.x - a.x)) / a.distance(b)
+                    })
+                    .fold(f64::MAX, f64::min);
+                outside = outside.max(-inside);
             }
-            c.ok(&format!("faces overlap: {sum:.3} m2 on {plan:.3} m2"), sum < plan * (1.0 + 1e-3) + 0.01);
+        }
+        let kinds: Vec<WarningKind> = roof.geos.iter().flat_map(|g| &g.warnings).map(|w| w.kind).collect();
+        let flagged = kinds.contains(&WarningKind::OutsideOutline);
+        verdict(&p, &roof, |c| {
+            if outside > 0.1 {
+                c.ok(&format!("corner {outside:.3} m outside, warnings {kinds:?}"), flagged);
+            }
+            if flagged {
+                c.ok(&format!("flagged with corners only {outside:.3} m outside"), outside > 0.03);
+            }
+            if sum > plan * 1.02 + 0.5 {
+                c.ok(&format!("faces cover {sum:.3} m2 of {plan:.3} m2, warnings {kinds:?}"), !kinds.is_empty());
+            }
         })?;
     }
 

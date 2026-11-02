@@ -98,6 +98,27 @@ fn describe_part(part: &RoofPart) -> Value {
     json!({ "name": part.name, "edges": edges })
 }
 
+/// A plausibility warning of a calculated roof (`tectora_core::check`),
+/// with what it means for whoever reads the result.
+fn warning(w: &tectora_core::check::RoofWarning) -> Value {
+    use tectora_core::check::WarningKind;
+    let message = match w.kind {
+        WarningKind::OutsideOutline => format!(
+            "part of the roof lies up to {:.2} m outside the eave outline; check pitches and overhangs",
+            w.value
+        ),
+        WarningKind::OverlappingFaces => format!(
+            "roof faces pass through or overlap each other over {:.2} m2; quantities may be wrong",
+            w.value
+        ),
+        WarningKind::AreaMismatch => format!(
+            "reported area differs from the roof faces by {:.1} %; check the area",
+            w.value * 100.0
+        ),
+    };
+    json!({ "kind": w.kind, "value": w.value, "message": message })
+}
+
 fn quantities(project: &Project) -> Value {
     let t = roof_totals(project);
     json!({
@@ -470,7 +491,7 @@ fn tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total.",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total. A part whose roof looks geometrically wrong (outside its eave outline, faces passing through each other, area not matching its faces) carries `warnings`: tell the user and suggest checking pitches and overhangs.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -594,7 +615,11 @@ impl Server {
                     .zip(tectora_core::openings::generate_project(&p))
                     .map(|(part, geo)| {
                         let q = geo.quantities();
-                        json!({ "name": part.name, "quantities": q })
+                        let mut v = json!({ "name": part.name, "quantities": q });
+                        if !geo.warnings.is_empty() {
+                            v["warnings"] = geo.warnings.iter().map(warning).collect();
+                        }
+                        v
                     })
                     .collect();
                 Ok(json!({ "id": id, "total": quantities(&p), "parts": parts }))
@@ -954,6 +979,27 @@ mod tests {
             .unwrap();
         assert!(!s.store.load(&id).unwrap().parts[0].edges[5].is_gable());
         let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn calc_reports_roofs_that_look_wrong() {
+        let s = server();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/check/C1_hips_outside.json");
+        let p: Project = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let id = s.store.save(None, &p).unwrap();
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        let w = r["parts"][0]["warnings"].as_array().unwrap();
+        assert_eq!(w[0]["kind"], "outside_outline");
+        assert!(w[0]["message"].as_str().unwrap().contains("3.69 m"));
+
+        let mut ok = p.clone();
+        for e in &mut ok.parts[0].edges {
+            e.overhang = 0.0;
+        }
+        let id = s.store.save(None, &ok).unwrap();
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        assert!(r["parts"][0].get("warnings").is_none(), "{r}");
     }
 
     #[test]
