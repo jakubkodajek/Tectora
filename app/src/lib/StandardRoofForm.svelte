@@ -73,6 +73,9 @@
         lines: r.parts[0].geometry.lines.filter((l) => l.kind !== "eave").map((l) => [[l.a[0], l.a[1]], [l.b[0], l.b[1]]]),
         area: r.totals.roof_area,
       };
+    }).catch(() => {
+      // Out-of-range dimensions: no preview rather than a stale one.
+      if (my === seq) preview = null;
     });
   });
 </script>
