@@ -1,0 +1,56 @@
+{
+ "schema_version": 1,
+ "name": "C4_mixed_overhang_model_walls_moved",
+ "parts": [
+  {
+   "name": "A",
+   "edges": [
+    {
+     "start": {
+      "x": -2.0795,
+      "y": 3.2764
+     },
+     "pitch_deg": 25.0,
+     "eave_height": 5.411,
+     "overhang": 0
+    },
+    {
+     "start": {
+      "x": -6.3113,
+      "y": 2.061
+     },
+     "pitch_deg": 25.99,
+     "eave_height": 5.411,
+     "overhang": 0
+    },
+    {
+     "start": {
+      "x": -7.8756,
+      "y": -0.1776
+     },
+     "pitch_deg": 29.46,
+     "eave_height": 5.411,
+     "overhang": 0
+    },
+    {
+     "start": {
+      "x": -2.8146,
+      "y": -3.7622
+     },
+     "pitch_deg": 55.41,
+     "eave_height": 5.411,
+     "overhang": 0
+    },
+    {
+     "start": {
+      "x": -1.3692,
+      "y": -4.0662
+     },
+     "pitch_deg": 36.94,
+     "eave_height": 5.411,
+     "overhang": 0
+    }
+   ]
+  }
+ ]
+}

@@ -190,8 +190,24 @@ export interface RoofQuantities {
   area_by_material?: [number, number][];
 }
 
+/** What looks wrong with a calculated roof (tectora_core::check). */
+export interface RoofWarning {
+  kind: "outside_outline" | "overlapping_faces" | "area_mismatch";
+  /** m outside, m² overlapping, or the relative area difference. */
+  value: number;
+}
+
 export interface CalcResult {
-  parts: { name: string; geometry: { faces: RoofFace[]; lines: RoofLine[]; gables: [number, number, number][][] }; quantities: RoofQuantities }[];
+  parts: {
+    name: string;
+    geometry: {
+      faces: RoofFace[];
+      lines: RoofLine[];
+      gables: [number, number, number][][];
+      warnings?: RoofWarning[];
+    };
+    quantities: RoofQuantities;
+  }[];
   totals: RoofQuantities;
   /** Line lengths by DACAD code (T, F, G, K, O, W). */
   codes: Record<string, number>;

@@ -1,0 +1,56 @@
+{
+ "schema_version": 1,
+ "name": "C4_mixed_overhang_model",
+ "parts": [
+  {
+   "name": "A",
+   "edges": [
+    {
+     "start": {
+      "x": -2.537,
+      "y": 3.145
+     },
+     "pitch_deg": 25.0,
+     "eave_height": 5.411,
+     "overhang": 0.0
+    },
+    {
+     "start": {
+      "x": -5.246,
+      "y": 2.367
+     },
+     "pitch_deg": 25.99,
+     "eave_height": 5.411,
+     "overhang": 0.698
+    },
+    {
+     "start": {
+      "x": -7.306,
+      "y": -0.581
+     },
+     "pitch_deg": 29.46,
+     "eave_height": 5.411,
+     "overhang": 0.0
+    },
+    {
+     "start": {
+      "x": -4.255,
+      "y": -2.742
+     },
+     "pitch_deg": 55.41,
+     "eave_height": 5.411,
+     "overhang": 0.702
+    },
+    {
+     "start": {
+      "x": -1.92,
+      "y": -3.233
+     },
+     "pitch_deg": 36.94,
+     "eave_height": 5.411,
+     "overhang": 0.468
+    }
+   ]
+  }
+ ]
+}

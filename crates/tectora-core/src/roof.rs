@@ -166,6 +166,10 @@ pub struct RoofGeometry {
     /// DACAD then gives no roof, and neither does the geometry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<CalcError>,
+    /// What looks wrong with the calculated roof ([`crate::check`]): the
+    /// roof is still DACAD's result, but its quantities need a look.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<crate::check::RoofWarning>,
 }
 
 /// An error DACAD's roof calculation ends with, as DACAD reports it.

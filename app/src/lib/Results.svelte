@@ -4,7 +4,7 @@
   import { m, m2, num } from "./format";
   import { t } from "./i18n.svelte";
   import { materialName } from "./materials";
-  import type { CalcResult, Project } from "./types";
+  import type { CalcResult, Project, RoofWarning } from "./types";
 
   let {
     result,
@@ -30,6 +30,18 @@
   );
 
   const totals = $derived(result?.totals ?? null);
+
+  /** Plausibility warnings of every part, with the part's name when there are several. */
+  const warnings = $derived(
+    (result?.parts ?? []).flatMap((p) =>
+      (p.geometry.warnings ?? []).map((w) => ({ part: result!.parts.length > 1 ? p.name : null, text: warningText(w) })),
+    ),
+  );
+
+  function warningText(w: RoofWarning): string {
+    const v = w.kind === "area_mismatch" ? num(w.value * 100) : num(w.value);
+    return t(`res.warn.${w.kind}`, { v });
+  }
   const rows = $derived(
     totals
       ? [
@@ -53,6 +65,15 @@
     <strong>{totals ? m2(totals.roof_area) : "—"}</strong>
     {#if totals}<small>{t("res.ridgeHeight", { v: num(totals.ridge_height) })}</small>{/if}
   </div>
+
+  {#if warnings.length}
+    <div class="warn" role="status">
+      <div class="warn-head"><i></i>{t("res.warn.title")}</div>
+      {#each warnings as w}
+        <p>{#if w.part}<code>{w.part}</code> {/if}{w.text}</p>
+      {/each}
+    </div>
+  {/if}
 
   {#if result && result.parts.length > 1}
     <h4>{t("res.areas")}</h4>
@@ -185,6 +206,32 @@
     text-align: right;
     font-variant-numeric: tabular-nums;
     font-weight: 500;
+  }
+  .warn {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 12.5px;
+  }
+  .warn-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+  }
+  .warn-head i {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: var(--ai);
+  }
+  .warn p {
+    margin: 6px 0 0 16px;
+    color: var(--text-2);
+  }
+  .warn code {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
   }
   .snap {
     display: flex;
