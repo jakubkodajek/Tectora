@@ -1,9 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppError } from "./errors";
 import type {
   ActivityItem,
   AppSettingsView,
+  AvailableUpdate,
   Attachment,
   CalcResult,
   ExampleInfo,
@@ -14,6 +15,7 @@ import type {
   ResultSnapshot,
   RoofPart,
   StandardKind,
+  UpdateProgress,
 } from "./types";
 
 export interface StandardParams {
@@ -26,6 +28,14 @@ export interface StandardParams {
 }
 
 export const api = {
+  /** A newer version of the app, if the update server offers one. */
+  updateCheck: () => invoke<AvailableUpdate | null>("update_check"),
+  /** Downloads and installs the update the check found; the app then restarts. */
+  updateInstall: (onProgress: (p: UpdateProgress) => void) => {
+    const progress = new Channel<UpdateProgress>();
+    progress.onmessage = onProgress;
+    return invoke<void>("update_install", { progress });
+  },
   projectsDir: () => invoke<string>("projects_dir"),
   listProjects: () => invoke<Library>("list_projects"),
   startupWarnings: () => invoke<AppError[]>("startup_warnings"),

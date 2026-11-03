@@ -14,6 +14,7 @@
   import { actorName, isFresh, live } from "./live.svelte";
   import type { Action } from "./errors";
   import { notifyError } from "./notify.svelte";
+  import UpdateBanner from "./UpdateBanner.svelte";
   import { prefs, savePrefs } from "./settings.svelte";
   import type { BrokenFile, ExampleInfo, JobStatus, ProjectSummary } from "./types";
   import { JOB_STATUSES, isAi } from "./types";
@@ -175,6 +176,7 @@
     </nav>
 
     <main>
+      <UpdateBanner />
       {#if filter === "examples"}
         <div class="head"><h2>{t("home.examples")}</h2><p class="muted">{t("home.examplesHint")}</p></div>
         <div class="examples">

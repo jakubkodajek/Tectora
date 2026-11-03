@@ -329,3 +329,17 @@ export const isGable = (e: EdgeDef) => Math.abs(e.pitch_deg - 90) <= 0.001;
 export const isMarker = (e: EdgeDef) => e.direction_rad != null;
 
 export type Selection = { part: number; edge: number } | null;
+
+/** A newer version of the app the update server offers (app/src-tauri/src/updates.rs). */
+export interface AvailableUpdate {
+  version: string;
+  /** What the release says changed; empty when it says nothing. */
+  notes: string;
+}
+
+/** How much of an update has been downloaded. */
+export interface UpdateProgress {
+  downloaded: number;
+  /** The update's size, when the server says it. */
+  total: number | null;
+}
