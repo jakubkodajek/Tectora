@@ -362,8 +362,10 @@ mod tests {
 
     #[test]
     fn rejects_bad_values() {
-        let mut s = Settings::default();
-        s.locale = Some("fr".into());
+        let s = Settings {
+            locale: Some("fr".into()),
+            ..Settings::default()
+        };
         assert_eq!(s.validate(), Err(SettingsError::InvalidValue("locale")));
         let mut s = Settings::default();
         s.roof_defaults.pitch_deg = 95.0;
@@ -371,8 +373,10 @@ mod tests {
         let mut s = Settings::default();
         s.roof_defaults.overhang = f64::NAN;
         assert!(s.validate().is_err());
-        let mut s = Settings::default();
-        s.projects_dir = Some(PathBuf::from("relative/dir"));
+        let s = Settings {
+            projects_dir: Some(PathBuf::from("relative/dir")),
+            ..Settings::default()
+        };
         assert_eq!(s.validate(), Err(SettingsError::NotAbsolute));
     }
 
