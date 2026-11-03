@@ -23,6 +23,14 @@ jobs:
         env:
           PROPTEST_CASES: ${{ inputs.cases || '20000' }}
         run: cargo test --release -p tectora-core --test properties
+      - name: Property tests, new seed
+        # Pull requests run the fixed seed; this explores a new one each
+        # night. A failure here is a new counterexample to triage (run it in
+        # the DACAD core emulator) and add as a fixed case.
+        env:
+          PROPTEST_CASES: ${{ inputs.cases || '20000' }}
+          PROPTEST_RNG_SEED: ${{ github.run_number }}
+        run: cargo test --release -p tectora-core --test properties --test invariants
       - name: Geometric invariants and fuzzing
         env:
           PROPTEST_CASES: ${{ inputs.cases || '20000' }}
