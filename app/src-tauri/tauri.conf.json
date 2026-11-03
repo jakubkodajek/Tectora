@@ -15,8 +15,8 @@
         "title": "Tectora",
         "width": 1360,
         "height": 860,
-        "minWidth": 960,
-        "minHeight": 620
+        "minWidth": 600,
+        "minHeight": 420
       }
     ],
     "security": {

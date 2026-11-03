@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import type { CalcResult, Point2, Project, Selection } from "./types";
   import { isGable } from "./types";
   import { t } from "./i18n.svelte";
@@ -61,6 +62,8 @@
   let scale = $state(30);
   let center = $state({ x: 0, y: 0 });
   let fitted = false;
+  /** The user zoomed or panned: stop re-fitting the plan when the view is resized. */
+  let userView = false;
 
   const GRID = 0.5;
   const SNAP = 0.05;
@@ -68,6 +71,7 @@
   export function fit() {
     const pts = project.parts.flatMap((p) => p.edges.map((e) => e.start)).concat(drawing ?? []);
     if (pts.length === 0 || width < 10) return;
+    userView = false;
     const xs = pts.map((p) => p.x);
     const ys = pts.map((p) => p.y);
     const w = Math.max(...xs) - Math.min(...xs) || 1;
@@ -85,6 +89,14 @@
       }
       fitted = true;
     }
+  });
+
+  // Window resized (e.g. snapped to half the screen) or a bar below the plan grew:
+  // keep the whole roof in view until the user zooms or pans.
+  $effect(() => {
+    void width;
+    void height;
+    if (untrack(() => fitted && !userView && project.parts.length > 0)) untrack(fit);
   });
 
   const snapPoint = (px: number, py: number, alt: boolean) => {
@@ -162,6 +174,7 @@
       onmove(drag.part, drag.vertex, cursorWorld.x, cursorWorld.y);
     } else if (pan) {
       center = { x: pan.cx - (p.x - pan.x) / scale, y: pan.cy + (p.y - pan.y) / scale };
+      if (Math.hypot(p.x - pan.x, p.y - pan.y) > 3) userView = true;
     }
   }
 
@@ -176,6 +189,7 @@
     const p = localPoint(e);
     const before = { x: wx(p.x), y: wy(p.y) };
     scale = Math.min(400, Math.max(4, scale * Math.exp(-e.deltaY * 0.0015)));
+    userView = true;
     center = { x: center.x + before.x - wx(p.x), y: center.y + before.y - wy(p.y) };
   }
 
