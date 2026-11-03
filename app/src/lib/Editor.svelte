@@ -742,7 +742,7 @@
       <button class="tool" class:on={prefs.layout === "split"} onclick={() => setLayout("split")}><Icon name="split" /><span>{t("editor.both")}</span></button>
       <button class="tool" class:on={prefs.layout === "3d"} onclick={() => setLayout("3d")} title="F3"><Icon name="cube" /><span>{t("editor.model")}</span></button>
       <button class="tool" onclick={() => plan?.fit()} disabled={prefs.layout === "3d"}><Icon name="fit" /><span>{t("plan.fit")}</span></button>
-      <button class="tool" class:on={showDims} onclick={() => (showDims = !showDims)}><Icon name="eye" /><span>{t("tool.dims")}</span></button>
+      <button class="tool" class:on={showDims} onclick={() => (showDims = !showDims)}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
     </div>
   </div>
 
@@ -1121,7 +1121,7 @@
   .btn.accept {
     background: var(--ai);
     border-color: var(--ai);
-    color: #fff;
+    color: var(--on-ai);
   }
   .views {
     flex: 1;

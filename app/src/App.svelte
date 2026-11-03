@@ -114,7 +114,7 @@
     z-index: 100;
   }
   .toast.error {
-    background: var(--danger);
+    background: var(--danger-fill);
     color: #fff;
   }
 </style>

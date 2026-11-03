@@ -159,7 +159,7 @@
       <button class:on={filter === "examples"} onclick={() => (filter = "examples")}>
         <Icon name="house" size={16} />{t("home.examples")}<span>{examples.length}</span>
       </button>
-      <div class="folder" title={dir}><Icon name="folder" size={13} /><span>{dir}</span></div>
+      <div class="folder" title={dir}><Icon name="folder" size={13} /><span>{`\u200E${dir}\u200E`}</span></div>
     </nav>
 
     <main>
