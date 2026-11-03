@@ -21,6 +21,7 @@ pub mod multiroof;
 pub mod openings;
 pub mod quantities;
 pub mod raised;
+pub mod report;
 pub mod roof;
 pub mod settings;
 pub mod snapshot;

@@ -12,8 +12,10 @@
   import { m2, relativeTime } from "./format";
   import { t } from "./i18n.svelte";
   import { actorName, isFresh, live } from "./live.svelte";
+  import type { Action } from "./errors";
+  import { notifyError } from "./notify.svelte";
   import { prefs, savePrefs } from "./settings.svelte";
-  import type { ExampleInfo, JobStatus, ProjectSummary } from "./types";
+  import type { BrokenFile, ExampleInfo, JobStatus, ProjectSummary } from "./types";
   import { JOB_STATUSES, isAi } from "./types";
 
   let {
@@ -22,7 +24,7 @@
     dir,
     onopen,
     onchanged,
-    onerror,
+    broken = [],
     onconnect,
     onsettings,
   }: {
@@ -31,7 +33,8 @@
     dir: string;
     onopen: (id: string) => void;
     onchanged: () => void;
-    onerror: (msg: string) => void;
+    /** Project files in the folder that could not be read. */
+    broken?: BrokenFile[];
     onconnect: () => void;
     onsettings: () => void;
   } = $props();
@@ -82,19 +85,23 @@
     sort = sort.key === key ? { key, desc: !sort.desc } : { key, desc: key === "modified" || key === "area" };
   }
 
-  async function run<T>(fn: () => Promise<T>): Promise<T | undefined> {
+  let showBroken = $state(false);
+
+  async function run<T>(action: Action, fn: () => Promise<T>): Promise<T | undefined> {
     try {
       return await fn();
     } catch (e) {
-      onerror(String(e));
+      notifyError(e, action);
     }
   }
 
   /** Adds a job from a .tectorajob bundle or a .tectora file. */
   async function importJob() {
-    const path = await open({ multiple: false, filters: [{ name: "Tectora", extensions: ["tectorajob", "tectora"] }] });
+    const path = await run("import", () =>
+      open({ multiple: false, filters: [{ name: "Tectora", extensions: ["tectorajob", "tectora"] }] }),
+    );
     if (typeof path !== "string") return;
-    const id = await run(() => api.importJob(path));
+    const id = await run("import", () => api.importJob(path));
     if (id) {
       onchanged();
       onopen(id);
@@ -105,13 +112,13 @@
     // Tauri's dialog plugin replaces window.confirm with an async version
     // (a Promise is always truthy), so the answer must be awaited.
     if (!(await confirm(t("home.confirmDelete", { name: p.name })))) return;
-    await run(() => api.deleteProject(p.id));
+    await run("delete", () => api.deleteProject(p.id));
     if (selectedId === p.id) selectedId = null;
     onchanged();
   }
 
   async function duplicate(p: ProjectSummary) {
-    const id = await run(() => api.duplicateProject(p.id, t("lib.copyName", { name: p.name })));
+    const id = await run("duplicate", () => api.duplicateProject(p.id, t("lib.copyName", { name: p.name })));
     if (id) selectedId = id;
     onchanged();
   }
@@ -186,6 +193,24 @@
             <button class:on={prefs.libraryView === "grid"} onclick={() => setView("grid")} aria-label={t("lib.grid")} title={t("lib.grid")}><Icon name="grid" size={16} /></button>
           </div>
         </div>
+
+        {#if broken.length}
+          <div class="broken" role="alert">
+            <i class="dot"></i>
+            <div class="broken-text">
+              <strong>{t("lib.broken", { n: broken.length })}</strong>
+              <span>{t("lib.brokenHint")}</span>
+              {#if showBroken}
+                <ul>
+                  {#each broken as b (b.id)}
+                    <li><code>{b.id}.tectora</code> {t(`err.${b.code === "unreadable" || b.code === "permission_denied" || b.code === "internal" ? b.code : "io"}`, { id: b.id })}{#if b.detail}<small>{b.detail}</small>{/if}</li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+            <button class="btn sm" onclick={() => (showBroken = !showBroken)}>{showBroken ? t("err.hideDetails") : t("lib.brokenShow")}</button>
+          </div>
+        {/if}
 
         {#if rows.length === 0}
           <div class="empty">
@@ -277,7 +302,6 @@
       newJob = null;
       onopen(id);
     }}
-    {onerror}
   />
 {/if}
 
@@ -452,6 +476,61 @@
     align-items: center;
     gap: 14px;
     margin-bottom: 14px;
+  }
+  .broken {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    font-size: 13px;
+  }
+  .broken .dot {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    margin-top: 6px;
+    border-radius: 1px;
+    background: var(--ai);
+  }
+  .broken-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .broken-text strong {
+    font-weight: 600;
+  }
+  .broken-text > span {
+    color: var(--text-2);
+  }
+  .broken ul {
+    margin: 8px 0 0;
+    padding: 0;
+    list-style: none;
+    color: var(--text-2);
+  }
+  .broken li + li {
+    margin-top: 6px;
+  }
+  .broken code,
+  .broken small {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
+  }
+  .broken code {
+    color: var(--text);
+    margin-right: 6px;
+  }
+  .broken small {
+    display: block;
+    color: var(--text-3);
+    word-break: break-word;
   }
   .head p {
     margin: 0;

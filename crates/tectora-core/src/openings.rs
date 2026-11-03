@@ -1300,6 +1300,8 @@ mod tests {
             p.chimneys = chimneys;
             let geo = &generate_project(&p)[0];
             assert!(geo.faces.is_empty() && geo.lines.is_empty());
+            let err = geo.error.as_ref().expect("DACAD's error is reported");
+            assert_eq!(err.kind, crate::roof::CalcErrorKind::NonConvexOpening);
         }
     }
 

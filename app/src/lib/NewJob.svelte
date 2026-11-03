@@ -6,6 +6,7 @@
   import PlanThumb from "./PlanThumb.svelte";
   import StandardRoofForm from "./StandardRoofForm.svelte";
   import { api } from "./api";
+  import { notifyError } from "./notify.svelte";
   import { t } from "./i18n.svelte";
   import type { ExampleInfo, RoofPart } from "./types";
   import { emptyProject } from "./types";
@@ -15,13 +16,11 @@
     initialExample = null,
     onclose,
     oncreated,
-    onerror,
   }: {
     examples: ExampleInfo[];
     initialExample?: string | null;
     onclose: () => void;
     oncreated: (id: string) => void;
-    onerror: (msg: string) => void;
   } = $props();
 
   let name = $state("");
@@ -50,7 +49,7 @@
       project.job = { number, customer, address, status: "draft" };
       oncreated(await api.saveProject(null, project));
     } catch (e) {
-      onerror(String(e));
+      notifyError(e, "create");
     } finally {
       busy = false;
     }

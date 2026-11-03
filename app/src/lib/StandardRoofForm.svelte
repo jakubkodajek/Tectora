@@ -2,6 +2,8 @@
   // DACAD's "Standard-Dach": pick a basic roof type for a rectangle and
   // enter its dimensions; shows a live plan preview with roof lines.
   import { api } from "./api";
+  import { toAppError } from "./errors";
+  import { notifyError } from "./notify.svelte";
   import PlanThumb from "./PlanThumb.svelte";
   import { m2 } from "./format";
   import { t } from "./i18n.svelte";
@@ -73,9 +75,12 @@
         lines: r.parts[0].geometry.lines.filter((l) => l.kind !== "eave").map((l) => [[l.a[0], l.a[1]], [l.b[0], l.b[1]]]),
         area: r.totals.roof_area,
       };
-    }).catch(() => {
-      // Out-of-range dimensions: no preview rather than a stale one.
-      if (my === seq) preview = null;
+    }).catch((e) => {
+      if (my !== seq) return;
+      // No preview rather than a stale one. Out-of-range dimensions are
+      // still being typed, so they need no message.
+      preview = null;
+      if (toAppError(e).code !== "out_of_range") notifyError(e, "preview");
     });
   });
 </script>

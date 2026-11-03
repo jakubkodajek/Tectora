@@ -16,6 +16,8 @@
   import OpeningBar from "./OpeningBar.svelte";
   import ManualBar from "./ManualBar.svelte";
   import { snapToRoof, type ManualSel } from "./manual";
+  import { describeCalcError, describeError, describeProblem, toAppError, type Described } from "./errors";
+  import { notifyError } from "./notify.svelte";
   import { chimneyFromRect, nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, roofHeightAt } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
@@ -37,14 +39,16 @@
   let {
     id,
     onback,
-    onerror,
     onconnect,
-  }: { id: string; onback: () => void; onerror: (msg: string) => void; onconnect: () => void } = $props();
+  }: { id: string; onback: () => void; onconnect: () => void } = $props();
 
   let project = $state<Project | null>(null);
   let result = $state<CalcResult | null>(null);
   let selection = $state<Selection>(null);
-  let saveState = $state<"saved" | "saving" | "dirty">("saved");
+  let saveState = $state<"saved" | "saving" | "dirty" | "failed">("saved");
+  /** Why the project could not be opened (shown instead of the editor). */
+  let loadError = $state<Described | null>(null);
+  let loadErrorCode = $state<string>("");
   let dock = $state<"results" | "ai" | "job">("results");
   /** Narrow windows only: whether the side panel is expanded over the views. */
   let dockOpen = $state(false);
@@ -115,6 +119,12 @@
   const pending = $derived(pendingList.length ? pendingList[0] : null);
   // DACAD calculates no roof once a chimney or roof opening is non-convex.
   const nonConvex = $derived(project ? nonConvexOpenings(project) : []);
+  /** DACAD's calculation error, if it gave no roof. The non-convex case
+      has its own bar above, with a button to show the opening. */
+  const calcError = $derived.by(() => {
+    const e = result?.parts.find((p) => p.geometry.error)?.geometry.error ?? null;
+    return e && !(e.kind === "non_convex_opening" && nonConvex.length) ? e : null;
+  });
   const pendingChanges = $derived(pendingList.flatMap((a) => a.changes));
   const highlight = $derived.by(() => {
     if (!project) return new Set<string>();
@@ -130,7 +140,8 @@
       const r = await api.calc($state.snapshot(project) as Project);
       if (seq === calcSeq) result = r;
     } catch (e) {
-      onerror(String(e));
+      if (seq === calcSeq) result = null;
+      notifyError(e, "calc");
     }
   }
 
@@ -161,8 +172,9 @@
       lastSaved = JSON.stringify(await api.loadProject(id));
       saveState = "saved";
     } catch (e) {
-      saveState = "dirty";
-      onerror(String(e));
+      // Keep the edits in memory; the status bar offers to try again.
+      saveState = "failed";
+      notifyError(e, "save");
     }
   }
 
@@ -215,7 +227,16 @@
       }
       recalc();
     } catch (e) {
-      onerror(String(e));
+      if (initial || !project) {
+        loadError = describeError(e, "load");
+        loadErrorCode = toAppError(e).code;
+      } else if (toAppError(e).code === "not_found") {
+        // Deleted outside the app while open: keep the edits, offer to save.
+        saveState = "failed";
+        notifyError(e, "load");
+      } else {
+        notifyError(e, "load");
+      }
     }
   }
 
@@ -228,7 +249,7 @@
   });
   onDestroy(() => {
     unlisten?.();
-    if (saveState === "dirty") save();
+    if (saveState === "dirty" || saveState === "failed") save();
   });
 
   function accept() {
@@ -253,7 +274,8 @@
       accepted = activity[0]?.ts_ms ?? accepted;
       markReviewed(id, accepted);
     } catch (e) {
-      onerror(String(e));
+      notifyError(e, "revert");
+      await refreshActivity();
     }
   }
 
@@ -329,7 +351,7 @@
       project.result_snapshot = await api.takeSnapshot(JSON.parse(JSON.stringify(project)));
       commit();
     } catch (e) {
-      onerror(String(e));
+      notifyError(e, "save");
     }
   }
 
@@ -732,6 +754,7 @@
     <LanguagePicker />
   </header>
 
+  {#if !loadError}
   <div class="toolbar" role="toolbar">
     <div class="group">
       <button class="tool" onclick={undo} disabled={at <= 0} title="{t('editor.undo')} (Ctrl+Z)"><Icon name="undo" /><span>{t("editor.undo")}</span></button>
@@ -758,6 +781,7 @@
       <button class="tool" class:on={showDims} onclick={() => (showDims = !showDims)} title={t("tool.dims")}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
     </div>
   </div>
+  {/if}
 
   {#if project}
     <div class="body">
@@ -780,9 +804,35 @@
             <button class="btn sm accept" onclick={accept}><Icon name="check" size={14} />{t("review.accept")}</button>
           </div>
         {/if}
+        {#if calcError}
+          {@const d = describeCalcError(calcError)}
+          <div class="warn-bar" role="alert">
+            <i class="dot"></i>
+            <div class="warn-text">
+              <strong>{d.title}</strong>
+              <span>{d.hint}</span>
+            </div>
+            <code>{d.code}</code>
+            {#if at > 0}<button class="btn sm" onclick={undo}><Icon name="undo" size={14} />{t("editor.undo")}</button>{/if}
+          </div>
+        {/if}
+        {#if result?.problems?.length}
+          {@const first = result.problems[0]}
+          <div class="warn-bar" role="alert">
+            <i class="dot"></i>
+            <div class="warn-text">
+              <strong>{t("prob.title", { n: result.problems.length })}</strong>
+              <span>{describeProblem(first, project)}{#if result.problems.length > 1} · {t("review.more", { n: result.problems.length - 1 })}{/if}</span>
+            </div>
+            <code>{first.code}</code>
+            {#if first.item === "part" && first.edge !== undefined}
+              <button class="btn sm" onclick={() => (selection = { part: first.index, edge: first.edge! })}>{t("opening.show")}</button>
+            {/if}
+          </div>
+        {/if}
         {#if nonConvex.length}
           <div class="warn-bar" role="alert">
-            <Icon name="warning" size={18} />
+            <i class="dot"></i>
             <span>{t("opening.nonConvexAll", { n: nonConvex.length })}</span>
             <button class="btn sm" onclick={() => (openSel = nonConvex[0])}>{t("opening.show")}</button>
           </div>
@@ -866,7 +916,7 @@
           {:else if dock === "ai"}
             <AiPanel {id} {project} {activity} onrevert={() => revert(false)} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
-            <JobPanel {id} {project} onchange={commit} onsave={save} {onerror} />
+            <JobPanel {id} {project} onchange={commit} onsave={save} />
           {/if}
         </div>
       </aside>
@@ -879,9 +929,22 @@
       {#if result}<span>{t("res.area")}: <b>{m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save">
-        {#if saveState === "saved"}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving"}{t("editor.saving")}{:else}{t("editor.dirty")}{/if}
+        {#if saveState === "saved"}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
       </span>
     </footer>
+  {:else if loadError}
+    <div class="load-error" role="alert">
+      <code class="code">{loadErrorCode}</code>
+      <h2>{loadError.title}</h2>
+      <p>{loadError.message}</p>
+      {#if loadError.detail}<pre>{loadError.detail}</pre>{/if}
+      <div class="load-actions">
+        <button class="btn" onclick={onback}><Icon name="back" size={16} />{t("editor.back")}</button>
+        {#if loadErrorCode !== "not_found" && loadErrorCode !== "unreadable"}
+          <button class="btn primary" onclick={() => { loadError = null; load(true); }}><Icon name="refresh" size={16} />{t("err.retry")}</button>
+        {/if}
+      </div>
+    </div>
   {/if}
 </div>
 
@@ -1088,14 +1151,106 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 10px 14px;
-    background: color-mix(in srgb, var(--danger) 12%, var(--surface));
-    border-bottom: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
-    color: var(--danger);
-    font-size: 13.5px;
+    padding: 9px 14px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font-size: 13px;
   }
-  .warn-bar span {
+  .warn-bar > span {
     flex: 1;
+  }
+  .warn-bar .dot {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+    background: var(--danger);
+  }
+  .warn-bar code,
+  .load-error .code {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: var(--text-3);
+  }
+  .warn-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    column-gap: 10px;
+    row-gap: 2px;
+  }
+  .warn-text strong {
+    font-weight: 600;
+  }
+  .warn-text span {
+    color: var(--text-2);
+  }
+  .save-failed .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+    background: var(--danger);
+  }
+  .save-failed {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--danger);
+    font-weight: 600;
+  }
+  .retry {
+    margin-left: 6px;
+    padding: 0 8px;
+    height: 20px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    font: inherit;
+    cursor: pointer;
+  }
+  .retry:hover {
+    background: var(--surface-2);
+  }
+  .load-error {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 8px;
+    width: min(560px, 100% - 48px);
+    margin: 0 auto;
+  }
+  .load-error h2 {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 600;
+  }
+  .load-error p {
+    margin: 0;
+    color: var(--text-2);
+    line-height: 1.5;
+  }
+  .load-error pre {
+    align-self: stretch;
+    margin: 4px 0 0;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface-2);
+    color: var(--text-2);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
+  }
+  .load-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
   }
   .review {
     display: flex;

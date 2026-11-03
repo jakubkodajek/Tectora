@@ -1,11 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { AppError } from "./errors";
 import type {
   ActivityItem,
   AppSettingsView,
   Attachment,
   CalcResult,
   ExampleInfo,
+  Library,
   LiveStatus,
   Project,
   ProjectSummary,
@@ -25,7 +27,8 @@ export interface StandardParams {
 
 export const api = {
   projectsDir: () => invoke<string>("projects_dir"),
-  listProjects: () => invoke<ProjectSummary[]>("list_projects"),
+  listProjects: () => invoke<Library>("list_projects"),
+  startupWarnings: () => invoke<AppError[]>("startup_warnings"),
   loadProject: (id: string) => invoke<Project>("load_project", { id }),
   saveProject: (id: string | null, project: Project) => invoke<string>("save_project", { id, project }),
   deleteProject: (id: string) => invoke<void>("delete_project", { id }),

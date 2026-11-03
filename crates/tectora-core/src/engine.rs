@@ -32,7 +32,7 @@ use crate::multiroof::{
     write_rd2_with,
 };
 use crate::openings::{apply_window, inside, inside_spans};
-use crate::roof::{CalcError, OpeningKind, RoofGeometry};
+use crate::roof::{CalcError, CalcErrorKind, OpeningKind, RoofGeometry};
 
 /// Why the engine gives no roof.
 #[derive(Debug, Clone, PartialEq)]
@@ -121,25 +121,43 @@ fn parse_sol(out: &Outputs) -> Result<CoreSol, Failure> {
 
 /// Whether DACAD ends with the same error.
 fn classify(e: CoreError) -> Failure {
-    let dacad = |e: &CoreError, id: Option<u32>, message: String| {
+    let dacad = |e: &CoreError, kind: CalcErrorKind, id: Option<u32>, message: String| {
         Failure::Dacad(CalcError {
+            kind,
             code: e.dacad_code(),
             message_id: id,
             message,
         })
     };
     match &e {
-        CoreError::Cut { msg, .. } => dacad(&e, msg.id, e.to_string()),
-        CoreError::NoSolution(msg) => dacad(&e, msg.id, msg.text.to_string()),
+        CoreError::Cut { msg, .. } => {
+            let kind = if msg.id == crate::dcore::error::MSG_OPEN_FACES.id {
+                CalcErrorKind::OpenFaces
+            } else {
+                CalcErrorKind::Cut
+            };
+            dacad(&e, kind, msg.id, e.to_string())
+        }
+        CoreError::NoSolution(msg) => {
+            dacad(&e, CalcErrorKind::NoSolution, msg.id, msg.text.to_string())
+        }
         // A non-convex chimney or opening: DACAD warns and cancels.
         CoreError::Fatal { code: 0, .. } => {
             let m = crate::dcore::holes::MSG_NONCONVEX;
-            dacad(&e, m.id, m.text.to_string())
+            dacad(
+                &e,
+                CalcErrorKind::NonConvexOpening,
+                m.id,
+                m.text.to_string(),
+            )
         }
         // An error of the geometry (interval, eave cut, area).
-        CoreError::Fatal { code: 2, msg } => dacad(&e, msg.id, msg.text.to_string()),
+        CoreError::Fatal { code: 2, msg } => {
+            dacad(&e, CalcErrorKind::Geometry, msg.id, msg.text.to_string())
+        }
         CoreError::Hang(_) => dacad(
             &e,
+            CalcErrorKind::NoEnd,
             None,
             "Die Dachberechnung kommt zu keinem Ende (DACAD hängt)".into(),
         ),

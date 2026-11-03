@@ -204,6 +204,12 @@ textarea:focus {
   color: var(--text-2);
 }
 
+.btn.sm {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
 /* Icons sit in flex rows next to text that may be truncated; never squash them. */
 svg.icon {
   flex-shrink: 0;

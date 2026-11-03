@@ -165,7 +165,7 @@ pub fn open_path(store: &Store, path: &Path) -> Result<String, String> {
     }
     let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let project = Project::from_json(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    store.save(None, &project)
+    Ok(store.save(None, &project)?)
 }
 
 /// Plan preview: wall outlines and roof lines, y up, 1 unit = 1 m.

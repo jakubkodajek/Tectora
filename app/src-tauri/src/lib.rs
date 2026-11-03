@@ -1,6 +1,8 @@
 //! Tectora desktop app: Tauri commands over `tectora-core` plus a watcher
 //! that tells the UI when project files change on disk (CLI, MCP, AI agents).
 
+mod error;
+
 use std::path::PathBuf;
 use std::sync::{Mutex, RwLock, RwLockReadGuard};
 use std::time::Duration;
@@ -12,10 +14,11 @@ use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 use tectora_core::diff::Change;
 use tectora_core::examples::{StandardRoof, standard_roof};
-use tectora_core::quantities::dacad_line_totals;
 use tectora_core::settings::{self, Settings};
-use tectora_core::store::{self, LiveStatus, Store, USER_ACTOR, outlines};
-use tectora_core::{Project, bundle, examples, roof, snapshot};
+use tectora_core::store::{self, BrokenFile, LiveStatus, Store, USER_ACTOR, outlines};
+use tectora_core::{Project, bundle, examples, snapshot};
+
+use error::{AppError, guard};
 
 struct AppState {
     /// Replaced when the projects folder is changed in the settings.
@@ -24,6 +27,9 @@ struct AppState {
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
     /// A job opened from a file (double-click) before the UI asked for it.
     pending_open: Mutex<Option<String>>,
+    /// Why the folder watcher could not start (AI and CLI edits then do not
+    /// show up live).
+    watcher_error: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -31,6 +37,8 @@ impl AppState {
         self.store.read().unwrap_or_else(|e| e.into_inner())
     }
 }
+
+type CmdResult<T> = Result<T, AppError>;
 
 #[derive(Serialize)]
 struct ExampleInfo {
@@ -46,11 +54,33 @@ fn projects_dir(state: State<AppState>) -> String {
     state.store().dir.display().to_string()
 }
 
+#[derive(Serialize)]
+struct Library {
+    projects: Vec<store::ProjectSummary>,
+    /// Project files in the folder that could not be read.
+    broken: Vec<BrokenFile>,
+}
+
 /// Runs off the main thread: summarising computes every roof, and the
 /// window must stay responsive while it does.
 #[tauri::command(async)]
-fn list_projects(state: State<AppState>) -> Vec<store::ProjectSummary> {
-    state.store().list()
+fn list_projects(state: State<AppState>) -> CmdResult<Library> {
+    guard(|| {
+        let (projects, broken) = state.store().scan()?;
+        Ok(Library { projects, broken })
+    })
+}
+
+/// Problems found at startup that the user should know about.
+#[tauri::command]
+fn startup_warnings(state: State<AppState>) -> Vec<AppError> {
+    state
+        .watcher_error
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|d| AppError::new("watcher").detail(d.clone()))
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -80,14 +110,14 @@ fn project_activity(state: State<AppState>, id: String) -> Vec<ActivityItem> {
 }
 
 #[tauri::command]
-fn revert_last_change(state: State<AppState>, id: String) -> Result<Project, String> {
-    state.store().revert_last(&id, USER_ACTOR)
+fn revert_last_change(state: State<AppState>, id: String) -> CmdResult<Project> {
+    guard(|| Ok(state.store().revert_last(&id, USER_ACTOR)?))
 }
 
 /// Undoes the change recorded at `ts_ms` and everything after it.
 #[tauri::command]
-fn revert_changes(state: State<AppState>, id: String, ts_ms: u64) -> Result<Project, String> {
-    state.store().revert_to(&id, ts_ms, USER_ACTOR)
+fn revert_changes(state: State<AppState>, id: String, ts_ms: u64) -> CmdResult<Project> {
+    guard(|| Ok(state.store().revert_to(&id, ts_ms, USER_ACTOR)?))
 }
 
 #[tauri::command]
@@ -105,34 +135,32 @@ fn mcp_command() -> Value {
 }
 
 #[tauri::command]
-fn load_project(state: State<AppState>, id: String) -> Result<Project, String> {
-    state.store().load(&id)
+fn load_project(state: State<AppState>, id: String) -> CmdResult<Project> {
+    guard(|| Ok(state.store().load(&id)?))
 }
 
 #[tauri::command]
-fn save_project(
-    state: State<AppState>,
-    id: Option<String>,
-    project: Project,
-) -> Result<String, String> {
-    state.store().save(id, &project)
+fn save_project(state: State<AppState>, id: Option<String>, project: Project) -> CmdResult<String> {
+    guard(|| Ok(state.store().save(id, &project)?))
 }
 
 #[tauri::command]
-fn delete_project(state: State<AppState>, id: String) -> Result<(), String> {
-    state.store().delete(&id)
+fn delete_project(state: State<AppState>, id: String) -> CmdResult<()> {
+    guard(|| Ok(state.store().delete(&id)?))
 }
 
 /// A copy is a new variant: draft, no stored result, the same files.
 #[tauri::command]
-fn duplicate_project(state: State<AppState>, id: String, name: String) -> Result<String, String> {
-    let mut project = state.store().load(&id)?;
-    project.name = name;
-    project.job.status = tectora_core::JobStatus::Draft;
-    project.result_snapshot = None;
-    let new_id = state.store().save(None, &project)?;
-    state.store().copy_attachments(&id, &new_id)?;
-    Ok(new_id)
+fn duplicate_project(state: State<AppState>, id: String, name: String) -> CmdResult<String> {
+    guard(|| {
+        let mut project = state.store().load(&id)?;
+        project.name = name;
+        project.job.status = tectora_core::JobStatus::Draft;
+        project.result_snapshot = None;
+        let new_id = state.store().save(None, &project)?;
+        state.store().copy_attachments(&id, &new_id)?;
+        Ok(new_id)
+    })
 }
 
 #[tauri::command]
@@ -141,20 +169,18 @@ fn list_attachments(state: State<AppState>, id: String) -> Vec<store::Attachment
 }
 
 #[tauri::command]
-fn attach_files(
-    state: State<AppState>,
-    id: String,
-    paths: Vec<String>,
-) -> Result<Vec<String>, String> {
-    paths
-        .iter()
-        .map(|p| state.store().attach_file(&id, &PathBuf::from(p)))
-        .collect()
+fn attach_files(state: State<AppState>, id: String, paths: Vec<String>) -> CmdResult<Vec<String>> {
+    guard(|| {
+        Ok(paths
+            .iter()
+            .map(|p| state.store().attach_file(&id, &PathBuf::from(p)))
+            .collect::<Result<_, _>>()?)
+    })
 }
 
 #[tauri::command]
-fn remove_attachment(state: State<AppState>, id: String, name: String) -> Result<(), String> {
-    state.store().remove_attachment(&id, &name)
+fn remove_attachment(state: State<AppState>, id: String, name: String) -> CmdResult<()> {
+    guard(|| Ok(state.store().remove_attachment(&id, &name)?))
 }
 
 /// Opens an attached file in the system's default app.
@@ -164,21 +190,23 @@ fn open_attachment(
     state: State<AppState>,
     id: String,
     name: String,
-) -> Result<(), String> {
-    let path = state.store().attachment_path(&id, &name)?;
-    app.opener()
-        .open_path(path.display().to_string(), None::<&str>)
-        .map_err(|e| e.to_string())
+) -> CmdResult<()> {
+    guard(|| {
+        let path = state.store().attachment_path(&id, &name)?;
+        app.opener()
+            .open_path(path.display().to_string(), None::<&str>)
+            .map_err(|e| AppError::new("open_failed").detail(e.to_string()))
+    })
 }
 
 #[tauri::command]
-fn export_job(state: State<AppState>, id: String, path: String) -> Result<(), String> {
-    bundle::export(&state.store(), &id, &PathBuf::from(path)).map(|_| ())
+fn export_job(state: State<AppState>, id: String, path: String) -> CmdResult<()> {
+    guard(|| Ok(bundle::export(&state.store(), &id, &PathBuf::from(path)).map(|_| ())?))
 }
 
 #[tauri::command]
-fn import_job(state: State<AppState>, path: String) -> Result<String, String> {
-    bundle::open_path(&state.store(), &PathBuf::from(path))
+fn import_job(state: State<AppState>, path: String) -> CmdResult<String> {
+    guard(|| Ok(bundle::open_path(&state.store(), &PathBuf::from(path))?))
 }
 
 /// The current result, to store as the job's result.
@@ -203,17 +231,19 @@ fn create_standard(
     pitch_deg: f64,
     eave_height: f64,
     overhang: f64,
-) -> Result<String, String> {
-    let mut project = Project::new(name);
-    project.parts.push(standard_roof(
-        kind,
-        length,
-        width,
-        pitch_deg,
-        eave_height,
-        overhang,
-    ));
-    state.store().save(None, &project)
+) -> CmdResult<String> {
+    guard(|| {
+        let mut project = Project::new(name);
+        project.parts.push(standard_roof(
+            kind,
+            length,
+            width,
+            pitch_deg,
+            eave_height,
+            overhang,
+        ));
+        Ok(state.store().save(None, &project)?)
+    })
 }
 
 /// A standard roof part for the "standard roof" dialog in the editor.
@@ -225,8 +255,17 @@ fn standard_part(
     pitch_deg: f64,
     eave_height: f64,
     overhang: f64,
-) -> tectora_core::RoofPart {
-    standard_roof(kind, length, width, pitch_deg, eave_height, overhang)
+) -> CmdResult<tectora_core::RoofPart> {
+    guard(|| {
+        Ok(standard_roof(
+            kind,
+            length,
+            width,
+            pitch_deg,
+            eave_height,
+            overhang,
+        ))
+    })
 }
 
 #[tauri::command]
@@ -248,53 +287,45 @@ fn create_from_example(
     state: State<AppState>,
     example_id: String,
     name: Option<String>,
-) -> Result<String, String> {
-    let example =
-        examples::find(&example_id).ok_or_else(|| format!("unknown example {example_id}"))?;
-    let mut project = example.project();
-    if let Some(name) = name.filter(|n| !n.trim().is_empty()) {
-        project.name = name;
-    }
-    state.store().save(None, &project)
+) -> CmdResult<String> {
+    guard(|| {
+        let example = examples::find(&example_id)
+            .ok_or_else(|| AppError::new("unknown_example").detail(example_id.clone()))?;
+        let mut project = example.project();
+        if let Some(name) = name.filter(|n| !n.trim().is_empty()) {
+            project.name = name;
+        }
+        Ok(state.store().save(None, &project)?)
+    })
 }
 
 #[tauri::command]
-fn new_project(state: State<AppState>, name: String) -> Result<String, String> {
-    let mut project = examples::find("gable").expect("built-in example").project();
-    project.name = name;
-    state.store().save(None, &project)
+fn new_project(state: State<AppState>, name: String) -> CmdResult<String> {
+    guard(|| {
+        let mut project = examples::find("gable").expect("built-in example").project();
+        project.name = name;
+        Ok(state.store().save(None, &project)?)
+    })
 }
 
-/// Roof geometry and quantities for every part, plus totals.
+/// Roof geometry and quantities for every part, plus totals, what kept
+/// parts from being calculated, and the stored result's status.
 ///
 /// Runs off the main thread so a slow roof never freezes the window, and
-/// reports out-of-range input or a kernel panic as an error instead of
-/// crashing the app (a panic on the main thread aborts it).
+/// reports out-of-range input (`out_of_range`) or a kernel panic
+/// (`internal`) as an error instead of crashing the app (a panic on the
+/// main thread aborts it).
 #[tauri::command(async)]
-fn calc(project: Project) -> Result<Value, String> {
-    project.check_limits()?;
-    tectora_core::model::guarded(|| calc_unguarded(&project))
-}
-
-fn calc_unguarded(project: &Project) -> Value {
-    let mut total = roof::RoofQuantities::default();
-    let parts: Vec<Value> = project
-        .parts
-        .iter()
-        .zip(tectora_core::openings::generate_project(project))
-        .map(|(part, geometry)| {
-            let q = geometry.quantities();
-            total.add(&q);
-            json!({ "name": part.name, "geometry": geometry, "quantities": q })
-        })
-        .collect();
-    // Lines and faces added by hand (DACAD: Dachlinieneingabe, Neue Dachfläche).
-    total.add(&tectora_core::quantities::manual_quantities(project));
-    json!({
-        "parts": parts,
-        "totals": total,
-        "codes": dacad_line_totals(project),
-        "stored_result": snapshot::status(project),
+fn calc(project: Project) -> CmdResult<Value> {
+    guard(|| {
+        project
+            .check_limits()
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+        let mut v = tectora_core::model::guarded(|| tectora_core::report::calc(&project))
+            .map_err(|d| AppError::new("internal").detail(d))?;
+        v["stored_result"] =
+            serde_json::to_value(snapshot::status(&project)).unwrap_or(Value::Null);
+        Ok(v)
     })
 }
 
@@ -352,10 +383,27 @@ fn switch_library(app: &tauri::AppHandle, settings: &Settings) -> std::io::Resul
     }
     let next = Store::new(dir.clone())?;
     *state.store.write().unwrap_or_else(|e| e.into_inner()) = next;
-    let watcher = start_watcher(app, dir).ok();
-    *state.watcher.lock().unwrap_or_else(|e| e.into_inner()) = watcher;
+    set_watcher(app, dir);
     let _ = app.emit("projects-changed", Vec::<String>::new());
     Ok(())
+}
+
+/// Starts watching `dir`, replacing the previous watcher, and records why
+/// it failed if it did (shown by `startup_warnings`).
+fn set_watcher(app: &tauri::AppHandle, dir: PathBuf) {
+    let state = app.state::<AppState>();
+    let (watcher, error) = match start_watcher(app, dir) {
+        Ok(w) => (Some(w), None),
+        Err(e) => {
+            eprintln!("tectora: cannot watch the project folder: {e}");
+            (None, Some(e.to_string()))
+        }
+    };
+    *state.watcher.lock().unwrap_or_else(|e| e.into_inner()) = watcher;
+    *state
+        .watcher_error
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = error;
 }
 
 fn start_watcher(
@@ -476,9 +524,24 @@ pub fn run() {
             let mut dir = store::default_dir();
             let store = match Store::new(dir.clone()) {
                 Ok(s) => s,
-                Err(_) => {
+                Err(first) => {
                     dir = settings::builtin_projects_dir();
-                    Store::new(dir.clone())?
+                    match Store::new(dir.clone()) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+                            app.dialog()
+                                .message(format!(
+                                    "Tectora cannot open its project folder:\n{}\n\n{first}\n{e}\n\n\
+                                     Set TECTORA_PROJECTS_DIR to a folder you can write to.",
+                                    dir.display()
+                                ))
+                                .title("Tectora")
+                                .kind(MessageDialogKind::Error)
+                                .blocking_show();
+                            return Err(e.into());
+                        }
+                    }
                 }
             };
             if store.list().is_empty() {
@@ -493,18 +556,16 @@ pub fn run() {
                 store: RwLock::new(store),
                 watcher: Mutex::new(None),
                 pending_open: Mutex::new(None),
+                watcher_error: Mutex::new(None),
             });
-            let watcher = start_watcher(app.handle(), dir).ok();
-            *app.state::<AppState>()
-                .watcher
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = watcher;
+            set_watcher(app.handle(), dir);
             open_files(app.handle(), file_args(std::env::args().skip(1)));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             projects_dir,
             list_projects,
+            startup_warnings,
             load_project,
             save_project,
             delete_project,

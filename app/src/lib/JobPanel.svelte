@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { notifyError } from "./notify.svelte";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { untrack } from "svelte";
   import Icon from "./Icon.svelte";
@@ -13,14 +14,12 @@
     project,
     onchange,
     onsave,
-    onerror,
   }: {
     id: string;
     project: Project;
     onchange: () => void;
     /** Writes pending edits to disk (before an export). */
     onsave: () => Promise<void>;
-    onerror: (msg: string) => void;
   } = $props();
 
   // Leaving the draft status stores the result the offer is made with.
@@ -32,7 +31,7 @@
       try {
         project.result_snapshot = await api.takeSnapshot(JSON.parse(JSON.stringify(project)));
       } catch (e) {
-        onerror(String(e));
+        notifyError(e, "save");
       }
     }
     onchange();
@@ -44,7 +43,7 @@
     try {
       files = await api.listAttachments(id);
     } catch (e) {
-      onerror(String(e));
+      notifyError(e, "files");
     }
   }
   $effect(() => {
@@ -59,7 +58,7 @@
     try {
       await api.attachFiles(id, paths);
     } catch (e) {
-      onerror(String(e));
+      notifyError(e, "files");
     }
     loadFiles();
   }
@@ -69,7 +68,7 @@
     try {
       await api.removeAttachment(id, name);
     } catch (e) {
-      onerror(String(e));
+      notifyError(e, "files");
     }
     loadFiles();
   }
@@ -84,7 +83,7 @@
       await onsave();
       await api.exportJob(id, path);
     } catch (e) {
-      onerror(String(e));
+      notifyError(e, "export");
     }
   }
 
@@ -121,7 +120,7 @@
     <ul class="files">
       {#each files as f (f.name)}
         <li>
-          <button class="link" onclick={() => api.openAttachment(id, f.name).catch((e) => onerror(String(e)))} title={t("files.open")}>{f.name}</button>
+          <button class="link" onclick={() => api.openAttachment(id, f.name).catch((e) => notifyError(e, "files"))} title={t("files.open")}>{f.name}</button>
           <span class="size">{size(f.size)}</span>
           <button class="icon" onclick={() => removeFile(f.name)} title={t("files.remove")} aria-label={t("files.remove")}><Icon name="trash" size={14} /></button>
         </li>
