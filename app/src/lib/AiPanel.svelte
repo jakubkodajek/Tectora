@@ -68,7 +68,7 @@
             <ul>
               {#each a.changes as c}
                 <li onpointerenter={() => onfocus(c)} onpointerleave={() => onfocus(null)}>
-                  {describeChange(c, project.parts.length > 1)}
+                  {describeChange(c, project)}
                 </li>
               {/each}
             </ul>

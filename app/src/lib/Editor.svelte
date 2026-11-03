@@ -2,7 +2,7 @@
   // Design editor laid out like DACAD (toolbar, plan + 3D windows, roof
   // definition bar, status bar) with a side dock for results, AI activity
   // and job data.
-  import { onDestroy, onMount, untrack } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import AiPanel from "./AiPanel.svelte";
   import DrawBar from "./DrawBar.svelte";
   import Icon from "./Icon.svelte";
@@ -28,12 +28,12 @@
   import { offsetWall, transformPart, type TransformMode, type TransformOp } from "./transform";
   import { oppositeWall, spanBetween, type Arc } from "./roundroof";
   import { api, onProjectsChanged } from "./api";
-  import { changedEdges, describeChange } from "./changes";
+  import { changedEdges, changedItems, describeChange, describeFigure, ghostOf } from "./changes";
   import { m2, num } from "./format";
   import { t } from "./i18n.svelte";
   import { actorName, isFresh, live } from "./live.svelte";
-  import { markReviewed, prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
-  import type { ActivityItem, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
+  import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
+  import type { ActivityItem, ReviewStatus, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
   import { isAi, isGable, isMarker } from "./types";
 
   let {
@@ -84,7 +84,10 @@
   let cursor = $state<Point2 | null>(null);
   let showDims = $state(true);
   let activity = $state<ActivityItem[]>([]);
-  let accepted = $state(untrack(() => reviewedAt(id)));
+  /** AI changes waiting for review, as the library keeps them (shared with the agents). */
+  let review = $state<ReviewStatus | null>(null);
+  /** Show the state before the pending AI changes dashed in the plan. */
+  let showBefore = $state(true);
   let focusChange = $state<Change | null>(null);
   let std = $state<{ part: RoofPart | null; mode: "add" | "replace" } | null>(null);
   let plan: PlanView | undefined = $state();
@@ -108,14 +111,7 @@
   const snapshot = () => JSON.stringify(project);
 
   /** AI changes since the user's last own action or accept, newest first. */
-  const pendingList = $derived.by(() => {
-    const out: ActivityItem[] = [];
-    for (const a of activity) {
-      if (!isAi(a.actor) || a.ts_ms <= accepted) break;
-      out.push(a);
-    }
-    return out;
-  });
+  const pendingList = $derived(review ? activity.filter((a) => isAi(a.actor) && a.ts_ms >= review!.since_ts_ms) : []);
   const pending = $derived(pendingList.length ? pendingList[0] : null);
   // DACAD calculates no roof once a chimney or roof opening is non-convex.
   const nonConvex = $derived(project ? nonConvexOpenings(project) : []);
@@ -131,6 +127,10 @@
     if (focusChange) return changedEdges([focusChange], project);
     return changedEdges(pendingChanges, project);
   });
+  const highlightItems = $derived(changedItems(focusChange ? [focusChange] : pendingChanges));
+  const ghost = $derived(
+    project && review && showBefore ? ghostOf(focusChange ? [focusChange] : pendingChanges, review.before, project, result) : null,
+  );
   const wallCount = $derived(project?.parts.reduce((n, p) => n + p.edges.length, 0) ?? 0);
 
   async function recalc() {
@@ -147,9 +147,24 @@
 
   async function refreshActivity() {
     try {
-      activity = await api.projectActivity(id);
+      const [a, r] = await Promise.all([api.projectActivity(id), api.reviewStatus(id).catch(() => null)]);
+      activity = a;
+      review = r;
     } catch {
       activity = [];
+      review = null;
+    }
+  }
+
+  /** Accepts done in an older version were kept in this browser only. */
+  async function migrateLocalReview() {
+    const local = reviewedAt(id);
+    if (!review || local < review.since_ts_ms) return;
+    try {
+      await api.acceptChanges(id, local);
+      await refreshActivity();
+    } catch {
+      // Stays pending; the user can accept again.
     }
   }
 
@@ -215,6 +230,7 @@
       project = p;
       lastSaved = json;
       if (initial) {
+        await migrateLocalReview();
         history = [snapshot()];
         at = 0;
         historyLen = 1;
@@ -252,10 +268,17 @@
     if (saveState === "dirty" || saveState === "failed") save();
   });
 
-  function accept() {
+  async function accept() {
     if (!pending) return;
-    accepted = pending.ts_ms;
-    markReviewed(id, pending.ts_ms);
+    const ts = pending.ts_ms;
+    review = null;
+    focusChange = null;
+    try {
+      await api.acceptChanges(id, ts);
+    } catch (e) {
+      notifyError(e, "save");
+    }
+    await refreshActivity();
   }
 
   /** Reverts the pending AI changes from the banner, or the latest one from the AI tab. */
@@ -270,9 +293,8 @@
       pushHistory();
       selection = null;
       recalc();
+      focusChange = null;
       await refreshActivity();
-      accepted = activity[0]?.ts_ms ?? accepted;
-      markReviewed(id, accepted);
     } catch (e) {
       notifyError(e, "revert");
       await refreshActivity();
@@ -796,10 +818,18 @@
               <span>{pendingList.map((a) => a.summary).reverse().join(" → ")}</span>
               {#if pendingChanges.length}
                 <span class="review-list">
-                  {pendingChanges.slice(0, 4).map((c) => describeChange(c, project!.parts.length > 1)).join(" · ")}{pendingChanges.length > 4 ? ` · ${t("review.more", { n: pendingChanges.length - 4 })}` : ""}
+                  {pendingChanges.slice(0, 4).map((c) => describeChange(c, project)).join(" · ")}{pendingChanges.length > 4 ? ` · ${t("review.more", { n: pendingChanges.length - 4 })}` : ""}
+                </span>
+              {/if}
+              {#if review?.differences?.length}
+                <span class="review-figures">
+                  {review.differences.slice(0, 3).map((d) => describeFigure(d, project)).join(" · ")}{review.differences.length > 3 ? ` · ${t("review.more", { n: review.differences.length - 3 })}` : ""}
                 </span>
               {/if}
             </div>
+            {#if review?.before}
+              <button class="btn sm" class:on={showBefore} aria-pressed={showBefore} onclick={() => (showBefore = !showBefore)} title={t("review.beforeHint")}>{t("review.before")}</button>
+            {/if}
             <button class="btn sm" onclick={() => revert(true)}><Icon name="undo" size={14} />{pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}</button>
             <button class="btn sm accept" onclick={accept}><Icon name="check" size={14} />{t("review.accept")}</button>
           </div>
@@ -846,6 +876,8 @@
                 {project}
                 {result}
                 {highlight}
+                {highlightItems}
+                {ghost}
                 {drawing}
                 {showDims}
                 bind:selection
@@ -1284,10 +1316,22 @@
     white-space: nowrap;
     text-overflow: ellipsis;
   }
+  .review-figures {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--text-2);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
   .btn.sm {
     height: 30px;
     padding: 0 12px;
     font-size: 13px;
+  }
+  .btn.sm.on {
+    border-color: color-mix(in srgb, var(--ai) 60%, var(--border));
+    color: var(--ai-strong);
   }
   .btn.accept {
     background: var(--ai);

@@ -12,6 +12,7 @@ import type {
   Project,
   ProjectSummary,
   ResultSnapshot,
+  ReviewStatus,
   RoofPart,
   StandardKind,
 } from "./types";
@@ -36,6 +37,8 @@ export const api = {
   projectActivity: (id: string) => invoke<ActivityItem[]>("project_activity", { id }),
   revertLastChange: (id: string) => invoke<Project>("revert_last_change", { id }),
   revertChanges: (id: string, tsMs: number) => invoke<Project>("revert_changes", { id, tsMs }),
+  reviewStatus: (id: string) => invoke<ReviewStatus | null>("review_status", { id }),
+  acceptChanges: (id: string, tsMs: number) => invoke<number>("accept_changes", { id, tsMs }),
   liveStatus: () => invoke<LiveStatus | null>("live_status"),
   mcpCommand: () => invoke<{ command: string; args: string[] }>("mcp_command"),
   createStandard: (name: string, p: StandardParams) => invoke<string>("create_standard", { name, ...p }),

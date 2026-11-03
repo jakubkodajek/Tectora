@@ -27,7 +27,7 @@ ready-to-paste configuration for Claude Desktop, Claude Code and Gemini CLI.
 | `set_openings`, `set_manual`, `set_roof_options` | Windows, chimneys, openings; hand-drawn lines and faces; flat roof, material names |
 | `roof_helper` | Calculation helpers (triangle, two parallels, point in space, merge, hip/valley, build-up, round roof), preview or apply |
 | `update_job`, `store_result` | Job data and status; the stored result for the offer |
-| `get_history`, `revert_to`, `revert_last_change`, `show_project` | History, undo, focus in the app |
+| `get_history`, `get_review`, `revert_to`, `revert_last_change`, `show_project` | History, review state (accepted or still pending in the app, effect on the figures), undo, focus in the app |
 | `duplicate_project`, `delete_project`, `list_examples` | Library |
 | `list_files`, `attach_file`, `remove_file` | Files attached to a job (drawings) |
 | `export_job`, `import_job`, `get_schema` | `.tectorajob` bundles, file schema |
@@ -43,8 +43,19 @@ Every write requires a `summary` sentence for the user.
 - The server also writes `.activity/live.json` on each call ("Reading …",
   "Calculating …", or the write summary).
 - The app watches the folder: it opens the job the agent works on (follow mode,
-  can be turned off), shows a banner with the summary and the list of changes,
-  highlights the changed walls in orange, and offers Accept or Revert.
+  can be turned off) and shows a banner with every pending step's summary, the
+  list of changes and how they change the figures (roof area, ridge height,
+  line lengths by code, area by material: before → now, with the difference).
+  Changed walls, dormers, chimneys, windows, openings and hand-drawn lines and
+  faces are highlighted in orange; the previous outline of moved walls and the
+  old place of moved or removed items are drawn dashed ("Previous state"
+  toggle). Hovering a change in the AI tab shows only that change.
+- The changes are computed per item (`tectora_core::diff`): one entry per
+  dormer, chimney, window, opening, hand-drawn line or face (`item` index),
+  plus flat roof, material names, wall material and the stored result.
+- Accept / Revert all act on every pending step at once. The review state is
+  kept in the library (`.activity/<id>.review.json`), so it survives a restart
+  and the agent can read it with `get_review`; only the user accepts.
   The AI tab keeps the full history.
 
 A skill for Claude that describes the drawing workflow is in
