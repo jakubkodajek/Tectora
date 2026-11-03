@@ -117,17 +117,21 @@ within those tolerances of each other are skipped by the envelope properties
    its own plane. SO2 byte-identical to DACAD's. `properties.rs`
    `faces_lie_in_their_edge_planes` now allows `slope × POINT_EPS` (2 cm in
    plan) on top of 1 cm.
-8. **Single-line faces (F5, F6, F8, G6).** Also with one overhang, where a
+8. **Single-line faces (F5, F6, F8, G6, V6).** Also with one overhang, where a
    short wall meets its neighbours at a sharp angle DACAD writes a face
    bounded by a single line: two of its three corners coincide, its
    polygon has no area, its reported area is a 0.004–0.016 m² sliver. SO2
    byte-identical to DACAD's; `faces_are_flat_at_their_pitch` skips such
-   faces.
+   faces. V6 (7 walls and a chimney, PR #18's CI failure) is the same case
+   seen from the pitch side: with only one line, the face's Newell normal
+   has no defined direction and comes out horizontal, so the polygon reads
+   as vertical while DACAD labels it with its edge's pitch (65°).
 
-All five are fixed cases in `tests/fixtures/check` (project JSON, the RD2
+All six are fixed cases in `tests/fixtures/check` (project JSON, the RD2
 the engine writes, DACAD's SO2 from the core emulator), checked by
 `properties.rs::merged_apex_corner_is_within_dacad_tolerance` and
-`single_line_faces_are_dacads`. `properties.rs` now runs a fixed seed like
+`single_line_faces_are_dacads` and `single_line_face_reads_as_vertical`.
+`properties.rs` now runs a fixed seed like
 `invariants.rs`, so a pull request's checks do not depend on which rare roof
 a random seed draws; the nightly run adds a new seed each night.
 

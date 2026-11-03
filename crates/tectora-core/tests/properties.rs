@@ -646,6 +646,7 @@ fn single_line_faces_are_dacads() {
         ("F6_single_line_face", 0),
         ("F8_single_line_face", 1),
         ("G6_single_line_face", 0),
+        ("V6_vertical_single_line_face", 0),
     ] {
         let p = dacad_fixture(name);
         let geos = generate_project(&p);
@@ -653,6 +654,26 @@ fn single_line_faces_are_dacads() {
         assert!(single_line_face(f), "{name}: {f:?}");
         assert!(f.area > 1e-3, "{name}: {f:?}");
     }
+}
+
+/// The PR #18 CI counterexample of `faces_are_flat_at_their_pitch` (before
+/// single-line faces were skipped): the face's Newell normal is horizontal,
+/// so the polygon reads as vertical while DACAD labels it with its edge's
+/// pitch. Its two distinct corners make one line, so the normal has no
+/// direction; same class as `single_line_faces_are_dacads`.
+#[test]
+fn single_line_face_reads_as_vertical() {
+    let p = dacad_fixture("V6_vertical_single_line_face");
+    let geos = generate_project(&p);
+    let f = geos[0].faces.iter().find(|f| f.edge == 0).unwrap();
+    let n = newell(&f.polygon);
+    let pitch = n[0].hypot(n[1]).atan2(n[2].abs()).to_degrees();
+    assert!(pitch > 89.0, "{pitch} {f:?}");
+    assert!(
+        (f.pitch_deg - p.parts[0].edges[0].pitch_deg).abs() < 1e-4,
+        "{f:?}"
+    );
+    assert!(single_line_face(f), "{f:?}");
 }
 
 #[test]
