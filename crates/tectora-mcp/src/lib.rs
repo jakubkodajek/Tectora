@@ -15,6 +15,7 @@ use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::geom::Point2;
 use tectora_core::model::GABLE_PITCH_DEG;
 use tectora_core::quantities::{dacad_line_totals, roof_totals};
+use tectora_core::settings::Settings;
 use tectora_core::store::{LiveStatus, Store, now_ms};
 use tectora_core::{
     Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow,
@@ -222,11 +223,13 @@ fn parse_points(v: &Value) -> Result<Vec<Point2>, String> {
 fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
     let points = parse_points(arg(v, "points")?)?;
     let defaults = v.get("defaults").cloned().unwrap_or(json!({}));
+    // Values not given come from the user's settings (Settings › New roofs).
+    let preset = Settings::load().roof_defaults;
     let base = EdgeDef {
         start: Point2::new(0.0, 0.0),
-        pitch_deg: arg_f64(&defaults, "pitch_deg")?.unwrap_or(40.0),
-        eave_height: arg_f64(&defaults, "eave_height")?.unwrap_or(3.0),
-        overhang: arg_f64(&defaults, "overhang")?.unwrap_or(0.5),
+        pitch_deg: arg_f64(&defaults, "pitch_deg")?.unwrap_or(preset.pitch_deg),
+        eave_height: arg_f64(&defaults, "eave_height")?.unwrap_or(preset.eave_height),
+        overhang: arg_f64(&defaults, "overhang")?.unwrap_or(preset.overhang),
         half_hip: None,
         direction_rad: None,
         breaks: Vec::new(),
@@ -376,6 +379,30 @@ fn base_tools() -> Value {
             "name": "tectora_guide",
             "description": "Read first. Explains Tectora's roof model (DACAD conventions), units, result codes and how to turn a technical drawing into a roof.",
             "inputSchema": schema(json!({}), &[]),
+        },
+        {
+            "name": "get_settings",
+            "description": "The user's Tectora settings: projects folder, drawings inbox folder (technical drawings to build roofs from), language, theme, default pitch / eave height / overhang for new roofs, AI follow mode.",
+            "inputSchema": schema(json!({}), &[]),
+        },
+        {
+            "name": "update_settings",
+            "description": "Change Tectora settings, same as the app's Settings screen. Pass only the keys to change; null resets a folder or the language to its default. Ask the user before moving the projects folder.",
+            "inputSchema": schema(json!({
+                "projects_dir": { "type": ["string", "null"], "description": "Absolute path of the design library folder." },
+                "drawings_dir": { "type": ["string", "null"], "description": "Absolute path of the drawings inbox; default <projects_dir>/drawings." },
+                "locale": { "type": ["string", "null"], "enum": ["cs", "sk", "en", "de", null] },
+                "theme": { "type": "string", "enum": ["system", "light", "dark"] },
+                "roof_defaults": {
+                    "type": "object",
+                    "properties": {
+                        "pitch_deg": { "type": "number", "minimum": 0, "maximum": 89 },
+                        "eave_height": { "type": "number" },
+                        "overhang": { "type": "number", "minimum": 0 }
+                    }
+                },
+                "follow_ai": { "type": "boolean" }
+            }), &[]),
         },
         {
             "name": "list_projects",
@@ -573,15 +600,33 @@ impl Server {
         Ok((id, project))
     }
 
+    /// Writes the settings file; when this server uses the library folder
+    /// from the settings and that folder changed, it switches to the new one.
+    fn update_settings(&mut self, args: &Value) -> ToolResult {
+        let old = Settings::load();
+        let next = old
+            .patched(args)
+            .map_err(|e| format!("settings not saved: {e}"))?;
+        next.save()
+            .map_err(|e| format!("settings not saved: {e}"))?;
+        if self.store.dir == old.projects_dir() && next.projects_dir() != old.projects_dir() {
+            self.store = Store::new(next.projects_dir()).map_err(|e| e.to_string())?;
+        }
+        self.live("Changed Tectora settings".into(), None);
+        Ok(next.describe())
+    }
+
     /// Runs a tool; a panic in the geometry kernel becomes a tool error
     /// instead of ending the server for the rest of the session.
-    pub fn call_tool(&self, name: &str, args: &Value) -> ToolResult {
+    pub fn call_tool(&mut self, name: &str, args: &Value) -> ToolResult {
         tectora_core::model::guarded(|| self.call_tool_unguarded(name, args))?
     }
 
-    fn call_tool_unguarded(&self, name: &str, args: &Value) -> ToolResult {
+    fn call_tool_unguarded(&mut self, name: &str, args: &Value) -> ToolResult {
         match name {
             "tectora_guide" => Ok(json!(GUIDE)),
+            "get_settings" => Ok(Settings::load().describe()),
+            "update_settings" => self.update_settings(args),
             "list_projects" => {
                 self.live("Browsing the design library".into(), None);
                 let q = args
@@ -663,6 +708,7 @@ impl Server {
                 let length = arg_f64(args, "length")?.ok_or("missing `length`")?;
                 let width = arg_f64(args, "width")?.unwrap_or(length);
                 let pitch = arg_f64(args, "pitch_deg")?.ok_or("missing `pitch_deg`")?;
+                let preset = Settings::load().roof_defaults;
                 if length <= 0.0 || width <= 0.0 || !(0.0 < pitch && pitch < 90.0) {
                     return Err(
                         "length and width must be positive and pitch between 0 and 90".into(),
@@ -674,8 +720,8 @@ impl Server {
                     length,
                     width,
                     pitch,
-                    arg_f64(args, "eave_height")?.unwrap_or(3.0),
-                    arg_f64(args, "overhang")?.unwrap_or(0.5),
+                    arg_f64(args, "eave_height")?.unwrap_or(preset.eave_height),
+                    arg_f64(args, "overhang")?.unwrap_or(preset.overhang),
                 ));
                 self.commit(None, None, &p, arg_str(args, "summary")?)
             }
@@ -978,7 +1024,7 @@ mod tests {
 
     #[test]
     fn create_update_and_revert() {
-        let s = server();
+        let mut s = server();
         let r = s
             .call_tool(
                 "create_project",
@@ -1019,8 +1065,35 @@ mod tests {
     }
 
     #[test]
+    fn settings_read_and_update() {
+        let base = std::env::temp_dir().join(format!("tectora-mcp-cfg-{}", std::process::id()));
+        // Only this test reads the settings file, so the env var is safe here.
+        unsafe { std::env::set_var("TECTORA_CONFIG_DIR", base.join("cfg")) };
+        let mut s = server();
+        let r = s.call_tool("get_settings", &json!({})).unwrap();
+        assert_eq!(r["settings"]["theme"], "system");
+        let inbox = base.join("inbox");
+        let r = s
+            .call_tool(
+                "update_settings",
+                &json!({ "drawings_dir": inbox.to_string_lossy(), "roof_defaults": { "pitch_deg": 35 } }),
+            )
+            .unwrap();
+        assert_eq!(r["effective"]["drawings_dir"], json!(inbox));
+        assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
+        assert!(inbox.is_dir());
+        assert!(
+            s.call_tool("update_settings", &json!({ "locale": "fr" }))
+                .is_err()
+        );
+        let r = s.call_tool("get_settings", &json!({})).unwrap();
+        assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn calc_reports_roofs_that_look_wrong() {
-        let s = server();
+        let mut s = server();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/check/C1_hips_outside.json");
         let p: Project = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
@@ -1053,7 +1126,7 @@ mod tests {
 
     #[test]
     fn absurd_values_are_rejected() {
-        let s = server();
+        let mut s = server();
         let err = s
             .call_tool(
                 "create_project",

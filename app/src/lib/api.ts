@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ActivityItem,
+  AppSettingsView,
   Attachment,
   CalcResult,
   ExampleInfo,
@@ -40,6 +41,9 @@ export const api = {
   createFromExample: (exampleId: string, name?: string) =>
     invoke<string>("create_from_example", { exampleId, name: name ?? null }),
   calc: (project: Project) => invoke<CalcResult>("calc", { project }),
+  getSettings: () => invoke<AppSettingsView>("get_settings"),
+  updateSettings: (patch: Record<string, unknown>) => invoke<AppSettingsView>("update_settings", { patch }),
+  openFolder: (which: "projects" | "drawings" | "settings") => invoke<void>("open_folder", { which }),
   listAttachments: (id: string) => invoke<Attachment[]>("list_attachments", { id }),
   attachFiles: (id: string, paths: string[]) => invoke<string[]>("attach_files", { id, paths }),
   removeAttachment: (id: string, name: string) => invoke<void>("remove_attachment", { id, name }),
@@ -49,6 +53,11 @@ export const api = {
   takeSnapshot: (project: Project) => invoke<ResultSnapshot>("take_snapshot", { project }),
   takePendingOpen: () => invoke<string | null>("take_pending_open"),
 };
+
+/** Fires when the settings file changes (e.g. an AI agent changed a setting). */
+export function onSettingsChanged(cb: (v: AppSettingsView) => void): Promise<UnlistenFn> {
+  return listen<AppSettingsView>("settings-changed", (e) => cb(e.payload));
+}
 
 /** Fires with the id of a job opened from a file (double-click). */
 export function onOpenProject(cb: (id: string) => void): Promise<UnlistenFn> {

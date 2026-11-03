@@ -24,6 +24,7 @@
     onchanged,
     onerror,
     onconnect,
+    onsettings,
   }: {
     projects: ProjectSummary[];
     examples: ExampleInfo[];
@@ -32,6 +33,7 @@
     onchanged: () => void;
     onerror: (msg: string) => void;
     onconnect: () => void;
+    onsettings: () => void;
   } = $props();
 
   type Filter = "all" | JobStatus | "ai" | "examples";
@@ -141,6 +143,7 @@
         {#if isFresh() && live.status}{actorName(live.status.actor)}: {live.status.message}{:else}{t("ai.connect")}{/if}
       </button>
       <LanguagePicker />
+      <button class="icon-btn" onclick={onsettings} title={t("settings.button")} aria-label={t("settings.button")}><Icon name="gear" size={18} /></button>
       <button class="btn import" onclick={importJob} title={t("home.importJobHint")}><Icon name="upload" size={16} /><span class="label">{t("home.importJob")}</span></button>
       <button class="btn primary" onclick={() => (newJob = { example: null })}><Icon name="plus" size={16} />{t("lib.new")}</button>
     </div>
@@ -161,7 +164,7 @@
       <button class:on={filter === "examples"} onclick={() => (filter = "examples")}>
         <Icon name="house" size={16} />{t("home.examples")}<span>{examples.length}</span>
       </button>
-      <div class="folder" title={dir}><Icon name="folder" size={13} /><span>{`\u200E${dir}\u200E`}</span></div>
+      <button class="folder" title={dir} onclick={onsettings}><Icon name="folder" size={13} /><span>{`\u200E${dir}\u200E`}</span></button>
     </nav>
 
     <main>
@@ -417,9 +420,18 @@
     align-items: center;
     gap: 6px;
     margin-top: auto;
-    padding: 0 8px;
+    padding: 4px 8px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
     font-size: 11.5px;
     color: var(--text-3);
+    text-align: left;
+    min-width: 0;
+  }
+  .folder:hover {
+    background: var(--surface-2);
+    color: var(--text-2);
   }
   .folder span {
     overflow: hidden;

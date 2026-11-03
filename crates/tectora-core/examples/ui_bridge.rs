@@ -23,6 +23,7 @@ use std::time::SystemTime;
 use serde_json::{Value, json};
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::quantities::dacad_line_totals;
+use tectora_core::settings::Settings;
 use tectora_core::store::{self, Store, USER_ACTOR, outlines};
 use tectora_core::{Project, bundle, examples, roof, snapshot};
 
@@ -169,6 +170,19 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             to_json(store.save(None, &project)?)
         }
         "calc" => Ok(calc(&arg::<Project>(a, "project")?)),
+        // Settings live in `target/ui-preview-config` (see `main`). The
+        // preview keeps serving its own library even if the projects folder
+        // setting changes.
+        "get_settings" => Ok(Settings::load().describe()),
+        "update_settings" => {
+            let patch = a.get("patch").cloned().unwrap_or(Value::Null);
+            let next = Settings::load()
+                .patched(&patch)
+                .map_err(|e| e.code().to_string())?;
+            next.save().map_err(|e| e.code().to_string())?;
+            Ok(next.describe())
+        }
+        "open_folder" => Err("open_folder is not available in the browser preview".into()),
         _ => Err(format!(
             "ui_bridge: unknown command {cmd} (add it to crates/tectora-core/examples/ui_bridge.rs)"
         )),
@@ -291,6 +305,11 @@ fn main() -> std::io::Result<()> {
             .unwrap_or_else(|| "target/ui-preview-library".into()),
     );
     let port: u16 = args.next().and_then(|p| p.parse().ok()).unwrap_or(7878);
+    if std::env::var_os("TECTORA_CONFIG_DIR").is_none() {
+        // Never touch the developer's real app settings from the preview.
+        // SAFETY: set before any other thread exists.
+        unsafe { std::env::set_var("TECTORA_CONFIG_DIR", "target/ui-preview-config") };
+    }
     let store = Store::new(dir.clone())?;
     if store.list().is_empty() {
         // Same first-run seed as the app, plus a few more shapes to look at.

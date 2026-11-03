@@ -243,6 +243,27 @@ export interface Presets {
   overhang: number;
 }
 
+/** App-wide settings (crates/tectora-core/src/settings.rs). */
+export interface AppSettings {
+  projects_dir: string | null;
+  drawings_dir: string | null;
+  locale: string | null;
+  theme: "system" | "light" | "dark";
+  roof_defaults: Presets;
+  follow_ai: boolean;
+}
+
+export interface AppSettingsView {
+  settings: AppSettings;
+  effective: {
+    projects_dir: string;
+    drawings_dir: string;
+    projects_dir_from_env: boolean;
+    default_projects_dir: string;
+    settings_file: string;
+  };
+}
+
 export const USER_ACTOR = "user";
 export const isAi = (actor: string) => actor !== USER_ACTOR;
 

@@ -1,5 +1,12 @@
 <script lang="ts">
   import { LOCALES, i18n, setLocale, t, type Locale } from "./i18n.svelte";
+  import { updateSettings } from "./settings.svelte";
+
+  function choose(l: Locale) {
+    setLocale(l);
+    // Also store it in the settings file; the choice applies even if that fails.
+    updateSettings({ locale: l }).catch(() => {});
+  }
 </script>
 
 <label class="lang" title={t("lang")}>
@@ -9,7 +16,7 @@
   <select
     aria-label={t("lang")}
     value={i18n.locale}
-    onchange={(e) => setLocale((e.target as HTMLSelectElement).value as Locale)}
+    onchange={(e) => choose((e.target as HTMLSelectElement).value as Locale)}
   >
     {#each LOCALES as l}
       <option value={l.id}>{l.label}</option>

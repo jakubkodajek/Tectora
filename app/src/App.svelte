@@ -3,10 +3,11 @@
   import AiConnect from "./lib/AiConnect.svelte";
   import Editor from "./lib/Editor.svelte";
   import Home from "./lib/Home.svelte";
-  import { api, onLiveStatus, onOpenProject, onProjectsChanged } from "./lib/api";
+  import SettingsDialog from "./lib/SettingsDialog.svelte";
+  import { api, onLiveStatus, onOpenProject, onProjectsChanged, onSettingsChanged } from "./lib/api";
   import { t } from "./lib/i18n.svelte";
   import { actorName, live } from "./lib/live.svelte";
-  import { prefs } from "./lib/settings.svelte";
+  import { applySettings, loadSettings, prefs } from "./lib/settings.svelte";
   import type { ExampleInfo, LiveStatus, ProjectSummary } from "./lib/types";
 
   let openId = $state<string | null>(null);
@@ -14,6 +15,7 @@
   let examples = $state<ExampleInfo[]>([]);
   let dir = $state("");
   let connect = $state(false);
+  let settingsOpen = $state(false);
   let toast = $state<{ text: string; error: boolean } | null>(null);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -41,7 +43,14 @@
     show(t("ai.followed", { who: actorName(s.actor) }));
   }
 
+  /** The projects folder changed: reload the library from the new one. */
+  function libraryChanged() {
+    api.projectsDir().then((d) => (dir = d));
+    refresh();
+  }
+
   onMount(() => {
+    loadSettings().catch(() => {});
     refresh();
     api.listExamples().then((x) => (examples = x));
     api.projectsDir().then((d) => (dir = d));
@@ -49,6 +58,12 @@
     // New or changed designs from the CLI / AI agents appear immediately.
     const un = onProjectsChanged(() => refresh());
     const unLive = onLiveStatus(onLive);
+    // Settings changed outside this window (e.g. by an AI agent over MCP).
+    const unSettings = onSettingsChanged((v) => {
+      const moved = v.effective.projects_dir !== dir;
+      applySettings(v);
+      if (moved) libraryChanged();
+    });
     // A .tectora / .tectorajob file opened from the system (double-click).
     const openFile = (id: string) => {
       refresh();
@@ -60,11 +75,22 @@
     return () => {
       un.then((f) => f());
       unLive.then((f) => f());
+      unSettings.then((f) => f());
       unOpen.then((f) => f());
       clearInterval(tick);
     };
   });
 </script>
+
+<svelte:window
+  onkeydown={(e) => {
+    // Cmd+, / Ctrl+, opens the settings, as in most desktop apps.
+    if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+      e.preventDefault();
+      settingsOpen = true;
+    }
+  }}
+/>
 
 {#if openId}
   {#key openId}
@@ -87,7 +113,12 @@
     onchanged={refresh}
     onerror={(m) => show(m, true)}
     onconnect={() => (connect = true)}
+    onsettings={() => (settingsOpen = true)}
   />
+{/if}
+
+{#if settingsOpen}
+  <SettingsDialog onclose={() => (settingsOpen = false)} onlibrarychanged={libraryChanged} />
 {/if}
 
 {#if connect}
