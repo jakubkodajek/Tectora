@@ -111,6 +111,26 @@ within those tolerances of each other are skipped by the envelope properties
    SO2). The 3D view draws both sides, so nothing shows; the doc comment is
    wrong.
 
+7. **Merged apex (P16, PR #16 CI).** Where four planes nearly meet at
+   the top, DACAD takes their events as one sweep level and merges their
+   corners, so a 45° face's corner is its neighbours' point, 1.16 cm off
+   its own plane. SO2 byte-identical to DACAD's. `properties.rs`
+   `faces_lie_in_their_edge_planes` now allows `slope × POINT_EPS` (2 cm in
+   plan) on top of 1 cm.
+8. **Single-line faces (F5, F6, F8, G6).** Also with one overhang, where a
+   short wall meets its neighbours at a sharp angle DACAD writes a face
+   bounded by a single line: two of its three corners coincide, its
+   polygon has no area, its reported area is a 0.004–0.016 m² sliver. SO2
+   byte-identical to DACAD's; `faces_are_flat_at_their_pitch` skips such
+   faces.
+
+All five are fixed cases in `tests/fixtures/check` (project JSON, the RD2
+the engine writes, DACAD's SO2 from the core emulator), checked by
+`properties.rs::merged_apex_corner_is_within_dacad_tolerance` and
+`single_line_faces_are_dacads`. `properties.rs` now runs a fixed seed like
+`invariants.rs`, so a pull request's checks do not depend on which rare roof
+a random seed draws; the nightly run adds a new seed each night.
+
 Every deviation from exact geometry found so far (73 roofs: the census's
 worst 60, C1–C5, D1–D7 from property failures under other seeds) was run in
 the DACAD core emulator and is SO2 byte-identical to DACAD. The property

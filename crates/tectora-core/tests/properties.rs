@@ -438,12 +438,30 @@ fn degenerate_project() -> impl Strategy<Value = Project> {
         })
 }
 
+/// Seed of the property runs (see [`config`]).
+const SEED: u64 = 20261103;
+
 fn config(cases: u32) -> ProptestConfig {
+    let cases = std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(cases);
     ProptestConfig {
-        cases: std::env::var("PROPTEST_CASES")
+        cases,
+        // Inputs DACAD refuses are rejected, not failed; with many cases
+        // their count outgrows proptest's default limit of 1024.
+        max_global_rejects: cases * 4,
+        max_local_rejects: 1 << 20,
+        // A fixed seed unless PROPTEST_RNG_SEED is set, so a pull request's
+        // checks do not depend on which rare roof a random seed draws (PR
+        // #16 drew P16_merged_apex). The nightly run explores new seeds.
+        rng_seed: std::env::var("PROPTEST_RNG_SEED")
             .ok()
-            .and_then(|c| c.parse().ok())
-            .unwrap_or(cases),
+            .and_then(|s| s.parse().ok())
+            .map_or(
+                proptest::test_runner::RngSeed::Fixed(SEED),
+                proptest::test_runner::RngSeed::Fixed,
+            ),
         failure_persistence: None,
         ..ProptestConfig::default()
     }
@@ -501,6 +519,9 @@ macro_rules! face_tests {
                     prop_assert!(f.polygon.len() >= 3, "face {} has {} points\n{}", f.edge, f.polygon.len(), describe(&p));
                     let n = newell(&f.polygon);
                     let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                    if single_line_face(f) {
+                        continue;
+                    }
                     let c = f.polygon[0];
                     for v in &f.polygon {
                         let d = ((v[0] - c[0]) * n[0] + (v[1] - c[1]) * n[1] + (v[2] - c[2]) * n[2]) / len;
@@ -511,45 +532,151 @@ macro_rules! face_tests {
                 }
             }
 
-            /// A face at its edge's pitch lies in the edge's plane: through the eave
-            /// line (the edge pushed out by its overhang) at eave height. Where
-            /// overhangs differ, the eave corners between them follow DACAD's own
-            /// rules, so the tolerance grows by what the overhang step can lift.
+            /// A face at its edge's pitch lies in the edge's plane
+            /// (see [`edge_plane_misfits`]).
             #[test]
             $(#[$attr])*
             fn faces_lie_in_their_edge_planes(p in tidy_project($uniform)) {
                 let geos = roof(&p)?;
-                let edges = &p.parts[0].edges;
-                let ovs = edges.iter().map(|e| e.overhang);
-                let step = ovs.clone().fold(0.0, f64::max) - ovs.fold(f64::MAX, f64::min);
-                for f in geos.iter().flat_map(|g| &g.faces) {
-                    let e = &edges[f.edge];
-                    if e.pitch_deg >= 89.0
-                        || (f.pitch_deg - e.pitch_deg).abs() > 1e-6
-                        || e.half_hip.is_some()
-                        || !e.breaks.is_empty()
-                        || e.direction_rad.is_some()
-                    {
-                        continue;
-                    }
-                    let b = edges[(f.edge + 1) % edges.len()].start;
-                    let (dx, dy) = (b.x - e.start.x, b.y - e.start.y);
-                    let len = dx.hypot(dy);
-                    let slope = e.pitch_deg.to_radians().tan();
-                    for v in &f.polygon {
-                        let inward = ((v[0] - e.start.x) * -dy + (v[1] - e.start.y) * dx) / len;
-                        let z = e.eave_height + slope * (inward + e.overhang);
-                        let tol = 0.01 + slope * step;
-                        prop_assert!((v[2] - z).abs() < tol, "face {} point {v:?} off its plane (z {z})\n{}", f.edge, describe(&p));
-                    }
-                }
+                let bad = edge_plane_misfits(&p, &geos);
+                prop_assert!(bad.is_empty(), "{}\n{}", bad.join("\n"), describe(&p));
             }
             }
         }
     };
 }
 
+/// A face DACAD's core writes bounded by a single line: its polygon has no
+/// area (two of its three corners coincide) but its reported area, taken
+/// from its edge list, is a sliver of a few hundredths of a square metre.
+/// It has no plane to be flat in (cases `F5_*`, `F6_*`, `F8_*`, `G6_*`, SO2
+/// byte-identical to DACAD's; see `single_line_faces_are_dacads`).
+fn single_line_face(f: &tectora_core::roof::RoofFace) -> bool {
+    // Corners within a millimetre are one (the coinciding pair can differ
+    // in the last float32 digit).
+    let mut corners: Vec<[f64; 3]> = Vec::new();
+    for v in &f.polygon {
+        if !corners
+            .iter()
+            .any(|c| (0..3).all(|k| (c[k] - v[k]).abs() < 1e-3))
+        {
+            corners.push(*v);
+        }
+    }
+    corners.len() < 3 && f.area < 0.05
+}
+
+/// DACAD's point merge distance in plan (POINT_EPS, 2 cm).
+const POINT_EPS: f64 = 0.02;
+
+/// The face corners that are off their edge's plane: through the eave line
+/// (the edge pushed out by its overhang) at eave height. DACAD takes events
+/// within 1 cm of height as one sweep level and merges points within 2 cm
+/// in plan, so where several planes nearly meet in one point a corner may
+/// be the merged point of its neighbours, off the face's own plane by up
+/// to `slope * POINT_EPS` (case `P16_merged_apex`, SO2 byte-identical to
+/// DACAD's). Where overhangs differ, the eave corners between them follow
+/// DACAD's own rules, so the tolerance also grows by what the overhang step
+/// can lift.
+fn edge_plane_misfits(p: &Project, geos: &[RoofGeometry]) -> Vec<String> {
+    let edges = &p.parts[0].edges;
+    let ovs = edges.iter().map(|e| e.overhang);
+    let step = ovs.clone().fold(0.0, f64::max) - ovs.fold(f64::MAX, f64::min);
+    let mut bad = Vec::new();
+    for f in geos.iter().flat_map(|g| &g.faces) {
+        let e = &edges[f.edge];
+        if e.pitch_deg >= 89.0
+            || (f.pitch_deg - e.pitch_deg).abs() > 1e-6
+            || e.half_hip.is_some()
+            || !e.breaks.is_empty()
+            || e.direction_rad.is_some()
+        {
+            continue;
+        }
+        let b = edges[(f.edge + 1) % edges.len()].start;
+        let (dx, dy) = (b.x - e.start.x, b.y - e.start.y);
+        let len = dx.hypot(dy);
+        let slope = e.pitch_deg.to_radians().tan();
+        for v in &f.polygon {
+            let inward = ((v[0] - e.start.x) * -dy + (v[1] - e.start.y) * dx) / len;
+            let z = e.eave_height + slope * (inward + e.overhang);
+            let tol = 0.01 + slope * (step + POINT_EPS);
+            if (v[2] - z).abs() >= tol {
+                bad.push(format!(
+                    "face {} point {v:?} off its plane (z {z}, tolerance {tol})",
+                    f.edge
+                ));
+            }
+        }
+    }
+    bad
+}
+
 face_tests!(faces_uniform_overhang, uniform: true, []);
+
+/// The counterexample a random seed drew on PR #16: on a 5-gon with one
+/// overhang, four roof planes nearly meet at the top and DACAD merges their
+/// corners there, so a corner of the 45° face is the merged point of its
+/// neighbours, 1.16 cm off its own plane. The engine's SO2 is byte-identical
+/// to DACAD's (DACAD core emulator), so this is DACAD's behaviour within its
+/// point tolerance, not a port bug.
+/// The engine writes the RD2 DACAD was run on and gives DACAD's SO2 (from
+/// the DACAD core emulator) for fixture `name` in `tests/fixtures/check`.
+fn dacad_fixture(name: &str) -> Project {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/check");
+    let read = |ext: &str| std::fs::read(dir.join(format!("{name}.{ext}"))).unwrap();
+    let p: Project = serde_json::from_slice(&read("json")).unwrap();
+    let (rd2, _) = tectora_core::engine::rd2_text(&p).unwrap();
+    assert_eq!(rd2.as_bytes(), read("RD2").as_slice(), "{name} RD2");
+    let out = tectora_core::dcore::pipeline::Run::new(0x4a8)
+        .run(&read("RD2"))
+        .unwrap();
+    assert!(out.sol == read("SO2"), "{name} SO2 differs from DACAD's");
+    p
+}
+
+/// Counterexamples of `faces_are_flat_at_their_pitch` under other seeds:
+/// with one overhang, where a short wall meets its neighbours at a sharp
+/// angle DACAD writes a face bounded by a single line (zero polygon area,
+/// a reported sliver of 0.004 to 0.016 m2).
+#[test]
+fn single_line_faces_are_dacads() {
+    for (name, edge) in [
+        ("F5_single_line_face", 3),
+        ("F6_single_line_face", 0),
+        ("F8_single_line_face", 1),
+        ("G6_single_line_face", 0),
+    ] {
+        let p = dacad_fixture(name);
+        let geos = generate_project(&p);
+        let f = geos[0].faces.iter().find(|f| f.edge == edge).unwrap();
+        assert!(single_line_face(f), "{name}: {f:?}");
+        assert!(f.area > 1e-3, "{name}: {f:?}");
+    }
+}
+
+#[test]
+fn merged_apex_corner_is_within_dacad_tolerance() {
+    let p = dacad_fixture("P16_merged_apex");
+
+    let geos = generate_project(&p);
+    assert!(geos[0].warnings.is_empty(), "{:?}", geos[0].warnings);
+    assert_eq!(edge_plane_misfits(&p, &geos), Vec::<String>::new());
+    // The corner itself: on faces 0 and 1, 1.16 cm above face 4's plane.
+    let e = &p.parts[0].edges[4];
+    let b = p.parts[0].edges[0].start;
+    let (dx, dy) = (b.x - e.start.x, b.y - e.start.y);
+    let face = geos[0].faces.iter().find(|f| f.edge == 4).unwrap();
+    let off = face
+        .polygon
+        .iter()
+        .map(|v| {
+            let inward = ((v[0] - e.start.x) * -dy + (v[1] - e.start.y) * dx) / dx.hypot(dy);
+            (v[2] - (e.eave_height + inward + e.overhang)).abs()
+        })
+        .fold(0.0, f64::max);
+    assert!((off - 0.0116).abs() < 2e-4, "{off}");
+}
 face_tests!(
     faces_mixed_overhang,
     uniform: false,
