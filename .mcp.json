@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "tectora": {
+      "command": "cargo",
+      "args": ["run", "-q", "-p", "tectora-cli", "--", "mcp", "--dir", "${TECTORA_DEV_LIBRARY:-target/ui-preview-library}"]
+    }
+  }
+}
