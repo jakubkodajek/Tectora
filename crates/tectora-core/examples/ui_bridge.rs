@@ -22,9 +22,9 @@ use std::time::SystemTime;
 
 use serde_json::{Value, json};
 use tectora_core::examples::{StandardRoof, standard_roof};
-use tectora_core::quantities::dacad_line_totals;
+use tectora_core::settings::Settings;
 use tectora_core::store::{self, Store, USER_ACTOR, outlines};
-use tectora_core::{Project, bundle, examples, roof, snapshot};
+use tectora_core::{Project, bundle, examples, snapshot};
 
 /// Largest request body accepted (a project with attachments metadata).
 const MAX_BODY: usize = 64 * 1024 * 1024;
@@ -38,32 +38,24 @@ fn to_json<T: serde::Serialize>(v: T) -> Result<Value, String> {
     serde_json::to_value(v).map_err(|e| e.to_string())
 }
 
-fn calc(project: &Project) -> Value {
-    let mut total = roof::RoofQuantities::default();
-    let parts: Vec<Value> = project
-        .parts
-        .iter()
-        .zip(tectora_core::openings::generate_project(project))
-        .map(|(part, geometry)| {
-            let q = geometry.quantities();
-            total.add(&q);
-            json!({ "name": part.name, "geometry": geometry, "quantities": q })
-        })
-        .collect();
-    total.add(&tectora_core::quantities::manual_quantities(project));
-    json!({
-        "parts": parts,
-        "totals": total,
-        "codes": dacad_line_totals(project),
-        "stored_result": snapshot::status(project),
-    })
+/// Same as the app's `calc` command: limits, panic guard, problems and
+/// the stored result's status.
+fn calc(project: &Project) -> Result<Value, String> {
+    project.check_limits()?;
+    let mut v = tectora_core::model::guarded(|| tectora_core::report::calc(project))?;
+    v["stored_result"] = to_json(snapshot::status(project))?;
+    Ok(v)
 }
 
 fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
     let id = || arg::<String>(a, "id");
     match cmd {
         "projects_dir" => to_json(store.dir.display().to_string()),
-        "list_projects" => to_json(store.list()),
+        "list_projects" => {
+            let (projects, broken) = store.scan()?;
+            Ok(json!({ "projects": projects, "broken": broken }))
+        }
+        "startup_warnings" => Ok(json!([])),
         "project_activity" => {
             let mut items: Vec<Value> = store
                 .activity(&id()?)
@@ -168,7 +160,20 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             project.name = arg(a, "name")?;
             to_json(store.save(None, &project)?)
         }
-        "calc" => Ok(calc(&arg::<Project>(a, "project")?)),
+        "calc" => calc(&arg::<Project>(a, "project")?),
+        // Settings live in `target/ui-preview-config` (see `main`). The
+        // preview keeps serving its own library even if the projects folder
+        // setting changes.
+        "get_settings" => Ok(Settings::load().describe()),
+        "update_settings" => {
+            let patch = a.get("patch").cloned().unwrap_or(Value::Null);
+            let next = Settings::load()
+                .patched(&patch)
+                .map_err(|e| e.code().to_string())?;
+            next.save().map_err(|e| e.code().to_string())?;
+            Ok(next.describe())
+        }
+        "open_folder" => Err("open_folder is not available in the browser preview".into()),
         _ => Err(format!(
             "ui_bridge: unknown command {cmd} (add it to crates/tectora-core/examples/ui_bridge.rs)"
         )),
@@ -291,6 +296,11 @@ fn main() -> std::io::Result<()> {
             .unwrap_or_else(|| "target/ui-preview-library".into()),
     );
     let port: u16 = args.next().and_then(|p| p.parse().ok()).unwrap_or(7878);
+    if std::env::var_os("TECTORA_CONFIG_DIR").is_none() {
+        // Never touch the developer's real app settings from the preview.
+        // SAFETY: set before any other thread exists.
+        unsafe { std::env::set_var("TECTORA_CONFIG_DIR", "target/ui-preview-config") };
+    }
     let store = Store::new(dir.clone())?;
     if store.list().is_empty() {
         // Same first-run seed as the app, plus a few more shapes to look at.

@@ -5,7 +5,7 @@
   import Modal from "./Modal.svelte";
   import { api } from "./api";
   import { t } from "./i18n.svelte";
-  import { prefs, savePrefs } from "./settings.svelte";
+  import { prefs, savePrefs, updateSettings } from "./settings.svelte";
 
   let { onclose }: { onclose: () => void } = $props();
 
@@ -71,7 +71,7 @@
     <li>{t("conn.how3")}</li>
   </ol>
   <label class="check">
-    <input type="checkbox" bind:checked={prefs.followAi} onchange={savePrefs} />
+    <input type="checkbox" bind:checked={prefs.followAi} onchange={() => { savePrefs(); updateSettings({ follow_ai: prefs.followAi }).catch(() => {}); }} />
     {t("conn.follow")}
   </label>
 </Modal>

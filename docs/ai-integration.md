@@ -31,6 +31,7 @@ ready-to-paste configuration for Claude Desktop, Claude Code and Gemini CLI.
 | `duplicate_project`, `delete_project`, `list_examples` | Library |
 | `list_files`, `attach_file`, `remove_file` | Files attached to a job (drawings) |
 | `export_job`, `import_job`, `get_schema` | `.tectorajob` bundles, file schema |
+| `get_settings`, `update_settings` | App settings shared with the Settings screen: jobs folder, drawings inbox folder, language, theme, defaults for new roofs, follow mode |
 
 Every write requires a `summary` sentence for the user.
 

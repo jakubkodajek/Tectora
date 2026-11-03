@@ -1026,7 +1026,7 @@ mod tests {
             now_ms(),
             std::process::id()
         ));
-        let s = Server::new(Store::new(dir).unwrap());
+        let mut s = Server::new(Store::new(dir).unwrap());
         let r = s
             .call_tool(
                 "create_standard_roof",
@@ -1037,14 +1037,14 @@ mod tests {
         (s, id)
     }
 
-    fn call(s: &Server, name: &str, args: Value) -> Value {
+    fn call(s: &mut Server, name: &str, args: Value) -> Value {
         s.call_tool(name, &args)
             .unwrap_or_else(|e| panic!("{name}: {e}"))
     }
 
     #[test]
     fn every_tool_has_a_schema_and_a_handler() {
-        let (s, _) = setup();
+        let (mut s, _) = setup();
         for t in tools() {
             let name = t["name"].as_str().unwrap();
             assert!(t["inputSchema"]["type"] == "object", "{name}");
@@ -1057,9 +1057,9 @@ mod tests {
 
     #[test]
     fn walls_transform_and_shapes() {
-        let (s, id) = setup();
+        let (mut s, id) = setup();
         call(
-            &s,
+            &mut s,
             "edit_walls",
             json!({ "id": id, "summary": "s", "operations": [
                 { "op": "insert_point", "after": 0, "x": 5, "y": 0 },
@@ -1075,17 +1075,17 @@ mod tests {
         assert_eq!(p.parts[0].edges.len(), 4);
         assert_eq!(p.parts[0].edges[1].start, Point2::new(12.0, 0.0));
         call(
-            &s,
+            &mut s,
             "transform_part",
             json!({ "id": id, "op": "mirror", "deg": 90, "centre": [-1, 0], "copies": 1, "summary": "s" }),
         );
         call(
-            &s,
+            &mut s,
             "add_shape_part",
             json!({ "id": id, "shape": "regular_polygon", "sides": 6, "side": 3, "at": [0, 20], "summary": "s" }),
         );
         call(
-            &s,
+            &mut s,
             "add_shape_part",
             json!({ "id": id, "shape": "hip", "length": 6, "width": 5, "summary": "s" }),
         );
@@ -1094,7 +1094,7 @@ mod tests {
         assert!(p.parts[1].edges.iter().all(|e| e.start.x <= -2.0 + 1e-9));
         assert_eq!(p.parts[2].edges.len(), 6);
         call(
-            &s,
+            &mut s,
             "delete_items",
             json!({ "id": id, "items": [{ "kind": "part", "index": 3 }, { "kind": "part", "index": 2 }], "summary": "s" }),
         );
@@ -1103,23 +1103,23 @@ mod tests {
 
     #[test]
     fn dormers_manual_lines_and_options() {
-        let (s, id) = setup();
+        let (mut s, id) = setup();
         let r = call(
-            &s,
+            &mut s,
             "add_dormer",
             json!({ "id": id, "kind": "hip", "start": [4, 1], "summary": "s" }),
         );
         assert_eq!(r["dormer"]["kind"], "hip");
         assert!(r["dormer"]["eave_height"].as_f64().unwrap() > 3.0);
         let r = call(
-            &s,
+            &mut s,
             "update_dormer",
             json!({ "id": id, "index": 0, "kind": "shed", "width": 3, "summary": "s" }),
         );
         assert_eq!(r["dormer"]["kind"], "shed");
         assert_eq!(r["dormer"]["width"], 3.0);
         call(
-            &s,
+            &mut s,
             "set_manual",
             json!({ "id": id, "summary": "s",
             "lines": [{ "a": [0, 0], "b": [10, 0, 3], "code": "T" }],
@@ -1128,7 +1128,7 @@ mod tests {
         let p = s.store.load(&id).unwrap();
         assert_eq!(p.manual_faces[0].pitch_deg, 30.0);
         call(
-            &s,
+            &mut s,
             "set_roof_options",
             json!({ "id": id, "flat_roof": true, "material_names": ["Bramac", ""], "summary": "s" }),
         );
@@ -1139,17 +1139,17 @@ mod tests {
 
     #[test]
     fn helpers_preview_and_apply() {
-        let (s, id) = setup();
+        let (mut s, id) = setup();
         // Edge 0 is the south eave of the 10 x 8 gable roof.
         let r = call(
-            &s,
+            &mut s,
             "roof_helper",
             json!({ "id": id, "edge": 0, "tool": "triangle", "width": 4, "ridge": 6 }),
         );
         assert_eq!(r["saved"], false);
         assert_eq!(s.store.load(&id).unwrap().parts[0].edges[0].pitch_deg, 40.0);
         let r = call(
-            &s,
+            &mut s,
             "roof_helper",
             json!({ "id": id, "edge": 0, "tool": "parallel", "target": "pitch",
             "steps": [{ "field": "ridge", "value": 7.5 }], "apply": true, "summary": "Ridge 7.5 m" }),
@@ -1157,13 +1157,13 @@ mod tests {
         assert_eq!(r["saved"], true);
         assert_eq!(r["patches"].as_array().unwrap().len(), 2);
         let r = call(
-            &s,
+            &mut s,
             "roof_helper",
             json!({ "id": id, "edge": 0, "tool": "point", "target": "pitch" }),
         );
         assert!(!r["roof_points"].as_array().unwrap().is_empty());
         let r = call(
-            &s,
+            &mut s,
             "roof_helper",
             json!({ "id": id, "edge": 0, "tool": "round_roof", "apply": true, "summary": "Round roof" }),
         );
@@ -1171,7 +1171,7 @@ mod tests {
         let p = s.store.load(&id).unwrap();
         assert!(!p.parts[0].edges[0].breaks.is_empty());
         call(
-            &s,
+            &mut s,
             "roof_helper",
             json!({ "id": id, "edge": 0, "tool": "build_up", "thickness": 0.2 }),
         );
@@ -1179,31 +1179,31 @@ mod tests {
 
     #[test]
     fn library_files_bundle_and_stored_result() {
-        let (s, id) = setup();
+        let (mut s, id) = setup();
         let dir = s.store.dir.clone();
         let drawing = dir.join("plan.pdf");
         std::fs::write(&drawing, b"%PDF").unwrap();
-        call(&s, "attach_file", json!({ "id": id, "path": drawing }));
+        call(&mut s, "attach_file", json!({ "id": id, "path": drawing }));
         assert_eq!(
-            call(&s, "list_files", json!({ "id": id }))[0]["name"],
+            call(&mut s, "list_files", json!({ "id": id }))[0]["name"],
             "plan.pdf"
         );
         call(
-            &s,
+            &mut s,
             "update_job",
             json!({ "id": id, "status": "offer", "summary": "Offer sent" }),
         );
-        let r = call(&s, "calc", json!({ "id": id }));
+        let r = call(&mut s, "calc", json!({ "id": id }));
         assert_eq!(
             r["stored_result"]["differences"].as_array().unwrap().len(),
             0
         );
         call(
-            &s,
+            &mut s,
             "update_edges",
             json!({ "id": id, "changes": [{ "index": 0, "pitch_deg": 45 }], "summary": "s" }),
         );
-        let r = call(&s, "calc", json!({ "id": id }));
+        let r = call(&mut s, "calc", json!({ "id": id }));
         assert!(
             !r["stored_result"]["differences"]
                 .as_array()
@@ -1211,34 +1211,38 @@ mod tests {
                 .is_empty()
         );
         let out = dir.join("job.tectorajob");
-        call(&s, "export_job", json!({ "id": id, "path": out }));
-        let new_id = call(&s, "import_job", json!({ "path": out }))["id"]
+        call(&mut s, "export_job", json!({ "id": id, "path": out }));
+        let new_id = call(&mut s, "import_job", json!({ "path": out }))["id"]
             .as_str()
             .unwrap()
             .to_string();
         assert_eq!(
-            call(&s, "list_files", json!({ "id": new_id }))
+            call(&mut s, "list_files", json!({ "id": new_id }))
                 .as_array()
                 .unwrap()
                 .len(),
             1
         );
-        let copy = call(&s, "duplicate_project", json!({ "id": id, "name": "Copy" }))["id"]
+        let copy = call(
+            &mut s,
+            "duplicate_project",
+            json!({ "id": id, "name": "Copy" }),
+        )["id"]
             .as_str()
             .unwrap()
             .to_string();
         assert!(s.store.load(&copy).unwrap().result_snapshot.is_none());
         assert!(
-            call(&s, "get_history", json!({ "id": id }))
+            call(&mut s, "get_history", json!({ "id": id }))
                 .as_array()
                 .unwrap()
                 .len()
                 >= 2
         );
-        call(&s, "delete_project", json!({ "id": copy }));
+        call(&mut s, "delete_project", json!({ "id": copy }));
         assert!(!s.store.exists(&copy));
         assert!(
-            call(&s, "get_schema", json!({}))["$defs"]
+            call(&mut s, "get_schema", json!({}))["$defs"]
                 .get("EdgeDef")
                 .is_some()
         );
