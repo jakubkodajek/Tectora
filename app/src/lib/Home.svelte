@@ -107,7 +107,9 @@
   }
 
   async function remove(p: ProjectSummary) {
-    if (!confirm(t("home.confirmDelete", { name: p.name }))) return;
+    // Tauri's dialog plugin replaces window.confirm with an async version
+    // (a Promise is always truthy), so the answer must be awaited.
+    if (!(await confirm(t("home.confirmDelete", { name: p.name })))) return;
     await run("delete", () => api.deleteProject(p.id));
     if (selectedId === p.id) selectedId = null;
     onchanged();
@@ -146,14 +148,14 @@
         {#if isFresh() && live.status}{actorName(live.status.actor)}: {live.status.message}{:else}{t("ai.connect")}{/if}
       </button>
       <LanguagePicker />
-      <button class="btn" onclick={importJob} title={t("home.importJobHint")}><Icon name="upload" size={16} />{t("home.importJob")}</button>
+      <button class="btn import" onclick={importJob} title={t("home.importJobHint")}><Icon name="upload" size={16} /><span class="label">{t("home.importJob")}</span></button>
       <button class="btn primary" onclick={() => (newJob = { example: null })}><Icon name="plus" size={16} />{t("lib.new")}</button>
     </div>
   </header>
 
   <div class="layout">
     <nav>
-      <h3>{t("lib.title")}</h3>
+      <h3 class="nav-title">{t("lib.title")}</h3>
       {#each FILTERS as f}
         <button class:on={filter === f.id} onclick={() => (filter = f.id)}>
           <Icon name={f.icon} size={16} />{f.id === "all" ? t("lib.all") : t(`status.${f.id}`)}<span>{counts[f.id] ?? 0}</span>
@@ -166,7 +168,7 @@
       <button class:on={filter === "examples"} onclick={() => (filter = "examples")}>
         <Icon name="house" size={16} />{t("home.examples")}<span>{examples.length}</span>
       </button>
-      <div class="folder" title={dir}><Icon name="folder" size={13} /><span>{dir}</span></div>
+      <div class="folder" title={dir}><Icon name="folder" size={13} /><span>{`\u200E${dir}\u200E`}</span></div>
     </nav>
 
     <main>
@@ -229,11 +231,11 @@
               <tr>
                 <th class="th-thumb"></th>
                 {#each [["name", "lib.colName"], ["number", "job.number"], ["customer", "job.customer"]] as [k, label]}
-                  <th><button onclick={() => sortBy(k as SortKey)}>{t(label)}{#if sort.key === k}{sort.desc ? " ↓" : " ↑"}{/if}</button></th>
+                  <th class="c-{k}"><button onclick={() => sortBy(k as SortKey)}>{t(label)}{#if sort.key === k}{sort.desc ? " ↓" : " ↑"}{/if}</button></th>
                 {/each}
-                <th>{t("job.status")}</th>
+                <th class="c-status">{t("job.status")}</th>
                 <th class="num"><button onclick={() => sortBy("area")}>{t("lib.colArea")}{#if sort.key === "area"}{sort.desc ? " ↓" : " ↑"}{/if}</button></th>
-                <th><button onclick={() => sortBy("modified")}>{t("lib.colModified")}{#if sort.key === "modified"}{sort.desc ? " ↓" : " ↑"}{/if}</button></th>
+                <th class="c-mod"><button onclick={() => sortBy("modified")}>{t("lib.colModified")}{#if sort.key === "modified"}{sort.desc ? " ↓" : " ↑"}{/if}</button></th>
               </tr>
             </thead>
             <tbody>
@@ -241,11 +243,11 @@
                 <tr class:sel={selectedId === p.id} onclick={() => (selectedId = p.id)} ondblclick={() => onopen(p.id)}>
                   <td class="th-thumb"><div class="mini"><PlanThumb outlines={p.outlines} lines={p.lines} /></div></td>
                   <td><strong>{p.name}</strong>{#if p.job.address}<small>{p.job.address}</small>{/if}</td>
-                  <td>{p.job.number || "—"}</td>
-                  <td>{p.job.customer || "—"}</td>
-                  <td><span class="chip {p.job.status}">{t(`status.${p.job.status}`)}</span></td>
+                  <td class="c-number">{p.job.number || "—"}</td>
+                  <td class="c-customer">{p.job.customer || "—"}</td>
+                  <td class="c-status"><span class="chip {p.job.status}">{t(`status.${p.job.status}`)}</span></td>
                   <td class="num">{m2(p.roof_area)}</td>
-                  <td class="mod">
+                  <td class="mod c-mod">
                     {relativeTime(p.modified_ms)}
                     {#if p.last_activity && isAi(p.last_activity.actor)}
                       <span class="ai-tag" title={p.last_activity.summary}><Icon name="sparkle" size={11} />{actorName(p.last_activity.actor)}</span>
@@ -344,6 +346,7 @@
   }
   .actions {
     margin-left: auto;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -352,6 +355,7 @@
     display: inline-flex;
     align-items: center;
     gap: 8px;
+    min-width: 0;
     max-width: 320px;
     height: 34px;
     padding: 0 12px;
@@ -453,6 +457,7 @@
     min-width: 0;
     overflow: auto;
     padding: 20px 24px;
+    container-type: inline-size;
   }
   .head {
     display: flex;
@@ -781,5 +786,154 @@
   }
   .danger {
     color: var(--danger);
+  }
+
+  /* ---- Responsive: half-screen and smaller windows ---- */
+  td strong {
+    overflow-wrap: anywhere;
+  }
+  /* Library columns give way as the list gets narrower (detail panel still shows them). */
+  @container (max-width: 640px) {
+    .c-number,
+    .c-customer {
+      display: none;
+    }
+  }
+  @container (max-width: 470px) {
+    .c-mod {
+      display: none;
+    }
+  }
+  @container (max-width: 360px) {
+    .c-status {
+      display: none;
+    }
+  }
+  @media (max-width: 1180px) {
+    header {
+      gap: 14px;
+    }
+    .import .label {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+    }
+    .import {
+      position: relative;
+      width: 34px;
+      padding: 0;
+      justify-content: center;
+    }
+    .ai-btn {
+      max-width: 220px;
+    }
+    .detail {
+      width: 260px;
+    }
+    .big {
+      height: 150px;
+    }
+  }
+  /* Half-screen: search on its own row, filters as a strip above the list. */
+  @media (max-width: 960px) {
+    header {
+      flex-wrap: wrap;
+      row-gap: 10px;
+      padding: 10px 14px;
+    }
+    .search {
+      order: 3;
+      flex-basis: 100%;
+      max-width: none;
+    }
+    .layout {
+      flex-direction: column;
+    }
+    nav {
+      width: auto;
+      flex-direction: row;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
+      padding: 8px 10px;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+    }
+    nav .nav-title,
+    nav .folder {
+      display: none;
+    }
+    nav button {
+      flex: none;
+      height: 30px;
+      gap: 6px;
+      padding: 0 10px;
+      white-space: nowrap;
+    }
+    nav button span {
+      margin-left: 2px;
+    }
+    nav hr {
+      width: auto;
+      height: 20px;
+      margin: 0 4px;
+      border-top: none;
+      border-left: 1px solid var(--border);
+    }
+    main {
+      padding: 14px 14px;
+    }
+    /* Selected job: compact panel under the list. */
+    .detail {
+      width: auto;
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 12px;
+      padding: 10px 14px;
+      max-height: 40vh;
+      border-left: none;
+      border-top: 1px solid var(--border);
+    }
+    .big {
+      width: 64px;
+      height: 52px;
+      padding: 6px;
+      background: var(--surface-2);
+      border: none;
+    }
+    .detail h3 {
+      margin: 0;
+    }
+    .detail dl,
+    .detail .notes,
+    .detail .last {
+      display: none;
+    }
+    .detail-actions {
+      width: auto;
+      margin-left: auto;
+    }
+  }
+  /* Half-screen and low: one scrolling filter row, no thumbnail in the detail strip. */
+  @media (max-width: 960px) and (max-height: 600px) {
+    nav {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .big {
+      display: none;
+    }
+    .detail {
+      padding: 8px 14px;
+    }
+  }
+  @media (max-width: 640px) {
+    .brand span {
+      display: none;
+    }
   }
 </style>

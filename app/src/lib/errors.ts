@@ -63,6 +63,7 @@ const KNOWN = new Set([
   "no_such_change",
   "unknown_example",
   "open_failed",
+  "out_of_range",
   "file_not_found",
   "invalid_input",
   "not_allowed",

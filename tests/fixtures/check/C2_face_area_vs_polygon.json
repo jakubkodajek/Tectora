@@ -1,0 +1,56 @@
+{
+ "schema_version": 1,
+ "name": "C2_face_area_vs_polygon",
+ "parts": [
+  {
+   "name": "A",
+   "edges": [
+    {
+     "start": {
+      "x": 3.32,
+      "y": 5.57
+     },
+     "pitch_deg": 64.31,
+     "eave_height": 4.876,
+     "overhang": 0.198
+    },
+    {
+     "start": {
+      "x": -0.186,
+      "y": 6.622
+     },
+     "pitch_deg": 25.91,
+     "eave_height": 4.876,
+     "overhang": 0.552
+    },
+    {
+     "start": {
+      "x": -3.243,
+      "y": 4.981
+     },
+     "pitch_deg": 49.58,
+     "eave_height": 4.876,
+     "overhang": 0.516
+    },
+    {
+     "start": {
+      "x": -4.247,
+      "y": 3.664
+     },
+     "pitch_deg": 54.08,
+     "eave_height": 4.876,
+     "overhang": 0.552
+    },
+    {
+     "start": {
+      "x": -5.127,
+      "y": 1.538
+     },
+     "pitch_deg": 22.03,
+     "eave_height": 4.876,
+     "overhang": 0.0
+    }
+   ]
+  }
+ ]
+}

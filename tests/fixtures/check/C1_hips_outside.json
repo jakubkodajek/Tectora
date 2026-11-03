@@ -1,0 +1,56 @@
+{
+ "schema_version": 1,
+ "name": "C1_hips_outside",
+ "parts": [
+  {
+   "name": "A",
+   "edges": [
+    {
+     "start": {
+      "x": 2.959,
+      "y": -2.568
+     },
+     "pitch_deg": 51.01,
+     "eave_height": 2.279,
+     "overhang": 0.0
+    },
+    {
+     "start": {
+      "x": 4.524,
+      "y": -0.962
+     },
+     "pitch_deg": 31.92,
+     "eave_height": 2.279,
+     "overhang": 0.0
+    },
+    {
+     "start": {
+      "x": -1.135,
+      "y": 3.168
+     },
+     "pitch_deg": 67.74,
+     "eave_height": 2.279,
+     "overhang": 0.64
+    },
+    {
+     "start": {
+      "x": -2.959,
+      "y": 2.568
+     },
+     "pitch_deg": 24.6,
+     "eave_height": 2.279,
+     "overhang": 0.438
+    },
+    {
+     "start": {
+      "x": -4.524,
+      "y": 0.962
+     },
+     "pitch_deg": 22.22,
+     "eave_height": 2.279,
+     "overhang": 0.688
+    }
+   ]
+  }
+ ]
+}

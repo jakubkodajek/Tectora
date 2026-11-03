@@ -209,7 +209,7 @@ impl Project {
             }
         }
         for (wi, w) in self.windows.iter().enumerate() {
-            let ok = [w.x, w.y, w.width, w.height].iter().all(|v| v.is_finite())
+            let ok = [w.x, w.y, w.width, w.height].iter().all(|&v| sane(v))
                 && w.width > 0.0
                 && w.height > 0.0;
             if !ok {
@@ -277,6 +277,70 @@ impl Project {
         }
         false
     }
+
+    /// Rejects designs with a number no real roof has (see
+    /// [`MAX_ABS_VALUE`]). Such values come from a typo or a broken file,
+    /// and the geometry kernel can spend minutes on them or panic, so
+    /// callers check before calculating or saving input from outside.
+    pub fn check_limits(&self) -> Result<(), String> {
+        let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        // The stored result is computed output with a timestamp, not input.
+        if let Some(obj) = value.as_object_mut() {
+            obj.remove("result_snapshot");
+        }
+        match first_out_of_range(&value, &mut String::new()) {
+            Some((path, v)) => Err(format!(
+                "value {v} at `{path}` is out of range (allowed ±{MAX_ABS_VALUE})"
+            )),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Largest absolute number accepted anywhere in a design: 100 km in
+/// metres, far above any building and far below where f64 geometry breaks.
+pub const MAX_ABS_VALUE: f64 = 1.0e5;
+
+fn first_out_of_range(v: &serde_json::Value, path: &mut String) -> Option<(String, f64)> {
+    use serde_json::Value;
+    match v {
+        Value::Number(n) => n
+            .as_f64()
+            .filter(|f| !f.is_finite() || f.abs() > MAX_ABS_VALUE)
+            .map(|f| (path.clone(), f)),
+        Value::Array(items) => items.iter().enumerate().find_map(|(i, item)| {
+            let len = path.len();
+            path.push_str(&format!("[{i}]"));
+            let found = first_out_of_range(item, path);
+            path.truncate(len);
+            found
+        }),
+        Value::Object(map) => map.iter().find_map(|(key, item)| {
+            let len = path.len();
+            if !path.is_empty() {
+                path.push('.');
+            }
+            path.push_str(key);
+            let found = first_out_of_range(item, path);
+            path.truncate(len);
+            found
+        }),
+        _ => None,
+    }
+}
+
+/// Runs `f` and turns a panic into an error, so one bad design cannot take
+/// down the app or the MCP server. The geometry kernel is a port of DACAD's
+/// core and still has `expect`s on cases DACAD itself aborts on.
+pub fn guarded<T>(f: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|e| {
+        let msg = e
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| e.downcast_ref::<&str>().copied())
+            .unwrap_or("unknown error");
+        format!("roof calculation failed: {msg}")
+    })
 }
 
 /// What a problem found by [`Project::problems`] is about.
@@ -454,8 +518,18 @@ pub struct WallSource {
     pub angle_deg: f64,
 }
 
+/// Largest coordinate, height or overhang the engine accepts, m. Finite
+/// values beyond it (e.g. `1e308` in a hand-edited file) overflow in the
+/// engine's arithmetic and give NaN geometry; no roof is 1000 km away.
+pub const MAX_COORD: f64 = 1e6;
+
+/// A finite number within [`MAX_COORD`].
+fn sane(v: f64) -> bool {
+    v.is_finite() && v.abs() <= MAX_COORD
+}
+
 fn finite_point(p: Point2) -> bool {
-    p.x.is_finite() && p.y.is_finite()
+    sane(p.x) && sane(p.y)
 }
 
 /// DACAD's default material names (DACAD.exe strings 1601-1605, German
@@ -507,12 +581,10 @@ impl EdgeDef {
         let checks = [
             !finite_point(self.start),
             !(self.pitch_deg > 0.0 && self.pitch_deg < 180.0),
-            !self.eave_height.is_finite(),
-            !(self.overhang >= 0.0 && self.overhang.is_finite()),
+            !sane(self.eave_height),
+            !(self.overhang >= 0.0 && sane(self.overhang)),
             self.direction_rad.is_some_and(|a| !a.is_finite()),
-            stacked
-                .into_iter()
-                .any(|(h, p)| !h.is_finite() || !p.is_finite()),
+            stacked.into_iter().any(|(h, p)| !sane(h) || !p.is_finite()),
         ];
         checks
             .into_iter()
@@ -618,4 +690,32 @@ pub fn json_schema() -> serde_json::Value {
     v["$id"] = "https://github.com/jakubkodajek/tectora/blob/main/docs/tectora.schema.json".into();
     v["title"] = "Tectora project".into();
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_limits_reports_the_bad_value() {
+        let mut p = crate::examples::find("gable").unwrap().project();
+        assert!(p.check_limits().is_ok());
+        p.parts[0].edges[1].overhang = 1e300;
+        let err = p.check_limits().unwrap_err();
+        assert!(err.contains("parts[0].edges[1].overhang"), "{err}");
+    }
+
+    #[test]
+    fn check_limits_ignores_the_stored_result() {
+        let mut p = crate::examples::find("gable").unwrap().project();
+        assert!(p.set_status(JobStatus::Offer));
+        assert!(p.check_limits().is_ok());
+    }
+
+    #[test]
+    fn guarded_turns_a_panic_into_an_error() {
+        assert_eq!(guarded(|| 2), Ok(2));
+        let err = guarded(|| -> u8 { panic!("boom") }).unwrap_err();
+        assert!(err.contains("boom"), "{err}");
+    }
 }

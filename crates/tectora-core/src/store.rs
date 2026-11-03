@@ -9,6 +9,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -263,12 +264,41 @@ fn modified_ms(path: &Path) -> u64 {
 }
 
 /// Writes via a temporary file so a watcher never sees a half-written file.
+/// The temporary name is unique per process and call, so the app and an MCP
+/// server saving the same design at once cannot write into each other's file.
 fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("{}-{n}.tmp", std::process::id()));
     fs::write(&tmp, contents)?;
     fs::rename(&tmp, path).inspect_err(|_| {
         let _ = fs::remove_file(&tmp);
     })
+}
+
+/// Longest accepted project id (file names stay well inside the 255-byte
+/// limit of common file systems).
+const MAX_ID_LEN: usize = 120;
+
+/// Names Windows reserves for devices in every folder (`CON.tectora` opens
+/// the console, not a file).
+const WINDOWS_DEVICE_NAMES: &[&str] = &[
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// A project id is a plain file name inside the library folder on both
+/// macOS and Windows: no separators, drive or stream prefix (`C:x`,
+/// `x:stream`), characters Windows forbids, hidden names or device names.
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_ID_LEN
+        && !id.starts_with('.')
+        && !id.ends_with(['.', ' '])
+        && !id.chars().any(|c| {
+            c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+        })
+        && !WINDOWS_DEVICE_NAMES.contains(&id.to_ascii_lowercase().as_str())
 }
 
 /// File-name friendly id derived from a project name.
@@ -320,7 +350,7 @@ impl Store {
     }
 
     pub fn path(&self, id: &str) -> Result<PathBuf, StoreError> {
-        if id.is_empty() || id.contains(['/', '\\']) || id.starts_with('.') {
+        if !valid_id(id) {
             return Err(StoreError::InvalidId(id.to_string()));
         }
         Ok(self.dir.join(format!("{id}.{EXTENSION}")))
@@ -341,16 +371,22 @@ impl Store {
 
     pub fn summarize(&self, id: &str) -> Result<ProjectSummary, StoreError> {
         let project = self.load(id)?;
+        // A broken design still shows up in the library (so it can be opened
+        // and fixed or deleted), just without its roof preview.
+        let (area, lines) = project
+            .check_limits()
+            .and_then(|()| crate::model::guarded(|| (roof_area(&project), roof_lines(&project))))
+            .unwrap_or_default();
         Ok(ProjectSummary {
             id: id.to_string(),
             name: project.name.clone(),
             notes: project.notes.clone(),
             job: project.job.clone(),
             modified_ms: modified_ms(&self.path(id)?),
-            roof_area: roof_area(&project),
+            roof_area: area,
             parts: project.parts.len(),
             outlines: outlines(&project),
-            lines: roof_lines(&project),
+            lines,
             last_activity: self.activity(id).last().map(ActivityEntry::info),
         })
     }
@@ -410,7 +446,12 @@ impl Store {
 
     /// Picks an unused id based on the project name.
     pub fn new_id(&self, name: &str) -> String {
-        let base = slug(name);
+        let mut base = slug(name);
+        // Leave room for the "-N" suffix and keep clear of device names.
+        base.truncate(MAX_ID_LEN - 8);
+        if !valid_id(&base) {
+            base.push_str("-navrh");
+        }
         let mut id = base.clone();
         let mut n = 2;
         while self.dir.join(format!("{id}.{EXTENSION}")).exists() {
@@ -708,6 +749,15 @@ mod tests {
     fn slug_handles_czech_names() {
         assert_eq!(slug("Rodinný dům Říčany"), "rodinny-dum-ricany");
         assert_eq!(slug("  "), "navrh");
+        let store = Store {
+            dir: PathBuf::from("/nonexistent-tectora-dir"),
+        };
+        assert_eq!(store.new_id("Con"), "con-navrh");
+        assert!(
+            store
+                .path(&store.new_id(&"dlouhy nazev ".repeat(40)))
+                .is_ok()
+        );
     }
 
     #[test]
@@ -717,6 +767,27 @@ mod tests {
         };
         assert!(store.path("../etc/passwd").is_err());
         assert!(store.path("ok-id").is_ok());
+        assert!(store.path("rodinny-dum-2").is_ok());
+        assert!(store.path("Dům Říčany").is_ok());
+        for bad in [
+            "",
+            ".hidden",
+            "a/b",
+            "a\\b",
+            "C:evil",
+            "x:stream",
+            "CON",
+            "nul",
+            "com1",
+            "trailing.",
+            "trailing ",
+            "a\nb",
+            "q?",
+            "a*b",
+        ] {
+            assert!(store.path(bad).is_err(), "{bad:?} must be rejected");
+        }
+        assert!(store.path(&"x".repeat(MAX_ID_LEN + 1)).is_err());
     }
 
     #[test]

@@ -218,10 +218,23 @@ export interface Problem {
     | "bad_size";
 }
 
+/** What looks wrong with a calculated roof (tectora_core::check). */
+export interface RoofWarning {
+  kind: "outside_outline" | "overlapping_faces" | "area_mismatch";
+  /** m outside, m² overlapping, or the relative area difference. */
+  value: number;
+}
+
 export interface CalcResult {
   parts: {
     name: string;
-    geometry: { faces: RoofFace[]; lines: RoofLine[]; gables: [number, number, number][][]; error?: CalcError };
+    geometry: {
+      faces: RoofFace[];
+      lines: RoofLine[];
+      gables: [number, number, number][][];
+      error?: CalcError;
+      warnings?: RoofWarning[];
+    };
     quantities: RoofQuantities;
   }[];
   totals: RoofQuantities;

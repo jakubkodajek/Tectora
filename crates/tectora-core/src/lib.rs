@@ -4,6 +4,7 @@
 //! and the MCP server all share exactly the same behaviour.
 
 pub mod bundle;
+pub mod check;
 pub mod coresol;
 pub mod dcore;
 pub mod diff;

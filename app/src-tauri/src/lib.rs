@@ -53,7 +53,9 @@ struct Library {
     broken: Vec<BrokenFile>,
 }
 
-#[tauri::command]
+/// Runs off the main thread: summarising computes every roof, and the
+/// window must stay responsive while it does.
+#[tauri::command(async)]
 fn list_projects(state: State<AppState>) -> CmdResult<Library> {
     guard(|| {
         let (projects, broken) = state.store.scan()?;
@@ -298,10 +300,19 @@ fn new_project(state: State<AppState>, name: String) -> CmdResult<String> {
 
 /// Roof geometry and quantities for every part, plus totals, what kept
 /// parts from being calculated, and the stored result's status.
-#[tauri::command]
+///
+/// Runs off the main thread so a slow roof never freezes the window, and
+/// reports out-of-range input (`out_of_range`) or a kernel panic
+/// (`internal`) as an error instead of crashing the app (a panic on the
+/// main thread aborts it).
+#[tauri::command(async)]
 fn calc(project: Project) -> CmdResult<Value> {
     guard(|| {
-        let mut v = tectora_core::report::calc(&project);
+        project
+            .check_limits()
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+        let mut v = tectora_core::model::guarded(|| tectora_core::report::calc(&project))
+            .map_err(|d| AppError::new("internal").detail(d))?;
         v["stored_result"] =
             serde_json::to_value(snapshot::status(&project)).unwrap_or(Value::Null);
         Ok(v)

@@ -60,9 +60,21 @@
   }
   footer {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     gap: 10px;
     padding: 14px 20px;
     border-top: 1px solid var(--border);
+  }
+  @media (max-height: 560px) {
+    .modal {
+      max-height: calc(100vh - 16px);
+    }
+    header {
+      padding-top: 8px;
+    }
+    footer {
+      padding: 10px 20px;
+    }
   }
 </style>

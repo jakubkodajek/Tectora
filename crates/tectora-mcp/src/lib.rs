@@ -100,6 +100,27 @@ fn describe_part(part: &RoofPart) -> Value {
     json!({ "name": part.name, "edges": edges })
 }
 
+/// A plausibility warning of a calculated roof (`tectora_core::check`),
+/// with what it means for whoever reads the result.
+fn warning(w: &tectora_core::check::RoofWarning) -> Value {
+    use tectora_core::check::WarningKind;
+    let message = match w.kind {
+        WarningKind::OutsideOutline => format!(
+            "part of the roof lies up to {:.2} m outside the eave outline; check pitches and overhangs",
+            w.value
+        ),
+        WarningKind::OverlappingFaces => format!(
+            "roof faces pass through or overlap each other over {:.2} m2; quantities may be wrong",
+            w.value
+        ),
+        WarningKind::AreaMismatch => format!(
+            "reported area differs from the roof faces by {:.1} %; check the area",
+            w.value * 100.0
+        ),
+    };
+    json!({ "kind": w.kind, "value": w.value, "message": message })
+}
+
 fn quantities(project: &Project) -> Value {
     let t = roof_totals(project);
     json!({
@@ -483,7 +504,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total.",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total. A part whose roof looks geometrically wrong (outside its eave outline, faces passing through each other, area not matching its faces) carries `warnings`: tell the user and suggest checking pitches and overhangs.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -524,6 +545,7 @@ impl Server {
         project: &Project,
         summary: &str,
     ) -> ToolResult {
+        project.check_limits()?;
         let id = self
             .store
             .save_as(id.map(str::to_string), project, &self.client, summary)?;
@@ -545,10 +567,19 @@ impl Server {
             .store
             .load(&id)
             .map_err(|_| format!("no design with id `{id}`; call list_projects to see the ids"))?;
+        project.check_limits().map_err(|e| {
+            format!("design `{id}` cannot be calculated: {e}; ask the user to fix it in the app")
+        })?;
         Ok((id, project))
     }
 
+    /// Runs a tool; a panic in the geometry kernel becomes a tool error
+    /// instead of ending the server for the rest of the session.
     pub fn call_tool(&self, name: &str, args: &Value) -> ToolResult {
+        tectora_core::model::guarded(|| self.call_tool_unguarded(name, args))?
+    }
+
+    fn call_tool_unguarded(&self, name: &str, args: &Value) -> ToolResult {
         match name {
             "tectora_guide" => Ok(json!(GUIDE)),
             "list_projects" => {
@@ -609,7 +640,11 @@ impl Server {
                     .zip(tectora_core::openings::generate_project(&p))
                     .map(|(part, geo)| {
                         let q = geo.quantities();
-                        json!({ "name": part.name, "quantities": q })
+                        let mut v = json!({ "name": part.name, "quantities": q });
+                        if !geo.warnings.is_empty() {
+                            v["warnings"] = geo.warnings.iter().map(warning).collect();
+                        }
+                        v
                     })
                     .collect();
                 Ok(json!({
@@ -910,8 +945,14 @@ mod tests {
     use super::*;
 
     fn server() -> Server {
-        let dir =
-            std::env::temp_dir().join(format!("tectora-mcp-{}-{}", now_ms(), std::process::id()));
+        // Tests run in parallel and remove their folder, so each needs its own.
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tectora-mcp-{}-{}-{n}",
+            now_ms(),
+            std::process::id()
+        ));
         let mut s = Server::new(Store::new(dir).unwrap());
         s.handle(&json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -978,6 +1019,27 @@ mod tests {
     }
 
     #[test]
+    fn calc_reports_roofs_that_look_wrong() {
+        let s = server();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/check/C1_hips_outside.json");
+        let p: Project = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let id = s.store.save(None, &p).unwrap();
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        let w = r["parts"][0]["warnings"].as_array().unwrap();
+        assert_eq!(w[0]["kind"], "outside_outline");
+        assert!(w[0]["message"].as_str().unwrap().contains("3.69 m"));
+
+        let mut ok = p.clone();
+        for e in &mut ok.parts[0].edges {
+            e.overhang = 0.0;
+        }
+        let id = s.store.save(None, &ok).unwrap();
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        assert!(r["parts"][0].get("warnings").is_none(), "{r}");
+    }
+
+    #[test]
     fn bad_input_is_a_tool_error_not_a_crash() {
         let mut s = server();
         let r = s
@@ -987,5 +1049,28 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(r["result"]["isError"], true);
+    }
+
+    #[test]
+    fn absurd_values_are_rejected() {
+        let s = server();
+        let err = s
+            .call_tool(
+                "create_project",
+                &json!({
+                    "name": "x", "summary": "x",
+                    "parts": [{ "points": [[0, 0], [1e300, 0], [10, 8]] }]
+                }),
+            )
+            .unwrap_err();
+        assert!(err.contains("out of range"), "{err}");
+        assert!(s.list_projects_empty());
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    impl Server {
+        fn list_projects_empty(&self) -> bool {
+            self.store.list().is_empty()
+        }
     }
 }
