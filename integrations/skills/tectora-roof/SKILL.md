@@ -19,7 +19,9 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    folder where they put drawings; its `roof_defaults` are the user's usual
    pitch, eave height and overhang (say when you used one).
 3. Search first with `list_projects` (customer, address, job number) so you edit
-   the existing job instead of creating a duplicate.
+   the existing job instead of creating a duplicate. A similar roof made
+   before can be the starting point: `duplicate_project` with the new `job`
+   data and `with_files: false`.
 4. Create: `create_standard_roof` for a plain rectangle, otherwise
    `create_project` (one part per wing with its own ridge height). Fill `job`
    (number, customer, address) when the drawing's title block has them.

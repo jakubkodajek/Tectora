@@ -19,6 +19,9 @@ The list below is DACAD's menu (DACAD.exe string table) against the app.
 - Move, rotate, mirror and copy parts; shift a wall in parallel.
 - Front, back, side and top views; area by material; material names.
 - MCP server with a tool for every editor operation, and the CLI.
+- Job library: search without accents over name, number, customer, address
+  and notes, filters by status, AI change and year, plan previews, pitch /
+  dormer / file details, and a new job from a past roof (also over MCP).
 - Job files: attached drawings and photos, `.tectorajob` bundles (project,
   files, history, plan preview) for hand-over and archive.
 - Stored result: the figures an offer was made with, kept with the engine

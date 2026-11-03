@@ -83,11 +83,12 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
         "duplicate_project" => {
             let source = id()?;
             let mut project = store.load(&source)?;
-            project.name = arg(a, "name")?;
-            project.job.status = tectora_core::JobStatus::Draft;
-            project.result_snapshot = None;
+            let name: String = arg(a, "name")?;
+            tectora_core::library::prepare_copy(&mut project, &name, arg(a, "job")?);
             let new_id = store.save(None, &project)?;
-            store.copy_attachments(&source, &new_id)?;
+            if arg::<Option<bool>>(a, "withFiles")?.unwrap_or(true) {
+                store.copy_attachments(&source, &new_id)?;
+            }
             to_json(new_id)
         }
         "list_attachments" => to_json(store.attachments(&id()?)),
