@@ -144,6 +144,13 @@ export interface ProjectSummary {
   parts: number;
   outlines: [number, number][][];
   lines: [[number, number], [number, number]][];
+  /** Lowest and highest roof pitch, degrees (gables left out). */
+  pitch_range: [number, number] | null;
+  dormers: number;
+  /** Attached drawings and photos. */
+  files: number;
+  /** The figures an offer was made with are stored. */
+  has_result: boolean;
 }
 
 export interface ExampleInfo {

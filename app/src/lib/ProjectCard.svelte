@@ -9,11 +9,14 @@
     project,
     onopen,
     onduplicate,
+    onreuse,
     ondelete,
   }: {
     project: ProjectSummary;
     onopen: () => void;
     onduplicate: () => void;
+    /** Start a new job (another customer) from this roof. */
+    onreuse: () => void;
     ondelete: () => void;
   } = $props();
 
@@ -46,6 +49,7 @@
         <div class="menu" role="menu">
           <button role="menuitem" onclick={onopen}><Icon name="open" size={16} />{t("card.open")}</button>
           <button role="menuitem" onclick={onduplicate}><Icon name="copy" size={16} />{t("card.duplicate")}</button>
+          <button role="menuitem" onclick={onreuse}><Icon name="plus" size={16} />{t("card.reuse")}</button>
           <button role="menuitem" class="danger" onclick={ondelete}><Icon name="trash" size={16} />{t("card.delete")}</button>
         </div>
       {/if}

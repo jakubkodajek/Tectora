@@ -406,8 +406,19 @@ fn base_tools() -> Value {
         },
         {
             "name": "list_projects",
-            "description": "List roof designs in the user's library (id, name, job, roof area, last change).",
-            "inputSchema": schema(json!({ "query": { "type": "string", "description": "Filter by name, customer, address or job number." } }), &[]),
+            "description": "Search the user's library of roofs made so far (newest first by default): id, name, job, roof area, pitch range, dormers, attached files, stored offer result, last change. Use it to find a past roof to start a new job from (duplicate_project with `job`).",
+            "inputSchema": schema(json!({
+                "query": { "type": "string", "description": "Words that must all appear in the name, job number, customer, address or notes (case and accents ignored)." },
+                "status": { "type": "string", "enum": ["draft", "offer", "ordered", "done"] },
+                "by_ai": { "type": "boolean", "description": "Only jobs last changed by an AI client." },
+                "modified_from": { "type": "string", "description": "Last changed on or after this day, YYYY-MM-DD." },
+                "modified_to": { "type": "string", "description": "Last changed on or before this day, YYYY-MM-DD." },
+                "min_area": { "type": "number", "description": "Roof area at least, m²." },
+                "max_area": { "type": "number", "description": "Roof area at most, m²." },
+                "sort": { "type": "string", "enum": ["modified", "name", "number", "customer", "area"] },
+                "desc": { "type": "boolean", "description": "Descending; default true for modified and area, false otherwise." },
+                "limit": { "type": "integer", "minimum": 1 }
+            }), &[]),
         },
         {
             "name": "get_project",
@@ -629,25 +640,19 @@ impl Server {
             "update_settings" => self.update_settings(args),
             "list_projects" => {
                 self.live("Browsing the design library".into(), None);
-                let q = args
-                    .get("query")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_lowercase();
-                let list: Vec<Value> = self
-                    .store
-                    .list()
+                let mut q: tectora_core::library::Query = serde_json::from_value(args.clone())
+                    .map_err(|e| format!("invalid search: {e}"))?;
+                if let Some(text) = args.get("query").and_then(Value::as_str) {
+                    q.text = text.to_string();
+                }
+                let list: Vec<Value> = tectora_core::library::search(self.store.list(), &q)?
                     .into_iter()
-                    .filter(|p| {
-                        q.is_empty()
-                            || [&p.name, &p.job.customer, &p.job.address, &p.job.number]
-                                .iter()
-                                .any(|s| s.to_lowercase().contains(&q))
-                    })
                     .map(|p| {
                         json!({
                             "id": p.id, "name": p.name, "job": p.job,
                             "roof_area_m2": round(p.roof_area, 2), "parts": p.parts,
+                            "pitch_range_deg": p.pitch_range.map(|[a, b]| [round(a, 2), round(b, 2)]),
+                            "dormers": p.dormers, "files": p.files, "has_result": p.has_result,
                             "modified_ms": p.modified_ms, "last_change": p.last_activity,
                         })
                     })

@@ -7,6 +7,7 @@ import type {
   Attachment,
   CalcResult,
   ExampleInfo,
+  JobInfo,
   Library,
   LiveStatus,
   Project,
@@ -32,7 +33,9 @@ export const api = {
   loadProject: (id: string) => invoke<Project>("load_project", { id }),
   saveProject: (id: string | null, project: Project) => invoke<string>("save_project", { id, project }),
   deleteProject: (id: string) => invoke<void>("delete_project", { id }),
-  duplicateProject: (id: string, name: string) => invoke<string>("duplicate_project", { id, name }),
+  /** Copies a job as a new draft; `job` starts a new job from a past roof. */
+  duplicateProject: (id: string, name: string, job?: Pick<JobInfo, "number" | "customer" | "address">, withFiles = true) =>
+    invoke<string>("duplicate_project", { id, name, job: job ? { ...job, status: "draft" } : null, withFiles }),
   projectActivity: (id: string) => invoke<ActivityItem[]>("project_activity", { id }),
   revertLastChange: (id: string) => invoke<Project>("revert_last_change", { id }),
   revertChanges: (id: string, tsMs: number) => invoke<Project>("revert_changes", { id, tsMs }),

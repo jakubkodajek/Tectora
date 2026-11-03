@@ -149,16 +149,23 @@ fn delete_project(state: State<AppState>, id: String) -> CmdResult<()> {
     guard(|| Ok(state.store().delete(&id)?))
 }
 
-/// A copy is a new variant: draft, no stored result, the same files.
+/// A copy is a new variant: draft, no stored result, the same files. With
+/// `job` it starts a new job for another customer from a past roof.
 #[tauri::command]
-fn duplicate_project(state: State<AppState>, id: String, name: String) -> CmdResult<String> {
+fn duplicate_project(
+    state: State<AppState>,
+    id: String,
+    name: String,
+    job: Option<tectora_core::JobInfo>,
+    with_files: Option<bool>,
+) -> CmdResult<String> {
     guard(|| {
         let mut project = state.store().load(&id)?;
-        project.name = name;
-        project.job.status = tectora_core::JobStatus::Draft;
-        project.result_snapshot = None;
+        tectora_core::library::prepare_copy(&mut project, &name, job);
         let new_id = state.store().save(None, &project)?;
-        state.store().copy_attachments(&id, &new_id)?;
+        if with_files.unwrap_or(true) {
+            state.store().copy_attachments(&id, &new_id)?;
+        }
         Ok(new_id)
     })
 }
