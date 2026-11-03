@@ -1,0 +1,4 @@
+# Check out every file with the bytes committed, on Windows too: the tests
+# compare committed text (the file schema, DACAD fixtures) byte for byte, and
+# Git for Windows would otherwise turn LF into CRLF.
+* -text
