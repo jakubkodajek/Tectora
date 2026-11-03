@@ -235,7 +235,11 @@ impl Project {
     /// and the geometry kernel can spend minutes on them or panic, so
     /// callers check before calculating or saving input from outside.
     pub fn check_limits(&self) -> Result<(), String> {
-        let value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        // The stored result is computed output with a timestamp, not input.
+        if let Some(obj) = value.as_object_mut() {
+            obj.remove("result_snapshot");
+        }
         match first_out_of_range(&value, &mut String::new()) {
             Some((path, v)) => Err(format!(
                 "value {v} at `{path}` is out of range (allowed ±{MAX_ABS_VALUE})"
@@ -610,6 +614,13 @@ mod tests {
         p.parts[0].edges[1].overhang = 1e300;
         let err = p.check_limits().unwrap_err();
         assert!(err.contains("parts[0].edges[1].overhang"), "{err}");
+    }
+
+    #[test]
+    fn check_limits_ignores_the_stored_result() {
+        let mut p = crate::examples::find("gable").unwrap().project();
+        assert!(p.set_status(JobStatus::Offer));
+        assert!(p.check_limits().is_ok());
     }
 
     #[test]
