@@ -69,6 +69,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
         }
         "revert_last_change" => to_json(store.revert_last(&id()?, USER_ACTOR)?),
         "revert_changes" => to_json(store.revert_to(&id()?, arg(a, "tsMs")?, USER_ACTOR)?),
+        "review_status" => to_json(store.review_status(&id()?)?),
+        "accept_changes" => to_json(store.mark_reviewed(&id()?, arg(a, "tsMs")?)?),
         "live_status" => to_json(store.live()),
         "mcp_command" => Ok(json!({
             "command": "cargo",

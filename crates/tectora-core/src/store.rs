@@ -4,7 +4,9 @@
 //! Every save made through [`Store::save_as`] is also recorded in an
 //! activity log (`.activity/<id>.jsonl`) together with the previous version,
 //! so the app can show who changed what and revert it. AI agents publish
-//! what they are doing right now in `.activity/live.json`.
+//! what they are doing right now in `.activity/live.json`. How far the user
+//! has reviewed (accepted) the agents' changes is kept in
+//! `.activity/<id>.review.json`, so the app and the agents see the same state.
 
 use std::fs;
 use std::io::Write;
@@ -84,6 +86,41 @@ impl ActivityEntry {
             summary: self.summary.clone(),
         }
     }
+}
+
+/// How far the user has reviewed a project's AI changes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ReviewMark {
+    /// Every change recorded at or before this time is accepted.
+    pub accepted_ms: u64,
+}
+
+/// AI changes the user has not reviewed yet: every agent change after the
+/// last accept and after the user's own last recorded action.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingReview {
+    /// The oldest pending change; reverting to it undoes them all.
+    pub since_ts_ms: u64,
+    /// Number of pending changes.
+    pub count: usize,
+    /// Who made them (the MCP client names), oldest first, without repeats.
+    pub actors: Vec<String>,
+    /// The project before the oldest pending change (`None` when an agent
+    /// created it).
+    pub before: Option<Project>,
+}
+
+/// A pending review with what it does to the figures, for the app and the
+/// agents (`get_history`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewStatus {
+    #[serde(flatten)]
+    pub pending: PendingReview,
+    /// Time up to which the user accepted earlier changes (0: never).
+    pub accepted_ms: u64,
+    /// Figures before the pending changes against now; `None` when one of
+    /// the two versions cannot be calculated.
+    pub differences: Option<Vec<crate::snapshot::Difference>>,
 }
 
 /// What an AI agent is doing right now, shown live in the app.
@@ -577,6 +614,71 @@ impl Store {
         Ok(before)
     }
 
+    fn review_path(&self, id: &str) -> Result<PathBuf, StoreError> {
+        self.path(id)?;
+        Ok(self.activity_dir().join(format!("{id}.review.json")))
+    }
+
+    /// Time up to which the user accepted the changes of project `id`
+    /// (0 when nothing was accepted yet).
+    pub fn reviewed_at(&self, id: &str) -> u64 {
+        self.review_path(id)
+            .ok()
+            .and_then(|p| fs::read_to_string(p).ok())
+            .and_then(|t| serde_json::from_str::<ReviewMark>(&t).ok())
+            .map_or(0, |m| m.accepted_ms)
+    }
+
+    /// Accepts every change recorded at or before `ts_ms`. Never moves the
+    /// mark back, so a late call from a second window cannot reopen a review.
+    pub fn mark_reviewed(&self, id: &str, ts_ms: u64) -> Result<u64, StoreError> {
+        let path = self.review_path(id)?;
+        let accepted_ms = self.reviewed_at(id).max(ts_ms);
+        let io = |e| StoreError::io(Some(id), e);
+        fs::create_dir_all(self.activity_dir()).map_err(io)?;
+        let text = serde_json::to_string(&ReviewMark { accepted_ms }).map_err(|e| io(e.into()))?;
+        write_atomic(&path, &text).map_err(io)?;
+        Ok(accepted_ms)
+    }
+
+    /// The agents' changes to `id` that wait for the user's review.
+    pub fn pending_review(&self, id: &str) -> Option<PendingReview> {
+        let accepted = self.reviewed_at(id);
+        let log = self.activity(id);
+        let start = log
+            .iter()
+            .rposition(|e| e.actor == USER_ACTOR || e.ts_ms <= accepted)
+            .map_or(0, |i| i + 1);
+        let pending = &log[start..];
+        let first = pending.first()?;
+        let mut actors: Vec<String> = Vec::new();
+        for e in pending {
+            if !actors.contains(&e.actor) {
+                actors.push(e.actor.clone());
+            }
+        }
+        Some(PendingReview {
+            since_ts_ms: first.ts_ms,
+            count: pending.len(),
+            actors,
+            before: first.before.clone(),
+        })
+    }
+
+    /// The pending review of `id` with its effect on the figures, or `None`
+    /// when every change is reviewed.
+    pub fn review_status(&self, id: &str) -> Result<Option<ReviewStatus>, StoreError> {
+        let Some(pending) = self.pending_review(id) else {
+            return Ok(None);
+        };
+        let current = self.load(id)?;
+        Ok(Some(ReviewStatus {
+            differences: crate::snapshot::change_in_figures(pending.before.as_ref(), &current),
+            accepted_ms: self.reviewed_at(id),
+            pending,
+        }))
+    }
+
     pub fn delete(&self, id: &str) -> Result<(), StoreError> {
         fs::remove_file(self.path(id)?).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -586,6 +688,7 @@ impl Store {
             }
         })?;
         let _ = fs::remove_file(self.activity_path(id)?);
+        let _ = fs::remove_file(self.review_path(id)?);
         let _ = fs::remove_dir_all(self.files_dir(id)?);
         Ok(())
     }
@@ -786,6 +889,48 @@ mod tests {
     }
 
     #[test]
+    fn accepting_closes_the_review_and_never_moves_back() {
+        let store = temp_store("review");
+        let a = examples::find("gable").unwrap().project();
+        let id = store.save_as(None, &a, "claude", "Created").unwrap();
+        let review = store.pending_review(&id).unwrap();
+        assert_eq!(review.count, 1);
+        assert!(review.before.is_none(), "created by the agent");
+
+        let ts = store.activity(&id)[0].ts_ms;
+        assert_eq!(store.mark_reviewed(&id, ts).unwrap(), ts);
+        assert!(store.pending_review(&id).is_none());
+        assert_eq!(store.mark_reviewed(&id, ts - 1).unwrap(), ts);
+        assert_eq!(store.reviewed_at(&id), ts);
+
+        let mut b = a.clone();
+        b.parts[0].edges[0].overhang = 0.7;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .save_as(Some(id.clone()), &b, "codex", "Overhang")
+            .unwrap();
+        let review = store.pending_review(&id).unwrap();
+        assert_eq!(
+            (review.count, review.actors.clone()),
+            (1, vec!["codex".to_string()])
+        );
+        assert_eq!(review.before.as_ref(), Some(&a));
+        let status = store.review_status(&id).unwrap().unwrap();
+        assert_eq!(status.accepted_ms, ts);
+        assert!(
+            status
+                .differences
+                .unwrap()
+                .iter()
+                .any(|d| d.key == "roof_area")
+        );
+
+        store.delete(&id).unwrap();
+        assert_eq!(store.reviewed_at(&id), 0);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
     fn records_activity_and_reverts() {
         let store = temp_store("activity");
         let a = examples::find("hip").unwrap().project();
@@ -821,8 +966,14 @@ mod tests {
         store
             .save_as(Some(id.clone()), &c, "claude", "Step 2")
             .unwrap();
+        let review = store.pending_review(&id).unwrap();
+        assert_eq!((review.count, review.since_ts_ms), (2, first));
+        assert_eq!(review.before.as_ref(), Some(&a), "after the user's revert");
+        assert_eq!(review.actors, ["claude"]);
         assert_eq!(store.revert_to(&id, first, USER_ACTOR).unwrap(), a);
         assert_eq!(store.load(&id).unwrap(), a);
+        // The user's revert closes the review.
+        assert!(store.pending_review(&id).is_none());
         store.delete(&id).unwrap();
         assert!(store.activity(&id).is_empty());
         let _ = fs::remove_dir_all(&store.dir);

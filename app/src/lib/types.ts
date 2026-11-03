@@ -79,7 +79,7 @@ export interface ResultSnapshot {
 export interface SnapshotStatus {
   stored: ResultSnapshot;
   /** key: roof_area, ridge_height, line:<code> or material:<number>. */
-  differences: { key: string; stored: number; current: number }[];
+  differences: FigureDifference[];
   engine_changed: boolean;
 }
 
@@ -261,8 +261,28 @@ export interface Change {
   field: string;
   part?: number;
   edge?: number;
+  /** Index of the dormer, chimney, window, opening, hand-drawn line or face. */
+  item?: number;
   before: unknown;
   after: unknown;
+}
+
+/** One figure that differs between two versions (`tectora_core::snapshot::Difference`). */
+export interface FigureDifference {
+  key: string;
+  stored: number;
+  current: number;
+}
+
+/** AI changes waiting for the user's review (`tectora_core::store::ReviewStatus`). */
+export interface ReviewStatus {
+  since_ts_ms: number;
+  count: number;
+  actors: string[];
+  before: Project | null;
+  accepted_ms: number;
+  /** Figures before the pending changes against now; null when unknown. */
+  differences: FigureDifference[] | null;
 }
 
 export interface ActivityItem extends ActivityInfo {

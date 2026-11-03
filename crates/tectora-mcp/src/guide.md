@@ -63,7 +63,10 @@ The tools cover every operation of the Tectora editor:
   triangle, two parallel walls, point in space, merge faces, hip/valley,
   build-up thickness, round roof). It shows the values first; pass
   `apply: true` to save them.
-- History: `get_history`, `revert_to`, `revert_last_change`.
+- History: `get_history`, `revert_to`, `revert_last_change`. `get_review`
+  tells whether the user has accepted your changes yet and how they changed
+  the figures; only the user accepts, in the app. Do not treat a design as
+  approved while `pending` is set.
 - Library: `list_examples`, `create_from_example`, `duplicate_project`,
   `delete_project` (only when the user asks).
 - Files of a job (the drawings): `attach_file`, `list_files`, `remove_file`.
