@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(cargo test *)",
+      "Bash(cargo build *)",
+      "Bash(cargo check *)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo fmt *)",
+      "Bash(cargo run -q -p tectora-cli -- calc *)",
+      "Bash(cargo run -q -p tectora-cli -- info *)",
+      "Bash(cargo run -q -p tectora-cli -- schema *)",
+      "Bash(npm ci)",
+      "Bash(npm run check)",
+      "Bash(npm test)",
+      "Bash(npm run build)",
+      "Bash(npm run preview)",
+      "Bash(python3 .claude/skills/tectora-i18n/sweep.py *)",
+      "Bash(python3 .claude/skills/tectora-design/contrast.py *)",
+      "Bash(node .claude/skills/tectora-ui-preview/shoot.mjs *)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git add -f *)"
+    ]
+  },
+  "enabledMcpjsonServers": ["tectora"]
+}

@@ -1,0 +1,143 @@
+{
+  "source": "C04_hip.DAD",
+  "format": "V2",
+  "input_format": "DACAD V1.13",
+  "input": {
+    "walls": [
+      {
+        "start": [
+          0.0,
+          0.0
+        ],
+        "end": [
+          12.0,
+          0.0
+        ],
+        "direction_deg": 0.0,
+        "definitions": [
+          {
+            "pitch_deg": 35.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1,
+            "priority": 0
+          }
+        ]
+      },
+      {
+        "start": [
+          12.0,
+          0.0
+        ],
+        "end": [
+          12.0,
+          8.0
+        ],
+        "direction_deg": 90.0,
+        "definitions": [
+          {
+            "pitch_deg": 35.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1,
+            "priority": 0
+          }
+        ]
+      },
+      {
+        "start": [
+          12.0,
+          8.0
+        ],
+        "end": [
+          0.0,
+          8.0
+        ],
+        "direction_deg": 180.0,
+        "definitions": [
+          {
+            "pitch_deg": 35.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1,
+            "priority": 0
+          }
+        ]
+      },
+      {
+        "start": [
+          0.0,
+          8.0
+        ],
+        "end": [
+          0.0,
+          0.0
+        ],
+        "direction_deg": 270.0,
+        "definitions": [
+          {
+            "pitch_deg": 35.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1,
+            "priority": 0
+          }
+        ]
+      }
+    ],
+    "windows": [],
+    "chimneys": []
+  },
+  "traits": {
+    "roof_numbers": [
+      1
+    ],
+    "stacked_definitions": false,
+    "pitches": [
+      35.0
+    ],
+    "eave_heights": [
+      3.0
+    ],
+    "overhangs": [
+      0.0
+    ]
+  },
+  "dacad_results": {
+    "lines_by_type": {
+      "F": 4.0,
+      "G": 25.249,
+      "T": 40.0
+    },
+    "line_groups": {
+      "7 Pult -": 0.0,
+      "3 Úžlabie -": 0.0,
+      "2 Nárožie -": 25.249,
+      "1 Hreben -": 4.0,
+      "6 Odkvap -": 40.0,
+      "Schlucht -": 0.0,
+      "Zlom -": 0.0,
+      "92 Bocné napojenie -": 0.0,
+      "93 Zadné napojenie -": 0.0,
+      "91 Predné napojenie -": 0.0,
+      "94 Krajné šikmo -": 0.0,
+      "5 Krajné pravé -": 0.0,
+      "4 Krajné lavé -": 0.0
+    },
+    "area_groups": {
+      "Stena : 1": 119.9996,
+      "Solarpanel": 0.0,
+      "Bridlica": 0.0,
+      "Kamen": 0.0,
+      "Plech - ": 0.0,
+      "Škridla - ": 117.1944
+    },
+    "line_count": 25,
+    "face_count": 8
+  },
+  "norm": "ONORM"
+}

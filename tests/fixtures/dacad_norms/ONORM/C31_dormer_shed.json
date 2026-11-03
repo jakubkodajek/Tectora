@@ -1,0 +1,215 @@
+{
+  "source": "C31_dormer_shed.DAD",
+  "format": "V2",
+  "input_format": "DACAD V1.13",
+  "input": {
+    "walls": [
+      {
+        "start": [
+          0.0,
+          0.0
+        ],
+        "end": [
+          12.0,
+          0.0
+        ],
+        "direction_deg": 0.0,
+        "definitions": [
+          {
+            "pitch_deg": 40.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1,
+            "priority": 0
+          }
+        ]
+      },
+      {
+        "start": [
+          12.0,
+          0.0
+        ],
+        "end": [
+          12.0,
+          8.0
+        ],
+        "direction_deg": 90.0,
+        "definitions": [
+          {
+            "pitch_deg": 90.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 0,
+            "roof_no": 1,
+            "priority": 0
+          }
+        ]
+      },
+      {
+        "start": [
+          12.0,
+          8.0
+        ],
+        "end": [
+          0.0,
+          8.0
+        ],
+        "direction_deg": 180.0,
+        "definitions": [
+          {
+            "pitch_deg": 40.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 1,
+            "priority": 0
+          }
+        ]
+      },
+      {
+        "start": [
+          0.0,
+          8.0
+        ],
+        "end": [
+          0.0,
+          0.0
+        ],
+        "direction_deg": 270.0,
+        "definitions": [
+          {
+            "pitch_deg": 90.0,
+            "eave_height_m": 3.0,
+            "overhang_m": 0.0,
+            "material": 0,
+            "roof_no": 1,
+            "priority": 0
+          }
+        ]
+      },
+      {
+        "start": [
+          4.5,
+          1.0
+        ],
+        "end": [
+          4.5,
+          1.0
+        ],
+        "direction_deg": 270.0,
+        "definitions": [
+          {
+            "pitch_deg": 90.0,
+            "eave_height_m": 5.0,
+            "overhang_m": 0.0,
+            "material": 0,
+            "roof_no": 2,
+            "priority": 0
+          }
+        ]
+      },
+      {
+        "start": [
+          4.5,
+          1.0
+        ],
+        "end": [
+          7.5,
+          1.0
+        ],
+        "direction_deg": 0.0,
+        "definitions": [
+          {
+            "pitch_deg": 15.0,
+            "eave_height_m": 5.0,
+            "overhang_m": 0.0,
+            "material": 1,
+            "roof_no": 2,
+            "priority": 0
+          }
+        ]
+      },
+      {
+        "start": [
+          7.5,
+          1.0
+        ],
+        "end": [
+          7.5,
+          1.0
+        ],
+        "direction_deg": 90.0,
+        "definitions": [
+          {
+            "pitch_deg": 90.0,
+            "eave_height_m": 5.0,
+            "overhang_m": 0.0,
+            "material": 0,
+            "roof_no": 2,
+            "priority": 0
+          }
+        ]
+      }
+    ],
+    "windows": [],
+    "chimneys": []
+  },
+  "traits": {
+    "roof_numbers": [
+      1,
+      2
+    ],
+    "stacked_definitions": false,
+    "pitches": [
+      15.0,
+      40.0,
+      90.0
+    ],
+    "eave_heights": [
+      3.0,
+      5.0
+    ],
+    "overhangs": [
+      0.0
+    ]
+  },
+  "dacad_results": {
+    "lines_by_type": {
+      "F": 12.0,
+      "OL": 12.5475,
+      "OR": 12.5475,
+      "T": 27.0,
+      "WS": 5.3067,
+      "WV": 3.0,
+      "c": 3.0
+    },
+    "line_groups": {
+      "Zlom -": 3.0,
+      "92 Bocné napojenie -": 5.3067,
+      "93 Zadné napojenie -": 0.0,
+      "91 Predné napojenie -": 3.0,
+      "94 Krajné šikmo -": 0.0,
+      "5 Krajné pravé -": 12.5475,
+      "4 Krajné lavé -": 12.5475,
+      "7 Pult -": 0.0,
+      "3 Úžlabie -": 0.0,
+      "2 Nárožie -": 0.0,
+      "1 Hreben -": 12.0,
+      "6 Odkvap -": 27.0,
+      "Schlucht -": 0.0
+    },
+    "area_groups": {
+      "Stena : 1": 146.8513,
+      "Stena : 2": 5.8423,
+      "Solarpanel": 0.0,
+      "Bridlica": 0.0,
+      "Kamen": 0.0,
+      "Plech - ": 0.0,
+      "Škridla - ": 123.6719
+    },
+    "line_count": 40,
+    "face_count": 11
+  },
+  "norm": "ONORM"
+}

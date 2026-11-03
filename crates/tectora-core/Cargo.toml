@@ -1,0 +1,19 @@
+[package]
+name = "tectora-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dirs = "6"
+flate2 = "1"
+geo = "0.31"
+schemars = "1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
+thiserror = "2.0.21"
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+
+[dev-dependencies]
+approx = "0.5.1"
+flate2 = "1.1"
+proptest = "1"

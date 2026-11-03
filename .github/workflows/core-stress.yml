@@ -1,0 +1,35 @@
+name: Core stress tests
+
+# The property tests run with 256 cases per property in the normal test job.
+# This runs them with many more cases every night, and reports the tests
+# ignored as known bugs without failing the run.
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: Cases per property
+        default: "20000"
+
+jobs:
+  properties:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Property tests
+        env:
+          PROPTEST_CASES: ${{ inputs.cases || '20000' }}
+        run: cargo test --release -p tectora-core --test properties
+      - name: Geometric invariants and fuzzing
+        env:
+          PROPTEST_CASES: ${{ inputs.cases || '20000' }}
+        run: cargo test --release -p tectora-core --test invariants --test analytic
+      - name: Known bugs (informational)
+        continue-on-error: true
+        env:
+          PROPTEST_CASES: "2000"
+        run: |
+          cargo test --release -p tectora-core --test properties -- --ignored
