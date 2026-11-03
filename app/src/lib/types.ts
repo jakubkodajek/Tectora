@@ -62,6 +62,32 @@ export interface Project {
   flat_roof?: boolean;
   /** Own names of the roof materials, index 0 = material 1 (DACAD: Materialnamen). */
   material_names?: string[];
+  /** The result stored when the job left the draft status (the offer's figures). */
+  result_snapshot?: ResultSnapshot | null;
+}
+
+export interface ResultSnapshot {
+  engine_version: string;
+  taken_ms: number;
+  roof_area: number;
+  ridge_height: number;
+  lines_by_code: Record<string, number>;
+  area_by_material: { material: number; area: number }[];
+}
+
+/** The stored result against the current one. */
+export interface SnapshotStatus {
+  stored: ResultSnapshot;
+  /** key: roof_area, ridge_height, line:<code> or material:<number>. */
+  differences: { key: string; stored: number; current: number }[];
+  engine_changed: boolean;
+}
+
+/** A file attached to a job (drawing, photo). */
+export interface Attachment {
+  name: string;
+  size: number;
+  modified_ms: number;
 }
 
 /** A line drawn by hand on the roof; `code` is DACAD's line code. */
@@ -85,6 +111,8 @@ export interface ManualFace {
 export interface Dormer {
   edges: EdgeDef[];
   end: Point2;
+  /** The wall the dormer sits on, where a file names it. */
+  host_wall?: [Point2, Point2] | null;
 }
 
 export interface Chimney {
@@ -162,11 +190,28 @@ export interface RoofQuantities {
   area_by_material?: [number, number][];
 }
 
+/** What looks wrong with a calculated roof (tectora_core::check). */
+export interface RoofWarning {
+  kind: "outside_outline" | "overlapping_faces" | "area_mismatch";
+  /** m outside, m² overlapping, or the relative area difference. */
+  value: number;
+}
+
 export interface CalcResult {
-  parts: { name: string; geometry: { faces: RoofFace[]; lines: RoofLine[]; gables: [number, number, number][][] }; quantities: RoofQuantities }[];
+  parts: {
+    name: string;
+    geometry: {
+      faces: RoofFace[];
+      lines: RoofLine[];
+      gables: [number, number, number][][];
+      warnings?: RoofWarning[];
+    };
+    quantities: RoofQuantities;
+  }[];
   totals: RoofQuantities;
   /** Line lengths by DACAD code (T, F, G, K, O, W). */
   codes: Record<string, number>;
+  stored_result?: SnapshotStatus | null;
 }
 
 export interface Change {

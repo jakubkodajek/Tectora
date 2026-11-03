@@ -14,7 +14,10 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    eave height, overhang, half-hip).
 2. Read the drawing. Note scale, footprint dimensions, which walls are eaves and
    which are gables (elevations/sections), pitches, eave height and overhang.
-   List anything you cannot read and ask instead of guessing.
+   List anything you cannot read and ask instead of guessing. If the user did
+   not attach the drawing, `get_settings` gives `effective.drawings_dir`, the
+   folder where they put drawings; its `roof_defaults` are the user's usual
+   pitch, eave height and overhang (say when you used one).
 3. Search first with `list_projects` (customer, address, job number) so you edit
    the existing job instead of creating a duplicate.
 4. Create: `create_standard_roof` for a plain rectangle, otherwise

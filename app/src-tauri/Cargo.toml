@@ -15,6 +15,8 @@ serde_json = "1"
 notify = "8"
 tectora-core = { path = "../../crates/tectora-core" }
 tectora-mcp = { version = "0.1.0", path = "../../crates/tectora-mcp" }
+tauri-plugin-single-instance = "2"
+tauri-plugin-opener = "2"
 
 [lib]
 name = "tectora_app"

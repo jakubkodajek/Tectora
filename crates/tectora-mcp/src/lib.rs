@@ -18,8 +18,10 @@ use tectora_core::quantities::{dacad_line_totals, roof_totals};
 use tectora_core::settings::Settings;
 use tectora_core::store::{LiveStatus, Store, now_ms};
 use tectora_core::{
-    Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow, dad,
+    Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow,
 };
+
+mod more;
 
 pub const GUIDE: &str = include_str!("guide.md");
 const SUPPORTED_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -97,6 +99,27 @@ fn describe_part(part: &RoofPart) -> Value {
         })
         .collect();
     json!({ "name": part.name, "edges": edges })
+}
+
+/// A plausibility warning of a calculated roof (`tectora_core::check`),
+/// with what it means for whoever reads the result.
+fn warning(w: &tectora_core::check::RoofWarning) -> Value {
+    use tectora_core::check::WarningKind;
+    let message = match w.kind {
+        WarningKind::OutsideOutline => format!(
+            "part of the roof lies up to {:.2} m outside the eave outline; check pitches and overhangs",
+            w.value
+        ),
+        WarningKind::OverlappingFaces => format!(
+            "roof faces pass through or overlap each other over {:.2} m2; quantities may be wrong",
+            w.value
+        ),
+        WarningKind::AreaMismatch => format!(
+            "reported area differs from the roof faces by {:.1} %; check the area",
+            w.value * 100.0
+        ),
+    };
+    json!({ "kind": w.kind, "value": w.value, "message": message })
 }
 
 fn quantities(project: &Project) -> Value {
@@ -311,11 +334,28 @@ fn edge_props() -> Value {
     })
 }
 
+/// Edge fields plus the selection of edges, for `update_edges`.
+fn edge_change_props() -> Value {
+    let mut p = edge_props();
+    p["indices"] = json!({ "type": "array", "items": { "type": "integer" } });
+    p["index"] = json!({ "type": "integer" });
+    p["all"] = json!({ "type": "boolean" });
+    p
+}
+
 fn summary_prop() -> Value {
     json!({ "type": "string", "description": "One sentence for the user on what you changed and why (shown in the app)." })
 }
 
 fn tools() -> Value {
+    let mut list = base_tools();
+    if let Value::Array(a) = &mut list {
+        a.extend(more::tools());
+    }
+    list
+}
+
+fn base_tools() -> Value {
     let part_schema = json!({
         "type": "object",
         "properties": {
@@ -403,7 +443,7 @@ fn tools() -> Value {
         },
         {
             "name": "update_edges",
-            "description": "Change roof definitions of edges (pitch, gable, eave height, overhang, half-hip). Select edges with `indices`, `index` or `all`.",
+            "description": "Change roof definitions of edges (pitch, gable, eave height, overhang, half-hip, breaks, priority, material). Select edges with `indices`, `index` or `all`.",
             "inputSchema": schema(json!({
                 "id": { "type": "string" },
                 "part": { "type": "integer", "description": "Part index (default 0)." },
@@ -411,14 +451,7 @@ fn tools() -> Value {
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "properties": {
-                            "indices": { "type": "array", "items": { "type": "integer" } },
-                            "index": { "type": "integer" },
-                            "all": { "type": "boolean" },
-                            "pitch_deg": { "type": "number" }, "gable": { "type": "boolean" },
-                            "eave_height": { "type": "number" }, "overhang": { "type": "number" },
-                            "half_hip": { "type": ["object", "null"] }
-                        }
+                        "properties": edge_change_props()
                     }
                 },
                 "summary": summary_prop(),
@@ -446,7 +479,7 @@ fn tools() -> Value {
         },
         {
             "name": "update_job",
-            "description": "Change the design name, notes or job data (number, customer, address, status: draft | offer | ordered | done).",
+            "description": "Change the design name, notes or job data (number, customer, address, status: draft | offer | ordered | done). When the status leaves draft, the current result is stored as the job's result (see store_result).",
             "inputSchema": schema(json!({
                 "id": { "type": "string" },
                 "name": { "type": "string" }, "notes": { "type": "string" },
@@ -471,14 +504,15 @@ fn tools() -> Value {
                 },
                 "chimneys": {
                     "type": "array",
-                    "description": "Chimneys as convex plan polygons.",
+                    "description": "Chimneys as convex plan polygons (`corners`), or as a rectangle: corner `x`, `y`, `width`, `depth` and `rotation_deg`.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "corners": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 } },
+                            "x": { "type": "number" }, "y": { "type": "number" },
+                            "width": { "type": "number" }, "depth": { "type": "number" }, "rotation_deg": { "type": "number" },
                             "height": { "type": "number", "description": "Top height, m (display only)." }
-                        },
-                        "required": ["corners"]
+                        }
                     }
                 },
                 "roof_openings": {
@@ -497,7 +531,7 @@ fn tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total.",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total. A part whose roof looks geometrically wrong (outside its eave outline, faces passing through each other, area not matching its faces) carries `warnings`: tell the user and suggest checking pitches and overhangs.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -509,11 +543,6 @@ fn tools() -> Value {
             "name": "revert_last_change",
             "description": "Undo the latest recorded change of a design.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
-        },
-        {
-            "name": "import_dad",
-            "description": "Import a DACAD .DAD file (V1.x) from a local path into the library.",
-            "inputSchema": schema(json!({ "path": { "type": "string" } }), &["path"]),
         },
     ])
 }
@@ -543,6 +572,7 @@ impl Server {
         project: &Project,
         summary: &str,
     ) -> ToolResult {
+        project.check_limits()?;
         let id = self
             .store
             .save_as(id.map(str::to_string), project, &self.client, summary)?;
@@ -564,6 +594,9 @@ impl Server {
             .store
             .load(&id)
             .map_err(|_| format!("no design with id `{id}`; call list_projects to see the ids"))?;
+        project.check_limits().map_err(|e| {
+            format!("design `{id}` cannot be calculated: {e}; ask the user to fix it in the app")
+        })?;
         Ok((id, project))
     }
 
@@ -583,7 +616,13 @@ impl Server {
         Ok(next.describe())
     }
 
+    /// Runs a tool; a panic in the geometry kernel becomes a tool error
+    /// instead of ending the server for the rest of the session.
     pub fn call_tool(&mut self, name: &str, args: &Value) -> ToolResult {
+        tectora_core::model::guarded(|| self.call_tool_unguarded(name, args))?
+    }
+
+    fn call_tool_unguarded(&mut self, name: &str, args: &Value) -> ToolResult {
         match name {
             "tectora_guide" => Ok(json!(GUIDE)),
             "get_settings" => Ok(Settings::load().describe()),
@@ -625,8 +664,15 @@ impl Server {
                     "job": p.job,
                     "parts": p.parts.iter().map(describe_part).collect::<Vec<_>>(),
                     "chimneys": p.chimneys,
+                    "windows": p.windows,
                     "roof_openings": p.roof_openings,
-                    "dormers": p.dormers.len(),
+                    "dormers": p.dormers.iter().enumerate().map(|(i, d)| more::describe_dormer(i, d)).collect::<Vec<_>>(),
+                    "manual_lines": p.manual_lines,
+                    "manual_faces": p.manual_faces,
+                    "flat_roof": p.flat_roof,
+                    "materials": (1..=tectora_core::model::DACAD_MATERIALS).map(|m| json!({ "material": m, "name": p.material_name(m) })).collect::<Vec<_>>(),
+                    "files": self.store.attachments(&id).iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
+                    "stored_result": tectora_core::snapshot::status(&p),
                     "quantities": quantities(&p),
                 }))
             }
@@ -639,10 +685,20 @@ impl Server {
                     .zip(tectora_core::openings::generate_project(&p))
                     .map(|(part, geo)| {
                         let q = geo.quantities();
-                        json!({ "name": part.name, "quantities": q })
+                        let mut v = json!({ "name": part.name, "quantities": q });
+                        if !geo.warnings.is_empty() {
+                            v["warnings"] = geo.warnings.iter().map(warning).collect();
+                        }
+                        v
                     })
                     .collect();
-                Ok(json!({ "id": id, "total": quantities(&p), "parts": parts }))
+                Ok(json!({
+                    "id": id,
+                    "total": quantities(&p),
+                    "parts": parts,
+                    "engine_version": tectora_core::snapshot::ENGINE_VERSION,
+                    "stored_result": tectora_core::snapshot::status(&p),
+                }))
             }
             "create_standard_roof" => {
                 let kind: StandardRoof = serde_json::from_value(arg(args, "type")?.clone())
@@ -780,7 +836,7 @@ impl Server {
                     }
                 }
                 if let Some(s) = args.get("status").and_then(Value::as_str) {
-                    p.job.status = parse_status(s)?;
+                    p.set_status(parse_status(s)?);
                 }
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
             }
@@ -797,8 +853,22 @@ impl Server {
                     p.chimneys = raw
                         .iter()
                         .map(|c| {
-                            let corners = parse_points(arg(c, "corners")?)?;
                             let height = arg_f64(c, "height")?.unwrap_or(0.0);
+                            if c.get("corners").is_none() {
+                                let (w, d) = (arg_f64(c, "width")?, arg_f64(c, "depth")?);
+                                let (Some(w), Some(d)) = (w, d) else {
+                                    return Err("a chimney needs `corners` or `x`, `y`, `width` and `depth`".to_string());
+                                };
+                                return Ok(tectora_core::edit::probe::chimney_from_rect(
+                                    arg_f64(c, "x")?.unwrap_or(0.0),
+                                    arg_f64(c, "y")?.unwrap_or(0.0),
+                                    w,
+                                    d,
+                                    arg_f64(c, "rotation_deg")?.unwrap_or(0.0),
+                                    height,
+                                ));
+                            }
+                            let corners = parse_points(arg(c, "corners")?)?;
                             Ok(Chimney { corners, height })
                         })
                         .collect::<Result<_, String>>()?;
@@ -830,23 +900,9 @@ impl Server {
                 self.live("Reverted the latest change".into(), Some(&id));
                 Ok(json!({ "id": id, "reverted": true, "quantities": quantities(&p) }))
             }
-            "import_dad" => {
-                let path = std::path::PathBuf::from(arg_str(args, "path")?);
-                let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("DACAD")
-                    .to_string();
-                let p = dad::import(&bytes, name).map_err(|e| e.to_string())?;
-                self.commit(
-                    None,
-                    None,
-                    &p,
-                    &format!("Imported {} from DACAD", path.display()),
-                )
-            }
-            _ => Err(format!("unknown tool `{name}`")),
+            _ => self
+                .call_more(name, args)
+                .unwrap_or_else(|| Err(format!("unknown tool `{name}`"))),
         }
     }
 
@@ -935,8 +991,14 @@ mod tests {
     use super::*;
 
     fn server() -> Server {
-        let dir =
-            std::env::temp_dir().join(format!("tectora-mcp-{}-{}", now_ms(), std::process::id()));
+        // Tests run in parallel and remove their folder, so each needs its own.
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tectora-mcp-{}-{}-{n}",
+            now_ms(),
+            std::process::id()
+        ));
         let mut s = Server::new(Store::new(dir).unwrap());
         s.handle(&json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -1030,6 +1092,27 @@ mod tests {
     }
 
     #[test]
+    fn calc_reports_roofs_that_look_wrong() {
+        let mut s = server();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/check/C1_hips_outside.json");
+        let p: Project = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let id = s.store.save(None, &p).unwrap();
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        let w = r["parts"][0]["warnings"].as_array().unwrap();
+        assert_eq!(w[0]["kind"], "outside_outline");
+        assert!(w[0]["message"].as_str().unwrap().contains("3.69 m"));
+
+        let mut ok = p.clone();
+        for e in &mut ok.parts[0].edges {
+            e.overhang = 0.0;
+        }
+        let id = s.store.save(None, &ok).unwrap();
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        assert!(r["parts"][0].get("warnings").is_none(), "{r}");
+    }
+
+    #[test]
     fn bad_input_is_a_tool_error_not_a_crash() {
         let mut s = server();
         let r = s
@@ -1039,5 +1122,28 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(r["result"]["isError"], true);
+    }
+
+    #[test]
+    fn absurd_values_are_rejected() {
+        let mut s = server();
+        let err = s
+            .call_tool(
+                "create_project",
+                &json!({
+                    "name": "x", "summary": "x",
+                    "parts": [{ "points": [[0, 0], [1e300, 0], [10, 8]] }]
+                }),
+            )
+            .unwrap_err();
+        assert!(err.contains("out of range"), "{err}");
+        assert!(s.list_projects_empty());
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    impl Server {
+        fn list_projects_empty(&self) -> bool {
+            self.store.list().is_empty()
+        }
     }
 }

@@ -45,6 +45,42 @@ slope) and chimneys (convex plan `corners`). Like DACAD, a window deducts
 width × height and adds no lines; a chimney deducts its plan area / cos(pitch)
 and adds WV (downhill), WH (uphill) and WS (sloped sides) abutment lines.
 
+## Everything the editor can do
+
+The tools cover every operation of the Tectora editor:
+
+- Walls: `edit_walls` (move, insert or delete a corner, set a wall length,
+  insert a direction change, shift a wall in parallel, rename the part),
+  `set_outline`, `update_edges`.
+- Parts: `add_part`, `add_shape_part` (standard roofs and regular polygons),
+  `transform_part` (move, rotate, mirror, with copies), `delete_items`.
+- Dormers: `add_dormer`, `update_dormer` (gable, pointed, hip, half_hip,
+  shed, trapezoid, round); `get_project` lists them with these parameters.
+- Windows, chimneys (also as a rectangle) and roof openings: `set_openings`.
+- Lines and faces drawn by hand on the roof: `set_manual`.
+- Flat roof and material names: `set_roof_options`.
+- Calculation helpers of the roof definition: `roof_helper` (simple
+  triangle, two parallel walls, point in space, merge faces, hip/valley,
+  build-up thickness, round roof). It shows the values first; pass
+  `apply: true` to save them.
+- History: `get_history`, `revert_to`, `revert_last_change`.
+- Library: `list_examples`, `create_from_example`, `duplicate_project`,
+  `delete_project` (only when the user asks).
+- Files of a job (the drawings): `attach_file`, `list_files`, `remove_file`.
+  Attach the drawing a roof was made from, so the colleague reviewing it has
+  it at hand.
+- Hand-over: `export_job`, `import_job` (`.tectorajob` = project, files,
+  history and a preview in one file).
+- `get_schema`: the JSON Schema of the `.tectora` file.
+
+## Stored result
+
+When a job leaves the draft status (`update_job` with `status`), its result
+is stored with the engine version: the figures the offer was made with.
+`calc` and `get_project` report `stored_result` with every difference to the
+current result; tell the user when there are differences. `store_result`
+replaces the stored result with the current one.
+
 ## Results (DACAD line codes)
 
 `calc` returns the roof area and line lengths keyed by DACAD codes:

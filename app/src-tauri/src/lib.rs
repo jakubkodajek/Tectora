@@ -9,18 +9,21 @@ use notify::{RecursiveMode, Watcher};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 use tectora_core::diff::Change;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::quantities::dacad_line_totals;
 use tectora_core::settings::{self, Settings};
 use tectora_core::store::{self, LiveStatus, Store, USER_ACTOR, outlines};
-use tectora_core::{Project, dad, examples, roof};
+use tectora_core::{Project, bundle, examples, roof, snapshot};
 
 struct AppState {
     /// Replaced when the projects folder is changed in the settings.
     store: RwLock<Store>,
     /// Keeps the file watcher alive; replaced together with the store.
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    /// A job opened from a file (double-click) before the UI asked for it.
+    pending_open: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -43,7 +46,9 @@ fn projects_dir(state: State<AppState>) -> String {
     state.store().dir.display().to_string()
 }
 
-#[tauri::command]
+/// Runs off the main thread: summarising computes every roof, and the
+/// window must stay responsive while it does.
+#[tauri::command(async)]
 fn list_projects(state: State<AppState>) -> Vec<store::ProjectSummary> {
     state.store().list()
 }
@@ -118,11 +123,74 @@ fn delete_project(state: State<AppState>, id: String) -> Result<(), String> {
     state.store().delete(&id)
 }
 
+/// A copy is a new variant: draft, no stored result, the same files.
 #[tauri::command]
 fn duplicate_project(state: State<AppState>, id: String, name: String) -> Result<String, String> {
     let mut project = state.store().load(&id)?;
     project.name = name;
-    state.store().save(None, &project)
+    project.job.status = tectora_core::JobStatus::Draft;
+    project.result_snapshot = None;
+    let new_id = state.store().save(None, &project)?;
+    state.store().copy_attachments(&id, &new_id)?;
+    Ok(new_id)
+}
+
+#[tauri::command]
+fn list_attachments(state: State<AppState>, id: String) -> Vec<store::Attachment> {
+    state.store().attachments(&id)
+}
+
+#[tauri::command]
+fn attach_files(
+    state: State<AppState>,
+    id: String,
+    paths: Vec<String>,
+) -> Result<Vec<String>, String> {
+    paths
+        .iter()
+        .map(|p| state.store().attach_file(&id, &PathBuf::from(p)))
+        .collect()
+}
+
+#[tauri::command]
+fn remove_attachment(state: State<AppState>, id: String, name: String) -> Result<(), String> {
+    state.store().remove_attachment(&id, &name)
+}
+
+/// Opens an attached file in the system's default app.
+#[tauri::command]
+fn open_attachment(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    id: String,
+    name: String,
+) -> Result<(), String> {
+    let path = state.store().attachment_path(&id, &name)?;
+    app.opener()
+        .open_path(path.display().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn export_job(state: State<AppState>, id: String, path: String) -> Result<(), String> {
+    bundle::export(&state.store(), &id, &PathBuf::from(path)).map(|_| ())
+}
+
+#[tauri::command]
+fn import_job(state: State<AppState>, path: String) -> Result<String, String> {
+    bundle::open_path(&state.store(), &PathBuf::from(path))
+}
+
+/// The current result, to store as the job's result.
+#[tauri::command]
+fn take_snapshot(project: Project) -> snapshot::ResultSnapshot {
+    snapshot::take(&project)
+}
+
+/// The job opened from a file at start-up, once.
+#[tauri::command]
+fn take_pending_open(state: State<AppState>) -> Option<String> {
+    state.pending_open.lock().ok()?.take()
 }
 
 #[tauri::command]
@@ -197,27 +265,23 @@ fn new_project(state: State<AppState>, name: String) -> Result<String, String> {
     state.store().save(None, &project)
 }
 
-#[tauri::command]
-fn import_dad(state: State<AppState>, path: String) -> Result<String, String> {
-    let path = PathBuf::from(path);
-    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-    let name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("DACAD")
-        .to_string();
-    let project = dad::import(&bytes, name).map_err(|e| e.to_string())?;
-    state.store().save(None, &project)
+/// Roof geometry and quantities for every part, plus totals.
+///
+/// Runs off the main thread so a slow roof never freezes the window, and
+/// reports out-of-range input or a kernel panic as an error instead of
+/// crashing the app (a panic on the main thread aborts it).
+#[tauri::command(async)]
+fn calc(project: Project) -> Result<Value, String> {
+    project.check_limits()?;
+    tectora_core::model::guarded(|| calc_unguarded(&project))
 }
 
-/// Roof geometry and quantities for every part, plus totals.
-#[tauri::command]
-fn calc(project: Project) -> Value {
+fn calc_unguarded(project: &Project) -> Value {
     let mut total = roof::RoofQuantities::default();
     let parts: Vec<Value> = project
         .parts
         .iter()
-        .zip(tectora_core::openings::generate_project(&project))
+        .zip(tectora_core::openings::generate_project(project))
         .map(|(part, geometry)| {
             let q = geometry.quantities();
             total.add(&q);
@@ -225,8 +289,13 @@ fn calc(project: Project) -> Value {
         })
         .collect();
     // Lines and faces added by hand (DACAD: Dachlinieneingabe, Neue Dachfläche).
-    total.add(&tectora_core::quantities::manual_quantities(&project));
-    json!({ "parts": parts, "totals": total, "codes": dacad_line_totals(&project) })
+    total.add(&tectora_core::quantities::manual_quantities(project));
+    json!({
+        "parts": parts,
+        "totals": total,
+        "codes": dacad_line_totals(project),
+        "stored_result": snapshot::status(project),
+    })
 }
 
 /// Settings plus the folders in use (see `Settings::describe`).
@@ -352,9 +421,54 @@ fn start_watcher(
     Ok(watcher)
 }
 
+/// Opens files given on the command line or by the OS (double-click on a
+/// `.tectora` or `.tectorajob` file): each becomes a library job, the last
+/// one is shown.
+fn open_files(app: &tauri::AppHandle, paths: impl IntoIterator<Item = PathBuf>) {
+    let state = app.state::<AppState>();
+    let mut last = None;
+    for p in paths {
+        match bundle::open_path(&state.store(), &p) {
+            Ok(id) => last = Some(id),
+            Err(e) => eprintln!("open {}: {e}", p.display()),
+        }
+    }
+    if let Some(id) = last {
+        if let Ok(mut pending) = state.pending_open.lock() {
+            *pending = Some(id.clone());
+        }
+        let _ = app.emit("open-project", id);
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+        }
+    }
+}
+
+/// Command-line arguments that name Tectora files.
+fn file_args(args: impl IntoIterator<Item = String>) -> Vec<PathBuf> {
+    args.into_iter()
+        .map(PathBuf::from)
+        .filter(|p| {
+            let ext = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            (ext == store::EXTENSION || ext == bundle::EXTENSION) && p.is_file()
+        })
+        .collect()
+}
+
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        // A second launch (double-click while the app runs) hands its files
+        // to this instance instead of opening another window.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            open_files(app, file_args(argv.into_iter().skip(1)));
+        }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Same folder as `tectora mcp`, so AI edits show up here.
             // A chosen folder that is gone (e.g. an unplugged network drive)
@@ -378,12 +492,14 @@ pub fn run() {
             app.manage(AppState {
                 store: RwLock::new(store),
                 watcher: Mutex::new(None),
+                pending_open: Mutex::new(None),
             });
             let watcher = start_watcher(app.handle(), dir).ok();
             *app.state::<AppState>()
                 .watcher
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = watcher;
+            open_files(app.handle(), file_args(std::env::args().skip(1)));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -403,12 +519,26 @@ pub fn run() {
             list_examples,
             create_from_example,
             new_project,
-            import_dad,
             calc,
+            list_attachments,
+            attach_files,
+            remove_attachment,
+            open_attachment,
+            export_job,
+            import_job,
+            take_snapshot,
+            take_pending_open,
             get_settings,
             update_settings,
             open_folder
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Tectora");
+        .build(tauri::generate_context!())
+        .expect("error while building Tectora");
+    app.run(|_app, _event| {
+        // macOS hands double-clicked files to a running app as an event.
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Opened { urls } = _event {
+            open_files(_app, urls.into_iter().filter_map(|u| u.to_file_path().ok()));
+        }
+    });
 }

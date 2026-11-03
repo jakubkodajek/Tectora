@@ -9,6 +9,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -20,10 +21,21 @@ use crate::roof;
 pub const EXTENSION: &str = "tectora";
 pub const ACTIVITY_DIR: &str = ".activity";
 pub const LIVE_FILE: &str = "live.json";
+/// Files attached to a job (drawings, photos), in `.files/<id>/`.
+pub const FILES_DIR: &str = ".files";
 /// The actor name used for edits made in the desktop app.
 pub const USER_ACTOR: &str = "user";
 /// Activity entries kept per project (each holds a full previous version).
 const ACTIVITY_KEEP: usize = 50;
+
+/// A file attached to a job.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Attachment {
+    pub name: String,
+    /// Bytes.
+    pub size: u64,
+    pub modified_ms: u64,
+}
 
 #[derive(Debug, Serialize)]
 pub struct ProjectSummary {
@@ -133,10 +145,42 @@ fn modified_ms(path: &Path) -> u64 {
 }
 
 /// Writes via a temporary file so a watcher never sees a half-written file.
+/// The temporary name is unique per process and call, so the app and an MCP
+/// server saving the same design at once cannot write into each other's file.
 fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
-    let tmp = path.with_extension("tmp");
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("{}-{n}.tmp", std::process::id()));
     fs::write(&tmp, contents).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, path).map_err(|e| e.to_string())
+    fs::rename(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        e.to_string()
+    })
+}
+
+/// Longest accepted project id (file names stay well inside the 255-byte
+/// limit of common file systems).
+const MAX_ID_LEN: usize = 120;
+
+/// Names Windows reserves for devices in every folder (`CON.tectora` opens
+/// the console, not a file).
+const WINDOWS_DEVICE_NAMES: &[&str] = &[
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// A project id is a plain file name inside the library folder on both
+/// macOS and Windows: no separators, drive or stream prefix (`C:x`,
+/// `x:stream`), characters Windows forbids, hidden names or device names.
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_ID_LEN
+        && !id.starts_with('.')
+        && !id.ends_with(['.', ' '])
+        && !id.chars().any(|c| {
+            c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+        })
+        && !WINDOWS_DEVICE_NAMES.contains(&id.to_ascii_lowercase().as_str())
 }
 
 /// File-name friendly id derived from a project name.
@@ -188,7 +232,7 @@ impl Store {
     }
 
     pub fn path(&self, id: &str) -> Result<PathBuf, String> {
-        if id.is_empty() || id.contains(['/', '\\']) || id.starts_with('.') {
+        if !valid_id(id) {
             return Err(format!("invalid project id: {id}"));
         }
         Ok(self.dir.join(format!("{id}.{EXTENSION}")))
@@ -198,7 +242,7 @@ impl Store {
         self.dir.join(ACTIVITY_DIR)
     }
 
-    fn activity_path(&self, id: &str) -> Result<PathBuf, String> {
+    pub(crate) fn activity_path(&self, id: &str) -> Result<PathBuf, String> {
         self.path(id)?;
         Ok(self.activity_dir().join(format!("{id}.jsonl")))
     }
@@ -209,16 +253,22 @@ impl Store {
 
     pub fn summarize(&self, id: &str) -> Result<ProjectSummary, String> {
         let project = self.load(id)?;
+        // A broken design still shows up in the library (so it can be opened
+        // and fixed or deleted), just without its roof preview.
+        let (area, lines) = project
+            .check_limits()
+            .and_then(|()| crate::model::guarded(|| (roof_area(&project), roof_lines(&project))))
+            .unwrap_or_default();
         Ok(ProjectSummary {
             id: id.to_string(),
             name: project.name.clone(),
             notes: project.notes.clone(),
             job: project.job.clone(),
             modified_ms: modified_ms(&self.path(id)?),
-            roof_area: roof_area(&project),
+            roof_area: area,
             parts: project.parts.len(),
             outlines: outlines(&project),
-            lines: roof_lines(&project),
+            lines,
             last_activity: self.activity(id).last().map(ActivityEntry::info),
         })
     }
@@ -245,7 +295,12 @@ impl Store {
 
     /// Picks an unused id based on the project name.
     pub fn new_id(&self, name: &str) -> String {
-        let base = slug(name);
+        let mut base = slug(name);
+        // Leave room for the "-N" suffix and keep clear of device names.
+        base.truncate(MAX_ID_LEN - 8);
+        if !valid_id(&base) {
+            base.push_str("-navrh");
+        }
         let mut id = base.clone();
         let mut n = 2;
         while self.dir.join(format!("{id}.{EXTENSION}")).exists() {
@@ -373,6 +428,92 @@ impl Store {
     pub fn delete(&self, id: &str) -> Result<(), String> {
         fs::remove_file(self.path(id)?).map_err(|e| e.to_string())?;
         let _ = fs::remove_file(self.activity_path(id)?);
+        let _ = fs::remove_dir_all(self.files_dir(id)?);
+        Ok(())
+    }
+
+    /// Folder of the files attached to job `id`.
+    pub fn files_dir(&self, id: &str) -> Result<PathBuf, String> {
+        self.path(id)?;
+        Ok(self.dir.join(FILES_DIR).join(id))
+    }
+
+    /// Path of attachment `name` of job `id`.
+    pub fn attachment_path(&self, id: &str, name: &str) -> Result<PathBuf, String> {
+        if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
+            return Err(format!("invalid file name: {name}"));
+        }
+        Ok(self.files_dir(id)?.join(name))
+    }
+
+    /// The files attached to job `id`, by name.
+    pub fn attachments(&self, id: &str) -> Vec<Attachment> {
+        let Ok(dir) = self.files_dir(id) else {
+            return Vec::new();
+        };
+        let mut out: Vec<Attachment> = fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                (!name.starts_with('.')).then(|| Attachment {
+                    size: e.metadata().map_or(0, |m| m.len()),
+                    modified_ms: modified_ms(&e.path()),
+                    name,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// Stores `bytes` as an attachment of job `id` under `name`, or under
+    /// `name (2)` etc. when that name is taken. Returns the name used.
+    pub fn add_attachment(&self, id: &str, name: &str, bytes: &[u8]) -> Result<String, String> {
+        if !self.exists(id) {
+            return Err(format!("no project with id {id}"));
+        }
+        let name = name.trim();
+        self.attachment_path(id, name)?;
+        let (stem, ext) = match name.rfind('.') {
+            Some(i) if i > 0 => (&name[..i], &name[i..]),
+            _ => (name, ""),
+        };
+        let mut used = name.to_string();
+        let mut n = 2;
+        while self.attachment_path(id, &used)?.exists() {
+            used = format!("{stem} ({n}){ext}");
+            n += 1;
+        }
+        let path = self.attachment_path(id, &used)?;
+        fs::create_dir_all(path.parent().expect("has a parent")).map_err(|e| e.to_string())?;
+        fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        Ok(used)
+    }
+
+    /// Copies a file from disk into job `id`'s attachments.
+    pub fn attach_file(&self, id: &str, src: &Path) -> Result<String, String> {
+        let bytes = fs::read(src).map_err(|e| format!("{}: {e}", src.display()))?;
+        let name = src
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| format!("{}: not a file", src.display()))?;
+        self.add_attachment(id, name, &bytes)
+    }
+
+    pub fn remove_attachment(&self, id: &str, name: &str) -> Result<(), String> {
+        fs::remove_file(self.attachment_path(id, name)?).map_err(|e| e.to_string())
+    }
+
+    /// Copies all attachments of job `from` to job `to`.
+    pub fn copy_attachments(&self, from: &str, to: &str) -> Result<(), String> {
+        for a in self.attachments(from) {
+            let bytes =
+                fs::read(self.attachment_path(from, &a.name)?).map_err(|e| e.to_string())?;
+            self.add_attachment(to, &a.name, &bytes)?;
+        }
         Ok(())
     }
 
@@ -404,6 +545,15 @@ mod tests {
     fn slug_handles_czech_names() {
         assert_eq!(slug("Rodinný dům Říčany"), "rodinny-dum-ricany");
         assert_eq!(slug("  "), "navrh");
+        let store = Store {
+            dir: PathBuf::from("/nonexistent-tectora-dir"),
+        };
+        assert_eq!(store.new_id("Con"), "con-navrh");
+        assert!(
+            store
+                .path(&store.new_id(&"dlouhy nazev ".repeat(40)))
+                .is_ok()
+        );
     }
 
     #[test]
@@ -413,6 +563,27 @@ mod tests {
         };
         assert!(store.path("../etc/passwd").is_err());
         assert!(store.path("ok-id").is_ok());
+        assert!(store.path("rodinny-dum-2").is_ok());
+        assert!(store.path("Dům Říčany").is_ok());
+        for bad in [
+            "",
+            ".hidden",
+            "a/b",
+            "a\\b",
+            "C:evil",
+            "x:stream",
+            "CON",
+            "nul",
+            "com1",
+            "trailing.",
+            "trailing ",
+            "a\nb",
+            "q?",
+            "a*b",
+        ] {
+            assert!(store.path(bad).is_err(), "{bad:?} must be rejected");
+        }
+        assert!(store.path(&"x".repeat(MAX_ID_LEN + 1)).is_err());
     }
 
     #[test]

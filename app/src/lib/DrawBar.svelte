@@ -88,10 +88,11 @@
     <label><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="number" step="0.05" value={presets.eave_height} onchange={(e) => preset(e, "eave_height")} /><em>m</em></div></label>
     <label><span>{t("edge.overhang")}</span><div class="unit"><input type="number" step="0.05" value={presets.overhang} onchange={(e) => preset(e, "overhang")} /><em>m</em></div></label>
   </div>
-  <div class="spacer"></div>
-  <button class="btn sm" disabled={count === 0} onclick={onundo}><Icon name="undo" size={15} />{t("draw.undo")}</button>
-  <button class="btn sm" onclick={oncancel}>{t("draw.cancel")}</button>
-  <button class="btn sm primary" disabled={count < 3} onclick={onclose}><Icon name="check" size={15} />{t("draw.close")}</button>
+  <div class="actions">
+    <button class="btn sm" disabled={count === 0} onclick={onundo}><Icon name="undo" size={15} />{t("draw.undo")}</button>
+    <button class="btn sm" onclick={oncancel}>{t("draw.cancel")}</button>
+    <button class="btn sm primary" disabled={count < 3} onclick={onclose}><Icon name="check" size={15} />{t("draw.close")}</button>
+  </div>
 </div>
 
 <style>
@@ -110,7 +111,8 @@
     display: flex;
     flex-direction: column;
     align-self: center;
-    width: 150px;
+    min-width: 110px;
+    max-width: 150px;
     line-height: 1.3;
   }
   .title span {
@@ -166,8 +168,10 @@
   .presets .unit input {
     width: 76px;
   }
-  .spacer {
-    flex: 1;
+  .actions {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
   }
   .btn.sm {
     height: 32px;

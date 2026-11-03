@@ -1,16 +1,17 @@
 //! Roof project model — the single source of truth saved as `.tectora` JSON.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::geom::{Point2, signed_area};
 
 /// Current version of the `.tectora` JSON schema.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Pitch at or above this value (degrees) means a vertical gable wall.
 pub const GABLE_PITCH_DEG: f64 = 89.999;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Project {
     pub schema_version: u32,
     pub name: String,
@@ -43,6 +44,10 @@ pub struct Project {
     /// material 1. A missing or empty name keeps DACAD's default name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub material_names: Vec<String>,
+    /// The result as it was when the job left the draft status (the figures
+    /// an offer was made with), with the engine version that calculated it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_snapshot: Option<crate::snapshot::ResultSnapshot>,
 }
 
 /// A line drawn by hand on the calculated roof (DACAD: Dachlinieneingabe).
@@ -50,7 +55,7 @@ pub struct Project {
 /// 0), lets the user pick its type, length and label, and counts it in the
 /// line totals of its type. Unlike DACAD, which drops such lines when the
 /// roof is recalculated, Tectora keeps them in the project.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ManualLine {
     pub a: [f64; 3],
     pub b: [f64; 3],
@@ -91,7 +96,7 @@ impl ManualLine {
 /// A roof face added by hand (DACAD: Neue Dachfläche): a plan polygon and
 /// the pitch DACAD asks for. Its area is the plan area over the cosine of
 /// the pitch (Tectora's reading; not yet checked against DACAD's numbers).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ManualFace {
     pub points: Vec<Point2>,
     pub pitch_deg: f64,
@@ -145,6 +150,7 @@ impl Project {
             manual_faces: Vec::new(),
             flat_roof: false,
             material_names: Vec::new(),
+            result_snapshot: None,
         }
     }
 
@@ -182,7 +188,7 @@ impl Project {
             }
         }
         for (wi, w) in self.windows.iter().enumerate() {
-            let ok = [w.x, w.y, w.width, w.height].iter().all(|v| v.is_finite())
+            let ok = [w.x, w.y, w.width, w.height].iter().all(|&v| sane(v))
                 && w.width > 0.0
                 && w.height > 0.0;
             if !ok {
@@ -203,13 +209,117 @@ impl Project {
         serde_json::to_string_pretty(self)
     }
 
+    /// Reads a project file of this or an older format version, migrating
+    /// it to [`SCHEMA_VERSION`]; a newer format is an error.
     pub fn from_json(s: &str) -> serde_json::Result<Self> {
-        serde_json::from_str(s)
+        let mut v: serde_json::Value = serde_json::from_str(s)?;
+        migrate(&mut v)?;
+        serde_json::from_value(v)
+    }
+
+    /// Sets the job status. When the job leaves the draft status its result
+    /// is stored (see [`Project::result_snapshot`]) unless one is stored
+    /// already; returns whether it was.
+    pub fn set_status(&mut self, status: JobStatus) -> bool {
+        let leaves_draft = self.job.status == JobStatus::Draft && status != JobStatus::Draft;
+        self.job.status = status;
+        if leaves_draft && self.result_snapshot.is_none() {
+            self.result_snapshot = Some(crate::snapshot::take(self));
+            return true;
+        }
+        false
+    }
+
+    /// Rejects designs with a number no real roof has (see
+    /// [`MAX_ABS_VALUE`]). Such values come from a typo or a broken file,
+    /// and the geometry kernel can spend minutes on them or panic, so
+    /// callers check before calculating or saving input from outside.
+    pub fn check_limits(&self) -> Result<(), String> {
+        let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        // The stored result is computed output with a timestamp, not input.
+        if let Some(obj) = value.as_object_mut() {
+            obj.remove("result_snapshot");
+        }
+        match first_out_of_range(&value, &mut String::new()) {
+            Some((path, v)) => Err(format!(
+                "value {v} at `{path}` is out of range (allowed ±{MAX_ABS_VALUE})"
+            )),
+            None => Ok(()),
+        }
     }
 }
 
+/// Largest absolute number accepted anywhere in a design: 100 km in
+/// metres, far above any building and far below where f64 geometry breaks.
+pub const MAX_ABS_VALUE: f64 = 1.0e5;
+
+fn first_out_of_range(v: &serde_json::Value, path: &mut String) -> Option<(String, f64)> {
+    use serde_json::Value;
+    match v {
+        Value::Number(n) => n
+            .as_f64()
+            .filter(|f| !f.is_finite() || f.abs() > MAX_ABS_VALUE)
+            .map(|f| (path.clone(), f)),
+        Value::Array(items) => items.iter().enumerate().find_map(|(i, item)| {
+            let len = path.len();
+            path.push_str(&format!("[{i}]"));
+            let found = first_out_of_range(item, path);
+            path.truncate(len);
+            found
+        }),
+        Value::Object(map) => map.iter().find_map(|(key, item)| {
+            let len = path.len();
+            if !path.is_empty() {
+                path.push('.');
+            }
+            path.push_str(key);
+            let found = first_out_of_range(item, path);
+            path.truncate(len);
+            found
+        }),
+        _ => None,
+    }
+}
+
+/// Runs `f` and turns a panic into an error, so one bad design cannot take
+/// down the app or the MCP server. The geometry kernel is a port of DACAD's
+/// core and still has `expect`s on cases DACAD itself aborts on.
+pub fn guarded<T>(f: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|e| {
+        let msg = e
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| e.downcast_ref::<&str>().copied())
+            .unwrap_or("unknown error");
+        format!("roof calculation failed: {msg}")
+    })
+}
+
+/// Upgrades the JSON of an older project file in place, one format version
+/// at a time.
+fn migrate(v: &mut serde_json::Value) -> serde_json::Result<()> {
+    use serde::de::Error;
+    let Some(obj) = v.as_object_mut() else {
+        return Err(serde_json::Error::custom(
+            "a project file holds a JSON object",
+        ));
+    };
+    let version = obj
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(1);
+    if version > u64::from(SCHEMA_VERSION) {
+        return Err(serde_json::Error::custom(format!(
+            "the file was saved by a newer Tectora (format {version}, this version reads up to {SCHEMA_VERSION})"
+        )));
+    }
+    // 1 -> 2: adds the optional `result_snapshot`; nothing to convert.
+    obj.insert("schema_version".into(), SCHEMA_VERSION.into());
+    Ok(())
+}
+
 /// Customer and job details of a design, like the job header in DACAD lists.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct JobInfo {
     /// Job or offer number.
@@ -219,7 +329,7 @@ pub struct JobInfo {
     pub status: JobStatus,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
     #[default]
@@ -231,7 +341,7 @@ pub enum JobStatus {
 
 /// One closed footprint whose edges each carry their own roof definition
 /// (like DACAD: every wall line has pitch, eave height and overhang).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RoofPart {
     pub name: String,
     /// Edges in order; edge `i` runs from `edges[i].start` to `edges[i+1].start`.
@@ -262,7 +372,7 @@ impl RoofPart {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct EdgeDef {
     pub start: Point2,
     /// Roof pitch in degrees; 90 means a gable (vertical wall, no roof plane).
@@ -311,7 +421,7 @@ pub struct EdgeDef {
 }
 
 /// A wall record of an imported DACAD file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WallSource {
     /// Wall number in the file, from 1; walls are listed in this order.
     pub id: u16,
@@ -323,8 +433,18 @@ pub struct WallSource {
     pub angle_deg: f64,
 }
 
+/// Largest coordinate, height or overhang the engine accepts, m. Finite
+/// values beyond it (e.g. `1e308` in a hand-edited file) overflow in the
+/// engine's arithmetic and give NaN geometry; no roof is 1000 km away.
+pub const MAX_COORD: f64 = 1e6;
+
+/// A finite number within [`MAX_COORD`].
+fn sane(v: f64) -> bool {
+    v.is_finite() && v.abs() <= MAX_COORD
+}
+
 fn finite_point(p: Point2) -> bool {
-    p.x.is_finite() && p.y.is_finite()
+    sane(p.x) && sane(p.y)
 }
 
 /// DACAD's default material names (DACAD.exe strings 1601-1605, German
@@ -367,9 +487,9 @@ impl EdgeDef {
                 !(self.pitch_deg > 0.0 && self.pitch_deg < 180.0),
                 "pitch must be between 0° and 180°",
             ),
-            (!self.eave_height.is_finite(), "eave height is not a number"),
+            (!sane(self.eave_height), "eave height is not a number"),
             (
-                !(self.overhang >= 0.0 && self.overhang.is_finite()),
+                !(self.overhang >= 0.0 && sane(self.overhang)),
                 "overhang must be zero or positive",
             ),
             (
@@ -377,9 +497,7 @@ impl EdgeDef {
                 "direction is not a number",
             ),
             (
-                stacked
-                    .into_iter()
-                    .any(|(h, p)| !h.is_finite() || !p.is_finite()),
+                stacked.into_iter().any(|(h, p)| !sane(h) || !p.is_finite()),
                 "half-hip or pitch break is not a number",
             ),
         ];
@@ -428,14 +546,14 @@ impl EdgeDef {
 }
 
 /// A change of pitch at a height above the eave (DACAD: Knick).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PitchBreak {
     /// Height of the break line, m above ground.
     pub height: f64,
     pub pitch_deg: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct HalfHip {
     /// Height at which the hipped part starts, m above ground.
     pub height: f64,
@@ -443,7 +561,7 @@ pub struct HalfHip {
 }
 
 /// A dormer stored as its open wall polyline (front edge plus cheeks).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Dormer {
     pub edges: Vec<EdgeDef>,
     pub end: Point2,
@@ -456,7 +574,7 @@ pub struct Dormer {
 }
 
 /// A chimney (or other penetration) as a convex plan polygon.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Chimney {
     #[serde(default)]
     pub corners: Vec<Point2>,
@@ -468,10 +586,47 @@ pub struct Chimney {
 /// A roof window (DACAD: Dachfenster). The position is the plan point of
 /// its lower corner at the start of the eave; width runs along the eave and
 /// height up the slope, both in the roof plane.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RoofWindow {
     pub x: f64,
     pub y: f64,
     pub width: f64,
     pub height: f64,
+}
+
+/// JSON Schema of the `.tectora` project file (committed as
+/// `docs/tectora.schema.json`).
+pub fn json_schema() -> serde_json::Value {
+    let mut v = serde_json::to_value(schemars::schema_for!(Project)).expect("schema is JSON");
+    v["$id"] = "https://github.com/jakubkodajek/tectora/blob/main/docs/tectora.schema.json".into();
+    v["title"] = "Tectora project".into();
+    v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_limits_reports_the_bad_value() {
+        let mut p = crate::examples::find("gable").unwrap().project();
+        assert!(p.check_limits().is_ok());
+        p.parts[0].edges[1].overhang = 1e300;
+        let err = p.check_limits().unwrap_err();
+        assert!(err.contains("parts[0].edges[1].overhang"), "{err}");
+    }
+
+    #[test]
+    fn check_limits_ignores_the_stored_result() {
+        let mut p = crate::examples::find("gable").unwrap().project();
+        assert!(p.set_status(JobStatus::Offer));
+        assert!(p.check_limits().is_ok());
+    }
+
+    #[test]
+    fn guarded_turns_a_panic_into_an_error() {
+        assert_eq!(guarded(|| 2), Ok(2));
+        let err = guarded(|| -> u8 { panic!("boom") }).unwrap_err();
+        assert!(err.contains("boom"), "{err}");
+    }
 }
