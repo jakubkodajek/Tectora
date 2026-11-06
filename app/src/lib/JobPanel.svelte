@@ -64,7 +64,9 @@
   }
 
   async function removeFile(name: string) {
-    if (!confirm(t("files.confirmRemove", { name }))) return;
+    // Tauri's dialog plugin makes window.confirm asynchronous (a Promise is
+    // always truthy), so the answer must be awaited.
+    if (!(await confirm(t("files.confirmRemove", { name })))) return;
     try {
       await api.removeAttachment(id, name);
     } catch (e) {

@@ -29,6 +29,7 @@
   import { oppositeWall, spanBetween, type Arc } from "./roundroof";
   import { api, onProjectsChanged } from "./api";
   import { changedEdges, describeChange } from "./changes";
+  import { merge3 } from "./merge";
   import { m2, num } from "./format";
   import { t } from "./i18n.svelte";
   import { actorName, isFresh, live } from "./live.svelte";
@@ -37,10 +38,15 @@
   import { isAi, isGable, isMarker } from "./types";
 
   let {
-    id,
+    id: idProp,
     onback,
     onconnect,
   }: { id: string; onback: () => void; onconnect: () => void } = $props();
+  // The job this editor instance edits (App re-creates the editor for
+  // another job). Props are live: when App opens another job or goes back,
+  // `idProp` already has the new value while this instance is torn down,
+  // and the save on destroy must still write to this job's file.
+  const id = untrack(() => idProp);
 
   let project = $state<Project | null>(null);
   let result = $state<CalcResult | null>(null);
@@ -103,6 +109,11 @@
   // Last JSON written by us, to tell our own saves from external edits.
   let lastSaved = "";
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Saves in flight, and edits made so far (to tell whether a save is still current). */
+  let inFlight = 0;
+  let edits = 0;
+  /** A file-change event came in while a save was running. */
+  let reloadWanted = false;
   let calcSeq = 0;
 
   const snapshot = () => JSON.stringify(project);
@@ -155,6 +166,7 @@
 
   function scheduleSave() {
     saveState = "dirty";
+    edits++;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(save, 500);
   }
@@ -163,18 +175,42 @@
     if (!project) return;
     clearTimeout(saveTimer);
     saveState = "saving";
-    const json = snapshot();
+    const seq = edits;
+    inFlight++;
     try {
-      await api.saveProject(id, JSON.parse(json));
+      // An external edit (AI agent, CLI) saved since our last save or load
+      // and not loaded yet: merge it in instead of writing over it.
+      if (lastSaved) {
+        const onDisk = await api.loadProject(id).then(
+          (p) => JSON.stringify(p),
+          () => null,
+        );
+        if (onDisk && onDisk !== lastSaved) {
+          project = merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, JSON.parse(onDisk) as Project);
+          pushHistory();
+          recalc();
+          refreshActivity();
+        }
+      }
+      const written = JSON.parse(snapshot());
+      await api.saveProject(id, written);
       // The store writes its own canonical form (no nulls, empty lists or
       // defaults); remember that, or the file-change event would come back
-      // as an external edit and break undo.
-      lastSaved = JSON.stringify(await api.loadProject(id));
-      saveState = "saved";
+      // as an external edit and break undo. Not read back from the file: an
+      // AI edit saved right after ours would then pass for our own.
+      lastSaved = JSON.stringify(await api.normalizeProject(written));
+      // An edit made while this save was running is still unsaved.
+      saveState = edits === seq ? "saved" : "dirty";
     } catch (e) {
       // Keep the edits in memory; the status bar offers to try again.
       saveState = "failed";
       notifyError(e, "save");
+    } finally {
+      inFlight--;
+      if (!inFlight && reloadWanted) {
+        reloadWanted = false;
+        load(false);
+      }
     }
   }
 
@@ -211,8 +247,16 @@
       const p = await api.loadProject(id);
       const json = JSON.stringify(p);
       await refreshActivity();
+      if (!initial && inFlight) {
+        // A save started while reading: this read may be older than it.
+        reloadWanted = true;
+        return;
+      }
       if (!initial && json === lastSaved) return;
-      project = p;
+      // An external edit while local edits are not saved yet: keep both
+      // (the external one wins where both changed the same value).
+      const merged = !initial && saveState === "dirty" && project && lastSaved;
+      project = merged ? merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, p) : p;
       lastSaved = json;
       if (initial) {
         history = [snapshot()];
@@ -222,6 +266,7 @@
         if (pending) dock = "ai";
       } else {
         // External change (AI agent, CLI): keep it undoable and show it.
+        // Merged local edits are still to be saved (the timer is running).
         pushHistory();
         if (pending) dock = "ai";
       }
@@ -244,7 +289,12 @@
   onMount(() => {
     load(true);
     onProjectsChanged((ids) => {
-      if (ids.includes(id) && saveState !== "saving") load(false);
+      if (!ids.includes(id)) return;
+      // While our own save runs, `lastSaved` is not yet up to date, so the
+      // file would look like an external edit and replace newer local edits.
+      // Check again once the save is done.
+      if (inFlight) reloadWanted = true;
+      else load(false);
     }).then((u) => (unlisten = u));
   });
   onDestroy(() => {
@@ -254,8 +304,11 @@
 
   function accept() {
     if (!pending) return;
-    accepted = pending.ts_ms;
-    markReviewed(id, pending.ts_ms);
+    // Read the time first: `pending` is derived from `accepted` and is null
+    // as soon as `accepted` moves past it.
+    const ts = pending.ts_ms;
+    accepted = ts;
+    markReviewed(id, ts);
   }
 
   /** Reverts the pending AI changes from the banner, or the latest one from the AI tab. */
@@ -692,10 +745,18 @@
     }
   }
 
+  // macOS keyboards have no Delete key (their "delete" sends Backspace) and
+  // show shortcuts with ⌘.
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  const keys = (k: string) => (isMac ? k.replace("Ctrl+Shift+", "⇧⌘").replace("Ctrl+", "⌘") : k);
+
   function onkeydown(e: KeyboardEvent) {
     const mod = e.metaKey || e.ctrlKey;
+    const del = e.key === "Delete" || (e.key === "Backspace" && !mod);
     const tag = (e.target as HTMLElement).tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    // A dialog is open: its keys (Escape closes it) must not edit the roof behind it.
+    if (document.querySelector('[role="dialog"]')) return;
     if (mod && e.key.toLowerCase() === "z") {
       e.preventDefault();
       e.shiftKey ? redo() : undo();
@@ -717,13 +778,13 @@
       dormerSel = null;
       openSel = null;
       manualSel = null;
-    } else if (e.key === "Delete" && dormerSel !== null && !drawing) {
+    } else if (del && dormerSel !== null && !drawing) {
       deleteDormer();
-    } else if (e.key === "Delete" && openSel && !drawing) {
+    } else if (del && openSel && !drawing) {
       deleteOpening();
-    } else if (e.key === "Delete" && manualSel && !drawing) {
+    } else if (del && manualSel && !drawing) {
       deleteManual();
-    } else if (e.key === "Delete" && selection && !drawing) {
+    } else if (del && selection && !drawing) {
       deleteVertex();
     }
   }
@@ -757,8 +818,8 @@
   {#if !loadError}
   <div class="toolbar" role="toolbar">
     <div class="group">
-      <button class="tool" onclick={undo} disabled={at <= 0} title="{t('editor.undo')} (Ctrl+Z)"><Icon name="undo" /><span>{t("editor.undo")}</span></button>
-      <button class="tool" onclick={redo} disabled={at >= historyLen - 1} title="{t('editor.redo')} (Ctrl+Shift+Z)"><Icon name="redo" /><span>{t("editor.redo")}</span></button>
+      <button class="tool" onclick={undo} disabled={at <= 0} title="{t('editor.undo')} ({keys('Ctrl+Z')})"><Icon name="undo" /><span>{t("editor.undo")}</span></button>
+      <button class="tool" onclick={redo} disabled={at >= historyLen - 1} title="{t('editor.redo')} ({keys('Ctrl+Shift+Z')})"><Icon name="redo" /><span>{t("editor.redo")}</span></button>
     </div>
     <div class="group">
       <button class="tool" class:on={!!std} onclick={() => (std = { part: null, mode: project?.parts.length ? "replace" : "add" })} title={t("tool.standardHint")}><Icon name="house" /><span>{t("tool.standard")}</span></button>

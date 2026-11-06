@@ -28,10 +28,12 @@
 
   async function save(field: Field, value: unknown) {
     busy = field;
+    const shown = errors[field];
     try {
       const before = app.view?.effective.projects_dir;
       const next = await updateSettings({ [field]: value });
-      delete errors[field];
+      // Keep an error that came up for another value while this one was saving.
+      if (errors[field] === shown) delete errors[field];
       if (next.effective.projects_dir !== before) onlibrarychanged();
     } catch (e) {
       errors[field] = String(e);
