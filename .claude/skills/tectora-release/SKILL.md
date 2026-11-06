@@ -74,8 +74,8 @@ results (worded without naming DACAD), known limits.
 
 `.github/workflows/release.yml` then builds the Windows NSIS installer and
 the macOS universal app and .dmg, signs the updates with the release key,
-checks them, writes `latest.json` and publishes the release to the public
-releases repository named in `plugins.updater.endpoints`. Installed apps
+checks them, writes `latest.json` and publishes the release (after the
+user approves the run for the `release` environment). Installed apps
 offer it the next time the job library opens. If a check refuses the tag,
 fix the cause, delete the tag (`git push origin :v0.X.Y`, only with the
 user's go) and tag again.
@@ -86,7 +86,7 @@ users until signing is set up.
 
 ## Step 4: tell the users
 
-First installs: `https://github.com/jakubkodajek/tectora-releases/releases/latest/download/Tectora_x64-setup.exe`
+First installs: `https://github.com/jakubkodajek/Tectora/releases/latest/download/Tectora_x64-setup.exe`
 (Windows) and `.../Tectora_universal.dmg` (macOS). Existing installs update
 themselves from the library.
 

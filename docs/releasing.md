@@ -9,19 +9,14 @@ a `latest.json` that names the version, its notes and, for each platform,
 the file and its signature. The app reads the address in
 `plugins.updater.endpoints` in `app/src-tauri/tauri.conf.json`:
 
-    https://github.com/jakubkodajek/tectora-releases/releases/latest/download/latest.json
+    https://github.com/jakubkodajek/Tectora/releases/latest/download/latest.json
 
 which always points at the release marked latest; drafts and pre-releases
 are never offered.
 
-This repository is private, and an installed app downloads without signing
-in to GitHub, so the releases go to a public repository of their own,
-`jakubkodajek/tectora-releases`, which holds only releases (no source). The
-Release workflow publishes to the repository named in that address. Anyone
-who finds the releases can download the installers.
-
 The releases are built by `.github/workflows/release.yml` when a version tag
-is pushed to this repository.
+is pushed. The repository is public, so its releases are too: anyone who
+finds them can download the installers.
 
 ## Publish a new version
 
@@ -43,7 +38,12 @@ is pushed to this repository.
 
    Make the tag with git, not on GitHub's Releases page: the workflow makes
    the release itself. A Claude session tags only after you say so.
-3. The Release workflow refuses a tag that does not name the version the
+3. Approve the run: GitHub mails you that the Release workflow waits for
+   the `release` environment. In the run (Actions > Release), Review
+   deployments > `release` > Approve and deploy. Approve only a run of a
+   tag you pushed or asked for: the approval is what lets a run use the
+   release key.
+4. The Release workflow refuses a tag that does not name the version the
    commit declares, a commit that is not on main or whose checks have not
    passed, an empty public key, and a version that is not higher than every
    release. It builds the Windows installer and the macOS app into a draft
@@ -55,7 +55,7 @@ is pushed to this repository.
    ("Re-run all jobs"); it starts from a fresh draft.
 
 The latest installers for a first install always have the same address:
-`https://github.com/jakubkodajek/tectora-releases/releases/latest/download/Tectora_x64-setup.exe`
+`https://github.com/jakubkodajek/Tectora/releases/latest/download/Tectora_x64-setup.exe`
 for Windows and `.../Tectora_universal.dmg` for macOS (Apple silicon and
 Intel).
 
@@ -115,26 +115,17 @@ bundler's signing settings
    `~/.tauri/tectora.key.pub`) in `plugins.updater.pubkey` in
    `app/src-tauri/tauri.conf.json`. Use a key of its own, not another
    app's.
-2. **The releases repository.** Create the public repository
-   `jakubkodajek/tectora-releases` with a README (a release needs a commit
-   to tag). Nothing else goes in it.
-3. **A token for it.** A fine-grained personal access token
-   (GitHub > Settings > Developer settings > Fine-grained tokens) with
-   access to `tectora-releases` only and the repository permission
-   Contents: Read and write.
-4. **Secrets** of this repository (Settings > Secrets and variables >
-   Actions): `TAURI_SIGNING_PRIVATE_KEY` (the content of
-   `~/.tauri/tectora.key`), `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` and
-   `RELEASE_TOKEN` (the token of step 3).
-
-Buzzdome keeps its key in an environment whose runs wait for your approval.
-On a private repository that needs GitHub Enterprise: on the Free, Pro and
-Team plans, required reviewers are only available for public repositories,
-and on Free, environment secrets too
-([GitHub docs: Deployments and environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)).
-So here the key is a repository secret, and what stops a release you did
-not mean is who may push to this private repository: only you, and Claude
-sessions acting as you, which tag only on your word.
+2. **An environment for the key.** In this repository's Settings >
+   Environments, create `release`, and under Deployment branches and tags
+   choose "Selected branches and tags" and add the tag rule `v*`. Under
+   Required reviewers add yourself, and leave "Prevent self-reviews" off,
+   or you cannot approve your own releases. Clear "Allow administrators to
+   bypass configured protection rules": sessions that act as you are admins
+   too. Every run that would use the key then waits for your approval, and
+   GitHub mails you about each one. Both are free on a public repository
+   ([GitHub docs: Deployments and environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)).
+3. **Secrets** of that environment: `TAURI_SIGNING_PRIVATE_KEY` (the content
+   of `~/.tauri/tectora.key`) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
 
 A changed key needs a manual reinstall on every computer, since the apps
 there only accept the old one.
