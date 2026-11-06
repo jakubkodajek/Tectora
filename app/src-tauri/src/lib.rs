@@ -2,6 +2,7 @@
 //! that tells the UI when project files change on disk (CLI, MCP, AI agents).
 
 mod error;
+mod updates;
 
 use std::path::PathBuf;
 use std::sync::{Mutex, RwLock, RwLockReadGuard};
@@ -517,6 +518,8 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updates::Updates::default())
         .setup(|app| {
             // Same folder as `tectora mcp`, so AI edits show up here.
             // A chosen folder that is gone (e.g. an unplugged network drive)
@@ -591,7 +594,9 @@ pub fn run() {
             take_pending_open,
             get_settings,
             update_settings,
-            open_folder
+            open_folder,
+            updates::update_check,
+            updates::update_install
         ])
         .build(tauri::generate_context!())
         .expect("error while building Tectora");

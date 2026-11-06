@@ -49,7 +49,8 @@ Run from the repo root unless noted.
 | calculate a file | `cargo run -q -p tectora-cli -- calc path/to/job.tectora --summary` |
 | MCP server | `cargo run -q -p tectora-cli -- mcp [--dir <library>]` |
 | update the file schema | `TECTORA_WRITE_SCHEMA=1 cargo test -p tectora-core --test schema` |
-| installers | CI: `.github/workflows/desktop.yml` (macOS universal .dmg, Windows .msi/.exe); tag `v*` for a release build |
+| test installers | Actions > Build > Run workflow (`.github/workflows/build.yml`): macOS universal .dmg, Windows NSIS .exe |
+| release | annotated tag `v<version>` on main, only on the user's go: `.github/workflows/release.yml` publishes signed installers and the in-app update (`docs/releasing.md`) |
 
 **Browser preview.** `npm run preview` builds and starts the `ui_bridge`
 example (`crates/tectora-core/examples/ui_bridge.rs`), which answers the Tauri

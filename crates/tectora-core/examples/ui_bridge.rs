@@ -56,6 +56,12 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             Ok(json!({ "projects": projects, "broken": broken }))
         }
         "startup_warnings" => Ok(json!([])),
+        // TECTORA_PREVIEW_UPDATE=0.2.0 shows the update offer in the library.
+        "update_check" => Ok(std::env::var("TECTORA_PREVIEW_UPDATE").map_or(
+            Value::Null,
+            |version| json!({ "version": version, "notes": "- Preview release notes" }),
+        )),
+        "update_install" => Err("updates are not installed in the preview".into()),
         "project_activity" => {
             let mut items: Vec<Value> = store
                 .activity(&id()?)
