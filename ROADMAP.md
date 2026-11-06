@@ -62,12 +62,16 @@ colleague uses Claude Desktop, Codex or Antigravity.
   against TERRAN's offers (`eval/drawings`, `tools/drawing-eval`). There is
   no DACAD roof for these jobs, so the offers are the labels.
   All ten jobs built (2026-11-06): jobs 3, 5, 7 and 10 match the offer's
-  areas within its rounding, job 9 within 1.3 %, object A of job 4 within
-  2.3 %. Job 6 (30 dormers) matches the exact Bramac lines (valleys 0.1 %,
+  areas within its rounding, object B of job 4 within 1.0 %, job 9 within
+  1.3 %, object A of job 4 within 2.3 %. Job 6 (30 dormers) matches the exact Bramac lines (valleys 0.1 %,
   verges 0.8 %, eaves 2.4 %) and its gross faces; its area is 4.7 % under
   because Bramac deducts less under each dormer. Open with the estimator:
-  job 8 (offer 23 % below the roof its ridge and eaves describe), object B
-  of job 4 (+7.3 %), jobs 1 and 2 (no section; contradictory labels on 1).
+  job 8 (offer 23 % below the roof its ridge, eaves and both sections
+  describe), jobs 1 and 2 (no section; contradictory labels on 1, the 12°
+  footprint of 2 is 7.6 % short whatever its form). A second pass over
+  all ten jobs found three reading errors in object B of job 4 (eave
+  height taken from the cornice label, a deck depth, where one deck
+  starts); fixing them took it from +7.3 % to +1.0 %.
   **Next:** the colleague's review of these builds in the app, and the
   missing sections for jobs 1 and 2.
 - Review flow: the AI marks what it was unsure about (unreadable dimension,

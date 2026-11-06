@@ -123,7 +123,7 @@
     12.92
    ],
    "rafter_m": 9.04,
-   "open_question": "ridge (64 ridge tiles = 22.4 m) and eaves (24 x 2 m) match a 22.4 x 12.9 m gable roof of 391 m², but the offer prices 303 m²; ask the estimator what was left out"
+   "open_question": "ridge (64 ridge tiles = 22.4 m), eaves (24 x 2 m) and both sections (rafters 9.04 m and 8.73 m at 43°) describe a 22.4 x 12.9 m gable roof of 391 m², but the offer prices 303 m² and no verge tiles; ask the estimator what was left out"
   },
   "6": {
    "sheet": "D1.1.2.11 (roof plan)",
@@ -158,13 +158,13 @@
    ],
    "eave_heights_m": [
     8.09,
-    10.0
+    10.1
    ],
    "ridge_heights_m": [
     12.7,
     14.6
    ],
-   "note": "A = tiles (priced), B = standing-seam metal (not priced). The metal decks are wide shed dormers cut into the tiled roof; their eave height is set so they meet the roof at the drawn depth (3.84 m in object A, 3.025 m in object B). Object A: tiles 110.4 m² against 113 (-2.3%). Object B: two wings (the oblique one as its own part), 11 decks; tiles 488 m² against 455 (+7.3%) while the ridge (75.8 m) matches the ridge tiles (75.7-77.1 m): the outline is right, what the offer leaves out of the 45° roof is open."
+   "note": "A = tiles (priced), B = standing-seam metal (not priced). The metal decks are wide shed dormers cut into the tiled roof; their eave height is set so they meet the roof at the drawn depth (3.84 m in object A, 3.174 m in object B, from section B-B). Object B's eave height is 10.1 m, from the ridge and the 45° pitch; the +10.0 label is the cornice. Its east deck starts at the junction of the two wings. Object A: tiles 110.4 m² against 113 (-2.3%); the deck labels hint at a depth of 4.0-4.25 m against the drawn 3.84 m, unresolved. Object B: two wings (the oblique one as its own part), 11 decks; tiles 459.4 m² against 455 (+1.0%), ridge 75.8 m against the ridge tiles' 75.7-77.1 m."
   },
   "2": {
    "sheet": "truss plan (raster, one page)",
@@ -178,7 +178,7 @@
     11.14,
     10.045
    ],
-   "note": "raster at about 113 dpi; the only sheet is the truss plan, no section. The 41° hip roof matches (147.9 m² against 150). The 12° roofs come out 101.7 m² against 110 (-7.6%): their form (shed or low gable, eave heights) cannot be read from the truss plan, and the offer's verge (41-45 m) and valley (16-20 m) pieces point to low gables joined to the hip roof. Needs the section."
+   "note": "raster at about 113 dpi; the only sheet is the truss plan, no section. The 41° hip roof matches (147.9 m² against 150) and alone accounts for the ridge tiles (ridge + hips 34.4 m against 34.3-35.7). The 12° roofs come out 101.7 m² against 110 (-7.6%) whether they are built as sheds or low gables (same footprint, same pitch), so the gap is in their footprint or overhang, not their form. The truss plan's symmetric purlins around a central purlin on a steel column hint at a low gable on the west wing, but a gable adds 7-17 m of ridge the offer has no ridge tiles for. The offer's verge (41-45 m) and valley (16-20 m) pieces fit neither form. Needs the section."
   }
  }
 }

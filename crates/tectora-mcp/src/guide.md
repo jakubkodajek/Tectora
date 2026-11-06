@@ -157,7 +157,11 @@ each a clean rectangle, the second running into the first.
 outline. Section and plan labels such as `+5,810` at a ridge are usually the
 top of the covering, 5–15 cm above Tectora's ridge; use them as a check, not
 as input. Read the pitch from the plan or section, never derive it from
-rounded heights.
+rounded heights. A cornice label (`římsa`, `atika`) is the top of the wall,
+not the eave of the roof plane, which usually sits a little higher: take
+the eave height from the section's ridge and pitch (ridge height − half
+span × tan(pitch)) and confirm it with a second label on the same plane,
+such as the front or back of a deck or dormer.
 
 **Roofs that are hard to model.** An eave that is lowered over part of a
 wall but continues the same plane (a porch under an extended roof) is two
