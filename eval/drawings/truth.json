@@ -1,0 +1,575 @@
+{
+ "version": 1,
+ "jobs": [
+  {
+   "job": "1",
+   "drawings": 1,
+   "offers": [
+    {
+     "covering": "Zenit MAX EVO",
+     "pitch_groups": [
+      {
+       "pitch_deg": 44.0,
+       "area_m2": 122.0
+      },
+      {
+       "pitch_deg": 54.0,
+       "area_m2": 40.0
+      }
+     ],
+     "roof_area_m2": 162.0,
+     "pieces": {
+      "ridge_tiles": 68.0,
+      "ridge_end_tiles": 6.0,
+      "ridge_split_y": 1.0,
+      "ridge_split_x": 0.0,
+      "verge_tiles_right": 24.0,
+      "verge_tiles_left": 24.0,
+      "eave_flashing_2m": 23.0,
+      "valley_strip_2m": 6.0,
+      "chimney_flashing": 0.0,
+      "roof_exit_window": 0.0
+     },
+     "line_intervals_m": {
+      "F+G": [
+       22.86,
+       24.29
+      ],
+      "OL+OR": [
+       15.2,
+       16.8
+      ],
+      "T": [
+       39.1,
+       46.0
+      ],
+      "K": [
+       9.6,
+       12.0
+      ]
+     }
+    }
+   ],
+   "exact": []
+  },
+  {
+   "job": "2",
+   "drawings": 1,
+   "offers": [
+    {
+     "covering": "Synus CS",
+     "pitch_groups": [
+      {
+       "pitch_deg": 41.0,
+       "area_m2": 150.0
+      },
+      {
+       "pitch_deg": 12.0,
+       "area_m2": 110.0
+      }
+     ],
+     "roof_area_m2": 260.0,
+     "pieces": {
+      "ridge_tiles": 100.0,
+      "ridge_end_tiles": 8.0,
+      "ridge_split_y": 3.0,
+      "ridge_split_x": 0.0,
+      "verge_tiles_right": 66.0,
+      "verge_tiles_left": 64.0,
+      "eave_flashing_2m": 26.0,
+      "valley_strip_2m": 10.0,
+      "chimney_flashing": 0.0,
+      "roof_exit_window": 0.0
+     },
+     "line_intervals_m": {
+      "F+G": [
+       34.29,
+       35.71
+      ],
+      "OL+OR": [
+       41.17,
+       45.5
+      ],
+      "T": [
+       44.2,
+       52.0
+      ],
+      "K": [
+       16.0,
+       20.0
+      ]
+     }
+    }
+   ],
+   "exact": []
+  },
+  {
+   "job": "3",
+   "drawings": 2,
+   "offers": [
+    {
+     "covering": "Rundo EVO",
+     "pitch_groups": [
+      {
+       "pitch_deg": 25.0,
+       "area_m2": 214.0
+      }
+     ],
+     "roof_area_m2": 214.0,
+     "pieces": {
+      "ridge_tiles": 60.0,
+      "ridge_end_tiles": 0.0,
+      "ridge_split_y": 0.0,
+      "ridge_split_x": 0.0,
+      "verge_tiles_right": 29.0,
+      "verge_tiles_left": 29.0,
+      "eave_flashing_2m": 23.0,
+      "valley_strip_2m": 0.0,
+      "chimney_flashing": 0.0,
+      "roof_exit_window": 0.0
+     },
+     "line_intervals_m": {
+      "F+G": [
+       20.0,
+       21.43
+      ],
+      "OL+OR": [
+       18.37,
+       20.3
+      ],
+      "T": [
+       39.1,
+       46.0
+      ]
+     }
+    }
+   ],
+   "exact": []
+  },
+  {
+   "job": "4",
+   "drawings": 2,
+   "offers": [
+    {
+     "covering": "Synus CS",
+     "pitch_groups": [
+      {
+       "pitch_deg": 36.5,
+       "area_m2": 113.0
+      }
+     ],
+     "roof_area_m2": 113.0,
+     "pieces": {
+      "ridge_tiles": 40.0,
+      "ridge_end_tiles": 0.0,
+      "ridge_split_y": 0.0,
+      "ridge_split_x": 0.0,
+      "verge_tiles_right": 45.0,
+      "verge_tiles_left": 45.0,
+      "eave_flashing_2m": 14.0,
+      "valley_strip_2m": 0.0,
+      "chimney_flashing": 0.0,
+      "roof_exit_window": 0.0
+     },
+     "line_intervals_m": {
+      "F+G": [
+       12.86,
+       14.29
+      ],
+      "OL+OR": [
+       28.5,
+       31.5
+      ],
+      "T": [
+       23.8,
+       28.0
+      ]
+     }
+    },
+    {
+     "covering": "Synus CS",
+     "pitch_groups": [
+      {
+       "pitch_deg": 45.0,
+       "area_m2": 455.0
+      }
+     ],
+     "roof_area_m2": 455.0,
+     "pieces": {
+      "ridge_tiles": 216.0,
+      "ridge_end_tiles": 0.0,
+      "ridge_split_y": 0.0,
+      "ridge_split_x": 0.0,
+      "verge_tiles_right": 43.0,
+      "verge_tiles_left": 59.0,
+      "eave_flashing_2m": 18.0,
+      "valley_strip_2m": 8.0,
+      "chimney_flashing": 0.0,
+      "roof_exit_window": 0.0
+     },
+     "line_intervals_m": {
+      "F+G": [
+       75.71,
+       77.14
+      ],
+      "OL+OR": [
+       32.3,
+       35.7
+      ],
+      "T": [
+       30.6,
+       36.0
+      ],
+      "K": [
+       12.8,
+       16.0
+      ]
+     }
+    }
+   ],
+   "exact": []
+  },
+  {
+   "job": "5",
+   "drawings": 1,
+   "offers": [
+    {
+     "covering": "Synus Inova",
+     "pitch_groups": [
+      {
+       "pitch_deg": 22.0,
+       "area_m2": 346.0
+      }
+     ],
+     "roof_area_m2": 346.0,
+     "pieces": {
+      "ridge_tiles": 188.0,
+      "ridge_end_tiles": 6.0,
+      "ridge_split_y": 2.0,
+      "ridge_split_x": 1.0,
+      "verge_tiles_right": 0.0,
+      "verge_tiles_left": 0.0,
+      "eave_flashing_2m": 41.0,
+      "valley_strip_2m": 10.0,
+      "chimney_flashing": 0.0,
+      "roof_exit_window": 0.0
+     },
+     "line_intervals_m": {
+      "F+G": [
+       65.71,
+       67.14
+      ],
+      "T": [
+       69.7,
+       82.0
+      ],
+      "K": [
+       16.0,
+       20.0
+      ]
+     }
+    }
+   ],
+   "exact": []
+  },
+  {
+   "job": "6",
+   "drawings": 3,
+   "offers": [
+    {
+     "covering": "Synus EVO",
+     "pitch_groups": [
+      {
+       "pitch_deg": 43.0,
+       "area_m2": 878.0
+      },
+      {
+       "pitch_deg": 12.0,
+       "area_m2": 16.35
+      }
+     ],
+     "roof_area_m2": 894.35,
+     "pieces": {
+      "ridge_tiles": 380.0,
+      "ridge_end_tiles": 0.0,
+      "ridge_split_y": 0.0,
+      "ridge_split_x": 0.0,
+      "verge_tiles_right": 236.0,
+      "verge_tiles_left": 236.0,
+      "eave_flashing_2m": 98.0,
+      "valley_strip_2m": 68.0,
+      "chimney_flashing": 0.0,
+      "roof_exit_window": 0.0
+     },
+     "line_intervals_m": {
+      "F+G": [
+       134.29,
+       135.71
+      ],
+      "OL+OR": [
+       149.47,
+       165.2
+      ],
+      "T": [
+       166.6,
+       196.0
+      ],
+      "K": [
+       108.8,
+       136.0
+      ]
+     }
+    },
+    {
+     "covering": "Danubia EVO",
+     "pitch_groups": [
+      {
+       "pitch_deg": 43.0,
+       "area_m2": 878.0
+      },
+      {
+       "pitch_deg": 12.0,
+       "area_m2": 16.35
+      }
+     ],
+     "roof_area_m2": 894.35,
+     "pieces": {
+      "ridge_tiles": 380.0,
+      "ridge_end_tiles": 0.0,
+      "ridge_split_y": 0.0,
+      "ridge_split_x": 0.0,
+      "verge_tiles_right": 236.0,
+      "verge_tiles_left": 236.0,
+      "eave_flashing_2m": 98.0,
+      "valley_strip_2m": 68.0,
+      "chimney_flashing": 0.0,
+      "roof_exit_window": 0.0
+     },
+     "line_intervals_m": {
+      "F+G": [
+       134.29,
+       135.71
+      ],
+      "OL+OR": [
+       149.47,
+       165.2
+      ],
+      "T": [
+       166.6,
+       196.0
+      ],
+      "K": [
+       108.8,
+       136.0
+      ]
+     }
+    }
+   ],
+   "exact": [
+    {
+     "lines_m": {
+      "ridge_and_hip": 134.82,
+      "valley": 120.62,
+      "eave": 186.78,
+      "verge_left": 79.4,
+      "verge_right": 79.45,
+      "abutment_side": 122.77,
+      "abutment_front": 47.1
+     },
+     "faces": 71,
+     "area_by_pitch_m2": [
+      {
+       "pitch_deg": 12.0,
+       "area_m2": 16.35
+      },
+      {
+       "pitch_deg": 42.0,
+       "area_m2": 540.56
+      },
+      {
+       "pitch_deg": 43.0,
+       "area_m2": 336.75
+      }
+     ],
+     "roof_area_m2": 893.66
+    }
+   ]
+  },
+  {
+   "job": "7",
+   "drawings": 1,
+   "offers": [
+    {
+     "covering": "Synus EVO",
+     "pitch_groups": [
+      {
+       "pitch_deg": 25.0,
+       "area_m2": 306.0
+      }
+     ],
+     "roof_area_m2": 306.0,
+     "pieces": {
+      "ridge_tiles": 160.0,
+      "ridge_end_tiles": 6.0,
+      "ridge_split_y": 3.0,
+      "ridge_split_x": 0.0,
+      "verge_tiles_right": 0.0,
+      "verge_tiles_left": 0.0,
+      "eave_flashing_2m": 42.0,
+      "valley_strip_2m": 5.0,
+      "chimney_flashing": 0.0,
+      "roof_exit_window": 0.0
+     },
+     "line_intervals_m": {
+      "F+G": [
+       55.71,
+       57.14
+      ],
+      "T": [
+       71.4,
+       84.0
+      ],
+      "K": [
+       8.0,
+       10.0
+      ]
+     }
+    }
+   ],
+   "exact": []
+  },
+  {
+   "job": "8",
+   "drawings": 2,
+   "offers": [
+    {
+     "covering": "Rundo Inova",
+     "pitch_groups": [
+      {
+       "pitch_deg": 43.0,
+       "area_m2": 303.0
+      }
+     ],
+     "roof_area_m2": 303.0,
+     "pieces": {
+      "ridge_tiles": 64.0,
+      "ridge_end_tiles": 0.0,
+      "ridge_split_y": 0.0,
+      "ridge_split_x": 0.0,
+      "verge_tiles_right": 0.0,
+      "verge_tiles_left": 0.0,
+      "eave_flashing_2m": 24.0,
+      "valley_strip_2m": 0.0,
+      "chimney_flashing": 0.0,
+      "roof_exit_window": 0.0
+     },
+     "line_intervals_m": {
+      "F+G": [
+       21.43,
+       22.86
+      ],
+      "T": [
+       40.8,
+       48.0
+      ]
+     }
+    }
+   ],
+   "exact": []
+  },
+  {
+   "job": "9",
+   "drawings": 3,
+   "offers": [
+    {
+     "covering": "Zenit MAX EVO",
+     "pitch_groups": [
+      {
+       "pitch_deg": 30.7,
+       "area_m2": 40.0
+      },
+      {
+       "pitch_deg": 32.0,
+       "area_m2": 51.0
+      }
+     ],
+     "roof_area_m2": 91.0,
+     "pieces": {
+      "ridge_tiles": 52.0,
+      "ridge_end_tiles": 1.0,
+      "ridge_split_y": 0.0,
+      "ridge_split_x": 0.0,
+      "verge_tiles_right": 15.0,
+      "verge_tiles_left": 15.0,
+      "eave_flashing_2m": 11.0,
+      "valley_strip_2m": 3.0,
+      "chimney_flashing": 0.0,
+      "roof_exit_window": 0.0
+     },
+     "line_intervals_m": {
+      "F+G": [
+       17.14,
+       18.57
+      ],
+      "OL+OR": [
+       9.5,
+       10.5
+      ],
+      "T": [
+       18.7,
+       22.0
+      ],
+      "K": [
+       4.8,
+       6.0
+      ]
+     }
+    }
+   ],
+   "exact": []
+  },
+  {
+   "job": "10",
+   "drawings": 2,
+   "offers": [
+    {
+     "covering": "Zenit MAX EVO",
+     "pitch_groups": [
+      {
+       "pitch_deg": 25.0,
+       "area_m2": 337.0
+      }
+     ],
+     "roof_area_m2": 337.0,
+     "pieces": {
+      "ridge_tiles": 180.0,
+      "ridge_end_tiles": 6.0,
+      "ridge_split_y": 3.0,
+      "ridge_split_x": 0.0,
+      "verge_tiles_right": 0.0,
+      "verge_tiles_left": 0.0,
+      "eave_flashing_2m": 42.0,
+      "valley_strip_2m": 9.0,
+      "chimney_flashing": 1.0,
+      "roof_exit_window": 1.0
+     },
+     "line_intervals_m": {
+      "F+G": [
+       62.86,
+       64.29
+      ],
+      "T": [
+       71.4,
+       84.0
+      ],
+      "K": [
+       14.4,
+       18.0
+      ]
+     }
+    }
+   ],
+   "exact": []
+  }
+ ]
+}

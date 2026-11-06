@@ -14,13 +14,14 @@ use tectora_core::diff::diff;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::geom::Point2;
 use tectora_core::model::GABLE_PITCH_DEG;
-use tectora_core::quantities::{dacad_line_totals, roof_totals};
+use tectora_core::quantities::{area_by_pitch, dacad_line_totals, roof_totals};
 use tectora_core::settings::Settings;
 use tectora_core::store::{LiveStatus, Store, now_ms};
 use tectora_core::{
     Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow,
 };
 
+mod drawings;
 mod more;
 
 pub const GUIDE: &str = include_str!("guide.md");
@@ -130,6 +131,10 @@ fn quantities(project: &Project) -> Value {
         "hip_count": t.hip_count,
         "valley_count": t.valley_count,
         "lines_by_dacad_code_m": dacad_line_totals(project),
+        "area_by_pitch_m2": area_by_pitch(project)
+            .iter()
+            .map(|&(p, a)| json!({ "pitch_deg": p, "area": a }))
+            .collect::<Vec<_>>(),
         "area_by_material_m2": t
             .area_by_material
             .iter()
@@ -351,6 +356,7 @@ fn tools() -> Value {
     let mut list = base_tools();
     if let Value::Array(a) = &mut list {
         a.extend(more::tools());
+        a.extend(drawings::tools());
     }
     list
 }
@@ -902,6 +908,7 @@ impl Server {
             }
             _ => self
                 .call_more(name, args)
+                .or_else(|| self.call_drawing(name, args))
                 .unwrap_or_else(|| Err(format!("unknown tool `{name}`"))),
         }
     }
@@ -937,6 +944,9 @@ impl Server {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 Ok(match self.call_tool(name, &args) {
+                    Ok(Value::Object(mut o)) if o.contains_key(drawings::CONTENT_KEY) => {
+                        json!({ "content": o.remove(drawings::CONTENT_KEY).unwrap_or_default() })
+                    }
                     Ok(Value::String(text)) => {
                         json!({ "content": [{ "type": "text", "text": text }] })
                     }

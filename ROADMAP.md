@@ -52,9 +52,16 @@ colleague uses Claude Desktop, Codex or Antigravity.
 - Alternative: an AI subscription or API key connected inside the app, so no
   external client is needed.
 - The hard part: reading dimensions, pitches and heights from the drawings
-  and putting the walls and roof definitions together correctly. Needs a
-  test set of real drawings with the roofs DACAD gave for them, to measure
-  how often the AI gets the roof right.
+  and putting the walls and roof definitions together correctly.
+  **Done (2026-11-06):** drawing tools in the MCP server (render pages and
+  crops, exact vector lines, measure and check a read dimension against the
+  sheet), a fixed six-step build order in the guide (one save per step, so
+  the colleague reviews step by step), `area_by_pitch_m2` in the quantities
+  for the final cross-check, and an evaluation set of 10 real jobs scored
+  against TERRAN's offers (`eval/drawings`, `tools/drawing-eval`). There is
+  no DACAD roof for these jobs, so the offers are the labels.
+  **Next:** build all 10 jobs and track the score; scans (job 7) need OCR or
+  read-only values.
 - Review flow: the AI marks what it was unsure about (unreadable dimension,
   guessed pitch); the colleague confirms or fixes it before the job leaves
   draft.

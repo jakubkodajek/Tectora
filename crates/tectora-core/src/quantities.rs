@@ -58,6 +58,22 @@ pub fn roof_totals(project: &Project) -> crate::roof::RoofQuantities {
     total
 }
 
+/// Roof area per pitch, m², pitches rounded to 0.01° and sorted. Offers
+/// list the roof area this way (one figure per pitch), so it is what an
+/// offer or a drawing's area table is checked against. Clad gable areas and
+/// hand-drawn faces have no pitch of their own and are not included.
+pub fn area_by_pitch(project: &Project) -> Vec<(f64, f64)> {
+    let mut by: std::collections::BTreeMap<i64, f64> = Default::default();
+    for geo in crate::openings::generate_project(project) {
+        for f in &geo.faces {
+            *by.entry((f.pitch_deg * 100.0).round() as i64).or_default() += f.area;
+        }
+    }
+    by.into_iter()
+        .map(|(p, a)| (p as f64 / 100.0, (a * 100.0).round() / 100.0))
+        .collect()
+}
+
 /// Line lengths keyed by DACAD's line codes (see `LineKind::dacad_code`),
 /// rounded to centimetres.
 pub fn dacad_line_totals(project: &Project) -> std::collections::BTreeMap<String, f64> {

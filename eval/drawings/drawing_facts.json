@@ -1,0 +1,10 @@
+{
+ "note": "Figures printed on the drawings themselves, read by eye on 2026-11-06. They are cross-checks for the AI's model, not offer figures. Plan areas are horizontal projections; sloped area = plan area / cos(pitch) for a single pitch.",
+ "jobs": {
+  "1": { "sheet": "11-PU_DORYS STR_ECHY - NA_VRH.pdf", "scale": 50, "rotated": true, "pitches_deg": [45, 54] },
+  "3": { "sheet": "Střecha.pdf", "scale": 50, "pitches_deg": [25], "sloped_area_m2": 213.7, "eave_heights_m": [3.62, 3.217, 2.795], "ridge_heights_m": [5.905, 4.434] },
+  "7": { "sheet": "SC28026020513000.pdf", "scale": 100, "scan": true, "pitches_deg": [25, 5], "plan_area_m2": { "hip_roof_25": 276.7, "shed_roof_5": 12.0 }, "outline_m": [18.96, 20.46] },
+  "9": { "sheet": "7) Střecha.pdf", "scale": 50, "rotated": true, "pitches_deg": [30.7, 32, 3], "face_areas_m2": { "tiles_30_7": [22.88, 12.48], "tiles_32": [21.18, 15.6], "metal_3": [10.33, 9.19] }, "open_question": "the offer has 40 m² at 30.7° and 51 m² at 32°, more than the faces above; ask the estimator why" },
+  "10": { "sheet": "D.1.1_06_výkres_tvaru_střechy.pdf", "scale": 50, "pitches_deg": [25], "outline_with_overhang_m": [21.9, 17.0], "overhang_m": 0.74, "eave_height_m": 3.2, "ridge_height_m": 5.81 }
+ }
+}

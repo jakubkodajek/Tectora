@@ -98,18 +98,58 @@ Krüppelwalm plane counts as eave T, and hips run through a pitch break.
 
 ## Turning a technical drawing into a roof
 
-1. Read the drawing: footprint dimensions, which sides are eaves and which
-   are gables (look at the elevations / sections), pitches, eave height,
-   overhang. Note the drawing's scale and units.
-2. Put the footprint in metres with one corner at (0, 0). For a building made
-   of several wings with different ridge heights, use one part per wing.
-3. Use `create_standard_roof` for a plain rectangle, otherwise
-   `create_project` with the points and per-edge definitions.
-4. Call `calc` and sanity-check the area and ridge height against the drawing.
-5. Fix individual values with `update_edges`, `set_outline` or `update_job`.
-   Each save is one reviewable step, so prefer a few meaningful steps over
-   many tiny ones, and always explain them in `summary`.
-6. Tell the user what you assumed (e.g. "overhang not dimensioned, used 0.5 m").
+The colleague reviewing your work sees every save live and accepts or
+reverts it, so build the roof in **six fixed steps, one save each**, in this
+order. Each step matches the sheet it comes from, so the reviewer can check
+it against that sheet.
+
+**Reading the drawing.** Most drawings are CAD plots with the text turned
+into outlines: there is no text to extract, and a whole sheet scaled down to
+an image makes dimension text unreadable. Use the drawing tools:
+
+- `list_drawings` lists the PDFs in the drawings inbox; `drawing_info` tells
+  each page's size and kind (`vector_with_text`, `vector_outlined_text`,
+  `raster` for scans).
+- `view_drawing` renders a page or a region. Look at the whole page first to
+  find the roof plan, sections and title block, then request crops of about
+  300 dpi to read numbers. Turn sideways sheets with `rotate`. Convert pixels
+  you see to sheet mm with the returned `pixel_to_sheet`.
+- `drawing_lines` gives the exact drawn lines of a region (and the text of
+  PDFs that have a text layer).
+- `measure_drawing` measures between two sheet points, snapped to line ends.
+  **Check every dimension you use**: pass the value you read as
+  `expected_mm` with the scale from the title block. `matches: false` means a
+  misread digit, wrong points, or a sheet not plotted to scale (then
+  `implied_scale` shows the real one: use dimensions that agree with each
+  other). On scans nothing snaps; say the values are read, not measured.
+- Check dimension chains: the parts must add up to the overall dimension.
+
+**The six steps:**
+
+1. **Read and check** (no save yet). `list_projects` first: edit the
+   existing job if there is one. Note per sheet what it shows and its scale,
+   read the dimensions and check them as above.
+2. **Footprint.** `create_project` with the wall-line outline, one part per
+   wing with its own ridge height, in metres, and `job` (number, customer,
+   address) from the title block; then `attach_file` the drawings to the
+   job. Use the roof plan; the overhang outline is not the wall line (wall
+   line = overhang outline minus the overhang dimension).
+3. **Roof definition.** Per edge: eave or gable (elevations / sections),
+   pitch, eave height, overhang, half-hips, pitch breaks (`update_edges`).
+4. **Dormers** (`add_dormer`), one save for all of them.
+5. **Chimneys, windows, openings** (`set_openings`).
+6. **Check.** `calc`, then compare with every figure the drawing prints:
+   roof area per pitch (`area_by_pitch_m2`; a drawing's "plocha střechy" is
+   sloped area, "půdorysná plocha" is plan area = sloped area × cos pitch),
+   ridge and eave heights (`+5,810` labels), outline dimensions. Save the
+   comparison, the values you could not measure and your assumptions (e.g.
+   "overhang not dimensioned, used 0.5 m") in the job's `notes` with
+   `update_job`, tell the user the same, and leave the job in draft.
+
+Skip a step that has nothing to do (no dormers) and say so. Steps 2–6 are
+one save each, so the reviewer sees five changes in this order. Write every
+`summary` for a roofer in the user's language and name the sheet the values
+come from, e.g. "Obrys podle půdorysu střechy D.1.1.06, kóty ověřeny".
 
 Never invent dimensions you cannot read; ask the user instead.
 

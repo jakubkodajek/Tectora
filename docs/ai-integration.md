@@ -32,8 +32,11 @@ ready-to-paste configuration for Claude Desktop, Claude Code and Gemini CLI.
 | `list_files`, `attach_file`, `remove_file` | Files attached to a job (drawings) |
 | `export_job`, `import_job`, `get_schema` | `.tectorajob` bundles, file schema |
 | `get_settings`, `update_settings` | App settings shared with the Settings screen: jobs folder, drawings inbox folder, language, theme, defaults for new roofs, follow mode |
+| `list_drawings`, `drawing_info`, `view_drawing`, `drawing_lines`, `measure_drawing` | Technical drawings (PDF in the drawings inbox or attached to a job): page size and kind, rendered pages and crops as images, the exact vector lines, and measuring between two sheet points snapped to line ends, checked against a dimension the AI read (`expected_mm` + scale) |
 
-Every write requires a `summary` sentence for the user.
+Every write requires a `summary` sentence for the user. The drawing tools only
+read; they are implemented in `crates/tectora-drawing` (pure Rust, `hayro`
+PDF renderer).
 
 ## What the user sees
 

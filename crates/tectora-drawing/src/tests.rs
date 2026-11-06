@@ -1,0 +1,259 @@
+use super::*;
+
+/// A minimal one-page PDF with the given content stream, page size in pt
+/// and optional `/Rotate`.
+fn pdf(content: &str, w: f64, h: f64, rotate: u32) -> Vec<u8> {
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w} {h}] /Rotate {rotate} /Contents 4 0 R /Resources << >> >>"
+        ),
+        format!(
+            "<< /Length {} >>\nstream\n{content}\nendstream",
+            content.len()
+        ),
+    ];
+    let mut out = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for o in offsets {
+        out.extend(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    out.extend(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objs.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
+}
+
+/// 1 mm in pt.
+const MM: f64 = 1.0 / MM_PER_PT;
+
+/// An A4 portrait sheet with a 100 × 50 mm rectangle whose top left corner is
+/// 20 mm from the left and 30 mm from the top of the sheet.
+fn rect_sheet(rotate: u32) -> Drawing {
+    let (w, h) = (210.0 * MM, 297.0 * MM);
+    // PDF y is up: the top edge 30 mm below the sheet top is at h - 30 mm.
+    let c = format!(
+        "1 w {x} {y} {rw} {rh} re S",
+        x = 20.0 * MM,
+        y = h - 80.0 * MM,
+        rw = 100.0 * MM,
+        rh = 50.0 * MM
+    );
+    Drawing::open(pdf(&c, w, h, rotate)).expect("valid pdf")
+}
+
+#[test]
+fn rejects_non_pdf() {
+    assert!(matches!(
+        Drawing::open(b"hello".to_vec()),
+        Err(DrawingError::NotPdf)
+    ));
+}
+
+#[test]
+fn page_info_reports_size_paper_and_kind() {
+    let d = rect_sheet(0);
+    assert_eq!(d.page_count(), 1);
+    let i = d.page_info(0).unwrap();
+    assert!((i.width_mm - 210.0).abs() < 0.1 && (i.height_mm - 297.0).abs() < 0.1);
+    assert_eq!(i.paper.as_deref(), Some("A4"));
+    assert_eq!(i.segments, 4);
+    assert_eq!(
+        i.kind,
+        PageKind::Empty,
+        "four lines are too few to be a drawing"
+    );
+    assert!(matches!(d.page_info(1), Err(DrawingError::NoPage(1, 1))));
+}
+
+#[test]
+fn lines_are_in_sheet_mm_with_y_down() {
+    let d = rect_sheet(0);
+    let c = d.content(0).unwrap();
+    let mut lens: Vec<f64> = c.segments.iter().map(|s| round(s.length(), 3)).collect();
+    lens.sort_by(f64::total_cmp);
+    assert_eq!(lens, vec![50.0, 50.0, 100.0, 100.0]);
+    let top = c
+        .segments
+        .iter()
+        .find(|s| (s.a[1] - 30.0).abs() < 1e-4 && (s.b[1] - 30.0).abs() < 1e-4)
+        .unwrap_or_else(|| panic!("top edge 30 mm below the sheet top: {:?}", c.segments));
+    assert!((top.a[0].min(top.b[0]) - 20.0).abs() < 1e-4);
+    assert!(
+        (top.width - 1.0 * MM_PER_PT).abs() < 1e-9,
+        "stroke width 1 pt"
+    );
+}
+
+#[test]
+fn rotated_page_uses_displayed_orientation() {
+    let d = rect_sheet(90);
+    let (w, h) = d.page_size_mm(0).unwrap();
+    assert!((w - 297.0).abs() < 0.1 && (h - 210.0).abs() < 0.1);
+    let c = d.content(0).unwrap();
+    for s in &c.segments {
+        for p in [s.a, s.b] {
+            assert!(p[0] >= -1e-6 && p[0] <= w + 1e-6 && p[1] >= -1e-6 && p[1] <= h + 1e-6);
+        }
+    }
+    // Turned clockwise, the 100 mm edges become vertical.
+    let long: Vec<_> = c
+        .segments
+        .iter()
+        .filter(|s| (s.length() - 100.0).abs() < 1e-6)
+        .collect();
+    assert_eq!(long.len(), 2);
+    assert!(long.iter().all(|s| (s.angle_deg() - 90.0).abs() < 1e-6));
+    assert_eq!(d.page_info(0).unwrap().rotate, 90);
+}
+
+#[test]
+fn measure_snaps_to_corners() {
+    let c = rect_sheet(0).content(0).unwrap();
+    let m = c.measure([20.6, 29.5], [119.4, 30.7], 1.5);
+    assert_eq!(m.snapped, [true, true]);
+    assert!((m.sheet_mm - 100.0).abs() < 1e-4, "{m:?}");
+    let far = c.measure([60.0, 60.0], [61.0, 60.0], 1.0);
+    assert_eq!(far.snapped, [false, false]);
+    assert!((far.sheet_mm - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn snap_finds_line_crossings() {
+    let segs = vec![
+        Segment {
+            a: [0.0, 5.0],
+            b: [10.0, 5.0],
+            width: 0.1,
+            dashed: false,
+        },
+        Segment {
+            a: [4.0, 0.0],
+            b: [4.0, 10.0],
+            width: 0.1,
+            dashed: false,
+        },
+    ];
+    let c = PageContent {
+        segments: segs,
+        ..Default::default()
+    };
+    let p = c.snap([4.3, 5.2], 1.0).unwrap();
+    assert!((p[0] - 4.0).abs() < 1e-9 && (p[1] - 5.0).abs() < 1e-9);
+}
+
+#[test]
+fn merge_joins_touching_collinear_pieces_only() {
+    let s = |a: [f64; 2], b: [f64; 2]| Segment {
+        a,
+        b,
+        width: 0.1,
+        dashed: false,
+    };
+    let merged = merge_collinear(vec![
+        s([0.0, 0.0], [10.0, 0.0]),
+        s([10.0, 0.0], [25.0, 0.0]),
+        s([30.0, 0.0], [40.0, 0.0]),
+        s([0.0, 3.0], [10.0, 3.0]),
+    ]);
+    let mut lens: Vec<f64> = merged.iter().map(|m| round(m.length(), 6)).collect();
+    lens.sort_by(f64::total_cmp);
+    assert_eq!(lens, vec![10.0, 10.0, 25.0]);
+}
+
+#[test]
+fn lines_filter_by_region_and_length() {
+    let c = rect_sheet(0).content(0).unwrap();
+    let all = c.lines(None, 0.0, 100);
+    assert_eq!(all.len(), 4);
+    assert!((all[0].length() - 100.0).abs() < 1e-6, "longest first");
+    let left = c.lines(Some(RectMm::new(10.0, 25.0, 15.0, 60.0)), 60.0, 100);
+    assert_eq!(left.len(), 2, "both 100 mm edges touch the left corners");
+}
+
+#[test]
+fn render_maps_pixels_back_to_the_sheet() {
+    let d = rect_sheet(0);
+    let region = RectMm::new(10.0, 20.0, 120.0, 70.0);
+    for turn in [Turn::None, Turn::Cw90, Turn::Cw180, Turn::Cw270] {
+        let r = d.render(0, Some(region), Some(254.0), 4096, turn).unwrap();
+        assert!(r.png.starts_with(b"\x89PNG"));
+        assert!((r.px_per_mm - 10.0).abs() < 1e-9);
+        let (w, h) = if matches!(turn, Turn::Cw90 | Turn::Cw270) {
+            (700, 1200)
+        } else {
+            (1200, 700)
+        };
+        assert_eq!((r.width, r.height), (w, h), "{turn:?}");
+        // The image corners map to the region corners.
+        let corners = [r.sheet_point(0.0, 0.0), r.sheet_point(w as f64, h as f64)];
+        let xs = [
+            corners[0][0].min(corners[1][0]),
+            corners[0][0].max(corners[1][0]),
+        ];
+        let ys = [
+            corners[0][1].min(corners[1][1]),
+            corners[0][1].max(corners[1][1]),
+        ];
+        assert!(
+            (xs[0] - 10.0).abs() < 1e-9 && (xs[1] - 130.0).abs() < 1e-9,
+            "{turn:?}"
+        );
+        assert!(
+            (ys[0] - 20.0).abs() < 1e-9 && (ys[1] - 90.0).abs() < 1e-9,
+            "{turn:?}"
+        );
+    }
+}
+
+#[test]
+fn render_clamps_resolution_and_region() {
+    let d = rect_sheet(0);
+    let r = d.render(0, None, Some(5000.0), 1000, Turn::None).unwrap();
+    assert!(r.width.max(r.height) <= 1000);
+    assert!(matches!(
+        d.render(
+            0,
+            Some(RectMm::new(500.0, 500.0, 10.0, 10.0)),
+            None,
+            1000,
+            Turn::None
+        ),
+        Err(DrawingError::EmptyRegion)
+    ));
+    let tiny = d
+        .render(
+            0,
+            Some(RectMm::new(0.0, 0.0, 5.0, 5.0)),
+            Some(10.0),
+            4096,
+            Turn::None,
+        )
+        .unwrap();
+    assert!(
+        tiny.width >= MIN_RENDER_PX,
+        "small crops are enlarged so models can read them"
+    );
+}
+
+#[test]
+fn scale_and_paper_parsing() {
+    assert_eq!(parse_scale("1:50"), Some(50.0));
+    assert_eq!(parse_scale("M 1:100"), Some(100.0));
+    assert_eq!(parse_scale(" 1 : 25 "), Some(25.0));
+    assert_eq!(parse_scale("2:50"), None);
+    assert_eq!(parse_scale("abc"), None);
+    assert_eq!(paper_name(420.0, 297.0).as_deref(), Some("A3"));
+    assert_eq!(paper_name(600.0, 670.0), None);
+}

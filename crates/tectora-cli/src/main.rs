@@ -118,6 +118,10 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
                 "parts": parts,
                 "quantities": {
                     "lines_by_type": lines_by_type,
+                    "area_by_pitch": tectora_core::quantities::area_by_pitch(&project)
+                        .iter()
+                        .map(|&(p, a)| json!({ "pitch_deg": p, "area": a }))
+                        .collect::<Vec<_>>(),
                     "roof_area": round2(totals.roof_area),
                     "area_by_material": by_material,
                 },
