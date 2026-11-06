@@ -108,8 +108,11 @@ test.describe("job tab", () => {
     await expect.poll(() => fs.existsSync(out)).toBe(true);
     expect(fs.statSync(out).size).toBeGreaterThan(200);
 
-    await bridge("delete_project", { id });
+    // Leave the editor first: deleting the open job is its own test below,
+    // and the watcher reports it as an error.
     await page.getByRole("button", { name: cs("editor.back") }).click();
+    await expect(page.locator(".editor")).toHaveCount(0);
+    await bridge("delete_project", { id });
     await app.answerFileDialog(out);
     await page.getByRole("button", { name: cs("home.importJob") }).click();
     await expect(page.locator(".editor input.title")).toHaveValue("Elko export");
