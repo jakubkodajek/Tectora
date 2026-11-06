@@ -3,6 +3,7 @@
 //
 //   npm run preview                 library: <repo>/target/ui-preview-library
 //   TECTORA_PREVIEW_DIR=/some/dir npm run preview
+//   TECTORA_PREVIEW_PORT / TECTORA_BRIDGE_PORT: other ports (Vite / ui_bridge)
 //
 // Point `tectora mcp --dir` at the same folder to watch AI edits live.
 import { spawn, spawnSync } from "node:child_process";
@@ -13,6 +14,8 @@ const app = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const repo = path.dirname(app);
 const dir = path.resolve(repo, process.env.TECTORA_PREVIEW_DIR ?? "target/ui-preview-library");
 const port = process.env.TECTORA_PREVIEW_PORT ?? "1430";
+// The page picks another bridge with /preview.html?bridge=http://127.0.0.1:<port>.
+const bridgePort = process.env.TECTORA_BRIDGE_PORT ?? "7878";
 const win = process.platform === "win32";
 
 // Build first, then run the binaries directly, so stopping this script stops
@@ -28,7 +31,7 @@ const bridge = path.join(target, "debug", "examples", win ? "ui_bridge.exe" : "u
 const vite = path.join(app, "node_modules", "vite", "bin", "vite.js");
 
 const children = [
-  spawn(bridge, [dir], { cwd: repo, stdio: "inherit" }),
+  spawn(bridge, [dir, bridgePort], { cwd: repo, stdio: "inherit" }),
   spawn(process.execPath, [vite, "--port", port, "--strictPort"], {
     cwd: app,
     stdio: "inherit",

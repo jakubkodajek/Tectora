@@ -3,7 +3,7 @@
   // press an arrow (button or keyboard) to add the next corner.
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
-  import { presets, savePresets } from "./settings.svelte";
+  import { presets, savePresets, updateSettings } from "./settings.svelte";
 
   let {
     count,
@@ -60,6 +60,9 @@
     if (Number.isFinite(v)) {
       presets[key] = v;
       savePresets();
+      // The same defaults as in Settings: store them in the settings file,
+      // or the next settings change (or start) puts the old ones back.
+      updateSettings({ roof_defaults: { [key]: v } }).catch(() => {});
     }
   }
 </script>
