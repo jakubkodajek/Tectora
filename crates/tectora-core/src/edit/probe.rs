@@ -49,6 +49,16 @@ pub fn roof_height_at(geos: &[RoofGeometry], p: Point2) -> Option<f64> {
         .reduce(f64::max)
 }
 
+/// Height of the roof a dormer or chimney stands on at a plan point: as
+/// [`roof_height_at`] without the dormers' own faces.
+pub fn host_height_at(geos: &[RoofGeometry], p: Point2) -> Option<f64> {
+    geos.iter()
+        .flat_map(|g| &g.faces)
+        .filter(|f| f.edge != usize::MAX && f.polygon.len() >= 3 && inside(&f.polygon, p))
+        .filter_map(|f| plane_z(&f.polygon, p))
+        .reduce(f64::max)
+}
+
 fn key(q: &[f64; 3]) -> [i64; 3] {
     q.map(|v| (v * 1000.0).round() as i64)
 }
