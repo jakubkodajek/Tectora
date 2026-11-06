@@ -7,7 +7,7 @@
   import type { ItemRef, PlanTarget } from "./items";
   import { t } from "./i18n.svelte";
   import { hostHeightAt, isDormerFace, slopeAt } from "./dormers";
-  import { windowOutline } from "./openings";
+  import { isConvex, windowOutline } from "./openings";
   import { chimneyTop, clipConvex, dormerWallLines, onWallLine, planArea, planeOf, type Poly3 } from "./scene3d";
 
   let {
@@ -137,7 +137,10 @@
       });
     });
 
-    const holes = (project.roof_openings ?? []).map((c, index) => ({ index, corners: c.corners, area: planArea(c.corners) }));
+    // A non-convex opening stops the whole roof calculation (warned in the editor).
+    const holes = (project.roof_openings ?? [])
+      .map((c, index) => ({ index, corners: c.corners, area: planArea(c.corners) }))
+      .filter((h) => h.corners.length >= 3 && h.area > 1e-6 && isConvex(h.corners));
     const dormerLines = project.dormers.map(dormerWallLines);
 
     if (result) {

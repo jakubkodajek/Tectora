@@ -55,6 +55,11 @@
       close();
       return;
     }
+    if (ev.key === "Delete" || ev.key === "Backspace" || (ev.key.length === 1 && ev.key !== " ") || ev.ctrlKey || ev.metaKey) {
+      // Any other command (Delete, Ctrl+Z, …) acts on the editor; the menu would be stale.
+      close();
+      return;
+    }
     if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp") return;
     ev.preventDefault();
     const items = [...el.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];

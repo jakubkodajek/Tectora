@@ -16,6 +16,7 @@
   import OpeningBar from "./OpeningBar.svelte";
   import ManualBar from "./ManualBar.svelte";
   import ContextMenu, { type MenuEntry, type MenuState } from "./ContextMenu.svelte";
+  import { mergeDroppedCorner, moveCorner } from "./corners";
   import { followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, transformItem, type ItemRef, type PlanTarget } from "./items";
   import { snapToRoof, type ManualSel } from "./manual";
   import { describeCalcError, describeError, describeProblem, toAppError, type Described } from "./errors";
@@ -214,6 +215,9 @@
       const json = JSON.stringify(p);
       await refreshActivity();
       if (!initial && json === lastSaved) return;
+      // Indices in an open menu or a drag in progress refer to the old project.
+      menu = null;
+      dragBase = null;
       project = p;
       lastSaved = json;
       if (initial) {
@@ -395,11 +399,21 @@
 
   function moveVertex(part: number, v: number, x: number, y: number) {
     if (!project) return;
-    const p = project.parts[part].edges[v].start;
+    const es = project.parts[part]?.edges;
+    if (!es?.[v] || !Number.isFinite(x) || !Number.isFinite(y)) return;
+    const p = es[v].start;
     if (p.x === x && p.y === y) return;
-    p.x = x;
-    p.y = y;
+    moveCorner(es, v, x, y);
     recalc();
+  }
+
+  /** End of a corner drag: a corner dropped onto its neighbour merges into it. */
+  function endVertexDrag(part: number, v: number) {
+    const es = project?.parts[part]?.edges;
+    if (es && mergeDroppedCorner(es, v) && selection?.part === part) {
+      selection = { part, edge: Math.min(v, es.length - 1) };
+    }
+    commit();
   }
 
   function insertVertex(part: number, edge: number, x: number, y: number) {
@@ -644,11 +658,38 @@
     }
   }
 
+  /** Where a copy goes: beside the original, its own size plus 30 cm away
+   *  (along a dormer's front, across for everything else) [no source: editor choice]. */
+  function copyOffset(it: ItemRef): Point2 {
+    if (!project) return { x: 0.5, y: 0 };
+    if (it.kind === "dormer") {
+      const d = project.dormers[it.index];
+      const s = d.edges[0]?.start ?? d.end;
+      const len = Math.hypot(d.end.x - s.x, d.end.y - s.y);
+      if (len > 1e-6) {
+        const k = (len + 0.3) / len;
+        return { x: +((d.end.x - s.x) * k).toFixed(3), y: +((d.end.y - s.y) * k).toFixed(3) };
+      }
+    }
+    const pts: Point2[] =
+      it.kind === "chimney" ? project.chimneys[it.index].corners
+      : it.kind === "hole" ? (project.roof_openings ?? [])[it.index]?.corners ?? []
+      : it.kind === "face" ? (project.manual_faces ?? [])[it.index]?.points ?? []
+      : it.kind === "line" ? (() => { const l = project.manual_lines![it.index]; return [{ x: l.a[0], y: l.a[1] }, { x: l.b[0], y: l.b[1] }]; })()
+      : [];
+    const w = it.kind === "window" ? project.windows![it.index].width : pts.length ? Math.max(...pts.map((p) => p.x)) - Math.min(...pts.map((p) => p.x)) : 0.5;
+    return { x: +(Math.max(w, 0.2) + 0.3).toFixed(3), y: 0 };
+  }
+
   function duplicateItem(it: ItemRef) {
     if (!project || !itemExists(project, it)) return;
-    // Half a metre aside, so the copy is seen next to the original [no source: editor choice].
-    const [copy] = transformItem(project, it, translation(0.5, -0.5), 1);
-    if (copy) selectItem(copy);
+    const off = copyOffset(it);
+    const from = itemCentre(project, it);
+    const before = result;
+    const [copy] = transformItem(project, it, translation(off.x, off.y), 1);
+    if (!copy) return;
+    if (from) followRoof(project, copy, from, { x: from.x + off.x, y: from.y + off.y }, before);
+    selectItem(copy);
     commit();
   }
 
@@ -742,7 +783,8 @@
       if (!itemExists(project, it)) return;
       selectItem(it);
       title = itemTitle(it);
-      const turns = it.kind !== "window";
+      // A window follows its roof face and a dormer faces down its roof: neither turns.
+      const turns = it.kind !== "window" && it.kind !== "dormer";
       entries = [
         { label: t("menu.properties"), icon: "sliders", action: focusProperties },
         { label: t("menu.duplicate"), icon: "copy", hint: "Ctrl+D", action: () => duplicateItem(it) },
@@ -1100,7 +1142,7 @@
                 {placing}
                 onplace={place}
                 onmove={moveVertex}
-                onmoveend={commit}
+                onmoveend={endVertexDrag}
                 oninsert={insertVertex}
                 ondrawpoint={(x, y) => drawing?.push({ x, y })}
                 ondrawclose={finishDraw}

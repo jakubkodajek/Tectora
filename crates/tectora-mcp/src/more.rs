@@ -667,6 +667,13 @@ impl Server {
         if items.is_empty() {
             return Err("`items` is empty".into());
         }
+        if items.len() > 500 {
+            return Err("at most 500 items".into());
+        }
+        let mut seen = std::collections::HashSet::new();
+        if let Some(d) = items.iter().find(|it| !seen.insert(**it)) {
+            return Err(format!("{:?} {} is listed twice", d.kind, d.index));
+        }
         let copies: u32 = opt(args, "copies")?.unwrap_or(0);
         if copies > 50 {
             return Err("at most 50 copies".into());

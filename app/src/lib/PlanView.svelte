@@ -33,7 +33,8 @@
     result: CalcResult | null;
     selection: Selection;
     onmove: (part: number, vertex: number, x: number, y: number) => void;
-    onmoveend: () => void;
+    /** A corner drag ended (the corner moved is given). */
+    onmoveend: (part: number, vertex: number) => void;
     oninsert: (part: number, edge: number, x: number, y: number) => void;
     /** "part:edge" keys of edges changed by the latest AI edit. */
     highlight?: Set<string>;
@@ -116,8 +117,61 @@
   const wx = (px: number) => (px - width / 2) / scale + center.x;
   const wy = (py: number) => -(py - height / 2) / scale + center.y;
 
+  /** Spacing of the grid lines drawn at this zoom, m. */
+  const gridStep = () => (scale * GRID < 8 ? GRID * 10 : scale * GRID < 16 ? GRID * 2 : GRID);
+
+  // Magnet radius, px [no source: a few pixels, as drawing programs use];
+  // at most 40 % of a grid cell, so 5 cm steps stay reachable between lines.
+  const MAGNET_PX = 12;
+  /** Grid or corner lines the pointer is held on (shown as guides). */
+  let guides = $state<{ x: number | null; y: number | null }>({ x: null, y: null });
+
+  /**
+   * The point for a corner, a new wall point or a placed object: pulled onto
+   * the visible grid lines and onto the x / y of other corners when within a
+   * few pixels of them, else rounded to 5 cm. Alt: 1 mm, no magnet.
+   * `skip` is the corner being dragged. O(corners).
+   */
+  function magnetPoint(px: number, py: number, alt: boolean, skip?: { part: number; vertex: number }): Point2 {
+    if (alt) {
+      guides = { x: null, y: null };
+      return snapPoint(px, py, true);
+    }
+    const step = gridStep();
+    const r = Math.min(MAGNET_PX, step * scale * 0.4);
+    let bx = { v: null as number | null, d: r };
+    let by = { v: null as number | null, d: r };
+    const gx = Math.round(wx(px) / step) * step;
+    const gy = Math.round(wy(py) / step) * step;
+    if (Math.abs(sx(gx) - px) <= bx.d) bx = { v: gx, d: Math.abs(sx(gx) - px) };
+    if (Math.abs(sy(gy) - py) <= by.d) by = { v: gy, d: Math.abs(sy(gy) - py) };
+    const skipAt = skip ? project.parts[skip.part]?.edges[skip.vertex]?.start : undefined;
+    const consider = (q: Point2) => {
+      const dx = Math.abs(sx(q.x) - px);
+      const dy = Math.abs(sy(q.y) - py);
+      // A corner's own line wins over the grid at the same distance.
+      if (dx <= bx.d) bx = { v: q.x, d: dx };
+      if (dy <= by.d) by = { v: q.y, d: dy };
+    };
+    project.parts.forEach((part, pi) =>
+      part.edges.forEach((e) => {
+        if (skipAt && pi === skip!.part && e.start.x === skipAt.x && e.start.y === skipAt.y) return;
+        consider(e.start);
+      }),
+    );
+    for (const q of drawing ?? []) consider(q);
+    guides = { x: bx.v, y: by.v };
+    const fine = snapPoint(px, py, false);
+    return { x: bx.v !== null ? +bx.v.toFixed(3) : fine.x, y: by.v !== null ? +by.v.toFixed(3) : fine.y };
+  }
+
+  // Drawing or placing finished: drop its guides.
+  $effect(() => {
+    if (!drawing && !placing) untrack(() => (guides.x !== null || guides.y !== null) && !drag && (guides = { x: null, y: null }));
+  });
+
   const gridLines = $derived.by(() => {
-    const step = scale * GRID < 8 ? GRID * 10 : scale * GRID < 16 ? GRID * 2 : GRID;
+    const step = gridStep();
     const x0 = Math.floor(wx(0) / step) * step;
     const x1 = wx(width);
     const y0 = Math.floor(wy(height) / step) * step;
@@ -133,7 +187,7 @@
   });
 
   // Dragging.
-  let drag: { part: number; vertex: number } | null = null;
+  let drag: { part: number; vertex: number; sx: number; sy: number; moved: boolean } | null = null;
   let pan: { x: number; y: number; cx: number; cy: number } | null = null;
   /** An item or a whole part being dragged: where the press started. */
   let objDrag: { target: PlanTarget; sx: number; sy: number; wx: number; wy: number; moved: boolean; dx: number; dy: number } | null = null;
@@ -187,10 +241,12 @@
     if (b !== 0) return;
     e.stopPropagation();
     if (selection?.part !== part) {
+      // The first press only selects, so panning across a roof never moves it.
       selection = { part, edge: 0 };
       dormerSel = null;
       openSel = null;
       manualSel = null;
+      return;
     }
     startObjDrag(e, { type: "part", part });
   }
@@ -213,7 +269,7 @@
     rcTarget = null;
     if (placing && e.button === 0) {
       const p = localPoint(e);
-      const w = snapPoint(p.x, p.y, e.altKey);
+      const w = magnetPoint(p.x, p.y, e.altKey);
       onplace?.(w.x, w.y);
       return;
     }
@@ -224,7 +280,7 @@
       if (first && drawing.length >= 3 && Math.hypot(sx(first.x) - p.x, sy(first.y) - p.y) < 10) {
         ondrawclose?.();
       } else {
-        const w = snapPoint(p.x, p.y, e.altKey);
+        const w = magnetPoint(p.x, p.y, e.altKey);
         ondrawpoint?.(w.x, w.y);
       }
       return;
@@ -244,10 +300,17 @@
 
   function onpointermove(e: PointerEvent) {
     const p = localPoint(e);
-    cursorWorld = snapPoint(p.x, p.y, e.altKey);
+    cursorWorld = drag
+      ? magnetPoint(p.x, p.y, e.altKey, drag)
+      : drawing || placing
+        ? magnetPoint(p.x, p.y, e.altKey)
+        : snapPoint(p.x, p.y, e.altKey);
+    if (!drag && !drawing && !placing && (guides.x !== null || guides.y !== null)) guides = { x: null, y: null };
     oncursor?.(cursorWorld);
     if (drag) {
-      onmove(drag.part, drag.vertex, cursorWorld.x, cursorWorld.y);
+      // A click on a corner does not move it; only a drag does.
+      if (!drag.moved && Math.hypot(p.x - drag.sx, p.y - drag.sy) > DRAG_SLOP) drag.moved = true;
+      if (drag.moved) onmove(drag.part, drag.vertex, cursorWorld.x, cursorWorld.y);
     } else if (objDrag) {
       if (!objDrag.moved && Math.hypot(p.x - objDrag.sx, p.y - objDrag.sy) > DRAG_SLOP) objDrag.moved = true;
       if (objDrag.moved) {
@@ -266,7 +329,8 @@
   }
 
   function onpointerup(e: PointerEvent) {
-    if (drag) onmoveend();
+    if (drag?.moved) onmoveend(drag.part, drag.vertex);
+    if (!drawing && !placing) guides = { x: null, y: null };
     if (objDrag?.moved) ondrag?.(objDrag.target, objDrag.dx, objDrag.dy, true);
     if (rc) {
       const p = localPoint(e);
@@ -290,7 +354,8 @@
   }
 
   function startVertexDrag(e: PointerEvent, part: number, vertex: number) {
-    if (placing) return;
+    // While drawing or placing, a click on a corner is a click on the plan.
+    if (placing || drawing) return;
     if (button(e) === 2) {
       selection = { part, edge: vertex };
       dormerSel = null;
@@ -300,7 +365,8 @@
       return;
     }
     e.stopPropagation();
-    drag = { part, vertex };
+    const p = localPoint(e);
+    drag = { part, vertex, sx: p.x, sy: p.y, moved: false };
     svg!.setPointerCapture(e.pointerId);
   }
 
@@ -368,6 +434,7 @@
     {onpointerdown}
     {onpointermove}
     {onpointerup}
+    onpointercancel={onpointerup}
     {onwheel}
     onpointerleave={() => {
       cursorWorld = null;
@@ -508,6 +575,12 @@
       {#each manualDraft as p, i}
         <circle class="draft-pt" class:first={i === 0} cx={sx(p[0])} cy={sy(p[1])} r="4" />
       {/each}
+    {/if}
+    {#if guides.x !== null}
+      <path class="guide" d="M{sx(guides.x)},0V{height}" />
+    {/if}
+    {#if guides.y !== null}
+      <path class="guide" d="M0,{sy(guides.y)}H{width}" />
     {/if}
     {#if placing && cursorWorld}
       <path class="crosshair" d="M{sx(cursorWorld.x) - 9},{sy(cursorWorld.y)}h18M{sx(cursorWorld.x)},{sy(cursorWorld.y) - 9}v18" />
@@ -687,6 +760,13 @@
   }
   .draft-pt.first {
     fill: var(--accent);
+  }
+  .guide {
+    stroke: var(--focus);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+    opacity: 0.7;
+    pointer-events: none;
   }
   .crosshair {
     stroke: var(--text-2);
