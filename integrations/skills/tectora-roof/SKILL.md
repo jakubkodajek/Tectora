@@ -26,6 +26,10 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    (written value / `sheet_mm`): sheets are often printed at another scale
    than the title block says. Say which written values disagree with the
    drawing; on scans say which values are only read, not measured.
+   The guide's "Reading the drawing" section lists what tripped earlier
+   builds: the gutter strip is not overhang, nearly straight corners break
+   the calculation, metal decks in a tiled slope are shed dormers, and gaps
+   in the drawings go to the user as questions, not guesses.
 5. Search with `list_projects` (customer, address, job number) so you edit the
    existing job instead of creating a duplicate.
 6. Build in the six steps of the guide: read and check, then one save each for

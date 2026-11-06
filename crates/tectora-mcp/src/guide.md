@@ -142,7 +142,16 @@ outermost line the estimator priced. Use the outline the overall dimensions
 measure, and check with the hips. When the walls are dimensioned (an
 overhang dimension such as 500 or 900 between two lines), model walls plus
 overhang; when they are not, model the roof outline with overhang 0, which
-gives the same roof for planes of one pitch, and say so.
+gives the same roof for planes of one pitch, and say so. A narrow strip of
+about 150–160 mm outside the eave is the gutter (`žlab`, legend item
+"podokapní žlab"), not overhang: the roof edge is the next line in, where
+the eave height label points.
+
+**Outline corners.** Leave out corners where the wall turns by only a
+degree or two (plot noise, a wall slightly out of line): nearly straight
+neighbouring eaves make the roof calculation fail. `trace_outline` warns
+about them. Wings at an angle to each other are easier as separate parts,
+each a clean rectangle, the second running into the first.
 
 **Heights.** Tectora's eave height is the height of the roof plane at the
 outline. Section and plan labels such as `+5,810` at a ridge are usually the
@@ -156,7 +165,25 @@ coplanar planes, which the roof core rejects as a single face: model the
 extension as its own shed part (eave at the low height, its other three
 edges gables) that touches the main eave line. Flat or sheet-metal roofs
 next to the tiled roof are separate parts with their own material, or left
-out if the offer does not price them; say which.
+out if the offer does not price them; say which. Sheet-metal decks or
+terraces cut into a tiled slope (a low 3–8° roof from the eave inward, with
+a step up to the tiled roof behind) are wide shed dormers with material 2:
+`kind: shed`, `front_pitch_deg` the deck's pitch, and the eave height chosen
+so the dormer meets the roof at the drawn depth (eave height of the roof +
+depth × tan(roof pitch) − depth × tan(deck pitch), roof heights measured at
+the dormer front). A dormer's front must run exactly along its eave: leave
+`angle_deg` out on a wall parallel to the axes, otherwise give the eave's
+direction from `trace_outline` (`edge_directions_deg`); a front a fraction
+of a degree off the eave makes the calculation fail. A roof that runs under
+another roof's overhang up to its wall loses the part under the overhang
+(the roof core hides it); other calculators may count it, so mention it
+when the check against an offer is short by about that strip.
+
+**Missing information.** When the sheets do not show something the roof
+needs (no section for eave heights or the form of a low roof, labels that
+contradict each other such as a pitch that does not fit the eave and ridge
+heights), build with the written values, list each gap in the job notes
+and ask the user; do not invent a value to make a figure fit.
 
 **The six steps:**
 

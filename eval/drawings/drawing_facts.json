@@ -10,7 +10,19 @@
     54
    ],
    "plot_scale": 68.39,
-   "note": "title block 1:50 on format 10A4, printed on A3"
+   "note": "title block 1:50 on format 10A4, printed on A3 (plot scale 68.39). Roof plan only, no section. The labels contradict each other: 43°55' with eaves +3.515 and ridge +7.609 over a 5.66 m half width gives 36°, and the 54° wing's +5.680/+9.105 over 2.78 m gives 51°. Built with the written pitches (main gable with a south half-hip, 54° cross wing, 8° flat dormer): 128 m² at 44° (offer 122, +4.8%) and 42 m² at 54° (offer 40, +4.4%). The ridge jogs at the north end and the main roof's north end is unclear; needs the section.",
+   "eave_heights_m": [
+    3.515,
+    5.68
+   ],
+   "ridge_heights_m": [
+    7.609,
+    9.105
+   ],
+   "outline_m": [
+    11.31,
+    11.12
+   ]
   },
   "3": {
    "sheet": "Střecha.pdf",
@@ -112,6 +124,61 @@
    ],
    "rafter_m": 9.04,
    "open_question": "ridge (64 ridge tiles = 22.4 m) and eaves (24 x 2 m) match a 22.4 x 12.9 m gable roof of 391 m², but the offer prices 303 m²; ask the estimator what was left out"
+  },
+  "6": {
+   "sheet": "D1.1.2.11 (roof plan)",
+   "scale": 50,
+   "plot_scale": 50.0,
+   "pitches_deg": [
+    42,
+    43,
+    12
+   ],
+   "eave_heights_m": [
+    3.42,
+    3.46
+   ],
+   "ridge_heights_m": [
+    7.47,
+    7.245,
+    8.75
+   ],
+   "note": "the 160 mm strip outside the eave is the gutter, not overhang: the exact Bramac rafter lengths (6.06 m at 42°, 7.7 m at 43°) end at the wall line. Built as 6 parts + 30 gable dormers: gross face areas equal the Bramac faces (existing roof 161.93 m² both), lines within 2.4% (valleys 0.1%). Area is 4.7% under Bramac because Bramac deducts less under each dormer (3.46 m² against the geometric 4.57 m²) and counts roof under the existing roof's overhang, which the core hides (cross gables, 12° shed)."
+  },
+  "4": {
+   "sheet": "D.1.1.8 (roof plan) and D.1.1.10 (sections)",
+   "scale": 100,
+   "plot_scale": 100.0,
+   "pitches_deg": [
+    36.5,
+    45,
+    8,
+    6,
+    3
+   ],
+   "eave_heights_m": [
+    8.09,
+    10.0
+   ],
+   "ridge_heights_m": [
+    12.7,
+    14.6
+   ],
+   "note": "A = tiles (priced), B = standing-seam metal (not priced). The metal decks are wide shed dormers cut into the tiled roof; their eave height is set so they meet the roof at the drawn depth (3.84 m in object A, 3.025 m in object B). Object A: tiles 110.4 m² against 113 (-2.3%). Object B: two wings (the oblique one as its own part), 11 decks; tiles 488 m² against 455 (+7.3%) while the ridge (75.8 m) matches the ridge tiles (75.7-77.1 m): the outline is right, what the offer leaves out of the 45° roof is open."
+  },
+  "2": {
+   "sheet": "truss plan (raster, one page)",
+   "scale": 100,
+   "plot_scale": 112.7,
+   "pitches_deg": [
+    41,
+    12
+   ],
+   "outline_m": [
+    11.14,
+    10.045
+   ],
+   "note": "raster at about 113 dpi; the only sheet is the truss plan, no section. The 41° hip roof matches (147.9 m² against 150). The 12° roofs come out 101.7 m² against 110 (-7.6%): their form (shed or low gable, eave heights) cannot be read from the truss plan, and the offer's verge (41-45 m) and valley (16-20 m) pieces point to low gables joined to the hip roof. Needs the section."
   }
  }
 }

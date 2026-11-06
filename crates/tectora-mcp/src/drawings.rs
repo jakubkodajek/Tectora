@@ -84,7 +84,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "trace_outline",
-            "description": "Snap a polygon to the drawing: give its corners roughly (sheet mm, read off the view_drawing grid), in order around the outline; each is snapped to the nearest drawn corner or line crossing. Returns the exact corners, the edge lengths, and with `scale` the polygon in metres ready for create_project (x right, y up, first corner at the origin, counter-clockwise) and the real edge lengths. Use it for the wall line or the eave line of a roof plan; check the edges against the dimensions.",
+            "description": "Snap a polygon to the drawing: give its corners roughly (sheet mm, read off the view_drawing grid), in order around the outline; each is snapped to the nearest drawn corner or line crossing. Returns the exact corners, the edge lengths, and with `scale` the polygon in metres ready for create_project (x right, y up, first corner at the origin, counter-clockwise), the real edge lengths and each edge's direction in degrees (the `angle_deg` for a dormer on that eave). Use it for the wall line or the eave line of a roof plan; check the edges against the dimensions. Corners that barely turn are reported: leave them out, the roof calculation fails on nearly straight neighbouring eaves.",
             "inputSchema": schema(with(source_props(), json!({
                 "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }, "minItems": 3, "maxItems": 500, "description": "Corners [x, y] in sheet mm, in order." },
                 "snap_mm": { "type": "number", "description": "Snap radius, mm (default 1.5)." },
@@ -427,10 +427,26 @@ impl Server {
                     round((b[0] - a[0]).hypot(b[1] - a[1]), 3)
                 })
                 .collect();
+            // Model directions of the edges, degrees counter-clockwise from +x:
+            // the `angle_deg` a dormer on that eave needs.
+            let dirs: Vec<f64> = (0..n)
+                .map(|i| {
+                    let (a, b) = (m[i], m[(i + 1) % n]);
+                    round(
+                        (b[1] - a[1])
+                            .atan2(b[0] - a[0])
+                            .to_degrees()
+                            .rem_euclid(360.0),
+                        2,
+                    )
+                })
+                .collect();
             out["outline_m"] = json!(m);
             out["edges_m"] = json!(edges);
+            out["edge_directions_deg"] = json!(dirs);
             out["area_m2"] = json!(round(signed_area(&m), 3));
         }
+        let mut warnings = Vec::new();
         if t.snapped.iter().any(|s| !s) {
             let missed: Vec<usize> = t
                 .snapped
@@ -439,12 +455,43 @@ impl Server {
                 .filter(|(_, s)| !**s)
                 .map(|(i, _)| i)
                 .collect();
-            out["warning"] = json!(format!(
+            warnings.push(format!(
                 "corners {missed:?} did not snap to a drawn corner; give them more exactly or check the view"
             ));
         }
+        let shallow = shallow_corners(&t.points, SHALLOW_CORNER_DEG);
+        if !shallow.is_empty() {
+            warnings.push(format!(
+                "corners {shallow:?} turn by less than {SHALLOW_CORNER_DEG}°: leave them out (straight edge) unless the walls really kink there; nearly straight neighbouring eaves make the roof calculation fail"
+            ));
+        }
+        if !warnings.is_empty() {
+            out["warning"] = json!(warnings.join("; "));
+        }
         Ok(out)
     }
+}
+
+/// Corners whose walls turn by less than this are reported: the core fails
+/// on nearly collinear neighbouring eaves (job 4 of the drawings set, a 1.2°
+/// kink, gave E00002).
+const SHALLOW_CORNER_DEG: f64 = 3.0;
+
+/// Indices of the corners of a closed polygon where the direction changes by
+/// less than `limit_deg`.
+fn shallow_corners(p: &[[f64; 2]], limit_deg: f64) -> Vec<usize> {
+    let n = p.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    (0..n)
+        .filter(|&i| {
+            let (a, b, c) = (p[(i + n - 1) % n], p[i], p[(i + 1) % n]);
+            let (d1, d2) = ([b[0] - a[0], b[1] - a[1]], [c[0] - b[0], c[1] - b[1]]);
+            let turn = (d1[0] * d2[1] - d1[1] * d2[0]).atan2(d1[0] * d2[0] + d1[1] * d2[1]);
+            turn.abs().to_degrees() < limit_deg
+        })
+        .collect()
 }
 
 fn scale_arg(args: &Value) -> Result<Option<f64>, String> {
@@ -595,6 +642,15 @@ fn base64(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shallow_corners_finds_nearly_straight_corners() {
+        // A rectangle with an extra corner on the bottom edge that turns by
+        // about 1.1°: only that corner is reported.
+        let p = [[0.0, 0.0], [5.0, 0.1], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]];
+        assert_eq!(super::shallow_corners(&p, 3.0), vec![1]);
+        assert!(super::shallow_corners(&p[..2], 3.0).is_empty());
+    }
+
     use super::base64;
     use crate::Server;
     use serde_json::{Value, json};
@@ -729,6 +785,15 @@ mod tests {
             .collect();
         edges.sort_by(f64::total_cmp);
         assert_eq!(edges, vec![2.5, 2.5, 5.0, 5.0]);
+        let mut dirs: Vec<f64> = t["edge_directions_deg"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        dirs.sort_by(f64::total_cmp);
+        assert_eq!(dirs, vec![0.0, 90.0, 180.0, 270.0], "{t}");
+        assert!(t.get("warning").is_none(), "{t}");
         let inner = text(&call(
             &mut s,
             "trace_outline",

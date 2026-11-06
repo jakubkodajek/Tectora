@@ -61,11 +61,15 @@ colleague uses Claude Desktop, Codex or Antigravity.
   for the final cross-check, and an evaluation set of 10 real jobs scored
   against TERRAN's offers (`eval/drawings`, `tools/drawing-eval`). There is
   no DACAD roof for these jobs, so the offers are the labels.
-  First run: jobs 3, 5, 7 and 10 match the offer's areas within its
-  rounding, job 9 within 1.3 %; job 8's offer area is 23 % below a roof
-  whose ridge and eaves match the offer (to clarify with the estimator).
-  **Next:** jobs 1, 2, 4 and 6 (many dormers, mixed flat roofs, a low
-  resolution scan).
+  All ten jobs built (2026-11-06): jobs 3, 5, 7 and 10 match the offer's
+  areas within its rounding, job 9 within 1.3 %, object A of job 4 within
+  2.3 %. Job 6 (30 dormers) matches the exact Bramac lines (valleys 0.1 %,
+  verges 0.8 %, eaves 2.4 %) and its gross faces; its area is 4.7 % under
+  because Bramac deducts less under each dormer. Open with the estimator:
+  job 8 (offer 23 % below the roof its ridge and eaves describe), object B
+  of job 4 (+7.3 %), jobs 1 and 2 (no section; contradictory labels on 1).
+  **Next:** the colleague's review of these builds in the app, and the
+  missing sections for jobs 1 and 2.
 - Review flow: the AI marks what it was unsure about (unreadable dimension,
   guessed pitch); the colleague confirms or fixes it before the job leaves
   draft.

@@ -22,7 +22,7 @@ Usage:
 
 ``designs.json`` maps job keys to designs: {"7": "/path/valec.tectora",
 "4A": {"id": "<library id>", "offer": 0}, ...}. For jobs with two buildings
-(job 4) give "4A"/"4B" with the offer index. Jobs not listed are skipped.
+(job 4) give "4A"/"4B"; the letter picks the offer unless "offer" is set. Jobs not listed are skipped.
 """
 
 from __future__ import annotations
@@ -125,7 +125,9 @@ def main() -> int:
         if job is None:
             print(f"{key}: no such job in truth", file=sys.stderr)
             continue
-        offer = job["offers"][spec.get("offer", 0)]
+        # "4B" means the second offer of job 4 unless "offer" says otherwise.
+        default = ord(key[-1]) - ord("A") if key[-1].isalpha() and len(job["offers"]) > 1 else 0
+        offer = job["offers"][min(spec.get("offer", default), len(job["offers"]) - 1)]
         path = Path(spec["path"]) if "path" in spec else library_design(args.library, spec["id"])
         try:
             r = score(calc(args.tectora, path), offer, job["exact"][0] if job["exact"] else None)
