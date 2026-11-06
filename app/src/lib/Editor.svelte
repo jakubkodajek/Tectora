@@ -2,7 +2,7 @@
   // Design editor laid out like DACAD (toolbar, plan + 3D windows, roof
   // definition bar, status bar) with a side dock for results, AI activity
   // and job data.
-  import { onDestroy, onMount, untrack } from "svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
   import AiPanel from "./AiPanel.svelte";
   import DrawBar from "./DrawBar.svelte";
   import Icon from "./Icon.svelte";
@@ -15,6 +15,8 @@
   import DormerBar from "./DormerBar.svelte";
   import OpeningBar from "./OpeningBar.svelte";
   import ManualBar from "./ManualBar.svelte";
+  import ContextMenu, { type MenuEntry, type MenuState } from "./ContextMenu.svelte";
+  import { followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, transformItem, type ItemRef, type PlanTarget } from "./items";
   import { snapToRoof, type ManualSel } from "./manual";
   import { describeCalcError, describeError, describeProblem, toAppError, type Described } from "./errors";
   import { notifyError } from "./notify.svelte";
@@ -25,7 +27,7 @@
   import RoundRoofForm from "./RoundRoofForm.svelte";
   import RoofCalcForm from "./RoofCalcForm.svelte";
   import TransformForm from "./TransformForm.svelte";
-  import { offsetWall, transformPart, type TransformMode, type TransformOp } from "./transform";
+  import { offsetWall, transformPart, translation, type TransformMode, type TransformOp } from "./transform";
   import { oppositeWall, spanBetween, type Arc } from "./roundroof";
   import { api, onProjectsChanged } from "./api";
   import { changedEdges, describeChange } from "./changes";
@@ -34,7 +36,7 @@
   import { actorName, isFresh, live } from "./live.svelte";
   import { markReviewed, prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
   import type { ActivityItem, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
-  import { isAi, isGable, isMarker } from "./types";
+  import { GABLE_PITCH, isAi, isGable, isMarker } from "./types";
 
   let {
     id,
@@ -591,6 +593,242 @@
     commit();
   }
 
+  // ---- Objects edited directly in the plan and the 3D view ------------
+
+  /** The selected single object, if any. */
+  const selectedItem = $derived.by((): ItemRef | null => {
+    if (dormerSel !== null) return { kind: "dormer", index: dormerSel };
+    if (openSel) return { kind: openSel.kind, index: openSel.index };
+    if (manualSel) return { kind: manualSel.kind, index: manualSel.index };
+    return null;
+  });
+
+  function selectItem(it: ItemRef | null) {
+    selection = null;
+    dormerSel = it?.kind === "dormer" ? it.index : null;
+    openSel = it && (it.kind === "chimney" || it.kind === "window" || it.kind === "hole") ? { kind: it.kind, index: it.index } : null;
+    manualSel = it && (it.kind === "line" || it.kind === "face") ? { kind: it.kind, index: it.index } : null;
+  }
+
+  /** The project and roof when a drag started; each step maps from these. */
+  let dragBase: { key: string; project: string; result: CalcResult | null; from: Point2 | null } | null = null;
+
+  function dragObject(target: PlanTarget, dx: number, dy: number, end: boolean) {
+    if (!project || (target.type !== "item" && target.type !== "part")) return;
+    const key = JSON.stringify(target);
+    if (!dragBase || dragBase.key !== key) {
+      dragBase = { key, project: snapshot(), result, from: target.type === "item" ? itemCentre(project, target.item) : null };
+    }
+    const base: Project = JSON.parse(dragBase.project);
+    if (target.type === "item") {
+      const it = target.item;
+      if (!itemExists(base, it)) return;
+      moveItem(base, it, dx, dy);
+      if (end && dragBase.from) {
+        followRoof(base, it, dragBase.from, { x: dragBase.from.x + dx, y: dragBase.from.y + dy }, dragBase.result);
+      }
+      project = base;
+      selectItem(it);
+    } else {
+      if (!base.parts[target.part]) return;
+      transformPart(base, target.part, translation(dx, dy));
+      const sel = selection;
+      project = base;
+      selection = sel;
+    }
+    if (end) {
+      dragBase = null;
+      commit();
+    } else {
+      recalc();
+    }
+  }
+
+  function duplicateItem(it: ItemRef) {
+    if (!project || !itemExists(project, it)) return;
+    // Half a metre aside, so the copy is seen next to the original [no source: editor choice].
+    const [copy] = transformItem(project, it, translation(0.5, -0.5), 1);
+    if (copy) selectItem(copy);
+    commit();
+  }
+
+  function turnItem(it: ItemRef, deg: number) {
+    if (!project || !rotateItem(project, it, deg).length) return;
+    commit();
+  }
+
+  /** Turns a chimney or opening so its first side runs along the nearest wall. */
+  function alignItem(it: ItemRef) {
+    if (!project || (it.kind !== "chimney" && it.kind !== "hole")) return;
+    const c = (it.kind === "chimney" ? project.chimneys : project.roof_openings ?? [])[it.index];
+    const centre = itemCentre(project, it);
+    if (!c || !centre || c.corners.length < 2) return;
+    const [a, b] = c.corners;
+    const now = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+    const want = (nearestWallAngle(project.parts, centre) * 180) / Math.PI;
+    // The smallest turn that lines the side up (any quarter turn of a square is the same).
+    let d = (((want - now) % 90) + 90) % 90;
+    if (d > 45) d -= 90;
+    if (Math.abs(d) < 1e-6) return;
+    turnItem(it, +d.toFixed(4));
+  }
+
+  function removeItem(it: ItemRef) {
+    if (!project || !itemExists(project, it)) return;
+    deleteItem(project, it);
+    selectItem(null);
+    commit();
+  }
+
+  /** Puts the keyboard into the selected object's bar (its properties). */
+  async function focusProperties() {
+    await tick();
+    document.querySelector<HTMLInputElement>(".editor .main .bar input:not(:disabled)")?.focus();
+  }
+
+  let menu = $state<MenuState | null>(null);
+
+  function itemTitle(it: ItemRef): string {
+    const n = it.index + 1;
+    return {
+      dormer: t("plan.dormer", { n }),
+      chimney: t("opening.chimneyN", { n }),
+      window: t("opening.windowN", { n }),
+      hole: t("opening.holeN", { n }),
+      line: t("manual.lineN", { n }),
+      face: t("manual.faceN", { n }),
+    }[it.kind];
+  }
+
+  /** "Add … here" entries, for a press on the roof or next to it. */
+  function placeEntries(at: Point2): MenuEntry[] {
+    if (!project?.parts.length) return [];
+    const go = (kind: "dormer" | "chimney" | "window" | "hole") => () => {
+      placing = kind;
+      place(at.x, at.y);
+    };
+    return [
+      { label: t("menu.placeChimney"), icon: "chimney", action: go("chimney") },
+      { label: t("menu.placeWindow"), icon: "window", action: go("window") },
+      { label: t("menu.placeHole"), icon: "hole", action: go("hole") },
+      { label: t("menu.placeDormer"), icon: "roof", action: go("dormer") },
+    ];
+  }
+
+  function partEntries(pi: number): MenuEntry[] {
+    if (!project?.parts[pi]) return [];
+    const ps = project.parts[pi].edges.map((e) => e.start);
+    const w = Math.max(...ps.map((p) => p.x)) - Math.min(...ps.map((p) => p.x));
+    return [
+      { label: t("tool.transform") + "…", icon: "move", action: () => { selection = { part: pi, edge: selection?.part === pi ? selection.edge : 0 }; openTransform(); } },
+      { label: t("menu.duplicatePart"), icon: "copy", action: () => {
+        if (!project) return;
+        // Beside the original, 2 m apart (as a new standard roof is placed).
+        const added = transformPart(project, pi, translation(+(w + 2).toFixed(3), 0), 1);
+        if (added.length) selection = { part: added[0], edge: 0 };
+        commit();
+        setTimeout(() => plan?.fit(), 0);
+      } },
+      { label: t("tool.deletePart"), icon: "trash", danger: true, disabled: project.parts.length < 2, action: () => { selection = { part: pi, edge: 0 }; deletePart(); } },
+    ];
+  }
+
+  function openMenu(target: PlanTarget, client: { x: number; y: number }, world: Point2) {
+    if (!project) return;
+    let title: string | undefined;
+    let entries: MenuEntry[] = [];
+    if (target.type === "item") {
+      const it = target.item;
+      if (!itemExists(project, it)) return;
+      selectItem(it);
+      title = itemTitle(it);
+      const turns = it.kind !== "window";
+      entries = [
+        { label: t("menu.properties"), icon: "sliders", action: focusProperties },
+        { label: t("menu.duplicate"), icon: "copy", hint: "Ctrl+D", action: () => duplicateItem(it) },
+        ...(turns
+          ? [
+              { label: t("menu.rotateLeft"), icon: "undo", action: () => turnItem(it, 90) },
+              { label: t("menu.rotateRight"), icon: "redo", action: () => turnItem(it, -90) },
+            ]
+          : []),
+        ...(it.kind === "chimney" || it.kind === "hole" ? [{ label: t("menu.alignWall"), icon: "fit", action: () => alignItem(it) }] : []),
+        { sep: true },
+        { label: t("menu.delete"), icon: "trash", danger: true, hint: "Del", action: () => removeItem(it) },
+      ];
+    } else if (target.type === "edge") {
+      const { part, edge } = target;
+      const e = project.parts[part]?.edges[edge];
+      if (!e) return;
+      selection = { part, edge };
+      title = t("def.wall", { n: edge + 1 });
+      const gable = isGable(e);
+      const marker = isMarker(e);
+      const es = project.parts[part].edges;
+      const a = e.start;
+      const b = es[(edge + 1) % es.length].start;
+      // The press projected onto the wall, so the new point lies on it.
+      const len2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1;
+      const u = Math.max(0.05, Math.min(0.95, ((world.x - a.x) * (b.x - a.x) + (world.y - a.y) * (b.y - a.y)) / len2));
+      const on = { x: +(a.x + (b.x - a.x) * u).toFixed(3), y: +(a.y + (b.y - a.y) * u).toFixed(3) };
+      entries = [
+        { label: t("menu.properties"), icon: "sliders", action: focusProperties },
+        ...(marker ? [] : [
+          gable
+            ? { label: t("menu.makeEave"), icon: "roof", action: () => patchEdge({ pitch_deg: presets.pitch_deg, half_hip: null }) }
+            : { label: t("menu.makeGable"), icon: "house", action: () => patchEdge({ pitch_deg: GABLE_PITCH }) },
+          { label: t("menu.insertPoint"), icon: "plus", action: () => insertVertex(part, edge, on.x, on.y) },
+          { label: t("edge.addMarker"), icon: "right", action: insertMarker },
+        ]),
+        ...(!marker && !gable ? [{ label: t("calc.button"), icon: "chart", action: () => (calc = { part, edge, patches: null }) }] : []),
+        { sep: true },
+        ...partEntries(part),
+      ];
+    } else if (target.type === "vertex") {
+      const { part, vertex } = target;
+      if (!project.parts[part]?.edges[vertex]) return;
+      selection = { part, edge: vertex };
+      title = t("plan.vertex", { n: vertex + 1 });
+      const es = project.parts[part].edges;
+      const canDelete = isMarker(es[vertex]) || es.filter((x) => !isMarker(x)).length > 3;
+      entries = [
+        { label: t("menu.properties"), icon: "sliders", action: focusProperties },
+        { label: t("menu.deletePoint"), icon: "trash", danger: true, hint: "Del", disabled: !canDelete, action: deleteVertex },
+      ];
+    } else if (target.type === "part") {
+      const pi = target.part;
+      if (!project.parts[pi]) return;
+      title = project.parts[pi].name;
+      entries = [...placeEntries(world), { sep: true }, ...partEntries(pi)];
+    } else {
+      const add = placeEntries(world);
+      entries = [
+        ...add,
+        ...(add.length ? [{ sep: true } as MenuEntry] : []),
+        { label: t("tool.draw"), icon: "draw", hint: "Insert", action: startDraw },
+        { label: t("tool.standard"), icon: "house", action: () => (std = { part: null, mode: "add" }) },
+        { label: t("plan.fit"), icon: "fit", action: () => plan?.fit() },
+      ];
+    }
+    menu = { x: client.x, y: client.y, title, entries };
+  }
+
+  /** Arrow keys nudge the selected object by 5 cm (Shift: 50 cm). */
+  function nudge(e: KeyboardEvent): boolean {
+    const it = selectedItem;
+    if (!project || !it || !itemExists(project, it)) return false;
+    const d = e.shiftKey ? 0.5 : 0.05;
+    const v = { ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, d], ArrowDown: [0, -d] }[e.key];
+    if (!v) return false;
+    e.preventDefault();
+    const from = itemCentre(project, it);
+    const before = result;
+    moveItem(project, it, v[0], v[1]);
+    if (from) followRoof(project, it, from, { x: from.x + v[0], y: from.y + v[1] }, before);
+    commit();
+    return true;
+  }
+
   function togglePlacing(kind: "dormer" | "chimney" | "window" | "hole" | "line" | "face") {
     placing = placing === kind ? false : kind;
     drawing = null;
@@ -705,6 +943,11 @@
     } else if (mod && e.key.toLowerCase() === "s") {
       e.preventDefault();
       save();
+    } else if (mod && e.key.toLowerCase() === "d" && selectedItem && !drawing) {
+      e.preventDefault();
+      duplicateItem(selectedItem);
+    } else if (!mod && !drawing && !placing && e.key.startsWith("Arrow") && nudge(e)) {
+      // handled
     } else if (e.key === "F3") {
       e.preventDefault();
       setLayout(prefs.layout === "3d" ? "split" : "3d");
@@ -730,6 +973,7 @@
 </script>
 
 <svelte:window {onkeydown} />
+<ContextMenu bind:menu />
 
 <div class="editor">
   <header>
@@ -861,13 +1105,17 @@
                 ondrawpoint={(x, y) => drawing?.push({ x, y })}
                 ondrawclose={finishDraw}
                 oncursor={(p) => (cursor = p)}
+                ondrag={dragObject}
+                oncontext={openMenu}
               />
             </div>
           {/if}
           {#if prefs.layout !== "plan"}
             <div class="view">
               <span class="view-label">{t("editor.model")}</span>
-              <Roof3D {project} {result} {selection} />
+              <Roof3D {project} {result} {selection} item={selectedItem}
+                onpick={(tg) => { if (tg.type === "item") selectItem(tg.item); else if (tg.type === "edge") { selectItem(null); selection = { part: tg.part, edge: tg.edge }; } }}
+                oncontext={openMenu} />
             </div>
           {/if}
         </div>
