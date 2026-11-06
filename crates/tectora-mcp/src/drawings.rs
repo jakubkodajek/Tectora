@@ -64,13 +64,33 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "view_drawing",
-            "description": "Render a page or a region of it as an image. First look at the whole page, then request crops of the parts you need: a crop is sharp enough to read dimension text when it is about 300 dpi (whole sheets are not). The result gives `pixel_to_sheet` to turn a pixel you see into sheet mm for drawing_lines and measure_drawing. Use `rotate` to straighten sheets plotted sideways.",
+            "description": "Render a page or a region of it as an image. First look at the whole page, then request crops of the parts you need: a crop is sharp enough to read dimension text when it is about 300 dpi (whole sheets are not). An orange grid labelled with sheet mm is drawn over the image (turn it off with `grid: false` to read small text under it); read sheet coordinates for region, measure_drawing and trace_outline off that grid. Use `rotate` to straighten sheets plotted sideways (the grid labels stay sheet coordinates).",
             "inputSchema": schema(with(source_props(), json!({
                 "region": region_prop(),
                 "dpi": { "type": "number", "description": "Resolution; default: as sharp as fits `max_px`." },
                 "max_px": { "type": "integer", "description": "Longest image edge, px (default 1568, at most 4096)." },
                 "rotate": { "type": "integer", "enum": [0, 90, 180, 270], "description": "Turn the image clockwise, degrees." },
+                "grid": { "description": "true (default): sheet-mm grid with a step that fits the crop; a number: grid step in mm; false: no grid.", "type": ["boolean", "number"] },
             })), &[]),
+        }),
+        json!({
+            "name": "drawing_dimensions",
+            "description": "Every dimension chain in a region of a vector PDF, found from the drawn dimension lines and their marks (extension lines or ticks): for each dimension its ends, its middle (where its text is) and its drawn length. With `scale` the real length in mm, which is exact when the sheet is plotted to scale: read the text at `mid`, and if it disagrees, the sheet is scaled (see `implied_scale` per dimension when you pass `read` values) or the dimension is not to scale. Prefer this to measuring dimensions one by one.",
+            "inputSchema": schema(with(source_props(), json!({
+                "region": region_prop(),
+                "scale": { "type": "number", "description": "Scale denominator, e.g. 50 for 1:50." },
+                "min_length_mm": { "type": "number", "description": "Skip dimensions shorter than this on the sheet (default 2 mm)." },
+            })), &[]),
+        }),
+        json!({
+            "name": "trace_outline",
+            "description": "Snap a polygon to the drawing: give its corners roughly (sheet mm, read off the view_drawing grid), in order around the outline; each is snapped to the nearest drawn corner or line crossing. Returns the exact corners, the edge lengths, and with `scale` the polygon in metres ready for create_project (x right, y up, first corner at the origin, counter-clockwise) and the real edge lengths. Use it for the wall line or the eave line of a roof plan; check the edges against the dimensions.",
+            "inputSchema": schema(with(source_props(), json!({
+                "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }, "minItems": 3, "maxItems": 500, "description": "Corners [x, y] in sheet mm, in order." },
+                "snap_mm": { "type": "number", "description": "Snap radius, mm (default 1.5)." },
+                "scale": { "type": "number", "description": "Scale denominator, e.g. 50 for 1:50." },
+                "offset_m": { "type": "number", "description": "Move every edge outward by this many metres (negative: inward), e.g. -0.6 to get the wall line from an eave line with a 0.6 m overhang. Needs `scale`." },
+            })), &["points"]),
         }),
         json!({
             "name": "drawing_lines",
@@ -103,6 +123,8 @@ impl Server {
             "view_drawing" => self.view_drawing(args),
             "drawing_lines" => self.drawing_lines(args),
             "measure_drawing" => self.measure_drawing(args),
+            "drawing_dimensions" => self.drawing_dimensions(args),
+            "trace_outline" => self.trace_outline(args),
             _ => return None,
         })
     }
@@ -182,8 +204,28 @@ impl Server {
                 .and_then(Turn::from_degrees)
                 .ok_or("`rotate` must be 0, 90, 180 or 270")?,
         };
+        let grid = match args.get("grid") {
+            None | Some(Value::Null) | Some(Value::Bool(true)) => Some(0.0),
+            Some(Value::Bool(false)) => None,
+            Some(v) => Some(
+                v.as_f64()
+                    .filter(|g| g.is_finite() && *g > 0.0 && *g <= 10_000.0)
+                    .ok_or("`grid` must be true, false or a step in mm")?,
+            ),
+        };
+        let grid = match grid {
+            // Default step: about ten lines over the crop's longer side.
+            Some(0.0) => {
+                let (w, h) = match region {
+                    Some(r) => (r.width, r.height),
+                    None => d.page_size_mm(page).map_err(|e| e.to_string())?,
+                };
+                Some(tectora_drawing::grid_auto_step(w.max(h)))
+            }
+            g => g,
+        };
         let r = d
-            .render(page, region, arg_f64(args, "dpi")?, max_px, turn)
+            .render(page, region, arg_f64(args, "dpi")?, max_px, turn, grid)
             .map_err(|e| e.to_string())?;
         let m = r.pixel_to_sheet.map(|v| round(v, 6));
         let info = json!({
@@ -193,6 +235,7 @@ impl Server {
             "dpi": round(r.px_per_mm * 25.4, 1),
             "rotate": r.turn.degrees(),
             "pixel_to_sheet": m,
+            "grid_mm": grid,
             "note": "sheet x = m0*u + m1*v + m2, y = m3*u + m4*v + m5 for image pixel (u, v)",
         });
         Ok(json!({
@@ -243,10 +286,7 @@ impl Server {
         let snap = arg_f64(args, "snap_mm")?
             .unwrap_or(DEFAULT_SNAP_MM)
             .clamp(0.0, 20.0);
-        let scale = arg_f64(args, "scale")?;
-        if scale.is_some_and(|s| s <= 0.0 || s > 10_000.0) {
-            return Err("`scale` must be the denominator, e.g. 50 for 1:50".into());
-        }
+        let scale = scale_arg(args)?;
         let expected = arg_f64(args, "expected_mm")?;
         let content = d.content(page).map_err(|e| e.to_string())?;
         let m = content.measure(from, to, snap);
@@ -277,6 +317,188 @@ impl Server {
         }
         Ok(out)
     }
+}
+
+impl Server {
+    fn drawing_dimensions(&self, args: &Value) -> ToolResult {
+        let (_, d, page) = self.open_drawing(args)?;
+        let region = region_arg(args)?;
+        let scale = scale_arg(args)?;
+        let min_len = arg_f64(args, "min_length_mm")?.unwrap_or(2.0).max(0.0);
+        let content = d.content(page).map_err(|e| e.to_string())?;
+        let mut chains = content.dimensions(region);
+        for c in &mut chains {
+            c.dimensions.retain(|x| x.sheet_mm >= min_len);
+        }
+        chains.retain(|c| !c.dimensions.is_empty());
+        let out: Vec<Value> = chains
+            .iter()
+            .map(|c| {
+                let dims: Vec<Value> = c
+                    .dimensions
+                    .iter()
+                    .map(|x| {
+                        let mut v = json!({ "from": x.from, "to": x.to, "mid": x.mid, "sheet_mm": x.sheet_mm });
+                        if let Some(s) = scale {
+                            v["real_mm"] = json!(round(x.sheet_mm * s, 0));
+                        }
+                        v
+                    })
+                    .collect();
+                let mut v = json!({
+                    "angle_deg": c.angle_deg, "from": c.from, "to": c.to,
+                    "sheet_mm": c.sheet_mm, "dimensions": dims,
+                });
+                if let Some(s) = scale {
+                    v["real_mm"] = json!(round(c.sheet_mm * s, 0));
+                }
+                v
+            })
+            .collect();
+        Ok(json!({
+            "page": page,
+            "chains": out,
+            "truncated": chains.len() >= tectora_drawing::MAX_CHAINS,
+            "note": "real_mm = sheet_mm x scale; it equals the written value only on a sheet plotted to scale. Compare with the text you read at `mid`; written / sheet_mm is the plot scale.",
+        }))
+    }
+
+    fn trace_outline(&self, args: &Value) -> ToolResult {
+        let (_, d, page) = self.open_drawing(args)?;
+        let pts: Vec<[f64; 2]> = args
+            .get("points")
+            .and_then(Value::as_array)
+            .filter(|a| (3..=500).contains(&a.len()))
+            .ok_or("`points` must be 3 to 500 corners [x, y] in sheet mm")?
+            .iter()
+            .map(|p| {
+                p.as_array()
+                    .filter(|a| a.len() == 2)
+                    .and_then(|a| Some([a[0].as_f64()?, a[1].as_f64()?]))
+                    .filter(|p| p.iter().all(|x| x.is_finite() && x.abs() <= 100_000.0))
+                    .ok_or_else(|| "each point must be [x, y] in sheet mm".to_string())
+            })
+            .collect::<Result<_, _>>()?;
+        let snap = arg_f64(args, "snap_mm")?
+            .unwrap_or(DEFAULT_SNAP_MM)
+            .clamp(0.0, 20.0);
+        let scale = scale_arg(args)?;
+        let offset = arg_f64(args, "offset_m")?;
+        if offset.is_some() && scale.is_none() {
+            return Err("`offset_m` needs `scale`".into());
+        }
+        if offset.is_some_and(|o| o.abs() > 5.0) {
+            return Err("`offset_m` must be within ±5 m".into());
+        }
+        let content = d.content(page).map_err(|e| e.to_string())?;
+        let t = content.trace(&pts, snap);
+        let mut out = json!(t);
+        out["page"] = json!(page);
+        if let Some(s) = scale {
+            // Sheet y is down; the model's y is up. Mirroring flips the turning
+            // direction, so the order is reversed when needed to keep the
+            // polygon counter-clockwise.
+            let mut m: Vec<[f64; 2]> = t
+                .points
+                .iter()
+                .map(|p| [p[0] * s / 1000.0, -p[1] * s / 1000.0])
+                .collect();
+            if t.edges_sheet_mm.iter().any(|e| *e < 1e-6) {
+                return Err(
+                    "two neighbouring corners snapped to the same point; give the corners more exactly or use a smaller snap_mm".into(),
+                );
+            }
+            if signed_area(&m) < 0.0 {
+                m.reverse();
+                m.rotate_right(1);
+            }
+            if let Some(o) = offset {
+                m = offset_polygon(&m, o).ok_or("the outline is too small for this offset")?;
+            }
+            let (x0, y0) = (m[0][0], m[0][1]);
+            let m: Vec<[f64; 2]> = m
+                .iter()
+                .map(|p| [round(p[0] - x0, 3), round(p[1] - y0, 3)])
+                .collect();
+            let n = m.len();
+            let edges: Vec<f64> = (0..n)
+                .map(|i| {
+                    let (a, b) = (m[i], m[(i + 1) % n]);
+                    round((b[0] - a[0]).hypot(b[1] - a[1]), 3)
+                })
+                .collect();
+            out["outline_m"] = json!(m);
+            out["edges_m"] = json!(edges);
+            out["area_m2"] = json!(round(signed_area(&m), 3));
+        }
+        if t.snapped.iter().any(|s| !s) {
+            let missed: Vec<usize> = t
+                .snapped
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| !**s)
+                .map(|(i, _)| i)
+                .collect();
+            out["warning"] = json!(format!(
+                "corners {missed:?} did not snap to a drawn corner; give them more exactly or check the view"
+            ));
+        }
+        Ok(out)
+    }
+}
+
+fn scale_arg(args: &Value) -> Result<Option<f64>, String> {
+    let scale = arg_f64(args, "scale")?;
+    if scale.is_some_and(|s| s.is_nan() || s <= 0.0 || s > 10_000.0) {
+        return Err("`scale` must be the denominator, e.g. 50 for 1:50".into());
+    }
+    Ok(scale)
+}
+
+fn signed_area(p: &[[f64; 2]]) -> f64 {
+    let n = p.len();
+    (0..n)
+        .map(|i| {
+            let (a, b) = (p[i], p[(i + 1) % n]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum::<f64>()
+        / 2.0
+}
+
+/// Moves every edge of a counter-clockwise polygon outward by `d` (inward
+/// when negative) and intersects neighbouring edges. `None` when a corner
+/// would run away (an edge shorter than the offset needs).
+fn offset_polygon(p: &[[f64; 2]], d: f64) -> Option<Vec<[f64; 2]>> {
+    let n = p.len();
+    // Outward normal of a CCW edge (a -> b) is (dy, -dx).
+    let line = |i: usize| {
+        let (a, b) = (p[i], p[(i + 1) % n]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l = dx.hypot(dy);
+        let (nx, ny) = (dy / l, -dx / l);
+        ([a[0] + nx * d, a[1] + ny * d], [dx / l, dy / l])
+    };
+    let mut out = Vec::with_capacity(n);
+    for (i, c) in p.iter().enumerate() {
+        let (p1, d1) = line((i + n - 1) % n);
+        let (p2, d2) = line(i);
+        let den = d1[0] * d2[1] - d1[1] * d2[0];
+        if den.abs() < 1e-9 {
+            // Collinear neighbours: the corner just moves along the normal.
+            out.push(p2);
+            continue;
+        }
+        let t = ((p2[0] - p1[0]) * d2[1] - (p2[1] - p1[1]) * d2[0]) / den;
+        let q = [p1[0] + t * d1[0], p1[1] + t * d1[1]];
+        if !(q[0].is_finite() && q[1].is_finite())
+            || (q[0] - c[0]).hypot(q[1] - c[1]) > d.abs() * 20.0 + 1e-9
+        {
+            return None;
+        }
+        out.push(q);
+    }
+    (signed_area(&out) > 0.0).then_some(out)
 }
 
 fn list_drawings() -> ToolResult {
@@ -488,6 +710,51 @@ mod tests {
         let meta: Value =
             serde_json::from_str(view["content"][1]["text"].as_str().unwrap()).unwrap();
         assert_eq!(meta["image_px"], json!([600, 350]));
+
+        // The rectangle traced from rough corners, in metres at 1:50, and
+        // moved inward by 0.5 m (e.g. eave line -> wall line).
+        let t = text(&call(
+            &mut s,
+            "trace_outline",
+            json!({ "path": path, "points": [[20.6, 30.5], [119.5, 29.6], [120.4, 79.5], [19.8, 80.3]], "scale": 50 }),
+        ));
+        assert_eq!(t["snapped"], json!([true, true, true, true]), "{t}");
+        assert_eq!(t["area_m2"], 12.5);
+        assert_eq!(t["outline_m"][0], json!([0.0, 0.0]));
+        let mut edges: Vec<f64> = t["edges_m"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        edges.sort_by(f64::total_cmp);
+        assert_eq!(edges, vec![2.5, 2.5, 5.0, 5.0]);
+        let inner = text(&call(
+            &mut s,
+            "trace_outline",
+            json!({ "path": path, "points": [[20.6, 30.5], [119.5, 29.6], [120.4, 79.5], [19.8, 80.3]], "scale": 50, "offset_m": -0.5 }),
+        ));
+        assert_eq!(inner["area_m2"], 6.0, "{inner}");
+        let e = call(
+            &mut s,
+            "trace_outline",
+            json!({ "path": path, "points": [[0, 0], [1, 1]] }),
+        );
+        assert_eq!(e["isError"], true);
+        let e = call(
+            &mut s,
+            "trace_outline",
+            json!({ "path": path, "points": [[20, 30], [120, 30], [120, 80]], "offset_m": 1 }),
+        );
+        assert_eq!(e["isError"], true, "offset needs a scale");
+
+        // The rectangle has no dimension lines.
+        let dims = text(&call(
+            &mut s,
+            "drawing_dimensions",
+            json!({ "path": path, "scale": 50 }),
+        ));
+        assert_eq!(dims["chains"], json!([]));
 
         // Bad input is an error, not a crash.
         let e = call(&mut s, "view_drawing", json!({ "path": path, "page": 3 }));

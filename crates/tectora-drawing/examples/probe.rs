@@ -23,6 +23,7 @@ fn main() {
             Some(n(6)),
             4096,
             Turn::None,
+            None,
         )
         .expect("render");
     std::fs::write(&a[7], &r.png).expect("write");

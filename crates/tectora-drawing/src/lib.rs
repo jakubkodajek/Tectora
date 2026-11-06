@@ -19,6 +19,12 @@
 
 use std::fmt;
 
+mod analyze;
+mod grid;
+
+pub use analyze::{Dimension, DimensionChain, MAX_CHAINS, Trace};
+pub use grid::auto_step as grid_auto_step;
+
 use hayro::hayro_interpret::font::GlyphRun;
 use hayro::hayro_interpret::hayro_cmap::BfString;
 use hayro::hayro_interpret::hayro_syntax::Pdf;
@@ -335,7 +341,9 @@ impl Drawing {
     ///
     /// The resolution is `dpi` when given, otherwise the largest that keeps
     /// the longer image edge at `max_px`; it is always clamped so the image
-    /// stays between [`MIN_RENDER_PX`] and [`MAX_RENDER_PX`].
+    /// stays between [`MIN_RENDER_PX`] and [`MAX_RENDER_PX`]. With `grid_mm`
+    /// a labelled grid of sheet coordinates is drawn over the image every
+    /// that many mm.
     pub fn render(
         &self,
         index: usize,
@@ -343,6 +351,7 @@ impl Drawing {
         dpi: Option<f64>,
         max_px: u32,
         turn: Turn,
+        grid_mm: Option<f64>,
     ) -> Result<Rendered, DrawingError> {
         let page = self.page(index)?;
         let (wmm, hmm) = self.page_size_mm(index)?;
@@ -391,11 +400,8 @@ impl Drawing {
                 ..Default::default()
             },
         );
-        let pixmap = turn_pixmap(pixmap, turn);
+        let mut pixmap = turn_pixmap(pixmap, turn);
         let (width, height) = (pixmap.width() as u32, pixmap.height() as u32);
-        let png = pixmap
-            .into_png()
-            .map_err(|e| DrawingError::Encode(e.to_string()))?;
         let s = 1.0 / px_per_mm;
         let (x0, y0) = (region.x, region.y);
         let (rw, rh) = (region.width, region.height);
@@ -406,6 +412,14 @@ impl Drawing {
             Turn::Cw180 => [-s, 0.0, x0 + rw, 0.0, -s, y0 + rh],
             Turn::Cw270 => [0.0, -s, x0 + rw, s, 0.0, y0],
         };
+        if let Some(step) = grid_mm.filter(|g| g.is_finite() && *g > 0.0) {
+            // At least 8 px between lines, or the labels run into each other.
+            let step = step.max(8.0 / px_per_mm);
+            grid::draw(&mut pixmap, pixel_to_sheet, step);
+        }
+        let png = pixmap
+            .into_png()
+            .map_err(|e| DrawingError::Encode(e.to_string()))?;
         Ok(Rendered {
             png,
             width,
@@ -714,7 +728,7 @@ pub fn merge_collinear(mut segs: Vec<Segment>) -> Vec<Segment> {
     out
 }
 
-fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
+pub(crate) fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     (a[0] - b[0]).hypot(a[1] - b[1])
 }
 

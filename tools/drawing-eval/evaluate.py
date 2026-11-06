@@ -6,9 +6,16 @@ design built from that job's drawings: a ``.tectora`` file or a library job
 id. It runs ``tectora calc --summary`` on each and compares:
 
 - roof area per pitch group and in total with the offer (the offer rounds
-  each group up to whole m², so the true value lies in (A - 1, A]);
-- line lengths (F+G, OL+OR, T, K) with the ranges the offer's piece counts
-  allow, or with the exact lengths where a Bramac offer has them;
+  each group up to whole m², so the true value lies in (A - 1, A]); faces
+  at pitches the offer does not price (e.g. sheet-metal dormers) are left
+  out of the total;
+- line lengths with the exact lengths where a Bramac offer has them.
+
+These are the scored checks. The line lengths that piece counts of the CN
+offers allow (F+G, OL+OR, T, K) are printed as `info` only: on the ten jobs
+they disagree with geometry that is certain by up to 7 % (ridge tiles) and
+more (verge tiles are not laid on every verge, valley strip lengths vary),
+so they say where to look, not whether a roof is right.
 
 Usage:
   python3 evaluate.py truth.json --designs designs.json [--library DIR] [--tectora BIN] [--json out.json]
@@ -58,17 +65,18 @@ def check_range(value: float, lo: float, hi: float) -> dict[str, Any]:
 def score(q: dict[str, Any], offer: dict[str, Any], exact: dict[str, Any] | None) -> dict[str, Any]:
     lines = q.get("lines_by_type", {})
     by_pitch = {round(p["pitch_deg"], 2): p["area"] for p in q.get("area_by_pitch", [])}
-    res: dict[str, Any] = {"checks": {}}
+    res: dict[str, Any] = {"checks": {}, "info": {}}
     c = res["checks"]
 
-    total = q.get("roof_area", 0.0)
     want = offer["roof_area_m2"]
     groups = offer["pitch_groups"]
+    # Offers merge close pitches into one group (job 6: 42° and 43° -> 43°).
+    priced = [p for p in by_pitch if any(abs(p - g["pitch_deg"]) <= 1.0 for g in groups)]
+    total = sum(by_pitch[p] for p in priced)
     # Each group is rounded up to a whole m² (a decimal group is exact).
     slack = sum(1.0 for g in groups if float(g["area_m2"]).is_integer())
     c["area_total"] = check_range(total, (want - slack) * (1 - AREA_TOL), want * (1 + AREA_TOL))
     for g in groups:
-        # Offers merge close pitches into one group (job 6: 42° and 43° -> 43°).
         got = sum(a for p, a in by_pitch.items() if abs(p - g["pitch_deg"]) <= 1.0)
         lo = (g["area_m2"] - (1 if float(g["area_m2"]).is_integer() else 0)) * (1 - AREA_TOL)
         c[f"area_{g['pitch_deg']:g}deg"] = check_range(got, lo, g["area_m2"] * (1 + AREA_TOL))
@@ -90,9 +98,9 @@ def score(q: dict[str, Any], offer: dict[str, Any], exact: dict[str, Any] | None
         for k, v in want_exact.items():
             if v:
                 c[f"{k}_exact"] = check_range(have[k], v * (1 - EXACT_TOL), v * (1 + EXACT_TOL))
-    else:
-        for k, (lo, hi) in offer["line_intervals_m"].items():
-            c[k] = check_range(have[k], lo, hi)
+    info = res["info"] = {}
+    for k, (lo, hi) in offer["line_intervals_m"].items():
+        info[k] = check_range(have[k], lo, hi)
     res["passed"] = sum(1 for v in c.values() if v["ok"])
     res["total"] = len(c)
     return res
@@ -122,17 +130,20 @@ def main() -> int:
         try:
             r = score(calc(args.tectora, path), offer, job["exact"][0] if job["exact"] else None)
         except Exception as e:  # report and go on with the other jobs
-            r = {"error": str(e), "passed": 0, "total": 0, "checks": {}}
+            r = {"error": str(e), "passed": 0, "total": 0, "checks": {}, "info": {}}
         r["job"] = key
         report.append(r)
 
-    width = max([len(k) for r in report for k in r["checks"]] + [10])
+    width = max([len(k) for r in report for k in (*r["checks"], *r["info"])] + [10])
     for r in report:
         head = f"job {r['job']}: {r['passed']}/{r['total']} checks"
         print(head + (f"  ERROR {r['error']}" if "error" in r else ""))
         for k, v in r["checks"].items():
             mark = "ok " if v["ok"] else "BAD"
             print(f"  {mark} {k:<{width}} {v['value']:>9.2f}  in [{v['range'][0]:.2f}, {v['range'][1]:.2f}]")
+        for k, v in r["info"].items():
+            mark = "   " if v["ok"] else "  ?"
+            print(f"  {mark} {k:<{width}} {v['value']:>9.2f}  pieces allow [{v['range'][0]:.2f}, {v['range'][1]:.2f}]  (info)")
     passed = sum(r["passed"] for r in report)
     total = sum(r["total"] for r in report)
     print(f"\n{len(report)} designs, {passed}/{total} checks passed")

@@ -109,26 +109,62 @@ an image makes dimension text unreadable. Use the drawing tools:
 
 - `list_drawings` lists the PDFs in the drawings inbox; `drawing_info` tells
   each page's size and kind (`vector_with_text`, `vector_outlined_text`,
-  `raster` for scans).
-- `view_drawing` renders a page or a region. Look at the whole page first to
-  find the roof plan, sections and title block, then request crops of about
-  300 dpi to read numbers. Turn sideways sheets with `rotate`. Convert pixels
-  you see to sheet mm with the returned `pixel_to_sheet`.
-- `drawing_lines` gives the exact drawn lines of a region (and the text of
-  PDFs that have a text layer).
-- `measure_drawing` measures between two sheet points, snapped to line ends.
-  **Check every dimension you use**: pass the value you read as
-  `expected_mm` with the scale from the title block. `matches: false` means a
-  misread digit, wrong points, or a sheet not plotted to scale (then
-  `implied_scale` shows the real one: use dimensions that agree with each
-  other). On scans nothing snaps; say the values are read, not measured.
-- Check dimension chains: the parts must add up to the overall dimension.
+  `raster` for scans). A file can hold many pages (plans, sections,
+  elevations); find the roof plan first.
+- `view_drawing` renders a page or a region with an orange grid labelled in
+  sheet mm (`x…`, `y…`). Look at the whole page first, then crop to about
+  300 dpi to read numbers, and read every coordinate you need off the grid.
+  Many sheets are plotted sideways: turn them with `rotate` until the text
+  reads upright (try 90 and 270).
+- `drawing_dimensions` finds every dimension chain in a region from the
+  drawn lines: each dimension's ends, its middle (where its text is) and its
+  exact drawn length. This is how to get dimensions, not by placing points.
+- `trace_outline` snaps a polygon you give roughly (from the grid) to the
+  drawn corners and returns it in metres for `create_project`, optionally
+  moved in or out (`offset_m`).
+- `measure_drawing` measures between two points; `drawing_lines` lists the
+  drawn lines of a region and the text of PDFs that have a text layer.
+
+**The plot scale is not always the title block's scale.** Sheets drawn at
+1:50 on a large format are often printed smaller (in the test jobs: 1:50.78,
+1:68.4, 1:89 instead of 1:50). Before using any length, take two or three
+long dimensions, read their text, and divide by `sheet_mm` from
+`drawing_dimensions`: that is the scale of this sheet. When the values
+agree with each other, use that scale for everything; a single dimension
+that disagrees is a misread digit or a dimension the designer overwrote
+(also seen: chains whose parts do not add up to the total, so trust the
+drawn geometry and say which written value disagrees).
+
+**Which line is the roof edge.** A roof plan often draws two or three
+parallel outlines: the gutter, the roof edge and the wall. The hip and
+valley lines start at the roof edge; the dimensions usually measure the
+outermost line the estimator priced. Use the outline the overall dimensions
+measure, and check with the hips. When the walls are dimensioned (an
+overhang dimension such as 500 or 900 between two lines), model walls plus
+overhang; when they are not, model the roof outline with overhang 0, which
+gives the same roof for planes of one pitch, and say so.
+
+**Heights.** Tectora's eave height is the height of the roof plane at the
+outline. Section and plan labels such as `+5,810` at a ridge are usually the
+top of the covering, 5–15 cm above Tectora's ridge; use them as a check, not
+as input. Read the pitch from the plan or section, never derive it from
+rounded heights.
+
+**Roofs that are hard to model.** An eave that is lowered over part of a
+wall but continues the same plane (a porch under an extended roof) is two
+coplanar planes, which the roof core rejects as a single face: model the
+extension as its own shed part (eave at the low height, its other three
+edges gables) that touches the main eave line. Flat or sheet-metal roofs
+next to the tiled roof are separate parts with their own material, or left
+out if the offer does not price them; say which.
 
 **The six steps:**
 
 1. **Read and check** (no save yet). `list_projects` first: edit the
-   existing job if there is one. Note per sheet what it shows and its scale,
-   read the dimensions and check them as above.
+   existing job if there is one. Note per sheet what it shows and its plot
+   scale (measured as above), read the dimensions with
+   `drawing_dimensions` and the outline with `trace_outline`, and work out
+   the roof shape: which edges are eaves, gables, hips, what joins where.
 2. **Footprint.** `create_project` with the wall-line outline, one part per
    wing with its own ridge height, in metres, and `job` (number, customer,
    address) from the title block; then `attach_file` the drawings to the

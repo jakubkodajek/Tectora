@@ -187,7 +187,9 @@ fn render_maps_pixels_back_to_the_sheet() {
     let d = rect_sheet(0);
     let region = RectMm::new(10.0, 20.0, 120.0, 70.0);
     for turn in [Turn::None, Turn::Cw90, Turn::Cw180, Turn::Cw270] {
-        let r = d.render(0, Some(region), Some(254.0), 4096, turn).unwrap();
+        let r = d
+            .render(0, Some(region), Some(254.0), 4096, turn, None)
+            .unwrap();
         assert!(r.png.starts_with(b"\x89PNG"));
         assert!((r.px_per_mm - 10.0).abs() < 1e-9);
         let (w, h) = if matches!(turn, Turn::Cw90 | Turn::Cw270) {
@@ -220,7 +222,9 @@ fn render_maps_pixels_back_to_the_sheet() {
 #[test]
 fn render_clamps_resolution_and_region() {
     let d = rect_sheet(0);
-    let r = d.render(0, None, Some(5000.0), 1000, Turn::None).unwrap();
+    let r = d
+        .render(0, None, Some(5000.0), 1000, Turn::None, None)
+        .unwrap();
     assert!(r.width.max(r.height) <= 1000);
     assert!(matches!(
         d.render(
@@ -228,7 +232,8 @@ fn render_clamps_resolution_and_region() {
             Some(RectMm::new(500.0, 500.0, 10.0, 10.0)),
             None,
             1000,
-            Turn::None
+            Turn::None,
+            None
         ),
         Err(DrawingError::EmptyRegion)
     ));
@@ -239,6 +244,7 @@ fn render_clamps_resolution_and_region() {
             Some(10.0),
             4096,
             Turn::None,
+            None,
         )
         .unwrap();
     assert!(
@@ -256,4 +262,95 @@ fn scale_and_paper_parsing() {
     assert_eq!(parse_scale("abc"), None);
     assert_eq!(paper_name(420.0, 297.0).as_deref(), Some("A3"));
     assert_eq!(paper_name(600.0, 670.0), None);
+}
+
+/// A horizontal dimension line 30 mm below the top of an A4 sheet from
+/// x = 20 to 120 mm with extension lines (4 mm, from below) at 20, 50 and
+/// 120 mm, and two short "text" strokes touching it from above.
+fn dimension_sheet() -> Drawing {
+    let (w, h) = (210.0 * MM, 297.0 * MM);
+    let y = h - 30.0 * MM;
+    let mut c = format!("0.2 w {} {y} m {} {y} l S", 18.0 * MM, 122.0 * MM);
+    for x in [20.0, 50.0, 120.0] {
+        c += &format!(
+            " {} {} m {} {} l S",
+            x * MM,
+            y - 4.0 * MM,
+            x * MM,
+            y + 0.1 * MM
+        );
+    }
+    for x in [33.0, 34.5] {
+        c += &format!(" {} {y} m {} {} l S", x * MM, x * MM, y + 1.4 * MM);
+    }
+    Drawing::open(pdf(&c, w, h, 0)).expect("valid pdf")
+}
+
+#[test]
+fn dimensions_are_found_from_extension_lines() {
+    let c = dimension_sheet().content(0).unwrap();
+    let chains = c.dimensions(None);
+    assert_eq!(chains.len(), 1, "{chains:?}");
+    let spans: Vec<f64> = chains[0]
+        .dimensions
+        .iter()
+        .map(|d| round(d.sheet_mm, 3))
+        .collect();
+    assert_eq!(
+        spans,
+        vec![30.0, 70.0],
+        "text strokes from the other side are not marks"
+    );
+    assert!((chains[0].sheet_mm - 100.0).abs() < 1e-3);
+    let mid = chains[0].dimensions[0].mid;
+    assert!((mid[0] - 35.0).abs() < 1e-3 && (mid[1] - 30.0).abs() < 1e-3);
+    // A region away from the chain finds nothing.
+    assert!(
+        c.dimensions(Some(RectMm::new(150.0, 150.0, 40.0, 40.0)))
+            .is_empty()
+    );
+}
+
+#[test]
+fn trace_snaps_a_rough_polygon_to_the_corners() {
+    let c = rect_sheet(0).content(0).unwrap();
+    let t = c.trace(
+        &[[21.0, 30.8], [119.2, 29.4], [120.6, 80.9], [19.5, 79.3]],
+        1.5,
+    );
+    assert_eq!(t.snapped, vec![true; 4]);
+    assert_eq!(t.edges_sheet_mm, vec![100.0, 50.0, 100.0, 50.0]);
+    assert!((t.area_sheet_mm2 - 5000.0).abs() < 1e-6);
+    assert!((t.points[2][0] - 120.0).abs() < 1e-3 && (t.points[2][1] - 80.0).abs() < 1e-3);
+    let far = c.trace(&[[60.0, 60.0], [70.0, 60.0], [70.0, 70.0]], 1.0);
+    assert_eq!(far.snapped, vec![false; 3]);
+}
+
+#[test]
+fn grid_is_drawn_on_multiples_of_the_step() {
+    let d = rect_sheet(0);
+    let plain = d
+        .render(
+            0,
+            Some(RectMm::new(0.0, 0.0, 100.0, 100.0)),
+            Some(254.0),
+            4096,
+            Turn::None,
+            None,
+        )
+        .unwrap();
+    let grid = d
+        .render(
+            0,
+            Some(RectMm::new(0.0, 0.0, 100.0, 100.0)),
+            Some(254.0),
+            4096,
+            Turn::None,
+            Some(10.0),
+        )
+        .unwrap();
+    assert_eq!((plain.width, plain.height), (grid.width, grid.height));
+    assert_ne!(plain.png, grid.png, "the grid changes the image");
+    assert_eq!(grid_auto_step(297.0), 20.0);
+    assert_eq!(grid_auto_step(40.0), 5.0);
 }
