@@ -19,7 +19,7 @@ Everything you need is in the repository and in the prompt that launched you
 
 ## Read first
 
-1. `CLAUDE.md` (especially the rules on DACAD parity), `ROADMAP.md`,
+1. `AGENTS.md` (especially the rules on DACAD parity), `ROADMAP.md`,
    `docs/core-verification.md` if present.
 2. `.claude/skills/tectora-dacad-parity/SKILL.md` and
    `.claude/skills/tectora-test/SKILL.md`.

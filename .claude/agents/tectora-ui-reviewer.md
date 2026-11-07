@@ -18,7 +18,7 @@ repository and in the prompt that launched you (it gives the run folder).
 
 ## Read first
 
-1. `CLAUDE.md`, then `.claude/skills/tectora-design/SKILL.md`,
+1. `AGENTS.md`, then `.claude/skills/tectora-design/SKILL.md`,
    `.claude/skills/tectora-i18n/SKILL.md`, `.claude/skills/tectora-ui-preview/SKILL.md`.
 2. `.claude/skills/tectora-review/board.md`: the shared findings protocol.
    Follow it exactly. Your file is `target/review/<run>/ui.md`.

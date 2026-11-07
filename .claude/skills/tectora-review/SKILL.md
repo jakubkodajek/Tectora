@@ -134,5 +134,5 @@ each starting with a failing test.
 - Every finding needs evidence (board.md "Evidence rules").
 - Agents are read-only on the source tree. Run `git status` after the run; if
   one edited a source file, revert it and say so.
-- A finding that contradicts a project rule in `CLAUDE.md` (for example
+- A finding that contradicts a project rule in `AGENTS.md` (for example
   "change the core to be geometrically exact") is rejected with the rule.
