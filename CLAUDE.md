@@ -80,6 +80,9 @@ to `ui_bridge.rs` too. Use the `tectora-ui-preview` skill for screenshots.
   live-review flow. `docs/design-brief.md` and `docs/design/`: UI direction.
 - `.claude/skills/tectora-*`: workflows for this repo (DACAD parity, UI preview,
   design, i18n, testing, release). Use them.
+- `.claude/agents/tectora-*-reviewer.md`: four reviewer subagents (UX, UI
+  controls, roof math, architecture and security) with clean context and a
+  shared findings board; run them with the `tectora-review` skill.
 
 ## Rules
 
