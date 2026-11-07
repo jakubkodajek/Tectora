@@ -1,0 +1,55 @@
+{
+ "version": 1,
+ "note": "Public roofs from Czech public tenders (E-ZAK portals): the tender's project documentation and its bill of quantities (soupis prací / výkaz výměr), or totals printed on the roof plan itself. The files are public and can be downloaded again from `source`; they are not stored here. Bills are written by an estimator and can be gross (see each `note`), so a difference is a reason to check the bill's formula as much as the build.",
+ "jobs": [
+  {
+   "job": "P1",
+   "drawings": 3,
+   "source": {
+    "contract": "https://zakazky.mendelu.cz/contract_display_7545.html",
+    "files": [
+     "sypka_zabcice_dps_vv_doplneno.zip: D_1_ASR/02 (section A-A, 1:50), 07 (roof view, 1:100), VV.xlsx (bill)"
+    ]
+   },
+   "offers": [
+    {
+     "covering": "plain tiles (bobrovka), bill of quantities",
+     "pitch_groups": [],
+     "roof_area_m2": 1295.58,
+     "line_intervals_m": {},
+     "gross": true
+    }
+   ],
+   "exact": [],
+   "note": "Gable roof 59.38 m between two 0.78 m gable walls, 12.85 m wide, 48° with a 42° sprocket at the eave (section: covering 7.255 m at 48° + 2.13 m at 42° per side). The bill's 60.94 x 10.63 x 2 counts the length over the gable walls and adds the 2.01 m sprocket to the full 8.62 m rafter although they overlap by 1.46 m, so it is about 14 % over the drawn covering (1112.8 m² built)."
+  },
+  {
+   "job": "P2",
+   "drawings": 7,
+   "source": {
+    "contract": "https://zakazky.mendelu.cz/contract_display_6651.html",
+    "files": [
+     "priloha-c-1_projektova-dokumentace.zip: D.1.1.13 (roof plan, 1:100, with the totals), D.1.1.14 (section A-A), D.1.1.15-18 (elevations)"
+    ]
+   },
+   "offers": [
+    {
+     "covering": "clay interlocking tiles, totals printed on the roof plan",
+     "pitch_groups": [],
+     "roof_area_m2": 461.0,
+     "line_intervals_m": {}
+    }
+   ],
+   "exact": [
+    {
+     "lines_m": {
+      "ridge_and_hip": 106.2,
+      "valley": 49.2
+     },
+     "roof_area_m2": 461.0
+    }
+   ],
+   "note": "Hipped villa roof with six wings, all ridges at one height (+12.716 in every elevation), so the narrower wings are steeper. No pitch is written; section A-A gives 39° but cuts at a wing junction. One pitch of 39° everywhere: 435.2 m², ridge 23.5, hips 86.5, valleys 50.0. Wings as parts with level ridges and the main wing at 34° (ridge 3.8 m above the eave line) match the printed totals: about 461 m², ridge 32.2, hips 72.6, valleys 49.1. Open: which height the eave line is at (the cornice is +7.750, the eaves are flared)."
+  }
+ ]
+}

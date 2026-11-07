@@ -14,6 +14,12 @@ repository**. Only numbers are here:
   line lengths of a Bramac offer. Made by `tools/drawing-eval/extract_truth.py`.
 - `drawing_facts.json`: figures printed on some drawings (scale, stated
   areas, heights), read by eye. Cross-checks, not offer figures.
+- `public_truth.json`: public roofs from Czech public tenders (`P1`, `P2`,
+  …) in the same shape: the bill of quantities or the totals printed on
+  the roof plan, with the tender page each comes from. The tender files
+  are not stored here; download them again from `source`. A bill marked
+  `gross` counts more than the drawn roof (its `note` says how) and is
+  printed as information, not scored.
 
 ## How exact each label is
 

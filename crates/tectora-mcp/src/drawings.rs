@@ -99,6 +99,7 @@ pub(crate) fn tools() -> Vec<Value> {
                 "region": region_prop(),
                 "min_length_mm": { "type": "number", "description": "Shortest line returned (default 2 mm)." },
                 "limit": { "type": "integer", "description": "Most lines returned (default 200, at most 2000)." },
+                "directions_deg": { "type": "array", "items": { "type": "number" }, "description": "Keep only lines within 1° of these sheet directions, e.g. [0, 90] for the walls and roof edges of a plan drawn square to the sheet. Use it on hatched or tiled roof plans, where the pattern otherwise fills the limit." },
             })), &["region"]),
         }),
         json!({
@@ -255,9 +256,18 @@ impl Server {
             .and_then(Value::as_u64)
             .unwrap_or(200)
             .clamp(1, 2000) as usize;
+        let directions: Vec<f64> = match args.get("directions_deg") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(a)) if a.len() <= 8 => a
+                .iter()
+                .map(|v| v.as_f64().filter(|x| x.is_finite()))
+                .collect::<Option<Vec<f64>>>()
+                .ok_or("`directions_deg` must be numbers")?,
+            Some(_) => return Err("`directions_deg` must be an array of at most 8 numbers".into()),
+        };
         let content = d.content(page).map_err(|e| e.to_string())?;
         let lines: Vec<Value> = content
-            .lines(Some(region), min_len, limit)
+            .lines_along(Some(region), min_len, limit, &directions)
             .iter()
             .map(|s| {
                 json!({

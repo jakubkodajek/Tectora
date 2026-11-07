@@ -354,3 +354,63 @@ fn grid_is_drawn_on_multiples_of_the_step() {
     assert_eq!(grid_auto_step(297.0), 20.0);
     assert_eq!(grid_auto_step(40.0), 5.0);
 }
+
+/// A square roof outline filled with 45° hatching that runs out at the edges
+/// near each corner, as on hatched roof plans.
+fn hatched_square() -> PageContent {
+    let s = |a: [f64; 2], b: [f64; 2]| Segment {
+        a,
+        b,
+        width: 0.1,
+        dashed: false,
+    };
+    let mut segs = vec![
+        s([10.0, 10.0], [60.0, 10.0]),
+        s([60.0, 10.0], [60.0, 60.0]),
+        s([60.0, 60.0], [10.0, 60.0]),
+        s([10.0, 60.0], [10.0, 10.0]),
+    ];
+    // Hatching every 1.3 mm, clipped to the square.
+    let mut k = 0.3;
+    while k < 100.0 {
+        let (a, b) = if k <= 50.0 {
+            ([10.0, 10.0 + k], [10.0 + k, 10.0])
+        } else {
+            ([10.0 + k - 50.0, 60.0], [60.0, 10.0 + k - 50.0])
+        };
+        segs.push(s(a, b));
+        k += 1.3;
+    }
+    PageContent {
+        segments: segs,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn trace_snaps_to_the_outline_not_to_hatching() {
+    let c = hatched_square();
+    // Rough corners about 1 mm off, closer to hatch crossings than to the corner.
+    let t = c.trace(
+        &[[10.9, 10.4], [59.2, 10.9], [59.4, 59.1], [10.6, 59.2]],
+        1.5,
+    );
+    assert_eq!(t.snapped, vec![true; 4]);
+    assert_eq!(t.edges_sheet_mm, vec![50.0, 50.0, 50.0, 50.0]);
+    assert_eq!(t.edges_angle_deg, vec![0.0, 90.0, 0.0, 90.0]);
+}
+
+#[test]
+fn lines_along_keeps_only_the_given_directions() {
+    let c = hatched_square();
+    assert_eq!(c.lines(None, 2.0, 4).len(), 4);
+    assert!(
+        c.lines(None, 2.0, 4)
+            .iter()
+            .any(|l| (l.angle_deg() - 45.0).abs() < 1.0 || (l.angle_deg() - 135.0).abs() < 1.0),
+        "longest first: the hatching crowds the outline out"
+    );
+    let square = c.lines_along(None, 2.0, 4, &[0.0, 90.0]);
+    assert_eq!(square.len(), 4);
+    assert!(square.iter().all(|l| (l.length() - 50.0).abs() < 1e-9));
+}

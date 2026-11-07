@@ -11,6 +11,11 @@ id. It runs ``tectora calc --summary`` on each and compares:
   out of the total;
 - line lengths with the exact lengths where a Bramac offer has them.
 
+``eval/drawings/public_truth.json`` has the same shape for public roofs
+(tender drawings with a bill of quantities, or totals printed on the roof
+plan). A bill marked ``gross`` counts more than the drawn roof (see its
+note), so its area is printed as ``info`` only.
+
 These are the scored checks. The line lengths that piece counts of the CN
 offers allow (F+G, OL+OR, T, K) are printed as `info` only: on the ten jobs
 they disagree with geometry that is certain by up to 7 % (ridge tiles) and
@@ -71,11 +76,17 @@ def score(q: dict[str, Any], offer: dict[str, Any], exact: dict[str, Any] | None
     want = offer["roof_area_m2"]
     groups = offer["pitch_groups"]
     # Offers merge close pitches into one group (job 6: 42° and 43° -> 43°).
-    priced = [p for p in by_pitch if any(abs(p - g["pitch_deg"]) <= 1.0 for g in groups)]
+    # Without pitch groups (a bill of quantities that gives one total) every
+    # pitch counts.
+    priced = [p for p in by_pitch
+              if not groups or any(abs(p - g["pitch_deg"]) <= 1.0 for g in groups)]
     total = sum(by_pitch[p] for p in priced)
     # Each group is rounded up to a whole m² (a decimal group is exact).
     slack = sum(1.0 for g in groups if float(g["area_m2"]).is_integer())
-    c["area_total"] = check_range(total, (want - slack) * (1 - AREA_TOL), want * (1 + AREA_TOL))
+    # A bill known to be gross (its formula counts more than the drawn roof)
+    # says where to look, not whether the roof is right.
+    area = check_range(total, (want - slack) * (1 - AREA_TOL), want * (1 + AREA_TOL))
+    (res["info"] if offer.get("gross") else c)["area_total"] = area
     for g in groups:
         got = sum(a for p, a in by_pitch.items() if abs(p - g["pitch_deg"]) <= 1.0)
         lo = (g["area_m2"] - (1 if float(g["area_m2"]).is_integer() else 0)) * (1 - AREA_TOL)
@@ -98,8 +109,8 @@ def score(q: dict[str, Any], offer: dict[str, Any], exact: dict[str, Any] | None
         for k, v in want_exact.items():
             if v:
                 c[f"{k}_exact"] = check_range(have[k], v * (1 - EXACT_TOL), v * (1 + EXACT_TOL))
-    info = res["info"] = {}
-    for k, (lo, hi) in offer["line_intervals_m"].items():
+    info = res["info"]
+    for k, (lo, hi) in offer.get("line_intervals_m", {}).items():
         info[k] = check_range(have[k], lo, hi)
     res["passed"] = sum(1 for v in c.values() if v["ok"])
     res["total"] = len(c)
@@ -130,7 +141,8 @@ def main() -> int:
         offer = job["offers"][min(spec.get("offer", default), len(job["offers"]) - 1)]
         path = Path(spec["path"]) if "path" in spec else library_design(args.library, spec["id"])
         try:
-            r = score(calc(args.tectora, path), offer, job["exact"][0] if job["exact"] else None)
+            exact = job.get("exact") or [None]
+            r = score(calc(args.tectora, path), offer, exact[0])
         except Exception as e:  # report and go on with the other jobs
             r = {"error": str(e), "passed": 0, "total": 0, "checks": {}, "info": {}}
         r["job"] = key
@@ -145,7 +157,7 @@ def main() -> int:
             print(f"  {mark} {k:<{width}} {v['value']:>9.2f}  in [{v['range'][0]:.2f}, {v['range'][1]:.2f}]")
         for k, v in r["info"].items():
             mark = "   " if v["ok"] else "  ?"
-            print(f"  {mark} {k:<{width}} {v['value']:>9.2f}  pieces allow [{v['range'][0]:.2f}, {v['range'][1]:.2f}]  (info)")
+            print(f"  {mark} {k:<{width}} {v['value']:>9.2f}  in [{v['range'][0]:.2f}, {v['range'][1]:.2f}]  (info)")
     passed = sum(r["passed"] for r in report)
     total = sum(r["total"] for r in report)
     print(f"\n{len(report)} designs, {passed}/{total} checks passed")

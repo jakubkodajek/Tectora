@@ -119,11 +119,26 @@ impl PageContent {
         out
     }
 
-    /// Snaps each of `points` (sheet mm) to the nearest drawn corner or line
-    /// crossing within `snap_mm` and measures the closed polygon.
+    /// Snaps each of `points` (sheet mm) to the drawing within `snap_mm` and
+    /// measures the closed polygon. A corner snaps first to the crossing of
+    /// drawn lines that run along its two edges (so hatching and patterns
+    /// near the corner do not pull it off), otherwise to the nearest drawn
+    /// corner or line crossing.
     pub fn trace(&self, points: &[[f64; 2]], snap_mm: f64) -> Trace {
-        let snapped: Vec<Option<[f64; 2]>> =
-            points.iter().map(|&p| self.snap(p, snap_mm)).collect();
+        let n = points.len();
+        let snapped: Vec<Option<[f64; 2]>> = (0..n)
+            .map(|i| {
+                let p = points[i];
+                let before = points[(i + n - 1) % n];
+                let after = points[(i + 1) % n];
+                let corner = if n >= 3 {
+                    self.snap_corner(p, before, after, snap_mm)
+                } else {
+                    None
+                };
+                corner.or_else(|| self.snap(p, snap_mm))
+            })
+            .collect();
         let pts: Vec<[f64; 2]> = points
             .iter()
             .zip(&snapped)

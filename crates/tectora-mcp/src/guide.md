@@ -121,9 +121,13 @@ an image makes dimension text unreadable. Use the drawing tools:
   exact drawn length. This is how to get dimensions, not by placing points.
 - `trace_outline` snaps a polygon you give roughly (from the grid) to the
   drawn corners and returns it in metres for `create_project`, optionally
-  moved in or out (`offset_m`).
+  moved in or out (`offset_m`). It snaps each corner to the crossing of
+  lines that run along your two neighbouring edges, so tile or hatch
+  patterns inside the roof do not pull it off the outline.
 - `measure_drawing` measures between two points; `drawing_lines` lists the
-  drawn lines of a region and the text of PDFs that have a text layer.
+  drawn lines of a region and the text of PDFs that have a text layer. On a
+  hatched or tiled roof plan the pattern fills the list: pass
+  `directions_deg` (e.g. `[0, 90]`) to keep only the lines along the walls.
 
 **The plot scale is not always the title block's scale.** Sheets drawn at
 1:50 on a large format are often printed smaller (in the test jobs: 1:50.78,
@@ -157,11 +161,28 @@ each a clean rectangle, the second running into the first.
 outline. Section and plan labels such as `+5,810` at a ridge are usually the
 top of the covering, 5–15 cm above Tectora's ridge; use them as a check, not
 as input. Read the pitch from the plan or section, never derive it from
-rounded heights. A cornice label (`římsa`, `atika`) is the top of the wall,
+rounded heights. A section cut where two wings meet can show a pitch that
+holds for neither wing (and sections often show the existing state, not the
+new roof): check it against the elevations. A cornice label (`římsa`, `atika`) is the top of the wall,
 not the eave of the roof plane, which usually sits a little higher: take
 the eave height from the section's ridge and pitch (ridge height − half
 span × tan(pitch)) and confirm it with a second label on the same plane,
 such as the front or back of a deck or dormer.
+
+**Roof form from the elevations.** When every elevation puts all ridges at
+one height but the wings are of different width, the narrower wings are
+steeper: each wing's pitch is atan(ridge height above the eave / half the
+wing's width). Build such a roof as one part per wing (a clean rectangle,
+running into its neighbours, gables where a wing ends against another),
+each with its own pitch; a single outline whose edges carry different
+pitches often fails to calculate. Check the result against the drawn hips
+and valleys and the ridge lengths on the roof plan.
+
+**Pitch breaks.** A flatter strip at the eave (a sprocket, `podkosík`) or a
+mansard is `breaks` on the eave edges only: `pitch_deg` is the pitch at the
+eave, each break the height where the next pitch starts. Never copy breaks
+to gable edges: a gable edge with a break becomes a hip above the break
+height.
 
 **Roofs that are hard to model.** An eave that is lowered over part of a
 wall but continues the same plane (a porch under an extended roof) is two
@@ -208,7 +229,12 @@ and ask the user; do not invent a value to make a figure fit.
 6. **Check.** `calc`, then compare with every figure the drawing prints:
    roof area per pitch (`area_by_pitch_m2`; a drawing's "plocha střechy" is
    sloped area, "půdorysná plocha" is plan area = sloped area × cos pitch),
-   ridge and eave heights (`+5,810` labels), outline dimensions. Save the
+   ridge and eave heights (`+5,810` labels), outline dimensions. A bill of
+   quantities (`soupis prací`, `výkaz výměr`) is an estimator's gross
+   figure: read the formula behind each item (it may run the length over
+   the gable walls, or add an eave strip to the full rafter although they
+   overlap) and say how it differs from the drawn roof instead of bending
+   the roof to it. Save the
    comparison, the values you could not measure and your assumptions (e.g.
    "overhang not dimensioned, used 0.5 m") in the job's `notes` with
    `update_job`, tell the user the same, and leave the job in draft.

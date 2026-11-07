@@ -29,7 +29,9 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    The guide's "Reading the drawing" section lists what tripped earlier
    builds: the gutter strip is not overhang, nearly straight corners break
    the calculation, metal decks in a tiled slope are shed dormers, and gaps
-   in the drawings go to the user as questions, not guesses.
+   in the drawings go to the user as questions, not guesses. Its "Roof
+   form from the elevations" and "Pitch breaks" paragraphs say how to read
+   wings whose ridges are level and eaves with a flatter strip.
 5. Search with `list_projects` (customer, address, job number) so you edit the
    existing job instead of creating a duplicate.
 6. Build in the six steps of the guide: read and check, then one save each for

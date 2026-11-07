@@ -72,8 +72,20 @@ colleague uses Claude Desktop, Codex or Antigravity.
   all ten jobs found three reading errors in object B of job 4 (eave
   height taken from the cornice label, a deck depth, where one deck
   starts); fixing them took it from +7.3 % to +1.0 %.
-  **Next:** the colleague's review of these builds in the app, and the
-  missing sections for jobs 1 and 2.
+  Public roofs (2026-11-07): Czech public tenders publish the whole
+  project with a bill of quantities, so they are a second set with
+  known figures (`eval/drawings/public_truth.json`, numbers and source
+  links only). The first two found two tool fixes (outline tracing
+  pulled to the tile hatching, `drawing_lines` crowded by it) and three
+  guide rules (gable edges carry no pitch breaks, level ridges mean
+  steeper narrow wings built as one part per wing, bills of quantities
+  are gross). A granary's bill is 14 % over its drawn roof (it counts
+  over the gable walls and the eave strip twice); a villa's printed
+  totals are matched by level ridges, area within 1 %, valleys 0.3 %,
+  ridges and hips 1.4 %.
+  **Next:** more public roofs (a larger hipped school, a roof whose bill
+  comes from the designer's 3D model), the colleague's review of these
+  builds in the app, and the missing sections for jobs 1 and 2.
 - Review flow: the AI marks what it was unsure about (unreadable dimension,
   guessed pitch); the colleague confirms or fixes it before the job leaves
   draft.

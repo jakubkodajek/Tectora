@@ -173,6 +173,9 @@ pub struct PageInfo {
     pub paper: Option<String>,
 }
 
+/// Direction tolerance of [`PageContent::lines_along`], degrees.
+pub const DIRECTION_TOL_DEG: f64 = 1.0;
+
 /// A straight line on the sheet, mm.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Segment {
@@ -591,10 +594,32 @@ pub struct Measurement {
 impl PageContent {
     /// Line segments inside `region`, collinear pieces merged, longest first.
     pub fn lines(&self, region: Option<RectMm>, min_len_mm: f64, limit: usize) -> Vec<Segment> {
+        self.lines_along(region, min_len_mm, limit, &[])
+    }
+
+    /// Like [`PageContent::lines`], keeping only lines within
+    /// [`DIRECTION_TOL_DEG`] of one of `directions_deg` (sheet degrees,
+    /// any sign; empty keeps all). Hatching and tile patterns in other
+    /// directions then no longer crowd the outline out of the limit.
+    pub fn lines_along(
+        &self,
+        region: Option<RectMm>,
+        min_len_mm: f64,
+        limit: usize,
+        directions_deg: &[f64],
+    ) -> Vec<Segment> {
+        let along = |s: &Segment| {
+            directions_deg.is_empty()
+                || directions_deg.iter().any(|&d| {
+                    let off = (s.angle_deg() - d).rem_euclid(180.0);
+                    off.min(180.0 - off) <= DIRECTION_TOL_DEG
+                })
+        };
         let inside: Vec<Segment> = self
             .segments
             .iter()
             .filter(|s| region.is_none_or(|r| r.contains(s.a) || r.contains(s.b)))
+            .filter(|s| along(s))
             .copied()
             .collect();
         let mut merged = merge_collinear(inside);
@@ -635,6 +660,64 @@ impl PageContent {
             for t in &near[i + 1..] {
                 if let Some(x) = intersect(s, t) {
                     consider(x);
+                }
+            }
+        }
+        best.map(|(q, _)| q)
+    }
+
+    /// Snaps the corner `p` of a traced polygon whose edges arrive from
+    /// `before` and leave towards `after`: the crossing of a drawn line along
+    /// the incoming edge with a drawn line along the outgoing edge, nearest
+    /// to `p` within `radius`. Lines in other directions (hatching, tile
+    /// patterns, dimension ticks) are ignored, and the lines are extended to
+    /// meet, so a corner drawn with a small gap or overlap still snaps.
+    pub fn snap_corner(
+        &self,
+        p: [f64; 2],
+        before: [f64; 2],
+        after: [f64; 2],
+        radius: f64,
+    ) -> Option<[f64; 2]> {
+        const DIR_TOL_DEG: f64 = 6.0;
+        const MIN_LEN_MM: f64 = 1.0;
+        const MIN_TURN_DEG: f64 = 15.0;
+        let dir = |a: [f64; 2], b: [f64; 2]| {
+            (b[1] - a[1])
+                .atan2(b[0] - a[0])
+                .to_degrees()
+                .rem_euclid(180.0)
+        };
+        let off = |a: f64, b: f64| {
+            let d = (a - b).rem_euclid(180.0);
+            d.min(180.0 - d)
+        };
+        let (d_in, d_out) = (dir(before, p), dir(p, after));
+        if off(d_in, d_out) < MIN_TURN_DEG {
+            return None;
+        }
+        let near: Vec<&Segment> = self
+            .segments
+            .iter()
+            .filter(|s| s.length() >= MIN_LEN_MM && seg_point_dist(s, p) <= radius)
+            .take(5000)
+            .collect();
+        let along_in: Vec<&&Segment> = near
+            .iter()
+            .filter(|s| off(s.angle_deg(), d_in) <= DIR_TOL_DEG)
+            .collect();
+        let along_out: Vec<&&Segment> = near
+            .iter()
+            .filter(|s| off(s.angle_deg(), d_out) <= DIR_TOL_DEG)
+            .collect();
+        let mut best: Option<([f64; 2], f64)> = None;
+        for s in &along_in {
+            for t in &along_out {
+                if let Some(x) = line_intersection(s, t) {
+                    let d = dist(p, x);
+                    if d <= radius && best.is_none_or(|(_, bd)| d < bd) {
+                        best = Some((x, d));
+                    }
                 }
             }
         }
@@ -740,6 +823,18 @@ fn seg_point_dist(s: &Segment, p: [f64; 2]) -> f64 {
     }
     let t = (((p[0] - s.a[0]) * vx + (p[1] - s.a[1]) * vy) / len2).clamp(0.0, 1.0);
     dist([s.a[0] + t * vx, s.a[1] + t * vy], p)
+}
+
+/// Crossing of the infinite lines through two segments.
+fn line_intersection(s: &Segment, t: &Segment) -> Option<[f64; 2]> {
+    let (x1, y1, x2, y2) = (s.a[0], s.a[1], s.b[0], s.b[1]);
+    let (x3, y3, x4, y4) = (t.a[0], t.a[1], t.b[0], t.b[1]);
+    let den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+    if den.abs() < 1e-9 {
+        return None;
+    }
+    let u = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den;
+    Some([x1 + u * (x2 - x1), y1 + u * (y2 - y1)])
 }
 
 fn intersect(s: &Segment, t: &Segment) -> Option<[f64; 2]> {
