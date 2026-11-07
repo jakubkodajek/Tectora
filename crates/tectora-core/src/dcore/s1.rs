@@ -214,6 +214,15 @@ fn merge(c: &mut Core) -> Result<(), CoreError> {
                 && num::eq(a.ov, b.ov, tol.value)
                 && a.b == b.b
             {
+                if roof_chain(c, p) != roof_chain(c, q) {
+                    let model = c.g.cur_model.map_or(0, |m| c.model(m).no);
+                    let (kept, absorbed) = (c.wall(p).no, c.wall(q).no);
+                    c.notices.push(Notice::MergedWalls {
+                        model,
+                        kept,
+                        absorbed,
+                    });
+                }
                 let qn = c.wnext(q)?;
                 c.set_next(p, qn);
                 c.set_prev(qn, p);
@@ -243,6 +252,19 @@ fn merge(c: &mut Core) -> Result<(), CoreError> {
             return Ok(());
         }
     }
+}
+
+/// Pitch, eave height and overhang of each roof face of a wall, bottom
+/// to top (the main face, then its pitch breaks).
+fn roof_chain(c: &Core, w: WallId) -> Vec<(f32, f32, f32)> {
+    let mut out = Vec::new();
+    let mut f = c.wall(w).faces.and_then(|h| c.face(h).next);
+    while let Some(fi) = f {
+        let face = c.face(fi);
+        out.push((face.pitch, face.h, face.ov));
+        f = face.next;
+    }
+    out
 }
 
 /// Relinks every hole outline in reverse order with swapped ends (the

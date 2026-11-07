@@ -76,7 +76,7 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     let mut geos = generate_valid(&clean);
     let warnings = crate::check::check(&clean.parts, &geos);
     for (geo, w) in geos.iter_mut().zip(warnings) {
-        geo.warnings = w;
+        geo.warnings.extend(w);
     }
     slots
         .into_iter()
@@ -88,6 +88,9 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
                     // Dormer faces (edge usize::MAX) belong to no edge.
                     for f in g.faces.iter_mut().filter(|f| f.edge < n) {
                         f.edge = n - 1 - f.edge;
+                    }
+                    for e in g.warnings.iter_mut().flat_map(|w| w.edges.iter_mut()) {
+                        *e = n - 1 - *e;
                     }
                 }
                 g

@@ -118,8 +118,22 @@ fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             "reported area differs from the roof faces by {:.1} %; check the area",
             w.value * 100.0
         ),
+        WarningKind::MergedWalls => {
+            let (kept, ignored) = (w.edges.first(), w.edges.get(1));
+            format!(
+                "edges {} and {} (0-based) are in line with the same eave height and overhang, so they are calculated as one wall with the pitch and pitch breaks of edge {}; edge {}'s own pitch or pitch breaks are ignored. To keep them, give the walls different eave heights or overhangs, or use one pitch for both",
+                kept.map_or(0, |e| *e),
+                ignored.map_or(0, |e| *e),
+                kept.map_or(0, |e| *e),
+                ignored.map_or(0, |e| *e),
+            )
+        }
     };
-    json!({ "kind": w.kind, "value": w.value, "message": message })
+    let mut v = json!({ "kind": w.kind, "value": w.value, "message": message });
+    if !w.edges.is_empty() {
+        v["edges"] = json!(w.edges);
+    }
+    v
 }
 
 fn quantities(project: &Project) -> Value {
@@ -531,7 +545,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total. A part whose roof looks geometrically wrong (outside its eave outline, faces passing through each other, area not matching its faces) carries `warnings`: tell the user and suggest checking pitches and overhangs.",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total. A part whose roof looks geometrically wrong (outside its eave outline, faces passing through each other, area not matching its faces) or where two walls in line are calculated as one so one wall's pitch is not used (`merged_walls`, with `edges`) carries `warnings`: tell the user and suggest checking pitches and overhangs.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
