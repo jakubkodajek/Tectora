@@ -1,0 +1,13 @@
+[package]
+name = "tectora-drawing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reads technical drawings (PDF) for the AI drawing-to-roof flow: page info, rendered crops, vector lines and measurements."
+
+[dependencies]
+# Pure-Rust PDF interpreter and rasterizer (Apache-2.0 OR MIT), no system libraries,
+# so the same code runs on macOS and Windows.
+hayro = "0.9.0"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
