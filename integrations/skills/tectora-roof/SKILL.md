@@ -24,7 +24,9 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    `create_project` (one part per wing with its own ridge height). Fill `job`
    (number, customer, address) when the drawing's title block has them.
 5. Check with `calc`: roof area, ridge height and line lengths (T, F, G, K, O, W)
-   must be plausible against the drawing.
+   must be plausible against the drawing. When the user asks how a number came
+   about, `calc_breakdown` gives every face (plan area / cos pitch − openings)
+   and every line with its 3D length.
 6. Correct with `update_edges`, `set_outline`, `add_part`, `update_job`. Make a
    few meaningful steps, each with a one-sentence `summary` in the user's
    language (it is shown to them), e.g. "Sklon uliční strany 42° podle řezu A-A".

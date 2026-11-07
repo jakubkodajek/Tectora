@@ -5,6 +5,7 @@ import type {
   ActivityItem,
   AppSettingsView,
   Attachment,
+  CalcBreakdown,
   CalcResult,
   ExampleInfo,
   Library,
@@ -44,6 +45,7 @@ export const api = {
   createFromExample: (exampleId: string, name?: string) =>
     invoke<string>("create_from_example", { exampleId, name: name ?? null }),
   calc: (project: Project) => invoke<CalcResult>("calc", { project }),
+  calcBreakdown: (project: Project) => invoke<CalcBreakdown>("calc_breakdown", { project }),
   getSettings: () => invoke<AppSettingsView>("get_settings"),
   updateSettings: (patch: Record<string, unknown>) => invoke<AppSettingsView>("update_settings", { patch }),
   openFolder: (which: "projects" | "drawings" | "settings") => invoke<void>("open_folder", { which }),

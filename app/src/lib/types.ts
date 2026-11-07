@@ -329,3 +329,76 @@ export const isGable = (e: EdgeDef) => Math.abs(e.pitch_deg - 90) <= 0.001;
 export const isMarker = (e: EdgeDef) => e.direction_rad != null;
 
 export type Selection = { part: number; edge: number } | null;
+
+/** How the roof's quantities were calculated (core `breakdown`). */
+export interface CalcBreakdown {
+  parts: {
+    name: string;
+    walls: {
+      no: number;
+      length: number;
+      gable: boolean;
+      pitch_deg: number;
+      eave_height: number;
+      overhang: number;
+      material: number;
+      half_hip?: boolean;
+      breaks?: number;
+      clad?: boolean;
+    }[];
+    faces: BreakdownFace[];
+    clad?: [number, number][];
+    openings?: { kind: "window" | "chimney" | "dormer" | "hole"; area: number }[];
+    roof_area: number;
+    calculated: boolean;
+  }[];
+  manual_faces: { no: number; label: string; pitch_deg: number; plan_area: number; factor: number; area: number }[];
+  materials: {
+    material: number;
+    name?: string;
+    items: { part: number | null; face: number | null; area: number }[];
+    area: number;
+  }[];
+  lines: {
+    code: string;
+    items: BreakdownLine[];
+    deducted?: number;
+    total: number;
+  }[];
+  roof_area: number;
+}
+
+export interface BreakdownFace {
+  no: number;
+  /** Wall number from 1; null for a dormer face. */
+  wall: number | null;
+  pitch_deg: number;
+  material: number;
+  polygon: [number, number, number][];
+  plan_area: number;
+  factor: number;
+  gross: number;
+  deducted: number;
+  area: number;
+  /** The core's gross area where it differs from the formula. */
+  engine_gross?: number;
+}
+
+export interface BreakdownLine {
+  part: number | null;
+  a: [number, number, number];
+  b: [number, number, number];
+  delta: [number, number, number];
+  length: number;
+  typed?: boolean;
+}
+
+/** A face or line the plan highlights while the breakdown points at it. */
+export type PlanMark = { polygon: [number, number][] } | { line: [[number, number], [number, number]] } | null;
+
+/** A face number the plan shows at the face's centre. */
+export interface PlanLabel {
+  x: number;
+  y: number;
+  text: string;
+}

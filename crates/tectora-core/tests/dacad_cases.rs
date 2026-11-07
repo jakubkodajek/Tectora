@@ -403,3 +403,45 @@ fn compare_tol(cases: Vec<(String, Value)>, tol: fn(f64) -> f64) -> Vec<String> 
     }
     failures
 }
+
+/// The step-by-step calculation the app shows adds up to the results for
+/// every DACAD case, and every face's `plan area / cos(pitch) - deducted`
+/// gives its area (joined roofs: within 1 %, flagged per face).
+#[test]
+fn breakdown_adds_up_for_every_case() {
+    let mut failures = Vec::new();
+    for sub in ["dacad_cases", "multiroof"] {
+        for (name, case) in fixtures_in(sub) {
+            let p = project(&name, &case);
+            let b = tectora_core::breakdown::breakdown(&p);
+            let t = tectora_core::quantities::roof_totals(&p);
+            if (b.roof_area - t.roof_area).abs() > 1e-9 {
+                failures.push(format!("{name}: area {} vs {}", b.roof_area, t.roof_area));
+            }
+            let codes = tectora_core::quantities::dacad_line_totals(&p);
+            let mine: BTreeMap<String, f64> =
+                b.lines.iter().map(|g| (g.code.clone(), g.total)).collect();
+            if mine != codes {
+                failures.push(format!("{name}: lines {mine:?} vs {codes:?}"));
+            }
+            for part in &b.parts {
+                for f in &part.faces {
+                    // Where roofs are joined, the core's area (DACAD's) and the
+                    // face polygon differ slightly (M3_0001, M3_0011, M3_0013:
+                    // up to 0.4 %); the app shows both numbers. Single roofs
+                    // match the formula.
+                    if let Some(e) = f.engine_gross {
+                        let rel = (f.gross - e).abs() / e.max(1e-9);
+                        if sub != "multiroof" || rel > 0.01 {
+                            failures.push(format!(
+                                "{name}/{}: face {} pitch {} formula {:.4} engine {e:.4}",
+                                part.name, f.no, f.pitch_deg, f.gross
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
