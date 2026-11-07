@@ -1,0 +1,53 @@
+name: Agent configuration
+
+# Checks the AI agent setup only: generated agent copies in sync, JSON valid,
+# hooks lint clean and block what they should. The app is tested in
+# desktop.yml.
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".claude/**"
+      - ".agents/**"
+      - ".codex/**"
+      - ".github/agents/**"
+      - "scripts/sync_agents.py"
+      - "memory/**"
+      - ".mcp.json"
+      - ".github/workflows/agent-config.yml"
+  pull_request:
+    paths:
+      - ".claude/**"
+      - ".agents/**"
+      - ".codex/**"
+      - ".github/agents/**"
+      - "scripts/sync_agents.py"
+      - "memory/**"
+      - ".mcp.json"
+      - ".github/workflows/agent-config.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-config-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generated agent files are in sync
+        run: python3 scripts/sync_agents.py --check
+      - name: JSON files are valid
+        run: |
+          for f in .claude/settings.json .claude/launch.json .mcp.json memory/features.json; do
+            python3 -m json.tool "$f" > /dev/null || { echo "invalid JSON: $f"; exit 1; }
+          done
+      - name: Shellcheck hooks
+        run: shellcheck -x .claude/hooks/*.sh
+      - name: Hooks block what they should
+        run: bash scripts/test_hooks.sh

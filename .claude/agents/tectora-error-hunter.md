@@ -19,7 +19,7 @@ Everything you need is in the repository and in the prompt that launched you
 
 ## Read first
 
-1. `CLAUDE.md` (rules on errors, untrusted input, async `confirm`),
+1. `AGENTS.md` (rules on errors, untrusted input, async `confirm`),
    `app/src/lib/errors.ts`, `app/src/lib/notify.svelte.ts`.
 2. `.claude/skills/tectora-review/board.md`: the shared findings protocol.
    Follow it exactly. Your file is `target/review/<run>/errors.md`.

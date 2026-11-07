@@ -37,3 +37,13 @@ cd app && npm ci && npm test && npx tauri dev
 ```
 
 DACAD example files are third-party data and are not committed to this repository.
+
+## Working with AI coding agents
+
+`AGENTS.md` holds the instructions every coding agent follows (Claude Code
+reads it through `CLAUDE.md`; Codex and Copilot read it directly).
+`make check` is the gate. The agent pipeline (planner, test engineer,
+implementer, bug hunter, reviewers, verifier, docs keeper) is described in
+[docs/agent-workflow.md](docs/agent-workflow.md), the system map in
+[docs/architecture.md](docs/architecture.md), decisions in `docs/adr/`, and
+the project memory agents keep between sessions in `memory/`.

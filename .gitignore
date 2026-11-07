@@ -31,3 +31,8 @@ CLAUDE.local.md
 .env
 .env.*
 !.env.example
+
+# DACAD help file and libraries (do NOT commit)
+*.HLP
+*.hlp
+*.dll
