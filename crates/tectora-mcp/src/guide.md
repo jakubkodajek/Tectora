@@ -304,8 +304,9 @@ and ask the user; do not invent a value to make a figure fit.
    `origin_sheet_mm` that `trace_outline` returned for the outline the
    footprint came from). Faces are tinted by material (yellow tiles, blue
    sheet metal, only the visible roof), lines in their colours (eaves blue,
-   ridges red, hips orange, valleys violet), openings white. Every drawn
-   ridge, hip, valley and dormer should lie under its model line; a line
+   ridges red, hips green, valleys violet, verges orange), openings white.
+   Every drawn ridge, hip, valley and dormer should lie under its model
+   line; a line
    that runs beside its drawn one is a wrong pitch, eave height or
    position. On a turned sheet pass the same `rotate` as for reading it.
    Then `calc` and compare with every figure the drawing prints:

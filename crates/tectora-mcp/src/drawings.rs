@@ -74,7 +74,7 @@ pub(crate) fn tools() -> Vec<Value> {
                 "grid": { "description": "true (default): sheet-mm grid with a step that fits the crop; a number: grid step in mm; false: no grid.", "type": ["boolean", "number"] },
                 "overlay": {
                     "type": "object",
-                    "description": "Draw a design's calculated roof over the drawing, to check the model against the plan. Faces are tinted by material (tiles yellow, sheet metal blue), lines coloured by kind as in the app (ridge red, hip green, valley violet, eave blue, verge orange), roof openings and chimneys outlined dark, roof windows marked with a cross at their position point. Where a coloured line leaves the drawn one, the model or a reading is off. Without `region` the crop is the roof's extent.",
+                    "description": "Draw a design's calculated roof over the drawing, to check the model against the plan. Faces are tinted by material (tiles yellow, sheet metal blue), lines coloured by kind as in the app (ridge red, hip green, valley violet, eave blue, verge orange), roof openings and chimneys white with a dark outline, roof windows marked with a cross at their position point. Where a coloured line leaves the drawn one, the model or a reading is off. Without `region` the crop is the roof's extent.",
                     "properties": {
                         "id": { "type": "string", "description": "Design id." },
                         "scale": { "type": "number", "description": "The plot scale denominator the model was built with, e.g. 50 (the measured one when the sheet is not to scale)." },
