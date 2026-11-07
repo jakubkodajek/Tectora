@@ -90,7 +90,10 @@ colleague uses Claude Desktop, Codex or Antigravity.
   now reports (`edges_drawn`). Open for a DACAD parity check: that roof
   as one outline (heads at 34°, wings at 28°) fails with E00002 as soon
   as a head's ridge comes out higher than a wing's; built as parts it
-  calculates.
+  calculates. Three smaller roofs (a hipped roof at 35°, a 9° hall, a
+  scanned hipped roof printed at 1:107 instead of 1:100) match every
+  line their bills give within 1 %; their areas differ by +1 % (a
+  rounded rafter), −0.9 % and +6 % (no formula).
   **Next:** more public roofs (a hipped school with mansards whose figures
   come from the designer's 3D model, an irregular faculty roof around a
   courtyard), the colleague's review of these builds in the app, and the

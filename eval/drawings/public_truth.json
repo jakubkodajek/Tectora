@@ -80,6 +80,93 @@
     }
    ],
    "note": "U-shaped hipped roof: two heads at 34° and 33°, two wings and a south block at 28°, all eaves at +16.782. The bill's eave (263.62) is exactly the perimeter of the roof edge drawn on the plan, and its ridge (94.8) plus hip (118.18) and valley figures are within about 1 % of the roof the plan describes, but its area (2322.32, the summary report's 'plocha střechy 2 322 m2') is about 9 % more than the planes of these pitches cover (about 2134 m²); no figure on the sheets explains it, so the area is information only."
+  },
+  {
+   "job": "P4",
+   "drawings": 2,
+   "source": {
+    "contract": "https://ezak.kr-karlovarsky.cz/contract_display_3307.html",
+    "files": [
+     "P4_strecha_projektova_dokumentace.zip: 07 (new roof plan, 1:50, text layer), 08 (sections A and B)",
+     "2019J-018 ... VV 10.12.2019.xlsx (bill)"
+    ]
+   },
+   "offers": [
+    {
+     "covering": "standing-seam aluminium, bill of quantities",
+     "gross": true,
+     "pitch_groups": [],
+     "roof_area_m2": 514.626,
+     "line_intervals_m": {}
+    }
+   ],
+   "exact": [
+    {
+     "lines_m": {
+      "ridge_and_hip": 60.0,
+      "eave": 88.53
+     }
+    }
+   ],
+   "note": "Hipped roof 30.645 x 13.62 m at 35° (plan and both sections). The bill's ridge (17.0), hips (4 x 10.75) and eave (2 x (30.645 + 13.62)) are the drawn roof; its area takes the rafter as 8.4 m where the section dimensions 8.31 m, so it is 1 % over the drawn planes (509.5 m²)."
+  },
+  {
+   "job": "P5",
+   "drawings": 2,
+   "source": {
+    "contract": "https://ezak.kr-karlovarsky.cz/contract_display_8192.html",
+    "files": [
+     "P1_PD.zip: D.01 (roof plan, 1:200, text layer), D.02 (cross section, 1:100)",
+     "P5_Cenová nabídka_výkaz výměr 07_02_25.xlsx (bill)"
+    ]
+   },
+   "offers": [
+    {
+     "covering": "trapezoidal steel sheet, bill of quantities",
+     "pitch_groups": [],
+     "roof_area_m2": 1186.0,
+     "line_intervals_m": {}
+    }
+   ],
+   "exact": [
+    {
+     "lines_m": {
+      "ridge_and_hip": 60.6,
+      "eave": 121.2,
+      "verge_left": 19.75,
+      "verge_right": 19.75
+     }
+    }
+   ],
+   "note": "Storage hall, gable roof 60.62 x 19.51 m at 9° (section: eave +12.000, ridge about +13.550). The bill's ridge, eaves and verges are the drawn roof; its battens area is 0.9 % under the planes (1197.3 m²)."
+  },
+  {
+   "job": "P6",
+   "drawings": 1,
+   "source": {
+    "contract": "https://ezak.kr-karlovarsky.cz/contract_display_7502.html",
+    "files": [
+     "P1_Technická dokumentace.pdf (scanned, A4): C.2 roof plan, C.3 section, both titled 1:100",
+     "P5_Cenová nabídka_výkaz výměr.xlsx (bill)"
+    ]
+   },
+   "offers": [
+    {
+     "covering": "standing-seam aluminium, bill of quantities",
+     "gross": true,
+     "pitch_groups": [],
+     "roof_area_m2": 277.0,
+     "line_intervals_m": {}
+    }
+   ],
+   "exact": [
+    {
+     "lines_m": {
+      "eave": 60.0
+     }
+    }
+   ],
+   "note": "Scanned drawings: the A4 sheets are printed at about 1:107, not the 1:100 of the title, so only the written dimensions are used. Hipped roof 11.70 x 18.23 m (with 0.65 m overhang); the section gives a 6.0 m run and a 7.30 m slope for the hip ends (34.7°), so the sides are 35.4°; ridge 6.23 m (6.27 and 6.32 are also written). The bill's gutter (60 m) is the perimeter; its area (277 m²) is 6 % over these planes (261 m²) with no formula given."
   }
  ]
 }
