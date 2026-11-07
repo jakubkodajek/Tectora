@@ -229,7 +229,8 @@ results, or a ridge appears where the two planes meet.
 
 **Things drawn over the roof.** A roof plan also draws what stands above
 the roof: canopies over walkways (`pavlač`), pergolas, solar frames. The
-tile hatch stops at their edge, but the tiles usually go on underneath.
+tile hatch stops at their edge, but the tiles usually go on underneath,
+and the estimators count the strip under such an overlap as tiles.
 Check the sections and the bill's eave and gutter lengths (an eave the
 bill counts under the canopy means tiles there), and leave such a
 structure out of the roof instead of making it a part, which would cut the

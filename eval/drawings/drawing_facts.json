@@ -193,7 +193,7 @@
     50.665,
     20.865
    ],
-   "note": "Heights from the plan: eaves +14.565 (pavilions, north), +14.570 (26° wing), south edge of the range +16.618, pavilion ridges +17.238, range ridge +17.639, 26° ridge +17.572, corridor roof +16.115 at axis A. Pavilions 9.205 x 16.565 / 16.615. The plan's 26° tile hatch is 76.2 m² plan; the bill's 89.64 also counts the strips under the walkway canopies (about 13.5 m²), which matches its 26° eave (12.3 + 2 x 6.7 m). Open: whether tiles really continue under the canopies (8 m² at 30°, 16 m² at 26°)."
+   "note": "Heights from the plan: eaves +14.565 (pavilions, north), +14.570 (26° wing), south edge of the range +16.618, pavilion ridges +17.238, range ridge +17.639, 26° ridge +17.572, corridor roof +16.115 at axis A. Pavilions 9.205 x 16.565 / 16.615. The plan's 26° tile hatch is 76.2 m² plan; the bill's 89.64 also counts the strips under the walkway canopies (about 13.5 m²), which matches its 26° eave (12.3 + 2 x 6.7 m). Confirmed by the estimator (2026-11-07): the tiles continue under the canopies, and the strips where their sheet metal overlaps the tile roof count as tiles. The corridor roof is different: near the 26° wing's eaves its plane runs above the slope, the plan's tile hatch stops at the intersection and the bill counts no tiles below it, so the corridor stays a part."
   }
  }
 }

@@ -623,7 +623,7 @@
      }
     }
    ],
-   "note": "Added by hand (2026-11-07), not by extract_truth.py: the offer as the script reads it, plus also_deg because the offer prices the 26° wing within its 30° area, and the bill's ridge. Three-storey building: two hipped pavilions at 30° joined by a range whose ridge is higher than theirs, a hipped wing at 26°, a tower, sheet-metal roofs at 8°, 22 roof windows 780 x 1600. The bill gives 30°: 482.29 m² plan / cos 30° minus 22 x 0.81 x 1.39 / cos 30° = 528.30, 26°: 89.64 / cos 26° = 99.73, ridge 51.65, hips 84.36 (plan / cos 30°, more than the true length), valleys 30.25, eaves 101.9 + 25.7. Walkway canopies drawn over the tiles are taken as standing above the roof (the bill's 26° eave runs under them)."
+   "note": "Added by hand (2026-11-07), not by extract_truth.py: the offer as the script reads it, plus also_deg because the offer prices the 26° wing within its 30° area, and the bill's ridge. Three-storey building: two hipped pavilions at 30° joined by a range whose ridge is higher than theirs, a hipped wing at 26°, a tower, sheet-metal roofs at 8°, 22 roof windows 780 x 1600. The bill gives 30°: 482.29 m² plan / cos 30° minus 22 x 0.81 x 1.39 / cos 30° = 528.30, 26°: 89.64 / cos 26° = 99.73, ridge 51.65, hips 84.36 (plan / cos 30°, more than the true length), valleys 30.25, eaves 101.9 + 25.7. Walkway canopies drawn over the tiles stand above the roof (the bill's 26° eave runs under them); the estimator confirmed that the strips where their sheet metal overlaps the tiles count as tiles."
   }
  ]
 }

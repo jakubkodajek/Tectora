@@ -111,7 +111,8 @@ colleague uses Claude Desktop, Codex or Antigravity.
   through MCP in the six steps, its tiles come out 634.7 m² against the
   offer's 630 (+0.75 %) and its ridge within 0.5 % of the bill. New guide
   rules: pavilions and range as one outline; canopies drawn over the tiles
-  stand above the roof; window sizes from the window schedule; openings at
+  stand above the roof (the estimator confirmed that the tiles under them
+  count); window sizes from the window schedule; openings at
   the eave reach past it. `drawing_lines` now lists the text layer
   separately from the lines, with a filter (`text_contains`), so one call
   gives every height and pitch label of a sheet. Open for a DACAD parity
