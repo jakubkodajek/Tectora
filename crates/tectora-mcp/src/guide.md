@@ -95,6 +95,11 @@ part's walls below that part's roof, and roofs that cross meet in valleys.
 The rules were checked against roofs calculated by DACAD itself: a step
 between eaves at different heights is a short verge, the lower edge of a
 Krüppelwalm plane counts as eave T, and hips run through a pitch break.
+With two or more materials `calc` also gives `lines_by_material_m`: the
+lines of each material's faces as drawn (without the corrections around
+openings and the hand-drawn lines, which are only in the totals).
+`heights_m` gives each part's level eave heights, pitch-break heights and
+highest point.
 
 ## Turning a technical drawing into a roof
 
@@ -294,17 +299,30 @@ and ask the user; do not invent a value to make a figure fit.
    pitch, eave height, overhang, half-hips, pitch breaks (`update_edges`).
 4. **Dormers** (`add_dormer`), one save for all of them.
 5. **Chimneys, windows, openings** (`set_openings`).
-6. **Check.** `calc`, then compare with every figure the drawing prints:
+6. **Check.** First look: `view_drawing` with `overlay` {`id`, `scale`,
+   `origin`} draws the calculated roof over the roof plan (`origin` is the
+   `origin_sheet_mm` that `trace_outline` returned for the outline the
+   footprint came from). Faces are tinted by material (yellow tiles, blue
+   sheet metal, only the visible roof), lines in their colours (eaves blue,
+   ridges red, hips orange, valleys violet), openings white. Every drawn
+   ridge, hip, valley and dormer should lie under its model line; a line
+   that runs beside its drawn one is a wrong pitch, eave height or
+   position. On a turned sheet pass the same `rotate` as for reading it.
+   Then `calc` and compare with every figure the drawing prints:
    roof area per pitch (`area_by_pitch_m2`; a drawing's "plocha střechy" is
    sloped area, "půdorysná plocha" is plan area = sloped area × cos pitch),
-   ridge and eave heights (`+5,810` labels), outline dimensions. A bill of
+   ridge and eave heights (`+5,810` labels: `heights_m` lists each part's
+   eave and pitch-break heights and its highest point), outline
+   dimensions. A bill of
    quantities (`soupis prací`, `výkaz výměr`) is an estimator's gross
    figure: read the formula behind each item (it may run the length over
    the gable walls, or add an eave strip to the full rafter although they
    overlap) and say how it differs from the drawn roof instead of bending
    the roof to it. The line totals count every part: when the offer
-   prices tiles only, take the eaves and verges of sheet-metal parts out
-   (`calc` lists quantities per part). Save the
+   prices one material (tiles only), compare its lines with that
+   material's entry in `lines_by_material_m` (listed when the roof has two
+   or more materials; a line between tiles and sheet metal counts for
+   both). Save the
    comparison, the values you could not measure and your assumptions (e.g.
    "overhang not dimensioned, used 0.5 m") in the job's `notes` with
    `update_job`, tell the user the same, and leave the job in draft.

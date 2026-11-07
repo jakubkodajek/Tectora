@@ -15,6 +15,7 @@ use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::geom::Point2;
 use tectora_core::model::GABLE_PITCH_DEG;
 use tectora_core::quantities::{area_by_pitch, dacad_line_totals, roof_totals};
+use tectora_core::roof::LineKind;
 use tectora_core::settings::Settings;
 use tectora_core::store::{LiveStatus, Store, now_ms};
 use tectora_core::{
@@ -125,7 +126,7 @@ fn warning(w: &tectora_core::check::RoofWarning) -> Value {
 
 fn quantities(project: &Project) -> Value {
     let t = roof_totals(project);
-    json!({
+    let mut q = json!({
         "roof_area_m2": round(t.roof_area, 2),
         "ridge_height_m": round(t.ridge_height, 2),
         "hip_count": t.hip_count,
@@ -140,7 +141,56 @@ fn quantities(project: &Project) -> Value {
             .iter()
             .map(|&(m, a)| json!({ "material": m, "name": project.material_name(m), "area": round(a, 2) }))
             .collect::<Vec<_>>(),
-    })
+    });
+    // With more than one material: the lines each one's offer needs.
+    let by_line = tectora_core::quantities::lines_by_material(project);
+    if by_line.len() > 1 {
+        q["lines_by_material_m"] = by_line
+            .into_iter()
+            .map(|(m, lines)| json!({ "material": m, "name": project.material_name(m), "lines_by_dacad_code_m": lines }))
+            .collect();
+    }
+    q["heights_m"] = heights(project);
+    q
+}
+
+/// The heights a section drawing labels, per part: the distinct heights of
+/// its level eaves and pitch breaks and its highest point, so they can be
+/// checked against the drawing's labels without reading every line.
+fn heights(project: &Project) -> Value {
+    let distinct = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v.dedup_by(|a, b| (*a - *b).abs() < 0.015);
+        v
+    };
+    tectora_core::openings::generate_project(project)
+        .iter()
+        .zip(&project.parts)
+        .enumerate()
+        .map(|(i, (g, part))| {
+            let level = |kind: LineKind| {
+                distinct(
+                    g.lines
+                        .iter()
+                        .filter(|l| l.kind == kind && (l.a[2] - l.b[2]).abs() < 0.005)
+                        .map(|l| round(l.a[2], 2))
+                        .collect(),
+                )
+            };
+            let top = g
+                .lines
+                .iter()
+                .flat_map(|l| [l.a[2], l.b[2]])
+                .fold(f64::NEG_INFINITY, f64::max);
+            json!({
+                "part": i,
+                "name": part.name,
+                "eaves": level(LineKind::Eave),
+                "pitch_breaks": level(LineKind::Knick),
+                "top": if top.is_finite() { json!(round(top, 2)) } else { Value::Null },
+            })
+        })
+        .collect()
 }
 
 fn parse_status(s: &str) -> Result<JobStatus, String> {

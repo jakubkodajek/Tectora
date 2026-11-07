@@ -126,6 +126,15 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
                     "area_by_material": by_material,
                 },
             });
+            let by_line_material = tectora_core::quantities::lines_by_material(&project);
+            if by_line_material.len() > 1 {
+                out["quantities"]["lines_by_material"] = by_line_material
+                    .into_iter()
+                    .map(|(mat, lines)| {
+                        json!({ "material": mat, "name": project.material_name(mat), "lines": lines })
+                    })
+                    .collect();
+            }
             if let Some(e) = dacad_error {
                 out["dacad_error"] = json!({
                     "code": e.code,

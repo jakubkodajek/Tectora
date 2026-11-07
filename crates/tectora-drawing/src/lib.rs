@@ -21,9 +21,11 @@ use std::fmt;
 
 mod analyze;
 mod grid;
+mod overlay;
 
 pub use analyze::{Dimension, DimensionChain, MAX_CHAINS, Trace};
 pub use grid::auto_step as grid_auto_step;
+pub use overlay::{MAX_SHAPES as OVERLAY_MAX_SHAPES, Overlay, OverlayFill, OverlayLine};
 
 use hayro::hayro_interpret::font::GlyphRun;
 use hayro::hayro_interpret::hayro_cmap::BfString;
@@ -361,6 +363,22 @@ impl Drawing {
         turn: Turn,
         grid_mm: Option<f64>,
     ) -> Result<Rendered, DrawingError> {
+        self.render_overlaid(index, region, dpi, max_px, turn, grid_mm, None)
+    }
+
+    /// [`Drawing::render`] with `overlay` (sheet mm) drawn over the page,
+    /// under the grid.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_overlaid(
+        &self,
+        index: usize,
+        region: Option<RectMm>,
+        dpi: Option<f64>,
+        max_px: u32,
+        turn: Turn,
+        grid_mm: Option<f64>,
+        overlay: Option<&Overlay>,
+    ) -> Result<Rendered, DrawingError> {
         let page = self.page(index)?;
         let (wmm, hmm) = self.page_size_mm(index)?;
         let full = RectMm::new(0.0, 0.0, wmm, hmm);
@@ -420,6 +438,10 @@ impl Drawing {
             Turn::Cw180 => [-s, 0.0, x0 + rw, 0.0, -s, y0 + rh],
             Turn::Cw270 => [0.0, -s, x0 + rw, s, 0.0, y0],
         };
+        if let Some(o) = overlay {
+            // About 0.35 mm on the sheet, at least two pixels.
+            overlay::draw(&mut pixmap, pixel_to_sheet, o, (0.35 * px_per_mm).max(2.0));
+        }
         if let Some(step) = grid_mm.filter(|g| g.is_finite() && *g > 0.0) {
             // At least 8 px between lines, or the labels run into each other.
             let step = step.max(8.0 / px_per_mm);

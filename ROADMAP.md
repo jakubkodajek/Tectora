@@ -119,6 +119,16 @@ colleague uses Claude Desktop, Codex or Antigravity.
   check: two parts whose coplanar faces share an eave line lose that eave
   in the results (the range as its own part with hipped ends in the
   pavilions' outer planes).
+  Second pass over every drawing (2026-11-07) added checking tools:
+  `view_drawing` draws the calculated roof over the plan (`overlay`:
+  faces tinted by material where they are visible, lines in their
+  colours, openings white; `trace_outline` returns the sheet origin for
+  it), so a misplaced ridge, hip or dormer shows at a glance; it confirmed
+  jobs 4A, 6, 8 and 11 line for line. `calc` gives the lines per material
+  when a roof has several (`lines_by_material_m`, also in the CLI, and the
+  scorer compares a tiles offer with the tiles' lines) and each part's
+  eave, pitch-break and top heights (`heights_m`) to check against the
+  section labels.
   **Next:** more public roofs (a hipped school with mansards whose figures
   come from the designer's 3D model, an irregular faculty roof around a
   courtyard), the colleague's review of these builds in the app, and the

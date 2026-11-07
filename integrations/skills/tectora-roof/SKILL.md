@@ -48,7 +48,13 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    dormers, chimneys and windows, and the check report in the job notes.
    Each `summary` is one sentence in the user's language
    naming the sheet, e.g. "Sklon uliční strany 42° podle řezu A-A".
-7. In the check step compare `calc` with every figure the drawing prints
-   (area per pitch, plan area, ridge and eave heights) and finish by telling
-   the user what matched, what you assumed and what they should look at in
-   the highlighted changes in Tectora.
+7. In the check step first look at the roof over the drawing:
+   `view_drawing` with `overlay` {`id`, `scale`, `origin`} (the
+   `origin_sheet_mm` from `trace_outline`) draws the calculated faces and
+   lines over the roof plan; every drawn ridge, hip, valley and dormer
+   should lie under its model line. Then compare `calc` with every figure
+   the drawing prints (area per pitch, plan area, ridge and eave heights
+   from `heights_m`, and with several materials the offer's material in
+   `lines_by_material_m`) and finish by telling the user what matched,
+   what you assumed and what they should look at in the highlighted
+   changes in Tectora.

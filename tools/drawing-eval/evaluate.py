@@ -72,6 +72,12 @@ def check_range(value: float, lo: float, hi: float) -> dict[str, Any]:
 
 def score(q: dict[str, Any], offer: dict[str, Any], exact: dict[str, Any] | None) -> dict[str, Any]:
     lines = q.get("lines_by_type", {})
+    # An offer prices one material (tiles unless it says otherwise): on a
+    # roof with several, its lines are that material's.
+    want_mat = offer.get("material", 1)
+    for entry in q.get("lines_by_material", []):
+        if entry.get("material") == want_mat:
+            lines = entry["lines"]
     by_pitch = {round(p["pitch_deg"], 2): p["area"] for p in q.get("area_by_pitch", [])}
     res: dict[str, Any] = {"checks": {}, "info": {}}
     c = res["checks"]

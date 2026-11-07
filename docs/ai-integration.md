@@ -32,7 +32,7 @@ ready-to-paste configuration for Claude Desktop, Claude Code and Gemini CLI.
 | `list_files`, `attach_file`, `remove_file` | Files attached to a job (drawings) |
 | `export_job`, `import_job`, `get_schema` | `.tectorajob` bundles, file schema |
 | `get_settings`, `update_settings` | App settings shared with the Settings screen: jobs folder, drawings inbox folder, language, theme, defaults for new roofs, follow mode |
-| `list_drawings`, `drawing_info`, `view_drawing`, `drawing_dimensions`, `trace_outline`, `drawing_lines`, `measure_drawing` | Technical drawings (PDF in the drawings inbox or attached to a job): page size and kind, rendered pages and crops with a sheet-mm grid, every dimension chain with its drawn length, an outline snapped to the drawn corners and returned in metres, the exact vector lines and the text-layer labels (filtered, e.g. every height label), and measuring between two points against a dimension the AI read |
+| `list_drawings`, `drawing_info`, `view_drawing`, `drawing_dimensions`, `trace_outline`, `drawing_lines`, `measure_drawing` | Technical drawings (PDF in the drawings inbox or attached to a job): page size and kind, rendered pages and crops with a sheet-mm grid, every dimension chain with its drawn length, an outline snapped to the drawn corners and returned in metres, the exact vector lines and the text-layer labels (filtered, e.g. every height label), measuring between two points against a dimension the AI read, and the calculated roof drawn over the plan (`view_drawing` `overlay`) to check it |
 
 Every write requires a `summary` sentence for the user. The drawing tools only
 read; they are implemented in `crates/tectora-drawing` (pure Rust, `hayro`

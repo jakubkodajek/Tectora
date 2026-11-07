@@ -8,8 +8,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
+use tectora_core::roof::LineKind;
 use tectora_core::settings::Settings;
-use tectora_drawing::{Drawing, RectMm, Turn, round};
+use tectora_drawing::{Drawing, Overlay, OverlayFill, OverlayLine, RectMm, Turn, round};
 
 use super::{Server, ToolResult, arg_f64, schema};
 
@@ -71,6 +72,16 @@ pub(crate) fn tools() -> Vec<Value> {
                 "max_px": { "type": "integer", "description": "Longest image edge, px (default 1568, at most 4096)." },
                 "rotate": { "type": "integer", "enum": [0, 90, 180, 270], "description": "Turn the image clockwise, degrees." },
                 "grid": { "description": "true (default): sheet-mm grid with a step that fits the crop; a number: grid step in mm; false: no grid.", "type": ["boolean", "number"] },
+                "overlay": {
+                    "type": "object",
+                    "description": "Draw a design's calculated roof over the drawing, to check the model against the plan. Faces are tinted by material (tiles yellow, sheet metal blue), lines coloured by kind as in the app (ridge red, hip green, valley violet, eave blue, verge orange), roof openings and chimneys outlined dark, roof windows marked with a cross at their position point. Where a coloured line leaves the drawn one, the model or a reading is off. Without `region` the crop is the roof's extent.",
+                    "properties": {
+                        "id": { "type": "string", "description": "Design id." },
+                        "scale": { "type": "number", "description": "The plot scale denominator the model was built with, e.g. 50 (the measured one when the sheet is not to scale)." },
+                        "origin": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "Sheet point (mm) of the model's (0, 0): trace_outline returns it as `origin_sheet_mm`." },
+                    },
+                    "required": ["id", "scale", "origin"],
+                },
             })), &[]),
         }),
         json!({
@@ -84,7 +95,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "trace_outline",
-            "description": "Snap a polygon to the drawing: give its corners roughly (sheet mm, read off the view_drawing grid), in order around the outline; each is snapped to the nearest drawn corner or line crossing. Returns the exact corners, the edge lengths, and with `scale` the polygon in metres ready for create_project (x right, y up, first corner at the origin, counter-clockwise), the real edge lengths and each edge's direction in degrees (the `angle_deg` for a dormer on that eave). Use it for the wall line or the eave line of a roof plan; check the edges against the dimensions. Corners that barely turn are reported: leave them out, the roof calculation fails on nearly straight neighbouring eaves. `edges_drawn` gives the share of each edge that lies on a drawn line; edges well under 1 mean a corner snapped to the wrong line.",
+            "description": "Snap a polygon to the drawing: give its corners roughly (sheet mm, read off the view_drawing grid), in order around the outline; each is snapped to the nearest drawn corner or line crossing. Returns the exact corners, the edge lengths, and with `scale` the polygon in metres ready for create_project (x right, y up, first corner at the origin, counter-clockwise), the real edge lengths and each edge's direction in degrees (the `angle_deg` for a dormer on that eave). Use it for the wall line or the eave line of a roof plan; check the edges against the dimensions. Corners that barely turn are reported: leave them out, the roof calculation fails on nearly straight neighbouring eaves. `edges_drawn` gives the share of each edge that lies on a drawn line; edges well under 1 mean a corner snapped to the wrong line. `origin_sheet_mm` is the sheet point of the model's (0, 0): pass it with the scale to view_drawing's `overlay` to draw the calculated roof over the plan.",
             "inputSchema": schema(with(source_props(), json!({
                 "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }, "minItems": 3, "maxItems": 500, "description": "Corners [x, y] in sheet mm, in order." },
                 "snap_mm": { "type": "number", "description": "Snap radius, mm (default 1.5)." },
@@ -192,7 +203,24 @@ impl Server {
 
     fn view_drawing(&self, args: &Value) -> ToolResult {
         let (_, d, page) = self.open_drawing(args)?;
-        let region = region_arg(args)?;
+        let overlay = match args.get("overlay") {
+            None | Some(Value::Null) => None,
+            Some(o) => Some(self.roof_overlay(o)?),
+        };
+        let region = match (region_arg(args)?, &overlay) {
+            (Some(r), _) => Some(r),
+            // The roof's extent with a margin.
+            (None, Some((_, b, _))) => {
+                let m = (0.06 * b.width.max(b.height)).max(5.0);
+                Some(RectMm::new(
+                    b.x - m,
+                    b.y - m,
+                    b.width + 2.0 * m,
+                    b.height + 2.0 * m,
+                ))
+            }
+            (None, None) => None,
+        };
         let max_px = match args.get("max_px") {
             None | Some(Value::Null) => DEFAULT_MAX_PX,
             Some(v) => v
@@ -228,10 +256,24 @@ impl Server {
             g => g,
         };
         let r = d
-            .render(page, region, arg_f64(args, "dpi")?, max_px, turn, grid)
-            .map_err(|e| e.to_string())?;
+            .render_overlaid(
+                page,
+                region,
+                arg_f64(args, "dpi")?,
+                max_px,
+                turn,
+                grid,
+                overlay.as_ref().map(|o| &o.0),
+            )
+            .map_err(|e| match (&overlay, e) {
+                (Some(_), tectora_drawing::DrawingError::EmptyRegion) => {
+                    "the roof lies outside the page: check the overlay's `origin` and `scale`"
+                        .to_string()
+                }
+                (_, e) => e.to_string(),
+            })?;
         let m = r.pixel_to_sheet.map(|v| round(v, 6));
-        let info = json!({
+        let mut info = json!({
             "page": page,
             "image_px": [r.width, r.height],
             "region_mm": [round(r.region.x, 2), round(r.region.y, 2), round(r.region.width, 2), round(r.region.height, 2)],
@@ -241,12 +283,134 @@ impl Server {
             "grid_mm": grid,
             "note": "sheet x = m0*u + m1*v + m2, y = m3*u + m4*v + m5 for image pixel (u, v)",
         });
+        if let Some((_, _, summary)) = overlay {
+            info["overlay"] = summary;
+        }
         Ok(json!({
             CONTENT_KEY: [
                 { "type": "image", "data": base64(&r.png), "mimeType": "image/png" },
                 { "type": "text", "text": serde_json::to_string_pretty(&info).unwrap_or_default() },
             ]
         }))
+    }
+
+    /// The calculated roof of a design as shapes in sheet mm, its extent on
+    /// the sheet and a short summary.
+    fn roof_overlay(&self, o: &Value) -> Result<(Overlay, RectMm, Value), String> {
+        let scale = scale_arg(o)?
+            .ok_or("`overlay.scale` is required: the scale denominator the model was built with")?;
+        let origin = point_arg(o, "origin")?;
+        let (id, p) = self.load(o)?;
+        self.live(
+            format!("Comparing “{}” with the drawing", p.name),
+            Some(&id),
+        );
+        let k = 1000.0 / scale;
+        let to_sheet = |x: f64, y: f64| [origin[0] + x * k, origin[1] - y * k];
+        let mut ov = Overlay::default();
+        let mut lo = [f64::MAX; 2];
+        let mut hi = [f64::MIN; 2];
+        let mut grow = |q: [f64; 2]| {
+            for i in 0..2 {
+                lo[i] = lo[i].min(q[i]);
+                hi[i] = hi[i].max(q[i]);
+            }
+        };
+        let mut errors = Vec::new();
+        for (part, g) in p
+            .parts
+            .iter()
+            .zip(tectora_core::openings::generate_project(&p))
+        {
+            if let Some(e) = &g.error {
+                errors.push(format!("{}: {e}", part.name));
+            }
+            for f in &g.faces {
+                let pts: Vec<[f64; 2]> = f.polygon.iter().map(|v| to_sheet(v[0], v[1])).collect();
+                pts.iter().for_each(|q| grow(*q));
+                // Faces carry the parts other roofs hide (as deductions), so
+                // only the highest face is tinted at each point.
+                let z_plane = face_plane(&f.polygon)
+                    .map(|[a, b, c]| [a / k, -b / k, c - a * origin[0] / k + b * origin[1] / k]);
+                ov.fills.push(OverlayFill {
+                    points: pts,
+                    color: material_color(f.material),
+                    alpha: 0.22,
+                    z_plane,
+                });
+            }
+            for l in &g.lines {
+                ov.lines.push(OverlayLine {
+                    a: to_sheet(l.a[0], l.a[1]),
+                    b: to_sheet(l.b[0], l.b[1]),
+                    color: line_color(l.kind),
+                });
+            }
+            // A part that did not calculate still shows its walls.
+            if g.faces.is_empty() {
+                let n = part.edges.len();
+                for i in 0..n {
+                    let (a, b) = (part.edges[i].start, part.edges[(i + 1) % n].start);
+                    let (a, b) = (to_sheet(a.x, a.y), to_sheet(b.x, b.y));
+                    grow(a);
+                    ov.lines.push(OverlayLine {
+                        a,
+                        b,
+                        color: OUTLINE,
+                    });
+                }
+            }
+        }
+        for c in p.chimneys.iter().chain(&p.roof_openings) {
+            // Cleared above every face: no roof there.
+            ov.fills.push(OverlayFill {
+                points: c.corners.iter().map(|q| to_sheet(q.x, q.y)).collect(),
+                color: [0xff, 0xff, 0xff],
+                alpha: 0.55,
+                z_plane: Some([0.0, 0.0, 1e9]),
+            });
+            let n = c.corners.len();
+            for i in 0..n {
+                let (a, b) = (c.corners[i], c.corners[(i + 1) % n]);
+                ov.lines.push(OverlayLine {
+                    a: to_sheet(a.x, a.y),
+                    b: to_sheet(b.x, b.y),
+                    color: OUTLINE,
+                });
+            }
+        }
+        // Windows: a cross of 0.3 m at the position point.
+        for w in &p.windows {
+            for (dx, dy) in [(0.15, 0.15), (0.15, -0.15)] {
+                ov.lines.push(OverlayLine {
+                    a: to_sheet(w.x - dx, w.y - dy),
+                    b: to_sheet(w.x + dx, w.y + dy),
+                    color: OUTLINE,
+                });
+            }
+        }
+        if ov.fills.len() + ov.lines.len() > tectora_drawing::OVERLAY_MAX_SHAPES {
+            return Err("the design has too many faces and lines to draw".into());
+        }
+        if lo[0] > hi[0] {
+            return Err(format!("design `{id}` has no roof to draw"));
+        }
+        let extent = RectMm::new(
+            lo[0],
+            lo[1],
+            (hi[0] - lo[0]).max(1.0),
+            (hi[1] - lo[1]).max(1.0),
+        );
+        let mut summary = json!({
+            "id": id,
+            "faces": ov.fills.len(),
+            "lines": ov.lines.len(),
+            "roof_extent_mm": [round(extent.x, 1), round(extent.y, 1), round(extent.width, 1), round(extent.height, 1)],
+        });
+        if !errors.is_empty() {
+            summary["calc_errors"] = json!(errors);
+        }
+        Ok((ov, extent, summary))
     }
 
     fn drawing_lines(&self, args: &Value) -> ToolResult {
@@ -480,6 +644,8 @@ impl Server {
                 })
                 .collect();
             out["outline_m"] = json!(m);
+            // Where the model's (0, 0) lies on the sheet: view_drawing's overlay.
+            out["origin_sheet_mm"] = json!([round(x0 * 1000.0 / s, 3), round(-y0 * 1000.0 / s, 3)]);
             out["edges_m"] = json!(edges);
             out["edge_directions_deg"] = json!(dirs);
             out["area_m2"] = json!(round(signed_area(&m), 3));
@@ -524,6 +690,57 @@ impl Server {
 
 /// Traced edges that lie on drawn lines for less than this share are reported.
 const EDGE_DRAWN_MIN: f64 = 0.5;
+
+/// Openings, chimneys, windows and walls of a part that did not calculate.
+const OUTLINE: [u8; 3] = [0x26, 0x26, 0x26];
+
+/// The plane of a roof face as `z = a*x + b*y + c` (Newell normal); `None`
+/// for a vertical or degenerate face.
+fn face_plane(poly: &[[f64; 3]]) -> Option<[f64; 3]> {
+    let n = poly.len();
+    let mut nv = [0.0f64; 3];
+    for i in 0..n {
+        let (p, q) = (poly[i], poly[(i + 1) % n]);
+        nv[0] += (p[1] - q[1]) * (p[2] + q[2]);
+        nv[1] += (p[2] - q[2]) * (p[0] + q[0]);
+        nv[2] += (p[0] - q[0]) * (p[1] + q[1]);
+    }
+    let len = (nv[0] * nv[0] + nv[1] * nv[1] + nv[2] * nv[2]).sqrt();
+    if n < 3 || !len.is_finite() || nv[2].abs() < 1e-6 * len.max(1e-12) {
+        return None;
+    }
+    let c = poly[0];
+    let (a, b) = (-nv[0] / nv[2], -nv[1] / nv[2]);
+    Some([a, b, c[2] - a * c[0] - b * c[1]])
+}
+
+/// Overlay tint of a roof material: tiles, sheet metal, anything else.
+fn material_color(material: u8) -> [u8; 3] {
+    match material {
+        1 => [0xf2, 0xb7, 0x05],
+        2 => [0x2f, 0x6f, 0xd6],
+        _ => [0x6b, 0x6b, 0x6b],
+    }
+}
+
+/// Line colours of the app's 3D view (`Roof3D.svelte`).
+fn line_color(kind: LineKind) -> [u8; 3] {
+    let c: u32 = match kind {
+        LineKind::Eave => 0x2f6fd6,
+        LineKind::Verge => 0xe39b2b,
+        LineKind::Ridge => 0xd6402f,
+        LineKind::Hip => 0x2c9a5b,
+        LineKind::Valley => 0x8a46c9,
+        LineKind::Pult => 0xc2417a,
+        LineKind::Knick => 0x1f9aa8,
+        LineKind::Gorge => 0x6b4fd8,
+        LineKind::Abutment
+        | LineKind::AbutmentFront
+        | LineKind::AbutmentBack
+        | LineKind::AbutmentSide => 0x8b5a3c,
+    };
+    [(c >> 16) as u8, (c >> 8) as u8, c as u8]
+}
 
 /// The texts that contain one of `contains` (all of them when it is empty),
 /// in reading order: top to bottom, then left to right. A large sheet has
@@ -722,6 +939,20 @@ mod tests {
         let p = [[0.0, 0.0], [5.0, 0.1], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]];
         assert_eq!(super::shallow_corners(&p, 3.0), vec![1]);
         assert!(super::shallow_corners(&p[..2], 3.0).is_empty());
+    }
+
+    #[test]
+    fn face_plane_gives_the_slope() {
+        // Rises 0.5 per metre along y, eave at z 3.
+        let p = super::face_plane(&[
+            [0.0, 0.0, 3.0],
+            [4.0, 0.0, 3.0],
+            [4.0, 2.0, 4.0],
+            [0.0, 2.0, 4.0],
+        ])
+        .unwrap();
+        assert!(p[0].abs() < 1e-12 && (p[1] - 0.5).abs() < 1e-12 && (p[2] - 3.0).abs() < 1e-12);
+        assert!(super::face_plane(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0]]).is_none());
     }
 
     #[test]
