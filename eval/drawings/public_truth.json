@@ -167,6 +167,114 @@
     }
    ],
    "note": "Scanned drawings: the A4 sheets are printed at about 1:107, not the 1:100 of the title, so only the written dimensions are used. Hipped roof 11.70 x 18.23 m (with 0.65 m overhang); the section gives a 6.0 m run and a 7.30 m slope for the hip ends (34.7°), so the sides are 35.4°; ridge 6.23 m (6.27 and 6.32 are also written). The bill's gutter (60 m) is the perimeter; its area (277 m²) is 6 % over these planes (261 m²) with no formula given."
+  },
+  {
+   "job": "P7",
+   "drawings": 2,
+   "source": {
+    "contract": "https://www.e-zakazky.cz/profil-zadavatele/https://www.e-zakazky.cz/profil-zadavatele/6fd89858-eec6-4b14-81fd-71f9adddb789/zakazka/P26V00000001",
+    "files": [
+     "D1.04 - střecha nový stav.pdf (roof plan, 1:100, text layer)",
+     "D1.05 - řez nový stav.pdf (section A-A)",
+     "2524 - Výměna střešní krytiny[zadání].xlsx (bill)"
+    ]
+   },
+   "offers": [
+    {
+     "covering": "standing-seam aluminium, bill of quantities",
+     "gross": true,
+     "pitch_groups": [],
+     "roof_area_m2": 512.05,
+     "line_intervals_m": {}
+    }
+   ],
+   "exact": [
+    {
+     "lines_m": {
+      "ridge_and_hip": 61.5,
+      "eave": 95.2
+     }
+    }
+   ],
+   "note": "Hipped roof 36.898 x 10.651 m at 39° (section: rafter 6.85 m to the ridge, ridge 26.25 m). The bill's ridge (26.3), hips (4 x 8.8) and eaves ((36.9 + 10.7) x 2) are the drawn roof; its area takes the slope as 6.9 m on the sides and 7.1 m on the hip ends where the section gives 6.85 m, so it is 1.3 % over the planes (505.7 m²)."
+  },
+  {
+   "job": "P8",
+   "drawings": 3,
+   "source": {
+    "contract": "https://www.e-zakazky.cz/profil-zadavatele/19e1d2c5-47a5-42e2-a26a-76beb7497114/zakazka/P23V00000001",
+    "files": [
+     "ZD 2 DPS.zip: D 1.1.11 (roof plan, 1:50, text layer), D 1.1.08 (section A-A'), D 1.1.12 (elevations)",
+     "VV.xlsx (bill)"
+    ]
+   },
+   "offers": [
+    {
+     "covering": "plain clay tiles (bobrovka), bill of quantities",
+     "pitch_groups": [],
+     "roof_area_m2": 194.884,
+     "line_intervals_m": {}
+    }
+   ],
+   "exact": [
+    {
+     "lines_m": {
+      "eave": 35.39,
+      "verge_left": 9.888,
+      "verge_right": 9.888
+     }
+    }
+   ],
+   "note": "Fire station, gable roof 10.40 x 15.35 m at 35°, eave +5.300; the north gable is half-hipped (hips start 2.86 m in from each eave and meet the ridge 1.99 m in from the gable line: start +7.305, 39.5°), the south end abuts a wall. The bill's area is footprint / cos 35° (194.88 m²; the build gives 195.23 m² with the steeper half-hip), its eaves (2 x 15.35 + 4.69) and verges plus wall flashing (2 x 2.90 / cos 35° + 10.40 / cos 35°) are the drawn roof. Its ridge (14.00) and half-hip hips (2 x 3.00 / cos 35°) are rounded: the drawing gives 13.36 m and 2 x 3.47 m."
+  },
+  {
+   "job": "P9",
+   "drawings": 5,
+   "source": {
+    "contract": "https://www.e-zakazky.cz/profil-zadavatele/35673c60-190f-42e1-9422-bf29267f6c39/zakazka/P20V00000001",
+    "files": [
+     "P4 Projektová dokumentace - Střecha Nový Vestec.zip: 5_výkresy (11 sheets; p. 7 roof plan 1:100 with text layer, pp. 8-11 elevations)",
+     "P2 Výkaz výměr - Střecha Nový Vestec.xlsx (bill)"
+    ]
+   },
+   "offers": [
+    {
+     "covering": "interlocking clay tiles, bill of quantities",
+     "unexplained": true,
+     "pitch_groups": [],
+     "roof_area_m2": 829.9,
+     "line_intervals_m": {}
+    }
+   ],
+   "exact": [
+    {
+     "lines_m": {
+      "ridge": 29.29
+     }
+    }
+   ],
+   "note": "T of two hipped wings at 40°: main 30.165 x 14.30 m, north wing 12.70 x 19.55 m running into it. The 'okap' labels (+5.600, +6.880) sit 0.27 m above the drawn roof edge; the ridge labels (+11.350, +11.885) and the elevations agree with eaves +5.35 and +6.557 at the outer outline. The north wing's hipped end meets the main slope in a level valley, with a saddle (diamond on the plan, ridge +9.490) in it; built as a third part its ridge comes out at +9.482. The bill's ridge (29.29 m) is the drawn roof with the saddle exactly; its area (829.9 m²) is 3.1 % under the planes (856.6 m²) and its hips (93.92) and valleys (17.3) do not split the way the drawing does, with no formula given; its gutter (140.92 m) is longer than the eaves (127.2 m)."
+  },
+  {
+   "job": "P10",
+   "drawings": 2,
+   "source": {
+    "contract": "https://www.e-zakazky.cz/profil-zadavatele/81224c9c-c945-4bf7-9064-05a5b36ab6ee/zakazka/P22V00000038",
+    "files": [
+     "122031 - příloha č. 1 - projektová dokumentace.zip: D.1.1.11 (roof plan, 1:50, text layer), D.1.1.12 (section A-A')",
+     "122031 - příloha č. 2 - soupis prací ... vč. výkazu výměr.xlsx (bill)"
+    ]
+   },
+   "offers": [
+    {
+     "covering": "clay tiles, bill of quantities",
+     "pitch_groups": [],
+     "roof_area_m2": 423.0,
+     "line_intervals_m": {}
+    }
+   ],
+   "exact": [],
+   "note": "Nursery, hipped roof 27.763 x 12.62 m at 34° (dimensions 6310 + 15143 + 6310), eave +7.632. The plan itself states 'půdorysná plocha 351 m², skutečná plocha cca 423 m²', which the bill copies; its ridge (15.2) and eaves (82) are rounded up from 15.14 and 80.77."
   }
  ]
 }

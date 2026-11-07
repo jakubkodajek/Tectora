@@ -433,3 +433,42 @@ fn lines_along_keeps_only_the_given_directions() {
     assert_eq!(square.len(), 4);
     assert!(square.iter().all(|l| (l.length() - 50.0).abs() < 1e-9));
 }
+
+fn glyph(text: &str, x: f64, y: f64, angle_deg: f64) -> TextItem {
+    TextItem {
+        text: text.into(),
+        at: [x, y],
+        size: 1.48,
+        angle_deg,
+        end: [x, y],
+    }
+}
+
+#[test]
+fn glyph_runs_join_into_labels() {
+    // A vertical CAD label written glyph by glyph (baseline downwards on
+    // the sheet), then a second label elsewhere.
+    let mut items: Vec<TextItem> = [
+        ("o", 141.24),
+        ("k", 142.21),
+        ("a", 143.1),
+        ("p", 144.03),
+        ("+", 147.21),
+        ("6", 148.22),
+        (",", 149.2),
+        ("8", 149.7),
+        ("8", 150.64),
+        ("0", 151.57),
+    ]
+    .iter()
+    .map(|(t, y)| glyph(t, 142.37, *y, 90.0))
+    .collect();
+    items.push(glyph("4", 168.19, 147.25, -0.4));
+    items.push(glyph("0°", 169.16, 147.24, -0.4));
+    // Same baseline but far away: a separate label.
+    items.push(glyph("1290", 190.0, 147.24, -0.4));
+    let joined = join_text_runs(items);
+    let texts: Vec<&str> = joined.iter().map(|t| t.text.as_str()).collect();
+    assert_eq!(texts, ["okap +6,880", "40°", "1290"]);
+    assert_eq!(joined[0].at, [142.37, 141.24]);
+}

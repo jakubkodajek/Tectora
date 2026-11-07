@@ -210,6 +210,9 @@ pub struct TextItem {
     pub size: f64,
     /// Baseline direction, degrees (sheet orientation, y down).
     pub angle_deg: f64,
+    /// Origin of the last glyph, mm (used to join runs into words).
+    #[serde(skip)]
+    pub end: [f64; 2],
 }
 
 /// The vector content of one page.
@@ -299,7 +302,7 @@ impl Drawing {
             hayro::hayro_interpret::hayro_syntax::page::Rotation::FlippedHorizontal => 270,
         };
         let text_chars: usize = content.texts.iter().map(|t| t.text.chars().count()).sum();
-        let kind = if content.segments.len() >= 50 && content.texts.len() >= 30 && text_chars >= 100
+        let kind = if content.segments.len() >= 50 && content.texts.len() >= 10 && text_chars >= 100
         {
             PageKind::VectorWithText
         } else if content.segments.len() >= 50 {
@@ -337,7 +340,9 @@ impl Drawing {
         );
         let mut collector = Collector::default();
         interpret_page(page, &mut ctx, &mut collector);
-        Ok(collector.content)
+        let mut content = collector.content;
+        content.texts = join_text_runs(std::mem::take(&mut content.texts));
+        Ok(content)
     }
 
     /// Renders `region` (default: the whole page) of a page to PNG.
@@ -540,15 +545,18 @@ impl<'a> Device<'a> for Collector {
     fn draw_glyph_run(&mut self, run: &GlyphRun<'_, 'a>, props: DrawProps<'a>, _: &DrawMode) {
         let mut text = String::new();
         let mut first: Option<Affine> = None;
+        let mut last: Option<Affine> = None;
         for g in run.glyphs() {
             match g.as_unicode() {
                 Some(BfString::Char(c)) => text.push(c),
                 Some(BfString::String(u)) => text.push_str(&u),
                 None => {}
             }
+            let t = props.transform * g.transform();
             if first.is_none() {
-                first = Some(props.transform * g.transform());
+                first = Some(t);
             }
+            last = Some(t);
         }
         let text = text.trim().to_string();
         let Some(t) = first else { return };
@@ -560,11 +568,13 @@ impl<'a> Device<'a> for Collector {
         let y_dir = t * Point::new(0.0, 1.0) - at;
         // Glyph space is 1/1000 em in most fonts; the cap height is about 0.7 em.
         let size = y_dir.hypot() * 700.0;
+        let end = last.map_or(at, |l| l * Point::ZERO);
         self.content.texts.push(TextItem {
             text,
             at: [round(at.x, 2), round(at.y, 2)],
             size: round(size, 2),
             angle_deg: round(x_dir.y.atan2(x_dir.x).to_degrees(), 1),
+            end: [end.x, end.y],
         });
     }
 
@@ -780,6 +790,43 @@ impl PageContent {
 }
 
 /// Merges overlapping or touching collinear segments.
+/// Joins glyph runs that continue one another on the same baseline into
+/// one text item. Many CAD exports write every glyph as its own run, so
+/// without this a label like `hřeben +11,885` comes out as twelve items.
+/// A gap clearly wider than a glyph becomes a space.
+pub fn join_text_runs(items: Vec<TextItem>) -> Vec<TextItem> {
+    let mut out: Vec<TextItem> = Vec::with_capacity(items.len());
+    for it in items {
+        if let Some(prev) = out.last_mut() {
+            let same_dir = {
+                let d = (it.angle_deg - prev.angle_deg).rem_euclid(360.0);
+                d.min(360.0 - d) <= 1.0
+            };
+            let size = prev.size.max(1e-6);
+            let same_size = it.size >= size * 0.8 && it.size <= size * 1.25;
+            if same_dir && same_size {
+                let a = prev.angle_deg.to_radians();
+                let (ux, uy) = (a.cos(), a.sin());
+                let (dx, dy) = (it.at[0] - prev.end[0], it.at[1] - prev.end[1]);
+                let along = dx * ux + dy * uy;
+                let across = (dx * uy - dy * ux).abs();
+                if across <= 0.25 * size && along > 0.1 * size && along <= 3.0 * size {
+                    // A wide last glyph advances further by itself.
+                    let wide = prev.text.ends_with(['M', 'W', 'm', 'w', '@', '%']);
+                    if along > if wide { 1.45 } else { 1.1 } * size {
+                        prev.text.push(' ');
+                    }
+                    prev.text.push_str(&it.text);
+                    prev.end = it.end;
+                    continue;
+                }
+            }
+        }
+        out.push(it);
+    }
+    out
+}
+
 pub fn merge_collinear(mut segs: Vec<Segment>) -> Vec<Segment> {
     const ANGLE_TOL: f64 = 0.15; // degrees
     const OFFSET_TOL: f64 = 0.05; // mm

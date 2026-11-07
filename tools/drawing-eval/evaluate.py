@@ -13,8 +13,11 @@ id. It runs ``tectora calc --summary`` on each and compares:
 
 ``eval/drawings/public_truth.json`` has the same shape for public roofs
 (tender drawings with a bill of quantities, or totals printed on the roof
-plan). A bill marked ``gross`` counts more than the drawn roof (see its
-note), so its area is printed as ``info`` only.
+plan). A bill marked ``gross`` counts more than the drawn roof, and one
+marked ``unexplained`` differs from it for a reason its files do not show
+(see each note), so their area is printed as ``info`` only. Exact lines can
+be given as ``ridge_and_hip`` or, where the bill splits them, ``ridge`` and
+``hip``.
 
 These are the scored checks. The line lengths that piece counts of the CN
 offers allow (F+G, OL+OR, T, K) are printed as `info` only: on the ten jobs
@@ -84,9 +87,11 @@ def score(q: dict[str, Any], offer: dict[str, Any], exact: dict[str, Any] | None
     # Each group is rounded up to a whole m² (a decimal group is exact).
     slack = sum(1.0 for g in groups if float(g["area_m2"]).is_integer())
     # A bill known to be gross (its formula counts more than the drawn roof)
-    # says where to look, not whether the roof is right.
+    # or off for a reason its files do not show says where to look, not
+    # whether the roof is right.
     area = check_range(total, (want - slack) * (1 - AREA_TOL), want * (1 + AREA_TOL))
-    (res["info"] if offer.get("gross") else c)["area_total"] = area
+    info_only = offer.get("gross") or offer.get("unexplained")
+    (res["info"] if info_only else c)["area_total"] = area
     for g in groups:
         got = sum(a for p, a in by_pitch.items() if abs(p - g["pitch_deg"]) <= 1.0)
         lo = (g["area_m2"] - (1 if float(g["area_m2"]).is_integer() else 0)) * (1 - AREA_TOL)
@@ -94,6 +99,8 @@ def score(q: dict[str, Any], offer: dict[str, Any], exact: dict[str, Any] | None
 
     have = {
         "F+G": lines.get("F", 0.0) + lines.get("G", 0.0),
+        "F": lines.get("F", 0.0),
+        "G": lines.get("G", 0.0),
         "OL+OR": lines.get("OL", 0.0) + lines.get("OR", 0.0) + lines.get("OS", 0.0),
         "T": lines.get("T", 0.0),
         "K": lines.get("K", 0.0),
@@ -102,6 +109,8 @@ def score(q: dict[str, Any], offer: dict[str, Any], exact: dict[str, Any] | None
         e = exact["lines_m"]
         want_exact = {
             "F+G": e.get("ridge_and_hip"),
+            "F": e.get("ridge"),
+            "G": e.get("hip"),
             "OL+OR": (e.get("verge_left") or 0) + (e.get("verge_right") or 0) or None,
             "T": e.get("eave"),
             "K": e.get("valley"),

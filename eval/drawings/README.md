@@ -18,8 +18,11 @@ repository**. Only numbers are here:
   …) in the same shape: the bill of quantities or the totals printed on
   the roof plan, with the tender page each comes from. The tender files
   are not stored here; download them again from `source`. A bill marked
-  `gross` counts more than the drawn roof (its `note` says how) and is
-  printed as information, not scored.
+  `gross` counts more than the drawn roof (its `note` says how), and one
+  marked `unexplained` differs from the drawn roof for a reason its files
+  do not show; their areas are printed as information, not scored. Exact
+  lines are `ridge_and_hip`, or `ridge` and `hip` where the bill splits
+  them, `valley`, `eave` and `verge_left` + `verge_right`.
 
 ## How exact each label is
 

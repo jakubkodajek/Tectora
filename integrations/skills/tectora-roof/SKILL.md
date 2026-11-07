@@ -31,7 +31,10 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    the calculation, metal decks in a tiled slope are shed dormers, and gaps
    in the drawings go to the user as questions, not guesses. Its "Roof
    form from the elevations" and "Pitch breaks" paragraphs say how to read
-   wings whose ridges are level and eaves with a flatter strip.
+   wings whose ridges are level and eaves with a flatter strip; "Heights"
+   says to check every eave label against the ridge and pitch, and
+   "Half-hips from the plan" and "Level valleys and saddles" cover a
+   half-hip drawn only on the plan and a saddle between two wings.
 5. Search with `list_projects` (customer, address, job number) so you edit the
    existing job instead of creating a duplicate.
 6. Build in the six steps of the guide: read and check, then one save each for

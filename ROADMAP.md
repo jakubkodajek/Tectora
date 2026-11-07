@@ -93,7 +93,18 @@ colleague uses Claude Desktop, Codex or Antigravity.
   calculates. Three smaller roofs (a hipped roof at 35°, a 9° hall, a
   scanned hipped roof printed at 1:107 instead of 1:100) match every
   line their bills give within 1 %; their areas differ by +1 % (a
-  rounded rafter), −0.9 % and +6 % (no formula).
+  rounded rafter), −0.9 % and +6 % (no formula). Four municipal roofs
+  from e-zakazky.cz followed: a hipped roof at 39° and a nursery at 34°
+  (all lines and the plan's stated area within 1 %), a fire station with
+  a half-hip drawn only on the plan (area +0.2 % against the bill's
+  formula, eaves and verges exact) and a T of hipped wings with a saddle
+  in the level valley between them (ridge exactly the bill's 29.29 m;
+  the bill's area is 3 % under the planes with no formula). They added
+  glyph joining for CAD text layers (labels come out whole instead of
+  letter by letter) and three guide rules: check every eave label
+  against ridge and pitch (all `okap` labels of one plan sat 0.27 m
+  above the drawn edge), half-hips from the plan, and saddles in level
+  valleys as their own part.
   **Next:** more public roofs (a hipped school with mansards whose figures
   come from the designer's 3D model, an irregular faculty roof around a
   courtyard), the colleague's review of these builds in the app, and the

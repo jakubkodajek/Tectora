@@ -135,7 +135,9 @@ an image makes dimension text unreadable. Use the drawing tools:
   `directions_deg` (e.g. `[0, 90]`) to keep only the lines along the walls.
   When a page has a text layer (`vector_with_text`), take every number
   from these texts and their positions instead of reading it off an image
-  (in a test a 28° label read as 26° on the image).
+  (in a test a 28° label read as 26° on the image). Glyphs that CAD
+  programs write one by one are joined into whole labels (`okap +6,880`),
+  each with the position of its first glyph.
 
 **The plot scale is not always the title block's scale.** Sheets drawn at
 1:50 on a large format are often printed smaller (in the test jobs: 1:50.78,
@@ -177,7 +179,28 @@ new roof): check it against the elevations. A cornice label (`římsa`, `atika`)
 not the eave of the roof plane, which usually sits a little higher: take
 the eave height from the section's ridge and pitch (ridge height − half
 span × tan(pitch)) and confirm it with a second label on the same plane,
-such as the front or back of a deck or dormer.
+such as the front or back of a deck or dormer. Check every eave label this
+way before using it: when ridge − eave is not half the span × tan(pitch)
+at the outline you model, the label belongs to another line (in a test all
+`okap` labels sat 0.27 m above the drawn roof edge, while the ridge labels
+and the elevations agreed with the edge); take the eave from the ridge.
+
+**Half-hips from the plan.** A half-hip (`polovalba`) shows on the plan as
+two short hips that start on the gable line, some way in from the eaves,
+and meet the ridge. Its `height` is the eave height + that offset ×
+tan(pitch of the eaves); its `pitch_deg` is atan((ridge height − that
+height) / the plan distance from the gable line to where the hips meet).
+
+**Level valleys and saddles.** Where the hipped end of a higher wing faces
+the slope of a lower roof, the two planes meet in a level valley (line
+`S`). Designers put a saddle (cricket) there: a small roof with its ridge
+across the valley, drawn on the plan as a diamond around the valley with
+its own ridge label. Model it as its own part: a rectangle a little longer
+than the diamond, gables at both ends, eaves along the diamond's side
+corners at the valley's height and the drawn pitch; the higher roofs hide
+the rest. The diamond's corners lie on the level valley, so they check the
+two eave heights (in the test the saddle's ridge then came out within 1 cm
+of its label and the bill's ridge length matched exactly).
 
 **Roof form from the elevations.** When every elevation puts all ridges at
 one height but the wings are of different width, the narrower wings are
