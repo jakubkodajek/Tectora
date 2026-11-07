@@ -424,7 +424,53 @@ fn breakdown_adds_up_for_every_case() {
             if mine != codes {
                 failures.push(format!("{name}: lines {mine:?} vs {codes:?}"));
             }
+            // The results by line type (the Results panel) take the same
+            // pieces off as the totals by code (a ridge through a chimney).
+            let code = |c: &str| codes.get(c).copied().unwrap_or(0.0);
+            for (what, by_type, by_code) in [
+                ("eave", t.eave_length, code("T")),
+                ("ridge", t.ridge_length, code("F")),
+                ("hip", t.hip_length, code("G")),
+                ("valley", t.valley_length, code("K")),
+                (
+                    "verge",
+                    t.verge_length,
+                    code("O") + code("OL") + code("OR") + code("OS"),
+                ),
+            ] {
+                if (by_type - by_code).abs() > 0.016 {
+                    failures.push(format!("{name}: {what} {by_type} vs codes {by_code}"));
+                }
+            }
             for part in &b.parts {
+                // The faces' deductions are the openings plus the other
+                // cut-outs of joined roofs, so the app can explain them.
+                let ded: f64 = part.faces.iter().map(|f| f.deducted).sum();
+                let listed: f64 =
+                    part.openings.iter().map(|o| o.area).sum::<f64>() + part.other_cuts;
+                if (ded - listed).abs() > 1e-6 {
+                    failures.push(format!(
+                        "{name}/{}: deducted {ded} vs listed {listed}",
+                        part.name
+                    ));
+                }
+                // The clad gables listed one by one make up the clad area.
+                let clad: f64 = part.clad.iter().map(|c| c.1).sum();
+                let listed: f64 = part.clad_faces.iter().map(|c| c.area).sum();
+                if (clad - listed).abs() > 1e-9 {
+                    failures.push(format!(
+                        "{name}/{}: clad {clad} vs listed {listed}",
+                        part.name
+                    ));
+                }
+                for c in &part.clad_faces {
+                    if let Some(fa) = c.formula_area {
+                        failures.push(format!(
+                            "{name}/{}: clad wall {:?} corners {fa} vs core {}",
+                            part.name, c.wall, c.area
+                        ));
+                    }
+                }
                 for f in &part.faces {
                     // Where roofs are joined, the core's area (DACAD's) and the
                     // face polygon differ slightly (M3_0001, M3_0011, M3_0013:
@@ -444,4 +490,409 @@ fn breakdown_adds_up_for_every_case() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Audit of the detailed steps the app shows: from the numbers as shown
+/// (rounded to `breakdown::DECIMALS`), every step redone by hand gives the
+/// next number shown to within one unit of its last decimal (plus half a
+/// unit per term of a sum), and the chain ends within 0.005 of the result.
+/// Runs over every example and every DACAD case.
+#[test]
+fn displayed_steps_recompute() {
+    use tectora_core::breakdown::{Breakdown, DECIMALS as D};
+    fn r(v: f64, d: u32) -> f64 {
+        let k = 10f64.powi(d as i32);
+        (v * k).round() / k
+    }
+    fn unit(d: u32) -> f64 {
+        10f64.powi(-(d as i32))
+    }
+    fn audit(name: &str, b: &Breakdown, out: &mut Vec<String>) {
+        let mut check = |what: String, got: f64, shown: f64, tol: f64| {
+            // Float noise of the f64 values themselves aside.
+            if (got - shown).abs() > tol + 1e-12 * shown.abs().max(1.0) {
+                out.push(format!("{name}: {what}: recomputed {got} shown {shown}"));
+            }
+        };
+        for (pi, part) in b.parts.iter().enumerate() {
+            for f in &part.faces {
+                let id = |s: &str| format!("part {pi} face {} {s}", f.no);
+                let n = f.polygon.len();
+                let c: Vec<[f64; 2]> = f
+                    .polygon
+                    .iter()
+                    .map(|p| [r(p[0], D.coord), r(p[1], D.coord)])
+                    .collect();
+                let mut sum = 0.0;
+                for i in 0..n {
+                    let (a, bb) = (c[i], c[(i + 1) % n]);
+                    let shown = [
+                        r(f.products[i][0], D.product),
+                        r(f.products[i][1], D.product),
+                    ];
+                    check(
+                        id(&format!("x{i}*y{}", i + 1)),
+                        r(a[0] * bb[1], D.product),
+                        shown[0],
+                        unit(D.product),
+                    );
+                    check(
+                        id(&format!("x{}*y{i}", i + 1)),
+                        r(bb[0] * a[1], D.product),
+                        shown[1],
+                        unit(D.product),
+                    );
+                    sum += shown[0] - shown[1];
+                }
+                let shown_sum = r(f.cross_sum, D.plan);
+                // Half a unit per rounded product (2 per corner).
+                check(
+                    id("cross sum"),
+                    r(sum, D.plan),
+                    shown_sum,
+                    unit(D.plan) * (1.0 + n as f64),
+                );
+                let shown_plan = r(f.plan_area, D.plan);
+                check(
+                    id("plan"),
+                    r(shown_sum.abs() / 2.0, D.plan),
+                    shown_plan,
+                    unit(D.plan),
+                );
+                let shown_pitch = r(f.pitch_deg, D.pitch);
+                let shown_cos = r(f.cos_pitch, f.cos_digits);
+                check(
+                    id("cos"),
+                    r(shown_pitch.to_radians().cos(), f.cos_digits),
+                    shown_cos,
+                    unit(f.cos_digits),
+                );
+                if shown_cos.abs() < 1e-6 {
+                    continue;
+                }
+                let shown_k = r(f.factor, D.factor);
+                check(
+                    id("1/cos"),
+                    r(1.0 / shown_cos.abs(), D.factor),
+                    shown_k,
+                    unit(D.factor),
+                );
+                // Steps 4 and 5 are shown with the face's own decimals.
+                let d = f.digits;
+                let shown_gross = r(f.gross, d);
+                check(
+                    id("gross"),
+                    r(shown_plan * shown_k, d),
+                    shown_gross,
+                    unit(d) + 2e-6,
+                );
+                let base = f.engine_gross.map_or(shown_gross, |e| r(e, d));
+                let shown_area = r(f.area, d);
+                let step = base - r(f.deducted, d);
+                check(id("area"), r(step, d), shown_area, unit(d));
+                // Rounding the numbers shown to hundredths gives the result
+                // (no double rounding).
+                check(id("hundredths"), r(shown_area, 2), r(f.area, 2), 0.0);
+                check(id("step hundredths"), r(step, 2), r(f.area, 2), 0.0);
+                if f.deducted.abs() < 1e-12 {
+                    check(id("base hundredths"), r(base, 2), r(f.area, 2), 0.0);
+                }
+                // The chain from the first numbers shown lands on the result.
+                let chain = (sum.abs() / 2.0) / shown_pitch.to_radians().cos().abs();
+                if f.engine_gross.is_none() {
+                    check(id("chain"), chain - f.deducted, f.area, 0.005);
+                }
+            }
+        }
+        for (pi, part) in b.parts.iter().enumerate() {
+            for (ci, c) in part.clad_faces.iter().enumerate() {
+                for (k, piece) in c.pieces.iter().enumerate() {
+                    let id = |s: &str| format!("part {pi} clad {ci} piece {k} {s}");
+                    let n = piece.uz.len();
+                    let uz: Vec<[f64; 2]> = piece
+                        .uz
+                        .iter()
+                        .map(|q| [r(q[0], D.coord), r(q[1], D.coord)])
+                        .collect();
+                    let mut sum = 0.0;
+                    for i in 0..n {
+                        let (a, bb) = (uz[i], uz[(i + 1) % n]);
+                        let shown = [
+                            r(piece.products[i][0], D.product),
+                            r(piece.products[i][1], D.product),
+                        ];
+                        check(
+                            id("u*z"),
+                            r(a[0] * bb[1], D.product),
+                            shown[0],
+                            unit(D.product),
+                        );
+                        check(
+                            id("u*z'"),
+                            r(bb[0] * a[1], D.product),
+                            shown[1],
+                            unit(D.product),
+                        );
+                        sum += shown[0] - shown[1];
+                    }
+                    let shown_sum = r(piece.cross_sum, D.plan);
+                    check(
+                        id("sum"),
+                        r(sum, D.plan),
+                        shown_sum,
+                        unit(D.plan) * (1.0 + n as f64),
+                    );
+                    check(
+                        id("area"),
+                        r(shown_sum.abs() / 2.0, D.area),
+                        r(piece.area, D.area),
+                        unit(D.area),
+                    );
+                    // u is the horizontal distance along the wall: the plan
+                    // distance between corners equals the difference of u.
+                    for i in 0..n {
+                        let (p, q) = (piece.polygon[i], piece.polygon[(i + 1) % n]);
+                        let plan = (q[0] - p[0]).hypot(q[1] - p[1]);
+                        check(
+                            id("u along wall"),
+                            (piece.uz[(i + 1) % n][0] - piece.uz[i][0]).abs(),
+                            plan,
+                            1e-6,
+                        );
+                    }
+                }
+            }
+        }
+        // Every sum in the panel adds up as shown with its decimals.
+        let mut sum_check = |what: String, terms: Vec<f64>, total: f64, d: u32| {
+            // 0: shown with "≈" at `sum_max` decimals, off by float noise only.
+            let (d, tol) = if d == 0 {
+                (D.sum_max, unit(D.sum_max) * terms.len() as f64)
+            } else {
+                (d, 0.0)
+            };
+            let shown: f64 = terms.iter().map(|&t| r(t, d)).sum();
+            check(format!("sum {what}"), r(shown, d), r(total, d), tol);
+            check(
+                format!("sum {what} hundredths"),
+                r(r(total, d), 2),
+                r(total, 2),
+                0.0,
+            );
+        };
+        for (pi, part) in b.parts.iter().enumerate() {
+            let terms = part
+                .faces
+                .iter()
+                .map(|f| f.area)
+                .chain(part.clad_faces.iter().map(|c| c.area))
+                .collect();
+            sum_check(format!("part {pi}"), terms, part.roof_area, part.digits);
+        }
+        for m in &b.materials {
+            sum_check(
+                format!("material {}", m.material),
+                m.items.iter().map(|i| i.area).collect(),
+                m.area,
+                m.digits,
+            );
+        }
+        for g in &b.lines {
+            let terms = g
+                .items
+                .iter()
+                .map(|l| l.length)
+                .chain(std::iter::once(-g.deducted))
+                .collect();
+            sum_check(format!("line {}", g.code), terms, g.sum, g.digits);
+            sum_check(format!("line {} total", g.code), vec![g.sum], g.total, 2);
+        }
+        sum_check(
+            "roof".into(),
+            b.parts
+                .iter()
+                .map(|p| p.roof_area)
+                .chain(b.manual_faces.iter().map(|f| f.area))
+                .collect(),
+            b.roof_area,
+            b.digits,
+        );
+        for g in &b.lines {
+            for (li, l) in g.items.iter().enumerate() {
+                if l.typed {
+                    continue;
+                }
+                let id = |s: &str| format!("line {} #{li} {s}", g.code);
+                let mut sum = 0.0;
+                for k in 0..3 {
+                    let d = r(r(l.b[k], D.coord) - r(l.a[k], D.coord), D.coord);
+                    let shown_d = r(l.delta[k], D.coord);
+                    check(id(&format!("delta{k}")), d, shown_d, unit(D.coord));
+                    let sq = l.sq_digits;
+                    let shown_sq = r(l.squares[k], sq);
+                    check(
+                        id(&format!("sq{k}")),
+                        r(shown_d * shown_d, sq),
+                        shown_sq,
+                        unit(sq),
+                    );
+                    sum += shown_sq;
+                }
+                let shown_sum = r(l.sum_sq, l.sq_digits);
+                check(
+                    id("sum"),
+                    r(sum, l.sq_digits),
+                    shown_sum,
+                    unit(l.sq_digits) * 2.5,
+                );
+                let dl = l.digits;
+                let shown_len = r(l.length, dl);
+                check(id("sqrt"), r(shown_sum.sqrt(), dl), shown_len, unit(dl));
+                check(id("hundredths"), r(shown_len, 2), r(l.length, 2), 0.0);
+                check(id("chain"), sum.sqrt(), l.length, 0.005);
+            }
+        }
+        for f in &b.manual_faces {
+            let n = f.points.len();
+            let mut sum = 0.0;
+            for i in 0..n {
+                let (a, bb) = (f.points[i], f.points[(i + 1) % n]);
+                let p = |v: f64| r(v, D.coord);
+                sum += r(p(a[0]) * p(bb[1]), D.product) - r(p(bb[0]) * p(a[1]), D.product);
+            }
+            let id = |s: &str| format!("manual face {} {s}", f.no);
+            let shown_plan = r(f.plan_area, D.plan);
+            check(
+                id("plan"),
+                r(sum.abs() / 2.0, D.plan),
+                shown_plan,
+                unit(D.plan) * (1.0 + n as f64),
+            );
+            if f.pitch_out_of_range {
+                check(id("out of range"), f.area, 0.0, 0.0);
+                continue;
+            }
+            let shown_cos = r(f.cos_pitch, f.cos_digits);
+            check(
+                id("cos"),
+                r(r(f.pitch_deg, D.pitch).to_radians().cos(), f.cos_digits),
+                shown_cos,
+                unit(f.cos_digits),
+            );
+            let shown_k = r(f.factor, D.factor);
+            check(
+                id("1/cos"),
+                r(1.0 / shown_cos, D.factor),
+                shown_k,
+                unit(D.factor),
+            );
+            let d = f.digits;
+            check(
+                id("area"),
+                r(shown_plan * shown_k, d),
+                r(f.area, d),
+                unit(d),
+            );
+            check(id("hundredths"), r(r(f.area, d), 2), r(f.area, 2), 0.0);
+        }
+    }
+
+    let mut failures = Vec::new();
+    for ex in tectora_core::examples::EXAMPLES {
+        let p = ex.project();
+        audit(
+            ex.id,
+            &tectora_core::breakdown::breakdown(&p),
+            &mut failures,
+        );
+    }
+    // Standard roofs of random size and pitch, placed up to 2 km from the
+    // origin (large coordinates make the products and squares long), with
+    // a chimney and hand-added faces and lines.
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut rnd = move |lo: f64, hi: f64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        lo + (hi - lo) * (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    use tectora_core::examples::{StandardRoof, standard_roof};
+    let kinds = [
+        StandardRoof::Gable,
+        StandardRoof::Hip,
+        StandardRoof::Shed,
+        StandardRoof::HalfHip,
+        StandardRoof::Pyramid,
+    ];
+    for i in 0..400 {
+        let kind = kinds[i % kinds.len()];
+        let (l, w) = (rnd(6.0, 40.0), rnd(6.0, 20.0));
+        let mut part = standard_roof(kind, l, w, rnd(5.0, 75.0), rnd(2.0, 8.0), rnd(0.0, 1.0));
+        let (ox, oy) = if i % 2 == 0 {
+            (rnd(-2000.0, 2000.0), rnd(-2000.0, 2000.0))
+        } else {
+            (rnd(0.0, 300.0), rnd(0.0, 300.0))
+        };
+        for e in &mut part.edges {
+            e.start = Point2::new(e.start.x + ox, e.start.y + oy);
+        }
+        let mut p = tectora_core::examples::find("gable").unwrap().project();
+        p.parts = vec![part];
+        if i % 4 == 1 {
+            // A chimney somewhere on the roof, on the ridge every 8th roof.
+            let cx = ox + l * rnd(0.25, 0.7);
+            let cy = if i % 8 == 1 {
+                oy + w / 2.0 - 0.4
+            } else {
+                oy + w * rnd(0.1, 0.7)
+            };
+            p.chimneys.push(Chimney {
+                corners: vec![
+                    Point2::new(cx, cy),
+                    Point2::new(cx + 0.8, cy),
+                    Point2::new(cx + 0.8, cy + 0.8),
+                    Point2::new(cx, cy + 0.8),
+                ],
+                height: 12.0,
+            });
+        }
+        if i % 3 == 0 {
+            let (cx, cy) = (ox + l * rnd(0.2, 0.8), oy + w * rnd(0.2, 0.8));
+            p.manual_faces.push(tectora_core::model::ManualFace {
+                points: vec![
+                    Point2::new(cx, cy),
+                    Point2::new(cx + 2.0, cy),
+                    Point2::new(cx + 2.0, cy + 1.5),
+                ],
+                pitch_deg: [rnd(0.0, 80.0), 89.9999, 95.0, 90.0][i / 3 % 4],
+                label: String::new(),
+            });
+        }
+        audit(
+            &format!("random {i} {kind:?} at ({ox:.1}, {oy:.1})"),
+            &tectora_core::breakdown::breakdown(&p),
+            &mut failures,
+        );
+    }
+    for sub in ["dacad_cases", "multiroof"] {
+        for (name, case) in fixtures_in(sub) {
+            let p = project(&name, &case);
+            audit(
+                &name,
+                &tectora_core::breakdown::breakdown(&p),
+                &mut failures,
+            );
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} failures:\n{}",
+        failures.len(),
+        failures
+            .iter()
+            .take(40)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }

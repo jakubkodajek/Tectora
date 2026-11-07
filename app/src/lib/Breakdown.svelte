@@ -9,7 +9,9 @@
   import { num } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
-  import type { CalcBreakdown, CalcResult, PlanMark, Project } from "./types";
+  import Modal from "./Modal.svelte";
+  import BreakdownDetail from "./BreakdownDetail.svelte";
+  import type { BreakdownDetail as Detail, CalcBreakdown, CalcResult, PartDeductions, PlanMark, Project } from "./types";
 
   let {
     project,
@@ -25,6 +27,8 @@
   } = $props();
 
   let error = $state<string | null>(null);
+  /** The face, gable or line open in the detailed dialog, with its title and its part's deductions. */
+  let open = $state<{ title: string; detail: Detail; deductions: PartDeductions | null } | null>(null);
   let seq = 0;
 
   // Recalculate whenever the roof result changes (every edit recalculates it).
@@ -45,11 +49,30 @@
       });
   });
 
-  const fixed = (v: number, d: number) =>
-    new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: d, maximumFractionDigits: d }).format(v);
+  const MINUS = "\u2212";
+  /** Fixed decimals, one minus sign (U+2212) and no grouping, as in the detailed dialog. */
+  const fixed = (v: number, d: number) => {
+    const s = new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: false })
+      .format(Object.is(v, -0) ? 0 : v)
+      .replace(/^[-\u2212]/, MINUS);
+    return /^−0([.,]0+)?$/.test(s) ? s.slice(1) : s;
+  };
   const a2 = (v: number) => `${num(v)} m²`;
   const len = (v: number) => `${num(v)} m`;
-  const deg = (v: number) => `${fixed(v, Math.abs(v - Math.round(v)) < 1e-6 ? 0 : 1)}°`;
+  /** A sum's sign and decimals: digits 0 means it adds up only to float noise. */
+  const sumFmt = (digits: number) => ({ d: digits || (data?.decimals.sum_max ?? 12), eq: digits ? "=" : "≈" });
+  /** Terms of a sum as written: "a + b − c". */
+  const terms = (vals: number[], d: number) =>
+    vals.map((v, i) => (i === 0 ? fixed(v, d) : v < 0 ? `${MINUS} ${fixed(-v, d)}` : `+ ${fixed(v, d)}`)).join(" ");
+
+  function partDeductions(part: CalcBreakdown["parts"][number]): PartDeductions {
+    const items = (part.openings ?? []).map((o) => ({ label: openingLabel(o.kind), area: o.area }));
+    if (part.other_cuts) items.push({ label: t("bd.otherCuts"), area: part.other_cuts });
+    return { items, total: part.deducted };
+  }
+  /** Degrees with up to `max` decimals, trailing zeros trimmed. */
+  const deg = (v: number, max = 4) =>
+    `${new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 0, maximumFractionDigits: max, useGrouping: false }).format(v)}°`;
 
   const many = $derived((data?.parts.length ?? 0) > 1);
   const multiMaterial = $derived((data?.materials.length ?? 0) > 1);
@@ -86,6 +109,12 @@
 <div class="bd" role="region" aria-label={t("bd.title")}>
   <p class="intro">{t("bd.intro")}</p>
 
+  {#if open && data}
+    <Modal title={open.title} width={760} onclose={() => (open = null)}>
+      <BreakdownDetail detail={open.detail} decimals={data.decimals} deductions={open.deductions} />
+    </Modal>
+  {/if}
+
   {#if error}
     <div class="err" role="status"><i></i><span>{t("bd.error")}</span><code>{error}</code></div>
   {:else if !data}
@@ -93,6 +122,7 @@
   {:else if !data.parts.length && !data.manual_faces.length}
     <p class="muted">{t("bd.empty")}</p>
   {:else}
+    {@const D = data.decimals}
     {#each data.parts as part, pi}
       <section>
         <h4 class="part">
@@ -113,12 +143,12 @@
               {#each part.walls as w}
                 <tr>
                   <td>{w.no}</td>
-                  <td>{num(w.length)}</td>
+                  <td>{fixed(w.length, 3)}</td>
                   <td>
                     {w.gable ? t("edge.gable") : deg(w.pitch_deg)}{#if w.half_hip}<span class="tag">{t("bd.halfHip")}</span>{/if}{#if w.breaks}<span class="tag">{t("bd.breaks", { n: w.breaks })}</span>{/if}{#if w.clad}<span class="tag">{t("bd.clad")}</span>{/if}
                   </td>
-                  <td>{num(w.eave_height)}</td>
-                  <td>{num(w.overhang)}</td>
+                  <td>{fixed(w.eave_height, 3)}</td>
+                  <td>{fixed(w.overhang, 3)}</td>
                   {#if multiMaterial}<td>{w.material}</td>{/if}
                 </tr>
               {/each}
@@ -131,10 +161,10 @@
         {/if}
 
         {#each part.faces as f}
-          <div
+          <button
             class="face"
-            role="listitem"
-            tabindex="-1"
+            title={t("bd.open")}
+            onclick={() => (open = { title: t("bdd.faceTitle", { n: faceRef(pi, f.no) }), detail: { kind: "face", face: f }, deductions: partDeductions(part) })}
             onpointerenter={() => onmark?.({ polygon: plan2(f.polygon) })}
             onpointerleave={() => onmark?.(null)}
           >
@@ -145,49 +175,45 @@
               <b>{a2(f.area)}</b>
             </div>
             <div class="calc">
-              <span>{fixed(f.plan_area, 3)} m² ÷ cos {deg(f.pitch_deg)}</span>
-              <span>= {fixed(f.plan_area, 3)} × {fixed(f.factor, 4)} = {a2(f.gross)}</span>
-              {#if f.engine_gross !== undefined}
-                <span class="note">{t("bd.engine", { v: a2(f.engine_gross), d: a2(f.engine_gross - f.gross) })}</span>
+              {#if f.engine_gross === undefined && !f.vertical}
+                <span>{fixed(f.plan_area, D.plan)} m² ÷ cos {deg(f.pitch_deg, 6)}{#if f.deducted > 0}{" "}{MINUS} {fixed(f.deducted, f.digits)} m²{/if}</span>
+              {:else}
+                <span>{t("bd.engineShort", { v: fixed(f.engine_gross ?? f.gross, f.digits) })}{#if f.deducted > 0}{" "}{MINUS} {fixed(f.deducted, f.digits)} m²{/if}</span>
               {/if}
-              {#if f.deducted > 0.00005}
-                <span>− {a2(f.deducted)} <em>{t("bd.deducted")}</em> = {a2(f.area)}</span>
-              {/if}
+              <span>= {fixed(f.area, f.digits)} m²</span>
             </div>
-            <details class="corners">
-              <summary>{t("bd.corners", { n: f.polygon.length })}</summary>
-              <div class="calc">
-                {#each f.polygon as v}<span>{num(v[0])}; {num(v[1])}; {num(v[2])}</span>{/each}
-              </div>
-            </details>
-          </div>
+            <span class="more">{t("bd.open")}</span>
+          </button>
         {/each}
 
-        {#each part.clad ?? [] as [mat, a]}
-          <div class="face">
+        {#each part.clad_faces ?? [] as c}
+          <button class="face" title={t("bd.open")} onclick={() => (open = { title: t("bdd.cladTitle", { n: c.wall ?? "?" }), detail: { kind: "clad", clad: c }, deductions: null })}>
             <div class="face-head">
               <span class="no">{faceRef(pi, null)}</span>
-              <span>{t("bd.cladGables")}</span>
-              {#if multiMaterial}<span class="mat">{materialName(project, mat)}</span>{/if}
-              <b>{a2(a)}</b>
+              <span>{t("bd.cladGable", { n: c.wall ?? "?" })}</span>
+              {#if multiMaterial}<span class="mat">{materialName(project, c.material)}</span>{/if}
+              <b>{a2(c.area)}</b>
             </div>
-          </div>
+            <span class="more">{t("bd.open")}</span>
+          </button>
         {/each}
 
-        {#if part.openings?.length}
+        {#if part.deducted > 0}
+          {@const ded = partDeductions(part)}
           <div class="sub">{t("bd.openings")}</div>
           <table>
             <tbody>
-              {#each part.openings as o}
-                <tr><td>{openingLabel(o.kind)}</td><td class="v">{a2(o.area)}</td></tr>
+              {#each ded.items as o}
+                <tr><td>{o.label}</td><td class="v">{fixed(o.area, 3)} m²</td></tr>
               {/each}
             </tbody>
           </table>
         {/if}
 
-        {#if part.faces.length > 1}
+        {#if part.faces.length + (part.clad_faces?.length ?? 0) > 1}
+          {@const sf = sumFmt(part.digits)}
           <div class="sum">
-            Σ {part.faces.map((f) => num(f.area)).concat((part.clad ?? []).map((c) => num(c[1]))).join(" + ")} = <b>{a2(part.roof_area)}</b>
+            Σ {terms(part.faces.map((f) => f.area).concat((part.clad_faces ?? []).map((c) => c.area)), sf.d)} {sf.eq} <b>{fixed(part.roof_area, sf.d)}</b> ≐ <b>{a2(part.roof_area)}</b>
           </div>
         {/if}
       </section>
@@ -197,16 +223,22 @@
       <section>
         <h4><span>{t("bd.manualFaces")}</span></h4>
         {#each data.manual_faces as f}
-          <div class="face">
+          <button class="face" onclick={() => (open = { title: f.label || t("manual.faceN", { n: f.no }), detail: { kind: "manual", face: f }, deductions: null })}>
             <div class="face-head">
               <span class="no">{faceRef(null, f.no)}</span>
               <span>{f.label || t("manual.faceN", { n: f.no })}</span>
               <b>{a2(f.area)}</b>
             </div>
             <div class="calc">
-              <span>{fixed(f.plan_area, 3)} m² ÷ cos {deg(f.pitch_deg)} = {fixed(f.plan_area, 3)} × {fixed(f.factor, 4)} = {a2(f.area)}</span>
+              {#if f.pitch_out_of_range}
+                <span>{deg(f.pitch_deg, 6)}</span>
+              {:else}
+                <span>{fixed(f.plan_area, D.plan)} m² ÷ cos {deg(f.pitch_deg, 6)}</span>
+              {/if}
+              <span>= {fixed(f.area, f.digits)} m²</span>
             </div>
-          </div>
+            <span class="more">{t("bd.open")}</span>
+          </button>
         {/each}
       </section>
     {/if}
@@ -215,9 +247,10 @@
       <section>
         <h4><span>{t("res.byMaterial")}</span></h4>
         {#each data.materials as mt}
+          {@const sf = sumFmt(mt.digits)}
           <div class="sum">
             <span class="mat-name">{materialName(project, mt.material)}</span>
-            {mt.items.map((i) => `${faceRef(i.part, i.face)}: ${num(i.area)}`).join(" + ")} = <b>{a2(mt.area)}</b>
+            {mt.items.map((i, k) => `${k ? "+ " : ""}${faceRef(i.part, i.face)}: ${fixed(i.area, sf.d)}`).join(" ")} {sf.eq} <b>{fixed(mt.area, sf.d)}</b> ≐ <b>{a2(mt.area)}</b>
           </div>
         {/each}
       </section>
@@ -226,6 +259,7 @@
     <section>
       <h4><span>{t("res.lines")}</span></h4>
       {#each data.lines as g}
+        {@const sf = sumFmt(g.digits)}
         <details class="lines">
           <summary>
             <code>{g.code}</code>
@@ -236,25 +270,24 @@
             <tbody>
               {#each g.items as l, li}
                 <tr
+                  class="clickable"
+                  title={t("bd.open")}
+                  onclick={() => (open = { title: t("bdd.lineTitle", { code: g.code, label: lineLabel(g.code), n: li + 1 }), detail: { kind: "line", code: g.code, line: l }, deductions: null })}
                   onpointerenter={() => onmark?.({ line: [[l.a[0], l.a[1]], [l.b[0], l.b[1]]] })}
                   onpointerleave={() => onmark?.(null)}
                 >
                   <td class="no">{li + 1}</td>
                   <td class="delta">
-                    {#if l.typed}
-                      {t("bd.typed")}
-                    {:else}
-                      √({num(l.delta[0])}² + {num(l.delta[1])}² + {num(l.delta[2])}²){#if l.part === null}<span class="tag">{t("bd.manual")}</span>{/if}
-                    {/if}
+                    {#if l.typed}{t("bd.typed")}{:else}{t("bd.lineOpen")}{/if}{#if l.part === null}<span class="tag">{t("bd.manual")}</span>{/if}
                   </td>
-                  <td class="v">{num(l.length)}</td>
+                  <td class="v">{fixed(l.length, sf.d)}</td>
                 </tr>
               {/each}
             </tbody>
           </table>
           <div class="sum">
-            Σ {num(g.items.reduce((s, l) => s + l.length, 0))}{#if g.deducted}
-              − {num(g.deducted)} <em>{t("bd.lineDeducted")}</em>{/if} = <b>{len(g.total)}</b>
+            Σ {terms(g.items.map((l) => l.length).concat(g.deducted ? [-g.deducted] : []), sf.d)}{#if g.deducted} <em>({t("bd.lineDeducted")})</em>{/if}
+            {sf.eq} <b>{fixed(g.sum, sf.d)}</b> ≐ <b>{len(g.total)}</b>
           </div>
         </details>
       {/each}
@@ -263,13 +296,15 @@
     <section class="total">
       <h4><span>{t("bd.total")}</span><b>{a2(data.roof_area)}</b></h4>
       {#if data.parts.length + data.manual_faces.length > 1}
+        {@const sf = sumFmt(data.digits)}
         <div class="sum">
-          Σ {data.parts.map((p) => num(p.roof_area)).concat(data.manual_faces.map((f) => num(f.area))).join(" + ")} = <b>{a2(data.roof_area)}</b>
+          Σ {terms(data.parts.map((p) => p.roof_area).concat(data.manual_faces.map((f) => f.area)), sf.d)} {sf.eq} <b>{fixed(data.roof_area, sf.d)}</b> ≐ <b>{a2(data.roof_area)}</b>
         </div>
       {/if}
       <p class="check" class:bad={!agrees}>
         <i></i>{agrees ? t("bd.agrees") : t("bd.differs", { v: result ? a2(result.totals.roof_area) : "—" })}
       </p>
+      <p class="muted">{t("bd.sumNote")}</p>
     </section>
   {/if}
 </div>
@@ -362,8 +397,28 @@
     border: 1px solid var(--border);
     border-radius: 6px;
   }
-  .face:hover {
+  button.face {
+    width: 100%;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    background: none;
+    cursor: pointer;
+  }
+  .face:hover,
+  .face:focus-visible {
     border-color: var(--accent);
+  }
+  .more {
+    align-self: flex-end;
+    font-size: 11px;
+    color: var(--text-3);
+  }
+  .face:hover .more {
+    color: var(--accent);
+  }
+  tr.clickable {
+    cursor: pointer;
   }
   .face-head {
     display: flex;
@@ -390,19 +445,10 @@
     font-size: 11.5px;
     color: var(--text-2);
   }
-  .calc em,
   .sum em {
     font-style: normal;
     color: var(--text-3);
     font-family: system-ui, sans-serif;
-  }
-  .calc .note {
-    color: var(--text-3);
-    font-family: system-ui, sans-serif;
-  }
-  .corners summary {
-    font-size: 11px;
-    color: var(--text-3);
   }
   .sub {
     color: var(--text-3);

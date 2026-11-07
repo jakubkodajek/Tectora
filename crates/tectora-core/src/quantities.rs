@@ -53,9 +53,30 @@ pub fn roof_totals(project: &Project) -> crate::roof::RoofQuantities {
     let mut total = crate::roof::RoofQuantities::default();
     for geo in crate::openings::generate_project(project) {
         total.add(&geo.quantities());
+        subtract_minus_lines(&mut total, &geo.minus_lines);
     }
     total.add(&manual_quantities(project));
     total
+}
+
+/// Takes the line pieces DACAD subtracts (`minus_lines`, e.g. a ridge
+/// through a chimney) off the line lengths, as `dacad_line_totals` does, so
+/// the totals by line type agree with the totals by line code.
+pub fn subtract_minus_lines(q: &mut crate::roof::RoofQuantities, minus: &[(String, f64)]) {
+    for (code, len) in minus {
+        let field = match code.as_str() {
+            "T" => &mut q.eave_length,
+            "F" => &mut q.ridge_length,
+            "G" => &mut q.hip_length,
+            "K" => &mut q.valley_length,
+            "O" | "OL" | "OR" | "OS" => &mut q.verge_length,
+            "P" => &mut q.pult_length,
+            "c" => &mut q.knick_length,
+            "S" => &mut q.gorge_length,
+            _ => &mut q.abutment_length,
+        };
+        *field -= len;
+    }
 }
 
 /// Line lengths keyed by DACAD's line codes (see `LineKind::dacad_code`),
@@ -257,6 +278,35 @@ mod manual_tests {
             label: String::new(),
         };
         assert!((f.area() - 6.0).abs() < 1e-9);
+        // A near-vertical pitch gives no area instead of millions of m².
+        for pitch_deg in [89.99999, 90.0, 95.0, -1.0] {
+            assert_eq!(
+                ManualFace {
+                    pitch_deg,
+                    ..f.clone()
+                }
+                .area(),
+                0.0
+            );
+        }
+    }
+
+    #[test]
+    fn line_types_take_off_the_ridge_through_a_chimney() {
+        let mut p = crate::examples::find("gable").unwrap().project();
+        let before = roof_totals(&p).ridge_length;
+        p.chimneys.push(crate::model::Chimney {
+            corners: [(5.0, 4.0), (6.2, 4.0), (6.2, 5.0), (5.0, 5.0)]
+                .map(|(x, y)| crate::geom::Point2::new(x, y))
+                .to_vec(),
+            height: 10.0,
+        });
+        let ridge = roof_totals(&p).ridge_length;
+        let f = dacad_line_totals(&p)["F"];
+        assert!(ridge < before - 1.0, "ridge {ridge} before {before}");
+        assert!((ridge - f).abs() < 0.006, "ridge {ridge} vs F {f}");
+        let report = crate::report::calc(&p);
+        assert!((report["totals"]["ridge_length"].as_f64().unwrap() - ridge).abs() < 1e-9);
     }
 }
 
