@@ -105,6 +105,19 @@ colleague uses Claude Desktop, Codex or Antigravity.
   against ridge and pitch (all `okap` labels of one plan sat 0.27 m
   above the drawn edge), half-hips from the plan, and saddles in level
   valleys as their own part.
+  Job 11 (2026-11-07), a large three-storey building: two hipped pavilions
+  joined by a range whose ridge is higher than theirs, a hipped wing at
+  26°, a tower, sheet-metal corridor roofs and 22 roof windows. Built
+  through MCP in the six steps, its tiles come out 634.7 m² against the
+  offer's 630 (+0.75 %) and its ridge within 0.5 % of the bill. New guide
+  rules: pavilions and range as one outline; canopies drawn over the tiles
+  stand above the roof; window sizes from the window schedule; openings at
+  the eave reach past it. `drawing_lines` now lists the text layer
+  separately from the lines, with a filter (`text_contains`), so one call
+  gives every height and pitch label of a sheet. Open for a DACAD parity
+  check: two parts whose coplanar faces share an eave line lose that eave
+  in the results (the range as its own part with hipped ends in the
+  pavilions' outer planes).
   **Next:** more public roofs (a hipped school with mansards whose figures
   come from the designer's 3D model, an irregular faculty roof around a
   courtyard), the colleague's review of these builds in the app, and the

@@ -34,7 +34,13 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    wings whose ridges are level and eaves with a flatter strip; "Heights"
    says to check every eave label against the ridge and pitch, and
    "Half-hips from the plan" and "Level valleys and saddles" cover a
-   half-hip drawn only on the plan and a saddle between two wings.
+   half-hip drawn only on the plan and a saddle between two wings. "A range
+   between hipped pavilions", "Things drawn over the roof" and "Windows
+   and boxes at the eave" cover a range whose ridge is higher than its
+   pavilions (one outline), walkway canopies drawn over the tiles, window
+   sizes from the window schedule and attics at the eave. On a sheet with
+   a text layer, `drawing_lines` with `limit: 0` and `text_contains`
+   (`["+", "°"]`) lists every height and pitch label at once.
 5. Search with `list_projects` (customer, address, job number) so you edit the
    existing job instead of creating a duplicate.
 6. Build in the six steps of the guide: read and check, then one save each for

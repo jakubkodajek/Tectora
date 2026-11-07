@@ -570,6 +570,60 @@
     }
    ],
    "exact": []
+  },
+  {
+   "job": "11",
+   "drawings": 3,
+   "offers": [
+    {
+     "covering": "Synus CS",
+     "pitch_groups": [
+      {
+       "pitch_deg": 30.0,
+       "area_m2": 630.0,
+       "also_deg": [
+        26.0
+       ]
+      }
+     ],
+     "roof_area_m2": 630.0,
+     "pieces": {
+      "ridge_tiles": 376.0,
+      "ridge_end_tiles": 8.0,
+      "ridge_split_y": 7.0,
+      "ridge_split_x": 0.0,
+      "verge_tiles_right": 0.0,
+      "verge_tiles_left": 0.0,
+      "eave_flashing_2m": 67.0,
+      "valley_strip_2m": 18.0,
+      "chimney_flashing": 0.0,
+      "roof_exit_window": 0.0
+     },
+     "line_intervals_m": {
+      "F+G": [
+       132.86,
+       134.29
+      ],
+      "T": [
+       113.9,
+       134.0
+      ],
+      "K": [
+       28.8,
+       36.0
+      ]
+     }
+    }
+   ],
+   "exact": [
+    {
+     "source": "bill of quantities, ridge item (sum of lengths measured in the DWG)",
+     "lines_m": {
+      "ridge": 51.65
+     }
+    }
+   ],
+   "note": "Added by hand (2026-11-07), not by extract_truth.py: the offer as the script reads it, plus also_deg because the offer prices the 26° wing within its 30° area, and the bill's ridge. Three-storey building: two hipped pavilions at 30° joined by a range whose ridge is higher than theirs, a hipped wing at 26°, a tower, sheet-metal roofs at 8°, 22 roof windows 780 x 1600. The bill gives 30°: 482.29 m² plan / cos 30° minus 22 x 0.81 x 1.39 / cos 30° = 528.30, 26°: 89.64 / cos 26° = 99.73, ridge 51.65, hips 84.36 (plan / cos 30°, more than the true length), valleys 30.25, eaves 101.9 + 25.7. Walkway canopies drawn over the tiles are taken as standing above the roof (the bill's 26° eave runs under them)."
   }
  ]
 }

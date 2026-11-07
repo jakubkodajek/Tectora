@@ -137,7 +137,9 @@ an image makes dimension text unreadable. Use the drawing tools:
   from these texts and their positions instead of reading it off an image
   (in a test a 28° label read as 26° on the image). Glyphs that CAD
   programs write one by one are joined into whole labels (`okap +6,880`),
-  each with the position of its first glyph.
+  each with the position of its first glyph. For the labels alone pass
+  `limit: 0` and `text_contains`: `["+", "°"]` gives every height and pitch
+  label of the sheet in one answer (`texts_total` says how many there are).
 
 **The plot scale is not always the title block's scale.** Sheets drawn at
 1:50 on a large format are often printed smaller (in the test jobs: 1:50.78,
@@ -215,6 +217,34 @@ roof. WS, OL or OR lines that the plan does not draw mean a gable sticks
 out: compare the ridge heights. Check the result against the drawn hips
 and valleys and the ridge lengths on the roof plan.
 
+**A range between hipped pavilions.** When a long range runs between two
+hipped pavilions and its ridge is higher than theirs (the pavilion ridges
+are broken where the range passes, and short hips run from the range's
+ridge end to them), draw pavilions and range as one outline: the range's
+eaves end on the pavilions' side walls, and every edge carries its own
+eave height. Do not let two parts overlap with coplanar faces along a
+shared eave (for example the range as its own part with hipped ends in
+the pavilions' outer planes): the shared eave line drops out of the
+results, or a ridge appears where the two planes meet.
+
+**Things drawn over the roof.** A roof plan also draws what stands above
+the roof: canopies over walkways (`pavlač`), pergolas, solar frames. The
+tile hatch stops at their edge, but the tiles usually go on underneath.
+Check the sections and the bill's eave and gutter lengths (an eave the
+bill counts under the canopy means tiles there), and leave such a
+structure out of the roof instead of making it a part, which would cut the
+tiles below it. Say which way you decided and what it changes. A roof that
+meets the tiles along a drawn intersection line (a lower corridor roof
+whose plane runs into the slope) is a real part.
+
+**Windows and boxes at the eave.** Take roof window sizes from the window
+schedule (`výrobky`, items such as `OK.074 okno 780×1600`): the drawn
+rectangle includes the flashing, and a bill may give the window's plan
+size. A box or attic that stands in front of the slope at the eave is a
+roof opening that reaches past the eave line, so the eave in front of it is
+not counted; an opening that stops just inside the eave leaves that eave in
+the results and adds a false line along it.
+
 **Pitch breaks.** A flatter strip at the eave (a sprocket, `podkosík`) or a
 mansard is `breaks` on the eave edges only: `pitch_deg` is the pitch at the
 eave, each break the height where the next pitch starts. Never copy breaks
@@ -271,7 +301,9 @@ and ask the user; do not invent a value to make a figure fit.
    figure: read the formula behind each item (it may run the length over
    the gable walls, or add an eave strip to the full rafter although they
    overlap) and say how it differs from the drawn roof instead of bending
-   the roof to it. Save the
+   the roof to it. The line totals count every part: when the offer
+   prices tiles only, take the eaves and verges of sheet-metal parts out
+   (`calc` lists quantities per part). Save the
    comparison, the values you could not measure and your assumptions (e.g.
    "overhang not dimensioned, used 0.5 m") in the job's `notes` with
    `update_job`, tell the user the same, and leave the job in draft.

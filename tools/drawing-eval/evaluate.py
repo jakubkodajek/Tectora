@@ -81,8 +81,12 @@ def score(q: dict[str, Any], offer: dict[str, Any], exact: dict[str, Any] | None
     # Offers merge close pitches into one group (job 6: 42° and 43° -> 43°).
     # Without pitch groups (a bill of quantities that gives one total) every
     # pitch counts.
-    priced = [p for p in by_pitch
-              if not groups or any(abs(p - g["pitch_deg"]) <= 1.0 for g in groups)]
+    # A group's `also_deg` lists further pitches the offer prices in it (job
+    # 11 quotes the whole tiled roof, 30° and 26°, at its main pitch).
+    def in_group(p: float, g: dict[str, Any]) -> bool:
+        return any(abs(p - d) <= 1.0 for d in (g["pitch_deg"], *g.get("also_deg", [])))
+
+    priced = [p for p in by_pitch if not groups or any(in_group(p, g) for g in groups)]
     total = sum(by_pitch[p] for p in priced)
     # Each group is rounded up to a whole m² (a decimal group is exact).
     slack = sum(1.0 for g in groups if float(g["area_m2"]).is_integer())
@@ -93,7 +97,7 @@ def score(q: dict[str, Any], offer: dict[str, Any], exact: dict[str, Any] | None
     info_only = offer.get("gross") or offer.get("unexplained")
     (res["info"] if info_only else c)["area_total"] = area
     for g in groups:
-        got = sum(a for p, a in by_pitch.items() if abs(p - g["pitch_deg"]) <= 1.0)
+        got = sum(a for p, a in by_pitch.items() if in_group(p, g))
         lo = (g["area_m2"] - (1 if float(g["area_m2"]).is_integer() else 0)) * (1 - AREA_TOL)
         c[f"area_{g['pitch_deg']:g}deg"] = check_range(got, lo, g["area_m2"] * (1 + AREA_TOL))
 

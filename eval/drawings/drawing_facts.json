@@ -179,6 +179,21 @@
     10.045
    ],
    "note": "raster at about 113 dpi; the only sheet is the truss plan, no section. The 41° hip roof matches (147.9 m² against 150) and alone accounts for the ridge tiles (ridge + hips 34.4 m against 34.3-35.7). The 12° roofs come out 101.7 m² against 110 (-7.6%) whether they are built as sheds or low gables (same footprint, same pitch), so the gap is in their footprint or overhang, not their form. The truss plan's symmetric purlins around a central purlin on a steel column hint at a low gable on the west wing, but a gable adds 7-17 m of ridge the offer has no ridge tiles for. The offer's verge (41-45 m) and valley (16-20 m) pieces fit neither form. Needs the section."
+  },
+  "11": {
+   "sheet": "roof plan (text layer), truss plan with sections A-A to D-D, building sections A and B",
+   "scale": 50,
+   "plot_scale": 50.0,
+   "pitches_deg": [
+    30,
+    26,
+    8
+   ],
+   "outline_m": [
+    50.665,
+    20.865
+   ],
+   "note": "Heights from the plan: eaves +14.565 (pavilions, north), +14.570 (26° wing), south edge of the range +16.618, pavilion ridges +17.238, range ridge +17.639, 26° ridge +17.572, corridor roof +16.115 at axis A. Pavilions 9.205 x 16.565 / 16.615. The plan's 26° tile hatch is 76.2 m² plan; the bill's 89.64 also counts the strips under the walkway canopies (about 13.5 m²), which matches its 26° eave (12.3 + 2 x 6.7 m). Open: whether tiles really continue under the canopies (8 m² at 30°, 16 m² at 26°)."
   }
  }
 }

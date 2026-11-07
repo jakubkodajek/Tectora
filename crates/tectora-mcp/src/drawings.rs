@@ -94,11 +94,13 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "drawing_lines",
-            "description": "The straight lines drawn in a region of a vector PDF, in sheet mm, longest first (collinear pieces merged), and the text of the PDF's text layer in that region. Use it to find wall lines, dimension lines and their exact ends.",
+            "description": "The straight lines drawn in a region of a vector PDF, in sheet mm, longest first (collinear pieces merged), and the text of the PDF's text layer in that region. Use it to find wall lines, dimension lines and their exact ends. For the labels only, pass `limit: 0` and `text_contains`, e.g. [\"+\", \"°\"] for every height and pitch label of a sheet.",
             "inputSchema": schema(with(source_props(), json!({
                 "region": region_prop(),
                 "min_length_mm": { "type": "number", "description": "Shortest line returned (default 2 mm)." },
-                "limit": { "type": "integer", "description": "Most lines returned (default 200, at most 2000)." },
+                "limit": { "type": "integer", "description": "Most lines returned (default 200, at most 2000; 0 = texts only)." },
+                "text_limit": { "type": "integer", "description": "Most texts returned (default 1000, at most 5000). `texts_total` says how many the region has." },
+                "text_contains": { "type": "array", "items": { "type": "string" }, "description": "Keep only texts that contain one of these strings (at most 8), e.g. [\"+\", \"°\"]." },
                 "directions_deg": { "type": "array", "items": { "type": "number" }, "description": "Keep only lines within 1° of these sheet directions, e.g. [0, 90] for the walls and roof edges of a plan drawn square to the sheet. Use it on hatched or tiled roof plans, where the pattern otherwise fills the limit." },
             })), &["region"]),
         }),
@@ -255,7 +257,25 @@ impl Server {
             .get("limit")
             .and_then(Value::as_u64)
             .unwrap_or(200)
-            .clamp(1, 2000) as usize;
+            .min(2000) as usize;
+        let text_limit = args
+            .get("text_limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(1000)
+            .min(5000) as usize;
+        let contains: Vec<String> = match args.get("text_contains") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(a)) if a.len() <= 8 => a
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .filter(|s| !s.is_empty() && s.len() <= 64)
+                        .map(str::to_owned)
+                })
+                .collect::<Option<Vec<String>>>()
+                .ok_or("`text_contains` must be non-empty strings of at most 64 bytes")?,
+            Some(_) => return Err("`text_contains` must be an array of at most 8 strings".into()),
+        };
         let directions: Vec<f64> = match args.get("directions_deg") {
             None | Some(Value::Null) => Vec::new(),
             Some(Value::Array(a)) if a.len() <= 8 => a
@@ -266,27 +286,35 @@ impl Server {
             Some(_) => return Err("`directions_deg` must be an array of at most 8 numbers".into()),
         };
         let content = d.content(page).map_err(|e| e.to_string())?;
-        let lines: Vec<Value> = content
-            .lines_along(Some(region), min_len, limit, &directions)
-            .iter()
-            .map(|s| {
-                json!({
-                    "a": [round(s.a[0], 2), round(s.a[1], 2)],
-                    "b": [round(s.b[0], 2), round(s.b[1], 2)],
-                    "length_mm": round(s.length(), 2),
-                    "angle_deg": round(s.angle_deg(), 2),
-                    "width_mm": round(s.width, 2),
-                    "dashed": s.dashed,
-                })
+        let lines: Vec<Value> = if limit == 0 {
+            Vec::new()
+        } else {
+            content.lines_along(Some(region), min_len, limit, &directions)
+        }
+        .iter()
+        .map(|s| {
+            json!({
+                "a": [round(s.a[0], 2), round(s.a[1], 2)],
+                "b": [round(s.b[0], 2), round(s.b[1], 2)],
+                "length_mm": round(s.length(), 2),
+                "angle_deg": round(s.angle_deg(), 2),
+                "width_mm": round(s.width, 2),
+                "dashed": s.dashed,
             })
-            .collect();
-        let texts: Vec<Value> = content
-            .texts_in(Some(region))
+        })
+        .collect();
+        let found = select_texts(content.texts_in(Some(region)), &contains);
+        let total = found.len();
+        let texts: Vec<Value> = found
             .into_iter()
-            .take(limit)
+            .take(text_limit)
             .map(|t| json!(t))
             .collect();
-        Ok(json!({ "page": page, "lines": lines, "texts": texts }))
+        let mut out = json!({ "page": page, "lines": lines, "texts": texts, "texts_total": total });
+        if total > text_limit {
+            out["texts_truncated"] = json!(true);
+        }
+        Ok(out)
     }
 
     fn measure_drawing(&self, args: &Value) -> ToolResult {
@@ -497,6 +525,26 @@ impl Server {
 /// Traced edges that lie on drawn lines for less than this share are reported.
 const EDGE_DRAWN_MIN: f64 = 0.5;
 
+/// The texts that contain one of `contains` (all of them when it is empty),
+/// in reading order: top to bottom, then left to right. A large sheet has
+/// more labels than one answer can hold, and a filter such as `+` (heights)
+/// or `°` (pitches) gets every label of one kind at once.
+fn select_texts<'a>(
+    mut texts: Vec<&'a tectora_drawing::TextItem>,
+    contains: &[String],
+) -> Vec<&'a tectora_drawing::TextItem> {
+    if !contains.is_empty() {
+        texts.retain(|t| contains.iter().any(|c| t.text.contains(c.as_str())));
+    }
+    texts.sort_by(|a, b| {
+        (a.at[1] / 2.0)
+            .floor()
+            .total_cmp(&(b.at[1] / 2.0).floor())
+            .then(a.at[0].total_cmp(&b.at[0]))
+    });
+    texts
+}
+
 /// Corners whose walls turn by less than this are reported: the core fails
 /// on nearly collinear neighbouring eaves (job 4 of the drawings set, a 1.2°
 /// kink, gave E00002).
@@ -676,6 +724,29 @@ mod tests {
         assert!(super::shallow_corners(&p[..2], 3.0).is_empty());
     }
 
+    #[test]
+    fn select_texts_filters_and_sorts_labels() {
+        let t = |text: &str, x: f64, y: f64| tectora_drawing::TextItem {
+            text: text.into(),
+            at: [x, y],
+            size: 2.2,
+            angle_deg: 0.0,
+            end: [x, y],
+        };
+        let items = [
+            t("30,0°", 50.0, 80.0),
+            t("OP.21b", 10.0, 10.0),
+            t("+14,565", 90.0, 10.5),
+            t("+17,238", 20.0, 10.0),
+        ];
+        let all = super::select_texts(items.iter().collect(), &[]);
+        let names: Vec<&str> = all.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(names, ["OP.21b", "+17,238", "+14,565", "30,0°"]);
+        let some = super::select_texts(items.iter().collect(), &["+".into(), "°".into()]);
+        let names: Vec<&str> = some.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(names, ["+17,238", "+14,565", "30,0°"]);
+    }
+
     use super::base64;
     use crate::Server;
     use serde_json::{Value, json};
@@ -773,6 +844,19 @@ mod tests {
             json!({ "path": path, "region": [0, 0, 210, 297], "min_length_mm": 60 }),
         ));
         assert_eq!(lines["lines"].as_array().unwrap().len(), 2);
+        let labels = text(&call(
+            &mut s,
+            "drawing_lines",
+            json!({ "path": path, "region": [0, 0, 210, 297], "limit": 0, "text_contains": ["+"] }),
+        ));
+        assert_eq!(labels["lines"], json!([]));
+        assert_eq!(labels["texts_total"], 0);
+        let e = call(
+            &mut s,
+            "drawing_lines",
+            json!({ "path": path, "region": [0, 0, 210, 297], "text_contains": "+" }),
+        );
+        assert_eq!(e["isError"], true);
 
         let view = call(
             &mut s,

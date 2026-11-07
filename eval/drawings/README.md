@@ -1,6 +1,6 @@
 # Drawing-to-roof evaluation set
 
-Ten real TERRAN jobs: the technical drawings an AI gets, and the offers the
+Eleven real TERRAN jobs: the technical drawings an AI gets, and the offers the
 estimators made from them. The offers are the labels: there is no reference
 roof for these jobs, so the score says how close a roof built from the
 drawings comes to what TERRAN priced.
@@ -8,10 +8,14 @@ drawings comes to what TERRAN priced.
 The drawings and offers themselves are customer data and are **not in the
 repository**. Only numbers are here:
 
-- `truth.json`: per job (`"1"` … `"10"`), the number of drawing PDFs, every
+- `truth.json`: per job (`"1"` … `"11"`), the number of drawing PDFs, every
   offer's covering, pitch groups, roof area, piece counts of line materials
   and the line-length ranges those counts allow, and for job 6 the exact
-  line lengths of a Bramac offer. Made by `tools/drawing-eval/extract_truth.py`.
+  line lengths of a Bramac offer. Made by `tools/drawing-eval/extract_truth.py`
+  for jobs 1–10. Job 11 was added by hand (its `note` says what): the offer
+  as the script reads it, `also_deg` on its pitch group because the offer
+  prices a 26° wing inside its 30° area, and the ridge of the job's bill of
+  quantities. Add it again after regenerating the file.
 - `drawing_facts.json`: figures printed on some drawings (scale, stated
   areas, heights), read by eye. Cross-checks, not offer figures.
 - `public_truth.json`: public roofs from Czech public tenders (`P1`, `P2`,
