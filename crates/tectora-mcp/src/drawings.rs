@@ -84,7 +84,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "trace_outline",
-            "description": "Snap a polygon to the drawing: give its corners roughly (sheet mm, read off the view_drawing grid), in order around the outline; each is snapped to the nearest drawn corner or line crossing. Returns the exact corners, the edge lengths, and with `scale` the polygon in metres ready for create_project (x right, y up, first corner at the origin, counter-clockwise), the real edge lengths and each edge's direction in degrees (the `angle_deg` for a dormer on that eave). Use it for the wall line or the eave line of a roof plan; check the edges against the dimensions. Corners that barely turn are reported: leave them out, the roof calculation fails on nearly straight neighbouring eaves.",
+            "description": "Snap a polygon to the drawing: give its corners roughly (sheet mm, read off the view_drawing grid), in order around the outline; each is snapped to the nearest drawn corner or line crossing. Returns the exact corners, the edge lengths, and with `scale` the polygon in metres ready for create_project (x right, y up, first corner at the origin, counter-clockwise), the real edge lengths and each edge's direction in degrees (the `angle_deg` for a dormer on that eave). Use it for the wall line or the eave line of a roof plan; check the edges against the dimensions. Corners that barely turn are reported: leave them out, the roof calculation fails on nearly straight neighbouring eaves. `edges_drawn` gives the share of each edge that lies on a drawn line; edges well under 1 mean a corner snapped to the wrong line.",
             "inputSchema": schema(with(source_props(), json!({
                 "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }, "minItems": 3, "maxItems": 500, "description": "Corners [x, y] in sheet mm, in order." },
                 "snap_mm": { "type": "number", "description": "Snap radius, mm (default 1.5)." },
@@ -469,6 +469,18 @@ impl Server {
                 "corners {missed:?} did not snap to a drawn corner; give them more exactly or check the view"
             ));
         }
+        let loose: Vec<usize> = t
+            .edges_drawn
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| **d < EDGE_DRAWN_MIN)
+            .map(|(i, _)| i)
+            .collect();
+        if !loose.is_empty() {
+            warnings.push(format!(
+                "edges {loose:?} lie on a drawn line for less than half their length (`edges_drawn`): a corner of each snapped to a pattern or a parallel line (gutter, wall); read those corners from a sharp crop and trace again"
+            ));
+        }
         let shallow = shallow_corners(&t.points, SHALLOW_CORNER_DEG);
         if !shallow.is_empty() {
             warnings.push(format!(
@@ -481,6 +493,9 @@ impl Server {
         Ok(out)
     }
 }
+
+/// Traced edges that lie on drawn lines for less than this share are reported.
+const EDGE_DRAWN_MIN: f64 = 0.5;
 
 /// Corners whose walls turn by less than this are reported: the core fails
 /// on nearly collinear neighbouring eaves (job 4 of the drawings set, a 1.2°

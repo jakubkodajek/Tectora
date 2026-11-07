@@ -82,10 +82,19 @@ colleague uses Claude Desktop, Codex or Antigravity.
   are gross). A granary's bill is 14 % over its drawn roof (it counts
   over the gable walls and the eave strip twice); a villa's printed
   totals are matched by level ridges, area within 1 %, valleys 0.3 %,
-  ridges and hips 1.4 %.
-  **Next:** more public roofs (a larger hipped school, a roof whose bill
-  comes from the designer's 3D model), the colleague's review of these
-  builds in the app, and the missing sections for jobs 1 and 2.
+  ridges and hips 1.4 %. A U-shaped hipped culture house (2134 m²) matches
+  its bill's eave exactly and ridges with hips within 0.3 %, valleys
+  1.1 %; the area its documents state is 9 % more with nothing on the
+  sheets to explain it. It also showed outline corners read off a
+  whole-page image snapping to the tile pattern, which `trace_outline`
+  now reports (`edges_drawn`). Open for a DACAD parity check: that roof
+  as one outline (heads at 34°, wings at 28°) fails with E00002 as soon
+  as a head's ridge comes out higher than a wing's; built as parts it
+  calculates.
+  **Next:** more public roofs (a hipped school with mansards whose figures
+  come from the designer's 3D model, an irregular faculty roof around a
+  courtyard), the colleague's review of these builds in the app, and the
+  missing sections for jobs 1 and 2.
 - Review flow: the AI marks what it was unsure about (unreadable dimension,
   guessed pitch); the colleague confirms or fixes it before the job leaves
   draft.

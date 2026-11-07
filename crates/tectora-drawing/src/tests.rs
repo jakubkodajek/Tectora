@@ -398,6 +398,25 @@ fn trace_snaps_to_the_outline_not_to_hatching() {
     assert_eq!(t.snapped, vec![true; 4]);
     assert_eq!(t.edges_sheet_mm, vec![50.0, 50.0, 50.0, 50.0]);
     assert_eq!(t.edges_angle_deg, vec![0.0, 90.0, 0.0, 90.0]);
+    assert_eq!(t.edges_drawn, vec![1.0; 4]);
+}
+
+#[test]
+fn trace_reports_edges_off_the_drawn_lines() {
+    let c = hatched_square();
+    // The third corner is far off: with snapping off it stays where it is, and
+    // the two edges to it run across the square, not along its outline.
+    let t = c.trace(
+        &[[10.0, 10.0], [60.0, 10.0], [45.0, 45.0], [10.0, 60.0]],
+        0.0,
+    );
+    assert_eq!(t.edges_drawn[0], 1.0);
+    assert_eq!(t.edges_drawn[3], 1.0);
+    assert!(
+        t.edges_drawn[1] < 0.1 && t.edges_drawn[2] < 0.1,
+        "{:?}",
+        t.edges_drawn
+    );
 }
 
 #[test]

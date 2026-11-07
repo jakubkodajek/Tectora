@@ -123,11 +123,19 @@ an image makes dimension text unreadable. Use the drawing tools:
   drawn corners and returns it in metres for `create_project`, optionally
   moved in or out (`offset_m`). It snaps each corner to the crossing of
   lines that run along your two neighbouring edges, so tile or hatch
-  patterns inside the roof do not pull it off the outline.
+  patterns inside the roof do not pull it off the outline. `edges_drawn`
+  tells for each edge how much of it lies on a drawn line: well under 1
+  means a corner snapped to a pattern or to a parallel line such as a
+  gutter. Corners read off a whole-page image are often 1–2 mm out, which
+  is enough for that; read them from a sharp crop, or take them from the
+  long outline lines that `drawing_lines` lists, and trace again.
 - `measure_drawing` measures between two points; `drawing_lines` lists the
   drawn lines of a region and the text of PDFs that have a text layer. On a
   hatched or tiled roof plan the pattern fills the list: pass
   `directions_deg` (e.g. `[0, 90]`) to keep only the lines along the walls.
+  When a page has a text layer (`vector_with_text`), take every number
+  from these texts and their positions instead of reading it off an image
+  (in a test a 28° label read as 26° on the image).
 
 **The plot scale is not always the title block's scale.** Sheets drawn at
 1:50 on a large format are often printed smaller (in the test jobs: 1:50.78,
@@ -149,7 +157,9 @@ overhang; when they are not, model the roof outline with overhang 0, which
 gives the same roof for planes of one pitch, and say so. A narrow strip of
 about 150–160 mm outside the eave is the gutter (`žlab`, legend item
 "podokapní žlab"), not overhang: the roof edge is the next line in, where
-the eave height label points.
+the eave height label points. An on-roof gutter (`nástřešní žlab`) is the
+other way round: a second thick line about half a metre inside the roof
+edge; the roof edge is the outer line, where the hips start.
 
 **Outline corners.** Leave out corners where the wall turns by only a
 degree or two (plot noise, a wall slightly out of line): nearly straight
@@ -175,7 +185,11 @@ steeper: each wing's pitch is atan(ridge height above the eave / half the
 wing's width). Build such a roof as one part per wing (a clean rectangle,
 running into its neighbours, gables where a wing ends against another),
 each with its own pitch; a single outline whose edges carry different
-pitches often fails to calculate. Check the result against the drawn hips
+pitches often fails to calculate (seen when a steeper head's ridge comes
+out higher than the wing's). A wing that runs into a head or cross wing
+ends with a gable on that roof's ridge line, so the gable stays under its
+roof. WS, OL or OR lines that the plan does not draw mean a gable sticks
+out: compare the ridge heights. Check the result against the drawn hips
 and valleys and the ridge lengths on the roof plan.
 
 **Pitch breaks.** A flatter strip at the eave (a sprocket, `podkosík`) or a

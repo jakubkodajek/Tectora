@@ -25,6 +25,8 @@ const SAME_MARK_MM: f64 = 0.4;
 const MIN_SPAN_MM: f64 = 1.0;
 /// Most chains returned.
 pub const MAX_CHAINS: usize = 400;
+/// A traced edge counts as on a drawn line within this distance, mm.
+const EDGE_ON_LINE_MM: f64 = 0.3;
 /// Most lines looked at for dimensions in one call.
 const MAX_LINES: usize = 60_000;
 
@@ -64,6 +66,9 @@ pub struct Trace {
     pub edges_angle_deg: Vec<f64>,
     /// Enclosed area on the sheet, mm².
     pub area_sheet_mm2: f64,
+    /// Share (0–1) of each edge that lies on drawn lines; see
+    /// [`PageContent::drawn_share`].
+    pub edges_drawn: Vec<f64>,
 }
 
 fn angle_of(a: [f64; 2], b: [f64; 2]) -> f64 {
@@ -147,11 +152,13 @@ impl PageContent {
         let n = pts.len();
         let mut edges = Vec::with_capacity(n);
         let mut angles = Vec::with_capacity(n);
+        let mut drawn = Vec::with_capacity(n);
         let mut area2 = 0.0;
         for i in 0..n {
             let (a, b) = (pts[i], pts[(i + 1) % n]);
             edges.push(round(dist(a, b), 3));
             angles.push(round(angle_of(a, b), 2));
+            drawn.push(round(self.drawn_share(a, b, EDGE_ON_LINE_MM), 2));
             area2 += a[0] * b[1] - b[0] * a[1];
         }
         Trace {
@@ -163,6 +170,7 @@ impl PageContent {
             edges_sheet_mm: edges,
             edges_angle_deg: angles,
             area_sheet_mm2: round(area2.abs() / 2.0, 2),
+            edges_drawn: drawn,
         }
     }
 }

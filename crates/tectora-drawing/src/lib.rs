@@ -724,6 +724,45 @@ impl PageContent {
         best.map(|(q, _)| q)
     }
 
+    /// Share (0–1) of the line from `a` to `b` that lies on drawn lines:
+    /// solid or dashed segments running along it within `tol_mm`. An outline
+    /// edge between two well-snapped corners lies on a drawn edge almost
+    /// entirely; a low share means a corner snapped to something else (a
+    /// tile pattern, a parallel gutter line).
+    pub fn drawn_share(&self, a: [f64; 2], b: [f64; 2], tol_mm: f64) -> f64 {
+        const DIR_TOL_DEG: f64 = 1.5;
+        let len = dist(a, b);
+        if len < 1e-9 {
+            return 0.0;
+        }
+        let (ux, uy) = ((b[0] - a[0]) / len, (b[1] - a[1]) / len);
+        let along = |p: [f64; 2]| (p[0] - a[0]) * ux + (p[1] - a[1]) * uy;
+        let across = |p: [f64; 2]| ((p[0] - a[0]) * uy - (p[1] - a[1]) * ux).abs();
+        let dir = uy.atan2(ux).to_degrees().rem_euclid(180.0);
+        let mut spans: Vec<(f64, f64)> = self
+            .segments
+            .iter()
+            .filter(|s| {
+                let d = (s.angle_deg() - dir).rem_euclid(180.0);
+                d.min(180.0 - d) <= DIR_TOL_DEG && across(s.a) <= tol_mm && across(s.b) <= tol_mm
+            })
+            .map(|s| {
+                let (t0, t1) = (along(s.a), along(s.b));
+                (t0.min(t1).max(0.0), t0.max(t1).min(len))
+            })
+            .filter(|(t0, t1)| t1 > t0)
+            .collect();
+        spans.sort_by(|p, q| p.0.total_cmp(&q.0));
+        let (mut covered, mut end) = (0.0, 0.0_f64);
+        for (t0, t1) in spans {
+            if t1 > end {
+                covered += t1 - t0.max(end);
+                end = t1;
+            }
+        }
+        (covered / len).clamp(0.0, 1.0)
+    }
+
     /// Distance between `from` and `to`, each snapped to the drawing within `snap_mm`.
     pub fn measure(&self, from: [f64; 2], to: [f64; 2], snap_mm: f64) -> Measurement {
         let a = self.snap(from, snap_mm);

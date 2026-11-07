@@ -50,6 +50,36 @@
     }
    ],
    "note": "Hipped villa roof with six wings, all ridges at one height (+12.716 in every elevation), so the narrower wings are steeper. No pitch is written; section A-A gives 39° but cuts at a wing junction. One pitch of 39° everywhere: 435.2 m², ridge 23.5, hips 86.5, valleys 50.0. Wings as parts with level ridges and the main wing at 34° (ridge 3.8 m above the eave line) match the printed totals: about 461 m², ridge 32.2, hips 72.6, valleys 49.1. Open: which height the eave line is at (the cornice is +7.750, the eaves are flared)."
+  },
+  {
+   "job": "P3",
+   "drawings": 3,
+   "source": {
+    "contract": "https://ezak.sokolov.cz/contract_display_2877.html",
+    "files": [
+     "priloha-c-4-projektova-dokumentace.zip: D.1.1.4 (new roof plan, 1:150, text layer), D.1.1.5 (elevations), B (summary report: roof area)",
+     "priloha-c-5-rozpocet-soupis-praci-s-vykazem-vymer-_19-01-2026.xlsx (bill)"
+    ]
+   },
+   "offers": [
+    {
+     "covering": "clay interlocking tiles, bill of quantities and the summary report",
+     "gross": true,
+     "pitch_groups": [],
+     "roof_area_m2": 2322.32,
+     "line_intervals_m": {}
+    }
+   ],
+   "exact": [
+    {
+     "lines_m": {
+      "ridge_and_hip": 212.98,
+      "valley": 60.93,
+      "eave": 263.62
+     }
+    }
+   ],
+   "note": "U-shaped hipped roof: two heads at 34° and 33°, two wings and a south block at 28°, all eaves at +16.782. The bill's eave (263.62) is exactly the perimeter of the roof edge drawn on the plan, and its ridge (94.8) plus hip (118.18) and valley figures are within about 1 % of the roof the plan describes, but its area (2322.32, the summary report's 'plocha střechy 2 322 m2') is about 9 % more than the planes of these pitches cover (about 2134 m²); no figure on the sheets explains it, so the area is information only."
   }
  ]
 }
