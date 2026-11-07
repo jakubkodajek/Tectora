@@ -329,3 +329,162 @@ export const isGable = (e: EdgeDef) => Math.abs(e.pitch_deg - 90) <= 0.001;
 export const isMarker = (e: EdgeDef) => e.direction_rad != null;
 
 export type Selection = { part: number; edge: number } | null;
+
+/** How the roof's quantities were calculated (core `breakdown`). */
+/** Decimals the detailed steps show (core `breakdown::DECIMALS`). */
+export interface BreakdownDecimals {
+  coord: number;
+  pitch: number;
+  product: number;
+  plan: number;
+  cos: number;
+  factor: number;
+  area: number;
+  length: number;
+  max: number;
+  /** Most decimals a sum is shown with ("≈" when even these do not add up). */
+  sum_max: number;
+}
+
+export interface CalcBreakdown {
+  decimals: BreakdownDecimals;
+  parts: {
+    name: string;
+    walls: {
+      no: number;
+      length: number;
+      gable: boolean;
+      pitch_deg: number;
+      eave_height: number;
+      overhang: number;
+      material: number;
+      half_hip?: boolean;
+      breaks?: number;
+      clad?: boolean;
+    }[];
+    faces: BreakdownFace[];
+    clad?: [number, number][];
+    clad_faces?: BreakdownClad[];
+    openings?: { kind: "window" | "chimney" | "dormer" | "hole"; area: number }[];
+    /** Cut out where roofs are joined, not by an opening. */
+    other_cuts?: number;
+    /** Σ of the faces' deductions (= openings + other_cuts). */
+    deducted: number;
+    roof_area: number;
+    /** Decimals for the part's sum; 0: adds up only to float noise ("≈"). */
+    digits: number;
+    calculated: boolean;
+  }[];
+  manual_faces: BreakdownManualFace[];
+  materials: {
+    material: number;
+    name?: string;
+    items: { part: number | null; face: number | null; area: number }[];
+    area: number;
+    digits: number;
+  }[];
+  lines: {
+    code: string;
+    items: BreakdownLine[];
+    deducted?: number;
+    /** Σ lengths − deducted, not rounded. */
+    sum: number;
+    digits: number;
+    total: number;
+  }[];
+  roof_area: number;
+  digits: number;
+}
+
+export interface BreakdownFace {
+  no: number;
+  /** Wall number from 1; null for a dormer face. */
+  wall: number | null;
+  pitch_deg: number;
+  material: number;
+  polygon: [number, number, number][];
+  /** Shoelace products [x_i·y_j, x_j·y_i] per corner. */
+  products: [number, number][];
+  cross_sum: number;
+  plan_area: number;
+  cos_pitch: number;
+  cos_digits: number;
+  factor: number;
+  gross: number;
+  /** Check: area of the 3D corners (Newell). */
+  area_3d: number;
+  /** Largest vertical distance of a corner from the face's plane, m. */
+  off_plane: number;
+  deducted: number;
+  area: number;
+  /** The core's gross area where the formula's would not lead to the area as shown. */
+  engine_gross?: number;
+  /** Decimals for gross, deduction and area in the detailed steps. */
+  digits: number;
+  /** Near vertical: the gross is the core's, the factor only gross / plan. */
+  vertical?: boolean;
+}
+
+export interface BreakdownClad {
+  wall: number | null;
+  material: number;
+  pieces: { polygon: [number, number, number][]; uz: [number, number][]; products: [number, number][]; cross_sum: number; area: number }[];
+  area: number;
+  digits: number;
+  /** Σ pieces where it differs from the counted area. */
+  formula_area?: number;
+}
+
+export interface BreakdownManualFace {
+  no: number;
+  label: string;
+  pitch_deg: number;
+  points: [number, number][];
+  products: [number, number][];
+  cross_sum: number;
+  plan_area: number;
+  cos_pitch: number;
+  cos_digits: number;
+  factor: number;
+  area: number;
+  digits: number;
+  /** The pitch gives no area (outside 0–90° or near vertical): 0 m². */
+  pitch_out_of_range?: boolean;
+}
+
+export interface BreakdownLine {
+  part: number | null;
+  a: [number, number, number];
+  b: [number, number, number];
+  delta: [number, number, number];
+  squares: [number, number, number];
+  sum_sq: number;
+  length: number;
+  digits: number;
+  /** Decimals for the squares and their sum. */
+  sq_digits: number;
+  typed?: boolean;
+}
+
+/** A face or line the plan highlights while the breakdown points at it. */
+export type PlanMark = { polygon: [number, number][] } | { line: [[number, number], [number, number]] } | null;
+
+/** A face number the plan shows at the face's centre. */
+export interface PlanLabel {
+  x: number;
+  y: number;
+  text: string;
+}
+
+/** What the detailed calculation dialog shows. */
+export type BreakdownDetail =
+  | { kind: "face"; face: BreakdownFace }
+  | { kind: "manual"; face: BreakdownManualFace }
+  | { kind: "clad"; clad: BreakdownClad }
+  | { kind: "line"; code: string; line: BreakdownLine };
+
+/** A part's deductions, listed under a face's last step. */
+export interface PartDeductions {
+  items: { label: string; area: number }[];
+  total: number;
+}

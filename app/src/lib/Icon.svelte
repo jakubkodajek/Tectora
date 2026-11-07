@@ -39,6 +39,7 @@
     right: "M9 6l6 6-6 6",
     briefcase: "M4 8h16v11H4zM9 8V5h6v3M4 13h16",
     chart: "M5 20V10M12 20V4M19 20v-7",
+    sigma: "M18 5H6l7 7-7 7h12",
     cursor: "M5 3l6 17 2.5-7.5L21 10z",
     warning: "M12 3l10 18H2zM12 10v5M12 18h.01",
     line: "M5 19L19 5M3 21l4-4M17 7l4-4",

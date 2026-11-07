@@ -18,6 +18,9 @@ The list below is DACAD's menu (DACAD.exe string table) against the app.
 - Flat roof, hand-drawn roof lines and new roof faces.
 - Move, rotate, mirror and copy parts; shift a wall in parallel.
 - Front, back, side and top views; area by material; material names.
+- Calculation breakdown ("Postup" tab, MCP `calc_breakdown`): the walls as
+  entered, every face as plan area / cos(pitch) less openings, every line as
+  the 3D distance of its ends, and how they add up, for whoever checks an offer.
 - MCP server with a tool for every editor operation, and the CLI.
 - Job files: attached drawings and photos, `.tectorajob` bundles (project,
   files, history, plan preview) for hand-over and archive.

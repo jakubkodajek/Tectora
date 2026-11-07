@@ -1090,6 +1090,12 @@ pub fn sol_geometries(project: &Project, map: &Rd2Map, res: &SolResult) -> Vec<R
                 let area = f.surfaces.iter().map(|s| s.1).sum::<f64>() + cut;
                 geo.clad_area += area;
                 crate::roof::add_material_area(&mut geo.clad_materials, material, area);
+                geo.clad_faces.push(crate::roof::CladFace {
+                    edge: ei,
+                    material,
+                    pieces: f.surfaces.iter().map(|(edges, _)| polygon(edges)).collect(),
+                    area,
+                });
             }
             for (edges, _) in &f.surfaces {
                 let p = polygon(edges);
@@ -1115,6 +1121,10 @@ pub fn sol_geometries(project: &Project, map: &Rd2Map, res: &SolResult) -> Vec<R
             face.deducted -= cut;
         }
         for &(area, opening) in &f.cuts {
+            if opening.is_none() {
+                // Cut areas are negative (see `face.deducted -= cut`).
+                geo.other_cuts -= area;
+            }
             if let Some((kind, key)) = opening {
                 let tag = match kind {
                     OpeningKind::Chimney => 0,

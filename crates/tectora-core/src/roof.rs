@@ -145,6 +145,10 @@ pub struct RoofGeometry {
     /// part of the roof area.
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub clad_area: f64,
+    /// The clad gables that make up `clad_area`, where the producer knows
+    /// them (to explain the area; not serialized).
+    #[serde(skip)]
+    pub clad_faces: Vec<CladFace>,
     /// Part of `clad_area` per roof material, where the producer knows the
     /// walls; the rest is the first material's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -152,6 +156,11 @@ pub struct RoofGeometry {
     /// Area deducted per window, chimney and dormer (for norm rules).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub openings: Vec<Opening>,
+    /// Area cut out of this roof's faces where roofs are joined that is no
+    /// window, chimney, hole or dormer (e.g. where another part covers
+    /// it), m². Already in the faces' `deducted`; kept to explain them.
+    #[serde(skip)]
+    pub other_cuts: f64,
     /// Line lengths removed by chimneys and dormers, by DACAD code.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cut_lines: Vec<(String, f64)>,
@@ -170,6 +179,18 @@ pub struct RoofGeometry {
     /// roof is still DACAD's result, but its quantities need a look.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<crate::check::RoofWarning>,
+}
+
+/// A clad gable counted as roof area ([`EdgeDef::clad`]).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CladFace {
+    /// Index of the footprint edge (wall) it belongs to.
+    pub edge: usize,
+    pub material: u8,
+    /// Its vertical pieces in 3D.
+    pub pieces: Vec<Vec<[f64; 3]>>,
+    /// Area counted, m² (less anything cut out of it).
+    pub area: f64,
 }
 
 /// An error DACAD's roof calculation ends with, as DACAD reports it.
@@ -2415,6 +2436,12 @@ fn build_geometry(part: &RoofPart, sim: &Sim, initial: &[usize]) -> RoofGeometry
                 let area = area3(&poly);
                 geo.clad_area += area;
                 add_material_area(&mut geo.clad_materials, e.material, area);
+                geo.clad_faces.push(CladFace {
+                    edge: i,
+                    material: e.material,
+                    pieces: vec![poly.clone()],
+                    area,
+                });
             }
             geo.gables.push(poly);
         }

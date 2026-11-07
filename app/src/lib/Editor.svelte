@@ -11,6 +11,7 @@
   import Modal from "./Modal.svelte";
   import PlanView from "./PlanView.svelte";
   import Results from "./Results.svelte";
+  import Breakdown from "./Breakdown.svelte";
   import RoofDefBar from "./RoofDefBar.svelte";
   import DormerBar from "./DormerBar.svelte";
   import OpeningBar from "./OpeningBar.svelte";
@@ -33,7 +34,7 @@
   import { t } from "./i18n.svelte";
   import { actorName, isFresh, live } from "./live.svelte";
   import { markReviewed, prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
-  import type { ActivityItem, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
+  import type { ActivityItem, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
   import { isAi, isGable, isMarker } from "./types";
 
   let {
@@ -49,7 +50,24 @@
   /** Why the project could not be opened (shown instead of the editor). */
   let loadError = $state<Described | null>(null);
   let loadErrorCode = $state<string>("");
-  let dock = $state<"results" | "ai" | "job">("results");
+  let dock = $state<"results" | "breakdown" | "ai" | "job">("results");
+  /** The calculation breakdown while its tab is open, the face or line it points at, and face numbers for the plan. */
+  let breakdown = $state<CalcBreakdown | null>(null);
+  let planMark = $state<PlanMark>(null);
+  const faceLabels = $derived.by((): PlanLabel[] => {
+    if (!breakdown || dock !== "breakdown" || !dockOpen) return [];
+    const many = breakdown.parts.length > 1;
+    return breakdown.parts.flatMap((p, pi) =>
+      p.faces.map((f) => {
+        const n = f.polygon.length || 1;
+        return {
+          x: f.polygon.reduce((s, v) => s + v[0], 0) / n,
+          y: f.polygon.reduce((s, v) => s + v[1], 0) / n,
+          text: many ? `${pi + 1}.${f.no}` : `${f.no}`,
+        };
+      }),
+    );
+  });
   /** Narrow windows only: whether the side panel is expanded over the views. */
   let dockOpen = $state(false);
 
@@ -846,6 +864,8 @@
                 {project}
                 {result}
                 {highlight}
+                mark={dock === "breakdown" && dockOpen ? planMark : null}
+                {faceLabels}
                 {drawing}
                 {showDims}
                 bind:selection
@@ -904,6 +924,7 @@
       <aside class:open={dockOpen}>
         <div class="tabs" role="tablist">
           <button role="tab" aria-selected={dock === "results"} class:on={dock === "results"} onclick={() => showDock("results")} title={t("dock.results")}><Icon name="chart" size={15} /><span class="tab-label">{t("dock.results")}</span></button>
+          <button role="tab" aria-selected={dock === "breakdown"} class:on={dock === "breakdown"} onclick={() => showDock("breakdown")} title={t("bd.title")}><Icon name="sigma" size={15} /><span class="tab-label">{t("dock.breakdown")}</span></button>
           <button role="tab" aria-selected={dock === "ai"} class:on={dock === "ai"} onclick={() => showDock("ai")} title={t("dock.ai")}>
             <Icon name="sparkle" size={15} /><span class="tab-label">{t("dock.ai")}</span>{#if pending}<i class="badge"></i>{/if}
           </button>
@@ -913,6 +934,8 @@
           <button class="icon-btn dock-close" onclick={() => (dockOpen = false)} aria-label={t("common.close")} title={t("common.close")}><Icon name="x" size={16} /></button>
           {#if dock === "results"}
             <Results {result} {project} onstore={storeResult} />
+          {:else if dock === "breakdown"}
+            <Breakdown {project} {result} bind:data={breakdown} onmark={(mk) => (planMark = mk)} />
           {:else if dock === "ai"}
             <AiPanel {id} {project} {activity} onrevert={() => revert(false)} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
