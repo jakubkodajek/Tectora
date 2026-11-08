@@ -361,6 +361,15 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             )?;
             to_json(project)
         }
+        "set_part_height" => {
+            let mut project = arg::<Project>(a, "project")?;
+            tectora_core::edit::height::set_part_height(
+                &mut project,
+                arg(a, "part")?,
+                arg(a, "eaveHeight")?,
+            )?;
+            to_json(project)
+        }
         // Settings live in `target/ui-preview-config` (see `main`). A new
         // projects folder set through the bridge is served from then on
         // (`serve`); one set by another process (MCP) is not.

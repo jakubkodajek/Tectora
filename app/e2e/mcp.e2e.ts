@@ -282,6 +282,21 @@ test.describe("MCP parity", () => {
     }, () => mcp.call("update_edges", { id: ids[1], changes: [{ index: 1, pitch_deg: 28, eave_height: 3.4, overhang: 0.65 }], summary: "x" }));
   });
 
+  test("building height", async ({ app, page, mcp }) => {
+    const ids = await twin("hip");
+    await parity(app, ids, async () => {
+      await selectWall(page, 2);
+      const def = bar(page, "def.title");
+      await def.getByRole("button", { name: cs("edge.addBreak") }).click();
+      await app.saved();
+      await setField(def.getByLabel(cs("edge.buildingHeight")), "4,25");
+    }, async () => {
+      const p = await loadProject(ids[0]);
+      await mcp.call("update_edges", { id: ids[1], changes: [{ index: 2, breaks: p.parts[0].edges[2].breaks.map((b: any) => ({ ...b, height: +(b.height - 4.25 + 3).toFixed(3) })) }], summary: "x" });
+      await mcp.call("set_part_height", { id: ids[1], part: 0, eave_height: 4.25, summary: "x" });
+    });
+  });
+
   test("eave to gable, half-hip, clad gable", async ({ app, page, mcp }) => {
     const ids = await twin("hip");
     await parity(app, ids, async () => {
@@ -508,6 +523,7 @@ test.describe("MCP parity", () => {
       "move / rotate / mirror / copy part": "transform_part",
       "delete part, dormer, opening, line, face": "delete_items",
       "clear the canvas": "clear_roof",
+      "building height": "set_part_height",
       dormer: "add_dormer",
       "edit dormer": "update_dormer",
       "chimney, window, opening": "set_openings",

@@ -157,6 +157,37 @@ test.describe("several buildings", () => {
     await areaMatchesCore(page, id);
   });
 
+  test("the building height sets every wall of the building in one change and rejoins both roofs", async ({ app, page }) => {
+    // Jakub 2026-11-08: two hip roofs side by side, the second lower, roofs
+    // overlapping; the building's height was only settable wall by wall.
+    const id = await createExample("hip", "Valba");
+    const wing = rect(10, 2, 16, 7, 3, "Křídlo");
+    wing.edges[2].eave_height = 3.4;
+    await withSecondPart(id, wing);
+    await openEditor(app, "Valba");
+    const def = bar(page, "def.title");
+    await selectWall(page, 4, 1);
+    const field = def.getByLabel(cs("edge.buildingHeight"));
+    // The wing's walls differ: the field says so instead of showing one of them.
+    await expect(field).toHaveValue("");
+    await expect(field).toHaveAttribute("placeholder", cs("edge.mixed"));
+    const main = (await loadProject(id)).parts[0];
+    const core = await coreLines(id);
+    await setField(field, "1,8");
+    const saved = await waitForProject(id, (p) => p.parts[1].edges.every((e: any) => e.eave_height === 1.8));
+    expect(saved.parts[0]).toEqual(main);
+    await expect(field).toHaveValue("1,8");
+    await expect(def.getByLabel(cs("edge.eaveHeight"))).toHaveValue("1,8");
+    // Both roofs are recalculated: the main roof's lines where the wing meets it change too.
+    const after = await coreLines(id);
+    expect(after[1]).not.toBe(core[1]);
+    expect(after[0]).not.toBe(core[0]);
+    await areaMatchesCore(page, id);
+    // One change: one undo brings every wall back.
+    await tool(page, "editor.undo").click();
+    await waitForProject(id, (p) => p.parts[1].edges[2].eave_height === 3.4 && p.parts[1].edges[0].eave_height === 3);
+  });
+
   test("a building far from the first leaves the first roof as it was and is shown in 3D", async ({ app, page }) => {
     const id = await createExample("gable", "Sedlo");
     await openEditor(app, "Sedlo");

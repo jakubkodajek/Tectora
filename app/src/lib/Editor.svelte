@@ -576,6 +576,31 @@
     commit();
   }
 
+  /**
+   * The bar's "Building height": every wall of the selected part at `h`, its
+   * breaks, half-hips and the objects on it moved with it, in one change.
+   * The core's operation, the same as MCP set_part_height.
+   */
+  async function setPartHeight(h: number) {
+    if (!project || !selection) return;
+    const pi = selection.part;
+    const part = project.parts[pi];
+    let next: Project;
+    try {
+      next = await api.setPartHeight($state.snapshot(project) as Project, pi, h);
+    } catch (e) {
+      notifyError(e, "calc");
+      return;
+    }
+    // The project may have changed meanwhile (an AI save): apply only to the same part.
+    if (!project || project.parts[pi] !== part) return;
+    project.parts = next.parts;
+    project.dormers = next.dormers;
+    project.chimneys = next.chimneys;
+    if (project.manual_lines?.length) project.manual_lines = next.manual_lines ?? [];
+    commit();
+  }
+
   /** Changes an edge length by moving its end vertex along the edge. */
   function setLength(len: number) {
     if (!project || !selection) return;
@@ -1541,6 +1566,7 @@
             bind:selection
             onchange={patchEdge}
             onapplyall={applyAll}
+            onheight={setPartHeight}
             onlength={setLength}
             onpoint={(x, y) => { if (selection) { moveVertex(selection.part, selection.edge, x, y); commit(); } }}
             ondelete={deleteVertex}

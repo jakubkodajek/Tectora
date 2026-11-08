@@ -31,6 +31,7 @@
     onmarker,
     onround,
     oncalc,
+    onheight,
   }: {
     project: Project;
     selection: Selection;
@@ -45,6 +46,8 @@
     onround?: () => void;
     /** Opens the pitch / eave / overhang calculations for the wall. */
     oncalc?: () => void;
+    /** Sets the eave height of every wall of the selected building at once. */
+    onheight?: (h: number) => unknown;
   } = $props();
 
   const part = $derived(selection ? project.parts[selection.part] : null);
@@ -59,6 +62,12 @@
   const realWalls = $derived(part ? part.edges.filter((e) => !isMarker(e)).length : 0);
   const directionDeg = $derived(edge?.direction_rad != null ? +(((edge.direction_rad * 180) / Math.PI + 360) % 360).toFixed(2) : 0);
   const breaks = $derived(edge?.breaks ?? []);
+  /** The eave height all walls of the building share; null when they differ. */
+  const buildingHeight = $derived.by(() => {
+    if (!part || part.edges.length === 0) return null;
+    const h = part.edges[0].eave_height;
+    return part.edges.every((e) => e.eave_height === h) ? h : null;
+  });
 
   /** Steps through all walls of all parts, like DACAD's NEXT/PREV buttons. */
   function step(d: number) {
@@ -134,6 +143,16 @@
     </div>
     <button class="icon-btn" onclick={() => step(1)} title={t("def.next")} aria-label={t("def.next")}><Icon name="right" /></button>
   </div>
+
+  {#if part && onheight}
+    <div class="building">
+      <label title={buildingHeight === null ? `${t("edge.buildingHeightMixed", { name: part.name })} ${t("edge.buildingHeightHint", { name: part.name })}` : t("edge.buildingHeightHint", { name: part.name })}>
+        <span>{t("edge.buildingHeight")}</span>
+        <div class="unit"><input type="text" data-testid="building-height" placeholder={buildingHeight === null ? t("edge.mixed") : undefined}
+          use:numeric={{ value: buildingHeight, step: 0.05, min: 0, max: 1000, onchange: onheight }} /><em>m</em></div>
+      </label>
+    </div>
+  {/if}
 
   {#if edge && part}
     {#if marker}
@@ -273,6 +292,13 @@
     display: flex;
     align-items: center;
     gap: 4px;
+    padding-right: 14px;
+    border-right: 1px solid var(--border);
+    align-self: stretch;
+  }
+  .building {
+    display: flex;
+    align-items: flex-end;
     padding-right: 14px;
     border-right: 1px solid var(--border);
     align-self: stretch;

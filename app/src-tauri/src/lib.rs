@@ -521,6 +521,16 @@ fn face_to_part(
     Ok(project)
 }
 
+/// The editor's "Building height": every wall of part `part` at
+/// `eave_height`, its breaks, half-hips and the objects on it moved with it
+/// (`tectora_core::edit::height::set_part_height`, the MCP tool's operation).
+#[tauri::command]
+fn set_part_height(mut project: Project, part: usize, eave_height: f64) -> CmdResult<Project> {
+    tectora_core::edit::height::set_part_height(&mut project, part, eave_height)
+        .map_err(|d| AppError::new("invalid_input").detail(d))?;
+    Ok(project)
+}
+
 /// Settings plus the folders in use (see `Settings::describe`).
 #[tauri::command]
 fn get_settings() -> Value {
@@ -828,6 +838,7 @@ pub fn run() {
             calc_breakdown,
             check_windows,
             face_to_part,
+            set_part_height,
             list_attachments,
             attach_files,
             remove_attachment,
