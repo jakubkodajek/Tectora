@@ -115,3 +115,28 @@ export function chimneyTop(c: Chimney, host: (p: Point2) => number | null): { bo
   const [lo, hi] = [Math.min(...zs), Math.max(...zs)];
   return { bottom: Math.max(0, lo - 0.3), top: c.height > hi + 0.05 ? c.height : hi + 1 };
 }
+
+/**
+ * A vertical polygon (a gable) in its own wall plane: u along the wall, v the
+ * height, one pair per corner. The wall direction comes from the two corners
+ * farthest apart in plan, not from the first edge: a gable cut by a lower
+ * roof starts with a vertical edge (both corners at one plan point), and a
+ * direction from it collapsed the whole gable to a line, so the 3D view drew
+ * it skewed. Null when the polygon has no horizontal extent.
+ */
+export function gableContour(poly: Poly3): [number, number][] | null {
+  if (poly.length < 3) return null;
+  const p0 = poly[0];
+  let far = p0;
+  let best = 0;
+  for (const p of poly) {
+    const d = Math.hypot(p[0] - p0[0], p[1] - p0[1]);
+    if (d > best) {
+      best = d;
+      far = p;
+    }
+  }
+  if (best < 1e-6) return null;
+  const d = [(far[0] - p0[0]) / best, (far[1] - p0[1]) / best];
+  return poly.map((p) => [(p[0] - p0[0]) * d[0] + (p[1] - p0[1]) * d[1], p[2]]);
+}

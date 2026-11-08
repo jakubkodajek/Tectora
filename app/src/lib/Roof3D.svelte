@@ -11,7 +11,7 @@
   import { t } from "./i18n.svelte";
   import { hostHeightAt, isDormerFace, slopeAt } from "./dormers";
   import { isConvex, windowOutline } from "./openings";
-  import { chimneyTop, clipConvex, dormerWallLines, onWallLine, planArea, planeOf, type Poly3 } from "./scene3d";
+  import { chimneyTop, clipConvex, gableContour, dormerWallLines, onWallLine, planArea, planeOf, type Poly3 } from "./scene3d";
 
   let {
     project,
@@ -235,10 +235,9 @@
         }
         for (const poly of rp.geometry.gables) {
           // Triangulate in the wall plane: u along the wall, v = height.
-          const [p0, p1] = poly;
-          const len = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) || 1;
-          const d = [(p1[0] - p0[0]) / len, (p1[1] - p0[1]) / len];
-          const contour = poly.map((p) => new THREE.Vector2((p[0] - p0[0]) * d[0] + (p[1] - p0[1]) * d[1], p[2]));
+          const uv = gableContour(poly);
+          if (!uv) continue;
+          const contour = uv.map(([u, v]) => new THREE.Vector2(u, v));
           const tris = THREE.ShapeUtils.triangulateShape(contour, []);
           const g = new THREE.BufferGeometry().setFromPoints(poly.map(v3));
           g.setIndex(tris.flat());
