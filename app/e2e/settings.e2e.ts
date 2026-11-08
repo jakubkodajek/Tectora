@@ -127,7 +127,7 @@ test.describe("settings", () => {
 
   test("settings changed over MCP reach the open app", async ({ app, page, mcp }) => {
     await app.open();
-    await mcp.call("update_settings", { roof_defaults: { pitch_deg: 33 }, theme: "dark", locale: "sk" });
+    await mcp.call("update_settings", { roof_defaults: { pitch_deg: 33 }, theme: "dark", locale: "sk", summary: "Defaults as the user asked" });
     // No reload: the app follows the settings file.
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
     await expect(page.getByRole("button", { name: tr("sk", "lib.new") }).first()).toBeVisible();

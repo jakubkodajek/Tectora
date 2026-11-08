@@ -17,7 +17,7 @@ use tectora_core::model::GABLE_PITCH_DEG;
 use tectora_core::quantities::{area_by_pitch, dacad_line_totals, roof_totals};
 use tectora_core::roof::LineKind;
 use tectora_core::settings::Settings;
-use tectora_core::store::{LiveStatus, Store, now_ms};
+use tectora_core::store::{LiveStatus, Store, StoreError, now_ms};
 use tectora_core::{
     Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow,
 };
@@ -489,12 +489,13 @@ fn base_tools() -> Value {
                         "overhang": { "type": "number", "minimum": 0 }
                     }
                 },
-                "follow_ai": { "type": "boolean" }
-            }), &[]),
+                "follow_ai": { "type": "boolean" },
+                "summary": summary_prop()
+            }), &["summary"]),
         },
         {
             "name": "list_projects",
-            "description": "Search the user's library of roofs made so far (newest first by default): id, name, job, roof area, pitch range, dormers, attached files, stored offer result, last change. Use it to find a past roof to start a new job from (duplicate_project with `job`).",
+            "description": "Search the user's library of roofs made so far (newest first by default): `projects` with id, name, job, roof area, pitch range, dormers, attached files, stored offer result, last change, and `broken`: job files the library cannot read (code `unreadable`: damaged, `newer_format`: saved by a newer Tectora, or a file system error), which you cannot open; tell the user about them. Use it to find a past roof to start a new job from (duplicate_project with `job`).",
             "inputSchema": schema(json!({
                 "query": { "type": "string", "description": "Words that must all appear in the name, job number, customer, address or notes (case and accents ignored)." },
                 "status": { "type": "string", "enum": ["draft", "offer", "ordered", "done"] },
@@ -649,7 +650,7 @@ fn base_tools() -> Value {
         {
             "name": "revert_last_change",
             "description": "Undo the latest recorded change of a design.",
-            "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
+            "inputSchema": schema(json!({ "id": { "type": "string" }, "summary": summary_prop() }), &["id", "summary"]),
         },
     ])
 }
@@ -697,10 +698,17 @@ impl Server {
 
     fn load(&self, args: &Value) -> Result<(String, Project), String> {
         let id = arg_str(args, "id")?.to_string();
-        let project = self
-            .store
-            .load(&id)
-            .map_err(|_| format!("no design with id `{id}`; call list_projects to see the ids"))?;
+        // The library's own reason (damaged, newer, locked) with its code,
+        // so the AI can tell the user why instead of calling it missing.
+        let project = self.store.load(&id).map_err(|e| match e {
+            StoreError::NotFound(_) | StoreError::InvalidId(_) => {
+                format!("no design with id `{id}`; call list_projects to see the ids")
+            }
+            e => format!(
+                "design `{id}` cannot be opened ({}): {e}; ask the user to check it in the app",
+                e.code()
+            ),
+        })?;
         project.check_limits().map_err(|e| {
             format!("design `{id}` cannot be calculated: {e}; ask the user to fix it in the app")
         })?;
@@ -710,16 +718,22 @@ impl Server {
     /// Writes the settings file; when this server uses the library folder
     /// from the settings and that folder changed, it switches to the new one.
     fn update_settings(&mut self, args: &Value) -> ToolResult {
+        let summary = arg_str(args, "summary")?.to_string();
+        // Everything but the summary is a setting.
+        let mut patch = args.clone();
+        if let Some(o) = patch.as_object_mut() {
+            o.remove("summary");
+        }
         let old = Settings::load();
         let next = old
-            .patched(args)
+            .patched(&patch)
             .map_err(|e| format!("settings not saved: {e}"))?;
         next.save()
             .map_err(|e| format!("settings not saved: {e}"))?;
         if self.store.dir == old.projects_dir() && next.projects_dir() != old.projects_dir() {
             self.store = Store::new(next.projects_dir()).map_err(|e| e.to_string())?;
         }
-        self.live("Changed Tectora settings".into(), None);
+        self.live(summary, None);
         Ok(next.describe())
     }
 
@@ -741,7 +755,8 @@ impl Server {
                 if let Some(text) = args.get("query").and_then(Value::as_str) {
                     q.text = text.to_string();
                 }
-                let list: Vec<Value> = tectora_core::library::search(self.store.list(), &q)?
+                let (all, broken) = self.store.scan()?;
+                let list: Vec<Value> = tectora_core::library::search(all, &q)?
                     .into_iter()
                     .map(|p| {
                         json!({
@@ -753,7 +768,13 @@ impl Server {
                         })
                     })
                     .collect();
-                Ok(json!(list))
+                // Files the library cannot read, as the app's library lists
+                // them: the user should hear about them, not miss them.
+                let broken: Vec<Value> = broken
+                    .iter()
+                    .map(|b| json!({ "id": b.id, "code": b.code, "detail": b.detail }))
+                    .collect();
+                Ok(json!({ "projects": list, "broken": broken }))
             }
             "get_project" => {
                 let (id, p) = self.load(args)?;
@@ -1046,8 +1067,9 @@ impl Server {
             }
             "revert_last_change" => {
                 let (id, _) = self.load(args)?;
-                let p = self.store.revert_last(&id, &self.client)?;
-                self.live("Reverted the latest change".into(), Some(&id));
+                let summary = arg_str(args, "summary")?;
+                let p = self.store.revert_last(&id, &self.client, Some(summary))?;
+                self.live(summary.to_string(), Some(&id));
                 Ok(json!({ "id": id, "reverted": true, "quantities": quantities(&p) }))
             }
             _ => self
@@ -1215,8 +1237,17 @@ mod tests {
             Some(id.as_str())
         );
 
-        s.call_tool("revert_last_change", &json!({ "id": id }))
-            .unwrap();
+        s.call_tool(
+            "revert_last_change",
+            &json!({ "id": id, "summary": "The west wall is not a gable" }),
+        )
+        .unwrap();
+        let last = s.store.activity(&id).pop().unwrap();
+        assert!(
+            last.summary.starts_with("The west wall is not a gable"),
+            "{}",
+            last.summary
+        );
         assert!(!s.store.load(&id).unwrap().parts[0].edges[5].is_gable());
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
@@ -1233,14 +1264,22 @@ mod tests {
         let r = s
             .call_tool(
                 "update_settings",
-                &json!({ "drawings_dir": inbox.to_string_lossy(), "roof_defaults": { "pitch_deg": 35 } }),
+                &json!({ "drawings_dir": inbox.to_string_lossy(), "roof_defaults": { "pitch_deg": 35 }, "summary": "Drawings inbox as the user asked" }),
             )
             .unwrap();
         assert_eq!(r["effective"]["drawings_dir"], json!(inbox));
         assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
         assert!(inbox.is_dir());
         assert!(
-            s.call_tool("update_settings", &json!({ "locale": "fr" }))
+            s.call_tool(
+                "update_settings",
+                &json!({ "locale": "fr", "summary": "s" })
+            )
+            .is_err()
+        );
+        // Like every write, a settings change carries a summary (ARCH-005).
+        assert!(
+            s.call_tool("update_settings", &json!({ "theme": "dark" }))
                 .is_err()
         );
         let r = s.call_tool("get_settings", &json!({})).unwrap();

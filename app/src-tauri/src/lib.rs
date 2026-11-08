@@ -112,13 +112,13 @@ fn project_activity(state: State<AppState>, id: String) -> Vec<ActivityItem> {
 
 #[tauri::command]
 fn revert_last_change(state: State<AppState>, id: String) -> CmdResult<Project> {
-    guard(|| Ok(state.store().revert_last(&id, USER_ACTOR)?))
+    guard(|| Ok(state.store().revert_last(&id, USER_ACTOR, None)?))
 }
 
 /// Undoes the change recorded at `ts_ms` and everything after it.
 #[tauri::command]
 fn revert_changes(state: State<AppState>, id: String, ts_ms: u64) -> CmdResult<Project> {
-    guard(|| Ok(state.store().revert_to(&id, ts_ms, USER_ACTOR)?))
+    guard(|| Ok(state.store().revert_to(&id, ts_ms, USER_ACTOR, None)?))
 }
 
 /// The AI changes of `id` waiting for review, with the version before them
@@ -188,9 +188,16 @@ fn normalize_project(project: Project) -> Project {
     project
 }
 
-#[tauri::command]
+/// Moves the job to the library's trash (`Store::delete`), from where the
+/// MCP `restore_project` tool or the file manager brings it back.
+#[tauri::command(async)]
 fn delete_project(state: State<AppState>, id: String) -> CmdResult<()> {
-    guard(|| Ok(state.store().delete(&id)?))
+    guard(|| {
+        state
+            .store()
+            .delete(&id, USER_ACTOR, "Deleted in the app")?;
+        Ok(())
+    })
 }
 
 /// A copy is a new variant: draft, no stored result, the same files. With
@@ -229,9 +236,14 @@ fn attach_files(state: State<AppState>, id: String, paths: Vec<String>) -> CmdRe
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn remove_attachment(state: State<AppState>, id: String, name: String) -> CmdResult<()> {
-    guard(|| Ok(state.store().remove_attachment(&id, &name)?))
+    guard(|| {
+        state
+            .store()
+            .remove_attachment(&id, &name, USER_ACTOR, "Removed in the app")?;
+        Ok(())
+    })
 }
 
 /// Opens an attached file in the system's default app; returns false when

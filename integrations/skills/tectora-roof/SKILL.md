@@ -45,7 +45,8 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
 5. Search with `list_projects` (customer, address, job number) so you edit the
    existing job instead of creating a duplicate. A similar roof made before
    can be the starting point: `duplicate_project` with the new `job` data and
-   `with_files: false`.
+   `with_files: false`. Jobs listed under `broken` cannot be read (damaged or
+   from a newer Tectora): tell the user instead of starting a new one.
 6. Build in the six steps of the guide: read and check, then one save each for
    footprint (with job data, then attach the drawings), roof definition,
    dormers, chimneys and windows, and the check report in the job notes.

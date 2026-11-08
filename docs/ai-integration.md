@@ -52,8 +52,9 @@ programs; Codex in the ChatGPT desktop app can.
 | `roof_helper` | Calculation helpers (triangle, two parallels, point in space, merge, hip/valley, build-up, round roof), preview or apply |
 | `update_job`, `store_result` | Job data and status; the stored result for the offer |
 | `get_history`, `get_review`, `revert_to`, `revert_last_change`, `show_project` | History, review state (accepted or still pending in the app, effect on the figures), undo, focus in the app |
-| `duplicate_project`, `delete_project`, `list_examples` | Library; `duplicate_project` with `job` starts a new job from a past roof |
-| `list_files`, `attach_file`, `remove_file` | Files attached to a job (drawings) |
+| `duplicate_project`, `delete_project`, `list_examples` | Library; `duplicate_project` with `job` starts a new job from a past roof; `delete_project` moves the job to the library's trash (`.trash`, 30 days) |
+| `list_deleted`, `restore_project` | Deleted jobs and removed files in the trash, and bringing them back |
+| `list_files`, `attach_file`, `remove_file` | Files attached to a job (drawings): regular drawing, photo or document files up to 256 MB; a removed file goes to the trash |
 | `export_job`, `import_job`, `get_schema` | `.tectorajob` bundles, file schema |
 | `export_list`, `export_plan` | The roof for the offer: the text list the Excel price sheet reads (the Export dialog's copy button) and the roof sheet with lengths, areas and pitches as PDF or SVG in the library's `exports` folder |
 | `get_settings`, `update_settings` | App settings shared with the Settings screen: jobs folder, drawings inbox folder, language, theme, defaults for new roofs, follow mode |

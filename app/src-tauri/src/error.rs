@@ -6,7 +6,7 @@
 //! the operating system or parser) under "Details" for support.
 
 use serde::Serialize;
-use tectora_core::store::{StoreError, panic_message};
+use tectora_core::store::{FileError, StoreError, panic_message};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AppError {
@@ -58,7 +58,19 @@ impl From<StoreError> for AppError {
     }
 }
 
-/// Errors that are still plain text (bundles, attachments).
+/// Attachment, bundle and import errors keep their code (`too_large`,
+/// `newer_format`, `not_a_file`, …), so the UI says what to do (ERR-007).
+impl From<FileError> for AppError {
+    fn from(e: FileError) -> Self {
+        AppError {
+            code: e.code,
+            id: e.id,
+            detail: Some(e.detail),
+        }
+    }
+}
+
+/// Errors that are still plain text.
 impl From<String> for AppError {
     fn from(detail: String) -> Self {
         AppError::new("unknown").detail(detail)
@@ -102,6 +114,13 @@ mod tests {
         let v = serde_json::to_value(&e).unwrap();
         assert_eq!(v["code"], "not_found");
         assert_eq!(v["id"], "dum");
+    }
+
+    #[test]
+    fn file_errors_keep_their_code() {
+        let e: AppError = FileError::new("too_large", "x.pdf: larger than 256 MB").into();
+        assert_eq!(e.code, "too_large");
+        assert_eq!(e.detail.as_deref(), Some("x.pdf: larger than 256 MB"));
     }
 
     #[test]

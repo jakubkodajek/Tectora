@@ -51,42 +51,84 @@ fn preview_assistants() -> Vec<Value> {
 /// Largest request body accepted (a project with attachments metadata).
 const MAX_BODY: usize = 64 * 1024 * 1024;
 
-fn arg<T: serde::de::DeserializeOwned>(a: &Value, key: &str) -> Result<T, String> {
+fn arg<T: serde::de::DeserializeOwned>(a: &Value, key: &str) -> Result<T, Fail> {
     serde_json::from_value(a.get(key).cloned().unwrap_or(Value::Null))
-        .map_err(|e| format!("argument {key}: {e}"))
+        .map_err(|e| format!("argument {key}: {e}").into())
 }
 
-fn to_json<T: serde::Serialize>(v: T) -> Result<Value, String> {
-    serde_json::to_value(v).map_err(|e| e.to_string())
+fn to_json<T: serde::Serialize>(v: T) -> Result<Value, Fail> {
+    serde_json::to_value(v).map_err(|e| e.to_string().into())
+}
+
+/// A failed command, as the app's `AppError` gives it: `{code, id, detail}`
+/// for errors with a code (library, files, limits), so the UI shows the same
+/// translated message as in the app; plain text otherwise.
+struct Fail(Value);
+
+impl From<String> for Fail {
+    fn from(e: String) -> Self {
+        Fail(Value::String(e))
+    }
+}
+
+impl From<&str> for Fail {
+    fn from(e: &str) -> Self {
+        Fail(Value::String(e.to_string()))
+    }
+}
+
+impl From<tectora_core::store::StoreError> for Fail {
+    fn from(e: tectora_core::store::StoreError) -> Self {
+        Fail(json!({ "code": e.code(), "id": e.id(), "detail": e.to_string() }))
+    }
+}
+
+impl From<tectora_core::store::FileError> for Fail {
+    fn from(e: tectora_core::store::FileError) -> Self {
+        Fail(json!({ "code": e.code, "id": e.id, "detail": e.detail }))
+    }
+}
+
+fn coded(code: &str, detail: impl std::fmt::Display) -> Fail {
+    Fail(json!({ "code": code, "detail": detail.to_string() }))
 }
 
 /// Same as the app's `calc` command: limits, panic guard, problems and
 /// the stored result's status.
-fn calc(project: &Project) -> Result<Value, String> {
-    project.check_limits()?;
-    let mut v = tectora_core::model::guarded(|| tectora_core::report::calc(project))?;
+fn calc(project: &Project) -> Result<Value, Fail> {
+    project
+        .check_limits()
+        .map_err(|d| coded("out_of_range", d))?;
+    let mut v = tectora_core::model::guarded(|| tectora_core::report::calc(project))
+        .map_err(|d| coded("internal", d))?;
     v["stored_result"] = to_json(snapshot::status(project))?;
     Ok(v)
 }
 
 /// Loading and saving a job, with the library's own error (see `serve`).
-fn store_command(
-    store: &Store,
-    cmd: &str,
-    a: &Value,
-) -> Option<Result<Value, tectora_core::store::StoreError>> {
+fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fail>> {
     let id = arg::<String>(a, "id").ok()?;
     match cmd {
-        "load_project" => Some(store.load(&id).map(|p| to_json(p).unwrap_or(Value::Null))),
+        "load_project" => Some(
+            store
+                .load(&id)
+                .map(|p| to_json(p).unwrap_or(Value::Null))
+                .map_err(Fail::from),
+        ),
         "save_project" => {
             let project = arg::<Project>(a, "project").ok()?;
-            Some(store.save(Some(id), &project).map(Value::String))
+            Some(
+                store
+                    .save(Some(id), &project)
+                    .map(Value::String)
+                    .map_err(Fail::from),
+            )
         }
         _ => None,
     }
 }
 
-fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
+fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
     let id = || arg::<String>(a, "id");
     match cmd {
         "projects_dir" => to_json(store.dir.display().to_string()),
@@ -112,8 +154,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             items.reverse();
             Ok(Value::Array(items))
         }
-        "revert_last_change" => to_json(store.revert_last(&id()?, USER_ACTOR)?),
-        "revert_changes" => to_json(store.revert_to(&id()?, arg(a, "tsMs")?, USER_ACTOR)?),
+        "revert_last_change" => to_json(store.revert_last(&id()?, USER_ACTOR, None)?),
+        "revert_changes" => to_json(store.revert_to(&id()?, arg(a, "tsMs")?, USER_ACTOR, None)?),
         "review_status" => to_json(store.review_status(&id()?)?),
         "accept_changes" => to_json(store.mark_reviewed(&id()?, arg(a, "tsMs")?)?),
         "live_status" => to_json(store.live()),
@@ -147,7 +189,10 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             to_json(store.save(arg(a, "id")?, &project)?)
         }
         "normalize_project" => to_json(arg::<Project>(a, "project")?),
-        "delete_project" => to_json(store.delete(&id()?)?),
+        "delete_project" => {
+            store.delete(&id()?, USER_ACTOR, "Deleted in the app")?;
+            Ok(Value::Null)
+        }
         "duplicate_project" => {
             let source = id()?;
             let mut project = store.load(&source)?;
@@ -163,14 +208,20 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
         "attach_files" => {
             let job = id()?;
             let paths: Vec<String> = arg(a, "paths")?;
-            let names: Result<Vec<String>, String> = paths
+            let names: Result<Vec<String>, _> = paths
                 .iter()
                 .map(|p| store.attach_file(&job, &PathBuf::from(p)))
                 .collect();
             to_json(names?)
         }
         "remove_attachment" => {
-            to_json(store.remove_attachment(&id()?, &arg::<String>(a, "name")?)?)
+            store.remove_attachment(
+                &id()?,
+                &arg::<String>(a, "name")?,
+                USER_ACTOR,
+                "Removed in the app",
+            )?;
+            Ok(Value::Null)
         }
         "open_attachment" => Err("open_attachment is not available in the browser preview".into()),
         "export_job" => {
@@ -182,7 +233,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
                 arg::<String>(a, "title")?,
                 arg::<String>(a, "stamp")?,
             );
-            let (list, svg) = tectora_core::export::checked(&arg::<Project>(a, "project")?, &opts)?;
+            let (list, svg) = tectora_core::export::checked(&arg::<Project>(a, "project")?, &opts)
+                .map_err(|d| coded("out_of_range", d))?;
             Ok(serde_json::json!({ "list": list, "svg": svg }))
         }
         "export_plan_file" => {
@@ -196,7 +248,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
                 &arg::<Project>(a, "project")?,
                 &arg::<String>(a, "stamp")?,
                 &ext,
-            )?;
+            )
+            .map_err(|d| coded("out_of_range", d))?;
             std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
@@ -211,7 +264,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             &PathBuf::from(arg::<String>(a, "path")?),
         )?),
         "take_snapshot" => to_json(
-            snapshot::take_checked(&arg::<Project>(a, "project")?).map_err(|e| e.to_string())?,
+            snapshot::take_checked(&arg::<Project>(a, "project")?)
+                .map_err(|e| coded("out_of_range", e))?,
         ),
         "take_pending_open" => Ok(Value::Null),
         "create_standard" | "standard_part" => {
@@ -263,10 +317,13 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
         "calc" => calc(&arg::<Project>(a, "project")?),
         "calc_breakdown" => {
             let project = arg::<Project>(a, "project")?;
-            project.check_limits()?;
-            to_json(tectora_core::model::guarded(|| {
-                tectora_core::breakdown::breakdown(&project)
-            })?)
+            project
+                .check_limits()
+                .map_err(|d| coded("out_of_range", d))?;
+            to_json(
+                tectora_core::model::guarded(|| tectora_core::breakdown::breakdown(&project))
+                    .map_err(|d| coded("internal", d))?,
+            )
         }
         // Settings live in `target/ui-preview-config` (see `main`). A new
         // projects folder set through the bridge is served from then on
@@ -283,7 +340,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
         "open_folder" => Err("open_folder is not available in the browser preview".into()),
         _ => Err(format!(
             "ui_bridge: unknown command {cmd} (add it to crates/tectora-core/examples/ui_bridge.rs)"
-        )),
+        )
+        .into()),
     }
 }
 
@@ -442,7 +500,7 @@ fn serve(
             }
             let out = match out {
                 Ok(v) => json!({ "ok": v }),
-                Err(e) => json!({ "err": e }),
+                Err(Fail(e)) => json!({ "err": e }),
             };
             respond(stream, "200 OK", &out.to_string());
             return Ok(());
@@ -451,12 +509,10 @@ fn serve(
             Some(Ok(v)) => json!({ "ok": v }),
             // Library errors with their stable code, as the Tauri commands
             // give them, so the UI shows the same translated message.
-            Some(Err(e)) => {
-                json!({ "err": { "code": e.code(), "id": e.id(), "detail": e.to_string() } })
-            }
+            Some(Err(Fail(e))) => json!({ "err": e }),
             None => match handle(store, &cmd, &args) {
                 Ok(v) => json!({ "ok": v }),
-                Err(e) => json!({ "err": e }),
+                Err(Fail(e)) => json!({ "err": e }),
             },
         }
     };

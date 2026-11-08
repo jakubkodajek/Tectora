@@ -164,7 +164,7 @@ test.describe("live AI changes", () => {
     const id = await createExample("l-shape", "Elko");
     await createExample("gable", "Jiná");
     await app.open({ prefs: { followAi: false, layout: "split", libraryView: "list" } });
-    await mcp.call("update_settings", { follow_ai: false });
+    await mcp.call("update_settings", { follow_ai: false, summary: "Follow mode off as the user asked" });
     await mcp.call("update_edges", { id, changes: [{ index: 0, overhang: 0.7 }], summary: "Přesah dle výkresu" });
     const row = page.getByRole("row").filter({ hasText: "Elko" });
     await expect(row.locator(".ai-tag")).toContainText("Claude");
@@ -176,7 +176,7 @@ test.describe("live AI changes", () => {
 
   test("a new job created by the AI shows up in the library", async ({ app, page, mcp }) => {
     await app.open({ prefs: { followAi: false, layout: "split", libraryView: "list" } });
-    await mcp.call("update_settings", { follow_ai: false });
+    await mcp.call("update_settings", { follow_ai: false, summary: "Follow mode off as the user asked" });
     await mcp.call("create_standard_roof", { name: "Od AI", type: "hip", length: 11, width: 9, pitch_deg: 30, summary: "Valba z výkresu" });
     await expect(page.getByRole("row").filter({ hasText: "Od AI" })).toBeVisible();
   });
@@ -525,7 +525,8 @@ test.describe("MCP parity", () => {
       ["update_edges", { id, changes: [{ index: 0, pitch_deg: 30 }] }],
       ["edit_walls", { id, operations: [{ op: "move_point", index: 0, x: 1e308, y: 0 }], summary: "x" }],
       ["get_project", { id: "../../etc/passwd" }],
-      ["attach_file", { id, path: "/nonexistent/file.pdf" }],
+      ["attach_file", { id, path: "/nonexistent/file.pdf", summary: "x" }],
+      ["attach_file", { id, path: "/dev/stdin", summary: "x" }],
     ] as const) {
       const r = await (mcp as Mcp).tryCall(tool, args as Record<string, unknown>);
       expect(r.isError, `${tool} ${JSON.stringify(args)}`).toBe(true);

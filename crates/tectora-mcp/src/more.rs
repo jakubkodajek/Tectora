@@ -404,7 +404,7 @@ pub(crate) fn tools() -> Vec<Value> {
         json!({
             "name": "revert_to",
             "description": "Undo every change of a design made at or after `ts_ms` (from get_history).",
-            "inputSchema": schema(json!({ "id": id, "ts_ms": { "type": "integer" } }), &["id", "ts_ms"]),
+            "inputSchema": schema(json!({ "id": id, "ts_ms": { "type": "integer" }, "summary": summary_prop() }), &["id", "ts_ms", "summary"]),
         }),
         json!({
             "name": "list_examples",
@@ -431,12 +431,22 @@ pub(crate) fn tools() -> Vec<Value> {
                 },
                 "with_files": { "type": "boolean", "description": "Copy the attached drawings and photos (default true)." },
                 "summary": summary_prop()
-            }), &["id", "name"]),
+            }), &["id", "name", "summary"]),
         }),
         json!({
             "name": "delete_project",
-            "description": "Delete a design with its history and attached files. Only when the user asked for it.",
-            "inputSchema": schema(json!({ "id": id }), &["id"]),
+            "description": "Delete a design with its history and attached files. Only when the user asked for it. The job goes to the library's trash (kept 30 days): restore_project with the returned `trash.entry` brings it back.",
+            "inputSchema": schema(json!({ "id": id, "summary": summary_prop() }), &["id", "summary"]),
+        }),
+        json!({
+            "name": "list_deleted",
+            "description": "Jobs and attached files deleted in the last 30 days (by the user in the app or by an AI client), newest first: `entry` (pass it to restore_project), job id and name, `file` for a removed attachment, who deleted it, when (ts_ms) and why (summary).",
+            "inputSchema": schema(json!({}), &[]),
+        }),
+        json!({
+            "name": "restore_project",
+            "description": "Bring a deleted job (with its history and files) or a removed attached file back from the trash. A job whose id is taken by now comes back under a new id; returns the id.",
+            "inputSchema": schema(json!({ "entry": { "type": "string", "description": "`entry` from list_deleted or from the delete_project / remove_file reply." }, "summary": summary_prop() }), &["entry", "summary"]),
         }),
         json!({
             "name": "list_files",
@@ -445,13 +455,13 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "attach_file",
-            "description": "Attach a file from this computer (e.g. the technical drawing the roof was made from) to a job.",
-            "inputSchema": schema(json!({ "id": id, "path": { "type": "string" } }), &["id", "path"]),
+            "description": "Attach a file from this computer (e.g. the technical drawing the roof was made from) to a job. Only a regular file up to 256 MB of a drawing, photo or document type (pdf, png, jpg, jpeg, webp, gif, bmp, tif, tiff, heic, svg, txt, csv, dxf, dwg, xlsx, xls, ods, docx, doc, odt). Attach only files the user gave you for this job; the reply names the folder the file came from.",
+            "inputSchema": schema(json!({ "id": id, "path": { "type": "string", "description": "Absolute path of the file." }, "summary": summary_prop() }), &["id", "path", "summary"]),
         }),
         json!({
             "name": "remove_file",
-            "description": "Remove an attached file from a job.",
-            "inputSchema": schema(json!({ "id": id, "name": { "type": "string" } }), &["id", "name"]),
+            "description": "Remove an attached file from a job. It goes to the library's trash (kept 30 days): restore_project with the returned `trash.entry` brings it back.",
+            "inputSchema": schema(json!({ "id": id, "name": { "type": "string" }, "summary": summary_prop() }), &["id", "name", "summary"]),
         }),
         json!({
             "name": "export_job",
@@ -484,7 +494,7 @@ pub(crate) fn tools() -> Vec<Value> {
         json!({
             "name": "import_job",
             "description": "Add a job from a .tectorajob file, or a .tectora project file from outside the library, as a new design.",
-            "inputSchema": schema(json!({ "path": { "type": "string" } }), &["path"]),
+            "inputSchema": schema(json!({ "path": { "type": "string" }, "summary": summary_prop() }), &["path", "summary"]),
         }),
         json!({
             "name": "store_result",
@@ -551,8 +561,9 @@ impl Server {
             "revert_to" => (|| {
                 let (id, _) = self.load(args)?;
                 let ts: u64 = req(args, "ts_ms")?;
-                let p = self.store.revert_to(&id, ts, &self.client)?;
-                self.live("Reverted changes".into(), Some(&id));
+                let summary = arg_str(args, "summary")?;
+                let p = self.store.revert_to(&id, ts, &self.client, Some(summary))?;
+                self.live(summary.to_string(), Some(&id));
                 Ok(json!({ "id": id, "reverted": true, "quantities": super::quantities(&p) }))
             })(),
             "list_examples" => Ok(json!(EXAMPLES
@@ -583,22 +594,32 @@ impl Server {
                     }
                 };
                 tectora_core::library::prepare_copy(&mut p, arg_str(args, "name")?, job);
-                let summary = match args.get("summary").and_then(Value::as_str) {
-                    Some(s) if !s.trim().is_empty() => s.to_string(),
-                    _ => format!("Copy of {id}"),
-                };
-                let new_id = self.store.save_as(None, &p, &self.client, &summary)?;
+                let summary = arg_str(args, "summary")?;
+                let new_id = self.store.save_as(None, &p, &self.client, summary)?;
                 if args.get("with_files").and_then(Value::as_bool).unwrap_or(true) {
                     self.store.copy_attachments(&id, &new_id)?;
                 }
-                self.live(format!("Copied “{}”", p.name), Some(&new_id));
+                self.live(summary.to_string(), Some(&new_id));
                 Ok(json!({ "id": new_id }))
             })(),
             "delete_project" => (|| {
-                let (id, p) = self.load(args)?;
-                self.store.delete(&id)?;
-                self.live(format!("Deleted “{}”", p.name), None);
-                Ok(json!({ "id": id, "deleted": true }))
+                let id = arg_str(args, "id")?.to_string();
+                let summary = arg_str(args, "summary")?;
+                // A damaged job can be deleted too, so it is not loaded first.
+                let entry = self.store.delete(&id, &self.client, summary)?;
+                self.live(summary.to_string(), None);
+                Ok(json!({
+                    "id": id, "deleted": true, "trash": entry,
+                    "note": "Moved to the library's trash for 30 days; restore_project with trash.entry brings it back.",
+                }))
+            })(),
+            "list_deleted" => Ok(json!(self.store.trash())),
+            "restore_project" => (|| {
+                let entry = arg_str(args, "entry")?;
+                let summary = arg_str(args, "summary")?;
+                let id = self.store.restore(entry)?;
+                self.live(summary.to_string(), Some(&id));
+                Ok(json!({ "id": id, "restored": true }))
             })(),
             "list_files" => self.load(args).map(|(id, _)| {
                 json!(self
@@ -613,16 +634,33 @@ impl Server {
             }),
             "attach_file" => (|| {
                 let (id, _) = self.load(args)?;
-                let name = self.store.attach_file(&id, &PathBuf::from(arg_str(args, "path")?))?;
-                self.live(format!("Attached {name}"), Some(&id));
-                Ok(json!({ "id": id, "name": name }))
+                let summary = arg_str(args, "summary")?;
+                let src = PathBuf::from(arg_str(args, "path")?);
+                if !src.is_absolute() {
+                    return Err("`path` must be an absolute path".into());
+                }
+                // Drawings, photos and documents only: a path from text in a
+                // drawing must not copy a key or a program into a job that
+                // is later handed over (ARCH-001).
+                let name = src.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !tectora_core::store::Store::opens_directly(name) {
+                    return Err(format!(
+                        "{}: only drawings, photos and documents can be attached (pdf, png, jpg, …, dwg, xlsx, docx)",
+                        src.display()
+                    ));
+                }
+                let name = self.store.attach_file(&id, &src)?;
+                self.live(summary.to_string(), Some(&id));
+                let from = src.parent().map(|d| d.display().to_string()).unwrap_or_default();
+                Ok(json!({ "id": id, "name": name, "from": from }))
             })(),
             "remove_file" => (|| {
                 let (id, _) = self.load(args)?;
                 let name = arg_str(args, "name")?;
-                self.store.remove_attachment(&id, name)?;
-                self.live(format!("Removed {name}"), Some(&id));
-                Ok(json!({ "id": id, "removed": name }))
+                let summary = arg_str(args, "summary")?;
+                let entry = self.store.remove_attachment(&id, name, &self.client, summary)?;
+                self.live(summary.to_string(), Some(&id));
+                Ok(json!({ "id": id, "removed": name, "trash": entry }))
             })(),
             "export_job" => (|| {
                 let (id, _) = self.load(args)?;
@@ -678,8 +716,9 @@ impl Server {
             })(),
             "import_job" => (|| {
                 let path = PathBuf::from(arg_str(args, "path")?);
+                let summary = arg_str(args, "summary")?;
                 let id = bundle::open_path(&self.store, &path)?;
-                self.live(format!("Imported {}", path.display()), Some(&id));
+                self.live(summary.to_string(), Some(&id));
                 Ok(json!({ "id": id }))
             })(),
             "store_result" => (|| {
@@ -1747,7 +1786,11 @@ mod tests {
         let dir = s.store.dir.clone();
         let drawing = dir.join("plan.pdf");
         std::fs::write(&drawing, b"%PDF").unwrap();
-        call(&mut s, "attach_file", json!({ "id": id, "path": drawing }));
+        call(
+            &mut s,
+            "attach_file",
+            json!({ "id": id, "path": drawing, "summary": "Drawing" }),
+        );
         assert_eq!(
             call(&mut s, "list_files", json!({ "id": id }))[0]["name"],
             "plan.pdf"
@@ -1824,7 +1867,11 @@ mod tests {
         ] {
             assert!(s.call_tool("export_plan", &bad).is_err());
         }
-        let new_id = call(&mut s, "import_job", json!({ "path": out }))["id"]
+        let new_id = call(
+            &mut s,
+            "import_job",
+            json!({ "path": out, "summary": "Received job" }),
+        )["id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1838,7 +1885,7 @@ mod tests {
         let copy = call(
             &mut s,
             "duplicate_project",
-            json!({ "id": id, "name": "Copy" }),
+            json!({ "id": id, "name": "Copy", "summary": "A variant" }),
         )["id"]
             .as_str()
             .unwrap()
@@ -1868,10 +1915,15 @@ mod tests {
             "list_projects",
             json!({ "query": "DVORAK", "sort": "name" }),
         );
+        let found = &found["projects"];
         assert_eq!(found.as_array().unwrap().len(), 1);
         assert_eq!(found[0]["id"], fresh.as_str());
         assert!(found[0]["pitch_range_deg"].is_array());
-        call(&mut s, "delete_project", json!({ "id": fresh }));
+        call(
+            &mut s,
+            "delete_project",
+            json!({ "id": fresh, "summary": "s" }),
+        );
         assert!(
             call(&mut s, "get_history", json!({ "id": id }))
                 .as_array()
@@ -1889,7 +1941,11 @@ mod tests {
         let review = call(&mut s, "get_review", json!({ "id": id }));
         assert!(review["pending"].is_null());
         assert_eq!(review["accepted_ms"], last);
-        call(&mut s, "delete_project", json!({ "id": copy }));
+        call(
+            &mut s,
+            "delete_project",
+            json!({ "id": copy, "summary": "s" }),
+        );
         assert!(!s.store.exists(&copy));
         assert!(
             call(&mut s, "get_schema", json!({}))["$defs"]
@@ -1897,5 +1953,201 @@ mod tests {
                 .is_some()
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn attach_file_takes_only_regular_documents_and_images() {
+        // ARCH-001: devices, folders and private files without a document
+        // extension (`~/.ssh/id_rsa`) were copied into the job.
+        let (mut s, id) = setup();
+        let dir = s.store.dir.join("outside");
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = dir.join("id_rsa");
+        std::fs::write(&key, b"PRIVATE").unwrap();
+        let script = dir.join("plan.pdf.command");
+        std::fs::write(&script, b"#!/bin/sh").unwrap();
+        let mut bad = vec![dir.clone(), key, script];
+        if cfg!(unix) {
+            bad.push(PathBuf::from("/dev/null"));
+        }
+        for path in bad {
+            let r = s.call_tool(
+                "attach_file",
+                &json!({ "id": id, "path": path, "summary": "Drawing" }),
+            );
+            assert!(r.is_err(), "{}: {r:?}", path.display());
+        }
+        let plan = dir.join("plan.pdf");
+        std::fs::write(&plan, b"%PDF").unwrap();
+        // A write without a summary is refused (ARCH-005).
+        assert!(
+            s.call_tool("attach_file", &json!({ "id": id, "path": plan }))
+                .is_err()
+        );
+        let r = call(
+            &mut s,
+            "attach_file",
+            json!({ "id": id, "path": plan, "summary": "The drawing the roof was made from" }),
+        );
+        assert_eq!(r["name"], "plan.pdf");
+        assert_eq!(r["from"], dir.display().to_string());
+        assert_eq!(s.store.attachments(&id).len(), 1);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn every_write_tool_requires_a_summary() {
+        // ARCH-005: AGENTS.md, every MCP write carries a one-sentence summary.
+        const READ_ONLY: &[&str] = &[
+            "tectora_guide",
+            "get_settings",
+            "list_projects",
+            "get_project",
+            "calc",
+            "calc_breakdown",
+            "show_project",
+            "get_history",
+            "get_review",
+            "list_examples",
+            "list_files",
+            "export_list",
+            "get_schema",
+            "list_deleted",
+            "roof_helper",
+            "list_drawings",
+            "drawing_info",
+            "view_drawing",
+            "drawing_lines",
+            "measure_drawing",
+            "drawing_dimensions",
+            "trace_outline",
+        ];
+        let tools = crate::tools();
+        let mut missing = Vec::new();
+        for t in tools.as_array().unwrap() {
+            let name = t["name"].as_str().unwrap();
+            if READ_ONLY.contains(&name) {
+                continue;
+            }
+            let required = t["inputSchema"]["required"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            if !required.iter().any(|r| r == "summary") {
+                missing.push(name.to_string());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "writes without a required summary: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn deleted_jobs_and_files_go_to_the_trash_and_come_back() {
+        // ARCH-004: delete_project and remove_file deleted for good.
+        let (mut s, id) = setup();
+        let plan = s.store.dir.join("plan.pdf");
+        std::fs::write(&plan, b"%PDF").unwrap();
+        call(
+            &mut s,
+            "attach_file",
+            json!({ "id": id, "path": plan, "summary": "Drawing" }),
+        );
+        assert!(
+            s.call_tool("delete_project", &json!({ "id": id })).is_err(),
+            "no summary"
+        );
+        assert!(s.store.exists(&id));
+        let r = call(
+            &mut s,
+            "remove_file",
+            json!({ "id": id, "name": "plan.pdf", "summary": "Wrong drawing" }),
+        );
+        let file_entry = r["trash"]["entry"].as_str().unwrap().to_string();
+        assert!(s.store.attachments(&id).is_empty());
+        let r = call(
+            &mut s,
+            "delete_project",
+            json!({ "id": id, "summary": "The user asked to remove the old draft" }),
+        );
+        let job_entry = r["trash"]["entry"].as_str().unwrap().to_string();
+        assert!(!s.store.exists(&id));
+        let deleted = call(&mut s, "list_deleted", json!({}));
+        let entries: Vec<&str> = deleted
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["entry"].as_str().unwrap())
+            .collect();
+        assert!(entries.contains(&job_entry.as_str()) && entries.contains(&file_entry.as_str()));
+        assert_eq!(
+            deleted[0]["summary"],
+            "The user asked to remove the old draft"
+        );
+        let r = call(
+            &mut s,
+            "restore_project",
+            json!({ "entry": job_entry, "summary": "Deleted by mistake" }),
+        );
+        assert_eq!(r["id"], id.as_str());
+        assert!(s.store.exists(&id));
+        assert!(!s.store.activity(&id).is_empty(), "history comes back too");
+        call(
+            &mut s,
+            "restore_project",
+            json!({ "entry": file_entry, "summary": "Needed after all" }),
+        );
+        assert_eq!(s.store.attachments(&id).len(), 1);
+        assert!(
+            call(&mut s, "list_deleted", json!({}))
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            s.call_tool(
+                "restore_project",
+                &json!({ "entry": "../x", "summary": "s" })
+            )
+            .is_err()
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn a_damaged_or_newer_job_is_named_as_such_not_missing() {
+        // ERR-008: the store's reason was replaced by "no design with id".
+        let (mut s, _) = setup();
+        std::fs::write(s.store.dir.join("damaged.tectora"), "{ \"name\": ").unwrap();
+        std::fs::write(
+            s.store.dir.join("newer.tectora"),
+            r#"{"schema_version": 999, "name": "x", "parts": []}"#,
+        )
+        .unwrap();
+        let e = s
+            .call_tool("get_project", &json!({ "id": "damaged" }))
+            .unwrap_err();
+        assert!(e.contains("damaged") && e.contains("unreadable"), "{e}");
+        let e = s
+            .call_tool(
+                "update_edges",
+                &json!({ "id": "newer", "changes": [], "summary": "s" }),
+            )
+            .unwrap_err();
+        assert!(
+            e.contains("newer Tectora") && e.contains("newer_format"),
+            "{e}"
+        );
+        let e = s
+            .call_tool("get_project", &json!({ "id": "nope" }))
+            .unwrap_err();
+        assert!(e.contains("list_projects"), "{e}");
+        let list = call(&mut s, "list_projects", json!({}));
+        let broken = list["broken"].as_array().unwrap();
+        let ids: Vec<&str> = broken.iter().map(|b| b["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["damaged", "newer"]);
+        assert_eq!(list["projects"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 }
