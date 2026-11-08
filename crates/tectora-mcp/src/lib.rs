@@ -17,7 +17,7 @@ use tectora_core::model::GABLE_PITCH_DEG;
 use tectora_core::quantities::{area_by_pitch, dacad_line_totals, roof_totals};
 use tectora_core::roof::LineKind;
 use tectora_core::settings::Settings;
-use tectora_core::store::{LiveStatus, Store, StoreError, now_ms};
+use tectora_core::store::{CheckedSave, LiveStatus, Store, StoreError, now_ms};
 use tectora_core::{
     Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow,
 };
@@ -760,11 +760,21 @@ impl Server {
         summary: &str,
     ) -> ToolResult {
         project.check_limits()?;
-        let id = self
-            .store
-            .save_as(id.map(str::to_string), project, &self.client, summary)?;
+        let (id, before, project) = match (id, before) {
+            (Some(id), Some(before)) => self.save_onto_current(id, before, project, summary)?,
+            _ => {
+                let id =
+                    self.store
+                        .save_as(id.map(str::to_string), project, &self.client, summary)?;
+                (id, before.cloned(), project.clone())
+            }
+        };
+        let project = &project;
         self.live_follow("changed", None, summary.to_string(), &id);
-        let changes = before.map(|b| diff(b, project)).unwrap_or_default();
+        let changes = before
+            .as_ref()
+            .map(|b| diff(b, project))
+            .unwrap_or_default();
         Ok(json!({
             "id": id,
             "saved": true,
@@ -773,6 +783,53 @@ impl Server {
             "quantities": quantities(project),
             "parts": project.parts.iter().map(describe_part).collect::<Vec<_>>(),
         }))
+    }
+
+    /// Saves a change made on `before` (the job as the tool loaded it). When
+    /// the app saved the user's edit to the job meanwhile, the change is
+    /// merged onto that version instead of writing over it; where both
+    /// changed the same value nothing is saved and the AI is told to load
+    /// the job again. Returns the id, the version the change was saved onto
+    /// and the saved job.
+    fn save_onto_current(
+        &self,
+        id: &str,
+        before: &Project,
+        project: &Project,
+        summary: &str,
+    ) -> Result<(String, Option<Project>, Project), String> {
+        let mut base = before.clone();
+        let mut next = project.clone();
+        for _ in 0..5 {
+            match self
+                .store
+                .save_as_checked(id, &next, &self.client, summary, Some(&base))?
+            {
+                CheckedSave::Saved { id } => return Ok((id, Some(base), next)),
+                CheckedSave::Conflict { current } => {
+                    let value = |p: &Project| serde_json::to_value(p).map_err(|e| e.to_string());
+                    let merged = tectora_core::merge::merge3(
+                        &value(&base)?,
+                        &value(&next)?,
+                        &value(&current)?,
+                    )
+                    .map_err(|paths| {
+                        format!(
+                            "design `{id}` was changed in the app while this change was made, \
+                             at the same values ({}); nothing was saved. Load it again \
+                             (get_project) and repeat the change.",
+                            paths.join(", ")
+                        )
+                    })?;
+                    next = serde_json::from_value(merged).map_err(|e| e.to_string())?;
+                    next.check_limits()?;
+                    base = *current;
+                }
+            }
+        }
+        Err(format!(
+            "design `{id}` keeps changing in the app; nothing was saved. Try again in a moment."
+        ))
     }
 
     fn load(&self, args: &Value) -> Result<(String, Project), String> {
@@ -1425,6 +1482,40 @@ mod tests {
         let r = s.call_tool("get_settings", &json!({})).unwrap();
         assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_tool_change_does_not_overwrite_a_user_edit_the_app_saved_meanwhile() {
+        // The app autosaves the user's edit after the tool loaded the job
+        // and before it saves: both stay.
+        let s = server();
+        let p = tectora_core::examples::find("hip").unwrap().project();
+        let id = s.store.save(None, &p).unwrap();
+        let before = s.store.load(&id).unwrap();
+        let mut user = before.clone();
+        user.parts[0].edges[0].overhang = 0.77;
+        s.store.save(Some(id.clone()), &user).unwrap();
+        let mut ai = before.clone();
+        ai.parts[0].edges[2].pitch_deg = 41.0;
+        let r = s.commit(Some(&id), Some(&before), &ai, "AI B").unwrap();
+        let saved = s.store.load(&id).unwrap();
+        assert_eq!(saved.parts[0].edges[0].overhang, 0.77, "user edit kept");
+        assert_eq!(saved.parts[0].edges[2].pitch_deg, 41.0, "AI change saved");
+        // The reply and the log name only the AI's own change.
+        assert_eq!(r["changes"].as_array().unwrap().len(), 1, "{r}");
+        assert_eq!(s.store.activity(&id)[0].before.as_ref(), Some(&user));
+
+        // Both changed the same value: nothing saved, the AI is told why.
+        let mut user2 = saved.clone();
+        user2.parts[0].edges[2].pitch_deg = 30.0;
+        s.store.save(Some(id.clone()), &user2).unwrap();
+        let mut ai2 = saved.clone();
+        ai2.parts[0].edges[2].pitch_deg = 45.0;
+        let e = s.commit(Some(&id), Some(&saved), &ai2, "AI C").unwrap_err();
+        assert!(e.contains("changed in the app"), "{e}");
+        assert_eq!(s.store.load(&id).unwrap(), user2);
+        assert_eq!(s.store.activity(&id).len(), 1);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
     #[test]

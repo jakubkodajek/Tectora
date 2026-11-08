@@ -99,6 +99,15 @@ PDF renderer).
 - A revert's change-log entry starts with the fixed English sentence the app
   translates (`Reverted: <summary>`, `Reverted <n> changes since: <summary>`);
   an AI's reason follows as ` (reason: <reason>)`.
+- Saves never overwrite each other. The app saves with
+  `save_project_checked` (`Store::save_checked`): only if the file still
+  holds the version the editor last read or wrote, otherwise it gets the
+  current file back, merges its edits onto it (the outside edit wins where
+  both changed a value; the local one stays in undo) and saves again. MCP
+  writes check the version the tool loaded in the same way
+  (`Store::save_as_checked`) and merge onto a user edit saved meanwhile, or
+  refuse when both changed the same value. The check and the write run under
+  the job's lock file `.activity/<id>.lock`, shared by all processes.
 
 A skill for Claude that describes the drawing workflow is in
 `integrations/skills/tectora-roof/SKILL.md`.

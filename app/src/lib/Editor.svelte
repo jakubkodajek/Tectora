@@ -186,6 +186,11 @@
   let reloadWanted = false;
   /** Saves started so far: a read that a save overtook is stale. */
   let saveGen = 0;
+  /** Saves run one after another: two from the same base would conflict
+      with each other, and the merge would drop the later local value. */
+  let saveQueue: Promise<unknown> = Promise.resolve();
+  /** Outside saves merged in a row before a save gives up (`save_conflict`). */
+  const SAVE_TRIES = 5;
   let calcSeq = 0;
 
   const snapshot = () => JSON.stringify(project);
@@ -256,63 +261,71 @@
   }
 
   /** Writes the job; resolves to whether the edits are on disk (errors are shown, never thrown). */
-  async function save(): Promise<boolean> {
-    if (!project) return false;
+  function save(): Promise<boolean> {
+    if (!project) return Promise.resolve(false);
     clearTimeout(saveTimer);
     saveState = "saving";
-    const seq = edits;
     inFlight++;
     saveGen++;
+    const run = saveQueue.then(saveNow).finally(() => {
+      inFlight--;
+      if (!inFlight && reloadWanted) {
+        reloadWanted = false;
+        load(false);
+      }
+    });
+    saveQueue = run.catch(() => {});
+    return run;
+  }
+
+  async function saveNow(): Promise<boolean> {
+    if (!project) return false;
+    saveState = "saving";
+    const seq = edits;
     try {
       // The jobs folder was switched under the open job (settings, or an AI
       // over MCP): the same id there is another job, never write over it.
       if (libraryDir !== null && (await api.projectsDir()) !== libraryDir) {
         throw { code: "library_changed", id, detail: `${libraryDir} -> ${await api.projectsDir()}` };
       }
-      // An external edit (AI agent, CLI) saved since our last save or load
-      // and not loaded yet: merge it in instead of writing over it.
-      if (lastSaved) {
-        // A file saved by a newer Tectora or unreachable is not overwritten
-        // with this copy: the error goes to the catch below and the edits
-        // stay in memory. A file deleted outside the app is written again,
-        // and a damaged one is repaired with the editor's good copy, as the
-        // store allows (ERR-018).
-        const onDisk = await api.loadProject(id).then(
-          (p) => JSON.stringify(p),
-          (e) => {
-            const code = toAppError(e).code;
-            if (code === "not_found" || code === "unreadable") return null;
-            throw e;
-          },
-        );
-        if (onDisk && onDisk !== lastSaved) {
-          project = merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, JSON.parse(onDisk) as Project);
-          pushHistory();
-          recalc();
-          refreshActivity();
+      for (let tries = 0; ; tries++) {
+        const written = JSON.parse(snapshot());
+        if (lastSaved) {
+          // Written only if the file is still the one we last read or wrote
+          // (checked and written in one step by the store). An external edit
+          // (AI agent, CLI) saved since then comes back instead: merge it in
+          // and try again, never write over it. A file saved by a newer
+          // Tectora or unreachable is not overwritten: the error goes to the
+          // catch below and the edits stay in memory. A file deleted outside
+          // the app is written again, and a damaged one is repaired with the
+          // editor's good copy, as the store allows (ERR-018).
+          const r = await api.saveProjectChecked(id, written, JSON.parse(lastSaved));
+          if (r.status === "conflict") {
+            if (tries + 1 >= SAVE_TRIES) throw { code: "save_conflict", id };
+            project = merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, r.current);
+            lastSaved = JSON.stringify(r.current);
+            pushHistory();
+            recalc();
+            refreshActivity();
+            continue;
+          }
+        } else {
+          await api.saveProject(id, written);
         }
+        // The store writes its own canonical form (no nulls, empty lists or
+        // defaults); remember that, or the file-change event would come back
+        // as an external edit and break undo. Not read back from the file: an
+        // AI edit saved right after ours would then pass for our own.
+        lastSaved = JSON.stringify(await api.normalizeProject(written));
+        // An edit made while this save was running is still unsaved.
+        saveState = edits === seq ? "saved" : "dirty";
+        return true;
       }
-      const written = JSON.parse(snapshot());
-      await api.saveProject(id, written);
-      // The store writes its own canonical form (no nulls, empty lists or
-      // defaults); remember that, or the file-change event would come back
-      // as an external edit and break undo. Not read back from the file: an
-      // AI edit saved right after ours would then pass for our own.
-      lastSaved = JSON.stringify(await api.normalizeProject(written));
-      // An edit made while this save was running is still unsaved.
-      saveState = edits === seq ? "saved" : "dirty";
-      return true;
     } catch (e) {
       // Keep the edits in memory; the status bar offers to try again.
       saveState = "failed";
       notifyError(e, "save");
       return false;
-    } finally {
-      inFlight--;
-      if (!inFlight && reloadWanted) {
-        reloadWanted = false;
-        load(false);
-      }
     }
   }
 

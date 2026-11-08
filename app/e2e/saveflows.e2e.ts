@@ -5,13 +5,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { bar, clickPlan, openEditor, selectWall, setField } from "./editor";
+import { bar, clickPlan, openEditor, selectWall, setField, tool } from "./editor";
 import { createExample, expect, listProjects, loadProject, scratchFile, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 
 const review = (page: Page) => page.locator(".review");
 const failSaves = (page: Page, code = "permission_denied") =>
-  page.route("**/save_project", (r) =>
+  page.route("**/save_project*", (r) =>
     r.fulfill({ contentType: "application/json", headers: { "access-control-allow-origin": "*" }, body: JSON.stringify({ err: { code } }) }),
   );
 
@@ -65,6 +65,60 @@ test.describe("revert keeps the user's later edits (ERR-001)", () => {
   });
 });
 
+test.describe("an AI save during the autosave", () => {
+  // The editor's write is held until an MCP save has landed: the AI's change
+  // was overwritten by the editor's copy (recheck-ce84f6d, new problem 1).
+  const holdFirstSave = (page: Page, during: () => Promise<unknown>) => {
+    let held = false;
+    return page.route(/\/save_project(_checked)?$/, async (r) => {
+      if (!held) {
+        held = true;
+        await during();
+      }
+      await r.continue();
+    });
+  };
+
+  test("an AI save landing between the editor's read and its write is kept with the user's edit", async ({ app, page, mcp }) => {
+    const id = await createExample("hip", "Valba");
+    await openEditor(app, "Valba");
+    await holdFirstSave(page, () => mcp.call("update_edges", { id, changes: [{ index: 2, pitch_deg: 41 }], summary: "Sklon stěny 3" }));
+    await selectWall(page, 0);
+    const overhang = bar(page, "def.title").getByLabel(cs("edge.overhang"));
+    await setField(overhang, 0.77);
+    await waitForProject(id, (p) => p.parts[0].edges[0].overhang === 0.77);
+    await expect(page.locator(".statusbar .save")).toContainText(cs("editor.saved"));
+    // Any reload the AI save starts has run by now.
+    await page.waitForTimeout(1200);
+    const p = await loadProject(id);
+    expect(p.parts[0].edges[2].pitch_deg).toBe(41);
+    expect(p.parts[0].edges[0].overhang).toBe(0.77);
+    // The editor shows both, and the AI change is up for review.
+    await expect(overhang).toHaveValue("0,77");
+    await selectWall(page, 2);
+    await expect(bar(page, "def.title").getByLabel(cs("edge.pitch"))).toHaveValue("41");
+    await expect(review(page)).toBeVisible();
+    await expect(page.locator(".statusbar .save")).toContainText(cs("editor.saved"));
+  });
+
+  test("where the AI and the user changed the same value during the save, the AI's value is kept and the user's is undoable", async ({ app, page, mcp }) => {
+    const id = await createExample("hip", "Valba");
+    await openEditor(app, "Valba");
+    await holdFirstSave(page, () => mcp.call("update_edges", { id, changes: [{ index: 2, pitch_deg: 41 }], summary: "Sklon stěny 3" }));
+    await selectWall(page, 2);
+    const pitch = bar(page, "def.title").getByLabel(cs("edge.pitch"));
+    await setField(pitch, 30);
+    await expect(pitch).toHaveValue("41");
+    await expect(page.locator(".statusbar .save")).toContainText(cs("editor.saved"));
+    await page.waitForTimeout(1200);
+    expect((await loadProject(id)).parts[0].edges[2].pitch_deg).toBe(41);
+    // Undo steps back through the merge to the user's own value.
+    await tool(page, "editor.undo").click();
+    await selectWall(page, 2);
+    await expect(pitch).toHaveValue("30");
+  });
+});
+
 test.describe("failed saves", () => {
   test("an outside save after a failed save keeps the unsaved edit, and Retry saves both (ERR-002)", async ({ app, page, mcp }) => {
     const id = await createExample("hip", "Valba");
@@ -79,7 +133,7 @@ test.describe("failed saves", () => {
     await expect(overhang).toHaveValue("0,9");
     // Still not saved: the state must not claim otherwise.
     await expect(page.locator(".statusbar .save-failed")).toBeVisible();
-    await page.unroute("**/save_project");
+    await page.unroute("**/save_project*");
     await page.locator(".statusbar .retry").click();
     await app.saved();
     const p = await waitForProject(id, (p) => p.parts[0].edges[0].overhang === 0.9);

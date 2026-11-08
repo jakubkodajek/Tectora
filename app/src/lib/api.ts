@@ -23,6 +23,9 @@ import type {
   UpdateProgress,
 } from "./types";
 
+/** What a checked save did (`Store::save_checked`). */
+export type CheckedSave = { status: "saved"; id: string } | { status: "conflict"; current: Project };
+
 export interface StandardParams {
   kind: StandardKind;
   length: number;
@@ -46,6 +49,10 @@ export const api = {
   startupWarnings: () => invoke<AppError[]>("startup_warnings"),
   loadProject: (id: string) => invoke<Project>("load_project", { id }),
   saveProject: (id: string | null, project: Project) => invoke<string>("save_project", { id, project }),
+  /** Saves only if the file still holds `base` (the version last read or
+      written); otherwise nothing is written and the current file comes back. */
+  saveProjectChecked: (id: string, project: Project, base: Project) =>
+    invoke<CheckedSave>("save_project_checked", { id, project, base }),
   /** The project in the store's canonical form, as load_project returns it after a save. */
   normalizeProject: (project: Project) => invoke<Project>("normalize_project", { project }),
   deleteProject: (id: string) => invoke<void>("delete_project", { id }),

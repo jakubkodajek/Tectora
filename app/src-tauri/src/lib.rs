@@ -194,6 +194,20 @@ fn save_project(state: State<AppState>, id: Option<String>, project: Project) ->
     guard(|| Ok(state.store().save(id, &project)?))
 }
 
+/// Saves the editor's edits only if the file still holds `base`, the
+/// version the editor last read or wrote (`Store::save_checked`); otherwise
+/// answers `conflict` with the current file, for the editor to merge its
+/// edits onto and save again, so an AI save in between is never lost.
+#[tauri::command(async)]
+fn save_project_checked(
+    state: State<AppState>,
+    id: String,
+    project: Project,
+    base: Project,
+) -> CmdResult<tectora_core::store::CheckedSave> {
+    guard(|| Ok(state.store().save_checked(&id, &project, &base)?))
+}
+
 /// The project as the store writes and reads it (defaults, nulls and empty
 /// lists dropped), without touching the file. The editor compares file
 /// changes with this to tell its own saves from external edits.
@@ -807,6 +821,7 @@ pub fn run() {
             take_open_errors,
             load_project,
             save_project,
+            save_project_checked,
             normalize_project,
             delete_project,
             duplicate_project,
