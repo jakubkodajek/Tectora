@@ -189,6 +189,24 @@ test.describe("job tab", () => {
     app.errors.length = 0;
   });
 
+  test("a job file damaged while it is open is repaired from the editor's copy (ERR-018)", async ({ app, page }) => {
+    const id = await createExample("hip", "Poškozená");
+    await openEditor(app, "Poškozená");
+    const file = path.join(LIBRARY_DIR, `${id}.tectora`);
+    fs.writeFileSync(file, "{ broken");
+    await selectWall(page, 0);
+    await setField(bar(page, "def.title").getByLabel(cs("edge.pitch")), 30);
+    await expect.poll(() => {
+      try {
+        return JSON.parse(fs.readFileSync(file, "utf8")).parts[0].edges[0].pitch_deg;
+      } catch {
+        return null;
+      }
+    }, { timeout: 8000 }).toBe(30);
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).name).toBe("Poškozená");
+    app.errors.length = 0;
+  });
+
   test("a job that cannot be opened shows the reason and a way back", async ({ app, page }) => {
     const id = await createExample("gable", "Rozbitá");
     await app.open();
