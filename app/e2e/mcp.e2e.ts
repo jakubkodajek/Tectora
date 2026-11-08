@@ -179,7 +179,7 @@ test.describe("live AI changes", () => {
     const id = await createExample("gable", "Moje");
     const other = await createExample("hip", "Jiná");
     await app.open({ prefs: { followAi: false } });
-    await mcp.call("update_settings", { follow_ai: false });
+    await mcp.call("update_settings", { follow_ai: false, summary: "Follow mode off as the user asked" });
     await app.openJob("Moje");
     const pill = page.locator("header .ai-pill");
     await mcp.call("calc", { id });

@@ -131,7 +131,7 @@ test.describe("settings", () => {
     // No reload: the app follows the settings file.
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
     await expect(page.getByRole("button", { name: tr("sk", "lib.new") }).first()).toBeVisible();
-    await page.getByRole("button", { name: tr("sk", "settings.button") }).click();
+    await page.getByRole("button", { name: tr("sk", "settings.button"), exact: true }).click();
     const dlg = page.getByRole("dialog", { name: tr("sk", "settings.title") });
     await expect(dlg.locator(".grid3").getByLabel(tr("sk", "edge.pitch"))).toHaveValue("33");
   });
