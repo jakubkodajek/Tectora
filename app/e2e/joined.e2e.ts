@@ -90,6 +90,43 @@ test.describe("several buildings", () => {
     await areaMatchesCore(page, id);
   });
 
+  test("buildings whose eaves only come close are not named as joined", async ({ app, page }) => {
+    // ARCH-008: 0.8 m apart with 0.5 m overhangs; the calculation leaves
+    // both roofs as they are alone, so the panel does not say "joined".
+    const id = await createExample("gable", "Sedlo");
+    const p = await loadProject(id);
+    const xs = p.parts[0].edges.map((e: any) => e.start.x);
+    const ys = p.parts[0].edges.map((e: any) => e.start.y);
+    const x = Math.max(...xs) + 0.8;
+    await withSecondPart(id, rect(x, Math.min(...ys) + 1, x + 4, Math.max(...ys) - 1));
+    await openEditor(app, "Sedlo");
+    const results = page.locator(".results");
+    await expect(results.locator("table").first()).toContainText("P2");
+    await expect(results).not.toContainText(cs("res.joinedTo", { names: p.parts[0].name }));
+    const r = await bridge<any>("calc", { project: await loadProject(id) });
+    expect(r.parts.map((q: any) => q.geometry.joined_with ?? [])).toEqual([[], []]);
+  });
+
+  test("a dormer beside the roof is reported and not counted", async ({ app, page }) => {
+    // ERR-011: it used to switch the job to the fallback engine in silence.
+    const id = await createExample("gable", "Sedlo");
+    const before = await bridge<any>("calc", { project: await loadProject(id) });
+    const p = await loadProject(id);
+    p.dormers.push({
+      edges: [
+        { start: { x: 40, y: 40 }, pitch_deg: 45, eave_height: 4, overhang: 0, direction_rad: 4.71238898038469 },
+        { start: { x: 40, y: 40 }, pitch_deg: 90, eave_height: 4, overhang: 0 },
+        { start: { x: 42, y: 40 }, pitch_deg: 45, eave_height: 4, overhang: 0, direction_rad: 1.5707963267948966 },
+      ],
+      end: { x: 42, y: 40 },
+    });
+    await bridge("save_project", { id, project: p });
+    await openEditor(app, "Sedlo");
+    await expect(page.locator(".results")).toContainText(cs("res.warn.dormer_off_roof", { n: 1 }));
+    const after = await bridge<any>("calc", { project: await loadProject(id) });
+    expect(after.totals.roof_area).toBe(before.totals.roof_area);
+  });
+
   test("a building inside another is reported, not silently roofless", async ({ app, page }) => {
     const id = await createExample("gable", "Sedlo");
     await withSecondPart(id, rect(4, 2, 7, 5));

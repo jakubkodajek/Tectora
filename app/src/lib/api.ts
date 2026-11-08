@@ -68,6 +68,12 @@ export const api = {
     invoke<string>("create_from_example", { exampleId, name: name ?? null }),
   calc: (project: Project) => invoke<CalcResult>("calc", { project }),
   calcBreakdown: (project: Project) => invoke<CalcBreakdown>("calc_breakdown", { project }),
+  /** Hand-drawn face `index` turned into a building (the MCP tool face_to_part). */
+  faceToPart: (project: Project, index: number, name: string, pitchDeg: number, eaveHeight: number, overhang: number) =>
+    invoke<Project>("face_to_part", { project, index, name, pitchDeg, eaveHeight, overhang }),
+  /** The first roof window larger than what is left of its face, or null. */
+  checkWindows: (project: Project) =>
+    invoke<{ index: number; area: number; face_area: number } | null>("check_windows", { project }),
   getSettings: () => invoke<AppSettingsView>("get_settings"),
   updateSettings: (patch: Record<string, unknown>) => invoke<AppSettingsView>("update_settings", { patch }),
   openFolder: (which: "projects" | "drawings" | "settings") => invoke<void>("open_folder", { which }),
@@ -87,11 +93,18 @@ export const api = {
   savePng: (path: string, bytes: number[]) => invoke<void>("save_png", { path, bytes }),
   takeSnapshot: (project: Project) => invoke<ResultSnapshot>("take_snapshot", { project }),
   takePendingOpen: () => invoke<string | null>("take_pending_open"),
+  /** Files opened from the system (double-click, start-up) that did not open. */
+  takeOpenErrors: () => invoke<AppError[]>("take_open_errors"),
 };
 
 /** Fires when the settings file changes (e.g. an AI agent changed a setting). */
 export function onSettingsChanged(cb: (v: AppSettingsView) => void): Promise<UnlistenFn> {
   return listen<AppSettingsView>("settings-changed", (e) => cb(e.payload));
+}
+
+/** Fires when a file opened from the system did not open; `takeOpenErrors` has it. */
+export function onOpenFailed(cb: () => void): Promise<UnlistenFn> {
+  return listen<AppError>("open-failed", () => cb());
 }
 
 /** Fires with the id of a job opened from a file (double-click). */

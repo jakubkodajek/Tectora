@@ -12,7 +12,7 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use zip::write::SimpleFileOptions;
@@ -261,6 +261,28 @@ pub fn open_path(store: &Store, path: &Path) -> Result<String, String> {
     Ok(store.save(None, &project)?)
 }
 
+/// What opening several files (double-click, start-up arguments) gave.
+#[derive(Debug, Default, PartialEq)]
+pub struct Opened {
+    /// The job of the last file that opened, to show.
+    pub last: Option<String>,
+    /// Each file that did not open, with why (English, for the details).
+    pub failed: Vec<(PathBuf, String)>,
+}
+
+/// [`open_path`] for each file; a file that fails does not stop the others,
+/// and its error is kept for the user (not only a log line).
+pub fn open_paths(store: &Store, paths: impl IntoIterator<Item = PathBuf>) -> Opened {
+    let mut out = Opened::default();
+    for p in paths {
+        match open_path(store, &p) {
+            Ok(id) => out.last = Some(id),
+            Err(e) => out.failed.push((p, e)),
+        }
+    }
+    out
+}
+
 /// Plan preview: wall outlines and roof lines, y up, 1 unit = 1 m.
 pub fn preview_svg(project: &Project) -> String {
     let outlines = outlines(project);
@@ -311,6 +333,25 @@ pub fn preview_svg(project: &Project) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn files_that_do_not_open_are_reported_and_the_others_open() {
+        let dir = std::env::temp_dir().join(format!("tectora-open-{}", now_ms()));
+        let store = Store::new(dir.join("lib")).unwrap();
+        let good = dir.join("good.tectora");
+        let p = crate::examples::find("hip").unwrap().project();
+        fs::write(&good, p.to_json().unwrap()).unwrap();
+        let broken = dir.join("broken.tectora");
+        fs::write(&broken, "{ not json").unwrap();
+        let other = dir.join("notes.txt");
+        fs::write(&other, "x").unwrap();
+        let r = open_paths(&store, [broken.clone(), good, other.clone()]);
+        assert!(r.last.is_some());
+        let failed: Vec<&PathBuf> = r.failed.iter().map(|f| &f.0).collect();
+        assert_eq!(failed, [&broken, &other]);
+        assert!(r.failed[1].1.contains("not a Tectora file"));
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_job_survives_export_and_import_with_files_and_history() {

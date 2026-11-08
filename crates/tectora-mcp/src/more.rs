@@ -167,7 +167,7 @@ fn apply_dormer_fields(p: &mut DormerParams, args: &Value) -> Result<(), String>
     if let Some(m) = opt::<u8>(args, "material")? {
         p.material = m.max(1);
     }
-    if !(p.width > 0.0) {
+    if p.width.is_nan() || p.width <= 0.0 {
         return Err("width must be positive".into());
     }
     for (name, v) in [
@@ -301,6 +301,19 @@ pub(crate) fn tools() -> Vec<Value> {
                 }, "required": ["kind", "index"] } },
                 "summary": summary_prop(),
             }), &["id", "items", "summary"]),
+        }),
+        json!({
+            "name": "face_to_part",
+            "description": "Turn a hand-drawn face (`set_manual` faces, index from 0 as get_project lists them) into a building with the same outline, in one change, as the editor's \"Make it a building\": a hand-drawn face only adds its area and calculates no roof; the new part gets every wall as an eave with `pitch_deg`, `eave_height` and `overhang` (default: the user's roof defaults). Use it when a footprint was traced as a face.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "index": { "type": "integer", "minimum": 0, "description": "The hand-drawn face." },
+                "name": { "type": "string", "description": "Name of the new part (default Main for the first part, else Part N)." },
+                "pitch_deg": { "type": "number" },
+                "eave_height": { "type": "number" },
+                "overhang": { "type": "number" },
+                "summary": summary_prop(),
+            }), &["id", "index", "summary"]),
         }),
         json!({
             "name": "clear_roof",
@@ -508,6 +521,30 @@ impl Server {
             "transform_items" => self.transform_items(args),
             "add_shape_part" => self.add_shape_part(args),
             "delete_items" => self.delete_items(args),
+            "face_to_part" => (|| {
+                let (id, before) = self.load(args)?;
+                let mut p = before.clone();
+                let index: usize = req(args, "index")?;
+                let preset = tectora_core::settings::Settings::load().roof_defaults;
+                let n = p.parts.len();
+                let name = args
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| if n == 0 { "Main".into() } else { format!("Part {}", n + 1) });
+                tectora_core::edit::face_to_part(
+                    &mut p,
+                    index,
+                    &name,
+                    arg_f64(args, "pitch_deg")?.unwrap_or(preset.pitch_deg),
+                    arg_f64(args, "eave_height")?.unwrap_or(preset.eave_height),
+                    arg_f64(args, "overhang")?.unwrap_or(preset.overhang),
+                )?;
+                if let Err(e) = p.validate() {
+                    return Err(e.join("; "));
+                }
+                self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+            })(),
             "clear_roof" => (|| {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
@@ -552,7 +589,7 @@ impl Server {
                 let (id, _) = self.load(args)?;
                 let ts: u64 = req(args, "ts_ms")?;
                 let p = self.store.revert_to(&id, ts, &self.client)?;
-                self.live_follow("Reverted changes".into(), &id);
+                self.live_follow("reverted_changes", Some(&p.name), "Reverted changes".into(), &id);
                 Ok(json!({ "id": id, "reverted": true, "quantities": super::quantities(&p) }))
             })(),
             "list_examples" => Ok(json!(EXAMPLES
@@ -591,13 +628,13 @@ impl Server {
                 if args.get("with_files").and_then(Value::as_bool).unwrap_or(true) {
                     self.store.copy_attachments(&id, &new_id)?;
                 }
-                self.live_follow(format!("Copied “{}”", p.name), &new_id);
+                self.live_follow("copied", Some(&p.name), format!("Copied “{}”", p.name), &new_id);
                 Ok(json!({ "id": new_id }))
             })(),
             "delete_project" => (|| {
                 let (id, p) = self.load(args)?;
                 self.store.delete(&id)?;
-                self.live(format!("Deleted “{}”", p.name), None);
+                self.live("deleted", Some(&p.name), format!("Deleted “{}”", p.name), None);
                 Ok(json!({ "id": id, "deleted": true }))
             })(),
             "list_files" => self.load(args).map(|(id, _)| {
@@ -614,14 +651,14 @@ impl Server {
             "attach_file" => (|| {
                 let (id, _) = self.load(args)?;
                 let name = self.store.attach_file(&id, &PathBuf::from(arg_str(args, "path")?))?;
-                self.live_follow(format!("Attached {name}"), &id);
+                self.live_follow("attached", Some(&name), format!("Attached {name}"), &id);
                 Ok(json!({ "id": id, "name": name }))
             })(),
             "remove_file" => (|| {
                 let (id, _) = self.load(args)?;
                 let name = arg_str(args, "name")?;
                 self.store.remove_attachment(&id, name)?;
-                self.live_follow(format!("Removed {name}"), &id);
+                self.live_follow("removed", Some(name), format!("Removed {name}"), &id);
                 Ok(json!({ "id": id, "removed": name }))
             })(),
             "export_job" => (|| {
@@ -636,7 +673,7 @@ impl Server {
                 };
                 let path = bundle::export_path(&self.store, &name)?;
                 let m = bundle::export(&self.store, &id, &path)?;
-                self.live(format!("Exported to {}: {summary}", path.display()), Some(&id));
+                self.live("exported", Some(&path.display().to_string()), format!("Exported to {}: {summary}", path.display()), Some(&id));
                 Ok(json!({ "id": id, "path": path.display().to_string(), "manifest": m }))
             })(),
             "export_list" => (|| {
@@ -673,13 +710,13 @@ impl Server {
                 let path = bundle::export_path_with(&self.store, &name, format)?;
                 let bytes = tectora_core::export::checked_sheet_file(&p, &stamp, format)?;
                 std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-                self.live(format!("Exported sheet to {}: {summary}", path.display()), Some(&id));
+                self.live("exported_sheet", Some(&path.display().to_string()), format!("Exported sheet to {}: {summary}", path.display()), Some(&id));
                 Ok(json!({ "id": id, "path": path.display().to_string() }))
             })(),
             "import_job" => (|| {
                 let path = PathBuf::from(arg_str(args, "path")?);
                 let id = bundle::open_path(&self.store, &path)?;
-                self.live_follow(format!("Imported {}", path.display()), &id);
+                self.live_follow("imported", Some(&path.display().to_string()), format!("Imported {}", path.display()), &id);
                 Ok(json!({ "id": id }))
             })(),
             "store_result" => (|| {
@@ -954,7 +991,7 @@ impl Server {
         let mut part = if shape == "regular_polygon" {
             let sides: usize = req(args, "sides")?;
             let side = arg_f64(args, "side")?.ok_or("missing `side`")?;
-            if !(3..=MAX_POLYGON_SIDES).contains(&sides) || !(side > 0.0) {
+            if !(3..=MAX_POLYGON_SIDES).contains(&sides) || side.is_nan() || side <= 0.0 {
                 return Err(format!(
                     "a polygon needs 3 to {MAX_POLYGON_SIDES} sides of positive length"
                 ));
@@ -1024,7 +1061,7 @@ impl Server {
             .map(|v| Ok((arg_str(v, "kind")?.to_string(), req::<usize>(v, "index")?)))
             .collect::<Result<_, String>>()?;
         // Highest index first, so the others keep theirs.
-        list.sort_by(|a, b| b.1.cmp(&a.1));
+        list.sort_by_key(|x| std::cmp::Reverse(x.1));
         list.dedup();
         for (kind, i) in list {
             fn take<T>(v: &mut Vec<T>, i: usize, kind: &str) -> Result<(), String> {
@@ -1663,6 +1700,45 @@ mod tests {
         assert!(p.parts.is_empty() && p.dormers.is_empty());
         let r = s.call_tool("clear_roof", &json!({ "id": id, "summary": "again" }));
         assert!(r.is_err(), "nothing left to clear");
+    }
+
+    #[test]
+    fn a_hand_drawn_face_becomes_a_building_in_one_save() {
+        let (mut s, id) = setup();
+        let mut p = s.store.load(&id).unwrap();
+        let parts = p.parts.len();
+        p.manual_faces.push(tectora_core::model::ManualFace {
+            points: [(30.0, 0.0), (40.0, 0.0), (40.0, 6.0), (30.0, 6.0)]
+                .iter()
+                .map(|&(x, y)| tectora_core::geom::Point2::new(x, y))
+                .collect(),
+            pitch_deg: 30.0,
+            label: String::new(),
+        });
+        s.store.save(Some(id.clone()), &p).unwrap();
+        let log = s.store.activity(&id).len();
+        call(
+            &mut s,
+            "face_to_part",
+            json!({ "id": id, "index": 0, "pitch_deg": 35, "eave_height": 3, "overhang": 0.4, "summary": "Garage traced as a face" }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert!(p.manual_faces.is_empty());
+        assert_eq!(p.parts.len(), parts + 1);
+        assert_eq!(p.parts[parts].name, format!("Part {}", parts + 1));
+        assert_eq!(s.store.activity(&id).len(), log + 1, "one change");
+        // Reverting it brings the face back and removes the part.
+        s.call_tool("revert_last_change", &json!({ "id": id }))
+            .unwrap();
+        let p = s.store.load(&id).unwrap();
+        assert_eq!((p.manual_faces.len(), p.parts.len()), (1, parts));
+        assert!(
+            s.call_tool(
+                "face_to_part",
+                &json!({ "id": id, "index": 5, "summary": "x" })
+            )
+            .is_err()
+        );
     }
 
     #[test]

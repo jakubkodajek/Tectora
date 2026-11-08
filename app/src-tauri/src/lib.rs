@@ -28,6 +28,9 @@ struct AppState {
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
     /// A job opened from a file (double-click) before the UI asked for it.
     pending_open: Mutex<Option<String>>,
+    /// Files that did not open before the UI asked (start-up arguments);
+    /// later ones go to the UI as `open-failed` events.
+    open_errors: Mutex<Vec<AppError>>,
     /// Why the folder watcher could not start (AI and CLI edits then do not
     /// show up live).
     watcher_error: Mutex<Option<String>>,
@@ -348,6 +351,17 @@ fn take_pending_open(state: State<AppState>) -> Option<String> {
     state.pending_open.lock().ok()?.take()
 }
 
+/// Files that did not open, each once: the UI takes them when it starts
+/// and on every `open-failed` event, so none is lost or shown twice.
+#[tauri::command]
+fn take_open_errors(state: State<AppState>) -> Vec<AppError> {
+    state
+        .open_errors
+        .lock()
+        .map(|mut q| std::mem::take(&mut *q))
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 fn create_standard(
     state: State<AppState>,
@@ -453,6 +467,37 @@ fn calc(project: Project) -> CmdResult<Value> {
 #[tauri::command(async)]
 fn calc_breakdown(project: Project) -> CmdResult<Value> {
     guard(|| Ok(commands::calc_breakdown(&project)?))
+}
+
+/// The first roof window larger than what is left of its face
+/// (`tectora_core::edit::check_windows`), or null; the editor refuses such
+/// a window, as MCP `set_openings` does.
+#[tauri::command(async)]
+fn check_windows(project: Project) -> CmdResult<Option<tectora_core::edit::OversizeWindow>> {
+    guard(|| {
+        project
+            .check_limits()
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+        tectora_core::model::guarded(|| tectora_core::edit::check_windows(&project).err())
+            .map_err(|d| AppError::new("internal").detail(d))
+    })
+}
+
+/// The editor's "Make it a building": hand-drawn face `index` replaced by a
+/// part of the same outline (`tectora_core::edit::face_to_part`, the MCP
+/// tool's operation).
+#[tauri::command]
+fn face_to_part(
+    mut project: Project,
+    index: usize,
+    name: String,
+    pitch_deg: f64,
+    eave_height: f64,
+    overhang: f64,
+) -> CmdResult<Project> {
+    tectora_core::edit::face_to_part(&mut project, index, &name, pitch_deg, eave_height, overhang)
+        .map_err(|d| AppError::new("invalid_input").detail(d))?;
+    Ok(project)
 }
 
 /// Settings plus the folders in use (see `Settings::describe`).
@@ -589,14 +634,18 @@ fn start_watcher(
 /// one is shown.
 fn open_files(app: &tauri::AppHandle, paths: impl IntoIterator<Item = PathBuf>) {
     let state = app.state::<AppState>();
-    let mut last = None;
-    for p in paths {
-        match bundle::open_path(&state.store(), &p) {
-            Ok(id) => last = Some(id),
-            Err(e) => eprintln!("open {}: {e}", p.display()),
+    let opened = bundle::open_paths(&state.store(), paths);
+    // A file that does not open is told to the user like a failed import
+    // (ERR-006), not only written to stderr, which a GUI app has none of.
+    for (p, e) in opened.failed {
+        eprintln!("open {}: {e}", p.display());
+        let err = AppError::from(e);
+        if let Ok(mut queued) = state.open_errors.lock() {
+            queued.push(err.clone());
         }
+        let _ = app.emit("open-failed", err);
     }
-    if let Some(id) = last {
+    if let Some(id) = opened.last {
         if let Ok(mut pending) = state.pending_open.lock() {
             *pending = Some(id.clone());
         }
@@ -721,6 +770,7 @@ pub fn run() {
                 store: RwLock::new(store),
                 watcher: Mutex::new(None),
                 pending_open: Mutex::new(None),
+                open_errors: Mutex::new(Vec::new()),
                 watcher_error: Mutex::new(None),
             });
             set_watcher(app.handle(), dir);
@@ -731,6 +781,7 @@ pub fn run() {
             projects_dir,
             list_projects,
             startup_warnings,
+            take_open_errors,
             load_project,
             save_project,
             normalize_project,
@@ -752,6 +803,8 @@ pub fn run() {
             new_project,
             calc,
             calc_breakdown,
+            check_windows,
+            face_to_part,
             list_attachments,
             attach_files,
             remove_attachment,

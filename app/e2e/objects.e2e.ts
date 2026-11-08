@@ -143,6 +143,28 @@ test.describe("chimneys, windows and openings", () => {
     expect(p.windows[0].x).toBe(7);
   });
 
+  test("a roof window larger than its face is refused with the reason", async ({ app, page }) => {
+    // MATH-001: cm typed as m would make the face area negative.
+    const id = await createExample("hip", "Valba");
+    await openEditor(app, "Valba");
+    await tool(page, "tool.window").click();
+    await clickPlan(page, 3, 1.5);
+    const ob = bar(page, "opening.window");
+    await waitForProject(id, (p) => p.windows?.length === 1);
+    await setField(ob.getByLabel(cs("opening.width")), 78);
+    await expect(page.getByText(cs("opening.tooLarge.title"))).toBeVisible();
+    await page.waitForTimeout(400);
+    const p = await loadProject(id);
+    expect(p.windows[0].width).toBe(0.78);
+    // The field shows the stored width again, not the refused one.
+    await expect(ob.getByLabel(cs("opening.width"))).not.toHaveValue("78");
+    await expect(page.locator(".results")).not.toContainText(cs("res.warn.title"));
+    await areaMatchesCore(page, id);
+    // A size that fits is taken.
+    await setField(ob.getByLabel(cs("opening.width")), 1.14);
+    await waitForProject(id, (p) => p.windows?.[0]?.width === 1.14);
+  });
+
   test("roof opening: place, resize, delete; undo brings it back", async ({ app, page }) => {
     const id = await createExample("hip", "Valba");
     await openEditor(app, "Valba");

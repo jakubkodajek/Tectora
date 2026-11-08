@@ -5,8 +5,8 @@
   import { m, m2, num } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
-  import { joinedParts } from "./planjoin";
-  import type { CalcResult, Project, RoofWarning } from "./types";
+  import { joinedWith, warningText } from "./results";
+  import type { CalcResult, Project } from "./types";
 
   let {
     result,
@@ -18,8 +18,8 @@
   const stored = $derived(result?.stored_result ?? null);
   const diffLabel = (key: string) => figureLabel(key, project);
   const fmtDiff = formatFigure;
-  /** Per part, the parts its roof is joined to (named under the part's area). */
-  const joins = $derived(project && project.parts.length > 1 ? joinedParts(project.parts) : []);
+  /** Per part, the parts the calculation joined its roof with (named under the part's area). */
+  const joins = $derived(joinedWith(result));
 
   /** Area per material, shown once the roof has more than one material or a non-default one. */
   const materials = $derived(
@@ -34,15 +34,6 @@
       (p.geometry.warnings ?? []).map((w) => ({ part: result!.parts.length > 1 ? p.name : null, text: warningText(w) })),
     ),
   );
-
-  function warningText(w: RoofWarning): string {
-    if (w.kind === "merged_walls") {
-      const [a, b] = w.edges ?? [0, 0];
-      return t("res.warn.merged_walls", { a: a + 1, b: b + 1 });
-    }
-    const v = w.kind === "area_mismatch" ? num(w.value * 100) : num(w.value);
-    return t(`res.warn.${w.kind}`, { v });
-  }
   const rows = $derived(
     totals
       ? [
@@ -85,7 +76,7 @@
           <tr>
             <td>
               {p.name}
-              {#if joins[pi]?.length}<small class="joined">{t("res.joinedTo", { names: joins[pi].map((j) => project?.parts[j]?.name ?? "").join(", ") })}</small>{/if}
+              {#if joins[pi]?.length}<small class="joined">{t("res.joinedTo", { names: joins[pi].map((j) => result.parts[j]?.name ?? "").join(", ") })}</small>{/if}
             </td>
             <td class="v">{m2(p.quantities.roof_area)}</td>
           </tr>

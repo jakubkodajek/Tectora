@@ -143,14 +143,48 @@ pub struct ReviewStatus {
 pub struct LiveStatus {
     pub ts_ms: u64,
     pub actor: String,
-    /// Short description, e.g. "Reading project rodinny-dum".
+    /// Short English description, e.g. "Reading “Rodinný dům”" (logs and
+    /// older apps); for a change, the agent's own summary.
     pub message: String,
     pub project_id: Option<String>,
     /// The agent saved `project_id` or asked to show it: the app may open it
     /// (follow mode). Reading or calculating a job does not set it.
     #[serde(default)]
     pub follow: bool,
+    /// What the agent is doing, as a code the app translates
+    /// ([`LIVE_KINDS`]); `changed` shows `message`, the agent's summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// The job or file name the sentence names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
+
+/// The codes of [`LiveStatus::kind`] (the app has a sentence for each, in
+/// every UI language: `ai.live.<kind>`).
+pub const LIVE_KINDS: [&str; 17] = [
+    "changed",
+    "settings",
+    "browsing",
+    "reading",
+    "calculating",
+    "explaining",
+    "comparing",
+    "showing",
+    "reverted",
+    "reverted_changes",
+    "copied",
+    "deleted",
+    "attached",
+    "removed",
+    "exported",
+    "exported_sheet",
+    "imported",
+];
+
+/// Summary prefixes of the change-log entries a revert writes; the app
+/// reads them to show the sentence in the user's language.
+pub const REVERTED_PREFIX: &str = "Reverted: ";
 
 pub fn now_ms() -> u64 {
     SystemTime::now()
@@ -715,7 +749,7 @@ impl Store {
             &log,
             log.len() - 1,
             actor,
-            format!("Reverted: {}", last.summary),
+            format!("{REVERTED_PREFIX}{}", last.summary),
         )
     }
 
@@ -732,7 +766,7 @@ impl Store {
                 })?;
         let undone = log.len() - pos;
         let summary = if undone == 1 {
-            format!("Reverted: {}", log[pos].summary)
+            format!("{REVERTED_PREFIX}{}", log[pos].summary)
         } else {
             format!("Reverted {undone} changes since: {}", log[pos].summary)
         };
@@ -974,10 +1008,10 @@ impl Store {
     }
 
     pub fn set_live(&self, status: &LiveStatus) {
-        if fs::create_dir_all(self.activity_dir()).is_ok() {
-            if let Ok(text) = serde_json::to_string(status) {
-                let _ = write_atomic(&self.activity_dir().join(LIVE_FILE), &text);
-            }
+        if fs::create_dir_all(self.activity_dir()).is_ok()
+            && let Ok(text) = serde_json::to_string(status)
+        {
+            let _ = write_atomic(&self.activity_dir().join(LIVE_FILE), &text);
         }
     }
 

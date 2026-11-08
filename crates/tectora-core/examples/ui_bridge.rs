@@ -236,6 +236,7 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             &PathBuf::from(arg::<String>(a, "path")?),
         )?),
         "take_pending_open" => Ok(Value::Null),
+        "take_open_errors" => Ok(serde_json::json!([])),
         "create_standard" | "standard_part" => {
             let kind: StandardRoof = arg(a, "kind")?;
             let part = standard_roof(
@@ -281,6 +282,25 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             let mut project = examples::find("gable").expect("built-in example").project();
             project.name = arg(a, "name")?;
             to_json(store.save(None, &project)?)
+        }
+        "face_to_part" => {
+            let mut project = arg::<Project>(a, "project")?;
+            tectora_core::edit::face_to_part(
+                &mut project,
+                arg(a, "index")?,
+                &arg::<String>(a, "name")?,
+                arg(a, "pitchDeg")?,
+                arg(a, "eaveHeight")?,
+                arg(a, "overhang")?,
+            )?;
+            to_json(project)
+        }
+        "check_windows" => {
+            let project = arg::<Project>(a, "project")?;
+            project.check_limits()?;
+            to_json(tectora_core::model::guarded(|| {
+                tectora_core::edit::check_windows(&project).err()
+            })?)
         }
         // Settings live in `target/ui-preview-config` (see `main`). A new
         // projects folder set through the bridge is served from then on

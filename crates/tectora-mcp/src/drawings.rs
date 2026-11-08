@@ -302,6 +302,8 @@ impl Server {
         let origin = point_arg(o, "origin")?;
         let (id, p) = self.load(o)?;
         self.live(
+            "comparing",
+            Some(&p.name),
             format!("Comparing “{}” with the drawing", p.name),
             Some(&id),
         );

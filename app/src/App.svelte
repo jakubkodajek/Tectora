@@ -5,7 +5,7 @@
   import Home from "./lib/Home.svelte";
   import SettingsDialog from "./lib/SettingsDialog.svelte";
   import Toasts from "./lib/Toasts.svelte";
-  import { api, onLiveStatus, onOpenProject, onProjectsChanged, onSettingsChanged } from "./lib/api";
+  import { api, onLiveStatus, onOpenFailed, onOpenProject, onProjectsChanged, onSettingsChanged } from "./lib/api";
   import { t } from "./lib/i18n.svelte";
   import { actorName, live } from "./lib/live.svelte";
   import { info, notify, notifyError } from "./lib/notify.svelte";
@@ -150,12 +150,22 @@
     const unClose = closeGuard();
     api.takePendingOpen().then((id) => id && openFile(id));
     const unOpen = onOpenProject(openFile);
+    // A file opened from the system that did not open (damaged, newer, not
+    // a job): told like a failed import, at start-up and later (ERR-006).
+    const showOpenErrors = () =>
+      api.takeOpenErrors().then(
+        (es) => es.forEach((e) => notifyError(e, "import")),
+        () => {},
+      );
+    const unOpenFailed = onOpenFailed(showOpenErrors);
+    showOpenErrors();
     const tick = setInterval(() => (live.now = Date.now()), 5000);
     return () => {
       un.then((f) => f());
       unLive.then((f) => f());
       unSettings.then((f) => f());
       unOpen.then((f) => f());
+      unOpenFailed.then((f) => f());
       unClose.then((f) => f());
       clearInterval(tick);
       window.removeEventListener("error", onError);

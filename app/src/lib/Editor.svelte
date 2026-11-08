@@ -24,7 +24,7 @@
   import { followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, transformItem, type ItemRef, type PlanTarget } from "./items";
   import { snapToRoof, type ManualSel } from "./manual";
   import { describeCalcError, describeError, describeProblem, toAppError, type Described } from "./errors";
-  import { notifyError } from "./notify.svelte";
+  import { notify, notifyError } from "./notify.svelte";
   import { chimneyFromRect, nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, roofHeightAt } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
@@ -42,7 +42,7 @@
   import { i18n, t } from "./i18n.svelte";
   import { hscroll } from "./hscroll";
   import { tabIds, tablist } from "./tabs";
-  import { actorName, isFresh, live } from "./live.svelte";
+  import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
   import type { ActivityItem, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
   import { GABLE_PITCH, isAi, isGable, isMarker } from "./types";
@@ -757,21 +757,27 @@
   /**
    * A manual face drawn where a building was meant: replace it with a part of
    * the same outline with the new-roof defaults (pitch, eave height,
-   * overhang) so its roof is calculated. Over MCP: add_part + set_manual.
+   * overhang) so its roof is calculated. The core's operation, the same as
+   * MCP face_to_part.
    */
-  function faceToPart() {
+  async function faceToPart() {
     if (!project || manualSel?.kind !== "face" || !project.manual_faces) return;
-    const face = project.manual_faces[manualSel.index];
+    const index = manualSel.index;
+    const face = project.manual_faces[index];
     if (!face || face.points.length < 3) return;
-    let pts = face.points.map((p) => ({ x: p.x, y: p.y }));
-    const area = pts.reduce((s, p, i) => s + p.x * pts[(i + 1) % pts.length].y - pts[(i + 1) % pts.length].x * p.y, 0);
-    if (area < 0) pts = pts.reverse();
-    project.manual_faces.splice(manualSel.index, 1);
     const n = project.parts.length;
-    project.parts.push({
-      name: n === 0 ? t("editor.mainPart") : t("editor.partN", { n: n + 1 }),
-      edges: pts.map((p) => ({ start: p, pitch_deg: presets.pitch_deg, eave_height: presets.eave_height, overhang: presets.overhang })),
-    });
+    const name = n === 0 ? t("editor.mainPart") : t("editor.partN", { n: n + 1 });
+    let next: Project;
+    try {
+      next = await api.faceToPart($state.snapshot(project) as Project, index, name, presets.pitch_deg, presets.eave_height, presets.overhang);
+    } catch (e) {
+      notifyError(e, "calc");
+      return;
+    }
+    // The project may have changed meanwhile (an AI save): apply only to the same face.
+    if (!project?.manual_faces || project.manual_faces[index] !== face) return;
+    project.manual_faces = next.manual_faces;
+    project.parts = next.parts;
     manualSel = null;
     selection = { part: n, edge: 0 };
     commit();
@@ -834,9 +840,32 @@
     commit();
   }
 
-  function setWindow(w: RoofWindow) {
+  async function setWindow(w: RoofWindow) {
     if (!project || openSel?.kind !== "window" || !project.windows) return;
-    project.windows[openSel.index] = w;
+    const index = openSel.index;
+    // A window larger than its face would make the face area negative
+    // (MATH-001): refused with the reason, as MCP set_openings refuses it.
+    const windows = project.windows.map((x, i) => (i === index ? w : x));
+    try {
+      const big = await api.checkWindows({ ...$state.snapshot(project), windows } as Project);
+      if (big) {
+        notify({
+          kind: "error",
+          code: "window_too_large",
+          title: t("opening.tooLarge.title"),
+          message: t("opening.tooLarge", { n: big.index + 1, a: num(big.area), f: num(big.face_area) }),
+        });
+        // Same values, new object: the fields show the stored size again.
+        const kept = project?.windows?.[index];
+        if (kept && project?.windows) project.windows[index] = { ...kept };
+        return;
+      }
+    } catch (e) {
+      notifyError(e, "calc");
+      return;
+    }
+    if (!project?.windows || project.windows.length !== windows.length) return;
+    project.windows[index] = w;
     commit();
   }
 
@@ -848,6 +877,9 @@
     openSel = null;
     commit();
   }
+
+  /** The agent is working on this job right now (the pill lights up only then). */
+  const aiHere = $derived(isFresh() && live.status?.project_id === id);
 
   // ---- Objects edited directly in the plan and the 3D view ------------
 
@@ -1334,10 +1366,13 @@
       {/if}
     </div>
     <div class="spacer"></div>
-    <button class="ai-pill" class:active={isFresh()} onclick={() => { dock = "ai"; dockOpen = true; }} title={t("ai.title")}>
+    <button class="ai-pill" class:active={aiHere} onclick={() => { dock = "ai"; dockOpen = true; }} title={t("ai.title")}>
       <span class="dot"></span>
-      {#if isFresh() && live.status}
-        <strong>{actorName(live.status.actor)}</strong><span class="msg">{live.status.message}</span>
+      {#if aiHere && live.status}
+        <strong>{actorName(live.status.actor)}</strong><span class="msg">{liveText(live.status)}</span>
+      {:else if isFresh() && live.status}
+        <!-- The agent works on another job (or the library): said, not lit up. -->
+        <strong>{actorName(live.status.actor)}</strong><span class="msg">{t("ai.elsewhere", { name: live.status.name ?? "" })}</span>
       {:else}
         <Icon name="sparkle" size={14} />{t("ai.short")}
       {/if}
@@ -1392,7 +1427,7 @@
               <strong>
                 {t("review.title", { who: actorName(pending.actor) })}{#if pendingList.length > 1}<span class="steps">{t("review.steps", { n: pendingList.length })}</span>{/if}
               </strong>
-              <span class="review-summary" title={pendingList.map((a) => a.summary).reverse().join(" → ")}>{pendingList.map((a) => a.summary).reverse().join(" → ")}</span>
+              <span class="review-summary" title={pendingList.map((a) => entrySummary(a.summary)).reverse().join(" → ")}>{pendingList.map((a) => entrySummary(a.summary)).reverse().join(" → ")}</span>
               {#if pendingChanges.length}
                 <span class="review-list">
                   {pendingChanges.slice(0, 4).map((c) => describeChange(c, project)).join(" · ")}{pendingChanges.length > 4 ? ` · ${t("review.more", { n: pendingChanges.length - 4 })}` : ""}

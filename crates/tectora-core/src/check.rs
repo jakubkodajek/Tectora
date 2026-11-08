@@ -32,6 +32,9 @@ pub const OVERLAP_TOL: f64 = 0.25;
 /// the area of the faces themselves above which the quantities are suspect
 /// (1 %; DACAD's sweep tolerances alone give up to about 0.5 %).
 pub const AREA_TOL: f64 = 0.01;
+/// Net area below which a face has lost more to its deductions than it
+/// has, m² (a little below zero, for rounding of the joined roofs' cuts).
+pub const OVERCUT_TOL: f64 = 0.01;
 
 /// What is wrong with a calculated roof.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -59,6 +62,21 @@ pub enum WarningKind {
     /// another part covers it (a building drawn inside or on top of
     /// another). The plan shows the walls with no roof. `value`: 0.
     Covered,
+    /// More is deducted from a roof face than the face has: its area is
+    /// negative, so the roof total is too small. A window larger than the
+    /// face it sits on does it (its `width × height` is deducted as DACAD
+    /// deducts it), and so does the cut of joined roofs where it exceeds
+    /// a face. `edges`: the walls of those faces (dormer faces name
+    /// none). `value`: the area missing below zero, summed, m².
+    CutExceedsFace,
+    /// A dormer sits on no roof face (placed beside the roof or moved off
+    /// it): it is left out of the calculation, so its area, lines and
+    /// material are not in the result. `dormer`: its index. `value`: 0.
+    DormerOffRoof,
+    /// The roof was not calculated by the standard calculation (DACAD's
+    /// core) but by Tectora's own fallback, so its figures may differ from
+    /// the standard result. `value`: 0.
+    NotCalculatedByCore,
 }
 
 /// One finding about a calculated roof.
@@ -71,6 +89,9 @@ pub struct RoofWarning {
     /// `kind` names them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub edges: Vec<usize>,
+    /// The dormer (index into `project.dormers`) the finding is about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dormer: Option<usize>,
 }
 
 impl RoofWarning {
@@ -80,6 +101,7 @@ impl RoofWarning {
             kind,
             value,
             edges: Vec::new(),
+            dormer: None,
         }
     }
 }
@@ -375,5 +397,25 @@ fn warnings(outline: &[Vec<Point2>], geo: &RoofGeometry, joined: bool) -> Vec<Ro
     if !joined && m.area > AREA_TOL {
         out.push(RoofWarning::new(WarningKind::AreaMismatch, m.area));
     }
+    if let Some(w) = over_cut(geo) {
+        out.push(w);
+    }
     out
+}
+
+/// The faces (dormer faces too) whose deductions exceed their gross area.
+pub fn over_cut(geo: &RoofGeometry) -> Option<RoofWarning> {
+    let mut missing = 0.0;
+    let mut edges = Vec::new();
+    for f in geo.faces.iter().filter(|f| f.area < -OVERCUT_TOL) {
+        missing -= f.area;
+        if f.edge != usize::MAX && !edges.contains(&f.edge) {
+            edges.push(f.edge);
+        }
+    }
+    edges.sort_unstable();
+    (missing > 0.0).then_some(RoofWarning {
+        edges,
+        ..RoofWarning::new(WarningKind::CutExceedsFace, missing)
+    })
 }

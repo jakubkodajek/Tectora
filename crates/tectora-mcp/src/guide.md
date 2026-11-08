@@ -44,6 +44,8 @@ corner at the start of the eave; `width` along the eave, `height` up the
 slope) and chimneys (convex plan `corners`). Like DACAD, a window deducts
 width × height and adds no lines; a chimney deducts its plan area / cos(pitch)
 and adds WV (downhill), WH (uphill) and WS (sloped sides) abutment lines.
+A window larger than what is left of its roof face is refused: check the
+units (cm read as m) and whether width and height are swapped.
 
 ## Everything the editor can do
 
@@ -60,7 +62,10 @@ The tools cover every operation of the Tectora editor:
 - Dormers: `add_dormer`, `update_dormer` (gable, pointed, hip, half_hip,
   shed, trapezoid, round); `get_project` lists them with these parameters.
 - Windows, chimneys (also as a rectangle) and roof openings: `set_openings`.
-- Lines and faces drawn by hand on the roof: `set_manual`.
+- Lines and faces drawn by hand on the roof: `set_manual`. A hand-drawn
+  face only adds its area: it is no building and calculates no roof. When a
+  footprint was traced as a face, `face_to_part` turns it into a building
+  in one change.
 - Single objects (dormers, chimneys, windows, openings, hand-drawn lines and
   faces): `transform_items` moves, rotates (about the object's centre) or
   copies them, as the user drags them in the plan or uses their right-click
@@ -128,6 +133,22 @@ lines of each material's faces as drawn (without the corrections around
 openings and the hand-drawn lines, which are only in the totals).
 `heights_m` gives each part's level eave heights, pitch-break heights and
 highest point.
+
+**Warnings and errors.** `calc` adds `warnings` to a part whose result needs
+a look; the result is still the standard calculation's, so never "fix" it by
+bending the input, tell the user. `outside_outline`, `overlapping_faces`
+and `area_mismatch`: the roof looks geometrically wrong; check pitches and
+overhangs. `merged_walls`: two walls in line are calculated as one, so the
+second wall's pitch (`edges`) is not used. `covered`: the part has no roof
+of its own because another part covers it; move or delete one of them.
+`cut_exceeds_face`: a face lost more than it has (a window larger than its
+face, or joined buildings), so the area is too small. `dormer_off_roof`: the
+dormer (`dormer`, index from 0) sits on no roof face and is left out of the
+result; move it onto the roof or delete it. `not_calculated_by_core`: the
+figures come from Tectora's fallback engine and may differ from the
+standard result. A part the calculation gave no roof for carries `error`
+(`kind`, `message`): say so instead of reporting 0 m². `joined_with` names
+the parts the calculation actually joined the part's roof with.
 
 ## Turning a technical drawing into a roof
 

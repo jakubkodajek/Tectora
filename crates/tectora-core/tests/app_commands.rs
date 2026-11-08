@@ -87,7 +87,7 @@ fn ui_params(src: &str, name: &str) -> Vec<String> {
             if ty.contains("State<") || ty.contains("AppHandle") || ty.contains("Window") {
                 return None;
             }
-            Some(camel(name.trim()))
+            Some(camel(name.trim().trim_start_matches("mut ").trim()))
         })
         .collect()
 }
@@ -143,8 +143,20 @@ fn bridge_arms(src: &str) -> BTreeMap<String, String> {
             .copied()
             .collect::<Vec<_>>()
             .join("\n");
+        // Arguments read before the `match` of the enclosing function (e.g.
+        // `store_command` reads `id` once) count for each of its arms.
+        let prologue: String = lines[..*i]
+            .iter()
+            .rposition(|l| l.trim_start().starts_with("fn ") || l.contains(" fn "))
+            .map(|f| {
+                let m = (f..*i).find(|&j| lines[j].contains("match ")).unwrap_or(*i);
+                lines[f..m].join("\n")
+            })
+            .unwrap_or_default();
         for n in names {
-            arms.entry(n.clone()).or_default().push_str(&body);
+            let arm = arms.entry(n.clone()).or_default();
+            arm.push_str(&prologue);
+            arm.push_str(&body);
         }
     }
     arms

@@ -14,7 +14,7 @@ setup: ## Install UI dependencies
 
 lint: ## rustfmt check, clippy, svelte-check
 	cargo fmt --all --check
-	cargo clippy --workspace --all-targets $(CARGO_EXCLUDE)
+	cargo clippy --workspace --all-targets $(CARGO_EXCLUDE) -- -D warnings
 	cd app && npm run check
 
 test: ## Rust tests (core fixtures, analytic, properties, schema) and UI unit tests

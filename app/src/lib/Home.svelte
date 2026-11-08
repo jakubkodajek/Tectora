@@ -11,7 +11,7 @@
   import { api } from "./api";
   import { m2, relativeTime } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
-  import { actorName, isFresh, live } from "./live.svelte";
+  import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import type { Action } from "./errors";
   import { notifyError } from "./notify.svelte";
   import UpdateBanner from "./UpdateBanner.svelte";
@@ -205,7 +205,7 @@
     <div class="actions">
       <button class="ai-btn" class:active={isFresh()} onclick={onconnect}>
         <span class="dot"></span>
-        {#if isFresh() && live.status}{actorName(live.status.actor)}: {live.status.message}{:else}{t("ai.connect")}{/if}
+        {#if isFresh() && live.status}{actorName(live.status.actor)}: {liveText(live.status)}{:else}{t("ai.connect")}{/if}
       </button>
       <LanguagePicker />
       <button class="icon-btn" onclick={onsettings} title={t("settings.button")} aria-label={t("settings.button")}><Icon name="gear" size={18} /></button>
@@ -331,7 +331,7 @@
                   <td class="mod c-mod">
                     {relativeTime(p.modified_ms)}
                     {#if p.last_activity && isAi(p.last_activity.actor)}
-                      <span class="ai-tag" title={p.last_activity.summary}><Icon name="sparkle" size={11} />{actorName(p.last_activity.actor)}</span>
+                      <span class="ai-tag" title={entrySummary(p.last_activity.summary)}><Icon name="sparkle" size={11} />{actorName(p.last_activity.actor)}</span>
                     {/if}
                   </td>
                 </tr>
@@ -370,7 +370,7 @@
         {#if selected.last_activity}
           <div class="last" class:ai={isAi(selected.last_activity.actor)}>
             <span>{isAi(selected.last_activity.actor) ? actorName(selected.last_activity.actor) : t("ai.you")} · {relativeTime(selected.last_activity.ts_ms)}</span>
-            {selected.last_activity.summary}
+            {entrySummary(selected.last_activity.summary)}
           </div>
         {/if}
         <div class="detail-actions">

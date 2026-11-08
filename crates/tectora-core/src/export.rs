@@ -192,6 +192,20 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
         }
         let own = &lines[first..];
         let mut part_faces = Vec::new();
+        // Faces are named after their wall (`Zpart.wall`, the walls counted
+        // over all parts). Dormer faces belong to no wall (`edge` is
+        // `usize::MAX`): they are numbered on after the part's walls.
+        let walls = project.parts.get(pi).map_or(0, |p| p.edges.len());
+        let mut extra = 0usize;
+        let mut face_no = |edge: usize| -> usize {
+            let own = if edge < walls {
+                edge + 1
+            } else {
+                extra += 1;
+                walls.saturating_add(extra)
+            };
+            wall_offset.saturating_add(own)
+        };
         for f in &geo.faces {
             let zs = f.polygon.iter().map(|p| p[2]);
             let (lo, hi) = zs.fold((f64::MAX, f64::MIN), |(lo, hi), z| (lo.min(z), hi.max(z)));
@@ -212,7 +226,7 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
                 }
             }
             part_faces.push(ListFace {
-                name: format!("Z{}.{:02}", pi + 1, wall_offset + f.edge + 1),
+                name: format!("Z{}.{:02}", pi + 1, face_no(f.edge)),
                 pitch: f.pitch_deg,
                 area: f.area + f.deducted,
                 rafter,
@@ -223,7 +237,7 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
         }
         for c in &geo.clad_faces {
             part_faces.push(ListFace {
-                name: format!("Z{}.{:02}", pi + 1, wall_offset + c.edge + 1),
+                name: format!("Z{}.{:02}", pi + 1, face_no(c.edge)),
                 pitch: 90.0,
                 area: c.area,
                 rafter: None,
@@ -233,7 +247,7 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
             });
         }
         faces.push(part_faces);
-        wall_offset += project.parts.get(pi).map_or(0, |p| p.edges.len());
+        wall_offset = wall_offset.saturating_add(walls);
     }
     for l in project.manual_lines.iter().filter(|l| l.counted()) {
         lines.push(ListLine {
@@ -1232,6 +1246,55 @@ mod tests {
         assert!(text.contains("DN(90,00°)"), "{text}");
         // Two faces of 14 × 4.507 m.
         assert_eq!(text.matches("33,70° 63,10").count(), 2, "{text}");
+    }
+
+    /// A 12 × 8 m gable roof with a 2 m gable dormer on its front face.
+    fn gable_with_dormer() -> Project {
+        use crate::edit::dormers::{DormerKind, build_dormer, default_params};
+        let mut p = Project::new("dormer");
+        p.parts.push(standard_roof(
+            StandardRoof::Gable,
+            12.0,
+            8.0,
+            40.0,
+            3.0,
+            0.5,
+        ));
+        let d = default_params(
+            DormerKind::Gable,
+            crate::geom::Point2::new(5.0, 1.0),
+            0.0,
+            5.0,
+        );
+        p.dormers.push(build_dormer(&d));
+        p
+    }
+
+    #[test]
+    fn the_list_names_dormer_faces_after_the_walls() {
+        let p = gable_with_dormer();
+        let geos = crate::openings::generate_project(&p);
+        assert!(
+            geos[0].faces.iter().any(|f| f.edge == usize::MAX),
+            "the dormer is cut into the roof"
+        );
+        // Used to overflow (`edge` of a dormer face is usize::MAX): a panic
+        // in debug builds, every dormer face named Z1.00 in release.
+        let text = dacad_list(&p, &ListOptions::new("", "08.11.2026 13:02"));
+        assert!(!text.contains("Z1.00"), "{text}");
+        let names: Vec<&str> = text
+            .lines()
+            .filter(|l| l.starts_with("Z1."))
+            .map(|l| l.split(' ').next().unwrap())
+            .collect();
+        let mut unique = names.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "{names:?}");
+        // Four walls, so the dormer faces follow as Z1.05 and on.
+        assert!(names.contains(&"Z1.05"), "{names:?}");
+        // The plan sheet takes the dormer too.
+        assert!(!plan_sheet(&p, &SheetInfo::default()).is_empty());
     }
 
     #[test]

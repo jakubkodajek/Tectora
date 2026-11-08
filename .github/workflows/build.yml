@@ -37,6 +37,8 @@ jobs:
           cache-dependency-path: app/package-lock.json
 
       - uses: ./.github/actions/rust
+        with:
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
 
@@ -59,6 +61,10 @@ jobs:
 
       - name: Check Rust formatting
         run: cargo fmt --all --check
+
+      # New lint warnings fail the build, as in `make lint`.
+      - name: Lint Rust
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test the Rust workspace
         run: cargo test --workspace
