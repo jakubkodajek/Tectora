@@ -55,7 +55,7 @@ programs; Codex in the ChatGPT desktop app can.
 | `duplicate_project`, `delete_project`, `list_examples` | Library; `duplicate_project` with `job` starts a new job from a past roof |
 | `list_files`, `attach_file`, `remove_file` | Files attached to a job (drawings) |
 | `export_job`, `import_job`, `get_schema` | `.tectorajob` bundles, file schema |
-| `export_list`, `export_plan` | The roof for the offer: the text list the Excel price sheet reads (the Export dialog's copy button) and the roof sheet with lengths, areas and pitches as PDF or SVG in the library's `exports` folder |
+| `export_list`, `export_plan` | The roof for the offer: the text list the Excel price sheet reads (the Export dialog's copy button; `full` for every section and line) and the roof sheet with lengths, areas and pitches as PDF or SVG in the library's `exports` folder |
 | `get_settings`, `update_settings` | App settings shared with the Settings screen: jobs folder, drawings inbox folder, language, theme, defaults for new roofs, follow mode |
 | `list_drawings`, `drawing_info`, `view_drawing`, `drawing_dimensions`, `trace_outline`, `drawing_lines`, `measure_drawing` | Technical drawings (PDF in the drawings inbox or attached to a job): page size and kind, rendered pages and crops with a sheet-mm grid, every dimension chain with its drawn length, an outline snapped to the drawn corners and returned in metres, the exact vector lines and the text-layer labels (filtered, e.g. every height label), measuring between two points against a dimension the AI read, and the calculated roof drawn over the plan (`view_drawing` `overlay`) to check it |
 

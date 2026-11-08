@@ -85,3 +85,17 @@ sessions that use it know where things stand.
   one hole entry per face, DIN Norm group only for one material.
 - Next: Jakub checks the pasted text in the real Excel sheet.
 - Blockers / open questions: none.
+## 2026-11-08 · Price-sheet text = TERRAN's DACAD list
+
+- Done: the default text list is now byte-identical to the list TERRAN's
+  DACAD wrote for a real job (L-shaped hip roof): only `STREŠNÉ PLOCHY`,
+  `PLOCHY` (with the wall area `Stena : 1`, from the wall stage) and
+  `LÍNIE`, totals without members; lengths and areas requantized through
+  `%10.5f` like DACAD's SOL (32,313 m, not 32,314 m). The old full list
+  pushed the faces past row 115, beyond what the Excel sheet sums; it is
+  now `ListOptions::full` / MCP `export_list full` / "Detailed list" box.
+  Checked in TERRAN's `.xls` under LibreOffice (sk locale): all 6 faces and
+  the ridge/hip/valley/eave totals read.
+- Open: `Stena : 1` for several roofs and the head line (DACAD writes the
+  .dad path there; the sheet reads Partner/Realizátor/Koncový from it) are
+  not verified against DACAD.

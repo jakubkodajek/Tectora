@@ -110,6 +110,25 @@ fn roofs(project: &Project, hosts: &[Option<DormerHost>]) -> Result<Vec<RoofGeom
     }
 }
 
+/// The area of the building's walls, from the ground up to the roof, as
+/// DACAD's wall stage builds the wall polygons (its list shows the total
+/// as `Stena : 1`). `project` is prepared as for [`generate`].
+pub fn wall_area(project: &Project) -> Result<f64, Failure> {
+    if project.parts.is_empty() {
+        return Err(Failure::Ours("no roof".into()));
+    }
+    let hosts = dormer_hosts(project)?;
+    let (text, _) = write_rd2_with(project, &hosts);
+    let flags = if multiroof::applies(project) {
+        FLAGS_INT
+    } else {
+        FLAGS_SOL
+    };
+    let sol = parse_sol(&run_core(&text, flags)?)?;
+    let walls = wall_stage(&sol).map_err(|e| Failure::Ours(e.to_string()))?;
+    Ok(walls.areas.iter().sum())
+}
+
 /// The core's notices as warnings of the parts they concern: the walls in
 /// line it calculated as one, so that one wall's pitch or pitch breaks
 /// are not used. Dormer walls are left out (a dormer is entered as a

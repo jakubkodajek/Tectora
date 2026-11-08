@@ -11,10 +11,20 @@
 //! 10 × 8 m hip roof and its Helpsample.dad (2026-11-08, see
 //! `tests` below).
 //!
-//! What the list does not have yet: DACAD's wall areas (`Stena : n`, its
-//! "calculate walls" option), the dormer roofs as their own `Dach-Nummer`,
-//! and the per-hole split of deductions (one `Zn.ww:1` entry per face sums
-//! the windows and chimneys of that face). The order of the members inside a
+//! By default the list has the three sections TERRAN's DACAD writes for the
+//! price sheet, byte for byte as in a list from TERRAN (2026-11-08, test
+//! `the_default_list_is_terrans_dacad_list`): the faces with their rafter
+//! length (`STREŠNÉ PLOCHY`), the wall and material totals (`PLOCHY`,
+//! `Stena : 1` first) and the line totals (`LÍNIE`), no group members. The
+//! sheet reads face areas only from rows 73-115 of its paste column, so a
+//! long list would push the faces out of its reach.
+//! [`ListOptions::full`] writes every section of DACAD's dialog with the
+//! members of each group, as DACAD's default dialog does.
+//!
+//! What the full list does not have yet: the walls one by one under
+//! `Stena : 1`, the dormer roofs as their own `Dach-Nummer`, and the
+//! per-hole split of deductions (one `Zn.ww:1` entry per face sums the
+//! windows and chimneys of that face). The order of the members inside a
 //! group differs from DACAD's (it follows DACAD's internal tables); names,
 //! values and group totals do not.
 
@@ -38,6 +48,9 @@ pub struct ListOptions {
     /// Decimals of lengths and areas (DACAD's precision setting; TERRAN
     /// uses millimetres, angles always have two).
     pub decimals: usize,
+    /// Every section with the members of each group (DACAD's default
+    /// dialog) instead of the three sections TERRAN's price sheet reads.
+    pub full: bool,
 }
 
 impl ListOptions {
@@ -46,7 +59,14 @@ impl ListOptions {
             title: title.into(),
             stamp: stamp.into(),
             decimals: 3,
+            full: false,
         }
+    }
+
+    /// The full list (see [`ListOptions::full`]).
+    pub fn full(mut self, full: bool) -> Self {
+        self.full = full;
+        self
     }
 }
 
@@ -117,6 +137,17 @@ pub fn num(v: f64, decimals: usize) -> String {
 /// "˛". TERRAN's price sheet searches for this glyph.
 const M2: &str = "m\u{2db}";
 
+/// A length or area as DACAD's list takes it: from the SOL, where the core
+/// printed it with `%10.5f`, read back as a float. The totals are sums of
+/// these (5 hips of 6.4627008 m give 32,313 m in TERRAN's list, not the
+/// 32,314 m of the exact sum).
+fn sol_value(v: f64) -> f64 {
+    if !v.is_finite() || v.abs() > 1e9 {
+        return v;
+    }
+    f64::from(crate::coresol::num::requantize(v as f32))
+}
+
 struct ListLine {
     name: String,
     code: String,
@@ -182,7 +213,7 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
                 name: name(&code),
                 code,
                 pitch: line_pitch(l.a, l.b),
-                length: l.length(),
+                length: sol_value(l.length()),
                 a: l.a,
                 b: l.b,
             });
@@ -214,7 +245,7 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
             part_faces.push(ListFace {
                 name: format!("Z{}.{:02}", pi + 1, wall_offset + f.edge + 1),
                 pitch: f.pitch_deg,
-                area: f.area + f.deducted,
+                area: sol_value(f.area + f.deducted),
                 rafter,
                 material: f.material,
                 lines: bounding,
@@ -240,7 +271,7 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
             name: name(&l.code),
             code: l.code.clone(),
             pitch: line_pitch(l.a, l.b),
-            length: l.length(),
+            length: sol_value(l.length()),
             a: l.a,
             b: l.b,
         });
@@ -308,96 +339,98 @@ pub fn dacad_list(project: &Project, opts: &ListOptions) -> String {
         .max(1);
     let mut out = format!("{title}{}{}", " ".repeat(pad), opts.stamp);
 
-    section(&mut out, "DÄCHER/GAUBEN");
-    for i in 0..project.parts.len() {
-        let _ = writeln!(out, "Dach-Nummer {}: normal", i + 1);
-    }
+    if opts.full {
+        section(&mut out, "DÄCHER/GAUBEN");
+        for i in 0..project.parts.len() {
+            let _ = writeln!(out, "Dach-Nummer {}: normal", i + 1);
+        }
 
-    section(&mut out, "WAND/DACH-DEFINITIONEN");
-    let mut wall = 0usize;
-    for (pi, part) in project.parts.iter().enumerate() {
-        for e in &part.edges {
-            wall += 1;
-            let def = format!("Flächendef.{}.{:02}", pi + 1, wall);
-            let _ = writeln!(
-                out,
-                "    {def} V({})   H({})   DN({})",
-                len(e.overhang),
-                len(e.eave_height),
-                deg(e.pitch_deg)
-            );
-            let knicks = e
-                .half_hip
-                .iter()
-                .map(|h| (h.height, h.pitch_deg))
-                .chain(e.breaks.iter().map(|b| (b.height, b.pitch_deg)));
-            for (h, p) in knicks {
-                let _ = writeln!(out, "    {def}              H({})   DN({})", len(h), deg(p));
+        section(&mut out, "WAND/DACH-DEFINITIONEN");
+        let mut wall = 0usize;
+        for (pi, part) in project.parts.iter().enumerate() {
+            for e in &part.edges {
+                wall += 1;
+                let def = format!("Flächendef.{}.{:02}", pi + 1, wall);
+                let _ = writeln!(
+                    out,
+                    "    {def} V({})   H({})   DN({})",
+                    len(e.overhang),
+                    len(e.eave_height),
+                    deg(e.pitch_deg)
+                );
+                let knicks = e
+                    .half_hip
+                    .iter()
+                    .map(|h| (h.height, h.pitch_deg))
+                    .chain(e.breaks.iter().map(|b| (b.height, b.pitch_deg)));
+                for (h, p) in knicks {
+                    let _ = writeln!(out, "    {def}              H({})   DN({})", len(h), deg(p));
+                }
             }
         }
-    }
 
-    // Roof windows, with the face they sit in (DACAD: Fenster<roof>.<wall>/<n>).
-    if !project.windows.is_empty() {
-        section(&mut out, "STREŠNÉ OKNÁ");
-        let mut per_face: BTreeMap<String, usize> = BTreeMap::new();
-        for (i, w) in project.windows.iter().enumerate() {
-            let host = geos.iter().zip(&c.faces).find_map(|(g, fs)| {
-                g.faces
-                    .iter()
-                    .zip(fs)
-                    .find(|(f, _)| inside(w.x, w.y, &f.polygon))
-                    .map(|(_, lf)| lf.name.trim_start_matches('Z').to_string())
-            });
-            let label = match host {
-                Some(h) => {
-                    let n = per_face.entry(h.clone()).or_default();
-                    *n += 1;
-                    format!("Fenster{h}/{n}")
-                }
-                None => format!("Fenster{}", i + 1),
-            };
-            let _ = writeln!(
-                out,
-                " {label}   Breite = {}   Höhe = {}   Material = {}",
-                len(w.width),
-                len(w.height),
-                material_group(project, 0)
-            );
+        // Roof windows, with the face they sit in (DACAD: Fenster<roof>.<wall>/<n>).
+        if !project.windows.is_empty() {
+            section(&mut out, "STREŠNÉ OKNÁ");
+            let mut per_face: BTreeMap<String, usize> = BTreeMap::new();
+            for (i, w) in project.windows.iter().enumerate() {
+                let host = geos.iter().zip(&c.faces).find_map(|(g, fs)| {
+                    g.faces
+                        .iter()
+                        .zip(fs)
+                        .find(|(f, _)| inside(w.x, w.y, &f.polygon))
+                        .map(|(_, lf)| lf.name.trim_start_matches('Z').to_string())
+                });
+                let label = match host {
+                    Some(h) => {
+                        let n = per_face.entry(h.clone()).or_default();
+                        *n += 1;
+                        format!("Fenster{h}/{n}")
+                    }
+                    None => format!("Fenster{}", i + 1),
+                };
+                let _ = writeln!(
+                    out,
+                    " {label}   Breite = {}   Höhe = {}   Material = {}",
+                    len(w.width),
+                    len(w.height),
+                    material_group(project, 0)
+                );
+            }
         }
-    }
 
-    if !project.chimneys.is_empty() || !project.roof_openings.is_empty() {
-        section(&mut out, "KOMÍN / OTVORY");
-        for (i, ch) in project.chimneys.iter().enumerate() {
-            let _ = writeln!(
-                out,
-                " Schornstein{}    Výška komína = {}",
-                i + 1,
-                len(ch.height)
-            );
+        if !project.chimneys.is_empty() || !project.roof_openings.is_empty() {
+            section(&mut out, "KOMÍN / OTVORY");
+            for (i, ch) in project.chimneys.iter().enumerate() {
+                let _ = writeln!(
+                    out,
+                    " Schornstein{}    Výška komína = {}",
+                    i + 1,
+                    len(ch.height)
+                );
+            }
+            for i in 0..project.roof_openings.len() {
+                let _ = writeln!(out, " Öffnung{}", i + 1);
+            }
         }
-        for i in 0..project.roof_openings.len() {
-            let _ = writeln!(out, " Öffnung{}", i + 1);
-        }
-    }
 
-    // Roof lines, sorted by name, a separator between line types.
-    section(&mut out, "DACHLINIEN");
-    let mut order: Vec<usize> = (0..c.lines.len()).collect();
-    order.sort_by(|&a, &b| c.lines[a].name.cmp(&c.lines[b].name));
-    let mut last: Option<&str> = None;
-    for &i in &order {
-        let l = &c.lines[i];
-        if last.is_some_and(|code| code != l.code) {
-            out.push_str(DASHES);
-            out.push('\n');
+        // Roof lines, sorted by name, a separator between line types.
+        section(&mut out, "DACHLINIEN");
+        let mut order: Vec<usize> = (0..c.lines.len()).collect();
+        order.sort_by(|&a, &b| c.lines[a].name.cmp(&c.lines[b].name));
+        let mut last: Option<&str> = None;
+        for &i in &order {
+            let l = &c.lines[i];
+            if last.is_some_and(|code| code != l.code) {
+                out.push_str(DASHES);
+                out.push('\n');
+            }
+            last = Some(&l.code);
+            let _ = writeln!(out, "{} {} {}", l.name, deg(l.pitch), len(l.length));
         }
-        last = Some(&l.code);
-        let _ = writeln!(out, "{} {} {}", l.name, deg(l.pitch), len(l.length));
+        out.push_str(DASHES);
+        out.push('\n');
     }
-    out.push_str(DASHES);
-    out.push('\n');
 
     // Faces with their rafter length and bounding lines.
     section(&mut out, "STREŠNÉ PLOCHY");
@@ -407,7 +440,7 @@ pub fn dacad_list(project: &Project, opts: &ListOptions) -> String {
             let _ = write!(out, " Dĺžka krokvy={}", len(r));
         }
         out.push('\n');
-        for &i in &f.lines {
+        for &i in f.lines.iter().filter(|_| opts.full) {
             let l = &c.lines[i];
             let _ = writeln!(out, "{} {} {}  ", l.name, deg(l.pitch), len(l.length));
         }
@@ -427,8 +460,20 @@ pub fn dacad_list(project: &Project, opts: &ListOptions) -> String {
     out.push_str(DASHES);
     out.push('\n');
 
-    // Area groups per material, then the norm group where the norm differs.
+    // The wall area, the area groups per material, then the norm group
+    // where the norm differs. Only the full list closes each group with a
+    // separator, after its members.
     section(&mut out, "PLOCHY");
+    let close = |out: &mut String| {
+        if opts.full {
+            out.push_str(DASHES);
+            out.push('\n');
+        }
+    };
+    if let Some(w) = crate::openings::wall_area(project).filter(|w| *w > 1e-9) {
+        let _ = writeln!(out, "Stena : 1 {}", area(w));
+        close(&mut out);
+    }
     let mut by_material: BTreeMap<u8, Vec<&ListFace>> = BTreeMap::new();
     for f in c.faces.iter().flatten().chain(&c.manual_faces) {
         if f.material > 0 {
@@ -440,23 +485,21 @@ pub fn dacad_list(project: &Project, opts: &ListOptions) -> String {
         let name = material_group(project, *m);
         let total: f64 = fs.iter().map(|f| f.area - f.holes).sum();
         let _ = writeln!(out, "{name} {}", area(total));
-        for f in fs.iter().rev() {
+        for f in fs.iter().rev().filter(|_| opts.full) {
             if f.holes > 1e-9 {
                 let _ = writeln!(out, "    {}:1 {}", f.name, area(-f.holes));
             }
             let _ = writeln!(out, "    {} {}", f.name, area(f.area));
         }
-        out.push_str(DASHES);
-        out.push('\n');
+        close(&mut out);
         if single {
             let norm = norm_totals(project, Norm::Din).roof_area;
             if (norm - total).abs() >= 0.5 * 10f64.powi(-(d as i32)) {
                 let _ = writeln!(out, "{name}-Norm {}", area(norm));
-                for f in fs.iter().rev() {
+                for f in fs.iter().rev().filter(|_| opts.full) {
                     let _ = writeln!(out, "    {} {}", f.name, area(f.area));
                 }
-                out.push_str(DASHES);
-                out.push('\n');
+                close(&mut out);
             }
         }
     }
@@ -475,11 +518,10 @@ pub fn dacad_list(project: &Project, opts: &ListOptions) -> String {
         let total: f64 = members.iter().map(|&i| c.lines[i].length).sum::<f64>()
             - c.minus.get(code).copied().unwrap_or(0.0);
         let _ = writeln!(out, "{name} {}", len(total));
-        for &i in members {
+        for &i in members.iter().filter(|_| opts.full) {
             let _ = writeln!(out, "    {} {}", c.lines[i].name, len(c.lines[i].length));
         }
-        out.push_str(DASHES);
-        out.push('\n');
+        close(&mut out);
     }
     out
 }
@@ -1160,9 +1202,171 @@ mod tests {
         p
     }
 
+    /// The L-shaped hip roof of a TERRAN job, two 15 m wings 8 m deep:
+    /// pitch 38°, eave height 3 m, no overhang, tiles.
+    fn terran_l_roof() -> Project {
+        let mut p = Project::new("L");
+        let mut part = standard_roof(StandardRoof::Hip, 15.0, 8.0, 38.0, 3.0, 0.0);
+        let e = part.edges[0].clone();
+        part.edges = [
+            (0.0, 0.0),
+            (15.0, 0.0),
+            (15.0, 8.0),
+            (8.0, 8.0),
+            (8.0, 15.0),
+            (0.0, 15.0),
+        ]
+        .iter()
+        .map(|&(x, y)| crate::model::EdgeDef {
+            start: crate::geom::Point2::new(x, y),
+            ..e.clone()
+        })
+        .collect();
+        p.parts.push(part);
+        p
+    }
+
+    /// The list TERRAN's DACAD wrote for [`terran_l_roof`] (sent by TERRAN
+    /// on 2026-11-08, from the first separator on).
+    const TERRAN_L_LIST: &str = "\
+------------------------------------------------------------
+STREŠNÉ PLOCHY
+------------------------------------------------------------
+Z1.01 38,00° 55,837m˛ Dĺžka krokvy=5,076m
+Z1.02 38,00° 20,304m˛ Dĺžka krokvy=5,076m
+Z1.03 38,00° 35,533m˛ Dĺžka krokvy=5,076m
+Z1.04 38,00° 35,533m˛ Dĺžka krokvy=5,076m
+Z1.05 38,00° 20,304m˛ Dĺžka krokvy=5,076m
+Z1.06 38,00° 55,837m˛ Dĺžka krokvy=5,076m
+------------------------------------------------------------
+
+
+------------------------------------------------------------
+PLOCHY
+------------------------------------------------------------
+Stena : 1 180,001m˛
+Škridla -  223,347m˛
+
+
+------------------------------------------------------------
+LÍNIE
+------------------------------------------------------------
+1 Hrebeň - 14,000m
+2 Nárožie - 32,313m
+3 Úžlabie - 6,463m
+6 Odkvap - 60,000m
+";
+
+    #[test]
+    fn the_default_list_is_terrans_dacad_list() {
+        let text = dacad_list(&terran_l_roof(), &ListOptions::new("L", "08.11.2026 16:26"));
+        let head = format!("L{}08.11.2026 16:26\n\n", " ".repeat(43));
+        assert_eq!(text, format!("{head}{TERRAN_L_LIST}"));
+    }
+
+    /// What TERRAN's price sheet (`__VYPOCTY_<date> CZ.xls`, sheet DATA)
+    /// reads from a list pasted at DH69: its per-row formulas, with Excel's
+    /// 1-based character positions. Face areas by row (only rows 73-115
+    /// count), line totals by word (`MID(DH, FIND(" ")+1, FIND("-")-4)`, the
+    /// value `MID(DH, FIND("-")+2, LEN(DH)-FIND("-")-2)`), the tile total
+    /// by its first word.
+    struct Sheet {
+        faces: Vec<(usize, f64)>,
+        lines: Vec<(String, f64)>,
+        tiles: Option<String>,
+    }
+
+    fn sheet(list: &str) -> Sheet {
+        let num = |t: &str| t.trim().replace(',', ".").parse::<f64>().ok();
+        let mut out = Sheet {
+            faces: Vec::new(),
+            lines: Vec::new(),
+            tiles: None,
+        };
+        for (i, row) in list.split('\n').enumerate() {
+            let c: Vec<char> = row.chars().collect();
+            let find = |pat: &str| row.find(pat).map(|b| row[..b].chars().count() + 1);
+            let mid =
+                |start: usize, n: usize| -> String { c.iter().skip(start - 1).take(n).collect() };
+            if let (Some(deg), Some(m2)) = (find("°"), find("m\u{2db}"))
+                && !row.starts_with(['k', 'K'])
+                && m2 > deg + 2
+                && let Some(a) = num(&mid(deg + 2, m2 - deg - 2))
+            {
+                out.faces.push((69 + i, a));
+            }
+            if let (Some(sp), Some(dash)) = (find(" "), find("-"))
+                && dash >= 4
+                && !row.starts_with('-')
+                && let Some(v) = num(&mid(dash + 2, c.len().saturating_sub(dash + 2)))
+            {
+                out.lines.push((mid(sp + 1, dash - 4), v));
+            }
+            if row.starts_with('Š') {
+                out.tiles = find("-").map(|d| mid(1, d - 2));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_price_sheet_reads_every_face_and_total() {
+        let text = dacad_list(&terran_l_roof(), &ListOptions::new("L", "08.11.2026 16:26"));
+        let s = sheet(&text);
+        assert_eq!(s.faces.len(), 6, "{text}");
+        assert!(
+            s.faces.iter().all(|(row, _)| (73..=115).contains(row)),
+            "{:?}",
+            s.faces
+        );
+        let sum: f64 = s.faces.iter().map(|f| f.1).sum();
+        assert!((sum - 223.348).abs() < 1e-9, "{sum}");
+        for (word, v) in [
+            ("Hrebeň", 14.0),
+            ("Nárožie", 32.313),
+            ("Úžlabie", 6.463),
+            ("Odkvap", 60.0),
+        ] {
+            let got = s.lines.iter().find(|(w, _)| w == word).map(|l| l.1);
+            assert_eq!(got, Some(v), "{word} in {:?}", s.lines);
+        }
+        assert_eq!(s.tiles.as_deref(), Some("Škridla"));
+        // The detailed list pushes the faces past row 115, where the sheet
+        // no longer reads them: that is why it is not the default.
+        let full = dacad_list(&terran_l_roof(), &ListOptions::new("L", "x").full(true));
+        assert!(sheet(&full).faces.iter().any(|(row, _)| *row > 115));
+    }
+
+    #[test]
+    fn the_list_names_every_line_type_as_the_sheet_looks_it_up() {
+        // The words of the sheet's VLOOKUPs (cells AD60-AD67).
+        let words = [
+            "Hrebeň",
+            "Nárožie",
+            "Úžlabie",
+            "Krajné ľavé",
+            "Krajné pravé",
+            "Odkvap",
+            "Pult",
+        ];
+        for code in ["F", "G", "K", "OL", "OR", "T", "P"] {
+            let row = format!("{} 1,000m", line_group(code));
+            let s = sheet(&row);
+            assert!(
+                words.contains(&s.lines[0].0.as_str()),
+                "{code}: {:?}",
+                s.lines
+            );
+            assert_eq!(s.lines[0].1, 1.0);
+        }
+    }
+
     #[test]
     fn the_list_has_dacads_lines_for_a_hip_roof() {
-        let text = dacad_list(&dacad_hip(), &ListOptions::new("", "08.11.2026 13:02"));
+        let text = dacad_list(
+            &dacad_hip(),
+            &ListOptions::new("", "08.11.2026 13:02").full(true),
+        );
         let lines: Vec<&str> = text.lines().collect();
         // Head: padded to 60 characters.
         assert_eq!(lines[0].chars().count(), 60, "{:?}", lines[0]);
@@ -1225,7 +1429,10 @@ mod tests {
             3.0,
             0.0,
         ));
-        let text = dacad_list(&p, &ListOptions::new("gable.tectora", "01.01.2027 08:00"));
+        let text = dacad_list(
+            &p,
+            &ListOptions::new("gable.tectora", "01.01.2027 08:00").full(true),
+        );
         assert!(text.contains("\n4 Krajné ľavé - "), "{text}");
         assert!(text.contains("\n5 Krajné pravé - "), "{text}");
         // Gable walls are listed with their 90° definition.
@@ -1289,7 +1496,9 @@ mod tests {
     fn an_empty_project_still_exports() {
         let p = Project::new("empty");
         let text = dacad_list(&p, &ListOptions::new("", ""));
-        assert!(text.contains("DACHLINIEN"));
+        assert!(text.contains("LÍNIE") && !text.contains("Stena"));
+        let full = dacad_list(&p, &ListOptions::new("", "").full(true));
+        assert!(full.contains("DACHLINIEN"));
         let shapes = plan_sheet(&p, &SheetInfo::default());
         assert!(!sheet_pdf(&shapes, "").is_empty());
     }

@@ -41,10 +41,44 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     if project.flat_roof {
         return crate::flat::generate_project(project);
     }
+    let (clean, slots) = cleaned(project);
+    let mut geos = generate_valid(&clean);
+    let warnings = crate::check::check(&clean.parts, &geos);
+    for (geo, w) in geos.iter_mut().zip(warnings) {
+        geo.warnings.extend(w);
+    }
+    slots
+        .into_iter()
+        .map(|slot| match slot {
+            None => RoofGeometry::default(),
+            Some((i, reversed)) => {
+                let mut g = std::mem::take(&mut geos[i]);
+                if let Some(n) = reversed {
+                    // Dormer faces (edge usize::MAX) belong to no edge.
+                    for f in g.faces.iter_mut().filter(|f| f.edge < n) {
+                        f.edge = n - 1 - f.edge;
+                    }
+                    for e in g.warnings.iter_mut().flat_map(|w| w.edges.iter_mut()) {
+                        *e = n - 1 - *e;
+                    }
+                }
+                g
+            }
+        })
+        .collect()
+}
+
+/// Index in the cleaned project of each part, and its edge count when it
+/// was reversed; `None` for a part that is not valid on its own.
+type Slots = Vec<Option<(usize, Option<usize>)>>;
+
+/// The project without what cannot be calculated: invalid parts, dormers,
+/// chimneys, openings and windows with bad numbers; parts counter-clockwise.
+fn cleaned(project: &Project) -> (Project, Slots) {
     let mut clean = project.clone();
     clean.parts.clear();
     // For each part: its index in `clean` and, if reversed, its edge count.
-    let mut slots: Vec<Option<(usize, Option<usize>)>> = Vec::new();
+    let mut slots: Slots = Vec::new();
     for part in &project.parts {
         let mut alone = Project::new("");
         alone.parts.push(part.clone());
@@ -73,30 +107,17 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
             && w.width > 0.0
             && w.height > 0.0
     });
-    let mut geos = generate_valid(&clean);
-    let warnings = crate::check::check(&clean.parts, &geos);
-    for (geo, w) in geos.iter_mut().zip(warnings) {
-        geo.warnings.extend(w);
+    (clean, slots)
+}
+
+/// The wall area of the project (DACAD's `Stena` group), `None` for a flat
+/// roof or where the core does not calculate the roof.
+pub fn wall_area(project: &Project) -> Option<f64> {
+    if project.flat_roof {
+        return None;
     }
-    slots
-        .into_iter()
-        .map(|slot| match slot {
-            None => RoofGeometry::default(),
-            Some((i, reversed)) => {
-                let mut g = std::mem::take(&mut geos[i]);
-                if let Some(n) = reversed {
-                    // Dormer faces (edge usize::MAX) belong to no edge.
-                    for f in g.faces.iter_mut().filter(|f| f.edge < n) {
-                        f.edge = n - 1 - f.edge;
-                    }
-                    for e in g.warnings.iter_mut().flat_map(|w| w.edges.iter_mut()) {
-                        *e = n - 1 - *e;
-                    }
-                }
-                g
-            }
-        })
-        .collect()
+    let (clean, _) = cleaned(project);
+    crate::engine::wall_area(&clean).ok()
 }
 
 fn generate_valid(project: &Project) -> Vec<RoofGeometry> {

@@ -464,10 +464,11 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "export_list",
-            "description": "The roof as the text list TERRAN's Excel price sheet reads (the text the user copies with the copy button in the app's Export dialog): roofs, wall definitions, windows, chimneys and openings, roof lines with pitch and length, faces with area and rafter length, and totals by material and line type. Read-only. Give it to the user verbatim; do not translate or reformat it, the price sheet parses it.",
+            "description": "The roof as the text list TERRAN's Excel price sheet reads (the text the user copies with the copy button in the app's Export dialog): faces with pitch, area and rafter length, wall area and area by material, and line lengths by line type. Read-only. Give it to the user verbatim; do not translate or reformat it, the price sheet parses it.",
             "inputSchema": schema(json!({
                 "id": id,
                 "stamp": { "type": "string", "description": "Date in the header, e.g. \"08.11.2026 14:30\"; default: now (UTC)." },
+                "full": { "type": "boolean", "description": "Also list roofs, wall definitions, windows, chimneys, openings and every roof line, with the members of each total (the detailed list). Default false: the list the price sheet reads; the detailed one can push the faces past the rows the sheet reads." },
             }), &["id"]),
         }),
         json!({
@@ -647,7 +648,12 @@ impl Server {
                     None => tectora_core::export::utc_stamp(tectora_core::store::now_ms()),
                 };
                 let title = if p.name.is_empty() { id.clone() } else { p.name.clone() };
-                let opts = tectora_core::export::ListOptions::new(title, stamp);
+                let full = match args.get("full") {
+                    None | Some(Value::Null) => false,
+                    Some(Value::Bool(b)) => *b,
+                    Some(_) => return Err("`full` must be true or false".into()),
+                };
+                let opts = tectora_core::export::ListOptions::new(title, stamp).full(full);
                 let (list, _) = tectora_core::export::checked(&p, &opts)?;
                 Ok(json!({ "id": id, "list": list }))
             })(),
@@ -1800,8 +1806,19 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(
-            list.contains("DACHLINIEN") && list.contains("08.11.2026 12:00"),
+            list.contains("LÍNIE")
+                && !list.contains("DACHLINIEN")
+                && list.contains("08.11.2026 12:00"),
             "{list}"
+        );
+        let full = call(&mut s, "export_list", json!({ "id": id, "full": true }))["list"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(full.contains("DACHLINIEN"), "{full}");
+        assert!(
+            s.call_tool("export_list", &json!({ "id": id, "full": "yes" }))
+                .is_err()
         );
         let sheet = call(&mut s, "export_plan", json!({ "id": id, "summary": "s" }))["path"]
             .as_str()

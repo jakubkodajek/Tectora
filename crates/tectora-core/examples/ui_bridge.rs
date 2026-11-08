@@ -181,7 +181,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             let opts = tectora_core::export::ListOptions::new(
                 arg::<String>(a, "title")?,
                 arg::<String>(a, "stamp")?,
-            );
+            )
+            .full(arg::<Option<bool>>(a, "full")?.unwrap_or(false));
             let (list, svg) = tectora_core::export::checked(&arg::<Project>(a, "project")?, &opts)?;
             Ok(serde_json::json!({ "list": list, "svg": svg }))
         }
