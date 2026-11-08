@@ -661,21 +661,27 @@
   /**
    * A manual face drawn where a building was meant: replace it with a part of
    * the same outline with the new-roof defaults (pitch, eave height,
-   * overhang) so its roof is calculated. Over MCP: add_part + set_manual.
+   * overhang) so its roof is calculated. The core's operation, the same as
+   * MCP face_to_part.
    */
-  function faceToPart() {
+  async function faceToPart() {
     if (!project || manualSel?.kind !== "face" || !project.manual_faces) return;
-    const face = project.manual_faces[manualSel.index];
+    const index = manualSel.index;
+    const face = project.manual_faces[index];
     if (!face || face.points.length < 3) return;
-    let pts = face.points.map((p) => ({ x: p.x, y: p.y }));
-    const area = pts.reduce((s, p, i) => s + p.x * pts[(i + 1) % pts.length].y - pts[(i + 1) % pts.length].x * p.y, 0);
-    if (area < 0) pts = pts.reverse();
-    project.manual_faces.splice(manualSel.index, 1);
     const n = project.parts.length;
-    project.parts.push({
-      name: n === 0 ? t("editor.mainPart") : t("editor.partN", { n: n + 1 }),
-      edges: pts.map((p) => ({ start: p, pitch_deg: presets.pitch_deg, eave_height: presets.eave_height, overhang: presets.overhang })),
-    });
+    const name = n === 0 ? t("editor.mainPart") : t("editor.partN", { n: n + 1 });
+    let next: Project;
+    try {
+      next = await api.faceToPart($state.snapshot(project) as Project, index, name, presets.pitch_deg, presets.eave_height, presets.overhang);
+    } catch (e) {
+      notifyError(e, "calc");
+      return;
+    }
+    // The project may have changed meanwhile (an AI save): apply only to the same face.
+    if (!project?.manual_faces || project.manual_faces[index] !== face) return;
+    project.manual_faces = next.manual_faces;
+    project.parts = next.parts;
     manualSel = null;
     selection = { part: n, edge: 0 };
     commit();

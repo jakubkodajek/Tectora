@@ -62,7 +62,10 @@ The tools cover every operation of the Tectora editor:
 - Dormers: `add_dormer`, `update_dormer` (gable, pointed, hip, half_hip,
   shed, trapezoid, round); `get_project` lists them with these parameters.
 - Windows, chimneys (also as a rectangle) and roof openings: `set_openings`.
-- Lines and faces drawn by hand on the roof: `set_manual`.
+- Lines and faces drawn by hand on the roof: `set_manual`. A hand-drawn
+  face only adds its area: it is no building and calculates no roof. When a
+  footprint was traced as a face, `face_to_part` turns it into a building
+  in one change.
 - Single objects (dormers, chimneys, windows, openings, hand-drawn lines and
   faces): `transform_items` moves, rotates (about the object's centre) or
   copies them, as the user drags them in the plan or uses their right-click

@@ -489,6 +489,23 @@ fn check_windows(project: Project) -> CmdResult<Option<tectora_core::edit::Overs
     })
 }
 
+/// The editor's "Make it a building": hand-drawn face `index` replaced by a
+/// part of the same outline (`tectora_core::edit::face_to_part`, the MCP
+/// tool's operation).
+#[tauri::command]
+fn face_to_part(
+    mut project: Project,
+    index: usize,
+    name: String,
+    pitch_deg: f64,
+    eave_height: f64,
+    overhang: f64,
+) -> CmdResult<Project> {
+    tectora_core::edit::face_to_part(&mut project, index, &name, pitch_deg, eave_height, overhang)
+        .map_err(|d| AppError::new("invalid_input").detail(d))?;
+    Ok(project)
+}
+
 /// Settings plus the folders in use (see `Settings::describe`).
 #[tauri::command]
 fn get_settings() -> Value {
@@ -787,6 +804,7 @@ pub fn run() {
             calc,
             calc_breakdown,
             check_windows,
+            face_to_part,
             list_attachments,
             attach_files,
             remove_attachment,

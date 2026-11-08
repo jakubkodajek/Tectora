@@ -68,6 +68,9 @@ export const api = {
     invoke<string>("create_from_example", { exampleId, name: name ?? null }),
   calc: (project: Project) => invoke<CalcResult>("calc", { project }),
   calcBreakdown: (project: Project) => invoke<CalcBreakdown>("calc_breakdown", { project }),
+  /** Hand-drawn face `index` turned into a building (the MCP tool face_to_part). */
+  faceToPart: (project: Project, index: number, name: string, pitchDeg: number, eaveHeight: number, overhang: number) =>
+    invoke<Project>("face_to_part", { project, index, name, pitchDeg, eaveHeight, overhang }),
   /** The first roof window larger than what is left of its face, or null. */
   checkWindows: (project: Project) =>
     invoke<{ index: number; area: number; face_area: number } | null>("check_windows", { project }),

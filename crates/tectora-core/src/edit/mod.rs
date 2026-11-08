@@ -204,6 +204,41 @@ pub fn check_windows(project: &Project) -> Result<(), OversizeWindow> {
     Ok(())
 }
 
+/// Turns hand-drawn face `index` into a building with the same outline:
+/// the face (which only adds its area and calculates no roof) is removed
+/// and a part named `name` takes its place, every wall an eave with the
+/// given pitch, eave height and overhang, so its roof is calculated. One
+/// change, as the editor's "Make it a building". Returns the new part's
+/// index.
+pub fn face_to_part(
+    project: &mut Project,
+    index: usize,
+    name: &str,
+    pitch_deg: f64,
+    eave_height: f64,
+    overhang: f64,
+) -> Result<usize, String> {
+    let face = project
+        .manual_faces
+        .get(index)
+        .ok_or_else(|| format!("no hand-drawn face {index}"))?;
+    if face.points.len() < 3 {
+        return Err(format!("hand-drawn face {index} has fewer than 3 corners"));
+    }
+    let mut part = crate::model::RoofPart {
+        name: name.to_string(),
+        edges: face
+            .points
+            .iter()
+            .map(|&p| plain_edge(p, pitch_deg, eave_height, overhang))
+            .collect(),
+    };
+    part.normalize_ccw();
+    project.manual_faces.remove(index);
+    project.parts.push(part);
+    Ok(project.parts.len() - 1)
+}
+
 /// A wall with the given start and roof values and nothing else set.
 pub fn plain_edge(start: Point2, pitch_deg: f64, eave_height: f64, overhang: f64) -> EdgeDef {
     EdgeDef {
@@ -318,5 +353,33 @@ mod tests {
             height: 10.0,
         });
         assert!(check_windows(&p).is_ok());
+    }
+
+    #[test]
+    fn a_face_becomes_a_building_in_one_change() {
+        use crate::model::ManualFace;
+        let mut p = Project::new("face");
+        let pt = Point2::new;
+        // Clockwise, as a face may be drawn.
+        p.manual_faces.push(ManualFace {
+            points: vec![pt(0.0, 0.0), pt(0.0, 8.0), pt(12.0, 8.0), pt(12.0, 0.0)],
+            pitch_deg: 30.0,
+            label: String::new(),
+        });
+        assert!(crate::openings::generate_project(&p).is_empty());
+        let i = face_to_part(&mut p, 0, "Main", 40.0, 3.0, 0.5).unwrap();
+        assert_eq!(i, 0);
+        assert!(p.manual_faces.is_empty());
+        assert_eq!(p.parts[0].name, "Main");
+        assert!(crate::geom::signed_area(&p.parts[0].outline()) > 0.0);
+        assert!(
+            p.parts[0]
+                .edges
+                .iter()
+                .all(|e| e.pitch_deg == 40.0 && e.overhang == 0.5)
+        );
+        let geo = &crate::openings::generate_project(&p)[0];
+        assert!(geo.error.is_none() && !geo.faces.is_empty());
+        assert!(face_to_part(&mut p, 0, "x", 40.0, 3.0, 0.5).is_err());
     }
 }

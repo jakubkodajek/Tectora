@@ -303,6 +303,19 @@ pub(crate) fn tools() -> Vec<Value> {
             }), &["id", "items", "summary"]),
         }),
         json!({
+            "name": "face_to_part",
+            "description": "Turn a hand-drawn face (`set_manual` faces, index from 0 as get_project lists them) into a building with the same outline, in one change, as the editor's \"Make it a building\": a hand-drawn face only adds its area and calculates no roof; the new part gets every wall as an eave with `pitch_deg`, `eave_height` and `overhang` (default: the user's roof defaults). Use it when a footprint was traced as a face.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "index": { "type": "integer", "minimum": 0, "description": "The hand-drawn face." },
+                "name": { "type": "string", "description": "Name of the new part (default Main for the first part, else Part N)." },
+                "pitch_deg": { "type": "number" },
+                "eave_height": { "type": "number" },
+                "overhang": { "type": "number" },
+                "summary": summary_prop(),
+            }), &["id", "index", "summary"]),
+        }),
+        json!({
             "name": "clear_roof",
             "description": "Remove everything drawn (parts, dormers, chimneys, roof windows, roof openings, hand-drawn lines and faces) and leave an empty canvas, as the editor's Clear. Job data, notes, roof options and the stored result stay; the change can be reverted like any other.",
             "inputSchema": schema(json!({
@@ -508,6 +521,30 @@ impl Server {
             "transform_items" => self.transform_items(args),
             "add_shape_part" => self.add_shape_part(args),
             "delete_items" => self.delete_items(args),
+            "face_to_part" => (|| {
+                let (id, before) = self.load(args)?;
+                let mut p = before.clone();
+                let index: usize = req(args, "index")?;
+                let preset = tectora_core::settings::Settings::load().roof_defaults;
+                let n = p.parts.len();
+                let name = args
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| if n == 0 { "Main".into() } else { format!("Part {}", n + 1) });
+                tectora_core::edit::face_to_part(
+                    &mut p,
+                    index,
+                    &name,
+                    arg_f64(args, "pitch_deg")?.unwrap_or(preset.pitch_deg),
+                    arg_f64(args, "eave_height")?.unwrap_or(preset.eave_height),
+                    arg_f64(args, "overhang")?.unwrap_or(preset.overhang),
+                )?;
+                if let Err(e) = p.validate() {
+                    return Err(e.join("; "));
+                }
+                self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+            })(),
             "clear_roof" => (|| {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
@@ -1663,6 +1700,45 @@ mod tests {
         assert!(p.parts.is_empty() && p.dormers.is_empty());
         let r = s.call_tool("clear_roof", &json!({ "id": id, "summary": "again" }));
         assert!(r.is_err(), "nothing left to clear");
+    }
+
+    #[test]
+    fn a_hand_drawn_face_becomes_a_building_in_one_save() {
+        let (mut s, id) = setup();
+        let mut p = s.store.load(&id).unwrap();
+        let parts = p.parts.len();
+        p.manual_faces.push(tectora_core::model::ManualFace {
+            points: [(30.0, 0.0), (40.0, 0.0), (40.0, 6.0), (30.0, 6.0)]
+                .iter()
+                .map(|&(x, y)| tectora_core::geom::Point2::new(x, y))
+                .collect(),
+            pitch_deg: 30.0,
+            label: String::new(),
+        });
+        s.store.save(Some(id.clone()), &p).unwrap();
+        let log = s.store.activity(&id).len();
+        call(
+            &mut s,
+            "face_to_part",
+            json!({ "id": id, "index": 0, "pitch_deg": 35, "eave_height": 3, "overhang": 0.4, "summary": "Garage traced as a face" }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert!(p.manual_faces.is_empty());
+        assert_eq!(p.parts.len(), parts + 1);
+        assert_eq!(p.parts[parts].name, format!("Part {}", parts + 1));
+        assert_eq!(s.store.activity(&id).len(), log + 1, "one change");
+        // Reverting it brings the face back and removes the part.
+        s.call_tool("revert_last_change", &json!({ "id": id }))
+            .unwrap();
+        let p = s.store.load(&id).unwrap();
+        assert_eq!((p.manual_faces.len(), p.parts.len()), (1, parts));
+        assert!(
+            s.call_tool(
+                "face_to_part",
+                &json!({ "id": id, "index": 5, "summary": "x" })
+            )
+            .is_err()
+        );
     }
 
     #[test]
