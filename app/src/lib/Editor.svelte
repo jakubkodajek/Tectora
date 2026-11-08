@@ -887,7 +887,7 @@
         commit();
         setTimeout(() => plan?.fit(), 0);
       } },
-      { label: t("tool.deletePart"), icon: "trash", danger: true, disabled: project.parts.length < 2, action: () => { selection = { part: pi, edge: 0 }; deletePart(); } },
+      { label: t("tool.deletePart"), icon: "trash", danger: true, action: () => { selection = { part: pi, edge: 0 }; deletePart(); } },
     ];
   }
 
@@ -1006,8 +1006,39 @@
     commit();
   }
 
+  /** Whether anything is drawn that Clear would remove. */
+  function hasDrawing(p: Project | null): boolean {
+    if (!p) return false;
+    return [p.parts, p.dormers, p.chimneys, p.windows, p.roof_openings, p.manual_lines, p.manual_faces].some((l) => (l?.length ?? 0) > 0);
+  }
+
+  // Removes everything drawn and leaves an empty canvas (MCP clear_roof);
+  // job data and roof options stay, and Undo brings the roof back.
+  async function clearRoof() {
+    if (!hasDrawing(project)) return;
+    const before = project;
+    if (!(await confirm(t("editor.confirmClear")))) return;
+    // The project may have been reloaded (AI edit) while the dialog was open.
+    if (!project || project !== before) return;
+    project.parts = [];
+    project.dormers = [];
+    project.chimneys = [];
+    project.windows = [];
+    project.roof_openings = [];
+    project.manual_lines = [];
+    project.manual_faces = [];
+    selection = null;
+    dormerSel = null;
+    openSel = null;
+    manualSel = null;
+    placing = false;
+    commit();
+  }
+
   async function deletePart() {
     if (!project || !selection) return;
+    // The last part takes the whole roof with it: that is Clear.
+    if (project.parts.length === 1) return clearRoof();
     const index = selection.part;
     const part = project.parts[index];
     // Tauri's dialog plugin replaces window.confirm with an async version
@@ -1182,7 +1213,8 @@
       <button class="tool" class:on={placing === "face"} disabled={!result} onclick={() => togglePlacing("face")} title={t("tool.faceHint")}><Icon name="face" /><span>{t("tool.face")}</span></button>
       <button class="tool" class:on={!!project?.flat_roof} disabled={!project?.parts.length} onclick={toggleFlat} title={t("tool.flatHint")}><Icon name="flat" /><span>{t("tool.flat")}</span></button>
       <button class="tool" class:on={!!xform} disabled={!selection} onclick={openTransform} title={t("tool.transformHint")}><Icon name="move" /><span>{t("tool.transform")}</span></button>
-      <button class="tool" disabled={!selection || (project?.parts.length ?? 0) < 2} onclick={deletePart} title={t("tool.deletePartHint")}><Icon name="trash" /><span>{t("tool.deletePart")}</span></button>
+      <button class="tool" disabled={!selection} onclick={deletePart} title={t("tool.deletePartHint")}><Icon name="trash" /><span>{t("tool.deletePart")}</span></button>
+      <button class="tool" disabled={!hasDrawing(project)} onclick={clearRoof} title={t("tool.clearHint")}><Icon name="eraser" /><span>{t("tool.clear")}</span></button>
     </div>
     <div class="group">
       <button class="tool" class:on={prefs.layout === "plan"} onclick={() => setLayout("plan")} title={t("editor.plan")}><Icon name="plan" /><span>{t("editor.plan")}</span></button>

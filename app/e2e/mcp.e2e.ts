@@ -490,6 +490,7 @@ test.describe("MCP parity", () => {
       "length, corners, direction change": "edit_walls",
       "move / rotate / mirror / copy part": "transform_part",
       "delete part, dormer, opening, line, face": "delete_items",
+      "clear the canvas": "clear_roof",
       dormer: "add_dormer",
       "edit dormer": "update_dormer",
       "chimney, window, opening": "set_openings",
