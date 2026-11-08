@@ -253,7 +253,8 @@ fn show_folder(dir: &std::path::Path) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+/// Async: the preview in the bundle runs the roof kernel.
+#[tauri::command(async)]
 fn export_job(state: State<AppState>, id: String, path: String) -> CmdResult<()> {
     guard(|| Ok(bundle::export(&state.store(), &id, &PathBuf::from(path)).map(|_| ())?))
 }
@@ -263,10 +264,16 @@ fn import_job(state: State<AppState>, path: String) -> CmdResult<String> {
     guard(|| Ok(bundle::open_path(&state.store(), &PathBuf::from(path))?))
 }
 
-/// The current result, to store as the job's result.
-#[tauri::command]
-fn take_snapshot(project: Project) -> snapshot::ResultSnapshot {
-    snapshot::take(&project)
+/// The current result, to store as the job's result. Async and guarded like
+/// `calc`: it runs the whole roof kernel (ERR-008).
+#[tauri::command(async)]
+fn take_snapshot(project: Project) -> CmdResult<snapshot::ResultSnapshot> {
+    guard(|| {
+        snapshot::take_checked(&project).map_err(|e| match e {
+            snapshot::Refused::OutOfRange(d) => AppError::new("out_of_range").detail(d),
+            snapshot::Refused::Internal(d) => AppError::new("internal").detail(d),
+        })
+    })
 }
 
 /// The job opened from a file at start-up, once.

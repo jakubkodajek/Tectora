@@ -613,7 +613,7 @@ impl Server {
             "store_result" => (|| {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
-                p.result_snapshot = Some(snapshot::take(&p));
+                p.result_snapshot = Some(snapshot::take_checked(&p).map_err(|e| e.to_string())?);
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
             })(),
             "get_schema" => Ok(tectora_core::model::json_schema()),

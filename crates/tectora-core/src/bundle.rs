@@ -114,7 +114,15 @@ pub fn export(store: &Store, id: &str, dest: &Path) -> Result<Manifest, String> 
     if let Ok(history) = fs::read(store.activity_path(id)?) {
         put("history.jsonl", &history)?;
     }
-    put("preview.svg", preview_svg(&project).as_bytes())?;
+    // The preview runs the roof kernel: a job out of range or one the
+    // kernel cannot calculate is still exported, without preview (ERR-008).
+    let svg = project
+        .check_limits()
+        .ok()
+        .and_then(|()| crate::model::guarded(|| preview_svg(&project)).ok());
+    if let Some(svg) = svg {
+        put("preview.svg", svg.as_bytes())?;
+    }
     for a in &attachments {
         let bytes = fs::read(store.attachment_path(id, &a.name)?).map_err(|e| e.to_string())?;
         put(&format!("files/{}", a.name), &bytes)?;
@@ -385,6 +393,9 @@ mod tests {
         fs::write(store.path(&id).unwrap(), serde_json::to_string(&p).unwrap()).unwrap();
         let file = dir.join("far.tectorajob");
         export(&store, &id, &file).unwrap();
+        let mut zip = zip::ZipArchive::new(fs::File::open(&file).unwrap()).unwrap();
+        assert!(zip.by_name("project.tectora").is_ok());
+        assert!(zip.by_name("preview.svg").is_err(), "no kernel run");
         let other = Store::new(dir.join("other")).unwrap();
         assert!(import(&other, &file).is_err());
         assert!(other.list().is_empty());

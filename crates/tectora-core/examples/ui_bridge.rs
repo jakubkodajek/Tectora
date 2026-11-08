@@ -139,7 +139,9 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             store,
             &PathBuf::from(arg::<String>(a, "path")?),
         )?),
-        "take_snapshot" => to_json(snapshot::take(&arg::<Project>(a, "project")?)),
+        "take_snapshot" => to_json(
+            snapshot::take_checked(&arg::<Project>(a, "project")?).map_err(|e| e.to_string())?,
+        ),
         "take_pending_open" => Ok(Value::Null),
         "create_standard" | "standard_part" => {
             let kind: StandardRoof = arg(a, "kind")?;
