@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,6 +31,35 @@ pub const FILES_DIR: &str = ".files";
 pub const USER_ACTOR: &str = "user";
 /// Activity entries kept per project (each holds a full previous version).
 const ACTIVITY_KEEP: usize = 50;
+/// Deleted jobs and removed attachments, one folder per deletion
+/// (`.trash/<entry>/`), so a delete by mistake or by an AI client can be
+/// undone ([`Store::restore`]).
+pub const TRASH_DIR: &str = ".trash";
+/// What was deleted, by whom and why, in each trash folder.
+const TRASH_INFO: &str = "deleted.json";
+/// Trash folders older than this are removed for good on the next delete.
+pub const TRASH_KEEP_DAYS: u64 = 30;
+/// Largest file attached from disk, bytes (as in a job bundle).
+pub const MAX_ATTACHMENT: u64 = 256 * 1024 * 1024;
+
+/// A deleted job or a removed attachment, kept in the library's trash.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrashEntry {
+    /// Folder name in `.trash`; pass it to [`Store::restore`].
+    pub entry: String,
+    /// The job (deleted, or the one the file was attached to).
+    pub id: String,
+    /// The job's name when it was deleted.
+    pub name: String,
+    /// The attachment's name when only a file was removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    pub ts_ms: u64,
+    /// `user` for the desktop app, otherwise the AI client's name.
+    pub actor: String,
+    /// One sentence on why it was deleted.
+    pub summary: String,
+}
 
 /// A file attached to a job.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -162,7 +191,7 @@ pub struct LiveStatus {
 
 /// The codes of [`LiveStatus::kind`] (the app has a sentence for each, in
 /// every UI language: `ai.live.<kind>`).
-pub const LIVE_KINDS: [&str; 17] = [
+pub const LIVE_KINDS: [&str; 18] = [
     "changed",
     "settings",
     "browsing",
@@ -175,6 +204,7 @@ pub const LIVE_KINDS: [&str; 17] = [
     "reverted_changes",
     "copied",
     "deleted",
+    "restored",
     "attached",
     "removed",
     "exported",
@@ -363,6 +393,58 @@ pub struct BrokenFile {
     pub detail: String,
 }
 
+/// Why work with a file other than the project file failed: an attachment,
+/// a job bundle, an imported file. Like [`StoreError`] it has a stable
+/// `code` the app translates; `detail` is English for the CLI, the MCP
+/// server and the "Details" view.
+///
+/// Codes: those of [`StoreError`], `file_not_found`, `not_a_file` (a folder,
+/// device or pipe), `too_large`, `unsupported_type`, `invalid_name`,
+/// `out_of_range`, `too_many`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{detail}")]
+pub struct FileError {
+    pub code: &'static str,
+    /// The job the error is about, if any.
+    pub id: Option<String>,
+    pub detail: String,
+}
+
+impl FileError {
+    pub fn new(code: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            id: None,
+            detail: detail.into(),
+        }
+    }
+
+    /// An operating system error on `path`, with the code the app explains.
+    pub fn io(path: &Path, e: std::io::Error) -> Self {
+        let code = match e.kind() {
+            std::io::ErrorKind::NotFound => "file_not_found",
+            _ => StoreError::io(None, std::io::Error::new(e.kind(), "")).code(),
+        };
+        Self::new(code, format!("{}: {e}", path.display()))
+    }
+}
+
+impl From<StoreError> for FileError {
+    fn from(e: StoreError) -> Self {
+        FileError {
+            code: e.code(),
+            id: e.id().map(str::to_string),
+            detail: e.to_string(),
+        }
+    }
+}
+
+impl From<FileError> for String {
+    fn from(e: FileError) -> String {
+        e.detail
+    }
+}
+
 fn modified_ms(path: &Path) -> u64 {
     fs::metadata(path)
         .and_then(|m| m.modified())
@@ -377,7 +459,7 @@ fn modified_ms(path: &Path) -> u64 {
 /// server saving the same design at once cannot write into each other's file.
 /// The `schema_version` of a project file's JSON when it is newer than this
 /// app reads, else `None` (also for text that is not JSON).
-fn newer_format(text: &str) -> Option<u64> {
+pub(crate) fn newer_format(text: &str) -> Option<u64> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     let version = v.get("schema_version")?.as_u64()?;
     (version > u64::from(crate::model::SCHEMA_VERSION)).then_some(version)
@@ -739,7 +821,14 @@ impl Store {
     }
 
     /// Undoes the latest recorded change, keeping later unlogged edits.
-    pub fn revert_last(&self, id: &str, actor: &str) -> Result<Project, StoreError> {
+    /// `reason` (an AI client's summary) is logged in front of what was
+    /// reverted.
+    pub fn revert_last(
+        &self,
+        id: &str,
+        actor: &str,
+        reason: Option<&str>,
+    ) -> Result<Project, StoreError> {
         let log = self.activity(id);
         let last = log
             .last()
@@ -749,13 +838,19 @@ impl Store {
             &log,
             log.len() - 1,
             actor,
-            format!("{REVERTED_PREFIX}{}", last.summary),
+            with_reason(reason, format!("{REVERTED_PREFIX}{}", last.summary)),
         )
     }
 
     /// Restores the version from before the change recorded at `ts_ms`,
     /// undoing it and every later change in one step.
-    pub fn revert_to(&self, id: &str, ts_ms: u64, actor: &str) -> Result<Project, StoreError> {
+    pub fn revert_to(
+        &self,
+        id: &str,
+        ts_ms: u64,
+        actor: &str,
+        reason: Option<&str>,
+    ) -> Result<Project, StoreError> {
         let log = self.activity(id);
         let pos =
             log.iter()
@@ -770,7 +865,7 @@ impl Store {
         } else {
             format!("Reverted {undone} changes since: {}", log[pos].summary)
         };
-        self.revert_from(id, &log, pos, actor, summary)
+        self.revert_from(id, &log, pos, actor, with_reason(reason, summary))
     }
 
     /// Undoes `log[pos..]`: the version before `log[pos]`, plus whatever the
@@ -889,18 +984,168 @@ impl Store {
         }))
     }
 
-    pub fn delete(&self, id: &str) -> Result<(), StoreError> {
-        fs::remove_file(self.path(id)?).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                StoreError::NotFound(id.to_string())
-            } else {
-                StoreError::io(Some(id), e)
-            }
-        })?;
+    /// Moves job `id` with its history and attached files to the library's
+    /// trash (`.trash/<entry>/`), noting who deleted it and why, so it can
+    /// be restored ([`Store::restore`]). Trash older than
+    /// [`TRASH_KEEP_DAYS`] is removed for good at the same time.
+    pub fn delete(&self, id: &str, actor: &str, summary: &str) -> Result<TrashEntry, StoreError> {
+        let path = self.path(id)?;
+        if !path.is_file() {
+            return Err(StoreError::NotFound(id.to_string()));
+        }
+        // A damaged job can be deleted too, it just has no name to show.
+        let name = self.load(id).map(|p| p.name).unwrap_or_default();
+        let io = |e| StoreError::io(Some(id), e);
+        let (entry, folder) = self.new_trash_folder(id).map_err(io)?;
+        // The project file first: when it cannot be moved nothing is.
+        if let Err(e) = fs::rename(&path, folder.join(format!("{id}.{EXTENSION}"))) {
+            let _ = fs::remove_dir_all(&folder);
+            return Err(io(e));
+        }
+        let _ = fs::rename(self.activity_path(id)?, folder.join("activity.jsonl"));
+        let _ = fs::rename(self.review_path(id)?, folder.join("review.json"));
+        let files = self.files_dir(id)?;
+        if files.is_dir() {
+            let _ = fs::rename(&files, folder.join("files"));
+        }
+        let info = TrashEntry {
+            entry,
+            id: id.to_string(),
+            name,
+            file: None,
+            ts_ms: now_ms(),
+            actor: actor.to_string(),
+            summary: summary.to_string(),
+        };
+        self.write_trash_info(&folder, &info).map_err(io)?;
+        self.prune_trash();
+        Ok(info)
+    }
+
+    /// Removes job `id`, its history and files for good (a half-imported
+    /// bundle that never was the user's job).
+    pub(crate) fn purge(&self, id: &str) -> Result<(), StoreError> {
+        fs::remove_file(self.path(id)?).map_err(|e| StoreError::io(Some(id), e))?;
         let _ = fs::remove_file(self.activity_path(id)?);
         let _ = fs::remove_file(self.review_path(id)?);
         let _ = fs::remove_dir_all(self.files_dir(id)?);
         Ok(())
+    }
+
+    pub fn trash_dir(&self) -> PathBuf {
+        self.dir.join(TRASH_DIR)
+    }
+
+    /// A new, empty folder in the trash for a deletion from job `id`.
+    fn new_trash_folder(&self, id: &str) -> std::io::Result<(String, PathBuf)> {
+        let base = format!("{}-{id}", now_ms());
+        for n in 1..1000 {
+            let entry = if n == 1 {
+                base.clone()
+            } else {
+                format!("{base}-{n}")
+            };
+            let folder = self.trash_dir().join(&entry);
+            fs::create_dir_all(self.trash_dir())?;
+            match fs::create_dir(&folder) {
+                Ok(()) => return Ok((entry, folder)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(std::io::Error::other("too many deletions at once"))
+    }
+
+    fn write_trash_info(&self, folder: &Path, info: &TrashEntry) -> std::io::Result<()> {
+        let text = serde_json::to_string_pretty(info).map_err(std::io::Error::other)?;
+        write_atomic(&folder.join(TRASH_INFO), &text)
+    }
+
+    /// The trash folder `entry`, if it is one (a plain name inside `.trash`).
+    fn trash_folder(&self, entry: &str) -> Option<(PathBuf, TrashEntry)> {
+        if !valid_file_name(entry) {
+            return None;
+        }
+        let folder = self.trash_dir().join(entry);
+        let text = fs::read_to_string(folder.join(TRASH_INFO)).ok()?;
+        let mut info: TrashEntry = serde_json::from_str(&text).ok()?;
+        // The folder name is what restores it, whatever the file says.
+        info.entry = entry.to_string();
+        valid_id(&info.id).then_some((folder, info))
+    }
+
+    /// Deleted jobs and removed files in the trash, newest first.
+    pub fn trash(&self) -> Vec<TrashEntry> {
+        let mut out: Vec<TrashEntry> = fs::read_dir(self.trash_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter_map(|name| self.trash_folder(&name).map(|(_, info)| info))
+            .collect();
+        out.sort_by(|a, b| b.ts_ms.cmp(&a.ts_ms).then(b.entry.cmp(&a.entry)));
+        out
+    }
+
+    /// Removes trash folders older than [`TRASH_KEEP_DAYS`] for good.
+    fn prune_trash(&self) {
+        let keep_ms = TRASH_KEEP_DAYS * 24 * 3600 * 1000;
+        let now = now_ms();
+        for e in self.trash() {
+            if now.saturating_sub(e.ts_ms) > keep_ms {
+                let _ = fs::remove_dir_all(self.trash_dir().join(&e.entry));
+            }
+        }
+    }
+
+    /// Brings a deleted job (with its history and files) or a removed file
+    /// back from the trash; returns the job's id. A job whose id was taken
+    /// in the meantime comes back under a new id, a file under a free name.
+    pub fn restore(&self, entry: &str) -> Result<String, StoreError> {
+        let (folder, info) = self
+            .trash_folder(entry)
+            .ok_or_else(|| StoreError::NotFound(entry.to_string()))?;
+        let io = |e| StoreError::io(Some(&info.id), e);
+        if let Some(name) = &info.file {
+            if !self.exists(&info.id) {
+                return Err(StoreError::NotFound(info.id.clone()));
+            }
+            let src = folder.join("files").join(name);
+            let used = self
+                .free_attachment_name(&info.id, name)
+                .map_err(|e| StoreError::Io {
+                    id: Some(info.id.clone()),
+                    kind: IoKind::Other,
+                    detail: e.detail,
+                })?;
+            let dest = self.files_dir(&info.id)?.join(&used);
+            fs::create_dir_all(self.files_dir(&info.id)?).map_err(io)?;
+            fs::rename(&src, &dest).map_err(io)?;
+            let _ = fs::remove_dir_all(&folder);
+            return Ok(info.id);
+        }
+        let id = if self.exists(&info.id) {
+            self.new_id(if info.name.is_empty() {
+                &info.id
+            } else {
+                &info.name
+            })
+        } else {
+            info.id.clone()
+        };
+        let job = folder.join(format!("{}.{EXTENSION}", info.id));
+        fs::create_dir_all(self.activity_dir()).map_err(io)?;
+        let _ = fs::rename(folder.join("activity.jsonl"), self.activity_path(&id)?);
+        let _ = fs::rename(folder.join("review.json"), self.review_path(&id)?);
+        let files = folder.join("files");
+        if files.is_dir() {
+            fs::create_dir_all(self.dir.join(FILES_DIR)).map_err(io)?;
+            let _ = fs::rename(&files, self.files_dir(&id)?);
+        }
+        // The project file last: the app's watcher sees the job when it is whole.
+        fs::rename(&job, self.path(&id)?).map_err(io)?;
+        let _ = fs::remove_dir_all(&folder);
+        Ok(id)
     }
 
     /// Folder of the files attached to job `id`.
@@ -929,9 +1174,12 @@ impl Store {
             .unwrap_or(false)
     }
 
-    pub fn attachment_path(&self, id: &str, name: &str) -> Result<PathBuf, String> {
+    pub fn attachment_path(&self, id: &str, name: &str) -> Result<PathBuf, FileError> {
         if !valid_file_name(name) {
-            return Err(format!("invalid file name: {name}"));
+            return Err(FileError::new(
+                "invalid_name",
+                format!("invalid file name: {name}"),
+            ));
         }
         Ok(self.files_dir(id)?.join(name))
     }
@@ -961,10 +1209,20 @@ impl Store {
 
     /// Stores `bytes` as an attachment of job `id` under `name`, or under
     /// `name (2)` etc. when that name is taken. Returns the name used.
-    pub fn add_attachment(&self, id: &str, name: &str, bytes: &[u8]) -> Result<String, String> {
+    pub fn add_attachment(&self, id: &str, name: &str, bytes: &[u8]) -> Result<String, FileError> {
         if !self.exists(id) {
-            return Err(format!("no project with id {id}"));
+            return Err(StoreError::NotFound(id.to_string()).into());
         }
+        let used = self.free_attachment_name(id, name)?;
+        let path = self.attachment_path(id, &used)?;
+        let dir = self.files_dir(id)?;
+        fs::create_dir_all(&dir).map_err(|e| FileError::io(&dir, e))?;
+        fs::write(&path, bytes).map_err(|e| FileError::io(&path, e))?;
+        Ok(used)
+    }
+
+    /// `name`, or `name (2)` etc. when job `id` has a file of that name.
+    fn free_attachment_name(&self, id: &str, name: &str) -> Result<String, FileError> {
         let name = name.trim();
         self.attachment_path(id, name)?;
         let (stem, ext) = match name.rfind('.') {
@@ -977,31 +1235,104 @@ impl Store {
             used = format!("{stem} ({n}){ext}");
             n += 1;
         }
-        let path = self.attachment_path(id, &used)?;
-        fs::create_dir_all(path.parent().expect("has a parent")).map_err(|e| e.to_string())?;
-        fs::write(&path, bytes).map_err(|e| e.to_string())?;
         Ok(used)
     }
 
-    /// Copies a file from disk into job `id`'s attachments.
-    pub fn attach_file(&self, id: &str, src: &Path) -> Result<String, String> {
-        let bytes = fs::read(src).map_err(|e| format!("{}: {e}", src.display()))?;
-        let name = src
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| format!("{}: not a file", src.display()))?;
+    /// Copies a file from disk into job `id`'s attachments. Only a regular
+    /// file up to [`MAX_ATTACHMENT`] bytes: a folder, a device (`/dev/zero`,
+    /// which never ends) or a pipe (`/dev/stdin`, which blocks until the
+    /// other end closes) is refused before it is opened (ARCH-001).
+    pub fn attach_file(&self, id: &str, src: &Path) -> Result<String, FileError> {
+        let name = src.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+            FileError::new("not_a_file", format!("{}: not a file", src.display()))
+        })?;
+        let not_a_file = || {
+            FileError::new(
+                "not_a_file",
+                format!(
+                    "{}: not a regular file (a folder, device or pipe)",
+                    src.display()
+                ),
+            )
+        };
+        let too_large = || {
+            FileError::new(
+                "too_large",
+                format!(
+                    "{}: larger than {} MB, the most a job can carry",
+                    src.display(),
+                    MAX_ATTACHMENT >> 20
+                ),
+            )
+        };
+        let meta = fs::metadata(src).map_err(|e| FileError::io(src, e))?;
+        if !meta.is_file() {
+            return Err(not_a_file());
+        }
+        if meta.len() > MAX_ATTACHMENT {
+            return Err(too_large());
+        }
+        let file = fs::File::open(src).map_err(|e| FileError::io(src, e))?;
+        // The path may have been replaced between the check and the open.
+        if !file.metadata().is_ok_and(|m| m.is_file()) {
+            return Err(not_a_file());
+        }
+        let mut bytes = Vec::new();
+        std::io::Read::take(file, MAX_ATTACHMENT + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| FileError::io(src, e))?;
+        if bytes.len() as u64 > MAX_ATTACHMENT {
+            return Err(too_large());
+        }
         self.add_attachment(id, name, &bytes)
     }
 
-    pub fn remove_attachment(&self, id: &str, name: &str) -> Result<(), String> {
-        fs::remove_file(self.attachment_path(id, name)?).map_err(|e| e.to_string())
+    /// Moves attachment `name` of job `id` to the library's trash (see
+    /// [`Store::delete`]).
+    pub fn remove_attachment(
+        &self,
+        id: &str,
+        name: &str,
+        actor: &str,
+        summary: &str,
+    ) -> Result<TrashEntry, FileError> {
+        let path = self.attachment_path(id, name)?;
+        if !path.is_file() {
+            return Err(FileError::io(
+                &path,
+                std::io::Error::from(std::io::ErrorKind::NotFound),
+            ));
+        }
+        let job = self.load(id).map(|p| p.name).unwrap_or_default();
+        let (entry, folder) = self
+            .new_trash_folder(id)
+            .map_err(|e| FileError::io(&self.trash_dir(), e))?;
+        let dest = folder.join("files");
+        let moved = fs::create_dir_all(&dest).and_then(|()| fs::rename(&path, dest.join(name)));
+        if let Err(e) = moved {
+            let _ = fs::remove_dir_all(&folder);
+            return Err(FileError::io(&path, e));
+        }
+        let info = TrashEntry {
+            entry,
+            id: id.to_string(),
+            name: job,
+            file: Some(name.to_string()),
+            ts_ms: now_ms(),
+            actor: actor.to_string(),
+            summary: summary.to_string(),
+        };
+        self.write_trash_info(&folder, &info)
+            .map_err(|e| FileError::io(&folder, e))?;
+        self.prune_trash();
+        Ok(info)
     }
 
     /// Copies all attachments of job `from` to job `to`.
-    pub fn copy_attachments(&self, from: &str, to: &str) -> Result<(), String> {
+    pub fn copy_attachments(&self, from: &str, to: &str) -> Result<(), FileError> {
         for a in self.attachments(from) {
-            let bytes =
-                fs::read(self.attachment_path(from, &a.name)?).map_err(|e| e.to_string())?;
+            let path = self.attachment_path(from, &a.name)?;
+            let bytes = fs::read(&path).map_err(|e| FileError::io(&path, e))?;
             self.add_attachment(to, &a.name, &bytes)?;
         }
         Ok(())
@@ -1018,6 +1349,14 @@ impl Store {
     pub fn live(&self) -> Option<LiveStatus> {
         let text = fs::read_to_string(self.activity_dir().join(LIVE_FILE)).ok()?;
         serde_json::from_str(&text).ok()
+    }
+}
+
+/// `reason (what)` when a reason is given, else `what`.
+fn with_reason(reason: Option<&str>, what: String) -> String {
+    match reason.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(r) => format!("{r} ({what})"),
+        None => what,
     }
 }
 
@@ -1045,7 +1384,10 @@ mod tests {
         let store = temp_store("errors");
         assert_eq!(store.load("nope").unwrap_err().code(), "not_found");
         assert_eq!(store.load("../x").unwrap_err().code(), "invalid_id");
-        assert_eq!(store.delete("nope").unwrap_err().code(), "not_found");
+        assert_eq!(
+            store.delete("nope", USER_ACTOR, "test").unwrap_err().code(),
+            "not_found"
+        );
         fs::write(store.dir.join("bad.tectora"), "{ not json").unwrap();
         let e = store.load("bad").unwrap_err();
         assert_eq!(e.code(), "unreadable");
@@ -1115,7 +1457,10 @@ mod tests {
         assert_eq!(pending.before.as_ref(), Some(&mine));
         let oldest = store.activity(&id)[0].ts_ms;
         assert_eq!(pending.since_ts_ms, oldest);
-        assert_eq!(store.revert_to(&id, oldest, USER_ACTOR).unwrap(), mine);
+        assert_eq!(
+            store.revert_to(&id, oldest, USER_ACTOR, None).unwrap(),
+            mine
+        );
         assert_eq!(store.load(&id).unwrap(), mine);
         let _ = fs::remove_dir_all(&store.dir);
     }
@@ -1194,7 +1539,7 @@ mod tests {
         assert_eq!(s.last_activity.unwrap().actor, "claude");
         store.add_attachment(&id, "plan.pdf", b"%PDF").unwrap();
         assert_eq!(store.summarize(&id).unwrap().files, 1);
-        store.delete(&id).unwrap();
+        store.delete(&id, USER_ACTOR, "test").unwrap();
         assert!(store.summarize(&id).is_err());
         assert!(store.list().is_empty());
         let _ = fs::remove_dir_all(&store.dir);
@@ -1278,7 +1623,7 @@ mod tests {
                 .any(|d| d.key == "roof_area")
         );
 
-        store.delete(&id).unwrap();
+        store.delete(&id, USER_ACTOR, "test").unwrap();
         assert_eq!(store.reviewed_at(&id), 0);
         let _ = fs::remove_dir_all(&store.dir);
     }
@@ -1305,7 +1650,7 @@ mod tests {
             "Steeper front"
         );
 
-        assert_eq!(store.revert_last(&id, USER_ACTOR).unwrap(), a);
+        assert_eq!(store.revert_last(&id, USER_ACTOR, None).unwrap(), a);
         assert_eq!(store.load(&id).unwrap(), a);
 
         // Two agent steps undone together.
@@ -1323,11 +1668,11 @@ mod tests {
         assert_eq!((review.count, review.since_ts_ms), (2, first));
         assert_eq!(review.before.as_ref(), Some(&a), "after the user's revert");
         assert_eq!(review.actors, ["claude"]);
-        assert_eq!(store.revert_to(&id, first, USER_ACTOR).unwrap(), a);
+        assert_eq!(store.revert_to(&id, first, USER_ACTOR, None).unwrap(), a);
         assert_eq!(store.load(&id).unwrap(), a);
         // The user's revert closes the review.
         assert!(store.pending_review(&id).is_none());
-        store.delete(&id).unwrap();
+        store.delete(&id, USER_ACTOR, "test").unwrap();
         assert!(store.activity(&id).is_empty());
         let _ = fs::remove_dir_all(&store.dir);
     }
@@ -1352,7 +1697,7 @@ mod tests {
 
         let mut want = a.clone();
         want.parts[0].edges[0].overhang = 0.9;
-        assert_eq!(store.revert_last(&id, USER_ACTOR).unwrap(), want);
+        assert_eq!(store.revert_last(&id, USER_ACTOR, None).unwrap(), want);
         assert_eq!(store.load(&id).unwrap(), want);
 
         // The same through "revert all".
@@ -1372,7 +1717,7 @@ mod tests {
         store.save(Some(id.clone()), &mine2).unwrap();
         let mut want2 = want.clone();
         want2.parts[0].edges[1].overhang = 0.7;
-        assert_eq!(store.revert_to(&id, ts2, USER_ACTOR).unwrap(), want2);
+        assert_eq!(store.revert_to(&id, ts2, USER_ACTOR, None).unwrap(), want2);
         assert_eq!(store.load(&id).unwrap(), want2);
         let _ = fs::remove_dir_all(&store.dir);
     }
@@ -1393,7 +1738,7 @@ mod tests {
         mine.parts[0].edges[3].pitch_deg = 40.0;
         store.save(Some(id.clone()), &mine).unwrap();
         let n = store.activity(&id).len();
-        let err = store.revert_last(&id, USER_ACTOR).unwrap_err();
+        let err = store.revert_last(&id, USER_ACTOR, None).unwrap_err();
         assert_eq!(err.code(), "revert_conflict");
         assert!(
             err.detail()
@@ -1402,6 +1747,87 @@ mod tests {
         );
         assert_eq!(store.load(&id).unwrap(), mine);
         assert_eq!(store.activity(&id).len(), n, "nothing logged");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn only_regular_files_of_a_sane_size_are_attached() {
+        // ARCH-001: `/dev/stdin`, devices, FIFOs and folders were read as
+        // files (the MCP server then swallowed its own input, `/dev/zero`
+        // filled the memory).
+        let store = temp_store("attach-checks");
+        let id = store
+            .save(None, &examples::find("gable").unwrap().project())
+            .unwrap();
+        let dir = store.dir.join("in");
+        fs::create_dir_all(&dir).unwrap();
+        let e = store.attach_file(&id, &dir).unwrap_err();
+        assert_eq!(e.code, "not_a_file", "{e}");
+        #[cfg(unix)]
+        for device in ["/dev/null", "/dev/zero", "/dev/stdin"] {
+            let e = store.attach_file(&id, Path::new(device)).unwrap_err();
+            assert_eq!(e.code, "not_a_file", "{device}: {e}");
+        }
+        // Larger than any drawing or photo: refused before it is read
+        // (a sparse file, so the test writes nothing).
+        let big = dir.join("huge.pdf");
+        fs::File::create(&big)
+            .unwrap()
+            .set_len(MAX_ATTACHMENT + 1)
+            .unwrap();
+        assert_eq!(store.attach_file(&id, &big).unwrap_err().code, "too_large");
+        let missing = store.attach_file(&id, &dir.join("gone.pdf")).unwrap_err();
+        assert_eq!(missing.code, "file_not_found");
+        let ok = dir.join("plan.pdf");
+        fs::write(&ok, b"%PDF").unwrap();
+        assert_eq!(store.attach_file(&id, &ok).unwrap(), "plan.pdf");
+        assert_eq!(store.attachments(&id).len(), 1);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn deletes_go_to_the_trash_which_forgets_after_a_month() {
+        // ARCH-004: a delete is reversible, and the trash does not grow forever.
+        let store = temp_store("trash");
+        let id = store
+            .save_as(
+                None,
+                &examples::find("gable").unwrap().project(),
+                "claude",
+                "create",
+            )
+            .unwrap();
+        store.add_attachment(&id, "plan.pdf", b"%PDF").unwrap();
+        let old = store.trash_dir().join("1-old");
+        fs::create_dir_all(&old).unwrap();
+        let stale = TrashEntry {
+            entry: "1-old".into(),
+            id: "old".into(),
+            name: "Old".into(),
+            file: None,
+            ts_ms: 1,
+            actor: USER_ACTOR.into(),
+            summary: "long ago".into(),
+        };
+        fs::write(old.join(TRASH_INFO), serde_json::to_string(&stale).unwrap()).unwrap();
+        let e = store.delete(&id, "claude", "Old draft").unwrap();
+        assert!(!old.exists(), "older than {TRASH_KEEP_DAYS} days");
+        assert!(!store.exists(&id) && store.attachments(&id).is_empty());
+        assert_eq!(store.trash(), std::slice::from_ref(&e));
+        assert_eq!(
+            (e.actor.as_str(), e.summary.as_str()),
+            ("claude", "Old draft")
+        );
+        // The id was taken again meanwhile: the job comes back beside it.
+        store
+            .save(Some(id.clone()), &Project::new("Other"))
+            .unwrap();
+        let back = store.restore(&e.entry).unwrap();
+        assert_ne!(back, id);
+        assert_eq!(store.attachments(&back).len(), 1);
+        assert_eq!(store.activity(&back).len(), 1);
+        assert!(store.trash().is_empty());
+        assert_eq!(store.restore("nope").unwrap_err().code(), "not_found");
         let _ = fs::remove_dir_all(&store.dir);
     }
 }

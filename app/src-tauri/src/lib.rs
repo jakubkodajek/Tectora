@@ -75,15 +75,24 @@ fn list_projects(state: State<AppState>) -> CmdResult<Library> {
     })
 }
 
-/// Problems found at startup that the user should know about.
+/// Problems found at startup that the user should know about: a damaged
+/// settings file (the defaults, so another jobs folder, are in use, ERR-005)
+/// and a folder watcher that could not start.
 #[tauri::command]
 fn startup_warnings(state: State<AppState>) -> Vec<AppError> {
-    state
-        .watcher_error
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .map(|d| AppError::new("watcher").detail(d.clone()))
+    let settings = Settings::load_checked()
+        .1
+        .map(|d| AppError::new("settings_unreadable").detail(d));
+    settings
+        .into_iter()
+        .chain(
+            state
+                .watcher_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .map(|d| AppError::new("watcher").detail(d.clone())),
+        )
         .collect()
 }
 
@@ -96,7 +105,7 @@ struct ActivityItem {
 }
 
 /// Recorded changes of a project, newest first.
-#[tauri::command]
+#[tauri::command(async)]
 fn project_activity(state: State<AppState>, id: String) -> Vec<ActivityItem> {
     let mut out: Vec<ActivityItem> = state
         .store()
@@ -113,20 +122,22 @@ fn project_activity(state: State<AppState>, id: String) -> Vec<ActivityItem> {
     out
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn revert_last_change(state: State<AppState>, id: String) -> CmdResult<Project> {
-    guard(|| Ok(state.store().revert_last(&id, USER_ACTOR)?))
+    guard(|| Ok(state.store().revert_last(&id, USER_ACTOR, None)?))
 }
 
 /// Undoes the change recorded at `ts_ms` and everything after it.
-#[tauri::command]
+#[tauri::command(async)]
 fn revert_changes(state: State<AppState>, id: String, ts_ms: u64) -> CmdResult<Project> {
-    guard(|| Ok(state.store().revert_to(&id, ts_ms, USER_ACTOR)?))
+    guard(|| Ok(state.store().revert_to(&id, ts_ms, USER_ACTOR, None)?))
 }
 
 /// The AI changes of `id` waiting for review, with the version before them
-/// and what they did to the figures.
-#[tauri::command]
+/// and what they did to the figures. Async like every command below that
+/// calculates a roof or copies files: a command without it runs on the
+/// window's main thread and freezes the window meanwhile (ARCH-003).
+#[tauri::command(async)]
 fn review_status(state: State<AppState>, id: String) -> CmdResult<Option<store::ReviewStatus>> {
     guard(|| Ok(state.store().review_status(&id)?))
 }
@@ -191,14 +202,21 @@ fn normalize_project(project: Project) -> Project {
     project
 }
 
-#[tauri::command]
+/// Moves the job to the library's trash (`Store::delete`), from where the
+/// MCP `restore_project` tool or the file manager brings it back.
+#[tauri::command(async)]
 fn delete_project(state: State<AppState>, id: String) -> CmdResult<()> {
-    guard(|| Ok(state.store().delete(&id)?))
+    guard(|| {
+        state
+            .store()
+            .delete(&id, USER_ACTOR, "Deleted in the app")?;
+        Ok(())
+    })
 }
 
 /// A copy is a new variant: draft, no stored result, the same files. With
 /// `job` it starts a new job for another customer from a past roof.
-#[tauri::command]
+#[tauri::command(async)]
 fn duplicate_project(
     state: State<AppState>,
     id: String,
@@ -222,7 +240,7 @@ fn list_attachments(state: State<AppState>, id: String) -> Vec<store::Attachment
     state.store().attachments(&id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn attach_files(state: State<AppState>, id: String, paths: Vec<String>) -> CmdResult<Vec<String>> {
     guard(|| {
         Ok(paths
@@ -232,9 +250,14 @@ fn attach_files(state: State<AppState>, id: String, paths: Vec<String>) -> CmdRe
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn remove_attachment(state: State<AppState>, id: String, name: String) -> CmdResult<()> {
-    guard(|| Ok(state.store().remove_attachment(&id, &name)?))
+    guard(|| {
+        state
+            .store()
+            .remove_attachment(&id, &name, USER_ACTOR, "Removed in the app")?;
+        Ok(())
+    })
 }
 
 /// Opens an attached file in the system's default app; returns false when
@@ -333,7 +356,7 @@ fn save_png(path: String, bytes: Vec<u8>) -> CmdResult<()> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn import_job(state: State<AppState>, path: String) -> CmdResult<String> {
     guard(|| Ok(bundle::open_path(&state.store(), &PathBuf::from(path))?))
 }
@@ -362,7 +385,7 @@ fn take_open_errors(state: State<AppState>) -> Vec<AppError> {
         .unwrap_or_default()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn create_standard(
     state: State<AppState>,
     name: String,
@@ -409,7 +432,7 @@ fn standard_part(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_examples() -> Vec<ExampleInfo> {
     examples::EXAMPLES
         .iter()
@@ -423,7 +446,7 @@ fn list_examples() -> Vec<ExampleInfo> {
         .collect()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn create_from_example(
     state: State<AppState>,
     example_id: String,
@@ -440,7 +463,7 @@ fn create_from_example(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn new_project(state: State<AppState>, name: String) -> CmdResult<String> {
     guard(|| {
         let mut project = examples::find("gable").expect("built-in example").project();
@@ -475,9 +498,7 @@ fn calc_breakdown(project: Project) -> CmdResult<Value> {
 #[tauri::command(async)]
 fn check_windows(project: Project) -> CmdResult<Option<tectora_core::edit::OversizeWindow>> {
     guard(|| {
-        project
-            .check_limits()
-            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+        commands::check_input(&project)?;
         tectora_core::model::guarded(|| tectora_core::edit::check_windows(&project).err())
             .map_err(|d| AppError::new("internal").detail(d))
     })
@@ -758,8 +779,10 @@ pub fn run() {
                     }
                 }
             };
-            if store.list().is_empty() {
-                // First run: seed the library with a couple of examples.
+            // First run: seed the library with a couple of examples. Not
+            // when the settings are damaged: the folder is then the default
+            // one, not the user's (ERR-005).
+            if store.list().is_empty() && Settings::load_checked().1.is_none() {
                 for id in ["gable", "l-shape"] {
                     if let Some(ex) = examples::find(id) {
                         let _ = store.save(None, &ex.project());
@@ -831,4 +854,35 @@ pub fn run() {
             open_files(_app, urls.into_iter().filter_map(|u| u.to_file_path().ok()));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    /// Commands that calculate a roof (twice for `review_status`) or read and
+    /// copy whole files must not run on the window's main thread (ARCH-003).
+    #[test]
+    fn slow_commands_run_off_the_main_thread() {
+        let src = include_str!("lib.rs");
+        for name in [
+            "list_projects",
+            "review_status",
+            "revert_last_change",
+            "revert_changes",
+            "duplicate_project",
+            "delete_project",
+            "attach_files",
+            "remove_attachment",
+            "import_job",
+            "export_job",
+            "list_examples",
+            "calc",
+            "calc_breakdown",
+            "take_snapshot",
+        ] {
+            assert!(
+                src.contains(&format!("#[tauri::command(async)]\nfn {name}(")),
+                "`{name}` must be #[tauri::command(async)]"
+            );
+        }
+    }
 }

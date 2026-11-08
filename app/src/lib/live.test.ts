@@ -15,6 +15,7 @@ const KINDS = [
   "reverted_changes",
   "copied",
   "deleted",
+  "restored",
   "attached",
   "removed",
   "exported",

@@ -17,7 +17,7 @@ use tectora_core::model::GABLE_PITCH_DEG;
 use tectora_core::quantities::{area_by_pitch, dacad_line_totals, roof_totals};
 use tectora_core::roof::LineKind;
 use tectora_core::settings::Settings;
-use tectora_core::store::{LiveStatus, Store, now_ms};
+use tectora_core::store::{LiveStatus, Store, StoreError, now_ms};
 use tectora_core::{
     Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow,
 };
@@ -338,17 +338,15 @@ fn parse_points(v: &Value) -> Result<Vec<Point2>, String> {
     Ok(pts.into_iter().map(|[x, y]| Point2::new(x, y)).collect())
 }
 
-/// Builds a part from `{name?, points, defaults?, edges?}`.
-fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
-    let points = parse_points(arg(v, "points")?)?;
-    let defaults = v.get("defaults").cloned().unwrap_or(json!({}));
-    // Values not given come from the user's settings (Settings › New roofs).
+/// A new wall: pitch, eave height and overhang from `defaults`, else from
+/// the user's settings (Settings › New roofs).
+fn default_edge(defaults: &Value) -> Result<EdgeDef, String> {
     let preset = Settings::load().roof_defaults;
-    let base = EdgeDef {
+    Ok(EdgeDef {
         start: Point2::new(0.0, 0.0),
-        pitch_deg: arg_f64(&defaults, "pitch_deg")?.unwrap_or(preset.pitch_deg),
-        eave_height: arg_f64(&defaults, "eave_height")?.unwrap_or(preset.eave_height),
-        overhang: arg_f64(&defaults, "overhang")?.unwrap_or(preset.overhang),
+        pitch_deg: arg_f64(defaults, "pitch_deg")?.unwrap_or(preset.pitch_deg),
+        eave_height: arg_f64(defaults, "eave_height")?.unwrap_or(preset.eave_height),
+        overhang: arg_f64(defaults, "overhang")?.unwrap_or(preset.overhang),
         half_hip: None,
         direction_rad: None,
         breaks: Vec::new(),
@@ -356,7 +354,14 @@ fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
         clad: false,
         material: tectora_core::model::DEFAULT_MATERIAL,
         source: None,
-    };
+    })
+}
+
+/// Builds a part from `{name?, points, defaults?, edges?}`.
+fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
+    let points = parse_points(arg(v, "points")?)?;
+    let defaults = v.get("defaults").cloned().unwrap_or(json!({}));
+    let base = default_edge(&defaults)?;
     let specs = v
         .get("edges")
         .and_then(Value::as_array)
@@ -523,12 +528,13 @@ fn base_tools() -> Value {
                         "overhang": { "type": "number", "minimum": 0 }
                     }
                 },
-                "follow_ai": { "type": "boolean" }
-            }), &[]),
+                "follow_ai": { "type": "boolean" },
+                "summary": summary_prop()
+            }), &["summary"]),
         },
         {
             "name": "list_projects",
-            "description": "Search the user's library of roofs made so far (newest first by default): id, name, job, roof area, pitch range, dormers, attached files, stored offer result, last change. Use it to find a past roof to start a new job from (duplicate_project with `job`).",
+            "description": "Search the user's library of roofs made so far (newest first by default): `projects` with id, name, job, roof area, pitch range, dormers, attached files, stored offer result, last change, and `broken`: job files the library cannot read (code `unreadable`: damaged, `newer_format`: saved by a newer Tectora, or a file system error), which you cannot open; tell the user about them. Use it to find a past roof to start a new job from (duplicate_project with `job`).",
             "inputSchema": schema(json!({
                 "query": { "type": "string", "description": "Words that must all appear in the name, job number, customer, address or notes (case and accents ignored)." },
                 "status": { "type": "string", "enum": ["draft", "offer", "ordered", "done"] },
@@ -683,7 +689,7 @@ fn base_tools() -> Value {
         {
             "name": "revert_last_change",
             "description": "Undo the latest recorded change of a design.",
-            "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
+            "inputSchema": schema(json!({ "id": { "type": "string" }, "summary": summary_prop() }), &["id", "summary"]),
         },
     ])
 }
@@ -756,10 +762,17 @@ impl Server {
 
     fn load(&self, args: &Value) -> Result<(String, Project), String> {
         let id = arg_str(args, "id")?.to_string();
-        let project = self
-            .store
-            .load(&id)
-            .map_err(|_| format!("no design with id `{id}`; call list_projects to see the ids"))?;
+        // The library's own reason (damaged, newer, locked) with its code,
+        // so the AI can tell the user why instead of calling it missing.
+        let project = self.store.load(&id).map_err(|e| match e {
+            StoreError::NotFound(_) | StoreError::InvalidId(_) => {
+                format!("no design with id `{id}`; call list_projects to see the ids")
+            }
+            e => format!(
+                "design `{id}` cannot be opened ({}): {e}; ask the user to check it in the app",
+                e.code()
+            ),
+        })?;
         project.check_limits().map_err(|e| {
             format!("design `{id}` cannot be calculated: {e}; ask the user to fix it in the app")
         })?;
@@ -769,16 +782,27 @@ impl Server {
     /// Writes the settings file; when this server uses the library folder
     /// from the settings and that folder changed, it switches to the new one.
     fn update_settings(&mut self, args: &Value) -> ToolResult {
+        let summary = arg_str(args, "summary")?.to_string();
+        // Everything but the summary is a setting.
+        let mut patch = args.clone();
+        if let Some(o) = patch.as_object_mut() {
+            o.remove("summary");
+        }
         let old = Settings::load();
         let next = old
-            .patched(args)
+            .patched(&patch)
             .map_err(|e| format!("settings not saved: {e}"))?;
         next.save()
             .map_err(|e| format!("settings not saved: {e}"))?;
         if self.store.dir == old.projects_dir() && next.projects_dir() != old.projects_dir() {
             self.store = Store::new(next.projects_dir()).map_err(|e| e.to_string())?;
         }
-        self.live("settings", None, "Changed Tectora settings".into(), None);
+        self.live(
+            "settings",
+            None,
+            format!("Changed Tectora settings: {summary}"),
+            None,
+        );
         Ok(next.describe())
     }
 
@@ -789,6 +813,9 @@ impl Server {
     }
 
     fn call_tool_unguarded(&mut self, name: &str, args: &Value) -> ToolResult {
+        if let Some(r) = self.call_calc_isolated(name, args) {
+            return r;
+        }
         match name {
             "tectora_guide" => Ok(json!(GUIDE)),
             "get_settings" => Ok(Settings::load().describe()),
@@ -800,7 +827,8 @@ impl Server {
                 if let Some(text) = args.get("query").and_then(Value::as_str) {
                     q.text = text.to_string();
                 }
-                let list: Vec<Value> = tectora_core::library::search(self.store.list(), &q)?
+                let (all, broken) = self.store.scan()?;
+                let list: Vec<Value> = tectora_core::library::search(all, &q)?
                     .into_iter()
                     .map(|p| {
                         json!({
@@ -812,7 +840,13 @@ impl Server {
                         })
                     })
                     .collect();
-                Ok(json!(list))
+                // Files the library cannot read, as the app's library lists
+                // them: the user should hear about them, not miss them.
+                let broken: Vec<Value> = broken
+                    .iter()
+                    .map(|b| json!({ "id": b.id, "code": b.code, "detail": b.detail }))
+                    .collect();
+                Ok(json!({ "projects": list, "broken": broken }))
             }
             "get_project" => {
                 let (id, p) = self.load(args)?;
@@ -1009,7 +1043,12 @@ impl Server {
                     .ok_or_else(|| format!("part {pi} does not exist"))?
                     .clone();
                 let points = parse_points(arg(args, "points")?)?;
-                let mut template = old.edges.last().cloned().expect("part has edges");
+                // A part stored without walls (ERR-010) takes the new-roof
+                // defaults, as `add_part` does.
+                let mut template = match old.edges.last() {
+                    Some(e) => e.clone(),
+                    None => default_edge(&json!({}))?,
+                };
                 template.half_hip = None;
                 template.direction_rad = None;
                 if let Some(d) = args.get("defaults") {
@@ -1131,11 +1170,12 @@ impl Server {
             }
             "revert_last_change" => {
                 let (id, _) = self.load(args)?;
-                let p = self.store.revert_last(&id, &self.client)?;
+                let summary = arg_str(args, "summary")?;
+                let p = self.store.revert_last(&id, &self.client, Some(summary))?;
                 self.live_follow(
                     "reverted",
                     Some(&p.name),
-                    "Reverted the latest change".into(),
+                    format!("Reverted the latest change: {summary}"),
                     &id,
                 );
                 Ok(json!({ "id": id, "reverted": true, "quantities": quantities(&p) }))
@@ -1313,8 +1353,17 @@ mod tests {
         s.call_tool("show_project", &json!({ "id": id })).unwrap();
         assert!(s.store.live().unwrap().follow, "show_project is followed");
 
-        s.call_tool("revert_last_change", &json!({ "id": id }))
-            .unwrap();
+        s.call_tool(
+            "revert_last_change",
+            &json!({ "id": id, "summary": "The west wall is not a gable" }),
+        )
+        .unwrap();
+        let last = s.store.activity(&id).pop().unwrap();
+        assert!(
+            last.summary.starts_with("The west wall is not a gable"),
+            "{}",
+            last.summary
+        );
         assert!(!s.store.load(&id).unwrap().parts[0].edges[5].is_gable());
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
@@ -1331,14 +1380,22 @@ mod tests {
         let r = s
             .call_tool(
                 "update_settings",
-                &json!({ "drawings_dir": inbox.to_string_lossy(), "roof_defaults": { "pitch_deg": 35 } }),
+                &json!({ "drawings_dir": inbox.to_string_lossy(), "roof_defaults": { "pitch_deg": 35 }, "summary": "Drawings inbox as the user asked" }),
             )
             .unwrap();
         assert_eq!(r["effective"]["drawings_dir"], json!(inbox));
         assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
         assert!(inbox.is_dir());
         assert!(
-            s.call_tool("update_settings", &json!({ "locale": "fr" }))
+            s.call_tool(
+                "update_settings",
+                &json!({ "locale": "fr", "summary": "s" })
+            )
+            .is_err()
+        );
+        // Like every write, a settings change carries a summary (ARCH-005).
+        assert!(
+            s.call_tool("update_settings", &json!({ "theme": "dark" }))
                 .is_err()
         );
         let r = s.call_tool("get_settings", &json!({})).unwrap();
@@ -1576,6 +1633,29 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("out of range"), "{err}");
         assert!(s.list_projects_empty());
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn set_outline_repairs_a_part_without_edges() {
+        // ERR-010: a stored part with no walls (the app flags it
+        // `too_few_edges`); the tool meant to repair it must not panic.
+        let mut s = server();
+        let mut p = Project::new("Empty");
+        p.parts.push(RoofPart {
+            name: "A".into(),
+            edges: Vec::new(),
+        });
+        let id = s.store.save(None, &p).unwrap();
+        let r = s
+            .call_tool(
+                "set_outline",
+                &json!({ "id": id, "part": 0, "points": [[0, 0], [5, 0], [5, 4], [0, 4]], "summary": "Outline from the drawing" }),
+            )
+            .unwrap();
+        assert_eq!(r["parts"][0]["edges"].as_array().unwrap().len(), 4, "{r}");
+        let preset = Settings::load().roof_defaults;
+        assert_eq!(r["parts"][0]["edges"][0]["pitch_deg"], preset.pitch_deg);
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 

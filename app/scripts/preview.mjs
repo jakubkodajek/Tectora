@@ -31,7 +31,8 @@ const bridge = path.join(target, "debug", "examples", win ? "ui_bridge.exe" : "u
 const vite = path.join(app, "node_modules", "vite", "bin", "vite.js");
 
 const children = [
-  spawn(bridge, [dir, bridgePort], { cwd: repo, stdio: "inherit" }),
+  // The bridge answers only pages from this Vite port (ARCH-009).
+  spawn(bridge, [dir, bridgePort], { cwd: repo, stdio: "inherit", env: { ...process.env, TECTORA_PREVIEW_PORT: port } }),
   spawn(process.execPath, [vite, "--port", port, "--strictPort"], {
     cwd: app,
     stdio: "inherit",

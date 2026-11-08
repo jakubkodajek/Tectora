@@ -92,6 +92,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             if let Err(errors) = project.validate() {
                 bail!("invalid project:\n{}", errors.join("\n"));
             }
+            project.check_limits().map_err(anyhow::Error::msg)?;
             tectora_core::model::guarded(|| calc(&project, summary)).map_err(anyhow::Error::msg)
         }
     }
