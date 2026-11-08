@@ -630,7 +630,17 @@ impl Store {
         let line = serde_json::to_string(&entry).map_err(|e| io(e.into()))?;
         if entries.len() >= ACTIVITY_KEEP {
             entries.push(entry);
-            let keep = &entries[entries.len() - ACTIVITY_KEEP..];
+            let mut keep: Vec<&ActivityEntry> =
+                entries[entries.len() - ACTIVITY_KEEP..].iter().collect();
+            // The first change still waiting for review holds the version
+            // the user had before it ("Revert all" goes back to it). When
+            // more changes than the log keeps are pending, keep that one in
+            // place of the oldest kept one, so the pre-AI version is never
+            // dropped while the review is open.
+            let start = self.pending_start(id, &entries);
+            if start < entries.len() - ACTIVITY_KEEP {
+                keep[0] = &entries[start];
+            }
             let text: Vec<String> = keep
                 .iter()
                 .filter_map(|e| serde_json::to_string(e).ok())
@@ -728,13 +738,18 @@ impl Store {
     }
 
     /// The agents' changes to `id` that wait for the user's review.
-    pub fn pending_review(&self, id: &str) -> Option<PendingReview> {
+    /// Index of the first entry of `log` still waiting for review: the one
+    /// after the last entry by the user or accepted in the app.
+    fn pending_start(&self, id: &str, log: &[ActivityEntry]) -> usize {
         let accepted = self.reviewed_at(id);
-        let log = self.activity(id);
-        let start = log
-            .iter()
+        log.iter()
             .rposition(|e| e.actor == USER_ACTOR || e.ts_ms <= accepted)
-            .map_or(0, |i| i + 1);
+            .map_or(0, |i| i + 1)
+    }
+
+    pub fn pending_review(&self, id: &str) -> Option<PendingReview> {
+        let log = self.activity(id);
+        let start = self.pending_start(id, &log);
         let pending = &log[start..];
         let first = pending.first()?;
         let mut actors: Vec<String> = Vec::new();
@@ -907,6 +922,30 @@ mod tests {
         let e = store.load("bad").unwrap_err();
         assert_eq!(e.code(), "unreadable");
         assert_eq!(e.id(), Some("bad"));
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn revert_all_after_more_ai_steps_than_the_log_keeps_restores_the_users_version() {
+        // ERR-015: the trimmed log must keep the entry that holds the
+        // version before the pending AI changes.
+        let store = temp_store("long-review");
+        let mut p = examples::find("gable").unwrap().project();
+        let id = store.save_as(None, &p, USER_ACTOR, "create").unwrap();
+        let mine = p.clone();
+        for i in 1..=ACTIVITY_KEEP + 5 {
+            p.parts[0].edges[0].overhang = 0.5 + i as f64 / 100.0;
+            store
+                .save_as(Some(id.clone()), &p, "claude", &format!("step {i}"))
+                .unwrap();
+        }
+        assert_eq!(store.activity(&id).len(), ACTIVITY_KEEP);
+        let pending = store.pending_review(&id).unwrap();
+        assert_eq!(pending.before.as_ref(), Some(&mine));
+        let oldest = store.activity(&id)[0].ts_ms;
+        assert_eq!(pending.since_ts_ms, oldest);
+        assert_eq!(store.revert_to(&id, oldest, USER_ACTOR).unwrap(), mine);
+        assert_eq!(store.load(&id).unwrap(), mine);
         let _ = fs::remove_dir_all(&store.dir);
     }
 
