@@ -169,10 +169,28 @@ impl Settings {
     }
 
     pub fn load_from(path: &Path) -> Self {
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        Self::load_checked_from(path).0
+    }
+
+    /// The settings and, when the file exists but cannot be read or parsed,
+    /// why: the defaults then apply, and the app and the MCP server say so
+    /// instead of silently using another jobs folder (ERR-005).
+    pub fn load_checked() -> (Self, Option<String>) {
+        Self::load_checked_from(&settings_path())
+    }
+
+    pub fn load_checked_from(path: &Path) -> (Self, Option<String>) {
+        let text = match fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return (Self::default(), None);
+            }
+            Err(e) => return (Self::default(), Some(format!("{}: {e}", path.display()))),
+        };
+        match serde_json::from_str(&text) {
+            Ok(s) => (s, None),
+            Err(e) => (Self::default(), Some(format!("{}: {e}", path.display()))),
+        }
     }
 
     pub fn save(&self) -> Result<(), SettingsError> {
@@ -186,7 +204,18 @@ impl Settings {
         }
         let json =
             serde_json::to_string_pretty(self).map_err(|e| SettingsError::Io(e.to_string()))?;
-        let tmp = path.with_extension("tmp");
+        // A damaged file is kept beside the new one: it may hold the jobs
+        // folder the user chose, which the defaults would otherwise replace
+        // for good (ERR-005).
+        if let (_, Some(_)) = Self::load_checked_from(path)
+            && path.is_file()
+        {
+            let backup = backup_path(path);
+            fs::copy(path, &backup).map_err(|e| SettingsError::Io(e.to_string()))?;
+        }
+        // Unique per process: the app and an MCP server saving at the same
+        // time must not rename each other's half-written file.
+        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
         fs::write(&tmp, json).map_err(|e| SettingsError::Io(e.to_string()))?;
         fs::rename(&tmp, path).map_err(|e| SettingsError::Io(e.to_string()))
     }
@@ -283,6 +312,8 @@ impl Settings {
     }
 
     /// Settings plus the folders actually in use, for the UI and AI agents.
+    /// `effective.settings_error` says why the settings file could not be
+    /// read, when it could not (the defaults are in use then).
     pub fn describe(&self) -> Value {
         serde_json::json!({
             "settings": self,
@@ -292,9 +323,27 @@ impl Settings {
                 "projects_dir_from_env": env_projects_dir().is_some(),
                 "default_projects_dir": builtin_projects_dir(),
                 "settings_file": settings_path(),
+                "settings_error": Self::load_checked().1,
             }
         })
     }
+}
+
+/// A free name beside `path` for a damaged settings file:
+/// `settings.json.bad`, then `settings.json.bad-<ms>`.
+fn backup_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| SETTINGS_FILE.into());
+    let first = path.with_file_name(format!("{name}.bad"));
+    if !first.exists() {
+        return first;
+    }
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    path.with_file_name(format!("{name}.bad-{ms}"))
 }
 
 /// Creates `dir` if needed and checks that it is a folder we can write to.
@@ -336,6 +385,33 @@ mod tests {
             Settings::load_from(&d.join("bad.json")),
             Settings::default()
         );
+    }
+
+    #[test]
+    fn a_damaged_file_is_reported_and_kept_before_it_is_replaced() {
+        // ERR-005: a damaged file silently gave defaults, and the next
+        // settings write made the loss of the jobs folder permanent.
+        let d = tmp("damaged");
+        let path = d.join(SETTINGS_FILE);
+        let text = r#"{ "locale": "de", "projects_dir": "/srv/zakazky", }"#;
+        fs::write(&path, text).unwrap();
+        let (s, problem) = Settings::load_checked_from(&path);
+        assert_eq!(s, Settings::default());
+        assert!(problem.is_some_and(|p| p.contains("trailing comma")));
+        Settings::default().save_to(&path).unwrap();
+        let backups: Vec<String> = fs::read_dir(&d)
+            .unwrap()
+            .flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| n.starts_with("settings.json.bad"))
+            .collect();
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(fs::read_to_string(d.join(&backups[0])).unwrap(), text);
+        assert_eq!(Settings::load_checked_from(&path).1, None);
+        // A second save of a good file makes no backup.
+        Settings::default().save_to(&path).unwrap();
+        assert_eq!(fs::read_dir(&d).unwrap().count(), 2);
+        assert_eq!(Settings::load_checked_from(&d.join("none.json")).1, None);
     }
 
     #[test]

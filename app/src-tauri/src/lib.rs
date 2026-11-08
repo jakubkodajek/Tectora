@@ -72,15 +72,24 @@ fn list_projects(state: State<AppState>) -> CmdResult<Library> {
     })
 }
 
-/// Problems found at startup that the user should know about.
+/// Problems found at startup that the user should know about: a damaged
+/// settings file (the defaults, so another jobs folder, are in use, ERR-005)
+/// and a folder watcher that could not start.
 #[tauri::command]
 fn startup_warnings(state: State<AppState>) -> Vec<AppError> {
-    state
-        .watcher_error
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .map(|d| AppError::new("watcher").detail(d.clone()))
+    let settings = Settings::load_checked()
+        .1
+        .map(|d| AppError::new("settings_unreadable").detail(d));
+    settings
+        .into_iter()
+        .chain(
+            state
+                .watcher_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .map(|d| AppError::new("watcher").detail(d.clone())),
+        )
         .collect()
 }
 
@@ -741,8 +750,10 @@ pub fn run() {
                     }
                 }
             };
-            if store.list().is_empty() {
-                // First run: seed the library with a couple of examples.
+            // First run: seed the library with a couple of examples. Not
+            // when the settings are damaged: the folder is then the default
+            // one, not the user's (ERR-005).
+            if store.list().is_empty() && Settings::load_checked().1.is_none() {
                 for id in ["gable", "l-shape"] {
                     if let Some(ex) = examples::find(id) {
                         let _ = store.save(None, &ex.project());

@@ -136,7 +136,14 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             let (projects, broken) = store.scan()?;
             Ok(json!({ "projects": projects, "broken": broken }))
         }
-        "startup_warnings" => Ok(json!([])),
+        // As the app: a damaged settings file is reported (ERR-005).
+        "startup_warnings" => Ok(json!(
+            Settings::load_checked()
+                .1
+                .map(|d| json!({ "code": "settings_unreadable", "detail": d }))
+                .into_iter()
+                .collect::<Vec<_>>()
+        )),
         // TECTORA_PREVIEW_UPDATE=0.2.0 shows the update offer in the library.
         "update_check" => Ok(std::env::var("TECTORA_PREVIEW_UPDATE").map_or(
             Value::Null,
