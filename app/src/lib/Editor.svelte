@@ -225,14 +225,16 @@
       // An external edit (AI agent, CLI) saved since our last save or load
       // and not loaded yet: merge it in instead of writing over it.
       if (lastSaved) {
-        // A file that cannot be read back (saved by a newer Tectora, damaged,
-        // unreachable) is not overwritten with this older copy: the error
-        // goes to the catch below and the edits stay in memory. A file
-        // deleted outside the app is written again with the edits.
+        // A file saved by a newer Tectora or unreachable is not overwritten
+        // with this copy: the error goes to the catch below and the edits
+        // stay in memory. A file deleted outside the app is written again,
+        // and a damaged one is repaired with the editor's good copy, as the
+        // store allows (ERR-018).
         const onDisk = await api.loadProject(id).then(
           (p) => JSON.stringify(p),
           (e) => {
-            if (toAppError(e).code === "not_found") return null;
+            const code = toAppError(e).code;
+            if (code === "not_found" || code === "unreadable") return null;
             throw e;
           },
         );
@@ -1788,11 +1790,15 @@
   }
   .tabs button {
     position: relative;
-    flex: 1;
+    flex: 1 1 auto;
+    /* Longer labels (de "Ergebnisse", "Rechenweg") shrink instead of
+       pushing the dock out of the window (UI-013). */
+    min-width: 0;
+    padding: 0 3px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
+    gap: 4px;
     height: 36px;
     border: none;
     border-bottom: 2px solid transparent;
@@ -1800,6 +1806,12 @@
     font-size: 13px;
     font-weight: 500;
     color: var(--text-2);
+  }
+  .tab-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .tabs button.on {
     color: var(--text);

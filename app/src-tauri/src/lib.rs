@@ -594,6 +594,48 @@ fn file_args(args: impl IntoIterator<Item = String>) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The id of Tectora's own Quit item (macOS, see [`app_menu`]).
+const QUIT_ID: &str = "tectora-quit";
+
+/// Tauri's default menu, except that on macOS Quit (Cmd+Q) is Tectora's own
+/// item: the predefined one ends the app through `terminate:` without any
+/// close request, so the window's guard for unsaved edits never ran
+/// (ERR-022; traced in tao 0.37, which sends only `LoopDestroyed`).
+fn app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
+    let menu = tauri::menu::Menu::default(app)?;
+    #[cfg(target_os = "macos")]
+    let items = menu.items()?;
+    #[cfg(target_os = "macos")]
+    if let Some(app_menu) = items.first().and_then(|m| m.as_submenu()) {
+        // The app submenu ends with the predefined Quit.
+        let n = app_menu.items()?.len();
+        if n > 0 {
+            app_menu.remove_at(n - 1)?;
+            let name = app.package_info().name.clone();
+            app_menu.append(&tauri::menu::MenuItem::with_id(
+                app,
+                QUIT_ID,
+                format!("Quit {name}"),
+                true,
+                Some("CmdOrCtrl+Q"),
+            )?)?;
+        }
+    }
+    Ok(menu)
+}
+
+/// Quit as a window close: the window's close-requested guard saves or asks
+/// first, then the last closed window ends the app.
+fn quit_through_close_guard<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let windows = app.webview_windows();
+    if windows.is_empty() {
+        app.exit(0);
+    }
+    for w in windows.values() {
+        let _ = w.close();
+    }
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         // A second launch (double-click while the app runs) hands its files
@@ -605,6 +647,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updates::Updates::default())
+        .menu(app_menu)
+        .on_menu_event(|app, event| {
+            if event.id() == QUIT_ID {
+                quit_through_close_guard(app);
+            }
+        })
         .setup(|app| {
             // Same folder as `tectora mcp`, so AI edits show up here.
             // A chosen folder that is gone (e.g. an unplugged network drive)

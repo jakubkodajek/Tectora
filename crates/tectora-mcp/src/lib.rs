@@ -893,15 +893,18 @@ impl Server {
                     .ok_or("`changes` must be a list")?;
                 for c in changes {
                     // As the editor's "apply to all walls": a pitch for every
-                    // wall leaves gables and direction changes as they are.
+                    // wall leaves gables and direction changes as they are,
+                    // unless the same change turns the gables into eaves
+                    // (then they take that pitch, ERR-020).
                     let all = c.get("all").and_then(Value::as_bool) == Some(true);
+                    let to_eave = c.get("gable").and_then(Value::as_bool) == Some(false);
                     let mut no_pitch = c.clone();
                     if let Some(o) = no_pitch.as_object_mut() {
                         o.remove("pitch_deg");
                     }
                     for i in edge_indices(c, part.edges.len())? {
                         let e = &part.edges[i];
-                        let keep = all && (e.is_gable() || e.direction_rad.is_some());
+                        let keep = all && ((e.is_gable() && !to_eave) || e.direction_rad.is_some());
                         apply_edge_fields(&mut part.edges[i], if keep { &no_pitch } else { c })
                             .map_err(|m| format!("edge {i}: {m}"))?;
                     }
