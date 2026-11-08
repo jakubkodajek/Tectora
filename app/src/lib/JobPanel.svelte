@@ -8,6 +8,7 @@
   import type { Attachment, Project } from "./types";
   import { JOB_STATUSES } from "./types";
   import { DACAD_MATERIALS, defaultMaterialName } from "./materials";
+  import { textfield } from "./textfield";
 
   /** Opens an attached file; files that are not drawings or documents are only shown in their folder. */
   async function openFile(name: string) {
@@ -107,10 +108,18 @@
 
   const ids = Array.from({ length: DACAD_MATERIALS }, (_, i) => i + 1);
 
-  function setName(m: number, e: Event) {
+  /** Stores a typed text into the job as it is now (an AI save may have replaced it while typing). */
+  function setText(apply: (p: Project, v: string) => void) {
+    return (v: string) => {
+      apply(project, v);
+      onchange();
+    };
+  }
+
+  function setName(m: number, v: string) {
     const names = [...(project.material_names ?? [])];
     while (names.length < m) names.push("");
-    names[m - 1] = (e.target as HTMLInputElement).value.trim();
+    names[m - 1] = v;
     while (names.length && !names[names.length - 1]) names.pop();
     project.material_names = names;
     onchange();
@@ -118,9 +127,9 @@
 </script>
 
 <div class="job">
-  <label><span>{t("job.name")}</span><input type="text" bind:value={project.name} onchange={onchange} /></label>
+  <label><span>{t("job.name")}</span><input type="text" use:textfield={{ value: project.name, required: true, onchange: setText((p, v) => (p.name = v)) }} /></label>
   <div class="two">
-    <label><span>{t("job.number")}</span><input type="text" bind:value={project.job.number} onchange={onchange} /></label>
+    <label><span>{t("job.number")}</span><input type="text" use:textfield={{ value: project.job.number, onchange: setText((p, v) => (p.job.number = v)) }} /></label>
     <label>
       <span>{t("job.status")}</span>
       <select bind:value={project.job.status} onchange={statusChanged}>
@@ -128,9 +137,9 @@
       </select>
     </label>
   </div>
-  <label><span>{t("job.customer")}</span><input type="text" bind:value={project.job.customer} onchange={onchange} /></label>
-  <label><span>{t("job.address")}</span><input type="text" bind:value={project.job.address} onchange={onchange} /></label>
-  <label><span>{t("job.notes")}</span><textarea rows="5" bind:value={project.notes} onchange={onchange}></textarea></label>
+  <label><span>{t("job.customer")}</span><input type="text" use:textfield={{ value: project.job.customer, onchange: setText((p, v) => (p.job.customer = v)) }} /></label>
+  <label><span>{t("job.address")}</span><input type="text" use:textfield={{ value: project.job.address, onchange: setText((p, v) => (p.job.address = v)) }} /></label>
+  <label><span>{t("job.notes")}</span><textarea rows="5" use:textfield={{ value: project.notes, raw: true, onchange: setText((p, v) => (p.notes = v)) }}></textarea></label>
   <h4>{t("files.title")}</h4>
   {#if files.length}
     <ul class="files">
@@ -153,8 +162,8 @@
   {#each ids as m}
     <label class="mat">
       <span>{m}</span>
-      <input type="text" value={project.material_names?.[m - 1] ?? ""} placeholder={defaultMaterialName(m)}
-        onchange={(e) => setName(m, e)} />
+      <input type="text" placeholder={defaultMaterialName(m)}
+        use:textfield={{ value: project.material_names?.[m - 1] ?? "", onchange: (v) => setName(m, v) }} />
     </label>
   {/each}
 </div>
