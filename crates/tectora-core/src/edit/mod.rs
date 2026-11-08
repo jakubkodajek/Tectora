@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::geom::Point2;
-use crate::model::{EdgeDef, HalfHip, PitchBreak};
+use crate::model::{EdgeDef, HalfHip, PitchBreak, Project};
 
 pub mod calc;
 pub mod dormers;
@@ -128,6 +128,28 @@ pub(crate) fn is_marker(e: &EdgeDef) -> bool {
     e.direction_rad.is_some()
 }
 
+/// Removes everything drawn (parts, dormers, chimneys, roof windows, roof
+/// openings, hand-drawn lines and faces) and leaves an empty canvas, as the
+/// editor's Clear. The job data, notes, roof options and the stored result
+/// stay. Returns whether anything was removed.
+pub fn clear_roof(project: &mut Project) -> bool {
+    let had = !(project.parts.is_empty()
+        && project.dormers.is_empty()
+        && project.chimneys.is_empty()
+        && project.windows.is_empty()
+        && project.roof_openings.is_empty()
+        && project.manual_lines.is_empty()
+        && project.manual_faces.is_empty());
+    project.parts.clear();
+    project.dormers.clear();
+    project.chimneys.clear();
+    project.windows.clear();
+    project.roof_openings.clear();
+    project.manual_lines.clear();
+    project.manual_faces.clear();
+    had
+}
+
 /// A wall with the given start and roof values and nothing else set.
 pub fn plain_edge(start: Point2, pitch_deg: f64, eave_height: f64, overhang: f64) -> EdgeDef {
     EdgeDef {
@@ -142,5 +164,40 @@ pub fn plain_edge(start: Point2, pitch_deg: f64, eave_height: f64, overhang: f64
         clad: false,
         material: crate::model::DEFAULT_MATERIAL,
         source: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Chimney, ManualLine};
+
+    #[test]
+    fn clear_roof_leaves_an_empty_canvas_and_keeps_the_job() {
+        let mut p = crate::examples::find("hip").expect("example").project();
+        p.job.customer = "Novák".into();
+        p.notes = "note".into();
+        p.material_names = vec!["Tiles".into()];
+        p.chimneys.push(Chimney {
+            corners: Vec::new(),
+            height: 0.0,
+        });
+        p.manual_lines.push(ManualLine {
+            a: [0.0; 3],
+            b: [1.0, 0.0, 0.0],
+            code: "M".into(),
+            length: None,
+            label: String::new(),
+        });
+        assert!(clear_roof(&mut p));
+        assert!(p.parts.is_empty() && p.chimneys.is_empty() && p.manual_lines.is_empty());
+        assert!(p.dormers.is_empty() && p.windows.is_empty() && p.roof_openings.is_empty());
+        assert!(p.manual_faces.is_empty());
+        assert_eq!(p.job.customer, "Novák");
+        assert_eq!(p.notes, "note");
+        assert_eq!(p.material_names, vec!["Tiles".to_string()]);
+        assert!(p.validate().is_ok());
+        // Nothing left to remove.
+        assert!(!clear_roof(&mut p));
     }
 }

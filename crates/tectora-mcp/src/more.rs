@@ -303,6 +303,14 @@ pub(crate) fn tools() -> Vec<Value> {
             }), &["id", "items", "summary"]),
         }),
         json!({
+            "name": "clear_roof",
+            "description": "Remove everything drawn (parts, dormers, chimneys, roof windows, roof openings, hand-drawn lines and faces) and leave an empty canvas, as the editor's Clear. Job data, notes, roof options and the stored result stay; the change can be reverted like any other.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "summary": summary_prop(),
+            }), &["id", "summary"]),
+        }),
+        json!({
             "name": "add_dormer",
             "description": "Place a dormer on the roof (DACAD Gauben). The front's left corner is `start`; get_project lists dormers with these parameters.",
             "inputSchema": schema({
@@ -500,6 +508,14 @@ impl Server {
             "transform_items" => self.transform_items(args),
             "add_shape_part" => self.add_shape_part(args),
             "delete_items" => self.delete_items(args),
+            "clear_roof" => (|| {
+                let (id, before) = self.load(args)?;
+                let mut p = before.clone();
+                if !tectora_core::edit::clear_roof(&mut p) {
+                    return Err("the job has nothing drawn to clear".into());
+                }
+                self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+            })(),
             "add_dormer" | "update_dormer" => self.dormer(args, name == "add_dormer"),
             "set_manual" => self.set_manual(args),
             "set_roof_options" => self.set_roof_options(args),
@@ -1638,6 +1654,15 @@ mod tests {
             json!({ "id": id, "items": [{ "kind": "part", "index": 3 }, { "kind": "part", "index": 2 }], "summary": "s" }),
         );
         assert_eq!(s.store.load(&id).unwrap().parts.len(), 2);
+        call(
+            &mut s,
+            "clear_roof",
+            json!({ "id": id, "summary": "Start over" }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert!(p.parts.is_empty() && p.dormers.is_empty());
+        let r = s.call_tool("clear_roof", &json!({ "id": id, "summary": "again" }));
+        assert!(r.is_err(), "nothing left to clear");
     }
 
     #[test]

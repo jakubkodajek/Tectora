@@ -55,7 +55,8 @@ The tools cover every operation of the Tectora editor:
   `update_edges` (also `clad` for a clad gable and `direction_deg` to turn
   or flip a direction change; with `all` a pitch leaves gables alone).
 - Parts: `add_part`, `add_shape_part` (standard roofs and regular polygons),
-  `transform_part` (move, rotate, mirror, with copies), `delete_items`.
+  `transform_part` (move, rotate, mirror, with copies), `delete_items`,
+  `clear_roof` (remove everything drawn and start on an empty canvas).
 - Dormers: `add_dormer`, `update_dormer` (gable, pointed, hip, half_hip,
   shed, trapezoid, round); `get_project` lists them with these parameters.
 - Windows, chimneys (also as a rectangle) and roof openings: `set_openings`.

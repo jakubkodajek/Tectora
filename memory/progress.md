@@ -63,6 +63,15 @@ sessions that use it know where things stand.
 - Next: test Connect on Windows with the MSIX Claude Desktop; tectora-review.
 - Blockers / open questions: none.
 
+## 2026-11-08 - clear-canvas-and-face-pitch
+- Done: editor "Clear all" (toolbar, confirm, undo; deleting the last part
+  now clears too) + MCP `clear_roof` (`tectora_core::edit::clear_roof`);
+  plan writes each face's pitch and area at its centre along its eave
+  (`app/src/lib/facelabels.ts`), hidden with the dimensions toggle and while
+  the breakdown shows face numbers.
+- State: `make check` exit 0; `npx playwright test objects mcp editor` 63 passed.
+  `make sweeps`: the 2 dark-theme accent contrast failures predate this change.
+- Next: export of the plan picture and the German line list (other thread).
 ## 2026-11-08 · Export for the offer (plan sheet + price-sheet text)
 
 - Done: `tectora_core::export`: the text list in the format of DACAD's

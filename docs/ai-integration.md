@@ -44,7 +44,7 @@ programs; Codex in the ChatGPT desktop app can.
 | `list_projects`, `get_project`, `calc` | Search the library (text, status, AI change, dates, area, sort), read designs, edge tables, dormers, quantities by DACAD line code, stored result |
 | `calc_breakdown` | How every face area and line length was calculated, step by step (the app's Calculation tab) |
 | `create_standard_roof`, `create_project`, `create_from_example` | Create designs |
-| `add_part`, `add_shape_part`, `transform_part`, `delete_items` | Parts: add (standard roofs, regular polygons), move / rotate / mirror / copy, delete anything |
+| `add_part`, `add_shape_part`, `transform_part`, `delete_items`, `clear_roof` | Parts: add (standard roofs, regular polygons), move / rotate / mirror / copy, delete anything, clear the whole canvas |
 | `update_edges`, `set_outline`, `edit_walls` | Walls and their roof definitions (incl. clad gable and the direction of a direction change); corners, lengths, direction changes, parallel shift |
 | `add_dormer`, `update_dormer` | Dormers by kind (gable, pointed, hip, half-hip, shed, trapezoid, round) |
 | `set_openings`, `set_manual`, `set_roof_options` | Windows, chimneys, openings; hand-drawn lines and faces; flat roof, material names |
