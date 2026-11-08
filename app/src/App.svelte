@@ -60,9 +60,10 @@
 
   /** The projects folder changed: reload the library from the new one. The
    * open job belongs to the old folder, so the editor closes (ERR-019). */
-  function libraryChanged() {
-    api.projectsDir().then((d) => (dir = d));
-    openId = null;
+  async function libraryChanged() {
+    const d = await api.projectsDir().catch(() => dir);
+    if (dir && d !== dir) openId = null;
+    dir = d;
     refresh();
   }
 
