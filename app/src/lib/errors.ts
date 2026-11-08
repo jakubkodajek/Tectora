@@ -25,7 +25,8 @@ export type Action =
   | "preview"
   | "files"
   | "export"
-  | "update";
+  | "update"
+  | "connect";
 
 export interface Described {
   /** One sentence: what failed. */
@@ -72,6 +73,9 @@ const KNOWN = new Set([
   "internal",
   "update_failed",
   "no_update",
+  "ai_not_installed",
+  "ai_config_invalid",
+  "ai_config_io",
 ]);
 
 /** A translated description of an error from `action`. */

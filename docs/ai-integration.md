@@ -11,8 +11,30 @@ the desktop app.
 - Development / CLI: `tectora mcp [--dir <library folder>]`.
 
 Both use the same project library as the app: `$TECTORA_PROJECTS_DIR` or
-`Documents/Tectora`. The app's "Connect AI" dialog shows the exact command and
-ready-to-paste configuration for Claude Desktop, Claude Code and Gemini CLI.
+`Documents/Tectora`.
+
+## Connecting an AI app
+
+The app's "Connect AI" dialog lists the AI apps installed for this user and
+connects each with one click (`tectora_core::assistants`, the approach of
+Jakub's Buzzdome app). Connecting adds one entry, `tectora`, with this
+executable and the `mcp` argument, to the app's own settings file and keeps
+everything else in it (TOML comments too). Nothing else changes; the AI app
+must be restarted (or its MCP list refreshed) to pick it up.
+
+| AI app | Settings file | Entry |
+| --- | --- | --- |
+| Claude Desktop | macOS `~/Library/Application Support/Claude/claude_desktop_config.json`; Windows `%APPDATA%\Claude\`, plus the packaged (MSIX) app's own copies in `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\` and `%LOCALAPPDATA%\Claude-Data\claude_*\` | `mcpServers.tectora` |
+| Codex (ChatGPT desktop app, Codex CLI and IDE extension) | `~/.codex/config.toml` or `$CODEX_HOME/config.toml` | `[mcp_servers.tectora]` |
+| Antigravity | `~/.gemini/config/mcp_config.json` | `mcpServers.tectora` |
+
+An app counts as installed when the folder it makes on first start exists.
+A row says "Needs connecting again" when an entry starts another program
+(Tectora moved, or an entry pasted by hand points at an old copy). A settings
+file that is not valid JSON/TOML is left untouched and the error is shown.
+For any other app the dialog gives the `claude mcp add` command for Claude
+Code and the JSON entry to paste. ChatGPT on the web cannot start local
+programs; Codex in the ChatGPT desktop app can.
 
 ## Tools
 

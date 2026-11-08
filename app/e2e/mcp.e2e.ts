@@ -165,17 +165,28 @@ test.describe("live AI changes", () => {
     await expect(page.getByRole("row").filter({ hasText: "Od AI" })).toBeVisible();
   });
 
-  test("AI connect dialog: every client tab, copy and the follow toggle", async ({ app, page }) => {
+  test("AI connect dialog: one-click connect, other apps, copy and the follow toggle", async ({ app, page }) => {
     await app.open();
     await page.getByRole("button", { name: cs("ai.connect") }).click();
     const dlg = page.getByRole("dialog", { name: cs("conn.title") });
-    for (const name of ["Claude Desktop", "Claude Code", "Gemini CLI", "ChatGPT"]) {
+    // The preview bridge shows Claude Desktop connected, Codex not connected
+    // and Antigravity missing, without touching real AI app settings.
+    const row = (name: string) => dlg.locator(".apps li").filter({ hasText: name });
+    await expect(row("Claude Desktop")).toContainText(cs("conn.state.connected"));
+    await expect(row("Antigravity")).toContainText(cs("conn.state.not_installed"));
+    await expect(row("Antigravity").getByRole("button")).toHaveCount(0);
+    // Not connected on the first run; a retry against the same bridge finds it connected.
+    await row("Codex").getByRole("button").click();
+    await expect(row("Codex")).toContainText(cs("conn.state.connected"));
+    await expect(row("Codex")).toContainText(cs("conn.restart.codex"));
+    for (const name of ["Claude Code", cs("conn.otherJson"), "ChatGPT"]) {
       await dlg.getByRole("tab", { name }).click();
       await expect(dlg.getByRole("tab", { name })).toHaveAttribute("aria-selected", "true");
     }
+    await expect(dlg.locator(".note")).toContainText("Codex");
     await dlg.getByRole("tab", { name: "Claude Code" }).click();
     await expect(dlg.locator("pre")).toContainText("claude mcp add tectora");
-    await dlg.getByRole("tab", { name: "Claude Desktop" }).click();
+    await dlg.getByRole("tab", { name: cs("conn.otherJson") }).click();
     await expect(dlg.locator("pre")).toContainText('"mcpServers"');
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
     await dlg.getByRole("button", { name: cs("conn.copy") }).click();

@@ -17,7 +17,7 @@ use tectora_core::diff::Change;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::settings::{self, Settings};
 use tectora_core::store::{self, BrokenFile, LiveStatus, Store, USER_ACTOR, outlines};
-use tectora_core::{Project, bundle, examples, snapshot};
+use tectora_core::{Project, assistants, bundle, examples, snapshot};
 
 use error::{AppError, guard};
 
@@ -145,7 +145,29 @@ fn mcp_command() -> Value {
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "tectora-app".into());
-    json!({ "command": exe, "args": ["mcp"] })
+    json!({ "command": exe, "args": [assistants::MCP_ARG] })
+}
+
+/// The command AI apps start Tectora's MCP server with.
+fn server_command() -> assistants::ServerCommand {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tectora-app"));
+    assistants::ServerCommand::new(&exe)
+}
+
+/// The AI apps Tectora can connect itself to, and whether each is connected.
+#[tauri::command]
+fn ai_assistants() -> Vec<assistants::AssistantInfo> {
+    assistants::list(&server_command())
+}
+
+/// Adds Tectora's MCP server to an AI app's configuration (the Connect AI
+/// dialog's one-click Connect), keeping everything else in the file.
+#[tauri::command]
+fn connect_ai_assistant(id: assistants::Assistant) -> CmdResult<assistants::ConnectChange> {
+    guard(|| {
+        id.connect(&server_command())
+            .map_err(|e| AppError::new(e.code()).detail(e.to_string()))
+    })
 }
 
 #[tauri::command]
@@ -623,6 +645,8 @@ pub fn run() {
             accept_changes,
             live_status,
             mcp_command,
+            ai_assistants,
+            connect_ai_assistant,
             create_standard,
             standard_part,
             list_examples,
