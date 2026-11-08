@@ -658,7 +658,7 @@ impl Server {
                 let (id, _) = self.load(args)?;
                 let name = arg_str(args, "name")?;
                 self.store.remove_attachment(&id, name)?;
-                self.live("removed", Some(&name), format!("Removed {name}"), Some(&id));
+                self.live("removed", Some(name), format!("Removed {name}"), Some(&id));
                 Ok(json!({ "id": id, "removed": name }))
             })(),
             "export_job" => (|| {

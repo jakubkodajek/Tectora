@@ -160,7 +160,7 @@ fn cutter_models(st: &State) -> Vec<(i32, i32)> {
         for s in f
             .cut_src
             .iter()
-            .filter(|s| ![b'T', b'L'].contains(&(s.kind as u8)))
+            .filter(|s| !b"TL".contains(&(s.kind as u8)))
         {
             let (a, b) = (f.rec.model, s.model);
             if a != b && models.contains(&b) && !pairs.contains(&(a.min(b), a.max(b))) {
