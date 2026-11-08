@@ -365,6 +365,11 @@ pub(crate) fn tools() -> Vec<Value> {
             "inputSchema": schema(json!({ "id": id }), &["id"]),
         }),
         json!({
+            "name": "get_review",
+            "description": "Whether the user has reviewed your changes to a design in the app. `pending` is null when every change is accepted or reverted; otherwise it gives the oldest unreviewed change (`since_ts_ms`), how many there are, who made them and how they change the figures (`differences`: roof_area, ridge_height, line:<code>, material:<n>, before → now). Only the user accepts changes, in the app.",
+            "inputSchema": schema(json!({ "id": id }), &["id"]),
+        }),
+        json!({
             "name": "revert_to",
             "description": "Undo every change of a design made at or after `ts_ms` (from get_history).",
             "inputSchema": schema(json!({ "id": id, "ts_ms": { "type": "integer" } }), &["id", "ts_ms"]),
@@ -440,8 +445,33 @@ impl Server {
             "set_roof_options" => self.set_roof_options(args),
             "roof_helper" => self.roof_helper(args),
             "get_history" => self.load(args).map(|(id, _)| {
-                json!(self.store.activity(&id).iter().rev().map(|e| e.info()).collect::<Vec<_>>())
+                let since = self.store.pending_review(&id).map_or(u64::MAX, |r| r.since_ts_ms);
+                json!(self
+                    .store
+                    .activity(&id)
+                    .iter()
+                    .rev()
+                    .map(|e| {
+                        let mut v = json!(e.info());
+                        v["pending_review"] = json!(e.ts_ms >= since);
+                        v
+                    })
+                    .collect::<Vec<_>>())
             }),
+            "get_review" => (|| {
+                let (id, _) = self.load(args)?;
+                let status = self.store.review_status(&id)?;
+                Ok(json!({
+                    "id": id,
+                    "accepted_ms": self.store.reviewed_at(&id),
+                    "pending": status.map(|s| json!({
+                        "since_ts_ms": s.pending.since_ts_ms,
+                        "count": s.pending.count,
+                        "actors": s.pending.actors,
+                        "differences": s.differences,
+                    })),
+                }))
+            })(),
             "revert_to" => (|| {
                 let (id, _) = self.load(args)?;
                 let ts: u64 = req(args, "ts_ms")?;
@@ -1239,6 +1269,16 @@ mod tests {
                 .len()
                 >= 2
         );
+        // Nothing accepted in the app yet: the agent's changes wait for review.
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        assert_eq!(history[0]["pending_review"], true);
+        let review = call(&mut s, "get_review", json!({ "id": id }));
+        assert!(review["pending"]["count"].as_u64().unwrap() >= 2);
+        let last = s.store.activity(&id).last().unwrap().ts_ms;
+        s.store.mark_reviewed(&id, last).unwrap();
+        let review = call(&mut s, "get_review", json!({ "id": id }));
+        assert!(review["pending"].is_null());
+        assert_eq!(review["accepted_ms"], last);
         call(&mut s, "delete_project", json!({ "id": copy }));
         assert!(!s.store.exists(&copy));
         assert!(

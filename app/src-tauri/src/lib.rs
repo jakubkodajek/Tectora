@@ -121,6 +121,19 @@ fn revert_changes(state: State<AppState>, id: String, ts_ms: u64) -> CmdResult<P
     guard(|| Ok(state.store().revert_to(&id, ts_ms, USER_ACTOR)?))
 }
 
+/// The AI changes of `id` waiting for review, with the version before them
+/// and what they did to the figures.
+#[tauri::command]
+fn review_status(state: State<AppState>, id: String) -> CmdResult<Option<store::ReviewStatus>> {
+    guard(|| Ok(state.store().review_status(&id)?))
+}
+
+/// Accepts every change of `id` recorded at or before `ts_ms`.
+#[tauri::command]
+fn accept_changes(state: State<AppState>, id: String, ts_ms: u64) -> CmdResult<u64> {
+    guard(|| Ok(state.store().mark_reviewed(&id, ts_ms)?))
+}
+
 #[tauri::command]
 fn live_status(state: State<AppState>) -> Option<LiveStatus> {
     state.store().live()
@@ -576,6 +589,8 @@ pub fn run() {
             project_activity,
             revert_last_change,
             revert_changes,
+            review_status,
+            accept_changes,
             live_status,
             mcp_command,
             create_standard,

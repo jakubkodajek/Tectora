@@ -5,6 +5,7 @@
   import { t } from "./i18n.svelte";
   import { windowOutline, type OpeningKind, type OpeningSel } from "./openings";
   import { codeKind, lineLength, type ManualSel } from "./manual";
+  import type { Ghost } from "./changes";
 
   let {
     project,
@@ -14,6 +15,8 @@
     onmoveend,
     oninsert,
     highlight = new Set<string>(),
+    highlightItems = new Set<string>(),
+    ghost = null,
     drawing = null,
     ondrawpoint,
     ondrawclose,
@@ -34,6 +37,10 @@
     oninsert: (part: number, edge: number, x: number, y: number) => void;
     /** "part:edge" keys of edges changed by the latest AI edit. */
     highlight?: Set<string>;
+    /** "field:item" keys (dormer:0, chimney:1, …) of items changed by the AI. */
+    highlightItems?: Set<string>;
+    /** The state before the pending AI changes, drawn dashed. */
+    ghost?: Ghost | null;
     /** Points of a footprint being drawn (draw mode), or null. */
     drawing?: Point2[] | null;
     ondrawpoint?: (x: number, y: number) => void;
@@ -318,6 +325,17 @@
       {/each}
     {/if}
 
+    {#if ghost}
+      <g class="ghost" aria-hidden="true">
+        {#each ghost.shapes as pts}
+          <path d={"M" + pts.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"} />
+        {/each}
+        {#each ghost.lines as [a, b]}
+          <line x1={sx(a.x)} y1={sy(a.y)} x2={sx(b.x)} y2={sy(b.y)} />
+        {/each}
+      </g>
+    {/if}
+
     {#each project.parts as part, pi}
       {#each part.edges as e, i}
         {@const b = part.edges[(i + 1) % part.edges.length].start}
@@ -354,7 +372,7 @@
     {#each project.dormers as d, di}
       {@const fs = d.edges.find((x) => x.direction_rad == null)?.start ?? d.edges[0]?.start}
       {#if fs}
-        <g class="dormer" class:sel={dormerSel === di}>
+        <g class="dormer" class:sel={dormerSel === di} class:changed={highlightItems.has(`dormer:${di}`)}>
           {#each d.edges as x, k}
             {#if x.direction_rad != null}
               {@const s0 = k === 0 ? -0.8 : 0.8}
@@ -370,32 +388,32 @@
       {/if}
     {/each}
     {#each project.chimneys as c, ci}
-      <path class="opening chimney" class:sel={openSel?.kind === "chimney" && openSel.index === ci}
+      <path class="opening chimney" class:sel={openSel?.kind === "chimney" && openSel.index === ci} class:changed={highlightItems.has(`chimney:${ci}`)}
         d={"M" + c.corners.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("opening.chimneyN", { n: ci + 1 })}
         onpointerdown={(ev) => pickOpening(ev, "chimney", ci)} />
     {/each}
     {#each project.roof_openings ?? [] as c, hi}
-      <path class="opening hole" class:sel={openSel?.kind === "hole" && openSel.index === hi}
+      <path class="opening hole" class:sel={openSel?.kind === "hole" && openSel.index === hi} class:changed={highlightItems.has(`roof_opening:${hi}`)}
         d={"M" + c.corners.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("opening.holeN", { n: hi + 1 })}
         onpointerdown={(ev) => pickOpening(ev, "hole", hi)} />
     {/each}
     {#each project.windows ?? [] as w, wi}
-      <path class="opening window" class:sel={openSel?.kind === "window" && openSel.index === wi}
+      <path class="opening window" class:sel={openSel?.kind === "window" && openSel.index === wi} class:changed={highlightItems.has(`window:${wi}`)}
         d={"M" + windowOutline(result, w).map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("opening.windowN", { n: wi + 1 })}
         onpointerdown={(ev) => pickOpening(ev, "window", wi)} />
     {/each}
     {#each project.manual_faces ?? [] as f, fi}
-      <path class="manual-face" class:sel={manualSel?.kind === "face" && manualSel.index === fi}
+      <path class="manual-face" class:sel={manualSel?.kind === "face" && manualSel.index === fi} class:changed={highlightItems.has(`manual_face:${fi}`)}
         d={"M" + f.points.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("manual.faceN", { n: fi + 1 })}
         onpointerdown={(ev) => pickManual(ev, "face", fi)} />
     {/each}
     {#each project.manual_lines ?? [] as l, li}
       {@const sel = manualSel?.kind === "line" && manualSel.index === li}
-      <g class="manual-line" class:sel>
+      <g class="manual-line" class:sel class:changed={highlightItems.has(`manual_line:${li}`)}>
         <line class="hit" x1={sx(l.a[0])} y1={sy(l.a[1])} x2={sx(l.b[0])} y2={sy(l.b[1])}
           role="button" tabindex="-1" aria-label={t("manual.lineN", { n: li + 1 })}
           onpointerdown={(ev) => pickManual(ev, "line", li)} />
@@ -557,6 +575,33 @@
   .edge.changed .wall {
     stroke: var(--ai);
     stroke-dasharray: none;
+  }
+  /* Items the AI added or changed: same orange as changed walls. */
+  .opening.changed,
+  .manual-face.changed {
+    stroke: var(--ai);
+    stroke-width: 2.5;
+    animation: pulse-stroke 1.6s ease-in-out infinite;
+  }
+  .dormer.changed .front,
+  .dormer.changed .cheek,
+  .manual-line.changed .stroke {
+    stroke: var(--ai);
+  }
+  @keyframes pulse-stroke {
+    50% {
+      stroke-opacity: 0.45;
+    }
+  }
+  /* The state before the pending AI changes. */
+  .ghost path,
+  .ghost line {
+    fill: none;
+    stroke: var(--ai-strong);
+    stroke-width: 1.4;
+    stroke-dasharray: 5 4;
+    opacity: 0.7;
+    pointer-events: none;
   }
   @keyframes pulse {
     50% {

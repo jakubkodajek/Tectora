@@ -124,6 +124,30 @@ pub fn compare(stored: &ResultSnapshot, current: &ResultSnapshot) -> Vec<Differe
     out
 }
 
+/// How the figures (area, line lengths, ridge height, area by material)
+/// change from `before` to `after`; `None` stands for a project without a
+/// roof. A roof that is out of range or makes the calculation fail gives no
+/// figures, so its change is unknown (`None`).
+pub fn change_in_figures(before: Option<&Project>, after: &Project) -> Option<Vec<Difference>> {
+    let figures = |p: &Project| {
+        p.check_limits().ok()?;
+        crate::model::guarded(|| take(p)).ok()
+    };
+    let empty = ResultSnapshot {
+        engine_version: ENGINE_VERSION.to_string(),
+        taken_ms: 0,
+        roof_area: 0.0,
+        ridge_height: 0.0,
+        lines_by_code: BTreeMap::new(),
+        area_by_material: Vec::new(),
+    };
+    let a = match before {
+        Some(p) => figures(p)?,
+        None => empty,
+    };
+    Some(compare(&a, &figures(after)?))
+}
+
 /// The stored result against the current one, for the app and the agents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SnapshotStatus {
@@ -148,6 +172,22 @@ mod tests {
     use super::*;
     use crate::examples;
     use crate::model::JobStatus;
+
+    #[test]
+    fn change_in_figures_reports_area_and_lines() {
+        let a = examples::find("gable").unwrap().project();
+        let mut b = a.clone();
+        for e in &mut b.parts[0].edges {
+            e.overhang += 0.3;
+        }
+        let d = change_in_figures(Some(&a), &b).unwrap();
+        let area = d.iter().find(|x| x.key == "roof_area").unwrap();
+        assert!(area.current > area.stored);
+        assert!(d.iter().any(|x| x.key == "line:T"));
+        assert!(change_in_figures(Some(&a), &a).unwrap().is_empty());
+        let created = change_in_figures(None, &a).unwrap();
+        assert_eq!(created[0].stored, 0.0);
+    }
 
     #[test]
     fn leaving_draft_stores_the_result_and_a_change_shows_up() {
