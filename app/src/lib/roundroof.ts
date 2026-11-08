@@ -9,6 +9,7 @@
 
 import type { EdgeDef, PitchBreak, Point2 } from "./types";
 import { isMarker } from "./types";
+import { roundTo } from "./rounding";
 
 export type ArcMode = "default" | "radius" | "ridge" | "length";
 
@@ -91,10 +92,10 @@ export function arcFor(a: ArcInput): Arc | null {
   // Vertices at equal angles from the vertical; a chord's pitch is the angle
   // of the radius to its middle.
   const at = (k: number) => half * (1 - k / n);
-  const pitch = (k: number) => +(((at(k) + at(k + 1)) / 2) * (180 / Math.PI)).toFixed(4);
+  const pitch = (k: number) => roundTo(((at(k) + at(k + 1)) / 2) * (180 / Math.PI), 4);
   const breaks: PitchBreak[] = [];
   for (let k = 1; k < n; k++) {
-    breaks.push({ height: +(centre + r * Math.cos(at(k))).toFixed(4), pitch_deg: pitch(k) });
+    breaks.push({ height: roundTo(centre + r * Math.cos(at(k)), 4), pitch_deg: pitch(k) });
   }
   return { radius: r, ridge: centre + r, length: 2 * r * half, segments: n, pitch_deg: pitch(0), breaks };
 }

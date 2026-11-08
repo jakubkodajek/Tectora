@@ -10,7 +10,7 @@
   import { t } from "./i18n.svelte";
   import { numeric } from "./numeric.svelte";
   import { oppositeWall, spanBetween } from "./roundroof";
-  import { buildUp, combine, eaveBelowGable, hipPitches, hipPitchesFromEaves, inward, meeting, mergeOnto, moveWall, parallelEdit, parallelPatches, parallelRafter, parallelStart, roofPoints, sameWay, shiftFor, solve, triangle, trianglePatch, type BuildUpEave, type CalcTarget, type ParallelField } from "./roofcalc";
+  import { buildUp, combine, eaveBelowGable, hipPitches, hipPitchesFromEaves, inward, meeting, mergeByMoving, mergeOnto, moveWall, parallelEdit, parallelPatches, parallelRafter, parallelStart, roofPoints, sameWay, shiftFor, solve, triangle, trianglePatch, type BuildUpEave, type CalcTarget, type ParallelField } from "./roofcalc";
   import type { CalcResult, EdgeDef, RoofPart } from "./types";
 
   let {
@@ -111,14 +111,7 @@
     if (target === "pitch") return null;
     if (target !== "position") return mergeOnto(es, edge, [...chosen], target);
     // Each wall moves until its eave (at its overhang) lies on this wall's plane.
-    const tr = Math.tan((e.pitch_deg * Math.PI) / 180);
-    if (!(tr > 0)) return null;
-    const moves = [...chosen].map((k) => {
-      const s = inward(es, edge, es[k].start);
-      const want = (es[k].eave_height - e.eave_height) / tr + es[k].overhang - e.overhang;
-      return combine(moveWall(es, k, want - s), new Map([[k, { pitch_deg: e.pitch_deg }]]));
-    });
-    return combine(...moves);
+    return mergeByMoving(es, edge, [...chosen]);
   });
 
   // Grat/Kehle: hip or valley length and both rafter lengths.
