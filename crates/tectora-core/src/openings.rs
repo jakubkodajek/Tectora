@@ -18,6 +18,7 @@
 
 use geo::{Area, BooleanOps, MultiPolygon};
 
+use crate::check::{RoofWarning, WarningKind};
 use crate::geom::{Point2, signed_area};
 use crate::model::{Chimney, Project, RoofPart, RoofWindow};
 use crate::roof::{
@@ -58,11 +59,21 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
         slots.push(Some((clean.parts.len(), reversed.then_some(p.edges.len()))));
         clean.parts.push(p);
     }
-    clean.dormers.retain(|d| {
-        d.end.x.is_finite()
-            && d.end.y.is_finite()
-            && d.edges.iter().all(|e| e.problems().next().is_none())
-    });
+    // Index in `project.dormers` of each dormer kept.
+    let dormer_ids: Vec<usize> = (0..clean.dormers.len())
+        .filter(|&i| {
+            let d = &clean.dormers[i];
+            d.end.x.is_finite()
+                && d.end.y.is_finite()
+                && d.edges.iter().all(|e| e.problems().next().is_none())
+        })
+        .collect();
+    clean.dormers = dormer_ids
+        .iter()
+        .map(|&i| project.dormers[i].clone())
+        .collect();
+    // Index in `project.parts` of each part in `clean`.
+    let part_ids: Vec<usize> = (0..slots.len()).filter(|&i| slots[i].is_some()).collect();
     let ok_poly = |c: &Chimney| {
         c.corners.len() >= 3 && c.corners.iter().all(|v| v.x.is_finite() && v.y.is_finite())
     };
@@ -84,6 +95,12 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
             None => RoofGeometry::default(),
             Some((i, reversed)) => {
                 let mut g = std::mem::take(&mut geos[i]);
+                for j in g.joined_with.iter_mut() {
+                    *j = part_ids.get(*j).copied().unwrap_or(*j);
+                }
+                for d in g.warnings.iter_mut().filter_map(|w| w.dormer.as_mut()) {
+                    *d = dormer_ids.get(*d).copied().unwrap_or(*d);
+                }
                 if let Some(n) = reversed {
                     // Dormer faces (edge usize::MAX) belong to no edge.
                     for f in g.faces.iter_mut().filter(|f| f.edge < n) {
@@ -117,6 +134,18 @@ fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
         }
         Err(crate::engine::Failure::Ours(_)) => {}
     }
+    let mut geos = fallback(project);
+    // Not DACAD's result: say so, once for the job.
+    if let Some(g) = geos.first_mut() {
+        g.warnings
+            .push(RoofWarning::new(WarningKind::NotCalculatedByCore, 0.0));
+    }
+    geos
+}
+
+/// Tectora's own sweep engine, where the core path failed for a reason of
+/// ours.
+fn fallback(project: &Project) -> Vec<RoofGeometry> {
     // With two or more roofs DACAD joins the roofs it built one by one in
     // its "Modellverschnitt" stage, which replaces everything below.
     if let Some(geos) = crate::multiroof::generate(project) {
@@ -519,7 +548,22 @@ pub(crate) fn inside(poly: &[Point2], p: Point2) -> bool {
 /// The window's corner lies on the face's boundary at the eave; test a
 /// point just inside it, up the slope and along the eave.
 pub(crate) fn apply_window(geos: &mut [RoofGeometry], w: &RoofWindow) {
-    for geo in geos.iter_mut() {
+    if let Some((g, k)) = window_face(geos, w) {
+        let geo = &mut geos[g];
+        let d = w.width * w.height;
+        geo.faces[k].area -= d;
+        geo.faces[k].deducted += d;
+        geo.openings.push(Opening {
+            kind: OpeningKind::Window,
+            area: d,
+        });
+    }
+}
+
+/// The face a window sits on: (geometry, face) of the first face that
+/// holds a point just inside the window's corner.
+pub(crate) fn window_face(geos: &[RoofGeometry], w: &RoofWindow) -> Option<(usize, usize)> {
+    for (g, geo) in geos.iter().enumerate() {
         let hit = geo.faces.iter().position(|face| {
             let (up, _) = slope(face);
             let along = Point2::new(up.y, -up.x);
@@ -533,16 +577,10 @@ pub(crate) fn apply_window(geos: &mut [RoofGeometry], w: &RoofWindow) {
             inside(&poly, probe(1.0)) || inside(&poly, probe(-1.0))
         });
         if let Some(k) = hit {
-            let d = w.width * w.height;
-            geo.faces[k].area -= d;
-            geo.faces[k].deducted += d;
-            geo.openings.push(Opening {
-                kind: OpeningKind::Window,
-                area: d,
-            });
-            return;
+            return Some((g, k));
         }
     }
+    None
 }
 
 /// Sutherland–Hodgman: `subject` clipped by the convex CCW polygon `clip`.

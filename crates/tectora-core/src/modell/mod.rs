@@ -108,6 +108,11 @@ pub struct Output {
     pub faces: Vec<OutFace>,
     /// The full final state, for inspection and for writing the SOL.
     pub state: State,
+    /// The pairs of models (RD2 model numbers, smaller first) where a face
+    /// of one hides part of a face of the other: the roofs this stage
+    /// joins. Read after the first stage, before the cutters are merged
+    /// and subtracted; an observation only, the stages are unchanged.
+    pub joins: Vec<(i32, i32)>,
 }
 
 /// Reads INT (and W3D) text into the stage's state.
@@ -136,8 +141,35 @@ pub fn write_sol(st: &State, tol: &Tol) -> String {
 pub fn run(int: &str, w3d: Option<&str>) -> Result<Output, ReadError> {
     let tol = Tol::default();
     let mut st = parse(int, w3d, &tol)?;
-    run_state(&mut st, &tol);
-    Ok(output(st, &tol))
+    // The same stages as `run_state`, with a look at the cutters between
+    // the first and the second.
+    stages::run_range(&mut st, &tol, 0, 1);
+    let joins = cutter_models(&st);
+    stages::run_range(&mut st, &tol, 1, usize::MAX);
+    let mut out = output(st, &tol);
+    out.joins = joins;
+    Ok(out)
+}
+
+/// The model pairs of [`Output::joins`]: each face's cutters made by a
+/// face of another model (holes and chimneys are no faces).
+fn cutter_models(st: &State) -> Vec<(i32, i32)> {
+    let models: Vec<i32> = st.faces.iter().map(|f| f.rec.model).collect();
+    let mut pairs = Vec::new();
+    for f in &st.faces {
+        for s in f
+            .cut_src
+            .iter()
+            .filter(|s| ![b'T', b'L'].contains(&(s.kind as u8)))
+        {
+            let (a, b) = (f.rec.model, s.model);
+            if a != b && models.contains(&b) && !pairs.contains(&(a.min(b), a.max(b))) {
+                pairs.push((a.min(b), a.max(b)));
+            }
+        }
+    }
+    pairs.sort_unstable();
+    pairs
 }
 
 /// The first difference between two SOL texts.
@@ -230,5 +262,6 @@ fn output(state: State, tol: &Tol) -> Output {
         lines,
         faces,
         state,
+        joins: Vec::new(),
     }
 }

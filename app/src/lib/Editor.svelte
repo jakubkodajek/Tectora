@@ -23,7 +23,7 @@
   import { followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, transformItem, type ItemRef, type PlanTarget } from "./items";
   import { snapToRoof, type ManualSel } from "./manual";
   import { describeCalcError, describeError, describeProblem, toAppError, type Described } from "./errors";
-  import { notifyError } from "./notify.svelte";
+  import { notify, notifyError } from "./notify.svelte";
   import { chimneyFromRect, nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, roofHeightAt } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
@@ -738,9 +738,32 @@
     commit();
   }
 
-  function setWindow(w: RoofWindow) {
+  async function setWindow(w: RoofWindow) {
     if (!project || openSel?.kind !== "window" || !project.windows) return;
-    project.windows[openSel.index] = w;
+    const index = openSel.index;
+    // A window larger than its face would make the face area negative
+    // (MATH-001): refused with the reason, as MCP set_openings refuses it.
+    const windows = project.windows.map((x, i) => (i === index ? w : x));
+    try {
+      const big = await api.checkWindows({ ...$state.snapshot(project), windows } as Project);
+      if (big) {
+        notify({
+          kind: "error",
+          code: "window_too_large",
+          title: t("opening.tooLarge.title"),
+          message: t("opening.tooLarge", { n: big.index + 1, a: num(big.area), f: num(big.face_area) }),
+        });
+        // Same values, new object: the fields show the stored size again.
+        const kept = project?.windows?.[index];
+        if (kept && project?.windows) project.windows[index] = { ...kept };
+        return;
+      }
+    } catch (e) {
+      notifyError(e, "calc");
+      return;
+    }
+    if (!project?.windows || project.windows.length !== windows.length) return;
+    project.windows[index] = w;
     commit();
   }
 

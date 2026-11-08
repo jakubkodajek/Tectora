@@ -150,6 +150,60 @@ pub fn clear_roof(project: &mut Project) -> bool {
     had
 }
 
+/// A roof window whose `width × height` is more than what is left of the
+/// roof face it sits on (after the windows before it): its deduction would
+/// make the face area negative.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct OversizeWindow {
+    /// Index of the window in `project.windows`.
+    pub index: usize,
+    /// The window's area, `width × height`, m².
+    pub area: f64,
+    /// What is left of its face before it is deducted, m².
+    pub face_area: f64,
+}
+
+impl std::fmt::Display for OversizeWindow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "roof window {} ({:.2} m2) is larger than what is left of the roof face it sits on ({:.2} m2); check its width and height (m, in the roof plane) and its position",
+            self.index, self.area, self.face_area
+        )
+    }
+}
+
+/// Refuses roof windows larger than their face, before they are saved
+/// (the editor's window fields and MCP `set_openings`). DACAD deducts a
+/// window's `width × height` from its face whatever its size, and the
+/// calculation keeps that; a window that does not fit is a typing error
+/// (cm for m, width and height swapped). A window on no roof face deducts
+/// nothing and is not refused.
+pub fn check_windows(project: &Project) -> Result<(), OversizeWindow> {
+    if project.windows.is_empty() {
+        return Ok(());
+    }
+    let mut bare = project.clone();
+    bare.windows.clear();
+    let mut geos = crate::openings::generate_project(&bare);
+    for (index, w) in project.windows.iter().enumerate() {
+        let Some((g, k)) = crate::openings::window_face(&geos, w) else {
+            continue;
+        };
+        let area = w.width * w.height;
+        let face = &mut geos[g].faces[k];
+        if area > face.area + crate::check::OVERCUT_TOL {
+            return Err(OversizeWindow {
+                index,
+                area,
+                face_area: face.area.max(0.0),
+            });
+        }
+        face.area -= area;
+    }
+    Ok(())
+}
+
 /// A wall with the given start and roof values and nothing else set.
 pub fn plain_edge(start: Point2, pitch_deg: f64, eave_height: f64, overhang: f64) -> EdgeDef {
     EdgeDef {
@@ -199,5 +253,70 @@ mod tests {
         assert!(p.validate().is_ok());
         // Nothing left to remove.
         assert!(!clear_roof(&mut p));
+    }
+
+    fn gable_12x8() -> Project {
+        let mut p = Project::new("gable");
+        p.parts.push(crate::examples::standard_roof(
+            crate::examples::StandardRoof::Gable,
+            12.0,
+            8.0,
+            40.0,
+            3.0,
+            0.0,
+        ));
+        p
+    }
+
+    #[test]
+    fn a_window_larger_than_its_face_is_refused() {
+        use crate::model::RoofWindow;
+        let mut p = gable_12x8();
+        p.windows.push(RoofWindow {
+            x: 1.0,
+            y: 0.0,
+            width: 0.78,
+            height: 1.18,
+        });
+        assert_eq!(check_windows(&p), Ok(()));
+        // 10 × 9 m on a face of 12 × 5.22 m (MATH-001).
+        p.windows.push(RoofWindow {
+            x: 1.0,
+            y: 0.0,
+            width: 10.0,
+            height: 9.0,
+        });
+        let e = check_windows(&p).unwrap_err();
+        assert_eq!(e.index, 1);
+        assert!((e.area - 90.0).abs() < 1e-9);
+        assert!(e.face_area > 60.0 && e.face_area < 63.0, "{}", e.face_area);
+        assert!(e.to_string().contains("roof window 1"));
+        // Windows that fit one by one but not together.
+        p.windows[1] = RoofWindow {
+            x: 3.0,
+            y: 0.0,
+            width: 8.0,
+            height: 7.0,
+        };
+        assert!(check_windows(&p).is_ok());
+        p.windows.push(RoofWindow {
+            x: 4.0,
+            y: 0.0,
+            width: 2.0,
+            height: 5.0,
+        });
+        assert_eq!(check_windows(&p).unwrap_err().index, 2);
+    }
+
+    #[test]
+    fn a_window_beside_the_roof_is_not_refused() {
+        let mut p = gable_12x8();
+        p.windows.push(crate::model::RoofWindow {
+            x: 40.0,
+            y: 40.0,
+            width: 10.0,
+            height: 10.0,
+        });
+        assert!(check_windows(&p).is_ok());
     }
 }

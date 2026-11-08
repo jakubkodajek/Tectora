@@ -475,6 +475,20 @@ fn calc_breakdown(project: Project) -> CmdResult<Value> {
     })
 }
 
+/// The first roof window larger than what is left of its face
+/// (`tectora_core::edit::check_windows`), or null; the editor refuses such
+/// a window, as MCP `set_openings` does.
+#[tauri::command(async)]
+fn check_windows(project: Project) -> CmdResult<Option<tectora_core::edit::OversizeWindow>> {
+    guard(|| {
+        project
+            .check_limits()
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+        tectora_core::model::guarded(|| tectora_core::edit::check_windows(&project).err())
+            .map_err(|d| AppError::new("internal").detail(d))
+    })
+}
+
 /// Settings plus the folders in use (see `Settings::describe`).
 #[tauri::command]
 fn get_settings() -> Value {
@@ -772,6 +786,7 @@ pub fn run() {
             new_project,
             calc,
             calc_breakdown,
+            check_windows,
             list_attachments,
             attach_files,
             remove_attachment,

@@ -227,11 +227,21 @@ export interface Problem {
 
 /** What looks wrong with a calculated roof (tectora_core::check). */
 export interface RoofWarning {
-  kind: "outside_outline" | "overlapping_faces" | "area_mismatch" | "merged_walls" | "covered";
-  /** m outside, m² overlapping, or the relative area difference (0 for merged_walls). */
+  kind:
+    | "outside_outline"
+    | "overlapping_faces"
+    | "area_mismatch"
+    | "merged_walls"
+    | "covered"
+    | "cut_exceeds_face"
+    | "dormer_off_roof"
+    | "not_calculated_by_core";
+  /** m outside, m² overlapping, the relative area difference, m² below zero (cut_exceeds_face), else 0. */
   value: number;
-  /** merged_walls: the edge whose pitch is used, then the edge whose pitch and breaks are ignored. */
+  /** merged_walls: the edge whose pitch is used, then the edge whose pitch and breaks are ignored; cut_exceeds_face: the walls of the faces. */
   edges?: number[];
+  /** dormer_off_roof: the dormer's index. */
+  dormer?: number;
 }
 
 export interface CalcResult {
@@ -243,6 +253,8 @@ export interface CalcResult {
       gables: [number, number, number][][];
       error?: CalcError;
       warnings?: RoofWarning[];
+      /** The parts this roof is joined with, as the calculation joined them. */
+      joined_with?: number[];
     };
     quantities: RoofQuantities;
   }[];

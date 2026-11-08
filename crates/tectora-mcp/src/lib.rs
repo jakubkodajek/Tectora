@@ -122,6 +122,15 @@ fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             w.value * 100.0
         ),
         WarningKind::Covered => "no face of this part's roof is left after joining it with the other parts: another part covers it (a building drawn inside or on top of another); move or delete one of them".to_string(),
+        WarningKind::CutExceedsFace => format!(
+            "more is deducted from a roof face than the face has ({:.2} m2 below zero), so the roof area is too small: usually a roof window larger than its face (cm typed as m, width and height swapped) or joined buildings; check the windows and the joins",
+            w.value
+        ),
+        WarningKind::DormerOffRoof => format!(
+            "dormer {} (0-based) sits on no roof face, so it is left out of the result (no area, lines or material); move it onto the roof or delete it",
+            w.dormer.unwrap_or(0)
+        ),
+        WarningKind::NotCalculatedByCore => "this roof was calculated by Tectora's fallback engine, not by the standard calculation, so its figures may differ from the standard result; tell the user to check the roof".to_string(),
         WarningKind::MergedWalls => {
             let (kept, ignored) = (w.edges.first(), w.edges.get(1));
             format!(
@@ -137,7 +146,37 @@ fn warning(w: &tectora_core::check::RoofWarning) -> Value {
     if !w.edges.is_empty() {
         v["edges"] = json!(w.edges);
     }
+    if let Some(d) = w.dormer {
+        v["dormer"] = json!(d);
+    }
     v
+}
+
+/// Why the calculation gave no roof for a part, in English and without
+/// the calculation's own (German) text: the AI passes it on to the user.
+fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
+    use tectora_core::roof::CalcErrorKind;
+    let message = match e.kind {
+        CalcErrorKind::OpenFaces => {
+            "the roof cannot be calculated: its faces do not close; adjust the pitch or length of the wall changed last (a very low pitch or a pitch break above the ridge often does it)"
+        }
+        CalcErrorKind::NoSolution => {
+            "no roof fits these walls and pitches; check pitches and eave heights (very different pitches on neighbouring walls often have no solution)"
+        }
+        CalcErrorKind::NonConvexOpening => {
+            "a chimney or roof opening is not convex, so no roof is calculated; give it no inward corners or split it"
+        }
+        CalcErrorKind::Cut => {
+            "two roof planes never meet, so no roof is calculated; check pitches and short walls"
+        }
+        CalcErrorKind::Geometry => {
+            "the roof geometry is invalid (a wall too short or an extreme pitch), so no roof is calculated"
+        }
+        CalcErrorKind::NoEnd => {
+            "the roof calculation does not finish for this roof; undo the last change or adjust the pitches"
+        }
+    };
+    json!({ "kind": e.kind, "message": message })
 }
 
 fn quantities(project: &Project) -> Value {
@@ -584,7 +623,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "set_openings",
-            "description": "Replace the roof windows, chimneys and/or roof openings of a design (omit a list to keep it). Windows deduct width × height from their roof face; chimneys deduct their plan area / cos(pitch) and add wall-abutment lines WV/WH/WS, as in DACAD; roof openings (holes) deduct like chimneys but their sides become an eave (uphill), a Pult (downhill) and verges.",
+            "description": "Replace the roof windows, chimneys and/or roof openings of a design (omit a list to keep it). Windows deduct width × height from their roof face; a window larger than what is left of its face is refused (check cm vs m and width vs height). Chimneys deduct their plan area / cos(pitch) and add wall-abutment lines WV/WH/WS, as in DACAD; roof openings (holes) deduct like chimneys but their sides become an eave (uphill), a Pult (downhill) and verges.",
             "inputSchema": schema(json!({
                 "id": { "type": "string" },
                 "windows": {
@@ -625,7 +664,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total. A part whose roof looks geometrically wrong (outside its eave outline, faces passing through each other, area not matching its faces) or where two walls in line are calculated as one so one wall's pitch is not used (`merged_walls`, with `edges`) carries `warnings`: tell the user and suggest checking pitches and overhangs.",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges` or `dormer` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result) and `not_calculated_by_core` (figures from the fallback engine). Tell the user about every warning. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -780,10 +819,21 @@ impl Server {
                     .iter()
                     .zip(tectora_core::openings::generate_project(&p))
                     .map(|(part, geo)| {
-                        let q = geo.quantities();
+                        // Net of the core's negative lines, as the totals.
+                        let q = tectora_core::quantities::part_quantities(&geo);
                         let mut v = json!({ "name": part.name, "quantities": q });
                         if !geo.warnings.is_empty() {
                             v["warnings"] = geo.warnings.iter().map(warning).collect();
+                        }
+                        if let Some(e) = &geo.error {
+                            v["error"] = calc_error(e);
+                        }
+                        if !geo.joined_with.is_empty() {
+                            v["joined_with"] = geo
+                                .joined_with
+                                .iter()
+                                .map(|&j| json!({ "part": j, "name": p.parts.get(j).map(|x| x.name.as_str()) }))
+                                .collect();
                         }
                         v
                     })
@@ -986,6 +1036,9 @@ impl Server {
                 if let Some(w) = args.get("windows") {
                     p.windows = serde_json::from_value::<Vec<RoofWindow>>(w.clone())
                         .map_err(|e| format!("windows: {e}"))?;
+                    // A window larger than its face makes the face area
+                    // negative: refused, as in the editor.
+                    tectora_core::edit::check_windows(&p).map_err(|e| e.to_string())?;
                 }
                 if let Some(c) = args.get("chimneys") {
                     let raw: Vec<Value> = serde_json::from_value(c.clone())
@@ -1291,6 +1344,131 @@ mod tests {
         let id = s.store.save(None, &ok).unwrap();
         let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
         assert!(r["parts"][0].get("warnings").is_none(), "{r}");
+    }
+
+    fn gable_job(s: &mut Server, pitch: f64) -> String {
+        let r = s
+            .call_tool(
+                "create_project",
+                &json!({
+                    "name": "gable", "summary": "Footprint",
+                    "parts": [{
+                        "points": [[0, 0], [12, 0], [12, 8], [0, 8]],
+                        "defaults": { "pitch_deg": pitch, "eave_height": 3, "overhang": 0 },
+                        "edges": [{}, { "gable": true }, {}, { "gable": true }]
+                    }]
+                }),
+            )
+            .unwrap();
+        r["id"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn calc_reports_a_roof_the_calculation_refused() {
+        // MATH-003: a 1° hip roof ends in the core's open-faces error.
+        let mut s = server();
+        let r = s
+            .call_tool(
+                "create_project",
+                &json!({
+                    "name": "flat hip", "summary": "Footprint",
+                    "parts": [{ "points": [[0, 0], [12, 0], [12, 8], [0, 8]], "defaults": { "pitch_deg": 1 } }]
+                }),
+            )
+            .unwrap();
+        let id = r["id"].as_str().unwrap().to_string();
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        let e = &r["parts"][0]["error"];
+        assert_eq!(e["kind"], "open_faces", "{r}");
+        let msg = e["message"].as_str().unwrap();
+        assert!(msg.contains("cannot be calculated"), "{msg}");
+        // No German text of the calculation reaches the AI.
+        let text = r.to_string();
+        for german in ["Fläche", "Nicht", "DACAD", "E0000"] {
+            assert!(!text.contains(german), "{german} in {text}");
+        }
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn set_openings_refuses_a_window_larger_than_its_face() {
+        // MATH-001: 10 × 9 m on a face of 12 × 5.22 m.
+        let mut s = server();
+        let id = gable_job(&mut s, 40.0);
+        let err = s
+            .call_tool(
+                "set_openings",
+                &json!({ "id": id, "summary": "Window", "windows": [{ "x": 1, "y": 0, "width": 10, "height": 9 }] }),
+            )
+            .unwrap_err();
+        assert!(
+            err.contains("larger than what is left of the roof face"),
+            "{err}"
+        );
+        assert!(s.store.load(&id).unwrap().windows.is_empty());
+        s.call_tool(
+            "set_openings",
+            &json!({ "id": id, "summary": "Window", "windows": [{ "x": 1, "y": 0, "width": 0.78, "height": 1.18 }] }),
+        )
+        .unwrap();
+        assert_eq!(s.store.load(&id).unwrap().windows.len(), 1);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn calc_warns_about_a_face_that_lost_more_than_it_has() {
+        // A file with an oversize window (written before the check, or by
+        // hand) still calculates as DACAD books it, with a warning.
+        let mut s = server();
+        let id = gable_job(&mut s, 40.0);
+        let mut p = s.store.load(&id).unwrap();
+        p.windows.push(RoofWindow {
+            x: 1.0,
+            y: 0.0,
+            width: 10.0,
+            height: 9.0,
+        });
+        s.store.save(Some(id.clone()), &p).unwrap();
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        let w = r["parts"][0]["warnings"].as_array().unwrap();
+        assert!(
+            w.iter()
+                .any(|w| w["kind"] == "cut_exceeds_face" && w["edges"] == json!([0])),
+            "{r}"
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn calc_names_the_parts_a_roof_is_joined_with() {
+        // ARCH-008: from the calculation's own join, not a plan guess.
+        let mut s = server();
+        let r = s
+            .call_tool(
+                "create_project",
+                &json!({
+                    "name": "two", "summary": "Footprint",
+                    "parts": [
+                        { "name": "Main", "points": [[0, 0], [12, 0], [12, 8], [0, 8]] },
+                        { "name": "Wing", "points": [[10, 2], [18, 2], [18, 6], [10, 6]] },
+                        { "name": "Shed", "points": [[40, 0], [46, 0], [46, 4], [40, 4]] }
+                    ]
+                }),
+            )
+            .unwrap();
+        let id = r["id"].as_str().unwrap().to_string();
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        assert_eq!(
+            r["parts"][0]["joined_with"],
+            json!([{ "part": 1, "name": "Wing" }]),
+            "{r}"
+        );
+        assert_eq!(
+            r["parts"][1]["joined_with"],
+            json!([{ "part": 0, "name": "Main" }])
+        );
+        assert!(r["parts"][2].get("joined_with").is_none());
+        let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
     #[test]

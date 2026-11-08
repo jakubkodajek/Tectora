@@ -261,6 +261,13 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             to_json(store.save(None, &project)?)
         }
         "calc" => calc(&arg::<Project>(a, "project")?),
+        "check_windows" => {
+            let project = arg::<Project>(a, "project")?;
+            project.check_limits()?;
+            to_json(tectora_core::model::guarded(|| {
+                tectora_core::edit::check_windows(&project).err()
+            })?)
+        }
         "calc_breakdown" => {
             let project = arg::<Project>(a, "project")?;
             project.check_limits()?;
