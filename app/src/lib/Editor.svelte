@@ -597,6 +597,25 @@
     commit();
   }
 
+  /**
+   * Delete / Backspace with a wall selected: the key is easy to hit while
+   * stepping through walls (Backspace meant for a field), and it changes the
+   * footprint, so it asks first (UX-006). The bar's trash button does not.
+   */
+  async function deleteVertexByKey() {
+    if (!project || !selection) return;
+    const sel = selection;
+    const part = project.parts[sel.part];
+    const es = part?.edges;
+    if (!es?.[sel.edge] || (!isMarker(es[sel.edge]) && es.filter((e) => !isMarker(e)).length <= 3)) return;
+    const msg = isMarker(es[sel.edge]) ? t("edge.confirmDeleteMarker") : t("edge.confirmDeleteVertex", { n: sel.edge + 1, name: part.name });
+    // Tauri's dialog plugin makes confirm asynchronous: always await it.
+    if (!(await confirm(msg))) return;
+    // The project or the selection may have changed while the dialog was open.
+    if (project?.parts[sel.part] !== part || selection?.part !== sel.part || selection?.edge !== sel.edge) return;
+    deleteVertex();
+  }
+
   function moveVertex(part: number, v: number, x: number, y: number) {
     if (!project) return;
     const es = project.parts[part]?.edges;
@@ -987,8 +1006,12 @@
       { label: t("tool.transform") + "…", icon: "move", action: () => { selection = { part: pi, edge: selection?.part === pi ? selection.edge : 0 }; openTransform(); } },
       { label: t("menu.duplicatePart"), icon: "copy", action: () => {
         if (!project) return;
-        // Beside the original, 2 m apart (as a new standard roof is placed).
-        const added = transformPart(project, pi, translation(+(w + 2).toFixed(3), 0), 1);
+        // 2 m to the right of everything drawn (as a new standard roof is
+        // placed), so the copy never lands on, and joins, another building
+        // or a manual face (UX-010).
+        const xs = [...project.parts.flatMap((p) => p.edges.map((e) => e.start.x)), ...(project.manual_faces ?? []).flatMap((f) => f.points.map((p) => p.x))];
+        const dx = Math.max(w, Math.max(...xs) - Math.min(...ps.map((p) => p.x))) + 2;
+        const added = transformPart(project, pi, translation(+dx.toFixed(3), 0), 1);
         if (added.length) selection = { part: added[0], edge: 0 };
         commit();
         setTimeout(() => plan?.fit(), 0);
@@ -1159,11 +1182,34 @@
 
   // Drawing a new footprint.
   function startDraw() {
+    // Already drawing: the Insert key keeps going; the toolbar button
+    // (toggle) and the context menu go through cancelDraw, which asks.
+    if (drawing) return;
     selection = null;
     dormerSel = null;
     openSel = null;
     placing = false;
     drawing = [];
+  }
+
+  /**
+   * Stops drawing the footprint. `ask` (a key or a second press of the
+   * Building button, easy to hit by accident) asks first once two or more
+   * corners would be lost; the bar's Cancel button stops at once.
+   */
+  async function cancelDraw(ask: boolean) {
+    const pts = drawing;
+    if (!pts) return;
+    // Tauri's dialog plugin makes confirm asynchronous: always await it.
+    if (ask && pts.length >= 2 && !(await confirm(t("draw.confirmCancel", { n: pts.length })))) return;
+    // Closed or restarted while the question was open.
+    if (drawing !== pts) return;
+    drawing = null;
+  }
+
+  function toggleDraw() {
+    if (drawing) cancelDraw(true);
+    else startDraw();
   }
 
   function drawStep(dx: number, dy: number) {
@@ -1268,7 +1314,7 @@
     } else if (del && manualSel && !drawing) {
       deleteManual();
     } else if (del && selection && !drawing) {
-      deleteVertex();
+      deleteVertexByKey();
     }
   }
 </script>
@@ -1307,7 +1353,7 @@
     </div>
     <div class="group">
       <button class="tool" class:on={!!std} aria-pressed={!!std} onclick={() => (std = { part: null, mode: project?.parts.length && selection ? "replace" : "add" })} title={t("tool.standardHint")}><Icon name="house" /><span>{t("tool.standard")}</span></button>
-      <button class="tool" class:on={!!drawing} aria-pressed={!!drawing} onclick={startDraw} title="{t('tool.drawHint')} (Insert)"><Icon name="draw" /><span>{t("tool.draw")}</span></button>
+      <button class="tool" class:on={!!drawing} aria-pressed={!!drawing} onclick={toggleDraw} title="{t('tool.drawHint')} (Insert)"><Icon name="draw" /><span>{t("tool.draw")}</span></button>
       <button class="tool" class:on={placing === "dormer"} aria-pressed={placing === "dormer"} disabled={!project?.parts.length} onclick={() => togglePlacing("dormer")} title={t("tool.dormerHint")}><Icon name="roof" /><span>{t("tool.dormer")}</span></button>
       <button class="tool" class:on={placing === "chimney"} aria-pressed={placing === "chimney"} disabled={!project?.parts.length} onclick={() => togglePlacing("chimney")} title={t("tool.chimneyHint")}><Icon name="chimney" /><span>{t("tool.chimney")}</span></button>
       <button class="tool" class:on={placing === "window"} aria-pressed={placing === "window"} disabled={!project?.parts.length} onclick={() => togglePlacing("window")} title={t("tool.windowHint")}><Icon name="window" /><span>{t("tool.window")}</span></button>
@@ -1446,7 +1492,7 @@
             onstep={drawStep}
             onundo={() => drawing?.pop()}
             onclose={finishDraw}
-            oncancel={() => (drawing = null)}
+            oncancel={(ask) => cancelDraw(!!ask)}
           />
         {:else if dormerSel !== null}
           <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} />

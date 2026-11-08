@@ -22,12 +22,25 @@ import { numberLocale, t } from "./i18n.svelte";
 /** Width the ▲▼ buttons take from the field's right padding, px. */
 const SPIN_W = 15;
 
+/**
+ * Largest absolute value any field takes: the core refuses every number
+ * beyond it (`model::MAX_ABS_VALUE`, 100 km in metres), so a field without
+ * its own bounds still refuses and explains it before anything is saved.
+ */
+export const MAX_VALUE = 1e5;
+
+/** The bounds a field enforces: its own, never wider than ±MAX_VALUE. */
+export function fieldBounds(min?: number, max?: number): { min: number; max: number } {
+  return { min: Math.max(min ?? -MAX_VALUE, -MAX_VALUE), max: Math.min(max ?? MAX_VALUE, MAX_VALUE) };
+}
+
 export interface NumericOptions {
   /** The stored value; null or undefined shows an empty field. */
   value: number | null | undefined;
   /**
    * Called with a parsed, in-range value that differs from `value`.
    * Return `false` to reject it: the field shows the stored value again.
+   * Return a string to reject it with that reason (shown as the tooltip).
    */
   onchange: (v: number) => unknown;
   /** Step of the arrow keys and the ▲▼ buttons (default 1). */
@@ -45,6 +58,10 @@ export interface NumericOptions {
   spinner?: boolean;
   /** Called with the reason when a typed value is refused (out of range, not a number). */
   onrefuse?: (why: string) => unknown;
+  /** Step with ArrowUp / ArrowDown (default true); false leaves the keys to the page. */
+  arrows?: boolean;
+  /** Told when the typed text becomes invalid (the reason) or valid again (null). */
+  onvalidity?: (reason: string | null) => void;
 }
 
 /** Parses a typed number: comma or dot as the decimal separator, spaces ignored. */
@@ -115,17 +132,15 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
     const v = parseNumber(text);
     if (v === null) return t("num.nan");
     const f = (x: number) => formatNumber(x, numberLocale());
-    const { min, max } = opts;
-    if ((min !== undefined && v < min) || (max !== undefined && v > max)) {
-      if (min !== undefined && max !== undefined) return t("num.range", { min: f(min), max: f(max) });
-      return min !== undefined ? t("num.min", { min: f(min) }) : t("num.max", { max: f(max!) });
-    }
+    const { min, max } = fieldBounds(opts.min, opts.max);
+    if (v < min || v > max) return t("num.range", { min: f(min), max: f(max) });
     return null;
   }
 
   /** Marks the field invalid with the reason as its tooltip (and for screen readers). */
   function setInvalid(why: string | null) {
     clearTimeout(clearTimer);
+    if (invalid !== (why !== null) || (why !== null && input.title !== why)) opts.onvalidity?.(why);
     invalid = why !== null;
     if (why !== null) {
       input.setAttribute("aria-invalid", "true");
@@ -145,14 +160,19 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
   /** A value the field may store, or null. */
   function accept(v: number | null): number | null {
     if (v === null) return null;
-    if (opts.min !== undefined && v < opts.min) return null;
-    if (opts.max !== undefined && v > opts.max) return null;
-    return v;
+    const { min, max } = fieldBounds(opts.min, opts.max);
+    return v < min || v > max ? null : v;
   }
 
+  /** Why the last stored value was refused, when `onchange` said so. */
+  let refusal: string | null = null;
+
   function store(v: number): boolean {
+    refusal = null;
     if (opts.value === v) return true;
-    return opts.onchange(v) !== false;
+    const r = opts.onchange(v);
+    if (typeof r === "string") refusal = r;
+    return r !== false && typeof r !== "string";
   }
 
   /** Stores the typed text if it changed; restores the stored value if it is not a number we take. */
@@ -174,7 +194,7 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
       setInvalid(null);
     } else {
       // Say why for a moment, then the restored value is plain again.
-      const why = reason(text) ?? t("num.refused");
+      const why = reason(text) ?? refusal ?? t("num.refused");
       setInvalid(why);
       opts.onrefuse?.(why);
       clearTimer = setTimeout(() => !dirty && setInvalid(null), 2500);
@@ -185,7 +205,8 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
     if (input.disabled || input.readOnly) return;
     const typed = dirty ? parseNumber(input.value) : null;
     const base = typed ?? opts.value ?? opts.min ?? 0;
-    const v = stepValue(base, dir, opts.step ?? 1, opts.min, opts.max);
+    const { min, max } = fieldBounds(opts.min, opts.max);
+    const v = stepValue(base, dir, opts.step ?? 1, min, max);
     setDirty(false);
     setInvalid(null);
     if (store(v)) input.value = fmt(v);
@@ -216,7 +237,7 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
       render();
       e.preventDefault();
       e.stopPropagation();
-    } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && opts.arrows !== false) {
       e.preventDefault();
       stepBy(e.key === "ArrowUp" ? 1 : -1);
     }

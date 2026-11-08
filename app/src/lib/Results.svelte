@@ -3,7 +3,7 @@
   // DACAD line code (T eave, F ridge, G hip, K valley, O verge, P shed top edge, c pitch break).
   import { figureLabel, formatFigure } from "./changes";
   import { m, m2, num } from "./format";
-  import { t } from "./i18n.svelte";
+  import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
   import { joinedParts } from "./planjoin";
   import type { CalcResult, Project, RoofWarning } from "./types";
@@ -126,7 +126,7 @@
         <i class="sq"></i>
         <span>
           {stored.differences.length ? t("snap.changed") : t("snap.same")}
-          · {new Date(stored.stored.taken_ms).toLocaleDateString()}
+          · {new Date(stored.stored.taken_ms).toLocaleDateString(numberLocale())}
         </span>
       </div>
       {#if stored.differences.length}
