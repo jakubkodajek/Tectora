@@ -102,7 +102,7 @@ struct ActivityItem {
 }
 
 /// Recorded changes of a project, newest first.
-#[tauri::command]
+#[tauri::command(async)]
 fn project_activity(state: State<AppState>, id: String) -> Vec<ActivityItem> {
     let mut out: Vec<ActivityItem> = state
         .store()
@@ -119,20 +119,22 @@ fn project_activity(state: State<AppState>, id: String) -> Vec<ActivityItem> {
     out
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn revert_last_change(state: State<AppState>, id: String) -> CmdResult<Project> {
     guard(|| Ok(state.store().revert_last(&id, USER_ACTOR, None)?))
 }
 
 /// Undoes the change recorded at `ts_ms` and everything after it.
-#[tauri::command]
+#[tauri::command(async)]
 fn revert_changes(state: State<AppState>, id: String, ts_ms: u64) -> CmdResult<Project> {
     guard(|| Ok(state.store().revert_to(&id, ts_ms, USER_ACTOR, None)?))
 }
 
 /// The AI changes of `id` waiting for review, with the version before them
-/// and what they did to the figures.
-#[tauri::command]
+/// and what they did to the figures. Async like every command below that
+/// calculates a roof or copies files: a command without it runs on the
+/// window's main thread and freezes the window meanwhile (ARCH-003).
+#[tauri::command(async)]
 fn review_status(state: State<AppState>, id: String) -> CmdResult<Option<store::ReviewStatus>> {
     guard(|| Ok(state.store().review_status(&id)?))
 }
@@ -211,7 +213,7 @@ fn delete_project(state: State<AppState>, id: String) -> CmdResult<()> {
 
 /// A copy is a new variant: draft, no stored result, the same files. With
 /// `job` it starts a new job for another customer from a past roof.
-#[tauri::command]
+#[tauri::command(async)]
 fn duplicate_project(
     state: State<AppState>,
     id: String,
@@ -235,7 +237,7 @@ fn list_attachments(state: State<AppState>, id: String) -> Vec<store::Attachment
     state.store().attachments(&id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn attach_files(state: State<AppState>, id: String, paths: Vec<String>) -> CmdResult<Vec<String>> {
     guard(|| {
         Ok(paths
@@ -351,7 +353,7 @@ fn save_png(path: String, bytes: Vec<u8>) -> CmdResult<()> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn import_job(state: State<AppState>, path: String) -> CmdResult<String> {
     guard(|| Ok(bundle::open_path(&state.store(), &PathBuf::from(path))?))
 }
@@ -374,7 +376,7 @@ fn take_pending_open(state: State<AppState>) -> Option<String> {
     state.pending_open.lock().ok()?.take()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn create_standard(
     state: State<AppState>,
     name: String,
@@ -421,7 +423,7 @@ fn standard_part(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_examples() -> Vec<ExampleInfo> {
     examples::EXAMPLES
         .iter()
@@ -435,7 +437,7 @@ fn list_examples() -> Vec<ExampleInfo> {
         .collect()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn create_from_example(
     state: State<AppState>,
     example_id: String,
@@ -452,7 +454,7 @@ fn create_from_example(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn new_project(state: State<AppState>, name: String) -> CmdResult<String> {
     guard(|| {
         let mut project = examples::find("gable").expect("built-in example").project();
@@ -821,4 +823,35 @@ pub fn run() {
             open_files(_app, urls.into_iter().filter_map(|u| u.to_file_path().ok()));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    /// Commands that calculate a roof (twice for `review_status`) or read and
+    /// copy whole files must not run on the window's main thread (ARCH-003).
+    #[test]
+    fn slow_commands_run_off_the_main_thread() {
+        let src = include_str!("lib.rs");
+        for name in [
+            "list_projects",
+            "review_status",
+            "revert_last_change",
+            "revert_changes",
+            "duplicate_project",
+            "delete_project",
+            "attach_files",
+            "remove_attachment",
+            "import_job",
+            "export_job",
+            "list_examples",
+            "calc",
+            "calc_breakdown",
+            "take_snapshot",
+        ] {
+            assert!(
+                src.contains(&format!("#[tauri::command(async)]\nfn {name}(")),
+                "`{name}` must be #[tauri::command(async)]"
+            );
+        }
+    }
 }
