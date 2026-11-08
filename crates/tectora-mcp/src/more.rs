@@ -386,8 +386,20 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "duplicate_project",
-            "description": "Copy a design (with its attached files) under a new name.",
-            "inputSchema": schema(json!({ "id": id, "name": { "type": "string" } }), &["id", "name"]),
+            "description": "Copy a design under a new name as a new draft (no stored offer result). Pass `job` to start a new job for another customer from a past roof; attached files are copied unless `with_files` is false.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "name": { "type": "string" },
+                "job": {
+                    "type": "object",
+                    "description": "Job data of the new job; omitted fields are empty. Without `job` the old job data is kept.",
+                    "properties": {
+                        "number": { "type": "string" }, "customer": { "type": "string" }, "address": { "type": "string" }
+                    }
+                },
+                "with_files": { "type": "boolean", "description": "Copy the attached drawings and photos (default true)." },
+                "summary": summary_prop()
+            }), &["id", "name"]),
         }),
         json!({
             "name": "delete_project",
@@ -494,11 +506,27 @@ impl Server {
             })(),
             "duplicate_project" => (|| {
                 let (id, mut p) = self.load(args)?;
-                p.name = arg_str(args, "name")?.to_string();
-                p.job.status = tectora_core::JobStatus::Draft;
-                p.result_snapshot = None;
-                let new_id = self.store.save_as(None, &p, &self.client, &format!("Copy of {id}"))?;
-                self.store.copy_attachments(&id, &new_id)?;
+                let job = match args.get("job") {
+                    None | Some(Value::Null) => None,
+                    Some(j) => {
+                        let field = |k: &str| j.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+                        Some(tectora_core::JobInfo {
+                            number: field("number"),
+                            customer: field("customer"),
+                            address: field("address"),
+                            status: tectora_core::JobStatus::Draft,
+                        })
+                    }
+                };
+                tectora_core::library::prepare_copy(&mut p, arg_str(args, "name")?, job);
+                let summary = match args.get("summary").and_then(Value::as_str) {
+                    Some(s) if !s.trim().is_empty() => s.to_string(),
+                    _ => format!("Copy of {id}"),
+                };
+                let new_id = self.store.save_as(None, &p, &self.client, &summary)?;
+                if args.get("with_files").and_then(Value::as_bool).unwrap_or(true) {
+                    self.store.copy_attachments(&id, &new_id)?;
+                }
                 self.live(format!("Copied “{}”", p.name), Some(&new_id));
                 Ok(json!({ "id": new_id }))
             })(),
@@ -1262,6 +1290,34 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(s.store.load(&copy).unwrap().result_snapshot.is_none());
+        let fresh = call(
+            &mut s,
+            "duplicate_project",
+            json!({ "id": id, "name": "New job", "job": { "customer": "Dvořák" }, "with_files": false, "summary": "Start from a past roof" }),
+        )["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let p = s.store.load(&fresh).unwrap();
+        assert_eq!(
+            (p.name.as_str(), p.job.customer.as_str()),
+            ("New job", "Dvořák")
+        );
+        assert!(
+            call(&mut s, "list_files", json!({ "id": fresh }))
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let found = call(
+            &mut s,
+            "list_projects",
+            json!({ "query": "DVORAK", "sort": "name" }),
+        );
+        assert_eq!(found.as_array().unwrap().len(), 1);
+        assert_eq!(found[0]["id"], fresh.as_str());
+        assert!(found[0]["pitch_range_deg"].is_array());
+        call(&mut s, "delete_project", json!({ "id": fresh }));
         assert!(
             call(&mut s, "get_history", json!({ "id": id }))
                 .as_array()

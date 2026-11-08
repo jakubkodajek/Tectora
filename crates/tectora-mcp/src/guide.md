@@ -67,8 +67,12 @@ The tools cover every operation of the Tectora editor:
   tells whether the user has accepted your changes yet and how they changed
   the figures; only the user accepts, in the app. Do not treat a design as
   approved while `pending` is set.
-- Library: `list_examples`, `create_from_example`, `duplicate_project`,
-  `delete_project` (only when the user asks).
+- Library: `list_projects` searches the roofs made so far (words in name,
+  number, customer, address or notes, accents ignored; filters by status,
+  AI change, date range and roof area; sort and limit). `list_examples`,
+  `create_from_example`, `duplicate_project` (with `job` it starts a new job
+  for another customer from a past roof, without the old files when
+  `with_files` is false), `delete_project` (only when the user asks).
 - Files of a job (the drawings): `attach_file`, `list_files`, `remove_file`.
   Attach the drawing a roof was made from, so the colleague reviewing it has
   it at hand.

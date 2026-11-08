@@ -19,7 +19,7 @@ ready-to-paste configuration for Claude Desktop, Claude Code and Gemini CLI.
 | Tool | Purpose |
 | --- | --- |
 | `tectora_guide` | Model conventions (DACAD terms, units) and the drawing-to-roof workflow |
-| `list_projects`, `get_project`, `calc` | Read designs, edge tables, dormers, quantities by DACAD line code, stored result |
+| `list_projects`, `get_project`, `calc` | Search the library (text, status, AI change, dates, area, sort), read designs, edge tables, dormers, quantities by DACAD line code, stored result |
 | `create_standard_roof`, `create_project`, `create_from_example` | Create designs |
 | `add_part`, `add_shape_part`, `transform_part`, `delete_items` | Parts: add (standard roofs, regular polygons), move / rotate / mirror / copy, delete anything |
 | `update_edges`, `set_outline`, `edit_walls` | Walls and their roof definitions; corners, lengths, direction changes, parallel shift |
@@ -28,7 +28,7 @@ ready-to-paste configuration for Claude Desktop, Claude Code and Gemini CLI.
 | `roof_helper` | Calculation helpers (triangle, two parallels, point in space, merge, hip/valley, build-up, round roof), preview or apply |
 | `update_job`, `store_result` | Job data and status; the stored result for the offer |
 | `get_history`, `get_review`, `revert_to`, `revert_last_change`, `show_project` | History, review state (accepted or still pending in the app, effect on the figures), undo, focus in the app |
-| `duplicate_project`, `delete_project`, `list_examples` | Library |
+| `duplicate_project`, `delete_project`, `list_examples` | Library; `duplicate_project` with `job` starts a new job from a past roof |
 | `list_files`, `attach_file`, `remove_file` | Files attached to a job (drawings) |
 | `export_job`, `import_job`, `get_schema` | `.tectorajob` bundles, file schema |
 | `get_settings`, `update_settings` | App settings shared with the Settings screen: jobs folder, drawings inbox folder, language, theme, defaults for new roofs, follow mode |
