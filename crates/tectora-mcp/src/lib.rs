@@ -813,6 +813,15 @@ impl Server {
     }
 
     fn call_tool_unguarded(&mut self, name: &str, args: &Value) -> ToolResult {
+        // Every write is shown to the user with its summary (AGENTS.md):
+        // a blank one is refused before anything is done.
+        if args
+            .get("summary")
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.trim().is_empty())
+        {
+            return Err("`summary` is empty: give one sentence for the user on what you change and why (it is shown in the app)".into());
+        }
         if let Some(r) = self.call_calc_isolated(name, args) {
             return r;
         }
@@ -1359,10 +1368,10 @@ mod tests {
         )
         .unwrap();
         let last = s.store.activity(&id).pop().unwrap();
-        assert!(
-            last.summary.starts_with("The west wall is not a gable"),
-            "{}",
-            last.summary
+        // The fixed sentence the app translates, then the AI's reason (UX-002).
+        assert_eq!(
+            last.summary,
+            "Reverted: Gable at the west (reason: The west wall is not a gable)"
         );
         assert!(!s.store.load(&id).unwrap().parts[0].edges[5].is_gable());
         let _ = std::fs::remove_dir_all(&s.store.dir);
