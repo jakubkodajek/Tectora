@@ -12,7 +12,11 @@
 //!
 //! Keep the command list in sync with `app/src-tauri/src/lib.rs`. Unknown
 //! commands return an error that the preview shows in the browser console.
-//! Listens on 127.0.0.1 only.
+//! Listens on 127.0.0.1 only, and answers only the preview page
+//! (`Origin: http://localhost:<TECTORA_PREVIEW_PORT>`, default 1430) and
+//! clients without a browser (no `Origin`): another web page open in the
+//! developer's browser could otherwise move the jobs folder, copy local files
+//! into the library or write files (ARCH-009).
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -414,11 +418,38 @@ fn events(store: &Store, seen: &mut BTreeMap<PathBuf, SystemTime>) -> Value {
     Value::Array(out)
 }
 
-fn respond(mut stream: TcpStream, status: &str, body: &str) {
+/// The page origins the bridge answers: the preview's Vite server.
+fn allowed_origins() -> Vec<String> {
+    let port = std::env::var("TECTORA_PREVIEW_PORT").unwrap_or_else(|_| "1430".into());
+    vec![
+        format!("http://localhost:{port}"),
+        format!("http://127.0.0.1:{port}"),
+    ]
+}
+
+/// Whether a request may be answered: from the preview page or from a client
+/// without a browser (no `Origin`), and addressed to this computer by its
+/// loopback name (a `Host` of another name is a DNS rebinding page).
+fn allowed(origin: Option<&str>, host: Option<&str>, port: u16) -> bool {
+    let host_ok =
+        host.is_none_or(|h| h == format!("127.0.0.1:{port}") || h == format!("localhost:{port}"));
+    let origin_ok = origin.is_none_or(|o| allowed_origins().iter().any(|a| a == o));
+    host_ok && origin_ok
+}
+
+fn respond(mut stream: TcpStream, status: &str, body: &str, origin: Option<&str>) {
+    // Only the preview page's own origin, never `*`.
+    let cors = origin
+        .map(|o| {
+            format!(
+                "Access-Control-Allow-Origin: {o}\r\nVary: Origin\r\n\
+                 Access-Control-Allow-Headers: content-type\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+            )
+        })
+        .unwrap_or_default();
     let _ = write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\
-         Access-Control-Allow-Headers: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{cors}\
          Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
@@ -426,6 +457,7 @@ fn respond(mut stream: TcpStream, status: &str, body: &str) {
 
 fn serve(
     home: &std::path::Path,
+    port: u16,
     store: &mut Store,
     seen: &mut BTreeMap<PathBuf, SystemTime>,
     stream: TcpStream,
@@ -441,21 +473,35 @@ fn serve(
         .trim_start_matches('/')
         .to_string();
     let mut len = 0usize;
+    let mut origin: Option<String> = None;
+    let mut host: Option<String> = None;
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header)? == 0 || header.trim().is_empty() {
             break;
         }
-        if let Some(v) = header.to_ascii_lowercase().strip_prefix("content-length:") {
-            len = v.trim().parse().unwrap_or(0);
+        let Some((name, value)) = header.split_once(':') else {
+            continue;
+        };
+        let value = value.trim().to_string();
+        match name.trim().to_ascii_lowercase().as_str() {
+            "content-length" => len = value.parse().unwrap_or(0),
+            "origin" => origin = Some(value),
+            "host" => host = Some(value),
+            _ => {}
         }
     }
+    if !allowed(origin.as_deref(), host.as_deref(), port) {
+        respond(stream, "403 Forbidden", "{}", None);
+        return Ok(());
+    }
+    let origin = origin.as_deref();
     if method == "OPTIONS" {
-        respond(stream, "204 No Content", "");
+        respond(stream, "204 No Content", "", origin);
         return Ok(());
     }
     if len > MAX_BODY {
-        respond(stream, "413 Payload Too Large", "{}");
+        respond(stream, "413 Payload Too Large", "{}", origin);
         return Ok(());
     }
     let mut body = vec![0; len];
@@ -473,6 +519,7 @@ fn serve(
                         stream,
                         "200 OK",
                         &json!({ "err": e.to_string() }).to_string(),
+                        origin,
                     );
                     return Ok(());
                 }
@@ -509,7 +556,7 @@ fn serve(
                 Ok(v) => json!({ "ok": v }),
                 Err(Fail(e)) => json!({ "err": e }),
             };
-            respond(stream, "200 OK", &out.to_string());
+            respond(stream, "200 OK", &out.to_string(), origin);
             return Ok(());
         }
         match store_command(store, &cmd, &args) {
@@ -523,7 +570,7 @@ fn serve(
             },
         }
     };
-    respond(stream, "200 OK", &out.to_string());
+    respond(stream, "200 OK", &out.to_string(), origin);
     Ok(())
 }
 
@@ -562,7 +609,7 @@ fn main() -> std::io::Result<()> {
     );
     let mut seen = scan(&dir);
     for stream in listener.incoming().flatten() {
-        if let Err(e) = serve(&dir, &mut store, &mut seen, stream) {
+        if let Err(e) = serve(&dir, port, &mut store, &mut seen, stream) {
             eprintln!("ui_bridge: {e}");
         }
     }
