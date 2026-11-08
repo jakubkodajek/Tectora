@@ -78,6 +78,12 @@ const KNOWN = new Set([
   "ai_not_installed",
   "ai_config_invalid",
   "ai_config_io",
+  "too_large",
+  "not_a_file",
+  "unsupported_type",
+  "invalid_name",
+  "too_many",
+  "settings_unreadable",
 ]);
 
 /** A translated description of an error from `action`. */

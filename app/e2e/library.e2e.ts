@@ -264,6 +264,26 @@ test.describe("library: examples, new job tabs, import, broken files", () => {
     app.errors.length = 0;
   });
 
+  test("a refused import says why: newer Tectora, damaged file, not a Tectora file", async ({ app, page }) => {
+    // ERR-007: every refused import read "An unexpected error occurred".
+    await app.open();
+    const cases: [string, string | Buffer, string][] = [
+      ["newer.tectora", JSON.stringify({ schema_version: 999, name: "Z budoucnosti", parts: [] }), "err.newer_format"],
+      ["rozbita.tectorajob", "this is not a zip", "err.unreadable"],
+      ["vykres.pdf", "%PDF-1.4", "err.unsupported_type"],
+    ];
+    for (const [name, content, key] of cases) {
+      await app.answerFileDialog(scratchFile(name, content));
+      await page.getByRole("button", { name: cs("home.importJob") }).click();
+      const toast = app.toasts().filter({ hasText: cs(key) });
+      await expect(toast, name).toBeVisible();
+      await expect(toast).toContainText(cs("err.action.import"));
+      await expect(toast).not.toContainText(cs("err.unknown"));
+    }
+    expect(await listProjects()).toEqual([]);
+    app.errors.length = 0;
+  });
+
   test("an unreadable file in the folder is reported, the rest still lists", async ({ app, page }) => {
     await createExample("gable", "Dobrá");
     fs.writeFileSync(path.join(LIBRARY_DIR, "rozbita.tectora"), "{ not json");
