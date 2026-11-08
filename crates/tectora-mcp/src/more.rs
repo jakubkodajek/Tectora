@@ -10,10 +10,12 @@ use serde_json::{Value, json};
 use tectora_core::edit::calc::{self as hc, BuildUpEave, ParallelField, Target};
 use tectora_core::edit::dormers::{self, DormerKind, DormerParams};
 use tectora_core::edit::probe::{host_height_at, roof_corner_points, roof_height_at, snap_to_roof};
-use tectora_core::edit::round::{ArcInput, ArcMode, arc_for, opposite_wall, span_between};
+use tectora_core::edit::round::{
+    ArcInput, ArcMode, MAX_ROUND_SEGMENTS, arc_for, opposite_wall, span_between,
+};
 use tectora_core::edit::transform::{
-    ItemRef, PlanMap, follow_roof, item_centre, offset_wall, part_centre, regular_polygon,
-    transform_items, transform_part,
+    ItemRef, MAX_COPIES, MAX_POLYGON_SIDES, PlanMap, follow_roof, item_centre, offset_wall,
+    part_centre, regular_polygon, transform_items, transform_part,
 };
 use tectora_core::edit::{EdgePatch, Patches, apply_patches, plain_edge};
 use tectora_core::examples::{EXAMPLES, StandardRoof, standard_roof};
@@ -157,6 +159,9 @@ fn apply_dormer_fields(p: &mut DormerParams, args: &Value) -> Result<(), String>
         }
     }
     if let Some(s) = opt::<u32>(args, "segments")? {
+        if s > MAX_ROUND_SEGMENTS {
+            return Err(format!("`segments` must be 0 to {MAX_ROUND_SEGMENTS}"));
+        }
         p.segments = s;
     }
     if let Some(m) = opt::<u8>(args, "material")? {
@@ -246,7 +251,7 @@ pub(crate) fn tools() -> Vec<Value> {
                 "dx": { "type": "number" }, "dy": { "type": "number" },
                 "centre": { "type": "array", "items": { "type": "number" }, "description": "rotate/mirror: pivot or a point on the mirror line [x, y]; default the part's centre." },
                 "deg": { "type": "number", "description": "rotate: angle, counter-clockwise; mirror: direction of the mirror line." },
-                "copies": { "type": "integer", "minimum": 0 },
+                "copies": { "type": "integer", "minimum": 0, "maximum": 50 },
                 "summary": summary_prop(),
             }), &["id", "op", "summary"]),
         }),
@@ -275,7 +280,7 @@ pub(crate) fn tools() -> Vec<Value> {
                 "id": id,
                 "shape": { "type": "string", "enum": ["gable", "shed", "hip", "pyramid", "half_hip", "regular_polygon"] },
                 "length": { "type": "number" }, "width": { "type": "number" },
-                "sides": { "type": "integer", "minimum": 3, "description": "regular_polygon: number of walls." },
+                "sides": { "type": "integer", "minimum": 3, "maximum": 64, "description": "regular_polygon: number of walls." },
                 "side": { "type": "number", "description": "regular_polygon: wall length, m." },
                 "rotation_deg": { "type": "number" },
                 "at": { "type": "array", "items": { "type": "number" }, "description": "Standard roof: its first corner; polygon: its centre [x, y]." },
@@ -442,8 +447,12 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "export_job",
-            "description": "Write a job to a .tectorajob file (project, attached files, history and a plan preview in one ZIP) at `path`.",
-            "inputSchema": schema(json!({ "id": id, "path": { "type": "string" } }), &["id", "path"]),
+            "description": "Write a job to a .tectorajob file (project, attached files, history and a plan preview in one ZIP) in the `exports` folder of the job library. The file is named after the job (or `name`); an existing file is never replaced. Returns the path to give the user.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "name": { "type": "string", "description": "File name without folder, e.g. \"Novak-strecha\"; default: the job's id." },
+                "summary": summary_prop(),
+            }), &["id", "summary"]),
         }),
         json!({
             "name": "import_job",
@@ -582,8 +591,17 @@ impl Server {
             })(),
             "export_job" => (|| {
                 let (id, _) = self.load(args)?;
-                let path = PathBuf::from(arg_str(args, "path")?);
+                let summary = arg_str(args, "summary")?;
+                if args.get("path").is_some() {
+                    return Err("`path` is not accepted: bundles are written to the library's exports folder; pass `name` for the file name".into());
+                }
+                let name = match args.get("name").and_then(Value::as_str) {
+                    Some(n) => n.trim().trim_end_matches(".tectorajob").to_string(),
+                    None => id.clone(),
+                };
+                let path = bundle::export_path(&self.store, &name)?;
                 let m = bundle::export(&self.store, &id, &path)?;
+                self.live(format!("Exported to {}: {summary}", path.display()), Some(&id));
                 Ok(json!({ "id": id, "path": path.display().to_string(), "manifest": m }))
             })(),
             "import_job" => (|| {
@@ -595,7 +613,7 @@ impl Server {
             "store_result" => (|| {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
-                p.result_snapshot = Some(snapshot::take(&p));
+                p.result_snapshot = Some(snapshot::take_checked(&p).map_err(|e| e.to_string())?);
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
             })(),
             "get_schema" => Ok(tectora_core::model::json_schema()),
@@ -713,6 +731,9 @@ impl Server {
             other => return Err(format!("unknown op `{other}`")),
         };
         let copies: u32 = opt(args, "copies")?.unwrap_or(0);
+        if copies > MAX_COPIES {
+            return Err(format!("at most {MAX_COPIES} copies"));
+        }
         transform_part(&mut p, pi, m, copies);
         self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
     }
@@ -733,8 +754,8 @@ impl Server {
             return Err(format!("{:?} {} is listed twice", d.kind, d.index));
         }
         let copies: u32 = opt(args, "copies")?.unwrap_or(0);
-        if copies > 50 {
-            return Err("at most 50 copies".into());
+        if copies > MAX_COPIES {
+            return Err(format!("at most {MAX_COPIES} copies"));
         }
         let moved = match arg_str(args, "op")? {
             "move" => {
@@ -813,8 +834,10 @@ impl Server {
         let mut part = if shape == "regular_polygon" {
             let sides: usize = req(args, "sides")?;
             let side = arg_f64(args, "side")?.ok_or("missing `side`")?;
-            if sides < 3 || !(side > 0.0) {
-                return Err("a polygon needs 3 or more sides of positive length".into());
+            if !(3..=MAX_POLYGON_SIDES).contains(&sides) || !(side > 0.0) {
+                return Err(format!(
+                    "a polygon needs 3 to {MAX_POLYGON_SIDES} sides of positive length"
+                ));
             }
             let c = at.unwrap_or(Point2::new(0.0, 0.0));
             let pts = regular_polygon(
@@ -1203,6 +1226,34 @@ mod tests {
     }
 
     #[test]
+    fn huge_counts_are_refused_before_anything_is_built() {
+        // ARCH-003: `sides: 1e12` aborted the server (out of memory).
+        let (mut s, id) = setup();
+        for (tool, want, args) in [
+            (
+                "add_shape_part",
+                "3 to 64 sides",
+                json!({ "id": id, "shape": "regular_polygon", "sides": 1_000_000_000_000u64, "side": 1, "summary": "s" }),
+            ),
+            (
+                "transform_part",
+                "at most 50 copies",
+                json!({ "id": id, "part": 0, "op": "move", "dx": 20, "dy": 0, "copies": 100_000, "summary": "s" }),
+            ),
+            (
+                "add_dormer",
+                "0 to 30",
+                json!({ "id": id, "kind": "round", "start": [2, 0], "width": 2, "segments": 1_000_000, "summary": "s" }),
+            ),
+        ] {
+            let e = s.call_tool(tool, &args).unwrap_err();
+            assert!(e.contains(want), "{tool}: {e}");
+        }
+        let p = s.store.load(&id).unwrap();
+        assert_eq!((p.parts.len(), p.dormers.len()), (1, 0));
+    }
+
+    #[test]
     fn transform_items_moves_copies_and_follows_the_roof() {
         let (mut s, id) = setup();
         call(
@@ -1408,8 +1459,23 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let out = dir.join("job.tectorajob");
-        call(&mut s, "export_job", json!({ "id": id, "path": out }));
+        assert!(
+            s.call_tool(
+                "export_job",
+                &json!({ "id": id, "path": dir.join("x.txt"), "summary": "s" })
+            )
+            .is_err()
+        );
+        let out = call(&mut s, "export_job", json!({ "id": id, "summary": "s" }))["path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(out.ends_with(".tectorajob"));
+        let again = call(&mut s, "export_job", json!({ "id": id, "summary": "s" }))["path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(out, again, "an existing export is never replaced");
         let new_id = call(&mut s, "import_job", json!({ "path": out }))["id"]
             .as_str()
             .unwrap()

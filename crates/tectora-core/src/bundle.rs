@@ -23,8 +23,16 @@ use crate::store::{Store, now_ms, outlines, roof_lines};
 pub const EXTENSION: &str = "tectorajob";
 const FORMAT: &str = "tectora-job";
 const FORMAT_VERSION: u32 = 1;
-/// Largest file read from a bundle, bytes (a guard against ZIP bombs).
-const MAX_ENTRY: u64 = 512 * 1024 * 1024;
+/// Largest attached file read from a bundle, bytes.
+const MAX_ENTRY: u64 = 256 * 1024 * 1024;
+/// Largest project or change log in a bundle, bytes.
+const MAX_TEXT_ENTRY: u64 = 16 * 1024 * 1024;
+/// Most attached files a bundle may carry.
+const MAX_FILES: usize = 200;
+/// Largest total size of the attached files of one bundle, bytes. Together
+/// with the limits above this keeps a small ZIP from filling the disk
+/// (an entry can inflate about 1000:1).
+const MAX_FILES_TOTAL: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
@@ -38,6 +46,40 @@ pub struct Manifest {
 
 fn zip_err(e: impl std::fmt::Display) -> String {
     format!("job bundle: {e}")
+}
+
+/// Folder of the library where the MCP server writes bundles.
+pub const EXPORTS_DIR: &str = "exports";
+
+/// A new file `<library>/exports/<name>.tectorajob` (with " (2)" etc. when
+/// the name is taken): the only place an AI client may write a bundle, so it
+/// can never replace a file of the user's. `name` must be a plain file name.
+pub fn export_path(store: &Store, name: &str) -> Result<std::path::PathBuf, String> {
+    let bad = name.is_empty()
+        || name.len() > 100
+        || name.starts_with('.')
+        || name.ends_with('.')
+        || name.ends_with(' ')
+        || name.chars().any(|c| {
+            c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+        });
+    if bad {
+        return Err(format!("`{name}` is not a plain file name"));
+    }
+    let dir = store.dir.join(EXPORTS_DIR);
+    fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for n in 1..1000 {
+        let file = if n == 1 {
+            format!("{name}.{EXTENSION}")
+        } else {
+            format!("{name} ({n}).{EXTENSION}")
+        };
+        let path = dir.join(file);
+        if !path.exists() {
+            return Ok(path);
+        }
+    }
+    Err(format!("too many exports named `{name}`"))
 }
 
 /// Writes job `id` of `store` to `dest` as a bundle.
@@ -72,7 +114,15 @@ pub fn export(store: &Store, id: &str, dest: &Path) -> Result<Manifest, String> 
     if let Ok(history) = fs::read(store.activity_path(id)?) {
         put("history.jsonl", &history)?;
     }
-    put("preview.svg", preview_svg(&project).as_bytes())?;
+    // The preview runs the roof kernel: a job out of range or one the
+    // kernel cannot calculate is still exported, without preview (ERR-008).
+    let svg = project
+        .check_limits()
+        .ok()
+        .and_then(|()| crate::model::guarded(|| preview_svg(&project)).ok());
+    if let Some(svg) = svg {
+        put("preview.svg", svg.as_bytes())?;
+    }
     for a in &attachments {
         let bytes = fs::read(store.attachment_path(id, &a.name)?).map_err(|e| e.to_string())?;
         put(&format!("files/{}", a.name), &bytes)?;
@@ -81,23 +131,29 @@ pub fn export(store: &Store, id: &str, dest: &Path) -> Result<Manifest, String> 
     Ok(manifest)
 }
 
+/// Reads entry `name`, at most `max` bytes (its declared size is checked
+/// first, the bytes actually inflated as they are read).
 fn read_entry<R: Read + std::io::Seek>(
     zip: &mut zip::ZipArchive<R>,
     name: &str,
+    max: u64,
 ) -> Result<Option<Vec<u8>>, String> {
     let mut f = match zip.by_name(name) {
         Ok(f) => f,
         Err(zip::result::ZipError::FileNotFound) => return Ok(None),
         Err(e) => return Err(zip_err(e)),
     };
-    if f.size() > MAX_ENTRY {
+    if f.size() > max {
         return Err(zip_err(format!("{name} is too large")));
     }
     let mut buf = Vec::new();
     f.by_ref()
-        .take(MAX_ENTRY + 1)
+        .take(max + 1)
         .read_to_end(&mut buf)
         .map_err(zip_err)?;
+    if buf.len() as u64 > max {
+        return Err(zip_err(format!("{name} is too large")));
+    }
     Ok(Some(buf))
 }
 
@@ -105,7 +161,7 @@ fn read_entry<R: Read + std::io::Seek>(
 pub fn import(store: &Store, src: &Path) -> Result<String, String> {
     let file = fs::File::open(src).map_err(|e| format!("{}: {e}", src.display()))?;
     let mut zip = zip::ZipArchive::new(file).map_err(zip_err)?;
-    if let Some(m) = read_entry(&mut zip, "manifest.json")? {
+    if let Some(m) = read_entry(&mut zip, "manifest.json", MAX_TEXT_ENTRY)? {
         let m: Manifest = serde_json::from_slice(&m).map_err(zip_err)?;
         if m.format != FORMAT {
             return Err(zip_err("not a Tectora job"));
@@ -114,26 +170,60 @@ pub fn import(store: &Store, src: &Path) -> Result<String, String> {
             return Err(zip_err("made by a newer Tectora"));
         }
     }
-    let text = read_entry(&mut zip, "project.tectora")?
+    let text = read_entry(&mut zip, "project.tectora", MAX_TEXT_ENTRY)?
         .ok_or_else(|| zip_err("no project in the file"))?;
     let project =
         Project::from_json(&String::from_utf8(text).map_err(zip_err)?).map_err(zip_err)?;
-    let id = store.save(None, &project)?;
-    if let Some(history) = read_entry(&mut zip, "history.jsonl")? {
-        let path = store.activity_path(&id)?;
-        fs::create_dir_all(store.activity_dir()).map_err(|e| e.to_string())?;
-        fs::write(path, history).map_err(|e| e.to_string())?;
-    }
+    project.check_limits().map_err(zip_err)?;
+    let history = read_entry(&mut zip, "history.jsonl", MAX_TEXT_ENTRY)?;
     let names: Vec<String> = zip
         .file_names()
         .filter_map(|n| n.ok())
         .filter_map(|n| n.strip_prefix("files/").map(str::to_string))
         .filter(|n| !n.is_empty() && !n.contains('/'))
         .collect();
-    for name in names {
-        if let Some(bytes) = read_entry(&mut zip, &format!("files/{name}"))? {
-            store.add_attachment(&id, &name, &bytes)?;
+    // Checked before anything is written, so a refused bundle leaves no
+    // half-imported job behind.
+    if names.len() > MAX_FILES {
+        return Err(zip_err(format!(
+            "too many attached files ({}, at most {MAX_FILES})",
+            names.len()
+        )));
+    }
+    let mut declared = 0u64;
+    for name in &names {
+        let f = zip.by_name(&format!("files/{name}")).map_err(zip_err)?;
+        declared = declared.saturating_add(f.size());
+    }
+    if declared > MAX_FILES_TOTAL {
+        return Err(zip_err(format!(
+            "the attached files are too large ({} MB, at most {} MB)",
+            declared >> 20,
+            MAX_FILES_TOTAL >> 20
+        )));
+    }
+    let id = store.save(None, &project)?;
+    let rest = (|| -> Result<(), String> {
+        if let Some(history) = history {
+            let path = store.activity_path(&id)?;
+            fs::create_dir_all(store.activity_dir()).map_err(|e| e.to_string())?;
+            fs::write(path, history).map_err(|e| e.to_string())?;
         }
+        let mut total = 0u64;
+        for name in names {
+            // The declared sizes can lie: the bytes read count too.
+            let max = MAX_ENTRY.min(MAX_FILES_TOTAL - total);
+            if let Some(bytes) = read_entry(&mut zip, &format!("files/{name}"), max)? {
+                total += bytes.len() as u64;
+                store.add_attachment(&id, &name, &bytes)?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(e) = rest {
+        // No half-imported job: the job, its log and its files go again.
+        let _ = store.delete(&id);
+        return Err(e);
     }
     Ok(id)
 }
@@ -246,6 +336,69 @@ mod tests {
         assert_eq!(other.load(&new_id).unwrap(), store.load(&id).unwrap());
         assert_eq!(other.attachments(&new_id).len(), 2);
         assert_eq!(other.activity(&new_id).len(), store.activity(&id).len());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A bundle with the gable example and these attached files: (name, size
+    /// in MiB of spaces, count of such files).
+    fn bundle_with(dir: &Path, files: &[(&str, usize, usize)]) -> std::path::PathBuf {
+        let path = dir.join("big.tectorajob");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        let opts = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .large_file(true);
+        let p = crate::examples::find("gable").unwrap().project();
+        zip.start_file("project.tectora", opts).unwrap();
+        zip.write_all(p.to_json().unwrap().as_bytes()).unwrap();
+        let chunk = vec![b' '; 1 << 20];
+        for (name, mib, count) in files {
+            for i in 0..*count {
+                zip.start_file(format!("files/{i}-{name}"), opts).unwrap();
+                for _ in 0..*mib {
+                    zip.write_all(&chunk).unwrap();
+                }
+            }
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn a_bundle_over_the_size_or_count_limits_is_refused_and_leaves_nothing() {
+        // ARCH-004: a small ZIP must not fill the disk.
+        let dir = std::env::temp_dir().join(format!("tectora-bomb-{}", now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        let store = Store::new(dir.join("lib")).unwrap();
+        let bomb = bundle_with(&dir, &[("plan.pdf", 200, 3)]);
+        assert!(fs::metadata(&bomb).unwrap().len() < 4 << 20);
+        let e = import(&store, &bomb).unwrap_err();
+        assert!(e.contains("too large"), "{e}");
+        let many = bundle_with(&dir, &[("x.pdf", 0, MAX_FILES + 1)]);
+        let e = import(&store, &many).unwrap_err();
+        assert!(e.contains("too many"), "{e}");
+        assert!(store.list().is_empty());
+        let ok = bundle_with(&dir, &[("x.pdf", 1, 2)]);
+        let id = import(&store, &ok).unwrap();
+        assert_eq!(store.attachments(&id).len(), 2);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_bundle_with_coordinates_out_of_range_is_refused() {
+        let dir = std::env::temp_dir().join(format!("tectora-range-{}", now_ms()));
+        let store = Store::new(dir.join("lib")).unwrap();
+        let mut p = crate::examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        p.parts[0].edges[0].start.x = 1e300;
+        fs::write(store.path(&id).unwrap(), serde_json::to_string(&p).unwrap()).unwrap();
+        let file = dir.join("far.tectorajob");
+        export(&store, &id, &file).unwrap();
+        let mut zip = zip::ZipArchive::new(fs::File::open(&file).unwrap()).unwrap();
+        assert!(zip.by_name("project.tectora").is_ok());
+        assert!(zip.by_name("preview.svg").is_err(), "no kernel run");
+        let other = Store::new(dir.join("other")).unwrap();
+        assert!(import(&other, &file).is_err());
+        assert!(other.list().is_empty());
         let _ = fs::remove_dir_all(dir);
     }
 

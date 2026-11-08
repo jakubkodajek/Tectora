@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { notifyError } from "./notify.svelte";
+  import { info, notifyError } from "./notify.svelte";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { untrack } from "svelte";
   import Icon from "./Icon.svelte";
@@ -8,6 +8,15 @@
   import type { Attachment, Project } from "./types";
   import { JOB_STATUSES } from "./types";
   import { DACAD_MATERIALS, defaultMaterialName } from "./materials";
+
+  /** Opens an attached file; files that are not drawings or documents are only shown in their folder. */
+  async function openFile(name: string) {
+    try {
+      if (!(await api.openAttachment(id, name))) info(t("files.shownInFolder", { name }));
+    } catch (e) {
+      notifyError(e, "files");
+    }
+  }
 
   let {
     id,
@@ -122,7 +131,7 @@
     <ul class="files">
       {#each files as f (f.name)}
         <li>
-          <button class="link" onclick={() => api.openAttachment(id, f.name).catch((e) => notifyError(e, "files"))} title={t("files.open")}>{f.name}</button>
+          <button class="link" onclick={() => openFile(f.name)} title={t("files.open")}>{f.name}</button>
           <span class="size">{size(f.size)}</span>
           <button class="icon" onclick={() => removeFile(f.name)} title={t("files.remove")} aria-label={t("files.remove")}><Icon name="trash" size={14} /></button>
         </li>

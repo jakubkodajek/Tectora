@@ -70,7 +70,8 @@ export const api = {
   listAttachments: (id: string) => invoke<Attachment[]>("list_attachments", { id }),
   attachFiles: (id: string, paths: string[]) => invoke<string[]>("attach_files", { id, paths }),
   removeAttachment: (id: string, name: string) => invoke<void>("remove_attachment", { id, name }),
-  openAttachment: (id: string, name: string) => invoke<void>("open_attachment", { id, name }),
+  /** False: the file's type does not open directly; its folder was shown. */
+  openAttachment: (id: string, name: string) => invoke<boolean>("open_attachment", { id, name }),
   exportJob: (id: string, path: string) => invoke<void>("export_job", { id, path }),
   importJob: (path: string) => invoke<string>("import_job", { path }),
   takeSnapshot: (project: Project) => invoke<ResultSnapshot>("take_snapshot", { project }),

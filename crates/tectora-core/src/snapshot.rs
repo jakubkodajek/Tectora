@@ -43,6 +43,32 @@ fn r2(v: f64) -> f64 {
 }
 
 /// The project's current result.
+/// [`take`] for input from outside: refuses a project out of range
+/// (`Err(Refused::OutOfRange)`) and turns a kernel panic into
+/// `Err(Refused::Internal)` instead of aborting the caller.
+pub fn take_checked(project: &Project) -> Result<ResultSnapshot, Refused> {
+    project.check_limits().map_err(Refused::OutOfRange)?;
+    crate::model::guarded(|| take(project)).map_err(Refused::Internal)
+}
+
+/// Why [`take_checked`] stored no result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refused {
+    /// A number of the project is out of range (the detail says which).
+    OutOfRange(String),
+    /// The roof calculation failed.
+    Internal(String),
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refused::OutOfRange(d) => write!(f, "out of range: {d}"),
+            Refused::Internal(d) => f.write_str(d),
+        }
+    }
+}
+
 pub fn take(project: &Project) -> ResultSnapshot {
     let t = crate::quantities::roof_totals(project);
     ResultSnapshot {
@@ -172,6 +198,15 @@ mod tests {
     use super::*;
     use crate::examples;
     use crate::model::JobStatus;
+
+    #[test]
+    fn storing_the_result_of_a_roof_out_of_range_is_refused_not_run() {
+        let ok = examples::find("gable").unwrap().project();
+        assert_eq!(take_checked(&ok).unwrap().roof_area, take(&ok).roof_area);
+        let mut far = ok.clone();
+        far.parts[0].edges[0].start.x = 1e300;
+        assert!(matches!(take_checked(&far), Err(Refused::OutOfRange(_))));
+    }
 
     #[test]
     fn change_in_figures_reports_area_and_lines() {

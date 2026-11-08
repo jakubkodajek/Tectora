@@ -227,7 +227,7 @@
               {#if showBroken}
                 <ul>
                   {#each broken as b (b.id)}
-                    <li><code>{b.id}.tectora</code> {t(`err.${b.code === "unreadable" || b.code === "permission_denied" || b.code === "internal" ? b.code : "io"}`, { id: b.id })}{#if b.detail}<small>{b.detail}</small>{/if}</li>
+                    <li><code>{b.id}.tectora</code> {t(`err.${b.code === "unreadable" || b.code === "newer_format" || b.code === "permission_denied" || b.code === "internal" ? b.code : "io"}`, { id: b.id })}{#if b.detail}<small>{b.detail}</small>{/if}</li>
                   {/each}
                 </ul>
               {/if}

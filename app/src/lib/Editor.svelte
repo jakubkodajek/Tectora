@@ -34,6 +34,7 @@
   import { api, onProjectsChanged } from "./api";
   import { changedEdges, changedItems, describeChange, describeFigure, ghostOf } from "./changes";
   import { merge3 } from "./merge";
+  import { releaseLeaveGuard, setLeaveGuard } from "./leave";
   import { m2, num } from "./format";
   import { t } from "./i18n.svelte";
   import { actorName, isFresh, live } from "./live.svelte";
@@ -217,9 +218,16 @@
       // An external edit (AI agent, CLI) saved since our last save or load
       // and not loaded yet: merge it in instead of writing over it.
       if (lastSaved) {
+        // A file that cannot be read back (saved by a newer Tectora, damaged,
+        // unreachable) is not overwritten with this older copy: the error
+        // goes to the catch below and the edits stay in memory. A file
+        // deleted outside the app is written again with the edits.
         const onDisk = await api.loadProject(id).then(
           (p) => JSON.stringify(p),
-          () => null,
+          (e) => {
+            if (toAppError(e).code === "not_found") return null;
+            throw e;
+          },
         );
         if (onDisk && onDisk !== lastSaved) {
           project = merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, JSON.parse(onDisk) as Project);
@@ -337,8 +345,17 @@
       else load(false);
     }).then((u) => (unlisten = u));
   });
+  /** Saves pending edits before the job is left; asks when they cannot be saved. */
+  async function leaveGuard(mode: "ask" | "quiet"): Promise<boolean> {
+    if (saveState === "dirty" || saveState === "saving" || saveState === "failed") await save();
+    if (saveState !== "failed") return true;
+    return mode === "ask" && (await confirm(t("editor.leaveUnsaved")));
+  }
+  setLeaveGuard(leaveGuard, () => saveState !== "saved");
+
   onDestroy(() => {
     unlisten?.();
+    releaseLeaveGuard(leaveGuard);
     if (saveState === "dirty" || saveState === "failed") save();
   });
 
@@ -1343,7 +1360,7 @@
       {#if loadError.detail}<pre>{loadError.detail}</pre>{/if}
       <div class="load-actions">
         <button class="btn" onclick={onback}><Icon name="back" size={16} />{t("editor.back")}</button>
-        {#if loadErrorCode !== "not_found" && loadErrorCode !== "unreadable"}
+        {#if loadErrorCode !== "not_found" && loadErrorCode !== "unreadable" && loadErrorCode !== "newer_format"}
           <button class="btn primary" onclick={() => { loadError = null; load(true); }}><Icon name="refresh" size={16} />{t("err.retry")}</button>
         {/if}
       </div>
