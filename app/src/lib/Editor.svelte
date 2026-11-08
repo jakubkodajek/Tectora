@@ -1194,7 +1194,7 @@
               <strong>
                 {t("review.title", { who: actorName(pending.actor) })}{#if pendingList.length > 1}<span class="steps">{t("review.steps", { n: pendingList.length })}</span>{/if}
               </strong>
-              <span>{pendingList.map((a) => a.summary).reverse().join(" → ")}</span>
+              <span class="review-summary" title={pendingList.map((a) => a.summary).reverse().join(" → ")}>{pendingList.map((a) => a.summary).reverse().join(" → ")}</span>
               {#if pendingChanges.length}
                 <span class="review-list">
                   {pendingChanges.slice(0, 4).map((c) => describeChange(c, project)).join(" · ")}{pendingChanges.length > 4 ? ` · ${t("review.more", { n: pendingChanges.length - 4 })}` : ""}
@@ -1696,6 +1696,14 @@
     background: color-mix(in srgb, var(--ai) 20%, transparent);
     font-size: 11.5px;
     font-weight: 600;
+  }
+  /* Two lines at most: a long AI run must not squeeze the plan away (UI-001). */
+  .review-summary {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
   }
   .review-list {
     color: var(--text-2);
