@@ -183,7 +183,7 @@ test.describe("job tab", () => {
     const id = await createExample("hip", "Plný disk");
     await openEditor(app, "Plný disk");
     // The disk is full: every save fails.
-    await page.route("**/save_project", (r) => r.fulfill({ contentType: "application/json", body: JSON.stringify({ err: { code: "disk_full" } }) }));
+    await page.route("**/save_project*", (r) => r.fulfill({ contentType: "application/json", body: JSON.stringify({ err: { code: "disk_full" } }) }));
     await selectWall(page, 0);
     await setField(bar(page, "def.title").getByLabel(cs("edge.pitch")), 31);
     await expect(page.locator(".statusbar .save-failed")).toBeVisible({ timeout: 8000 });
@@ -193,7 +193,7 @@ test.describe("job tab", () => {
     await expect.poll(async () => (await app.dialogs()).map((d) => d.message)).toContain(cs("editor.leaveUnsaved"));
     await expect(page.locator(".editor")).toBeVisible();
     // Disk freed: the next try saves the edit, and Back leaves without asking.
-    await page.unroute("**/save_project");
+    await page.unroute("**/save_project*");
     await page.getByRole("button", { name: cs("editor.back") }).first().click();
     await expect(page.locator("main")).toBeVisible();
     expect((await loadProject(id)).parts[0].edges[0].pitch_deg).toBe(31);

@@ -141,6 +141,17 @@ fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fa
                     .map_err(Fail::from),
             )
         }
+        // As the app: saved, or `conflict` with the current file.
+        "save_project_checked" => {
+            let project = arg::<Project>(a, "project").ok()?;
+            let base = arg::<Project>(a, "base").ok()?;
+            Some(
+                store
+                    .save_checked(&id, &project, &base)
+                    .map(|r| to_json(r).unwrap_or(Value::Null))
+                    .map_err(Fail::from),
+            )
+        }
         // Reverts with their codes too (`revert_conflict`, ERR-001).
         "revert_last_change" => Some(
             store

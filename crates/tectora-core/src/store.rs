@@ -475,6 +475,21 @@ fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     })
 }
 
+/// What [`Store::save_checked`] and [`Store::save_as_checked`] did: saved,
+/// or found the file changed since the caller's base and left it alone.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CheckedSave {
+    Saved {
+        id: String,
+    },
+    /// Someone else saved the job after the base was read: `current` is the
+    /// file now, to merge with and save again.
+    Conflict {
+        current: Box<Project>,
+    },
+}
+
 /// Longest accepted project id (file names stay well inside the 255-byte
 /// limit of common file systems).
 const MAX_ID_LEN: usize = 120;
@@ -719,23 +734,78 @@ impl Store {
     /// a colleague's newer one.
     pub fn save(&self, id: Option<String>, project: &Project) -> Result<String, StoreError> {
         let id = id.unwrap_or_else(|| self.new_id(&project.name));
-        let path = self.path(&id)?;
+        let _lock = self.lock(&id);
+        self.write(&id, project)?;
+        Ok(id)
+    }
+
+    /// Saves the app's own edits (like [`Store::save`]) only if the file
+    /// still holds `base`, the version the editor last read or wrote.
+    /// Otherwise the file is left alone and its current content comes back
+    /// as [`CheckedSave::Conflict`], for the editor to merge its edits onto
+    /// and save again: an AI (MCP) save that landed in between is never
+    /// overwritten. The check and the write happen under the job's lock
+    /// file, which every save of every process (app, MCP server, CLI) takes.
+    /// A missing or damaged file is written (repaired with the editor's
+    /// copy, ERR-018); one saved by a newer Tectora is refused.
+    pub fn save_checked(
+        &self,
+        id: &str,
+        project: &Project,
+        base: &Project,
+    ) -> Result<CheckedSave, StoreError> {
+        self.path(id)?;
+        let _lock = self.lock(id);
+        match self.load(id) {
+            Ok(current) if current != *base => {
+                return Ok(CheckedSave::Conflict {
+                    current: Box::new(current),
+                });
+            }
+            Ok(_) | Err(StoreError::NotFound(_) | StoreError::Unreadable { .. }) => {}
+            Err(e) => return Err(e),
+        }
+        self.write(id, project)?;
+        Ok(CheckedSave::Saved { id: id.to_string() })
+    }
+
+    /// Writes the file; the caller holds the job's lock.
+    fn write(&self, id: &str, project: &Project) -> Result<(), StoreError> {
+        let path = self.path(id)?;
         if let Some(version) = fs::read_to_string(&path)
             .ok()
             .and_then(|t| newer_format(&t))
         {
             return Err(StoreError::NewerFormat {
-                id,
+                id: id.to_string(),
                 version,
                 max: crate::model::SCHEMA_VERSION,
             });
         }
         let json = project.to_json().map_err(|e| StoreError::Unreadable {
-            id: id.clone(),
+            id: id.to_string(),
             detail: e.to_string(),
         })?;
-        write_atomic(&path, &json).map_err(|e| StoreError::io(Some(&id), e))?;
-        Ok(id)
+        write_atomic(&path, &json).map_err(|e| StoreError::io(Some(id), e))
+    }
+
+    /// Takes the job's lock file (`.activity/<id>.lock`), held until the
+    /// returned file is dropped, so that reading the current file and
+    /// writing the next one is one step for every process saving the job.
+    /// Best effort: where the folder cannot hold a lock file (read-only,
+    /// a file system without locks), saving goes on without it and the
+    /// write reports its own error.
+    fn lock(&self, id: &str) -> Option<fs::File> {
+        self.path(id).ok()?;
+        fs::create_dir_all(self.activity_dir()).ok()?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.activity_dir().join(format!("{id}.lock")))
+            .ok()?;
+        file.lock().ok()?;
+        Some(file)
     }
 
     /// Saves and records who made the change and why, keeping the previous
@@ -747,19 +817,77 @@ impl Store {
         actor: &str,
         summary: &str,
     ) -> Result<String, StoreError> {
-        let before = match id.as_deref().map(|id| self.load(id)) {
-            // Refused before anything is logged (see `save`).
-            Some(Err(e @ StoreError::NewerFormat { .. })) => return Err(e),
-            Some(r) => r.ok(),
-            None => None,
+        let id = match id {
+            Some(id) => id,
+            None => {
+                let id = self.new_id(&project.name);
+                let _lock = self.lock(&id);
+                self.log_and_write(&id, None, project, actor, summary)?;
+                return Ok(id);
+            }
         };
-        if before.as_ref() == Some(project) {
-            return Ok(id.unwrap_or_default());
+        match self.save_as_checked(&id, project, actor, summary, None)? {
+            CheckedSave::Saved { id } => Ok(id),
+            CheckedSave::Conflict { .. } => unreachable!("no base, no conflict"),
         }
-        let id = id.unwrap_or_else(|| self.new_id(&project.name));
+    }
+
+    /// [`Store::save_as`] of an existing job, only if the file still holds
+    /// `base` (the version the change was made on); otherwise nothing is
+    /// saved or logged and the current file comes back as
+    /// [`CheckedSave::Conflict`]. MCP tools use it, so a user edit the app
+    /// saved while the tool ran is not overwritten.
+    pub fn save_as_checked(
+        &self,
+        id: &str,
+        project: &Project,
+        actor: &str,
+        summary: &str,
+        base: Option<&Project>,
+    ) -> Result<CheckedSave, StoreError> {
+        self.path(id)?;
+        let _lock = self.lock(id);
+        let before = match self.load(id) {
+            // Refused before anything is logged (see `save`).
+            Err(e @ StoreError::NewerFormat { .. }) => return Err(e),
+            r => r.ok(),
+        };
+        if let (Some(base), Some(current)) = (base, before.as_ref())
+            && current != base
+        {
+            return Ok(CheckedSave::Conflict {
+                current: Box::new(current.clone()),
+            });
+        }
+        if before.as_ref() != Some(project) {
+            self.log_and_write(id, before, project, actor, summary)?;
+        }
+        Ok(CheckedSave::Saved { id: id.to_string() })
+    }
+
+    /// Logs the change and writes the file; the caller holds the job's lock.
+    fn log_and_write(
+        &self,
+        id: &str,
+        before: Option<Project>,
+        project: &Project,
+        actor: &str,
+        summary: &str,
+    ) -> Result<(), StoreError> {
+        // A newer file is refused before anything is logged.
+        if let Some(version) = fs::read_to_string(self.path(id)?)
+            .ok()
+            .and_then(|t| newer_format(&t))
+        {
+            return Err(StoreError::NewerFormat {
+                id: id.to_string(),
+                version,
+                max: crate::model::SCHEMA_VERSION,
+            });
+        }
         // Log first: the app reacts to the project file and then reads the log.
         self.append_activity(
-            &id,
+            id,
             ActivityEntry {
                 ts_ms: now_ms(),
                 actor: actor.to_string(),
@@ -772,7 +900,7 @@ impl Store {
                 after: Some(project.clone()),
             },
         )?;
-        self.save(Some(id.clone()), project)
+        self.write(id, project)
     }
 
     fn append_activity(&self, id: &str, entry: ActivityEntry) -> Result<(), StoreError> {
@@ -1462,6 +1590,157 @@ mod tests {
             mine
         );
         assert_eq!(store.load(&id).unwrap(), mine);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// The project as the editor sends it back as the base of a checked
+    /// save: through JSON, as the UI holds it.
+    fn through_json(p: &Project) -> Project {
+        serde_json::from_str(&serde_json::to_string(p).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_checked_save_never_overwrites_an_outside_save_made_after_its_base() {
+        // An MCP save landing between the editor's read and its write was
+        // overwritten by the editor's copy (recheck-ce84f6d, new problem 1).
+        let store = temp_store("checked");
+        let base = examples::find("hip").unwrap().project();
+        let id = store.save(None, &base).unwrap();
+        let base = through_json(&store.load(&id).unwrap());
+
+        // The AI saves wall 3 at 41 degrees.
+        let mut ai = base.clone();
+        ai.parts[0].edges[2].pitch_deg = 41.0;
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "AI B")
+            .unwrap();
+
+        // The editor, still on the old base, saves its overhang edit.
+        let mut mine = base.clone();
+        mine.parts[0].edges[0].overhang = 0.77;
+        match store.save_checked(&id, &mine, &base).unwrap() {
+            CheckedSave::Conflict { current } => assert_eq!(*current, ai),
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+        assert_eq!(store.load(&id).unwrap(), ai, "the AI's save is kept");
+
+        // Against the current file as base, the save goes through.
+        let current = through_json(&ai);
+        let mut merged = mine.clone();
+        merged.parts[0].edges[2].pitch_deg = 41.0;
+        assert_eq!(
+            store.save_checked(&id, &merged, &current).unwrap(),
+            CheckedSave::Saved { id: id.clone() }
+        );
+        assert_eq!(store.load(&id).unwrap(), merged);
+        // The editor's own save is still not logged as a change.
+        assert_eq!(store.activity(&id).len(), 1);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_checked_save_repairs_a_missing_or_damaged_file_and_refuses_a_newer_one() {
+        let store = temp_store("checked-repair");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let mut mine = p.clone();
+        mine.parts[0].edges[0].overhang = 0.9;
+        // Deleted outside the app: written again (as an unchecked save is).
+        fs::remove_file(store.path(&id).unwrap()).unwrap();
+        assert!(matches!(
+            store.save_checked(&id, &mine, &p).unwrap(),
+            CheckedSave::Saved { .. }
+        ));
+        assert_eq!(store.load(&id).unwrap(), mine);
+        // Damaged: repaired with the editor's good copy (ERR-018).
+        fs::write(store.path(&id).unwrap(), "{ not json").unwrap();
+        assert!(matches!(
+            store.save_checked(&id, &mine, &p).unwrap(),
+            CheckedSave::Saved { .. }
+        ));
+        assert_eq!(store.load(&id).unwrap(), mine);
+        // Saved by a newer Tectora: refused, file kept.
+        let newer = format!(
+            "{{\"schema_version\": {}, \"name\": \"x\"}}",
+            crate::model::SCHEMA_VERSION + 1
+        );
+        fs::write(store.path(&id).unwrap(), &newer).unwrap();
+        assert_eq!(
+            store.save_checked(&id, &mine, &p).unwrap_err().code(),
+            "newer_format"
+        );
+        assert_eq!(fs::read_to_string(store.path(&id).unwrap()).unwrap(), newer);
+        assert_eq!(
+            store.save_checked("../x", &mine, &p).unwrap_err().code(),
+            "invalid_id"
+        );
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_logged_save_checked_against_its_base_refuses_an_edit_saved_meanwhile() {
+        // MCP side: the app saved the user's edit after the tool loaded the job.
+        let store = temp_store("checked-as");
+        let base = examples::find("hip").unwrap().project();
+        let id = store.save(None, &base).unwrap();
+        let mut user = base.clone();
+        user.parts[0].edges[0].overhang = 0.9;
+        store.save(Some(id.clone()), &user).unwrap();
+        let mut ai = base.clone();
+        ai.parts[0].edges[2].pitch_deg = 41.0;
+        match store
+            .save_as_checked(&id, &ai, "claude", "AI", Some(&base))
+            .unwrap()
+        {
+            CheckedSave::Conflict { current } => assert_eq!(*current, user),
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+        assert_eq!(store.load(&id).unwrap(), user);
+        assert!(store.activity(&id).is_empty(), "nothing logged");
+        // Against the current file it saves and logs.
+        let mut merged = user.clone();
+        merged.parts[0].edges[2].pitch_deg = 41.0;
+        assert_eq!(
+            store
+                .save_as_checked(&id, &merged, "claude", "AI", Some(&user))
+                .unwrap(),
+            CheckedSave::Saved { id: id.clone() }
+        );
+        assert_eq!(store.load(&id).unwrap(), merged);
+        assert_eq!(store.activity(&id)[0].before.as_ref(), Some(&user));
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn saves_of_one_job_wait_for_each_other() {
+        // The check and the write happen under the job's lock file, which
+        // the app and the MCP server (separate processes) both take.
+        let store = temp_store("checked-lock");
+        let base = examples::find("gable").unwrap().project();
+        let id = store.save(None, &base).unwrap();
+        let held = store.lock(&id).expect("lock file");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (dir, id2, b2) = (store.dir.clone(), id.clone(), base.clone());
+        let t = std::thread::spawn(move || {
+            let other = Store::new(dir).unwrap();
+            let mut mine = b2.clone();
+            mine.parts[0].edges[0].overhang = 0.9;
+            let r = other.save_checked(&id2, &mine, &b2).unwrap();
+            tx.send(()).unwrap();
+            r
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "the save waits while the lock is held"
+        );
+        // Meanwhile the holder writes: the waiting save must see it.
+        let mut ai = base.clone();
+        ai.parts[0].edges[2].pitch_deg = 41.0;
+        store.write(&id, &ai).unwrap();
+        drop(held);
+        assert!(matches!(t.join().unwrap(), CheckedSave::Conflict { .. }));
+        assert_eq!(store.load(&id).unwrap(), ai);
         let _ = fs::remove_dir_all(&store.dir);
     }
 
