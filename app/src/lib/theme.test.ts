@@ -1,13 +1,14 @@
 // Theme tokens: the dark theme picked in Settings is the same palette as the
 // dark theme that follows the OS, and components take colours only from the
 // tokens in app.css (AGENTS.md, Rules).
-import { readFileSync, readdirSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const LIB = path.dirname(fileURLToPath(import.meta.url));
-const CSS = readFileSync(path.join(LIB, "..", "app.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+// Vitest stubs CSS imports (even `?raw`), so read the file itself. The
+// module names are built at run time: the UI has no Node type definitions.
+const fs: { readFileSync(p: URL, enc: "utf8"): string } = await import(/* @vite-ignore */ ["node", "fs"].join(":"));
+const appCss = fs.readFileSync(new URL("../app.css", import.meta.url), "utf8");
+const CSS = appCss.replace(/\/\*[\s\S]*?\*\//g, "");
+const components = import.meta.glob(["./*.svelte", "!./Logo.svelte"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 
 /** Custom properties declared in the first block whose selector matches `selector`. */
 function tokens(selector: RegExp): Record<string, string> {
@@ -23,6 +24,7 @@ describe("theme tokens", () => {
   const picked = tokens(/^:root\[data-theme="dark"\]\s*\{/m);
 
   it("the dark theme picked in Settings equals the system dark theme", () => {
+    expect(Object.keys(system).length).toBeGreaterThan(20);
     expect(picked).toEqual(system);
   });
 });
@@ -30,8 +32,7 @@ describe("theme tokens", () => {
 describe("components", () => {
   it("use no raw colours in their styles (tokens from app.css only)", () => {
     const found: string[] = [];
-    for (const f of readdirSync(LIB).filter((f) => f.endsWith(".svelte") && f !== "Logo.svelte")) {
-      const src = readFileSync(path.join(LIB, f), "utf8");
+    for (const [f, src] of Object.entries(components)) {
       for (const style of src.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)) {
         for (const m of style[1].matchAll(/#[0-9a-fA-F]{3,8}\b/g)) found.push(`${f}: ${m[0]}`);
       }
