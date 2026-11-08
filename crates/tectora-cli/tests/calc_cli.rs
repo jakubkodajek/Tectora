@@ -79,3 +79,43 @@ fn part_lines_are_net_of_the_chimney_on_the_ridge() {
     let total = r["quantities"]["lines_by_type"]["F"].as_f64().unwrap();
     assert!((ridge - total).abs() < 0.01, "part {ridge}, total {total}");
 }
+
+#[test]
+fn the_summary_carries_each_parts_warnings() {
+    // Re-check: `--summary` dropped them (cut_exceeds_face showed only
+    // without it).
+    let mut p = rect(0.0, 12.0);
+    p["windows"] = json!([{ "x": -50, "y": -50, "width": 0.78, "height": 1.18 }]);
+    let r = calc(&job("stray-window", &p));
+    let w = &r["parts"][0]["warnings"][0];
+    assert_eq!(w["kind"], "window_off_roof", "{r}");
+    assert!(
+        w["message"].as_str().unwrap().contains("no roof face"),
+        "{w}"
+    );
+}
+
+#[test]
+fn a_refused_roof_gives_its_code_and_an_english_message() {
+    // Re-check: the raw German message of the calculation was printed.
+    let mut p = rect(0.0, 12.0);
+    for e in p["parts"][0]["edges"].as_array_mut().unwrap() {
+        e["pitch_deg"] = json!(1);
+    }
+    let r = calc(&job("refused", &p));
+    let text = r.to_string();
+    for german in ["Fläche", "Lösung", "Kein", "Nicht", "vorhanden"] {
+        assert!(!text.contains(german), "{german}: {r}");
+    }
+    let e = &r["parts"][0]["error"];
+    assert_eq!(e["kind"], "open_faces", "{r}");
+    assert!(
+        e["message"]
+            .as_str()
+            .unwrap()
+            .contains("faces do not close"),
+        "{r}"
+    );
+    assert_eq!(r["calc_error"]["kind"], "open_faces", "{r}");
+    assert!(r.get("dacad_error").is_none(), "{r}");
+}

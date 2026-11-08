@@ -106,7 +106,7 @@ fn describe_part(part: &RoofPart) -> Value {
 
 /// A plausibility warning of a calculated roof (`tectora_core::check`),
 /// with what it means for whoever reads the result.
-fn warning(w: &tectora_core::check::RoofWarning) -> Value {
+pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
     use tectora_core::check::WarningKind;
     let message = match w.kind {
         WarningKind::OutsideOutline => format!(
@@ -169,7 +169,7 @@ fn warning(w: &tectora_core::check::RoofWarning) -> Value {
 
 /// Why the calculation gave no roof for a part, in English and without
 /// the calculation's own (German) text: the AI passes it on to the user.
-fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
+pub fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
     use tectora_core::roof::CalcErrorKind;
     let message = match e.kind {
         CalcErrorKind::OpenFaces => {
