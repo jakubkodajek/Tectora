@@ -97,8 +97,8 @@ fn coded(code: &str, detail: impl std::fmt::Display) -> Fail {
 /// the stored result's status.
 fn calc(project: &Project) -> Result<Value, Fail> {
     project
-        .check_limits()
-        .map_err(|d| coded("out_of_range", d))?;
+        .check_input()
+        .map_err(|e| coded(e.code, e.message))?;
     let mut v = tectora_core::model::guarded(|| tectora_core::report::calc(project))
         .map_err(|d| coded("internal", d))?;
     v["stored_result"] = to_json(snapshot::status(project))?;
@@ -318,8 +318,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         "calc_breakdown" => {
             let project = arg::<Project>(a, "project")?;
             project
-                .check_limits()
-                .map_err(|d| coded("out_of_range", d))?;
+                .check_input()
+                .map_err(|e| coded(e.code, e.message))?;
             to_json(
                 tectora_core::model::guarded(|| tectora_core::breakdown::breakdown(&project))
                     .map_err(|d| coded("internal", d))?,

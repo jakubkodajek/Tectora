@@ -206,3 +206,63 @@ fn an_inflate_bomb_is_stopped_by_the_memory_limit_and_the_session_goes_on() {
     assert!(!err, "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A job of `n` separate 10 x 8 m buildings in rows of 20.
+fn many_parts(n: usize) -> String {
+    let parts: Vec<Value> = (0..n)
+        .map(|i| {
+            let (x, y) = ((i % 20) as f64 * 15.0, (i / 20) as f64 * 12.0);
+            let edge = |dx: f64, dy: f64| {
+                json!({ "start": { "x": x + dx, "y": y + dy }, "pitch_deg": 35.0, "eave_height": 3.0, "overhang": 0.5 })
+            };
+            json!({ "name": format!("P{i}"), "edges": [edge(0.0, 0.0), edge(10.0, 0.0), edge(10.0, 8.0), edge(0.0, 8.0)] })
+        })
+        .collect();
+    json!({ "schema_version": 2, "name": format!("parts-{n}"), "parts": parts }).to_string()
+}
+
+#[test]
+fn attaching_the_servers_own_input_is_refused_and_the_session_goes_on() {
+    // ARCH-001: `/dev/stdin` was read until the client closed the pipe; every
+    // later request became the attachment.
+    let dir = scratch("stdin");
+    std::fs::write(dir.join("lib").join("job.tectora"), many_parts(1)).unwrap();
+    let mut mcp = Mcp::start(&dir, &[]);
+    for path in ["/dev/stdin", "/dev/zero"] {
+        let (err, text) = mcp.tool(
+            "attach_file",
+            json!({ "id": "job", "path": path, "summary": "Drawing" }),
+        );
+        assert!(err, "{path}: {text}");
+    }
+    let (err, text) = mcp.tool("list_files", json!({ "id": "job" }));
+    assert!(!err && text.contains("[]"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_job_too_large_to_calculate_is_refused_or_stopped_and_the_session_goes_on() {
+    // ARCH-002: 1000 parts took 77 s per calculation (release) and blocked
+    // the single-threaded server; larger files, hours.
+    let dir = scratch("many");
+    let lib = dir.join("lib");
+    std::fs::write(lib.join("huge.tectora"), many_parts(1000)).unwrap();
+    std::fs::write(lib.join("big.tectora"), many_parts(200)).unwrap();
+    let mut mcp = Mcp::start(&dir, &[("TECTORA_CALC_TIMEOUT_S", "1")]);
+    let start = Instant::now();
+    let (err, text) = mcp.tool("calc", json!({ "id": "huge" }));
+    assert!(err && text.contains("too many parts"), "{text}");
+    assert!(start.elapsed() < Duration::from_secs(5));
+    // At the limit it is allowed, and the deadline still holds.
+    let start = Instant::now();
+    let (err, text) = mcp.tool("calc", json!({ "id": "big" }));
+    if err {
+        assert!(text.contains("longer than 1 s"), "{text}");
+    }
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

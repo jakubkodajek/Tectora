@@ -96,6 +96,10 @@ The tools cover every operation of the Tectora editor:
   asks you to.
 - Every tool that changes something (a design, a file, the library or the
   settings) needs `summary`: one sentence for the user on what and why.
+- Limits: a design has at most 200 parts, 500 walls per part (2000 in all)
+  and 500 of each kind of object (dormers, chimneys, windows, openings,
+  hand-drawn lines and faces); a write over them is refused (`too many …`).
+  `calc`, `calc_breakdown` and `get_project` stop after 60 s.
 - Hand-over: `export_job`, `import_job` (`.tectorajob` = project, files,
   history and a preview in one file). `export_job` writes into the
   library's `exports` folder and returns the path; tell the user where it is.

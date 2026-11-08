@@ -744,6 +744,9 @@ impl Server {
     }
 
     fn call_tool_unguarded(&mut self, name: &str, args: &Value) -> ToolResult {
+        if let Some(r) = self.call_calc_isolated(name, args) {
+            return r;
+        }
         match name {
             "tectora_guide" => Ok(json!(GUIDE)),
             "get_settings" => Ok(Settings::load().describe()),

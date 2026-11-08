@@ -90,6 +90,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             if let Err(errors) = project.validate() {
                 bail!("invalid project:\n{}", errors.join("\n"));
             }
+            project.check_limits().map_err(anyhow::Error::msg)?;
             let geos = tectora_core::openings::generate_project(&project);
             // DACAD refused the roof: its error is the result, no quantities.
             let dacad_error = geos.iter().find_map(|g| g.error.clone());

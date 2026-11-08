@@ -463,8 +463,8 @@ fn new_project(state: State<AppState>, name: String) -> CmdResult<String> {
 fn calc(project: Project) -> CmdResult<Value> {
     guard(|| {
         project
-            .check_limits()
-            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+            .check_input()
+            .map_err(|e| AppError::new(e.code).detail(e.message))?;
         let mut v = tectora_core::model::guarded(|| tectora_core::report::calc(&project))
             .map_err(|d| AppError::new("internal").detail(d))?;
         v["stored_result"] =
@@ -479,8 +479,8 @@ fn calc(project: Project) -> CmdResult<Value> {
 fn calc_breakdown(project: Project) -> CmdResult<Value> {
     guard(|| {
         project
-            .check_limits()
-            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+            .check_input()
+            .map_err(|e| AppError::new(e.code).detail(e.message))?;
         let b = tectora_core::model::guarded(|| tectora_core::breakdown::breakdown(&project))
             .map_err(|d| AppError::new("internal").detail(d))?;
         Ok(serde_json::to_value(b).unwrap_or(Value::Null))

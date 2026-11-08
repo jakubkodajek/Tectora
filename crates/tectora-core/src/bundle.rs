@@ -69,8 +69,8 @@ fn parse_project(text: &str, what: &str) -> Result<Project, FileError> {
     let project = Project::from_json(text)
         .map_err(|e| FileError::new("unreadable", format!("{what}: {e}")))?;
     project
-        .check_limits()
-        .map_err(|e| FileError::new("out_of_range", format!("{what}: {e}")))?;
+        .check_input()
+        .map_err(|e| FileError::new(e.code, format!("{what}: {e}")))?;
     Ok(project)
 }
 

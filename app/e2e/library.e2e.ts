@@ -172,6 +172,16 @@ test.describe("library actions", () => {
   });
 });
 
+/** A job of `n` separate 10 x 8 m buildings. */
+function manyParts(n: number): string {
+  const edge = (x: number, y: number) => ({ start: { x, y }, pitch_deg: 35, eave_height: 3, overhang: 0.5 });
+  const parts = Array.from({ length: n }, (_, i) => {
+    const [x, y] = [(i % 20) * 15, Math.floor(i / 20) * 12];
+    return { name: `P${i}`, edges: [edge(x, y), edge(x + 10, y), edge(x + 10, y + 8), edge(x, y + 8)] };
+  });
+  return JSON.stringify({ schema_version: 2, name: `parts-${n}`, parts });
+}
+
 test.describe("library: examples, new job tabs, import, broken files", () => {
   test("examples gallery starts a new job from the chosen example", async ({ app, page }) => {
     await app.open();
@@ -271,6 +281,8 @@ test.describe("library: examples, new job tabs, import, broken files", () => {
       ["newer.tectora", JSON.stringify({ schema_version: 999, name: "Z budoucnosti", parts: [] }), "err.newer_format"],
       ["rozbita.tectorajob", "this is not a zip", "err.unreadable"],
       ["vykres.pdf", "%PDF-1.4", "err.unsupported_type"],
+      // ARCH-002: more buildings than any job has would block the library.
+      ["mnoho.tectora", manyParts(201), "err.too_many"],
     ];
     for (const [name, content, key] of cases) {
       await app.answerFileDialog(scratchFile(name, content));
