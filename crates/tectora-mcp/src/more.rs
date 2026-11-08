@@ -447,8 +447,12 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "export_job",
-            "description": "Write a job to a .tectorajob file (project, attached files, history and a plan preview in one ZIP) at `path`.",
-            "inputSchema": schema(json!({ "id": id, "path": { "type": "string" } }), &["id", "path"]),
+            "description": "Write a job to a .tectorajob file (project, attached files, history and a plan preview in one ZIP) in the `exports` folder of the job library. The file is named after the job (or `name`); an existing file is never replaced. Returns the path to give the user.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "name": { "type": "string", "description": "File name without folder, e.g. \"Novak-strecha\"; default: the job's id." },
+                "summary": summary_prop(),
+            }), &["id", "summary"]),
         }),
         json!({
             "name": "import_job",
@@ -587,8 +591,17 @@ impl Server {
             })(),
             "export_job" => (|| {
                 let (id, _) = self.load(args)?;
-                let path = PathBuf::from(arg_str(args, "path")?);
+                let summary = arg_str(args, "summary")?;
+                if args.get("path").is_some() {
+                    return Err("`path` is not accepted: bundles are written to the library's exports folder; pass `name` for the file name".into());
+                }
+                let name = match args.get("name").and_then(Value::as_str) {
+                    Some(n) => n.trim().trim_end_matches(".tectorajob").to_string(),
+                    None => id.clone(),
+                };
+                let path = bundle::export_path(&self.store, &name)?;
                 let m = bundle::export(&self.store, &id, &path)?;
+                self.live(format!("Exported to {}: {summary}", path.display()), Some(&id));
                 Ok(json!({ "id": id, "path": path.display().to_string(), "manifest": m }))
             })(),
             "import_job" => (|| {
@@ -1446,8 +1459,23 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let out = dir.join("job.tectorajob");
-        call(&mut s, "export_job", json!({ "id": id, "path": out }));
+        assert!(
+            s.call_tool(
+                "export_job",
+                &json!({ "id": id, "path": dir.join("x.txt"), "summary": "s" })
+            )
+            .is_err()
+        );
+        let out = call(&mut s, "export_job", json!({ "id": id, "summary": "s" }))["path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(out.ends_with(".tectorajob"));
+        let again = call(&mut s, "export_job", json!({ "id": id, "summary": "s" }))["path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(out, again, "an existing export is never replaced");
         let new_id = call(&mut s, "import_job", json!({ "path": out }))["id"]
             .as_str()
             .unwrap()

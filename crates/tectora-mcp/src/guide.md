@@ -81,7 +81,8 @@ The tools cover every operation of the Tectora editor:
   Attach the drawing a roof was made from, so the colleague reviewing it has
   it at hand.
 - Hand-over: `export_job`, `import_job` (`.tectorajob` = project, files,
-  history and a preview in one file).
+  history and a preview in one file). `export_job` writes into the
+  library's `exports` folder and returns the path; tell the user where it is.
 - `get_schema`: the JSON Schema of the `.tectora` file.
 
 ## Stored result

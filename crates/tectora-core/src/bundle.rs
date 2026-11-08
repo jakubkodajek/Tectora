@@ -48,6 +48,40 @@ fn zip_err(e: impl std::fmt::Display) -> String {
     format!("job bundle: {e}")
 }
 
+/// Folder of the library where the MCP server writes bundles.
+pub const EXPORTS_DIR: &str = "exports";
+
+/// A new file `<library>/exports/<name>.tectorajob` (with " (2)" etc. when
+/// the name is taken): the only place an AI client may write a bundle, so it
+/// can never replace a file of the user's. `name` must be a plain file name.
+pub fn export_path(store: &Store, name: &str) -> Result<std::path::PathBuf, String> {
+    let bad = name.is_empty()
+        || name.len() > 100
+        || name.starts_with('.')
+        || name.ends_with('.')
+        || name.ends_with(' ')
+        || name.chars().any(|c| {
+            c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+        });
+    if bad {
+        return Err(format!("`{name}` is not a plain file name"));
+    }
+    let dir = store.dir.join(EXPORTS_DIR);
+    fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for n in 1..1000 {
+        let file = if n == 1 {
+            format!("{name}.{EXTENSION}")
+        } else {
+            format!("{name} ({n}).{EXTENSION}")
+        };
+        let path = dir.join(file);
+        if !path.exists() {
+            return Ok(path);
+        }
+    }
+    Err(format!("too many exports named `{name}`"))
+}
+
 /// Writes job `id` of `store` to `dest` as a bundle.
 pub fn export(store: &Store, id: &str, dest: &Path) -> Result<Manifest, String> {
     let project = store.load(id)?;
