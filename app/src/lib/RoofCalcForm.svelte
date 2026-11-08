@@ -8,6 +8,7 @@
   // rules were measured in DACAD itself (roofcalc.test.ts).
   import { num } from "./format";
   import { t } from "./i18n.svelte";
+  import { tabIds, tablist } from "./tabs";
   import { numeric } from "./numeric.svelte";
   import { oppositeWall, spanBetween } from "./roundroof";
   import { buildUp, combine, eaveBelowGable, hipPitches, hipPitchesFromEaves, inward, meeting, mergeByMoving, mergeOnto, moveWall, parallelEdit, parallelPatches, parallelRafter, parallelStart, roofPoints, sameWay, shiftFor, solve, triangle, trianglePatch, type BuildUpEave, type CalcTarget, type ParallelField } from "./roofcalc";
@@ -19,6 +20,7 @@
     result,
     patches = $bindable(null),
   }: { part: RoofPart; edge: number; result: CalcResult | null; patches: Map<number, Partial<EdgeDef>> | null } = $props();
+  const ids = tabIds("calc");
 
   type Tool = "triangle" | "parallel" | "point" | "merge" | "hip" | "buildup";
   type Target = CalcTarget | "position";
@@ -185,12 +187,13 @@
 </script>
 
 <div class="form">
-  <div class="tabs" role="tablist">
+  <div class="tabs" role="tablist" use:tablist>
     {#each ["triangle", "parallel", "point", "merge", "hip", "buildup"] as const as k}
-      <button role="tab" class:on={tool === k} aria-selected={tool === k} disabled={k === "parallel" && opp === null}
+      <button role="tab" id={ids.tab(k)} aria-controls={ids.panel} class:on={tool === k} aria-selected={tool === k} disabled={k === "parallel" && opp === null}
         onclick={() => { tool = k; if (k === "triangle" || k === "hip" || k === "buildup") target = "pitch"; else if (k === "merge" && target === "pitch") target = "eave"; }}>{t(`calc.${k}`)}</button>
     {/each}
   </div>
+  <div class="panel" role="tabpanel" id={ids.panel} aria-labelledby={ids.tab(tool)}>
   <p class="tip">{t(`calc.${tool}Hint`)}</p>
 
   {#if tool !== "triangle" && tool !== "hip" && tool !== "buildup"}
@@ -309,10 +312,12 @@
     {/if}
   </div>
   {/if}
+  </div>
 </div>
 
 <style>
-  .form {
+  .form,
+  .panel {
     display: flex;
     flex-direction: column;
     gap: 12px;

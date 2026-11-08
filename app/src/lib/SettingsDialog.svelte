@@ -53,13 +53,36 @@
     if (typeof dir === "string") await save(field, dir);
   }
 
-  function saveDefault(key: keyof typeof presets, v: number, min: number, max: number) {
+  /** Allowed range of each roof default (the same the settings file accepts). */
+  const RANGE = { pitch_deg: [1, 89], eave_height: [-100, 1000], overhang: [0, 20] } as const;
+  type DefaultKey = keyof typeof RANGE;
+  /** Why the last value typed in a default field was refused (its allowed range). */
+  let refused = $state<Partial<Record<DefaultKey, string>>>({});
+
+  function saveDefault(key: DefaultKey, v: number) {
+    const [min, max] = RANGE[key];
     if (!Number.isFinite(v) || v < min || v > max) {
       errors.roof_defaults = "invalid_value";
       return false;
     }
+    delete refused[key];
+    if (!Object.keys(refused).length && errors.roof_defaults === "invalid_value") delete errors.roof_defaults;
     save("roof_defaults", { [key]: v });
   }
+
+  function refuseDefault(key: DefaultKey, why: string) {
+    refused[key] = why;
+    errors.roof_defaults = "invalid_value";
+  }
+
+  const defaultField = (key: DefaultKey, step: number) => ({
+    value: presets[key],
+    step,
+    min: RANGE[key][0],
+    max: RANGE[key][1],
+    onchange: (v: number) => saveDefault(key, v),
+    onrefuse: (why: string) => refuseDefault(key, why),
+  });
 
   const errText = (code: string) => t(`settings.err.${code}`) === `settings.err.${code}` ? t("settings.err.io") : t(`settings.err.${code}`);
 
@@ -148,23 +171,26 @@
         <label>
           <span>{t("edge.pitch")}</span>
           <div class="unit">
-            <input type="text" use:numeric={{ value: presets.pitch_deg, step: 0.5, onchange: (v) => saveDefault("pitch_deg", v, 1, 89) }} />
+            <input type="text" use:numeric={defaultField("pitch_deg", 0.5)} aria-describedby={refused.pitch_deg ? "range-pitch_deg" : undefined} />
             <em>°</em>
           </div>
+          {#if refused.pitch_deg}<small class="range" id="range-pitch_deg">{refused.pitch_deg}</small>{/if}
         </label>
         <label>
           <span>{t("edge.eaveHeight")}</span>
           <div class="unit">
-            <input type="text" use:numeric={{ value: presets.eave_height, step: 0.05, onchange: (v) => saveDefault("eave_height", v, -100, 1000) }} />
+            <input type="text" use:numeric={defaultField("eave_height", 0.05)} aria-describedby={refused.eave_height ? "range-eave_height" : undefined} />
             <em>m</em>
           </div>
+          {#if refused.eave_height}<small class="range" id="range-eave_height">{refused.eave_height}</small>{/if}
         </label>
         <label>
           <span>{t("edge.overhang")}</span>
           <div class="unit">
-            <input type="text" use:numeric={{ value: presets.overhang, step: 0.05, onchange: (v) => saveDefault("overhang", v, 0, 20) }} />
+            <input type="text" use:numeric={defaultField("overhang", 0.05)} aria-describedby={refused.overhang ? "range-overhang" : undefined} />
             <em>m</em>
           </div>
+          {#if refused.overhang}<small class="range" id="range-overhang">{refused.overhang}</small>{/if}
         </label>
       </div>
       {#if errors.roof_defaults}<small class="err" role="alert">{errText(errors.roof_defaults)}</small>{/if}
@@ -274,7 +300,8 @@
   .note {
     color: var(--text-3);
   }
-  .err {
+  .err,
+  .range {
     font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     color: var(--danger);
   }
