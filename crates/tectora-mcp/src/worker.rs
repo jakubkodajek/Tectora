@@ -175,9 +175,7 @@ fn worker_call(dir: PathBuf) -> ToolResult {
         server.client = client;
     }
     let args = call.get("args").cloned().unwrap_or(json!({}));
-    tectora_core::model::guarded(|| {
-        server.call_drawing(name, &args).unwrap_or(Ok(Value::Null))
-    })?
+    tectora_core::model::guarded(|| server.call_drawing(name, &args).unwrap_or(Ok(Value::Null)))?
 }
 
 impl Server {
