@@ -212,20 +212,45 @@ fn remove_attachment(state: State<AppState>, id: String, name: String) -> CmdRes
     guard(|| Ok(state.store().remove_attachment(&id, &name)?))
 }
 
-/// Opens an attached file in the system's default app.
+/// Opens an attached file in the system's default app; returns false when
+/// the file's type is not one that opens directly (`Store::opens_directly`)
+/// and its folder was shown instead, so a program that came in a received
+/// bundle is never run by one click.
 #[tauri::command]
 fn open_attachment(
     app: tauri::AppHandle,
     state: State<AppState>,
     id: String,
     name: String,
-) -> CmdResult<()> {
+) -> CmdResult<bool> {
     guard(|| {
         let path = state.store().attachment_path(&id, &name)?;
+        if !Store::opens_directly(&name) {
+            let dir = path.parent().unwrap_or(&path).to_path_buf();
+            show_folder(&dir).map_err(|e| AppError::new("open_failed").detail(e))?;
+            return Ok(false);
+        }
         app.opener()
             .open_path(path.display().to_string(), None::<&str>)
-            .map_err(|e| AppError::new("open_failed").detail(e.to_string()))
+            .map_err(|e| AppError::new("open_failed").detail(e.to_string()))?;
+        Ok(true)
     })
+}
+
+/// Shows a folder in Finder / Explorer (the file manager on Linux).
+fn show_folder(dir: &std::path::Path) -> Result<(), String> {
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(program)
+        .arg(dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -402,18 +427,7 @@ fn open_folder(which: String) -> Result<(), String> {
         _ => return Err("invalid_value".into()),
     };
     std::fs::create_dir_all(&dir).map_err(|_| "not_writable".to_string())?;
-    let program = if cfg!(target_os = "macos") {
-        "open"
-    } else if cfg!(target_os = "windows") {
-        "explorer"
-    } else {
-        "xdg-open"
-    };
-    std::process::Command::new(program)
-        .arg(&dir)
-        .spawn()
-        .map(|_| ())
-        .map_err(|_| "io".to_string())
+    show_folder(&dir).map_err(|_| "io".to_string())
 }
 
 /// Points the app at the projects folder from `settings` if it differs from

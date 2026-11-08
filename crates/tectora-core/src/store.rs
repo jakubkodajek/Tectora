@@ -801,6 +801,25 @@ impl Store {
     }
 
     /// Path of attachment `name` of job `id`.
+    /// Whether an attached file may be opened with the system's default app
+    /// by one click: drawings, photos, documents and spreadsheets. Anything
+    /// else (`.exe`, `.command`, `.lnk`, `.js`, `.app`, …) may have come in a
+    /// received bundle; extracted by Tectora it carries no "downloaded from
+    /// the internet" mark, so the system would run it without a warning. The
+    /// app shows such a file in its folder instead.
+    pub fn opens_directly(name: &str) -> bool {
+        const SAFE: &[&str] = &[
+            "pdf", "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "heic", "svg", "txt",
+            "csv", "dxf", "dwg", "xlsx", "xls", "ods", "docx", "doc", "odt",
+        ];
+        // Only the last extension counts: `plan.pdf.exe` is an `.exe`.
+        name.rsplit_once('.')
+            .map(|(stem, ext)| {
+                !stem.is_empty() && SAFE.contains(&ext.to_ascii_lowercase().as_str())
+            })
+            .unwrap_or(false)
+    }
+
     pub fn attachment_path(&self, id: &str, name: &str) -> Result<PathBuf, String> {
         if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
             return Err(format!("invalid file name: {name}"));
@@ -923,6 +942,30 @@ mod tests {
         assert_eq!(e.code(), "unreadable");
         assert_eq!(e.id(), Some("bad"));
         let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn only_documents_and_images_open_with_one_click() {
+        for ok in ["plan.pdf", "Foto.JPG", "nabidka.xlsx", "rez A-A.dwg"] {
+            assert!(Store::opens_directly(ok), "{ok}");
+        }
+        for bad in [
+            "plan.pdf.exe",
+            "Plan strechy.pdf.command",
+            "vykres.pdf.lnk",
+            "x.js",
+            "x.app",
+            "x.bat",
+            "x.xlsm",
+            "pdf",
+            ".pdf",
+            "x.scr",
+            "x.ps1",
+            "x.vbs",
+            "x.html",
+        ] {
+            assert!(!Store::opens_directly(bad), "{bad}");
+        }
     }
 
     #[test]
