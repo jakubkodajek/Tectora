@@ -66,7 +66,8 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    every line with its 3D length. Tell the user about every part's
    `warnings` and `error` from `calc` (the guide's "Warnings and errors"):
    a `covered` part has no roof of its own (move or delete it), a
-   `dormer_off_roof` dormer is not counted, `cut_exceeds_face` means a face
+   `dormer_off_roof` dormer and a `window_off_roof`, `chimney_off_roof` or
+   `opening_off_roof` object are not counted, `cut_exceeds_face` means a face
    lost more than it has; never bend the input to make a warning go away.
 8. When the roof is approved and the user wants it for the offer,
    `export_plan` writes the roof sheet (PDF) and `export_list` returns the

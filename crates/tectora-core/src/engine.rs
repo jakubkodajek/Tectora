@@ -108,7 +108,7 @@ pub fn generate(project: &Project) -> Result<Vec<RoofGeometry>, Failure> {
 }
 
 /// Distance from `q` to the walls of `part` in plan.
-fn outline_distance(part: &crate::model::RoofPart, q: Point2) -> f64 {
+pub(crate) fn outline_distance(part: &crate::model::RoofPart, q: Point2) -> f64 {
     let o = part.outline();
     let n = o.len();
     (0..n)

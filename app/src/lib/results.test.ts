@@ -26,7 +26,18 @@ describe("warningText", () => {
     { kind: "cut_exceeds_face", value: 27.34, edges: [0] },
     { kind: "dormer_off_roof", value: 0, dormer: 1 },
     { kind: "not_calculated_by_core", value: 0 },
+    { kind: "window_off_roof", value: 0, item: 0 },
+    { kind: "chimney_off_roof", value: 0, item: 2 },
+    { kind: "opening_off_roof", value: 0, item: 1 },
   ];
+  it("names the window, chimney or opening left out, numbered from 1", () => {
+    i18n.locale = "en";
+    expect(warningText(kinds[3])).toContain("Roof window 1 ");
+    expect(warningText(kinds[4])).toContain("Chimney 3 ");
+    expect(warningText(kinds[5])).toContain("Opening 2 ");
+    i18n.locale = "cs";
+    expect(warningText(kinds[3])).toContain("Střešní okno 1 ");
+  });
   it("has every new warning in all four languages", () => {
     for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
       for (const w of kinds) expect(DICTS[locale][`res.warn.${w.kind}`], `${locale} ${w.kind}`).toBeTruthy();

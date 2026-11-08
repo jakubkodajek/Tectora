@@ -16,6 +16,10 @@ export function warningText(w: RoofWarning): string {
     }
     case "dormer_off_roof":
       return t("res.warn.dormer_off_roof", { n: (w.dormer ?? 0) + 1 });
+    case "window_off_roof":
+    case "chimney_off_roof":
+    case "opening_off_roof":
+      return t(`res.warn.${w.kind}`, { n: (w.item ?? 0) + 1 });
     case "area_mismatch":
       return t("res.warn.area_mismatch", { v: num(w.value * 100) });
     default:

@@ -235,6 +235,9 @@ export interface RoofWarning {
     | "covered"
     | "cut_exceeds_face"
     | "dormer_off_roof"
+    | "window_off_roof"
+    | "chimney_off_roof"
+    | "opening_off_roof"
     | "not_calculated_by_core";
   /** m outside, m² overlapping, the relative area difference, m² below zero (cut_exceeds_face), else 0. */
   value: number;
@@ -242,6 +245,8 @@ export interface RoofWarning {
   edges?: number[];
   /** dormer_off_roof: the dormer's index. */
   dormer?: number;
+  /** window_off_roof, chimney_off_roof, opening_off_roof: the object's index in its list. */
+  item?: number;
 }
 
 export interface CalcResult {
