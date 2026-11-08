@@ -18,6 +18,8 @@ pub struct Outputs {
     pub int: Option<Vec<u8>>,
     /// The pipeline's return code: 0, or 3 for the fallback SOL of a broken wall chain.
     pub code: u32,
+    /// Changes the run made to the walls' roof definitions (see [`Notice`]).
+    pub notices: Vec<Notice>,
 }
 
 /// One core run.
@@ -52,6 +54,7 @@ impl<'a> Run<'a> {
                 sol: out::fallback_sol(&self.core)?,
                 int: None,
                 code: 3,
+                notices: self.core.notices.clone(),
             }),
             r => r,
         }
@@ -186,6 +189,11 @@ impl<'a> Run<'a> {
         } else {
             None
         };
-        Ok(Outputs { sol, int, code: 0 })
+        Ok(Outputs {
+            sol,
+            int,
+            code: 0,
+            notices: self.core.notices.clone(),
+        })
     }
 }

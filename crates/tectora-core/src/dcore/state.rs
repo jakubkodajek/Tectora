@@ -491,6 +491,33 @@ pub struct Core {
     pub levels: Vec<Level>,
     pub edges: Vec<Edge>,
     pub g: Globals,
+    /// What the run changed in the input without an error (not part of
+    /// the original's state; see [`Notice`]).
+    pub notices: Vec<Notice>,
+}
+
+/// A change the core makes to the walls' roof definitions without an
+/// error. DACAD shows the second one in an information box and the first
+/// one not at all; the roof is calculated either way.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Notice {
+    /// The ring merge joined wall `absorbed` into its predecessor `kept`:
+    /// the two are in line with the same eave height, overhang and flag,
+    /// so the joined wall carries `kept`'s roof faces only. Recorded only
+    /// where `absorbed`'s pitch or pitch breaks differ from `kept`'s.
+    MergedWalls {
+        model: i32,
+        kept: i32,
+        absorbed: i32,
+    },
+    /// The sweep joined the coplanar roof faces of two neighbouring walls
+    /// and dropped the pitch breaks of `absorbed` ("Knicke bei Wand %d
+    /// werden ignoriert", string 0xa35).
+    IgnoredBreaks {
+        model: i32,
+        kept: i32,
+        absorbed: i32,
+    },
 }
 
 impl Face {

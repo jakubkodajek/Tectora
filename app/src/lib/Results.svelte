@@ -33,6 +33,10 @@
   );
 
   function warningText(w: RoofWarning): string {
+    if (w.kind === "merged_walls") {
+      const [a, b] = w.edges ?? [0, 0];
+      return t("res.warn.merged_walls", { a: a + 1, b: b + 1 });
+    }
     const v = w.kind === "area_mismatch" ? num(w.value * 100) : num(w.value);
     return t(`res.warn.${w.kind}`, { v });
   }
