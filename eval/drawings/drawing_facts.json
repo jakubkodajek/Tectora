@@ -1,0 +1,199 @@
+{
+ "note": "Figures printed on the drawings themselves, read on 2026-11-06. They are cross-checks for the AI's model, not offer figures. plot_scale is the scale the sheet is printed at, measured from its dimensions (written value / drawn length); it differs from the title block on several sheets.",
+ "jobs": {
+  "1": {
+   "sheet": "11-PU_DORYS STR_ECHY - NA_VRH.pdf",
+   "scale": 50,
+   "rotated": true,
+   "pitches_deg": [
+    45,
+    54
+   ],
+   "plot_scale": 68.39,
+   "note": "title block 1:50 on format 10A4, printed on A3 (plot scale 68.39). Roof plan only, no section. The labels contradict each other: 43°55' with eaves +3.515 and ridge +7.609 over a 5.66 m half width gives 36°, and the 54° wing's +5.680/+9.105 over 2.78 m gives 51°. Built with the written pitches (main gable with a south half-hip, 54° cross wing, 8° flat dormer): 128 m² at 44° (offer 122, +4.8%) and 42 m² at 54° (offer 40, +4.4%). The ridge jogs at the north end and the main roof's north end is unclear; needs the section.",
+   "eave_heights_m": [
+    3.515,
+    5.68
+   ],
+   "ridge_heights_m": [
+    7.609,
+    9.105
+   ],
+   "outline_m": [
+    11.31,
+    11.12
+   ]
+  },
+  "3": {
+   "sheet": "Střecha.pdf",
+   "scale": 50,
+   "pitches_deg": [
+    25
+   ],
+   "sloped_area_m2": 213.7,
+   "eave_heights_m": [
+    3.62,
+    3.217,
+    2.795
+   ],
+   "ridge_heights_m": [
+    5.905,
+    4.434
+   ],
+   "plot_scale": 50.78
+  },
+  "7": {
+   "sheet": "SC28026020513000.pdf",
+   "scale": 100,
+   "scan": true,
+   "pitches_deg": [
+    25,
+    5
+   ],
+   "plan_area_m2": {
+    "hip_roof_25": 276.7,
+    "shed_roof_5": 12.0
+   },
+   "outline_m": [
+    18.96,
+    20.46
+   ],
+   "note": "the shed roof (5°) is not in the offer"
+  },
+  "9": {
+   "sheet": "7) Střecha.pdf",
+   "scale": 50,
+   "rotated": true,
+   "pitches_deg": [
+    30.7,
+    32,
+    3
+   ],
+   "face_plan_areas_m2": {
+    "tiles_30_7": [
+     22.88,
+     12.48
+    ],
+    "tiles_32": [
+     27.78,
+     15.6
+    ],
+    "metal_3": [
+     10.33,
+     9.19
+    ]
+   },
+   "note": "the face areas are plan areas; sloped they give 41.1 m² at 30.7° (offer 40) and 51.2 m² at 32° (offer 51)"
+  },
+  "10": {
+   "sheet": "D.1.1_06_výkres_tvaru_střechy.pdf",
+   "scale": 50,
+   "pitches_deg": [
+    25
+   ],
+   "outline_with_overhang_m": [
+    21.9,
+    17.0
+   ],
+   "overhang_m": 0.74,
+   "eave_height_m": 3.2,
+   "ridge_height_m": 5.81
+  },
+  "5": {
+   "sheet": "page 5 of the PDF (F 1.5, roof plan)",
+   "scale": 50,
+   "plot_scale": 89.0,
+   "pitches_deg": [
+    22
+   ],
+   "outline_m": [
+    14.85,
+    17.85
+   ],
+   "note": "three parallel outlines; the dimensions and the offer use the outermost"
+  },
+  "8": {
+   "sheet": "D.1.2.05 and D.1.2.06",
+   "scale": 50,
+   "pitches_deg": [
+    43
+   ],
+   "outline_m": [
+    22.4,
+    12.92
+   ],
+   "rafter_m": 9.04,
+   "open_question": "ridge (64 ridge tiles = 22.4 m), eaves (24 x 2 m) and both sections (rafters 9.04 m and 8.73 m at 43°) describe a 22.4 x 12.9 m gable roof of 391 m², but the offer prices 303 m² and no verge tiles; ask the estimator what was left out"
+  },
+  "6": {
+   "sheet": "D1.1.2.11 (roof plan)",
+   "scale": 50,
+   "plot_scale": 50.0,
+   "pitches_deg": [
+    42,
+    43,
+    12
+   ],
+   "eave_heights_m": [
+    3.42,
+    3.46
+   ],
+   "ridge_heights_m": [
+    7.47,
+    7.245,
+    8.75
+   ],
+   "note": "the 160 mm strip outside the eave is the gutter, not overhang: the exact Bramac rafter lengths (6.06 m at 42°, 7.7 m at 43°) end at the wall line. Built as 6 parts + 30 gable dormers: gross face areas equal the Bramac faces (existing roof 161.93 m² both), lines within 2.4% (valleys 0.1%). Area is 4.7% under Bramac because Bramac deducts less under each dormer (3.46 m² against the geometric 4.57 m²) and counts roof under the existing roof's overhang, which the core hides (cross gables, 12° shed)."
+  },
+  "4": {
+   "sheet": "D.1.1.8 (roof plan) and D.1.1.10 (sections)",
+   "scale": 100,
+   "plot_scale": 100.0,
+   "pitches_deg": [
+    36.5,
+    45,
+    8,
+    6,
+    3
+   ],
+   "eave_heights_m": [
+    8.09,
+    10.1
+   ],
+   "ridge_heights_m": [
+    12.7,
+    14.6
+   ],
+   "note": "A = tiles (priced), B = standing-seam metal (not priced). The metal decks are wide shed dormers cut into the tiled roof; their eave height is set so they meet the roof at the drawn depth (3.84 m in object A, 3.174 m in object B, from section B-B). Object B's eave height is 10.1 m, from the ridge and the 45° pitch; the +10.0 label is the cornice. Its east deck starts at the junction of the two wings. Object A: tiles 110.4 m² against 113 (-2.3%); the deck labels hint at a depth of 4.0-4.25 m against the drawn 3.84 m, unresolved. Object B: two wings (the oblique one as its own part), 11 decks; tiles 459.4 m² against 455 (+1.0%), ridge 75.8 m against the ridge tiles' 75.7-77.1 m."
+  },
+  "2": {
+   "sheet": "truss plan (raster, one page)",
+   "scale": 100,
+   "plot_scale": 112.7,
+   "pitches_deg": [
+    41,
+    12
+   ],
+   "outline_m": [
+    11.14,
+    10.045
+   ],
+   "note": "raster at about 113 dpi; the only sheet is the truss plan, no section. The 41° hip roof matches (147.9 m² against 150) and alone accounts for the ridge tiles (ridge + hips 34.4 m against 34.3-35.7). The 12° roofs come out 101.7 m² against 110 (-7.6%) whether they are built as sheds or low gables (same footprint, same pitch), so the gap is in their footprint or overhang, not their form. The truss plan's symmetric purlins around a central purlin on a steel column hint at a low gable on the west wing, but a gable adds 7-17 m of ridge the offer has no ridge tiles for. The offer's verge (41-45 m) and valley (16-20 m) pieces fit neither form. Needs the section."
+  },
+  "11": {
+   "sheet": "roof plan (text layer), truss plan with sections A-A to D-D, building sections A and B",
+   "scale": 50,
+   "plot_scale": 50.0,
+   "pitches_deg": [
+    30,
+    26,
+    8
+   ],
+   "outline_m": [
+    50.665,
+    20.865
+   ],
+   "note": "Heights from the plan: eaves +14.565 (pavilions, north), +14.570 (26° wing), south edge of the range +16.618, pavilion ridges +17.238, range ridge +17.639, 26° ridge +17.572, corridor roof +16.115 at axis A. Pavilions 9.205 x 16.565 / 16.615. The plan's 26° tile hatch is 76.2 m² plan; the bill's 89.64 also counts the strips under the walkway canopies (about 13.5 m²), which matches its 26° eave (12.3 + 2 x 6.7 m). Confirmed by the estimator (2026-11-07): the tiles continue under the canopies, and the strips where their sheet metal overlaps the tile roof count as tiles. The corridor roof is different: near the 26° wing's eaves its plane runs above the slope, the plan's tile hatch stops at the intersection and the bill counts no tiles below it, so the corridor stays a part."
+  }
+ }
+}
