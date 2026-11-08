@@ -47,7 +47,10 @@ fn coordinates_the_app_refuses_are_refused_as_out_of_range() {
     // A corner past the engine's limit is out of range too, not "not a number".
     let r = calc(&job("huge", &rect(1.08e6, 12.0)));
     let e = r["error"].as_str().unwrap();
-    assert!(e.contains("out of range") && !e.contains("not a number"), "{e}");
+    assert!(
+        e.contains("out of range") && !e.contains("not a number"),
+        "{e}"
+    );
     // A job in range calculates.
     let r = calc(&job("near", &rect(0.0, 12.0)));
     assert_eq!(r["ok"], true, "{r}");
@@ -56,7 +59,12 @@ fn coordinates_the_app_refuses_are_refused_as_out_of_range() {
 #[test]
 fn part_lines_are_net_of_the_chimney_on_the_ridge() {
     let mut p = rect(0.0, 12.0);
-    for (i, e) in p["parts"][0]["edges"].as_array_mut().unwrap().iter_mut().enumerate() {
+    for (i, e) in p["parts"][0]["edges"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .enumerate()
+    {
         if i % 2 == 1 {
             e["pitch_deg"] = json!(90);
         }
@@ -65,7 +73,9 @@ fn part_lines_are_net_of_the_chimney_on_the_ridge() {
         { "x": 5, "y": 3.5 }, { "x": 6, "y": 3.5 }, { "x": 6, "y": 4.5 }, { "x": 5, "y": 4.5 }
     ], "height": 8 }]);
     let r = calc(&job("chimney", &p));
-    let ridge = r["parts"][0]["quantities"]["ridge_length"].as_f64().unwrap();
+    let ridge = r["parts"][0]["quantities"]["ridge_length"]
+        .as_f64()
+        .unwrap();
     let total = r["quantities"]["lines_by_type"]["F"].as_f64().unwrap();
     assert!((ridge - total).abs() < 0.01, "part {ridge}, total {total}");
 }

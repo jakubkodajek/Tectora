@@ -574,7 +574,10 @@ impl EdgeDef {
         ("eave_nan", "eave height is not a number or out of range"),
         ("overhang_negative", "overhang must be zero or positive"),
         ("direction_nan", "direction is not a number"),
-        ("stacked_nan", "half-hip or pitch break is not a number or out of range"),
+        (
+            "stacked_nan",
+            "half-hip or pitch break is not a number or out of range",
+        ),
     ];
 
     /// What keeps the roof engine from using this edge, as
