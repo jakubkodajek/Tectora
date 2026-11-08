@@ -51,7 +51,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUxOEU4QTFBNUQ0ODk0NTAKUldSUWxFaGRHb3FPNFZNc1IvbUt2UTJTWnRYTUJjdkt2eHlxUHNkUW0rU1FyVmdVdVFBSWZPVTAK",
       "endpoints": [
         "https://github.com/jakubkodajek/Tectora/releases/latest/download/latest.json"
       ],
