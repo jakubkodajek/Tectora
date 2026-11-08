@@ -399,6 +399,8 @@ fn take_open_errors(state: State<AppState>) -> Vec<AppError> {
         .unwrap_or_default()
 }
 
+// Tauri passes each command argument separately from the UI's object.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command(async)]
 fn create_standard(
     state: State<AppState>,
@@ -641,12 +643,11 @@ fn start_watcher(
                             live = true;
                         } else if name == Some(settings::SETTINGS_FILE) {
                             settings_changed = true;
-                        } else if p.extension().and_then(|e| e.to_str()) == Some(store::EXTENSION) {
-                            if let Some(id) = p.file_stem().and_then(|s| s.to_str()) {
-                                if !ids.iter().any(|i| i == id) {
-                                    ids.push(id.to_string());
-                                }
-                            }
+                        } else if p.extension().and_then(|e| e.to_str()) == Some(store::EXTENSION)
+                            && let Some(id) = p.file_stem().and_then(|s| s.to_str())
+                            && !ids.iter().any(|i| i == id)
+                        {
+                            ids.push(id.to_string());
                         }
                     }
                 }
@@ -664,10 +665,8 @@ fn start_watcher(
                 // May replace this watcher; this thread then ends on its own.
                 let _ = switch_library(&handle, &s);
             }
-            if live {
-                if let Some(status) = handle.state::<AppState>().store().live() {
-                    let _ = handle.emit("live-status", status);
-                }
+            if live && let Some(status) = handle.state::<AppState>().store().live() {
+                let _ = handle.emit("live-status", status);
             }
         }
     });
