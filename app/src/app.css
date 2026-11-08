@@ -172,6 +172,22 @@ body {
   user-select: none;
 }
 
+/* Strips that scroll sideways (lib/hscroll.ts): a thin scrollbar that stays
+   visible, also where the system hides overlay scrollbars (macOS). */
+.hscroll::-webkit-scrollbar {
+  height: 6px;
+}
+.hscroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.hscroll::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: var(--border);
+}
+.hscroll::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+}
+
 button {
   font: inherit;
   color: inherit;

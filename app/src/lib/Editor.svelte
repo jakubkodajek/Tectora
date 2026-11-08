@@ -38,7 +38,9 @@
   import { merge3 } from "./merge";
   import { releaseLeaveGuard, setLeaveGuard } from "./leave";
   import { m2, num } from "./format";
-  import { t } from "./i18n.svelte";
+  import { i18n, t } from "./i18n.svelte";
+  import { hscroll } from "./hscroll";
+  import { tabIds, tablist } from "./tabs";
   import { actorName, isFresh, live } from "./live.svelte";
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
   import type { ActivityItem, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
@@ -63,6 +65,43 @@
   let loadError = $state<Described | null>(null);
   let loadErrorCode = $state<string>("");
   let dock = $state<"results" | "breakdown" | "ai" | "job">("results");
+  const dockIds = tabIds("dock");
+
+  // The toolbar drops its labels (icons + tooltips) whenever the labelled
+  // buttons do not fit the window, e.g. German at 1360 or 1440 px, and takes
+  // them back once the window is wide enough for the width they needed.
+  let toolbarEl: HTMLDivElement | undefined = $state();
+  let compactTools = $state(false);
+  let labelledWidth = 0;
+  function fitToolbar() {
+    const el = toolbarEl;
+    if (!el) return;
+    if (!compactTools) {
+      if (el.scrollWidth > el.clientWidth + 1) {
+        labelledWidth = el.scrollWidth;
+        compactTools = true;
+      }
+    } else if (el.clientWidth >= labelledWidth) {
+      compactTools = false;
+      tick().then(fitToolbar);
+    }
+  }
+  $effect(() => {
+    const el = toolbarEl;
+    if (!el) return;
+    const ro = new ResizeObserver(() => fitToolbar());
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+  $effect(() => {
+    // Labels of another language need another width: measure again.
+    void i18n.locale;
+    untrack(() => {
+      compactTools = false;
+      labelledWidth = 0;
+      tick().then(fitToolbar);
+    });
+  });
   /** The calculation breakdown while its tab is open, the face or line it points at, and face numbers for the plan. */
   let breakdown = $state<CalcBreakdown | null>(null);
   let planMark = $state<PlanMark>(null);
@@ -1226,38 +1265,38 @@
   </header>
 
   {#if !loadError}
-  <div class="toolbar" role="toolbar">
+  <div class="toolbar" class:compact={compactTools} role="toolbar" bind:this={toolbarEl} use:hscroll>
     <div class="group">
       <button class="tool" onclick={undo} disabled={at <= 0} title="{t('editor.undo')} ({keys('Ctrl+Z')})"><Icon name="undo" /><span>{t("editor.undo")}</span></button>
       <button class="tool" onclick={redo} disabled={at >= historyLen - 1} title="{t('editor.redo')} ({keys('Ctrl+Shift+Z')})"><Icon name="redo" /><span>{t("editor.redo")}</span></button>
     </div>
     <div class="group">
-      <button class="tool" class:on={!!std} onclick={() => (std = { part: null, mode: project?.parts.length && selection ? "replace" : "add" })} title={t("tool.standardHint")}><Icon name="house" /><span>{t("tool.standard")}</span></button>
-      <button class="tool" class:on={!!drawing} onclick={startDraw} title="{t('tool.drawHint')} (Insert)"><Icon name="draw" /><span>{t("tool.draw")}</span></button>
-      <button class="tool" class:on={placing === "dormer"} disabled={!project?.parts.length} onclick={() => togglePlacing("dormer")} title={t("tool.dormerHint")}><Icon name="roof" /><span>{t("tool.dormer")}</span></button>
-      <button class="tool" class:on={placing === "chimney"} disabled={!project?.parts.length} onclick={() => togglePlacing("chimney")} title={t("tool.chimneyHint")}><Icon name="chimney" /><span>{t("tool.chimney")}</span></button>
-      <button class="tool" class:on={placing === "window"} disabled={!project?.parts.length} onclick={() => togglePlacing("window")} title={t("tool.windowHint")}><Icon name="window" /><span>{t("tool.window")}</span></button>
-      <button class="tool" class:on={placing === "hole"} disabled={!project?.parts.length} onclick={() => togglePlacing("hole")} title={t("tool.holeHint")}><Icon name="hole" /><span>{t("tool.hole")}</span></button>
+      <button class="tool" class:on={!!std} aria-pressed={!!std} onclick={() => (std = { part: null, mode: project?.parts.length && selection ? "replace" : "add" })} title={t("tool.standardHint")}><Icon name="house" /><span>{t("tool.standard")}</span></button>
+      <button class="tool" class:on={!!drawing} aria-pressed={!!drawing} onclick={startDraw} title="{t('tool.drawHint')} (Insert)"><Icon name="draw" /><span>{t("tool.draw")}</span></button>
+      <button class="tool" class:on={placing === "dormer"} aria-pressed={placing === "dormer"} disabled={!project?.parts.length} onclick={() => togglePlacing("dormer")} title={t("tool.dormerHint")}><Icon name="roof" /><span>{t("tool.dormer")}</span></button>
+      <button class="tool" class:on={placing === "chimney"} aria-pressed={placing === "chimney"} disabled={!project?.parts.length} onclick={() => togglePlacing("chimney")} title={t("tool.chimneyHint")}><Icon name="chimney" /><span>{t("tool.chimney")}</span></button>
+      <button class="tool" class:on={placing === "window"} aria-pressed={placing === "window"} disabled={!project?.parts.length} onclick={() => togglePlacing("window")} title={t("tool.windowHint")}><Icon name="window" /><span>{t("tool.window")}</span></button>
+      <button class="tool" class:on={placing === "hole"} aria-pressed={placing === "hole"} disabled={!project?.parts.length} onclick={() => togglePlacing("hole")} title={t("tool.holeHint")}><Icon name="hole" /><span>{t("tool.hole")}</span></button>
     </div>
     <div class="group">
-      <button class="tool" class:on={placing === "line"} disabled={!result} onclick={() => togglePlacing("line")} title={t("tool.lineHint")}><Icon name="line" /><span>{t("tool.line")}</span></button>
-      <button class="tool" class:on={placing === "face"} disabled={!result} onclick={() => togglePlacing("face")} title={t("tool.faceHint")}><Icon name="face" /><span>{t("tool.face")}</span></button>
-      <button class="tool" class:on={!!project?.flat_roof} disabled={!project?.parts.length} onclick={toggleFlat} title={t("tool.flatHint")}><Icon name="flat" /><span>{t("tool.flat")}</span></button>
+      <button class="tool" class:on={placing === "line"} aria-pressed={placing === "line"} disabled={!result} onclick={() => togglePlacing("line")} title={t("tool.lineHint")}><Icon name="line" /><span>{t("tool.line")}</span></button>
+      <button class="tool" class:on={placing === "face"} aria-pressed={placing === "face"} disabled={!result} onclick={() => togglePlacing("face")} title={t("tool.faceHint")}><Icon name="face" /><span>{t("tool.face")}</span></button>
+      <button class="tool" class:on={!!project?.flat_roof} aria-pressed={!!project?.flat_roof} disabled={!project?.parts.length} onclick={toggleFlat} title={t("tool.flatHint")}><Icon name="flat" /><span>{t("tool.flat")}</span></button>
     </div>
     <div class="group">
-      <button class="tool" class:on={!!xform} disabled={!selection} onclick={openTransform} title={t("tool.transformHint")}><Icon name="move" /><span>{t("tool.transform")}</span></button>
+      <button class="tool" class:on={!!xform} aria-pressed={!!xform} disabled={!selection} onclick={openTransform} title={t("tool.transformHint")}><Icon name="move" /><span>{t("tool.transform")}</span></button>
       <button class="tool" disabled={!selection} onclick={deletePart} title={t("tool.deletePartHint")}><Icon name="trash" /><span>{t("tool.deletePart")}</span></button>
       <button class="tool" disabled={!hasDrawing(project)} onclick={clearRoof} title={t("tool.clearHint")}><Icon name="eraser" /><span>{t("tool.clear")}</span></button>
     </div>
     <div class="group">
-      <button class="tool" class:on={prefs.layout === "plan"} onclick={() => setLayout("plan")} title={t("editor.plan")}><Icon name="plan" /><span>{t("editor.plan")}</span></button>
-      <button class="tool" class:on={prefs.layout === "split"} onclick={() => setLayout("split")} title={t("editor.both")}><Icon name="split" /><span>{t("editor.both")}</span></button>
-      <button class="tool" class:on={prefs.layout === "3d"} onclick={() => setLayout("3d")} title="F3"><Icon name="cube" /><span>{t("editor.model")}</span></button>
+      <button class="tool" class:on={prefs.layout === "plan"} aria-pressed={prefs.layout === "plan"} onclick={() => setLayout("plan")} title={t("editor.plan")}><Icon name="plan" /><span>{t("editor.plan")}</span></button>
+      <button class="tool" class:on={prefs.layout === "split"} aria-pressed={prefs.layout === "split"} onclick={() => setLayout("split")} title={t("editor.both")}><Icon name="split" /><span>{t("editor.both")}</span></button>
+      <button class="tool" class:on={prefs.layout === "3d"} aria-pressed={prefs.layout === "3d"} onclick={() => setLayout("3d")} title="F3"><Icon name="cube" /><span>{t("editor.model")}</span></button>
       <button class="tool" onclick={() => plan?.fit()} disabled={prefs.layout === "3d"} title={t("plan.fit")}><Icon name="fit" /><span>{t("plan.fit")}</span></button>
-      <button class="tool" class:on={showDims} onclick={() => (showDims = !showDims)} title={t("tool.dims")}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
+      <button class="tool" class:on={showDims} aria-pressed={showDims} onclick={() => (showDims = !showDims)} title={t("tool.dims")}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
     </div>
     <div class="group">
-      <button class="tool" class:on={exporting} disabled={!result} onclick={() => (exporting = true)} title={t("tool.exportHint")}><Icon name="download" /><span>{t("tool.export")}</span></button>
+      <button class="tool" class:on={exporting} aria-pressed={exporting} disabled={!result} onclick={() => (exporting = true)} title={t("tool.exportHint")}><Icon name="download" /><span>{t("tool.export")}</span></button>
     </div>
   </div>
   {/if}
@@ -1397,15 +1436,15 @@
       </div>
 
       <aside class:open={dockOpen}>
-        <div class="tabs" role="tablist">
-          <button role="tab" aria-selected={dock === "results"} class:on={dock === "results"} onclick={() => showDock("results")} title={t("dock.results")}><Icon name="chart" size={15} /><span class="tab-label">{t("dock.results")}</span></button>
-          <button role="tab" aria-selected={dock === "breakdown"} class:on={dock === "breakdown"} onclick={() => showDock("breakdown")} title={t("bd.title")}><Icon name="sigma" size={15} /><span class="tab-label">{t("dock.breakdown")}</span></button>
-          <button role="tab" aria-selected={dock === "ai"} class:on={dock === "ai"} onclick={() => showDock("ai")} title={t("dock.ai")}>
+        <div class="tabs" role="tablist" use:tablist>
+          <button role="tab" id={dockIds.tab("results")} aria-controls={dockIds.panel} aria-selected={dock === "results"} class:on={dock === "results"} onclick={() => showDock("results")} title={t("dock.results")}><Icon name="chart" size={15} /><span class="tab-label">{t("dock.results")}</span></button>
+          <button role="tab" id={dockIds.tab("breakdown")} aria-controls={dockIds.panel} aria-selected={dock === "breakdown"} class:on={dock === "breakdown"} onclick={() => showDock("breakdown")} title={t("bd.title")}><Icon name="sigma" size={15} /><span class="tab-label">{t("dock.breakdown")}</span></button>
+          <button role="tab" id={dockIds.tab("ai")} aria-controls={dockIds.panel} aria-selected={dock === "ai"} class:on={dock === "ai"} onclick={() => showDock("ai")} title={t("dock.ai")}>
             <Icon name="sparkle" size={15} /><span class="tab-label">{t("dock.ai")}</span>{#if pending}<i class="badge"></i>{/if}
           </button>
-          <button role="tab" aria-selected={dock === "job"} class:on={dock === "job"} onclick={() => showDock("job")} title={t("dock.job")}><Icon name="briefcase" size={15} /><span class="tab-label">{t("dock.job")}</span></button>
+          <button role="tab" id={dockIds.tab("job")} aria-controls={dockIds.panel} aria-selected={dock === "job"} class:on={dock === "job"} onclick={() => showDock("job")} title={t("dock.job")}><Icon name="briefcase" size={15} /><span class="tab-label">{t("dock.job")}</span></button>
         </div>
-        <div class="dock">
+        <div class="dock" role="tabpanel" id={dockIds.panel} aria-labelledby={dockIds.tab(dock)}>
           <button class="icon-btn dock-close" onclick={() => (dockOpen = false)} aria-label={t("common.close")} title={t("common.close")}><Icon name="x" size={16} /></button>
           {#if dock === "results"}
             <Results {result} {project} onstore={storeResult} />
@@ -1945,6 +1984,25 @@
     flex: none;
     max-height: 46vh;
     overflow-y: auto;
+  }
+
+  /* Labels that do not fit the window (long languages): icons only, as below. */
+  .toolbar.compact .tool {
+    width: 36px;
+    height: 36px;
+    min-width: 0;
+    padding: 0;
+  }
+  .toolbar.compact .tool span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .toolbar.compact .group {
+    padding-right: 4px;
+    margin-right: 2px;
   }
 
   /* ---- Responsive: half-screen and smaller windows ---- */
