@@ -1082,11 +1082,34 @@
 
   // Drawing a new footprint.
   function startDraw() {
+    // Already drawing: the Insert key keeps going; the toolbar button
+    // (toggle) and the context menu go through cancelDraw, which asks.
+    if (drawing) return;
     selection = null;
     dormerSel = null;
     openSel = null;
     placing = false;
     drawing = [];
+  }
+
+  /**
+   * Stops drawing the footprint. `ask` (a key or a second press of the
+   * Building button, easy to hit by accident) asks first once two or more
+   * corners would be lost; the bar's Cancel button stops at once.
+   */
+  async function cancelDraw(ask: boolean) {
+    const pts = drawing;
+    if (!pts) return;
+    // Tauri's dialog plugin makes confirm asynchronous: always await it.
+    if (ask && pts.length >= 2 && !(await confirm(t("draw.confirmCancel", { n: pts.length })))) return;
+    // Closed or restarted while the question was open.
+    if (drawing !== pts) return;
+    drawing = null;
+  }
+
+  function toggleDraw() {
+    if (drawing) cancelDraw(true);
+    else startDraw();
   }
 
   function drawStep(dx: number, dy: number) {
@@ -1233,7 +1256,7 @@
     </div>
     <div class="group">
       <button class="tool" class:on={!!std} onclick={() => (std = { part: null, mode: project?.parts.length && selection ? "replace" : "add" })} title={t("tool.standardHint")}><Icon name="house" /><span>{t("tool.standard")}</span></button>
-      <button class="tool" class:on={!!drawing} onclick={startDraw} title="{t('tool.drawHint')} (Insert)"><Icon name="draw" /><span>{t("tool.draw")}</span></button>
+      <button class="tool" class:on={!!drawing} onclick={toggleDraw} title="{t('tool.drawHint')} (Insert)"><Icon name="draw" /><span>{t("tool.draw")}</span></button>
       <button class="tool" class:on={placing === "dormer"} disabled={!project?.parts.length} onclick={() => togglePlacing("dormer")} title={t("tool.dormerHint")}><Icon name="roof" /><span>{t("tool.dormer")}</span></button>
       <button class="tool" class:on={placing === "chimney"} disabled={!project?.parts.length} onclick={() => togglePlacing("chimney")} title={t("tool.chimneyHint")}><Icon name="chimney" /><span>{t("tool.chimney")}</span></button>
       <button class="tool" class:on={placing === "window"} disabled={!project?.parts.length} onclick={() => togglePlacing("window")} title={t("tool.windowHint")}><Icon name="window" /><span>{t("tool.window")}</span></button>
@@ -1372,7 +1395,7 @@
             onstep={drawStep}
             onundo={() => drawing?.pop()}
             onclose={finishDraw}
-            oncancel={() => (drawing = null)}
+            oncancel={(ask) => cancelDraw(!!ask)}
           />
         {:else if dormerSel !== null}
           <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} />

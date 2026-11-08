@@ -83,6 +83,25 @@ describe("number fields", () => {
     expect(bad).toEqual([]);
   });
 
+  it("no hand-made number field: a text input read as a number goes through use:numeric", () => {
+    // A plain text field marked as numeric, or whose bound text is parsed
+    // with parseFloat / Number, takes "5abc" as 5 and "1 250" as 1 while
+    // every use:numeric field refuses the first and reads 1250 (UI-004).
+    const bad: string[] = [];
+    for (const [file, text] of Object.entries(sources)) {
+      for (const m of text.matchAll(/<input\b[\s\S]*?\/>/g)) {
+        const tag = m[0];
+        if (tag.includes("use:numeric")) continue;
+        if (/inputmode=["']?(decimal|numeric)/i.test(tag)) bad.push(`${file}: ${tag.slice(0, 120)}`);
+        const bound = tag.match(/bind:value=\{([\w.]+)\}/)?.[1];
+        if (bound && new RegExp(`(parseFloat|parseInt|Number)\\(\\s*${bound.replace(/\./g, "\\.")}\\b`).test(text)) {
+          bad.push(`${file}: ${tag.slice(0, 120)} (parsed by hand)`);
+        }
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+
   it("a number field never commits on `input`/`change` by hand", () => {
     // A field with use:numeric must not also carry its own value/onchange,
     // or the two would fight over the typed text.
