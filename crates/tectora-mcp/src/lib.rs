@@ -616,6 +616,14 @@ fn base_tools() -> Value {
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
+            "name": "calc_breakdown",
+            "description": "How the roof's quantities were calculated, step by step, as the app's Calculation tab shows it: per part the walls entered (length, pitch, eave height, overhang, material), every roof face as plan_area / cos(pitch) = gross, minus windows/chimneys = area (`engine_gross` is set where the core's own area differs from that formula by over 1 dm²), clad gables and openings; area per material with the faces it sums; every line by code as sqrt(dx²+dy²+dz²), minus deductions = total. Use it to explain or check a result for the user. `part` (index from 0) limits the parts listed; totals stay for the whole roof.",
+            "inputSchema": schema(json!({
+                "id": { "type": "string" },
+                "part": { "type": "integer", "minimum": 0, "description": "Only this part's walls, faces and lines." }
+            }), &["id"]),
+        },
+        {
             "name": "show_project",
             "description": "Bring a design to the front in the user's Tectora app.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
@@ -774,6 +782,38 @@ impl Server {
                     "engine_version": tectora_core::snapshot::ENGINE_VERSION,
                     "stored_result": tectora_core::snapshot::status(&p),
                 }))
+            }
+            "calc_breakdown" => {
+                let (id, p) = self.load(args)?;
+                let only = match args.get("part") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => {
+                        let i = v.as_u64().ok_or("`part` must be a part index from 0")? as usize;
+                        if i >= p.parts.len() {
+                            return Err(format!(
+                                "`part` {i} out of range: the design has {} parts",
+                                p.parts.len()
+                            ));
+                        }
+                        Some(i)
+                    }
+                };
+                self.live(
+                    format!("Explaining the calculation of “{}”", p.name),
+                    Some(&id),
+                );
+                let b = tectora_core::breakdown::breakdown(&p);
+                let mut v = serde_json::to_value(&b).map_err(|e| e.to_string())?;
+                if let Some(i) = only {
+                    v["parts"] = json!([{ "index": i, "part": v["parts"][i].take() }]);
+                    for g in v["lines"].as_array_mut().into_iter().flatten() {
+                        if let Some(items) = g["items"].as_array_mut() {
+                            items.retain(|l| l["part"].as_u64() == Some(i as u64));
+                        }
+                    }
+                }
+                v["id"] = json!(id);
+                Ok(v)
             }
             "create_standard_roof" => {
                 let kind: StandardRoof = serde_json::from_value(arg(args, "type")?.clone())
@@ -1168,6 +1208,40 @@ mod tests {
         let r = s.call_tool("get_settings", &json!({})).unwrap();
         assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn calc_breakdown_explains_every_face_and_line() {
+        let mut s = server();
+        let p = tectora_core::examples::find("l-shape").unwrap().project();
+        let id = s.store.save(None, &p).unwrap();
+        let total = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        let r = s.call_tool("calc_breakdown", &json!({ "id": id })).unwrap();
+        let area = r["roof_area"].as_f64().unwrap();
+        assert!(
+            (area - total["total"]["roof_area_m2"].as_f64().unwrap()).abs() < 0.01,
+            "{r}"
+        );
+        let f = &r["parts"][0]["faces"][0];
+        let k = 1.0 / f["pitch_deg"].as_f64().unwrap().to_radians().cos();
+        assert!((f["factor"].as_f64().unwrap() - k).abs() < 1e-9);
+        assert!(
+            r["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|g| g["code"] == "T")
+        );
+
+        let one = s
+            .call_tool("calc_breakdown", &json!({ "id": id, "part": 0 }))
+            .unwrap();
+        assert_eq!(one["parts"].as_array().unwrap().len(), 1);
+        assert_eq!(one["parts"][0]["index"], 0);
+        assert!(
+            s.call_tool("calc_breakdown", &json!({ "id": id, "part": 9 }))
+                .is_err()
+        );
     }
 
     #[test]

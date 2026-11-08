@@ -101,6 +101,11 @@ P top edge of a shed roof against its wall (Pult), c pitch break (Knick/zlom),
 S horizontal valley between two buildings (Schlucht),
 WV/WH/WS wall abutment downhill/uphill/side (around a chimney, or where a
 lower roof meets a higher building's wall).
+`calc_breakdown` shows how each number came about, as the app's
+Calculation tab does: every face as plan area / cos(pitch) less openings,
+every line as the 3D distance of its ends, and how they sum per material and
+per line code. Use it when the user asks how an area was calculated or wants
+to check a result.
 Several parts are joined like solids: a roof is hidden inside another
 part's walls below that part's roof, and roofs that cross meet in valleys.
 The rules were checked against roofs calculated by DACAD itself: a step

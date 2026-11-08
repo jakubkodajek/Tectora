@@ -24,6 +24,9 @@ The list below is DACAD's menu (DACAD.exe string table) against the app.
 - 3D view shows chimneys (with cap), roof windows (frame and glass), roof
   openings cut into their face and dormer cheeks and fronts.
 - Front, back, side and top views; area by material; material names.
+- Calculation breakdown ("Postup" tab, MCP `calc_breakdown`): the walls as
+  entered, every face as plan area / cos(pitch) less openings, every line as
+  the 3D distance of its ends, and how they add up, for whoever checks an offer.
 - MCP server with a tool for every editor operation, and the CLI.
 - Job library: search without accents over name, number, customer, address
   and notes, filters by status, AI change and year, plan previews, pitch /

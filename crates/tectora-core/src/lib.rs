@@ -3,6 +3,7 @@
 //! Everything here is pure and deterministic so the desktop app, the CLI
 //! and the MCP server all share exactly the same behaviour.
 
+pub mod breakdown;
 pub mod bundle;
 pub mod check;
 pub mod coresol;

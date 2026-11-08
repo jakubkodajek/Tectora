@@ -5,7 +5,7 @@
 use serde_json::{Value, json};
 
 use crate::Project;
-use crate::quantities::{dacad_line_totals, manual_quantities};
+use crate::quantities::{dacad_line_totals, manual_quantities, subtract_minus_lines};
 use crate::roof::RoofQuantities;
 
 /// Roof geometry and quantities for every part, plus totals. A part the
@@ -21,6 +21,7 @@ pub fn calc(project: &Project) -> Value {
         .map(|(part, geometry)| {
             let q = geometry.quantities();
             total.add(&q);
+            subtract_minus_lines(&mut total, &geometry.minus_lines);
             json!({ "name": part.name, "geometry": geometry, "quantities": q })
         })
         .collect();

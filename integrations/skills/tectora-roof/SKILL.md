@@ -60,4 +60,6 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    from `heights_m`, and with several materials the offer's material in
    `lines_by_material_m`) and finish by telling the user what matched,
    what you assumed and what they should look at in the highlighted
-   changes in Tectora.
+   changes in Tectora. When the user asks how a number came about,
+   `calc_breakdown` gives every face (plan area / cos pitch − openings) and
+   every line with its 3D length.

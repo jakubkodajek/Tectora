@@ -20,6 +20,7 @@ ready-to-paste configuration for Claude Desktop, Claude Code and Gemini CLI.
 | --- | --- |
 | `tectora_guide` | Model conventions (DACAD terms, units) and the drawing-to-roof workflow |
 | `list_projects`, `get_project`, `calc` | Search the library (text, status, AI change, dates, area, sort), read designs, edge tables, dormers, quantities by DACAD line code, stored result |
+| `calc_breakdown` | How every face area and line length was calculated, step by step (the app's Calculation tab) |
 | `create_standard_roof`, `create_project`, `create_from_example` | Create designs |
 | `add_part`, `add_shape_part`, `transform_part`, `delete_items` | Parts: add (standard roofs, regular polygons), move / rotate / mirror / copy, delete anything |
 | `update_edges`, `set_outline`, `edit_walls` | Walls and their roof definitions; corners, lengths, direction changes, parallel shift |

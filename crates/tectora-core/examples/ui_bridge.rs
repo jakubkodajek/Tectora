@@ -171,6 +171,13 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             to_json(store.save(None, &project)?)
         }
         "calc" => calc(&arg::<Project>(a, "project")?),
+        "calc_breakdown" => {
+            let project = arg::<Project>(a, "project")?;
+            project.check_limits()?;
+            to_json(tectora_core::model::guarded(|| {
+                tectora_core::breakdown::breakdown(&project)
+            })?)
+        }
         // Settings live in `target/ui-preview-config` (see `main`). The
         // preview keeps serving its own library even if the projects folder
         // setting changes.

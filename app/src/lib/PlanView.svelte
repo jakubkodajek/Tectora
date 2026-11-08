@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import type { CalcResult, Point2, Project, Selection } from "./types";
+  import type { CalcResult, PlanLabel, PlanMark, Point2, Project, Selection } from "./types";
   import { isGable } from "./types";
   import { t } from "./i18n.svelte";
   import { windowOutline, type OpeningSel } from "./openings";
@@ -18,6 +18,8 @@
     highlight = new Set<string>(),
     highlightItems = new Set<string>(),
     ghost = null,
+    mark = null,
+    faceLabels = [],
     drawing = null,
     ondrawpoint,
     ondrawclose,
@@ -45,6 +47,10 @@
     highlightItems?: Set<string>;
     /** The state before the pending AI changes, drawn dashed. */
     ghost?: Ghost | null;
+    /** A face or line the calculation breakdown points at. */
+    mark?: PlanMark;
+    /** Face numbers of the calculation breakdown. */
+    faceLabels?: PlanLabel[];
     /** Points of a footprint being drawn (draw mode), or null. */
     drawing?: Point2[] | null;
     ondrawpoint?: (x: number, y: number) => void;
@@ -493,6 +499,14 @@
         {/each}
       </g>
     {/if}
+    {#if mark && "polygon" in mark}
+      <path class="mark" d={"M" + mark.polygon.map((p) => `${sx(p[0])},${sy(p[1])}`).join("L") + "Z"} />
+    {:else if mark && "line" in mark}
+      <line class="mark-line" x1={sx(mark.line[0][0])} y1={sy(mark.line[0][1])} x2={sx(mark.line[1][0])} y2={sy(mark.line[1][1])} />
+    {/if}
+    {#each faceLabels as l}
+      <text class="face-no" x={sx(l.x)} y={sy(l.y)}>{l.text}</text>
+    {/each}
 
     {#each project.parts as part, pi}
       {#each part.edges as e, i}
@@ -699,6 +713,27 @@
   .opening.sel {
     stroke: var(--accent);
     stroke-width: 2.5;
+  }
+  .mark {
+    fill: color-mix(in srgb, var(--accent) 22%, transparent);
+    stroke: var(--accent);
+    stroke-width: 2;
+    pointer-events: none;
+  }
+  .mark-line {
+    stroke: var(--accent);
+    stroke-width: 4;
+    stroke-linecap: round;
+    pointer-events: none;
+  }
+  .face-no {
+    fill: var(--text-2);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    font-weight: 700;
+    text-anchor: middle;
+    dominant-baseline: middle;
+    pointer-events: none;
   }
   .manual-face {
     fill: color-mix(in srgb, var(--accent) 10%, transparent);

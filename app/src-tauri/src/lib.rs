@@ -358,6 +358,20 @@ fn calc(project: Project) -> CmdResult<Value> {
     })
 }
 
+/// How every face area and line length was calculated, step by step
+/// (`tectora_core::breakdown`), with the same guards as `calc`.
+#[tauri::command(async)]
+fn calc_breakdown(project: Project) -> CmdResult<Value> {
+    guard(|| {
+        project
+            .check_limits()
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+        let b = tectora_core::model::guarded(|| tectora_core::breakdown::breakdown(&project))
+            .map_err(|d| AppError::new("internal").detail(d))?;
+        Ok(serde_json::to_value(b).unwrap_or(Value::Null))
+    })
+}
+
 /// Settings plus the folders in use (see `Settings::describe`).
 #[tauri::command]
 fn get_settings() -> Value {
@@ -615,6 +629,7 @@ pub fn run() {
             create_from_example,
             new_project,
             calc,
+            calc_breakdown,
             list_attachments,
             attach_files,
             remove_attachment,

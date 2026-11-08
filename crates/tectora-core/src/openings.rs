@@ -164,6 +164,10 @@ pub(crate) fn build_roofs(project: &Project) -> Vec<RoofGeometry> {
             geo.gables.extend(g.gables);
             geo.clad_area += g.clad_area;
             geo.clad_materials.extend(g.clad_materials);
+            geo.clad_faces.extend(g.clad_faces.into_iter().map(|mut c| {
+                c.edge = map.get(c.edge).copied().unwrap_or(usize::MAX);
+                c
+            }));
             geo.openings.extend(g.openings);
             geo.cut_lines.extend(g.cut_lines);
             geo.minus_lines.extend(g.minus_lines);
