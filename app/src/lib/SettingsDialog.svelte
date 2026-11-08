@@ -5,6 +5,7 @@
   import Icon from "./Icon.svelte";
   import Modal from "./Modal.svelte";
   import { api } from "./api";
+  import { mayLeave } from "./leave";
   import { LOCALES, i18n, t } from "./i18n.svelte";
   import { app, loadSettings, presets, prefs, updateSettings } from "./settings.svelte";
   import { ui, type Theme } from "./theme.svelte";
@@ -27,6 +28,9 @@
   });
 
   async function save(field: Field, value: unknown) {
+    // The open job is saved into the folder it came from before the folder
+    // changes; edits that cannot be saved are left only when the user says so.
+    if (field === "projects_dir" && !(await mayLeave())) return;
     busy = field;
     const shown = errors[field];
     try {

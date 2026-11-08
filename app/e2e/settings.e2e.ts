@@ -4,8 +4,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CONFIG_DIR, E2E_DIR } from "./env";
-import { clickPlan } from "./editor";
-import { expect, listProjects, test, waitForProject } from "./fixtures";
+import { clickPlan, openEditor, plan } from "./editor";
+import { bridge, createExample, expect, listProjects, test, waitForProject } from "./fixtures";
 import { cs, tr } from "./i18n";
 
 const settingsFile = () => JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, "settings.json"), "utf8"));
@@ -129,5 +129,17 @@ test.describe("settings", () => {
     await page.getByRole("button", { name: tr("sk", "settings.button") }).click();
     const dlg = page.getByRole("dialog", { name: tr("sk", "settings.title") });
     await expect(dlg.locator(".grid3").getByLabel(tr("sk", "edge.pitch"))).toHaveValue("33");
+  });
+
+  test("the jobs folder changed while a job is open closes the job (ERR-019)", async ({ app, page }) => {
+    await createExample("gable", "Sedlo");
+    await openEditor(app, "Sedlo");
+    // As an AI client changing the folder over MCP: the settings file changes.
+    const other = path.join(E2E_DIR, "other-library");
+    fs.mkdirSync(other, { recursive: true });
+    await bridge("update_settings", { patch: { projects_dir: other } });
+    // The open job belonged to the old folder: back to the library.
+    await expect(plan(page)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: cs("settings.button") })).toBeVisible();
   });
 });

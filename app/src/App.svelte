@@ -58,9 +58,11 @@
     notifyError(e);
   }
 
-  /** The projects folder changed: reload the library from the new one. */
+  /** The projects folder changed: reload the library from the new one. The
+   * open job belongs to the old folder, so the editor closes (ERR-019). */
   function libraryChanged() {
     api.projectsDir().then((d) => (dir = d));
+    openId = null;
     refresh();
   }
 
