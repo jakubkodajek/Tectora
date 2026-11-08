@@ -10,6 +10,7 @@
   import { actorName, live } from "./lib/live.svelte";
   import { info, notifyError } from "./lib/notify.svelte";
   import { applySettings, loadSettings, prefs } from "./lib/settings.svelte";
+  import { hasUnsaved, mayLeave } from "./lib/leave";
   import type { BrokenFile, ExampleInfo, LiveStatus, ProjectSummary } from "./lib/types";
 
   let openId = $state<string | null>(null);
@@ -36,8 +37,20 @@
     live.status = s;
     live.now = Date.now();
     if (!fresh || !s.project_id || !prefs.followAi || s.project_id === openId) return;
-    openId = s.project_id;
-    info(t("ai.followed", { who: actorName(s.actor) }));
+    const next = s.project_id;
+    // Follow mode never drops edits that could not be saved; the user stays.
+    mayLeave("quiet").then((ok) => {
+      if (!ok || openId === next) return;
+      openId = next;
+      info(t("ai.followed", { who: actorName(s.actor) }));
+    });
+  }
+
+  /** Opens another job (or the library, with null) once the open one may be left. */
+  async function openJob(id: string | null) {
+    if (id === openId || !(await mayLeave())) return;
+    openId = id;
+    if (id === null) refresh();
   }
 
   /** Last resort: anything that slipped through still reaches the user. */
@@ -49,6 +62,25 @@
   function libraryChanged() {
     api.projectsDir().then((d) => (dir = d));
     refresh();
+  }
+
+  async function closeGuard(): Promise<() => void> {
+    if ((window as unknown as { __TECTORA_PREVIEW__?: boolean }).__TECTORA_PREVIEW__) {
+      // Browser preview: a page unload cannot wait for a save, only warn.
+      const onUnload = (e: BeforeUnloadEvent) => {
+        if (hasUnsaved()) e.preventDefault();
+      };
+      window.addEventListener("beforeunload", onUnload);
+      return () => window.removeEventListener("beforeunload", onUnload);
+    }
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      return await getCurrentWindow().onCloseRequested(async (e) => {
+        if (!(await mayLeave())) e.preventDefault();
+      });
+    } catch {
+      return () => {};
+    }
   }
 
   onMount(() => {
@@ -77,8 +109,11 @@
     // A .tectora / .tectorajob file opened from the system (double-click).
     const openFile = (id: string) => {
       refresh();
-      openId = id;
+      openJob(id);
     };
+    // Closing the window: the open job is saved first, and edits that cannot
+    // be saved are only dropped when the user says so.
+    const unClose = closeGuard();
     api.takePendingOpen().then((id) => id && openFile(id));
     const unOpen = onOpenProject(openFile);
     const tick = setInterval(() => (live.now = Date.now()), 5000);
@@ -87,6 +122,7 @@
       unLive.then((f) => f());
       unSettings.then((f) => f());
       unOpen.then((f) => f());
+      unClose.then((f) => f());
       clearInterval(tick);
       window.removeEventListener("error", onError);
       window.removeEventListener("unhandledrejection", onRejection);
@@ -108,10 +144,7 @@
   {#key openId}
     <Editor
       id={openId}
-      onback={() => {
-        openId = null;
-        refresh();
-      }}
+      onback={() => openJob(null)}
       onconnect={() => (connect = true)}
     />
   {/key}

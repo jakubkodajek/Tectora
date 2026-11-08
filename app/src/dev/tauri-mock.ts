@@ -83,6 +83,8 @@ async function poll(): Promise<void> {
 }
 
 const w = window as unknown as Record<string, unknown>;
+// The app's window-close guard uses beforeunload here (no Tauri window).
+w.__TECTORA_PREVIEW__ = true;
 w.__TAURI_INTERNALS__ = {
   metadata: {
     currentWindow: { label: "main" },

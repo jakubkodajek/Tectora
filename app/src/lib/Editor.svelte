@@ -34,6 +34,7 @@
   import { api, onProjectsChanged } from "./api";
   import { changedEdges, changedItems, describeChange, describeFigure, ghostOf } from "./changes";
   import { merge3 } from "./merge";
+  import { releaseLeaveGuard, setLeaveGuard } from "./leave";
   import { m2, num } from "./format";
   import { t } from "./i18n.svelte";
   import { actorName, isFresh, live } from "./live.svelte";
@@ -344,8 +345,17 @@
       else load(false);
     }).then((u) => (unlisten = u));
   });
+  /** Saves pending edits before the job is left; asks when they cannot be saved. */
+  async function leaveGuard(mode: "ask" | "quiet"): Promise<boolean> {
+    if (saveState === "dirty" || saveState === "saving" || saveState === "failed") await save();
+    if (saveState !== "failed") return true;
+    return mode === "ask" && (await confirm(t("editor.leaveUnsaved")));
+  }
+  setLeaveGuard(leaveGuard, () => saveState !== "saved");
+
   onDestroy(() => {
     unlisten?.();
+    releaseLeaveGuard(leaveGuard);
     if (saveState === "dirty" || saveState === "failed") save();
   });
 
