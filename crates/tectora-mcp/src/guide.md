@@ -58,6 +58,10 @@ The tools cover every operation of the Tectora editor:
   shed, trapezoid, round); `get_project` lists them with these parameters.
 - Windows, chimneys (also as a rectangle) and roof openings: `set_openings`.
 - Lines and faces drawn by hand on the roof: `set_manual`.
+- Single objects (dormers, chimneys, windows, openings, hand-drawn lines and
+  faces): `transform_items` moves, rotates (about the object's centre) or
+  copies them, as the user drags them in the plan or uses their right-click
+  menu; on a move chimney tops and dormer eaves follow the roof.
 - Flat roof and material names: `set_roof_options`.
 - Calculation helpers of the roof definition: `roof_helper` (simple
   triangle, two parallel walls, point in space, merge faces, hip/valley,

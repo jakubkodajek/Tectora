@@ -17,6 +17,12 @@ The list below is DACAD's menu (DACAD.exe string table) against the app.
   pitches; build-up thickness; round roof (Runddach).
 - Flat roof, hand-drawn roof lines and new roof faces.
 - Move, rotate, mirror and copy parts; shift a wall in parallel.
+- Direct editing in the plan and the 3D view: drag dormers, chimneys,
+  windows, openings, hand-drawn shapes and the selected part; right-click
+  menus (properties, duplicate, rotate, align with wall, delete, eave/gable,
+  insert point, add an object here); arrow keys nudge, Ctrl+D duplicates.
+- 3D view shows chimneys (with cap), roof windows (frame and glass), roof
+  openings cut into their face and dormer cheeks and fronts.
 - Front, back, side and top views; area by material; material names.
 - MCP server with a tool for every editor operation, and the CLI.
 - Job library: search without accents over name, number, customer, address

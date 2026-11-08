@@ -133,6 +133,25 @@ export function roofHeightAt(result: CalcResult | null, p: Point2): number | nul
   return best;
 }
 
+/** Dormer faces belong to no wall: the engine gives them usize::MAX. */
+export const isDormerFace = (edge: number) => edge > 1e15;
+
+/** Height of the roof a dormer or chimney stands on (without the dormers'
+ *  own faces), as tectora-core `edit::probe::host_height_at`. */
+export function hostHeightAt(result: CalcResult | null, p: Point2): number | null {
+  if (!result) return null;
+  let best: number | null = null;
+  for (const part of result.parts) {
+    for (const f of part.geometry.faces) {
+      const poly = f.polygon;
+      if (isDormerFace(f.edge) || poly.length < 3 || !inside(poly, p)) continue;
+      const z = planeZ(poly, p);
+      if (z !== null && (best === null || z > best)) best = z;
+    }
+  }
+  return best;
+}
+
 function inside(poly: [number, number, number][], p: Point2) {
   let c = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {

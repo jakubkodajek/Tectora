@@ -9,10 +9,11 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 use tectora_core::edit::calc::{self as hc, BuildUpEave, ParallelField, Target};
 use tectora_core::edit::dormers::{self, DormerKind, DormerParams};
-use tectora_core::edit::probe::{roof_corner_points, roof_height_at, snap_to_roof};
+use tectora_core::edit::probe::{host_height_at, roof_corner_points, roof_height_at, snap_to_roof};
 use tectora_core::edit::round::{ArcInput, ArcMode, arc_for, opposite_wall, span_between};
 use tectora_core::edit::transform::{
-    PlanMap, offset_wall, part_centre, regular_polygon, transform_part,
+    ItemRef, PlanMap, follow_roof, item_centre, offset_wall, part_centre, regular_polygon,
+    transform_items, transform_part,
 };
 use tectora_core::edit::{EdgePatch, Patches, apply_patches, plain_edge};
 use tectora_core::examples::{EXAMPLES, StandardRoof, standard_roof};
@@ -250,6 +251,24 @@ pub(crate) fn tools() -> Vec<Value> {
             }), &["id", "op", "summary"]),
         }),
         json!({
+            "name": "transform_items",
+            "description": "Move, rotate or copy single objects on the roof (not their part): dormers, chimneys, roof windows, roof openings, hand-drawn lines and faces, as the user drags them in the plan or picks Duplicate / Rotate in their context menu. `rotate` turns each item about its own centre unless `centre` is given (a window keeps its anchor and only moves). With `copies` > 0 the items stay and that many copies of each are added, each one the transform applied once more; the reply lists the new indices. On a move, `follow_roof` (default true) keeps chimney tops, dormer eaves and line ends at the same height above the roof.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "items": { "type": "array", "minItems": 1, "items": { "type": "object", "properties": {
+                    "kind": { "type": "string", "enum": ["dormer", "chimney", "window", "roof_opening", "manual_line", "manual_face"] },
+                    "index": { "type": "integer", "minimum": 0 }
+                }, "required": ["kind", "index"] } },
+                "op": { "type": "string", "enum": ["move", "rotate"] },
+                "dx": { "type": "number" }, "dy": { "type": "number" },
+                "deg": { "type": "number", "description": "rotate: angle, counter-clockwise." },
+                "centre": { "type": "array", "items": { "type": "number" }, "description": "rotate: one pivot [x, y] for all items." },
+                "copies": { "type": "integer", "minimum": 0, "maximum": 50 },
+                "follow_roof": { "type": "boolean" },
+                "summary": summary_prop(),
+            }), &["id", "items", "op", "summary"]),
+        }),
+        json!({
             "name": "add_shape_part",
             "description": "Add a part from a shape: a standard roof on a rectangle (gable, shed, hip, pyramid, half_hip) or a regular polygon with a hip roof on every wall. Without `at`, a standard roof is placed 2 m right of the existing parts (as in the app). With `replace_part` it replaces that part instead.",
             "inputSchema": schema(json!({
@@ -450,6 +469,7 @@ impl Server {
         Some(match name {
             "edit_walls" => self.edit_walls(args),
             "transform_part" => self.transform(args),
+            "transform_items" => self.transform_items(args),
             "add_shape_part" => self.add_shape_part(args),
             "delete_items" => self.delete_items(args),
             "add_dormer" | "update_dormer" => self.dormer(args, name == "add_dormer"),
@@ -695,6 +715,88 @@ impl Server {
         let copies: u32 = opt(args, "copies")?.unwrap_or(0);
         transform_part(&mut p, pi, m, copies);
         self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+    }
+
+    fn transform_items(&self, args: &Value) -> ToolResult {
+        let (id, before) = self.load(args)?;
+        let mut p = before.clone();
+        let items: Vec<ItemRef> = serde_json::from_value(arg(args, "items")?.clone())
+            .map_err(|e| format!("items: {e}"))?;
+        if items.is_empty() {
+            return Err("`items` is empty".into());
+        }
+        if items.len() > 500 {
+            return Err("at most 500 items".into());
+        }
+        let mut seen = std::collections::HashSet::new();
+        if let Some(d) = items.iter().find(|it| !seen.insert(**it)) {
+            return Err(format!("{:?} {} is listed twice", d.kind, d.index));
+        }
+        let copies: u32 = opt(args, "copies")?.unwrap_or(0);
+        if copies > 50 {
+            return Err("at most 50 copies".into());
+        }
+        let moved = match arg_str(args, "op")? {
+            "move" => {
+                let (dx, dy) = (
+                    arg_f64(args, "dx")?.unwrap_or(0.0),
+                    arg_f64(args, "dy")?.unwrap_or(0.0),
+                );
+                if !(dx.is_finite() && dy.is_finite() && dx.abs() < 1e4 && dy.abs() < 1e4) {
+                    return Err("dx and dy must be finite and under 10 km".into());
+                }
+                let from: Vec<Point2> =
+                    items.iter().filter_map(|&it| item_centre(&p, it)).collect();
+                let out = transform_items(&mut p, &items, PlanMap::Move { dx, dy }, copies)?;
+                if opt::<bool>(args, "follow_roof")?.unwrap_or(true) {
+                    let geos = tectora_core::openings::generate_project(&before);
+                    let n = items.len();
+                    let pairs: Vec<_> = out
+                        .iter()
+                        .enumerate()
+                        .map(|(j, &r)| {
+                            let a = from[j % n];
+                            let k = (j / n + 1) as f64;
+                            (r, a, Point2::new(a.x + dx * k, a.y + dy * k))
+                        })
+                        .collect();
+                    follow_roof(&mut p, &pairs, |q| host_height_at(&geos, q));
+                }
+                out
+            }
+            "rotate" => {
+                let deg = arg_f64(args, "deg")?.ok_or("missing `deg`")?;
+                if !deg.is_finite() {
+                    return Err("`deg` must be finite".into());
+                }
+                match point(args, "centre")? {
+                    Some(c) => {
+                        transform_items(&mut p, &items, PlanMap::Rotate { centre: c, deg }, copies)?
+                    }
+                    None => {
+                        let mut out = Vec::new();
+                        for &it in &items {
+                            let c = item_centre(&p, it).ok_or_else(|| {
+                                format!("{:?} {} does not exist", it.kind, it.index)
+                            })?;
+                            out.extend(transform_items(
+                                &mut p,
+                                &[it],
+                                PlanMap::Rotate { centre: c, deg },
+                                copies,
+                            )?);
+                        }
+                        out
+                    }
+                }
+            }
+            other => return Err(format!("unknown op `{other}`")),
+        };
+        let mut reply = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
+        if let Some(o) = reply.as_object_mut() {
+            o.insert("items".into(), json!(moved));
+        }
+        Ok(reply)
     }
 
     fn add_shape_part(&self, args: &Value) -> ToolResult {
@@ -1098,6 +1200,44 @@ mod tests {
     fn call(s: &mut Server, name: &str, args: Value) -> Value {
         s.call_tool(name, &args)
             .unwrap_or_else(|e| panic!("{name}: {e}"))
+    }
+
+    #[test]
+    fn transform_items_moves_copies_and_follows_the_roof() {
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "set_openings",
+            json!({ "id": id, "summary": "c",
+            "chimneys": [{ "x": 4, "y": 1, "width": 0.6, "depth": 0.6, "height": 6 }] }),
+        );
+        // 40° roof rising towards y = 4: 1 m north lifts the top by tan 40°.
+        let r = call(
+            &mut s,
+            "transform_items",
+            json!({ "id": id, "summary": "m",
+            "items": [{ "kind": "chimney", "index": 0 }], "op": "move", "dy": 1 }),
+        );
+        assert_eq!(r["items"], json!([{ "kind": "chimney", "index": 0 }]));
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(p.chimneys[0].corners[0], Point2::new(4.0, 2.0));
+        assert!((p.chimneys[0].height - (6.0 + 40f64.to_radians().tan())).abs() < 2e-3);
+        let r = call(
+            &mut s,
+            "transform_items",
+            json!({ "id": id, "summary": "c",
+            "items": [{ "kind": "chimney", "index": 0 }], "op": "rotate", "deg": 90, "copies": 1 }),
+        );
+        assert_eq!(r["items"][0]["index"], 1);
+        assert_eq!(s.store.load(&id).unwrap().chimneys.len(), 2);
+        assert!(
+            s.call_tool(
+                "transform_items",
+                &json!({ "id": id, "summary": "x",
+            "items": [{ "kind": "dormer", "index": 3 }], "op": "move", "dx": 1 })
+            )
+            .is_err()
+        );
     }
 
     #[test]
