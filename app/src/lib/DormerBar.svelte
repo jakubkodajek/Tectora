@@ -2,12 +2,12 @@
   // DACAD's dormer definition (Gaube definieren): type, width, position,
   // eave height and pitches of the selected dormer, docked like the wall bar.
   import Icon from "./Icon.svelte";
-  import { t } from "./i18n.svelte";
+  import { numberLocale, t } from "./i18n.svelte";
   import type { CalcResult, Dormer, Project } from "./types";
   import { materialIds, materialName } from "./materials";
   import { DORMER_KINDS, buildDormer, defaultParams, parseDormer, roofHeightAt, type DormerKind, type DormerParams } from "./dormers";
   import { MAX_ROUND_SEGMENTS } from "./roundroof";
-  import { numeric } from "./numeric.svelte";
+  import { formatNumber, numeric } from "./numeric.svelte";
 
   let {
     project,
@@ -100,7 +100,7 @@
         <span>{t("edge.direction")}</span>
         <div class="unit"><input type="text" use:numeric={{ value: angleDeg, step: 1, onchange: (v) => set({ angle: (v * Math.PI) / 180 }) }} /><em>°</em></div>
       </label>
-      <label title={host !== null ? t("dormer.hostHint", { h: host.toFixed(2) }) : undefined}>
+      <label title={host !== null ? t("dormer.hostHint", { h: formatNumber(host, numberLocale(), 2) }) : undefined}>
         <span>{t("edge.eaveHeight")}</span>
         <div class="unit"><input type="text" disabled={kind === "pointed"} use:numeric={{ value: params.eave_height, step: 0.05, onchange: (v) => set({ eave_height: v }) }} /><em>m</em></div>
       </label>
