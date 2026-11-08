@@ -1451,8 +1451,9 @@ mod tests {
 
     #[test]
     fn settings_read_and_update() {
+        let _settings = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner());
         let base = std::env::temp_dir().join(format!("tectora-mcp-cfg-{}", std::process::id()));
-        // Only this test reads the settings file, so the env var is safe here.
+        // Tests touching the settings file hold SETTINGS_FILE, so the env var is safe here.
         unsafe { std::env::set_var("TECTORA_CONFIG_DIR", base.join("cfg")) };
         let mut s = server();
         let r = s.call_tool("get_settings", &json!({})).unwrap();
@@ -1775,10 +1776,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
+    /// Tests that read or write the settings file (through
+    /// `TECTORA_CONFIG_DIR`) run one at a time, so one never sees the
+    /// other's half-written defaults.
+    static SETTINGS_FILE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn set_outline_repairs_a_part_without_edges() {
         // ERR-010: a stored part with no walls (the app flags it
         // `too_few_edges`); the tool meant to repair it must not panic.
+        let _settings = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner());
         let mut s = server();
         let mut p = Project::new("Empty");
         p.parts.push(RoofPart {
