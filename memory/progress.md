@@ -110,3 +110,14 @@ sessions that use it know where things stand.
   off the roof (review tests/); Jakub decides count limits, trash restore
   button, `after` in the activity log, P16 test expectation.
 - Blockers: app/src-tauri is compiled only by CI (no WebKitGTK here).
+## 2026-11-08 · DACAD input limits
+
+- Done: core input problems for pitch outside 2-178°, negative eave,
+  pitch break below the eave or twice at one height (`EdgeDef::problems`,
+  `MIN_PITCH_DEG`/`MAX_PITCH_DEG`); MCP `create_project` defaults and
+  `update_edges` refuse them; roof bar bounds; cs/sk/en/de messages.
+- State: `make check` exit 0; e2e `editor fields mcp errors` 77/78, the
+  failing `MCP parity › building height` also fails without this change
+  (PR #39 base).
+- Next: gap analysis doc lists the other DACAD gaps; Jakub chose only
+  limits + building height for now.
