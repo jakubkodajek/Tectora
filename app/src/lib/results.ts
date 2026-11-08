@@ -27,6 +27,32 @@ export function warningText(w: RoofWarning): string {
   }
 }
 
+/** One row of the Results area list: a part, or a face added by hand. */
+export interface AreaRow {
+  name: string;
+  area: number;
+  /** Index into `result.parts`, or -1 for a hand-drawn face. */
+  part: number;
+  manual: boolean;
+}
+
+/**
+ * The Results area list: every part's area, then every hand-drawn face's
+ * (the core's `manual_faces`, which the total already includes), so the
+ * rows add up to the total.
+ */
+export function areaRows(result: CalcResult | null): AreaRow[] {
+  if (!result) return [];
+  const parts = result.parts.map((p, i) => ({ name: p.name, area: p.quantities.roof_area, part: i, manual: false }));
+  const faces = (result.manual_faces ?? []).map((f, i) => ({
+    name: f.label || t("manual.faceN", { n: i + 1 }),
+    area: f.area,
+    part: -1,
+    manual: true,
+  }));
+  return [...parts, ...faces];
+}
+
 /** Per part, the parts its roof is joined with, as the calculation joined them. */
 export function joinedWith(result: CalcResult | null): number[][] {
   return (result?.parts ?? []).map((p) => p.geometry.joined_with ?? []);

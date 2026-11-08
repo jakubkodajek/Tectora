@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DICTS, i18n } from "./i18n.svelte";
-import { joinedWith, warningText } from "./results";
+import { areaRows, joinedWith, warningText } from "./results";
 import type { CalcResult, RoofWarning } from "./types";
 
 const part = (name: string, joined_with?: number[]) => ({
@@ -18,6 +18,33 @@ describe("joinedWith", () => {
     const joined = { parts: [part("A", [1]), part("B", [0])] } as unknown as CalcResult;
     expect(joinedWith(joined)).toEqual([[1], [0]]);
     expect(joinedWith(null)).toEqual([]);
+  });
+});
+
+describe("areaRows", () => {
+  it("lists the hand-drawn faces after the parts, and the rows add up to the total (UX-009)", () => {
+    i18n.locale = "cs";
+    const withArea = (name: string, roof_area: number) => ({ ...part(name), quantities: { roof_area } as CalcResult["parts"][number]["quantities"] });
+    const result = {
+      parts: [withArea("Hlavní", 152.73), withArea("Křídlo", 20.5)],
+      manual_faces: [
+        { label: "Stříška", pitch_deg: 60, area: 6 },
+        { label: "", pitch_deg: 0, area: 8 },
+      ],
+      totals: { roof_area: 187.23 },
+    } as unknown as CalcResult;
+    const rows = areaRows(result);
+    expect(rows.map((r) => r.name)).toEqual(["Hlavní", "Křídlo", "Stříška", "Plocha 2"]);
+    expect(rows.map((r) => r.manual)).toEqual([false, false, true, true]);
+    const sum = rows.reduce((s, r) => s + r.area, 0);
+    expect(sum).toBeCloseTo(result.totals.roof_area, 9);
+    // One part and one face: two rows, so the list is shown.
+    const one = { parts: [withArea("A", 10)], manual_faces: [{ label: "", pitch_deg: 30, area: 2 }], totals: { roof_area: 12 } } as unknown as CalcResult;
+    expect(areaRows(one).length).toBe(2);
+    // Older results without the field: the parts only.
+    const old = { parts: [withArea("A", 10)], totals: { roof_area: 10 } } as unknown as CalcResult;
+    expect(areaRows(old).map((r) => r.name)).toEqual(["A"]);
+    expect(areaRows(null)).toEqual([]);
   });
 });
 

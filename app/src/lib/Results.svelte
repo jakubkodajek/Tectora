@@ -5,7 +5,7 @@
   import { m, m2, num } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
-  import { joinedWith, warningText } from "./results";
+  import { areaRows, joinedWith, warningText } from "./results";
   import type { CalcResult, Project } from "./types";
 
   let {
@@ -20,6 +20,8 @@
   const fmtDiff = formatFigure;
   /** Per part, the parts the calculation joined its roof with (named under the part's area). */
   const joins = $derived(joinedWith(result));
+  /** Parts and hand-drawn faces with their areas: everything the total counts (UX-009). */
+  const areas = $derived(areaRows(result));
 
   /** Area per material, shown once the roof has more than one material or a non-default one. */
   const materials = $derived(
@@ -62,23 +64,27 @@
     <div class="warn" role="status">
       <div class="warn-head"><i></i>{t("res.warn.title")}</div>
       {#each warnings as w}
-        <p>{#if w.part}<code>{w.part}</code> {/if}{w.text}</p>
+        <!-- The space is an expression: Svelte trims plain whitespace at the end of a block. -->
+        <p>{#if w.part}<code>{w.part}</code>{" "}{/if}{w.text}</p>
       {/each}
     </div>
   {/if}
 
-  {#if result && result.parts.length > 1}
+  {#if result && areas.length > 1}
     <h4>{t("res.areas")}</h4>
-    <table>
+    <table class="areas">
       <tbody>
-        {#each result.parts as p}
-          {@const pi = result.parts.indexOf(p)}
+        {#each areas as a}
           <tr>
             <td>
-              {p.name}
-              {#if joins[pi]?.length}<small class="joined">{t("res.joinedTo", { names: joins[pi].map((j) => result.parts[j]?.name ?? "").join(", ") })}</small>{/if}
+              {a.name}
+              {#if a.manual}
+                <small class="joined">{t("bd.manual")}</small>
+              {:else if joins[a.part]?.length}
+                <small class="joined">{t("res.joinedTo", { names: joins[a.part].map((j) => result.parts[j]?.name ?? "").join(", ") })}</small>
+              {/if}
             </td>
-            <td class="v">{m2(p.quantities.roof_area)}</td>
+            <td class="v">{m2(a.area)}</td>
           </tr>
         {/each}
       </tbody>

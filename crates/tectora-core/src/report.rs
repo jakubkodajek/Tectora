@@ -8,7 +8,8 @@ use crate::Project;
 use crate::quantities::{dacad_line_totals, manual_quantities, part_quantities};
 use crate::roof::RoofQuantities;
 
-/// Roof geometry and quantities for every part, plus totals. A part the
+/// Roof geometry and quantities for every part, the area of each
+/// hand-drawn face (`manual_faces`, already in the totals), plus totals. A part the
 /// engine could not take has empty geometry; `problems` says why, and a
 /// DACAD error the calculation ended with is in each part's
 /// `geometry.error`.
@@ -27,8 +28,16 @@ pub fn calc(project: &Project) -> Value {
         .collect();
     // Lines and faces added by hand (DACAD: Dachlinieneingabe, Neue Dachfläche).
     total.add(&manual_quantities(project));
+    // Each hand-drawn face's area, to list beside the parts' (already in
+    // the totals; display only).
+    let manual_faces: Vec<Value> = project
+        .manual_faces
+        .iter()
+        .map(|f| json!({ "label": f.label, "pitch_deg": f.pitch_deg, "area": f.area() }))
+        .collect();
     json!({
         "parts": parts,
+        "manual_faces": manual_faces,
         "totals": total,
         "codes": dacad_line_totals(project),
         "problems": project.problems(),
@@ -57,6 +66,46 @@ mod tests {
             v["parts"][0]["geometry"]["faces"].as_array().unwrap().len(),
             0
         );
+    }
+
+    #[test]
+    fn the_hand_drawn_faces_are_listed_and_the_listed_areas_add_up_to_the_total() {
+        // UX-009: the Results area list had no row for a hand-drawn face
+        // although it counts in the total.
+        let mut p = examples::find("gable").unwrap().project();
+        let alone = calc(&p)["totals"]["roof_area"].as_f64().unwrap();
+        let pt = crate::geom::Point2::new;
+        p.manual_faces.push(crate::model::ManualFace {
+            points: vec![pt(20.0, 0.0), pt(22.0, 0.0), pt(22.0, 3.0)],
+            pitch_deg: 60.0,
+            label: "Stříška".into(),
+        });
+        p.manual_faces.push(crate::model::ManualFace {
+            points: vec![pt(30.0, 0.0), pt(34.0, 0.0), pt(34.0, 2.0), pt(30.0, 2.0)],
+            pitch_deg: 0.0,
+            label: String::new(),
+        });
+        let v = calc(&p);
+        let faces = v["manual_faces"].as_array().unwrap();
+        assert_eq!(faces.len(), 2);
+        assert_eq!(faces[0]["label"], "Stříška");
+        assert_eq!(faces[0]["pitch_deg"], 60.0);
+        assert!((faces[0]["area"].as_f64().unwrap() - 6.0).abs() < 1e-9);
+        assert!((faces[1]["area"].as_f64().unwrap() - 8.0).abs() < 1e-9);
+        let total = v["totals"]["roof_area"].as_f64().unwrap();
+        // The total is what it was plus the faces: display data only.
+        assert!((total - alone - 14.0).abs() < 1e-9, "{total} vs {alone}");
+        let listed: f64 = v["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["quantities"]["roof_area"].as_f64().unwrap())
+            .chain(faces.iter().map(|f| f["area"].as_f64().unwrap()))
+            .sum();
+        assert!((listed - total).abs() < 1e-9, "{listed} vs {total}");
+        // Without hand-drawn faces the list is empty.
+        let none = calc(&examples::find("gable").unwrap().project());
+        assert_eq!(none["manual_faces"], json!([]));
     }
 
     #[test]

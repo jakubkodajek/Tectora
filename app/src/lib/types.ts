@@ -263,6 +263,8 @@ export interface CalcResult {
     };
     quantities: RoofQuantities;
   }[];
+  /** Every face added by hand with its area (already in `totals`). */
+  manual_faces?: { label: string; pitch_deg: number; area: number }[];
   totals: RoofQuantities;
   /** Line lengths by DACAD code (T, F, G, K, O, W). */
   codes: Record<string, number>;
