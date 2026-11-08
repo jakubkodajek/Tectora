@@ -128,9 +128,20 @@ test.describe("job tab", () => {
     const dlg = page.getByRole("dialog", { name: cs("export.title") });
     await expect(dlg.locator(".paper img")).toBeVisible();
     const list = dlg.locator("pre");
-    await expect(list).toContainText("DACHLINIEN");
+    // The default list is the one TERRAN's price sheet reads: faces, wall
+    // and material areas, line totals.
+    await expect(list).toContainText("STREŠNÉ PLOCHY");
+    await expect(list).toContainText("Stena : 1 ");
+    await expect(list).toContainText("6 Odkvap - 44,000m");
+    await expect(list).not.toContainText("DACHLINIEN");
     await expect(list).toContainText("Valba export");
     await expect(list).toContainText("m\u02db");
+    // The detailed list adds every section and line.
+    const full = dlg.getByRole("checkbox", { name: cs("export.full") });
+    await full.check();
+    await expect(list).toContainText("DACHLINIEN");
+    await full.uncheck();
+    await expect(list).not.toContainText("DACHLINIEN");
 
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
     await dlg.getByRole("button", { name: cs("export.copyList") }).click();
