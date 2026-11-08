@@ -2,9 +2,10 @@
 name: tectora-release
 description: >-
   Ships a Tectora version to TERRAN: a preflight gate (tests, DACAD parity,
-  i18n sweep, no proprietary files), version bump in all manifests, a v* tag
-  that makes CI build the macOS universal .dmg and the Windows installers, and
-  release notes in Czech for the users. Use when the user says "release",
+  i18n sweep, no proprietary files), version bump in all manifests, an
+  annotated v* tag whose Czech message becomes the release notes, and the
+  Release workflow that publishes signed installers and the in-app update
+  (docs/releasing.md). Use when the user says "release",
   "new version", "build the installer", "ship it", "send it to the
   colleagues", or "tag v0.x".
 ---
@@ -34,8 +35,9 @@ python3 .claude/skills/tectora-design/contrast.py
 
 Plus by hand, or as a checklist for the user:
 
-- [ ] the CI run of `.github/workflows/desktop.yml` on the release commit is
-      green on Linux, macOS and Windows
+- [ ] the Build workflow (`.github/workflows/build.yml`) has `check` and
+      `windows-tests` green on the release commit (the Release workflow
+      refuses it otherwise)
 - [ ] the macOS .dmg installs and opens on Apple Silicon and Intel
 - [ ] the Windows installer installs, `.tectora` opens by double-click
 - [ ] a job from the previous release opens and calculates the same result
@@ -48,33 +50,47 @@ Any failure stops the release. Say which and why.
 
 ## Step 2: version
 
-Same version in `Cargo.toml` (`[workspace.package]`), every crate that pins
-its own, `app/src-tauri/tauri.conf.json` and `app/package.json`. Semver: a
-change of roof results or of the file format is at least a minor bump and is
-named in the notes.
+Same version in `app/src-tauri/tauri.conf.json` (what the installed apps
+compare), `[workspace.package]` in `Cargo.toml` and `app/package.json`; the
+test `every_manifest_declares_the_same_version` fails otherwise. Run
+`cargo check` so `Cargo.lock` follows. Semver: a change of roof results or
+of the file format is at least a minor bump and is named in the notes. The
+bump goes to `main` through a PR like any change.
 
-## Step 3: tag and build
+## Step 3: tag
 
-After the user's go, on the release commit:
+After the user's go, and once `check` and `windows-tests` passed on that
+commit of main:
 
 ```bash
-git tag -a v0.X.Y -m "Tectora 0.X.Y"
+git fetch origin main
+git tag -a v0.X.Y -m "<Czech title>" -m "<Czech notes, - bullets>" origin/main
 git push origin v0.X.Y
 ```
 
-The `v*` tag runs the desktop workflow: `Tectora-macOS` (universal .dmg) and
-`Tectora-Windows` (.msi and NSIS .exe) artifacts on the run. The installers
-are not code-signed yet: macOS needs right-click > Open the first time, and
-Windows SmartScreen asks once. Say so in the notes until signing is set up.
+The tag's message is the release notes the users read in the app before
+installing, so write it in Czech, short: what is new, what changed in
+results (worded without naming DACAD), known limits.
 
-## Step 4: release notes
+`.github/workflows/release.yml` then builds the Windows NSIS installer and
+the macOS universal app and .dmg, signs the updates with the release key,
+checks them, writes `latest.json` and publishes the release (after the
+user approves the run for the `release` environment). Installed apps
+offer it the next time the job library opens. If a check refuses the tag,
+fix the cause, delete the tag (`git push origin :v0.X.Y`, only with the
+user's go) and tag again.
 
-For the colleagues at TERRAN, in Czech, short: what is new, what changed in
-results (and why: "now matches DACAD for …", worded without naming DACAD if the
-notes reach customers), how to install, known limits. Engineering notes in
-English go in the GitHub release.
+The installers are not code-signed: macOS needs Privacy & Security > Open
+Anyway the first time, and Windows SmartScreen asks once. Say so to new
+users until signing is set up.
+
+## Step 4: tell the users
+
+First installs: `https://github.com/jakubkodajek/Tectora/releases/latest/download/Tectora_x64-setup.exe`
+(Windows) and `.../Tectora_universal.dmg` (macOS). Existing installs update
+themselves from the library.
 
 ## Output
 
-The preflight results, the tag, the CI run link with the installers, and the
-Czech release notes ready to send.
+The preflight results, the tag, the Release run and the published release
+link, and the Czech release notes.

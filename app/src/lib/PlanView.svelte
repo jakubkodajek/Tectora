@@ -221,11 +221,22 @@
     manualSel = item.kind === "line" || item.kind === "face" ? { kind: item.kind, index: item.index } : null;
   }
 
+  /** Captures the pointer for a drag. A synthetic or already released pointer
+   * (no active pointer with that id) cannot be captured; the drag then just
+   * ends at the next pointerup the plan sees. */
+  function capture(e: PointerEvent) {
+    try {
+      svg!.setPointerCapture(e.pointerId);
+    } catch {
+      // Not capturable: nothing to do.
+    }
+  }
+
   function startObjDrag(e: PointerEvent, target: PlanTarget) {
     const p = localPoint(e);
     const w = snapPoint(p.x, p.y, e.altKey);
     objDrag = { target, sx: p.x, sy: p.y, wx: w.x, wy: w.y, moved: false, dx: 0, dy: 0 };
-    svg!.setPointerCapture(e.pointerId);
+    capture(e);
   }
 
   /** A press on a dormer, chimney, window, opening or hand-drawn shape. */
@@ -276,7 +287,7 @@
       rc = { target: rcTarget ?? { type: "canvas" }, x: p.x, y: p.y, cx: e.clientX, cy: e.clientY };
       rcTarget = null;
       pan = { x: p.x, y: p.y, cx: center.x, cy: center.y };
-      svg!.setPointerCapture(e.pointerId);
+      capture(e);
       return;
     }
     rcTarget = null;
@@ -307,7 +318,7 @@
         openSel = null;
         manualSel = null;
       }
-      svg!.setPointerCapture(e.pointerId);
+      capture(e);
     }
   }
 
@@ -380,7 +391,7 @@
     e.stopPropagation();
     const p = localPoint(e);
     drag = { part, vertex, sx: p.x, sy: p.y, moved: false };
-    svg!.setPointerCapture(e.pointerId);
+    capture(e);
   }
 
   function edgeDblClick(e: MouseEvent, part: number, edge: number) {

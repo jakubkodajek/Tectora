@@ -187,7 +187,7 @@
         "New job from a past roof"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "pr": [
         19
       ]
@@ -200,7 +200,7 @@
         "Roof windows stand out in 3D"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "pr": [
         20,
         25
@@ -214,7 +214,7 @@
         "make e2e runs it"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "pr": [
         22
       ]
@@ -226,7 +226,7 @@
         "A localized warning names the walls"
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "pr": [
         23
       ]
@@ -238,7 +238,7 @@
         "Breakdown per face and line in the results, same numbers in CLI, MCP and UI"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "pr": [
         24
       ]
