@@ -44,6 +44,7 @@ library and settings file. Tests run one at a time (one shared library).
 | `i18n.e2e.ts` | cs / sk / en / de on every screen: no raw keys, no DACAD names, nothing outside the window at 1360×860 and 600×420; dark theme |
 | `fields.e2e.ts` | number and text fields: Enter, Tab, Escape, a click on the plan / another wall / a button stores on the right object, decimal comma, refused values, ▲▼ and arrow keys, presets; manual face labels and "make it a building" |
 | `joined.e2e.ts` | a second building: roof at once, "joined to" in the results, dashed lines under a higher roof, a covered building warned, recalculation of both roofs |
+| `lines.e2e.ts` | line lengths by code (T, F, G, K, O, P, c) in the Results tab equal the core's totals and per-code list of the saved file, also after an edit |
 | `mcp.e2e.ts` | live AI review (banner, highlight, Accept, Revert, Revert all, follow mode, library marks, races with autosave) and MCP parity: the same edit in the editor and over MCP gives the same file and result |
 
 Most assertions check the saved file (`waitForProject`) and that the area in

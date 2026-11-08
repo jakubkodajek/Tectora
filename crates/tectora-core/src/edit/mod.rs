@@ -117,7 +117,8 @@ pub fn apply_patches(edges: &mut [EdgeDef], patches: &Patches) -> Patches {
     applied
 }
 
-/// Rounds to `digits` decimals, as the editor's `+v.toFixed(digits)`.
+/// Rounds to `digits` decimals, halves away from zero; the editor rounds the
+/// same way (`app/src/lib/rounding.ts`, checked by `tests/edit_parity.rs`).
 pub(crate) fn round_to(v: f64, digits: i32) -> f64 {
     let f = 10f64.powi(digits);
     (v * f).round() / f

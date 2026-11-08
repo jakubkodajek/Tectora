@@ -4,6 +4,7 @@
 // roof is recalculated afterwards, so no roof rule is involved.
 
 import type { Chimney, Dormer, EdgeDef, ManualFace, ManualLine, Point2, Project, RoofPart, RoofWindow } from "./types";
+import { roundTo } from "./rounding";
 
 export type TransformMode = "move" | "rotate" | "mirror" | "wall";
 /** What the transform dialog asks for: a map of the part (with copies) or a wall shift. */
@@ -22,7 +23,7 @@ export interface PlanMap {
 /** Deep copy that also works on reactive (proxied) project state. */
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 
-const r3 = (v: number) => Math.round(v * 1000) / 1000;
+const r3 = (v: number) => roundTo(v, 3);
 const pt = (p: Point2): Point2 => ({ x: r3(p.x), y: r3(p.y) });
 
 export function translation(dx: number, dy: number): PlanMap {
