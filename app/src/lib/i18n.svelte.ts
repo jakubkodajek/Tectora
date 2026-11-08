@@ -2498,7 +2498,7 @@ const de: Dict = {
   "tool.drawHint": "Neuen Grundriss Wand für Wand zeichnen",
   "tool.deletePart": "Teil löschen",
   "tool.deletePartHint": "Löscht den Dachteil der gewählten Wand",
-  "tool.clear": "Alles löschen",
+  "tool.clear": "Leeren",
   "tool.clearHint": "Entfernt das ganze Dach mit allem darauf und lässt eine leere Zeichenfläche",
   "editor.confirmClear": "Das ganze Dach löschen und mit einer leeren Zeichenfläche beginnen? Die Auftragsdaten bleiben; Rückgängig holt das Dach zurück.",
   "tool.dims": "Maße",
