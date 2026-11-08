@@ -7,6 +7,17 @@ export const m = (v: number) => `${fmt(v)} m`;
 export const m2 = (v: number) => `${fmt(v)} m²`;
 export const num = fmt;
 
+/**
+ * An intermediate value of a calculation shown for checking: at most `max`
+ * decimals with trailing zeros cut (but at least `min`), so the core's
+ * single-precision noise (58.499997 for 13 × 4.5) reads as 58,50 (UX-014).
+ */
+export function plain(v: number, locale: string, max = 4, min = 2): string {
+  return new Intl.NumberFormat(locale, { minimumFractionDigits: Math.min(min, max), maximumFractionDigits: max, useGrouping: false }).format(
+    Object.is(v, -0) ? 0 : v,
+  );
+}
+
 export function relativeTime(ms: number): string {
   const min = Math.round((Date.now() - ms) / 60000);
   if (min < 1) return t("time.now");

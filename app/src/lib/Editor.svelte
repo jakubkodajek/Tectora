@@ -520,6 +520,25 @@
     commit();
   }
 
+  /**
+   * Delete / Backspace with a wall selected: the key is easy to hit while
+   * stepping through walls (Backspace meant for a field), and it changes the
+   * footprint, so it asks first (UX-006). The bar's trash button does not.
+   */
+  async function deleteVertexByKey() {
+    if (!project || !selection) return;
+    const sel = selection;
+    const part = project.parts[sel.part];
+    const es = part?.edges;
+    if (!es?.[sel.edge] || (!isMarker(es[sel.edge]) && es.filter((e) => !isMarker(e)).length <= 3)) return;
+    const msg = isMarker(es[sel.edge]) ? t("edge.confirmDeleteMarker") : t("edge.confirmDeleteVertex", { n: sel.edge + 1, name: part.name });
+    // Tauri's dialog plugin makes confirm asynchronous: always await it.
+    if (!(await confirm(msg))) return;
+    // The project or the selection may have changed while the dialog was open.
+    if (project?.parts[sel.part] !== part || selection?.part !== sel.part || selection?.edge !== sel.edge) return;
+    deleteVertex();
+  }
+
   function moveVertex(part: number, v: number, x: number, y: number) {
     if (!project) return;
     const es = project.parts[part]?.edges;
@@ -910,8 +929,12 @@
       { label: t("tool.transform") + "…", icon: "move", action: () => { selection = { part: pi, edge: selection?.part === pi ? selection.edge : 0 }; openTransform(); } },
       { label: t("menu.duplicatePart"), icon: "copy", action: () => {
         if (!project) return;
-        // Beside the original, 2 m apart (as a new standard roof is placed).
-        const added = transformPart(project, pi, translation(+(w + 2).toFixed(3), 0), 1);
+        // 2 m to the right of everything drawn (as a new standard roof is
+        // placed), so the copy never lands on, and joins, another building
+        // or a manual face (UX-010).
+        const xs = [...project.parts.flatMap((p) => p.edges.map((e) => e.start.x)), ...(project.manual_faces ?? []).flatMap((f) => f.points.map((p) => p.x))];
+        const dx = Math.max(w, Math.max(...xs) - Math.min(...ps.map((p) => p.x))) + 2;
+        const added = transformPart(project, pi, translation(+dx.toFixed(3), 0), 1);
         if (added.length) selection = { part: added[0], edge: 0 };
         commit();
         setTimeout(() => plan?.fit(), 0);
@@ -1217,7 +1240,7 @@
     } else if (del && manualSel && !drawing) {
       deleteManual();
     } else if (del && selection && !drawing) {
-      deleteVertex();
+      deleteVertexByKey();
     }
   }
 </script>

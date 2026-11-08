@@ -122,20 +122,36 @@
     }
   }
 
-  async function remove(p: ProjectSummary) {
-    // Tauri's dialog plugin replaces window.confirm with an async version
-    // (a Promise is always truthy), so the answer must be awaited.
-    if (!(await confirm(t("home.confirmDelete", { name: p.name })))) return;
-    await run("delete", () => api.deleteProject(p.id));
-    if (selectedId === p.id) selectedId = null;
-    onchanged();
+  /** Jobs with a delete or duplicate under way: a double click must not
+   *  make two copies, or ask twice and then fail (UI-018). */
+  let busy = $state<Record<string, boolean>>({});
+
+  async function once(id: string, f: () => Promise<void>) {
+    if (busy[id]) return;
+    busy[id] = true;
+    try {
+      await f();
+    } finally {
+      delete busy[id];
+    }
   }
 
-  async function duplicate(p: ProjectSummary) {
-    const id = await run("duplicate", () => api.duplicateProject(p.id, t("lib.copyName", { name: p.name })));
-    if (id) selectedId = id;
-    onchanged();
-  }
+  const remove = (p: ProjectSummary) =>
+    once(p.id, async () => {
+      // Tauri's dialog plugin replaces window.confirm with an async version
+      // (a Promise is always truthy), so the answer must be awaited.
+      if (!(await confirm(t("home.confirmDelete", { name: p.name })))) return;
+      await run("delete", () => api.deleteProject(p.id));
+      if (selectedId === p.id) selectedId = null;
+      onchanged();
+    });
+
+  const duplicate = (p: ProjectSummary) =>
+    once(p.id, async () => {
+      const id = await run("duplicate", () => api.duplicateProject(p.id, t("lib.copyName", { name: p.name })));
+      if (id) selectedId = id;
+      onchanged();
+    });
 
   function setView(v: "list" | "grid") {
     prefs.libraryView = v;
@@ -313,9 +329,9 @@
         {/if}
         <div class="detail-actions">
           <button class="btn primary" onclick={() => onopen(selected!.id)}><Icon name="open" size={16} />{t("card.open")}</button>
-          <button class="btn" onclick={() => duplicate(selected!)}><Icon name="copy" size={16} />{t("card.duplicate")}</button>
+          <button class="btn" disabled={!!busy[selected!.id]} onclick={() => duplicate(selected!)}><Icon name="copy" size={16} />{t("card.duplicate")}</button>
           <button class="btn reuse" onclick={() => (newJob = { example: null, from: selected!.id })}><Icon name="plus" size={16} />{t("card.reuse")}</button>
-          <button class="btn ghost danger" onclick={() => remove(selected!)}><Icon name="trash" size={16} />{t("card.delete")}</button>
+          <button class="btn ghost danger" disabled={!!busy[selected!.id]} onclick={() => remove(selected!)}><Icon name="trash" size={16} />{t("card.delete")}</button>
         </div>
       </aside>
     {/if}

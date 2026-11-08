@@ -2,6 +2,7 @@
 // face, the wall lines of a dormer and the height range of a chimney.
 // Display only; quantities come from the core.
 
+import { ShapeUtils, Vector2 } from "three";
 import type { Chimney, Dormer, Point2 } from "./types";
 
 export type Poly3 = [number, number, number][];
@@ -139,4 +140,95 @@ export function gableContour(poly: Poly3): [number, number][] | null {
   if (best < 1e-6) return null;
   const d = [(far[0] - p0[0]) / best, (far[1] - p0[1]) / best];
   return poly.map((p) => [(p[0] - p0[0]) * d[0] + (p[1] - p0[1]) * d[1], p[2]]);
+}
+
+/**
+ * The triangles (indices into `poly`) the 3D view draws for a vertical
+ * polygon, triangulated in its own wall plane (see `gableContour`). This is
+ * the whole step Roof3D runs for a gable, so the test covers its call site.
+ * Null when the polygon cannot be drawn.
+ */
+export function wallTriangles(poly: Poly3): number[] | null {
+  const uv = gableContour(poly);
+  if (!uv) return null;
+  const tris = ShapeUtils.triangulateShape(uv.map(([u, v]) => new Vector2(u, v)), []);
+  return tris.length ? tris.flat() : null;
+}
+
+/** Plan parameters (0..1) where the segment a–b crosses the plan segments `lines`, sorted. */
+export function crossings(a: Point2, b: Point2, lines: [Poly3[number], Poly3[number]][]): number[] {
+  const out: number[] = [];
+  const [dx, dy] = [b.x - a.x, b.y - a.y];
+  for (const [p, q] of lines) {
+    const [ex, ey] = [q[0] - p[0], q[1] - p[1]];
+    const den = dx * ey - dy * ex;
+    if (Math.abs(den) < 1e-12) continue;
+    const t = ((p[0] - a.x) * ey - (p[1] - a.y) * ex) / den;
+    const u = ((p[0] - a.x) * dy - (p[1] - a.y) * dx) / den;
+    if (t > 1e-6 && t < 1 - 1e-6 && u >= -1e-6 && u <= 1 + 1e-6) out.push(t);
+  }
+  return out.sort((x, y) => x - y).filter((t, i, ts) => i === 0 || t - ts[i - 1] > 1e-6);
+}
+
+/**
+ * A wall from the ground up to the roof over its line: the bottom edge a–b
+ * at `z0`, the top following the roof height at both ends and at every
+ * point `cuts` (plan parameters along a–b where the roof's surface bends,
+ * e.g. a ridge over a gable wall). Used where the calculation returns no
+ * gable polygon for a gable wall (a shed roof's verges and its high wall),
+ * so the 3D view shows a closed building [no source: display only].
+ * Null when the roof is not over the wall or not above `z0`.
+ */
+export function wallUpToRoof(a: Point2, b: Point2, z0: number, cuts: number[], roofAt: (p: Point2) => number | null): Poly3 | null {
+  const ts = [0, ...cuts.filter((t) => t > 0 && t < 1), 1];
+  const top: Poly3 = [];
+  for (const t of ts) {
+    // Just inside the ends, so the corner itself (shared with the next
+    // wall's verge or an eave) does not decide.
+    const k = Math.min(1 - 1e-4, Math.max(1e-4, t));
+    const p = { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
+    const z = roofAt(p);
+    if (z === null) return null;
+    top.push([a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, z]);
+  }
+  if (top.every((p) => p[2] <= z0 + 1e-3)) return null;
+  return [[a.x, a.y, z0], [b.x, b.y, z0], ...top.reverse().map((p): Poly3[number] => [p[0], p[1], Math.max(p[2], z0)])];
+}
+
+/**
+ * A hand-drawn roof face (manual face) for the 3D view: the plan polygon
+ * lifted onto a plane of its pitch, with its first side as the eave at
+ * `base` m, rising towards the polygon. The file gives only outline and
+ * pitch, so the slope direction is a display choice [no source: display
+ * only]; the 3D area equals the face's area (plan area ÷ cos pitch).
+ */
+export function manualFacePoly(points: Point2[], pitchDeg: number, base: number): Poly3 | null {
+  if (points.length < 3 || !(pitchDeg >= 0 && pitchDeg < 90)) return null;
+  const [a, b] = points;
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  if (len < 1e-6) return null;
+  // Normal of the first side, turned to the side the polygon lies on.
+  let n = { x: -(b.y - a.y) / len, y: (b.x - a.x) / len };
+  const c = points.reduce((s, p) => ({ x: s.x + p.x / points.length, y: s.y + p.y / points.length }), { x: 0, y: 0 });
+  if ((c.x - a.x) * n.x + (c.y - a.y) * n.y < 0) n = { x: -n.x, y: -n.y };
+  const k = Math.tan((pitchDeg * Math.PI) / 180);
+  return points.map((p) => [p.x, p.y, base + k * ((p.x - a.x) * n.x + (p.y - a.y) * n.y)]);
+}
+
+/** An axis-aligned 3D box, as [min, max] corners. */
+export type Extent = { min: [number, number, number]; max: [number, number, number] };
+
+/**
+ * True when the scene's extent `now` reaches outside the one the camera was
+ * framed for (with 5 % slack): a second building, a copy or a larger roof,
+ * which the first framing would cut off (UI-007). Shrinking never reframes,
+ * so the user's own view is kept while editing within it.
+ */
+export function outgrows(framed: Extent | null, now: Extent): boolean {
+  if (!framed) return true;
+  for (let i = 0; i < 3; i++) {
+    const slack = (framed.max[i] - framed.min[i]) * 0.05 + 0.01;
+    if (now.min[i] < framed.min[i] - slack || now.max[i] > framed.max[i] + slack) return true;
+  }
+  return false;
 }

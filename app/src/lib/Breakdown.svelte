@@ -6,7 +6,7 @@
   // (`calc_breakdown`); nothing is calculated here.
   import { api } from "./api";
   import { toAppError } from "./errors";
-  import { num } from "./format";
+  import { num, plain } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
   import Modal from "./Modal.svelte";
@@ -176,7 +176,7 @@
             </div>
             <div class="calc">
               {#if f.engine_gross === undefined && !f.vertical}
-                <span>{fixed(f.plan_area, D.plan)} m² ÷ cos {deg(f.pitch_deg, 6)}{#if f.deducted > 0}{" "}{MINUS} {fixed(f.deducted, f.digits)} m²{/if}</span>
+                <span>{plain(f.plan_area, numberLocale(), Math.min(D.plan, 4))} m² ÷ cos {deg(f.pitch_deg, 6)}{#if f.deducted > 0}{" "}{MINUS} {fixed(f.deducted, f.digits)} m²{/if}</span>
               {:else}
                 <span>{t("bd.engineShort", { v: fixed(f.engine_gross ?? f.gross, f.digits) })}{#if f.deducted > 0}{" "}{MINUS} {fixed(f.deducted, f.digits)} m²{/if}</span>
               {/if}
@@ -233,7 +233,7 @@
               {#if f.pitch_out_of_range}
                 <span>{deg(f.pitch_deg, 6)}</span>
               {:else}
-                <span>{fixed(f.plan_area, D.plan)} m² ÷ cos {deg(f.pitch_deg, 6)}</span>
+                <span>{plain(f.plan_area, numberLocale(), Math.min(D.plan, 4))} m² ÷ cos {deg(f.pitch_deg, 6)}</span>
               {/if}
               <span>= {fixed(f.area, f.digits)} m²</span>
             </div>
