@@ -45,10 +45,10 @@ programs; Codex in the ChatGPT desktop app can.
 | `calc_breakdown` | How every face area and line length was calculated, step by step (the app's Calculation tab) |
 | `create_standard_roof`, `create_project`, `create_from_example` | Create designs |
 | `add_part`, `add_shape_part`, `transform_part`, `delete_items` | Parts: add (standard roofs, regular polygons), move / rotate / mirror / copy, delete anything |
-| `update_edges`, `set_outline`, `edit_walls` | Walls and their roof definitions; corners, lengths, direction changes, parallel shift |
+| `update_edges`, `set_outline`, `edit_walls` | Walls and their roof definitions (incl. clad gable and the direction of a direction change); corners, lengths, direction changes, parallel shift |
 | `add_dormer`, `update_dormer` | Dormers by kind (gable, pointed, hip, half-hip, shed, trapezoid, round) |
 | `set_openings`, `set_manual`, `set_roof_options` | Windows, chimneys, openings; hand-drawn lines and faces; flat roof, material names |
-| `transform_items` | Move, rotate or copy single dormers, chimneys, windows, openings, hand-drawn lines and faces (the plan's drag and right-click menu) |
+| `transform_items` | Move, rotate, copy or align to the nearest wall single dormers, chimneys, windows, openings, hand-drawn lines and faces (the plan's drag and right-click menu) |
 | `roof_helper` | Calculation helpers (triangle, two parallels, point in space, merge, hip/valley, build-up, round roof), preview or apply |
 | `update_job`, `store_result` | Job data and status; the stored result for the offer |
 | `get_history`, `get_review`, `revert_to`, `revert_last_change`, `show_project` | History, review state (accepted or still pending in the app, effect on the figures), undo, focus in the app |

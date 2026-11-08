@@ -12,8 +12,8 @@ use tectora_core::edit::dormers::{self, DormerKind, DormerParams};
 use tectora_core::edit::probe::{host_height_at, roof_corner_points, roof_height_at, snap_to_roof};
 use tectora_core::edit::round::{ArcInput, ArcMode, arc_for, opposite_wall, span_between};
 use tectora_core::edit::transform::{
-    ItemRef, PlanMap, follow_roof, item_centre, offset_wall, part_centre, regular_polygon,
-    transform_items, transform_part,
+    ItemKind, ItemRef, PlanMap, follow_roof, item_centre, offset_wall, part_centre,
+    regular_polygon, transform_items, transform_part,
 };
 use tectora_core::edit::{EdgePatch, Patches, apply_patches, plain_edge};
 use tectora_core::examples::{EXAMPLES, StandardRoof, standard_roof};
@@ -259,7 +259,7 @@ pub(crate) fn tools() -> Vec<Value> {
                     "kind": { "type": "string", "enum": ["dormer", "chimney", "window", "roof_opening", "manual_line", "manual_face"] },
                     "index": { "type": "integer", "minimum": 0 }
                 }, "required": ["kind", "index"] } },
-                "op": { "type": "string", "enum": ["move", "rotate"] },
+                "op": { "type": "string", "enum": ["move", "rotate", "align"], "description": "align: turn each chimney or roof opening by the smallest angle that lines its first side up with the nearest eave wall (the context menu's Align to wall)." },
                 "dx": { "type": "number" }, "dy": { "type": "number" },
                 "deg": { "type": "number", "description": "rotate: angle, counter-clockwise." },
                 "centre": { "type": "array", "items": { "type": "number" }, "description": "rotate: one pivot [x, y] for all items." },
@@ -623,7 +623,12 @@ impl Server {
             match arg_str(op, "op").map_err(at)? {
                 "move_point" => {
                     let i = edge_index(op, "index", n).map_err(at)?;
-                    part.edges[i].start = xy().map_err(at)?;
+                    let to = xy().map_err(at)?;
+                    // As a corner drag in the plan: direction changes on the
+                    // corner move with it.
+                    for j in corner_group(&part.edges, i) {
+                        part.edges[j].start = to;
+                    }
                 }
                 "insert_point" => {
                     let i = edge_index(op, "after", n).map_err(at)?;
@@ -665,13 +670,18 @@ impl Server {
                     let next = part.edges[(i + 1) % n].start;
                     let ang = (next.y - e.start.y).atan2(next.x - e.start.x)
                         + std::f64::consts::FRAC_PI_2;
-                    let mut marker = plain_edge(
-                        e.start,
-                        if e.is_gable() { 40.0 } else { e.pitch_deg },
-                        e.eave_height,
-                        e.overhang,
-                    );
-                    marker.material = e.material;
+                    // The wall's own definition, as the editor's "Direction
+                    // change" button makes it; a gable's marker gets the
+                    // pitch for new roofs from the settings.
+                    let mut marker = e.clone();
+                    marker.half_hip = None;
+                    marker.breaks.clear();
+                    marker.clad = false;
+                    if e.is_gable() {
+                        marker.pitch_deg = tectora_core::settings::Settings::load()
+                            .roof_defaults
+                            .pitch_deg;
+                    }
                     marker.direction_rad = Some(ang.rem_euclid(std::f64::consts::TAU));
                     part.edges.insert(i, marker);
                 }
@@ -789,6 +799,44 @@ impl Server {
                         out
                     }
                 }
+            }
+            "align" => {
+                let mut out = Vec::new();
+                for &it in &items {
+                    let corners = match it.kind {
+                        ItemKind::Chimney => p.chimneys.get(it.index),
+                        ItemKind::RoofOpening => p.roof_openings.get(it.index),
+                        _ => return Err("align turns only chimneys and roof openings".into()),
+                    }
+                    .ok_or_else(|| format!("{:?} {} does not exist", it.kind, it.index))?
+                    .corners
+                    .clone();
+                    let c = item_centre(&p, it)
+                        .ok_or_else(|| format!("{:?} {} does not exist", it.kind, it.index))?;
+                    if corners.len() < 2 {
+                        continue;
+                    }
+                    let now = (corners[1].y - corners[0].y)
+                        .atan2(corners[1].x - corners[0].x)
+                        .to_degrees();
+                    let want = nearest_wall_angle(&p, c).to_degrees();
+                    // Any quarter turn of a rectangle lines up the same.
+                    let mut d = (want - now).rem_euclid(90.0);
+                    if d > 45.0 {
+                        d -= 90.0;
+                    }
+                    let d = (d * 1e4).round() / 1e4;
+                    if d.abs() < 1e-6 {
+                        continue;
+                    }
+                    out.extend(transform_items(
+                        &mut p,
+                        &[it],
+                        PlanMap::Rotate { centre: c, deg: d },
+                        0,
+                    )?);
+                }
+                out
             }
             other => return Err(format!("unknown op `{other}`")),
         };
@@ -1173,6 +1221,57 @@ impl Server {
     }
 }
 
+/// Direction (radians) of the eave wall nearest to `q` over all parts, as
+/// the editor's Align to wall uses it (`app/src/lib/dormers.ts`).
+fn nearest_wall_angle(p: &Project, q: Point2) -> f64 {
+    let mut best = (f64::INFINITY, 0.0);
+    for part in &p.parts {
+        let es = &part.edges;
+        for (i, e) in es.iter().enumerate() {
+            let b = es[(i + 1) % es.len()].start;
+            let (dx, dy) = (b.x - e.start.x, b.y - e.start.y);
+            let l2 = dx * dx + dy * dy;
+            if l2 < 1e-12 || e.is_gable() {
+                continue;
+            }
+            let t = (((q.x - e.start.x) * dx + (q.y - e.start.y) * dy) / l2).clamp(0.0, 1.0);
+            let d = (e.start.x + t * dx - q.x).hypot(e.start.y + t * dy - q.y);
+            if d < best.0 {
+                best = (d, dy.atan2(dx));
+            }
+        }
+    }
+    best.1
+}
+
+/// Corner `v` and the direction changes (zero-length marker walls) on the
+/// same point next to it, as the plan editor moves them together
+/// (`app/src/lib/corners.ts`). O(n).
+fn corner_group(es: &[tectora_core::EdgeDef], v: usize) -> Vec<usize> {
+    let n = es.len();
+    let p = es[v].start;
+    let at = |j: usize| (es[j].start.x - p.x).abs() < 1e-6 && (es[j].start.y - p.y).abs() < 1e-6;
+    let marker = |j: usize| es[j].direction_rad.is_some();
+    let mut out = vec![v];
+    for k in 1..n {
+        let j = (v + n - k) % n;
+        if !marker(j) || !at(j) {
+            break;
+        }
+        out.push(j);
+    }
+    for k in 1..n {
+        let (prev, j) = ((v + k - 1) % n, (v + k) % n);
+        if !marker(prev) || !at(j) {
+            break;
+        }
+        out.push(j);
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1200,6 +1299,109 @@ mod tests {
     fn call(s: &mut Server, name: &str, args: Value) -> Value {
         s.call_tool(name, &args)
             .unwrap_or_else(|e| panic!("{name}: {e}"))
+    }
+
+    #[test]
+    fn a_direction_change_moves_with_its_corner_and_can_be_turned() {
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "edit_walls",
+            json!({ "id": id, "summary": "m", "operations": [{ "op": "insert_direction_change", "index": 0 }] }),
+        );
+        let p = s.store.load(&id).unwrap();
+        let (marker, wall) = (&p.parts[0].edges[0], &p.parts[0].edges[1]);
+        assert!(marker.direction_rad.is_some() && wall.direction_rad.is_none());
+        assert_eq!(marker.pitch_deg, wall.pitch_deg);
+        assert_eq!(marker.start, wall.start);
+        call(
+            &mut s,
+            "edit_walls",
+            json!({ "id": id, "summary": "m", "operations": [{ "op": "move_point", "index": 1, "x": -1.0, "y": -0.5 }] }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(
+            p.parts[0].edges[0].start,
+            Point2::new(-1.0, -0.5),
+            "the marker follows its corner"
+        );
+        assert_eq!(p.parts[0].edges[1].start, Point2::new(-1.0, -0.5));
+        call(
+            &mut s,
+            "update_edges",
+            json!({ "id": id, "summary": "d", "changes": [{ "index": 0, "direction_deg": 450 }] }),
+        );
+        let d = s.store.load(&id).unwrap().parts[0].edges[0]
+            .direction_rad
+            .unwrap();
+        assert!((d - std::f64::consts::FRAC_PI_2).abs() < 1e-12, "{d}");
+        let err = s
+            .call_tool("update_edges", &json!({ "id": id, "summary": "d", "changes": [{ "index": 1, "direction_deg": 90 }] }))
+            .unwrap_err();
+        assert!(err.contains("direction change"), "{err}");
+    }
+
+    #[test]
+    fn a_pitch_for_all_walls_keeps_the_gables_and_a_chimney_aligns_to_its_wall() {
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "update_edges",
+            json!({ "id": id, "summary": "p", "changes": [{ "all": true, "pitch_deg": 30 }] }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(p.parts[0].edges.iter().filter(|e| e.is_gable()).count(), 2);
+        assert!(
+            p.parts[0]
+                .edges
+                .iter()
+                .filter(|e| !e.is_gable())
+                .all(|e| e.pitch_deg == 30.0)
+        );
+        call(
+            &mut s,
+            "set_openings",
+            json!({ "id": id, "summary": "c",
+            "chimneys": [{ "x": 4, "y": 1, "width": 0.6, "depth": 0.6, "height": 6, "rotation_deg": 20 }] }),
+        );
+        call(
+            &mut s,
+            "transform_items",
+            json!({ "id": id, "summary": "a", "op": "align", "items": [{ "kind": "chimney", "index": 0 }] }),
+        );
+        let c = &s.store.load(&id).unwrap().chimneys[0].corners;
+        let a = (c[1].y - c[0].y)
+            .atan2(c[1].x - c[0].x)
+            .to_degrees()
+            .rem_euclid(90.0);
+        assert!(a < 1e-6 || (90.0 - a) < 1e-6, "{a}");
+        let err = s
+            .call_tool("transform_items", &json!({ "id": id, "summary": "a", "op": "align", "items": [{ "kind": "window", "index": 0 }] }))
+            .unwrap_err();
+        assert!(err.contains("only chimneys"), "{err}");
+    }
+
+    #[test]
+    fn a_gable_can_be_clad() {
+        let (mut s, id) = setup();
+        let p = s.store.load(&id).unwrap();
+        let g = p.parts[0]
+            .edges
+            .iter()
+            .position(|e| e.is_gable())
+            .expect("a gable");
+        call(
+            &mut s,
+            "update_edges",
+            json!({ "id": id, "summary": "c", "changes": [{ "index": g, "clad": true }] }),
+        );
+        assert!(s.store.load(&id).unwrap().parts[0].edges[g].clad);
+        call(
+            &mut s,
+            "update_edges",
+            json!({ "id": id, "summary": "c", "changes": [{ "index": g, "clad": false }] }),
+        );
+        assert!(!s.store.load(&id).unwrap().parts[0].edges[g].clad);
     }
 
     #[test]

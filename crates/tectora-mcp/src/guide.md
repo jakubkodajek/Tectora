@@ -50,8 +50,10 @@ and adds WV (downhill), WH (uphill) and WS (sloped sides) abutment lines.
 The tools cover every operation of the Tectora editor:
 
 - Walls: `edit_walls` (move, insert or delete a corner, set a wall length,
-  insert a direction change, shift a wall in parallel, rename the part),
-  `set_outline`, `update_edges`.
+  insert a direction change, shift a wall in parallel, rename the part;
+  a moved corner takes its direction changes along), `set_outline`,
+  `update_edges` (also `clad` for a clad gable and `direction_deg` to turn
+  or flip a direction change; with `all` a pitch leaves gables alone).
 - Parts: `add_part`, `add_shape_part` (standard roofs and regular polygons),
   `transform_part` (move, rotate, mirror, with copies), `delete_items`.
 - Dormers: `add_dormer`, `update_dormer` (gable, pointed, hip, half_hip,
@@ -61,7 +63,8 @@ The tools cover every operation of the Tectora editor:
 - Single objects (dormers, chimneys, windows, openings, hand-drawn lines and
   faces): `transform_items` moves, rotates (about the object's centre) or
   copies them, as the user drags them in the plan or uses their right-click
-  menu; on a move chimney tops and dormer eaves follow the roof.
+  menu; on a move chimney tops and dormer eaves follow the roof. `align`
+  turns chimneys and roof openings square to the nearest eave wall.
 - Flat roof and material names: `set_roof_options`.
 - Calculation helpers of the roof definition: `roof_helper` (simple
   triangle, two parallel walls, point in space, merge faces, hip/valley,

@@ -261,6 +261,15 @@ test.describe("MCP parity", () => {
     }, () => mcp.call("update_edges", { id: ids[1], changes: [{ index: 1, gable: true, half_hip: { height: 5.5, pitch_deg: 50 } }], summary: "x" }));
   });
 
+  test("clad gable", async ({ app, page, mcp }) => {
+    const ids = await twin("gable");
+    const gable = (await loadProject(ids[0])).parts[0].edges.findIndex((e: any) => e.pitch_deg >= 90);
+    await parity(app, ids, async () => {
+      await selectWall(page, gable);
+      await bar(page, "def.title").getByLabel(cs("edge.clad")).check();
+    }, () => mcp.call("update_edges", { id: ids[1], changes: [{ index: gable, clad: true }], summary: "x" }));
+  });
+
   test("pitch breaks, priority and material on all walls", async ({ app, page, mcp }) => {
     const ids = await twin("hip");
     await parity(app, ids, async () => {
