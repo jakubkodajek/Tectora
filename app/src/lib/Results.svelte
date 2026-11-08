@@ -5,6 +5,7 @@
   import { m, m2, num } from "./format";
   import { t } from "./i18n.svelte";
   import { materialName } from "./materials";
+  import { joinedParts } from "./planjoin";
   import type { CalcResult, Project, RoofWarning } from "./types";
 
   let {
@@ -17,6 +18,8 @@
   const stored = $derived(result?.stored_result ?? null);
   const diffLabel = (key: string) => figureLabel(key, project);
   const fmtDiff = formatFigure;
+  /** Per part, the parts its roof is joined to (named under the part's area). */
+  const joins = $derived(project && project.parts.length > 1 ? joinedParts(project.parts) : []);
 
   /** Area per material, shown once the roof has more than one material or a non-default one. */
   const materials = $derived(
@@ -78,7 +81,14 @@
     <table>
       <tbody>
         {#each result.parts as p}
-          <tr><td>{p.name}</td><td class="v">{m2(p.quantities.roof_area)}</td></tr>
+          {@const pi = result.parts.indexOf(p)}
+          <tr>
+            <td>
+              {p.name}
+              {#if joins[pi]?.length}<small class="joined">{t("res.joinedTo", { names: joins[pi].map((j) => project?.parts[j]?.name ?? "").join(", ") })}</small>{/if}
+            </td>
+            <td class="v">{m2(p.quantities.roof_area)}</td>
+          </tr>
         {/each}
       </tbody>
     </table>
@@ -139,6 +149,11 @@
 </div>
 
 <style>
+  .joined {
+    display: block;
+    font-size: 11.5px;
+    color: var(--text-2);
+  }
   .results {
     display: flex;
     flex-direction: column;

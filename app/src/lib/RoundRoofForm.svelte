@@ -64,7 +64,7 @@
     <div class="fields">
       <p class="tip">{t("round.span", { s: num(span) })}</p>
       <label><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: eave, step: 0.05, live: true, onchange: (v) => (eave = v) }} /><em>m</em></div></label>
-      <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: overhang, step: 0.05, live: true, onchange: (v) => (overhang = v) }} /><em>m</em></div></label>
+      <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: overhang, step: 0.05, min: 0, live: true, onchange: (v) => (overhang = v) }} /><em>m</em></div></label>
       <label>
         <span>{t("round.mode")}</span>
         <select value={mode} onchange={(e) => setMode((e.target as HTMLSelectElement).value as ArcMode)}>

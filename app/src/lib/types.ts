@@ -227,7 +227,7 @@ export interface Problem {
 
 /** What looks wrong with a calculated roof (tectora_core::check). */
 export interface RoofWarning {
-  kind: "outside_outline" | "overlapping_faces" | "area_mismatch" | "merged_walls";
+  kind: "outside_outline" | "overlapping_faces" | "area_mismatch" | "merged_walls" | "covered";
   /** m outside, m² overlapping, or the relative area difference (0 for merged_walls). */
   value: number;
   /** merged_walls: the edge whose pitch is used, then the edge whose pitch and breaks are ignored. */

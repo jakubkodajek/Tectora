@@ -3,6 +3,7 @@
   // press an arrow (button or keyboard) to add the next corner.
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
+  import { notifyError } from "./notify.svelte";
   import { numeric } from "./numeric.svelte";
   import { presets, savePresets, updateSettings } from "./settings.svelte";
 
@@ -62,7 +63,7 @@
     savePresets();
     // The same defaults as in Settings: store them in the settings file,
     // or the next settings change (or start) puts the old ones back.
-    updateSettings({ roof_defaults: { [key]: v } }).catch(() => {});
+    updateSettings({ roof_defaults: { [key]: v } }).catch((e) => notifyError(e, "save"));
   }
 </script>
 
@@ -86,9 +87,9 @@
   </div>
   <div class="presets">
     <span class="lbl">{t("draw.presets")}</span>
-    <label><span>{t("edge.pitch")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.pitch_deg, step: 1, onchange: (v) => preset(v, "pitch_deg") }} /><em>°</em></div></label>
-    <label><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.eave_height, step: 0.05, onchange: (v) => preset(v, "eave_height") }} /><em>m</em></div></label>
-    <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.overhang, step: 0.05, onchange: (v) => preset(v, "overhang") }} /><em>m</em></div></label>
+    <label><span>{t("edge.pitch")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.pitch_deg, step: 1, min: 1, max: 89, onchange: (v) => preset(v, "pitch_deg") }} /><em>°</em></div></label>
+    <label><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.eave_height, step: 0.05, min: -100, max: 1000, onchange: (v) => preset(v, "eave_height") }} /><em>m</em></div></label>
+    <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.overhang, step: 0.05, min: 0, max: 20, onchange: (v) => preset(v, "overhang") }} /><em>m</em></div></label>
   </div>
   <div class="actions">
     <button class="btn sm" disabled={count === 0} onclick={onundo}><Icon name="undo" size={15} />{t("draw.undo")}</button>

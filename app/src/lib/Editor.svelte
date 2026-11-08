@@ -17,6 +17,7 @@
   import DormerBar from "./DormerBar.svelte";
   import OpeningBar from "./OpeningBar.svelte";
   import ManualBar from "./ManualBar.svelte";
+  import { commitFocused } from "./commitfocus";
   import ContextMenu, { type MenuEntry, type MenuState } from "./ContextMenu.svelte";
   import { mergeDroppedCorner, moveCorner } from "./corners";
   import { followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, transformItem, type ItemRef, type PlanTarget } from "./items";
@@ -359,6 +360,9 @@
   });
   /** Saves pending edits before the job is left; asks when they cannot be saved. */
   async function leaveGuard(mode: "ask" | "quiet"): Promise<boolean> {
+    // A value still being typed is part of the job: store it first.
+    commitFocused();
+    await tick();
     if (saveState === "dirty" || saveState === "saving" || saveState === "failed") await save();
     if (saveState !== "failed") return true;
     return mode === "ask" && (await confirm(t("editor.leaveUnsaved")));

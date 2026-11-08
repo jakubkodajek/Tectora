@@ -121,6 +121,7 @@ fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             "reported area differs from the roof faces by {:.1} %; check the area",
             w.value * 100.0
         ),
+        WarningKind::Covered => "no face of this part's roof is left after joining it with the other parts: another part covers it (a building drawn inside or on top of another); move or delete one of them".to_string(),
         WarningKind::MergedWalls => {
             let (kept, ignored) = (w.edges.first(), w.edges.get(1));
             format!(

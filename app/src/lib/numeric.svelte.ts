@@ -244,7 +244,7 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
       const b = document.createElement("button");
       b.type = "button";
       b.tabIndex = -1;
-      b.title = t(label);
+      b.dataset.label = label;
       b.dataset.dir = String(dir);
       b.innerHTML =
         dir > 0
@@ -255,6 +255,8 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
       b.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
+        // Arrow keys after a click on ▲▼ step this field, not the selected object.
+        if (document.activeElement !== input) input.focus({ preventScroll: true });
         stepBy(dir);
       });
       spin.appendChild(b);
@@ -280,6 +282,10 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
     spin.style.right = `${Math.max(0, right)}px`;
   }
 
+  function translateSpinner() {
+    spin?.querySelectorAll("button").forEach((b) => (b.title = t(b.dataset.label ?? "")));
+  }
+
   function syncDisabled() {
     spin?.querySelectorAll("button").forEach((b) => (b.disabled = input.disabled));
   }
@@ -299,6 +305,7 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
       untrack(() => {
         render();
         syncDisabled();
+        translateSpinner();
       });
     });
   });

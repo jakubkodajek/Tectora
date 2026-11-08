@@ -98,7 +98,7 @@
   <div class="row">
     <div class="fields">
       {#if kind === "polygon"}
-        <label><span>{t("std.sides")}</span><input type="text" use:numeric={{ value: sides, step: 1, live: true, onchange: (v) => (sides = v) }} /></label>
+        <label><span>{t("std.sides")}</span><input type="text" use:numeric={{ value: sides, step: 1, min: 3, max: 64, live: true, onchange: (v) => (sides = v) }} /></label>
         <label><span>{t("std.side")}</span><div class="unit"><input type="text" use:numeric={{ value: length, step: 0.1, live: true, onchange: (v) => (length = v) }} /><em>m</em></div></label>
       {:else}
         <label><span>{t("std.length")}</span><div class="unit"><input type="text" use:numeric={{ value: length, step: 0.1, live: true, onchange: (v) => (length = v) }} /><em>m</em></div></label>
@@ -106,7 +106,7 @@
       {/if}
       <label><span>{t("edge.pitch")}</span><div class="unit"><input type="text" use:numeric={{ value: pitch, step: 1, live: true, onchange: (v) => (pitch = v) }} /><em>°</em></div></label>
       <label><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: eave, step: 0.05, live: true, onchange: (v) => (eave = v) }} /><em>m</em></div></label>
-      <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: overhang, step: 0.05, live: true, onchange: (v) => (overhang = v) }} /><em>m</em></div></label>
+      <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: overhang, step: 0.05, min: 0, live: true, onchange: (v) => (overhang = v) }} /><em>m</em></div></label>
     </div>
     <div class="preview">
       {#if preview}

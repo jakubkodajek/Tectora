@@ -65,7 +65,7 @@
     {#if mode !== "wall"}
       <label title={t("xf.copiesHint")}>
         <span>{t("xf.copies")}</span>
-        <input type="text" use:numeric={{ value: copies, step: 1, min: 0, max: mode === "mirror" ? 1 : 50, live: true, onchange: (v) => (copies = v) }} />
+        <input type="text" use:numeric={{ value: copies, step: 1, min: 0, live: true, onchange: (v) => (copies = v) }} />
       </label>
     {/if}
   </div>

@@ -9,6 +9,7 @@
   import type { ItemRef, PlanTarget } from "./items";
   import { fitScale, gridValues } from "./grid";
   import { faceTags } from "./facelabels";
+  import { coveredPieces } from "./planjoin";
   import { numberLocale } from "./i18n.svelte";
 
   let {
@@ -131,6 +132,8 @@
   };
 
   // Pitch and area of every calculated face, written at its centre.
+  // Joined roofs: stretches of a line under a higher roof are drawn dashed.
+  const linePieces = $derived(result ? coveredPieces(result) : []);
   const tags = $derived(result ? result.parts.flatMap((rp) => faceTags(rp.geometry.faces)) : []);
   const pitchText = (v: number) =>
     `${new Intl.NumberFormat(numberLocale(), { maximumFractionDigits: 2 }).format(v)}°`;
@@ -493,22 +496,23 @@
       />
     {/each}
 
-    {#if result}
-      {#each result.parts as rp}
-        {#each rp.geometry.lines as l}
-          {#if l.kind !== "eave"}
+    {#each linePieces as lines}
+      {#each lines as l}
+        {#if l.kind !== "eave"}
+          {#each l.pieces as piece}
             <line
-              x1={sx(l.a[0])}
-              y1={sy(l.a[1])}
-              x2={sx(l.b[0])}
-              y2={sy(l.b[1])}
+              x1={sx(piece.a[0])}
+              y1={sy(piece.a[1])}
+              x2={sx(piece.b[0])}
+              y2={sy(piece.b[1])}
               stroke={lineColor[l.kind]}
               class="roofline"
+              class:covered={piece.hidden}
             />
-          {/if}
-        {/each}
+          {/each}
+        {/if}
       {/each}
-    {/if}
+    {/each}
 
     {#if ghost}
       <g class="ghost" aria-hidden="true">
@@ -844,6 +848,13 @@
   .roofline {
     stroke-width: 1.8;
     stroke-linecap: round;
+  }
+  /* Under a higher roof (joined buildings): still there, but not on top. */
+  .roofline.covered {
+    stroke-width: 1.4;
+    stroke-dasharray: 4 4;
+    stroke-linecap: butt;
+    opacity: 0.55;
   }
   .edge .wall {
     stroke: var(--line-eave);

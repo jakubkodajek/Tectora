@@ -140,6 +140,41 @@ fn joined_roofs_may_run_on_to_the_other_building() {
     assert_eq!(kinds(&p), []);
 }
 
+#[test]
+fn a_building_inside_another_is_reported_as_covered() {
+    // A small building drawn inside a larger one keeps no roof face after
+    // the join, which used to show the walls with no roof and no message.
+    let rect = |x0: f64, y0: f64, x1: f64, y1: f64| RoofPart {
+        name: "R".into(),
+        edges: vec![
+            edge(x0, y0, 40.0, 3.0, 0.5),
+            edge(x1, y0, 40.0, 3.0, 0.5),
+            edge(x1, y1, 40.0, 3.0, 0.5),
+            edge(x0, y1, 40.0, 3.0, 0.5),
+        ],
+    };
+    let mut p = Project::new("inside");
+    p.parts.push(rect(0.0, 0.0, 12.0, 8.0));
+    p.parts.push(rect(4.0, 2.0, 7.0, 5.0));
+    let geos = generate_project(&p);
+    assert!(
+        geos[1].error.is_none() && geos[1].faces.is_empty(),
+        "{:?}",
+        geos[1].faces.len()
+    );
+    assert!(!geos[0].faces.is_empty());
+    assert!(
+        geos[0]
+            .warnings
+            .iter()
+            .all(|w| w.kind != WarningKind::Covered)
+    );
+    assert_eq!(
+        geos[1].warnings.iter().map(|w| w.kind).collect::<Vec<_>>(),
+        [WarningKind::Covered]
+    );
+}
+
 /// A 10 × 8 m hip roof whose front eave is entered as two walls in line,
 /// the second with its own pitch and pitch break.
 fn split_front(second_pitch: f64, second_eave: f64, break_on_second: bool) -> Project {

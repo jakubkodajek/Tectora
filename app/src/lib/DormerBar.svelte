@@ -121,13 +121,13 @@
       {#if kind !== "shed" && kind !== "round"}
         <label>
           <span>{kind === "trapezoid" ? t("dormer.cheekPitch") : t("edge.pitch")}</span>
-          <div class="unit"><input type="text" use:numeric={{ value: params.pitch_deg, step: 1, min: 1, max: 89, onchange: (v) => set({ pitch_deg: v }) }} /><em>°</em></div>
+          <div class="unit"><input type="text" use:numeric={{ value: params.pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => set({ pitch_deg: v }) }} /><em>°</em></div>
         </label>
       {/if}
       {#if kind === "shed" || kind === "trapezoid"}
         <label>
           <span>{t("dormer.frontPitch")}</span>
-          <div class="unit"><input type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: 1, max: 89, onchange: (v) => set({ front_pitch_deg: v }) }} /><em>°</em></div>
+          <div class="unit"><input type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => set({ front_pitch_deg: v }) }} /><em>°</em></div>
         </label>
       {/if}
       {#if kind === "half_hip"}
@@ -137,7 +137,7 @@
         </label>
         <label>
           <span>{t("edge.halfHipPitch")}</span>
-          <div class="unit"><input type="text" use:numeric={{ value: params.half_hip_pitch_deg, step: 1, min: 1, max: 89, onchange: (v) => set({ half_hip_pitch_deg: v }) }} /><em>°</em></div>
+          <div class="unit"><input type="text" use:numeric={{ value: params.half_hip_pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => set({ half_hip_pitch_deg: v }) }} /><em>°</em></div>
         </label>
       {/if}
       <label>

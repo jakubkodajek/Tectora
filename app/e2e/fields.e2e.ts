@@ -97,7 +97,7 @@ test.describe("number fields", () => {
     await page.keyboard.press("Enter");
     await expect(pitch).toHaveValue(String(start));
     // The refusal says why, then the restored value is plain again.
-    await expect(pitch).toHaveAttribute("title", cs("num.range", { min: "1", max: "179" }));
+    await expect(pitch).toHaveAttribute("title", cs("num.range", { min: "0,1", max: "179,9" }));
     await expect(pitch).not.toHaveAttribute("aria-invalid", "true", { timeout: 5000 });
     await page.waitForTimeout(700);
     expect((await loadProject(id)).parts[0].edges[0].pitch_deg).toBe(start);
@@ -192,4 +192,40 @@ test.describe("number fields", () => {
     expect(p.parts[1].name).toBe(cs("editor.partN", { n: 2 }));
     await expect(page.locator(".statusbar")).toContainText(cs("status.walls", { n: 8, p: 2 }));
   });
+
+  test("a text label typed and followed by a click on another line stays on its own line", async ({ app, page }) => {
+    const id = await createExample("gable", "Sedlo");
+    await openEditor(app, "Sedlo");
+    for (const y of [2, 6]) {
+      await tool(page, "tool.line").click();
+      await pressPlan(page, 2, y);
+      await pressPlan(page, 8, y);
+    }
+    await waitForProject(id, (p) => p.manual_lines?.length === 2);
+    const mb = bar(page, "manual.line");
+    await expect(mb.locator(".which strong")).toHaveText(cs("manual.lineN", { n: 2 }));
+    await typeInto(page, mb.getByLabel(cs("manual.label")), "Okap dvůr");
+    // Straight onto the first line in the plan.
+    await pressPlan(page, 5, 2);
+    await expect(mb.locator(".which strong")).toHaveText(cs("manual.lineN", { n: 1 }));
+    const p = await waitForProject(id, (p) => p.manual_lines[1].label === "Okap dvůr");
+    expect(p.manual_lines[0].label ?? "").toBe("");
+  });
+
+  test("after a click on ▲ the arrow keys step the field, not the selected object", async ({ app, page }) => {
+    const id = await createExample("gable", "Sedlo");
+    await openEditor(app, "Sedlo");
+    await tool(page, "tool.chimney").click();
+    await pressPlan(page, 3, 2);
+    await waitForProject(id, (p) => p.chimneys.length === 1);
+    const cb = bar(page, "opening.chimney");
+    const top = cb.getByLabel(cs("opening.top"));
+    const before = (await loadProject(id)).chimneys[0];
+    await top.locator("xpath=following-sibling::span[contains(@class,'num-spin')]//button[1]").click();
+    await expect(top).toBeFocused();
+    await page.keyboard.press("ArrowUp");
+    const p = await waitForProject(id, (p) => Math.abs(p.chimneys[0].height - (before.height + 0.1)) < 1e-9);
+    expect(p.chimneys[0].corners).toEqual(before.corners);
+  });
 });
+

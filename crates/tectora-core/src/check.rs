@@ -55,6 +55,10 @@ pub enum WarningKind {
     /// is used, then the wall whose pitch or pitch breaks are ignored.
     /// `value`: 0.
     MergedWalls,
+    /// Several roofs are joined and no face of this part's roof is left:
+    /// another part covers it (a building drawn inside or on top of
+    /// another). The plan shows the walls with no roof. `value`: 0.
+    Covered,
 }
 
 /// One finding about a calculated roof.
@@ -343,7 +347,16 @@ pub fn check(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<Vec<RoofWarning>>
     let outline: Vec<Vec<Point2>> = parts.iter().flat_map(eave_outline).collect();
     let joined = parts.len() > 1;
     geos.iter()
-        .map(|geo| warnings(&outline, geo, joined))
+        .enumerate()
+        .map(|(i, geo)| {
+            let roofed = parts
+                .get(i)
+                .is_some_and(|p| p.edges.iter().any(|e| !e.is_gable()));
+            if joined && roofed && geo.error.is_none() && geo.faces.is_empty() {
+                return vec![RoofWarning::new(WarningKind::Covered, 0.0)];
+            }
+            warnings(&outline, geo, joined)
+        })
         .collect()
 }
 
