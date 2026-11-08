@@ -214,6 +214,7 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             snapshot::take_checked(&arg::<Project>(a, "project")?).map_err(|e| e.to_string())?,
         ),
         "take_pending_open" => Ok(Value::Null),
+        "take_open_errors" => Ok(serde_json::json!([])),
         "create_standard" | "standard_part" => {
             let kind: StandardRoof = arg(a, "kind")?;
             let part = standard_roof(

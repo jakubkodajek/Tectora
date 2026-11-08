@@ -93,11 +93,18 @@ export const api = {
   savePng: (path: string, bytes: number[]) => invoke<void>("save_png", { path, bytes }),
   takeSnapshot: (project: Project) => invoke<ResultSnapshot>("take_snapshot", { project }),
   takePendingOpen: () => invoke<string | null>("take_pending_open"),
+  /** Files opened from the system (double-click, start-up) that did not open. */
+  takeOpenErrors: () => invoke<AppError[]>("take_open_errors"),
 };
 
 /** Fires when the settings file changes (e.g. an AI agent changed a setting). */
 export function onSettingsChanged(cb: (v: AppSettingsView) => void): Promise<UnlistenFn> {
   return listen<AppSettingsView>("settings-changed", (e) => cb(e.payload));
+}
+
+/** Fires when a file opened from the system did not open; `takeOpenErrors` has it. */
+export function onOpenFailed(cb: () => void): Promise<UnlistenFn> {
+  return listen<AppError>("open-failed", () => cb());
 }
 
 /** Fires with the id of a job opened from a file (double-click). */
