@@ -4,7 +4,7 @@
 
 import type { CalcResult, Dormer, EdgeDef, Point2 } from "./types";
 import { GABLE_PITCH, isGable } from "./types";
-import { arcFor } from "./roundroof";
+import { MAX_ROUND_SEGMENTS, arcFor } from "./roundroof";
 
 export type DormerKind = "gable" | "pointed" | "hip" | "half_hip" | "shed" | "trapezoid" | "round" | "general";
 
@@ -60,7 +60,7 @@ export function buildDormer(p: DormerParams): Dormer {
   // DACAD's default arc is assumed, its dormer dialog is not verified yet.
   const arc =
     p.kind === "round"
-      ? arcFor({ span: p.width, overhang: p.overhang, eave_height: p.eave_height, segments: p.segments, mode: "default", value: 0 })
+      ? arcFor({ span: p.width, overhang: p.overhang, eave_height: p.eave_height, segments: Math.min(MAX_ROUND_SEGMENTS, p.segments), mode: "default", value: 0 })
       : null;
   const cheek = (dir: number, start: Point2): EdgeDef => ({
     ...base,

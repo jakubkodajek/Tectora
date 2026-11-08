@@ -7,7 +7,7 @@ use std::f64::consts::{FRAC_PI_2, TAU};
 
 use serde::{Deserialize, Serialize};
 
-use super::round::{ArcInput, ArcMode, arc_for};
+use super::round::{ArcInput, ArcMode, MAX_ROUND_SEGMENTS, arc_for};
 use super::{plain_edge, round_to};
 use crate::geom::Point2;
 use crate::model::{Dormer, EdgeDef, HalfHip, RoofPart};
@@ -113,7 +113,10 @@ pub fn build_dormer(p: &DormerParams) -> Dormer {
                 span: p.width,
                 overhang: p.overhang,
                 eave_height: p.eave_height,
-                segments: p.segments,
+                // A count above the cap (an older file, the editor before the
+                // cap) keeps the dormer round with the most segments allowed,
+                // instead of turning it into another kind (MATH-018).
+                segments: p.segments.min(MAX_ROUND_SEGMENTS),
                 mode: ArcMode::Default,
                 value: 0.0,
             })
@@ -267,5 +270,17 @@ mod tests {
         assert!(!d.edges[0].breaks.is_empty());
         assert_eq!(d.edges[0].breaks, d.edges[2].breaks);
         assert!(is_gable(&d.edges[1]));
+    }
+
+    #[test]
+    fn a_round_dormer_with_too_many_segments_stays_round() {
+        // MATH-018: 40 segments (the editor before its cap) used to rebuild as
+        // a gable dormer with 45° cheeks on any MCP update_dormer.
+        let mut p = default_params(DormerKind::Round, Point2::new(0.0, 0.0), 0.0, 4.0);
+        p.width = 2.0;
+        p.segments = 40;
+        let d = build_dormer(&p);
+        assert_eq!(parse_dormer(&d).kind, DormerKind::Round);
+        assert_eq!(d.edges[0].breaks.len() + 1, MAX_ROUND_SEGMENTS as usize);
     }
 }

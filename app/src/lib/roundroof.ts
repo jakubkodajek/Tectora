@@ -57,10 +57,13 @@ export function segmentsFor(deg: number, radius: number): number {
   return chord < MIN_CHORD ? steps(SHORT_SEGMENT_ARC) : n;
 }
 
+/** Most segments per side, as in the core (`edit::round::MAX_ROUND_SEGMENTS`). */
+export const MAX_ROUND_SEGMENTS = 30;
+
 /** The arc for the input, or null when the value is out of range. */
 export function arcFor(a: ArcInput): Arc | null {
   const c = minRadius(a.span, a.overhang);
-  if (!(c > 0) || a.segments < 0) return null;
+  if (!(c > 0) || a.segments < 0 || a.segments > MAX_ROUND_SEGMENTS) return null;
   let r = defaultRadius(a.span, a.overhang);
   if (a.mode === "radius") {
     if (a.value < c - 1e-9) return null;
