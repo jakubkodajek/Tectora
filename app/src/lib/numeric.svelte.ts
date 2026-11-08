@@ -43,6 +43,8 @@ export interface NumericOptions {
   live?: boolean;
   /** Hide the ▲▼ buttons (fields that are not stepped, e.g. coordinates in a dialog). */
   spinner?: boolean;
+  /** Called with the reason when a typed value is refused (out of range, not a number). */
+  onrefuse?: (why: string) => unknown;
 }
 
 /** Parses a typed number: comma or dot as the decimal separator, spaces ignored. */
@@ -165,7 +167,9 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
       setInvalid(null);
     } else {
       // Say why for a moment, then the restored value is plain again.
-      setInvalid(reason(text) ?? t("num.refused"));
+      const why = reason(text) ?? t("num.refused");
+      setInvalid(why);
+      opts.onrefuse?.(why);
       clearTimer = setTimeout(() => !dirty && setInvalid(null), 2500);
     }
   }
