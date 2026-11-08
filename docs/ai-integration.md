@@ -85,6 +85,11 @@ PDF renderer).
   kept in the library (`.activity/<id>.review.json`), so it survives a restart
   and the agent can read it with `get_review`; only the user accepts.
   The AI tab keeps the full history.
+- A revert keeps the edits made after the reverted step (the app's own
+  saves are not logged): the store merges the inverse of the step onto the
+  current file, using the version the step saved (`after`) as the base. When
+  a later edit changed a value the step also set, the revert is refused with
+  `revert_conflict` and the file stays as it is.
 
 A skill for Claude that describes the drawing workflow is in
 `integrations/skills/tectora-roof/SKILL.md`.
