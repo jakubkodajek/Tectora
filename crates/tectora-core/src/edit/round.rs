@@ -7,6 +7,9 @@
 //! be under 0.4 m, Rundgaube runs RGa-RGs), and segment k has the pitch
 //! (k + ½)·arc / n. Port of the editor's `roundroof.ts`.
 
+// `!(x > 0.0)` and the like are deliberate: they also refuse NaN.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
 use std::f64::consts::PI;
 
 use serde::{Deserialize, Serialize};

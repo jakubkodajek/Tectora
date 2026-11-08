@@ -917,10 +917,10 @@ impl Store {
     }
 
     pub fn set_live(&self, status: &LiveStatus) {
-        if fs::create_dir_all(self.activity_dir()).is_ok() {
-            if let Ok(text) = serde_json::to_string(status) {
-                let _ = write_atomic(&self.activity_dir().join(LIVE_FILE), &text);
-            }
+        if fs::create_dir_all(self.activity_dir()).is_ok()
+            && let Ok(text) = serde_json::to_string(status)
+        {
+            let _ = write_atomic(&self.activity_dir().join(LIVE_FILE), &text);
         }
     }
 

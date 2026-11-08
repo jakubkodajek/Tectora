@@ -337,6 +337,7 @@ fn drop_covered_lines(geo: &mut RoofGeometry) {
             );
             let (left, right) = (top(pl), top(pr));
             // ... over a face below it.
+            #[allow(clippy::type_complexity)]
             let under = |p: Point2, over: Option<(&Plane, *const (Vec<Point2>, Plane, bool))>| {
                 over.is_some_and(|(o, _)| {
                     faces

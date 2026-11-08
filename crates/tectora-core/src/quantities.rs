@@ -381,7 +381,7 @@ mod manual_tests {
             after.get("G").copied().unwrap_or(0.0) - before.get("G").copied().unwrap_or(0.0),
             4.0
         );
-        assert!(after.get("M").is_none());
+        assert!(!after.contains_key("M"));
         let q = manual_quantities(&p);
         assert_eq!((q.hip_length, q.hip_count), (4.0, 1));
     }

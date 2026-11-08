@@ -2127,6 +2127,7 @@ fn generate_mode(part: &RoofPart, raised: &[bool]) -> (RoofGeometry, Vec<Point2>
     };
     // Initial vertex i sits between edge i-1 (left) and edge i (right),
     // on the roof outline.
+    #[allow(clippy::needless_range_loop)] // `i` also names the edges
     for i in 0..n {
         let (l, r) = ((i + n - 1) % n, i);
         let (ll, rl) = (&sim.lines[l], &sim.lines[r]);

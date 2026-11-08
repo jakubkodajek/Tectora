@@ -167,7 +167,7 @@ fn apply_dormer_fields(p: &mut DormerParams, args: &Value) -> Result<(), String>
     if let Some(m) = opt::<u8>(args, "material")? {
         p.material = m.max(1);
     }
-    if !(p.width > 0.0) {
+    if p.width.is_nan() || p.width <= 0.0 {
         return Err("width must be positive".into());
     }
     for (name, v) in [
@@ -954,7 +954,7 @@ impl Server {
         let mut part = if shape == "regular_polygon" {
             let sides: usize = req(args, "sides")?;
             let side = arg_f64(args, "side")?.ok_or("missing `side`")?;
-            if !(3..=MAX_POLYGON_SIDES).contains(&sides) || !(side > 0.0) {
+            if !(3..=MAX_POLYGON_SIDES).contains(&sides) || side.is_nan() || side <= 0.0 {
                 return Err(format!(
                     "a polygon needs 3 to {MAX_POLYGON_SIDES} sides of positive length"
                 ));
@@ -1024,7 +1024,7 @@ impl Server {
             .map(|v| Ok((arg_str(v, "kind")?.to_string(), req::<usize>(v, "index")?)))
             .collect::<Result<_, String>>()?;
         // Highest index first, so the others keep theirs.
-        list.sort_by(|a, b| b.1.cmp(&a.1));
+        list.sort_by_key(|x| std::cmp::Reverse(x.1));
         list.dedup();
         for (kind, i) in list {
             fn take<T>(v: &mut Vec<T>, i: usize, kind: &str) -> Result<(), String> {
