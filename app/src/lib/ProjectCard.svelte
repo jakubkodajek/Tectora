@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import Icon from "./Icon.svelte";
   import PlanThumb from "./PlanThumb.svelte";
   import { m2, relativeTime } from "./format";
@@ -21,6 +22,44 @@
   } = $props();
 
   let menuOpen = $state(false);
+  let moreBtn: HTMLButtonElement | undefined = $state();
+  let menuEl: HTMLDivElement | undefined = $state();
+
+  // Opening moves the focus to the first item; the arrow keys, Home and End
+  // move between the items; Escape or Tab closes it (Escape returns the
+  // focus to the "More actions" button), like the editor's context menu.
+  $effect(() => {
+    if (menuOpen) tick().then(() => menuEl?.querySelector<HTMLButtonElement>("button")?.focus());
+  });
+
+  function closeMenu(refocus: boolean) {
+    menuOpen = false;
+    if (refocus) moreBtn?.focus();
+  }
+
+  function onmenukey(e: KeyboardEvent) {
+    if (!menuEl) return;
+    const items = [...menuEl.querySelectorAll<HTMLButtonElement>("button")];
+    const i = items.indexOf(document.activeElement as HTMLButtonElement);
+    let j: number | null = null;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeMenu(true);
+      return;
+    }
+    if (e.key === "Tab") {
+      closeMenu(false);
+      return;
+    }
+    if (e.key === "ArrowDown") j = (i + 1) % items.length;
+    else if (e.key === "ArrowUp") j = (i - 1 + items.length) % items.length;
+    else if (e.key === "Home") j = 0;
+    else if (e.key === "End") j = items.length - 1;
+    if (j === null) return;
+    e.preventDefault();
+    items[j].focus();
+  }
 </script>
 
 <svelte:window onclick={() => (menuOpen = false)} />
@@ -37,7 +76,10 @@
     <div class="menu-wrap">
       <button
         class="icon-btn"
+        bind:this={moreBtn}
         aria-label={t("card.more")}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
         onclick={(e) => {
           e.stopPropagation();
           menuOpen = !menuOpen;
@@ -46,7 +88,8 @@
         <Icon name="more" />
       </button>
       {#if menuOpen}
-        <div class="menu" role="menu">
+        <!-- svelte-ignore a11y_interactive_supports_focus -->
+        <div class="menu" role="menu" tabindex="-1" bind:this={menuEl} onkeydown={onmenukey}>
           <button role="menuitem" onclick={onopen}><Icon name="open" size={16} />{t("card.open")}</button>
           <button role="menuitem" onclick={onduplicate}><Icon name="copy" size={16} />{t("card.duplicate")}</button>
           <button role="menuitem" onclick={onreuse}><Icon name="plus" size={16} />{t("card.reuse")}</button>
