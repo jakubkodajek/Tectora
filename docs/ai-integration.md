@@ -11,8 +11,30 @@ the desktop app.
 - Development / CLI: `tectora mcp [--dir <library folder>]`.
 
 Both use the same project library as the app: `$TECTORA_PROJECTS_DIR` or
-`Documents/Tectora`. The app's "Connect AI" dialog shows the exact command and
-ready-to-paste configuration for Claude Desktop, Claude Code and Gemini CLI.
+`Documents/Tectora`.
+
+## Connecting an AI app
+
+The app's "Connect AI" dialog lists the AI apps installed for this user and
+connects each with one click (`tectora_core::assistants`, the approach of
+Jakub's Buzzdome app). Connecting adds one entry, `tectora`, with this
+executable and the `mcp` argument, to the app's own settings file and keeps
+everything else in it (TOML comments too). Nothing else changes; the AI app
+must be restarted (or its MCP list refreshed) to pick it up.
+
+| AI app | Settings file | Entry |
+| --- | --- | --- |
+| Claude Desktop | macOS `~/Library/Application Support/Claude/claude_desktop_config.json`; Windows `%APPDATA%\Claude\`, plus the packaged (MSIX) app's own copies in `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\` and `%LOCALAPPDATA%\Claude-Data\claude_*\` | `mcpServers.tectora` |
+| Codex (ChatGPT desktop app, Codex CLI and IDE extension) | `~/.codex/config.toml` or `$CODEX_HOME/config.toml` | `[mcp_servers.tectora]` |
+| Antigravity | `~/.gemini/config/mcp_config.json` | `mcpServers.tectora` |
+
+An app counts as installed when the folder it makes on first start exists.
+A row says "Needs connecting again" when an entry starts another program
+(Tectora moved, or an entry pasted by hand points at an old copy). A settings
+file that is not valid JSON/TOML is left untouched and the error is shown.
+For any other app the dialog gives the `claude mcp add` command for Claude
+Code and the JSON entry to paste. ChatGPT on the web cannot start local
+programs; Codex in the ChatGPT desktop app can.
 
 ## Tools
 
@@ -23,10 +45,10 @@ ready-to-paste configuration for Claude Desktop, Claude Code and Gemini CLI.
 | `calc_breakdown` | How every face area and line length was calculated, step by step (the app's Calculation tab) |
 | `create_standard_roof`, `create_project`, `create_from_example` | Create designs |
 | `add_part`, `add_shape_part`, `transform_part`, `delete_items` | Parts: add (standard roofs, regular polygons), move / rotate / mirror / copy, delete anything |
-| `update_edges`, `set_outline`, `edit_walls` | Walls and their roof definitions; corners, lengths, direction changes, parallel shift |
+| `update_edges`, `set_outline`, `edit_walls` | Walls and their roof definitions (incl. clad gable and the direction of a direction change); corners, lengths, direction changes, parallel shift |
 | `add_dormer`, `update_dormer` | Dormers by kind (gable, pointed, hip, half-hip, shed, trapezoid, round) |
 | `set_openings`, `set_manual`, `set_roof_options` | Windows, chimneys, openings; hand-drawn lines and faces; flat roof, material names |
-| `transform_items` | Move, rotate or copy single dormers, chimneys, windows, openings, hand-drawn lines and faces (the plan's drag and right-click menu) |
+| `transform_items` | Move, rotate, copy or align to the nearest wall single dormers, chimneys, windows, openings, hand-drawn lines and faces (the plan's drag and right-click menu) |
 | `roof_helper` | Calculation helpers (triangle, two parallels, point in space, merge, hip/valley, build-up, round roof), preview or apply |
 | `update_job`, `store_result` | Job data and status; the stored result for the offer |
 | `get_history`, `get_review`, `revert_to`, `revert_last_change`, `show_project` | History, review state (accepted or still pending in the app, effect on the figures), undo, focus in the app |

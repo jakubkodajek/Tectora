@@ -259,6 +259,15 @@ fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
             _ => return Err("priority must be 0 or 1".into()),
         };
     }
+    if let Some(c) = v.get("clad") {
+        edge.clad = c.as_bool().ok_or("clad must be true or false")?;
+    }
+    if let Some(d) = arg_f64(v, "direction_deg")? {
+        if edge.direction_rad.is_none() {
+            return Err("direction_deg applies only to a direction change (a zero-length marker wall from edit_walls insert_direction_change)".into());
+        }
+        edge.direction_rad = Some(d.rem_euclid(360.0).to_radians());
+    }
     match v.get("breaks") {
         Some(Value::Null) => edge.breaks.clear(),
         Some(b) => {
@@ -382,6 +391,8 @@ fn edge_props() -> Value {
             "description": "Gable edges only: Krüppelwalm. null removes it.",
             "properties": { "height": { "type": "number" }, "pitch_deg": { "type": "number" } }
         },
+        "clad": { "type": "boolean", "description": "Gable (or a wall leaning outward) covered with the roof material: its area counts as roof area (the editor's \"Clad gable\")." },
+        "direction_deg": { "type": "number", "description": "Direction change walls only (zero-length markers from edit_walls insert_direction_change): the direction the roof turns to, degrees counter-clockwise from +x. Add 180 to flip it." },
         "priority": {
             "type": "integer",
             "enum": [0, 1],
@@ -409,7 +420,7 @@ fn edge_change_props() -> Value {
     let mut p = edge_props();
     p["indices"] = json!({ "type": "array", "items": { "type": "integer" } });
     p["index"] = json!({ "type": "integer" });
-    p["all"] = json!({ "type": "boolean" });
+    p["all"] = json!({ "type": "boolean", "description": "Apply to every wall of the part. A pitch_deg given with all leaves gables and direction changes as they are." });
     p
 }
 
@@ -881,8 +892,17 @@ impl Server {
                     .as_array()
                     .ok_or("`changes` must be a list")?;
                 for c in changes {
+                    // As the editor's "apply to all walls": a pitch for every
+                    // wall leaves gables and direction changes as they are.
+                    let all = c.get("all").and_then(Value::as_bool) == Some(true);
+                    let mut no_pitch = c.clone();
+                    if let Some(o) = no_pitch.as_object_mut() {
+                        o.remove("pitch_deg");
+                    }
                     for i in edge_indices(c, part.edges.len())? {
-                        apply_edge_fields(&mut part.edges[i], c)
+                        let e = &part.edges[i];
+                        let keep = all && (e.is_gable() || e.direction_rad.is_some());
+                        apply_edge_fields(&mut part.edges[i], if keep { &no_pitch } else { c })
                             .map_err(|m| format!("edge {i}: {m}"))?;
                     }
                 }

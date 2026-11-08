@@ -298,6 +298,17 @@ export interface ActivityItem extends ActivityInfo {
   changes: Change[];
 }
 
+/** An AI app Tectora can add its MCP server to (`tectora_core::assistants`). */
+export type AiAssistantId = "claude_desktop" | "codex" | "antigravity";
+
+export interface AiAssistant {
+  id: AiAssistantId;
+  name: string;
+  state: "not_installed" | "not_connected" | "connected" | "outdated";
+  /** The configuration files Connect writes. */
+  files: string[];
+}
+
 export interface LiveStatus {
   ts_ms: number;
   actor: string;

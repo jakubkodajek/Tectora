@@ -51,3 +51,14 @@ sessions that use it know where things stand.
 - State: see the PR for the `make check` output.
 - Next: merge #26, then this PR; run `tectora-feature` on the next ROADMAP item.
 - Blockers / open questions: none.
+
+## 2026-11-08 - ai-connect-and-mcp-audit
+- Done: one-click Connect for Claude Desktop (incl. Windows MSIX copies),
+  Codex and Antigravity (`tectora_core::assistants`, ported from Buzzdome);
+  MCP parity fixes: update_edges `clad`/`direction_deg`/`all` keeps gables,
+  edit_walls move_point carries direction changes, transform_items `align`.
+  PR #29.
+- State: `make check` exit 0; `npx playwright test mcp` 27 passed.
+  `app/src-tauri/src/lib.rs` not compiled here (no WebKitGTK).
+- Next: test Connect on Windows with the MSIX Claude Desktop; tectora-review.
+- Blockers / open questions: none.

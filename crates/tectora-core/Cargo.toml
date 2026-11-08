@@ -11,6 +11,8 @@ schemars = "1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 thiserror = "2.0.21"
+# AI apps' configuration files, changed keeping their comments (assistants.rs).
+toml_edit = "0.25"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]

@@ -165,17 +165,28 @@ test.describe("live AI changes", () => {
     await expect(page.getByRole("row").filter({ hasText: "Od AI" })).toBeVisible();
   });
 
-  test("AI connect dialog: every client tab, copy and the follow toggle", async ({ app, page }) => {
+  test("AI connect dialog: one-click connect, other apps, copy and the follow toggle", async ({ app, page }) => {
     await app.open();
     await page.getByRole("button", { name: cs("ai.connect") }).click();
     const dlg = page.getByRole("dialog", { name: cs("conn.title") });
-    for (const name of ["Claude Desktop", "Claude Code", "Gemini CLI", "ChatGPT"]) {
+    // The preview bridge shows Claude Desktop connected, Codex not connected
+    // and Antigravity missing, without touching real AI app settings.
+    const row = (name: string) => dlg.locator(".apps li").filter({ hasText: name });
+    await expect(row("Claude Desktop")).toContainText(cs("conn.state.connected"));
+    await expect(row("Antigravity")).toContainText(cs("conn.state.not_installed"));
+    await expect(row("Antigravity").getByRole("button")).toHaveCount(0);
+    // Not connected on the first run; a retry against the same bridge finds it connected.
+    await row("Codex").getByRole("button").click();
+    await expect(row("Codex")).toContainText(cs("conn.state.connected"));
+    await expect(row("Codex")).toContainText(cs("conn.restart.codex"));
+    for (const name of ["Claude Code", cs("conn.otherJson"), "ChatGPT"]) {
       await dlg.getByRole("tab", { name }).click();
       await expect(dlg.getByRole("tab", { name })).toHaveAttribute("aria-selected", "true");
     }
+    await expect(dlg.locator(".note")).toContainText("Codex");
     await dlg.getByRole("tab", { name: "Claude Code" }).click();
     await expect(dlg.locator("pre")).toContainText("claude mcp add tectora");
-    await dlg.getByRole("tab", { name: "Claude Desktop" }).click();
+    await dlg.getByRole("tab", { name: cs("conn.otherJson") }).click();
     await expect(dlg.locator("pre")).toContainText('"mcpServers"');
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
     await dlg.getByRole("button", { name: cs("conn.copy") }).click();
@@ -248,6 +259,15 @@ test.describe("MCP parity", () => {
       await setField(def.getByLabel(cs("edge.halfHipHeight")), 5.5);
       await setField(def.getByLabel(cs("edge.halfHipPitch")), 50);
     }, () => mcp.call("update_edges", { id: ids[1], changes: [{ index: 1, gable: true, half_hip: { height: 5.5, pitch_deg: 50 } }], summary: "x" }));
+  });
+
+  test("clad gable", async ({ app, page, mcp }) => {
+    const ids = await twin("gable");
+    const gable = (await loadProject(ids[0])).parts[0].edges.findIndex((e: any) => e.pitch_deg >= 90);
+    await parity(app, ids, async () => {
+      await selectWall(page, gable);
+      await bar(page, "def.title").getByLabel(cs("edge.clad")).check();
+    }, () => mcp.call("update_edges", { id: ids[1], changes: [{ index: gable, clad: true }], summary: "x" }));
   });
 
   test("pitch breaks, priority and material on all walls", async ({ app, page, mcp }) => {

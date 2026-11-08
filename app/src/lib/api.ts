@@ -2,6 +2,8 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppError } from "./errors";
 import type {
+  AiAssistant,
+  AiAssistantId,
   ActivityItem,
   AppSettingsView,
   AvailableUpdate,
@@ -57,6 +59,8 @@ export const api = {
   acceptChanges: (id: string, tsMs: number) => invoke<number>("accept_changes", { id, tsMs }),
   liveStatus: () => invoke<LiveStatus | null>("live_status"),
   mcpCommand: () => invoke<{ command: string; args: string[] }>("mcp_command"),
+  aiAssistants: () => invoke<AiAssistant[]>("ai_assistants"),
+  connectAiAssistant: (id: AiAssistantId) => invoke<"added" | "updated" | "unchanged">("connect_ai_assistant", { id }),
   createStandard: (name: string, p: StandardParams) => invoke<string>("create_standard", { name, ...p }),
   standardPart: (p: StandardParams) => invoke<RoofPart>("standard_part", { ...p }),
   listExamples: () => invoke<ExampleInfo[]>("list_examples"),
