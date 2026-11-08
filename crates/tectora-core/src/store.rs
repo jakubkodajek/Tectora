@@ -356,14 +356,32 @@ const WINDOWS_DEVICE_NAMES: &[&str] = &[
 /// macOS and Windows: no separators, drive or stream prefix (`C:x`,
 /// `x:stream`), characters Windows forbids, hidden names or device names.
 fn valid_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= MAX_ID_LEN
-        && !id.starts_with('.')
-        && !id.ends_with(['.', ' '])
-        && !id.chars().any(|c| {
+    id.len() <= MAX_ID_LEN
+        && plain_name(id)
+        && !WINDOWS_DEVICE_NAMES.contains(&id.to_ascii_lowercase().as_str())
+}
+
+/// No separators, drive or stream prefix, characters Windows forbids,
+/// hidden or trailing-dot names.
+fn plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !name.ends_with(['.', ' '])
+        && !name.chars().any(|c| {
             c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
         })
-        && !WINDOWS_DEVICE_NAMES.contains(&id.to_ascii_lowercase().as_str())
+}
+
+/// An attachment or export name is a plain file name on both macOS and
+/// Windows: the [`valid_id`] rules, and no device name before an extension
+/// either (`NUL.pdf` is the null device on Windows). Without this a received
+/// bundle's `files/C:x.dll` joins to `C:x.dll` on Windows, outside the
+/// library (ARCH-039).
+pub fn valid_file_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or("").trim_end();
+    name.len() <= 255
+        && plain_name(name)
+        && !WINDOWS_DEVICE_NAMES.contains(&stem.to_ascii_lowercase().as_str())
 }
 
 /// File-name friendly id derived from a project name.
@@ -821,7 +839,7 @@ impl Store {
     }
 
     pub fn attachment_path(&self, id: &str, name: &str) -> Result<PathBuf, String> {
-        if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
+        if !valid_file_name(name) {
             return Err(format!("invalid file name: {name}"));
         }
         Ok(self.files_dir(id)?.join(name))
@@ -942,6 +960,25 @@ mod tests {
         assert_eq!(e.code(), "unreadable");
         assert_eq!(e.id(), Some("bad"));
         let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn attachment_names_stay_plain_file_names_on_every_platform() {
+        for bad in [
+            "C:x.dll", "x:stream", "NUL.pdf", "nul", "Com1.txt", "lpt9", "a<b", "", ".hidden",
+            "x.", "a/b", "a\\b",
+        ] {
+            assert!(!valid_file_name(bad), "{bad}");
+        }
+        for ok in [
+            "plan.pdf",
+            "Řez A-A (2).pdf",
+            "nultá verze.pdf",
+            "console.txt",
+            "výkres.dwg",
+        ] {
+            assert!(valid_file_name(ok), "{ok}");
+        }
     }
 
     #[test]

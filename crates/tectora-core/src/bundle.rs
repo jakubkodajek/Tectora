@@ -55,14 +55,7 @@ pub const EXPORTS_DIR: &str = "exports";
 /// the name is taken): the only place an AI client may write a bundle, so it
 /// can never replace a file of the user's. `name` must be a plain file name.
 pub fn export_path(store: &Store, name: &str) -> Result<std::path::PathBuf, String> {
-    let bad = name.is_empty()
-        || name.len() > 100
-        || name.starts_with('.')
-        || name.ends_with('.')
-        || name.ends_with(' ')
-        || name.chars().any(|c| {
-            c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
-        });
+    let bad = name.len() > 100 || !crate::store::valid_file_name(&format!("{name}.{EXTENSION}"));
     if bad {
         return Err(format!("`{name}` is not a plain file name"));
     }
@@ -380,6 +373,25 @@ mod tests {
         let ok = bundle_with(&dir, &[("x.pdf", 1, 2)]);
         let id = import(&store, &ok).unwrap();
         assert_eq!(store.attachments(&id).len(), 2);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_bundle_cannot_name_a_file_outside_the_library() {
+        // ARCH-039: on Windows `files_dir.join("C:x.dll")` is `C:x.dll`.
+        let dir = std::env::temp_dir().join(format!("tectora-names-{}", now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        let store = Store::new(dir.join("lib")).unwrap();
+        for name in ["C:version.dll", "plan.pdf:hidden"] {
+            let b = bundle_with(&dir, &[(name, 0, 1)]);
+            let e = import(&store, &b).unwrap_err();
+            assert!(e.contains("invalid file name"), "{name}: {e}");
+            assert!(store.list().is_empty(), "{name}: nothing kept");
+        }
+        for name in ["nul", "NUL.pdf", "com1.txt", "a:b", "..", "x/y"] {
+            assert!(export_path(&store, name).is_err(), "{name}");
+        }
+        assert!(export_path(&store, "Novák střecha").is_ok());
         let _ = fs::remove_dir_all(dir);
     }
 
