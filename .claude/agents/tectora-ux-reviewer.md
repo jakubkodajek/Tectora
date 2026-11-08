@@ -17,7 +17,7 @@ launched you (it gives the review run folder).
 
 ## Read first
 
-1. `CLAUDE.md` (product shape, rules), `ROADMAP.md`, `docs/design-brief.md`
+1. `AGENTS.md` (product shape, rules), `ROADMAP.md`, `docs/design-brief.md`
    and `docs/design/` if present.
 2. `.claude/skills/tectora-review/board.md`: the shared findings protocol.
    Follow it exactly. Your file is `target/review/<run>/ux.md`.

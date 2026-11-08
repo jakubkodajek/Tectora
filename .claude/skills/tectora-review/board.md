@@ -81,7 +81,7 @@ https://github.com/anthropics/claude-plugins-official/tree/main/plugins/pr-revie
 
 | score | means |
 | --- | --- |
-| 91-100 | reproduced, or an explicit `CLAUDE.md` rule broken (quote it) |
+| 91-100 | reproduced, or an explicit `AGENTS.md` rule broken (quote it) |
 | 80-90 | traced end to end in the code, not run |
 | 51-79 | real but uncertain reach or impact |
 | 0-50 | suspicion, nitpick, or likely already handled |
@@ -95,7 +95,7 @@ false positive costs the person more than a missed nit.
 - Style or formatting a linter catches (`cargo clippy`, `cargo fmt`,
   `npm run check`): run the linter and report its failure once instead.
 - A roof that is geometrically odd but matches the DACAD fixture (the rule
-  in `CLAUDE.md`); the missing warning for it can be one.
+  in `AGENTS.md`); the missing warning for it can be one.
 - Subjective preferences without a user or maintainer who is hurt.
 - Anything the code explicitly and knowingly allows (a comment naming the
   DACAD behaviour it mirrors, an `#[allow]` with a reason).

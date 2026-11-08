@@ -29,7 +29,7 @@ step of Anthropic's `code-review` plugin and the refutation panel of
     (`examples/`, `ui_bridge`, `tauri-mock.ts`)?
   - **IMPACT**: if it happens, is the stated consequence real and is the
     severity right (board.md table)?
-  - **RULES**: is it a defect under `CLAUDE.md`? In particular a roof that is
+  - **RULES**: is it a defect under `AGENTS.md`? In particular a roof that is
     geometrically odd but identical to the DACAD fixture is *not* a defect;
     "make the core more exact" contradicts the parity rule.
 

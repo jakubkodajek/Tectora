@@ -19,7 +19,7 @@ behavioural coverage, not line coverage.
 
 ## Read first
 
-1. `CLAUDE.md`, `.claude/skills/tectora-test/SKILL.md`,
+1. `AGENTS.md`, `.claude/skills/tectora-test/SKILL.md`,
    `.claude/skills/tectora-dacad-parity/SKILL.md`, `app/e2e/README.md` if present.
 2. `.claude/skills/tectora-review/board.md`: the shared findings protocol.
    Follow it exactly. Your file is `target/review/<run>/test.md`.

@@ -19,7 +19,7 @@ repository and in the prompt that launched you (it gives the run folder).
 
 ## Read first
 
-1. `CLAUDE.md` (stack, layout, rules), `README.md`, `docs/ai-integration.md`.
+1. `AGENTS.md` (stack, layout, rules), `README.md`, `docs/ai-integration.md`.
 2. `.claude/skills/tectora-review/board.md`: the shared findings protocol.
    Follow it exactly. Your file is `target/review/<run>/arch.md`.
 3. The other reviewers' files in the run folder.
