@@ -58,7 +58,11 @@ The tools cover every operation of the Tectora editor:
   or flip a direction change; with `all` a pitch leaves gables alone).
 - Parts: `add_part`, `add_shape_part` (standard roofs and regular polygons),
   `transform_part` (move, rotate, mirror, with copies), `delete_items`,
-  `clear_roof` (remove everything drawn and start on an empty canvas).
+  `clear_roof` (remove everything drawn and start on an empty canvas),
+  `set_part_height` (the editor's "Building height": every wall of a part
+  at one eave height in one save, its breaks, half-hips, dormers and
+  chimneys moved with it). A building has no height of its own besides its
+  walls' eave heights; a lower wing is joined to the main roof by them.
 - Dormers: `add_dormer`, `update_dormer` (gable, pointed, hip, half_hip,
   shed, trapezoid, round); `get_project` lists them with these parameters.
 - Windows, chimneys (also as a rectangle) and roof openings: `set_openings`.
@@ -366,6 +370,7 @@ and ask the user; do not invent a value to make a figure fit.
    line = overhang outline minus the overhang dimension).
 3. **Roof definition.** Per edge: eave or gable (elevations / sections),
    pitch, eave height, overhang, half-hips, pitch breaks (`update_edges`).
+   A wing lower or higher than the main roof: `set_part_height` on it.
 4. **Dormers** (`add_dormer`), one save for all of them.
 5. **Chimneys, windows, openings** (`set_openings`).
 6. **Check.** First look: `view_drawing` with `overlay` {`id`, `scale`,

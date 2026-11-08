@@ -316,6 +316,16 @@ pub(crate) fn tools() -> Vec<Value> {
             }), &["id", "index", "summary"]),
         }),
         json!({
+            "name": "set_part_height",
+            "description": "Set the height of a building (part) in one change, as the editor's \"Building height\" field: every wall of the part gets `eave_height` (m above ground); its pitch breaks and half-hips move with it, and so do the dormers, chimneys and hand-drawn lines on it. Where buildings of different heights meet, the roofs are joined by these eave heights, so use it to make a wing lower or higher than the main roof. To change only some walls, use update_edges.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "part": { "type": "integer", "minimum": 0, "description": "Part index (as get_project lists them)." },
+                "eave_height": { "type": "number", "minimum": tectora_core::edit::height::MIN_PART_HEIGHT, "maximum": tectora_core::edit::height::MAX_PART_HEIGHT, "description": "Eave height of every wall, m above ground." },
+                "summary": summary_prop(),
+            }), &["id", "part", "eave_height", "summary"]),
+        }),
+        json!({
             "name": "clear_roof",
             "description": "Remove everything drawn (parts, dormers, chimneys, roof windows, roof openings, hand-drawn lines and faces) and leave an empty canvas, as the editor's Clear. Job data, notes, roof options and the stored result stay; the change can be reverted like any other.",
             "inputSchema": schema(json!({
@@ -550,6 +560,19 @@ impl Server {
                     arg_f64(args, "eave_height")?.unwrap_or(preset.eave_height),
                     arg_f64(args, "overhang")?.unwrap_or(preset.overhang),
                 )?;
+                if let Err(e) = p.validate() {
+                    return Err(e.join("; "));
+                }
+                self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+            })(),
+            "set_part_height" => (|| {
+                let (id, before) = self.load(args)?;
+                let mut p = before.clone();
+                let part: usize = req(args, "part")?;
+                let h = arg_f64(args, "eave_height")?.ok_or("`eave_height` is required")?;
+                if !tectora_core::edit::height::set_part_height(&mut p, part, h)? {
+                    return Err(format!("every wall of part {part} already has eave height {h} m"));
+                }
                 if let Err(e) = p.validate() {
                     return Err(e.join("; "));
                 }
@@ -1781,6 +1804,50 @@ mod tests {
                 &json!({ "id": id, "index": 5, "summary": "x" })
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn a_building_height_sets_every_wall_in_one_save_and_changes_the_join() {
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "add_part",
+            json!({ "id": id, "summary": "Wing",
+                "part": { "name": "Wing", "points": [[6, 4], [14, 4], [14, 10], [6, 10]], "pitch_deg": 35 } }),
+        );
+        let before = s.store.load(&id).unwrap();
+        let roofs = tectora_core::engine::generate(&before).unwrap();
+        let log = s.store.activity(&id).len();
+        call(
+            &mut s,
+            "set_part_height",
+            json!({ "id": id, "part": 1, "eave_height": 1.8, "summary": "The wing is lower" }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert!(p.parts[1].edges.iter().all(|e| e.eave_height == 1.8));
+        assert_eq!(p.parts[0], before.parts[0]);
+        assert_eq!(s.store.activity(&id).len(), log + 1, "one change");
+        let after = tectora_core::engine::generate(&p).unwrap();
+        let area =
+            |g: &tectora_core::roof::RoofGeometry| g.faces.iter().map(|f| f.area).sum::<f64>();
+        assert!(
+            (area(&roofs[0]) - area(&after[0])).abs() > 0.01,
+            "the main roof is joined anew"
+        );
+        for bad in [
+            json!({ "id": id, "part": 1, "eave_height": 1.8, "summary": "same" }),
+            json!({ "id": id, "part": 9, "eave_height": 3, "summary": "no part" }),
+            json!({ "id": id, "part": 1, "eave_height": -1, "summary": "below ground" }),
+            json!({ "id": id, "part": 1, "eave_height": 5000, "summary": "cm for m" }),
+            json!({ "id": id, "part": 1, "summary": "no height" }),
+        ] {
+            assert!(s.call_tool("set_part_height", &bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            s.store.activity(&id).len(),
+            log + 1,
+            "refused calls save nothing"
         );
     }
 

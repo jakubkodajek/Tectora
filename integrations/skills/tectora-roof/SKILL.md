@@ -50,6 +50,9 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
 6. Build in the six steps of the guide: read and check, then one save each for
    footprint (with job data, then attach the drawings), roof definition,
    dormers, chimneys and windows, and the check report in the job notes.
+   A wing whose eave is lower or higher than the main roof's gets its
+   height with `set_part_height` (all its walls in one save); the roofs
+   are joined by those eave heights.
    Each `summary` is one sentence in the user's language
    naming the sheet, e.g. "Sklon uliční strany 42° podle řezu A-A".
 7. In the check step first look at the roof over the drawing:
