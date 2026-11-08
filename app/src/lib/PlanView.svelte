@@ -8,6 +8,8 @@
   import type { Ghost } from "./changes";
   import type { ItemRef, PlanTarget } from "./items";
   import { fitScale, gridValues } from "./grid";
+  import { faceTags } from "./facelabels";
+  import { numberLocale } from "./i18n.svelte";
 
   let {
     project,
@@ -127,6 +129,15 @@
     const snap = alt ? 0.001 : SNAP;
     return { x: +(Math.round(wx(px) / snap) * snap).toFixed(3), y: +(Math.round(wy(py) / snap) * snap).toFixed(3) };
   };
+
+  // Pitch and area of every calculated face, written at its centre.
+  const tags = $derived(result ? result.parts.flatMap((rp) => faceTags(rp.geometry.faces)) : []);
+  const pitchText = (v: number) =>
+    `${new Intl.NumberFormat(numberLocale(), { maximumFractionDigits: 2 }).format(v)}°`;
+  const areaText = (v: number) =>
+    `${new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v)} m²`;
+  /** Rough width of a label in px (monospace, 11 px). */
+  const textPx = (s: string) => s.length * 6.8 + 6;
 
   const sx = (x: number) => (x - center.x) * scale + width / 2;
   const sy = (y: number) => -(y - center.y) * scale + height / 2;
@@ -514,6 +525,24 @@
     {:else if mark && "line" in mark}
       <line class="mark-line" x1={sx(mark.line[0][0])} y1={sy(mark.line[0][1])} x2={sx(mark.line[1][0])} y2={sy(mark.line[1][1])} />
     {/if}
+    {#if showDims && !faceLabels.length}
+      {#each tags as tag}
+        {@const pitch = pitchText(tag.pitch_deg)}
+        {@const area = areaText(tag.area)}
+        {@const along = tag.along * scale}
+        {@const across = tag.across * scale}
+        {#if along > textPx(pitch) && across > 14}
+          <g class="face-tag" transform="translate({sx(tag.x)} {sy(tag.y)}) rotate({-tag.angle_deg})">
+            {#if along > textPx(area) && across > 34}
+              <text class="pitch" y="-7">{pitch}</text>
+              <text class="area" y="7">{area}</text>
+            {:else}
+              <text class="pitch">{pitch}</text>
+            {/if}
+          </g>
+        {/if}
+      {/each}
+    {/if}
     {#each faceLabels as l}
       <text class="face-no" x={sx(l.x)} y={sy(l.y)}>{l.text}</text>
     {/each}
@@ -735,6 +764,25 @@
     stroke-width: 4;
     stroke-linecap: round;
     pointer-events: none;
+  }
+  .face-tag text {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    text-anchor: middle;
+    dominant-baseline: middle;
+    pointer-events: none;
+    paint-order: stroke;
+    stroke: var(--surface);
+    stroke-width: 3px;
+    stroke-linejoin: round;
+  }
+  .face-tag .pitch {
+    fill: var(--text);
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .face-tag .area {
+    fill: var(--text-2);
+    font-size: 11px;
   }
   .face-no {
     fill: var(--text-2);

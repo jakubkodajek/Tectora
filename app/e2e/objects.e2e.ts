@@ -86,7 +86,7 @@ test.describe("dormers", () => {
     const dlg = page.getByRole("dialog", { name: cs("new.title") });
     await dlg.getByRole("tab", { name: cs("new.draw") }).click();
     await dlg.getByRole("button", { name: cs("new.create") }).click();
-    for (const key of ["tool.dormer", "tool.chimney", "tool.window", "tool.hole", "tool.flat", "tool.transform", "tool.deletePart"]) {
+    for (const key of ["tool.dormer", "tool.chimney", "tool.window", "tool.hole", "tool.flat", "tool.transform", "tool.deletePart", "tool.clear"]) {
       await expect(tool(page, key), key).toBeDisabled();
     }
   });
@@ -310,6 +310,29 @@ test.describe("parts", () => {
     const p = await waitForProject(id, (p) => p.parts.length === 1);
     expect(p.parts[0].name).not.toBe("Garáž");
     await areaMatchesCore(page, id);
+  });
+  test("clear asks first, empties the canvas, keeps the job and undoes", async ({ app, page }) => {
+    const id = await createExample("hip", "Valba");
+    const p0 = await loadProject(id);
+    p0.chimneys.push({ corners: [{ x: 4, y: 3 }, { x: 4.6, y: 3 }, { x: 4.6, y: 3.6 }, { x: 4, y: 3.6 }], height: 9 });
+    p0.job.customer = "Novák";
+    await bridge("save_project", { id, project: p0 });
+    await openEditor(app, "Valba");
+    await app.answerConfirm(false);
+    await tool(page, "tool.clear").click();
+    await page.waitForTimeout(700);
+    expect((await loadProject(id)).parts).toHaveLength(1);
+    expect((await app.dialogs()).at(-1)?.message).toBe(cs("editor.confirmClear"));
+    await app.answerConfirm(true);
+    await tool(page, "tool.clear").click();
+    const p = await waitForProject(id, (p) => p.parts.length === 0);
+    expect(p.chimneys).toHaveLength(0);
+    expect(p.job.customer).toBe("Novák");
+    await expect(tool(page, "tool.clear")).toBeDisabled();
+    await expect(tool(page, "tool.draw")).toBeEnabled();
+    await tool(page, "editor.undo").click();
+    const back = await waitForProject(id, (p) => p.parts.length === 1);
+    expect(back.chimneys).toHaveLength(1);
   });
 });
 
