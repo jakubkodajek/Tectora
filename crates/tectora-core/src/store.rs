@@ -1031,6 +1031,30 @@ impl Store {
         actor: &str,
         summary: String,
     ) -> Result<Project, StoreError> {
+        // The file is read, merged and written back only if nobody saved in
+        // between (the app's autosave); otherwise the merge runs again on
+        // the newer file.
+        for _ in 0..4 {
+            if let Some(p) = self.revert_once(id, log, pos, actor, &summary)? {
+                return Ok(p);
+            }
+        }
+        Err(StoreError::RevertConflict {
+            id: id.to_string(),
+            detail: "the job kept changing while it was reverted".into(),
+        })
+    }
+
+    /// One attempt of [`Store::revert_from`]: `None` when the file changed
+    /// between reading and writing it.
+    fn revert_once(
+        &self,
+        id: &str,
+        log: &[ActivityEntry],
+        pos: usize,
+        actor: &str,
+        summary: &str,
+    ) -> Result<Option<Project>, StoreError> {
         let value = |p: &Project| {
             serde_json::to_value(p).map_err(|e| StoreError::Unreadable {
                 id: id.to_string(),
@@ -1044,6 +1068,7 @@ impl Store {
             // A damaged file: the version before the change is restored.
             Err(_) => None,
         };
+        let base = current.clone();
         let mut target = None;
         for entry in log[pos..].iter().rev() {
             let before = entry
@@ -1071,8 +1096,10 @@ impl Store {
             target = Some(undone);
         }
         let target = target.ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
-        self.save_as(Some(id.to_string()), &target, actor, &summary)?;
-        Ok(target)
+        match self.save_as_checked(id, &target, actor, summary, base.as_ref())? {
+            CheckedSave::Saved { .. } => Ok(Some(target)),
+            CheckedSave::Conflict { .. } => Ok(None),
+        }
     }
 
     fn review_path(&self, id: &str) -> Result<PathBuf, StoreError> {
