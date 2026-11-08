@@ -133,7 +133,7 @@
   <section class="list">
     <div class="head">
       <h3>{t("export.list")}</h3>
-      <button class="btn sm" disabled={!list} onclick={copyList} title={t("export.copyListHint")} aria-label={t("export.copyList")}>
+      <button class="btn sm" disabled={!list} onclick={copyList} title={t("export.copyListHint")}>
         <Icon name={copied === "list" ? "check" : "copy"} size={14} />{copied === "list" ? t("export.copied") : t("export.copyList")}
       </button>
     </div>

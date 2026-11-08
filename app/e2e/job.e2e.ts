@@ -121,6 +121,31 @@ test.describe("job tab", () => {
     expect(imported.roof_area).toBeGreaterThan(100);
   });
 
+  test("export dialog: plan sheet as PDF and the price-sheet text with a copy button", async ({ app, page }) => {
+    await createExample("hip", "Valba export");
+    await openEditor(app, "Valba export");
+    await page.getByRole("button", { name: cs("tool.export") }).click();
+    const dlg = page.getByRole("dialog", { name: cs("export.title") });
+    await expect(dlg.locator(".paper img")).toBeVisible();
+    const list = dlg.locator("pre");
+    await expect(list).toContainText("DACHLINIEN");
+    await expect(list).toContainText("Valba export");
+    await expect(list).toContainText("m\u02db");
+
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await dlg.getByRole("button", { name: cs("export.copyList") }).click();
+    await expect(dlg.getByRole("button", { name: cs("export.copied") })).toBeVisible();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(await list.textContent());
+
+    const out = path.join(path.dirname(scratchFile("x", "")), "Valba export.pdf");
+    await app.answerFileDialog(out);
+    await dlg.getByRole("button", { name: "PDF" }).click();
+    await expect.poll(() => fs.existsSync(out)).toBe(true);
+    expect(fs.readFileSync(out).subarray(0, 5).toString()).toBe("%PDF-");
+    await dlg.getByRole("button", { name: cs("common.close") }).last().click();
+    await expect(dlg).toHaveCount(0);
+  });
+
   test("material names appear in the wall bar and in the results", async ({ app, page }) => {
     const id = await createExample("hip", "Valba");
     const job = await openJobTab(app, "Valba");
