@@ -7,6 +7,7 @@
   import { api } from "./api";
   import { mayLeave } from "./leave";
   import { LOCALES, i18n, t } from "./i18n.svelte";
+  import { numeric } from "./numeric.svelte";
   import { app, loadSettings, presets, prefs, updateSettings } from "./settings.svelte";
   import { ui, type Theme } from "./theme.svelte";
 
@@ -52,11 +53,10 @@
     if (typeof dir === "string") await save(field, dir);
   }
 
-  function saveDefault(key: keyof typeof presets, raw: string, min: number, max: number) {
-    const v = Number(raw.replace(",", "."));
+  function saveDefault(key: keyof typeof presets, v: number, min: number, max: number) {
     if (!Number.isFinite(v) || v < min || v > max) {
       errors.roof_defaults = "invalid_value";
-      return;
+      return false;
     }
     save("roof_defaults", { [key]: v });
   }
@@ -148,21 +148,21 @@
         <label>
           <span>{t("edge.pitch")}</span>
           <div class="unit">
-            <input type="number" min="1" max="89" step="0.5" value={presets.pitch_deg} onchange={(e) => saveDefault("pitch_deg", (e.target as HTMLInputElement).value, 1, 89)} />
+            <input type="text" use:numeric={{ value: presets.pitch_deg, step: 0.5, onchange: (v) => saveDefault("pitch_deg", v, 1, 89) }} />
             <em>°</em>
           </div>
         </label>
         <label>
           <span>{t("edge.eaveHeight")}</span>
           <div class="unit">
-            <input type="number" min="-100" max="1000" step="0.05" value={presets.eave_height} onchange={(e) => saveDefault("eave_height", (e.target as HTMLInputElement).value, -100, 1000)} />
+            <input type="text" use:numeric={{ value: presets.eave_height, step: 0.05, onchange: (v) => saveDefault("eave_height", v, -100, 1000) }} />
             <em>m</em>
           </div>
         </label>
         <label>
           <span>{t("edge.overhang")}</span>
           <div class="unit">
-            <input type="number" min="0" max="20" step="0.05" value={presets.overhang} onchange={(e) => saveDefault("overhang", (e.target as HTMLInputElement).value, 0, 20)} />
+            <input type="text" use:numeric={{ value: presets.overhang, step: 0.05, onchange: (v) => saveDefault("overhang", v, 0, 20) }} />
             <em>m</em>
           </div>
         </label>

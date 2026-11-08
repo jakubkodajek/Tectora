@@ -3,6 +3,7 @@
   // press an arrow (button or keyboard) to add the next corner.
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
+  import { numeric } from "./numeric.svelte";
   import { presets, savePresets, updateSettings } from "./settings.svelte";
 
   let {
@@ -40,7 +41,8 @@
 
   function onkeydown(e: KeyboardEvent) {
     const d = DIRS.find((d) => d.key && d.key === e.key);
-    if ((e.target as HTMLInputElement).type === "number") return;
+    // The preset fields keep their own keys (Enter stores, arrows step).
+    if ((e.target as HTMLElement).classList?.contains("num-input")) return;
     if (d && count > 0) {
       e.preventDefault();
       go(d.dx, d.dy);
@@ -55,15 +57,12 @@
     }
   }
 
-  function preset(e: Event, key: "pitch_deg" | "eave_height" | "overhang") {
-    const v = parseFloat((e.target as HTMLInputElement).value.replace(",", "."));
-    if (Number.isFinite(v)) {
-      presets[key] = v;
-      savePresets();
-      // The same defaults as in Settings: store them in the settings file,
-      // or the next settings change (or start) puts the old ones back.
-      updateSettings({ roof_defaults: { [key]: v } }).catch(() => {});
-    }
+  function preset(v: number, key: "pitch_deg" | "eave_height" | "overhang") {
+    presets[key] = v;
+    savePresets();
+    // The same defaults as in Settings: store them in the settings file,
+    // or the next settings change (or start) puts the old ones back.
+    updateSettings({ roof_defaults: { [key]: v } }).catch(() => {});
   }
 </script>
 
@@ -87,9 +86,9 @@
   </div>
   <div class="presets">
     <span class="lbl">{t("draw.presets")}</span>
-    <label><span>{t("edge.pitch")}</span><div class="unit"><input type="number" value={presets.pitch_deg} onchange={(e) => preset(e, "pitch_deg")} /><em>°</em></div></label>
-    <label><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="number" step="0.05" value={presets.eave_height} onchange={(e) => preset(e, "eave_height")} /><em>m</em></div></label>
-    <label><span>{t("edge.overhang")}</span><div class="unit"><input type="number" step="0.05" value={presets.overhang} onchange={(e) => preset(e, "overhang")} /><em>m</em></div></label>
+    <label><span>{t("edge.pitch")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.pitch_deg, step: 1, onchange: (v) => preset(v, "pitch_deg") }} /><em>°</em></div></label>
+    <label><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.eave_height, step: 0.05, onchange: (v) => preset(v, "eave_height") }} /><em>m</em></div></label>
+    <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.overhang, step: 0.05, onchange: (v) => preset(v, "overhang") }} /><em>m</em></div></label>
   </div>
   <div class="actions">
     <button class="btn sm" disabled={count === 0} onclick={onundo}><Icon name="undo" size={15} />{t("draw.undo")}</button>

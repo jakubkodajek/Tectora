@@ -391,8 +391,8 @@ test.describe("MCP parity", () => {
       await tool(page, "tool.window").click();
       await clickPlan(page, 3, 1.5);
       const wb = bar(page, "opening.window");
-      await setField(wb.getByRole("spinbutton", { name: /^X\b/ }), 3);
-      await setField(wb.getByRole("spinbutton", { name: /^Y\b/ }), 1.5);
+      await setField(wb.getByRole("textbox", { name: /^X\b/ }), 3);
+      await setField(wb.getByRole("textbox", { name: /^Y\b/ }), 1.5);
     }, () =>
       mcp.call("set_openings", {
         id: ids[1],
@@ -409,8 +409,8 @@ test.describe("MCP parity", () => {
       await tool(page, "tool.dormer").click();
       await clickPlan(page, 4, 1);
       const db = bar(page, "dormer.title");
-      await setField(db.getByRole("spinbutton", { name: /^X\b/ }), 4);
-      await setField(db.getByRole("spinbutton", { name: /^Y\b/ }), 1);
+      await setField(db.getByRole("textbox", { name: /^X\b/ }), 4);
+      await setField(db.getByRole("textbox", { name: /^Y\b/ }), 1);
     }, async () => {
       const p = await loadProject(ids[0]);
       const ui = p.dormers[0];

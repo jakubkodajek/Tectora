@@ -239,3 +239,36 @@ textarea:focus {
 svg.icon {
   flex-shrink: 0;
 }
+
+/* ▲▼ buttons of number fields (lib/numeric.svelte.ts), placed by the action. */
+.num-spin {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.num-spin button {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 12px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.num-spin button:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.num-spin button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+input.num-input[aria-invalid="true"] {
+  border-color: var(--danger);
+}

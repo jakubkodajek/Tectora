@@ -6,6 +6,7 @@
   import type { EdgeDef, PitchBreak, Project, Selection } from "./types";
   import { GABLE_PITCH, isGable, isMarker } from "./types";
   import { materialIds, materialName } from "./materials";
+  import { numeric } from "./numeric.svelte";
 
   let {
     project,
@@ -56,18 +57,16 @@
     selection = all[(cur + d + all.length) % all.length];
   }
 
-  function num(e: Event): number | null {
-    const v = parseFloat((e.target as HTMLInputElement).value.replace(",", "."));
-    return Number.isFinite(v) ? v : null;
-  }
-
   function setDirection(deg: number) {
     onchange({ direction_rad: (((deg % 360) + 360) % 360) * (Math.PI / 180) });
   }
 
   /** A pitch for an eave plane: under 90°, or over 90° for a plane leaning out. */
-  function setPitch(v: number | null) {
-    if (v && v > 0 && v < 180 && Math.abs(v - GABLE_PITCH) > 0.001) onchange({ pitch_deg: v });
+  function setPitch(v: number): boolean {
+    // 90° is a gable, chosen with the Eave / Gable switch.
+    if (!(v > 0 && v < 180 && Math.abs(v - GABLE_PITCH) > 0.001)) return false;
+    onchange({ pitch_deg: v });
+    return true;
   }
 
   function setBreak(i: number, patch: Partial<PitchBreak>) {
@@ -112,8 +111,7 @@
       <div class="kind" title={t("edge.markerHint")}>{t("edge.marker")}</div>
       <label>
         <span>{t("edge.direction")}</span>
-        <div class="unit"><input type="number" step="1" value={directionDeg}
-          onchange={(e) => { const v = num(e); if (v !== null) setDirection(v); }} /><em>°</em></div>
+        <div class="unit"><input type="text" use:numeric={{ value: directionDeg, step: 1, onchange: setDirection }} /><em>°</em></div>
       </label>
       <button class="icon-btn" onclick={() => setDirection(directionDeg + 180)} title={t("edge.flip")} aria-label={t("edge.flip")}><Icon name="refresh" /></button>
     {:else}
@@ -123,36 +121,30 @@
       </div>
       <label>
         <span>{t("edge.length")}</span>
-        <div class="unit"><input type="number" step="0.05" min="0.05" value={length.toFixed(2)}
-          onchange={(e) => { const v = num(e); if (v && v > 0) onlength(v); }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ value: length, digits: 2, step: 0.05, min: 0.01, onchange: onlength }} /><em>m</em></div>
       </label>
     {/if}
     {#if onpoint}
       <label class="xy" title={t("edge.startHint")}>
         <span>{t("edge.startX")}</span>
-        <div class="unit"><input type="number" step="0.05" value={+edge.start.x.toFixed(3)}
-          onchange={(e) => { const v = num(e); if (v !== null) onpoint(v, edge.start.y); }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ value: edge.start.x, step: 0.05, onchange: (v) => onpoint(v, edge.start.y) }} /><em>m</em></div>
       </label>
       <label class="xy" title={t("edge.startHint")}>
         <span>{t("edge.startY")}</span>
-        <div class="unit"><input type="number" step="0.05" value={+edge.start.y.toFixed(3)}
-          onchange={(e) => { const v = num(e); if (v !== null) onpoint(edge.start.x, v); }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ value: edge.start.y, step: 0.05, onchange: (v) => onpoint(edge.start.x, v) }} /><em>m</em></div>
       </label>
     {/if}
     <label class:off={gable} title={edge.pitch_deg > GABLE_PITCH && !gable ? t("edge.leaningHint") : undefined}>
       <span>{t("edge.pitch")}</span>
-      <div class="unit"><input type="number" step="1" min="1" max="179" disabled={gable} value={gable ? "" : edge.pitch_deg}
-        onchange={(e) => setPitch(num(e))} /><em>°</em></div>
+      <div class="unit"><input type="text" disabled={gable} use:numeric={{ value: gable ? null : edge.pitch_deg, step: 1, min: 1, max: 179, onchange: setPitch }} /><em>°</em></div>
     </label>
     <label>
       <span>{t("edge.eaveHeight")}</span>
-      <div class="unit"><input type="number" step="0.05" value={edge.eave_height}
-        onchange={(e) => { const v = num(e); if (v !== null) onchange({ eave_height: v }); }} /><em>m</em></div>
+      <div class="unit"><input type="text" use:numeric={{ value: edge.eave_height, step: 0.05, onchange: (v) => onchange({ eave_height: v }) }} /><em>m</em></div>
     </label>
     <label>
       <span>{t("edge.overhang")}</span>
-      <div class="unit"><input type="number" step="0.05" min="0" value={edge.overhang}
-        onchange={(e) => { const v = num(e); if (v !== null && v >= 0) onchange({ overhang: v }); }} /><em>m</em></div>
+      <div class="unit"><input type="text" use:numeric={{ value: edge.overhang, step: 0.05, min: 0, onchange: (v) => onchange({ overhang: v }) }} /><em>m</em></div>
     </label>
     {#if !gable || edge.clad}
       <label title={t("edge.materialHint")}>
@@ -179,13 +171,11 @@
       {#if edge.half_hip}
         <label>
           <span>{t("edge.halfHipHeight")}</span>
-          <div class="unit"><input type="number" step="0.05" value={edge.half_hip.height}
-            onchange={(e) => { const v = num(e); if (v !== null && edge.half_hip) onchange({ half_hip: { ...edge.half_hip, height: v } }); }} /><em>m</em></div>
+          <div class="unit"><input type="text" use:numeric={{ value: edge.half_hip.height, step: 0.05, onchange: (v) => { if (edge.half_hip) onchange({ half_hip: { ...edge.half_hip, height: v } }); } }} /><em>m</em></div>
         </label>
         <label>
           <span>{t("edge.halfHipPitch")}</span>
-          <div class="unit"><input type="number" step="1" min="1" max="89" value={edge.half_hip.pitch_deg}
-            onchange={(e) => { const v = num(e); if (v && edge.half_hip) onchange({ half_hip: { ...edge.half_hip, pitch_deg: v } }); }} /><em>°</em></div>
+          <div class="unit"><input type="text" use:numeric={{ value: edge.half_hip.pitch_deg, step: 1, min: 1, max: 89, onchange: (v) => { if (edge.half_hip) onchange({ half_hip: { ...edge.half_hip, pitch_deg: v } }); } }} /><em>°</em></div>
         </label>
       {/if}
     {/if}
@@ -201,13 +191,11 @@
         <div class="break">
           <label>
             <span>{t("edge.breakHeight", { n: i + 1 })}</span>
-            <div class="unit"><input type="number" step="0.05" value={b.height}
-              onchange={(e) => { const v = num(e); if (v !== null) setBreak(i, { height: v }); }} /><em>m</em></div>
+            <div class="unit"><input type="text" use:numeric={{ value: b.height, step: 0.05, onchange: (v) => setBreak(i, { height: v }) }} /><em>m</em></div>
           </label>
           <label>
             <span>{t("edge.breakPitch")}</span>
-            <div class="unit"><input type="number" step="1" min="1" max="90" value={b.pitch_deg}
-              onchange={(e) => { const v = num(e); if (v && v > 0 && v <= 90) setBreak(i, { pitch_deg: v }); }} /><em>°</em></div>
+            <div class="unit"><input type="text" use:numeric={{ value: b.pitch_deg, step: 1, min: 1, max: 90, onchange: (v) => setBreak(i, { pitch_deg: v }) }} /><em>°</em></div>
           </label>
           <button class="icon-btn" onclick={() => onchange({ breaks: breaks.filter((_, j) => j !== i).map((x) => ({ ...x })) })}
             title={t("edge.removeBreak")} aria-label={t("edge.removeBreak")}><Icon name="x" /></button>

@@ -6,6 +6,7 @@
   import { t } from "./i18n.svelte";
   import { COUNTED, MANUAL_CODES, faceArea, lineLength, type ManualSel } from "./manual";
   import type { ManualFace, ManualLine, Project } from "./types";
+  import { numeric } from "./numeric.svelte";
 
   let {
     project,
@@ -25,10 +26,6 @@
   const line = $derived(sel?.kind === "line" ? (project.manual_lines ?? [])[sel.index] ?? null : null);
   const face = $derived(sel?.kind === "face" ? (project.manual_faces ?? [])[sel.index] ?? null : null);
 
-  function num(e: Event): number | null {
-    const v = parseFloat((e.target as HTMLInputElement).value.replace(",", "."));
-    return Number.isFinite(v) ? v : null;
-  }
 
   function step(d: number) {
     if (!sel || list.length === 0) return;
@@ -55,8 +52,9 @@
       </label>
       <label>
         <span>{t("manual.length")}</span>
-        <div class="unit"><input type="number" step="0.01" min="0" value={+lineLength(line).toFixed(3)}
-          onchange={(e) => { const v = num(e); online({ ...$state.snapshot(line), length: v !== null && v >= 0 ? v : null }); }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ value: lineLength(line), step: 0.01, min: 0,
+            onchange: (v) => online({ ...$state.snapshot(line), length: v }),
+            onclear: () => online({ ...$state.snapshot(line), length: null }) }} /><em>m</em></div>
       </label>
       {#if line.length != null}
         <button class="link" onclick={() => online({ ...$state.snapshot(line), length: null })}>{t("manual.measured")}</button>
@@ -69,8 +67,7 @@
     {:else if face}
       <label>
         <span>{t("edge.pitch")}</span>
-        <div class="unit"><input type="number" step="0.5" min="0" max="89.9" value={face.pitch_deg}
-          onchange={(e) => { const v = num(e); if (v !== null && v >= 0 && v < 90) onface({ ...$state.snapshot(face), pitch_deg: v }); }} /><em>°</em></div>
+        <div class="unit"><input type="text" use:numeric={{ value: face.pitch_deg, step: 0.5, min: 0, max: 89.9, onchange: (v) => onface({ ...$state.snapshot(face), pitch_deg: v }) }} /><em>°</em></div>
       </label>
       <label>
         <span>{t("manual.label")}</span>

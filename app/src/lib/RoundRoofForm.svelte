@@ -4,6 +4,7 @@
   // developed length. A cross-section shows the polygon that will be built.
   import { num } from "./format";
   import { t } from "./i18n.svelte";
+  import { numeric } from "./numeric.svelte";
   import { MAX_ROUND_SEGMENTS, arcFor, minRadius, type Arc, type ArcMode } from "./roundroof";
 
   let {
@@ -62,8 +63,8 @@
   <div class="row">
     <div class="fields">
       <p class="tip">{t("round.span", { s: num(span) })}</p>
-      <label><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="number" step="0.05" bind:value={eave} /><em>m</em></div></label>
-      <label><span>{t("edge.overhang")}</span><div class="unit"><input type="number" step="0.05" min="0" bind:value={overhang} /><em>m</em></div></label>
+      <label><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: eave, step: 0.05, live: true, onchange: (v) => (eave = v) }} /><em>m</em></div></label>
+      <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: overhang, step: 0.05, live: true, onchange: (v) => (overhang = v) }} /><em>m</em></div></label>
       <label>
         <span>{t("round.mode")}</span>
         <select value={mode} onchange={(e) => setMode((e.target as HTMLSelectElement).value as ArcMode)}>
@@ -76,13 +77,13 @@
       {#if mode !== "default"}
         <label>
           <span>{t(`round.${mode}`)}</span>
-          <div class="unit"><input type="number" step="0.05" bind:value /><em>m</em></div>
+          <div class="unit"><input type="text" use:numeric={{ value: value, step: 0.05, live: true, onchange: (v) => (value = v) }} /><em>m</em></div>
         </label>
       {/if}
       <label>
         <span>{t("round.segments")}</span>
-        <input type="number" step="1" min="1" max={MAX_ROUND_SEGMENTS} value={segments || (arc?.segments ?? "")}
-          onchange={(e) => { const v = Math.round(+(e.target as HTMLInputElement).value); segments = v >= 1 ? Math.min(MAX_ROUND_SEGMENTS, v) : 0; }} />
+        <input type="text" use:numeric={{ value: segments || (arc?.segments ?? null), step: 1, min: 1, max: MAX_ROUND_SEGMENTS,
+            onchange: (v) => (segments = Math.round(v)), onclear: () => (segments = 0) }} />
       </label>
     </div>
     <div class="preview">

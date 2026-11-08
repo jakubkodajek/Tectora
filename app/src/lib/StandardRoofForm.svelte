@@ -7,6 +7,7 @@
   import PlanThumb from "./PlanThumb.svelte";
   import { m2 } from "./format";
   import { t } from "./i18n.svelte";
+  import { numeric } from "./numeric.svelte";
   import { presets } from "./settings.svelte";
   import type { RoofPart, StandardKind } from "./types";
   import { STANDARD_KINDS, emptyProject } from "./types";
@@ -97,15 +98,15 @@
   <div class="row">
     <div class="fields">
       {#if kind === "polygon"}
-        <label><span>{t("std.sides")}</span><input type="number" step="1" min="3" max="64" bind:value={sides} /></label>
-        <label><span>{t("std.side")}</span><div class="unit"><input type="number" step="0.1" min="0.1" bind:value={length} /><em>m</em></div></label>
+        <label><span>{t("std.sides")}</span><input type="text" use:numeric={{ value: sides, step: 1, live: true, onchange: (v) => (sides = v) }} /></label>
+        <label><span>{t("std.side")}</span><div class="unit"><input type="text" use:numeric={{ value: length, step: 0.1, live: true, onchange: (v) => (length = v) }} /><em>m</em></div></label>
       {:else}
-        <label><span>{t("std.length")}</span><div class="unit"><input type="number" step="0.1" min="1" bind:value={length} /><em>m</em></div></label>
-        <label class:off={kind === "pyramid"}><span>{t("std.width")}</span><div class="unit"><input type="number" step="0.1" min="1" disabled={kind === "pyramid"} bind:value={width} /><em>m</em></div></label>
+        <label><span>{t("std.length")}</span><div class="unit"><input type="text" use:numeric={{ value: length, step: 0.1, live: true, onchange: (v) => (length = v) }} /><em>m</em></div></label>
+        <label class:off={kind === "pyramid"}><span>{t("std.width")}</span><div class="unit"><input type="text" disabled={kind === "pyramid"} use:numeric={{ value: width, step: 0.1, live: true, onchange: (v) => (width = v) }} /><em>m</em></div></label>
       {/if}
-      <label><span>{t("edge.pitch")}</span><div class="unit"><input type="number" step="1" min="1" max="89" bind:value={pitch} /><em>°</em></div></label>
-      <label><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="number" step="0.05" bind:value={eave} /><em>m</em></div></label>
-      <label><span>{t("edge.overhang")}</span><div class="unit"><input type="number" step="0.05" min="0" bind:value={overhang} /><em>m</em></div></label>
+      <label><span>{t("edge.pitch")}</span><div class="unit"><input type="text" use:numeric={{ value: pitch, step: 1, live: true, onchange: (v) => (pitch = v) }} /><em>°</em></div></label>
+      <label><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: eave, step: 0.05, live: true, onchange: (v) => (eave = v) }} /><em>m</em></div></label>
+      <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: overhang, step: 0.05, live: true, onchange: (v) => (overhang = v) }} /><em>m</em></div></label>
     </div>
     <div class="preview">
       {#if preview}

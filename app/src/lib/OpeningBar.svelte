@@ -4,6 +4,7 @@
   import { t } from "./i18n.svelte";
   import type { Chimney, Project, RoofWindow } from "./types";
   import { chimneyFromRect, isConvex, openingList, rectFromChimney, type ChimneyRect, type OpeningSel } from "./openings";
+  import { numeric } from "./numeric.svelte";
 
   let {
     project,
@@ -25,10 +26,6 @@
   const rect = $derived(chimney ? rectFromChimney(chimney) : null);
   const win = $derived(sel?.kind === "window" ? (project.windows ?? [])[sel.index] : null);
 
-  function num(e: Event): number | null {
-    const v = parseFloat((e.target as HTMLInputElement).value.replace(",", "."));
-    return Number.isFinite(v) ? v : null;
-  }
 
   function setRect(patch: Partial<ChimneyRect>) {
     if (rect) onchimney(chimneyFromRect({ ...rect, ...patch }));
@@ -43,8 +40,7 @@
 {#snippet field(label: string, value: number, unit: string, set: (v: number) => void, min: number | null = null)}
   <label>
     <span>{label}</span>
-    <div class="unit"><input type="number" step="0.05" min={min ?? undefined} {value}
-      onchange={(e) => { const v = num(e); if (v !== null && (min === null || v >= min)) set(v); }} /><em>{unit}</em></div>
+    <div class="unit"><input type="text" use:numeric={{ value, step: 0.05, min: min ?? undefined, onchange: set }} /><em>{unit}</em></div>
   </label>
 {/snippet}
 

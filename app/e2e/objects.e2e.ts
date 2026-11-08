@@ -104,8 +104,8 @@ test.describe("chimneys, windows and openings", () => {
     expect(p.chimneys[0].corners[0]).toEqual({ x: 5, y: 3 });
     await areaMatchesCore(page, id);
 
-    await setField(ob.getByRole("spinbutton", { name: /^X\b/ }), 5.5);
-    await setField(ob.getByRole("spinbutton", { name: /^Y\b/ }), 3.5);
+    await setField(ob.getByRole("textbox", { name: /^X\b/ }), 5.5);
+    await setField(ob.getByRole("textbox", { name: /^Y\b/ }), 3.5);
     await setField(ob.getByLabel(cs("opening.width")), 0.9);
     await setField(ob.getByLabel(cs("opening.depth")), 0.7);
     await setField(ob.getByLabel(cs("opening.rotation")), 0);
