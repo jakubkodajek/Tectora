@@ -15,11 +15,12 @@ in the user's language, e.g. "Pitch of the street side set to 42° per drawing".
   point `i+1` (the last edge closes back to point 0). The order may be
   clockwise or counter-clockwise; Tectora stores it counter-clockwise.
 - Like in DACAD, **every edge carries its own roof definition**:
-  - `pitch_deg` – roof pitch rising from this edge (1–89°).
+  - `pitch_deg` – roof pitch rising from this edge (2–89°; DACAD refuses
+    pitches under 2°).
   - `gable: true` – gable wall (Ortgang / štít): no roof plane rises from it
     (stored as pitch 90°).
   - `eave_height` – height of the eave line above ±0.00, m, measured at the
-    outer (overhang) line as in DACAD.
+    outer (overhang) line as in DACAD; zero or more.
   - `overhang` – horizontal eave overhang beyond the wall, m.
   - `half_hip` (gable edges only) – Krüppelwalm / polovalba:
     `{ "height": m above ±0.00 where the hip starts, "pitch_deg": … }`.
@@ -29,7 +30,8 @@ in the user's language, e.g. "Pitch of the street side set to 42° per drawing".
     steeper one ends, as in DACAD.
   - `breaks` – pitch breaks (Knick / zlom, e.g. a mansard roof):
     `[{ "height": m above ±0.00, "pitch_deg": … }]`; from each height on the
-    plane continues at the new pitch.
+    plane continues at the new pitch. A break may not lie below the eave,
+    and two breaks of one edge may not share a height.
 - Typical values: pitch 25–45° (tiles), 5–15° (sheet metal / shed roofs),
   eave height 3–7 m, overhang 0.3–0.8 m.
 - Roof types: gable roof = eaves on the long sides + gables on the short

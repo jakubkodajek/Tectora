@@ -67,7 +67,7 @@ describe("calculation errors", () => {
       { name: "Garáž", edges: [] },
     ] as never;
     expect(describeProblem({ item: "part", index: 1, edge: 2, code: "pitch_range" }, p)).toBe(
-      "Část 2 „Garáž“, stěna 3: sklon musí být větší než 0° a menší než 180°",
+      "Část 2 „Garáž“, stěna 3: sklon musí být od 2° do 178°",
     );
   });
 });

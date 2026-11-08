@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tectora_core::diff::diff;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::geom::Point2;
-use tectora_core::model::GABLE_PITCH_DEG;
+use tectora_core::model::{GABLE_PITCH_DEG, MIN_PITCH_DEG};
 use tectora_core::quantities::{area_by_pitch, dacad_line_totals, roof_totals};
 use tectora_core::roof::LineKind;
 use tectora_core::settings::Settings;
@@ -270,8 +270,10 @@ fn parse_status(s: &str) -> Result<JobStatus, String> {
 /// Applies the optional per-edge fields of `v` to `edge`.
 fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
     if let Some(p) = arg_f64(v, "pitch_deg")? {
-        if !(0.0 < p && p < 90.0) {
-            return Err(format!("pitch_deg {p} must be between 0 and 90"));
+        if !(MIN_PITCH_DEG..90.0).contains(&p) {
+            return Err(format!(
+                "pitch_deg {p} must be at least {MIN_PITCH_DEG} and below 90 (use gable for 90)"
+            ));
         }
         edge.pitch_deg = p;
     }
@@ -284,6 +286,9 @@ fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
         _ => {}
     }
     if let Some(h) = arg_f64(v, "eave_height")? {
+        if h < 0.0 {
+            return Err(format!("eave_height {h} must be zero or positive"));
+        }
         edge.eave_height = h;
     }
     if let Some(o) = arg_f64(v, "overhang")? {
@@ -330,16 +335,20 @@ fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
                 serde_json::from_value(b.clone()).map_err(|e| format!("breaks: {e}"))?;
             if let Some(bad) = breaks
                 .iter()
-                .find(|b| !(0.0 < b.pitch_deg && b.pitch_deg < 90.0))
+                .find(|b| !(MIN_PITCH_DEG..=90.0).contains(&b.pitch_deg))
             {
                 return Err(format!(
-                    "breaks: pitch_deg {} must be between 0 and 90",
+                    "breaks: pitch_deg {} must be between {MIN_PITCH_DEG} and 90",
                     bad.pitch_deg
                 ));
             }
             edge.breaks = breaks;
         }
         None => {}
+    }
+    // The same input limits the editor and the engine use (DACAD's).
+    if let Some((code, msg)) = edge.problems().next() {
+        return Err(format!("{code}: {msg}"));
     }
     Ok(())
 }
@@ -357,7 +366,7 @@ fn parse_points(v: &Value) -> Result<Vec<Point2>, String> {
 /// the user's settings (Settings › New roofs).
 fn default_edge(defaults: &Value) -> Result<EdgeDef, String> {
     let preset = Settings::load().roof_defaults;
-    Ok(EdgeDef {
+    let edge = EdgeDef {
         start: Point2::new(0.0, 0.0),
         pitch_deg: arg_f64(defaults, "pitch_deg")?.unwrap_or(preset.pitch_deg),
         eave_height: arg_f64(defaults, "eave_height")?.unwrap_or(preset.eave_height),
@@ -369,7 +378,11 @@ fn default_edge(defaults: &Value) -> Result<EdgeDef, String> {
         clad: false,
         material: tectora_core::model::DEFAULT_MATERIAL,
         source: None,
-    })
+    };
+    if let Some((code, msg)) = edge.problems().next() {
+        return Err(format!("defaults: {code}: {msg}"));
+    }
+    Ok(edge)
 }
 
 /// Builds a part from `{name?, points, defaults?, edges?}`.
@@ -1615,15 +1628,65 @@ mod tests {
     }
 
     #[test]
+    fn edge_input_outside_dacad_limits_is_refused() {
+        // DACAD: pitch 2-178°, eave height >= 0, no pitch break below the
+        // eave or twice at one height.
+        let mut s = server();
+        let part = |defaults: Value, edges: Value| {
+            json!({ "name": "limits", "summary": "Footprint",
+                "parts": [{ "points": [[0, 0], [12, 0], [12, 8], [0, 8]], "defaults": defaults, "edges": edges }] })
+        };
+        let none = json!([]);
+        let cases = [
+            (part(json!({ "pitch_deg": 1 }), none.clone()), "pitch_range"),
+            (
+                part(json!({ "pitch_deg": 40, "eave_height": -1 }), none.clone()),
+                "eave_negative",
+            ),
+            (
+                part(
+                    json!({ "pitch_deg": 40, "eave_height": 3 }),
+                    json!([{ "breaks": [{ "height": 2, "pitch_deg": 30 }] }, {}, {}, {}]),
+                ),
+                "break_below_eave",
+            ),
+            (
+                part(
+                    json!({ "pitch_deg": 40, "eave_height": 3 }),
+                    json!([{ "breaks": [{ "height": 5, "pitch_deg": 30 }, { "height": 5, "pitch_deg": 20 }] }, {}, {}, {}]),
+                ),
+                "break_duplicate",
+            ),
+        ];
+        for (args, code) in cases {
+            let e = s.call_tool("create_project", &args).unwrap_err();
+            assert!(e.contains(code), "{code}: {e}");
+        }
+        let ok = s
+            .call_tool(
+                "create_project",
+                &part(json!({ "pitch_deg": 2, "eave_height": 0 }), none),
+            )
+            .unwrap();
+        assert!(ok["id"].is_string(), "{ok}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
     fn calc_reports_a_roof_the_calculation_refused() {
-        // MATH-003: a 1° hip roof ends in the core's open-faces error.
+        // MATH-003: a roof the core cannot close ends in its open-faces
+        // error. (A 1° hip used to be the example; DACAD refuses pitches
+        // under 2°, so now it never reaches the core.) Here one wall's eave
+        // lies far above the ridge of the others.
         let mut s = server();
         let r = s
             .call_tool(
                 "create_project",
                 &json!({
                     "name": "flat hip", "summary": "Footprint",
-                    "parts": [{ "points": [[0, 0], [12, 0], [12, 8], [0, 8]], "defaults": { "pitch_deg": 1 } }]
+                    "parts": [{ "points": [[0, 0], [12, 0], [12, 8], [0, 8]],
+                        "defaults": { "pitch_deg": 40, "eave_height": 3, "overhang": 0.5 },
+                        "edges": [{}, {}, {}, { "eave_height": 20 }] }]
                 }),
             )
             .unwrap();

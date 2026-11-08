@@ -153,7 +153,7 @@ test.describe("number fields", () => {
     await page.keyboard.press("Enter");
     await expect(pitch).toHaveValue(String(start));
     // The refusal says why, then the restored value is plain again.
-    await expect(pitch).toHaveAttribute("title", cs("num.range", { min: "0,1", max: "179,9" }));
+    await expect(pitch).toHaveAttribute("title", cs("num.range", { min: "2", max: "178" }));
     await expect(pitch).not.toHaveAttribute("aria-invalid", "true", { timeout: 5000 });
     await page.waitForTimeout(700);
     expect((await loadProject(id)).parts[0].edges[0].pitch_deg).toBe(start);

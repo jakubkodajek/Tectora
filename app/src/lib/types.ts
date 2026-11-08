@@ -217,9 +217,12 @@ export interface Problem {
     | "start_nan"
     | "pitch_range"
     | "eave_nan"
+    | "eave_negative"
     | "overhang_negative"
     | "direction_nan"
     | "stacked_nan"
+    | "break_below_eave"
+    | "break_duplicate"
     | "end_nan"
     | "bad_corners"
     | "bad_size";
