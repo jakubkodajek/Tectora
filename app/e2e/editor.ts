@@ -70,3 +70,12 @@ export async function shownArea(page: Page): Promise<number> {
   const text = (await page.locator(".results .hero strong").textContent()) ?? "";
   return parseCoord(text.replace("m²", ""));
 }
+
+/**
+ * The roof area once the first calculation has been shown. Right after the
+ * editor opens the results may still show a placeholder, which reads as NaN.
+ */
+export async function firstArea(page: Page): Promise<number> {
+  await expect.poll(() => shownArea(page)).toBeGreaterThan(0);
+  return shownArea(page);
+}

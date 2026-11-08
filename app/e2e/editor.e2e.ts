@@ -1,7 +1,7 @@
 // Editor: toolbar, layout, keyboard shortcuts, undo / redo, saving, the dock
 // tabs and every control of the roof definition bar, checked against the
 // stored file and the core's own calculation.
-import { bar, openEditor, plan, selectWall, setField, shownArea, tool } from "./editor";
+import { bar, firstArea, openEditor, plan, selectWall, setField, shownArea, tool } from "./editor";
 import { bridge, createExample, expect, listProjects, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 
@@ -154,7 +154,7 @@ test.describe("roof definition bar", () => {
     const id = await createExample("gable", "Sedlo");
     await openEditor(app, "Sedlo");
     const def = bar(page, "def.title");
-    const before = await shownArea(page);
+    const before = await firstArea(page);
 
     await selectWall(page, 1);
     await def.getByRole("radio", { name: cs("edge.eave") }).click();
@@ -232,7 +232,7 @@ test.describe("roof definition bar", () => {
     const id = await createExample("gable", "Sedlo");
     await openEditor(app, "Sedlo");
     const def = bar(page, "def.title");
-    const a0 = await shownArea(page);
+    const a0 = await firstArea(page);
     await selectWall(page, 1);
     await def.getByLabel(cs("edge.clad")).check();
     await waitForProject(id, (p) => p.parts[0].edges[1].clad === true);
