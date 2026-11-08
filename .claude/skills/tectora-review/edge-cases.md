@@ -30,9 +30,32 @@ then check the saved file (`waitForProject`) and the recalculated result:
   unchanged)
 - the ▲▼ buttons and the arrow keys (then the next arrow key must step the
   field, not move the selected object)
+- a button press that keeps the focus in the field (WebKit does not focus
+  a clicked button): reproduce it with `dispatchEvent("pointerdown")` +
+  `dispatchEvent("click")`, a real Chromium click blurs first and proves
+  nothing
+- an AI / outside save arriving while the user types (the typed text stays
+  and is stored with the AI change)
+- a value beyond the core's limit (`1e9`, mm typed for m): every field,
+  also one without its own bounds, refuses it (±100 000, `MAX_VALUE`)
+- Escape inside a bar's field (e.g. the footprint wall length) only undoes
+  the typing, never the bar's work (the footprint drawn so far)
 
-No native number inputs: every number field uses `use:numeric`
-(`app/src/lib/numeric.svelte.ts`); the unit test fails otherwise.
+No native number inputs and no hand-made ones: every number field uses
+`use:numeric` (`app/src/lib/numeric.svelte.ts`); the unit test fails on a
+`type="number"` input and on a text input read with `parseFloat` / `Number`
+or marked `inputmode="decimal"`. A field must land on exactly its own value
+(fields.e2e "every number field" diffs the file).
+
+## 1b. Keys and double clicks that throw work away (@ux, @ui)
+
+Guards: `app/e2e/editor-ux.e2e.ts`, `app/e2e/fields.e2e.ts`.
+
+- Delete / Backspace with a wall selected (focus on a ◀ ▶ button) asks
+  before removing a corner; a second press of a tool button that is
+  already active (Building) asks before discarding corners drawn.
+- A double click on every library and editor action that creates or
+  deletes (Duplicate, Delete) acts once.
 
 ## 2. Every edit recalculates (@errors, @test)
 
@@ -57,7 +80,10 @@ inside, identical; with the same, a lower and a higher eave height. Check:
   not reach it: its ridge, hips and **gables in 3D stay straight** (a gable
   cut by the other roof is concave and may start with a vertical edge)
 - the plan stays readable: lines under a higher roof are dashed, the results
-  name what each building is joined to
+  name what each building is joined to, no two wall dimensions or face
+  labels overlap (joined.e2e measures their screen boxes)
+- the 3D view reframes so the new building is in view (`data-frame` on the
+  3D host); a copy (Duplicate part) lands beside all buildings, not on one
 - a building left with no visible roof face carries the `covered` warning
 - the results equal the core's calculation of the saved file
 
@@ -74,5 +100,10 @@ labelled, not brick red like a building).
 Every polygon the core returns (faces, gables, clad faces, openings) must
 render in plan and 3D for: a first edge of length 0 or vertical, concave
 shapes, collinear corners, holes, very small and very large parts. Test the
-helper that turns them into geometry (e.g. `gableContour`) with the shape the
-core actually returns for the case, taken from `tectora calc`.
+helper that turns them into geometry with the shape the core actually
+returns for the case, taken from `tectora calc`, and make sure the component
+calls that helper (Roof3D draws gables through `scene3d.wallTriangles`,
+which `scene3d.test.ts` covers). A roof whose core result has no gable
+polygon for a gable wall (shed roof) still shows closed walls
+(`wallUpToRoof`); manual faces appear in 3D; at any zoom the plan grid stays
+at least 8 px apart (`grid.test.ts`).
