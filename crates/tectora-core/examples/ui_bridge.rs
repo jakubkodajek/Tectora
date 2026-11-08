@@ -47,6 +47,23 @@ fn calc(project: &Project) -> Result<Value, String> {
     Ok(v)
 }
 
+/// Loading and saving a job, with the library's own error (see `serve`).
+fn store_command(
+    store: &Store,
+    cmd: &str,
+    a: &Value,
+) -> Option<Result<Value, tectora_core::store::StoreError>> {
+    let id = arg::<String>(a, "id").ok()?;
+    match cmd {
+        "load_project" => Some(store.load(&id).map(|p| to_json(p).unwrap_or(Value::Null))),
+        "save_project" => {
+            let project = arg::<Project>(a, "project").ok()?;
+            Some(store.save(Some(id), &project).map(Value::String))
+        }
+        _ => None,
+    }
+}
+
 fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
     let id = || arg::<String>(a, "id");
     match cmd {
@@ -309,9 +326,17 @@ fn serve(
     } else {
         let cmd = path.replace("%7C", "|").replace("%3A", ":");
         let args: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-        match handle(store, &cmd, &args) {
-            Ok(v) => json!({ "ok": v }),
-            Err(e) => json!({ "err": e }),
+        match store_command(store, &cmd, &args) {
+            Some(Ok(v)) => json!({ "ok": v }),
+            // Library errors with their stable code, as the Tauri commands
+            // give them, so the UI shows the same translated message.
+            Some(Err(e)) => {
+                json!({ "err": { "code": e.code(), "id": e.id(), "detail": e.to_string() } })
+            }
+            None => match handle(store, &cmd, &args) {
+                Ok(v) => json!({ "ok": v }),
+                Err(e) => json!({ "err": e }),
+            },
         }
     };
     respond(stream, "200 OK", &out.to_string());

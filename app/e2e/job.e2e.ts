@@ -154,6 +154,19 @@ test.describe("job tab", () => {
     app.errors.length = 0;
   });
 
+  test("a job saved meanwhile by a newer Tectora is not overwritten by the open editor", async ({ app, page }) => {
+    const id = await createExample("hip", "Novější");
+    await openEditor(app, "Novější");
+    const file = path.join(LIBRARY_DIR, `${id}.tectora`);
+    const newer = JSON.stringify({ schema_version: 99, name: "Novější", job: { customer: "Kolega" }, future_field: 1 });
+    fs.writeFileSync(file, newer);
+    await selectWall(page, 0);
+    await setField(bar(page, "def.title").getByLabel(cs("edge.pitch")), 30);
+    await expect(page.locator(".toast").filter({ hasText: cs("err.newer_format") }).first()).toBeVisible({ timeout: 8000 });
+    expect(fs.readFileSync(file, "utf8")).toBe(newer);
+    app.errors.length = 0;
+  });
+
   test("a job that cannot be opened shows the reason and a way back", async ({ app, page }) => {
     const id = await createExample("gable", "Rozbitá");
     await app.open();

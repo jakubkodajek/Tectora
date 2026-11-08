@@ -202,6 +202,12 @@ pub enum StoreError {
     /// The file exists but is not a valid Tectora project.
     #[error("{id}: the project file is damaged ({detail})")]
     Unreadable { id: String, detail: String },
+    /// The file was saved by a newer Tectora: it is neither read nor
+    /// overwritten, so the newer version's data is not lost.
+    #[error(
+        "{id}: the file was saved by a newer Tectora (format {version}, this version reads up to {max})"
+    )]
+    NewerFormat { id: String, version: u64, max: u32 },
     /// The operating system refused to read or write a file.
     #[error("{}{detail}", id.as_deref().map(|i| format!("{i}: ")).unwrap_or_default())]
     Io {
@@ -236,6 +242,7 @@ impl StoreError {
             StoreError::InvalidId(_) => "invalid_id",
             StoreError::NotFound(_) => "not_found",
             StoreError::Unreadable { .. } => "unreadable",
+            StoreError::NewerFormat { .. } => "newer_format",
             StoreError::Io {
                 kind: IoKind::PermissionDenied,
                 ..
@@ -258,7 +265,9 @@ impl StoreError {
             | StoreError::NotFound(id)
             | StoreError::NothingToRevert(id)
             | StoreError::RevertCreated(id) => Some(id),
-            StoreError::Unreadable { id, .. } | StoreError::NoSuchChange { id, .. } => Some(id),
+            StoreError::Unreadable { id, .. }
+            | StoreError::NewerFormat { id, .. }
+            | StoreError::NoSuchChange { id, .. } => Some(id),
             StoreError::Io { id, .. } => id.as_deref(),
         }
     }
@@ -314,6 +323,14 @@ fn modified_ms(path: &Path) -> u64 {
 /// Writes via a temporary file so a watcher never sees a half-written file.
 /// The temporary name is unique per process and call, so the app and an MCP
 /// server saving the same design at once cannot write into each other's file.
+/// The `schema_version` of a project file's JSON when it is newer than this
+/// app reads, else `None` (also for text that is not JSON).
+fn newer_format(text: &str) -> Option<u64> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let version = v.get("schema_version")?.as_u64()?;
+    (version > u64::from(crate::model::SCHEMA_VERSION)).then_some(version)
+}
+
 fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -513,6 +530,13 @@ impl Store {
                 StoreError::io(Some(id), e)
             }
         })?;
+        if let Some(version) = newer_format(&text) {
+            return Err(StoreError::NewerFormat {
+                id: id.to_string(),
+                version,
+                max: crate::model::SCHEMA_VERSION,
+            });
+        }
         Project::from_json(&text).map_err(|e| StoreError::Unreadable {
             id: id.to_string(),
             detail: e.to_string(),
@@ -537,9 +561,23 @@ impl Store {
     }
 
     /// Saves without recording activity (app autosave of its own edits).
+    ///
+    /// Refuses to replace a file saved by a newer Tectora: on a shared
+    /// library folder an older app would otherwise write its stale copy over
+    /// a colleague's newer one.
     pub fn save(&self, id: Option<String>, project: &Project) -> Result<String, StoreError> {
         let id = id.unwrap_or_else(|| self.new_id(&project.name));
         let path = self.path(&id)?;
+        if let Some(version) = fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| newer_format(&t))
+        {
+            return Err(StoreError::NewerFormat {
+                id,
+                version,
+                max: crate::model::SCHEMA_VERSION,
+            });
+        }
         let json = project.to_json().map_err(|e| StoreError::Unreadable {
             id: id.clone(),
             detail: e.to_string(),
@@ -557,7 +595,12 @@ impl Store {
         actor: &str,
         summary: &str,
     ) -> Result<String, StoreError> {
-        let before = id.as_deref().and_then(|id| self.load(id).ok());
+        let before = match id.as_deref().map(|id| self.load(id)) {
+            // Refused before anything is logged (see `save`).
+            Some(Err(e @ StoreError::NewerFormat { .. })) => return Err(e),
+            Some(r) => r.ok(),
+            None => None,
+        };
         if before.as_ref() == Some(project) {
             return Ok(id.unwrap_or_default());
         }
@@ -864,6 +907,44 @@ mod tests {
         let e = store.load("bad").unwrap_err();
         assert_eq!(e.code(), "unreadable");
         assert_eq!(e.id(), Some("bad"));
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_file_saved_by_a_newer_tectora_is_neither_read_nor_overwritten() {
+        // ERR-010: on a shared folder an older app must not write its stale
+        // copy over a colleague's newer file.
+        let store = temp_store("newer");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let newer = r#"{"schema_version": 99, "name": "x", "job": {"customer": "Newer"}, "future_field": 1}"#;
+        fs::write(store.dir.join(format!("{id}.tectora")), newer).unwrap();
+        let e = store.load(&id).unwrap_err();
+        assert_eq!(e.code(), "newer_format");
+        assert_eq!(e.id(), Some(id.as_str()));
+        assert_eq!(
+            store.save(Some(id.clone()), &p).unwrap_err().code(),
+            "newer_format"
+        );
+        assert_eq!(
+            store
+                .save_as(Some(id.clone()), &p, "claude", "edit")
+                .unwrap_err()
+                .code(),
+            "newer_format"
+        );
+        assert!(
+            store.activity(&id).is_empty(),
+            "nothing logged for a refused save"
+        );
+        assert_eq!(
+            fs::read_to_string(store.dir.join(format!("{id}.tectora"))).unwrap(),
+            newer
+        );
+        // A damaged file can still be replaced (that is how it is repaired).
+        fs::write(store.dir.join(format!("{id}.tectora")), "{").unwrap();
+        store.save(Some(id.clone()), &p).unwrap();
+        assert_eq!(store.load(&id).unwrap(), p);
         let _ = fs::remove_dir_all(&store.dir);
     }
 

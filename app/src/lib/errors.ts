@@ -56,6 +56,7 @@ const KNOWN = new Set([
   "invalid_id",
   "not_found",
   "unreadable",
+  "newer_format",
   "permission_denied",
   "disk_full",
   "io",
