@@ -1,0 +1,150 @@
+name: Build
+
+# Checks every push to a branch and every pull request. Unsigned test
+# installers for macOS and Windows are built on demand ("Run workflow" in the
+# Actions tab), not on every merge, as macOS minutes cost the most; download
+# them from the run's "Artifacts" section. Releases, built from v* tags, are
+# release.yml's (docs/releasing.md).
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to a branch cancels the run it replaces; main runs every merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# The jobs only read the repository; installers go up as run artifacts.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/linux-deps
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: ./.github/actions/rust
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install UI dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Type-check the UI
+        working-directory: app
+        run: npm run check
+
+      - name: Test the UI logic
+        working-directory: app
+        run: npm test
+
+      # Tauri embeds the built UI, so it must exist before the shell compiles.
+      - name: Build the UI
+        working-directory: app
+        run: npm run build
+
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+
+      - name: Test the Rust workspace
+        run: cargo test --workspace
+
+  # Job files, bundles and the settings file depend on how the OS opens,
+  # renames and locks files, so the Rust tests also run on Windows, one of
+  # the two platforms the app ships for.
+  windows-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: ./.github/actions/rust
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-tests
+
+      - name: Install UI dependencies
+        working-directory: app
+        run: npm ci
+
+      # Tauri embeds the built UI, so it must exist before the shell compiles.
+      - name: Build the UI
+        working-directory: app
+        run: npm run build
+
+      - name: Test the Rust workspace
+        run: cargo test --workspace
+
+  installers:
+    needs: [check, windows-tests]
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+            args: --bundles nsis
+            artifacts: target/release/bundle/nsis/*.exe
+          - name: macos
+            os: macos-latest
+            # One build for Apple silicon and Intel Macs.
+            args: --target universal-apple-darwin --bundles dmg
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            artifacts: target/universal-apple-darwin/release/bundle/dmg/*.dmg
+    name: installer (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: ./.github/actions/rust
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: Install UI dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Build the installer
+        working-directory: app
+        run: npm run tauri build -- ${{ matrix.args }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tectora-${{ matrix.name }}
+          path: ${{ matrix.artifacts }}
+          if-no-files-found: error

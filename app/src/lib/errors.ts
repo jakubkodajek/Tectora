@@ -24,7 +24,8 @@ export type Action =
   | "calc"
   | "preview"
   | "files"
-  | "export";
+  | "export"
+  | "update";
 
 export interface Described {
   /** One sentence: what failed. */
@@ -69,6 +70,8 @@ const KNOWN = new Set([
   "not_allowed",
   "watcher",
   "internal",
+  "update_failed",
+  "no_update",
 ]);
 
 /** A translated description of an error from `action`. */

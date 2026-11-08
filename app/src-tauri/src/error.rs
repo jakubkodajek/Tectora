@@ -65,6 +65,21 @@ impl From<String> for AppError {
     }
 }
 
+/// The updater could not check, download or install an update (no
+/// internet, the server or the signature refused it). The UI says so in
+/// the user's language; the updater's own message is the detail.
+impl From<tauri_plugin_updater::Error> for AppError {
+    fn from(e: tauri_plugin_updater::Error) -> Self {
+        AppError::new("update_failed").detail(e.to_string())
+    }
+}
+
+impl From<tauri::Error> for AppError {
+    fn from(e: tauri::Error) -> Self {
+        AppError::new("internal").detail(e.to_string())
+    }
+}
+
 /// Runs a command body, turning a panic into an `internal` error so the UI
 /// gets an answer instead of a promise that never settles.
 pub fn guard<T>(f: impl FnOnce() -> Result<T, AppError>) -> Result<T, AppError> {
