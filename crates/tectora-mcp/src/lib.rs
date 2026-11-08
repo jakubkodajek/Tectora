@@ -299,17 +299,15 @@ fn parse_points(v: &Value) -> Result<Vec<Point2>, String> {
     Ok(pts.into_iter().map(|[x, y]| Point2::new(x, y)).collect())
 }
 
-/// Builds a part from `{name?, points, defaults?, edges?}`.
-fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
-    let points = parse_points(arg(v, "points")?)?;
-    let defaults = v.get("defaults").cloned().unwrap_or(json!({}));
-    // Values not given come from the user's settings (Settings › New roofs).
+/// A new wall: pitch, eave height and overhang from `defaults`, else from
+/// the user's settings (Settings › New roofs).
+fn default_edge(defaults: &Value) -> Result<EdgeDef, String> {
     let preset = Settings::load().roof_defaults;
-    let base = EdgeDef {
+    Ok(EdgeDef {
         start: Point2::new(0.0, 0.0),
-        pitch_deg: arg_f64(&defaults, "pitch_deg")?.unwrap_or(preset.pitch_deg),
-        eave_height: arg_f64(&defaults, "eave_height")?.unwrap_or(preset.eave_height),
-        overhang: arg_f64(&defaults, "overhang")?.unwrap_or(preset.overhang),
+        pitch_deg: arg_f64(defaults, "pitch_deg")?.unwrap_or(preset.pitch_deg),
+        eave_height: arg_f64(defaults, "eave_height")?.unwrap_or(preset.eave_height),
+        overhang: arg_f64(defaults, "overhang")?.unwrap_or(preset.overhang),
         half_hip: None,
         direction_rad: None,
         breaks: Vec::new(),
@@ -317,7 +315,14 @@ fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
         clad: false,
         material: tectora_core::model::DEFAULT_MATERIAL,
         source: None,
-    };
+    })
+}
+
+/// Builds a part from `{name?, points, defaults?, edges?}`.
+fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
+    let points = parse_points(arg(v, "points")?)?;
+    let defaults = v.get("defaults").cloned().unwrap_or(json!({}));
+    let base = default_edge(&defaults)?;
     let specs = v
         .get("edges")
         .and_then(Value::as_array)
@@ -922,7 +927,12 @@ impl Server {
                     .ok_or_else(|| format!("part {pi} does not exist"))?
                     .clone();
                 let points = parse_points(arg(args, "points")?)?;
-                let mut template = old.edges.last().cloned().expect("part has edges");
+                // A part stored without walls (ERR-010) takes the new-roof
+                // defaults, as `add_part` does.
+                let mut template = match old.edges.last() {
+                    Some(e) => e.clone(),
+                    None => default_edge(&json!({}))?,
+                };
                 template.half_hip = None;
                 template.direction_rad = None;
                 if let Some(d) = args.get("defaults") {
@@ -1319,6 +1329,29 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("out of range"), "{err}");
         assert!(s.list_projects_empty());
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn set_outline_repairs_a_part_without_edges() {
+        // ERR-010: a stored part with no walls (the app flags it
+        // `too_few_edges`); the tool meant to repair it must not panic.
+        let mut s = server();
+        let mut p = Project::new("Empty");
+        p.parts.push(RoofPart {
+            name: "A".into(),
+            edges: Vec::new(),
+        });
+        let id = s.store.save(None, &p).unwrap();
+        let r = s
+            .call_tool(
+                "set_outline",
+                &json!({ "id": id, "part": 0, "points": [[0, 0], [5, 0], [5, 4], [0, 4]], "summary": "Outline from the drawing" }),
+            )
+            .unwrap();
+        assert_eq!(r["parts"][0]["edges"].as_array().unwrap().len(), 4, "{r}");
+        let preset = Settings::load().roof_defaults;
+        assert_eq!(r["parts"][0]["edges"][0]["pitch_deg"], preset.pitch_deg);
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
