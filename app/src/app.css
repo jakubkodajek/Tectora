@@ -37,6 +37,16 @@
   --line-knick: #1f9aa8;
   --line-gorge: #6b4fd8;
   --line-abutment: #8b5a3c;
+  /* Roof window (glass): plan fill and 3D glass. */
+  --window: #3a85c8;
+  /* 3D view materials. The roof is a pale clay so every line code and object
+     reads against it; brick and the TERRAN grey (frames, caps) stand out. */
+  --scene-roof: #e6cfc2;
+  --scene-wall: #eceae5;
+  --scene-ground: #e9ece6;
+  --scene-brick: #8e4636;
+  --scene-metal: #5c5b5a;
+  --scene-hole: #2a2c31;
   color-scheme: light;
 }
 
@@ -65,6 +75,13 @@
     --shadow-lg: 0 12px 48px rgba(0, 0, 0, 0.5);
     --plan-grid: #232838;
     --plan-fill: rgba(208, 87, 75, 0.12);
+    --window: #5aa2e6;
+    --scene-roof: #b08672;
+    --scene-wall: #8d93a3;
+    --scene-ground: #1a1f2b;
+    --scene-brick: #8e4636;
+    --scene-metal: #4a4948;
+    --scene-hole: #0d0f14;
     color-scheme: dark;
   }
 }
@@ -87,6 +104,14 @@
   --shadow-lg: 0 12px 48px rgba(0, 0, 0, 0.5);
   --plan-grid: #232838;
   --plan-fill: rgba(208, 87, 75, 0.12);
+  --line-abutment: #a8754f;
+  --window: #5aa2e6;
+  --scene-roof: #b08672;
+  --scene-wall: #8d93a3;
+  --scene-ground: #1a1f2b;
+  --scene-brick: #8e4636;
+  --scene-metal: #4a4948;
+  --scene-hole: #0d0f14;
   color-scheme: dark;
 }
 

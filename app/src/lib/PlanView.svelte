@@ -694,7 +694,7 @@
     stroke-dasharray: 4 3;
   }
   .opening.window {
-    fill: color-mix(in srgb, var(--line-valley) 22%, transparent);
+    fill: color-mix(in srgb, var(--window) 28%, transparent);
   }
   .opening.sel {
     stroke: var(--accent);

@@ -1,8 +1,11 @@
 <script lang="ts">
-  import { isDark, ui } from "./theme.svelte";
+  import { ui } from "./theme.svelte";
   import { onMount } from "svelte";
   import * as THREE from "three";
   import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+  import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
+  import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
+  import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
   import type { CalcResult, Point2, Project, Selection } from "./types";
   import type { ItemRef, PlanTarget } from "./items";
   import { t } from "./i18n.svelte";
@@ -37,23 +40,42 @@
   let content = new THREE.Group();
   let framed = false;
 
-  const LINE_COLORS: Record<string, number> = {
-    eave: 0x2f6fd6,
-    verge: 0xe39b2b,
-    ridge: 0xd6402f,
-    hip: 0x2c9a5b,
-    valley: 0x8a46c9,
-    pult: 0xc2417a,
-    knick: 0x1f9aa8,
-    gorge: 0x6b4fd8,
-    abutment: 0x8b5a3c,
-    abutment_front: 0x8b5a3c,
-    abutment_back: 0x8b5a3c,
-    abutment_side: 0x8b5a3c,
+  /** Roof line kind → its plan colour token, so 3D and the plan legend agree. */
+  const LINE_TOKENS: Record<string, string> = {
+    eave: "--line-eave",
+    verge: "--line-verge",
+    ridge: "--line-ridge",
+    hip: "--line-hip",
+    valley: "--line-valley",
+    pult: "--line-pult",
+    knick: "--line-knick",
+    gorge: "--line-gorge",
+    abutment: "--line-abutment",
+    abutment_front: "--line-abutment",
+    abutment_back: "--line-abutment",
+    abutment_side: "--line-abutment",
   };
-  const SELECTED = 0x3b6fe0;
+  /** How far a roof window's frame stands above the roof and its frame width, m
+   *  [no source: display only, typical roof-window proportions]. */
+  const WINDOW_PROUD = 0.09;
+  const WINDOW_FRAME = 0.07;
+  /** Screen width of the roof lines, px. */
+  const LINE_PX = 2.5;
 
-  const dark = isDark;
+  let groundMat: THREE.MeshStandardMaterial;
+  const lineMats: LineMaterial[] = [];
+
+  /** A colour token from app.css (light or dark, as currently applied). */
+  function token(name: string, fallback = "#808080"): THREE.Color {
+    const v = host ? getComputedStyle(host).getPropertyValue(name).trim() : "";
+    const c = new THREE.Color();
+    try {
+      c.setStyle(v || fallback);
+    } catch {
+      c.setStyle(fallback);
+    }
+    return c;
+  }
 
   // Plan (x, y) with height z maps to three.js (x, z, -y): y-up world.
   const v3 = (p: [number, number, number]) => new THREE.Vector3(p[0], p[2], -p[1]);
@@ -106,26 +128,42 @@
       else mat?.dispose();
     });
     content = new THREE.Group();
+    lineMats.length = 0;
+    groundMat?.color.copy(token("--scene-ground"));
 
+    // Colours come from the theme tokens (app.css, --scene-*), as in the plan:
+    // a selected wall or roof face is --focus, a selected object --accent.
     const roofMat = new THREE.MeshStandardMaterial({
-      color: 0xc65a32,
-      roughness: 0.75,
+      color: token("--scene-roof"),
+      roughness: 0.8,
       metalness: 0.0,
       side: THREE.DoubleSide,
       polygonOffset: true,
       polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
     });
     const selMat = roofMat.clone();
-    selMat.color.set(SELECTED);
-    const wallMat = new THREE.MeshStandardMaterial({ color: dark() ? 0x8d93a3 : 0xeceae5, roughness: 0.9, side: THREE.DoubleSide });
+    selMat.color.copy(token("--focus"));
+    const wallMat = new THREE.MeshStandardMaterial({ color: token("--scene-wall"), roughness: 0.9, side: THREE.DoubleSide });
+    // A selected dormer is an object: --accent, like in the plan.
+    const selDormerMat = roofMat.clone();
+    selDormerMat.color.copy(token("--accent"));
     const selWallMat = wallMat.clone();
-    selWallMat.color.set(0x9db5ec);
-    const brickMat = new THREE.MeshStandardMaterial({ color: 0x8e4636, roughness: 0.85 });
-    const capMat = new THREE.MeshStandardMaterial({ color: 0x5c5b5a, roughness: 0.6 });
-    const frameMat = new THREE.MeshStandardMaterial({ color: 0x3f4247, roughness: 0.5, metalness: 0.3, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2 });
-    const glassMat = new THREE.MeshStandardMaterial({ color: 0x5f86ad, roughness: 0.1, metalness: 0.6, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -4 });
-    const holeMat = new THREE.MeshStandardMaterial({ color: 0x15171c, roughness: 1, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2 });
-    const selObjMat = new THREE.MeshStandardMaterial({ color: SELECTED, roughness: 0.6, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -4 });
+    selWallMat.color.lerp(token("--accent"), 0.45);
+    const brickMat = new THREE.MeshStandardMaterial({ color: token("--scene-brick"), roughness: 0.85 });
+    const capMat = new THREE.MeshStandardMaterial({ color: token("--scene-metal"), roughness: 0.6 });
+    const frameMat = new THREE.MeshStandardMaterial({ color: token("--scene-metal"), roughness: 0.45, metalness: 0.2, side: THREE.DoubleSide });
+    // Glass glows a little so a window reads as glass on every face, lit or not.
+    const glass = token("--window");
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: glass,
+      emissive: glass.clone().multiplyScalar(0.35),
+      roughness: 0.15,
+      metalness: 0.1,
+      side: THREE.DoubleSide,
+    });
+    const holeMat = new THREE.MeshStandardMaterial({ color: token("--scene-hole"), roughness: 1, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2 });
+    const selObjMat = new THREE.MeshStandardMaterial({ color: token("--accent"), roughness: 0.6, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -4 });
 
     // Walls: from ground to each edge's eave height, on the wall line.
     project.parts.forEach((part, pi) => {
@@ -169,6 +207,9 @@
                   const q = lifted[(k + 1) % lifted.length];
                   content.add(quad([p, q, [q[0], q[1], q[2] - 0.15], [p[0], p[1], p[2] - 0.15]], selected ? selObjMat : holeMat, target));
                 });
+                // Closed at the bottom, so the hole reads as an opening and
+                // not as a view of the underside of the far roof face.
+                content.add(polyMesh(lifted.map((p) => [p[0], p[1], p[2] - 0.15]), [], selected ? selObjMat : holeMat, target));
               } else {
                 content.add(polyMesh(lifted, [], selected ? selObjMat : holeMat, target));
               }
@@ -176,7 +217,7 @@
           }
           const sel = dormer >= 0 ? same(item, { kind: "dormer", index: dormer }) : selection?.part === pi && selection?.edge === f.edge;
           const target: PlanTarget = dormer >= 0 ? { type: "item", item: { kind: "dormer", index: dormer } } : { type: "edge", part: pi, edge: f.edge };
-          content.add(polyMesh(f.polygon, cut, sel ? selMat : roofMat, isDormerFace(f.edge) && dormer < 0 ? undefined : target));
+          content.add(polyMesh(f.polygon, cut, sel ? (dormer >= 0 ? selDormerMat : selMat) : roofMat, isDormerFace(f.edge) && dormer < 0 ? undefined : target));
 
           // Dormer cheeks and front: walls hanging from the dormer roof's
           // edges on its wall lines down to the roof it stands on.
@@ -204,9 +245,25 @@
           g.computeVertexNormals();
           content.add(new THREE.Mesh(g, wallMat));
         }
+        // Roof lines, grouped by kind, a few px wide so each line code reads
+        // against the roof like in the plan.
+        const byKind = new Map<string, number[]>();
         for (const l of rp.geometry.lines) {
-          const g = new THREE.BufferGeometry().setFromPoints([v3(l.a), v3(l.b)]);
-          content.add(new THREE.Line(g, new THREE.LineBasicMaterial({ color: LINE_COLORS[l.kind] ?? 0x333333 })));
+          const tok = LINE_TOKENS[l.kind] ?? "--text-2";
+          const a = v3(l.a);
+          const b = v3(l.b);
+          if (!byKind.has(tok)) byKind.set(tok, []);
+          byKind.get(tok)!.push(a.x, a.y, a.z, b.x, b.y, b.z);
+        }
+        for (const [tok, pos] of byKind) {
+          const g = new LineSegmentsGeometry().setPositions(pos);
+          const mat = new LineMaterial({ color: token(tok).getHex(), linewidth: LINE_PX });
+          mat.resolution.set(host.clientWidth, host.clientHeight);
+          lineMats.push(mat);
+          const ls = new LineSegments2(g, mat);
+          // Lines are not pickable: a click goes to the face under them.
+          ls.raycast = () => {};
+          content.add(ls);
         }
       });
     }
@@ -227,7 +284,9 @@
       content.add(prism(cap, top - 0.08, top, selected ? selObjMat : capMat, target));
     });
 
-    // Roof windows: frame and glass lying on the face under the anchor.
+    // Roof windows: a frame box standing 9 cm proud of the roof face under
+    // the anchor, in the frame colour, with glowing glass inset 7 cm, so a
+    // window stands out from the roof and from roof openings at any angle.
     (project.windows ?? []).forEach((w, index) => {
       if (!result) return;
       const anchor = { x: w.x + 1e-3, y: w.y + 1e-3 };
@@ -235,20 +294,23 @@
       const s = slopeAt(result, anchor);
       if (z0 === null || !s) return;
       const target: PlanTarget = { type: "item", item: { kind: "window", index } };
+      const fm = same(item, target.item) ? selObjMat : frameMat;
       const lift = (p: Point2, up: number): [number, number, number] => [p.x, p.y, z0 + s.tan * ((p.x - w.x) * s.up.x + (p.y - w.y) * s.up.y) + up];
       const outline = windowOutline(result, w);
-      const frame = outline.map((p) => lift(p, 0.03));
-      content.add(quad(frame, same(item, target.item) ? selObjMat : frameMat, target));
-      // Glass inset by 6 cm in the roof plane.
-      const [a, b, , d] = frame;
+      const base = outline.map((p) => lift(p, -0.02));
+      const top = outline.map((p) => lift(p, WINDOW_PROUD));
+      content.add(quad(top, fm, target));
+      top.forEach((p, k) => {
+        const q = top[(k + 1) % 4];
+        content.add(quad([base[k], base[(k + 1) % 4], q, p], fm, target));
+      });
+      const [a, b, , d] = top;
       const U = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
       const V = [d[0] - a[0], d[1] - a[1], d[2] - a[2]];
-      const lu = Math.hypot(...U) || 1;
-      const lv = Math.hypot(...V) || 1;
-      const m = 0.06;
-      const at = (su: number, sv: number): [number, number, number] => [0, 1, 2].map((i) => a[i] + U[i] * su + V[i] * sv + (i === 2 ? 0.01 : 0)) as [number, number, number];
-      const iu = Math.min(0.45, m / lu);
-      const iv = Math.min(0.45, m / lv);
+      const iu = Math.min(0.4, WINDOW_FRAME / (Math.hypot(...U) || 1));
+      const iv = Math.min(0.4, WINDOW_FRAME / (Math.hypot(...V) || 1));
+      const at = (su: number, sv: number): [number, number, number] =>
+        [0, 1, 2].map((i) => a[i] + U[i] * su + V[i] * sv + (i === 2 ? 0.012 : 0)) as [number, number, number];
       content.add(quad([at(iu, iv), at(1 - iu, iv), at(1 - iu, 1 - iv), at(iu, 1 - iv)], glassMat, target));
     });
 
@@ -301,13 +363,15 @@
     controls.enableDamping = true;
     controls.maxPolarAngle = Math.PI * 0.495;
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x8899aa, 1.6));
-    const sun = new THREE.DirectionalLight(0xffffff, 2.2);
-    sun.position.set(30, 50, 20);
+    // Soft sky plus a stronger sun, so roof planes facing different ways
+    // get clearly different shades.
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x8899aa, 1.1));
+    const sun = new THREE.DirectionalLight(0xffffff, 2.8);
+    sun.position.set(-25, 45, 35);
     scene.add(sun);
     const ground = new THREE.Mesh(
       new THREE.CircleGeometry(200, 64),
-      new THREE.MeshStandardMaterial({ color: dark() ? 0x1a1f2b : 0xe9ece6, roughness: 1 }),
+      (groundMat = new THREE.MeshStandardMaterial({ color: token("--scene-ground"), roughness: 1 })),
     );
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.01;
@@ -319,6 +383,7 @@
       renderer.setSize(w, h);
       camera.aspect = w / Math.max(h, 1);
       camera.updateProjectionMatrix();
+      for (const m of lineMats) m.resolution.set(w, h);
     };
     const ro = new ResizeObserver(resize);
     ro.observe(host);
