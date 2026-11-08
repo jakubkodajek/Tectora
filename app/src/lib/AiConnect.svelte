@@ -255,8 +255,8 @@
     padding: 12px 14px;
     padding-right: 110px;
     border-radius: 8px;
-    background: #12151d;
-    color: #e6e9f0;
+    background: var(--code-bg);
+    color: var(--code-text);
     font: 12.5px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     white-space: pre-wrap;
     word-break: break-all;

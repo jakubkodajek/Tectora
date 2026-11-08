@@ -92,7 +92,7 @@
     background: var(--ai);
   }
   .info .dot {
-    background: #2c9a5b;
+    background: var(--ok);
   }
   strong {
     flex: 1;

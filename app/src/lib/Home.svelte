@@ -707,16 +707,16 @@
     color: var(--text-2);
   }
   .chip.offer {
-    background: #fdf1dc;
-    color: #8a5a10;
+    background: var(--status-offer-bg);
+    color: var(--status-offer);
   }
   .chip.ordered {
-    background: #e2edfb;
-    color: #24539b;
+    background: var(--status-ordered-bg);
+    color: var(--status-ordered);
   }
   .chip.done {
-    background: #e1f3e8;
-    color: #22703f;
+    background: var(--status-done-bg);
+    color: var(--status-done);
   }
   .grid {
     display: grid;

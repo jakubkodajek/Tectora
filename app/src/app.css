@@ -23,6 +23,20 @@
   --danger: #d23d3d;
   /* Filled error surfaces with white text. */
   --danger-fill: #d23d3d;
+  /* Success mark (info toast dot). */
+  --ok: #2c9a5b;
+  /* Job status chips in the library: text on its tinted background. */
+  --status-offer: #8a5a10;
+  --status-offer-bg: #fdf1dc;
+  --status-ordered: #24539b;
+  --status-ordered-bg: #e2edfb;
+  --status-done: #22703f;
+  --status-done-bg: #e1f3e8;
+  /* Command and config snippets (always a dark block). */
+  --code-bg: #12151d;
+  --code-text: #e6e9f0;
+  /* Dims the window behind a dialog. */
+  --backdrop: rgba(12, 14, 20, 0.45);
   --shadow: 0 1px 2px rgba(20, 24, 36, 0.06), 0 4px 16px rgba(20, 24, 36, 0.06);
   --shadow-lg: 0 12px 48px rgba(20, 24, 36, 0.18);
   --radius: 12px;
@@ -51,7 +65,8 @@
 }
 
 /* Dark: follows the OS unless the user picked a theme in Settings
-   (`<html data-theme="light|dark">`, see lib/theme.svelte.ts). */
+   (`<html data-theme="light|dark">`, see lib/theme.svelte.ts). The two
+   blocks below are one palette and must stay identical (theme.test.ts). */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0f121a;
@@ -69,6 +84,16 @@
     --ai-strong: #f0a95e;
     --ai-soft: #35271a;
     --danger: #e65b5b;
+    --ok: #3fb872;
+    --status-offer: #f0b766;
+    --status-offer-bg: #3a2c14;
+    --status-ordered: #8db8f2;
+    --status-ordered-bg: #1c2a44;
+    --status-done: #7fd19d;
+    --status-done-bg: #173323;
+    --code-bg: #0b0d13;
+    --code-text: #e6e9f0;
+    --backdrop: rgba(0, 0, 0, 0.55);
     --line-abutment: #a8754f;
     --logo-bg: #f4f2ef;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.25);
@@ -94,17 +119,30 @@
   --text: #e9ecf3;
   --text-2: #a3abbd;
   --text-3: #6f788c;
-  --accent: #d0574b;
-  --accent-2: #b8463b;
+  --accent: #e46e62;
+  --accent-2: #d0574b;
+  --accent-fill: #b8463b;
+  --accent-fill-2: #a63d33;
   --accent-soft: #3a1f1c;
   --ai-strong: #f0a95e;
   --ai-soft: #35271a;
+  --danger: #e65b5b;
+  --ok: #3fb872;
+  --status-offer: #f0b766;
+  --status-offer-bg: #3a2c14;
+  --status-ordered: #8db8f2;
+  --status-ordered-bg: #1c2a44;
+  --status-done: #7fd19d;
+  --status-done-bg: #173323;
+  --code-bg: #0b0d13;
+  --code-text: #e6e9f0;
+  --backdrop: rgba(0, 0, 0, 0.55);
+  --line-abutment: #a8754f;
   --logo-bg: #f4f2ef;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.25);
   --shadow-lg: 0 12px 48px rgba(0, 0, 0, 0.5);
   --plan-grid: #232838;
   --plan-fill: rgba(208, 87, 75, 0.12);
-  --line-abutment: #a8754f;
   --window: #5aa2e6;
   --scene-roof: #b08672;
   --scene-wall: #8d93a3;

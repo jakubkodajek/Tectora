@@ -32,7 +32,7 @@
     z-index: 50;
     display: grid;
     place-items: center;
-    background: rgba(12, 14, 20, 0.45);
+    background: var(--backdrop);
     backdrop-filter: blur(2px);
   }
   .modal {
