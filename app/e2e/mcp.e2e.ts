@@ -68,6 +68,22 @@ test.describe("live AI changes", () => {
     await expect(review(page)).toHaveCount(0);
   });
 
+  test("a long AI run in the smallest window keeps the plan working (UI-001)", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "Sedlo");
+    await openEditor(app, "Sedlo");
+    const long = "Sklon podle řezu A-A, okapová výška podle pohledu od jihu a přesah podle detailu D3 ve výkresu";
+    for (let i = 1; i <= 4; i++) {
+      await mcp.call("update_edges", { id, changes: [{ index: 0, pitch_deg: 30 + i }], summary: `${i}. ${long}` });
+    }
+    await expect(review(page)).toContainText(cs("review.steps", { n: 4 }));
+    // Used to squeeze the plan to 0 px and hang the page in the grid loop.
+    await page.setViewportSize({ width: 600, height: 420 });
+    await expect(review(page)).toContainText(`1. ${long}`);
+    expect(await page.evaluate(() => 1 + 1)).toBe(2);
+    await review(page).getByRole("button", { name: cs("review.accept") }).click();
+    await expect(review(page)).toHaveCount(0);
+  });
+
   test("Revert in the AI tab undoes only the latest AI change", async ({ app, page, mcp }) => {
     const id = await createExample("gable", "Sedlo");
     await openEditor(app, "Sedlo");

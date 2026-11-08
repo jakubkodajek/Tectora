@@ -4,7 +4,7 @@
   // developed length. A cross-section shows the polygon that will be built.
   import { num } from "./format";
   import { t } from "./i18n.svelte";
-  import { arcFor, minRadius, type Arc, type ArcMode } from "./roundroof";
+  import { MAX_ROUND_SEGMENTS, arcFor, minRadius, type Arc, type ArcMode } from "./roundroof";
 
   let {
     span,
@@ -81,8 +81,8 @@
       {/if}
       <label>
         <span>{t("round.segments")}</span>
-        <input type="number" step="1" min="1" max="30" value={segments || (arc?.segments ?? "")}
-          onchange={(e) => { const v = Math.round(+(e.target as HTMLInputElement).value); segments = v >= 1 ? v : 0; }} />
+        <input type="number" step="1" min="1" max={MAX_ROUND_SEGMENTS} value={segments || (arc?.segments ?? "")}
+          onchange={(e) => { const v = Math.round(+(e.target as HTMLInputElement).value); segments = v >= 1 ? Math.min(MAX_ROUND_SEGMENTS, v) : 0; }} />
       </label>
     </div>
     <div class="preview">

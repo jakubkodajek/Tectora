@@ -7,6 +7,7 @@
   import { codeKind, lineLength, type ManualSel } from "./manual";
   import type { Ghost } from "./changes";
   import type { ItemRef, PlanTarget } from "./items";
+  import { fitScale, gridValues } from "./grid";
 
   let {
     project,
@@ -91,13 +92,15 @@
 
   export function fit() {
     const pts = project.parts.flatMap((p) => p.edges.map((e) => e.start)).concat(drawing ?? []);
-    if (pts.length === 0 || width < 10) return;
-    userView = false;
+    if (pts.length === 0) return;
     const xs = pts.map((p) => p.x);
     const ys = pts.map((p) => p.y);
     const w = Math.max(...xs) - Math.min(...xs) || 1;
     const h = Math.max(...ys) - Math.min(...ys) || 1;
-    scale = Math.min((width * 0.75) / w, (height * 0.75) / h);
+    const s = fitScale(width, height, w, h);
+    if (s === null) return;
+    userView = false;
+    scale = s;
     center = { x: (Math.max(...xs) + Math.min(...xs)) / 2, y: (Math.max(...ys) + Math.min(...ys)) / 2 };
   }
 
@@ -185,15 +188,11 @@
 
   const gridLines = $derived.by(() => {
     const step = gridStep();
-    const x0 = Math.floor(wx(0) / step) * step;
-    const x1 = wx(width);
-    const y0 = Math.floor(wy(height) / step) * step;
-    const y1 = wy(0);
     const out: { d: string; major: boolean }[] = [];
-    for (let x = x0; x <= x1; x += step) {
+    for (const x of gridValues(wx(0), wx(width), step)) {
       out.push({ d: `M${sx(x)},0V${height}`, major: Math.abs(x / (step * 5) - Math.round(x / (step * 5))) < 1e-6 });
     }
-    for (let y = y0; y <= y1; y += step) {
+    for (const y of gridValues(wy(height), wy(0), step)) {
       out.push({ d: `M0,${sy(y)}H${width}`, major: Math.abs(y / (step * 5) - Math.round(y / (step * 5))) < 1e-6 });
     }
     return out;

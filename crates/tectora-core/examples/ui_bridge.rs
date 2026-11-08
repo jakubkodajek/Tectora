@@ -239,9 +239,9 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
                 tectora_core::breakdown::breakdown(&project)
             })?)
         }
-        // Settings live in `target/ui-preview-config` (see `main`). The
-        // preview keeps serving its own library even if the projects folder
-        // setting changes.
+        // Settings live in `target/ui-preview-config` (see `main`). A new
+        // projects folder set through the bridge is served from then on
+        // (`serve`); one set by another process (MCP) is not.
         "get_settings" => Ok(Settings::load().describe()),
         "update_settings" => {
             let patch = a.get("patch").cloned().unwrap_or(Value::Null);
@@ -331,7 +331,7 @@ fn respond(mut stream: TcpStream, status: &str, body: &str) {
 }
 
 fn serve(
-    store: &Store,
+    store: &mut Store,
     seen: &mut BTreeMap<PathBuf, SystemTime>,
     stream: TcpStream,
 ) -> std::io::Result<()> {
@@ -370,6 +370,36 @@ fn serve(
     } else {
         let cmd = path.replace("%7C", "|").replace("%3A", ":");
         let args: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        if cmd == "update_settings" {
+            let before = effective_projects_dir();
+            let out = handle(store, &cmd, &args);
+            // A new jobs folder: serve it from now on, as the app's
+            // `switch_library` does (only when the setting changed, so the
+            // preview's own library stays put otherwise).
+            let after = effective_projects_dir();
+            if out.is_ok()
+                && after != before
+                && let Some(dir) = after.filter(|d| !d.is_empty())
+                && let Ok(next) = Store::new(PathBuf::from(dir))
+            {
+                *store = next;
+                // As the app's switch: the jobs of the new folder are not
+                // "changed", but the settings change still reaches the UI.
+                let settings = tectora_core::settings::settings_path();
+                let old = seen.get(&settings).copied();
+                *seen = scan(&store.dir);
+                match old {
+                    Some(t) => seen.insert(settings, t),
+                    None => seen.remove(&settings),
+                };
+            }
+            let out = match out {
+                Ok(v) => json!({ "ok": v }),
+                Err(e) => json!({ "err": e }),
+            };
+            respond(stream, "200 OK", &out.to_string());
+            return Ok(());
+        }
         match store_command(store, &cmd, &args) {
             Some(Ok(v)) => json!({ "ok": v }),
             // Library errors with their stable code, as the Tauri commands
@@ -387,6 +417,13 @@ fn serve(
     Ok(())
 }
 
+/// The jobs folder the settings name (`effective.projects_dir`).
+fn effective_projects_dir() -> Option<String> {
+    Settings::load().describe()["effective"]["projects_dir"]
+        .as_str()
+        .map(str::to_string)
+}
+
 fn main() -> std::io::Result<()> {
     let mut args = std::env::args().skip(1);
     let dir = PathBuf::from(
@@ -399,7 +436,7 @@ fn main() -> std::io::Result<()> {
         // SAFETY: set before any other thread exists.
         unsafe { std::env::set_var("TECTORA_CONFIG_DIR", "target/ui-preview-config") };
     }
-    let store = Store::new(dir.clone())?;
+    let mut store = Store::new(dir.clone())?;
     if store.list().is_empty() {
         // Same first-run seed as the app, plus a few more shapes to look at.
         for id in ["gable", "l-shape", "hip", "t-shape"] {
@@ -415,7 +452,7 @@ fn main() -> std::io::Result<()> {
     );
     let mut seen = scan(&dir);
     for stream in listener.incoming().flatten() {
-        if let Err(e) = serve(&store, &mut seen, stream) {
+        if let Err(e) = serve(&mut store, &mut seen, stream) {
             eprintln!("ui_bridge: {e}");
         }
     }

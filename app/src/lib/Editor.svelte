@@ -133,6 +133,8 @@
   let historyLen = $state(0);
   // Last JSON written by us, to tell our own saves from external edits.
   let lastSaved = "";
+  /** The jobs folder the job was opened from (see `save`). */
+  let libraryDir: string | null = null;
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   /** Saves in flight, and edits made so far (to tell whether a save is still current). */
   let inFlight = 0;
@@ -215,6 +217,11 @@
     const seq = edits;
     inFlight++;
     try {
+      // The jobs folder was switched under the open job (settings, or an AI
+      // over MCP): the same id there is another job, never write over it.
+      if (libraryDir !== null && (await api.projectsDir()) !== libraryDir) {
+        throw { code: "library_changed", id, detail: `${libraryDir} -> ${await api.projectsDir()}` };
+      }
       // An external edit (AI agent, CLI) saved since our last save or load
       // and not loaded yet: merge it in instead of writing over it.
       if (lastSaved) {
@@ -335,6 +342,7 @@
 
   let unlisten: (() => void) | undefined;
   onMount(() => {
+    api.projectsDir().then((d) => (libraryDir = d), () => {});
     load(true);
     onProjectsChanged((ids) => {
       if (!ids.includes(id)) return;
@@ -1194,7 +1202,7 @@
               <strong>
                 {t("review.title", { who: actorName(pending.actor) })}{#if pendingList.length > 1}<span class="steps">{t("review.steps", { n: pendingList.length })}</span>{/if}
               </strong>
-              <span>{pendingList.map((a) => a.summary).reverse().join(" → ")}</span>
+              <span class="review-summary" title={pendingList.map((a) => a.summary).reverse().join(" → ")}>{pendingList.map((a) => a.summary).reverse().join(" → ")}</span>
               {#if pendingChanges.length}
                 <span class="review-list">
                   {pendingChanges.slice(0, 4).map((c) => describeChange(c, project)).join(" · ")}{pendingChanges.length > 4 ? ` · ${t("review.more", { n: pendingChanges.length - 4 })}` : ""}
@@ -1696,6 +1704,14 @@
     background: color-mix(in srgb, var(--ai) 20%, transparent);
     font-size: 11.5px;
     font-weight: 600;
+  }
+  /* Two lines at most: a long AI run must not squeeze the plan away (UI-001). */
+  .review-summary {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
   }
   .review-list {
     color: var(--text-2);

@@ -6,6 +6,7 @@
   import type { CalcResult, Dormer, Project } from "./types";
   import { materialIds, materialName } from "./materials";
   import { DORMER_KINDS, buildDormer, defaultParams, parseDormer, roofHeightAt, type DormerKind, type DormerParams } from "./dormers";
+  import { MAX_ROUND_SEGMENTS } from "./roundroof";
 
   let {
     project,
@@ -122,8 +123,8 @@
       {#if kind === "round"}
         <label>
           <span>{t("round.segments")}</span>
-          <input type="number" step="1" min="1" max="30" value={params.segments}
-            onchange={(e) => { const v = num(e); if (v && v >= 1) set({ segments: Math.round(v) }); }} />
+          <input type="number" step="1" min="1" max={MAX_ROUND_SEGMENTS} value={params.segments}
+            onchange={(e) => { const v = num(e); if (v && v >= 1) set({ segments: Math.min(MAX_ROUND_SEGMENTS, Math.round(v)) }); }} />
         </label>
       {/if}
       {#if kind !== "shed" && kind !== "round"}

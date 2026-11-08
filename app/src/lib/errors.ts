@@ -58,6 +58,7 @@ const KNOWN = new Set([
   "not_found",
   "unreadable",
   "newer_format",
+  "library_changed",
   "permission_denied",
   "disk_full",
   "io",
