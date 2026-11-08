@@ -1790,11 +1790,15 @@
   }
   .tabs button {
     position: relative;
-    flex: 1;
+    flex: 1 1 auto;
+    /* Longer labels (de "Ergebnisse", "Rechenweg") shrink instead of
+       pushing the dock out of the window (UI-013). */
+    min-width: 0;
+    padding: 0 3px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
+    gap: 4px;
     height: 36px;
     border: none;
     border-bottom: 2px solid transparent;
@@ -1802,6 +1806,12 @@
     font-size: 13px;
     font-weight: 500;
     color: var(--text-2);
+  }
+  .tab-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .tabs button.on {
     color: var(--text);
