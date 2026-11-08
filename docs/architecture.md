@@ -118,14 +118,17 @@ it). Details: `docs/ai-integration.md`, `crates/tectora-core/src/store.rs`.
 
 | file | format | written by |
 | --- | --- | --- |
-| `*.tectora` | JSON, `docs/tectora.schema.json`, versioned with migrations on load, newer refused | core `store` |
+| `*.tectora` | JSON, `docs/tectora.schema.json`, versioned with migrations on load, newer neither read nor overwritten | core `store` |
 | `*.tectorajob` | ZIP: `manifest.json`, `project.tectora`, `history.jsonl`, `preview.svg`, `files/` | core `bundle` |
 | `.activity/<id>.jsonl`, `.activity/live.json` | change log with previous versions; current AI activity | core `store`, MCP |
 | `settings.json` | user settings, unknown keys kept | core `settings` |
 
 All of them are untrusted input: ids, sizes and coordinate ranges are checked
 before anything is calculated or written, and calculations run inside
-`model::guarded`.
+`model::guarded`. PDF drawings (MCP drawing tools) are read in a child
+process of the same executable with a heap cap and a time limit
+(`tectora-mcp/src/worker.rs`), because the PDF reader itself has no limit
+on inflated streams or nested forms.
 
 ## Development and CI
 

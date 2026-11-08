@@ -24,6 +24,7 @@ use tectora_core::{
 
 mod drawings;
 mod more;
+mod worker;
 
 pub const GUIDE: &str = include_str!("guide.md");
 const SUPPORTED_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -1017,7 +1018,7 @@ impl Server {
             }
             _ => self
                 .call_more(name, args)
-                .or_else(|| self.call_drawing(name, args))
+                .or_else(|| self.call_drawing_isolated(name, args))
                 .unwrap_or_else(|| Err(format!("unknown tool `{name}`"))),
         }
     }
@@ -1082,6 +1083,9 @@ impl Server {
 
 /// Serves MCP over stdin/stdout (one JSON-RPC message per line) until EOF.
 pub fn run_stdio(store: Store) -> io::Result<()> {
+    if worker::run_if_worker() {
+        return Ok(());
+    }
     let mut server = Server::new(store);
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
