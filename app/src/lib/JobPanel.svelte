@@ -27,8 +27,8 @@
     id: string;
     project: Project;
     onchange: () => void;
-    /** Writes pending edits to disk (before an export). */
-    onsave: () => Promise<void>;
+    /** Writes pending edits to disk (before an export); false when that failed. */
+    onsave: () => Promise<boolean>;
   } = $props();
 
   // Leaving the draft status stores the result the offer is made with.
@@ -91,7 +91,12 @@
     });
     if (!path) return;
     try {
-      await onsave();
+      // A failed save keeps the edits only in memory: the bundle would hold
+      // the older file (ERR-003). The save has shown its own error.
+      if (!(await onsave())) {
+        notifyError({ code: "not_saved", id }, "export");
+        return;
+      }
       await api.exportJob(id, path);
     } catch (e) {
       notifyError(e, "export");

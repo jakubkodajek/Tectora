@@ -144,6 +144,8 @@
   let edits = 0;
   /** A file-change event came in while a save was running. */
   let reloadWanted = false;
+  /** Saves started so far: a read that a save overtook is stale. */
+  let saveGen = 0;
   let calcSeq = 0;
 
   const snapshot = () => JSON.stringify(project);
@@ -213,12 +215,14 @@
     saveTimer = setTimeout(save, 500);
   }
 
-  async function save() {
-    if (!project) return;
+  /** Writes the job; resolves to whether the edits are on disk (errors are shown, never thrown). */
+  async function save(): Promise<boolean> {
+    if (!project) return false;
     clearTimeout(saveTimer);
     saveState = "saving";
     const seq = edits;
     inFlight++;
+    saveGen++;
     try {
       // The jobs folder was switched under the open job (settings, or an AI
       // over MCP): the same id there is another job, never write over it.
@@ -257,10 +261,12 @@
       lastSaved = JSON.stringify(await api.normalizeProject(written));
       // An edit made while this save was running is still unsaved.
       saveState = edits === seq ? "saved" : "dirty";
+      return true;
     } catch (e) {
       // Keep the edits in memory; the status bar offers to try again.
       saveState = "failed";
       notifyError(e, "save");
+      return false;
     } finally {
       inFlight--;
       if (!inFlight && reloadWanted) {
@@ -299,6 +305,7 @@
   const redo = () => at < history.length - 1 && restore(at + 1);
 
   async function load(initial: boolean) {
+    const gen = saveGen;
     try {
       const p = await api.loadProject(id);
       const json = JSON.stringify(p);
@@ -308,13 +315,22 @@
         reloadWanted = true;
         return;
       }
+      if (!initial && gen !== saveGen) {
+        // A save started and finished while reading: this read may be older
+        // than it and would pass for an outside edit, putting the job back
+        // to before the user's last edit. Read again.
+        load(false);
+        return;
+      }
       if (!initial && json === lastSaved) return;
       // Indices in an open menu or a drag in progress refer to the old project.
       menu = null;
       dragBase = null;
-      // An external edit while local edits are not saved yet: keep both
-      // (the external one wins where both changed the same value).
-      const merged = !initial && saveState === "dirty" && project && lastSaved;
+      // An external edit while local edits are not saved yet (waiting for
+      // the timer, or a save that failed): keep both (the external one wins
+      // where both changed the same value). The state stays "dirty" or
+      // "failed", so the merged edits are still to be saved (ERR-002).
+      const merged = !initial && (saveState === "dirty" || saveState === "failed") && project && lastSaved;
       project = merged ? merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, p) : p;
       lastSaved = json;
       if (initial) {
@@ -390,6 +406,11 @@
 
   /** Reverts the pending AI changes from the banner, or the latest one from the AI tab. */
   async function revert(all = false) {
+    // Edits not on disk yet would be lost: the store keeps only the edits in
+    // the file, merging the revert onto them (ERR-001).
+    commitFocused();
+    await tick();
+    if (saveState !== "saved" && !(await save())) return;
     try {
       clearTimeout(saveTimer);
       const oldest = pendingList[pendingList.length - 1];
