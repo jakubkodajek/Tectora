@@ -505,6 +505,8 @@ test.describe("MCP parity", () => {
       "remove file": "remove_file",
       "export job": "export_job",
       "import job": "import_job",
+      "export plan sheet (PDF)": "export_plan",
+      "export text for the price sheet": "export_list",
       "AI history": "get_history",
       "revert AI change": "revert_last_change",
       "revert to": "revert_to",

@@ -14,6 +14,7 @@ pub mod dormer;
 pub mod edit;
 pub mod engine;
 pub mod examples;
+pub mod export;
 pub mod flat;
 mod gable_wall;
 pub mod geom;

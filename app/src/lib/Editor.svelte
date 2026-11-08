@@ -9,6 +9,7 @@
   import JobPanel from "./JobPanel.svelte";
   import LanguagePicker from "./LanguagePicker.svelte";
   import Modal from "./Modal.svelte";
+  import ExportDialog from "./ExportDialog.svelte";
   import PlanView from "./PlanView.svelte";
   import Results from "./Results.svelte";
   import Breakdown from "./Breakdown.svelte";
@@ -111,6 +112,7 @@
   });
   let cursor = $state<Point2 | null>(null);
   let showDims = $state(true);
+  let exporting = $state(false);
   let activity = $state<ActivityItem[]>([]);
   /** AI changes waiting for review, as the library keeps them (shared with the agents). */
   let review = $state<ReviewStatus | null>(null);
@@ -1223,6 +1225,9 @@
       <button class="tool" onclick={() => plan?.fit()} disabled={prefs.layout === "3d"} title={t("plan.fit")}><Icon name="fit" /><span>{t("plan.fit")}</span></button>
       <button class="tool" class:on={showDims} onclick={() => (showDims = !showDims)} title={t("tool.dims")}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
     </div>
+    <div class="group">
+      <button class="tool" class:on={exporting} disabled={!result} onclick={() => (exporting = true)} title={t("tool.exportHint")}><Icon name="download" /><span>{t("tool.export")}</span></button>
+    </div>
   </div>
   {/if}
 
@@ -1409,6 +1414,10 @@
     </div>
   {/if}
 </div>
+
+{#if exporting && project}
+  <ExportDialog {project} title={project.name || id} onclose={() => (exporting = false)} />
+{/if}
 
 {#if calc && project}
   <Modal title={t("calc.title")} width={640} onclose={() => (calc = null)}>

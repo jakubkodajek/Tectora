@@ -177,6 +177,35 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             bundle::export(store, &id()?, &PathBuf::from(arg::<String>(a, "path")?))?;
             Ok(Value::Null)
         }
+        "export_preview" => {
+            let opts = tectora_core::export::ListOptions::new(
+                arg::<String>(a, "title")?,
+                arg::<String>(a, "stamp")?,
+            );
+            let (list, svg) = tectora_core::export::checked(&arg::<Project>(a, "project")?, &opts)?;
+            Ok(serde_json::json!({ "list": list, "svg": svg }))
+        }
+        "export_plan_file" => {
+            let path = PathBuf::from(arg::<String>(a, "path")?);
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let bytes = tectora_core::export::checked_sheet_file(
+                &arg::<Project>(a, "project")?,
+                &arg::<String>(a, "stamp")?,
+                &ext,
+            )?;
+            std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+            Ok(Value::Null)
+        }
+        "save_png" => {
+            let bytes = arg::<Vec<u8>>(a, "bytes")?;
+            std::fs::write(PathBuf::from(arg::<String>(a, "path")?), bytes)
+                .map_err(|e| e.to_string())?;
+            Ok(Value::Null)
+        }
         "import_job" => to_json(bundle::open_path(
             store,
             &PathBuf::from(arg::<String>(a, "path")?),

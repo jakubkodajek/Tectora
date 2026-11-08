@@ -72,4 +72,16 @@ sessions that use it know where things stand.
 - State: `make check` exit 0; `npx playwright test objects mcp editor` 63 passed.
   `make sweeps`: the 2 dark-theme accent contrast failures predate this change.
 - Next: export of the plan picture and the German line list (other thread).
+## 2026-11-08 · Export for the offer (plan sheet + price-sheet text)
+
+- Done: `tectora_core::export`: the text list in the format of DACAD's
+  "Liste" as TERRAN's Slovak-patched build writes it (verified against
+  DACAD under Wine; `m˛` glyph and Slovak group names on purpose, the Excel
+  price sheet parses them), and an A4 plan sheet (lengths, areas, pitches,
+  totals) as SVG and a hand-written PDF. Export dialog in the editor (PDF,
+  PNG, copy image, copy text), Tauri commands + ui_bridge, MCP
+  `export_list` / `export_plan`.
+- Known gaps: wall-area ("Stena") groups, dormers as their own roof number,
+  one hole entry per face, DIN Norm group only for one material.
+- Next: Jakub checks the pasted text in the real Excel sheet.
 - Blockers / open questions: none.

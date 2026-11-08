@@ -55,7 +55,17 @@ pub const EXPORTS_DIR: &str = "exports";
 /// the name is taken): the only place an AI client may write a bundle, so it
 /// can never replace a file of the user's. `name` must be a plain file name.
 pub fn export_path(store: &Store, name: &str) -> Result<std::path::PathBuf, String> {
-    let bad = name.len() > 100 || !crate::store::valid_file_name(&format!("{name}.{EXTENSION}"));
+    export_path_with(store, name, EXTENSION)
+}
+
+/// Like [`export_path`] for another file type in the exports folder, e.g.
+/// the plan sheet as `pdf` or `svg`.
+pub fn export_path_with(
+    store: &Store,
+    name: &str,
+    ext: &str,
+) -> Result<std::path::PathBuf, String> {
+    let bad = name.len() > 100 || !crate::store::valid_file_name(&format!("{name}.{ext}"));
     if bad {
         return Err(format!("`{name}` is not a plain file name"));
     }
@@ -63,9 +73,9 @@ pub fn export_path(store: &Store, name: &str) -> Result<std::path::PathBuf, Stri
     fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     for n in 1..1000 {
         let file = if n == 1 {
-            format!("{name}.{EXTENSION}")
+            format!("{name}.{ext}")
         } else {
-            format!("{name} ({n}).{EXTENSION}")
+            format!("{name} ({n}).{ext}")
         };
         let path = dir.join(file);
         if !path.exists() {

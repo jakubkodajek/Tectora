@@ -78,6 +78,13 @@ export const api = {
   openAttachment: (id: string, name: string) => invoke<boolean>("open_attachment", { id, name }),
   exportJob: (id: string, path: string) => invoke<void>("export_job", { id, path }),
   importJob: (path: string) => invoke<string>("import_job", { path }),
+  /** The price-sheet text list and the plan sheet (SVG) for the export dialog. */
+  exportPreview: (project: Project, title: string, stamp: string) =>
+    invoke<{ list: string; svg: string }>("export_preview", { project, title, stamp }),
+  /** Writes the plan sheet as PDF or SVG (by the path's extension). */
+  exportPlanFile: (project: Project, stamp: string, path: string) =>
+    invoke<void>("export_plan_file", { project, stamp, path }),
+  savePng: (path: string, bytes: number[]) => invoke<void>("save_png", { path, bytes }),
   takeSnapshot: (project: Project) => invoke<ResultSnapshot>("take_snapshot", { project }),
   takePendingOpen: () => invoke<string | null>("take_pending_open"),
 };

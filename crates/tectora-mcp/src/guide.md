@@ -87,6 +87,11 @@ The tools cover every operation of the Tectora editor:
 - Hand-over: `export_job`, `import_job` (`.tectorajob` = project, files,
   history and a preview in one file). `export_job` writes into the
   library's `exports` folder and returns the path; tell the user where it is.
+- Price sheet: `export_list` returns the text list the user pastes into the
+  Excel price sheet (the app's Export dialog has the same text with a copy
+  button); hand it over verbatim, never translated or reformatted.
+  `export_plan` writes the roof sheet (plan with line lengths, areas and
+  pitches) as PDF or SVG into the `exports` folder and returns the path.
 - `get_schema`: the JSON Schema of the `.tectora` file.
 
 ## Stored result
