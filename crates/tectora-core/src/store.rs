@@ -1820,14 +1820,20 @@ mod tests {
         let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
         let mut ai = a.clone();
         ai.parts[0].edges[3].pitch_deg = 44.0;
+        // Distinct times: `revert_to` finds the entry by its time.
+        std::thread::sleep(std::time::Duration::from_millis(2));
         store
             .save_as(Some(id.clone()), &ai, "claude", "Steeper wall 4")
             .unwrap();
+        // Distinct times: `revert_to` finds the entry by its time.
+        std::thread::sleep(std::time::Duration::from_millis(2));
         store.revert_last(&id, "claude", Some(" undo ")).unwrap();
         assert_eq!(
             store.activity(&id).last().unwrap().summary,
             format!("{REVERTED_PREFIX}Steeper wall 4{REVERT_REASON_OPEN}undo)")
         );
+        // Distinct times: `revert_to` finds the entry by its time.
+        std::thread::sleep(std::time::Duration::from_millis(2));
         store
             .save_as(Some(id.clone()), &ai, "claude", "Steeper wall 4")
             .unwrap();
@@ -1840,6 +1846,8 @@ mod tests {
             "{s}"
         );
         // Without a reason nothing is added.
+        // Distinct times: `revert_to` finds the entry by its time.
+        std::thread::sleep(std::time::Duration::from_millis(2));
         store
             .save_as(Some(id.clone()), &ai, "claude", "Again")
             .unwrap();
@@ -1860,6 +1868,8 @@ mod tests {
         let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
         let mut ai = a.clone();
         ai.parts[0].edges[3].pitch_deg = 44.0;
+        // Distinct times: `revert_to` finds the entry by its time.
+        std::thread::sleep(std::time::Duration::from_millis(2));
         store
             .save_as(Some(id.clone()), &ai, "claude", "Steeper wall 4")
             .unwrap();
