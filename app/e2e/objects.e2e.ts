@@ -3,7 +3,7 @@
 // 3D view buttons. Each is placed with its tool, edited in its bar, deleted,
 // and checked against the stored file and the core calculation.
 import type { Page } from "@playwright/test";
-import { bar, clickPlan, openEditor, selectWall, setField, shownArea, tool } from "./editor";
+import { bar, firstArea, clickPlan, openEditor, selectWall, setField, shownArea, tool } from "./editor";
 import { bridge, createExample, expect, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 
@@ -20,7 +20,7 @@ test.describe("dormers", () => {
   test("place, change every kind and its fields, step, delete with the button and the Delete key", async ({ app, page }) => {
     const id = await createExample("hip", "Valba");
     await openEditor(app, "Valba");
-    const a0 = await shownArea(page);
+    const a0 = await firstArea(page);
     await tool(page, "tool.dormer").click();
     await expect(page.getByText(cs("plan.placeDormer"))).toBeVisible();
     await clickPlan(page, 4, 1);
@@ -204,7 +204,7 @@ test.describe("hand-drawn lines and faces, flat roof", () => {
   test("new face: corners, close on the first, pitch and label, delete with Delete", async ({ app, page }) => {
     const id = await createExample("gable", "Sedlo");
     await openEditor(app, "Sedlo");
-    const a0 = await shownArea(page);
+    const a0 = await firstArea(page);
     await tool(page, "tool.face").click();
     await clickPlan(page, 1, 1);
     await clickPlan(page, 4, 1);

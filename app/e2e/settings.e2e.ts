@@ -63,7 +63,12 @@ test.describe("settings", () => {
     await grid.getByLabel(cs("edge.eaveHeight")).press("Tab");
     await grid.getByLabel(cs("edge.overhang")).fill("0.4");
     await grid.getByLabel(cs("edge.overhang")).press("Tab");
-    await expect.poll(() => settingsFile().roof_defaults).toEqual({ pitch_deg: 27.5, eave_height: 2.6, overhang: 0.4 });
+    const saved = { pitch_deg: 27.5, eave_height: 2.6, overhang: 0.4 };
+    await expect.poll(() => settingsFile().roof_defaults).toEqual(saved);
+    // The file is written before the app has the answers to the three saves;
+    // each answer sets the fields again, which would overwrite a value typed
+    // in the meantime. The app keeps the last answer in localStorage.
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("tectora.presets") ?? "null"))).toEqual(saved);
     await grid.getByLabel(cs("edge.pitch")).fill("95");
     await grid.getByLabel(cs("edge.pitch")).press("Tab");
     await expect(dlg.getByRole("alert")).toHaveText(cs("settings.err.invalid_value"));
@@ -136,6 +141,7 @@ test.describe("settings", () => {
     await openEditor(app, "Sedlo");
     // As an AI client changing the folder over MCP: the settings file changes.
     const other = path.join(E2E_DIR, "other-library");
+    fs.rmSync(other, { recursive: true, force: true });
     fs.mkdirSync(other, { recursive: true });
     await bridge("update_settings", { patch: { projects_dir: other } });
     // The open job belonged to the old folder: back to the library.

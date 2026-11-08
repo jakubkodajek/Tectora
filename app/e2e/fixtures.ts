@@ -19,13 +19,17 @@ export async function bridge<T = any>(cmd: string, args: Record<string, unknown>
   return body.ok as T;
 }
 
-/** Empties the library and the settings folder, and drops pending file events. */
+/**
+ * Empties the library and the settings folder, points the bridge back at the
+ * test library (a test may switch the jobs folder) and drops pending file
+ * events.
+ */
 export async function resetData() {
   for (const dir of [LIBRARY_DIR, CONFIG_DIR, FILES_DIR]) {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.mkdirSync(dir, { recursive: true });
   }
-  await bridge("__events");
+  await bridge("__reset");
 }
 
 /** Writes a scratch file for attachments / imports and returns its path. */

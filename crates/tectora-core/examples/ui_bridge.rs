@@ -360,6 +360,7 @@ fn respond(mut stream: TcpStream, status: &str, body: &str) {
 }
 
 fn serve(
+    home: &std::path::Path,
     store: &mut Store,
     seen: &mut BTreeMap<PathBuf, SystemTime>,
     stream: TcpStream,
@@ -395,6 +396,23 @@ fn serve(
     let mut body = vec![0; len];
     reader.read_exact(&mut body)?;
     let out = if path == "__events" {
+        json!({ "ok": events(store, seen) })
+    } else if path == "__reset" {
+        // Test harness: back to the library the bridge was started with
+        // (a test may have switched the jobs folder), and drop pending events.
+        if store.dir != home {
+            match Store::new(home.to_path_buf()) {
+                Ok(next) => *store = next,
+                Err(e) => {
+                    respond(
+                        stream,
+                        "200 OK",
+                        &json!({ "err": e.to_string() }).to_string(),
+                    );
+                    return Ok(());
+                }
+            }
+        }
         json!({ "ok": events(store, seen) })
     } else {
         let cmd = path.replace("%7C", "|").replace("%3A", ":");
@@ -481,7 +499,7 @@ fn main() -> std::io::Result<()> {
     );
     let mut seen = scan(&dir);
     for stream in listener.incoming().flatten() {
-        if let Err(e) = serve(&mut store, &mut seen, stream) {
+        if let Err(e) = serve(&dir, &mut store, &mut seen, stream) {
             eprintln!("ui_bridge: {e}");
         }
     }
