@@ -37,6 +37,11 @@ const SHORT_SEGMENT_ARC: f64 = 15.0;
 /// Below this chord, m, DACAD takes the coarser steps.
 const MIN_CHORD: f64 = 0.4;
 
+/// Most segments per side a round roof or Rundgaube may have (the editor's
+/// field allows 30). A larger count from a file or an MCP client would
+/// build that many pitch breaks.
+pub const MAX_ROUND_SEGMENTS: u32 = 30;
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ArcInput {
     /// Distance between the two wall lines, m.
@@ -83,6 +88,9 @@ pub fn segments_for(deg: f64, radius: f64) -> u32 {
 
 /// The arc for the input, or `None` when the value is out of range.
 pub fn arc_for(a: &ArcInput) -> Option<Arc> {
+    if a.segments > MAX_ROUND_SEGMENTS {
+        return None;
+    }
     let c = min_radius(a.span, a.overhang);
     if !(c > 0.0) {
         return None;

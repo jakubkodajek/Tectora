@@ -232,11 +232,18 @@ pub fn part_centre(part: &RoofPart) -> Point2 {
     pt(centre(part.edges.iter().map(|e| e.start)))
 }
 
+/// Most copies one transform adds (the editor's field allows 50).
+pub const MAX_COPIES: u32 = 50;
+/// Most walls of a regular polygon part (the editor's field allows 64).
+pub const MAX_POLYGON_SIDES: usize = 64;
+
 /// Applies `m` to part `pi` and to the dormers, chimneys, openings, windows
-/// and hand-drawn lines and faces lying on it. With `copies` > 0 the part
-/// stays and that many copies are added, the k-th mapped k times (DACAD's
-/// copy functions). Returns the indices of the new or moved parts.
+/// and hand-drawn lines and faces lying on it. With `copies` > 0 (at most
+/// [`MAX_COPIES`]) the part stays and that many copies are added, the k-th
+/// mapped k times (DACAD's copy functions). Returns the indices of the new
+/// or moved parts.
 pub fn transform_part(project: &mut Project, pi: usize, m: PlanMap, copies: u32) -> Vec<usize> {
+    let copies = copies.min(MAX_COPIES);
     let Some(part) = project.parts.get(pi).cloned() else {
         return Vec::new();
     };
@@ -598,7 +605,9 @@ pub fn offset_wall(part: &mut RoofPart, ei: usize, d: f64) -> bool {
 
 /// The corners of a regular polygon (DACAD: Vieleck-Eingabe),
 /// counter-clockwise, the first wall horizontal at the bottom for rotation 0.
+/// The corners of a regular polygon; `sides` is capped at [`MAX_POLYGON_SIDES`].
 pub fn regular_polygon(c: Point2, sides: usize, side: f64, rotation_deg: f64) -> Vec<Point2> {
+    let sides = sides.min(MAX_POLYGON_SIDES);
     let s = sides as f64;
     let r = side / (2.0 * (PI / s).sin());
     let a0 = -PI / 2.0 - PI / s + rotation_deg.to_radians();
