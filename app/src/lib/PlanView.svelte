@@ -136,8 +136,8 @@
     `${new Intl.NumberFormat(numberLocale(), { maximumFractionDigits: 2 }).format(v)}°`;
   const areaText = (v: number) =>
     `${new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v)} m²`;
-  /** Rough width of a label in px (monospace, 11 px). */
-  const textPx = (s: string) => s.length * 6.8 + 6;
+  /** Rough width of a label in px at the given font size. */
+  const textPx = (s: string, size: number) => s.length * size * 0.62 + 8;
 
   const sx = (x: number) => (x - center.x) * scale + width / 2;
   const sy = (y: number) => -(y - center.y) * scale + height / 2;
@@ -531,11 +531,11 @@
         {@const area = areaText(tag.area)}
         {@const along = tag.along * scale}
         {@const across = tag.across * scale}
-        {#if along > textPx(pitch) && across > 14}
+        {#if along > textPx(pitch, 16) && across > 20}
           <g class="face-tag" transform="translate({sx(tag.x)} {sy(tag.y)}) rotate({-tag.angle_deg})">
-            {#if along > textPx(area) && across > 34}
-              <text class="pitch" y="-7">{pitch}</text>
-              <text class="area" y="7">{area}</text>
+            {#if along > textPx(area, 12.5) && across > 44}
+              <text class="pitch" y="-8">{pitch}</text>
+              <text class="area" y="9">{area}</text>
             {:else}
               <text class="pitch">{pitch}</text>
             {/if}
@@ -766,23 +766,25 @@
     pointer-events: none;
   }
   .face-tag text {
-    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-family: inherit;
+    font-variant-numeric: tabular-nums;
     text-anchor: middle;
     dominant-baseline: middle;
     pointer-events: none;
     paint-order: stroke;
     stroke: var(--surface);
-    stroke-width: 3px;
+    stroke-width: 4px;
     stroke-linejoin: round;
   }
   .face-tag .pitch {
     fill: var(--text);
-    font-size: 12px;
+    font-size: 16px;
     font-weight: 700;
   }
   .face-tag .area {
     fill: var(--text-2);
-    font-size: 11px;
+    font-size: 12.5px;
+    font-weight: 600;
   }
   .face-no {
     fill: var(--text-2);
