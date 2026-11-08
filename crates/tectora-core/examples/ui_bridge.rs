@@ -56,6 +56,12 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             Ok(json!({ "projects": projects, "broken": broken }))
         }
         "startup_warnings" => Ok(json!([])),
+        // TECTORA_PREVIEW_UPDATE=0.2.0 shows the update offer in the library.
+        "update_check" => Ok(std::env::var("TECTORA_PREVIEW_UPDATE").map_or(
+            Value::Null,
+            |version| json!({ "version": version, "notes": "- Preview release notes" }),
+        )),
+        "update_install" => Err("updates are not installed in the preview".into()),
         "project_activity" => {
             let mut items: Vec<Value> = store
                 .activity(&id()?)
@@ -69,6 +75,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
         }
         "revert_last_change" => to_json(store.revert_last(&id()?, USER_ACTOR)?),
         "revert_changes" => to_json(store.revert_to(&id()?, arg(a, "tsMs")?, USER_ACTOR)?),
+        "review_status" => to_json(store.review_status(&id()?)?),
+        "accept_changes" => to_json(store.mark_reviewed(&id()?, arg(a, "tsMs")?)?),
         "live_status" => to_json(store.live()),
         "mcp_command" => Ok(json!({
             "command": "cargo",
@@ -79,15 +87,17 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             let project: Project = arg(a, "project")?;
             to_json(store.save(arg(a, "id")?, &project)?)
         }
+        "normalize_project" => to_json(arg::<Project>(a, "project")?),
         "delete_project" => to_json(store.delete(&id()?)?),
         "duplicate_project" => {
             let source = id()?;
             let mut project = store.load(&source)?;
-            project.name = arg(a, "name")?;
-            project.job.status = tectora_core::JobStatus::Draft;
-            project.result_snapshot = None;
+            let name: String = arg(a, "name")?;
+            tectora_core::library::prepare_copy(&mut project, &name, arg(a, "job")?);
             let new_id = store.save(None, &project)?;
-            store.copy_attachments(&source, &new_id)?;
+            if arg::<Option<bool>>(a, "withFiles")?.unwrap_or(true) {
+                store.copy_attachments(&source, &new_id)?;
+            }
             to_json(new_id)
         }
         "list_attachments" => to_json(store.attachments(&id()?)),
@@ -161,6 +171,13 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             to_json(store.save(None, &project)?)
         }
         "calc" => calc(&arg::<Project>(a, "project")?),
+        "calc_breakdown" => {
+            let project = arg::<Project>(a, "project")?;
+            project.check_limits()?;
+            to_json(tectora_core::model::guarded(|| {
+                tectora_core::breakdown::breakdown(&project)
+            })?)
+        }
         // Settings live in `target/ui-preview-config` (see `main`). The
         // preview keeps serving its own library even if the projects folder
         // setting changes.
@@ -180,9 +197,14 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
     }
 }
 
-/// Modification times of the library's job files and the live status file.
+/// Modification times of the library's job files, the live status file and
+/// the settings file (the app's watcher covers the settings folder too).
 fn scan(dir: &Path) -> BTreeMap<PathBuf, SystemTime> {
     let mut out = BTreeMap::new();
+    let settings = tectora_core::settings::settings_path();
+    if let Ok(modified) = std::fs::metadata(&settings).and_then(|m| m.modified()) {
+        out.insert(settings, modified);
+    }
     for folder in [dir.to_path_buf(), dir.join(store::ACTIVITY_DIR)] {
         let Ok(entries) = std::fs::read_dir(&folder) else {
             continue;
@@ -206,12 +228,16 @@ fn events(store: &Store, seen: &mut BTreeMap<PathBuf, SystemTime>) -> Value {
     let now = scan(&store.dir);
     let mut ids = Vec::new();
     let mut live = false;
+    let mut settings_changed = false;
+    let settings = tectora_core::settings::settings_path();
     let changed = now
         .keys()
         .chain(seen.keys())
         .filter(|p| now.get(*p) != seen.get(*p));
     for path in changed {
-        if path.file_name().and_then(|n| n.to_str()) == Some(store::LIVE_FILE) {
+        if *path == settings {
+            settings_changed = true;
+        } else if path.file_name().and_then(|n| n.to_str()) == Some(store::LIVE_FILE) {
             live = true;
         } else if let Some(id) = path.file_stem().and_then(|s| s.to_str())
             && !ids.iter().any(|i| i == id)
@@ -223,6 +249,9 @@ fn events(store: &Store, seen: &mut BTreeMap<PathBuf, SystemTime>) -> Value {
     let mut out = Vec::new();
     if !ids.is_empty() {
         out.push(json!({ "event": "projects-changed", "payload": ids }));
+    }
+    if settings_changed {
+        out.push(json!({ "event": "settings-changed", "payload": Settings::load().describe() }));
     }
     if live && let Some(status) = store.live() {
         out.push(json!({ "event": "live-status", "payload": status }));

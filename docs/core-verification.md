@@ -111,6 +111,47 @@ within those tolerances of each other are skipped by the envelope properties
    SO2). The 3D view draws both sides, so nothing shows; the doc comment is
    wrong.
 
+7. **Merged apex (P16, PR #16 CI).** Where four planes nearly meet at
+   the top, DACAD takes their events as one sweep level and merges their
+   corners, so a 45° face's corner is its neighbours' point, 1.16 cm off
+   its own plane. SO2 byte-identical to DACAD's. `properties.rs`
+   `faces_lie_in_their_edge_planes` now allows `slope × POINT_EPS` (2 cm in
+   plan) on top of 1 cm.
+8. **Single-line faces (F5, F6, F8, G6, V6).** Also with one overhang, where a
+   short wall meets its neighbours at a sharp angle DACAD writes a face
+   bounded by a single line: two of its three corners coincide, its
+   polygon has no area, its reported area is a 0.004–0.016 m² sliver. SO2
+   byte-identical to DACAD's; `faces_are_flat_at_their_pitch` skips such
+   faces. V6 (7 walls and a chimney, PR #18's CI failure) is the same case
+   seen from the pitch side: with only one line, the face's Newell normal
+   has no defined direction and comes out horizontal, so the polygon reads
+   as vertical while DACAD labels it with its edge's pitch (65°).
+
+All six are fixed cases in `tests/fixtures/check` (project JSON, the RD2
+the engine writes, DACAD's SO2 from the core emulator), checked by
+`properties.rs::merged_apex_corner_is_within_dacad_tolerance` and
+`single_line_faces_are_dacads` and `single_line_face_reads_as_vertical`.
+`properties.rs` now runs a fixed seed like
+`invariants.rs`, so a pull request's checks do not depend on which rare roof
+a random seed draws; the nightly run adds a new seed each night.
+
+9. **Walls in line are joined before their pitches are looked at.** At the
+   start of every model the core joins a wall with its successor when both
+   have a length, lie in line (unit directions equal within 0.01) and their
+   first roof faces have the same eave height, overhang and flag. The
+   pitch is not compared: the joined wall carries the first wall's pitch
+   and pitch breaks, the second wall's are dropped without a message
+   (`dcore::s1::merge`). A front entered as 40° + 25° with one eave height
+   becomes one 40° face; a pitch break on only the second wall disappears,
+   one on only the first runs on over the second. Where the walls' faces
+   meet in one plane later in the sweep, DACAD drops the second wall's
+   pitch breaks too and says so in an information box ("Knicke bei Wand %d
+   werden ignoriert", string 0xa35). The same walls with different eave
+   heights or overhangs and no marker wall between them end in E00002
+   ("Kein Schnittpunkt berechenbar"). All cases were run in the DACAD core
+   emulator and are SO2 byte-identical (or the same error) with the
+   engine. The engine keeps the result and warns (`merged_walls`, below).
+
 Every deviation from exact geometry found so far (73 roofs: the census's
 worst 60, C1–C5, D1–D7 from property failures under other seeds) was run in
 the DACAD core emulator and is SO2 byte-identical to DACAD. The property
@@ -135,6 +176,7 @@ roof against its walls and the app and MCP show a warning (`RoofGeometry::warnin
 | `outside_outline` | largest distance of a face corner outside the eave outline (each wall's strip out to its overhang, mitred; for joined roofs every building's) | 5 cm |
 | `overlapping_faces` | plan area where two faces pass through each other or coincide; a face lying above another one (an overhang over a lower roof) is sound | 0.25 m² |
 | `area_mismatch` | relative difference of the reported face areas (plus deductions) to the faces' own 3D polygons; single roofs only, joined roofs book their pieces by DACAD's own rules | 1 % |
+| `merged_walls` | the core joined two walls in line whose pitch or pitch breaks differ (finding 7); `edges` = the wall whose definition is used, then the one whose pitch or breaks are ignored. Comes from the core run itself (`dcore::state::Notice`), not from the geometry | — |
 
 Tolerances were set on 2 779 roofs: every DACAD-calculated `.DAD` in the
 project files (golden, samples, mass s1/s2, mr3, core-stress, variants), the

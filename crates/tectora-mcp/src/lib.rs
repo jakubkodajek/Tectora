@@ -14,13 +14,15 @@ use tectora_core::diff::diff;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::geom::Point2;
 use tectora_core::model::GABLE_PITCH_DEG;
-use tectora_core::quantities::{dacad_line_totals, roof_totals};
+use tectora_core::quantities::{area_by_pitch, dacad_line_totals, roof_totals};
+use tectora_core::roof::LineKind;
 use tectora_core::settings::Settings;
 use tectora_core::store::{LiveStatus, Store, now_ms};
 use tectora_core::{
     Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow,
 };
 
+mod drawings;
 mod more;
 
 pub const GUIDE: &str = include_str!("guide.md");
@@ -118,24 +120,91 @@ fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             "reported area differs from the roof faces by {:.1} %; check the area",
             w.value * 100.0
         ),
+        WarningKind::MergedWalls => {
+            let (kept, ignored) = (w.edges.first(), w.edges.get(1));
+            format!(
+                "edges {} and {} (0-based) are in line with the same eave height and overhang, so they are calculated as one wall with the pitch and pitch breaks of edge {}; edge {}'s own pitch or pitch breaks are ignored. To keep them, give the walls different eave heights or overhangs, or use one pitch for both",
+                kept.map_or(0, |e| *e),
+                ignored.map_or(0, |e| *e),
+                kept.map_or(0, |e| *e),
+                ignored.map_or(0, |e| *e),
+            )
+        }
     };
-    json!({ "kind": w.kind, "value": w.value, "message": message })
+    let mut v = json!({ "kind": w.kind, "value": w.value, "message": message });
+    if !w.edges.is_empty() {
+        v["edges"] = json!(w.edges);
+    }
+    v
 }
 
 fn quantities(project: &Project) -> Value {
     let t = roof_totals(project);
-    json!({
+    let mut q = json!({
         "roof_area_m2": round(t.roof_area, 2),
         "ridge_height_m": round(t.ridge_height, 2),
         "hip_count": t.hip_count,
         "valley_count": t.valley_count,
         "lines_by_dacad_code_m": dacad_line_totals(project),
+        "area_by_pitch_m2": area_by_pitch(project)
+            .iter()
+            .map(|&(p, a)| json!({ "pitch_deg": p, "area": a }))
+            .collect::<Vec<_>>(),
         "area_by_material_m2": t
             .area_by_material
             .iter()
             .map(|&(m, a)| json!({ "material": m, "name": project.material_name(m), "area": round(a, 2) }))
             .collect::<Vec<_>>(),
-    })
+    });
+    // With more than one material: the lines each one's offer needs.
+    let by_line = tectora_core::quantities::lines_by_material(project);
+    if by_line.len() > 1 {
+        q["lines_by_material_m"] = by_line
+            .into_iter()
+            .map(|(m, lines)| json!({ "material": m, "name": project.material_name(m), "lines_by_dacad_code_m": lines }))
+            .collect();
+    }
+    q["heights_m"] = heights(project);
+    q
+}
+
+/// The heights a section drawing labels, per part: the distinct heights of
+/// its level eaves and pitch breaks and its highest point, so they can be
+/// checked against the drawing's labels without reading every line.
+fn heights(project: &Project) -> Value {
+    let distinct = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v.dedup_by(|a, b| (*a - *b).abs() < 0.015);
+        v
+    };
+    tectora_core::openings::generate_project(project)
+        .iter()
+        .zip(&project.parts)
+        .enumerate()
+        .map(|(i, (g, part))| {
+            let level = |kind: LineKind| {
+                distinct(
+                    g.lines
+                        .iter()
+                        .filter(|l| l.kind == kind && (l.a[2] - l.b[2]).abs() < 0.005)
+                        .map(|l| round(l.a[2], 2))
+                        .collect(),
+                )
+            };
+            let top = g
+                .lines
+                .iter()
+                .flat_map(|l| [l.a[2], l.b[2]])
+                .fold(f64::NEG_INFINITY, f64::max);
+            json!({
+                "part": i,
+                "name": part.name,
+                "eaves": level(LineKind::Eave),
+                "pitch_breaks": level(LineKind::Knick),
+                "top": if top.is_finite() { json!(round(top, 2)) } else { Value::Null },
+            })
+        })
+        .collect()
 }
 
 fn parse_status(s: &str) -> Result<JobStatus, String> {
@@ -351,6 +420,7 @@ fn tools() -> Value {
     let mut list = base_tools();
     if let Value::Array(a) = &mut list {
         a.extend(more::tools());
+        a.extend(drawings::tools());
     }
     list
 }
@@ -406,8 +476,19 @@ fn base_tools() -> Value {
         },
         {
             "name": "list_projects",
-            "description": "List roof designs in the user's library (id, name, job, roof area, last change).",
-            "inputSchema": schema(json!({ "query": { "type": "string", "description": "Filter by name, customer, address or job number." } }), &[]),
+            "description": "Search the user's library of roofs made so far (newest first by default): id, name, job, roof area, pitch range, dormers, attached files, stored offer result, last change. Use it to find a past roof to start a new job from (duplicate_project with `job`).",
+            "inputSchema": schema(json!({
+                "query": { "type": "string", "description": "Words that must all appear in the name, job number, customer, address or notes (case and accents ignored)." },
+                "status": { "type": "string", "enum": ["draft", "offer", "ordered", "done"] },
+                "by_ai": { "type": "boolean", "description": "Only jobs last changed by an AI client." },
+                "modified_from": { "type": "string", "description": "Last changed on or after this day, YYYY-MM-DD." },
+                "modified_to": { "type": "string", "description": "Last changed on or before this day, YYYY-MM-DD." },
+                "min_area": { "type": "number", "description": "Roof area at least, m²." },
+                "max_area": { "type": "number", "description": "Roof area at most, m²." },
+                "sort": { "type": "string", "enum": ["modified", "name", "number", "customer", "area"] },
+                "desc": { "type": "boolean", "description": "Descending; default true for modified and area, false otherwise." },
+                "limit": { "type": "integer", "minimum": 1 }
+            }), &[]),
         },
         {
             "name": "get_project",
@@ -531,8 +612,16 @@ fn base_tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total. A part whose roof looks geometrically wrong (outside its eave outline, faces passing through each other, area not matching its faces) carries `warnings`: tell the user and suggest checking pitches and overhangs.",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total. A part whose roof looks geometrically wrong (outside its eave outline, faces passing through each other, area not matching its faces) or where two walls in line are calculated as one so one wall's pitch is not used (`merged_walls`, with `edges`) carries `warnings`: tell the user and suggest checking pitches and overhangs.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
+        },
+        {
+            "name": "calc_breakdown",
+            "description": "How the roof's quantities were calculated, step by step, as the app's Calculation tab shows it: per part the walls entered (length, pitch, eave height, overhang, material), every roof face as plan_area / cos(pitch) = gross, minus windows/chimneys = area (`engine_gross` is set where the core's own area differs from that formula by over 1 dm²), clad gables and openings; area per material with the faces it sums; every line by code as sqrt(dx²+dy²+dz²), minus deductions = total. Use it to explain or check a result for the user. `part` (index from 0) limits the parts listed; totals stay for the whole roof.",
+            "inputSchema": schema(json!({
+                "id": { "type": "string" },
+                "part": { "type": "integer", "minimum": 0, "description": "Only this part's walls, faces and lines." }
+            }), &["id"]),
         },
         {
             "name": "show_project",
@@ -629,25 +718,19 @@ impl Server {
             "update_settings" => self.update_settings(args),
             "list_projects" => {
                 self.live("Browsing the design library".into(), None);
-                let q = args
-                    .get("query")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_lowercase();
-                let list: Vec<Value> = self
-                    .store
-                    .list()
+                let mut q: tectora_core::library::Query = serde_json::from_value(args.clone())
+                    .map_err(|e| format!("invalid search: {e}"))?;
+                if let Some(text) = args.get("query").and_then(Value::as_str) {
+                    q.text = text.to_string();
+                }
+                let list: Vec<Value> = tectora_core::library::search(self.store.list(), &q)?
                     .into_iter()
-                    .filter(|p| {
-                        q.is_empty()
-                            || [&p.name, &p.job.customer, &p.job.address, &p.job.number]
-                                .iter()
-                                .any(|s| s.to_lowercase().contains(&q))
-                    })
                     .map(|p| {
                         json!({
                             "id": p.id, "name": p.name, "job": p.job,
                             "roof_area_m2": round(p.roof_area, 2), "parts": p.parts,
+                            "pitch_range_deg": p.pitch_range.map(|[a, b]| [round(a, 2), round(b, 2)]),
+                            "dormers": p.dormers, "files": p.files, "has_result": p.has_result,
                             "modified_ms": p.modified_ms, "last_change": p.last_activity,
                         })
                     })
@@ -699,6 +782,38 @@ impl Server {
                     "engine_version": tectora_core::snapshot::ENGINE_VERSION,
                     "stored_result": tectora_core::snapshot::status(&p),
                 }))
+            }
+            "calc_breakdown" => {
+                let (id, p) = self.load(args)?;
+                let only = match args.get("part") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => {
+                        let i = v.as_u64().ok_or("`part` must be a part index from 0")? as usize;
+                        if i >= p.parts.len() {
+                            return Err(format!(
+                                "`part` {i} out of range: the design has {} parts",
+                                p.parts.len()
+                            ));
+                        }
+                        Some(i)
+                    }
+                };
+                self.live(
+                    format!("Explaining the calculation of “{}”", p.name),
+                    Some(&id),
+                );
+                let b = tectora_core::breakdown::breakdown(&p);
+                let mut v = serde_json::to_value(&b).map_err(|e| e.to_string())?;
+                if let Some(i) = only {
+                    v["parts"] = json!([{ "index": i, "part": v["parts"][i].take() }]);
+                    for g in v["lines"].as_array_mut().into_iter().flatten() {
+                        if let Some(items) = g["items"].as_array_mut() {
+                            items.retain(|l| l["part"].as_u64() == Some(i as u64));
+                        }
+                    }
+                }
+                v["id"] = json!(id);
+                Ok(v)
             }
             "create_standard_roof" => {
                 let kind: StandardRoof = serde_json::from_value(arg(args, "type")?.clone())
@@ -902,6 +1017,7 @@ impl Server {
             }
             _ => self
                 .call_more(name, args)
+                .or_else(|| self.call_drawing(name, args))
                 .unwrap_or_else(|| Err(format!("unknown tool `{name}`"))),
         }
     }
@@ -937,6 +1053,9 @@ impl Server {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 Ok(match self.call_tool(name, &args) {
+                    Ok(Value::Object(mut o)) if o.contains_key(drawings::CONTENT_KEY) => {
+                        json!({ "content": o.remove(drawings::CONTENT_KEY).unwrap_or_default() })
+                    }
                     Ok(Value::String(text)) => {
                         json!({ "content": [{ "type": "text", "text": text }] })
                     }
@@ -1089,6 +1208,40 @@ mod tests {
         let r = s.call_tool("get_settings", &json!({})).unwrap();
         assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn calc_breakdown_explains_every_face_and_line() {
+        let mut s = server();
+        let p = tectora_core::examples::find("l-shape").unwrap().project();
+        let id = s.store.save(None, &p).unwrap();
+        let total = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        let r = s.call_tool("calc_breakdown", &json!({ "id": id })).unwrap();
+        let area = r["roof_area"].as_f64().unwrap();
+        assert!(
+            (area - total["total"]["roof_area_m2"].as_f64().unwrap()).abs() < 0.01,
+            "{r}"
+        );
+        let f = &r["parts"][0]["faces"][0];
+        let k = 1.0 / f["pitch_deg"].as_f64().unwrap().to_radians().cos();
+        assert!((f["factor"].as_f64().unwrap() - k).abs() < 1e-9);
+        assert!(
+            r["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|g| g["code"] == "T")
+        );
+
+        let one = s
+            .call_tool("calc_breakdown", &json!({ "id": id, "part": 0 }))
+            .unwrap();
+        assert_eq!(one["parts"].as_array().unwrap().len(), 1);
+        assert_eq!(one["parts"][0]["index"], 0);
+        assert!(
+            s.call_tool("calc_breakdown", &json!({ "id": id, "part": 9 }))
+                .is_err()
+        );
     }
 
     #[test]

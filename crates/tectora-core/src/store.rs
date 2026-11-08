@@ -4,11 +4,15 @@
 //! Every save made through [`Store::save_as`] is also recorded in an
 //! activity log (`.activity/<id>.jsonl`) together with the previous version,
 //! so the app can show who changed what and revert it. AI agents publish
-//! what they are doing right now in `.activity/live.json`.
+//! what they are doing right now in `.activity/live.json`. How far the user
+//! has reviewed (accepted) the agents' changes is kept in
+//! `.activity/<id>.review.json`, so the app and the agents see the same state.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -37,7 +41,7 @@ pub struct Attachment {
     pub modified_ms: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ProjectSummary {
     pub id: String,
     pub name: String,
@@ -52,6 +56,13 @@ pub struct ProjectSummary {
     pub lines: Vec<[[f64; 2]; 2]>,
     /// Latest recorded change, if any.
     pub last_activity: Option<ActivityInfo>,
+    /// Lowest and highest roof pitch, degrees (gables left out).
+    pub pitch_range: Option<[f64; 2]>,
+    pub dormers: usize,
+    /// Attached drawings and photos.
+    pub files: usize,
+    /// The figures an offer was made with are stored.
+    pub has_result: bool,
 }
 
 /// An activity entry without the stored previous version.
@@ -84,6 +95,41 @@ impl ActivityEntry {
             summary: self.summary.clone(),
         }
     }
+}
+
+/// How far the user has reviewed a project's AI changes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ReviewMark {
+    /// Every change recorded at or before this time is accepted.
+    pub accepted_ms: u64,
+}
+
+/// AI changes the user has not reviewed yet: every agent change after the
+/// last accept and after the user's own last recorded action.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingReview {
+    /// The oldest pending change; reverting to it undoes them all.
+    pub since_ts_ms: u64,
+    /// Number of pending changes.
+    pub count: usize,
+    /// Who made them (the MCP client names), oldest first, without repeats.
+    pub actors: Vec<String>,
+    /// The project before the oldest pending change (`None` when an agent
+    /// created it).
+    pub before: Option<Project>,
+}
+
+/// A pending review with what it does to the figures, for the app and the
+/// agents (`get_history`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewStatus {
+    #[serde(flatten)]
+    pub pending: PendingReview,
+    /// Time up to which the user accepted earlier changes (0: never).
+    pub accepted_ms: u64,
+    /// Figures before the pending changes against now; `None` when one of
+    /// the two versions cannot be calculated.
+    pub differences: Option<Vec<crate::snapshot::Difference>>,
 }
 
 /// What an AI agent is doing right now, shown live in the app.
@@ -133,7 +179,14 @@ pub fn roof_area(project: &Project) -> f64 {
 
 pub struct Store {
     pub dir: PathBuf,
+    /// Summaries by id with the file stamps they were made from, so listing
+    /// a large library does not recalculate every roof each time.
+    cache: Mutex<HashMap<String, (Stamp, ProjectSummary)>>,
 }
+
+/// What a cached summary depends on: the project file, its activity log and
+/// its files folder (modification time and size of each).
+type Stamp = [Option<(SystemTime, u64)>; 3];
 
 /// Why a library operation failed. Each variant has a stable [`code`]
 /// (`StoreError::code`) so the app can show a translated message; the
@@ -302,24 +355,7 @@ fn slug(name: &str) -> String {
         .to_lowercase()
         .chars()
         .map(|c| {
-            let c = match c {
-                'á' | 'ä' => 'a',
-                'č' => 'c',
-                'ď' => 'd',
-                'é' | 'ě' => 'e',
-                'í' => 'i',
-                'ĺ' | 'ľ' => 'l',
-                'ň' => 'n',
-                'ó' | 'ô' | 'ö' => 'o',
-                'ŕ' | 'ř' => 'r',
-                'š' => 's',
-                'ß' => 's',
-                'ť' => 't',
-                'ú' | 'ů' | 'ü' => 'u',
-                'ý' => 'y',
-                'ž' => 'z',
-                c => c,
-            };
+            let c = crate::library::fold_char(c);
             if c.is_ascii_alphanumeric() {
                 c.to_ascii_lowercase()
             } else {
@@ -337,7 +373,15 @@ fn slug(name: &str) -> String {
 impl Store {
     pub fn new(dir: PathBuf) -> std::io::Result<Self> {
         fs::create_dir_all(&dir)?;
-        Ok(Self { dir })
+        Ok(Self::at(dir))
+    }
+
+    /// A store for `dir` without creating the folder.
+    pub fn at(dir: PathBuf) -> Self {
+        Self {
+            dir,
+            cache: Mutex::default(),
+        }
     }
 
     pub fn open_default() -> std::io::Result<Self> {
@@ -365,6 +409,33 @@ impl Store {
     }
 
     pub fn summarize(&self, id: &str) -> Result<ProjectSummary, StoreError> {
+        let stamp = self.stamp(id)?;
+        let cache = || self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if stamp[0].is_some()
+            && let Some((s, summary)) = cache().get(id)
+            && *s == stamp
+        {
+            return Ok(summary.clone());
+        }
+        let summary = self.summarize_uncached(id)?;
+        cache().insert(id.to_string(), (stamp, summary.clone()));
+        Ok(summary)
+    }
+
+    fn stamp(&self, id: &str) -> Result<Stamp, StoreError> {
+        let of = |p: PathBuf| {
+            fs::metadata(p)
+                .ok()
+                .and_then(|m| Some((m.modified().ok()?, m.len())))
+        };
+        Ok([
+            of(self.path(id)?),
+            of(self.activity_path(id)?),
+            of(self.files_dir(id)?),
+        ])
+    }
+
+    fn summarize_uncached(&self, id: &str) -> Result<ProjectSummary, StoreError> {
         let project = self.load(id)?;
         // A broken design still shows up in the library (so it can be opened
         // and fixed or deleted), just without its roof preview.
@@ -383,6 +454,10 @@ impl Store {
             outlines: outlines(&project),
             lines,
             last_activity: self.activity(id).last().map(ActivityEntry::info),
+            pitch_range: crate::library::pitch_range(&project),
+            dormers: project.dormers.len(),
+            files: self.attachments(id).len(),
+            has_result: project.result_snapshot.is_some(),
         })
     }
 
@@ -422,6 +497,11 @@ impl Store {
         }
         ok.sort_by_key(|s| std::cmp::Reverse(s.modified_ms));
         broken.sort_by(|a, b| a.id.cmp(&b.id));
+        // Forget deleted projects.
+        self.cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|id, _| ok.iter().any(|s| &s.id == id));
         Ok((ok, broken))
     }
 
@@ -577,6 +657,71 @@ impl Store {
         Ok(before)
     }
 
+    fn review_path(&self, id: &str) -> Result<PathBuf, StoreError> {
+        self.path(id)?;
+        Ok(self.activity_dir().join(format!("{id}.review.json")))
+    }
+
+    /// Time up to which the user accepted the changes of project `id`
+    /// (0 when nothing was accepted yet).
+    pub fn reviewed_at(&self, id: &str) -> u64 {
+        self.review_path(id)
+            .ok()
+            .and_then(|p| fs::read_to_string(p).ok())
+            .and_then(|t| serde_json::from_str::<ReviewMark>(&t).ok())
+            .map_or(0, |m| m.accepted_ms)
+    }
+
+    /// Accepts every change recorded at or before `ts_ms`. Never moves the
+    /// mark back, so a late call from a second window cannot reopen a review.
+    pub fn mark_reviewed(&self, id: &str, ts_ms: u64) -> Result<u64, StoreError> {
+        let path = self.review_path(id)?;
+        let accepted_ms = self.reviewed_at(id).max(ts_ms);
+        let io = |e| StoreError::io(Some(id), e);
+        fs::create_dir_all(self.activity_dir()).map_err(io)?;
+        let text = serde_json::to_string(&ReviewMark { accepted_ms }).map_err(|e| io(e.into()))?;
+        write_atomic(&path, &text).map_err(io)?;
+        Ok(accepted_ms)
+    }
+
+    /// The agents' changes to `id` that wait for the user's review.
+    pub fn pending_review(&self, id: &str) -> Option<PendingReview> {
+        let accepted = self.reviewed_at(id);
+        let log = self.activity(id);
+        let start = log
+            .iter()
+            .rposition(|e| e.actor == USER_ACTOR || e.ts_ms <= accepted)
+            .map_or(0, |i| i + 1);
+        let pending = &log[start..];
+        let first = pending.first()?;
+        let mut actors: Vec<String> = Vec::new();
+        for e in pending {
+            if !actors.contains(&e.actor) {
+                actors.push(e.actor.clone());
+            }
+        }
+        Some(PendingReview {
+            since_ts_ms: first.ts_ms,
+            count: pending.len(),
+            actors,
+            before: first.before.clone(),
+        })
+    }
+
+    /// The pending review of `id` with its effect on the figures, or `None`
+    /// when every change is reviewed.
+    pub fn review_status(&self, id: &str) -> Result<Option<ReviewStatus>, StoreError> {
+        let Some(pending) = self.pending_review(id) else {
+            return Ok(None);
+        };
+        let current = self.load(id)?;
+        Ok(Some(ReviewStatus {
+            differences: crate::snapshot::change_in_figures(pending.before.as_ref(), &current),
+            accepted_ms: self.reviewed_at(id),
+            pending,
+        }))
+    }
+
     pub fn delete(&self, id: &str) -> Result<(), StoreError> {
         fs::remove_file(self.path(id)?).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -586,6 +731,7 @@ impl Store {
             }
         })?;
         let _ = fs::remove_file(self.activity_path(id)?);
+        let _ = fs::remove_file(self.review_path(id)?);
         let _ = fs::remove_dir_all(self.files_dir(id)?);
         Ok(())
     }
@@ -741,12 +887,33 @@ mod tests {
     }
 
     #[test]
+    fn cached_summary_follows_saves_files_and_deletes() {
+        let store = temp_store("cache");
+        let mut p = examples::find("gable").unwrap().project();
+        let id = store.save_as(None, &p, USER_ACTOR, "create").unwrap();
+        let first = store.summarize(&id).unwrap();
+        assert_eq!((first.files, first.dormers), (0, 0));
+        assert!(first.pitch_range.is_some());
+        p.job.customer = "Novák".into();
+        store
+            .save_as(Some(id.clone()), &p, "claude", "set customer")
+            .unwrap();
+        let s = store.summarize(&id).unwrap();
+        assert_eq!(s.job.customer, "Novák");
+        assert_eq!(s.last_activity.unwrap().actor, "claude");
+        store.add_attachment(&id, "plan.pdf", b"%PDF").unwrap();
+        assert_eq!(store.summarize(&id).unwrap().files, 1);
+        store.delete(&id).unwrap();
+        assert!(store.summarize(&id).is_err());
+        assert!(store.list().is_empty());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
     fn slug_handles_czech_names() {
         assert_eq!(slug("Rodinný dům Říčany"), "rodinny-dum-ricany");
         assert_eq!(slug("  "), "navrh");
-        let store = Store {
-            dir: PathBuf::from("/nonexistent-tectora-dir"),
-        };
+        let store = Store::at(PathBuf::from("/nonexistent-tectora-dir"));
         assert_eq!(store.new_id("Con"), "con-navrh");
         assert!(
             store
@@ -757,9 +924,7 @@ mod tests {
 
     #[test]
     fn rejects_path_traversal() {
-        let store = Store {
-            dir: PathBuf::from("/tmp/x"),
-        };
+        let store = Store::at(PathBuf::from("/tmp/x"));
         assert!(store.path("../etc/passwd").is_err());
         assert!(store.path("ok-id").is_ok());
         assert!(store.path("rodinny-dum-2").is_ok());
@@ -783,6 +948,48 @@ mod tests {
             assert!(store.path(bad).is_err(), "{bad:?} must be rejected");
         }
         assert!(store.path(&"x".repeat(MAX_ID_LEN + 1)).is_err());
+    }
+
+    #[test]
+    fn accepting_closes_the_review_and_never_moves_back() {
+        let store = temp_store("review");
+        let a = examples::find("gable").unwrap().project();
+        let id = store.save_as(None, &a, "claude", "Created").unwrap();
+        let review = store.pending_review(&id).unwrap();
+        assert_eq!(review.count, 1);
+        assert!(review.before.is_none(), "created by the agent");
+
+        let ts = store.activity(&id)[0].ts_ms;
+        assert_eq!(store.mark_reviewed(&id, ts).unwrap(), ts);
+        assert!(store.pending_review(&id).is_none());
+        assert_eq!(store.mark_reviewed(&id, ts - 1).unwrap(), ts);
+        assert_eq!(store.reviewed_at(&id), ts);
+
+        let mut b = a.clone();
+        b.parts[0].edges[0].overhang = 0.7;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .save_as(Some(id.clone()), &b, "codex", "Overhang")
+            .unwrap();
+        let review = store.pending_review(&id).unwrap();
+        assert_eq!(
+            (review.count, review.actors.clone()),
+            (1, vec!["codex".to_string()])
+        );
+        assert_eq!(review.before.as_ref(), Some(&a));
+        let status = store.review_status(&id).unwrap().unwrap();
+        assert_eq!(status.accepted_ms, ts);
+        assert!(
+            status
+                .differences
+                .unwrap()
+                .iter()
+                .any(|d| d.key == "roof_area")
+        );
+
+        store.delete(&id).unwrap();
+        assert_eq!(store.reviewed_at(&id), 0);
+        let _ = fs::remove_dir_all(&store.dir);
     }
 
     #[test]
@@ -821,8 +1028,14 @@ mod tests {
         store
             .save_as(Some(id.clone()), &c, "claude", "Step 2")
             .unwrap();
+        let review = store.pending_review(&id).unwrap();
+        assert_eq!((review.count, review.since_ts_ms), (2, first));
+        assert_eq!(review.before.as_ref(), Some(&a), "after the user's revert");
+        assert_eq!(review.actors, ["claude"]);
         assert_eq!(store.revert_to(&id, first, USER_ACTOR).unwrap(), a);
         assert_eq!(store.load(&id).unwrap(), a);
+        // The user's revert closes the review.
+        assert!(store.pending_review(&id).is_none());
         store.delete(&id).unwrap();
         assert!(store.activity(&id).is_empty());
         let _ = fs::remove_dir_all(&store.dir);

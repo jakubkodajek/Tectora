@@ -2,7 +2,7 @@
   // Design editor laid out like DACAD (toolbar, plan + 3D windows, roof
   // definition bar, status bar) with a side dock for results, AI activity
   // and job data.
-  import { onDestroy, onMount, untrack } from "svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
   import AiPanel from "./AiPanel.svelte";
   import DrawBar from "./DrawBar.svelte";
   import Icon from "./Icon.svelte";
@@ -11,10 +11,14 @@
   import Modal from "./Modal.svelte";
   import PlanView from "./PlanView.svelte";
   import Results from "./Results.svelte";
+  import Breakdown from "./Breakdown.svelte";
   import RoofDefBar from "./RoofDefBar.svelte";
   import DormerBar from "./DormerBar.svelte";
   import OpeningBar from "./OpeningBar.svelte";
   import ManualBar from "./ManualBar.svelte";
+  import ContextMenu, { type MenuEntry, type MenuState } from "./ContextMenu.svelte";
+  import { mergeDroppedCorner, moveCorner } from "./corners";
+  import { followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, transformItem, type ItemRef, type PlanTarget } from "./items";
   import { snapToRoof, type ManualSel } from "./manual";
   import { describeCalcError, describeError, describeProblem, toAppError, type Described } from "./errors";
   import { notifyError } from "./notify.svelte";
@@ -25,22 +29,28 @@
   import RoundRoofForm from "./RoundRoofForm.svelte";
   import RoofCalcForm from "./RoofCalcForm.svelte";
   import TransformForm from "./TransformForm.svelte";
-  import { offsetWall, transformPart, type TransformMode, type TransformOp } from "./transform";
+  import { offsetWall, transformPart, translation, type TransformMode, type TransformOp } from "./transform";
   import { oppositeWall, spanBetween, type Arc } from "./roundroof";
   import { api, onProjectsChanged } from "./api";
-  import { changedEdges, describeChange } from "./changes";
+  import { changedEdges, changedItems, describeChange, describeFigure, ghostOf } from "./changes";
+  import { merge3 } from "./merge";
   import { m2, num } from "./format";
   import { t } from "./i18n.svelte";
   import { actorName, isFresh, live } from "./live.svelte";
-  import { markReviewed, prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
-  import type { ActivityItem, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
-  import { isAi, isGable, isMarker } from "./types";
+  import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
+  import type { ActivityItem, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
+  import { GABLE_PITCH, isAi, isGable, isMarker } from "./types";
 
   let {
-    id,
+    id: idProp,
     onback,
     onconnect,
   }: { id: string; onback: () => void; onconnect: () => void } = $props();
+  // The job this editor instance edits (App re-creates the editor for
+  // another job). Props are live: when App opens another job or goes back,
+  // `idProp` already has the new value while this instance is torn down,
+  // and the save on destroy must still write to this job's file.
+  const id = untrack(() => idProp);
 
   let project = $state<Project | null>(null);
   let result = $state<CalcResult | null>(null);
@@ -49,7 +59,24 @@
   /** Why the project could not be opened (shown instead of the editor). */
   let loadError = $state<Described | null>(null);
   let loadErrorCode = $state<string>("");
-  let dock = $state<"results" | "ai" | "job">("results");
+  let dock = $state<"results" | "breakdown" | "ai" | "job">("results");
+  /** The calculation breakdown while its tab is open, the face or line it points at, and face numbers for the plan. */
+  let breakdown = $state<CalcBreakdown | null>(null);
+  let planMark = $state<PlanMark>(null);
+  const faceLabels = $derived.by((): PlanLabel[] => {
+    if (!breakdown || dock !== "breakdown" || !dockOpen) return [];
+    const many = breakdown.parts.length > 1;
+    return breakdown.parts.flatMap((p, pi) =>
+      p.faces.map((f) => {
+        const n = f.polygon.length || 1;
+        return {
+          x: f.polygon.reduce((s, v) => s + v[0], 0) / n,
+          y: f.polygon.reduce((s, v) => s + v[1], 0) / n,
+          text: many ? `${pi + 1}.${f.no}` : `${f.no}`,
+        };
+      }),
+    );
+  });
   /** Narrow windows only: whether the side panel is expanded over the views. */
   let dockOpen = $state(false);
 
@@ -84,7 +111,10 @@
   let cursor = $state<Point2 | null>(null);
   let showDims = $state(true);
   let activity = $state<ActivityItem[]>([]);
-  let accepted = $state(untrack(() => reviewedAt(id)));
+  /** AI changes waiting for review, as the library keeps them (shared with the agents). */
+  let review = $state<ReviewStatus | null>(null);
+  /** Show the state before the pending AI changes dashed in the plan. */
+  let showBefore = $state(true);
   let focusChange = $state<Change | null>(null);
   let std = $state<{ part: RoofPart | null; mode: "add" | "replace" } | null>(null);
   let plan: PlanView | undefined = $state();
@@ -103,19 +133,17 @@
   // Last JSON written by us, to tell our own saves from external edits.
   let lastSaved = "";
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Saves in flight, and edits made so far (to tell whether a save is still current). */
+  let inFlight = 0;
+  let edits = 0;
+  /** A file-change event came in while a save was running. */
+  let reloadWanted = false;
   let calcSeq = 0;
 
   const snapshot = () => JSON.stringify(project);
 
   /** AI changes since the user's last own action or accept, newest first. */
-  const pendingList = $derived.by(() => {
-    const out: ActivityItem[] = [];
-    for (const a of activity) {
-      if (!isAi(a.actor) || a.ts_ms <= accepted) break;
-      out.push(a);
-    }
-    return out;
-  });
+  const pendingList = $derived(review ? activity.filter((a) => isAi(a.actor) && a.ts_ms >= review!.since_ts_ms) : []);
   const pending = $derived(pendingList.length ? pendingList[0] : null);
   // DACAD calculates no roof once a chimney or roof opening is non-convex.
   const nonConvex = $derived(project ? nonConvexOpenings(project) : []);
@@ -131,6 +159,10 @@
     if (focusChange) return changedEdges([focusChange], project);
     return changedEdges(pendingChanges, project);
   });
+  const highlightItems = $derived(changedItems(focusChange ? [focusChange] : pendingChanges));
+  const ghost = $derived(
+    project && review && showBefore ? ghostOf(focusChange ? [focusChange] : pendingChanges, review.before, project, result) : null,
+  );
   const wallCount = $derived(project?.parts.reduce((n, p) => n + p.edges.length, 0) ?? 0);
 
   async function recalc() {
@@ -147,14 +179,30 @@
 
   async function refreshActivity() {
     try {
-      activity = await api.projectActivity(id);
+      const [a, r] = await Promise.all([api.projectActivity(id), api.reviewStatus(id).catch(() => null)]);
+      activity = a;
+      review = r;
     } catch {
       activity = [];
+      review = null;
+    }
+  }
+
+  /** Accepts done in an older version were kept in this browser only. */
+  async function migrateLocalReview() {
+    const local = reviewedAt(id);
+    if (!review || local < review.since_ts_ms) return;
+    try {
+      await api.acceptChanges(id, local);
+      await refreshActivity();
+    } catch {
+      // Stays pending; the user can accept again.
     }
   }
 
   function scheduleSave() {
     saveState = "dirty";
+    edits++;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(save, 500);
   }
@@ -163,18 +211,42 @@
     if (!project) return;
     clearTimeout(saveTimer);
     saveState = "saving";
-    const json = snapshot();
+    const seq = edits;
+    inFlight++;
     try {
-      await api.saveProject(id, JSON.parse(json));
+      // An external edit (AI agent, CLI) saved since our last save or load
+      // and not loaded yet: merge it in instead of writing over it.
+      if (lastSaved) {
+        const onDisk = await api.loadProject(id).then(
+          (p) => JSON.stringify(p),
+          () => null,
+        );
+        if (onDisk && onDisk !== lastSaved) {
+          project = merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, JSON.parse(onDisk) as Project);
+          pushHistory();
+          recalc();
+          refreshActivity();
+        }
+      }
+      const written = JSON.parse(snapshot());
+      await api.saveProject(id, written);
       // The store writes its own canonical form (no nulls, empty lists or
       // defaults); remember that, or the file-change event would come back
-      // as an external edit and break undo.
-      lastSaved = JSON.stringify(await api.loadProject(id));
-      saveState = "saved";
+      // as an external edit and break undo. Not read back from the file: an
+      // AI edit saved right after ours would then pass for our own.
+      lastSaved = JSON.stringify(await api.normalizeProject(written));
+      // An edit made while this save was running is still unsaved.
+      saveState = edits === seq ? "saved" : "dirty";
     } catch (e) {
       // Keep the edits in memory; the status bar offers to try again.
       saveState = "failed";
       notifyError(e, "save");
+    } finally {
+      inFlight--;
+      if (!inFlight && reloadWanted) {
+        reloadWanted = false;
+        load(false);
+      }
     }
   }
 
@@ -211,10 +283,22 @@
       const p = await api.loadProject(id);
       const json = JSON.stringify(p);
       await refreshActivity();
+      if (!initial && inFlight) {
+        // A save started while reading: this read may be older than it.
+        reloadWanted = true;
+        return;
+      }
       if (!initial && json === lastSaved) return;
-      project = p;
+      // Indices in an open menu or a drag in progress refer to the old project.
+      menu = null;
+      dragBase = null;
+      // An external edit while local edits are not saved yet: keep both
+      // (the external one wins where both changed the same value).
+      const merged = !initial && saveState === "dirty" && project && lastSaved;
+      project = merged ? merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, p) : p;
       lastSaved = json;
       if (initial) {
+        await migrateLocalReview();
         history = [snapshot()];
         at = 0;
         historyLen = 1;
@@ -222,6 +306,7 @@
         if (pending) dock = "ai";
       } else {
         // External change (AI agent, CLI): keep it undoable and show it.
+        // Merged local edits are still to be saved (the timer is running).
         pushHistory();
         if (pending) dock = "ai";
       }
@@ -244,7 +329,12 @@
   onMount(() => {
     load(true);
     onProjectsChanged((ids) => {
-      if (ids.includes(id) && saveState !== "saving") load(false);
+      if (!ids.includes(id)) return;
+      // While our own save runs, `lastSaved` is not yet up to date, so the
+      // file would look like an external edit and replace newer local edits.
+      // Check again once the save is done.
+      if (inFlight) reloadWanted = true;
+      else load(false);
     }).then((u) => (unlisten = u));
   });
   onDestroy(() => {
@@ -252,10 +342,17 @@
     if (saveState === "dirty" || saveState === "failed") save();
   });
 
-  function accept() {
+  async function accept() {
     if (!pending) return;
-    accepted = pending.ts_ms;
-    markReviewed(id, pending.ts_ms);
+    const ts = pending.ts_ms;
+    review = null;
+    focusChange = null;
+    try {
+      await api.acceptChanges(id, ts);
+    } catch (e) {
+      notifyError(e, "save");
+    }
+    await refreshActivity();
   }
 
   /** Reverts the pending AI changes from the banner, or the latest one from the AI tab. */
@@ -270,9 +367,8 @@
       pushHistory();
       selection = null;
       recalc();
+      focusChange = null;
       await refreshActivity();
-      accepted = activity[0]?.ts_ms ?? accepted;
-      markReviewed(id, accepted);
     } catch (e) {
       notifyError(e, "revert");
       await refreshActivity();
@@ -393,11 +489,21 @@
 
   function moveVertex(part: number, v: number, x: number, y: number) {
     if (!project) return;
-    const p = project.parts[part].edges[v].start;
+    const es = project.parts[part]?.edges;
+    if (!es?.[v] || !Number.isFinite(x) || !Number.isFinite(y)) return;
+    const p = es[v].start;
     if (p.x === x && p.y === y) return;
-    p.x = x;
-    p.y = y;
+    moveCorner(es, v, x, y);
     recalc();
+  }
+
+  /** End of a corner drag: a corner dropped onto its neighbour merges into it. */
+  function endVertexDrag(part: number, v: number) {
+    const es = project?.parts[part]?.edges;
+    if (es && mergeDroppedCorner(es, v) && selection?.part === part) {
+      selection = { part, edge: Math.min(v, es.length - 1) };
+    }
+    commit();
   }
 
   function insertVertex(part: number, edge: number, x: number, y: number) {
@@ -591,6 +697,270 @@
     commit();
   }
 
+  // ---- Objects edited directly in the plan and the 3D view ------------
+
+  /** The selected single object, if any. */
+  const selectedItem = $derived.by((): ItemRef | null => {
+    if (dormerSel !== null) return { kind: "dormer", index: dormerSel };
+    if (openSel) return { kind: openSel.kind, index: openSel.index };
+    if (manualSel) return { kind: manualSel.kind, index: manualSel.index };
+    return null;
+  });
+
+  function selectItem(it: ItemRef | null) {
+    selection = null;
+    dormerSel = it?.kind === "dormer" ? it.index : null;
+    openSel = it && (it.kind === "chimney" || it.kind === "window" || it.kind === "hole") ? { kind: it.kind, index: it.index } : null;
+    manualSel = it && (it.kind === "line" || it.kind === "face") ? { kind: it.kind, index: it.index } : null;
+  }
+
+  /** The project and roof when a drag started; each step maps from these. */
+  let dragBase: { key: string; project: string; result: CalcResult | null; from: Point2 | null } | null = null;
+
+  function dragObject(target: PlanTarget, dx: number, dy: number, end: boolean) {
+    if (!project || (target.type !== "item" && target.type !== "part")) return;
+    const key = JSON.stringify(target);
+    if (!dragBase || dragBase.key !== key) {
+      dragBase = { key, project: snapshot(), result, from: target.type === "item" ? itemCentre(project, target.item) : null };
+    }
+    const base: Project = JSON.parse(dragBase.project);
+    if (target.type === "item") {
+      const it = target.item;
+      if (!itemExists(base, it)) return;
+      moveItem(base, it, dx, dy);
+      if (end && dragBase.from) {
+        followRoof(base, it, dragBase.from, { x: dragBase.from.x + dx, y: dragBase.from.y + dy }, dragBase.result);
+      }
+      project = base;
+      selectItem(it);
+    } else {
+      if (!base.parts[target.part]) return;
+      transformPart(base, target.part, translation(dx, dy));
+      const sel = selection;
+      project = base;
+      selection = sel;
+    }
+    if (end) {
+      dragBase = null;
+      commit();
+    } else {
+      recalc();
+    }
+  }
+
+  /** Where a copy goes: beside the original, its own size plus 30 cm away
+   *  (along a dormer's front, across for everything else) [no source: editor choice]. */
+  function copyOffset(it: ItemRef): Point2 {
+    if (!project) return { x: 0.5, y: 0 };
+    if (it.kind === "dormer") {
+      const d = project.dormers[it.index];
+      const s = d.edges[0]?.start ?? d.end;
+      const len = Math.hypot(d.end.x - s.x, d.end.y - s.y);
+      if (len > 1e-6) {
+        const k = (len + 0.3) / len;
+        return { x: +((d.end.x - s.x) * k).toFixed(3), y: +((d.end.y - s.y) * k).toFixed(3) };
+      }
+    }
+    const pts: Point2[] =
+      it.kind === "chimney" ? project.chimneys[it.index].corners
+      : it.kind === "hole" ? (project.roof_openings ?? [])[it.index]?.corners ?? []
+      : it.kind === "face" ? (project.manual_faces ?? [])[it.index]?.points ?? []
+      : it.kind === "line" ? (() => { const l = project.manual_lines![it.index]; return [{ x: l.a[0], y: l.a[1] }, { x: l.b[0], y: l.b[1] }]; })()
+      : [];
+    const w = it.kind === "window" ? project.windows![it.index].width : pts.length ? Math.max(...pts.map((p) => p.x)) - Math.min(...pts.map((p) => p.x)) : 0.5;
+    return { x: +(Math.max(w, 0.2) + 0.3).toFixed(3), y: 0 };
+  }
+
+  function duplicateItem(it: ItemRef) {
+    if (!project || !itemExists(project, it)) return;
+    const off = copyOffset(it);
+    const from = itemCentre(project, it);
+    const before = result;
+    const [copy] = transformItem(project, it, translation(off.x, off.y), 1);
+    if (!copy) return;
+    if (from) followRoof(project, copy, from, { x: from.x + off.x, y: from.y + off.y }, before);
+    selectItem(copy);
+    commit();
+  }
+
+  function turnItem(it: ItemRef, deg: number) {
+    if (!project || !rotateItem(project, it, deg).length) return;
+    commit();
+  }
+
+  /** Turns a chimney or opening so its first side runs along the nearest wall. */
+  function alignItem(it: ItemRef) {
+    if (!project || (it.kind !== "chimney" && it.kind !== "hole")) return;
+    const c = (it.kind === "chimney" ? project.chimneys : project.roof_openings ?? [])[it.index];
+    const centre = itemCentre(project, it);
+    if (!c || !centre || c.corners.length < 2) return;
+    const [a, b] = c.corners;
+    const now = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+    const want = (nearestWallAngle(project.parts, centre) * 180) / Math.PI;
+    // The smallest turn that lines the side up (any quarter turn of a square is the same).
+    let d = (((want - now) % 90) + 90) % 90;
+    if (d > 45) d -= 90;
+    if (Math.abs(d) < 1e-6) return;
+    turnItem(it, +d.toFixed(4));
+  }
+
+  function removeItem(it: ItemRef) {
+    if (!project || !itemExists(project, it)) return;
+    deleteItem(project, it);
+    selectItem(null);
+    commit();
+  }
+
+  /** Puts the keyboard into the selected object's bar (its properties). */
+  async function focusProperties() {
+    await tick();
+    document.querySelector<HTMLInputElement>(".editor .main .bar input:not(:disabled)")?.focus();
+  }
+
+  let menu = $state<MenuState | null>(null);
+
+  function itemTitle(it: ItemRef): string {
+    const n = it.index + 1;
+    return {
+      dormer: t("plan.dormer", { n }),
+      chimney: t("opening.chimneyN", { n }),
+      window: t("opening.windowN", { n }),
+      hole: t("opening.holeN", { n }),
+      line: t("manual.lineN", { n }),
+      face: t("manual.faceN", { n }),
+    }[it.kind];
+  }
+
+  /** "Add … here" entries, for a press on the roof or next to it. */
+  function placeEntries(at: Point2): MenuEntry[] {
+    if (!project?.parts.length) return [];
+    const go = (kind: "dormer" | "chimney" | "window" | "hole") => () => {
+      placing = kind;
+      place(at.x, at.y);
+    };
+    return [
+      { label: t("menu.placeChimney"), icon: "chimney", action: go("chimney") },
+      { label: t("menu.placeWindow"), icon: "window", action: go("window") },
+      { label: t("menu.placeHole"), icon: "hole", action: go("hole") },
+      { label: t("menu.placeDormer"), icon: "roof", action: go("dormer") },
+    ];
+  }
+
+  function partEntries(pi: number): MenuEntry[] {
+    if (!project?.parts[pi]) return [];
+    const ps = project.parts[pi].edges.map((e) => e.start);
+    const w = Math.max(...ps.map((p) => p.x)) - Math.min(...ps.map((p) => p.x));
+    return [
+      { label: t("tool.transform") + "…", icon: "move", action: () => { selection = { part: pi, edge: selection?.part === pi ? selection.edge : 0 }; openTransform(); } },
+      { label: t("menu.duplicatePart"), icon: "copy", action: () => {
+        if (!project) return;
+        // Beside the original, 2 m apart (as a new standard roof is placed).
+        const added = transformPart(project, pi, translation(+(w + 2).toFixed(3), 0), 1);
+        if (added.length) selection = { part: added[0], edge: 0 };
+        commit();
+        setTimeout(() => plan?.fit(), 0);
+      } },
+      { label: t("tool.deletePart"), icon: "trash", danger: true, disabled: project.parts.length < 2, action: () => { selection = { part: pi, edge: 0 }; deletePart(); } },
+    ];
+  }
+
+  function openMenu(target: PlanTarget, client: { x: number; y: number }, world: Point2) {
+    if (!project) return;
+    let title: string | undefined;
+    let entries: MenuEntry[] = [];
+    if (target.type === "item") {
+      const it = target.item;
+      if (!itemExists(project, it)) return;
+      selectItem(it);
+      title = itemTitle(it);
+      // A window follows its roof face and a dormer faces down its roof: neither turns.
+      const turns = it.kind !== "window" && it.kind !== "dormer";
+      entries = [
+        { label: t("menu.properties"), icon: "sliders", action: focusProperties },
+        { label: t("menu.duplicate"), icon: "copy", hint: "Ctrl+D", action: () => duplicateItem(it) },
+        ...(turns
+          ? [
+              { label: t("menu.rotateLeft"), icon: "undo", action: () => turnItem(it, 90) },
+              { label: t("menu.rotateRight"), icon: "redo", action: () => turnItem(it, -90) },
+            ]
+          : []),
+        ...(it.kind === "chimney" || it.kind === "hole" ? [{ label: t("menu.alignWall"), icon: "fit", action: () => alignItem(it) }] : []),
+        { sep: true },
+        { label: t("menu.delete"), icon: "trash", danger: true, hint: "Del", action: () => removeItem(it) },
+      ];
+    } else if (target.type === "edge") {
+      const { part, edge } = target;
+      const e = project.parts[part]?.edges[edge];
+      if (!e) return;
+      selection = { part, edge };
+      title = t("def.wall", { n: edge + 1 });
+      const gable = isGable(e);
+      const marker = isMarker(e);
+      const es = project.parts[part].edges;
+      const a = e.start;
+      const b = es[(edge + 1) % es.length].start;
+      // The press projected onto the wall, so the new point lies on it.
+      const len2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1;
+      const u = Math.max(0.05, Math.min(0.95, ((world.x - a.x) * (b.x - a.x) + (world.y - a.y) * (b.y - a.y)) / len2));
+      const on = { x: +(a.x + (b.x - a.x) * u).toFixed(3), y: +(a.y + (b.y - a.y) * u).toFixed(3) };
+      entries = [
+        { label: t("menu.properties"), icon: "sliders", action: focusProperties },
+        ...(marker ? [] : [
+          gable
+            ? { label: t("menu.makeEave"), icon: "roof", action: () => patchEdge({ pitch_deg: presets.pitch_deg, half_hip: null }) }
+            : { label: t("menu.makeGable"), icon: "house", action: () => patchEdge({ pitch_deg: GABLE_PITCH }) },
+          { label: t("menu.insertPoint"), icon: "plus", action: () => insertVertex(part, edge, on.x, on.y) },
+          { label: t("edge.addMarker"), icon: "right", action: insertMarker },
+        ]),
+        ...(!marker && !gable ? [{ label: t("calc.button"), icon: "chart", action: () => (calc = { part, edge, patches: null }) }] : []),
+        { sep: true },
+        ...partEntries(part),
+      ];
+    } else if (target.type === "vertex") {
+      const { part, vertex } = target;
+      if (!project.parts[part]?.edges[vertex]) return;
+      selection = { part, edge: vertex };
+      title = t("plan.vertex", { n: vertex + 1 });
+      const es = project.parts[part].edges;
+      const canDelete = isMarker(es[vertex]) || es.filter((x) => !isMarker(x)).length > 3;
+      entries = [
+        { label: t("menu.properties"), icon: "sliders", action: focusProperties },
+        { label: t("menu.deletePoint"), icon: "trash", danger: true, hint: "Del", disabled: !canDelete, action: deleteVertex },
+      ];
+    } else if (target.type === "part") {
+      const pi = target.part;
+      if (!project.parts[pi]) return;
+      title = project.parts[pi].name;
+      entries = [...placeEntries(world), { sep: true }, ...partEntries(pi)];
+    } else {
+      const add = placeEntries(world);
+      entries = [
+        ...add,
+        ...(add.length ? [{ sep: true } as MenuEntry] : []),
+        { label: t("tool.draw"), icon: "draw", hint: "Insert", action: startDraw },
+        { label: t("tool.standard"), icon: "house", action: () => (std = { part: null, mode: "add" }) },
+        { label: t("plan.fit"), icon: "fit", action: () => plan?.fit() },
+      ];
+    }
+    menu = { x: client.x, y: client.y, title, entries };
+  }
+
+  /** Arrow keys nudge the selected object by 5 cm (Shift: 50 cm). */
+  function nudge(e: KeyboardEvent): boolean {
+    const it = selectedItem;
+    if (!project || !it || !itemExists(project, it)) return false;
+    const d = e.shiftKey ? 0.5 : 0.05;
+    const v = { ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, d], ArrowDown: [0, -d] }[e.key];
+    if (!v) return false;
+    e.preventDefault();
+    const from = itemCentre(project, it);
+    const before = result;
+    moveItem(project, it, v[0], v[1]);
+    if (from) followRoof(project, it, from, { x: from.x + v[0], y: from.y + v[1] }, before);
+    commit();
+    return true;
+  }
+
   function togglePlacing(kind: "dormer" | "chimney" | "window" | "hole" | "line" | "face") {
     placing = placing === kind ? false : kind;
     drawing = null;
@@ -692,10 +1062,18 @@
     }
   }
 
+  // macOS keyboards have no Delete key (their "delete" sends Backspace) and
+  // show shortcuts with ⌘.
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  const keys = (k: string) => (isMac ? k.replace("Ctrl+Shift+", "⇧⌘").replace("Ctrl+", "⌘") : k);
+
   function onkeydown(e: KeyboardEvent) {
     const mod = e.metaKey || e.ctrlKey;
+    const del = e.key === "Delete" || (e.key === "Backspace" && !mod);
     const tag = (e.target as HTMLElement).tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    // A dialog is open: its keys (Escape closes it) must not edit the roof behind it.
+    if (document.querySelector('[role="dialog"]')) return;
     if (mod && e.key.toLowerCase() === "z") {
       e.preventDefault();
       e.shiftKey ? redo() : undo();
@@ -705,6 +1083,11 @@
     } else if (mod && e.key.toLowerCase() === "s") {
       e.preventDefault();
       save();
+    } else if (mod && e.key.toLowerCase() === "d" && selectedItem && !drawing) {
+      e.preventDefault();
+      duplicateItem(selectedItem);
+    } else if (!mod && !drawing && !placing && e.key.startsWith("Arrow") && nudge(e)) {
+      // handled
     } else if (e.key === "F3") {
       e.preventDefault();
       setLayout(prefs.layout === "3d" ? "split" : "3d");
@@ -717,19 +1100,20 @@
       dormerSel = null;
       openSel = null;
       manualSel = null;
-    } else if (e.key === "Delete" && dormerSel !== null && !drawing) {
+    } else if (del && dormerSel !== null && !drawing) {
       deleteDormer();
-    } else if (e.key === "Delete" && openSel && !drawing) {
+    } else if (del && openSel && !drawing) {
       deleteOpening();
-    } else if (e.key === "Delete" && manualSel && !drawing) {
+    } else if (del && manualSel && !drawing) {
       deleteManual();
-    } else if (e.key === "Delete" && selection && !drawing) {
+    } else if (del && selection && !drawing) {
       deleteVertex();
     }
   }
 </script>
 
 <svelte:window {onkeydown} />
+<ContextMenu bind:menu />
 
 <div class="editor">
   <header>
@@ -757,8 +1141,8 @@
   {#if !loadError}
   <div class="toolbar" role="toolbar">
     <div class="group">
-      <button class="tool" onclick={undo} disabled={at <= 0} title="{t('editor.undo')} (Ctrl+Z)"><Icon name="undo" /><span>{t("editor.undo")}</span></button>
-      <button class="tool" onclick={redo} disabled={at >= historyLen - 1} title="{t('editor.redo')} (Ctrl+Shift+Z)"><Icon name="redo" /><span>{t("editor.redo")}</span></button>
+      <button class="tool" onclick={undo} disabled={at <= 0} title="{t('editor.undo')} ({keys('Ctrl+Z')})"><Icon name="undo" /><span>{t("editor.undo")}</span></button>
+      <button class="tool" onclick={redo} disabled={at >= historyLen - 1} title="{t('editor.redo')} ({keys('Ctrl+Shift+Z')})"><Icon name="redo" /><span>{t("editor.redo")}</span></button>
     </div>
     <div class="group">
       <button class="tool" class:on={!!std} onclick={() => (std = { part: null, mode: project?.parts.length ? "replace" : "add" })} title={t("tool.standardHint")}><Icon name="house" /><span>{t("tool.standard")}</span></button>
@@ -796,10 +1180,18 @@
               <span>{pendingList.map((a) => a.summary).reverse().join(" → ")}</span>
               {#if pendingChanges.length}
                 <span class="review-list">
-                  {pendingChanges.slice(0, 4).map((c) => describeChange(c, project!.parts.length > 1)).join(" · ")}{pendingChanges.length > 4 ? ` · ${t("review.more", { n: pendingChanges.length - 4 })}` : ""}
+                  {pendingChanges.slice(0, 4).map((c) => describeChange(c, project)).join(" · ")}{pendingChanges.length > 4 ? ` · ${t("review.more", { n: pendingChanges.length - 4 })}` : ""}
+                </span>
+              {/if}
+              {#if review?.differences?.length}
+                <span class="review-figures">
+                  {review.differences.slice(0, 3).map((d) => describeFigure(d, project)).join(" · ")}{review.differences.length > 3 ? ` · ${t("review.more", { n: review.differences.length - 3 })}` : ""}
                 </span>
               {/if}
             </div>
+            {#if review?.before}
+              <button class="btn sm" class:on={showBefore} aria-pressed={showBefore} onclick={() => (showBefore = !showBefore)} title={t("review.beforeHint")}>{t("review.before")}</button>
+            {/if}
             <button class="btn sm" onclick={() => revert(true)}><Icon name="undo" size={14} />{pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}</button>
             <button class="btn sm accept" onclick={accept}><Icon name="check" size={14} />{t("review.accept")}</button>
           </div>
@@ -846,6 +1238,10 @@
                 {project}
                 {result}
                 {highlight}
+                {highlightItems}
+                {ghost}
+                mark={dock === "breakdown" && dockOpen ? planMark : null}
+                {faceLabels}
                 {drawing}
                 {showDims}
                 bind:selection
@@ -856,18 +1252,22 @@
                 {placing}
                 onplace={place}
                 onmove={moveVertex}
-                onmoveend={commit}
+                onmoveend={endVertexDrag}
                 oninsert={insertVertex}
                 ondrawpoint={(x, y) => drawing?.push({ x, y })}
                 ondrawclose={finishDraw}
                 oncursor={(p) => (cursor = p)}
+                ondrag={dragObject}
+                oncontext={openMenu}
               />
             </div>
           {/if}
           {#if prefs.layout !== "plan"}
             <div class="view">
               <span class="view-label">{t("editor.model")}</span>
-              <Roof3D {project} {result} {selection} />
+              <Roof3D {project} {result} {selection} item={selectedItem}
+                onpick={(tg) => { if (tg.type === "item") selectItem(tg.item); else if (tg.type === "edge") { selectItem(null); selection = { part: tg.part, edge: tg.edge }; } }}
+                oncontext={openMenu} />
             </div>
           {/if}
         </div>
@@ -904,6 +1304,7 @@
       <aside class:open={dockOpen}>
         <div class="tabs" role="tablist">
           <button role="tab" aria-selected={dock === "results"} class:on={dock === "results"} onclick={() => showDock("results")} title={t("dock.results")}><Icon name="chart" size={15} /><span class="tab-label">{t("dock.results")}</span></button>
+          <button role="tab" aria-selected={dock === "breakdown"} class:on={dock === "breakdown"} onclick={() => showDock("breakdown")} title={t("bd.title")}><Icon name="sigma" size={15} /><span class="tab-label">{t("dock.breakdown")}</span></button>
           <button role="tab" aria-selected={dock === "ai"} class:on={dock === "ai"} onclick={() => showDock("ai")} title={t("dock.ai")}>
             <Icon name="sparkle" size={15} /><span class="tab-label">{t("dock.ai")}</span>{#if pending}<i class="badge"></i>{/if}
           </button>
@@ -913,6 +1314,8 @@
           <button class="icon-btn dock-close" onclick={() => (dockOpen = false)} aria-label={t("common.close")} title={t("common.close")}><Icon name="x" size={16} /></button>
           {#if dock === "results"}
             <Results {result} {project} onstore={storeResult} />
+          {:else if dock === "breakdown"}
+            <Breakdown {project} {result} bind:data={breakdown} onmark={(mk) => (planMark = mk)} />
           {:else if dock === "ai"}
             <AiPanel {id} {project} {activity} onrevert={() => revert(false)} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
@@ -1284,10 +1687,22 @@
     white-space: nowrap;
     text-overflow: ellipsis;
   }
+  .review-figures {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--text-2);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
   .btn.sm {
     height: 30px;
     padding: 0 12px;
     font-size: 13px;
+  }
+  .btn.sm.on {
+    border-color: color-mix(in srgb, var(--ai) 60%, var(--border));
+    color: var(--ai-strong);
   }
   .btn.accept {
     background: var(--ai);

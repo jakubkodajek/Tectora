@@ -1,10 +1,12 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import type { CalcResult, Point2, Project, Selection } from "./types";
+  import type { CalcResult, PlanLabel, PlanMark, Point2, Project, Selection } from "./types";
   import { isGable } from "./types";
   import { t } from "./i18n.svelte";
-  import { windowOutline, type OpeningKind, type OpeningSel } from "./openings";
+  import { windowOutline, type OpeningSel } from "./openings";
   import { codeKind, lineLength, type ManualSel } from "./manual";
+  import type { Ghost } from "./changes";
+  import type { ItemRef, PlanTarget } from "./items";
 
   let {
     project,
@@ -14,6 +16,10 @@
     onmoveend,
     oninsert,
     highlight = new Set<string>(),
+    highlightItems = new Set<string>(),
+    ghost = null,
+    mark = null,
+    faceLabels = [],
     drawing = null,
     ondrawpoint,
     ondrawclose,
@@ -25,15 +31,26 @@
     openSel = $bindable(null),
     manualSel = $bindable(null),
     manualDraft = [],
+    ondrag,
+    oncontext,
   }: {
     project: Project;
     result: CalcResult | null;
     selection: Selection;
     onmove: (part: number, vertex: number, x: number, y: number) => void;
-    onmoveend: () => void;
+    /** A corner drag ended (the corner moved is given). */
+    onmoveend: (part: number, vertex: number) => void;
     oninsert: (part: number, edge: number, x: number, y: number) => void;
     /** "part:edge" keys of edges changed by the latest AI edit. */
     highlight?: Set<string>;
+    /** "field:item" keys (dormer:0, chimney:1, …) of items changed by the AI. */
+    highlightItems?: Set<string>;
+    /** The state before the pending AI changes, drawn dashed. */
+    ghost?: Ghost | null;
+    /** A face or line the calculation breakdown points at. */
+    mark?: PlanMark;
+    /** Face numbers of the calculation breakdown. */
+    faceLabels?: PlanLabel[];
     /** Points of a footprint being drawn (draw mode), or null. */
     drawing?: Point2[] | null;
     ondrawpoint?: (x: number, y: number) => void;
@@ -51,6 +68,10 @@
     manualSel?: ManualSel;
     /** Points picked so far for a line or face being added. */
     manualDraft?: [number, number, number][];
+    /** An item or the selected part is dragged by (dx, dy); `end` on release. */
+    ondrag?: (target: PlanTarget, dx: number, dy: number, end: boolean) => void;
+    /** Right click (or Ctrl+click) without dragging: open the context menu. */
+    oncontext?: (target: PlanTarget, client: { x: number; y: number }, world: Point2) => void;
   } = $props();
 
   let cursorWorld = $state<Point2 | null>(null);
@@ -109,8 +130,61 @@
   const wx = (px: number) => (px - width / 2) / scale + center.x;
   const wy = (py: number) => -(py - height / 2) / scale + center.y;
 
+  /** Spacing of the grid lines drawn at this zoom, m. */
+  const gridStep = () => (scale * GRID < 8 ? GRID * 10 : scale * GRID < 16 ? GRID * 2 : GRID);
+
+  // Magnet radius, px [no source: a few pixels, as drawing programs use];
+  // at most 40 % of a grid cell, so 5 cm steps stay reachable between lines.
+  const MAGNET_PX = 12;
+  /** Grid or corner lines the pointer is held on (shown as guides). */
+  let guides = $state<{ x: number | null; y: number | null }>({ x: null, y: null });
+
+  /**
+   * The point for a corner, a new wall point or a placed object: pulled onto
+   * the visible grid lines and onto the x / y of other corners when within a
+   * few pixels of them, else rounded to 5 cm. Alt: 1 mm, no magnet.
+   * `skip` is the corner being dragged. O(corners).
+   */
+  function magnetPoint(px: number, py: number, alt: boolean, skip?: { part: number; vertex: number }): Point2 {
+    if (alt) {
+      guides = { x: null, y: null };
+      return snapPoint(px, py, true);
+    }
+    const step = gridStep();
+    const r = Math.min(MAGNET_PX, step * scale * 0.4);
+    let bx = { v: null as number | null, d: r };
+    let by = { v: null as number | null, d: r };
+    const gx = Math.round(wx(px) / step) * step;
+    const gy = Math.round(wy(py) / step) * step;
+    if (Math.abs(sx(gx) - px) <= bx.d) bx = { v: gx, d: Math.abs(sx(gx) - px) };
+    if (Math.abs(sy(gy) - py) <= by.d) by = { v: gy, d: Math.abs(sy(gy) - py) };
+    const skipAt = skip ? project.parts[skip.part]?.edges[skip.vertex]?.start : undefined;
+    const consider = (q: Point2) => {
+      const dx = Math.abs(sx(q.x) - px);
+      const dy = Math.abs(sy(q.y) - py);
+      // A corner's own line wins over the grid at the same distance.
+      if (dx <= bx.d) bx = { v: q.x, d: dx };
+      if (dy <= by.d) by = { v: q.y, d: dy };
+    };
+    project.parts.forEach((part, pi) =>
+      part.edges.forEach((e) => {
+        if (skipAt && pi === skip!.part && e.start.x === skipAt.x && e.start.y === skipAt.y) return;
+        consider(e.start);
+      }),
+    );
+    for (const q of drawing ?? []) consider(q);
+    guides = { x: bx.v, y: by.v };
+    const fine = snapPoint(px, py, false);
+    return { x: bx.v !== null ? +bx.v.toFixed(3) : fine.x, y: by.v !== null ? +by.v.toFixed(3) : fine.y };
+  }
+
+  // Drawing or placing finished: drop its guides.
+  $effect(() => {
+    if (!drawing && !placing) untrack(() => (guides.x !== null || guides.y !== null) && !drag && (guides = { x: null, y: null }));
+  });
+
   const gridLines = $derived.by(() => {
-    const step = scale * GRID < 8 ? GRID * 10 : scale * GRID < 16 ? GRID * 2 : GRID;
+    const step = gridStep();
     const x0 = Math.floor(wx(0) / step) * step;
     const x1 = wx(width);
     const y0 = Math.floor(wy(height) / step) * step;
@@ -126,8 +200,80 @@
   });
 
   // Dragging.
-  let drag: { part: number; vertex: number } | null = null;
+  let drag: { part: number; vertex: number; sx: number; sy: number; moved: boolean } | null = null;
   let pan: { x: number; y: number; cx: number; cy: number } | null = null;
+  /** An item or a whole part being dragged: where the press started. */
+  let objDrag: { target: PlanTarget; sx: number; sy: number; wx: number; wy: number; moved: boolean; dx: number; dy: number } | null = null;
+  /** What a right press hit, set by the shape's own handler before the plan's. */
+  let rcTarget: PlanTarget | null = null;
+  /** A right press that opens the menu on release unless it pans. */
+  let rc: { target: PlanTarget; x: number; y: number; cx: number; cy: number } | null = null;
+  // Pixels the pointer may travel before a press counts as a drag.
+  const DRAG_SLOP = 4;
+
+  /** Ctrl+click is a right click (macOS habit, and one-button mice). */
+  const button = (e: PointerEvent) => (e.button === 0 && e.ctrlKey ? 2 : e.button);
+
+  function selectItem(item: ItemRef) {
+    selection = null;
+    dormerSel = item.kind === "dormer" ? item.index : null;
+    openSel = item.kind === "chimney" || item.kind === "window" || item.kind === "hole" ? { kind: item.kind, index: item.index } : null;
+    manualSel = item.kind === "line" || item.kind === "face" ? { kind: item.kind, index: item.index } : null;
+  }
+
+  /** Captures the pointer for a drag. A synthetic or already released pointer
+   * (no active pointer with that id) cannot be captured; the drag then just
+   * ends at the next pointerup the plan sees. */
+  function capture(e: PointerEvent) {
+    try {
+      svg!.setPointerCapture(e.pointerId);
+    } catch {
+      // Not capturable: nothing to do.
+    }
+  }
+
+  function startObjDrag(e: PointerEvent, target: PlanTarget) {
+    const p = localPoint(e);
+    const w = snapPoint(p.x, p.y, e.altKey);
+    objDrag = { target, sx: p.x, sy: p.y, wx: w.x, wy: w.y, moved: false, dx: 0, dy: 0 };
+    capture(e);
+  }
+
+  /** A press on a dormer, chimney, window, opening or hand-drawn shape. */
+  function pressItem(e: PointerEvent, item: ItemRef) {
+    if (placing || drawing) return;
+    const b = button(e);
+    if (b === 2) {
+      selectItem(item);
+      rcTarget = { type: "item", item };
+      return;
+    }
+    if (b !== 0) return;
+    e.stopPropagation();
+    selectItem(item);
+    startObjDrag(e, { type: "item", item });
+  }
+
+  /** A press inside a part's outline: drags the selected part, else selects it. */
+  function pressPart(e: PointerEvent, part: number) {
+    if (placing || drawing) return;
+    const b = button(e);
+    if (b === 2) {
+      rcTarget = { type: "part", part };
+      return;
+    }
+    if (b !== 0) return;
+    e.stopPropagation();
+    if (selection?.part !== part) {
+      // The first press only selects, so panning across a roof never moves it.
+      selection = { part, edge: 0 };
+      dormerSel = null;
+      openSel = null;
+      manualSel = null;
+      return;
+    }
+    startObjDrag(e, { type: "part", part });
+  }
 
   function localPoint(e: PointerEvent | WheelEvent) {
     const r = svg!.getBoundingClientRect();
@@ -135,9 +281,19 @@
   }
 
   function onpointerdown(e: PointerEvent) {
+    const b = button(e);
+    if (b === 2 && !placing && !drawing) {
+      const p = localPoint(e);
+      rc = { target: rcTarget ?? { type: "canvas" }, x: p.x, y: p.y, cx: e.clientX, cy: e.clientY };
+      rcTarget = null;
+      pan = { x: p.x, y: p.y, cx: center.x, cy: center.y };
+      capture(e);
+      return;
+    }
+    rcTarget = null;
     if (placing && e.button === 0) {
       const p = localPoint(e);
-      const w = snapPoint(p.x, p.y, e.altKey);
+      const w = magnetPoint(p.x, p.y, e.altKey);
       onplace?.(w.x, w.y);
       return;
     }
@@ -148,7 +304,7 @@
       if (first && drawing.length >= 3 && Math.hypot(sx(first.x) - p.x, sy(first.y) - p.y) < 10) {
         ondrawclose?.();
       } else {
-        const w = snapPoint(p.x, p.y, e.altKey);
+        const w = magnetPoint(p.x, p.y, e.altKey);
         ondrawpoint?.(w.x, w.y);
       }
       return;
@@ -162,26 +318,54 @@
         openSel = null;
         manualSel = null;
       }
-      svg!.setPointerCapture(e.pointerId);
+      capture(e);
     }
   }
 
   function onpointermove(e: PointerEvent) {
     const p = localPoint(e);
-    cursorWorld = snapPoint(p.x, p.y, e.altKey);
+    cursorWorld = drag
+      ? magnetPoint(p.x, p.y, e.altKey, drag)
+      : drawing || placing
+        ? magnetPoint(p.x, p.y, e.altKey)
+        : snapPoint(p.x, p.y, e.altKey);
+    if (!drag && !drawing && !placing && (guides.x !== null || guides.y !== null)) guides = { x: null, y: null };
     oncursor?.(cursorWorld);
     if (drag) {
-      onmove(drag.part, drag.vertex, cursorWorld.x, cursorWorld.y);
+      // A click on a corner does not move it; only a drag does.
+      if (!drag.moved && Math.hypot(p.x - drag.sx, p.y - drag.sy) > DRAG_SLOP) drag.moved = true;
+      if (drag.moved) onmove(drag.part, drag.vertex, cursorWorld.x, cursorWorld.y);
+    } else if (objDrag) {
+      if (!objDrag.moved && Math.hypot(p.x - objDrag.sx, p.y - objDrag.sy) > DRAG_SLOP) objDrag.moved = true;
+      if (objDrag.moved) {
+        const dx = +(cursorWorld.x - objDrag.wx).toFixed(3);
+        const dy = +(cursorWorld.y - objDrag.wy).toFixed(3);
+        if (dx !== objDrag.dx || dy !== objDrag.dy) {
+          objDrag.dx = dx;
+          objDrag.dy = dy;
+          ondrag?.(objDrag.target, dx, dy, false);
+        }
+      }
     } else if (pan) {
       center = { x: pan.cx - (p.x - pan.x) / scale, y: pan.cy + (p.y - pan.y) / scale };
       if (Math.hypot(p.x - pan.x, p.y - pan.y) > 3) userView = true;
     }
   }
 
-  function onpointerup() {
-    if (drag) onmoveend();
+  function onpointerup(e: PointerEvent) {
+    if (drag?.moved) onmoveend(drag.part, drag.vertex);
+    if (!drawing && !placing) guides = { x: null, y: null };
+    if (objDrag?.moved) ondrag?.(objDrag.target, objDrag.dx, objDrag.dy, true);
+    if (rc) {
+      const p = localPoint(e);
+      if (Math.hypot(p.x - rc.x, p.y - rc.y) <= DRAG_SLOP) {
+        oncontext?.(rc.target, { x: rc.cx, y: rc.cy }, snapPoint(rc.x, rc.y, false));
+      }
+    }
     drag = null;
+    objDrag = null;
     pan = null;
+    rc = null;
   }
 
   function onwheel(e: WheelEvent) {
@@ -194,28 +378,20 @@
   }
 
   function startVertexDrag(e: PointerEvent, part: number, vertex: number) {
-    if (placing) return;
+    // While drawing or placing, a click on a corner is a click on the plan.
+    if (placing || drawing) return;
+    if (button(e) === 2) {
+      selection = { part, edge: vertex };
+      dormerSel = null;
+      openSel = null;
+      manualSel = null;
+      rcTarget = { type: "vertex", part, vertex };
+      return;
+    }
     e.stopPropagation();
-    drag = { part, vertex };
-    svg!.setPointerCapture(e.pointerId);
-  }
-
-  function pickOpening(ev: PointerEvent, kind: OpeningKind, index: number) {
-    if (placing || drawing) return;
-    ev.stopPropagation();
-    openSel = { kind, index };
-    selection = null;
-    dormerSel = null;
-    manualSel = null;
-  }
-
-  function pickManual(ev: PointerEvent, kind: "line" | "face", index: number) {
-    if (placing || drawing) return;
-    ev.stopPropagation();
-    manualSel = { kind, index };
-    selection = null;
-    dormerSel = null;
-    openSel = null;
+    const p = localPoint(e);
+    drag = { part, vertex, sx: p.x, sy: p.y, moved: false };
+    capture(e);
   }
 
   function edgeDblClick(e: MouseEvent, part: number, edge: number) {
@@ -282,6 +458,7 @@
     {onpointerdown}
     {onpointermove}
     {onpointerup}
+    onpointercancel={onpointerup}
     {onwheel}
     onpointerleave={() => {
       cursorWorld = null;
@@ -297,7 +474,12 @@
     {#each project.parts as part, pi}
       <path
         class="fill"
+        class:movable={selection?.part === pi}
         d={"M" + part.edges.map((e) => `${sx(e.start.x)},${sy(e.start.y)}`).join("L") + "Z"}
+        role="button"
+        tabindex="-1"
+        aria-label={part.name}
+        onpointerdown={(ev) => pressPart(ev, pi)}
       />
     {/each}
 
@@ -318,6 +500,25 @@
       {/each}
     {/if}
 
+    {#if ghost}
+      <g class="ghost" aria-hidden="true">
+        {#each ghost.shapes as pts}
+          <path d={"M" + pts.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"} />
+        {/each}
+        {#each ghost.lines as [a, b]}
+          <line x1={sx(a.x)} y1={sy(a.y)} x2={sx(b.x)} y2={sy(b.y)} />
+        {/each}
+      </g>
+    {/if}
+    {#if mark && "polygon" in mark}
+      <path class="mark" d={"M" + mark.polygon.map((p) => `${sx(p[0])},${sy(p[1])}`).join("L") + "Z"} />
+    {:else if mark && "line" in mark}
+      <line class="mark-line" x1={sx(mark.line[0][0])} y1={sy(mark.line[0][1])} x2={sx(mark.line[1][0])} y2={sy(mark.line[1][1])} />
+    {/if}
+    {#each faceLabels as l}
+      <text class="face-no" x={sx(l.x)} y={sy(l.y)}>{l.text}</text>
+    {/each}
+
     {#each project.parts as part, pi}
       {#each part.edges as e, i}
         {@const b = part.edges[(i + 1) % part.edges.length].start}
@@ -329,7 +530,12 @@
           {/if}
           <line class="hit" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)}
             role="button" tabindex="-1" aria-label={t("plan.edge", { n: i + 1 })}
-            onpointerdown={(ev) => { if (placing) return; ev.stopPropagation(); selection = { part: pi, edge: i }; dormerSel = null; openSel = null; manualSel = null; }}
+            onpointerdown={(ev) => {
+              if (placing || drawing) return;
+              selection = { part: pi, edge: i }; dormerSel = null; openSel = null; manualSel = null;
+              if (button(ev) === 2) rcTarget = { type: "edge", part: pi, edge: i };
+              else ev.stopPropagation();
+            }}
             ondblclick={(ev) => edgeDblClick(ev, pi, i)} />
           <line class="wall" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)} />
           {#if showDims && scale * edgeLength(pi, i) > 46}
@@ -354,7 +560,7 @@
     {#each project.dormers as d, di}
       {@const fs = d.edges.find((x) => x.direction_rad == null)?.start ?? d.edges[0]?.start}
       {#if fs}
-        <g class="dormer" class:sel={dormerSel === di}>
+        <g class="dormer" class:sel={dormerSel === di} class:changed={highlightItems.has(`dormer:${di}`)}>
           {#each d.edges as x, k}
             {#if x.direction_rad != null}
               {@const s0 = k === 0 ? -0.8 : 0.8}
@@ -364,41 +570,41 @@
           {/each}
           <line class="hit" x1={sx(fs.x)} y1={sy(fs.y)} x2={sx(d.end.x)} y2={sy(d.end.y)}
             role="button" tabindex="-1" aria-label={t("plan.dormer", { n: di + 1 })}
-            onpointerdown={(ev) => { if (placing) return; ev.stopPropagation(); dormerSel = di; selection = null; openSel = null; manualSel = null; }} />
+            onpointerdown={(ev) => pressItem(ev, { kind: "dormer", index: di })} />
           <line class="front" x1={sx(fs.x)} y1={sy(fs.y)} x2={sx(d.end.x)} y2={sy(d.end.y)} />
         </g>
       {/if}
     {/each}
     {#each project.chimneys as c, ci}
-      <path class="opening chimney" class:sel={openSel?.kind === "chimney" && openSel.index === ci}
+      <path class="opening chimney" class:sel={openSel?.kind === "chimney" && openSel.index === ci} class:changed={highlightItems.has(`chimney:${ci}`)}
         d={"M" + c.corners.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("opening.chimneyN", { n: ci + 1 })}
-        onpointerdown={(ev) => pickOpening(ev, "chimney", ci)} />
+        onpointerdown={(ev) => pressItem(ev, { kind: "chimney", index: ci })} />
     {/each}
     {#each project.roof_openings ?? [] as c, hi}
-      <path class="opening hole" class:sel={openSel?.kind === "hole" && openSel.index === hi}
+      <path class="opening hole" class:sel={openSel?.kind === "hole" && openSel.index === hi} class:changed={highlightItems.has(`roof_opening:${hi}`)}
         d={"M" + c.corners.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("opening.holeN", { n: hi + 1 })}
-        onpointerdown={(ev) => pickOpening(ev, "hole", hi)} />
+        onpointerdown={(ev) => pressItem(ev, { kind: "hole", index: hi })} />
     {/each}
     {#each project.windows ?? [] as w, wi}
-      <path class="opening window" class:sel={openSel?.kind === "window" && openSel.index === wi}
+      <path class="opening window" class:sel={openSel?.kind === "window" && openSel.index === wi} class:changed={highlightItems.has(`window:${wi}`)}
         d={"M" + windowOutline(result, w).map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("opening.windowN", { n: wi + 1 })}
-        onpointerdown={(ev) => pickOpening(ev, "window", wi)} />
+        onpointerdown={(ev) => pressItem(ev, { kind: "window", index: wi })} />
     {/each}
     {#each project.manual_faces ?? [] as f, fi}
-      <path class="manual-face" class:sel={manualSel?.kind === "face" && manualSel.index === fi}
+      <path class="manual-face" class:sel={manualSel?.kind === "face" && manualSel.index === fi} class:changed={highlightItems.has(`manual_face:${fi}`)}
         d={"M" + f.points.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("manual.faceN", { n: fi + 1 })}
-        onpointerdown={(ev) => pickManual(ev, "face", fi)} />
+        onpointerdown={(ev) => pressItem(ev, { kind: "face", index: fi })} />
     {/each}
     {#each project.manual_lines ?? [] as l, li}
       {@const sel = manualSel?.kind === "line" && manualSel.index === li}
-      <g class="manual-line" class:sel>
+      <g class="manual-line" class:sel class:changed={highlightItems.has(`manual_line:${li}`)}>
         <line class="hit" x1={sx(l.a[0])} y1={sy(l.a[1])} x2={sx(l.b[0])} y2={sy(l.b[1])}
           role="button" tabindex="-1" aria-label={t("manual.lineN", { n: li + 1 })}
-          onpointerdown={(ev) => pickManual(ev, "line", li)} />
+          onpointerdown={(ev) => pressItem(ev, { kind: "line", index: li })} />
         <line class="stroke" class:measure={!codeKind[l.code]} x1={sx(l.a[0])} y1={sy(l.a[1])} x2={sx(l.b[0])} y2={sy(l.b[1])}
           stroke={codeKind[l.code] ? lineColor[codeKind[l.code]] : undefined} />
         {#if showDims}
@@ -412,6 +618,12 @@
       {#each manualDraft as p, i}
         <circle class="draft-pt" class:first={i === 0} cx={sx(p[0])} cy={sy(p[1])} r="4" />
       {/each}
+    {/if}
+    {#if guides.x !== null}
+      <path class="guide" d="M{sx(guides.x)},0V{height}" />
+    {/if}
+    {#if guides.y !== null}
+      <path class="guide" d="M0,{sy(guides.y)}H{width}" />
     {/if}
     {#if placing && cursorWorld}
       <path class="crosshair" d="M{sx(cursorWorld.x) - 9},{sy(cursorWorld.y)}h18M{sx(cursorWorld.x)},{sy(cursorWorld.y) - 9}v18" />
@@ -484,10 +696,20 @@
   .fill {
     fill: var(--plan-fill);
   }
+  .fill.movable {
+    cursor: move;
+    fill: color-mix(in srgb, var(--focus) 7%, var(--plan-fill));
+  }
   .opening {
     stroke: var(--text-2);
     stroke-width: 1.5;
     cursor: pointer;
+  }
+  .opening.sel,
+  .dormer.sel .hit,
+  .manual-face.sel,
+  .manual-line.sel .hit {
+    cursor: move;
   }
   .opening.chimney {
     fill: color-mix(in srgb, var(--text-3) 35%, transparent);
@@ -497,11 +719,32 @@
     stroke-dasharray: 4 3;
   }
   .opening.window {
-    fill: color-mix(in srgb, var(--line-valley) 22%, transparent);
+    fill: color-mix(in srgb, var(--window) 28%, transparent);
   }
   .opening.sel {
     stroke: var(--accent);
     stroke-width: 2.5;
+  }
+  .mark {
+    fill: color-mix(in srgb, var(--accent) 22%, transparent);
+    stroke: var(--accent);
+    stroke-width: 2;
+    pointer-events: none;
+  }
+  .mark-line {
+    stroke: var(--accent);
+    stroke-width: 4;
+    stroke-linecap: round;
+    pointer-events: none;
+  }
+  .face-no {
+    fill: var(--text-2);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    font-weight: 700;
+    text-anchor: middle;
+    dominant-baseline: middle;
+    pointer-events: none;
   }
   .manual-face {
     fill: color-mix(in srgb, var(--accent) 10%, transparent);
@@ -558,6 +801,33 @@
     stroke: var(--ai);
     stroke-dasharray: none;
   }
+  /* Items the AI added or changed: same orange as changed walls. */
+  .opening.changed,
+  .manual-face.changed {
+    stroke: var(--ai);
+    stroke-width: 2.5;
+    animation: pulse-stroke 1.6s ease-in-out infinite;
+  }
+  .dormer.changed .front,
+  .dormer.changed .cheek,
+  .manual-line.changed .stroke {
+    stroke: var(--ai);
+  }
+  @keyframes pulse-stroke {
+    50% {
+      stroke-opacity: 0.45;
+    }
+  }
+  /* The state before the pending AI changes. */
+  .ghost path,
+  .ghost line {
+    fill: none;
+    stroke: var(--ai-strong);
+    stroke-width: 1.4;
+    stroke-dasharray: 5 4;
+    opacity: 0.7;
+    pointer-events: none;
+  }
   @keyframes pulse {
     50% {
       opacity: 0.12;
@@ -581,6 +851,13 @@
   }
   .draft-pt.first {
     fill: var(--accent);
+  }
+  .guide {
+    stroke: var(--focus);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+    opacity: 0.7;
+    pointer-events: none;
   }
   .crosshair {
     stroke: var(--text-2);

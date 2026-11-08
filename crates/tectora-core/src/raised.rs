@@ -49,6 +49,7 @@ pub fn combine(
         gables: body.gables.clone(),
         clad_area: body.clad_area,
         clad_materials: body.clad_materials.clone(),
+        clad_faces: body.clad_faces.clone(),
         ..RoofGeometry::default()
     };
     let mut shown: Vec<Shown> = Vec::new();

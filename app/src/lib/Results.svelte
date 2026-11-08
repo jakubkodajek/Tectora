@@ -1,6 +1,7 @@
 <script lang="ts">
   // Results in DACAD's terms: roof areas per part and line lengths by
   // DACAD line code (T eave, F ridge, G hip, K valley, O verge, P shed top edge, c pitch break).
+  import { figureLabel, formatFigure } from "./changes";
   import { m, m2, num } from "./format";
   import { t } from "./i18n.svelte";
   import { materialName } from "./materials";
@@ -14,15 +15,8 @@
 
   /** The stored result (figures of the offer) against the current one. */
   const stored = $derived(result?.stored_result ?? null);
-  const diffLabel = (key: string) =>
-    key === "roof_area"
-      ? t("res.area")
-      : key === "ridge_height"
-        ? t("snap.ridge")
-        : key.startsWith("line:")
-          ? key.slice(5)
-          : materialName(project, Number(key.slice(9)));
-  const fmtDiff = (key: string, v: number) => (key === "ridge_height" || key.startsWith("line:") ? m(v) : m2(v));
+  const diffLabel = (key: string) => figureLabel(key, project);
+  const fmtDiff = formatFigure;
 
   /** Area per material, shown once the roof has more than one material or a non-default one. */
   const materials = $derived(
@@ -39,6 +33,10 @@
   );
 
   function warningText(w: RoofWarning): string {
+    if (w.kind === "merged_walls") {
+      const [a, b] = w.edges ?? [0, 0];
+      return t("res.warn.merged_walls", { a: a + 1, b: b + 1 });
+    }
     const v = w.kind === "area_mismatch" ? num(w.value * 100) : num(w.value);
     return t(`res.warn.${w.kind}`, { v });
   }

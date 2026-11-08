@@ -21,9 +21,11 @@
 //! later stages cannot take): [`Failure::Ours`], and the caller falls back
 //! to Tectora's own sweep engine.
 
+use crate::check::{RoofWarning, WarningKind};
 use crate::coresol::{CoreSol, Rd2, SolFace, wall_stage};
 use crate::dcore::CoreError;
 use crate::dcore::pipeline::{Outputs, Run};
+use crate::dcore::state::Notice;
 use crate::geom::{Point2, signed_area};
 use crate::model::{Chimney, Project};
 use crate::modell;
@@ -95,12 +97,53 @@ fn roofs(project: &Project, hosts: &[Option<DormerHost>]) -> Result<Vec<RoofGeom
             .w3d;
         let joined =
             modell::run(&int, Some(&w3d)).map_err(|e| Failure::Ours(format!("INT: {e}")))?;
-        Ok(multiroof::to_geometries(project, &map, &joined))
+        let mut geos = multiroof::to_geometries(project, &map, &joined);
+        add_notices(&mut geos, &map, &out.notices);
+        Ok(geos)
     } else {
         let out = run_core(&text, FLAGS_SOL)?;
         let sol = parse_sol(&out)?;
         let res = core_sol_result(project, &rd2, &sol);
-        Ok(multiroof::sol_geometries(project, &map, &res))
+        let mut geos = multiroof::sol_geometries(project, &map, &res);
+        add_notices(&mut geos, &map, &out.notices);
+        Ok(geos)
+    }
+}
+
+/// The core's notices as warnings of the parts they concern: the walls in
+/// line it calculated as one, so that one wall's pitch or pitch breaks
+/// are not used. Dormer walls are left out (a dormer is entered as a
+/// whole, not wall by wall).
+fn add_notices(geos: &mut [RoofGeometry], map: &Rd2Map, notices: &[Notice]) {
+    for n in notices {
+        let (Notice::MergedWalls {
+            model,
+            kept,
+            absorbed,
+        }
+        | Notice::IgnoredBreaks {
+            model,
+            kept,
+            absorbed,
+        }) = *n;
+        let (Some((pk, ek)), Some((pa, ea))) = (map.find(model, kept), map.find(model, absorbed))
+        else {
+            continue;
+        };
+        if pk != pa || ek == usize::MAX || ea == usize::MAX {
+            continue;
+        }
+        let Some(geo) = geos.get_mut(pk) else {
+            continue;
+        };
+        let w = RoofWarning {
+            kind: WarningKind::MergedWalls,
+            value: 0.0,
+            edges: vec![ek, ea],
+        };
+        if !geo.warnings.contains(&w) {
+            geo.warnings.push(w);
+        }
     }
 }
 

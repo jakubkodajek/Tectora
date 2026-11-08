@@ -1,19 +1,24 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppError } from "./errors";
 import type {
   ActivityItem,
   AppSettingsView,
+  AvailableUpdate,
   Attachment,
+  CalcBreakdown,
   CalcResult,
   ExampleInfo,
+  JobInfo,
   Library,
   LiveStatus,
   Project,
   ProjectSummary,
   ResultSnapshot,
+  ReviewStatus,
   RoofPart,
   StandardKind,
+  UpdateProgress,
 } from "./types";
 
 export interface StandardParams {
@@ -26,16 +31,30 @@ export interface StandardParams {
 }
 
 export const api = {
+  /** A newer version of the app, if the update server offers one. */
+  updateCheck: () => invoke<AvailableUpdate | null>("update_check"),
+  /** Downloads and installs the update the check found; the app then restarts. */
+  updateInstall: (onProgress: (p: UpdateProgress) => void) => {
+    const progress = new Channel<UpdateProgress>();
+    progress.onmessage = onProgress;
+    return invoke<void>("update_install", { progress });
+  },
   projectsDir: () => invoke<string>("projects_dir"),
   listProjects: () => invoke<Library>("list_projects"),
   startupWarnings: () => invoke<AppError[]>("startup_warnings"),
   loadProject: (id: string) => invoke<Project>("load_project", { id }),
   saveProject: (id: string | null, project: Project) => invoke<string>("save_project", { id, project }),
+  /** The project in the store's canonical form, as load_project returns it after a save. */
+  normalizeProject: (project: Project) => invoke<Project>("normalize_project", { project }),
   deleteProject: (id: string) => invoke<void>("delete_project", { id }),
-  duplicateProject: (id: string, name: string) => invoke<string>("duplicate_project", { id, name }),
+  /** Copies a job as a new draft; `job` starts a new job from a past roof. */
+  duplicateProject: (id: string, name: string, job?: Pick<JobInfo, "number" | "customer" | "address">, withFiles = true) =>
+    invoke<string>("duplicate_project", { id, name, job: job ? { ...job, status: "draft" } : null, withFiles }),
   projectActivity: (id: string) => invoke<ActivityItem[]>("project_activity", { id }),
   revertLastChange: (id: string) => invoke<Project>("revert_last_change", { id }),
   revertChanges: (id: string, tsMs: number) => invoke<Project>("revert_changes", { id, tsMs }),
+  reviewStatus: (id: string) => invoke<ReviewStatus | null>("review_status", { id }),
+  acceptChanges: (id: string, tsMs: number) => invoke<number>("accept_changes", { id, tsMs }),
   liveStatus: () => invoke<LiveStatus | null>("live_status"),
   mcpCommand: () => invoke<{ command: string; args: string[] }>("mcp_command"),
   createStandard: (name: string, p: StandardParams) => invoke<string>("create_standard", { name, ...p }),
@@ -44,6 +63,7 @@ export const api = {
   createFromExample: (exampleId: string, name?: string) =>
     invoke<string>("create_from_example", { exampleId, name: name ?? null }),
   calc: (project: Project) => invoke<CalcResult>("calc", { project }),
+  calcBreakdown: (project: Project) => invoke<CalcBreakdown>("calc_breakdown", { project }),
   getSettings: () => invoke<AppSettingsView>("get_settings"),
   updateSettings: (patch: Record<string, unknown>) => invoke<AppSettingsView>("update_settings", { patch }),
   openFolder: (which: "projects" | "drawings" | "settings") => invoke<void>("open_folder", { which }),

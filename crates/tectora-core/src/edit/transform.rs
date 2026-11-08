@@ -360,6 +360,199 @@ pub fn transform_part(project: &mut Project, pi: usize, m: PlanMap, copies: u32)
     added
 }
 
+/// One object placed on the roof, by its index in the project's list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ItemRef {
+    pub kind: ItemKind,
+    pub index: usize,
+}
+
+/// The kinds of objects the editor selects and moves on their own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemKind {
+    Dormer,
+    Chimney,
+    Window,
+    RoofOpening,
+    ManualLine,
+    ManualFace,
+}
+
+impl ItemKind {
+    fn len(self, p: &Project) -> usize {
+        match self {
+            ItemKind::Dormer => p.dormers.len(),
+            ItemKind::Chimney => p.chimneys.len(),
+            ItemKind::Window => p.windows.len(),
+            ItemKind::RoofOpening => p.roof_openings.len(),
+            ItemKind::ManualLine => p.manual_lines.len(),
+            ItemKind::ManualFace => p.manual_faces.len(),
+        }
+    }
+}
+
+/// The plan point an item is moved by and rotated about: the centre of a
+/// chimney, opening or face, the middle of a line or of a dormer's front,
+/// a window's anchor corner. `None` for an index that does not exist.
+pub fn item_centre(p: &Project, it: ItemRef) -> Option<Point2> {
+    if it.index >= it.kind.len(p) {
+        return None;
+    }
+    Some(pt(match it.kind {
+        ItemKind::Dormer => {
+            let d = &p.dormers[it.index];
+            let s = d.edges.first().map_or(d.end, |e| e.start);
+            Point2::new((s.x + d.end.x) / 2.0, (s.y + d.end.y) / 2.0)
+        }
+        ItemKind::Chimney => centre(p.chimneys[it.index].corners.clone()),
+        ItemKind::RoofOpening => centre(p.roof_openings[it.index].corners.clone()),
+        ItemKind::Window => Point2::new(p.windows[it.index].x, p.windows[it.index].y),
+        ItemKind::ManualLine => {
+            let l = &p.manual_lines[it.index];
+            Point2::new((l.a[0] + l.b[0]) / 2.0, (l.a[1] + l.b[1]) / 2.0)
+        }
+        ItemKind::ManualFace => centre(p.manual_faces[it.index].points.clone()),
+    }))
+}
+
+/// Applies `m` to single items (not their part): the editor's drag, rotate
+/// and duplicate on a selected chimney, window, opening, dormer or
+/// hand-drawn line or face. With `copies` > 0 the items stay and that many
+/// copies of each are appended, the k-th mapped k times. Heights are kept
+/// as they are; see [`follow_roof`]. Returns the moved or new items, in the
+/// order given; an index that does not exist is an error and changes nothing.
+pub fn transform_items(
+    project: &mut Project,
+    items: &[ItemRef],
+    m: PlanMap,
+    copies: u32,
+) -> Result<Vec<ItemRef>, String> {
+    let mut seen = std::collections::HashSet::new();
+    for it in items {
+        if it.index >= it.kind.len(project) {
+            return Err(format!(
+                "{} {} does not exist",
+                kind_name(it.kind),
+                it.index
+            ));
+        }
+        if !seen.insert(*it) {
+            return Err(format!(
+                "{} {} is listed twice",
+                kind_name(it.kind),
+                it.index
+            ));
+        }
+    }
+    let mut out = Vec::new();
+    let rounds = if copies == 0 { 1 } else { copies };
+    for k in 1..=rounds {
+        let mk = Power(m, if copies == 0 { 1 } else { k });
+        for &it in items {
+            let i = it.index;
+            let p = &mut *project;
+            let index = match it.kind {
+                ItemKind::Dormer => {
+                    let d = map_dormer(&p.dormers[i], mk);
+                    put(&mut p.dormers, i, d, copies)
+                }
+                ItemKind::Chimney => {
+                    let c = map_chimney(&p.chimneys[i], mk);
+                    put(&mut p.chimneys, i, c, copies)
+                }
+                ItemKind::RoofOpening => {
+                    let c = map_chimney(&p.roof_openings[i], mk);
+                    put(&mut p.roof_openings, i, c, copies)
+                }
+                ItemKind::Window => {
+                    let w = map_window(&p.windows[i], mk);
+                    put(&mut p.windows, i, w, copies)
+                }
+                ItemKind::ManualLine => {
+                    let l = map_line(&p.manual_lines[i], mk);
+                    put(&mut p.manual_lines, i, l, copies)
+                }
+                ItemKind::ManualFace => {
+                    let f = map_face(&p.manual_faces[i], mk);
+                    put(&mut p.manual_faces, i, f, copies)
+                }
+            };
+            out.push(ItemRef {
+                kind: it.kind,
+                index,
+            });
+        }
+    }
+    Ok(out)
+}
+
+fn put<T>(v: &mut Vec<T>, i: usize, x: T, copies: u32) -> usize {
+    if copies == 0 {
+        v[i] = x;
+        i
+    } else {
+        v.push(x);
+        v.len() - 1
+    }
+}
+
+fn kind_name(k: ItemKind) -> &'static str {
+    match k {
+        ItemKind::Dormer => "dormer",
+        ItemKind::Chimney => "chimney",
+        ItemKind::Window => "window",
+        ItemKind::RoofOpening => "roof_opening",
+        ItemKind::ManualLine => "manual_line",
+        ItemKind::ManualFace => "manual_face",
+    }
+}
+
+/// Keeps items moved by `to - from` at the same height above the roof: a
+/// chimney's top, a dormer's eave and a hand-drawn line's ends rise or fall
+/// with the host roof between where they were and their new place. `host`
+/// gives the roof height at a plan point (without the dormers' own roofs);
+/// where it has none the height stays. [no source: an editor convenience,
+/// DACAD keeps absolute heights when its objects are moved.]
+pub fn follow_roof(
+    project: &mut Project,
+    moved: &[(ItemRef, Point2, Point2)],
+    host: impl Fn(Point2) -> Option<f64>,
+) {
+    let delta = |a: Point2, b: Point2| match (host(a), host(b)) {
+        (Some(za), Some(zb)) => zb - za,
+        _ => 0.0,
+    };
+    for &(it, from, to) in moved {
+        let d = delta(from, to);
+        match it.kind {
+            ItemKind::Chimney => {
+                if let Some(c) = project.chimneys.get_mut(it.index) {
+                    c.height = round_to(c.height + d, 3);
+                }
+            }
+            ItemKind::Dormer => {
+                if let Some(dm) = project.dormers.get_mut(it.index) {
+                    for e in &mut dm.edges {
+                        e.eave_height = round_to(e.eave_height + d, 3);
+                    }
+                }
+            }
+            ItemKind::ManualLine => {
+                if let Some(l) = project.manual_lines.get_mut(it.index) {
+                    let off = Point2::new(to.x - from.x, to.y - from.y);
+                    for q in [&mut l.a, &mut l.b] {
+                        let now = Point2::new(q[0], q[1]);
+                        let was = Point2::new(q[0] - off.x, q[1] - off.y);
+                        q[2] = round_to(q[2] + delta(was, now), 3);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Moves wall `ei` of a part parallel to itself by `d` metres outward (the
 /// roof side is to the left of the wall in a counter-clockwise outline, so
 /// outward is to the right), its neighbours stretched to meet it (DACAD:
@@ -451,6 +644,105 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    fn with_items() -> Project {
+        let mut p = Project::new("T");
+        p.parts.push(part());
+        p.chimneys.push(Chimney {
+            corners: vec![
+                Point2::new(2.0, 2.0),
+                Point2::new(3.0, 2.0),
+                Point2::new(3.0, 3.0),
+                Point2::new(2.0, 3.0),
+            ],
+            height: 6.0,
+        });
+        p.windows.push(RoofWindow {
+            x: 5.0,
+            y: 1.0,
+            width: 0.78,
+            height: 1.18,
+        });
+        p
+    }
+
+    #[test]
+    fn moves_one_item_and_leaves_the_part_and_the_others() {
+        let mut p = with_items();
+        let before = p.clone();
+        let it = ItemRef {
+            kind: ItemKind::Chimney,
+            index: 0,
+        };
+        let out = transform_items(&mut p, &[it], PlanMap::Move { dx: 1.0, dy: -0.5 }, 0).unwrap();
+        assert_eq!(out, vec![it]);
+        assert_eq!(p.chimneys[0].corners[0], Point2::new(3.0, 1.5));
+        assert_eq!(p.chimneys[0].height, 6.0);
+        assert_eq!(p.parts, before.parts);
+        assert_eq!(p.windows, before.windows);
+    }
+
+    #[test]
+    fn copies_append_and_rotation_turns_about_the_item_centre() {
+        let mut p = with_items();
+        let it = ItemRef {
+            kind: ItemKind::Chimney,
+            index: 0,
+        };
+        let c = item_centre(&p, it).unwrap();
+        assert_eq!(c, Point2::new(2.5, 2.5));
+        let out = transform_items(
+            &mut p,
+            &[it],
+            PlanMap::Rotate {
+                centre: c,
+                deg: 45.0,
+            },
+            2,
+        )
+        .unwrap();
+        assert_eq!(out.iter().map(|r| r.index).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(p.chimneys.len(), 3);
+        assert_eq!(item_centre(&p, out[0]), Some(c));
+        // Two turns of 45°: the square is back on its axes.
+        let mut xs: Vec<f64> = p.chimneys[2].corners.iter().map(|q| q.x).collect();
+        xs.sort_by(f64::total_cmp);
+        assert_eq!((xs[0], xs[3]), (2.0, 3.0));
+    }
+
+    #[test]
+    fn a_missing_or_repeated_item_changes_nothing() {
+        let mut p = with_items();
+        let before = p.clone();
+        let bad = ItemRef {
+            kind: ItemKind::Dormer,
+            index: 0,
+        };
+        assert!(transform_items(&mut p, &[bad], PlanMap::Move { dx: 1.0, dy: 0.0 }, 0).is_err());
+        let w = ItemRef {
+            kind: ItemKind::Window,
+            index: 0,
+        };
+        assert!(transform_items(&mut p, &[w, w], PlanMap::Move { dx: 1.0, dy: 0.0 }, 0).is_err());
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn follow_roof_lifts_a_chimney_with_the_roof() {
+        let mut p = with_items();
+        let it = ItemRef {
+            kind: ItemKind::Chimney,
+            index: 0,
+        };
+        transform_items(&mut p, &[it], PlanMap::Move { dx: 0.0, dy: 1.0 }, 0).unwrap();
+        // A roof rising 0.5 m per metre in y.
+        follow_roof(
+            &mut p,
+            &[(it, Point2::new(2.5, 2.5), Point2::new(2.5, 3.5))],
+            |q| Some(q.y * 0.5),
+        );
+        assert_eq!(p.chimneys[0].height, 6.5);
     }
 
     #[test]

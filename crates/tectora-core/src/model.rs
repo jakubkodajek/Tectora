@@ -105,10 +105,12 @@ pub struct ManualFace {
 }
 
 impl ManualFace {
-    /// Sloped area, m².
+    /// Sloped area, m². 0 for fewer than 3 corners or a pitch outside
+    /// 0°..90°, and for a (near) vertical pitch, whose cosine (below 1e-6,
+    /// about 89.99994°) would blow a small plan area up to millions of m².
     pub fn area(&self) -> f64 {
         let n = self.points.len();
-        if n < 3 || !(self.pitch_deg >= 0.0 && self.pitch_deg < 90.0) {
+        if n < 3 || !self.pitch_counts() {
             return 0.0;
         }
         let plan: f64 = (0..n)
@@ -120,6 +122,11 @@ impl ManualFace {
             .abs()
             / 2.0;
         plan / self.pitch_deg.to_radians().cos()
+    }
+
+    /// Whether the pitch gives the face an area (see [`ManualFace::area`]).
+    pub fn pitch_counts(&self) -> bool {
+        self.pitch_deg >= 0.0 && self.pitch_deg < 90.0 && self.pitch_deg.to_radians().cos() > 1e-6
     }
 }
 

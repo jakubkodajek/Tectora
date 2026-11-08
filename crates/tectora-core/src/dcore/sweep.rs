@@ -20,7 +20,7 @@ use super::error::*;
 use super::geom::{self, Line, NO_POINT};
 use super::num::{self, HALF_PI_F, V3};
 use super::s1;
-use super::state::{Core, Cut, CutId, Face, FaceId, TFACE, WallId, ctr};
+use super::state::{Core, Cut, CutId, Face, FaceId, Notice, TFACE, WallId, ctr};
 
 /// Sweep iterations (both passes) after which the port gives up: the
 /// original loops forever on some inputs, adding segments every round.
@@ -394,6 +394,7 @@ impl Sweep<'_, '_> {
                             }
                         }
                         close::merge_faces(c, a, pa)?;
+                        note_breaks(c, p, prev, pa);
                         close_chain(c, pa);
                         let wm = c.wall_mut(prev);
                         wm.act = None;
@@ -477,6 +478,7 @@ impl Sweep<'_, '_> {
                             }
                         }
                         close::merge_faces(c, a, na)?;
+                        note_breaks(c, p, next, na);
                         close_chain(c, na);
                         let wm = c.wall_mut(next);
                         wm.act = None;
@@ -808,6 +810,21 @@ fn close_chain(c: &mut Core, start: FaceId) {
             k[ctr::CLOSED] += 1;
         }
         f = c.face(fi).next;
+    }
+}
+
+/// After the faces of `absorbed` were joined into `kept`'s: DACAD's
+/// information box "Knicke bei Wand %d werden ignoriert" (0xa35) when the
+/// absorbed face has pitch breaks above it.
+fn note_breaks(c: &mut Core, kept: WallId, absorbed: WallId, face: FaceId) {
+    if c.face(face).next.is_some() {
+        let model = c.g.cur_model.map_or(0, |m| c.model(m).no);
+        let (kept, absorbed) = (c.wall(kept).no, c.wall(absorbed).no);
+        c.notices.push(Notice::IgnoredBreaks {
+            model,
+            kept,
+            absorbed,
+        });
     }
 }
 

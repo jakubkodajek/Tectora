@@ -2,6 +2,7 @@
 //! that tells the UI when project files change on disk (CLI, MCP, AI agents).
 
 mod error;
+mod updates;
 
 use std::path::PathBuf;
 use std::sync::{Mutex, RwLock, RwLockReadGuard};
@@ -120,6 +121,19 @@ fn revert_changes(state: State<AppState>, id: String, ts_ms: u64) -> CmdResult<P
     guard(|| Ok(state.store().revert_to(&id, ts_ms, USER_ACTOR)?))
 }
 
+/// The AI changes of `id` waiting for review, with the version before them
+/// and what they did to the figures.
+#[tauri::command]
+fn review_status(state: State<AppState>, id: String) -> CmdResult<Option<store::ReviewStatus>> {
+    guard(|| Ok(state.store().review_status(&id)?))
+}
+
+/// Accepts every change of `id` recorded at or before `ts_ms`.
+#[tauri::command]
+fn accept_changes(state: State<AppState>, id: String, ts_ms: u64) -> CmdResult<u64> {
+    guard(|| Ok(state.store().mark_reviewed(&id, ts_ms)?))
+}
+
 #[tauri::command]
 fn live_status(state: State<AppState>) -> Option<LiveStatus> {
     state.store().live()
@@ -144,21 +158,36 @@ fn save_project(state: State<AppState>, id: Option<String>, project: Project) ->
     guard(|| Ok(state.store().save(id, &project)?))
 }
 
+/// The project as the store writes and reads it (defaults, nulls and empty
+/// lists dropped), without touching the file. The editor compares file
+/// changes with this to tell its own saves from external edits.
+#[tauri::command]
+fn normalize_project(project: Project) -> Project {
+    project
+}
+
 #[tauri::command]
 fn delete_project(state: State<AppState>, id: String) -> CmdResult<()> {
     guard(|| Ok(state.store().delete(&id)?))
 }
 
-/// A copy is a new variant: draft, no stored result, the same files.
+/// A copy is a new variant: draft, no stored result, the same files. With
+/// `job` it starts a new job for another customer from a past roof.
 #[tauri::command]
-fn duplicate_project(state: State<AppState>, id: String, name: String) -> CmdResult<String> {
+fn duplicate_project(
+    state: State<AppState>,
+    id: String,
+    name: String,
+    job: Option<tectora_core::JobInfo>,
+    with_files: Option<bool>,
+) -> CmdResult<String> {
     guard(|| {
         let mut project = state.store().load(&id)?;
-        project.name = name;
-        project.job.status = tectora_core::JobStatus::Draft;
-        project.result_snapshot = None;
+        tectora_core::library::prepare_copy(&mut project, &name, job);
         let new_id = state.store().save(None, &project)?;
-        state.store().copy_attachments(&id, &new_id)?;
+        if with_files.unwrap_or(true) {
+            state.store().copy_attachments(&id, &new_id)?;
+        }
         Ok(new_id)
     })
 }
@@ -326,6 +355,20 @@ fn calc(project: Project) -> CmdResult<Value> {
         v["stored_result"] =
             serde_json::to_value(snapshot::status(&project)).unwrap_or(Value::Null);
         Ok(v)
+    })
+}
+
+/// How every face area and line length was calculated, step by step
+/// (`tectora_core::breakdown`), with the same guards as `calc`.
+#[tauri::command(async)]
+fn calc_breakdown(project: Project) -> CmdResult<Value> {
+    guard(|| {
+        project
+            .check_limits()
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+        let b = tectora_core::model::guarded(|| tectora_core::breakdown::breakdown(&project))
+            .map_err(|d| AppError::new("internal").detail(d))?;
+        Ok(serde_json::to_value(b).unwrap_or(Value::Null))
     })
 }
 
@@ -517,6 +560,8 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updates::Updates::default())
         .setup(|app| {
             // Same folder as `tectora mcp`, so AI edits show up here.
             // A chosen folder that is gone (e.g. an unplugged network drive)
@@ -568,11 +613,14 @@ pub fn run() {
             startup_warnings,
             load_project,
             save_project,
+            normalize_project,
             delete_project,
             duplicate_project,
             project_activity,
             revert_last_change,
             revert_changes,
+            review_status,
+            accept_changes,
             live_status,
             mcp_command,
             create_standard,
@@ -581,6 +629,7 @@ pub fn run() {
             create_from_example,
             new_project,
             calc,
+            calc_breakdown,
             list_attachments,
             attach_files,
             remove_attachment,
@@ -591,7 +640,9 @@ pub fn run() {
             take_pending_open,
             get_settings,
             update_settings,
-            open_folder
+            open_folder,
+            updates::update_check,
+            updates::update_install
         ])
         .build(tauri::generate_context!())
         .expect("error while building Tectora");

@@ -1,0 +1,247 @@
+{
+  "$comment": "Mirror of ROADMAP.md with acceptance criteria. Agents may only change 'passes', and only after make check passed. Jakub adds and edits items. 'pr' lists open pull requests working on the item (2026-11-07).",
+  "features": [
+    {
+      "id": "F-001",
+      "title": "Walls and standard roofs",
+      "acceptance": [
+        "Rectangle and regular polygon entry, typed coordinates and wall lengths",
+        "Gable, hip, half-hip, shed and pyramid roofs match DACAD's fixtures (crates/tectora-core/tests/dacad_cases.rs)"
+      ],
+      "priority": 1,
+      "passes": true
+    },
+    {
+      "id": "F-002",
+      "title": "Roof definition per wall",
+      "acceptance": [
+        "Eave or gable, pitch, eave height, overhang, Kruppelwalm, pitch breaks, priority, clad gable, material and direction markers per wall",
+        "Results equal DACAD for the fixture cases"
+      ],
+      "priority": 1,
+      "passes": true
+    },
+    {
+      "id": "F-003",
+      "title": "Dormers, chimneys, roof windows, openings",
+      "acceptance": [
+        "Dormer kinds gable, pointed, hip, half-hip, shed, trapezoid, round",
+        "Area deductions and abutment lines as DACAD (cases C24-C36)"
+      ],
+      "priority": 1,
+      "passes": true
+    },
+    {
+      "id": "F-004",
+      "title": "Calculation helpers and round roof",
+      "acceptance": [
+        "Pitch / eave height / overhang / wall position by triangle, two parallels, point in space, merge faces",
+        "Hip/valley pitches, build-up thickness, Runddach"
+      ],
+      "priority": 2,
+      "passes": true
+    },
+    {
+      "id": "F-005",
+      "title": "Flat roof, hand-drawn roof lines and faces",
+      "acceptance": [
+        "Flat roof as DACAD (cases FD1, FD2)",
+        "Manual lines and faces count in the quantities"
+      ],
+      "priority": 2,
+      "passes": true
+    },
+    {
+      "id": "F-006",
+      "title": "Move, rotate, mirror, copy parts; parallel wall shift",
+      "acceptance": [
+        "Same edit operation from the editor and the MCP tool"
+      ],
+      "priority": 2,
+      "passes": true
+    },
+    {
+      "id": "F-007",
+      "title": "Views and material results",
+      "acceptance": [
+        "Front, back, side and top views",
+        "Area by material and material names"
+      ],
+      "priority": 2,
+      "passes": true
+    },
+    {
+      "id": "F-008",
+      "title": "MCP server and CLI with parity",
+      "acceptance": [
+        "An MCP tool for every editor operation, each write with a summary",
+        "tectora calc gives the same result as the app"
+      ],
+      "priority": 1,
+      "passes": true
+    },
+    {
+      "id": "F-009",
+      "title": "Job files and bundles",
+      "acceptance": [
+        "Attached drawings and photos",
+        "Export and import .tectorajob with project, files, history and preview"
+      ],
+      "priority": 2,
+      "passes": true
+    },
+    {
+      "id": "F-010",
+      "title": "Stored result",
+      "acceptance": [
+        "The offer's figures are kept with the engine version",
+        "App and MCP show any later difference"
+      ],
+      "priority": 2,
+      "passes": true
+    },
+    {
+      "id": "F-011",
+      "title": "Versioned file format",
+      "acceptance": [
+        "docs/tectora.schema.json matches the model (tests/schema.rs)",
+        "Older versions migrate on load; newer files are refused"
+      ],
+      "priority": 1,
+      "passes": true
+    },
+    {
+      "id": "F-012",
+      "title": "Open jobs by double-click on macOS and Windows",
+      "acceptance": [
+        ".tectora and .tectorajob file associations in the installers"
+      ],
+      "priority": 3,
+      "passes": true
+    },
+    {
+      "id": "F-013",
+      "title": "Post-processing: trapezoid split, sheet layout, rafters",
+      "acceptance": [
+        "Trapezzerlegung, Bahnenteilung, Rollbahnenteilung and Sparreneingabe match DACAD on fixture cases",
+        "Each has an MCP tool"
+      ],
+      "priority": 3,
+      "passes": false
+    },
+    {
+      "id": "F-014",
+      "title": "Help points and lines, extra text, separating lines, dormer in plan, covering direction",
+      "acceptance": [
+        "Hilfspunkte, Hilfslinien, Zusatztext, Trennlinien, Gaube im Grundriss and Deckrichtung as in DACAD",
+        "Each has an MCP tool"
+      ],
+      "priority": 3,
+      "passes": false
+    },
+    {
+      "id": "F-015",
+      "title": "Job variants, DXF import/export, printed views and lists",
+      "acceptance": [
+        "Variants of one job",
+        "DXF round trip",
+        "Printable views and lists"
+      ],
+      "priority": 3,
+      "passes": false
+    },
+    {
+      "id": "F-016",
+      "title": "AI builds the roof from technical drawings",
+      "acceptance": [
+        "An inbox folder turns each drawing set into a draft job",
+        "The AI's steps show live in the app with Accept / Revert",
+        "Measured on a test set of real drawings with DACAD's roofs: share of roofs the AI gets right",
+        "The AI marks what it was unsure of; the colleague confirms before the job leaves draft"
+      ],
+      "priority": 1,
+      "passes": false,
+      "pr": [
+        21,
+        18
+      ]
+    },
+    {
+      "id": "F-017",
+      "title": "Signed releases with in-app updates",
+      "acceptance": [
+        "Tagged builds are signed for macOS and Windows",
+        "The app offers and installs an update"
+      ],
+      "priority": 2,
+      "passes": false,
+      "pr": [
+        16
+      ]
+    },
+    {
+      "id": "F-018",
+      "title": "Library of past roofs",
+      "acceptance": [
+        "Search, filters and details",
+        "New job from a past roof"
+      ],
+      "priority": 2,
+      "passes": true,
+      "pr": [
+        19
+      ]
+    },
+    {
+      "id": "F-019",
+      "title": "Edit roof objects directly in the plan and the 3D view",
+      "acceptance": [
+        "Dormers, chimneys, windows selectable and editable in plan and 3D",
+        "Roof windows stand out in 3D"
+      ],
+      "priority": 2,
+      "passes": true,
+      "pr": [
+        20,
+        25
+      ]
+    },
+    {
+      "id": "F-020",
+      "title": "E2E tests for every button and flow",
+      "acceptance": [
+        "A Playwright suite under app/e2e covers every control",
+        "make e2e runs it"
+      ],
+      "priority": 2,
+      "passes": true,
+      "pr": [
+        22
+      ]
+    },
+    {
+      "id": "F-021",
+      "title": "Warning when walls in line are merged and a pitch is lost",
+      "acceptance": [
+        "A localized warning names the walls"
+      ],
+      "priority": 3,
+      "passes": true,
+      "pr": [
+        23
+      ]
+    },
+    {
+      "id": "F-022",
+      "title": "Show how every roof area and line was calculated",
+      "acceptance": [
+        "Breakdown per face and line in the results, same numbers in CLI, MCP and UI"
+      ],
+      "priority": 2,
+      "passes": true,
+      "pr": [
+        24
+      ]
+    }
+  ]
+}

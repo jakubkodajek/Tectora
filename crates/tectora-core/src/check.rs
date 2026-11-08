@@ -8,8 +8,10 @@
 //! measure the geometry against the walls so the app can tell the user to
 //! look at the roof before using its quantities.
 //!
-//! Every check is independent of how the roof was calculated: it uses the
-//! walls, their overhangs and the faces' own corners.
+//! Every check here is independent of how the roof was calculated: it uses
+//! the walls, their overhangs and the faces' own corners. One more kind,
+//! [`WarningKind::MergedWalls`], comes from the calculation itself
+//! (`engine`): walls whose pitch the calculation does not use.
 
 use geo::{Area, BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use serde::Serialize;
@@ -45,6 +47,14 @@ pub enum WarningKind {
     /// The roof area reported for the faces differs from the area of the
     /// faces' own outlines. `value`: relative difference.
     AreaMismatch,
+    /// Two walls in line were calculated as one wall, so the roof
+    /// definition of the second one is not used (the calculation joins
+    /// walls in line with the same eave height and overhang, whatever
+    /// their pitches; and where their roof faces lie in one plane it drops
+    /// the second wall's pitch breaks). `edges`: the wall whose definition
+    /// is used, then the wall whose pitch or pitch breaks are ignored.
+    /// `value`: 0.
+    MergedWalls,
 }
 
 /// One finding about a calculated roof.
@@ -53,6 +63,21 @@ pub struct RoofWarning {
     pub kind: WarningKind,
     /// How large the deviation is, in the unit `kind` gives.
     pub value: f64,
+    /// The walls (edge indices of the part) the finding is about, where
+    /// `kind` names them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<usize>,
+}
+
+impl RoofWarning {
+    /// A finding about the whole roof.
+    pub fn new(kind: WarningKind, value: f64) -> RoofWarning {
+        RoofWarning {
+            kind,
+            value,
+            edges: Vec::new(),
+        }
+    }
 }
 
 /// Plan pieces where two faces overlap smaller than this are rounding
@@ -329,22 +354,13 @@ fn warnings(outline: &[Vec<Point2>], geo: &RoofGeometry, joined: bool) -> Vec<Ro
     let m = measure(outline, geo);
     let mut out = Vec::new();
     if m.outside > OUTSIDE_TOL {
-        out.push(RoofWarning {
-            kind: WarningKind::OutsideOutline,
-            value: m.outside,
-        });
+        out.push(RoofWarning::new(WarningKind::OutsideOutline, m.outside));
     }
     if m.overlap > OVERLAP_TOL {
-        out.push(RoofWarning {
-            kind: WarningKind::OverlappingFaces,
-            value: m.overlap,
-        });
+        out.push(RoofWarning::new(WarningKind::OverlappingFaces, m.overlap));
     }
     if !joined && m.area > AREA_TOL {
-        out.push(RoofWarning {
-            kind: WarningKind::AreaMismatch,
-            value: m.area,
-        });
+        out.push(RoofWarning::new(WarningKind::AreaMismatch, m.area));
     }
     out
 }

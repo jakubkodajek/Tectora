@@ -10,10 +10,11 @@
   import ProjectCard from "./ProjectCard.svelte";
   import { api } from "./api";
   import { m2, relativeTime } from "./format";
-  import { t } from "./i18n.svelte";
+  import { numberLocale, t } from "./i18n.svelte";
   import { actorName, isFresh, live } from "./live.svelte";
   import type { Action } from "./errors";
   import { notifyError } from "./notify.svelte";
+  import UpdateBanner from "./UpdateBanner.svelte";
   import { prefs, savePrefs } from "./settings.svelte";
   import type { BrokenFile, ExampleInfo, JobStatus, ProjectSummary } from "./types";
   import { JOB_STATUSES, isAi } from "./types";
@@ -45,7 +46,11 @@
   let filter = $state<Filter>("all");
   let sort = $state<{ key: SortKey; desc: boolean }>({ key: "modified", desc: true });
   let selectedId = $state<string | null>(null);
-  let newJob = $state<{ example: string | null } | null>(null);
+  let newJob = $state<{ example: string | null; from?: string } | null>(null);
+  /** Year of the last change, local time; `null` = all years. */
+  let year = $state<number | null>(null);
+  const yearOf = (ms: number) => new Date(ms).getFullYear();
+  const years = $derived([...new Set(projects.map((p) => yearOf(p.modified_ms)))].sort((a, b) => b - a));
 
   const norm = (s: string) => s.toLocaleLowerCase("cs").normalize("NFD").replace(/\p{M}/gu, "");
   const counts = $derived.by(() => {
@@ -59,12 +64,15 @@
   });
 
   const rows = $derived.by(() => {
-    const q = norm(query.trim());
+    // Every word must appear somewhere (same rule as the MCP search).
+    const words = norm(query).split(/\s+/).filter(Boolean);
     const list = projects.filter((p) => {
+      if (year !== null && yearOf(p.modified_ms) !== year) return false;
       if (filter === "ai" && !(p.last_activity && isAi(p.last_activity.actor))) return false;
       if (filter !== "all" && filter !== "ai" && filter !== "examples" && p.job.status !== filter) return false;
-      if (!q) return true;
-      return [p.name, p.job.number, p.job.customer, p.job.address, p.notes].some((s) => norm(s).includes(q));
+      if (!words.length) return true;
+      const hay = norm([p.name, p.job.number, p.job.customer, p.job.address, p.notes].join("\n"));
+      return words.every((w) => hay.includes(w));
     });
     const key = (p: ProjectSummary): string | number =>
       sort.key === "modified" ? p.modified_ms
@@ -80,6 +88,12 @@
     });
   });
   const selected = $derived(projects.find((p) => p.id === selectedId) ?? null);
+
+  function pitchText(r: [number, number] | null): string {
+    if (!r) return "—";
+    const f = (x: number) => x.toLocaleString(numberLocale(), { maximumFractionDigits: 1 });
+    return Math.abs(r[1] - r[0]) < 0.05 ? `${f(r[0])}°` : `${f(r[0])}–${f(r[1])}°`;
+  }
 
   function sortBy(key: SortKey) {
     sort = sort.key === key ? { key, desc: !sort.desc } : { key, desc: key === "modified" || key === "area" };
@@ -167,6 +181,15 @@
       <button class:on={filter === "ai"} onclick={() => (filter = "ai")}>
         <Icon name="sparkle" size={16} />{t("lib.byAi")}<span>{counts.ai}</span>
       </button>
+      {#if years.length > 1}
+        <label class="year">
+          <span>{t("lib.year")}</span>
+          <select bind:value={year}>
+            <option value={null}>{t("lib.anyYear")}</option>
+            {#each years as y}<option value={y}>{y}</option>{/each}
+          </select>
+        </label>
+      {/if}
       <hr />
       <button class:on={filter === "examples"} onclick={() => (filter = "examples")}>
         <Icon name="house" size={16} />{t("home.examples")}<span>{examples.length}</span>
@@ -175,6 +198,7 @@
     </nav>
 
     <main>
+      <UpdateBanner />
       {#if filter === "examples"}
         <div class="head"><h2>{t("home.examples")}</h2><p class="muted">{t("home.examplesHint")}</p></div>
         <div class="examples">
@@ -225,7 +249,7 @@
         {:else if prefs.libraryView === "grid"}
           <div class="grid">
             {#each rows as p (p.id)}
-              <ProjectCard project={p} onopen={() => onopen(p.id)} onduplicate={() => duplicate(p)} ondelete={() => remove(p)} />
+              <ProjectCard project={p} onopen={() => onopen(p.id)} onduplicate={() => duplicate(p)} onreuse={() => (newJob = { example: null, from: p.id })} ondelete={() => remove(p)} />
             {/each}
           </div>
         {:else}
@@ -274,6 +298,10 @@
           <dt>{t("job.customer")}</dt><dd>{selected.job.customer || "—"}</dd>
           <dt>{t("job.address")}</dt><dd>{selected.job.address || "—"}</dd>
           <dt>{t("res.area")}</dt><dd>{m2(selected.roof_area)}</dd>
+          <dt>{t("edge.pitch")}</dt><dd>{pitchText(selected.pitch_range)}</dd>
+          {#if selected.dormers}<dt>{t("lib.dormers")}</dt><dd>{selected.dormers}</dd>{/if}
+          <dt>{t("lib.files")}</dt><dd>{selected.files}</dd>
+          {#if selected.has_result}<dt>{t("lib.stored")}</dt><dd>{t("lib.storedYes")}</dd>{/if}
           <dt>{t("lib.colModified")}</dt><dd>{relativeTime(selected.modified_ms)}</dd>
         </dl>
         {#if selected.notes}<p class="notes">{selected.notes}</p>{/if}
@@ -286,6 +314,7 @@
         <div class="detail-actions">
           <button class="btn primary" onclick={() => onopen(selected!.id)}><Icon name="open" size={16} />{t("card.open")}</button>
           <button class="btn" onclick={() => duplicate(selected!)}><Icon name="copy" size={16} />{t("card.duplicate")}</button>
+          <button class="btn reuse" onclick={() => (newJob = { example: null, from: selected!.id })}><Icon name="plus" size={16} />{t("card.reuse")}</button>
           <button class="btn ghost danger" onclick={() => remove(selected!)}><Icon name="trash" size={16} />{t("card.delete")}</button>
         </div>
       </aside>
@@ -296,7 +325,9 @@
 {#if newJob}
   <NewJob
     {examples}
+    {projects}
     initialExample={newJob.example}
+    initialSource={newJob.from ?? null}
     onclose={() => (newJob = null)}
     oncreated={(id) => {
       newJob = null;
@@ -432,6 +463,20 @@
   nav button.on {
     background: var(--accent-soft);
     color: var(--accent);
+  }
+  .year {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+    padding: 0 10px;
+    font-size: 12px;
+    color: var(--text-3);
+  }
+  .year select {
+    flex: 1;
+    min-width: 0;
+    height: 30px;
   }
   nav hr {
     width: 100%;
@@ -796,6 +841,10 @@
     gap: 8px;
     width: 100%;
   }
+  .detail-actions .reuse {
+    flex: 1 1 100%;
+    white-space: nowrap;
+  }
   .danger {
     color: var(--danger);
   }
@@ -877,6 +926,13 @@
     nav .folder {
       display: none;
     }
+    .year {
+      flex: none;
+      margin: 0;
+    }
+    .year span {
+      display: none;
+    }
     nav button {
       flex: none;
       height: 30px;
@@ -927,6 +983,10 @@
     .detail-actions {
       width: auto;
       margin-left: auto;
+      flex-wrap: nowrap;
+    }
+    .detail-actions .reuse {
+      flex: none;
     }
   }
   /* Half-screen and low: one scrolling filter row, no thumbnail in the detail strip. */

@@ -139,3 +139,78 @@ fn joined_roofs_may_run_on_to_the_other_building() {
     );
     assert_eq!(kinds(&p), []);
 }
+
+/// A 10 × 8 m hip roof whose front eave is entered as two walls in line,
+/// the second with its own pitch and pitch break.
+fn split_front(second_pitch: f64, second_eave: f64, break_on_second: bool) -> Project {
+    let mut second = edge(5.0, 0.0, second_pitch, second_eave, 0.5);
+    if break_on_second {
+        second.breaks = vec![tectora_core::model::PitchBreak {
+            height: 4.5,
+            pitch_deg: 20.0,
+        }];
+    }
+    let mut p = Project::new("split front");
+    p.parts.push(RoofPart {
+        name: "A".into(),
+        edges: vec![
+            edge(0.0, 0.0, 40.0, 3.0, 0.5),
+            second,
+            edge(10.0, 0.0, 40.0, 3.0, 0.5),
+            edge(10.0, 8.0, 40.0, 3.0, 0.5),
+            edge(0.0, 8.0, 40.0, 3.0, 0.5),
+        ],
+    });
+    p
+}
+
+#[test]
+fn walls_in_line_with_the_same_eave_are_one_wall() {
+    // The calculation joins walls in line with the same eave height and
+    // overhang before it looks at their pitches (byte-identical with the
+    // DACAD core emulator): the second wall's 25° and its pitch break are
+    // not used, the whole front is 40°. The roof stays as calculated and
+    // carries a warning naming both walls.
+    for p in [split_front(25.0, 3.0, false), split_front(40.0, 3.0, true)] {
+        let geos = generate_project(&p);
+        let g = &geos[0];
+        assert!(g.error.is_none());
+        assert!(g.faces.iter().all(|f| f.pitch_deg == 40.0), "{:?}", g.faces);
+        let w: Vec<_> = g
+            .warnings
+            .iter()
+            .filter(|w| w.kind == WarningKind::MergedWalls)
+            .collect();
+        assert_eq!(w.len(), 1, "{:?}", g.warnings);
+        assert_eq!(w[0].edges, [0, 1]);
+    }
+    // Same definitions: nothing is lost, no warning.
+    assert_eq!(kinds(&split_front(40.0, 3.0, false)), []);
+}
+
+#[test]
+fn merged_walls_name_the_edges_as_entered() {
+    // The same roof entered clockwise: the warning names the edges in the
+    // order the user entered them.
+    let mut p = split_front(25.0, 3.0, false);
+    let part = &mut p.parts[0];
+    let n = part.edges.len();
+    let starts: Vec<_> = part.edges.iter().map(|e| e.start).collect();
+    let mut cw = Vec::new();
+    for i in (0..n).rev() {
+        let mut e = part.edges[i].clone();
+        e.start = starts[(i + 1) % n];
+        cw.push(e);
+    }
+    part.edges = cw;
+    let geos = generate_project(&p);
+    let w = &geos[0].warnings;
+    assert_eq!(w.len(), 1, "{w:?}");
+    // Entered clockwise, edge 4 is the 40° wall (5,0)-(0,0), which is
+    // kept, and edge 3 the 25° wall (10,0)-(5,0), which loses its pitch.
+    assert_eq!(w[0].edges, [4, 3]);
+    let e = &p.parts[0].edges;
+    assert_eq!(e[3].pitch_deg, 25.0);
+    assert!(geos[0].faces.iter().all(|f| f.pitch_deg == 40.0));
+    assert!(geos[0].faces.iter().any(|f| f.edge == 4));
+}
