@@ -62,3 +62,17 @@ sessions that use it know where things stand.
   `app/src-tauri/src/lib.rs` not compiled here (no WebKitGTK).
 - Next: test Connect on Windows with the MSIX Claude Desktop; tectora-review.
 - Blockers / open questions: none.
+
+## 2026-11-08 · Export for the offer (plan sheet + price-sheet text)
+
+- Done: `tectora_core::export`: the text list in the format of DACAD's
+  "Liste" as TERRAN's Slovak-patched build writes it (verified against
+  DACAD under Wine; `m˛` glyph and Slovak group names on purpose, the Excel
+  price sheet parses them), and an A4 plan sheet (lengths, areas, pitches,
+  totals) as SVG and a hand-written PDF. Export dialog in the editor (PDF,
+  PNG, copy image, copy text), Tauri commands + ui_bridge, MCP
+  `export_list` / `export_plan`.
+- Known gaps: wall-area ("Stena") groups, dormers as their own roof number,
+  one hole entry per face, DIN Norm group only for one material.
+- Next: Jakub checks the pasted text in the real Excel sheet.
+- Blockers / open questions: none.

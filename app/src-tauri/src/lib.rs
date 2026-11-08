@@ -281,6 +281,55 @@ fn export_job(state: State<AppState>, id: String, path: String) -> CmdResult<()>
     guard(|| Ok(bundle::export(&state.store(), &id, &PathBuf::from(path)).map(|_| ())?))
 }
 
+/// The text list for the price sheet and the plan sheet (SVG) of the open
+/// project, for the export dialog.
+#[tauri::command(async)]
+fn export_preview(project: Project, title: String, stamp: String) -> CmdResult<Value> {
+    guard(|| {
+        let opts = tectora_core::export::ListOptions::new(title, stamp);
+        let (list, svg) = tectora_core::export::checked(&project, &opts)
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+        Ok(serde_json::json!({ "list": list, "svg": svg }))
+    })
+}
+
+/// Writes the plan sheet to `path` (from the save dialog) as PDF or SVG,
+/// by its extension.
+#[tauri::command(async)]
+fn export_plan_file(project: Project, stamp: String, path: String) -> CmdResult<()> {
+    guard(|| {
+        let path = PathBuf::from(path);
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default();
+        let bytes = tectora_core::export::checked_sheet_file(&project, &stamp, &ext)
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+        std::fs::write(&path, bytes)
+            .map_err(|e| AppError::new("io").detail(format!("{}: {e}", path.display())))?;
+        Ok(())
+    })
+}
+
+/// Writes the PNG the export dialog rendered to `path` (from the save dialog).
+#[tauri::command(async)]
+fn save_png(path: String, bytes: Vec<u8>) -> CmdResult<()> {
+    guard(|| {
+        let path = PathBuf::from(path);
+        let png = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("png"));
+        if !png || !bytes.starts_with(b"\x89PNG") || bytes.len() > 64 << 20 {
+            return Err(AppError::new("invalid_input").detail("not a PNG image"));
+        }
+        std::fs::write(&path, bytes)
+            .map_err(|e| AppError::new("io").detail(format!("{}: {e}", path.display())))?;
+        Ok(())
+    })
+}
+
 #[tauri::command]
 fn import_job(state: State<AppState>, path: String) -> CmdResult<String> {
     guard(|| Ok(bundle::open_path(&state.store(), &PathBuf::from(path))?))
@@ -728,6 +777,9 @@ pub fn run() {
             remove_attachment,
             open_attachment,
             export_job,
+            export_preview,
+            export_plan_file,
+            save_png,
             import_job,
             take_snapshot,
             take_pending_open,

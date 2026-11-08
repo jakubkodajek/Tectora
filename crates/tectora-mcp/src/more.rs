@@ -455,6 +455,25 @@ pub(crate) fn tools() -> Vec<Value> {
             }), &["id", "summary"]),
         }),
         json!({
+            "name": "export_list",
+            "description": "The roof as the text list TERRAN's Excel price sheet reads (the text the user copies with the copy button in the app's Export dialog): roofs, wall definitions, windows, chimneys and openings, roof lines with pitch and length, faces with area and rafter length, and totals by material and line type. Read-only. Give it to the user verbatim; do not translate or reformat it, the price sheet parses it.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "stamp": { "type": "string", "description": "Date in the header, e.g. \"08.11.2026 14:30\"; default: now (UTC)." },
+            }), &["id"]),
+        }),
+        json!({
+            "name": "export_plan",
+            "description": "Write the roof sheet (A4 landscape plan with line lengths, face areas, pitches and totals; the picture the user adds to the Excel price sheet) to the `exports` folder of the job library as PDF or SVG. The file is named after the job (or `name`); an existing file is never replaced. Returns the path to give the user.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "format": { "type": "string", "enum": ["pdf", "svg"], "description": "Default: pdf." },
+                "name": { "type": "string", "description": "File name without folder or extension; default: the job's id." },
+                "stamp": { "type": "string", "description": "Date on the sheet; default: now (UTC)." },
+                "summary": summary_prop(),
+            }), &["id", "summary"]),
+        }),
+        json!({
             "name": "import_job",
             "description": "Add a job from a .tectorajob file, or a .tectora project file from outside the library, as a new design.",
             "inputSchema": schema(json!({ "path": { "type": "string" } }), &["path"]),
@@ -603,6 +622,43 @@ impl Server {
                 let m = bundle::export(&self.store, &id, &path)?;
                 self.live(format!("Exported to {}: {summary}", path.display()), Some(&id));
                 Ok(json!({ "id": id, "path": path.display().to_string(), "manifest": m }))
+            })(),
+            "export_list" => (|| {
+                let (id, p) = self.load(args)?;
+                let stamp = match args.get("stamp").and_then(Value::as_str) {
+                    Some(s) if s.chars().count() <= 40 => s.to_string(),
+                    Some(_) => return Err("`stamp` is too long".into()),
+                    None => tectora_core::export::utc_stamp(tectora_core::store::now_ms()),
+                };
+                let title = if p.name.is_empty() { id.clone() } else { p.name.clone() };
+                let opts = tectora_core::export::ListOptions::new(title, stamp);
+                let (list, _) = tectora_core::export::checked(&p, &opts)?;
+                Ok(json!({ "id": id, "list": list }))
+            })(),
+            "export_plan" => (|| {
+                let (id, p) = self.load(args)?;
+                let summary = arg_str(args, "summary")?;
+                if args.get("path").is_some() {
+                    return Err("`path` is not accepted: sheets are written to the library's exports folder; pass `name` for the file name".into());
+                }
+                let format = args.get("format").and_then(Value::as_str).unwrap_or("pdf");
+                if format != "pdf" && format != "svg" {
+                    return Err(format!("`format` must be pdf or svg, not `{format}`"));
+                }
+                let stamp = match args.get("stamp").and_then(Value::as_str) {
+                    Some(s) if s.chars().count() <= 40 => s.to_string(),
+                    Some(_) => return Err("`stamp` is too long".into()),
+                    None => tectora_core::export::utc_stamp(tectora_core::store::now_ms()),
+                };
+                let name = match args.get("name").and_then(Value::as_str) {
+                    Some(n) => n.trim().trim_end_matches(&format!(".{format}")).to_string(),
+                    None => id.clone(),
+                };
+                let path = bundle::export_path_with(&self.store, &name, format)?;
+                let bytes = tectora_core::export::checked_sheet_file(&p, &stamp, format)?;
+                std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+                self.live(format!("Exported sheet to {}: {summary}", path.display()), Some(&id));
+                Ok(json!({ "id": id, "path": path.display().to_string() }))
             })(),
             "import_job" => (|| {
                 let path = PathBuf::from(arg_str(args, "path")?);
@@ -1710,6 +1766,39 @@ mod tests {
             .unwrap()
             .to_string();
         assert_ne!(out, again, "an existing export is never replaced");
+        let list = call(
+            &mut s,
+            "export_list",
+            json!({ "id": id, "stamp": "08.11.2026 12:00" }),
+        )["list"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            list.contains("DACHLINIEN") && list.contains("08.11.2026 12:00"),
+            "{list}"
+        );
+        let sheet = call(&mut s, "export_plan", json!({ "id": id, "summary": "s" }))["path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(sheet.ends_with(".pdf"));
+        assert!(std::fs::read(&sheet).unwrap().starts_with(b"%PDF-"));
+        let svg = call(
+            &mut s,
+            "export_plan",
+            json!({ "id": id, "format": "svg", "name": "plan", "summary": "s" }),
+        )["path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(svg.ends_with("plan.svg"));
+        for bad in [
+            json!({ "id": id, "format": "exe", "summary": "s" }),
+            json!({ "id": id, "name": "../x", "summary": "s" }),
+        ] {
+            assert!(s.call_tool("export_plan", &bad).is_err());
+        }
         let new_id = call(&mut s, "import_job", json!({ "path": out }))["id"]
             .as_str()
             .unwrap()
