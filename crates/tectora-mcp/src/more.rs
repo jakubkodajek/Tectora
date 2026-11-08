@@ -552,7 +552,7 @@ impl Server {
                 let (id, _) = self.load(args)?;
                 let ts: u64 = req(args, "ts_ms")?;
                 let p = self.store.revert_to(&id, ts, &self.client)?;
-                self.live("Reverted changes".into(), Some(&id));
+                self.live_follow("Reverted changes".into(), &id);
                 Ok(json!({ "id": id, "reverted": true, "quantities": super::quantities(&p) }))
             })(),
             "list_examples" => Ok(json!(EXAMPLES
@@ -591,7 +591,7 @@ impl Server {
                 if args.get("with_files").and_then(Value::as_bool).unwrap_or(true) {
                     self.store.copy_attachments(&id, &new_id)?;
                 }
-                self.live(format!("Copied “{}”", p.name), Some(&new_id));
+                self.live_follow(format!("Copied “{}”", p.name), &new_id);
                 Ok(json!({ "id": new_id }))
             })(),
             "delete_project" => (|| {
@@ -614,14 +614,14 @@ impl Server {
             "attach_file" => (|| {
                 let (id, _) = self.load(args)?;
                 let name = self.store.attach_file(&id, &PathBuf::from(arg_str(args, "path")?))?;
-                self.live(format!("Attached {name}"), Some(&id));
+                self.live_follow(format!("Attached {name}"), &id);
                 Ok(json!({ "id": id, "name": name }))
             })(),
             "remove_file" => (|| {
                 let (id, _) = self.load(args)?;
                 let name = arg_str(args, "name")?;
                 self.store.remove_attachment(&id, name)?;
-                self.live(format!("Removed {name}"), Some(&id));
+                self.live_follow(format!("Removed {name}"), &id);
                 Ok(json!({ "id": id, "removed": name }))
             })(),
             "export_job" => (|| {
@@ -679,7 +679,7 @@ impl Server {
             "import_job" => (|| {
                 let path = PathBuf::from(arg_str(args, "path")?);
                 let id = bundle::open_path(&self.store, &path)?;
-                self.live(format!("Imported {}", path.display()), Some(&id));
+                self.live_follow(format!("Imported {}", path.display()), &id);
                 Ok(json!({ "id": id }))
             })(),
             "store_result" => (|| {

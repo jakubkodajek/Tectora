@@ -95,6 +95,20 @@ fn store_command(
             let project = arg::<Project>(a, "project").ok()?;
             Some(store.save(Some(id), &project).map(Value::String))
         }
+        // Reverts with their codes too (`revert_conflict`, ERR-001).
+        "revert_last_change" => Some(
+            store
+                .revert_last(&id, USER_ACTOR)
+                .map(|p| to_json(p).unwrap_or(Value::Null)),
+        ),
+        "revert_changes" => {
+            let ts = arg::<u64>(a, "tsMs").ok()?;
+            Some(
+                store
+                    .revert_to(&id, ts, USER_ACTOR)
+                    .map(|p| to_json(p).unwrap_or(Value::Null)),
+            )
+        }
         _ => None,
     }
 }
@@ -125,8 +139,6 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             items.reverse();
             Ok(Value::Array(items))
         }
-        "revert_last_change" => to_json(store.revert_last(&id()?, USER_ACTOR)?),
-        "revert_changes" => to_json(store.revert_to(&id()?, arg(a, "tsMs")?, USER_ACTOR)?),
         "review_status" => to_json(store.review_status(&id()?)?),
         "accept_changes" => to_json(store.mark_reviewed(&id()?, arg(a, "tsMs")?)?),
         "live_status" => to_json(store.live()),

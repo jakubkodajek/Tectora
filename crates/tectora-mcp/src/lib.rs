@@ -657,12 +657,25 @@ impl Server {
         }
     }
 
+    /// Publishes what the agent is doing; the app shows it and never opens
+    /// the job for it (reading, calculating, exporting).
     fn live(&self, message: String, project_id: Option<&str>) {
+        self.publish(message, project_id, false);
+    }
+
+    /// Publishes a write to (or `show_project` of) a job: the app opens it
+    /// in follow mode when the user is not in the middle of something.
+    fn live_follow(&self, message: String, project_id: &str) {
+        self.publish(message, Some(project_id), true);
+    }
+
+    fn publish(&self, message: String, project_id: Option<&str>, follow: bool) {
         self.store.set_live(&LiveStatus {
             ts_ms: now_ms(),
             actor: self.client.clone(),
             message,
             project_id: project_id.map(str::to_string),
+            follow,
         });
     }
 
@@ -678,7 +691,7 @@ impl Server {
         let id = self
             .store
             .save_as(id.map(str::to_string), project, &self.client, summary)?;
-        self.live(summary.to_string(), Some(&id));
+        self.live_follow(summary.to_string(), &id);
         let changes = before.map(|b| diff(b, project)).unwrap_or_default();
         Ok(json!({
             "id": id,
@@ -1031,13 +1044,13 @@ impl Server {
             }
             "show_project" => {
                 let (id, p) = self.load(args)?;
-                self.live(format!("Showing “{}”", p.name), Some(&id));
+                self.live_follow(format!("Showing “{}”", p.name), &id);
                 Ok(json!({ "id": id, "shown": true }))
             }
             "revert_last_change" => {
                 let (id, _) = self.load(args)?;
                 let p = self.store.revert_last(&id, &self.client)?;
-                self.live("Reverted the latest change".into(), Some(&id));
+                self.live_follow("Reverted the latest change".into(), &id);
                 Ok(json!({ "id": id, "reverted": true, "quantities": quantities(&p) }))
             }
             _ => self
@@ -1200,10 +1213,18 @@ mod tests {
         let log = s.store.activity(&id);
         assert_eq!(log.len(), 2);
         assert_eq!(log[1].actor, "test-agent");
-        assert_eq!(
-            s.store.live().unwrap().project_id.as_deref(),
-            Some(id.as_str())
-        );
+        let live = s.store.live().unwrap();
+        assert_eq!(live.project_id.as_deref(), Some(id.as_str()));
+        assert!(live.follow, "a write may be followed in the app");
+        // Reading or calculating a job never makes the app switch to it (UX-001).
+        for tool in ["get_project", "calc", "calc_breakdown"] {
+            s.call_tool(tool, &json!({ "id": id })).unwrap();
+            let live = s.store.live().unwrap();
+            assert_eq!(live.project_id.as_deref(), Some(id.as_str()), "{tool}");
+            assert!(!live.follow, "{tool} must not be followed");
+        }
+        s.call_tool("show_project", &json!({ "id": id })).unwrap();
+        assert!(s.store.live().unwrap().follow, "show_project is followed");
 
         s.call_tool("revert_last_change", &json!({ "id": id }))
             .unwrap();

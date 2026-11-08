@@ -32,6 +32,12 @@
         <button class="close" onclick={() => dismiss(toast.id)} aria-label={t("err.close")} title={t("err.close")}><Icon name="x" size={14} /></button>
       </div>
       {#if toast.message}<p>{toast.message}</p>{/if}
+      {#if toast.action}
+        {@const action = toast.action}
+        <div class="foot">
+          <button class="btn sm" onclick={() => { dismiss(toast.id); action.run(); }}>{action.label}</button>
+        </div>
+      {/if}
       {#if toast.code || toast.detail}
         <div class="foot">
           {#if toast.code}<span class="mono">{toast.code}</span>{/if}

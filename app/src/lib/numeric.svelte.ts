@@ -88,6 +88,13 @@ export function stepValue(base: number, dir: number, step: number, min?: number,
 export function numeric(input: HTMLInputElement, initial: NumericOptions) {
   let opts = initial;
   let dirty = false;
+  // Marks the field as one of ours, and whether it holds typed text not
+  // stored yet (follow mode waits for that, leave.ts `isTyping`).
+  input.dataset.field = "";
+  const setDirty = (d: boolean) => {
+    dirty = d;
+    input.toggleAttribute("data-typing", d);
+  };
   let invalid = false;
 
   input.type = "text";
@@ -149,7 +156,7 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
   /** Stores the typed text if it changed; restores the stored value if it is not a number we take. */
   function commit() {
     if (!dirty) return;
-    dirty = false;
+    setDirty(false);
     if (opts.onclear && input.value.trim() === "") {
       setInvalid(null);
       opts.onclear();
@@ -175,14 +182,14 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
     const typed = dirty ? parseNumber(input.value) : null;
     const base = typed ?? opts.value ?? opts.min ?? 0;
     const v = stepValue(base, dir, opts.step ?? 1, opts.min, opts.max);
-    dirty = false;
+    setDirty(false);
     setInvalid(null);
     if (store(v)) input.value = fmt(v);
     else input.value = fmt(opts.value);
   }
 
   function onInput() {
-    dirty = true;
+    setDirty(true);
     const text = input.value.trim();
     // A lone "-" or "," is a number being typed, not an error yet.
     const partial = /^[-+\u2212]?[.,]?$/.test(text);
@@ -200,7 +207,7 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
       commit();
       input.select();
     } else if (e.key === "Escape" && dirty) {
-      dirty = false;
+      setDirty(false);
       setInvalid(null);
       render();
       e.preventDefault();

@@ -70,8 +70,11 @@ PDF renderer).
   computed changes and the previous version.
 - The server also writes `.activity/live.json` on each call ("Reading …",
   "Calculating …", or the write summary).
-- The app watches the folder: it opens the job the agent works on (follow mode,
-  can be turned off) and shows a banner with every pending step's summary, the
+- The app watches the folder: it opens the job the agent saves or shows with
+  `show_project` (follow mode, can be turned off; reading or calculating
+  another job never switches, and while the user is drawing, placing an
+  object, typing or has a dialog open the app only offers "Open" in a toast)
+  and shows a banner with every pending step's summary, the
   list of changes and how they change the figures (roof area, ridge height,
   line lengths by code, area by material: before → now, with the difference).
   Changed walls, dormers, chimneys, windows, openings and hand-drawn lines and
@@ -85,6 +88,11 @@ PDF renderer).
   kept in the library (`.activity/<id>.review.json`), so it survives a restart
   and the agent can read it with `get_review`; only the user accepts.
   The AI tab keeps the full history.
+- A revert keeps the edits made after the reverted step (the app's own
+  saves are not logged): the store merges the inverse of the step onto the
+  current file, using the version the step saved (`after`) as the base. When
+  a later edit changed a value the step also set, the revert is refused with
+  `revert_conflict` and the file stays as it is.
 
 A skill for Claude that describes the drawing workflow is in
 `integrations/skills/tectora-roof/SKILL.md`.

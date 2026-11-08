@@ -65,6 +65,8 @@ const KNOWN = new Set([
   "nothing_to_revert",
   "revert_created",
   "no_such_change",
+  "revert_conflict",
+  "not_saved",
   "unknown_example",
   "open_failed",
   "out_of_range",

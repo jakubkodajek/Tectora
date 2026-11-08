@@ -20,6 +20,7 @@ pub mod flat;
 mod gable_wall;
 pub mod geom;
 pub mod library;
+pub mod merge;
 pub mod model;
 pub mod modell;
 pub mod multiroof;

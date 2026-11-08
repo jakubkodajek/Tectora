@@ -85,6 +85,12 @@ pub struct ActivityEntry {
     /// What this change did, computed when it was saved.
     #[serde(default)]
     pub changes: Vec<Change>,
+    /// The project this change saved. A revert merges the inverse of the
+    /// change onto the current file with it as the base, so edits saved
+    /// later without a log entry (the app's autosave) are kept. `None` in
+    /// entries written by Tectora 0.5 and older.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Project>,
 }
 
 impl ActivityEntry {
@@ -140,6 +146,10 @@ pub struct LiveStatus {
     /// Short description, e.g. "Reading project rodinny-dum".
     pub message: String,
     pub project_id: Option<String>,
+    /// The agent saved `project_id` or asked to show it: the app may open it
+    /// (follow mode). Reading or calculating a job does not set it.
+    #[serde(default)]
+    pub follow: bool,
 }
 
 pub fn now_ms() -> u64 {
@@ -224,6 +234,10 @@ pub enum StoreError {
     /// No recorded change has this timestamp (the log moved on).
     #[error("{id}: no recorded change at {ts_ms}")]
     NoSuchChange { id: String, ts_ms: u64 },
+    /// The job was edited after the change to revert, in values that change
+    /// also set: reverting would overwrite those edits, so nothing is done.
+    #[error("{id}: edited since that change in the same values ({detail})")]
+    RevertConflict { id: String, detail: String },
 }
 
 /// The kinds of file system failure the app explains differently.
@@ -255,6 +269,7 @@ impl StoreError {
             StoreError::NothingToRevert(_) => "nothing_to_revert",
             StoreError::RevertCreated(_) => "revert_created",
             StoreError::NoSuchChange { .. } => "no_such_change",
+            StoreError::RevertConflict { .. } => "revert_conflict",
         }
     }
 
@@ -267,7 +282,8 @@ impl StoreError {
             | StoreError::RevertCreated(id) => Some(id),
             StoreError::Unreadable { id, .. }
             | StoreError::NewerFormat { id, .. }
-            | StoreError::NoSuchChange { id, .. } => Some(id),
+            | StoreError::NoSuchChange { id, .. }
+            | StoreError::RevertConflict { id, .. } => Some(id),
             StoreError::Io { id, .. } => id.as_deref(),
         }
     }
@@ -275,7 +291,9 @@ impl StoreError {
     /// The underlying message (OS or parser error), if any.
     pub fn detail(&self) -> Option<&str> {
         match self {
-            StoreError::Unreadable { detail, .. } | StoreError::Io { detail, .. } => Some(detail),
+            StoreError::Unreadable { detail, .. }
+            | StoreError::Io { detail, .. }
+            | StoreError::RevertConflict { detail, .. } => Some(detail),
             _ => None,
         }
     }
@@ -635,6 +653,7 @@ impl Store {
                     .map(|b| diff(b, project))
                     .unwrap_or_default(),
                 before,
+                after: Some(project.clone()),
             },
         )?;
         self.save(Some(id.clone()), project)
@@ -685,22 +704,19 @@ impl Store {
             .collect()
     }
 
-    /// Restores the version before the latest recorded change.
+    /// Undoes the latest recorded change, keeping later unlogged edits.
     pub fn revert_last(&self, id: &str, actor: &str) -> Result<Project, StoreError> {
-        let last = self
-            .activity(id)
-            .pop()
+        let log = self.activity(id);
+        let last = log
+            .last()
             .ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
-        let before = last
-            .before
-            .ok_or_else(|| StoreError::RevertCreated(id.to_string()))?;
-        self.save_as(
-            Some(id.to_string()),
-            &before,
+        self.revert_from(
+            id,
+            &log,
+            log.len() - 1,
             actor,
-            &format!("Reverted: {}", last.summary),
-        )?;
-        Ok(before)
+            format!("Reverted: {}", last.summary),
+        )
     }
 
     /// Restores the version from before the change recorded at `ts_ms`,
@@ -714,18 +730,59 @@ impl Store {
                     id: id.to_string(),
                     ts_ms,
                 })?;
-        let before = log[pos]
-            .before
-            .clone()
-            .ok_or_else(|| StoreError::RevertCreated(id.to_string()))?;
         let undone = log.len() - pos;
         let summary = if undone == 1 {
             format!("Reverted: {}", log[pos].summary)
         } else {
             format!("Reverted {undone} changes since: {}", log[pos].summary)
         };
-        self.save_as(Some(id.to_string()), &before, actor, &summary)?;
-        Ok(before)
+        self.revert_from(id, &log, pos, actor, summary)
+    }
+
+    /// Undoes `log[pos..]`: the version before `log[pos]`, plus whatever the
+    /// current file changed after the latest entry. The app autosaves the
+    /// user's own edits without a log entry, so the file can be newer than
+    /// the last entry's result; those edits are merged onto the reverted
+    /// version (ERR-001). Refuses when they touch a value the reverted
+    /// changes set. Edits saved between the reverted entries are reverted
+    /// with them.
+    fn revert_from(
+        &self,
+        id: &str,
+        log: &[ActivityEntry],
+        pos: usize,
+        actor: &str,
+        summary: String,
+    ) -> Result<Project, StoreError> {
+        let before = log[pos]
+            .before
+            .clone()
+            .ok_or_else(|| StoreError::RevertCreated(id.to_string()))?;
+        let target = match (log.last().and_then(|e| e.after.as_ref()), self.load(id)) {
+            (Some(after), Ok(current)) if &current != after => {
+                let value = |p: &Project| {
+                    serde_json::to_value(p).map_err(|e| StoreError::Unreadable {
+                        id: id.to_string(),
+                        detail: e.to_string(),
+                    })
+                };
+                let merged =
+                    crate::merge::merge3(&value(after)?, &value(&current)?, &value(&before)?)
+                        .map_err(|paths| StoreError::RevertConflict {
+                            id: id.to_string(),
+                            detail: paths.join(", "),
+                        })?;
+                serde_json::from_value(merged).map_err(|e| StoreError::Unreadable {
+                    id: id.to_string(),
+                    detail: e.to_string(),
+                })?
+            }
+            // A file newer than this Tectora is neither read nor written.
+            (_, Err(e @ StoreError::NewerFormat { .. })) => return Err(e),
+            _ => before,
+        };
+        self.save_as(Some(id.to_string()), &target, actor, &summary)?;
+        Ok(target)
     }
 
     fn review_path(&self, id: &str) -> Result<PathBuf, StoreError> {
@@ -1238,6 +1295,79 @@ mod tests {
         assert!(store.pending_review(&id).is_none());
         store.delete(&id).unwrap();
         assert!(store.activity(&id).is_empty());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ERR-001: the app saves its own edits without a log entry; reverting
+    /// the AI step before them must not throw them away.
+    #[test]
+    fn reverting_an_ai_change_keeps_the_users_later_edits() {
+        let store = temp_store("revert-keeps-user");
+        let a = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
+        let mut ai = a.clone();
+        ai.parts[0].edges[3].pitch_deg = 44.0;
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "Steeper wall 4")
+            .unwrap();
+        let ts = store.activity(&id).last().unwrap().ts_ms;
+        // The user's own correction, autosaved by the app (not logged).
+        let mut mine = ai.clone();
+        mine.parts[0].edges[0].overhang = 0.9;
+        store.save(Some(id.clone()), &mine).unwrap();
+
+        let mut want = a.clone();
+        want.parts[0].edges[0].overhang = 0.9;
+        assert_eq!(store.revert_last(&id, USER_ACTOR).unwrap(), want);
+        assert_eq!(store.load(&id).unwrap(), want);
+
+        // The same through "revert all".
+        store
+            .save_as(Some(id.clone()), &mine, USER_ACTOR, "again")
+            .unwrap();
+        let mut ai2 = mine.clone();
+        ai2.parts[0].edges[3].pitch_deg = 44.0;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .save_as(Some(id.clone()), &ai2, "claude", "Steeper wall 4")
+            .unwrap();
+        let ts2 = store.activity(&id).last().unwrap().ts_ms;
+        assert_ne!(ts, ts2);
+        let mut mine2 = ai2.clone();
+        mine2.parts[0].edges[1].overhang = 0.7;
+        store.save(Some(id.clone()), &mine2).unwrap();
+        let mut want2 = want.clone();
+        want2.parts[0].edges[1].overhang = 0.7;
+        assert_eq!(store.revert_to(&id, ts2, USER_ACTOR).unwrap(), want2);
+        assert_eq!(store.load(&id).unwrap(), want2);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ERR-001: when the user changed the very value the AI step changed,
+    /// revert refuses and the file stays as it is.
+    #[test]
+    fn revert_refuses_when_the_user_changed_the_same_value() {
+        let store = temp_store("revert-conflict");
+        let a = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
+        let mut ai = a.clone();
+        ai.parts[0].edges[3].pitch_deg = 44.0;
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "Steeper wall 4")
+            .unwrap();
+        let mut mine = ai.clone();
+        mine.parts[0].edges[3].pitch_deg = 40.0;
+        store.save(Some(id.clone()), &mine).unwrap();
+        let n = store.activity(&id).len();
+        let err = store.revert_last(&id, USER_ACTOR).unwrap_err();
+        assert_eq!(err.code(), "revert_conflict");
+        assert!(
+            err.detail()
+                .unwrap()
+                .contains("parts[0].edges[3].pitch_deg")
+        );
+        assert_eq!(store.load(&id).unwrap(), mine);
+        assert_eq!(store.activity(&id).len(), n, "nothing logged");
         let _ = fs::remove_dir_all(&store.dir);
     }
 }

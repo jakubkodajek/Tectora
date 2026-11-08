@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasUnsaved, mayLeave, releaseLeaveGuard, setLeaveGuard } from "./leave";
+import { hasUnsaved, isBusy, mayLeave, releaseLeaveGuard, setLeaveGuard } from "./leave";
 
 describe("leave guard", () => {
   it("lets go when no editor is open", async () => {
@@ -34,5 +34,26 @@ describe("leave guard", () => {
     expect(await mayLeave()).toBe(false);
     releaseLeaveGuard(newer);
     expect(await mayLeave()).toBe(true);
+  });
+
+  it("follow mode waits while the user is busy (UX-001)", () => {
+    const doc = (dialog: boolean, active: { tagName: string; type?: string } | null) =>
+      ({ querySelector: () => (dialog ? {} : null), activeElement: active }) as unknown as Document;
+    setLeaveGuard(null);
+    expect(isBusy(doc(false, null))).toBe(false);
+    expect(isBusy(doc(true, null))).toBe(true);
+    expect(isBusy(doc(false, { tagName: "INPUT", type: "text" }))).toBe(true);
+    expect(isBusy(doc(false, { tagName: "TEXTAREA" }))).toBe(true);
+    expect(isBusy(doc(false, { tagName: "BUTTON" }))).toBe(false);
+    const field = (typing: boolean) => ({ tagName: "INPUT", type: "text", hasAttribute: (n: string) => n === "data-field" || (typing && n === "data-typing") });
+    expect(isBusy(doc(false, field(false))), "a focused field with nothing typed").toBe(false);
+    expect(isBusy(doc(false, field(true))), "typed text not stored yet").toBe(true);
+    let drawing = true;
+    setLeaveGuard(async () => true, () => false, () => drawing);
+    expect(isBusy(doc(false, null))).toBe(true);
+    drawing = false;
+    expect(isBusy(doc(false, null))).toBe(false);
+    expect(isBusy(doc(true, null))).toBe(true);
+    setLeaveGuard(null);
   });
 });
