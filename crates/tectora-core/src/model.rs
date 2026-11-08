@@ -249,7 +249,7 @@ impl Project {
             .map(|(_, m)| *m)
             .unwrap_or(match p.code {
                 "too_few_edges" => "needs at least 3 edges",
-                "end_nan" => "end point is not a number",
+                "end_nan" => "end point is not a number or out of range",
                 "bad_corners" => "needs 3 or more finite corners",
                 "bad_size" => "needs a finite position and a positive size",
                 other => other,
@@ -569,12 +569,12 @@ impl EdgeDef {
     /// What makes this edge unusable for the engine (see [`Project::validate`]).
     /// Codes and English messages of [`EdgeDef::problems`].
     pub const PROBLEMS: [(&'static str, &'static str); 6] = [
-        ("start_nan", "start point is not a number"),
+        ("start_nan", "start point is not a number or out of range"),
         ("pitch_range", "pitch must be between 0° and 180°"),
-        ("eave_nan", "eave height is not a number"),
+        ("eave_nan", "eave height is not a number or out of range"),
         ("overhang_negative", "overhang must be zero or positive"),
         ("direction_nan", "direction is not a number"),
-        ("stacked_nan", "half-hip or pitch break is not a number"),
+        ("stacked_nan", "half-hip or pitch break is not a number or out of range"),
     ];
 
     /// What keeps the roof engine from using this edge, as

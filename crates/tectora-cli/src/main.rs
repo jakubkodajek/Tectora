@@ -87,64 +87,71 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
         }
         Command::Calc { input, summary } => {
             let project = load(&input)?;
+            // The same limits and panic guard as the app and the MCP server.
+            project.check_limits().map_err(anyhow::Error::msg)?;
             if let Err(errors) = project.validate() {
                 bail!("invalid project:\n{}", errors.join("\n"));
             }
-            let geos = tectora_core::openings::generate_project(&project);
-            // DACAD refused the roof: its error is the result, no quantities.
-            let dacad_error = geos.iter().find_map(|g| g.error.clone());
-            let parts: Vec<_> = project
-                .parts
-                .iter()
-                .zip(geos)
-                .map(|(part, geo)| {
-                    let q = geo.quantities();
-                    if summary {
-                        json!({ "name": part.name, "quantities": q })
-                    } else {
-                        json!({ "name": part.name, "quantities": q, "geometry": geo })
-                    }
-                })
-                .collect();
-            let lines_by_type = dacad_line_totals(&project);
-            let totals = tectora_core::quantities::roof_totals(&project);
-            let mut by_material = serde_json::Map::new();
-            for &(m, a) in &totals.area_by_material {
-                by_material.insert(project.material_name(m), json!(round2(a)));
+            tectora_core::model::guarded(|| calc(&project, summary)).map_err(anyhow::Error::msg)
+        }
+    }
+}
+
+/// `tectora calc`: the roof of a valid project.
+fn calc(project: &Project, summary: bool) -> serde_json::Value {
+    let geos = tectora_core::openings::generate_project(project);
+    // DACAD refused the roof: its error is the result, no quantities.
+    let dacad_error = geos.iter().find_map(|g| g.error.clone());
+    let parts: Vec<_> = project
+        .parts
+        .iter()
+        .zip(geos)
+        .map(|(part, geo)| {
+            let q = tectora_core::quantities::part_quantities(&geo);
+            if summary {
+                json!({ "name": part.name, "quantities": q })
+            } else {
+                json!({ "name": part.name, "quantities": q, "geometry": geo })
             }
-            let mut out = json!({
-                "ok": true,
-                "name": project.name,
-                "parts": parts,
-                "quantities": {
-                    "lines_by_type": lines_by_type,
-                    "area_by_pitch": tectora_core::quantities::area_by_pitch(&project)
-                        .iter()
-                        .map(|&(p, a)| json!({ "pitch_deg": p, "area": a }))
-                        .collect::<Vec<_>>(),
-                    "roof_area": round2(totals.roof_area),
-                    "area_by_material": by_material,
-                },
-            });
-            let by_line_material = tectora_core::quantities::lines_by_material(&project);
-            if by_line_material.len() > 1 {
-                out["quantities"]["lines_by_material"] = by_line_material
+        })
+        .collect();
+    let lines_by_type = dacad_line_totals(project);
+    let totals = tectora_core::quantities::roof_totals(project);
+    let mut by_material = serde_json::Map::new();
+    for &(m, a) in &totals.area_by_material {
+        by_material.insert(project.material_name(m), json!(round2(a)));
+    }
+    let mut out = json!({
+        "ok": true,
+        "name": project.name,
+        "parts": parts,
+        "quantities": {
+            "lines_by_type": lines_by_type,
+            "area_by_pitch": tectora_core::quantities::area_by_pitch(project)
+                .iter()
+                .map(|&(p, a)| json!({ "pitch_deg": p, "area": a }))
+                .collect::<Vec<_>>(),
+            "roof_area": round2(totals.roof_area),
+            "area_by_material": by_material,
+        },
+    });
+    let by_line_material = tectora_core::quantities::lines_by_material(project);
+    if by_line_material.len() > 1 {
+        out["quantities"]["lines_by_material"] = by_line_material
                     .into_iter()
                     .map(|(mat, lines)| {
                         json!({ "material": mat, "name": project.material_name(mat), "lines": lines })
                     })
                     .collect();
-            }
-            if let Some(e) = dacad_error {
-                out["dacad_error"] = json!({
-                    "code": e.code,
-                    "message_id": e.message_id,
-                    "message": e.message,
-                });
-            }
-            Ok(out)
-        }
     }
+    if let Some(e) = dacad_error {
+        out["dacad_error"] = json!({
+            "code": e.code,
+            "message_id": e.message_id,
+            "message": e.message,
+        });
+    }
+    out
 }
 
 fn round2(v: f64) -> f64 {

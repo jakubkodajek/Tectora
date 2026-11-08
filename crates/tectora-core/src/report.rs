@@ -5,7 +5,7 @@
 use serde_json::{Value, json};
 
 use crate::Project;
-use crate::quantities::{dacad_line_totals, manual_quantities, subtract_minus_lines};
+use crate::quantities::{dacad_line_totals, manual_quantities, part_quantities};
 use crate::roof::RoofQuantities;
 
 /// Roof geometry and quantities for every part, plus totals. A part the
@@ -19,9 +19,9 @@ pub fn calc(project: &Project) -> Value {
         .iter()
         .zip(crate::openings::generate_project(project))
         .map(|(part, geometry)| {
-            let q = geometry.quantities();
+            // Net of the core's negative lines, as the totals.
+            let q = part_quantities(&geometry);
             total.add(&q);
-            subtract_minus_lines(&mut total, &geometry.minus_lines);
             json!({ "name": part.name, "geometry": geometry, "quantities": q })
         })
         .collect();
@@ -65,5 +65,42 @@ mod tests {
         let v = calc(&p);
         assert!(v["problems"].as_array().unwrap().is_empty());
         assert!(v["totals"]["roof_area"].as_f64().unwrap() > 0.0);
+    }
+
+    #[test]
+    fn part_lines_are_net_of_deductions_like_the_totals() {
+        // MATH-004: a chimney on the ridge books a negative ridge line
+        // (DACAD's minus line); the part's figures must match the totals.
+        let mut p = Project::new("chimney");
+        p.parts.push(crate::examples::standard_roof(
+            crate::examples::StandardRoof::Gable,
+            12.0,
+            8.0,
+            40.0,
+            3.0,
+            0.5,
+        ));
+        let pt = crate::geom::Point2::new;
+        p.chimneys.push(crate::model::Chimney {
+            corners: vec![pt(5.0, 3.5), pt(6.0, 3.5), pt(6.0, 4.5), pt(5.0, 4.5)],
+            height: 8.0,
+        });
+        let geos = crate::openings::generate_project(&p);
+        assert!(
+            !geos[0].minus_lines.is_empty(),
+            "the case books a minus line"
+        );
+        let v = calc(&p);
+        let part = &v["parts"][0]["quantities"];
+        let total = &v["totals"];
+        for key in [
+            "ridge_length",
+            "eave_length",
+            "verge_length",
+            "abutment_length",
+        ] {
+            let (a, b) = (part[key].as_f64().unwrap(), total[key].as_f64().unwrap());
+            assert!((a - b).abs() < 1e-9, "{key}: part {a}, total {b}");
+        }
     }
 }

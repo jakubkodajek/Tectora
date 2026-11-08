@@ -48,12 +48,22 @@ pub fn plan_quantities(project: &Project) -> PlanQuantities {
     q
 }
 
+/// The quantities of one part's roof as the totals count them: line
+/// lengths net of the negative lines DACAD books where a chimney or
+/// opening edge lies on a roof line ([`RoofGeometry::minus_lines`]).
+///
+/// [`RoofGeometry::minus_lines`]: crate::roof::RoofGeometry::minus_lines
+pub fn part_quantities(geo: &crate::roof::RoofGeometry) -> crate::roof::RoofQuantities {
+    let mut q = geo.quantities();
+    subtract_minus_lines(&mut q, &geo.minus_lines);
+    q
+}
+
 /// Roof quantities summed over all parts.
 pub fn roof_totals(project: &Project) -> crate::roof::RoofQuantities {
     let mut total = crate::roof::RoofQuantities::default();
     for geo in crate::openings::generate_project(project) {
-        total.add(&geo.quantities());
-        subtract_minus_lines(&mut total, &geo.minus_lines);
+        total.add(&part_quantities(&geo));
     }
     total.add(&manual_quantities(project));
     total
