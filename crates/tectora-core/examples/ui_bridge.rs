@@ -24,7 +24,29 @@ use serde_json::{Value, json};
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::settings::Settings;
 use tectora_core::store::{self, Store, USER_ACTOR, outlines};
-use tectora_core::{Project, bundle, examples, snapshot};
+use tectora_core::{Project, assistants, bundle, examples, snapshot};
+
+/// AI apps "connected" in the preview besides Claude Desktop, which always
+/// shows as connected (see `ai_assistants` below).
+static PREVIEW_CONNECTED: std::sync::Mutex<Vec<assistants::Assistant>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn preview_assistants() -> Vec<Value> {
+    let connected = PREVIEW_CONNECTED.lock().unwrap_or_else(|e| e.into_inner());
+    assistants::Assistant::ALL
+        .iter()
+        .map(|&a| {
+            let state = if a == assistants::Assistant::Antigravity {
+                "not_installed"
+            } else if a == assistants::Assistant::ClaudeDesktop || connected.contains(&a) {
+                "connected"
+            } else {
+                "not_connected"
+            };
+            json!({ "id": a, "name": a.name(), "state": state, "files": [] })
+        })
+        .collect()
+}
 
 /// Largest request body accepted (a project with attachments metadata).
 const MAX_BODY: usize = 64 * 1024 * 1024;
@@ -99,6 +121,26 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             "command": "cargo",
             "args": ["run", "-q", "-p", "tectora-cli", "--", "mcp", "--dir", store.dir.display().to_string()],
         })),
+        // The preview never touches the developer's own AI app settings: it
+        // shows Claude Desktop connected and Antigravity missing, and Connect
+        // only flips the state in memory.
+        "ai_assistants" => to_json(preview_assistants()),
+        "connect_ai_assistant" => {
+            let which: assistants::Assistant = arg(a, "id")?;
+            let mut connected = PREVIEW_CONNECTED.lock().unwrap_or_else(|e| e.into_inner());
+            if which == assistants::Assistant::Antigravity {
+                return Err("ai_not_installed: Antigravity is not installed for this user".into());
+            }
+            let change = if connected.contains(&which) {
+                "unchanged"
+            } else {
+                "added"
+            };
+            if !connected.contains(&which) {
+                connected.push(which);
+            }
+            to_json(change)
+        }
         "load_project" => to_json(store.load(&id()?)?),
         "save_project" => {
             let project: Project = arg(a, "project")?;
