@@ -79,8 +79,8 @@ export const api = {
   exportJob: (id: string, path: string) => invoke<void>("export_job", { id, path }),
   importJob: (path: string) => invoke<string>("import_job", { path }),
   /** The price-sheet text list and the plan sheet (SVG) for the export dialog. */
-  exportPreview: (project: Project, title: string, stamp: string, full = false) =>
-    invoke<{ list: string; svg: string }>("export_preview", { project, title, stamp, full }),
+  exportPreview: (project: Project, title: string, stamp: string) =>
+    invoke<{ list: string; svg: string }>("export_preview", { project, title, stamp }),
   /** Writes the plan sheet as PDF or SVG (by the path's extension). */
   exportPlanFile: (project: Project, stamp: string, path: string) =>
     invoke<void>("export_plan_file", { project, stamp, path }),

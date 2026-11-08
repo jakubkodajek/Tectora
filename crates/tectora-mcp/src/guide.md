@@ -91,7 +91,7 @@ The tools cover every operation of the Tectora editor:
   Excel price sheet (the app's Export dialog has the same text with a copy
   button); hand it over verbatim, never translated or reformatted. It has
   the faces, the wall and material areas and the line totals, as the sheet
-  reads them; `full: true` adds every section and line (not for the sheet).
+  reads them.
   `export_plan` writes the roof sheet (plan with line lengths, areas and
   pitches) as PDF or SVG into the `exports` folder and returns the path.
 - `get_schema`: the JSON Schema of the `.tectora` file.

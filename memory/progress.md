@@ -87,15 +87,18 @@ sessions that use it know where things stand.
 - Blockers / open questions: none.
 ## 2026-11-08 · Price-sheet text = TERRAN's DACAD list
 
-- Done: the default text list is now byte-identical to the list TERRAN's
-  DACAD wrote for a real job (L-shaped hip roof): only `STREŠNÉ PLOCHY`,
-  `PLOCHY` (with the wall area `Stena : 1`, from the wall stage) and
-  `LÍNIE`, totals without members; lengths and areas requantized through
-  `%10.5f` like DACAD's SOL (32,313 m, not 32,314 m). The old full list
-  pushed the faces past row 115, beyond what the Excel sheet sums; it is
-  now `ListOptions::full` / MCP `export_list full` / "Detailed list" box.
-  Checked in TERRAN's `.xls` under LibreOffice (sk locale): all 6 faces and
-  the ridge/hip/valley/eave totals read.
-- Open: `Stena : 1` for several roofs and the head line (DACAD writes the
-  .dad path there; the sheet reads Partner/Realizátor/Koncový from it) are
-  not verified against DACAD.
+- Done: the text list is the list TERRAN's DACAD writes for the price
+  sheet, byte-identical for a real job (L-shaped hip roof): only
+  `STREŠNÉ PLOCHY`, `PLOCHY` (wall area `Stena : 1` from the wall stage,
+  then material totals) and `LÍNIE` (totals only); lengths and areas
+  requantized through `%10.5f` like DACAD's SOL (32,313 m, not 32,314 m).
+  The old long list (all sections, members) is gone on Jakub's request: it
+  pushed faces past row 115, beyond what the Excel sheet sums. Dormer faces
+  no longer overflow the face name (were `wall_offset + usize::MAX`).
+  Test `every_kind_of_roof_exports_a_list_the_price_sheet_reads` runs 34
+  roofs (all examples × dormer, chimney + window, clad gables + metal +
+  manual face; two buildings; flat) through the sheet's formulas.
+- Open, not verified against DACAD: dormer face numbering (`Z<parts+1>.nn`),
+  `Stena` for joined roofs and with dormers, the `Škridla - -Norm` line when
+  windows make the DIN area differ, the head line (DACAD writes the .dad
+  path; the sheet reads Partner/Realizátor/Koncový from it).

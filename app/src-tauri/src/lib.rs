@@ -284,14 +284,9 @@ fn export_job(state: State<AppState>, id: String, path: String) -> CmdResult<()>
 /// The text list for the price sheet and the plan sheet (SVG) of the open
 /// project, for the export dialog.
 #[tauri::command(async)]
-fn export_preview(
-    project: Project,
-    title: String,
-    stamp: String,
-    full: Option<bool>,
-) -> CmdResult<Value> {
+fn export_preview(project: Project, title: String, stamp: String) -> CmdResult<Value> {
     guard(|| {
-        let opts = tectora_core::export::ListOptions::new(title, stamp).full(full.unwrap_or(false));
+        let opts = tectora_core::export::ListOptions::new(title, stamp);
         let (list, svg) = tectora_core::export::checked(&project, &opts)
             .map_err(|d| AppError::new("out_of_range").detail(d))?;
         Ok(serde_json::json!({ "list": list, "svg": svg }))

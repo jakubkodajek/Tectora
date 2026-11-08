@@ -26,13 +26,11 @@
   let svg = $state("");
   let failed = $state(false);
   let copied = $state<"list" | "image" | null>(null);
-  /** The detailed list (every section and line) instead of the one the price sheet reads. */
-  let full = $state(false);
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 
   $effect(() => {
     api
-      .exportPreview($state.snapshot(project) as Project, title, stamp, full)
+      .exportPreview($state.snapshot(project) as Project, title, stamp)
       .then((r) => {
         list = r.list;
         svg = r.svg;
@@ -135,7 +133,6 @@
   <section class="list">
     <div class="head">
       <h3>{t("export.list")}</h3>
-      <label class="check" title={t("export.fullHint")}><input type="checkbox" bind:checked={full} />{t("export.full")}</label>
       <button class="btn sm" disabled={!list} onclick={copyList} title={t("export.copyListHint")}>
         <Icon name={copied === "list" ? "check" : "copy"} size={14} />{copied === "list" ? t("export.copied") : t("export.copyList")}
       </button>
@@ -169,17 +166,6 @@
   .actions {
     display: flex;
     gap: 6px;
-  }
-  .check {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    margin-left: auto;
-    font-size: 12px;
-    color: var(--text-2);
-  }
-  .check input {
-    width: auto;
   }
   .btn :global(svg) {
     margin-right: 4px;
