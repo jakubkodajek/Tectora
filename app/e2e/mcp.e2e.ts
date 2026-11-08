@@ -290,6 +290,9 @@ test.describe("MCP parity", () => {
       await def.getByRole("button", { name: cs("edge.addBreak") }).click();
       await app.saved();
       await setField(def.getByLabel(cs("edge.buildingHeight")), "4,25");
+      // The height goes through a core command first; "saved" may still
+      // show the previous save, so wait for the height in the file.
+      await expect.poll(async () => (await loadProject(ids[0])).parts[0].edges[0].eave_height, { timeout: 8000 }).toBe(4.25);
     }, async () => {
       const p = await loadProject(ids[0]);
       await mcp.call("update_edges", { id: ids[1], changes: [{ index: 2, breaks: p.parts[0].edges[2].breaks.map((b: any) => ({ ...b, height: +(b.height - 4.25 + 3).toFixed(3) })) }], summary: "x" });

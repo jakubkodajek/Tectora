@@ -597,7 +597,7 @@
   async function setPartHeight(h: number) {
     if (!project || !selection) return;
     const pi = selection.part;
-    const part = project.parts[pi];
+    const part = JSON.stringify($state.snapshot(project.parts[pi]));
     let next: Project;
     try {
       next = await api.setPartHeight($state.snapshot(project) as Project, pi, h);
@@ -606,7 +606,8 @@
       return;
     }
     // The project may have changed meanwhile (an AI save): apply only to the same part.
-    if (!project || project.parts[pi] !== part) return;
+    // (Compared by value: a save in between may hand back equal but new objects.)
+    if (!project || !project.parts[pi] || JSON.stringify($state.snapshot(project.parts[pi])) !== part) return;
     project.parts = next.parts;
     project.dormers = next.dormers;
     project.chimneys = next.chimneys;
