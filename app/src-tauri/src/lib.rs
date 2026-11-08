@@ -158,6 +158,14 @@ fn save_project(state: State<AppState>, id: Option<String>, project: Project) ->
     guard(|| Ok(state.store().save(id, &project)?))
 }
 
+/// The project as the store writes and reads it (defaults, nulls and empty
+/// lists dropped), without touching the file. The editor compares file
+/// changes with this to tell its own saves from external edits.
+#[tauri::command]
+fn normalize_project(project: Project) -> Project {
+    project
+}
+
 #[tauri::command]
 fn delete_project(state: State<AppState>, id: String) -> CmdResult<()> {
     guard(|| Ok(state.store().delete(&id)?))
@@ -591,6 +599,7 @@ pub fn run() {
             startup_warnings,
             load_project,
             save_project,
+            normalize_project,
             delete_project,
             duplicate_project,
             project_activity,

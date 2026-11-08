@@ -43,6 +43,8 @@ export const api = {
   startupWarnings: () => invoke<AppError[]>("startup_warnings"),
   loadProject: (id: string) => invoke<Project>("load_project", { id }),
   saveProject: (id: string | null, project: Project) => invoke<string>("save_project", { id, project }),
+  /** The project in the store's canonical form, as load_project returns it after a save. */
+  normalizeProject: (project: Project) => invoke<Project>("normalize_project", { project }),
   deleteProject: (id: string) => invoke<void>("delete_project", { id }),
   /** Copies a job as a new draft; `job` starts a new job from a past roof. */
   duplicateProject: (id: string, name: string, job?: Pick<JobInfo, "number" | "customer" | "address">, withFiles = true) =>

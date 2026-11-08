@@ -1,0 +1,49 @@
+name: E2E
+
+# The whole UI in Chromium against the real Rust core (browser preview:
+# ui_bridge + Vite) and the MCP server: library, editor, every toolbar and bar
+# control, objects, job tab, settings, all four languages, live AI review and
+# MCP parity. See app/e2e/README.md.
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+        working-directory: app
+      - name: Build the ui_bridge and the tectora CLI
+        run: cargo build -p tectora-core --example ui_bridge -p tectora-cli
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+        working-directory: app
+      - name: E2E tests
+        run: npm run e2e
+        working-directory: app
+      - name: Upload the report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: |
+            target/e2e-report
+            target/e2e-results
+          retention-days: 14
