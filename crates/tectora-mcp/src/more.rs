@@ -1449,6 +1449,38 @@ mod tests {
     }
 
     #[test]
+    fn all_walls_to_eaves_take_the_given_pitch() {
+        // ERR-020: the former gables kept a hard-coded 40°.
+        let (mut s, id) = setup();
+        assert!(
+            s.store.load(&id).unwrap().parts[0]
+                .edges
+                .iter()
+                .any(|e| e.is_gable())
+        );
+        call(
+            &mut s,
+            "update_edges",
+            json!({ "id": id, "summary": "hip", "changes": [{ "all": true, "gable": false, "pitch_deg": 30 }] }),
+        );
+        let p = s.store.load(&id).unwrap();
+        let pitches: Vec<f64> = p.parts[0].edges.iter().map(|e| e.pitch_deg).collect();
+        assert!(pitches.iter().all(|&a| a == 30.0), "{pitches:?}");
+        // A pitch alone for all walls still leaves gables alone.
+        call(
+            &mut s,
+            "update_edges",
+            json!({ "id": id, "summary": "g", "changes": [{ "index": 1, "gable": true }] }),
+        );
+        call(
+            &mut s,
+            "update_edges",
+            json!({ "id": id, "summary": "p", "changes": [{ "all": true, "pitch_deg": 25 }] }),
+        );
+        assert!(s.store.load(&id).unwrap().parts[0].edges[1].is_gable());
+    }
+
+    #[test]
     fn a_gable_can_be_clad() {
         let (mut s, id) = setup();
         let p = s.store.load(&id).unwrap();
