@@ -215,6 +215,10 @@ pub const LIVE_KINDS: [&str; 18] = [
 /// Summary prefixes of the change-log entries a revert writes; the app
 /// reads them to show the sentence in the user's language.
 pub const REVERTED_PREFIX: &str = "Reverted: ";
+/// What follows a revert's sentence when the AI gave a reason: the entry
+/// reads `Reverted: <summary> (reason: <reason>)` (the app's
+/// `live.svelte.ts` splits it there).
+pub const REVERT_REASON_OPEN: &str = " (reason: ";
 
 pub fn now_ms() -> u64 {
     SystemTime::now()
@@ -791,8 +795,24 @@ impl Store {
             // place of the oldest kept one, so the pre-AI version is never
             // dropped while the review is open.
             let start = self.pending_start(id, &entries);
-            if start < entries.len() - ACTIVITY_KEEP {
-                keep[0] = &entries[start];
+            let cut = entries.len() - ACTIVITY_KEEP;
+            let merged;
+            if start < cut {
+                // That entry then stands for the changes dropped after it
+                // too: it saved what the last dropped one saved, so "Revert
+                // all" undoes them with it and keeps the user's unlogged
+                // edits in between (ERR-001).
+                let mut first = entries[start].clone();
+                if let Some(after) = entries[cut].after.clone() {
+                    first.changes = first
+                        .before
+                        .as_ref()
+                        .map(|b| diff(b, &after))
+                        .unwrap_or_default();
+                    first.after = Some(after);
+                }
+                merged = first;
+                keep[0] = &merged;
             }
             let text: Vec<String> = keep
                 .iter()
@@ -821,8 +841,8 @@ impl Store {
     }
 
     /// Undoes the latest recorded change, keeping later unlogged edits.
-    /// `reason` (an AI client's summary) is logged in front of what was
-    /// reverted.
+    /// `reason` (an AI client's summary) is logged after what was reverted
+    /// ([`REVERT_REASON_OPEN`]).
     pub fn revert_last(
         &self,
         id: &str,
@@ -868,13 +888,13 @@ impl Store {
         self.revert_from(id, &log, pos, actor, with_reason(reason, summary))
     }
 
-    /// Undoes `log[pos..]`: the version before `log[pos]`, plus whatever the
-    /// current file changed after the latest entry. The app autosaves the
-    /// user's own edits without a log entry, so the file can be newer than
-    /// the last entry's result; those edits are merged onto the reverted
-    /// version (ERR-001). Refuses when they touch a value the reverted
-    /// changes set. Edits saved between the reverted entries are reverted
-    /// with them.
+    /// Undoes `log[pos..]`, latest first: the inverse of each change is
+    /// merged onto the current file with the version it saved as the base.
+    /// The app autosaves the user's own edits without a log entry, so the
+    /// file can be newer than the last entry's result, and an edit can lie
+    /// between two entries; such edits are kept (ERR-001). Refuses, with
+    /// nothing written, when one of them touches a value a reverted change
+    /// set.
     fn revert_from(
         &self,
         id: &str,
@@ -883,33 +903,46 @@ impl Store {
         actor: &str,
         summary: String,
     ) -> Result<Project, StoreError> {
-        let before = log[pos]
-            .before
-            .clone()
-            .ok_or_else(|| StoreError::RevertCreated(id.to_string()))?;
-        let target = match (log.last().and_then(|e| e.after.as_ref()), self.load(id)) {
-            (Some(after), Ok(current)) if &current != after => {
-                let value = |p: &Project| {
-                    serde_json::to_value(p).map_err(|e| StoreError::Unreadable {
+        let value = |p: &Project| {
+            serde_json::to_value(p).map_err(|e| StoreError::Unreadable {
+                id: id.to_string(),
+                detail: e.to_string(),
+            })
+        };
+        let mut current = match self.load(id) {
+            Ok(p) => Some(p),
+            // A file newer than this Tectora is neither read nor written.
+            Err(e @ StoreError::NewerFormat { .. }) => return Err(e),
+            // A damaged file: the version before the change is restored.
+            Err(_) => None,
+        };
+        let mut target = None;
+        for entry in log[pos..].iter().rev() {
+            let before = entry
+                .before
+                .clone()
+                .ok_or_else(|| StoreError::RevertCreated(id.to_string()))?;
+            let undone = match (entry.after.as_ref(), current.as_ref()) {
+                (Some(after), Some(cur)) if cur != after => {
+                    let merged =
+                        crate::merge::merge3(&value(after)?, &value(cur)?, &value(&before)?)
+                            .map_err(|paths| StoreError::RevertConflict {
+                                id: id.to_string(),
+                                detail: paths.join(", "),
+                            })?;
+                    serde_json::from_value(merged).map_err(|e| StoreError::Unreadable {
                         id: id.to_string(),
                         detail: e.to_string(),
-                    })
-                };
-                let merged =
-                    crate::merge::merge3(&value(after)?, &value(&current)?, &value(&before)?)
-                        .map_err(|paths| StoreError::RevertConflict {
-                            id: id.to_string(),
-                            detail: paths.join(", "),
-                        })?;
-                serde_json::from_value(merged).map_err(|e| StoreError::Unreadable {
-                    id: id.to_string(),
-                    detail: e.to_string(),
-                })?
-            }
-            // A file newer than this Tectora is neither read nor written.
-            (_, Err(e @ StoreError::NewerFormat { .. })) => return Err(e),
-            _ => before,
-        };
+                    })?
+                }
+                // Unchanged since, written by Tectora 0.5 or older (no
+                // `after`), or no readable file: the version before it.
+                _ => before,
+            };
+            current = Some(undone.clone());
+            target = Some(undone);
+        }
+        let target = target.ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
         self.save_as(Some(id.to_string()), &target, actor, &summary)?;
         Ok(target)
     }
@@ -1352,10 +1385,11 @@ impl Store {
     }
 }
 
-/// `reason (what)` when a reason is given, else `what`.
+/// `what (reason: …)` when a reason is given, else `what`: the sentence
+/// the core wrote stays first, so the app recognises and translates it.
 fn with_reason(reason: Option<&str>, what: String) -> String {
     match reason.map(str::trim).filter(|r| !r.is_empty()) {
-        Some(r) => format!("{r} ({what})"),
+        Some(r) => format!("{what}{REVERT_REASON_OPEN}{r})"),
         None => what,
     }
 }
@@ -1719,6 +1753,101 @@ mod tests {
         want2.parts[0].edges[1].overhang = 0.7;
         assert_eq!(store.revert_to(&id, ts2, USER_ACTOR, None).unwrap(), want2);
         assert_eq!(store.load(&id).unwrap(), want2);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ERR-001: "Revert all" over several AI steps keeps an edit the user
+    /// made between them (the app autosaves it without a log entry), and
+    /// refuses when that edit is in a value one of the steps set.
+    #[test]
+    fn revert_all_keeps_the_users_edit_between_two_ai_steps() {
+        let store = temp_store("revert-all-between");
+        let a = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
+        let mut ai = a.clone();
+        ai.parts[0].edges[3].pitch_deg = 44.0;
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "Steeper wall 4")
+            .unwrap();
+        let first = store.activity(&id).last().unwrap().ts_ms;
+        let mut mine = ai.clone();
+        mine.parts[0].edges[0].overhang = 0.9;
+        store.save(Some(id.clone()), &mine).unwrap();
+        let mut ai2 = mine.clone();
+        ai2.parts[0].edges[2].pitch_deg = 41.0;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .save_as(Some(id.clone()), &ai2, "claude", "Steeper wall 3")
+            .unwrap();
+
+        let mut want = a.clone();
+        want.parts[0].edges[0].overhang = 0.9;
+        assert_eq!(store.revert_to(&id, first, USER_ACTOR, None).unwrap(), want);
+        assert_eq!(store.load(&id).unwrap(), want);
+
+        // The user's edit between the steps is in the value the first step
+        // set: refused, nothing changed or logged.
+        let mut ai = want.clone();
+        ai.parts[0].edges[3].pitch_deg = 44.0;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "Steeper wall 4")
+            .unwrap();
+        let first = store.activity(&id).last().unwrap().ts_ms;
+        let mut mine = ai.clone();
+        mine.parts[0].edges[3].pitch_deg = 40.0;
+        store.save(Some(id.clone()), &mine).unwrap();
+        let mut ai2 = mine.clone();
+        ai2.parts[0].edges[2].pitch_deg = 41.0;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .save_as(Some(id.clone()), &ai2, "claude", "Steeper wall 3")
+            .unwrap();
+        let n = store.activity(&id).len();
+        let err = store.revert_to(&id, first, USER_ACTOR, None).unwrap_err();
+        assert_eq!(err.code(), "revert_conflict");
+        assert_eq!(store.load(&id).unwrap(), ai2);
+        assert_eq!(store.activity(&id).len(), n, "nothing logged");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// UX-002: a revert's entry starts with the fixed sentence the app
+    /// translates, and the AI's reason follows in a fixed form.
+    #[test]
+    fn a_revert_with_a_reason_starts_with_the_fixed_sentence() {
+        let store = temp_store("revert-reason");
+        let a = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
+        let mut ai = a.clone();
+        ai.parts[0].edges[3].pitch_deg = 44.0;
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "Steeper wall 4")
+            .unwrap();
+        store.revert_last(&id, "claude", Some(" undo ")).unwrap();
+        assert_eq!(
+            store.activity(&id).last().unwrap().summary,
+            format!("{REVERTED_PREFIX}Steeper wall 4{REVERT_REASON_OPEN}undo)")
+        );
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "Steeper wall 4")
+            .unwrap();
+        let ts = store.activity(&id)[1].ts_ms;
+        store.revert_to(&id, ts, "claude", Some("back")).unwrap();
+        let s = store.activity(&id).last().unwrap().summary.clone();
+        assert!(
+            s.starts_with("Reverted 3 changes since: Steeper wall 4")
+                && s.ends_with(" (reason: back)"),
+            "{s}"
+        );
+        // Without a reason nothing is added.
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "Again")
+            .unwrap();
+        store.revert_last(&id, "claude", Some("  ")).unwrap();
+        assert_eq!(
+            store.activity(&id).last().unwrap().summary,
+            "Reverted: Again"
+        );
         let _ = fs::remove_dir_all(&store.dir);
     }
 
