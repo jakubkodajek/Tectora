@@ -7,6 +7,7 @@ pub mod assistants;
 pub mod breakdown;
 pub mod bundle;
 pub mod check;
+pub mod commands;
 pub mod coresol;
 pub mod dcore;
 pub mod diff;

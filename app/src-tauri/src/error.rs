@@ -74,6 +74,13 @@ impl From<tauri_plugin_updater::Error> for AppError {
     }
 }
 
+/// The calculation commands' refusals (`tectora_core::commands`).
+impl From<tectora_core::commands::CommandError> for AppError {
+    fn from(e: tectora_core::commands::CommandError) -> Self {
+        AppError::new(e.code).detail(e.detail)
+    }
+}
+
 impl From<tauri::Error> for AppError {
     fn from(e: tauri::Error) -> Self {
         AppError::new("internal").detail(e.to_string())

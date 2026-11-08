@@ -17,7 +17,7 @@ use tectora_core::diff::Change;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::settings::{self, Settings};
 use tectora_core::store::{self, BrokenFile, LiveStatus, Store, USER_ACTOR, outlines};
-use tectora_core::{Project, assistants, bundle, examples, snapshot};
+use tectora_core::{Project, assistants, bundle, commands, examples, snapshot};
 
 use error::{AppError, guard};
 
@@ -339,12 +339,7 @@ fn import_job(state: State<AppState>, path: String) -> CmdResult<String> {
 /// `calc`: it runs the whole roof kernel (ERR-008).
 #[tauri::command(async)]
 fn take_snapshot(project: Project) -> CmdResult<snapshot::ResultSnapshot> {
-    guard(|| {
-        snapshot::take_checked(&project).map_err(|e| match e {
-            snapshot::Refused::OutOfRange(d) => AppError::new("out_of_range").detail(d),
-            snapshot::Refused::Internal(d) => AppError::new("internal").detail(d),
-        })
-    })
+    guard(|| Ok(commands::take_snapshot(&project)?))
 }
 
 /// The job opened from a file at start-up, once.
@@ -446,33 +441,18 @@ fn new_project(state: State<AppState>, name: String) -> CmdResult<String> {
 /// Runs off the main thread so a slow roof never freezes the window, and
 /// reports out-of-range input (`out_of_range`) or a kernel panic
 /// (`internal`) as an error instead of crashing the app (a panic on the
-/// main thread aborts it).
+/// main thread aborts it). The body is `tectora_core::commands::calc`,
+/// shared with the browser preview and tested there.
 #[tauri::command(async)]
 fn calc(project: Project) -> CmdResult<Value> {
-    guard(|| {
-        project
-            .check_limits()
-            .map_err(|d| AppError::new("out_of_range").detail(d))?;
-        let mut v = tectora_core::model::guarded(|| tectora_core::report::calc(&project))
-            .map_err(|d| AppError::new("internal").detail(d))?;
-        v["stored_result"] =
-            serde_json::to_value(snapshot::status(&project)).unwrap_or(Value::Null);
-        Ok(v)
-    })
+    guard(|| Ok(commands::calc(&project)?))
 }
 
 /// How every face area and line length was calculated, step by step
 /// (`tectora_core::breakdown`), with the same guards as `calc`.
 #[tauri::command(async)]
 fn calc_breakdown(project: Project) -> CmdResult<Value> {
-    guard(|| {
-        project
-            .check_limits()
-            .map_err(|d| AppError::new("out_of_range").detail(d))?;
-        let b = tectora_core::model::guarded(|| tectora_core::breakdown::breakdown(&project))
-            .map_err(|d| AppError::new("internal").detail(d))?;
-        Ok(serde_json::to_value(b).unwrap_or(Value::Null))
-    })
+    guard(|| Ok(commands::calc_breakdown(&project)?))
 }
 
 /// Settings plus the folders in use (see `Settings::describe`).

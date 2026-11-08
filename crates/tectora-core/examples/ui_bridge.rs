@@ -10,7 +10,8 @@
 //! (defaults: `target/ui-preview-library`, 7878). Usually started by
 //! `npm run preview` in `app/`.
 //!
-//! Keep the command list in sync with `app/src-tauri/src/lib.rs`. Unknown
+//! Keep the command list in sync with `app/src-tauri/src/lib.rs` (checked by
+//! `tests/app_commands.rs`: names and arguments). Unknown
 //! commands return an error that the preview shows in the browser console.
 //! Listens on 127.0.0.1 only.
 
@@ -24,7 +25,7 @@ use serde_json::{Value, json};
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::settings::Settings;
 use tectora_core::store::{self, Store, USER_ACTOR, outlines};
-use tectora_core::{Project, assistants, bundle, examples, snapshot};
+use tectora_core::{Project, assistants, bundle, examples};
 
 /// AI apps "connected" in the preview besides Claude Desktop, which always
 /// shows as connected (see `ai_assistants` below).
@@ -60,13 +61,25 @@ fn to_json<T: serde::Serialize>(v: T) -> Result<Value, String> {
     serde_json::to_value(v).map_err(|e| e.to_string())
 }
 
-/// Same as the app's `calc` command: limits, panic guard, problems and
-/// the stored result's status.
-fn calc(project: &Project) -> Result<Value, String> {
-    project.check_limits()?;
-    let mut v = tectora_core::model::guarded(|| tectora_core::report::calc(project))?;
-    v["stored_result"] = to_json(snapshot::status(project))?;
-    Ok(v)
+/// The calculation commands, with the app's own bodies
+/// (`tectora_core::commands`) and its error codes (`out_of_range`,
+/// `internal`), so the UI shows the same translated message as in the app.
+fn calc_command(cmd: &str, a: &Value) -> Option<Result<Value, Value>> {
+    use tectora_core::commands;
+    let project = || {
+        arg::<Project>(a, "project").map_err(|e| json!({ "code": "invalid_input", "detail": e }))
+    };
+    let err = |e: commands::CommandError| to_json(e).unwrap_or(Value::Null);
+    Some(match cmd {
+        "calc" => project().and_then(|p| commands::calc(&p).map_err(err)),
+        "calc_breakdown" => project().and_then(|p| commands::calc_breakdown(&p).map_err(err)),
+        "take_snapshot" => project().and_then(|p| {
+            commands::take_snapshot(&p)
+                .map_err(err)
+                .map(|s| to_json(s).unwrap_or(Value::Null))
+        }),
+        _ => return None,
+    })
 }
 
 /// Loading and saving a job, with the library's own error (see `serve`).
@@ -210,9 +223,6 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             store,
             &PathBuf::from(arg::<String>(a, "path")?),
         )?),
-        "take_snapshot" => to_json(
-            snapshot::take_checked(&arg::<Project>(a, "project")?).map_err(|e| e.to_string())?,
-        ),
         "take_pending_open" => Ok(Value::Null),
         "create_standard" | "standard_part" => {
             let kind: StandardRoof = arg(a, "kind")?;
@@ -259,14 +269,6 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             let mut project = examples::find("gable").expect("built-in example").project();
             project.name = arg(a, "name")?;
             to_json(store.save(None, &project)?)
-        }
-        "calc" => calc(&arg::<Project>(a, "project")?),
-        "calc_breakdown" => {
-            let project = arg::<Project>(a, "project")?;
-            project.check_limits()?;
-            to_json(tectora_core::model::guarded(|| {
-                tectora_core::breakdown::breakdown(&project)
-            })?)
         }
         // Settings live in `target/ui-preview-config` (see `main`). A new
         // projects folder set through the bridge is served from then on
@@ -440,6 +442,14 @@ fn serve(
                     None => seen.remove(&settings),
                 };
             }
+            let out = match out {
+                Ok(v) => json!({ "ok": v }),
+                Err(e) => json!({ "err": e }),
+            };
+            respond(stream, "200 OK", &out.to_string());
+            return Ok(());
+        }
+        if let Some(out) = calc_command(&cmd, &args) {
             let out = match out {
                 Ok(v) => json!({ "ok": v }),
                 Err(e) => json!({ "err": e }),
