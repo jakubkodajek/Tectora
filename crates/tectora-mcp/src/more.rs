@@ -589,7 +589,7 @@ impl Server {
                 let (id, _) = self.load(args)?;
                 let ts: u64 = req(args, "ts_ms")?;
                 let p = self.store.revert_to(&id, ts, &self.client)?;
-                self.live("Reverted changes".into(), Some(&id));
+                self.live("reverted_changes", Some(&p.name), "Reverted changes".into(), Some(&id));
                 Ok(json!({ "id": id, "reverted": true, "quantities": super::quantities(&p) }))
             })(),
             "list_examples" => Ok(json!(EXAMPLES
@@ -628,13 +628,13 @@ impl Server {
                 if args.get("with_files").and_then(Value::as_bool).unwrap_or(true) {
                     self.store.copy_attachments(&id, &new_id)?;
                 }
-                self.live(format!("Copied “{}”", p.name), Some(&new_id));
+                self.live("copied", Some(&p.name), format!("Copied “{}”", p.name), Some(&new_id));
                 Ok(json!({ "id": new_id }))
             })(),
             "delete_project" => (|| {
                 let (id, p) = self.load(args)?;
                 self.store.delete(&id)?;
-                self.live(format!("Deleted “{}”", p.name), None);
+                self.live("deleted", Some(&p.name), format!("Deleted “{}”", p.name), None);
                 Ok(json!({ "id": id, "deleted": true }))
             })(),
             "list_files" => self.load(args).map(|(id, _)| {
@@ -651,14 +651,14 @@ impl Server {
             "attach_file" => (|| {
                 let (id, _) = self.load(args)?;
                 let name = self.store.attach_file(&id, &PathBuf::from(arg_str(args, "path")?))?;
-                self.live(format!("Attached {name}"), Some(&id));
+                self.live("attached", Some(&name), format!("Attached {name}"), Some(&id));
                 Ok(json!({ "id": id, "name": name }))
             })(),
             "remove_file" => (|| {
                 let (id, _) = self.load(args)?;
                 let name = arg_str(args, "name")?;
                 self.store.remove_attachment(&id, name)?;
-                self.live(format!("Removed {name}"), Some(&id));
+                self.live("removed", Some(&name), format!("Removed {name}"), Some(&id));
                 Ok(json!({ "id": id, "removed": name }))
             })(),
             "export_job" => (|| {
@@ -673,7 +673,7 @@ impl Server {
                 };
                 let path = bundle::export_path(&self.store, &name)?;
                 let m = bundle::export(&self.store, &id, &path)?;
-                self.live(format!("Exported to {}: {summary}", path.display()), Some(&id));
+                self.live("exported", Some(&path.display().to_string()), format!("Exported to {}: {summary}", path.display()), Some(&id));
                 Ok(json!({ "id": id, "path": path.display().to_string(), "manifest": m }))
             })(),
             "export_list" => (|| {
@@ -710,13 +710,13 @@ impl Server {
                 let path = bundle::export_path_with(&self.store, &name, format)?;
                 let bytes = tectora_core::export::checked_sheet_file(&p, &stamp, format)?;
                 std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-                self.live(format!("Exported sheet to {}: {summary}", path.display()), Some(&id));
+                self.live("exported_sheet", Some(&path.display().to_string()), format!("Exported sheet to {}: {summary}", path.display()), Some(&id));
                 Ok(json!({ "id": id, "path": path.display().to_string() }))
             })(),
             "import_job" => (|| {
                 let path = PathBuf::from(arg_str(args, "path")?);
                 let id = bundle::open_path(&self.store, &path)?;
-                self.live(format!("Imported {}", path.display()), Some(&id));
+                self.live("imported", Some(&path.display().to_string()), format!("Imported {}", path.display()), Some(&id));
                 Ok(json!({ "id": id }))
             })(),
             "store_result" => (|| {

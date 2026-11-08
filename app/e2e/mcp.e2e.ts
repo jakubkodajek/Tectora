@@ -174,6 +174,23 @@ test.describe("live AI changes", () => {
     await expect(page.locator("header .ai-btn")).toContainText("Claude");
   });
 
+  test("the editor's AI pill speaks the user's language and lights up only for the open job", async ({ app, page, mcp }) => {
+    // UX-002: the MCP server sends a code and a name, the app the sentence.
+    const id = await createExample("gable", "Moje");
+    const other = await createExample("hip", "Jiná");
+    await app.open({ prefs: { followAi: false } });
+    await mcp.call("update_settings", { follow_ai: false });
+    await app.openJob("Moje");
+    const pill = page.locator("header .ai-pill");
+    await mcp.call("calc", { id });
+    await expect(pill).toContainText(cs("ai.live.calculating", { name: "Moje" }));
+    await expect(pill).toHaveClass(/\bactive\b/);
+    await mcp.call("get_project", { id: other });
+    await expect(pill).toContainText(cs("ai.elsewhere", { name: "Jiná" }));
+    await expect(pill).not.toHaveClass(/\bactive\b/);
+    await expect(pill).not.toContainText("Reading");
+  });
+
   test("a new job created by the AI shows up in the library", async ({ app, page, mcp }) => {
     await app.open({ prefs: { followAi: false, layout: "split", libraryView: "list" } });
     await mcp.call("update_settings", { follow_ai: false });

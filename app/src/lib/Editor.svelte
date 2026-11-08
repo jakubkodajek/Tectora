@@ -39,7 +39,7 @@
   import { releaseLeaveGuard, setLeaveGuard } from "./leave";
   import { m2, num } from "./format";
   import { t } from "./i18n.svelte";
-  import { actorName, isFresh, live } from "./live.svelte";
+  import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
   import type { ActivityItem, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
   import { GABLE_PITCH, isAi, isGable, isMarker } from "./types";
@@ -782,6 +782,9 @@
     commit();
   }
 
+  /** The agent is working on this job right now (the pill lights up only then). */
+  const aiHere = $derived(isFresh() && live.status?.project_id === id);
+
   // ---- Objects edited directly in the plan and the 3D view ------------
 
   /** The selected single object, if any. */
@@ -1243,10 +1246,13 @@
       {/if}
     </div>
     <div class="spacer"></div>
-    <button class="ai-pill" class:active={isFresh()} onclick={() => { dock = "ai"; dockOpen = true; }} title={t("ai.title")}>
+    <button class="ai-pill" class:active={aiHere} onclick={() => { dock = "ai"; dockOpen = true; }} title={t("ai.title")}>
       <span class="dot"></span>
-      {#if isFresh() && live.status}
-        <strong>{actorName(live.status.actor)}</strong><span class="msg">{live.status.message}</span>
+      {#if aiHere && live.status}
+        <strong>{actorName(live.status.actor)}</strong><span class="msg">{liveText(live.status)}</span>
+      {:else if isFresh() && live.status}
+        <!-- The agent works on another job (or the library): said, not lit up. -->
+        <strong>{actorName(live.status.actor)}</strong><span class="msg">{t("ai.elsewhere", { name: live.status.name ?? "" })}</span>
       {:else}
         <Icon name="sparkle" size={14} />{t("ai.short")}
       {/if}
@@ -1301,7 +1307,7 @@
               <strong>
                 {t("review.title", { who: actorName(pending.actor) })}{#if pendingList.length > 1}<span class="steps">{t("review.steps", { n: pendingList.length })}</span>{/if}
               </strong>
-              <span class="review-summary" title={pendingList.map((a) => a.summary).reverse().join(" → ")}>{pendingList.map((a) => a.summary).reverse().join(" → ")}</span>
+              <span class="review-summary" title={pendingList.map((a) => entrySummary(a.summary)).reverse().join(" → ")}>{pendingList.map((a) => entrySummary(a.summary)).reverse().join(" → ")}</span>
               {#if pendingChanges.length}
                 <span class="review-list">
                   {pendingChanges.slice(0, 4).map((c) => describeChange(c, project)).join(" · ")}{pendingChanges.length > 4 ? ` · ${t("review.more", { n: pendingChanges.length - 4 })}` : ""}

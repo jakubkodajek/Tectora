@@ -324,8 +324,13 @@ export interface AiAssistant {
 export interface LiveStatus {
   ts_ms: number;
   actor: string;
+  /** English text (older servers); for a change, the agent's own summary. */
   message: string;
   project_id: string | null;
+  /** What the agent does, translated in the app (`ai.live.<kind>`). */
+  kind?: string;
+  /** The job or file name the sentence names. */
+  name?: string;
 }
 
 export type StandardKind = "gable" | "shed" | "hip" | "pyramid" | "half_hip";

@@ -696,12 +696,18 @@ impl Server {
         }
     }
 
-    fn live(&self, message: String, project_id: Option<&str>) {
+    /// Tells the app what the agent does now: `kind` (one of
+    /// `store::LIVE_KINDS`, translated in the app) about `name` (the job or
+    /// file), with `message` in English for logs and older apps.
+    fn live(&self, kind: &str, name: Option<&str>, message: String, project_id: Option<&str>) {
+        debug_assert!(tectora_core::store::LIVE_KINDS.contains(&kind), "{kind}");
         self.store.set_live(&LiveStatus {
             ts_ms: now_ms(),
             actor: self.client.clone(),
             message,
             project_id: project_id.map(str::to_string),
+            kind: Some(kind.to_string()),
+            name: name.map(str::to_string),
         });
     }
 
@@ -717,7 +723,7 @@ impl Server {
         let id = self
             .store
             .save_as(id.map(str::to_string), project, &self.client, summary)?;
-        self.live(summary.to_string(), Some(&id));
+        self.live("changed", None, summary.to_string(), Some(&id));
         let changes = before.map(|b| diff(b, project)).unwrap_or_default();
         Ok(json!({
             "id": id,
@@ -753,7 +759,7 @@ impl Server {
         if self.store.dir == old.projects_dir() && next.projects_dir() != old.projects_dir() {
             self.store = Store::new(next.projects_dir()).map_err(|e| e.to_string())?;
         }
-        self.live("Changed Tectora settings".into(), None);
+        self.live("settings", None, "Changed Tectora settings".into(), None);
         Ok(next.describe())
     }
 
@@ -769,7 +775,7 @@ impl Server {
             "get_settings" => Ok(Settings::load().describe()),
             "update_settings" => self.update_settings(args),
             "list_projects" => {
-                self.live("Browsing the design library".into(), None);
+                self.live("browsing", None, "Browsing the design library".into(), None);
                 let mut q: tectora_core::library::Query = serde_json::from_value(args.clone())
                     .map_err(|e| format!("invalid search: {e}"))?;
                 if let Some(text) = args.get("query").and_then(Value::as_str) {
@@ -791,7 +797,12 @@ impl Server {
             }
             "get_project" => {
                 let (id, p) = self.load(args)?;
-                self.live(format!("Reading “{}”", p.name), Some(&id));
+                self.live(
+                    "reading",
+                    Some(&p.name),
+                    format!("Reading “{}”", p.name),
+                    Some(&id),
+                );
                 Ok(json!({
                     "id": id,
                     "name": p.name,
@@ -813,7 +824,12 @@ impl Server {
             }
             "calc" => {
                 let (id, p) = self.load(args)?;
-                self.live(format!("Calculating “{}”", p.name), Some(&id));
+                self.live(
+                    "calculating",
+                    Some(&p.name),
+                    format!("Calculating “{}”", p.name),
+                    Some(&id),
+                );
                 let parts: Vec<Value> = p
                     .parts
                     .iter()
@@ -862,6 +878,8 @@ impl Server {
                     }
                 };
                 self.live(
+                    "explaining",
+                    Some(&p.name),
                     format!("Explaining the calculation of “{}”", p.name),
                     Some(&id),
                 );
@@ -1084,13 +1102,23 @@ impl Server {
             }
             "show_project" => {
                 let (id, p) = self.load(args)?;
-                self.live(format!("Showing “{}”", p.name), Some(&id));
+                self.live(
+                    "showing",
+                    Some(&p.name),
+                    format!("Showing “{}”", p.name),
+                    Some(&id),
+                );
                 Ok(json!({ "id": id, "shown": true }))
             }
             "revert_last_change" => {
                 let (id, _) = self.load(args)?;
                 let p = self.store.revert_last(&id, &self.client)?;
-                self.live("Reverted the latest change".into(), Some(&id));
+                self.live(
+                    "reverted",
+                    Some(&p.name),
+                    "Reverted the latest change".into(),
+                    Some(&id),
+                );
                 Ok(json!({ "id": id, "reverted": true, "quantities": quantities(&p) }))
             }
             _ => self
@@ -1361,6 +1389,30 @@ mod tests {
             )
             .unwrap();
         r["id"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn live_status_is_a_code_and_a_name_the_app_translates() {
+        // UX-002: the app shows the sentence in the user's language.
+        let mut s = server();
+        let id = gable_job(&mut s, 40.0);
+        let live = s.store.live().unwrap();
+        assert_eq!(
+            (live.kind.as_deref(), live.message.as_str()),
+            (Some("changed"), "Footprint")
+        );
+        s.call_tool("calc", &json!({ "id": id })).unwrap();
+        let live = s.store.live().unwrap();
+        assert_eq!(live.kind.as_deref(), Some("calculating"));
+        assert_eq!(live.name.as_deref(), Some("gable"));
+        assert_eq!(live.project_id.as_deref(), Some(id.as_str()));
+        s.call_tool("list_projects", &json!({})).unwrap();
+        let live = s.store.live().unwrap();
+        assert_eq!(
+            (live.kind.as_deref(), live.project_id),
+            (Some("browsing"), None)
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
     #[test]
