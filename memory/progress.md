@@ -85,3 +85,13 @@ sessions that use it know where things stand.
   one hole entry per face, DIN Norm group only for one material.
 - Next: Jakub checks the pasted text in the real Excel sheet.
 - Blockers / open questions: none.
+## 2026-11-08 - building-height
+- Done: "Výška budovy (okap)" field in the roof definition bar (selected
+  building; empty with "různá" when its walls differ) and MCP
+  `set_part_height`, both `tectora_core::edit::height::set_part_height`:
+  every wall at the eave height, its breaks and half-hip moved by the same
+  amount, dormers / chimneys / hand-drawn lines on the building by the
+  building's shift. Pure input, no roof math changed.
+- State: `make check` exit 0, `make sweeps` clean; e2e joined, fields, mcp,
+  i18n, editor passed.
+- Next: Jakub tries it on the two-hip-roof job from his screenshot.

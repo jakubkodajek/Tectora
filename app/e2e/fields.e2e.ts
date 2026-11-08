@@ -207,12 +207,18 @@ test.describe("number fields", () => {
         expect(changed.every((k) => k.startsWith("0.edges.1.start.")), `${label}: ${changed}`).toBe(true);
         const e = (await loadProject(id)).parts[0].edges;
         expect(Math.hypot(e[1].start.x - e[0].start.x, e[1].start.y - e[0].start.y)).toBeCloseTo(cur + 0.5, 3);
+      } else if (label === cs("edge.buildingHeight")) {
+        // Every wall of the building, with wall 1's pitch break moved along.
+        const walls = (await loadProject(id)).parts[0].edges.map((_: unknown, k: number) => `0.edges.${k}.eave_height`);
+        expect([...changed].sort(), label).toEqual([...walls, "0.edges.0.breaks.0.height"].sort());
+        for (const k of walls) expect(after[k], label).toBeCloseTo(cur + 0.5, 6);
+        expect(after["0.edges.0.breaks.0.height"] - before["0.edges.0.breaks.0.height"], label).toBeCloseTo(0.5, 6);
       } else {
         expect(changed, label).toEqual([target[label]]);
         expect(after[target[label]], label).toBeCloseTo(cur + 0.5, 6);
       }
     }
-    expect(seen).toEqual(expect.arrayContaining([cs("edge.length"), ...Object.keys(target)]));
+    expect(seen).toEqual(expect.arrayContaining([cs("edge.length"), cs("edge.buildingHeight"), ...Object.keys(target)]));
   });
 
   test("chimney and dormer fields take typed values", async ({ app, page }) => {
