@@ -654,6 +654,29 @@
     commit();
   }
 
+  /**
+   * A manual face drawn where a building was meant: replace it with a part of
+   * the same outline with the new-roof defaults (pitch, eave height,
+   * overhang) so its roof is calculated. Over MCP: add_part + set_manual.
+   */
+  function faceToPart() {
+    if (!project || manualSel?.kind !== "face" || !project.manual_faces) return;
+    const face = project.manual_faces[manualSel.index];
+    if (!face || face.points.length < 3) return;
+    let pts = face.points.map((p) => ({ x: p.x, y: p.y }));
+    const area = pts.reduce((s, p, i) => s + p.x * pts[(i + 1) % pts.length].y - pts[(i + 1) % pts.length].x * p.y, 0);
+    if (area < 0) pts = pts.reverse();
+    project.manual_faces.splice(manualSel.index, 1);
+    const n = project.parts.length;
+    project.parts.push({
+      name: n === 0 ? t("editor.mainPart") : t("editor.partN", { n: n + 1 }),
+      edges: pts.map((p) => ({ start: p, pitch_deg: presets.pitch_deg, eave_height: presets.eave_height, overhang: presets.overhang })),
+    });
+    manualSel = null;
+    selection = { part: n, edge: 0 };
+    commit();
+  }
+
   function deleteManual() {
     if (!project || !manualSel) return;
     if (manualSel.kind === "line") project.manual_lines?.splice(manualSel.index, 1);
@@ -1205,15 +1228,19 @@
       <button class="tool" onclick={redo} disabled={at >= historyLen - 1} title="{t('editor.redo')} ({keys('Ctrl+Shift+Z')})"><Icon name="redo" /><span>{t("editor.redo")}</span></button>
     </div>
     <div class="group">
-      <button class="tool" class:on={!!std} onclick={() => (std = { part: null, mode: project?.parts.length ? "replace" : "add" })} title={t("tool.standardHint")}><Icon name="house" /><span>{t("tool.standard")}</span></button>
+      <button class="tool" class:on={!!std} onclick={() => (std = { part: null, mode: project?.parts.length && selection ? "replace" : "add" })} title={t("tool.standardHint")}><Icon name="house" /><span>{t("tool.standard")}</span></button>
       <button class="tool" class:on={!!drawing} onclick={startDraw} title="{t('tool.drawHint')} (Insert)"><Icon name="draw" /><span>{t("tool.draw")}</span></button>
       <button class="tool" class:on={placing === "dormer"} disabled={!project?.parts.length} onclick={() => togglePlacing("dormer")} title={t("tool.dormerHint")}><Icon name="roof" /><span>{t("tool.dormer")}</span></button>
       <button class="tool" class:on={placing === "chimney"} disabled={!project?.parts.length} onclick={() => togglePlacing("chimney")} title={t("tool.chimneyHint")}><Icon name="chimney" /><span>{t("tool.chimney")}</span></button>
       <button class="tool" class:on={placing === "window"} disabled={!project?.parts.length} onclick={() => togglePlacing("window")} title={t("tool.windowHint")}><Icon name="window" /><span>{t("tool.window")}</span></button>
       <button class="tool" class:on={placing === "hole"} disabled={!project?.parts.length} onclick={() => togglePlacing("hole")} title={t("tool.holeHint")}><Icon name="hole" /><span>{t("tool.hole")}</span></button>
+    </div>
+    <div class="group">
       <button class="tool" class:on={placing === "line"} disabled={!result} onclick={() => togglePlacing("line")} title={t("tool.lineHint")}><Icon name="line" /><span>{t("tool.line")}</span></button>
       <button class="tool" class:on={placing === "face"} disabled={!result} onclick={() => togglePlacing("face")} title={t("tool.faceHint")}><Icon name="face" /><span>{t("tool.face")}</span></button>
       <button class="tool" class:on={!!project?.flat_roof} disabled={!project?.parts.length} onclick={toggleFlat} title={t("tool.flatHint")}><Icon name="flat" /><span>{t("tool.flat")}</span></button>
+    </div>
+    <div class="group">
       <button class="tool" class:on={!!xform} disabled={!selection} onclick={openTransform} title={t("tool.transformHint")}><Icon name="move" /><span>{t("tool.transform")}</span></button>
       <button class="tool" disabled={!selection} onclick={deletePart} title={t("tool.deletePartHint")}><Icon name="trash" /><span>{t("tool.deletePart")}</span></button>
       <button class="tool" disabled={!hasDrawing(project)} onclick={clearRoof} title={t("tool.clearHint")}><Icon name="eraser" /><span>{t("tool.clear")}</span></button>
@@ -1348,7 +1375,7 @@
         {:else if openSel}
           <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening} />
         {:else if manualSel}
-          <ManualBar {project} bind:sel={manualSel} online={setManualLine} onface={setManualFace} ondelete={deleteManual} />
+          <ManualBar {project} bind:sel={manualSel} online={setManualLine} onface={setManualFace} ontopart={faceToPart} ondelete={deleteManual} />
         {:else}
           <RoofDefBar
             {project}

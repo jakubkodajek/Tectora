@@ -626,6 +626,10 @@
         d={"M" + f.points.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("manual.faceN", { n: fi + 1 })}
         onpointerdown={(ev) => pressItem(ev, { kind: "face", index: fi })} />
+      {#if showDims && f.points.length >= 3}
+        <!-- Says what the outline is, so it is not taken for a building without a roof. -->
+        <text class="manual-tag" x={sx(f.points.reduce((a, p) => a + p.x, 0) / f.points.length)} y={sy(f.points.reduce((a, p) => a + p.y, 0) / f.points.length)}>{t("manual.faceN", { n: fi + 1 })} · {pitchText(f.pitch_deg)}</text>
+      {/if}
     {/each}
     {#each project.manual_lines ?? [] as l, li}
       {@const sel = manualSel?.kind === "line" && manualSel.index === li}
@@ -795,16 +799,29 @@
     dominant-baseline: middle;
     pointer-events: none;
   }
+  /* Neutral, like an annotation: brick red is the building fill and the
+     selection, so a red outline read as a building whose roof failed. */
   .manual-face {
-    fill: color-mix(in srgb, var(--accent) 10%, transparent);
-    stroke: var(--accent);
+    fill: color-mix(in srgb, var(--text-3) 12%, transparent);
+    stroke: var(--text-2);
     stroke-width: 1.2;
     stroke-dasharray: 2 3;
     cursor: pointer;
   }
   .manual-face.sel {
+    stroke: var(--accent);
     stroke-width: 2.5;
     stroke-dasharray: none;
+  }
+  .manual-tag {
+    font-size: 11.5px;
+    fill: var(--text-2);
+    text-anchor: middle;
+    dominant-baseline: middle;
+    pointer-events: none;
+    paint-order: stroke;
+    stroke: var(--surface);
+    stroke-width: 3px;
   }
   .manual-line .stroke {
     stroke-width: 2.2;

@@ -98,10 +98,33 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
 
   const fmt = (v: number | null | undefined) => formatNumber(v, numberLocale(), opts.digits);
 
-  function setInvalid(on: boolean) {
-    invalid = on;
-    if (on) input.setAttribute("aria-invalid", "true");
-    else input.removeAttribute("aria-invalid");
+  let ownTitle = input.title;
+  let clearTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Why `text` cannot be stored, for the tooltip; null when it can. */
+  function reason(text: string): string | null {
+    const v = parseNumber(text);
+    if (v === null) return t("num.nan");
+    const f = (x: number) => formatNumber(x, numberLocale());
+    const { min, max } = opts;
+    if ((min !== undefined && v < min) || (max !== undefined && v > max)) {
+      if (min !== undefined && max !== undefined) return t("num.range", { min: f(min), max: f(max) });
+      return min !== undefined ? t("num.min", { min: f(min) }) : t("num.max", { max: f(max!) });
+    }
+    return null;
+  }
+
+  /** Marks the field invalid with the reason as its tooltip (and for screen readers). */
+  function setInvalid(why: string | null) {
+    clearTimeout(clearTimer);
+    invalid = why !== null;
+    if (why !== null) {
+      input.setAttribute("aria-invalid", "true");
+      input.title = why;
+    } else {
+      input.removeAttribute("aria-invalid");
+      input.title = ownTitle;
+    }
   }
 
   function render() {
@@ -128,17 +151,23 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
     if (!dirty) return;
     dirty = false;
     if (opts.onclear && input.value.trim() === "") {
-      setInvalid(false);
+      setInvalid(null);
       opts.onclear();
       return;
     }
-    const v = accept(parseNumber(input.value));
+    const text = input.value;
+    const v = accept(parseNumber(text));
     const ok = v !== null && store(v);
-    setInvalid(!ok && input.value.trim() !== "");
     // The stored value may arrive later (parent re-render); show the typed
     // number now, or the stored one when it was refused.
     input.value = ok ? fmt(v) : fmt(opts.value);
-    if (!ok && input.value.trim() === "") setInvalid(false);
+    if (ok || text.trim() === "") {
+      setInvalid(null);
+    } else {
+      // Say why for a moment, then the restored value is plain again.
+      setInvalid(reason(text) ?? t("num.refused"));
+      clearTimer = setTimeout(() => !dirty && setInvalid(null), 2500);
+    }
   }
 
   function stepBy(dir: number) {
@@ -147,15 +176,18 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
     const base = typed ?? opts.value ?? opts.min ?? 0;
     const v = stepValue(base, dir, opts.step ?? 1, opts.min, opts.max);
     dirty = false;
-    setInvalid(false);
+    setInvalid(null);
     if (store(v)) input.value = fmt(v);
     else input.value = fmt(opts.value);
   }
 
   function onInput() {
     dirty = true;
-    const v = accept(parseNumber(input.value));
-    setInvalid(v === null && input.value.trim() !== "");
+    const text = input.value.trim();
+    // A lone "-" or "," is a number being typed, not an error yet.
+    const partial = /^[-+\u2212]?[.,]?$/.test(text);
+    const v = accept(parseNumber(text));
+    setInvalid(v === null && !partial ? reason(text) : null);
     if (opts.live && v !== null) {
       // Live fields store as they go but keep the text as typed ("2," stays).
       if (opts.value !== v) opts.onchange(v);
@@ -169,7 +201,7 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
       input.select();
     } else if (e.key === "Escape" && dirty) {
       dirty = false;
-      setInvalid(false);
+      setInvalid(null);
       render();
       e.preventDefault();
       e.stopPropagation();
@@ -276,12 +308,13 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
   return {
     update(next: NumericOptions) {
       opts = next;
-      if (!dirty && invalid && fmt(opts.value) !== input.value) setInvalid(false);
+      if (!dirty && invalid && fmt(opts.value) !== input.value) setInvalid(null);
       render();
       syncDisabled();
     },
     destroy() {
       window.removeEventListener("pointerdown", onOutsidePress, true);
+      clearTimeout(clearTimer);
       stop();
       observer.disconnect();
       resize?.disconnect();

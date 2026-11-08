@@ -96,6 +96,9 @@ test.describe("number fields", () => {
     await typeInto(page, pitch, "500");
     await page.keyboard.press("Enter");
     await expect(pitch).toHaveValue(String(start));
+    // The refusal says why, then the restored value is plain again.
+    await expect(pitch).toHaveAttribute("title", cs("num.range", { min: "1", max: "179" }));
+    await expect(pitch).not.toHaveAttribute("aria-invalid", "true", { timeout: 5000 });
     await page.waitForTimeout(700);
     expect((await loadProject(id)).parts[0].edges[0].pitch_deg).toBe(start);
 
@@ -170,5 +173,23 @@ test.describe("number fields", () => {
     await setField(eave, "3");
     await page.keyboard.press("Escape");
     expect((await loadProject(id)).parts).toHaveLength(1);
+  });
+
+  test("a manual face is labelled and can be turned into a building", async ({ app, page }) => {
+    const id = await createExample("gable", "Sedlo");
+    await openEditor(app, "Sedlo");
+    await tool(page, "tool.face").click();
+    await pressPlan(page, 9, 1);
+    await pressPlan(page, 12.5, 1);
+    await pressPlan(page, 12.5, 7);
+    await pressPlan(page, 9, 7);
+    await pressPlan(page, 9, 1);
+    await waitForProject(id, (p) => p.manual_faces?.length === 1);
+    await expect(page.locator(".manual-tag")).toHaveText(`${cs("manual.faceN", { n: 1 })} · 30°`);
+    await bar(page, "manual.face").getByRole("button", { name: cs("manual.toPart") }).click();
+    const p = await waitForProject(id, (p) => p.parts.length === 2 && !p.manual_faces?.length);
+    expect(p.parts[1].edges).toHaveLength(4);
+    expect(p.parts[1].name).toBe(cs("editor.partN", { n: 2 }));
+    await expect(page.locator(".statusbar")).toContainText(cs("status.walls", { n: 8, p: 2 }));
   });
 });

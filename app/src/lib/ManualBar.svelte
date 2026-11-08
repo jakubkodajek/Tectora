@@ -13,12 +13,15 @@
     sel = $bindable(),
     online,
     onface,
+    ontopart,
     ondelete,
   }: {
     project: Project;
     sel: ManualSel;
     online: (l: ManualLine) => void;
     onface: (f: ManualFace) => void;
+    /** Replaces the selected face with a building part of the same outline. */
+    ontopart?: () => void;
     ondelete: () => void;
   } = $props();
 
@@ -76,6 +79,9 @@
       <p class="tip">{t("manual.faceArea", { a: m2(faceArea(face)), n: face.points.length })}</p>
     {/if}
     <div class="spacer"></div>
+    {#if face && ontopart}
+      <button class="btn sm" onclick={ontopart} title={t("manual.toPartHint")}><Icon name="house" size={15} />{t("manual.toPart")}</button>
+    {/if}
     <button class="icon-btn danger" onclick={ondelete} title={t("manual.delete")} aria-label={t("manual.delete")}><Icon name="trash" /></button>
   {/if}
 </div>
