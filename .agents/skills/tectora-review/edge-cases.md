@@ -107,3 +107,46 @@ which `scene3d.test.ts` covers). A roof whose core result has no gable
 polygon for a gable wall (shed roof) still shows closed walls
 (`wallUpToRoof`); manual faces appear in 3D; at any zoom the plan grid stays
 at least 8 px apart (`grid.test.ts`).
+
+## 6. Text fields, saves and AI review (@errors, @ux)
+
+Guards: `app/e2e/textfields.e2e.ts`, `app/e2e/saveflows.e2e.ts`,
+`app/e2e/recalc.e2e.ts`, store tests `reverting_an_ai_change_keeps_the_users_later_edits`
+and `revert_refuses_when_the_user_changed_the_same_value`.
+
+- Text fields (Job tab, job title): Escape restores, typing survives an AI
+  save, an empty job name is refused, Back right after typing keeps the text.
+- Revert of an AI step after the user's own edits keeps those edits or
+  refuses with a reason (`revert_conflict`); it never silently drops them.
+- A failed save stays "not saved" through an outside change; export after a
+  failed save stops.
+- Follow mode opens a job only for an AI write or `show_project`, never while
+  the user draws, places, drags, types or has a dialog open.
+- Undo, redo, AI save, merge on save, standard roof, face → building and move
+  all recalculate (class 2).
+
+## 7. Window size and language (@ui)
+
+Guards: `app/e2e/shell.e2e.ts`.
+
+- German or Slovak at 1360×860 and 1440×900 with the editor open: every
+  toolbar button lies inside the window; a strip that scrolls sideways shows a
+  scrollbar and scrolls with the wheel.
+- Half-screen (≤ 960 px) library: double-click the lowest visible row; a click
+  never moves the rows under the pointer.
+
+## 8. Untrusted input and UI / MCP parity (@arch, @math)
+
+Guards: core `only_regular_files_of_a_sane_size_are_attached`,
+`check_limits_refuses_more_parts_walls_or_objects_than_a_real_job_has`, CLI
+`attaching_the_servers_own_input_is_refused_and_the_session_goes_on`, MCP
+`every_write_tool_requires_a_summary`, `app/src/lib/editparity.test.ts` with
+`crates/tectora-core/tests/edit_parity.rs`, `tests/app_commands.rs`.
+
+- MCP paths: devices, pipes, folders, private files, huge files are refused.
+- Huge part / wall / object counts are refused before the core runs.
+- The same editor operation gives the same value in the UI and over MCP
+  (rounding at exact halves).
+- Every Tauri command has a bridge counterpart reading the same arguments.
+- Oversize windows, dormers off the roof and faces cut below zero carry a
+  warning (`check_cases`, `result_report`); export works with dormers.
