@@ -146,6 +146,10 @@ pub struct LiveStatus {
     /// Short description, e.g. "Reading project rodinny-dum".
     pub message: String,
     pub project_id: Option<String>,
+    /// The agent saved `project_id` or asked to show it: the app may open it
+    /// (follow mode). Reading or calculating a job does not set it.
+    #[serde(default)]
+    pub follow: bool,
 }
 
 pub fn now_ms() -> u64 {

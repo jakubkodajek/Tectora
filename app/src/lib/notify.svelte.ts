@@ -14,6 +14,8 @@ export interface Toast {
   detail?: string;
   /** How many times the same message came in. */
   count: number;
+  /** One button that does what the message offers (e.g. "Open"); the toast closes after it. */
+  action?: { label: string; run: () => unknown };
 }
 
 export const toasts = $state<Toast[]>([]);
@@ -55,6 +57,7 @@ export function notify(t: Omit<Toast, "id" | "count">): number {
   if (same) {
     same.count += 1;
     same.detail = t.detail ?? same.detail;
+    same.action = t.action ?? same.action;
     schedule(same.id, same.kind);
     return same.id;
   }

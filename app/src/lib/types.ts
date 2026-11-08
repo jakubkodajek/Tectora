@@ -314,6 +314,8 @@ export interface LiveStatus {
   actor: string;
   message: string;
   project_id: string | null;
+  /** The agent saved this job or asked to show it (follow mode may open it). */
+  follow?: boolean;
 }
 
 export type StandardKind = "gable" | "shed" | "hip" | "pyramid" | "half_hip";

@@ -70,8 +70,11 @@ PDF renderer).
   computed changes and the previous version.
 - The server also writes `.activity/live.json` on each call ("Reading …",
   "Calculating …", or the write summary).
-- The app watches the folder: it opens the job the agent works on (follow mode,
-  can be turned off) and shows a banner with every pending step's summary, the
+- The app watches the folder: it opens the job the agent saves or shows with
+  `show_project` (follow mode, can be turned off; reading or calculating
+  another job never switches, and while the user is drawing, placing an
+  object, typing or has a dialog open the app only offers "Open" in a toast)
+  and shows a banner with every pending step's summary, the
   list of changes and how they change the figures (roof area, ridge height,
   line lengths by code, area by material: before → now, with the difference).
   Changed walls, dormers, chimneys, windows, openings and hand-drawn lines and
