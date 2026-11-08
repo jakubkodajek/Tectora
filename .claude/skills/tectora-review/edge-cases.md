@@ -150,3 +150,24 @@ Guards: core `only_regular_files_of_a_sane_size_are_attached`,
 - Every Tauri command has a bridge counterpart reading the same arguments.
 - Oversize windows, dormers off the roof and faces cut below zero carry a
   warning (`check_cases`, `result_report`); export works with dormers.
+
+## 9. Concurrent saves and building-level edits (@errors, @math)
+
+Guards: store `a_checked_save_*`, `saves_of_one_job_wait_for_each_other`,
+`revert_all_keeps_the_users_edit_between_two_ai_steps`, MCP
+`a_tool_change_does_not_overwrite_a_user_edit_the_app_saved_meanwhile`,
+`a_building_height_sets_every_wall_in_one_save_and_changes_the_join`, E2E
+saveflows "an AI save during the autosave", joined "the building height sets
+every wall…", `app/e2e/results.e2e.ts`.
+
+- An AI save landing between the editor's read and write survives (saves are
+  compare-and-swap under `.activity/<id>.lock`); a revert never overwrites an
+  autosave made while it merged.
+- Revert all over AI steps with a user edit between them keeps the edit or
+  refuses, never drops it.
+- The building height sets every wall of the part (and breaks, half-hips,
+  objects on it) in one save; both joined roofs recalculate; one undo
+  restores it.
+- Windows, chimneys and openings off every roof face carry a warning; the
+  result is unchanged.
+- The Results area rows add up to the total, hand-drawn faces included.
