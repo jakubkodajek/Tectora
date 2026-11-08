@@ -168,3 +168,62 @@ fn the_dormer_index_counts_dormers_left_out_as_invalid() {
         .expect("reported");
     assert_eq!(w.dormer, Some(1));
 }
+
+fn square(x: f64, y: f64, s: f64) -> tectora_core::model::Chimney {
+    serde_json::from_value(serde_json::json!({ "corners": [
+        { "x": x, "y": y }, { "x": x + s, "y": y }, { "x": x + s, "y": y + s }, { "x": x, "y": y + s }
+    ], "height": 9 }))
+    .unwrap()
+}
+
+fn window(x: f64, y: f64) -> tectora_core::model::RoofWindow {
+    serde_json::from_value(serde_json::json!({ "x": x, "y": y, "width": 0.78, "height": 1.18 }))
+        .unwrap()
+}
+
+#[test]
+fn windows_chimneys_and_openings_off_the_roof_are_reported_and_change_nothing() {
+    // Re-check of ERR-011: a roof window at (-50, -50) was saved and left
+    // out of the result without a word; dormers already said so.
+    let mut on = gable();
+    on.windows.push(window(3.0, 0.5));
+    on.chimneys.push(square(5.0, 5.5, 0.8));
+    on.roof_openings.push(square(8.0, 1.0, 0.6));
+    let base = generate_project(&on);
+    assert!(base[0].warnings.is_empty(), "{:?}", base[0].warnings);
+
+    let mut p = on.clone();
+    p.windows.push(window(-50.0, -50.0));
+    // An invalid chimney (two corners) is left out before the calculation;
+    // the index still counts it.
+    let mut bad = square(1.0, 1.0, 1.0);
+    bad.corners.truncate(2);
+    p.chimneys.push(bad);
+    p.chimneys.push(square(40.0, 40.0, 1.0));
+    p.roof_openings.insert(0, square(-30.0, 5.0, 1.0));
+    let geos = generate_project(&p);
+    // The roof is exactly the one without the stray objects.
+    assert_eq!(geos[0].faces, base[0].faces);
+    assert_eq!(geos[0].lines, base[0].lines);
+    let got: Vec<_> = geos[0].warnings.iter().map(|w| (w.kind, w.item)).collect();
+    assert_eq!(
+        got,
+        [
+            (WarningKind::WindowOffRoof, Some(1)),
+            (WarningKind::ChimneyOffRoof, Some(2)),
+            (WarningKind::OpeningOffRoof, Some(0)),
+        ]
+    );
+}
+
+#[test]
+fn an_object_off_the_roof_is_reported_on_the_nearest_part() {
+    let mut p = Project::new("two");
+    p.parts.push(hip("A", 0.0, 0.0, 10.0, 8.0, 3.0));
+    p.parts.push(hip("B", 40.0, 0.0, 50.0, 8.0, 3.0));
+    p.windows.push(window(55.0, 4.0));
+    let geos = generate_project(&p);
+    assert!(geos[0].warnings.is_empty(), "{:?}", geos[0].warnings);
+    let w: Vec<_> = geos[1].warnings.iter().map(|w| (w.kind, w.item)).collect();
+    assert_eq!(w, [(WarningKind::WindowOffRoof, Some(0))]);
+}

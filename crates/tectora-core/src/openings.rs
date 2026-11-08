@@ -77,17 +77,34 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     let ok_poly = |c: &Chimney| {
         c.corners.len() >= 3 && c.corners.iter().all(|v| v.x.is_finite() && v.y.is_finite())
     };
-    clean.chimneys.retain(ok_poly);
-    clean.roof_openings.retain(ok_poly);
-    clean.windows.retain(|w| {
+    let ok_window = |w: &RoofWindow| {
         [w.x, w.y, w.width, w.height].iter().all(|v| v.is_finite())
             && w.width > 0.0
             && w.height > 0.0
-    });
+    };
+    // Index in `project` of each chimney, opening and window kept.
+    let kept = |ok: Vec<bool>| -> Vec<usize> { (0..ok.len()).filter(|&i| ok[i]).collect() };
+    let chimney_ids = kept(clean.chimneys.iter().map(ok_poly).collect());
+    let opening_ids = kept(clean.roof_openings.iter().map(ok_poly).collect());
+    let window_ids = kept(clean.windows.iter().map(ok_window).collect());
+    clean.chimneys.retain(ok_poly);
+    clean.roof_openings.retain(ok_poly);
+    clean.windows.retain(ok_window);
     let mut geos = generate_valid(&clean);
     let warnings = crate::check::check(&clean.parts, &geos);
     for (geo, w) in geos.iter_mut().zip(warnings) {
         geo.warnings.extend(w);
+    }
+    // Windows, chimneys and openings the calculation left out: said, the
+    // result unchanged.
+    for (part, mut w) in crate::check::off_roof(&clean, &geos) {
+        let ids = match w.kind {
+            WarningKind::WindowOffRoof => &window_ids,
+            WarningKind::ChimneyOffRoof => &chimney_ids,
+            _ => &opening_ids,
+        };
+        w.item = w.item.map(|i| ids.get(i).copied().unwrap_or(i));
+        geos[part].warnings.push(w);
     }
     slots
         .into_iter()

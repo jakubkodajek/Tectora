@@ -93,7 +93,12 @@ PDF renderer).
   saves are not logged): the store merges the inverse of the step onto the
   current file, using the version the step saved (`after`) as the base. When
   a later edit changed a value the step also set, the revert is refused with
-  `revert_conflict` and the file stays as it is.
+  `revert_conflict` and the file stays as it is. Revert all undoes the steps
+  one by one, latest first, the same way, so an edit the user made between
+  two AI steps is kept too (or the whole revert is refused).
+- A revert's change-log entry starts with the fixed English sentence the app
+  translates (`Reverted: <summary>`, `Reverted <n> changes since: <summary>`);
+  an AI's reason follows as ` (reason: <reason>)`.
 
 A skill for Claude that describes the drawing workflow is in
 `integrations/skills/tectora-roof/SKILL.md`.

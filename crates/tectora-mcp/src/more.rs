@@ -2124,6 +2124,54 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_or_blank_summary_is_refused_by_every_write_tool() {
+        // Re-check of ARCH-005: `"summary": ""` and `"  "` were accepted.
+        let (mut s, id) = setup();
+        let before = s.store.load(&id).unwrap();
+        let log = s.store.activity(&id).len();
+        let tools = crate::tools();
+        let writes: Vec<&str> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| {
+                t["inputSchema"]["required"]
+                    .as_array()
+                    .is_some_and(|r| r.iter().any(|r| r == "summary"))
+            })
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(writes.len() > 20, "{writes:?}");
+        for name in writes {
+            for blank in ["", "   ", "\n\t "] {
+                let e = s
+                    .call_tool(name, &json!({ "id": id, "summary": blank }))
+                    .expect_err(name);
+                assert!(
+                    e.contains("`summary`") && e.contains("empty"),
+                    "{name}: {e}"
+                );
+            }
+        }
+        let e = s
+            .call_tool(
+                "update_edges",
+                &json!({ "id": id, "summary": " ", "changes": [{ "index": 0, "pitch_deg": 30 }] }),
+            )
+            .unwrap_err();
+        assert!(e.contains("summary"), "{e}");
+        assert_eq!(s.store.load(&id).unwrap(), before, "nothing written");
+        assert_eq!(s.store.activity(&id).len(), log, "nothing logged");
+        // A real sentence still works.
+        call(
+            &mut s,
+            "update_edges",
+            json!({ "id": id, "summary": "Flatter wall 1", "changes": [{ "index": 0, "pitch_deg": 30 }] }),
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
     fn deleted_jobs_and_files_go_to_the_trash_and_come_back() {
         // ARCH-004: delete_project and remove_file deleted for good.
         let (mut s, id) = setup();

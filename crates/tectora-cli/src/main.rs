@@ -47,7 +47,7 @@ enum Command {
     /// Generate the roof and print faces, lines and quantities as JSON.
     Calc {
         input: PathBuf,
-        /// Print only quantities (no geometry).
+        /// Print quantities, warnings and errors only (no geometry).
         #[arg(long)]
         summary: bool,
     },
@@ -101,19 +101,27 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
 /// `tectora calc`: the roof of a valid project.
 fn calc(project: &Project, summary: bool) -> serde_json::Value {
     let geos = tectora_core::openings::generate_project(project);
-    // DACAD refused the roof: its error is the result, no quantities.
-    let dacad_error = geos.iter().find_map(|g| g.error.clone());
+    // The calculation refused the roof: its error is the result, no quantities.
+    let calc_error = geos.iter().find_map(|g| g.error.clone());
     let parts: Vec<_> = project
         .parts
         .iter()
         .zip(geos)
         .map(|(part, geo)| {
             let q = tectora_core::quantities::part_quantities(&geo);
-            if summary {
-                json!({ "name": part.name, "quantities": q })
-            } else {
-                json!({ "name": part.name, "quantities": q, "geometry": geo })
+            let mut v = json!({ "name": part.name, "quantities": q });
+            // Warnings and errors as MCP `calc` gives them: code and an
+            // English sentence, never the calculation's German text.
+            if !geo.warnings.is_empty() {
+                v["warnings"] = geo.warnings.iter().map(tectora_mcp::warning).collect();
             }
+            if let Some(e) = &geo.error {
+                v["error"] = tectora_mcp::calc_error(e);
+            }
+            if !summary {
+                v["geometry"] = json!(geo);
+            }
+            v
         })
         .collect();
     let lines_by_type = dacad_line_totals(project);
@@ -145,12 +153,8 @@ fn calc(project: &Project, summary: bool) -> serde_json::Value {
                     })
                     .collect();
     }
-    if let Some(e) = dacad_error {
-        out["dacad_error"] = json!({
-            "code": e.code,
-            "message_id": e.message_id,
-            "message": e.message,
-        });
+    if let Some(e) = calc_error {
+        out["calc_error"] = tectora_mcp::calc_error(&e);
     }
     out
 }

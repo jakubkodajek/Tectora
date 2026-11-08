@@ -203,27 +203,38 @@ fn read_entry<R: Read + std::io::Seek>(
 pub fn import(store: &Store, src: &Path) -> Result<String, FileError> {
     let file = fs::File::open(src).map_err(|e| FileError::io(src, e))?;
     let mut zip = zip::ZipArchive::new(file).map_err(zip_err)?;
-    if let Some(m) = read_entry(&mut zip, "manifest.json", MAX_TEXT_ENTRY)? {
-        let m: Manifest = serde_json::from_slice(&m).map_err(zip_err)?;
-        if m.format != FORMAT {
+    let manifest = read_entry(&mut zip, "manifest.json", MAX_TEXT_ENTRY)?;
+    if let Some(m) = &manifest {
+        // The format and its version first: a newer Tectora may have
+        // changed the rest of the manifest (ERR-007).
+        let v: serde_json::Value = serde_json::from_slice(m).map_err(zip_err)?;
+        if v.get("format").and_then(serde_json::Value::as_str) != Some(FORMAT) {
             return Err(zip_err("not a Tectora job"));
         }
-        if m.format_version > FORMAT_VERSION {
+        if let Some(version) = v
+            .get("format_version")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|&n| n > u64::from(FORMAT_VERSION))
+        {
             return Err(FileError::new(
                 "newer_format",
                 format!(
-                    "job bundle: made by a newer Tectora (bundle format {}, this version reads up to {FORMAT_VERSION})",
-                    m.format_version
+                    "job bundle: made by a newer Tectora (bundle format {version}, this version reads up to {FORMAT_VERSION})"
                 ),
             ));
         }
     }
     let text = read_entry(&mut zip, "project.tectora", MAX_TEXT_ENTRY)?
         .ok_or_else(|| zip_err("no project in the file"))?;
+    // A project from a newer Tectora is `newer_format` whatever the
+    // manifest says.
     let project = parse_project(
         &String::from_utf8(text).map_err(zip_err)?,
         "job bundle: project.tectora",
     )?;
+    if let Some(m) = &manifest {
+        serde_json::from_slice::<Manifest>(m).map_err(zip_err)?;
+    }
     let history = read_entry(&mut zip, "history.jsonl", MAX_TEXT_ENTRY)?;
     let names: Vec<String> = zip
         .file_names()
@@ -498,6 +509,65 @@ mod tests {
         let ok = bundle_with(&dir, &[("x.pdf", 1, 2)]);
         let id = import(&store, &ok).unwrap();
         assert_eq!(store.attachments(&id).len(), 2);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A bundle with this manifest text and project text.
+    fn bundle_of(dir: &Path, name: &str, manifest: &str, project: &str) -> PathBuf {
+        let path = dir.join(name);
+        let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        let opts = SimpleFileOptions::default();
+        zip.start_file("manifest.json", opts).unwrap();
+        zip.write_all(manifest.as_bytes()).unwrap();
+        zip.start_file("project.tectora", opts).unwrap();
+        zip.write_all(project.as_bytes()).unwrap();
+        zip.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn a_bundle_from_a_newer_tectora_says_so_even_when_its_manifest_changed() {
+        // ERR-007: a newer manifest that the current struct cannot parse
+        // was called damaged.
+        let dir = std::env::temp_dir().join(format!("tectora-newer-bundle-{}", now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        let store = Store::new(dir.join("lib")).unwrap();
+        let p = crate::examples::find("gable").unwrap().project();
+        let project = p.to_json().unwrap();
+        let newer = bundle_of(
+            &dir,
+            "newer.tectorajob",
+            r#"{"format": "tectora-job", "format_version": 2, "name": "x", "app": {"version": "9.0"}}"#,
+            &project,
+        );
+        let e = import(&store, &newer).unwrap_err();
+        assert_eq!(e.code, "newer_format", "{e}");
+        // An older manifest that lacks a field, with a project from a newer
+        // Tectora: the project's version is what counts.
+        let mut v: serde_json::Value = serde_json::from_str(&project).unwrap();
+        v["schema_version"] = 99.into();
+        v["future"] = serde_json::json!({ "x": 1 });
+        let short = r#"{"format": "tectora-job", "format_version": 1, "name": "x"}"#;
+        let newer_schema = bundle_of(&dir, "newer-schema.tectorajob", short, &v.to_string());
+        let e = import(&store, &newer_schema).unwrap_err();
+        assert_eq!(e.code, "newer_format", "{e}");
+        // The same manifest with a current project is damaged.
+        let damaged = bundle_of(&dir, "damaged.tectorajob", short, &project);
+        assert_eq!(import(&store, &damaged).unwrap_err().code, "unreadable");
+        let not_json = bundle_of(&dir, "garbage.tectorajob", "{ x", &project);
+        assert_eq!(import(&store, &not_json).unwrap_err().code, "unreadable");
+        let other = bundle_of(
+            &dir,
+            "other.tectorajob",
+            r#"{"format": "something-else", "format_version": 7}"#,
+            &project,
+        );
+        let e = import(&store, &other).unwrap_err();
+        assert!(
+            e.code == "unreadable" && e.detail.contains("not a Tectora job"),
+            "{e}"
+        );
+        assert!(store.list().is_empty());
         let _ = fs::remove_dir_all(dir);
     }
 

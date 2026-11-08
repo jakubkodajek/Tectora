@@ -106,7 +106,7 @@ fn describe_part(part: &RoofPart) -> Value {
 
 /// A plausibility warning of a calculated roof (`tectora_core::check`),
 /// with what it means for whoever reads the result.
-fn warning(w: &tectora_core::check::RoofWarning) -> Value {
+pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
     use tectora_core::check::WarningKind;
     let message = match w.kind {
         WarningKind::OutsideOutline => format!(
@@ -130,6 +130,18 @@ fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             "dormer {} (0-based) sits on no roof face, so it is left out of the result (no area, lines or material); move it onto the roof or delete it",
             w.dormer.unwrap_or(0)
         ),
+        WarningKind::WindowOffRoof => format!(
+            "roof window {} (0-based) sits on no roof face, so nothing is deducted for it and it is not in the result; move it onto the roof or delete it",
+            w.item.unwrap_or(0)
+        ),
+        WarningKind::ChimneyOffRoof => format!(
+            "chimney {} (0-based) lies on no roof face, so it cuts nothing and is not in the result; move it onto the roof or delete it",
+            w.item.unwrap_or(0)
+        ),
+        WarningKind::OpeningOffRoof => format!(
+            "roof opening {} (0-based) lies on no roof face, so it cuts nothing and is not in the result; move it onto the roof or delete it",
+            w.item.unwrap_or(0)
+        ),
         WarningKind::NotCalculatedByCore => "this roof was calculated by Tectora's fallback engine, not by the standard calculation, so its figures may differ from the standard result; tell the user to check the roof".to_string(),
         WarningKind::MergedWalls => {
             let (kept, ignored) = (w.edges.first(), w.edges.get(1));
@@ -149,12 +161,15 @@ fn warning(w: &tectora_core::check::RoofWarning) -> Value {
     if let Some(d) = w.dormer {
         v["dormer"] = json!(d);
     }
+    if let Some(i) = w.item {
+        v["item"] = json!(i);
+    }
     v
 }
 
 /// Why the calculation gave no roof for a part, in English and without
 /// the calculation's own (German) text: the AI passes it on to the user.
-fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
+pub fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
     use tectora_core::roof::CalcErrorKind;
     let message = match e.kind {
         CalcErrorKind::OpenFaces => {
@@ -670,7 +685,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges` or `dormer` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result) and `not_calculated_by_core` (figures from the fallback engine). Tell the user about every warning. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with.",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer` or `item` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out) and `not_calculated_by_core` (figures from the fallback engine). Tell the user about every warning. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -813,6 +828,15 @@ impl Server {
     }
 
     fn call_tool_unguarded(&mut self, name: &str, args: &Value) -> ToolResult {
+        // Every write is shown to the user with its summary (AGENTS.md):
+        // a blank one is refused before anything is done.
+        if args
+            .get("summary")
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.trim().is_empty())
+        {
+            return Err("`summary` is empty: give one sentence for the user on what you change and why (it is shown in the app)".into());
+        }
         if let Some(r) = self.call_calc_isolated(name, args) {
             return r;
         }
@@ -1359,10 +1383,10 @@ mod tests {
         )
         .unwrap();
         let last = s.store.activity(&id).pop().unwrap();
-        assert!(
-            last.summary.starts_with("The west wall is not a gable"),
-            "{}",
-            last.summary
+        // The fixed sentence the app translates, then the AI's reason (UX-002).
+        assert_eq!(
+            last.summary,
+            "Reverted: Gable at the west (reason: The west wall is not a gable)"
         );
         assert!(!s.store.load(&id).unwrap().parts[0].edges[5].is_gable());
         let _ = std::fs::remove_dir_all(&s.store.dir);
@@ -1571,6 +1595,30 @@ mod tests {
             w.iter()
                 .any(|w| w["kind"] == "cut_exceeds_face" && w["edges"] == json!([0])),
             "{r}"
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn calc_warns_about_a_window_on_no_roof_face() {
+        // Re-check of ERR-011: the window was saved and left out silently.
+        let mut s = server();
+        let id = gable_job(&mut s, 40.0);
+        let area = s.call_tool("calc", &json!({ "id": id })).unwrap()["quantities"]["roof_area_m2"]
+            .clone();
+        s.call_tool(
+            "set_openings",
+            &json!({ "id": id, "summary": "Window", "windows": [{ "x": -50, "y": -50, "width": 0.78, "height": 1.18 }] }),
+        )
+        .unwrap();
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        assert_eq!(r["quantities"]["roof_area_m2"], area, "result unchanged");
+        let w = &r["parts"][0]["warnings"][0];
+        assert_eq!(w["kind"], "window_off_roof", "{r}");
+        assert_eq!(w["item"], 0, "{r}");
+        assert!(
+            w["message"].as_str().unwrap().contains("roof window 0"),
+            "{w}"
         );
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }

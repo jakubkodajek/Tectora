@@ -53,4 +53,26 @@ describe("entrySummary", () => {
     i18n.locale = "de";
     expect(entrySummary("Reverted: Pitch")).toBe("Rückgängig: Pitch");
   });
+
+  it("translates a revert with the AI's reason, in every language (UX-002)", () => {
+    const want: Record<string, string> = {
+      cs: "Vráceno: na část (důvod: zpět)",
+      sk: "Vrátené: na část (dôvod: zpět)",
+      en: "Reverted: na část (reason: zpět)",
+      de: "Rückgängig: na část (Grund: zpět)",
+    };
+    for (const [loc, text] of Object.entries(want)) {
+      i18n.locale = loc as typeof i18n.locale;
+      expect(entrySummary("Reverted: na část (reason: zpět)")).toBe(text);
+    }
+    i18n.locale = "cs";
+    expect(entrySummary("Reverted 2 changes since: X (reason: back)")).toBe("Vráceno změn: 2, od: X (důvod: back)");
+    // A revert of a revert with reasons: the outer reason is the last one.
+    expect(entrySummary("Reverted: Reverted: X (reason: a) (reason: b)")).toBe("Vráceno: Vráceno: X (důvod: a) (důvod: b)");
+    // Entries written before the fixed form: `reason (Reverted: …)`.
+    expect(entrySummary("undo (Reverted: to part)")).toBe("Vráceno: to part (důvod: undo)");
+    expect(isRevert("undo (Reverted: to part)")).toBe(true);
+    // An AI summary that only mentions a reason is left as it is.
+    expect(entrySummary("Pitch 45 (reason: drawing)")).toBe("Pitch 45 (reason: drawing)");
+  });
 });

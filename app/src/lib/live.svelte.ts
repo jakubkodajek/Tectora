@@ -35,14 +35,37 @@ export function liveText(s: LiveStatus): string {
 /** Prefix the core writes before the summary a revert undid (store.rs `REVERTED_PREFIX`). */
 const REVERTED = "Reverted: ";
 const REVERTED_MANY = /^Reverted (\d+) changes since: /;
+/** What follows a revert's sentence when the AI gave a reason (store.rs `REVERT_REASON_OPEN`). */
+const REASON_OPEN = " (reason: ";
+/** Entries written before that fixed form: `reason (Reverted: …)`. */
+const LEGACY_REASON = /^(.*?) \((Reverted: .*|Reverted \d+ changes since: .*)\)$/s;
+
+function revertSentence(summary: string): boolean {
+  return summary.startsWith(REVERTED) || REVERTED_MANY.test(summary);
+}
 
 /** Whether a change-log summary is one the core wrote for a revert. */
 export function isRevert(summary: string): boolean {
-  return summary.startsWith(REVERTED) || REVERTED_MANY.test(summary);
+  return revertSentence(summary) || LEGACY_REASON.test(summary);
 }
 
 /** A change-log summary with the core's English revert sentences translated. */
 export function entrySummary(summary: string): string {
+  if (revertSentence(summary)) {
+    // The AI's reason is the entry's last ` (reason: …)`.
+    const at = summary.lastIndexOf(REASON_OPEN);
+    if (at >= 0 && summary.endsWith(")")) {
+      return t("chg.revertReason", { s: revertText(summary.slice(0, at)), r: summary.slice(at + REASON_OPEN.length, -1) });
+    }
+    return revertText(summary);
+  }
+  const legacy = LEGACY_REASON.exec(summary);
+  if (legacy) return t("chg.revertReason", { s: revertText(legacy[2]), r: legacy[1] });
+  return summary;
+}
+
+/** A revert's sentence (without a reason) in the user's language. */
+function revertText(summary: string): string {
   if (summary.startsWith(REVERTED)) return t("chg.revertedEntry", { s: entrySummary(summary.slice(REVERTED.length)) });
   const m = REVERTED_MANY.exec(summary);
   if (m) return t("chg.revertedMany", { n: m[1], s: entrySummary(summary.slice(m[0].length)) });
