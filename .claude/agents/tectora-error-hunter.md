@@ -23,6 +23,9 @@ Everything you need is in the repository and in the prompt that launched you
    `app/src/lib/errors.ts`, `app/src/lib/notify.svelte.ts`.
 2. `.claude/skills/tectora-review/board.md`: the shared findings protocol.
    Follow it exactly. Your file is `target/review/<run>/errors.md`.
+2b. `.claude/skills/tectora-review/edge-cases.md`: bug classes the user
+   has already hit. Run every check of class 1 and 2 yourself (preview or E2E,
+   not only reading) and file each failure; skim the other classes.
 3. The other reviewers' files in the run folder.
 
 ## Why it matters here

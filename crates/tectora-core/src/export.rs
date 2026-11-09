@@ -1426,6 +1426,55 @@ LÍNIE
         assert_eq!(text.matches("33,70° 63,10").count(), 2, "{text}");
     }
 
+    /// A 12 × 8 m gable roof with a 2 m gable dormer on its front face.
+    fn gable_with_dormer() -> Project {
+        use crate::edit::dormers::{DormerKind, build_dormer, default_params};
+        let mut p = Project::new("dormer");
+        p.parts.push(standard_roof(
+            StandardRoof::Gable,
+            12.0,
+            8.0,
+            40.0,
+            3.0,
+            0.5,
+        ));
+        let d = default_params(
+            DormerKind::Gable,
+            crate::geom::Point2::new(5.0, 1.0),
+            0.0,
+            5.0,
+        );
+        p.dormers.push(build_dormer(&d));
+        p
+    }
+
+    #[test]
+    fn the_list_names_dormer_faces_after_the_walls() {
+        let p = gable_with_dormer();
+        let geos = crate::openings::generate_project(&p);
+        assert!(
+            geos[0].faces.iter().any(|f| f.edge == usize::MAX),
+            "the dormer is cut into the roof"
+        );
+        // Used to overflow (`edge` of a dormer face is usize::MAX): a panic
+        // in debug builds, every dormer face named Z1.00 in release.
+        let text = dacad_list(&p, &ListOptions::new("", "08.11.2026 13:02"));
+        assert!(!text.contains("Z1.00"), "{text}");
+        let names: Vec<&str> = text
+            .lines()
+            .filter(|l| l.starts_with("Z1."))
+            .map(|l| l.split(' ').next().unwrap())
+            .collect();
+        let mut unique = names.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "{names:?}");
+        // Four walls, so the dormer faces follow as Z1.05 and on.
+        assert!(names.contains(&"Z1.05"), "{names:?}");
+        // The plan sheet takes the dormer too.
+        assert!(!plan_sheet(&p, &SheetInfo::default()).is_empty());
+    }
+
     #[test]
     fn numbers_use_a_decimal_comma_and_no_negative_zero() {
         assert_eq!(num(1.23456, 3), "1,235");

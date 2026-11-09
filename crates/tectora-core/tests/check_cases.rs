@@ -140,6 +140,41 @@ fn joined_roofs_may_run_on_to_the_other_building() {
     assert_eq!(kinds(&p), []);
 }
 
+#[test]
+fn a_building_inside_another_is_reported_as_covered() {
+    // A small building drawn inside a larger one keeps no roof face after
+    // the join, which used to show the walls with no roof and no message.
+    let rect = |x0: f64, y0: f64, x1: f64, y1: f64| RoofPart {
+        name: "R".into(),
+        edges: vec![
+            edge(x0, y0, 40.0, 3.0, 0.5),
+            edge(x1, y0, 40.0, 3.0, 0.5),
+            edge(x1, y1, 40.0, 3.0, 0.5),
+            edge(x0, y1, 40.0, 3.0, 0.5),
+        ],
+    };
+    let mut p = Project::new("inside");
+    p.parts.push(rect(0.0, 0.0, 12.0, 8.0));
+    p.parts.push(rect(4.0, 2.0, 7.0, 5.0));
+    let geos = generate_project(&p);
+    assert!(
+        geos[1].error.is_none() && geos[1].faces.is_empty(),
+        "{:?}",
+        geos[1].faces.len()
+    );
+    assert!(!geos[0].faces.is_empty());
+    assert!(
+        geos[0]
+            .warnings
+            .iter()
+            .all(|w| w.kind != WarningKind::Covered)
+    );
+    assert_eq!(
+        geos[1].warnings.iter().map(|w| w.kind).collect::<Vec<_>>(),
+        [WarningKind::Covered]
+    );
+}
+
 /// A 10 × 8 m hip roof whose front eave is entered as two walls in line,
 /// the second with its own pitch and pitch break.
 fn split_front(second_pitch: f64, second_eave: f64, break_on_second: bool) -> Project {
@@ -213,4 +248,100 @@ fn merged_walls_name_the_edges_as_entered() {
     assert_eq!(e[3].pitch_deg, 25.0);
     assert!(geos[0].faces.iter().all(|f| f.pitch_deg == 40.0));
     assert!(geos[0].faces.iter().any(|f| f.edge == 4));
+}
+
+/// A 12 × 8 m gable roof, 40°, eave 3 m, no overhang.
+fn plain_gable() -> Project {
+    let mut p = Project::new("gable");
+    p.parts.push(RoofPart {
+        name: "A".into(),
+        edges: vec![
+            edge(0.0, 0.0, 40.0, 3.0, 0.0),
+            edge(12.0, 0.0, 90.0, 3.0, 0.0),
+            edge(12.0, 8.0, 40.0, 3.0, 0.0),
+            edge(0.0, 8.0, 90.0, 3.0, 0.0),
+        ],
+    });
+    p
+}
+
+#[test]
+fn a_window_larger_than_its_face_is_reported() {
+    // MATH-001: a 10 × 9 m window on a face of 12 × 5.22 m. DACAD's
+    // booking (width × height) is kept, so the face goes negative and the
+    // roof total drops; the roofer must be told.
+    let mut p = plain_gable();
+    p.windows.push(tectora_core::model::RoofWindow {
+        x: 1.0,
+        y: 0.0,
+        width: 10.0,
+        height: 9.0,
+    });
+    let geos = generate_project(&p);
+    assert!(geos[0].faces.iter().any(|f| f.area < 0.0));
+    let w: Vec<_> = geos[0]
+        .warnings
+        .iter()
+        .filter(|w| w.kind == WarningKind::CutExceedsFace)
+        .collect();
+    assert_eq!(w.len(), 1, "{:?}", geos[0].warnings);
+    assert_eq!(w[0].edges, [0]);
+    let missing: f64 = geos[0].faces.iter().map(|f| (-f.area).max(0.0)).sum();
+    assert!(
+        (w[0].value - missing).abs() < 1e-9 && missing > 20.0,
+        "{}",
+        w[0].value
+    );
+}
+
+#[test]
+fn a_window_that_fits_its_face_is_no_warning() {
+    let mut p = plain_gable();
+    p.windows.push(tectora_core::model::RoofWindow {
+        x: 2.0,
+        y: 0.0,
+        width: 1.2,
+        height: 1.4,
+    });
+    assert_eq!(kinds(&p), []);
+}
+
+#[test]
+fn joined_rows_whose_cut_exceeds_a_face_are_reported() {
+    // MATH-002: 8 × 2 hip roofs 10 × 8 m on a 9 × 7 m grid, each
+    // overlapping its neighbours by 1 m. The join's cut grows along the
+    // first row until a face's area is negative (as booked from the
+    // Modellverschnitt; whether DACAD books the same needs a DACAD run).
+    let mut p = Project::new("rows");
+    for row in 0..2 {
+        for col in 0..8 {
+            let (x0, y0) = (col as f64 * 9.0, row as f64 * 7.0);
+            p.parts.push(RoofPart {
+                name: format!("R{row}{col}"),
+                edges: vec![
+                    edge(x0, y0, 35.0, 3.0, 0.5),
+                    edge(x0 + 10.0, y0, 35.0, 3.0, 0.5),
+                    edge(x0 + 10.0, y0 + 8.0, 35.0, 3.0, 0.5),
+                    edge(x0, y0 + 8.0, 35.0, 3.0, 0.5),
+                ],
+            });
+        }
+    }
+    let geos = generate_project(&p);
+    let negative = |g: &tectora_core::roof::RoofGeometry| {
+        g.faces
+            .iter()
+            .any(|f| f.area < -tectora_core::check::OVERCUT_TOL)
+    };
+    assert!(
+        geos.iter().any(negative),
+        "the case still has a negative face"
+    );
+    for (i, g) in geos.iter().enumerate() {
+        let flagged = g
+            .warnings
+            .iter()
+            .any(|w| w.kind == WarningKind::CutExceedsFace);
+        assert_eq!(flagged, negative(g), "part {i}: {:?}", g.warnings);
+    }
 }

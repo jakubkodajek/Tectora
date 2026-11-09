@@ -18,3 +18,7 @@ Entries before 2026-11-07 were recorded retroactively from the git history.
 - 2026-11-03: Old Python app removed from the repository - Tectora 2 replaces it fully (6003380)
 - 2026-11-07: `AGENTS.md` is the canonical agent instruction file, imported by `CLAUDE.md`; agents and skills live in `.claude/` and are generated for Codex and Copilot - one source for every AI tool [ADR-0001]
 - 2026-11-07: Feature work runs through the planner, test-engineer, implementer, reviewers, verifier and docs-keeper agents (`tectora-feature`) - separation of duties and evidence before merge (`docs/agent-workflow.md`)
+- 2026-11-08: A building's height is the eave height of its walls; no separate base or terrain level - DACAD's RD2 has none (the `W` record is plan x/y only, every height sits in the wall's `D`/`K` records), so "Building height" / MCP `set_part_height` only writes the walls' heights (feat/building-height)
+- 2026-11-08: Joined roofs keep the DACAD join math; the plan only shows it (dashed lines under a higher roof, "joined to" from the core's own record) - Jakub chose "Zpřehlednit spojení" over changing the overlap calculation
+- 2026-11-08: Deletes go to `<library>/.trash` for 30 days and every MCP write needs a non-empty summary - a prompt injection must not destroy jobs silently (ARCH-004/005)
+- 2026-11-08: Saves are compare-and-swap under `.activity/<id>.lock`; reverts merge the undo onto the current file and refuse on conflicts - neither the user's nor the AI's edits may be dropped silently (ERR-001, autosave race)

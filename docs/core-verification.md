@@ -176,6 +176,7 @@ roof against its walls and the app and MCP show a warning (`RoofGeometry::warnin
 | `outside_outline` | largest distance of a face corner outside the eave outline (each wall's strip out to its overhang, mitred; for joined roofs every building's) | 5 cm |
 | `overlapping_faces` | plan area where two faces pass through each other or coincide; a face lying above another one (an overhang over a lower roof) is sound | 0.25 m² |
 | `area_mismatch` | relative difference of the reported face areas (plus deductions) to the faces' own 3D polygons; single roofs only, joined roofs book their pieces by DACAD's own rules | 1 % |
+| `covered` | several roofs are joined and a part with roofed walls is left with no face (another part covers it, e.g. a building drawn inside another); the result is unchanged | — |
 | `merged_walls` | the core joined two walls in line whose pitch or pitch breaks differ (finding 7); `edges` = the wall whose definition is used, then the one whose pitch or breaks are ignored. Comes from the core run itself (`dcore::state::Notice`), not from the geometry | — |
 
 Tolerances were set on 2 779 roofs: every DACAD-calculated `.DAD` in the

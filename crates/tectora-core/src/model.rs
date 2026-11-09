@@ -249,7 +249,7 @@ impl Project {
             .map(|(_, m)| *m)
             .unwrap_or(match p.code {
                 "too_few_edges" => "needs at least 3 edges",
-                "end_nan" => "end point is not a number",
+                "end_nan" => "end point is not a number or out of range",
                 "bad_corners" => "needs 3 or more finite corners",
                 "bad_size" => "needs a finite position and a positive size",
                 other => other,
@@ -290,6 +290,64 @@ impl Project {
     /// and the geometry kernel can spend minutes on them or panic, so
     /// callers check before calculating or saving input from outside.
     pub fn check_limits(&self) -> Result<(), String> {
+        self.check_input().map_err(|e| e.message)
+    }
+
+    /// [`Project::check_limits`] with a code for the app: `too_many` when
+    /// the design has more parts, walls or objects than [`MAX_PARTS`] and
+    /// the limits beside it allow, `out_of_range` for a number out of range.
+    pub fn check_input(&self) -> Result<(), InputError> {
+        self.check_counts().map_err(|message| InputError {
+            code: "too_many",
+            message,
+        })?;
+        self.check_values().map_err(|message| InputError {
+            code: "out_of_range",
+            message,
+        })
+    }
+
+    /// The counts limits (ARCH-002): the core's time grows about with the
+    /// square of the parts and walls, so a file with thousands of them
+    /// would block the library, the editor or the MCP server for hours.
+    fn check_counts(&self) -> Result<(), String> {
+        let over = |what: &str, n: usize, max: usize| {
+            (n > max).then(|| format!("too many {what}: {n} (at most {max})"))
+        };
+        let walls: usize = self.parts.iter().map(|p| p.edges.len()).sum();
+        let mut checks = vec![
+            over("parts", self.parts.len(), MAX_PARTS),
+            over("walls in all parts", walls, MAX_WALLS),
+            over("dormers", self.dormers.len(), MAX_OBJECTS),
+            over("chimneys", self.chimneys.len(), MAX_OBJECTS),
+            over("roof windows", self.windows.len(), MAX_OBJECTS),
+            over("roof openings", self.roof_openings.len(), MAX_OBJECTS),
+            over("hand-drawn lines", self.manual_lines.len(), MAX_OBJECTS),
+            over("hand-drawn faces", self.manual_faces.len(), MAX_OBJECTS),
+        ];
+        for (i, part) in self.parts.iter().enumerate() {
+            checks.push(over(
+                &format!("walls in part {}", i + 1),
+                part.edges.len(),
+                MAX_PART_WALLS,
+            ));
+        }
+        let corners = self
+            .chimneys
+            .iter()
+            .chain(&self.roof_openings)
+            .map(|c| c.corners.len())
+            .chain(self.manual_faces.iter().map(|f| f.points.len()))
+            .max()
+            .unwrap_or(0);
+        checks.push(over("corners of one object", corners, MAX_PART_WALLS));
+        match checks.into_iter().flatten().next() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    fn check_values(&self) -> Result<(), String> {
         let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
         // The stored result is computed output with a timestamp, not input.
         if let Some(obj) = value.as_object_mut() {
@@ -307,6 +365,28 @@ impl Project {
 /// Largest absolute number accepted anywhere in a design: 100 km in
 /// metres, far above any building and far below where f64 geometry breaks.
 pub const MAX_ABS_VALUE: f64 = 1.0e5;
+
+/// Most parts (buildings, wings) a design may have. Generous: a large
+/// TERRAN job has a few dozen; 200 still calculate in a few seconds.
+pub const MAX_PARTS: usize = 200;
+/// Most walls of one part (a round roof uses up to 30 per arc).
+pub const MAX_PART_WALLS: usize = 500;
+/// Most walls of all parts together.
+pub const MAX_WALLS: usize = 2000;
+/// Most dormers, chimneys, windows, openings, hand-drawn lines or faces,
+/// each.
+pub const MAX_OBJECTS: usize = 500;
+
+/// Why a design is refused before it is calculated (see
+/// [`Project::check_input`]).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct InputError {
+    /// `too_many` or `out_of_range`.
+    pub code: &'static str,
+    /// English, for the CLI, the MCP server and the details view.
+    pub message: String,
+}
 
 fn first_out_of_range(v: &serde_json::Value, path: &mut String) -> Option<(String, f64)> {
     use serde_json::Value;
@@ -569,12 +649,15 @@ impl EdgeDef {
     /// What makes this edge unusable for the engine (see [`Project::validate`]).
     /// Codes and English messages of [`EdgeDef::problems`].
     pub const PROBLEMS: [(&'static str, &'static str); 6] = [
-        ("start_nan", "start point is not a number"),
+        ("start_nan", "start point is not a number or out of range"),
         ("pitch_range", "pitch must be between 0° and 180°"),
-        ("eave_nan", "eave height is not a number"),
+        ("eave_nan", "eave height is not a number or out of range"),
         ("overhang_negative", "overhang must be zero or positive"),
         ("direction_nan", "direction is not a number"),
-        ("stacked_nan", "half-hip or pitch break is not a number"),
+        (
+            "stacked_nan",
+            "half-hip or pitch break is not a number or out of range",
+        ),
     ];
 
     /// What keeps the roof engine from using this edge, as
@@ -717,6 +800,33 @@ mod tests {
         let mut p = crate::examples::find("gable").unwrap().project();
         assert!(p.set_status(JobStatus::Offer));
         assert!(p.check_limits().is_ok());
+    }
+
+    #[test]
+    fn check_limits_refuses_more_parts_walls_or_objects_than_a_real_job_has() {
+        // ARCH-002: 1000 parts took 77 s per calculation and a bundle-sized
+        // job hung the library and the MCP server.
+        let gable = crate::examples::find("gable").unwrap().project();
+        let mut p = gable.clone();
+        let part = p.parts[0].clone();
+        p.parts = vec![part.clone(); 200];
+        assert!(p.check_limits().is_ok(), "200 buildings still pass");
+        p.parts.push(part.clone());
+        let err = p.check_limits().unwrap_err();
+        assert!(err.contains("parts") && err.contains("200"), "{err}");
+
+        let mut p = gable.clone();
+        let e = p.parts[0].edges[0].clone();
+        p.parts[0].edges = vec![e.clone(); 501];
+        assert!(p.check_limits().unwrap_err().contains("walls"));
+
+        let mut p = gable.clone();
+        let c = Chimney {
+            corners: Vec::new(),
+            height: 0.0,
+        };
+        p.chimneys = vec![c; 501];
+        assert!(p.check_limits().unwrap_err().contains("chimneys"));
     }
 
     #[test]

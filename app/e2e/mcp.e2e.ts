@@ -164,7 +164,7 @@ test.describe("live AI changes", () => {
     const id = await createExample("l-shape", "Elko");
     await createExample("gable", "Jiná");
     await app.open({ prefs: { followAi: false, layout: "split", libraryView: "list" } });
-    await mcp.call("update_settings", { follow_ai: false });
+    await mcp.call("update_settings", { follow_ai: false, summary: "Follow mode off as the user asked" });
     await mcp.call("update_edges", { id, changes: [{ index: 0, overhang: 0.7 }], summary: "Přesah dle výkresu" });
     const row = page.getByRole("row").filter({ hasText: "Elko" });
     await expect(row.locator(".ai-tag")).toContainText("Claude");
@@ -174,9 +174,26 @@ test.describe("live AI changes", () => {
     await expect(page.locator("header .ai-btn")).toContainText("Claude");
   });
 
+  test("the editor's AI pill speaks the user's language and lights up only for the open job", async ({ app, page, mcp }) => {
+    // UX-002: the MCP server sends a code and a name, the app the sentence.
+    const id = await createExample("gable", "Moje");
+    const other = await createExample("hip", "Jiná");
+    await app.open({ prefs: { followAi: false } });
+    await mcp.call("update_settings", { follow_ai: false, summary: "Follow mode off as the user asked" });
+    await app.openJob("Moje");
+    const pill = page.locator("header .ai-pill");
+    await mcp.call("calc", { id });
+    await expect(pill).toContainText(cs("ai.live.calculating", { name: "Moje" }));
+    await expect(pill).toHaveClass(/\bactive\b/);
+    await mcp.call("get_project", { id: other });
+    await expect(pill).toContainText(cs("ai.elsewhere", { name: "Jiná" }));
+    await expect(pill).not.toHaveClass(/\bactive\b/);
+    await expect(pill).not.toContainText("Reading");
+  });
+
   test("a new job created by the AI shows up in the library", async ({ app, page, mcp }) => {
     await app.open({ prefs: { followAi: false, layout: "split", libraryView: "list" } });
-    await mcp.call("update_settings", { follow_ai: false });
+    await mcp.call("update_settings", { follow_ai: false, summary: "Follow mode off as the user asked" });
     await mcp.call("create_standard_roof", { name: "Od AI", type: "hip", length: 11, width: 9, pitch_deg: 30, summary: "Valba z výkresu" });
     await expect(page.getByRole("row").filter({ hasText: "Od AI" })).toBeVisible();
   });
@@ -263,6 +280,24 @@ test.describe("MCP parity", () => {
       await setField(def.getByLabel(cs("edge.eaveHeight")), 3.4);
       await setField(def.getByLabel(cs("edge.overhang")), 0.65);
     }, () => mcp.call("update_edges", { id: ids[1], changes: [{ index: 1, pitch_deg: 28, eave_height: 3.4, overhang: 0.65 }], summary: "x" }));
+  });
+
+  test("building height", async ({ app, page, mcp }) => {
+    const ids = await twin("hip");
+    await parity(app, ids, async () => {
+      await selectWall(page, 2);
+      const def = bar(page, "def.title");
+      await def.getByRole("button", { name: cs("edge.addBreak") }).click();
+      await app.saved();
+      await setField(def.getByLabel(cs("edge.buildingHeight")), "4,25");
+      // The height goes through a core command first; "saved" may still
+      // show the previous save, so wait for the height in the file.
+      await expect.poll(async () => (await loadProject(ids[0])).parts[0].edges[0].eave_height, { timeout: 8000 }).toBe(4.25);
+    }, async () => {
+      const p = await loadProject(ids[0]);
+      await mcp.call("update_edges", { id: ids[1], changes: [{ index: 2, breaks: p.parts[0].edges[2].breaks.map((b: any) => ({ ...b, height: +(b.height - 4.25 + 3).toFixed(3) })) }], summary: "x" });
+      await mcp.call("set_part_height", { id: ids[1], part: 0, eave_height: 4.25, summary: "x" });
+    });
   });
 
   test("eave to gable, half-hip, clad gable", async ({ app, page, mcp }) => {
@@ -391,8 +426,8 @@ test.describe("MCP parity", () => {
       await tool(page, "tool.window").click();
       await clickPlan(page, 3, 1.5);
       const wb = bar(page, "opening.window");
-      await setField(wb.getByRole("spinbutton", { name: /^X\b/ }), 3);
-      await setField(wb.getByRole("spinbutton", { name: /^Y\b/ }), 1.5);
+      await setField(wb.getByRole("textbox", { name: /^X\b/ }), 3);
+      await setField(wb.getByRole("textbox", { name: /^Y\b/ }), 1.5);
     }, () =>
       mcp.call("set_openings", {
         id: ids[1],
@@ -409,8 +444,8 @@ test.describe("MCP parity", () => {
       await tool(page, "tool.dormer").click();
       await clickPlan(page, 4, 1);
       const db = bar(page, "dormer.title");
-      await setField(db.getByRole("spinbutton", { name: /^X\b/ }), 4);
-      await setField(db.getByRole("spinbutton", { name: /^Y\b/ }), 1);
+      await setField(db.getByRole("textbox", { name: /^X\b/ }), 4);
+      await setField(db.getByRole("textbox", { name: /^Y\b/ }), 1);
     }, async () => {
       const p = await loadProject(ids[0]);
       const ui = p.dormers[0];
@@ -491,6 +526,7 @@ test.describe("MCP parity", () => {
       "move / rotate / mirror / copy part": "transform_part",
       "delete part, dormer, opening, line, face": "delete_items",
       "clear the canvas": "clear_roof",
+      "building height": "set_part_height",
       dormer: "add_dormer",
       "edit dormer": "update_dormer",
       "chimney, window, opening": "set_openings",
@@ -525,7 +561,8 @@ test.describe("MCP parity", () => {
       ["update_edges", { id, changes: [{ index: 0, pitch_deg: 30 }] }],
       ["edit_walls", { id, operations: [{ op: "move_point", index: 0, x: 1e308, y: 0 }], summary: "x" }],
       ["get_project", { id: "../../etc/passwd" }],
-      ["attach_file", { id, path: "/nonexistent/file.pdf" }],
+      ["attach_file", { id, path: "/nonexistent/file.pdf", summary: "x" }],
+      ["attach_file", { id, path: "/dev/stdin", summary: "x" }],
     ] as const) {
       const r = await (mcp as Mcp).tryCall(tool, args as Record<string, unknown>);
       expect(r.isError, `${tool} ${JSON.stringify(args)}`).toBe(true);

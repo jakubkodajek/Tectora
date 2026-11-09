@@ -7,8 +7,12 @@
   import { codeKind, lineLength, type ManualSel } from "./manual";
   import type { Ghost } from "./changes";
   import type { ItemRef, PlanTarget } from "./items";
-  import { fitScale, gridValues } from "./grid";
+  import { fitScale, gridStep as gridStepFor, gridValues } from "./grid";
   import { faceTags } from "./facelabels";
+  import { hostHeightAt } from "./dormers";
+  import { planeOf } from "./scene3d";
+  import { placeLabels, rotatedBox, underHigherRoof } from "./planlabels";
+  import { coveredPieces } from "./planjoin";
   import { numberLocale } from "./i18n.svelte";
 
   let {
@@ -131,11 +135,27 @@
   };
 
   // Pitch and area of every calculated face, written at its centre.
-  const tags = $derived(result ? result.parts.flatMap((rp) => faceTags(rp.geometry.faces)) : []);
+  // Joined roofs: stretches of a line under a higher roof are drawn dashed.
+  const linePieces = $derived(result ? coveredPieces(result) : []);
+  // A face under another building's higher roof gets no label: it would be
+  // written over the roof that covers it (UX-012).
+  const tags = $derived.by(() => {
+    if (!result) return [];
+    const res = result;
+    const many = res.parts.length > 1;
+    return res.parts.flatMap((rp) =>
+      rp.geometry.faces.flatMap((f) =>
+        faceTags([f]).filter((tag) => !many || !underHigherRoof(planeOf(f.polygon)?.({ x: tag.x, y: tag.y }) ?? null, hostHeightAt(res, { x: tag.x, y: tag.y }))),
+      ),
+    );
+  });
   const pitchText = (v: number) =>
     `${new Intl.NumberFormat(numberLocale(), { maximumFractionDigits: 2 }).format(v)}°`;
   const areaText = (v: number) =>
     `${new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v)} m²`;
+  /** A length in the plan, 2 decimals in the UI language (decimal comma in cs, sk, de). */
+  const lenText = (v: number) =>
+    new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }).format(v);
   /** Rough width of a label in px at the given font size. */
   const textPx = (s: string, size: number) => s.length * size * 0.62 + 8;
 
@@ -144,8 +164,8 @@
   const wx = (px: number) => (px - width / 2) / scale + center.x;
   const wy = (py: number) => -(py - height / 2) / scale + center.y;
 
-  /** Spacing of the grid lines drawn at this zoom, m. */
-  const gridStep = () => (scale * GRID < 8 ? GRID * 10 : scale * GRID < 16 ? GRID * 2 : GRID);
+  /** Spacing of the grid lines drawn at this zoom, m (never denser than 8 px). */
+  const gridStep = () => gridStepFor(scale, GRID);
 
   // Magnet radius, px [no source: a few pixels, as drawing programs use];
   // at most 40 % of a grid cell, so 5 cm steps stay reachable between lines.
@@ -451,11 +471,46 @@
     // Outward normal in world space, then flipped to screen space (y down).
     const nx = (side * (b.y - a.y)) / len;
     const ny = (-side * -(b.x - a.x)) / len;
-    const label = `${i + 1}  ${edgeLength(part, i).toFixed(2)}`;
+    const label = `${i + 1}  ${lenText(edgeLength(part, i))}`;
     const halfW = label.length * 3.3;
     const off = 9 + Math.abs(nx) * halfW + Math.abs(ny) * 4;
-    return { x: (sx(a.x) + sx(b.x)) / 2 + nx * off, y: (sy(a.y) + sy(b.y)) / 2 + ny * off };
+    return { x: (sx(a.x) + sx(b.x)) / 2 + nx * off, y: (sy(a.y) + sy(b.y)) / 2 + ny * off, w: halfW * 2 + 4 };
   }
+
+  /** How a face label is written: pitch and area, pitch only, or not at all (too small). */
+  function tagMode(tag: (typeof tags)[number]): "full" | "pitch" | null {
+    const along = tag.along * scale;
+    const across = tag.across * scale;
+    if (!(along > textPx(pitchText(tag.pitch_deg), 16) && across > 20)) return null;
+    return along > textPx(areaText(tag.area), 12.5) && across > 44 ? "full" : "pitch";
+  }
+
+  /**
+   * Which wall dimensions and face labels are drawn: none may overlap one
+   * drawn before it (wall lengths first, part by part, then the faces), so
+   * buildings drawn into each other keep a readable plan (UX-012).
+   */
+  const labels = $derived.by(() => {
+    const dims = project.parts.map((part, pi) =>
+      part.edges.map((_, i) => {
+        if (!showDims || !(scale * edgeLength(pi, i) > 46)) return null;
+        const p = dimPos(pi, i);
+        return { ...p, box: rotatedBox(p.x, p.y, p.w, 13, 0) };
+      }),
+    );
+    const modes = showDims && !faceLabels.length ? tags.map(tagMode) : tags.map(() => null);
+    const tagBoxes = tags.map((tag, k) => {
+      const m = modes[k];
+      if (!m) return null;
+      const w = Math.max(textPx(pitchText(tag.pitch_deg), 16), m === "full" ? textPx(areaText(tag.area), 12.5) : 0);
+      return rotatedBox(sx(tag.x), sy(tag.y), w, m === "full" ? 36 : 20, -tag.angle_deg);
+    });
+    const keep = placeLabels([...dims.flat().map((d) => d?.box ?? null), ...tagBoxes]);
+    let k = 0;
+    const dimShown = dims.map((row) => row.map((d) => (keep[k++] ? d : null)));
+    const tagShown = tags.map((_, j) => (keep[k + j] ? modes[j] : null));
+    return { dims: dimShown, tags: tagShown };
+  });
 </script>
 
 <div class="wrap" bind:clientWidth={width} bind:clientHeight={height}>
@@ -493,22 +548,23 @@
       />
     {/each}
 
-    {#if result}
-      {#each result.parts as rp}
-        {#each rp.geometry.lines as l}
-          {#if l.kind !== "eave"}
+    {#each linePieces as lines}
+      {#each lines as l}
+        {#if l.kind !== "eave"}
+          {#each l.pieces as piece}
             <line
-              x1={sx(l.a[0])}
-              y1={sy(l.a[1])}
-              x2={sx(l.b[0])}
-              y2={sy(l.b[1])}
+              x1={sx(piece.a[0])}
+              y1={sy(piece.a[1])}
+              x2={sx(piece.b[0])}
+              y2={sy(piece.b[1])}
               stroke={lineColor[l.kind]}
               class="roofline"
+              class:covered={piece.hidden}
             />
-          {/if}
-        {/each}
+          {/each}
+        {/if}
       {/each}
-    {/if}
+    {/each}
 
     {#if ghost}
       <g class="ghost" aria-hidden="true">
@@ -526,18 +582,15 @@
       <line class="mark-line" x1={sx(mark.line[0][0])} y1={sy(mark.line[0][1])} x2={sx(mark.line[1][0])} y2={sy(mark.line[1][1])} />
     {/if}
     {#if showDims && !faceLabels.length}
-      {#each tags as tag}
-        {@const pitch = pitchText(tag.pitch_deg)}
-        {@const area = areaText(tag.area)}
-        {@const along = tag.along * scale}
-        {@const across = tag.across * scale}
-        {#if along > textPx(pitch, 16) && across > 20}
+      {#each tags as tag, k}
+        {@const mode = labels.tags[k]}
+        {#if mode}
           <g class="face-tag" transform="translate({sx(tag.x)} {sy(tag.y)}) rotate({-tag.angle_deg})">
-            {#if along > textPx(area, 12.5) && across > 44}
-              <text class="pitch" y="-8">{pitch}</text>
-              <text class="area" y="9">{area}</text>
+            {#if mode === "full"}
+              <text class="pitch" y="-8">{pitchText(tag.pitch_deg)}</text>
+              <text class="area" y="9">{areaText(tag.area)}</text>
             {:else}
-              <text class="pitch">{pitch}</text>
+              <text class="pitch">{pitchText(tag.pitch_deg)}</text>
             {/if}
           </g>
         {/if}
@@ -556,6 +609,9 @@
           {#if changed}
             <line class="glow" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)} />
           {/if}
+          {#if sel}
+            <line class="sel-halo" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)} />
+          {/if}
           <line class="hit" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)}
             role="button" tabindex="-1" aria-label={t("plan.edge", { n: i + 1 })}
             onpointerdown={(ev) => {
@@ -566,9 +622,9 @@
             }}
             ondblclick={(ev) => edgeDblClick(ev, pi, i)} />
           <line class="wall" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)} />
-          {#if showDims && scale * edgeLength(pi, i) > 46}
-            {@const lp = dimPos(pi, i)}
-            <text x={lp.x} y={lp.y} class="dim edge-dim"><tspan class="no">{i + 1}</tspan>  {edgeLength(pi, i).toFixed(2)}</text>
+          {#if labels.dims[pi]?.[i]}
+            {@const lp = labels.dims[pi][i]!}
+            <text x={lp.x} y={lp.y} class="dim edge-dim"><tspan class="no">{i + 1}</tspan>  {lenText(edgeLength(pi, i))}</text>
           {/if}
         </g>
       {/each}
@@ -626,6 +682,10 @@
         d={"M" + f.points.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("manual.faceN", { n: fi + 1 })}
         onpointerdown={(ev) => pressItem(ev, { kind: "face", index: fi })} />
+      {#if showDims && f.points.length >= 3}
+        <!-- Says what the outline is, so it is not taken for a building without a roof. -->
+        <text class="manual-tag" x={sx(f.points.reduce((a, p) => a + p.x, 0) / f.points.length)} y={sy(f.points.reduce((a, p) => a + p.y, 0) / f.points.length)}>{t("manual.faceN", { n: fi + 1 })} · {pitchText(f.pitch_deg)}</text>
+      {/if}
     {/each}
     {#each project.manual_lines ?? [] as l, li}
       {@const sel = manualSel?.kind === "line" && manualSel.index === li}
@@ -636,7 +696,7 @@
         <line class="stroke" class:measure={!codeKind[l.code]} x1={sx(l.a[0])} y1={sy(l.a[1])} x2={sx(l.b[0])} y2={sy(l.b[1])}
           stroke={codeKind[l.code] ? lineColor[codeKind[l.code]] : undefined} />
         {#if showDims}
-          <text class="dim" x={(sx(l.a[0]) + sx(l.b[0])) / 2} y={(sy(l.a[1]) + sy(l.b[1])) / 2} dy="-6">{l.label ? `${l.label} ` : ""}{lineLength(l).toFixed(2)}</text>
+          <text class="dim" x={(sx(l.a[0]) + sx(l.b[0])) / 2} y={(sy(l.a[1]) + sy(l.b[1])) / 2} dy="-6">{l.label ? `${l.label} ` : ""}{lenText(lineLength(l))}</text>
         {/if}
       </g>
     {/each}
@@ -670,7 +730,7 @@
           {@const last = drawing[drawing.length - 1]}
           {@const d = Math.hypot(cursorWorld.x - last.x, cursorWorld.y - last.y)}
           {#if d > 0.01}
-            <text class="dim draft-dim" x={(sx(last.x) + sx(cursorWorld.x)) / 2} y={(sy(last.y) + sy(cursorWorld.y)) / 2} dy="-8">{d.toFixed(2)}</text>
+            <text class="dim draft-dim" x={(sx(last.x) + sx(cursorWorld.x)) / 2} y={(sy(last.y) + sy(cursorWorld.y)) / 2} dy="-8">{lenText(d)}</text>
           {/if}
         {/if}
       {/if}
@@ -795,16 +855,29 @@
     dominant-baseline: middle;
     pointer-events: none;
   }
+  /* Neutral, like an annotation: brick red is the building fill and the
+     selection, so a red outline read as a building whose roof failed. */
   .manual-face {
-    fill: color-mix(in srgb, var(--accent) 10%, transparent);
-    stroke: var(--accent);
+    fill: color-mix(in srgb, var(--text-3) 12%, transparent);
+    stroke: var(--text-2);
     stroke-width: 1.2;
     stroke-dasharray: 2 3;
     cursor: pointer;
   }
   .manual-face.sel {
+    stroke: var(--accent);
     stroke-width: 2.5;
     stroke-dasharray: none;
+  }
+  .manual-tag {
+    font-size: 11.5px;
+    fill: var(--text-2);
+    text-anchor: middle;
+    dominant-baseline: middle;
+    pointer-events: none;
+    paint-order: stroke;
+    stroke: var(--surface);
+    stroke-width: 3px;
   }
   .manual-line .stroke {
     stroke-width: 2.2;
@@ -827,6 +900,13 @@
   .roofline {
     stroke-width: 1.8;
     stroke-linecap: round;
+  }
+  /* Under a higher roof (joined buildings): still there, but not on top. */
+  .roofline.covered {
+    stroke-width: 1.4;
+    stroke-dasharray: 4 4;
+    stroke-linecap: butt;
+    opacity: 0.55;
   }
   .edge .wall {
     stroke: var(--line-eave);
@@ -920,10 +1000,24 @@
     font-weight: 700;
     fill: var(--text);
   }
-  .edge.sel .wall {
+  /* The selected wall must not look like an eave (also blue): a wide
+     selection halo with the wall drawn in the text colour on top, and its
+     number and length in bold (UX-007). */
+  .edge .sel-halo {
     stroke: var(--focus);
-    stroke-width: 5;
+    stroke-width: 13;
+    stroke-linecap: round;
+    opacity: 0.3;
+    pointer-events: none;
+  }
+  .edge.sel .wall {
+    stroke: var(--text);
+    stroke-width: 3.5;
     stroke-dasharray: none;
+  }
+  .edge.sel .edge-dim {
+    font-weight: 700;
+    fill: var(--text);
   }
   svg :global(*:focus) {
     outline: none;

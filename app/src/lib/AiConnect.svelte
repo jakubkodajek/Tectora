@@ -8,10 +8,12 @@
   import { api } from "./api";
   import { describeError } from "./errors";
   import { t } from "./i18n.svelte";
+  import { tabIds, tablist } from "./tabs";
   import { prefs, savePrefs, updateSettings } from "./settings.svelte";
   import type { AiAssistant, AiAssistantId } from "./types";
 
   let { onclose }: { onclose: () => void } = $props();
+  const ids = tabIds("connect");
 
   type Other = "claudeCode" | "json" | "chatgpt";
   let other = $state<Other>("claudeCode");
@@ -112,11 +114,12 @@
   {/if}
 
   <h4>{t("conn.other")}</h4>
-  <div class="tabs" role="tablist">
+  <div class="tabs" role="tablist" use:tablist>
     {#each [["claudeCode", "Claude Code"], ["json", t("conn.otherJson")], ["chatgpt", "ChatGPT"]] as [id, label]}
-      <button role="tab" aria-selected={other === id} class:on={other === id} onclick={() => (other = id as Other)}>{label}</button>
+      <button role="tab" id={ids.tab(id)} aria-controls={ids.panel} aria-selected={other === id} class:on={other === id} onclick={() => (other = id as Other)}>{label}</button>
     {/each}
   </div>
+  <div role="tabpanel" id={ids.panel} aria-labelledby={ids.tab(other)}>
   {#if other === "chatgpt"}
     <p class="note">{t("conn.chatgpt")}</p>
   {:else}
@@ -126,6 +129,7 @@
       <button class="btn sm" onclick={copy}><Icon name={copied ? "check" : "copy"} size={14} />{copied ? t("conn.copied") : t("conn.copy")}</button>
     </div>
   {/if}
+  </div>
 
   <h4>{t("conn.howTitle")}</h4>
   <ol class="how">
@@ -255,8 +259,8 @@
     padding: 12px 14px;
     padding-right: 110px;
     border-radius: 8px;
-    background: #12151d;
-    color: #e6e9f0;
+    background: var(--code-bg);
+    color: var(--code-text);
     font: 12.5px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     white-space: pre-wrap;
     word-break: break-all;

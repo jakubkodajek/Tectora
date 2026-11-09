@@ -17,7 +17,7 @@ use tectora_core::model::GABLE_PITCH_DEG;
 use tectora_core::quantities::{area_by_pitch, dacad_line_totals, roof_totals};
 use tectora_core::roof::LineKind;
 use tectora_core::settings::Settings;
-use tectora_core::store::{LiveStatus, Store, now_ms};
+use tectora_core::store::{CheckedSave, LiveStatus, Store, StoreError, now_ms};
 use tectora_core::{
     Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow,
 };
@@ -106,7 +106,7 @@ fn describe_part(part: &RoofPart) -> Value {
 
 /// A plausibility warning of a calculated roof (`tectora_core::check`),
 /// with what it means for whoever reads the result.
-fn warning(w: &tectora_core::check::RoofWarning) -> Value {
+pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
     use tectora_core::check::WarningKind;
     let message = match w.kind {
         WarningKind::OutsideOutline => format!(
@@ -121,6 +121,28 @@ fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             "reported area differs from the roof faces by {:.1} %; check the area",
             w.value * 100.0
         ),
+        WarningKind::Covered => "no face of this part's roof is left after joining it with the other parts: another part covers it (a building drawn inside or on top of another); move or delete one of them".to_string(),
+        WarningKind::CutExceedsFace => format!(
+            "more is deducted from a roof face than the face has ({:.2} m2 below zero), so the roof area is too small: usually a roof window larger than its face (cm typed as m, width and height swapped) or joined buildings; check the windows and the joins",
+            w.value
+        ),
+        WarningKind::DormerOffRoof => format!(
+            "dormer {} (0-based) sits on no roof face, so it is left out of the result (no area, lines or material); move it onto the roof or delete it",
+            w.dormer.unwrap_or(0)
+        ),
+        WarningKind::WindowOffRoof => format!(
+            "roof window {} (0-based) sits on no roof face, so nothing is deducted for it and it is not in the result; move it onto the roof or delete it",
+            w.item.unwrap_or(0)
+        ),
+        WarningKind::ChimneyOffRoof => format!(
+            "chimney {} (0-based) lies on no roof face, so it cuts nothing and is not in the result; move it onto the roof or delete it",
+            w.item.unwrap_or(0)
+        ),
+        WarningKind::OpeningOffRoof => format!(
+            "roof opening {} (0-based) lies on no roof face, so it cuts nothing and is not in the result; move it onto the roof or delete it",
+            w.item.unwrap_or(0)
+        ),
+        WarningKind::NotCalculatedByCore => "this roof was calculated by Tectora's fallback engine, not by the standard calculation, so its figures may differ from the standard result; tell the user to check the roof".to_string(),
         WarningKind::MergedWalls => {
             let (kept, ignored) = (w.edges.first(), w.edges.get(1));
             format!(
@@ -136,7 +158,40 @@ fn warning(w: &tectora_core::check::RoofWarning) -> Value {
     if !w.edges.is_empty() {
         v["edges"] = json!(w.edges);
     }
+    if let Some(d) = w.dormer {
+        v["dormer"] = json!(d);
+    }
+    if let Some(i) = w.item {
+        v["item"] = json!(i);
+    }
     v
+}
+
+/// Why the calculation gave no roof for a part, in English and without
+/// the calculation's own (German) text: the AI passes it on to the user.
+pub fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
+    use tectora_core::roof::CalcErrorKind;
+    let message = match e.kind {
+        CalcErrorKind::OpenFaces => {
+            "the roof cannot be calculated: its faces do not close; adjust the pitch or length of the wall changed last (a very low pitch or a pitch break above the ridge often does it)"
+        }
+        CalcErrorKind::NoSolution => {
+            "no roof fits these walls and pitches; check pitches and eave heights (very different pitches on neighbouring walls often have no solution)"
+        }
+        CalcErrorKind::NonConvexOpening => {
+            "a chimney or roof opening is not convex, so no roof is calculated; give it no inward corners or split it"
+        }
+        CalcErrorKind::Cut => {
+            "two roof planes never meet, so no roof is calculated; check pitches and short walls"
+        }
+        CalcErrorKind::Geometry => {
+            "the roof geometry is invalid (a wall too short or an extreme pitch), so no roof is calculated"
+        }
+        CalcErrorKind::NoEnd => {
+            "the roof calculation does not finish for this roof; undo the last change or adjust the pitches"
+        }
+    };
+    json!({ "kind": e.kind, "message": message })
 }
 
 fn quantities(project: &Project) -> Value {
@@ -298,17 +353,15 @@ fn parse_points(v: &Value) -> Result<Vec<Point2>, String> {
     Ok(pts.into_iter().map(|[x, y]| Point2::new(x, y)).collect())
 }
 
-/// Builds a part from `{name?, points, defaults?, edges?}`.
-fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
-    let points = parse_points(arg(v, "points")?)?;
-    let defaults = v.get("defaults").cloned().unwrap_or(json!({}));
-    // Values not given come from the user's settings (Settings › New roofs).
+/// A new wall: pitch, eave height and overhang from `defaults`, else from
+/// the user's settings (Settings › New roofs).
+fn default_edge(defaults: &Value) -> Result<EdgeDef, String> {
     let preset = Settings::load().roof_defaults;
-    let base = EdgeDef {
+    Ok(EdgeDef {
         start: Point2::new(0.0, 0.0),
-        pitch_deg: arg_f64(&defaults, "pitch_deg")?.unwrap_or(preset.pitch_deg),
-        eave_height: arg_f64(&defaults, "eave_height")?.unwrap_or(preset.eave_height),
-        overhang: arg_f64(&defaults, "overhang")?.unwrap_or(preset.overhang),
+        pitch_deg: arg_f64(defaults, "pitch_deg")?.unwrap_or(preset.pitch_deg),
+        eave_height: arg_f64(defaults, "eave_height")?.unwrap_or(preset.eave_height),
+        overhang: arg_f64(defaults, "overhang")?.unwrap_or(preset.overhang),
         half_hip: None,
         direction_rad: None,
         breaks: Vec::new(),
@@ -316,7 +369,14 @@ fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
         clad: false,
         material: tectora_core::model::DEFAULT_MATERIAL,
         source: None,
-    };
+    })
+}
+
+/// Builds a part from `{name?, points, defaults?, edges?}`.
+fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
+    let points = parse_points(arg(v, "points")?)?;
+    let defaults = v.get("defaults").cloned().unwrap_or(json!({}));
+    let base = default_edge(&defaults)?;
     let specs = v
         .get("edges")
         .and_then(Value::as_array)
@@ -483,12 +543,13 @@ fn base_tools() -> Value {
                         "overhang": { "type": "number", "minimum": 0 }
                     }
                 },
-                "follow_ai": { "type": "boolean" }
-            }), &[]),
+                "follow_ai": { "type": "boolean" },
+                "summary": summary_prop()
+            }), &["summary"]),
         },
         {
             "name": "list_projects",
-            "description": "Search the user's library of roofs made so far (newest first by default): id, name, job, roof area, pitch range, dormers, attached files, stored offer result, last change. Use it to find a past roof to start a new job from (duplicate_project with `job`).",
+            "description": "Search the user's library of roofs made so far (newest first by default): `projects` with id, name, job, roof area, pitch range, dormers, attached files, stored offer result, last change, and `broken`: job files the library cannot read (code `unreadable`: damaged, `newer_format`: saved by a newer Tectora, or a file system error), which you cannot open; tell the user about them. Use it to find a past roof to start a new job from (duplicate_project with `job`).",
             "inputSchema": schema(json!({
                 "query": { "type": "string", "description": "Words that must all appear in the name, job number, customer, address or notes (case and accents ignored)." },
                 "status": { "type": "string", "enum": ["draft", "offer", "ordered", "done"] },
@@ -583,7 +644,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "set_openings",
-            "description": "Replace the roof windows, chimneys and/or roof openings of a design (omit a list to keep it). Windows deduct width × height from their roof face; chimneys deduct their plan area / cos(pitch) and add wall-abutment lines WV/WH/WS, as in DACAD; roof openings (holes) deduct like chimneys but their sides become an eave (uphill), a Pult (downhill) and verges.",
+            "description": "Replace the roof windows, chimneys and/or roof openings of a design (omit a list to keep it). Windows deduct width × height from their roof face; a window larger than what is left of its face is refused (check cm vs m and width vs height). Chimneys deduct their plan area / cos(pitch) and add wall-abutment lines WV/WH/WS, as in DACAD; roof openings (holes) deduct like chimneys but their sides become an eave (uphill), a Pult (downhill) and verges.",
             "inputSchema": schema(json!({
                 "id": { "type": "string" },
                 "windows": {
@@ -624,7 +685,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total. A part whose roof looks geometrically wrong (outside its eave outline, faces passing through each other, area not matching its faces) or where two walls in line are calculated as one so one wall's pitch is not used (`merged_walls`, with `edges`) carries `warnings`: tell the user and suggest checking pitches and overhangs.",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer` or `item` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out) and `not_calculated_by_core` (figures from the fallback engine). Tell the user about every warning. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -643,7 +704,7 @@ fn base_tools() -> Value {
         {
             "name": "revert_last_change",
             "description": "Undo the latest recorded change of a design.",
-            "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
+            "inputSchema": schema(json!({ "id": { "type": "string" }, "summary": summary_prop() }), &["id", "summary"]),
         },
     ])
 }
@@ -656,12 +717,37 @@ impl Server {
         }
     }
 
-    fn live(&self, message: String, project_id: Option<&str>) {
+    /// Tells the app what the agent does now: `kind` (one of
+    /// `store::LIVE_KINDS`, translated in the app) about `name` (the job or
+    /// file), with `message` in English for logs and older apps. The app
+    /// shows it and never opens the job for it (reading, calculating, exporting).
+    fn live(&self, kind: &str, name: Option<&str>, message: String, project_id: Option<&str>) {
+        self.publish(kind, name, message, project_id, false);
+    }
+
+    /// Publishes a write to (or `show_project` of) a job: the app opens it
+    /// in follow mode when the user is not in the middle of something.
+    fn live_follow(&self, kind: &str, name: Option<&str>, message: String, project_id: &str) {
+        self.publish(kind, name, message, Some(project_id), true);
+    }
+
+    fn publish(
+        &self,
+        kind: &str,
+        name: Option<&str>,
+        message: String,
+        project_id: Option<&str>,
+        follow: bool,
+    ) {
+        debug_assert!(tectora_core::store::LIVE_KINDS.contains(&kind), "{kind}");
         self.store.set_live(&LiveStatus {
             ts_ms: now_ms(),
             actor: self.client.clone(),
             message,
             project_id: project_id.map(str::to_string),
+            follow,
+            kind: Some(kind.to_string()),
+            name: name.map(str::to_string),
         });
     }
 
@@ -674,11 +760,21 @@ impl Server {
         summary: &str,
     ) -> ToolResult {
         project.check_limits()?;
-        let id = self
-            .store
-            .save_as(id.map(str::to_string), project, &self.client, summary)?;
-        self.live(summary.to_string(), Some(&id));
-        let changes = before.map(|b| diff(b, project)).unwrap_or_default();
+        let (id, before, project) = match (id, before) {
+            (Some(id), Some(before)) => self.save_onto_current(id, before, project, summary)?,
+            _ => {
+                let id =
+                    self.store
+                        .save_as(id.map(str::to_string), project, &self.client, summary)?;
+                (id, before.cloned(), project.clone())
+            }
+        };
+        let project = &project;
+        self.live_follow("changed", None, summary.to_string(), &id);
+        let changes = before
+            .as_ref()
+            .map(|b| diff(b, project))
+            .unwrap_or_default();
         Ok(json!({
             "id": id,
             "saved": true,
@@ -689,12 +785,66 @@ impl Server {
         }))
     }
 
+    /// Saves a change made on `before` (the job as the tool loaded it). When
+    /// the app saved the user's edit to the job meanwhile, the change is
+    /// merged onto that version instead of writing over it; where both
+    /// changed the same value nothing is saved and the AI is told to load
+    /// the job again. Returns the id, the version the change was saved onto
+    /// and the saved job.
+    fn save_onto_current(
+        &self,
+        id: &str,
+        before: &Project,
+        project: &Project,
+        summary: &str,
+    ) -> Result<(String, Option<Project>, Project), String> {
+        let mut base = before.clone();
+        let mut next = project.clone();
+        for _ in 0..5 {
+            match self
+                .store
+                .save_as_checked(id, &next, &self.client, summary, Some(&base))?
+            {
+                CheckedSave::Saved { id } => return Ok((id, Some(base), next)),
+                CheckedSave::Conflict { current } => {
+                    let value = |p: &Project| serde_json::to_value(p).map_err(|e| e.to_string());
+                    let merged = tectora_core::merge::merge3(
+                        &value(&base)?,
+                        &value(&next)?,
+                        &value(&current)?,
+                    )
+                    .map_err(|paths| {
+                        format!(
+                            "design `{id}` was changed in the app while this change was made, \
+                             at the same values ({}); nothing was saved. Load it again \
+                             (get_project) and repeat the change.",
+                            paths.join(", ")
+                        )
+                    })?;
+                    next = serde_json::from_value(merged).map_err(|e| e.to_string())?;
+                    next.check_limits()?;
+                    base = *current;
+                }
+            }
+        }
+        Err(format!(
+            "design `{id}` keeps changing in the app; nothing was saved. Try again in a moment."
+        ))
+    }
+
     fn load(&self, args: &Value) -> Result<(String, Project), String> {
         let id = arg_str(args, "id")?.to_string();
-        let project = self
-            .store
-            .load(&id)
-            .map_err(|_| format!("no design with id `{id}`; call list_projects to see the ids"))?;
+        // The library's own reason (damaged, newer, locked) with its code,
+        // so the AI can tell the user why instead of calling it missing.
+        let project = self.store.load(&id).map_err(|e| match e {
+            StoreError::NotFound(_) | StoreError::InvalidId(_) => {
+                format!("no design with id `{id}`; call list_projects to see the ids")
+            }
+            e => format!(
+                "design `{id}` cannot be opened ({}): {e}; ask the user to check it in the app",
+                e.code()
+            ),
+        })?;
         project.check_limits().map_err(|e| {
             format!("design `{id}` cannot be calculated: {e}; ask the user to fix it in the app")
         })?;
@@ -704,16 +854,27 @@ impl Server {
     /// Writes the settings file; when this server uses the library folder
     /// from the settings and that folder changed, it switches to the new one.
     fn update_settings(&mut self, args: &Value) -> ToolResult {
+        let summary = arg_str(args, "summary")?.to_string();
+        // Everything but the summary is a setting.
+        let mut patch = args.clone();
+        if let Some(o) = patch.as_object_mut() {
+            o.remove("summary");
+        }
         let old = Settings::load();
         let next = old
-            .patched(args)
+            .patched(&patch)
             .map_err(|e| format!("settings not saved: {e}"))?;
         next.save()
             .map_err(|e| format!("settings not saved: {e}"))?;
         if self.store.dir == old.projects_dir() && next.projects_dir() != old.projects_dir() {
             self.store = Store::new(next.projects_dir()).map_err(|e| e.to_string())?;
         }
-        self.live("Changed Tectora settings".into(), None);
+        self.live(
+            "settings",
+            None,
+            format!("Changed Tectora settings: {summary}"),
+            None,
+        );
         Ok(next.describe())
     }
 
@@ -724,18 +885,31 @@ impl Server {
     }
 
     fn call_tool_unguarded(&mut self, name: &str, args: &Value) -> ToolResult {
+        // Every write is shown to the user with its summary (AGENTS.md):
+        // a blank one is refused before anything is done.
+        if args
+            .get("summary")
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.trim().is_empty())
+        {
+            return Err("`summary` is empty: give one sentence for the user on what you change and why (it is shown in the app)".into());
+        }
+        if let Some(r) = self.call_calc_isolated(name, args) {
+            return r;
+        }
         match name {
             "tectora_guide" => Ok(json!(GUIDE)),
             "get_settings" => Ok(Settings::load().describe()),
             "update_settings" => self.update_settings(args),
             "list_projects" => {
-                self.live("Browsing the design library".into(), None);
+                self.live("browsing", None, "Browsing the design library".into(), None);
                 let mut q: tectora_core::library::Query = serde_json::from_value(args.clone())
                     .map_err(|e| format!("invalid search: {e}"))?;
                 if let Some(text) = args.get("query").and_then(Value::as_str) {
                     q.text = text.to_string();
                 }
-                let list: Vec<Value> = tectora_core::library::search(self.store.list(), &q)?
+                let (all, broken) = self.store.scan()?;
+                let list: Vec<Value> = tectora_core::library::search(all, &q)?
                     .into_iter()
                     .map(|p| {
                         json!({
@@ -747,11 +921,22 @@ impl Server {
                         })
                     })
                     .collect();
-                Ok(json!(list))
+                // Files the library cannot read, as the app's library lists
+                // them: the user should hear about them, not miss them.
+                let broken: Vec<Value> = broken
+                    .iter()
+                    .map(|b| json!({ "id": b.id, "code": b.code, "detail": b.detail }))
+                    .collect();
+                Ok(json!({ "projects": list, "broken": broken }))
             }
             "get_project" => {
                 let (id, p) = self.load(args)?;
-                self.live(format!("Reading “{}”", p.name), Some(&id));
+                self.live(
+                    "reading",
+                    Some(&p.name),
+                    format!("Reading “{}”", p.name),
+                    Some(&id),
+                );
                 Ok(json!({
                     "id": id,
                     "name": p.name,
@@ -773,16 +958,32 @@ impl Server {
             }
             "calc" => {
                 let (id, p) = self.load(args)?;
-                self.live(format!("Calculating “{}”", p.name), Some(&id));
+                self.live(
+                    "calculating",
+                    Some(&p.name),
+                    format!("Calculating “{}”", p.name),
+                    Some(&id),
+                );
                 let parts: Vec<Value> = p
                     .parts
                     .iter()
                     .zip(tectora_core::openings::generate_project(&p))
                     .map(|(part, geo)| {
-                        let q = geo.quantities();
+                        // Net of the core's negative lines, as the totals.
+                        let q = tectora_core::quantities::part_quantities(&geo);
                         let mut v = json!({ "name": part.name, "quantities": q });
                         if !geo.warnings.is_empty() {
                             v["warnings"] = geo.warnings.iter().map(warning).collect();
+                        }
+                        if let Some(e) = &geo.error {
+                            v["error"] = calc_error(e);
+                        }
+                        if !geo.joined_with.is_empty() {
+                            v["joined_with"] = geo
+                                .joined_with
+                                .iter()
+                                .map(|&j| json!({ "part": j, "name": p.parts.get(j).map(|x| x.name.as_str()) }))
+                                .collect();
                         }
                         v
                     })
@@ -811,6 +1012,8 @@ impl Server {
                     }
                 };
                 self.live(
+                    "explaining",
+                    Some(&p.name),
                     format!("Explaining the calculation of “{}”", p.name),
                     Some(&id),
                 );
@@ -921,7 +1124,12 @@ impl Server {
                     .ok_or_else(|| format!("part {pi} does not exist"))?
                     .clone();
                 let points = parse_points(arg(args, "points")?)?;
-                let mut template = old.edges.last().cloned().expect("part has edges");
+                // A part stored without walls (ERR-010) takes the new-roof
+                // defaults, as `add_part` does.
+                let mut template = match old.edges.last() {
+                    Some(e) => e.clone(),
+                    None => default_edge(&json!({}))?,
+                };
                 template.half_hip = None;
                 template.direction_rad = None;
                 if let Some(d) = args.get("defaults") {
@@ -985,6 +1193,9 @@ impl Server {
                 if let Some(w) = args.get("windows") {
                     p.windows = serde_json::from_value::<Vec<RoofWindow>>(w.clone())
                         .map_err(|e| format!("windows: {e}"))?;
+                    // A window larger than its face makes the face area
+                    // negative: refused, as in the editor.
+                    tectora_core::edit::check_windows(&p).map_err(|e| e.to_string())?;
                 }
                 if let Some(c) = args.get("chimneys") {
                     let raw: Vec<Value> = serde_json::from_value(c.clone())
@@ -1030,13 +1241,24 @@ impl Server {
             }
             "show_project" => {
                 let (id, p) = self.load(args)?;
-                self.live(format!("Showing “{}”", p.name), Some(&id));
+                self.live_follow(
+                    "showing",
+                    Some(&p.name),
+                    format!("Showing “{}”", p.name),
+                    &id,
+                );
                 Ok(json!({ "id": id, "shown": true }))
             }
             "revert_last_change" => {
                 let (id, _) = self.load(args)?;
-                let p = self.store.revert_last(&id, &self.client)?;
-                self.live("Reverted the latest change".into(), Some(&id));
+                let summary = arg_str(args, "summary")?;
+                let p = self.store.revert_last(&id, &self.client, Some(summary))?;
+                self.live_follow(
+                    "reverted",
+                    Some(&p.name),
+                    format!("Reverted the latest change: {summary}"),
+                    &id,
+                );
                 Ok(json!({ "id": id, "reverted": true, "quantities": quantities(&p) }))
             }
             _ => self
@@ -1199,21 +1421,39 @@ mod tests {
         let log = s.store.activity(&id);
         assert_eq!(log.len(), 2);
         assert_eq!(log[1].actor, "test-agent");
-        assert_eq!(
-            s.store.live().unwrap().project_id.as_deref(),
-            Some(id.as_str())
-        );
+        let live = s.store.live().unwrap();
+        assert_eq!(live.project_id.as_deref(), Some(id.as_str()));
+        assert!(live.follow, "a write may be followed in the app");
+        // Reading or calculating a job never makes the app switch to it (UX-001).
+        for tool in ["get_project", "calc", "calc_breakdown"] {
+            s.call_tool(tool, &json!({ "id": id })).unwrap();
+            let live = s.store.live().unwrap();
+            assert_eq!(live.project_id.as_deref(), Some(id.as_str()), "{tool}");
+            assert!(!live.follow, "{tool} must not be followed");
+        }
+        s.call_tool("show_project", &json!({ "id": id })).unwrap();
+        assert!(s.store.live().unwrap().follow, "show_project is followed");
 
-        s.call_tool("revert_last_change", &json!({ "id": id }))
-            .unwrap();
+        s.call_tool(
+            "revert_last_change",
+            &json!({ "id": id, "summary": "The west wall is not a gable" }),
+        )
+        .unwrap();
+        let last = s.store.activity(&id).pop().unwrap();
+        // The fixed sentence the app translates, then the AI's reason (UX-002).
+        assert_eq!(
+            last.summary,
+            "Reverted: Gable at the west (reason: The west wall is not a gable)"
+        );
         assert!(!s.store.load(&id).unwrap().parts[0].edges[5].is_gable());
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
     #[test]
     fn settings_read_and_update() {
+        let _settings = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner());
         let base = std::env::temp_dir().join(format!("tectora-mcp-cfg-{}", std::process::id()));
-        // Only this test reads the settings file, so the env var is safe here.
+        // Tests touching the settings file hold SETTINGS_FILE, so the env var is safe here.
         unsafe { std::env::set_var("TECTORA_CONFIG_DIR", base.join("cfg")) };
         let mut s = server();
         let r = s.call_tool("get_settings", &json!({})).unwrap();
@@ -1222,19 +1462,61 @@ mod tests {
         let r = s
             .call_tool(
                 "update_settings",
-                &json!({ "drawings_dir": inbox.to_string_lossy(), "roof_defaults": { "pitch_deg": 35 } }),
+                &json!({ "drawings_dir": inbox.to_string_lossy(), "roof_defaults": { "pitch_deg": 35 }, "summary": "Drawings inbox as the user asked" }),
             )
             .unwrap();
         assert_eq!(r["effective"]["drawings_dir"], json!(inbox));
         assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
         assert!(inbox.is_dir());
         assert!(
-            s.call_tool("update_settings", &json!({ "locale": "fr" }))
+            s.call_tool(
+                "update_settings",
+                &json!({ "locale": "fr", "summary": "s" })
+            )
+            .is_err()
+        );
+        // Like every write, a settings change carries a summary (ARCH-005).
+        assert!(
+            s.call_tool("update_settings", &json!({ "theme": "dark" }))
                 .is_err()
         );
         let r = s.call_tool("get_settings", &json!({})).unwrap();
         assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_tool_change_does_not_overwrite_a_user_edit_the_app_saved_meanwhile() {
+        // The app autosaves the user's edit after the tool loaded the job
+        // and before it saves: both stay.
+        let s = server();
+        let p = tectora_core::examples::find("hip").unwrap().project();
+        let id = s.store.save(None, &p).unwrap();
+        let before = s.store.load(&id).unwrap();
+        let mut user = before.clone();
+        user.parts[0].edges[0].overhang = 0.77;
+        s.store.save(Some(id.clone()), &user).unwrap();
+        let mut ai = before.clone();
+        ai.parts[0].edges[2].pitch_deg = 41.0;
+        let r = s.commit(Some(&id), Some(&before), &ai, "AI B").unwrap();
+        let saved = s.store.load(&id).unwrap();
+        assert_eq!(saved.parts[0].edges[0].overhang, 0.77, "user edit kept");
+        assert_eq!(saved.parts[0].edges[2].pitch_deg, 41.0, "AI change saved");
+        // The reply and the log name only the AI's own change.
+        assert_eq!(r["changes"].as_array().unwrap().len(), 1, "{r}");
+        assert_eq!(s.store.activity(&id)[0].before.as_ref(), Some(&user));
+
+        // Both changed the same value: nothing saved, the AI is told why.
+        let mut user2 = saved.clone();
+        user2.parts[0].edges[2].pitch_deg = 30.0;
+        s.store.save(Some(id.clone()), &user2).unwrap();
+        let mut ai2 = saved.clone();
+        ai2.parts[0].edges[2].pitch_deg = 45.0;
+        let e = s.commit(Some(&id), Some(&saved), &ai2, "AI C").unwrap_err();
+        assert!(e.contains("changed in the app"), "{e}");
+        assert_eq!(s.store.load(&id).unwrap(), user2);
+        assert_eq!(s.store.activity(&id).len(), 1);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
     #[test]
@@ -1292,6 +1574,179 @@ mod tests {
         assert!(r["parts"][0].get("warnings").is_none(), "{r}");
     }
 
+    fn gable_job(s: &mut Server, pitch: f64) -> String {
+        let r = s
+            .call_tool(
+                "create_project",
+                &json!({
+                    "name": "gable", "summary": "Footprint",
+                    "parts": [{
+                        "points": [[0, 0], [12, 0], [12, 8], [0, 8]],
+                        "defaults": { "pitch_deg": pitch, "eave_height": 3, "overhang": 0 },
+                        "edges": [{}, { "gable": true }, {}, { "gable": true }]
+                    }]
+                }),
+            )
+            .unwrap();
+        r["id"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn live_status_is_a_code_and_a_name_the_app_translates() {
+        // UX-002: the app shows the sentence in the user's language.
+        let mut s = server();
+        let id = gable_job(&mut s, 40.0);
+        let live = s.store.live().unwrap();
+        assert_eq!(
+            (live.kind.as_deref(), live.message.as_str()),
+            (Some("changed"), "Footprint")
+        );
+        s.call_tool("calc", &json!({ "id": id })).unwrap();
+        let live = s.store.live().unwrap();
+        assert_eq!(live.kind.as_deref(), Some("calculating"));
+        assert_eq!(live.name.as_deref(), Some("gable"));
+        assert_eq!(live.project_id.as_deref(), Some(id.as_str()));
+        s.call_tool("list_projects", &json!({})).unwrap();
+        let live = s.store.live().unwrap();
+        assert_eq!(
+            (live.kind.as_deref(), live.project_id),
+            (Some("browsing"), None)
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn calc_reports_a_roof_the_calculation_refused() {
+        // MATH-003: a 1° hip roof ends in the core's open-faces error.
+        let mut s = server();
+        let r = s
+            .call_tool(
+                "create_project",
+                &json!({
+                    "name": "flat hip", "summary": "Footprint",
+                    "parts": [{ "points": [[0, 0], [12, 0], [12, 8], [0, 8]], "defaults": { "pitch_deg": 1 } }]
+                }),
+            )
+            .unwrap();
+        let id = r["id"].as_str().unwrap().to_string();
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        let e = &r["parts"][0]["error"];
+        assert_eq!(e["kind"], "open_faces", "{r}");
+        let msg = e["message"].as_str().unwrap();
+        assert!(msg.contains("cannot be calculated"), "{msg}");
+        // No German text of the calculation reaches the AI.
+        let text = r.to_string();
+        for german in ["Fläche", "Nicht", "DACAD", "E0000"] {
+            assert!(!text.contains(german), "{german} in {text}");
+        }
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn set_openings_refuses_a_window_larger_than_its_face() {
+        // MATH-001: 10 × 9 m on a face of 12 × 5.22 m.
+        let mut s = server();
+        let id = gable_job(&mut s, 40.0);
+        let err = s
+            .call_tool(
+                "set_openings",
+                &json!({ "id": id, "summary": "Window", "windows": [{ "x": 1, "y": 0, "width": 10, "height": 9 }] }),
+            )
+            .unwrap_err();
+        assert!(
+            err.contains("larger than what is left of the roof face"),
+            "{err}"
+        );
+        assert!(s.store.load(&id).unwrap().windows.is_empty());
+        s.call_tool(
+            "set_openings",
+            &json!({ "id": id, "summary": "Window", "windows": [{ "x": 1, "y": 0, "width": 0.78, "height": 1.18 }] }),
+        )
+        .unwrap();
+        assert_eq!(s.store.load(&id).unwrap().windows.len(), 1);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn calc_warns_about_a_face_that_lost_more_than_it_has() {
+        // A file with an oversize window (written before the check, or by
+        // hand) still calculates as DACAD books it, with a warning.
+        let mut s = server();
+        let id = gable_job(&mut s, 40.0);
+        let mut p = s.store.load(&id).unwrap();
+        p.windows.push(RoofWindow {
+            x: 1.0,
+            y: 0.0,
+            width: 10.0,
+            height: 9.0,
+        });
+        s.store.save(Some(id.clone()), &p).unwrap();
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        let w = r["parts"][0]["warnings"].as_array().unwrap();
+        assert!(
+            w.iter()
+                .any(|w| w["kind"] == "cut_exceeds_face" && w["edges"] == json!([0])),
+            "{r}"
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn calc_warns_about_a_window_on_no_roof_face() {
+        // Re-check of ERR-011: the window was saved and left out silently.
+        let mut s = server();
+        let id = gable_job(&mut s, 40.0);
+        let area = s.call_tool("calc", &json!({ "id": id })).unwrap()["quantities"]["roof_area_m2"]
+            .clone();
+        s.call_tool(
+            "set_openings",
+            &json!({ "id": id, "summary": "Window", "windows": [{ "x": -50, "y": -50, "width": 0.78, "height": 1.18 }] }),
+        )
+        .unwrap();
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        assert_eq!(r["quantities"]["roof_area_m2"], area, "result unchanged");
+        let w = &r["parts"][0]["warnings"][0];
+        assert_eq!(w["kind"], "window_off_roof", "{r}");
+        assert_eq!(w["item"], 0, "{r}");
+        assert!(
+            w["message"].as_str().unwrap().contains("roof window 0"),
+            "{w}"
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn calc_names_the_parts_a_roof_is_joined_with() {
+        // ARCH-008: from the calculation's own join, not a plan guess.
+        let mut s = server();
+        let r = s
+            .call_tool(
+                "create_project",
+                &json!({
+                    "name": "two", "summary": "Footprint",
+                    "parts": [
+                        { "name": "Main", "points": [[0, 0], [12, 0], [12, 8], [0, 8]] },
+                        { "name": "Wing", "points": [[10, 2], [18, 2], [18, 6], [10, 6]] },
+                        { "name": "Shed", "points": [[40, 0], [46, 0], [46, 4], [40, 4]] }
+                    ]
+                }),
+            )
+            .unwrap();
+        let id = r["id"].as_str().unwrap().to_string();
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        assert_eq!(
+            r["parts"][0]["joined_with"],
+            json!([{ "part": 1, "name": "Wing" }]),
+            "{r}"
+        );
+        assert_eq!(
+            r["parts"][1]["joined_with"],
+            json!([{ "part": 0, "name": "Main" }])
+        );
+        assert!(r["parts"][2].get("joined_with").is_none());
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
     #[test]
     fn bad_input_is_a_tool_error_not_a_crash() {
         let mut s = server();
@@ -1318,6 +1773,35 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("out of range"), "{err}");
         assert!(s.list_projects_empty());
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// Tests that read or write the settings file (through
+    /// `TECTORA_CONFIG_DIR`) run one at a time, so one never sees the
+    /// other's half-written defaults.
+    static SETTINGS_FILE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn set_outline_repairs_a_part_without_edges() {
+        // ERR-010: a stored part with no walls (the app flags it
+        // `too_few_edges`); the tool meant to repair it must not panic.
+        let _settings = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = server();
+        let mut p = Project::new("Empty");
+        p.parts.push(RoofPart {
+            name: "A".into(),
+            edges: Vec::new(),
+        });
+        let id = s.store.save(None, &p).unwrap();
+        let r = s
+            .call_tool(
+                "set_outline",
+                &json!({ "id": id, "part": 0, "points": [[0, 0], [5, 0], [5, 4], [0, 4]], "summary": "Outline from the drawing" }),
+            )
+            .unwrap();
+        assert_eq!(r["parts"][0]["edges"].as_array().unwrap().len(), 4, "{r}");
+        let preset = Settings::load().roof_defaults;
+        assert_eq!(r["parts"][0]["edges"][0]["pitch_deg"], preset.pitch_deg);
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 

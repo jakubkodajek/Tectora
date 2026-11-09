@@ -179,6 +179,12 @@ pub struct RoofGeometry {
     /// roof is still DACAD's result, but its quantities need a look.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<crate::check::RoofWarning>,
+    /// The other parts (indices into `project.parts`) this roof is joined
+    /// with in DACAD's Modellverschnitt: a face of one of the two is cut by
+    /// a face of the other. Empty for a roof on its own and where the
+    /// calculation did not join roofs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joined_with: Vec<usize>,
 }
 
 /// A clad gable counted as roof area ([`EdgeDef::clad`]).
@@ -2127,6 +2133,7 @@ fn generate_mode(part: &RoofPart, raised: &[bool]) -> (RoofGeometry, Vec<Point2>
     };
     // Initial vertex i sits between edge i-1 (left) and edge i (right),
     // on the roof outline.
+    #[allow(clippy::needless_range_loop)] // `i` also names the edges
     for i in 0..n {
         let (l, r) = ((i + n - 1) % n, i);
         let (ll, rl) = (&sim.lines[l], &sim.lines[r]);

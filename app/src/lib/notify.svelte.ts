@@ -14,6 +14,8 @@ export interface Toast {
   detail?: string;
   /** How many times the same message came in. */
   count: number;
+  /** One button that does what the message offers (e.g. "Open"); the toast closes after it. */
+  action?: { label: string; run: () => unknown };
 }
 
 export const toasts = $state<Toast[]>([]);
@@ -55,6 +57,7 @@ export function notify(t: Omit<Toast, "id" | "count">): number {
   if (same) {
     same.count += 1;
     same.detail = t.detail ?? same.detail;
+    same.action = t.action ?? same.action;
     schedule(same.id, same.kind);
     return same.id;
   }
@@ -72,7 +75,7 @@ export function notifyError(e: unknown, action?: Action): number {
   const d = describeError(e, action);
   console.error(`[tectora] ${action ?? "error"}:`, e);
   return notify({
-    kind: d.code === "watcher" ? "warning" : "error",
+    kind: d.code === "watcher" || d.code === "settings_unreadable" ? "warning" : "error",
     code: d.code,
     title: d.title,
     message: d.message,

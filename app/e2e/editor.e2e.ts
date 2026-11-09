@@ -187,7 +187,7 @@ test.describe("roof definition bar", () => {
     await openEditor(app, "Valba");
     const def = bar(page, "def.title");
     await selectWall(page, 0);
-    await expect(def.getByLabel(cs("edge.length"))).toHaveValue("12.00");
+    await expect(def.getByLabel(cs("edge.length"))).toHaveValue("12,00");
     await setField(def.getByLabel(cs("edge.length")), "14");
     let p = await waitForProject(id, (p) => p.parts[0].edges[1].start.x === 14);
     expect(p.parts[0].edges[1].start).toEqual({ x: 14, y: 0 });
@@ -290,7 +290,7 @@ test.describe("roof definition bar", () => {
     let p = await waitForProject(id, (p) => p.parts[0].edges.length === 5);
     expect(p.parts[0].edges[1].direction_rad).toBeCloseTo(Math.PI, 6);
     await expect(def.locator(".kind")).toHaveText(cs("edge.marker"));
-    await setField(def.getByRole("spinbutton", { name: new RegExp(`^${cs("edge.direction")}`) }), 170);
+    await setField(def.getByRole("textbox", { name: new RegExp(`^${cs("edge.direction")}`) }), 170);
     p = await waitForProject(id, (p) => Math.abs(p.parts[0].edges[1].direction_rad - (170 * Math.PI) / 180) < 1e-9);
     await def.getByRole("button", { name: cs("edge.flip") }).click();
     p = await waitForProject(id, (p) => Math.abs(p.parts[0].edges[1].direction_rad - (350 * Math.PI) / 180) < 1e-9);

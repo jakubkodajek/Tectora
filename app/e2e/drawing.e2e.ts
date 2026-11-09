@@ -1,6 +1,6 @@
 // Drawing footprints: clicks in the plan, typed lengths with the arrow
 // buttons and keys, undo point, cancel, close, presets and the Insert key.
-import { clickPlan, openEditor, setField, shownArea, tool } from "./editor";
+import { clickPlan, openEditor, selectWall, setField, shownArea, tool } from "./editor";
 import { createExample, expect, listProjects, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 
@@ -165,8 +165,14 @@ test.describe("standard roof tool", () => {
   test("replace the selected part, or add a new part beside it", async ({ app, page }) => {
     const id = await createExample("gable", "Sedlo");
     await openEditor(app, "Sedlo");
+    // With nothing selected the dialog adds a part; with a wall selected it
+    // offers to replace that part.
     await tool(page, "tool.standard").click();
     const dlg = page.getByRole("dialog", { name: cs("std.title") });
+    await expect(dlg.getByLabel(cs("std.add"))).toBeChecked();
+    await dlg.getByRole("button", { name: cs("common.cancel") }).click();
+    await selectWall(page, 0);
+    await tool(page, "tool.standard").click();
     await dlg.getByRole("radio", { name: cs("std.hip"), exact: true }).click();
     await setField(dlg.getByLabel(cs("std.length")), 10);
     await setField(dlg.getByLabel(cs("std.width")), 7);

@@ -41,19 +41,21 @@ programs; Codex in the ChatGPT desktop app can.
 | Tool | Purpose |
 | --- | --- |
 | `tectora_guide` | Model conventions (DACAD terms, units) and the drawing-to-roof workflow |
-| `list_projects`, `get_project`, `calc` | Search the library (text, status, AI change, dates, area, sort), read designs, edge tables, dormers, quantities by DACAD line code, stored result |
+| `list_projects`, `get_project`, `calc` | Search the library (text, status, AI change, dates, area, sort), read designs, edge tables, dormers, quantities by DACAD line code, per-part warnings, calculation errors and the parts each roof is joined with, stored result |
 | `calc_breakdown` | How every face area and line length was calculated, step by step (the app's Calculation tab) |
 | `create_standard_roof`, `create_project`, `create_from_example` | Create designs |
 | `add_part`, `add_shape_part`, `transform_part`, `delete_items`, `clear_roof` | Parts: add (standard roofs, regular polygons), move / rotate / mirror / copy, delete anything, clear the whole canvas |
 | `update_edges`, `set_outline`, `edit_walls` | Walls and their roof definitions (incl. clad gable and the direction of a direction change); corners, lengths, direction changes, parallel shift |
+| `set_part_height` | A building's height: the eave height of every wall of a part in one save, its breaks, half-hips, dormers and chimneys moved with it |
 | `add_dormer`, `update_dormer` | Dormers by kind (gable, pointed, hip, half-hip, shed, trapezoid, round) |
-| `set_openings`, `set_manual`, `set_roof_options` | Windows, chimneys, openings; hand-drawn lines and faces; flat roof, material names |
+| `set_openings`, `set_manual`, `face_to_part`, `set_roof_options` | Windows, chimneys, openings (a window larger than its face is refused); hand-drawn lines and faces, a face turned into a building; flat roof, material names |
 | `transform_items` | Move, rotate, copy or align to the nearest wall single dormers, chimneys, windows, openings, hand-drawn lines and faces (the plan's drag and right-click menu) |
 | `roof_helper` | Calculation helpers (triangle, two parallels, point in space, merge, hip/valley, build-up, round roof), preview or apply |
 | `update_job`, `store_result` | Job data and status; the stored result for the offer |
 | `get_history`, `get_review`, `revert_to`, `revert_last_change`, `show_project` | History, review state (accepted or still pending in the app, effect on the figures), undo, focus in the app |
-| `duplicate_project`, `delete_project`, `list_examples` | Library; `duplicate_project` with `job` starts a new job from a past roof |
-| `list_files`, `attach_file`, `remove_file` | Files attached to a job (drawings) |
+| `duplicate_project`, `delete_project`, `list_examples` | Library; `duplicate_project` with `job` starts a new job from a past roof; `delete_project` moves the job to the library's trash (`.trash`, 30 days) |
+| `list_deleted`, `restore_project` | Deleted jobs and removed files in the trash, and bringing them back |
+| `list_files`, `attach_file`, `remove_file` | Files attached to a job (drawings): regular drawing, photo or document files up to 256 MB; a removed file goes to the trash |
 | `export_job`, `import_job`, `get_schema` | `.tectorajob` bundles, file schema |
 | `export_list`, `export_plan` | The roof for the offer: the text list the Excel price sheet reads (the Export dialog's copy button) and the roof sheet with lengths, areas and pitches as PDF or SVG in the library's `exports` folder |
 | `get_settings`, `update_settings` | App settings shared with the Settings screen: jobs folder, drawings inbox folder, language, theme, defaults for new roofs, follow mode |
@@ -70,8 +72,11 @@ PDF renderer).
   computed changes and the previous version.
 - The server also writes `.activity/live.json` on each call ("Reading …",
   "Calculating …", or the write summary).
-- The app watches the folder: it opens the job the agent works on (follow mode,
-  can be turned off) and shows a banner with every pending step's summary, the
+- The app watches the folder: it opens the job the agent saves or shows with
+  `show_project` (follow mode, can be turned off; reading or calculating
+  another job never switches, and while the user is drawing, placing an
+  object, typing or has a dialog open the app only offers "Open" in a toast)
+  and shows a banner with every pending step's summary, the
   list of changes and how they change the figures (roof area, ridge height,
   line lengths by code, area by material: before → now, with the difference).
   Changed walls, dormers, chimneys, windows, openings and hand-drawn lines and
@@ -85,6 +90,25 @@ PDF renderer).
   kept in the library (`.activity/<id>.review.json`), so it survives a restart
   and the agent can read it with `get_review`; only the user accepts.
   The AI tab keeps the full history.
+- A revert keeps the edits made after the reverted step (the app's own
+  saves are not logged): the store merges the inverse of the step onto the
+  current file, using the version the step saved (`after`) as the base. When
+  a later edit changed a value the step also set, the revert is refused with
+  `revert_conflict` and the file stays as it is. Revert all undoes the steps
+  one by one, latest first, the same way, so an edit the user made between
+  two AI steps is kept too (or the whole revert is refused).
+- A revert's change-log entry starts with the fixed English sentence the app
+  translates (`Reverted: <summary>`, `Reverted <n> changes since: <summary>`);
+  an AI's reason follows as ` (reason: <reason>)`.
+- Saves never overwrite each other. The app saves with
+  `save_project_checked` (`Store::save_checked`): only if the file still
+  holds the version the editor last read or wrote, otherwise it gets the
+  current file back, merges its edits onto it (the outside edit wins where
+  both changed a value; the local one stays in undo) and saves again. MCP
+  writes check the version the tool loaded in the same way
+  (`Store::save_as_checked`) and merge onto a user edit saved meanwhile, or
+  refuse when both changed the same value. The check and the write run under
+  the job's lock file `.activity/<id>.lock`, shared by all processes.
 
 A skill for Claude that describes the drawing workflow is in
 `integrations/skills/tectora-roof/SKILL.md`.

@@ -3,9 +3,10 @@
   // DACAD line code (T eave, F ridge, G hip, K valley, O verge, P shed top edge, c pitch break).
   import { figureLabel, formatFigure } from "./changes";
   import { m, m2, num } from "./format";
-  import { t } from "./i18n.svelte";
+  import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
-  import type { CalcResult, Project, RoofWarning } from "./types";
+  import { areaRows, joinedWith, warningText } from "./results";
+  import type { CalcResult, Project } from "./types";
 
   let {
     result,
@@ -17,6 +18,10 @@
   const stored = $derived(result?.stored_result ?? null);
   const diffLabel = (key: string) => figureLabel(key, project);
   const fmtDiff = formatFigure;
+  /** Per part, the parts the calculation joined its roof with (named under the part's area). */
+  const joins = $derived(joinedWith(result));
+  /** Parts and hand-drawn faces with their areas: everything the total counts (UX-009). */
+  const areas = $derived(areaRows(result));
 
   /** Area per material, shown once the roof has more than one material or a non-default one. */
   const materials = $derived(
@@ -31,15 +36,6 @@
       (p.geometry.warnings ?? []).map((w) => ({ part: result!.parts.length > 1 ? p.name : null, text: warningText(w) })),
     ),
   );
-
-  function warningText(w: RoofWarning): string {
-    if (w.kind === "merged_walls") {
-      const [a, b] = w.edges ?? [0, 0];
-      return t("res.warn.merged_walls", { a: a + 1, b: b + 1 });
-    }
-    const v = w.kind === "area_mismatch" ? num(w.value * 100) : num(w.value);
-    return t(`res.warn.${w.kind}`, { v });
-  }
   const rows = $derived(
     totals
       ? [
@@ -68,17 +64,28 @@
     <div class="warn" role="status">
       <div class="warn-head"><i></i>{t("res.warn.title")}</div>
       {#each warnings as w}
-        <p>{#if w.part}<code>{w.part}</code> {/if}{w.text}</p>
+        <!-- The space is an expression: Svelte trims plain whitespace at the end of a block. -->
+        <p>{#if w.part}<code>{w.part}</code>{" "}{/if}{w.text}</p>
       {/each}
     </div>
   {/if}
 
-  {#if result && result.parts.length > 1}
+  {#if result && areas.length > 1}
     <h4>{t("res.areas")}</h4>
-    <table>
+    <table class="areas">
       <tbody>
-        {#each result.parts as p}
-          <tr><td>{p.name}</td><td class="v">{m2(p.quantities.roof_area)}</td></tr>
+        {#each areas as a}
+          <tr>
+            <td>
+              {a.name}
+              {#if a.manual}
+                <small class="joined">{t("bd.manual")}</small>
+              {:else if joins[a.part]?.length}
+                <small class="joined">{t("res.joinedTo", { names: joins[a.part].map((j) => result.parts[j]?.name ?? "").join(", ") })}</small>
+              {/if}
+            </td>
+            <td class="v">{m2(a.area)}</td>
+          </tr>
         {/each}
       </tbody>
     </table>
@@ -116,7 +123,7 @@
         <i class="sq"></i>
         <span>
           {stored.differences.length ? t("snap.changed") : t("snap.same")}
-          · {new Date(stored.stored.taken_ms).toLocaleDateString()}
+          · {new Date(stored.stored.taken_ms).toLocaleDateString(numberLocale())}
         </span>
       </div>
       {#if stored.differences.length}
@@ -139,6 +146,11 @@
 </div>
 
 <style>
+  .joined {
+    display: block;
+    font-size: 11.5px;
+    color: var(--text-2);
+  }
   .results {
     display: flex;
     flex-direction: column;

@@ -102,3 +102,28 @@ sessions that use it know where things stand.
   `Stena` for joined roofs and with dormers, the `Škridla - -Norm` line when
   windows make the DIN area differ, the head line (DACAD writes the .dad
   path; the sheet reads Partner/Realizátor/Koncový from it).
+## 2026-11-08 - building-height
+- Done: "Výška budovy (okap)" field in the roof definition bar (selected
+  building; empty with "různá" when its walls differ) and MCP
+  `set_part_height`, both `tectora_core::edit::height::set_part_height`:
+  every wall at the eave height, its breaks and half-hip moved by the same
+  amount, dormers / chimneys / hand-drawn lines on the building by the
+  building's shift. Pure input, no roof math changed.
+- State: `make check` exit 0, `make sweeps` clean; e2e joined, fields, mcp,
+  i18n, editor passed.
+- Next: Jakub tries it on the two-hip-roof job from his screenshot.
+## 2026-11-08 - input-and-deep-audit (branch claude/project-thread-6k6mz9)
+- Done: number fields via `use:numeric` (typed values kept on a click
+  elsewhere, decimal comma, bounds); Building vs Manual face told apart and
+  "make it a building"; joined roofs readable (dashed lines under a higher
+  roof, "joined to" from the core, `covered` warning); 3D gable from the
+  polygon's full extent. Deep audit with the six reviewers (73 findings,
+  board target/review/2026-11-08-ebf4a0c-deep/summary.md), verified, all
+  fixed in seven branches merged here; re-check 67 fixed + 6 partly, the
+  partly ones and an autosave/AI save race fixed afterwards. Edge-case
+  classes 1-9 in `.claude/skills/tectora-review/edge-cases.md`.
+- State: `make check` exit 0, full E2E green (see PR).
+- Next: DACAD runs for window_bigger_than_face, rows/grid_4x2 and a dormer
+  off the roof (review tests/); Jakub decides count limits, trash restore
+  button, `after` in the activity log, P16 test expectation.
+- Blockers: app/src-tauri is compiled only by CI (no WebKitGTK here).

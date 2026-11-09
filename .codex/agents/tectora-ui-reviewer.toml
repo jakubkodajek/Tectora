@@ -13,6 +13,9 @@ repository and in the prompt that launched you (it gives the run folder).
    `.claude/skills/tectora-i18n/SKILL.md`, `.claude/skills/tectora-ui-preview/SKILL.md`.
 2. `.claude/skills/tectora-review/board.md`: the shared findings protocol.
    Follow it exactly. Your file is `target/review/<run>/ui.md`.
+2b. `.claude/skills/tectora-review/edge-cases.md`: bug classes the user
+   has already hit. Run every check of class 1, 3 and 5 yourself (preview or E2E,
+   not only reading) and file each failure; skim the other classes.
 3. `app/e2e/README.md` if the E2E suite exists in this checkout.
 4. The other reviewers' files in the run folder.
 

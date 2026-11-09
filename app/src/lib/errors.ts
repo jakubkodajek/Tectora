@@ -65,6 +65,9 @@ const KNOWN = new Set([
   "nothing_to_revert",
   "revert_created",
   "no_such_change",
+  "revert_conflict",
+  "save_conflict",
+  "not_saved",
   "unknown_example",
   "open_failed",
   "out_of_range",
@@ -78,6 +81,12 @@ const KNOWN = new Set([
   "ai_not_installed",
   "ai_config_invalid",
   "ai_config_io",
+  "too_large",
+  "not_a_file",
+  "unsupported_type",
+  "invalid_name",
+  "too_many",
+  "settings_unreadable",
 ]);
 
 /** A translated description of an error from `action`. */

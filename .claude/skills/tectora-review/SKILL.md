@@ -69,6 +69,16 @@ tell the agents it is running on http://localhost:1430, so they do not start
 competing copies. Build once (`cargo build --workspace --exclude tectora-app`
 in the cloud container) so the agents do not all wait on the first build.
 
+## Edge cases are part of every run
+
+`edge-cases.md` (next to this file) lists the bug classes users have hit:
+typed values lost or applied to the wrong object, edits that do not
+recalculate, a second building that changes or hides the first one's roof
+(3D gables included), tools that look alike, core polygons the UI cannot
+draw. Each reviewer runs the classes named for it, even when the scope is a
+narrow diff, and every fix of a new user-reported bug adds its class and
+guard test there. Say in `summary.md` which classes were run and passed.
+
 ## Step 2: round 1, in parallel
 
 Launch the reviewers in one message with the Agent tool, `subagent_type` set
@@ -80,7 +90,8 @@ bias:
 > Review run folder: target/review/<RUN>. Commit <sha> on <branch>.
 > Scope: <whole project | area | diff of PR #n>. The browser preview is
 > running on http://localhost:1430 (or: not running). Follow
-> .claude/skills/tectora-review/board.md. Go deep: this is a full audit,
+> .claude/skills/tectora-review/board.md and run your classes in
+> .claude/skills/tectora-review/edge-cases.md. Go deep: this is a full audit,
 > not a skim. Do not modify the source tree.
 
 ## Step 3: round 2, cross-check

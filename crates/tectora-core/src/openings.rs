@@ -18,6 +18,7 @@
 
 use geo::{Area, BooleanOps, MultiPolygon};
 
+use crate::check::{RoofWarning, WarningKind};
 use crate::geom::{Point2, signed_area};
 use crate::model::{Chimney, Project, RoofPart, RoofWindow};
 use crate::roof::{
@@ -41,11 +42,22 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     if project.flat_roof {
         return crate::flat::generate_project(project);
     }
-    let (clean, slots) = cleaned(project);
+    let (clean, slots, ids) = cleaned(project);
     let mut geos = generate_valid(&clean);
     let warnings = crate::check::check(&clean.parts, &geos);
     for (geo, w) in geos.iter_mut().zip(warnings) {
         geo.warnings.extend(w);
+    }
+    // Windows, chimneys and openings the calculation left out: said, the
+    // result unchanged.
+    for (part, mut w) in crate::check::off_roof(&clean, &geos) {
+        let kept = match w.kind {
+            WarningKind::WindowOffRoof => &ids.windows,
+            WarningKind::ChimneyOffRoof => &ids.chimneys,
+            _ => &ids.openings,
+        };
+        w.item = w.item.map(|i| kept.get(i).copied().unwrap_or(i));
+        geos[part].warnings.push(w);
     }
     slots
         .into_iter()
@@ -53,6 +65,12 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
             None => RoofGeometry::default(),
             Some((i, reversed)) => {
                 let mut g = std::mem::take(&mut geos[i]);
+                for j in g.joined_with.iter_mut() {
+                    *j = ids.parts.get(*j).copied().unwrap_or(*j);
+                }
+                for d in g.warnings.iter_mut().filter_map(|w| w.dormer.as_mut()) {
+                    *d = ids.dormers.get(*d).copied().unwrap_or(*d);
+                }
                 if let Some(n) = reversed {
                     // Dormer faces (edge usize::MAX) belong to no edge.
                     for f in g.faces.iter_mut().filter(|f| f.edge < n) {
@@ -72,9 +90,18 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
 /// was reversed; `None` for a part that is not valid on its own.
 type Slots = Vec<Option<(usize, Option<usize>)>>;
 
+/// For each item kept in the cleaned project, its index in the project.
+struct KeptIds {
+    parts: Vec<usize>,
+    dormers: Vec<usize>,
+    chimneys: Vec<usize>,
+    openings: Vec<usize>,
+    windows: Vec<usize>,
+}
+
 /// The project without what cannot be calculated: invalid parts, dormers,
 /// chimneys, openings and windows with bad numbers; parts counter-clockwise.
-fn cleaned(project: &Project) -> (Project, Slots) {
+fn cleaned(project: &Project) -> (Project, Slots, KeptIds) {
     let mut clean = project.clone();
     clean.parts.clear();
     // For each part: its index in `clean` and, if reversed, its edge count.
@@ -92,22 +119,45 @@ fn cleaned(project: &Project) -> (Project, Slots) {
         slots.push(Some((clean.parts.len(), reversed.then_some(p.edges.len()))));
         clean.parts.push(p);
     }
-    clean.dormers.retain(|d| {
-        d.end.x.is_finite()
-            && d.end.y.is_finite()
-            && d.edges.iter().all(|e| e.problems().next().is_none())
-    });
+    // Index in `project.dormers` of each dormer kept.
+    let dormer_ids: Vec<usize> = (0..clean.dormers.len())
+        .filter(|&i| {
+            let d = &clean.dormers[i];
+            d.end.x.is_finite()
+                && d.end.y.is_finite()
+                && d.edges.iter().all(|e| e.problems().next().is_none())
+        })
+        .collect();
+    clean.dormers = dormer_ids
+        .iter()
+        .map(|&i| project.dormers[i].clone())
+        .collect();
+    // Index in `project.parts` of each part in `clean`.
+    let part_ids: Vec<usize> = (0..slots.len()).filter(|&i| slots[i].is_some()).collect();
     let ok_poly = |c: &Chimney| {
         c.corners.len() >= 3 && c.corners.iter().all(|v| v.x.is_finite() && v.y.is_finite())
     };
-    clean.chimneys.retain(ok_poly);
-    clean.roof_openings.retain(ok_poly);
-    clean.windows.retain(|w| {
+    let ok_window = |w: &RoofWindow| {
         [w.x, w.y, w.width, w.height].iter().all(|v| v.is_finite())
             && w.width > 0.0
             && w.height > 0.0
-    });
-    (clean, slots)
+    };
+    // Index in `project` of each chimney, opening and window kept.
+    let kept = |ok: Vec<bool>| -> Vec<usize> { (0..ok.len()).filter(|&i| ok[i]).collect() };
+    let chimney_ids = kept(clean.chimneys.iter().map(ok_poly).collect());
+    let opening_ids = kept(clean.roof_openings.iter().map(ok_poly).collect());
+    let window_ids = kept(clean.windows.iter().map(ok_window).collect());
+    clean.chimneys.retain(ok_poly);
+    clean.roof_openings.retain(ok_poly);
+    clean.windows.retain(ok_window);
+    let ids = KeptIds {
+        parts: part_ids,
+        dormers: dormer_ids,
+        chimneys: chimney_ids,
+        openings: opening_ids,
+        windows: window_ids,
+    };
+    (clean, slots, ids)
 }
 
 /// The wall area of the project (DACAD's `Stena` group), `None` for a flat
@@ -116,7 +166,7 @@ pub fn wall_area(project: &Project) -> Option<f64> {
     if project.flat_roof {
         return None;
     }
-    let (clean, _) = cleaned(project);
+    let (clean, _, _) = cleaned(project);
     crate::engine::wall_area(&clean).ok()
 }
 
@@ -138,6 +188,18 @@ fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
         }
         Err(crate::engine::Failure::Ours(_)) => {}
     }
+    let mut geos = fallback(project);
+    // Not DACAD's result: say so, once for the job.
+    if let Some(g) = geos.first_mut() {
+        g.warnings
+            .push(RoofWarning::new(WarningKind::NotCalculatedByCore, 0.0));
+    }
+    geos
+}
+
+/// Tectora's own sweep engine, where the core path failed for a reason of
+/// ours.
+fn fallback(project: &Project) -> Vec<RoofGeometry> {
     // With two or more roofs DACAD joins the roofs it built one by one in
     // its "Modellverschnitt" stage, which replaces everything below.
     if let Some(geos) = crate::multiroof::generate(project) {
@@ -358,6 +420,7 @@ fn drop_covered_lines(geo: &mut RoofGeometry) {
             );
             let (left, right) = (top(pl), top(pr));
             // ... over a face below it.
+            #[allow(clippy::type_complexity)]
             let under = |p: Point2, over: Option<(&Plane, *const (Vec<Point2>, Plane, bool))>| {
                 over.is_some_and(|(o, _)| {
                     faces
@@ -539,7 +602,22 @@ pub(crate) fn inside(poly: &[Point2], p: Point2) -> bool {
 /// The window's corner lies on the face's boundary at the eave; test a
 /// point just inside it, up the slope and along the eave.
 pub(crate) fn apply_window(geos: &mut [RoofGeometry], w: &RoofWindow) {
-    for geo in geos.iter_mut() {
+    if let Some((g, k)) = window_face(geos, w) {
+        let geo = &mut geos[g];
+        let d = w.width * w.height;
+        geo.faces[k].area -= d;
+        geo.faces[k].deducted += d;
+        geo.openings.push(Opening {
+            kind: OpeningKind::Window,
+            area: d,
+        });
+    }
+}
+
+/// The face a window sits on: (geometry, face) of the first face that
+/// holds a point just inside the window's corner.
+pub(crate) fn window_face(geos: &[RoofGeometry], w: &RoofWindow) -> Option<(usize, usize)> {
+    for (g, geo) in geos.iter().enumerate() {
         let hit = geo.faces.iter().position(|face| {
             let (up, _) = slope(face);
             let along = Point2::new(up.y, -up.x);
@@ -553,16 +631,10 @@ pub(crate) fn apply_window(geos: &mut [RoofGeometry], w: &RoofWindow) {
             inside(&poly, probe(1.0)) || inside(&poly, probe(-1.0))
         });
         if let Some(k) = hit {
-            let d = w.width * w.height;
-            geo.faces[k].area -= d;
-            geo.faces[k].deducted += d;
-            geo.openings.push(Opening {
-                kind: OpeningKind::Window,
-                area: d,
-            });
-            return;
+            return Some((g, k));
         }
     }
+    None
 }
 
 /// Sutherland–Hodgman: `subject` clipped by the convex CCW polygon `clip`.

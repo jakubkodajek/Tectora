@@ -2,11 +2,12 @@
   // DACAD's dormer definition (Gaube definieren): type, width, position,
   // eave height and pitches of the selected dormer, docked like the wall bar.
   import Icon from "./Icon.svelte";
-  import { t } from "./i18n.svelte";
+  import { numberLocale, t } from "./i18n.svelte";
   import type { CalcResult, Dormer, Project } from "./types";
   import { materialIds, materialName } from "./materials";
   import { DORMER_KINDS, buildDormer, defaultParams, parseDormer, roofHeightAt, type DormerKind, type DormerParams } from "./dormers";
   import { MAX_ROUND_SEGMENTS } from "./roundroof";
+  import { formatNumber, numeric } from "./numeric.svelte";
 
   let {
     project,
@@ -40,10 +41,6 @@
   );
   const angleDeg = $derived(params ? +(((params.angle * 180) / Math.PI + 360) % 360).toFixed(2) : 0);
 
-  function num(e: Event): number | null {
-    const v = parseFloat((e.target as HTMLInputElement).value.replace(",", "."));
-    return Number.isFinite(v) ? v : null;
-  }
 
   function set(patch: Partial<DormerParams>) {
     if (!params) return;
@@ -89,28 +86,23 @@
       </label>
       <label>
         <span>{t("dormer.width")}</span>
-        <div class="unit"><input type="number" step="0.05" min="0.1" value={+params.width.toFixed(3)}
-          onchange={(e) => { const v = num(e); if (v && v > 0) set({ width: v }); }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ value: params.width, step: 0.05, min: 0.1, onchange: (v) => set({ width: v }) }} /><em>m</em></div>
       </label>
       <label>
         <span>X</span>
-        <div class="unit"><input type="number" step="0.05" value={params.start.x}
-          onchange={(e) => { const v = num(e); if (v !== null) set({ start: { ...params.start, x: v } }); }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ value: params.start.x, step: 0.05, onchange: (v) => set({ start: { ...params.start, x: v } }) }} /><em>m</em></div>
       </label>
       <label>
         <span>Y</span>
-        <div class="unit"><input type="number" step="0.05" value={params.start.y}
-          onchange={(e) => { const v = num(e); if (v !== null) set({ start: { ...params.start, y: v } }); }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ value: params.start.y, step: 0.05, onchange: (v) => set({ start: { ...params.start, y: v } }) }} /><em>m</em></div>
       </label>
       <label>
         <span>{t("edge.direction")}</span>
-        <div class="unit"><input type="number" step="1" value={angleDeg}
-          onchange={(e) => { const v = num(e); if (v !== null) set({ angle: (v * Math.PI) / 180 }); }} /><em>°</em></div>
+        <div class="unit"><input type="text" use:numeric={{ value: angleDeg, step: 1, onchange: (v) => set({ angle: (v * Math.PI) / 180 }) }} /><em>°</em></div>
       </label>
-      <label title={host !== null ? t("dormer.hostHint", { h: host.toFixed(2) }) : undefined}>
+      <label title={host !== null ? t("dormer.hostHint", { h: formatNumber(host, numberLocale(), 2) }) : undefined}>
         <span>{t("edge.eaveHeight")}</span>
-        <div class="unit"><input type="number" step="0.05" value={params.eave_height} disabled={kind === "pointed"}
-          onchange={(e) => { const v = num(e); if (v !== null) set({ eave_height: v }); }} /><em>m</em></div>
+        <div class="unit"><input type="text" disabled={kind === "pointed"} use:numeric={{ value: params.eave_height, step: 0.05, onchange: (v) => set({ eave_height: v }) }} /><em>m</em></div>
       </label>
       <label title={t("edge.materialHint")}>
         <span>{t("edge.material")}</span>
@@ -123,40 +115,34 @@
       {#if kind === "round"}
         <label>
           <span>{t("round.segments")}</span>
-          <input type="number" step="1" min="1" max={MAX_ROUND_SEGMENTS} value={params.segments}
-            onchange={(e) => { const v = num(e); if (v && v >= 1) set({ segments: Math.min(MAX_ROUND_SEGMENTS, Math.round(v)) }); }} />
+          <input type="text" use:numeric={{ value: params.segments, step: 1, min: 1, max: MAX_ROUND_SEGMENTS, onchange: (v) => set({ segments: Math.round(v) }) }} />
         </label>
       {/if}
       {#if kind !== "shed" && kind !== "round"}
         <label>
           <span>{kind === "trapezoid" ? t("dormer.cheekPitch") : t("edge.pitch")}</span>
-          <div class="unit"><input type="number" step="1" min="1" max="89" value={params.pitch_deg}
-            onchange={(e) => { const v = num(e); if (v && v > 0 && v < 90) set({ pitch_deg: v }); }} /><em>°</em></div>
+          <div class="unit"><input type="text" use:numeric={{ value: params.pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => set({ pitch_deg: v }) }} /><em>°</em></div>
         </label>
       {/if}
       {#if kind === "shed" || kind === "trapezoid"}
         <label>
           <span>{t("dormer.frontPitch")}</span>
-          <div class="unit"><input type="number" step="1" min="1" max="89" value={params.front_pitch_deg}
-            onchange={(e) => { const v = num(e); if (v && v > 0 && v < 90) set({ front_pitch_deg: v }); }} /><em>°</em></div>
+          <div class="unit"><input type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => set({ front_pitch_deg: v }) }} /><em>°</em></div>
         </label>
       {/if}
       {#if kind === "half_hip"}
         <label>
           <span>{t("dormer.halfHipHeight")}</span>
-          <div class="unit"><input type="number" step="0.05" min="0.05" value={params.half_hip_height}
-            onchange={(e) => { const v = num(e); if (v && v > 0) set({ half_hip_height: v }); }} /><em>m</em></div>
+          <div class="unit"><input type="text" use:numeric={{ value: params.half_hip_height, step: 0.05, min: 0.05, onchange: (v) => set({ half_hip_height: v }) }} /><em>m</em></div>
         </label>
         <label>
           <span>{t("edge.halfHipPitch")}</span>
-          <div class="unit"><input type="number" step="1" min="1" max="89" value={params.half_hip_pitch_deg}
-            onchange={(e) => { const v = num(e); if (v && v > 0 && v < 90) set({ half_hip_pitch_deg: v }); }} /><em>°</em></div>
+          <div class="unit"><input type="text" use:numeric={{ value: params.half_hip_pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => set({ half_hip_pitch_deg: v }) }} /><em>°</em></div>
         </label>
       {/if}
       <label>
         <span>{t("edge.overhang")}</span>
-        <div class="unit"><input type="number" step="0.05" min="0" value={params.overhang}
-          onchange={(e) => { const v = num(e); if (v !== null && v >= 0) set({ overhang: v }); }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ value: params.overhang, step: 0.05, min: 0, onchange: (v) => set({ overhang: v }) }} /><em>m</em></div>
       </label>
     {/if}
     <div class="spacer"></div>

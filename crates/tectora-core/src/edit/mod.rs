@@ -16,6 +16,7 @@ use crate::model::{EdgeDef, HalfHip, PitchBreak, Project};
 
 pub mod calc;
 pub mod dormers;
+pub mod height;
 pub mod probe;
 pub mod round;
 pub mod transform;
@@ -117,7 +118,8 @@ pub fn apply_patches(edges: &mut [EdgeDef], patches: &Patches) -> Patches {
     applied
 }
 
-/// Rounds to `digits` decimals, as the editor's `+v.toFixed(digits)`.
+/// Rounds to `digits` decimals, halves away from zero; the editor rounds the
+/// same way (`app/src/lib/rounding.ts`, checked by `tests/edit_parity.rs`).
 pub(crate) fn round_to(v: f64, digits: i32) -> f64 {
     let f = 10f64.powi(digits);
     (v * f).round() / f
@@ -148,6 +150,95 @@ pub fn clear_roof(project: &mut Project) -> bool {
     project.manual_lines.clear();
     project.manual_faces.clear();
     had
+}
+
+/// A roof window whose `width × height` is more than what is left of the
+/// roof face it sits on (after the windows before it): its deduction would
+/// make the face area negative.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct OversizeWindow {
+    /// Index of the window in `project.windows`.
+    pub index: usize,
+    /// The window's area, `width × height`, m².
+    pub area: f64,
+    /// What is left of its face before it is deducted, m².
+    pub face_area: f64,
+}
+
+impl std::fmt::Display for OversizeWindow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "roof window {} ({:.2} m2) is larger than what is left of the roof face it sits on ({:.2} m2); check its width and height (m, in the roof plane) and its position",
+            self.index, self.area, self.face_area
+        )
+    }
+}
+
+/// Refuses roof windows larger than their face, before they are saved
+/// (the editor's window fields and MCP `set_openings`). DACAD deducts a
+/// window's `width × height` from its face whatever its size, and the
+/// calculation keeps that; a window that does not fit is a typing error
+/// (cm for m, width and height swapped). A window on no roof face deducts
+/// nothing and is not refused.
+pub fn check_windows(project: &Project) -> Result<(), OversizeWindow> {
+    if project.windows.is_empty() {
+        return Ok(());
+    }
+    let mut bare = project.clone();
+    bare.windows.clear();
+    let mut geos = crate::openings::generate_project(&bare);
+    for (index, w) in project.windows.iter().enumerate() {
+        let Some((g, k)) = crate::openings::window_face(&geos, w) else {
+            continue;
+        };
+        let area = w.width * w.height;
+        let face = &mut geos[g].faces[k];
+        if area > face.area + crate::check::OVERCUT_TOL {
+            return Err(OversizeWindow {
+                index,
+                area,
+                face_area: face.area.max(0.0),
+            });
+        }
+        face.area -= area;
+    }
+    Ok(())
+}
+
+/// Turns hand-drawn face `index` into a building with the same outline:
+/// the face (which only adds its area and calculates no roof) is removed
+/// and a part named `name` takes its place, every wall an eave with the
+/// given pitch, eave height and overhang, so its roof is calculated. One
+/// change, as the editor's "Make it a building". Returns the new part's
+/// index.
+pub fn face_to_part(
+    project: &mut Project,
+    index: usize,
+    name: &str,
+    pitch_deg: f64,
+    eave_height: f64,
+    overhang: f64,
+) -> Result<usize, String> {
+    let face = project
+        .manual_faces
+        .get(index)
+        .ok_or_else(|| format!("no hand-drawn face {index}"))?;
+    if face.points.len() < 3 {
+        return Err(format!("hand-drawn face {index} has fewer than 3 corners"));
+    }
+    let mut part = crate::model::RoofPart {
+        name: name.to_string(),
+        edges: face
+            .points
+            .iter()
+            .map(|&p| plain_edge(p, pitch_deg, eave_height, overhang))
+            .collect(),
+    };
+    part.normalize_ccw();
+    project.manual_faces.remove(index);
+    project.parts.push(part);
+    Ok(project.parts.len() - 1)
 }
 
 /// A wall with the given start and roof values and nothing else set.
@@ -199,5 +290,98 @@ mod tests {
         assert!(p.validate().is_ok());
         // Nothing left to remove.
         assert!(!clear_roof(&mut p));
+    }
+
+    fn gable_12x8() -> Project {
+        let mut p = Project::new("gable");
+        p.parts.push(crate::examples::standard_roof(
+            crate::examples::StandardRoof::Gable,
+            12.0,
+            8.0,
+            40.0,
+            3.0,
+            0.0,
+        ));
+        p
+    }
+
+    #[test]
+    fn a_window_larger_than_its_face_is_refused() {
+        use crate::model::RoofWindow;
+        let mut p = gable_12x8();
+        p.windows.push(RoofWindow {
+            x: 1.0,
+            y: 0.0,
+            width: 0.78,
+            height: 1.18,
+        });
+        assert_eq!(check_windows(&p), Ok(()));
+        // 10 × 9 m on a face of 12 × 5.22 m (MATH-001).
+        p.windows.push(RoofWindow {
+            x: 1.0,
+            y: 0.0,
+            width: 10.0,
+            height: 9.0,
+        });
+        let e = check_windows(&p).unwrap_err();
+        assert_eq!(e.index, 1);
+        assert!((e.area - 90.0).abs() < 1e-9);
+        assert!(e.face_area > 60.0 && e.face_area < 63.0, "{}", e.face_area);
+        assert!(e.to_string().contains("roof window 1"));
+        // Windows that fit one by one but not together.
+        p.windows[1] = RoofWindow {
+            x: 3.0,
+            y: 0.0,
+            width: 8.0,
+            height: 7.0,
+        };
+        assert!(check_windows(&p).is_ok());
+        p.windows.push(RoofWindow {
+            x: 4.0,
+            y: 0.0,
+            width: 2.0,
+            height: 5.0,
+        });
+        assert_eq!(check_windows(&p).unwrap_err().index, 2);
+    }
+
+    #[test]
+    fn a_window_beside_the_roof_is_not_refused() {
+        let mut p = gable_12x8();
+        p.windows.push(crate::model::RoofWindow {
+            x: 40.0,
+            y: 40.0,
+            width: 10.0,
+            height: 10.0,
+        });
+        assert!(check_windows(&p).is_ok());
+    }
+
+    #[test]
+    fn a_face_becomes_a_building_in_one_change() {
+        use crate::model::ManualFace;
+        let mut p = Project::new("face");
+        let pt = Point2::new;
+        // Clockwise, as a face may be drawn.
+        p.manual_faces.push(ManualFace {
+            points: vec![pt(0.0, 0.0), pt(0.0, 8.0), pt(12.0, 8.0), pt(12.0, 0.0)],
+            pitch_deg: 30.0,
+            label: String::new(),
+        });
+        assert!(crate::openings::generate_project(&p).is_empty());
+        let i = face_to_part(&mut p, 0, "Main", 40.0, 3.0, 0.5).unwrap();
+        assert_eq!(i, 0);
+        assert!(p.manual_faces.is_empty());
+        assert_eq!(p.parts[0].name, "Main");
+        assert!(crate::geom::signed_area(&p.parts[0].outline()) > 0.0);
+        assert!(
+            p.parts[0]
+                .edges
+                .iter()
+                .all(|e| e.pitch_deg == 40.0 && e.overhang == 0.5)
+        );
+        let geo = &crate::openings::generate_project(&p)[0];
+        assert!(geo.error.is_none() && !geo.faces.is_empty());
+        assert!(face_to_part(&mut p, 0, "x", 40.0, 3.0, 0.5).is_err());
     }
 }

@@ -17,7 +17,7 @@ use tectora_core::diff::Change;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::settings::{self, Settings};
 use tectora_core::store::{self, BrokenFile, LiveStatus, Store, USER_ACTOR, outlines};
-use tectora_core::{Project, assistants, bundle, examples, snapshot};
+use tectora_core::{Project, assistants, bundle, commands, examples, snapshot};
 
 use error::{AppError, guard};
 
@@ -28,6 +28,9 @@ struct AppState {
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
     /// A job opened from a file (double-click) before the UI asked for it.
     pending_open: Mutex<Option<String>>,
+    /// Files that did not open before the UI asked (start-up arguments);
+    /// later ones go to the UI as `open-failed` events.
+    open_errors: Mutex<Vec<AppError>>,
     /// Why the folder watcher could not start (AI and CLI edits then do not
     /// show up live).
     watcher_error: Mutex<Option<String>>,
@@ -72,15 +75,24 @@ fn list_projects(state: State<AppState>) -> CmdResult<Library> {
     })
 }
 
-/// Problems found at startup that the user should know about.
+/// Problems found at startup that the user should know about: a damaged
+/// settings file (the defaults, so another jobs folder, are in use, ERR-005)
+/// and a folder watcher that could not start.
 #[tauri::command]
 fn startup_warnings(state: State<AppState>) -> Vec<AppError> {
-    state
-        .watcher_error
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .map(|d| AppError::new("watcher").detail(d.clone()))
+    let settings = Settings::load_checked()
+        .1
+        .map(|d| AppError::new("settings_unreadable").detail(d));
+    settings
+        .into_iter()
+        .chain(
+            state
+                .watcher_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .map(|d| AppError::new("watcher").detail(d.clone())),
+        )
         .collect()
 }
 
@@ -93,7 +105,7 @@ struct ActivityItem {
 }
 
 /// Recorded changes of a project, newest first.
-#[tauri::command]
+#[tauri::command(async)]
 fn project_activity(state: State<AppState>, id: String) -> Vec<ActivityItem> {
     let mut out: Vec<ActivityItem> = state
         .store()
@@ -110,20 +122,22 @@ fn project_activity(state: State<AppState>, id: String) -> Vec<ActivityItem> {
     out
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn revert_last_change(state: State<AppState>, id: String) -> CmdResult<Project> {
-    guard(|| Ok(state.store().revert_last(&id, USER_ACTOR)?))
+    guard(|| Ok(state.store().revert_last(&id, USER_ACTOR, None)?))
 }
 
 /// Undoes the change recorded at `ts_ms` and everything after it.
-#[tauri::command]
+#[tauri::command(async)]
 fn revert_changes(state: State<AppState>, id: String, ts_ms: u64) -> CmdResult<Project> {
-    guard(|| Ok(state.store().revert_to(&id, ts_ms, USER_ACTOR)?))
+    guard(|| Ok(state.store().revert_to(&id, ts_ms, USER_ACTOR, None)?))
 }
 
 /// The AI changes of `id` waiting for review, with the version before them
-/// and what they did to the figures.
-#[tauri::command]
+/// and what they did to the figures. Async like every command below that
+/// calculates a roof or copies files: a command without it runs on the
+/// window's main thread and freezes the window meanwhile (ARCH-003).
+#[tauri::command(async)]
 fn review_status(state: State<AppState>, id: String) -> CmdResult<Option<store::ReviewStatus>> {
     guard(|| Ok(state.store().review_status(&id)?))
 }
@@ -180,6 +194,20 @@ fn save_project(state: State<AppState>, id: Option<String>, project: Project) ->
     guard(|| Ok(state.store().save(id, &project)?))
 }
 
+/// Saves the editor's edits only if the file still holds `base`, the
+/// version the editor last read or wrote (`Store::save_checked`); otherwise
+/// answers `conflict` with the current file, for the editor to merge its
+/// edits onto and save again, so an AI save in between is never lost.
+#[tauri::command(async)]
+fn save_project_checked(
+    state: State<AppState>,
+    id: String,
+    project: Project,
+    base: Project,
+) -> CmdResult<tectora_core::store::CheckedSave> {
+    guard(|| Ok(state.store().save_checked(&id, &project, &base)?))
+}
+
 /// The project as the store writes and reads it (defaults, nulls and empty
 /// lists dropped), without touching the file. The editor compares file
 /// changes with this to tell its own saves from external edits.
@@ -188,14 +216,21 @@ fn normalize_project(project: Project) -> Project {
     project
 }
 
-#[tauri::command]
+/// Moves the job to the library's trash (`Store::delete`), from where the
+/// MCP `restore_project` tool or the file manager brings it back.
+#[tauri::command(async)]
 fn delete_project(state: State<AppState>, id: String) -> CmdResult<()> {
-    guard(|| Ok(state.store().delete(&id)?))
+    guard(|| {
+        state
+            .store()
+            .delete(&id, USER_ACTOR, "Deleted in the app")?;
+        Ok(())
+    })
 }
 
 /// A copy is a new variant: draft, no stored result, the same files. With
 /// `job` it starts a new job for another customer from a past roof.
-#[tauri::command]
+#[tauri::command(async)]
 fn duplicate_project(
     state: State<AppState>,
     id: String,
@@ -219,7 +254,7 @@ fn list_attachments(state: State<AppState>, id: String) -> Vec<store::Attachment
     state.store().attachments(&id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn attach_files(state: State<AppState>, id: String, paths: Vec<String>) -> CmdResult<Vec<String>> {
     guard(|| {
         Ok(paths
@@ -229,9 +264,14 @@ fn attach_files(state: State<AppState>, id: String, paths: Vec<String>) -> CmdRe
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn remove_attachment(state: State<AppState>, id: String, name: String) -> CmdResult<()> {
-    guard(|| Ok(state.store().remove_attachment(&id, &name)?))
+    guard(|| {
+        state
+            .store()
+            .remove_attachment(&id, &name, USER_ACTOR, "Removed in the app")?;
+        Ok(())
+    })
 }
 
 /// Opens an attached file in the system's default app; returns false when
@@ -330,7 +370,7 @@ fn save_png(path: String, bytes: Vec<u8>) -> CmdResult<()> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn import_job(state: State<AppState>, path: String) -> CmdResult<String> {
     guard(|| Ok(bundle::open_path(&state.store(), &PathBuf::from(path))?))
 }
@@ -339,12 +379,7 @@ fn import_job(state: State<AppState>, path: String) -> CmdResult<String> {
 /// `calc`: it runs the whole roof kernel (ERR-008).
 #[tauri::command(async)]
 fn take_snapshot(project: Project) -> CmdResult<snapshot::ResultSnapshot> {
-    guard(|| {
-        snapshot::take_checked(&project).map_err(|e| match e {
-            snapshot::Refused::OutOfRange(d) => AppError::new("out_of_range").detail(d),
-            snapshot::Refused::Internal(d) => AppError::new("internal").detail(d),
-        })
-    })
+    guard(|| Ok(commands::take_snapshot(&project)?))
 }
 
 /// The job opened from a file at start-up, once.
@@ -353,7 +388,20 @@ fn take_pending_open(state: State<AppState>) -> Option<String> {
     state.pending_open.lock().ok()?.take()
 }
 
+/// Files that did not open, each once: the UI takes them when it starts
+/// and on every `open-failed` event, so none is lost or shown twice.
 #[tauri::command]
+fn take_open_errors(state: State<AppState>) -> Vec<AppError> {
+    state
+        .open_errors
+        .lock()
+        .map(|mut q| std::mem::take(&mut *q))
+        .unwrap_or_default()
+}
+
+// Tauri passes each command argument separately from the UI's object.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command(async)]
 fn create_standard(
     state: State<AppState>,
     name: String,
@@ -400,7 +448,7 @@ fn standard_part(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_examples() -> Vec<ExampleInfo> {
     examples::EXAMPLES
         .iter()
@@ -414,7 +462,7 @@ fn list_examples() -> Vec<ExampleInfo> {
         .collect()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn create_from_example(
     state: State<AppState>,
     example_id: String,
@@ -431,7 +479,7 @@ fn create_from_example(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn new_project(state: State<AppState>, name: String) -> CmdResult<String> {
     guard(|| {
         let mut project = examples::find("gable").expect("built-in example").project();
@@ -446,33 +494,57 @@ fn new_project(state: State<AppState>, name: String) -> CmdResult<String> {
 /// Runs off the main thread so a slow roof never freezes the window, and
 /// reports out-of-range input (`out_of_range`) or a kernel panic
 /// (`internal`) as an error instead of crashing the app (a panic on the
-/// main thread aborts it).
+/// main thread aborts it). The body is `tectora_core::commands::calc`,
+/// shared with the browser preview and tested there.
 #[tauri::command(async)]
 fn calc(project: Project) -> CmdResult<Value> {
-    guard(|| {
-        project
-            .check_limits()
-            .map_err(|d| AppError::new("out_of_range").detail(d))?;
-        let mut v = tectora_core::model::guarded(|| tectora_core::report::calc(&project))
-            .map_err(|d| AppError::new("internal").detail(d))?;
-        v["stored_result"] =
-            serde_json::to_value(snapshot::status(&project)).unwrap_or(Value::Null);
-        Ok(v)
-    })
+    guard(|| Ok(commands::calc(&project)?))
 }
 
 /// How every face area and line length was calculated, step by step
 /// (`tectora_core::breakdown`), with the same guards as `calc`.
 #[tauri::command(async)]
 fn calc_breakdown(project: Project) -> CmdResult<Value> {
+    guard(|| Ok(commands::calc_breakdown(&project)?))
+}
+
+/// The first roof window larger than what is left of its face
+/// (`tectora_core::edit::check_windows`), or null; the editor refuses such
+/// a window, as MCP `set_openings` does.
+#[tauri::command(async)]
+fn check_windows(project: Project) -> CmdResult<Option<tectora_core::edit::OversizeWindow>> {
     guard(|| {
-        project
-            .check_limits()
-            .map_err(|d| AppError::new("out_of_range").detail(d))?;
-        let b = tectora_core::model::guarded(|| tectora_core::breakdown::breakdown(&project))
-            .map_err(|d| AppError::new("internal").detail(d))?;
-        Ok(serde_json::to_value(b).unwrap_or(Value::Null))
+        commands::check_input(&project)?;
+        tectora_core::model::guarded(|| tectora_core::edit::check_windows(&project).err())
+            .map_err(|d| AppError::new("internal").detail(d))
     })
+}
+
+/// The editor's "Make it a building": hand-drawn face `index` replaced by a
+/// part of the same outline (`tectora_core::edit::face_to_part`, the MCP
+/// tool's operation).
+#[tauri::command]
+fn face_to_part(
+    mut project: Project,
+    index: usize,
+    name: String,
+    pitch_deg: f64,
+    eave_height: f64,
+    overhang: f64,
+) -> CmdResult<Project> {
+    tectora_core::edit::face_to_part(&mut project, index, &name, pitch_deg, eave_height, overhang)
+        .map_err(|d| AppError::new("invalid_input").detail(d))?;
+    Ok(project)
+}
+
+/// The editor's "Building height": every wall of part `part` at
+/// `eave_height`, its breaks, half-hips and the objects on it moved with it
+/// (`tectora_core::edit::height::set_part_height`, the MCP tool's operation).
+#[tauri::command]
+fn set_part_height(mut project: Project, part: usize, eave_height: f64) -> CmdResult<Project> {
+    tectora_core::edit::height::set_part_height(&mut project, part, eave_height)
+        .map_err(|d| AppError::new("invalid_input").detail(d))?;
+    Ok(project)
 }
 
 /// Settings plus the folders in use (see `Settings::describe`).
@@ -571,12 +643,11 @@ fn start_watcher(
                             live = true;
                         } else if name == Some(settings::SETTINGS_FILE) {
                             settings_changed = true;
-                        } else if p.extension().and_then(|e| e.to_str()) == Some(store::EXTENSION) {
-                            if let Some(id) = p.file_stem().and_then(|s| s.to_str()) {
-                                if !ids.iter().any(|i| i == id) {
-                                    ids.push(id.to_string());
-                                }
-                            }
+                        } else if p.extension().and_then(|e| e.to_str()) == Some(store::EXTENSION)
+                            && let Some(id) = p.file_stem().and_then(|s| s.to_str())
+                            && !ids.iter().any(|i| i == id)
+                        {
+                            ids.push(id.to_string());
                         }
                     }
                 }
@@ -594,10 +665,8 @@ fn start_watcher(
                 // May replace this watcher; this thread then ends on its own.
                 let _ = switch_library(&handle, &s);
             }
-            if live {
-                if let Some(status) = handle.state::<AppState>().store().live() {
-                    let _ = handle.emit("live-status", status);
-                }
+            if live && let Some(status) = handle.state::<AppState>().store().live() {
+                let _ = handle.emit("live-status", status);
             }
         }
     });
@@ -609,14 +678,18 @@ fn start_watcher(
 /// one is shown.
 fn open_files(app: &tauri::AppHandle, paths: impl IntoIterator<Item = PathBuf>) {
     let state = app.state::<AppState>();
-    let mut last = None;
-    for p in paths {
-        match bundle::open_path(&state.store(), &p) {
-            Ok(id) => last = Some(id),
-            Err(e) => eprintln!("open {}: {e}", p.display()),
+    let opened = bundle::open_paths(&state.store(), paths);
+    // A file that does not open is told to the user like a failed import
+    // (ERR-006), not only written to stderr, which a GUI app has none of.
+    for (p, e) in opened.failed {
+        eprintln!("open {}: {e}", p.display());
+        let err = AppError::from(e);
+        if let Ok(mut queued) = state.open_errors.lock() {
+            queued.push(err.clone());
         }
+        let _ = app.emit("open-failed", err);
     }
-    if let Some(id) = last {
+    if let Some(id) = opened.last {
         if let Ok(mut pending) = state.pending_open.lock() {
             *pending = Some(id.clone());
         }
@@ -729,8 +802,10 @@ pub fn run() {
                     }
                 }
             };
-            if store.list().is_empty() {
-                // First run: seed the library with a couple of examples.
+            // First run: seed the library with a couple of examples. Not
+            // when the settings are damaged: the folder is then the default
+            // one, not the user's (ERR-005).
+            if store.list().is_empty() && Settings::load_checked().1.is_none() {
                 for id in ["gable", "l-shape"] {
                     if let Some(ex) = examples::find(id) {
                         let _ = store.save(None, &ex.project());
@@ -741,6 +816,7 @@ pub fn run() {
                 store: RwLock::new(store),
                 watcher: Mutex::new(None),
                 pending_open: Mutex::new(None),
+                open_errors: Mutex::new(Vec::new()),
                 watcher_error: Mutex::new(None),
             });
             set_watcher(app.handle(), dir);
@@ -751,8 +827,10 @@ pub fn run() {
             projects_dir,
             list_projects,
             startup_warnings,
+            take_open_errors,
             load_project,
             save_project,
+            save_project_checked,
             normalize_project,
             delete_project,
             duplicate_project,
@@ -772,6 +850,9 @@ pub fn run() {
             new_project,
             calc,
             calc_breakdown,
+            check_windows,
+            face_to_part,
+            set_part_height,
             list_attachments,
             attach_files,
             remove_attachment,
@@ -798,4 +879,35 @@ pub fn run() {
             open_files(_app, urls.into_iter().filter_map(|u| u.to_file_path().ok()));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    /// Commands that calculate a roof (twice for `review_status`) or read and
+    /// copy whole files must not run on the window's main thread (ARCH-003).
+    #[test]
+    fn slow_commands_run_off_the_main_thread() {
+        let src = include_str!("lib.rs");
+        for name in [
+            "list_projects",
+            "review_status",
+            "revert_last_change",
+            "revert_changes",
+            "duplicate_project",
+            "delete_project",
+            "attach_files",
+            "remove_attachment",
+            "import_job",
+            "export_job",
+            "list_examples",
+            "calc",
+            "calc_breakdown",
+            "take_snapshot",
+        ] {
+            assert!(
+                src.contains(&format!("#[tauri::command(async)]\nfn {name}(")),
+                "`{name}` must be #[tauri::command(async)]"
+            );
+        }
+    }
 }
