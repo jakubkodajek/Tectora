@@ -10,6 +10,7 @@
   import { m2, relativeTime } from "./format";
   import { notifyError } from "./notify.svelte";
   import { t } from "./i18n.svelte";
+  import { tabIds, tablist } from "./tabs";
   import type { ExampleInfo, ProjectSummary, RoofPart } from "./types";
   import { emptyProject } from "./types";
 
@@ -30,6 +31,7 @@
     onclose: () => void;
     oncreated: (id: string) => void;
   } = $props();
+  const ids = tabIds("newjob");
 
   let name = $state("");
   let number = $state("");
@@ -92,13 +94,14 @@
     <label class="wide"><span>{t("job.address")}</span><input type="text" bind:value={address} /></label>
   </div>
 
-  <div class="tabs" role="tablist">
-    <button role="tab" aria-selected={start === "standard"} class:on={start === "standard"} onclick={() => (start = "standard")}>{t("new.standard")}</button>
-    <button role="tab" aria-selected={start === "example"} class:on={start === "example"} onclick={() => (start = "example")}>{t("new.example")}</button>
-    <button role="tab" aria-selected={start === "past"} class:on={start === "past"} onclick={() => (start = "past")}>{t("new.past")}</button>
-    <button role="tab" aria-selected={start === "draw"} class:on={start === "draw"} onclick={() => (start = "draw")}>{t("new.draw")}</button>
+  <div class="tabs" role="tablist" use:tablist>
+    <button role="tab" id={ids.tab("standard")} aria-controls={ids.panel} aria-selected={start === "standard"} class:on={start === "standard"} onclick={() => (start = "standard")}>{t("new.standard")}</button>
+    <button role="tab" id={ids.tab("example")} aria-controls={ids.panel} aria-selected={start === "example"} class:on={start === "example"} onclick={() => (start = "example")}>{t("new.example")}</button>
+    <button role="tab" id={ids.tab("past")} aria-controls={ids.panel} aria-selected={start === "past"} class:on={start === "past"} onclick={() => (start = "past")}>{t("new.past")}</button>
+    <button role="tab" id={ids.tab("draw")} aria-controls={ids.panel} aria-selected={start === "draw"} class:on={start === "draw"} onclick={() => (start = "draw")}>{t("new.draw")}</button>
   </div>
 
+  <div role="tabpanel" id={ids.panel} aria-labelledby={ids.tab(start)}>
   {#if start === "standard"}
     <StandardRoofForm bind:part />
   {:else if start === "example"}
@@ -140,6 +143,7 @@
   {:else}
     <p class="draw">{t("new.drawHint")}</p>
   {/if}
+  </div>
 
   {#snippet footer()}
     <button class="btn" onclick={onclose}>{t("common.cancel")}</button>

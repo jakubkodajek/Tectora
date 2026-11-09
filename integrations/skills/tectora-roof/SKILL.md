@@ -45,10 +45,14 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
 5. Search with `list_projects` (customer, address, job number) so you edit the
    existing job instead of creating a duplicate. A similar roof made before
    can be the starting point: `duplicate_project` with the new `job` data and
-   `with_files: false`.
+   `with_files: false`. Jobs listed under `broken` cannot be read (damaged or
+   from a newer Tectora): tell the user instead of starting a new one.
 6. Build in the six steps of the guide: read and check, then one save each for
    footprint (with job data, then attach the drawings), roof definition,
    dormers, chimneys and windows, and the check report in the job notes.
+   A wing whose eave is lower or higher than the main roof's gets its
+   height with `set_part_height` (all its walls in one save); the roofs
+   are joined by those eave heights.
    Each `summary` is one sentence in the user's language
    naming the sheet, e.g. "Sklon uliční strany 42° podle řezu A-A".
 7. In the check step first look at the roof over the drawing:
@@ -62,7 +66,12 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    what you assumed and what they should look at in the highlighted
    changes in Tectora. When the user asks how a number came about,
    `calc_breakdown` gives every face (plan area / cos pitch − openings) and
-   every line with its 3D length.
+   every line with its 3D length. Tell the user about every part's
+   `warnings` and `error` from `calc` (the guide's "Warnings and errors"):
+   a `covered` part has no roof of its own (move or delete it), a
+   `dormer_off_roof` dormer and a `window_off_roof`, `chimney_off_roof` or
+   `opening_off_roof` object are not counted, `cut_exceeds_face` means a face
+   lost more than it has; never bend the input to make a warning go away.
 8. When the roof is approved and the user wants it for the offer,
    `export_plan` writes the roof sheet (PDF) and `export_list` returns the
    text for the Excel price sheet; give the text verbatim.

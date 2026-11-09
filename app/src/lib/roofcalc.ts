@@ -6,13 +6,14 @@
 
 import type { CalcResult, EdgeDef, Point2 } from "./types";
 import { isGable, isMarker } from "./types";
+import { roundTo } from "./rounding";
 
 export type CalcTarget = "pitch" | "eave" | "overhang";
 
 const DEG = Math.PI / 180;
 const tan = (deg: number) => Math.tan(deg * DEG);
 const atanDeg = (v: number) => Math.atan(v) / DEG;
-const round = (v: number, d = 4) => +v.toFixed(d);
+const round = (v: number, d = 4) => roundTo(v, d);
 
 /** Wall `i`'s line: start, unit direction and inward normal (the roof rises to the left). */
 export function wallFrame(edges: EdgeDef[], i: number) {
@@ -404,6 +405,25 @@ export function mergeOnto(edges: EdgeDef[], ref: number, walls: number[], target
     out.set(i, patch);
   }
   return out;
+}
+
+/**
+ * Flächen zusammenfassen with target position: each wall moves until its
+ * eave (at its overhang) lies on the reference wall's plane, as
+ * tectora-core `edit::calc::merge_by_moving`.
+ */
+export function mergeByMoving(edges: EdgeDef[], ref: number, walls: number[]): Map<number, Partial<EdgeDef>> | null {
+  const e = edges[ref];
+  const tr = tan(e.pitch_deg);
+  if (!(tr > 0)) return null;
+  const moves = walls
+    .filter((k) => k !== ref)
+    .map((k) => {
+      const s = inward(edges, ref, edges[k].start);
+      const want = (edges[k].eave_height - e.eave_height) / tr + edges[k].overhang - e.overhang;
+      return combine(moveWall(edges, k, want - s), new Map([[k, { pitch_deg: e.pitch_deg }]]));
+    });
+  return combine(...moves);
 }
 
 /** Walls of the outline parallel to wall `i` and facing the same way. */

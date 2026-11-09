@@ -21,6 +21,9 @@ launched you (it gives the review run folder).
    and `docs/design/` if present.
 2. `.claude/skills/tectora-review/board.md`: the shared findings protocol.
    Follow it exactly. Your file is `target/review/<run>/ux.md`.
+2b. `.claude/skills/tectora-review/edge-cases.md`: bug classes the user
+   has already hit. Run every check of class 3 and 4 yourself (preview or E2E,
+   not only reading) and file each failure; skim the other classes.
 3. `.claude/skills/tectora-ui-preview/SKILL.md`: how to run the app in a
    browser against the real core and take screenshots.
 4. The other reviewers' files in the run folder.

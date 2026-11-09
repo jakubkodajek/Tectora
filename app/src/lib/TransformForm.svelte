@@ -7,6 +7,7 @@
   import type { RoofPart } from "./types";
   import { isMarker } from "./types";
   import { mirror, partCentre, rotation, translation, type TransformMode, type TransformOp } from "./transform";
+  import { numeric } from "./numeric.svelte";
 
   let {
     part,
@@ -48,23 +49,23 @@
   <p class="hint">{t(`xf.${mode}Hint`)}</p>
   <div class="fields">
     {#if mode === "move"}
-      <label><span>{t("xf.dx")}</span><div class="unit"><input type="number" step="0.1" bind:value={dx} /><em>m</em></div></label>
-      <label><span>{t("xf.dy")}</span><div class="unit"><input type="number" step="0.1" bind:value={dy} /><em>m</em></div></label>
+      <label><span>{t("xf.dx")}</span><div class="unit"><input type="text" use:numeric={{ value: dx, step: 0.1, live: true, onchange: (v) => (dx = v) }} /><em>m</em></div></label>
+      <label><span>{t("xf.dy")}</span><div class="unit"><input type="text" use:numeric={{ value: dy, step: 0.1, live: true, onchange: (v) => (dy = v) }} /><em>m</em></div></label>
     {:else if mode === "rotate" || mode === "mirror"}
       {#if mode === "rotate"}
-        <label><span>{t("xf.angle")}</span><div class="unit"><input type="number" step="1" bind:value={angle} /><em>°</em></div></label>
+        <label><span>{t("xf.angle")}</span><div class="unit"><input type="text" use:numeric={{ value: angle, step: 1, live: true, onchange: (v) => (angle = v) }} /><em>°</em></div></label>
       {:else}
-        <label><span>{t("xf.axis")}</span><div class="unit"><input type="number" step="1" bind:value={axis} /><em>°</em></div></label>
+        <label><span>{t("xf.axis")}</span><div class="unit"><input type="text" use:numeric={{ value: axis, step: 1, live: true, onchange: (v) => (axis = v) }} /><em>°</em></div></label>
       {/if}
-      <label><span>{t("xf.cx")}</span><div class="unit"><input type="number" step="0.1" bind:value={cx} /><em>m</em></div></label>
-      <label><span>{t("xf.cy")}</span><div class="unit"><input type="number" step="0.1" bind:value={cy} /><em>m</em></div></label>
+      <label><span>{t("xf.cx")}</span><div class="unit"><input type="text" use:numeric={{ value: cx, step: 0.1, live: true, onchange: (v) => (cx = v) }} /><em>m</em></div></label>
+      <label><span>{t("xf.cy")}</span><div class="unit"><input type="text" use:numeric={{ value: cy, step: 0.1, live: true, onchange: (v) => (cy = v) }} /><em>m</em></div></label>
     {:else}
-      <label><span>{t("xf.dist")}</span><div class="unit"><input type="number" step="0.05" bind:value={dist} /><em>m</em></div></label>
+      <label><span>{t("xf.dist")}</span><div class="unit"><input type="text" use:numeric={{ value: dist, step: 0.05, live: true, onchange: (v) => (dist = v) }} /><em>m</em></div></label>
     {/if}
     {#if mode !== "wall"}
       <label title={t("xf.copiesHint")}>
         <span>{t("xf.copies")}</span>
-        <input type="number" step="1" min="0" max={mode === "mirror" ? 1 : 50} bind:value={copies} />
+        <input type="text" use:numeric={{ value: copies, step: 1, min: 0, live: true, onchange: (v) => (copies = v) }} />
       </label>
     {/if}
   </div>

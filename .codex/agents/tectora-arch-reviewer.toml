@@ -13,6 +13,8 @@ repository and in the prompt that launched you (it gives the run folder).
 1. `AGENTS.md` (stack, layout, rules), `README.md`, `docs/ai-integration.md`.
 2. `.claude/skills/tectora-review/board.md`: the shared findings protocol.
    Follow it exactly. Your file is `target/review/<run>/arch.md`.
+2b. `.claude/skills/tectora-review/edge-cases.md`: bug classes the user
+   has already hit; flag designs that make them easy to repeat.
 3. The other reviewers' files in the run folder.
 
 ## Part A: architecture

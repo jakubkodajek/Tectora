@@ -952,7 +952,7 @@ pub fn to_geometries(project: &Project, map: &Rd2Map, out: &modell::Output) -> V
         }
         faces.push(face);
     }
-    sol_geometries(
+    let mut geos = sol_geometries(
         project,
         map,
         &SolResult {
@@ -960,7 +960,31 @@ pub fn to_geometries(project: &Project, map: &Rd2Map, out: &modell::Output) -> V
             faces,
             negative_lines: NegativeLines::Drop,
         },
-    )
+    );
+    for (a, b) in joins(map, out) {
+        for (x, y) in [(a, b), (b, a)] {
+            if let Some(g) = geos.get_mut(x)
+                && !g.joined_with.contains(&y)
+            {
+                g.joined_with.push(y);
+            }
+        }
+    }
+    for g in &mut geos {
+        g.joined_with.sort_unstable();
+    }
+    geos
+}
+
+/// The pairs of parts the Modellverschnitt joined ([`modell::Output::joins`]);
+/// dormers are models too, but no part.
+fn joins(map: &Rd2Map, out: &modell::Output) -> Vec<(usize, usize)> {
+    let part_of = |model: i32| map.parts.iter().position(|p| p.model == model);
+    out.joins
+        .iter()
+        .filter_map(|&(a, b)| Some((part_of(a)?, part_of(b)?)))
+        .filter(|(a, b)| a != b)
+        .collect()
 }
 
 /// A roof line of a SOL (the core's or the Modellverschnitt's).

@@ -8,8 +8,10 @@
   // rules were measured in DACAD itself (roofcalc.test.ts).
   import { num } from "./format";
   import { t } from "./i18n.svelte";
+  import { tabIds, tablist } from "./tabs";
+  import { numeric } from "./numeric.svelte";
   import { oppositeWall, spanBetween } from "./roundroof";
-  import { buildUp, combine, eaveBelowGable, hipPitches, hipPitchesFromEaves, inward, meeting, mergeOnto, moveWall, parallelEdit, parallelPatches, parallelRafter, parallelStart, roofPoints, sameWay, shiftFor, solve, triangle, trianglePatch, type BuildUpEave, type CalcTarget, type ParallelField } from "./roofcalc";
+  import { buildUp, combine, eaveBelowGable, hipPitches, hipPitchesFromEaves, inward, meeting, mergeByMoving, mergeOnto, moveWall, parallelEdit, parallelPatches, parallelRafter, parallelStart, roofPoints, sameWay, shiftFor, solve, triangle, trianglePatch, type BuildUpEave, type CalcTarget, type ParallelField } from "./roofcalc";
   import type { CalcResult, EdgeDef, RoofPart } from "./types";
 
   let {
@@ -18,6 +20,7 @@
     result,
     patches = $bindable(null),
   }: { part: RoofPart; edge: number; result: CalcResult | null; patches: Map<number, Partial<EdgeDef>> | null } = $props();
+  const ids = tabIds("calc");
 
   type Tool = "triangle" | "parallel" | "point" | "merge" | "hip" | "buildup";
   type Target = CalcTarget | "position";
@@ -72,9 +75,8 @@
     const [pa, pb] = parallelPatches(parState, target);
     return new Map([[edge, pa], [opp, pb]]);
   });
-  const parSet = (f: ParallelField, v: string) => {
-    const x = n(v);
-    if (x !== null) parEdits = [...parEdits, [f, x]];
+  const parSet = (f: ParallelField, v: number) => {
+    parEdits = [...parEdits, [f, v]];
   };
 
   // Punkt im Raum: a computed roof point or one typed in.
@@ -111,14 +113,7 @@
     if (target === "pitch") return null;
     if (target !== "position") return mergeOnto(es, edge, [...chosen], target);
     // Each wall moves until its eave (at its overhang) lies on this wall's plane.
-    const tr = Math.tan((e.pitch_deg * Math.PI) / 180);
-    if (!(tr > 0)) return null;
-    const moves = [...chosen].map((k) => {
-      const s = inward(es, edge, es[k].start);
-      const want = (es[k].eave_height - e.eave_height) / tr + es[k].overhang - e.overhang;
-      return combine(moveWall(es, k, want - s), new Map([[k, { pitch_deg: e.pitch_deg }]]));
-    });
-    return combine(...moves);
+    return mergeByMoving(es, edge, [...chosen]);
   });
 
   // Grat/Kehle: hip or valley length and both rafter lengths.
@@ -171,10 +166,6 @@
       (tool === "hip" && hipLen !== null && raf1 !== null && raf2 !== null),
   );
 
-  function n(v: string): number | null {
-    const x = parseFloat(v.replace(",", "."));
-    return Number.isFinite(x) ? x : null;
-  }
   const fmt = (k: string, v: unknown) =>
     k === "start"
       ? `X ${num((v as { x: number }).x)} · Y ${num((v as { y: number }).y)}`
@@ -196,12 +187,13 @@
 </script>
 
 <div class="form">
-  <div class="tabs" role="tablist">
+  <div class="tabs" role="tablist" use:tablist>
     {#each ["triangle", "parallel", "point", "merge", "hip", "buildup"] as const as k}
-      <button role="tab" class:on={tool === k} aria-selected={tool === k} disabled={k === "parallel" && opp === null}
+      <button role="tab" id={ids.tab(k)} aria-controls={ids.panel} class:on={tool === k} aria-selected={tool === k} disabled={k === "parallel" && opp === null}
         onclick={() => { tool = k; if (k === "triangle" || k === "hip" || k === "buildup") target = "pitch"; else if (k === "merge" && target === "pitch") target = "eave"; }}>{t(`calc.${k}`)}</button>
     {/each}
   </div>
+  <div class="panel" role="tabpanel" id={ids.panel} aria-labelledby={ids.tab(tool)}>
   <p class="tip">{t(`calc.${tool}Hint`)}</p>
 
   {#if tool !== "triangle" && tool !== "hip" && tool !== "buildup"}
@@ -218,9 +210,9 @@
 
   {#if tool === "triangle"}
     <div class="grid">
-      <label><span>{t("calc.width")}</span><div class="unit"><input type="number" step="0.05" value={triWidth ?? ""} oninput={(ev) => (triWidth = n(ev.currentTarget.value))} /><em>m</em></div></label>
-      <label><span>{t("calc.rafter")}</span><div class="unit"><input type="number" step="0.05" value={triRafter ?? ""} oninput={(ev) => (triRafter = n(ev.currentTarget.value))} /><em>m</em></div></label>
-      <label><span>{t("calc.ridge")}</span><div class="unit"><input type="number" step="0.05" value={triRidge ?? ""} oninput={(ev) => (triRidge = n(ev.currentTarget.value))} /><em>m</em></div></label>
+      <label><span>{t("calc.width")}</span><div class="unit"><input type="text" use:numeric={{ value: triWidth, step: 0.05, live: true, onchange: (v) => (triWidth = v), onclear: () => (triWidth = null) }} /><em>m</em></div></label>
+      <label><span>{t("calc.rafter")}</span><div class="unit"><input type="text" use:numeric={{ value: triRafter, step: 0.05, live: true, onchange: (v) => (triRafter = v), onclear: () => (triRafter = null) }} /><em>m</em></div></label>
+      <label><span>{t("calc.ridge")}</span><div class="unit"><input type="text" use:numeric={{ value: triRidge, step: 0.05, live: true, onchange: (v) => (triRidge = v), onclear: () => (triRidge = null) }} /><em>m</em></div></label>
       <label class="check"><input type="checkbox" bind:checked={triWithOv} />{t("calc.withOverhang")}</label>
     </div>
   {:else if tool === "parallel" && current}
@@ -231,12 +223,12 @@
     {@const ovA = parWithOv && st ? st.a.overhang : 0}
     {@const ovB = parWithOv && st ? st.b.overhang : 0}
     <div class="grid">
-      <label><span>{t("calc.widthA")}</span><div class="unit"><input type="number" step="0.05" value={st ? +(st.wA + ovA).toFixed(3) : ""} onchange={(ev) => parSet("widthA", ev.currentTarget.value)} /><em>m</em></div></label>
-      <label><span>{t("calc.widthB")}</span><div class="unit"><input type="number" step="0.05" value={st ? +(st.wB + ovB).toFixed(3) : ""} onchange={(ev) => parSet("widthB", ev.currentTarget.value)} /><em>m</em></div></label>
-      <label><span>{t("calc.ridge")}</span><div class="unit"><input type="number" step="0.05" value={st ? +st.H.toFixed(3) : ""} onchange={(ev) => parSet("ridge", ev.currentTarget.value)} /><em>m</em></div></label>
-      <label><span>{t("calc.rafterA")}</span><div class="unit"><input type="number" step="0.05" value={st ? +parallelRafter(st, "a").toFixed(3) : ""} onchange={(ev) => parSet("rafterA", ev.currentTarget.value)} /><em>m</em></div></label>
-      <label><span>{t("calc.rafterB")}</span><div class="unit"><input type="number" step="0.05" value={st ? +parallelRafter(st, "b").toFixed(3) : ""} onchange={(ev) => parSet("rafterB", ev.currentTarget.value)} /><em>m</em></div></label>
-      <label><span>{t("calc.top")}</span><div class="unit"><input type="number" step="0.05" min="0" value={st ? +st.top.toFixed(3) : ""} onchange={(ev) => parSet("top", ev.currentTarget.value)} /><em>m</em></div></label>
+      <label><span>{t("calc.widthA")}</span><div class="unit"><input type="text" use:numeric={{ value: st ? +(st.wA + ovA).toFixed(3) : null, step: 0.05, onchange: (v) => parSet("widthA", v) }} /><em>m</em></div></label>
+      <label><span>{t("calc.widthB")}</span><div class="unit"><input type="text" use:numeric={{ value: st ? +(st.wB + ovB).toFixed(3) : null, step: 0.05, onchange: (v) => parSet("widthB", v) }} /><em>m</em></div></label>
+      <label><span>{t("calc.ridge")}</span><div class="unit"><input type="text" use:numeric={{ value: st ? +st.H.toFixed(3) : null, step: 0.05, onchange: (v) => parSet("ridge", v) }} /><em>m</em></div></label>
+      <label><span>{t("calc.rafterA")}</span><div class="unit"><input type="text" use:numeric={{ value: st ? +parallelRafter(st, "a").toFixed(3) : null, step: 0.05, onchange: (v) => parSet("rafterA", v) }} /><em>m</em></div></label>
+      <label><span>{t("calc.rafterB")}</span><div class="unit"><input type="text" use:numeric={{ value: st ? +parallelRafter(st, "b").toFixed(3) : null, step: 0.05, onchange: (v) => parSet("rafterB", v) }} /><em>m</em></div></label>
+      <label><span>{t("calc.top")}</span><div class="unit"><input type="text" use:numeric={{ value: st ? +st.top.toFixed(3) : null, step: 0.05, min: 0, onchange: (v) => parSet("top", v) }} /><em>m</em></div></label>
       <label class="check wide"><input type="checkbox" bind:checked={parWithOv} />{t("calc.withOverhang")}</label>
     </div>
     <p class="tip">{t("round.span", { s: num(span) })}</p>
@@ -252,9 +244,9 @@
           {/each}
         </select>
       </label>
-      <label><span>X</span><div class="unit"><input type="number" step="0.05" value={point ? +point.x.toFixed(3) : ""} onchange={(ev) => (px = n(ev.currentTarget.value))} /><em>m</em></div></label>
-      <label><span>Y</span><div class="unit"><input type="number" step="0.05" value={point ? +point.y.toFixed(3) : ""} onchange={(ev) => (py = n(ev.currentTarget.value))} /><em>m</em></div></label>
-      <label><span>Z</span><div class="unit"><input type="number" step="0.05" value={point ? +point.z.toFixed(3) : ""} onchange={(ev) => (pz = n(ev.currentTarget.value))} /><em>m</em></div></label>
+      <label><span>X</span><div class="unit"><input type="text" use:numeric={{ value: point ? +point.x.toFixed(3) : null, step: 0.05, onchange: (v) => (px = v) }} /><em>m</em></div></label>
+      <label><span>Y</span><div class="unit"><input type="text" use:numeric={{ value: point ? +point.y.toFixed(3) : null, step: 0.05, onchange: (v) => (py = v) }} /><em>m</em></div></label>
+      <label><span>Z</span><div class="unit"><input type="text" use:numeric={{ value: point ? +point.z.toFixed(3) : null, step: 0.05, onchange: (v) => (pz = v) }} /><em>m</em></div></label>
     </div>
   {:else if tool === "merge"}
     {#if mates.length}
@@ -286,13 +278,13 @@
           <option value="eaves">{t("calc.hipByEaves")}</option>
         </select>
       </label>
-      <label><span>{t("calc.hipLength")}</span><div class="unit"><input type="number" step="0.05" value={hipLen ?? ""} oninput={(ev) => (hipLen = n(ev.currentTarget.value))} /><em>m</em></div></label>
-      <label><span>{t(hipBy === "rafters" ? "calc.rafterThis" : "calc.eaveThis")}</span><div class="unit"><input type="number" step="0.05" value={raf1 ?? ""} oninput={(ev) => (raf1 = n(ev.currentTarget.value))} /><em>m</em></div></label>
-      <label><span>{t(hipBy === "rafters" ? "calc.rafterOther" : "calc.eaveOther")}</span><div class="unit"><input type="number" step="0.05" value={raf2 ?? ""} oninput={(ev) => (raf2 = n(ev.currentTarget.value))} /><em>m</em></div></label>
+      <label><span>{t("calc.hipLength")}</span><div class="unit"><input type="text" use:numeric={{ value: hipLen, step: 0.05, live: true, onchange: (v) => (hipLen = v), onclear: () => (hipLen = null) }} /><em>m</em></div></label>
+      <label><span>{t(hipBy === "rafters" ? "calc.rafterThis" : "calc.eaveThis")}</span><div class="unit"><input type="text" use:numeric={{ value: raf1, step: 0.05, live: true, onchange: (v) => (raf1 = v), onclear: () => (raf1 = null) }} /><em>m</em></div></label>
+      <label><span>{t(hipBy === "rafters" ? "calc.rafterOther" : "calc.eaveOther")}</span><div class="unit"><input type="text" use:numeric={{ value: raf2, step: 0.05, live: true, onchange: (v) => (raf2 = v), onclear: () => (raf2 = null) }} /><em>m</em></div></label>
     </div>
   {:else if tool === "buildup"}
     <div class="grid">
-      <label><span>{t("calc.thickness")}</span><div class="unit"><input type="number" step="0.01" value={thick ?? ""} oninput={(ev) => (thick = n(ev.currentTarget.value))} /><em>m</em></div></label>
+      <label><span>{t("calc.thickness")}</span><div class="unit"><input type="text" use:numeric={{ value: thick, step: 0.01, live: true, onchange: (v) => (thick = v), onclear: () => (thick = null) }} /><em>m</em></div></label>
       <label class="wide">
         <span>{t("calc.eaveForm")}</span>
         <select bind:value={eaveForm}>
@@ -320,10 +312,12 @@
     {/if}
   </div>
   {/if}
+  </div>
 </div>
 
 <style>
-  .form {
+  .form,
+  .panel {
     display: flex;
     flex-direction: column;
     gap: 12px;

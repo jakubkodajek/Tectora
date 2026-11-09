@@ -5,12 +5,12 @@
   import Home from "./lib/Home.svelte";
   import SettingsDialog from "./lib/SettingsDialog.svelte";
   import Toasts from "./lib/Toasts.svelte";
-  import { api, onLiveStatus, onOpenProject, onProjectsChanged, onSettingsChanged } from "./lib/api";
+  import { api, onLiveStatus, onOpenFailed, onOpenProject, onProjectsChanged, onSettingsChanged } from "./lib/api";
   import { t } from "./lib/i18n.svelte";
   import { actorName, live } from "./lib/live.svelte";
-  import { info, notifyError } from "./lib/notify.svelte";
+  import { info, notify, notifyError } from "./lib/notify.svelte";
   import { applySettings, loadSettings, prefs } from "./lib/settings.svelte";
-  import { hasUnsaved, mayLeave } from "./lib/leave";
+  import { hasUnsaved, isBusy, mayLeave } from "./lib/leave";
   import type { BrokenFile, ExampleInfo, LiveStatus, ProjectSummary } from "./lib/types";
 
   let openId = $state<string | null>(null);
@@ -31,18 +31,42 @@
     }
   }
 
-  /** Follow mode: open the design the AI agent is working on. */
+  /**
+   * Newest status follow mode has seen. Only statuses written after the app
+   * started are followed; the start-up read must not mark a status that is
+   * still on its way as an event as seen (a race that kept the app from
+   * following under load).
+   */
+  let followSeen = 0;
+  const startedAt = Date.now();
+
+  /**
+   * Follow mode: open the job the AI agent saved or asked to show. Reading
+   * or calculating a job never switches; while the user draws, places an
+   * object, types or has a dialog open, a toast offers to open it instead
+   * (UX-001).
+   */
   function onLive(s: LiveStatus) {
-    const fresh = !live.status || s.ts_ms > live.status.ts_ms;
-    live.status = s;
+    const fresh = s.ts_ms > followSeen;
+    followSeen = Math.max(followSeen, s.ts_ms);
+    if (!live.status || s.ts_ms >= live.status.ts_ms) live.status = s;
     live.now = Date.now();
-    if (!fresh || !s.project_id || !prefs.followAi || s.project_id === openId) return;
+    if (!fresh || !s.follow || !s.project_id || !prefs.followAi || s.project_id === openId) return;
     const next = s.project_id;
+    const who = actorName(s.actor);
+    if (isBusy()) {
+      notify({
+        kind: "info",
+        title: t("ai.followOffer", { who }),
+        action: { label: t("ai.followOpen"), run: () => openJob(next) },
+      });
+      return;
+    }
     // Follow mode never drops edits that could not be saved; the user stays.
     mayLeave("quiet").then((ok) => {
       if (!ok || openId === next) return;
       openId = next;
-      info(t("ai.followed", { who: actorName(s.actor) }));
+      info(t("ai.followed", { who }));
     });
   }
 
@@ -95,7 +119,14 @@
     refresh();
     api.listExamples().then((x) => (examples = x), (e) => notifyError(e, "list"));
     api.projectsDir().then((d) => (dir = d), () => {});
-    api.liveStatus().then((s) => (live.status = s), () => {});
+    api.liveStatus().then(
+      (s) => {
+        if (!s) return;
+        if (!live.status || s.ts_ms > live.status.ts_ms) live.status = s;
+        if (s.ts_ms < startedAt) followSeen = Math.max(followSeen, s.ts_ms);
+      },
+      () => {},
+    );
     api.startupWarnings().then(
       (ws) => ws.forEach((w) => notifyError(w)),
       () => {},
@@ -119,12 +150,22 @@
     const unClose = closeGuard();
     api.takePendingOpen().then((id) => id && openFile(id));
     const unOpen = onOpenProject(openFile);
+    // A file opened from the system that did not open (damaged, newer, not
+    // a job): told like a failed import, at start-up and later (ERR-006).
+    const showOpenErrors = () =>
+      api.takeOpenErrors().then(
+        (es) => es.forEach((e) => notifyError(e, "import")),
+        () => {},
+      );
+    const unOpenFailed = onOpenFailed(showOpenErrors);
+    showOpenErrors();
     const tick = setInterval(() => (live.now = Date.now()), 5000);
     return () => {
       un.then((f) => f());
       unLive.then((f) => f());
       unSettings.then((f) => f());
       unOpen.then((f) => f());
+      unOpenFailed.then((f) => f());
       unClose.then((f) => f());
       clearInterval(tick);
       window.removeEventListener("error", onError);

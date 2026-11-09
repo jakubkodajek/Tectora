@@ -6,6 +6,9 @@
 //! distance from the wall + overhang). Port of the editor's `roofcalc.ts`;
 //! the rules were measured in DACAD (cases named in the tests).
 
+// `!(x > 0.0)` and the like are deliberate: they also refuse NaN.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

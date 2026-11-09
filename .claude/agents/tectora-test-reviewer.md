@@ -23,6 +23,9 @@ behavioural coverage, not line coverage.
    `.claude/skills/tectora-dacad-parity/SKILL.md`, `app/e2e/README.md` if present.
 2. `.claude/skills/tectora-review/board.md`: the shared findings protocol.
    Follow it exactly. Your file is `target/review/<run>/test.md`.
+2b. `.claude/skills/tectora-review/edge-cases.md`: bug classes the user
+   has already hit. Run every check of class 2 (and that every class has its guard test) yourself (preview or E2E,
+   not only reading) and file each failure; skim the other classes.
 3. The other reviewers' files in the run folder. Every confirmed bug another
    reviewer found is also a test gap (no test caught it): list it as such.
 

@@ -23,6 +23,9 @@ import type {
   UpdateProgress,
 } from "./types";
 
+/** What a checked save did (`Store::save_checked`). */
+export type CheckedSave = { status: "saved"; id: string } | { status: "conflict"; current: Project };
+
 export interface StandardParams {
   kind: StandardKind;
   length: number;
@@ -46,6 +49,10 @@ export const api = {
   startupWarnings: () => invoke<AppError[]>("startup_warnings"),
   loadProject: (id: string) => invoke<Project>("load_project", { id }),
   saveProject: (id: string | null, project: Project) => invoke<string>("save_project", { id, project }),
+  /** Saves only if the file still holds `base` (the version last read or
+      written); otherwise nothing is written and the current file comes back. */
+  saveProjectChecked: (id: string, project: Project, base: Project) =>
+    invoke<CheckedSave>("save_project_checked", { id, project, base }),
   /** The project in the store's canonical form, as load_project returns it after a save. */
   normalizeProject: (project: Project) => invoke<Project>("normalize_project", { project }),
   deleteProject: (id: string) => invoke<void>("delete_project", { id }),
@@ -68,6 +75,15 @@ export const api = {
     invoke<string>("create_from_example", { exampleId, name: name ?? null }),
   calc: (project: Project) => invoke<CalcResult>("calc", { project }),
   calcBreakdown: (project: Project) => invoke<CalcBreakdown>("calc_breakdown", { project }),
+  /** Every wall of part `part` at `eaveHeight`, with its breaks and the objects on it (the MCP tool set_part_height). */
+  setPartHeight: (project: Project, part: number, eaveHeight: number) =>
+    invoke<Project>("set_part_height", { project, part, eaveHeight }),
+  /** Hand-drawn face `index` turned into a building (the MCP tool face_to_part). */
+  faceToPart: (project: Project, index: number, name: string, pitchDeg: number, eaveHeight: number, overhang: number) =>
+    invoke<Project>("face_to_part", { project, index, name, pitchDeg, eaveHeight, overhang }),
+  /** The first roof window larger than what is left of its face, or null. */
+  checkWindows: (project: Project) =>
+    invoke<{ index: number; area: number; face_area: number } | null>("check_windows", { project }),
   getSettings: () => invoke<AppSettingsView>("get_settings"),
   updateSettings: (patch: Record<string, unknown>) => invoke<AppSettingsView>("update_settings", { patch }),
   openFolder: (which: "projects" | "drawings" | "settings") => invoke<void>("open_folder", { which }),
@@ -87,11 +103,18 @@ export const api = {
   savePng: (path: string, bytes: number[]) => invoke<void>("save_png", { path, bytes }),
   takeSnapshot: (project: Project) => invoke<ResultSnapshot>("take_snapshot", { project }),
   takePendingOpen: () => invoke<string | null>("take_pending_open"),
+  /** Files opened from the system (double-click, start-up) that did not open. */
+  takeOpenErrors: () => invoke<AppError[]>("take_open_errors"),
 };
 
 /** Fires when the settings file changes (e.g. an AI agent changed a setting). */
 export function onSettingsChanged(cb: (v: AppSettingsView) => void): Promise<UnlistenFn> {
   return listen<AppSettingsView>("settings-changed", (e) => cb(e.payload));
+}
+
+/** Fires when a file opened from the system did not open; `takeOpenErrors` has it. */
+export function onOpenFailed(cb: () => void): Promise<UnlistenFn> {
+  return listen<AppError>("open-failed", () => cb());
 }
 
 /** Fires with the id of a job opened from a file (double-click). */

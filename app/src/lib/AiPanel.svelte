@@ -5,7 +5,7 @@
   import { describeChange } from "./changes";
   import { relativeTime } from "./format";
   import { t } from "./i18n.svelte";
-  import { actorName, isFresh, live } from "./live.svelte";
+  import { actorName, entrySummary, isFresh, isRevert, live, liveText } from "./live.svelte";
   import type { ActivityItem, Change, Project } from "./types";
   import { isAi } from "./types";
 
@@ -35,7 +35,7 @@
     {#if isFresh() && live.status}
       <div>
         <strong>{actorName(live.status.actor)}</strong>
-        <span>{live.status.message}</span>
+        <span>{liveText(live.status)}</span>
         {#if !here && live.status.project_id}<em>{t("ai.otherProject")}</em>{/if}
       </div>
     {:else}
@@ -59,7 +59,7 @@
           <span class="who" class:ai><Icon name={ai ? "sparkle" : "cursor"} size={13} />{ai ? actorName(a.actor) : t("ai.you")}</span>
           <time>{relativeTime(a.ts_ms)}</time>
         </div>
-        <p class="summary">{!ai && a.summary.startsWith("Reverted") ? t("ai.revertedEntry") : a.summary}</p>
+        <p class="summary">{!ai && isRevert(a.summary) ? t("ai.revertedEntry") : entrySummary(a.summary)}</p>
         {#if a.changes.length}
           <button class="link" onclick={() => (open[i] = !open[i])}>
             {open[i] ? t("ai.hideChanges") : t("ai.showChanges", { n: a.changes.length })}

@@ -5,6 +5,7 @@
 import type { CalcResult, Dormer, EdgeDef, Point2 } from "./types";
 import { GABLE_PITCH, isGable } from "./types";
 import { MAX_ROUND_SEGMENTS, arcFor } from "./roundroof";
+import { roundTo } from "./rounding";
 
 export type DormerKind = "gable" | "pointed" | "hip" | "half_hip" | "shed" | "trapezoid" | "round" | "general";
 
@@ -52,7 +53,7 @@ export function defaultParams(kind: DormerKind, start: Point2, angle: number, ea
 
 export function buildDormer(p: DormerParams): Dormer {
   const u = { x: Math.cos(p.angle), y: Math.sin(p.angle) };
-  const end = { x: +(p.start.x + u.x * p.width).toFixed(3), y: +(p.start.y + u.y * p.width).toFixed(3) };
+  const end = { x: roundTo(p.start.x + u.x * p.width, 3), y: roundTo(p.start.y + u.y * p.width, 3) };
   const sloped = p.kind !== "shed";
   const frontSloped = p.kind === "hip" || p.kind === "shed" || p.kind === "trapezoid";
   const base = { eave_height: p.eave_height, overhang: p.overhang, ...(p.material !== 1 ? { material: p.material } : {}) };
@@ -74,7 +75,7 @@ export function buildDormer(p: DormerParams): Dormer {
     start: { ...p.start },
     pitch_deg: frontSloped ? (p.kind === "hip" ? p.pitch_deg : p.front_pitch_deg) : GABLE_PITCH,
     half_hip:
-      p.kind === "half_hip" ? { height: +(p.eave_height + p.half_hip_height).toFixed(3), pitch_deg: p.half_hip_pitch_deg } : null,
+      p.kind === "half_hip" ? { height: roundTo(p.eave_height + p.half_hip_height, 3), pitch_deg: p.half_hip_pitch_deg } : null,
   };
   return {
     edges: [cheek(p.angle - Math.PI / 2, p.start), front, cheek(p.angle + Math.PI / 2, end)],
@@ -106,7 +107,7 @@ export function parseDormer(d: Dormer): DormerParams {
   }
   if (isGable(f)) {
     if (f.half_hip) {
-      return { ...p, kind: "half_hip", half_hip_height: +(f.half_hip.height - f.eave_height).toFixed(3), half_hip_pitch_deg: f.half_hip.pitch_deg };
+      return { ...p, kind: "half_hip", half_hip_height: roundTo(f.half_hip.height - f.eave_height, 3), half_hip_pitch_deg: f.half_hip.pitch_deg };
     }
     return { ...p, kind: "gable" };
   }

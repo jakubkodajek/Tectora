@@ -11,11 +11,13 @@
   import { api } from "./api";
   import { m2, relativeTime } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
-  import { actorName, isFresh, live } from "./live.svelte";
+  import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import type { Action } from "./errors";
   import { notifyError } from "./notify.svelte";
   import UpdateBanner from "./UpdateBanner.svelte";
   import { prefs, savePrefs } from "./settings.svelte";
+  import { hscroll } from "./hscroll";
+  import { tick } from "svelte";
   import type { BrokenFile, ExampleInfo, JobStatus, ProjectSummary } from "./types";
   import { JOB_STATUSES, isAi } from "./types";
 
@@ -88,6 +90,32 @@
     });
   });
   const selected = $derived(projects.find((p) => p.id === selectedId) ?? null);
+  /** The list row that takes the Tab stop: the selected one, else the first. */
+  const focusId = $derived(rows.some((p) => p.id === selectedId) ? selectedId : (rows[0]?.id ?? null));
+  const filterLabel = $derived(filter === "all" ? t("lib.all") : filter === "ai" ? t("lib.byAi") : filter === "examples" ? t("home.examples") : t(`status.${filter}`));
+  let tbody: HTMLElement | undefined = $state();
+
+  /** Keyboard in the list: arrows / Home / End move the selection, Enter opens. */
+  async function onrowkey(e: KeyboardEvent, p: ProjectSummary) {
+    if (e.target !== e.currentTarget || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === "Enter") {
+      e.preventDefault();
+      onopen(p.id);
+      return;
+    }
+    const i = rows.findIndex((r) => r.id === p.id);
+    const j =
+      e.key === "ArrowDown" ? Math.min(rows.length - 1, i + 1)
+      : e.key === "ArrowUp" ? Math.max(0, i - 1)
+      : e.key === "Home" ? 0
+      : e.key === "End" ? rows.length - 1
+      : -1;
+    if (j < 0) return;
+    e.preventDefault();
+    selectedId = rows[j].id;
+    await tick();
+    tbody?.querySelectorAll<HTMLElement>("tr")[j]?.focus();
+  }
 
   function pitchText(r: [number, number] | null): string {
     if (!r) return "—";
@@ -122,20 +150,36 @@
     }
   }
 
-  async function remove(p: ProjectSummary) {
-    // Tauri's dialog plugin replaces window.confirm with an async version
-    // (a Promise is always truthy), so the answer must be awaited.
-    if (!(await confirm(t("home.confirmDelete", { name: p.name })))) return;
-    await run("delete", () => api.deleteProject(p.id));
-    if (selectedId === p.id) selectedId = null;
-    onchanged();
+  /** Jobs with a delete or duplicate under way: a double click must not
+   *  make two copies, or ask twice and then fail (UI-018). */
+  let busy = $state<Record<string, boolean>>({});
+
+  async function once(id: string, f: () => Promise<void>) {
+    if (busy[id]) return;
+    busy[id] = true;
+    try {
+      await f();
+    } finally {
+      delete busy[id];
+    }
   }
 
-  async function duplicate(p: ProjectSummary) {
-    const id = await run("duplicate", () => api.duplicateProject(p.id, t("lib.copyName", { name: p.name })));
-    if (id) selectedId = id;
-    onchanged();
-  }
+  const remove = (p: ProjectSummary) =>
+    once(p.id, async () => {
+      // Tauri's dialog plugin replaces window.confirm with an async version
+      // (a Promise is always truthy), so the answer must be awaited.
+      if (!(await confirm(t("home.confirmDelete", { name: p.name })))) return;
+      await run("delete", () => api.deleteProject(p.id));
+      if (selectedId === p.id) selectedId = null;
+      onchanged();
+    });
+
+  const duplicate = (p: ProjectSummary) =>
+    once(p.id, async () => {
+      const id = await run("duplicate", () => api.duplicateProject(p.id, t("lib.copyName", { name: p.name })));
+      if (id) selectedId = id;
+      onchanged();
+    });
 
   function setView(v: "list" | "grid") {
     prefs.libraryView = v;
@@ -161,7 +205,7 @@
     <div class="actions">
       <button class="ai-btn" class:active={isFresh()} onclick={onconnect}>
         <span class="dot"></span>
-        {#if isFresh() && live.status}{actorName(live.status.actor)}: {live.status.message}{:else}{t("ai.connect")}{/if}
+        {#if isFresh() && live.status}{actorName(live.status.actor)}: {liveText(live.status)}{:else}{t("ai.connect")}{/if}
       </button>
       <LanguagePicker />
       <button class="icon-btn" onclick={onsettings} title={t("settings.button")} aria-label={t("settings.button")}><Icon name="gear" size={18} /></button>
@@ -171,7 +215,7 @@
   </header>
 
   <div class="layout">
-    <nav>
+    <nav use:hscroll>
       <h3 class="nav-title">{t("lib.title")}</h3>
       {#each FILTERS as f}
         <button class:on={filter === f.id} onclick={() => (filter = f.id)}>
@@ -242,8 +286,12 @@
               <Icon name="roof" size={36} />
               <p>{t("home.empty")}</p>
               <button class="btn primary" onclick={() => (newJob = { example: null })}><Icon name="plus" size={16} />{t("lib.new")}</button>
-            {:else}
+            {:else if query.trim()}
               <p>{t("home.noMatch", { q: query })}</p>
+            {:else if year !== null}
+              <p>{t("home.noneInFilterYear", { filter: filterLabel, year })}</p>
+            {:else}
+              <p>{t("home.noneInFilter", { filter: filterLabel })}</p>
             {/if}
           </div>
         {:else if prefs.libraryView === "grid"}
@@ -265,9 +313,15 @@
                 <th class="c-mod"><button onclick={() => sortBy("modified")}>{t("lib.colModified")}{#if sort.key === "modified"}{sort.desc ? " ↓" : " ↑"}{/if}</button></th>
               </tr>
             </thead>
-            <tbody>
+            <tbody bind:this={tbody}>
               {#each rows as p (p.id)}
-                <tr class:sel={selectedId === p.id} onclick={() => (selectedId = p.id)} ondblclick={() => onopen(p.id)}>
+                <tr
+                  class:sel={selectedId === p.id}
+                  tabindex={focusId === p.id ? 0 : -1}
+                  onclick={() => (selectedId = p.id)}
+                  ondblclick={() => onopen(p.id)}
+                  onkeydown={(e) => onrowkey(e, p)}
+                >
                   <td class="th-thumb"><div class="mini"><PlanThumb outlines={p.outlines} lines={p.lines} /></div></td>
                   <td><strong>{p.name}</strong>{#if p.job.address}<small>{p.job.address}</small>{/if}</td>
                   <td class="c-number">{p.job.number || "—"}</td>
@@ -277,7 +331,7 @@
                   <td class="mod c-mod">
                     {relativeTime(p.modified_ms)}
                     {#if p.last_activity && isAi(p.last_activity.actor)}
-                      <span class="ai-tag" title={p.last_activity.summary}><Icon name="sparkle" size={11} />{actorName(p.last_activity.actor)}</span>
+                      <span class="ai-tag" title={entrySummary(p.last_activity.summary)}><Icon name="sparkle" size={11} />{actorName(p.last_activity.actor)}</span>
                     {/if}
                   </td>
                 </tr>
@@ -288,7 +342,15 @@
       {/if}
     </main>
 
-    {#if selected && filter !== "examples" && prefs.libraryView === "list"}
+    {#if filter !== "examples" && prefs.libraryView === "list" && !selected && rows.length}
+      <!-- Half-screen: the detail strip keeps its place while nothing is
+           selected, so a click that selects a row never moves the rows (the
+           second press of a double-click lands on the same row). -->
+      <div class="detail none">
+        <div class="big"></div>
+        <p class="muted">{t("lib.selectHint")}</p>
+      </div>
+    {:else if selected && filter !== "examples" && prefs.libraryView === "list"}
       <aside class="detail">
         <div class="big"><PlanThumb outlines={selected.outlines} lines={selected.lines} /></div>
         <h3>{selected.name}</h3>
@@ -308,14 +370,14 @@
         {#if selected.last_activity}
           <div class="last" class:ai={isAi(selected.last_activity.actor)}>
             <span>{isAi(selected.last_activity.actor) ? actorName(selected.last_activity.actor) : t("ai.you")} · {relativeTime(selected.last_activity.ts_ms)}</span>
-            {selected.last_activity.summary}
+            {entrySummary(selected.last_activity.summary)}
           </div>
         {/if}
         <div class="detail-actions">
           <button class="btn primary" onclick={() => onopen(selected!.id)}><Icon name="open" size={16} />{t("card.open")}</button>
-          <button class="btn" onclick={() => duplicate(selected!)}><Icon name="copy" size={16} />{t("card.duplicate")}</button>
-          <button class="btn reuse" onclick={() => (newJob = { example: null, from: selected!.id })}><Icon name="plus" size={16} />{t("card.reuse")}</button>
-          <button class="btn ghost danger" onclick={() => remove(selected!)}><Icon name="trash" size={16} />{t("card.delete")}</button>
+          <button class="btn" disabled={!!busy[selected!.id]} onclick={() => duplicate(selected!)} title={t("card.duplicate")}><Icon name="copy" size={16} /><span class="label">{t("card.duplicate")}</span></button>
+          <button class="btn reuse" onclick={() => (newJob = { example: null, from: selected!.id })} title={t("card.reuse")}><Icon name="plus" size={16} /><span class="label">{t("card.reuse")}</span></button>
+          <button class="btn ghost danger" disabled={!!busy[selected!.id]} onclick={() => remove(selected!)} title={t("card.delete")}><Icon name="trash" size={16} /><span class="label">{t("card.delete")}</span></button>
         </div>
       </aside>
     {/if}
@@ -664,6 +726,10 @@
   tbody tr.sel {
     background: var(--accent-soft);
   }
+  tbody tr:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
   td small {
     display: block;
     color: var(--text-3);
@@ -707,16 +773,16 @@
     color: var(--text-2);
   }
   .chip.offer {
-    background: #fdf1dc;
-    color: #8a5a10;
+    background: var(--status-offer-bg);
+    color: var(--status-offer);
   }
   .chip.ordered {
-    background: #e2edfb;
-    color: #24539b;
+    background: var(--status-ordered-bg);
+    color: var(--status-ordered);
   }
   .chip.done {
-    background: #e1f3e8;
-    color: #22703f;
+    background: var(--status-done-bg);
+    color: var(--status-done);
   }
   .grid {
     display: grid;
@@ -772,6 +838,9 @@
     margin: 0;
     max-width: 420px;
     color: var(--text-2);
+  }
+  .detail.none {
+    display: none;
   }
   .detail {
     width: 300px;
@@ -957,13 +1026,49 @@
     .detail {
       width: auto;
       flex-direction: row;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       align-items: center;
       gap: 6px 12px;
+      height: 72px;
       padding: 10px 14px;
-      max-height: 40vh;
+      overflow: hidden;
       border-left: none;
       border-top: 1px solid var(--border);
+    }
+    .detail.none {
+      display: flex;
+    }
+    .detail.none p {
+      flex: 1;
+      min-width: 0;
+      margin: 0;
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .detail h3 {
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .detail > .chip {
+      flex: none;
+    }
+    .detail-actions .label {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+    }
+    .detail-actions .btn:not(.primary) {
+      position: relative;
+      width: 34px;
+      padding: 0;
+      justify-content: center;
     }
     .big {
       width: 64px;
@@ -994,12 +1099,12 @@
     nav {
       flex-wrap: nowrap;
       overflow-x: auto;
-      scrollbar-width: none;
     }
     .big {
       display: none;
     }
     .detail {
+      height: 50px;
       padding: 8px 14px;
     }
   }

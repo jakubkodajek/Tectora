@@ -681,7 +681,16 @@ fn merged_apex_corner_is_within_dacad_tolerance() {
     let p = dacad_fixture("P16_merged_apex");
 
     let geos = generate_project(&p);
-    assert!(geos[0].warnings.is_empty(), "{:?}", geos[0].warnings);
+    // The case's chimney (x 1.9..3.2, y 5.1..6.2) lies beside the roof,
+    // which ends at x 0.98: DACAD cuts nothing for it, and the result says
+    // so. No other warning.
+    let kinds: Vec<_> = geos[0].warnings.iter().map(|w| (w.kind, w.item)).collect();
+    assert_eq!(
+        kinds,
+        [(tectora_core::check::WarningKind::ChimneyOffRoof, Some(0))],
+        "{:?}",
+        geos[0].warnings
+    );
     assert_eq!(edge_plane_misfits(&p, &geos), Vec::<String>::new());
     // The corner itself: on faces 0 and 1, 1.16 cm above face 4's plane.
     let e = &p.parts[0].edges[4];

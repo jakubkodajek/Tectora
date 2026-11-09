@@ -17,12 +17,14 @@
   import DormerBar from "./DormerBar.svelte";
   import OpeningBar from "./OpeningBar.svelte";
   import ManualBar from "./ManualBar.svelte";
+  import { commitFocused } from "./commitfocus";
+  import { textfield } from "./textfield";
   import ContextMenu, { type MenuEntry, type MenuState } from "./ContextMenu.svelte";
   import { mergeDroppedCorner, moveCorner } from "./corners";
   import { followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, transformItem, type ItemRef, type PlanTarget } from "./items";
   import { snapToRoof, type ManualSel } from "./manual";
   import { describeCalcError, describeError, describeProblem, toAppError, type Described } from "./errors";
-  import { notifyError } from "./notify.svelte";
+  import { notify, notifyError } from "./notify.svelte";
   import { chimneyFromRect, nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, roofHeightAt } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
@@ -35,10 +37,12 @@
   import { api, onProjectsChanged } from "./api";
   import { changedEdges, changedItems, describeChange, describeFigure, ghostOf } from "./changes";
   import { merge3 } from "./merge";
-  import { releaseLeaveGuard, setLeaveGuard } from "./leave";
+  import { isTyping, releaseLeaveGuard, setLeaveGuard } from "./leave";
   import { m2, num } from "./format";
-  import { t } from "./i18n.svelte";
-  import { actorName, isFresh, live } from "./live.svelte";
+  import { i18n, t } from "./i18n.svelte";
+  import { hscroll } from "./hscroll";
+  import { tabIds, tablist } from "./tabs";
+  import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
   import type { ActivityItem, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
   import { GABLE_PITCH, isAi, isGable, isMarker } from "./types";
@@ -62,6 +66,43 @@
   let loadError = $state<Described | null>(null);
   let loadErrorCode = $state<string>("");
   let dock = $state<"results" | "breakdown" | "ai" | "job">("results");
+  const dockIds = tabIds("dock");
+
+  // The toolbar drops its labels (icons + tooltips) whenever the labelled
+  // buttons do not fit the window, e.g. German at 1360 or 1440 px, and takes
+  // them back once the window is wide enough for the width they needed.
+  let toolbarEl: HTMLDivElement | undefined = $state();
+  let compactTools = $state(false);
+  let labelledWidth = 0;
+  function fitToolbar() {
+    const el = toolbarEl;
+    if (!el) return;
+    if (!compactTools) {
+      if (el.scrollWidth > el.clientWidth + 1) {
+        labelledWidth = el.scrollWidth;
+        compactTools = true;
+      }
+    } else if (el.clientWidth >= labelledWidth) {
+      compactTools = false;
+      tick().then(fitToolbar);
+    }
+  }
+  $effect(() => {
+    const el = toolbarEl;
+    if (!el) return;
+    const ro = new ResizeObserver(() => fitToolbar());
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+  $effect(() => {
+    // Labels of another language need another width: measure again.
+    void i18n.locale;
+    untrack(() => {
+      compactTools = false;
+      labelledWidth = 0;
+      tick().then(fitToolbar);
+    });
+  });
   /** The calculation breakdown while its tab is open, the face or line it points at, and face numbers for the plan. */
   let breakdown = $state<CalcBreakdown | null>(null);
   let planMark = $state<PlanMark>(null);
@@ -143,6 +184,13 @@
   let edits = 0;
   /** A file-change event came in while a save was running. */
   let reloadWanted = false;
+  /** Saves started so far: a read that a save overtook is stale. */
+  let saveGen = 0;
+  /** Saves run one after another: two from the same base would conflict
+      with each other, and the merge would drop the later local value. */
+  let saveQueue: Promise<unknown> = Promise.resolve();
+  /** Outside saves merged in a row before a save gives up (`save_conflict`). */
+  const SAVE_TRIES = 5;
   let calcSeq = 0;
 
   const snapshot = () => JSON.stringify(project);
@@ -212,60 +260,72 @@
     saveTimer = setTimeout(save, 500);
   }
 
-  async function save() {
-    if (!project) return;
+  /** Writes the job; resolves to whether the edits are on disk (errors are shown, never thrown). */
+  function save(): Promise<boolean> {
+    if (!project) return Promise.resolve(false);
     clearTimeout(saveTimer);
     saveState = "saving";
-    const seq = edits;
     inFlight++;
+    saveGen++;
+    const run = saveQueue.then(saveNow).finally(() => {
+      inFlight--;
+      if (!inFlight && reloadWanted) {
+        reloadWanted = false;
+        load(false);
+      }
+    });
+    saveQueue = run.catch(() => {});
+    return run;
+  }
+
+  async function saveNow(): Promise<boolean> {
+    if (!project) return false;
+    saveState = "saving";
+    const seq = edits;
     try {
       // The jobs folder was switched under the open job (settings, or an AI
       // over MCP): the same id there is another job, never write over it.
       if (libraryDir !== null && (await api.projectsDir()) !== libraryDir) {
         throw { code: "library_changed", id, detail: `${libraryDir} -> ${await api.projectsDir()}` };
       }
-      // An external edit (AI agent, CLI) saved since our last save or load
-      // and not loaded yet: merge it in instead of writing over it.
-      if (lastSaved) {
-        // A file saved by a newer Tectora or unreachable is not overwritten
-        // with this copy: the error goes to the catch below and the edits
-        // stay in memory. A file deleted outside the app is written again,
-        // and a damaged one is repaired with the editor's good copy, as the
-        // store allows (ERR-018).
-        const onDisk = await api.loadProject(id).then(
-          (p) => JSON.stringify(p),
-          (e) => {
-            const code = toAppError(e).code;
-            if (code === "not_found" || code === "unreadable") return null;
-            throw e;
-          },
-        );
-        if (onDisk && onDisk !== lastSaved) {
-          project = merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, JSON.parse(onDisk) as Project);
-          pushHistory();
-          recalc();
-          refreshActivity();
+      for (let tries = 0; ; tries++) {
+        const written = JSON.parse(snapshot());
+        if (lastSaved) {
+          // Written only if the file is still the one we last read or wrote
+          // (checked and written in one step by the store). An external edit
+          // (AI agent, CLI) saved since then comes back instead: merge it in
+          // and try again, never write over it. A file saved by a newer
+          // Tectora or unreachable is not overwritten: the error goes to the
+          // catch below and the edits stay in memory. A file deleted outside
+          // the app is written again, and a damaged one is repaired with the
+          // editor's good copy, as the store allows (ERR-018).
+          const r = await api.saveProjectChecked(id, written, JSON.parse(lastSaved));
+          if (r.status === "conflict") {
+            if (tries + 1 >= SAVE_TRIES) throw { code: "save_conflict", id };
+            project = merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, r.current);
+            lastSaved = JSON.stringify(r.current);
+            pushHistory();
+            recalc();
+            refreshActivity();
+            continue;
+          }
+        } else {
+          await api.saveProject(id, written);
         }
+        // The store writes its own canonical form (no nulls, empty lists or
+        // defaults); remember that, or the file-change event would come back
+        // as an external edit and break undo. Not read back from the file: an
+        // AI edit saved right after ours would then pass for our own.
+        lastSaved = JSON.stringify(await api.normalizeProject(written));
+        // An edit made while this save was running is still unsaved.
+        saveState = edits === seq ? "saved" : "dirty";
+        return true;
       }
-      const written = JSON.parse(snapshot());
-      await api.saveProject(id, written);
-      // The store writes its own canonical form (no nulls, empty lists or
-      // defaults); remember that, or the file-change event would come back
-      // as an external edit and break undo. Not read back from the file: an
-      // AI edit saved right after ours would then pass for our own.
-      lastSaved = JSON.stringify(await api.normalizeProject(written));
-      // An edit made while this save was running is still unsaved.
-      saveState = edits === seq ? "saved" : "dirty";
     } catch (e) {
       // Keep the edits in memory; the status bar offers to try again.
       saveState = "failed";
       notifyError(e, "save");
-    } finally {
-      inFlight--;
-      if (!inFlight && reloadWanted) {
-        reloadWanted = false;
-        load(false);
-      }
+      return false;
     }
   }
 
@@ -298,6 +358,7 @@
   const redo = () => at < history.length - 1 && restore(at + 1);
 
   async function load(initial: boolean) {
+    const gen = saveGen;
     try {
       const p = await api.loadProject(id);
       const json = JSON.stringify(p);
@@ -307,13 +368,22 @@
         reloadWanted = true;
         return;
       }
+      if (!initial && gen !== saveGen) {
+        // A save started and finished while reading: this read may be older
+        // than it and would pass for an outside edit, putting the job back
+        // to before the user's last edit. Read again.
+        load(false);
+        return;
+      }
       if (!initial && json === lastSaved) return;
       // Indices in an open menu or a drag in progress refer to the old project.
       menu = null;
       dragBase = null;
-      // An external edit while local edits are not saved yet: keep both
-      // (the external one wins where both changed the same value).
-      const merged = !initial && saveState === "dirty" && project && lastSaved;
+      // An external edit while local edits are not saved yet (waiting for
+      // the timer, or a save that failed): keep both (the external one wins
+      // where both changed the same value). The state stays "dirty" or
+      // "failed", so the merged edits are still to be saved (ERR-002).
+      const merged = !initial && (saveState === "dirty" || saveState === "failed") && project && lastSaved;
       project = merged ? merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, p) : p;
       lastSaved = json;
       if (initial) {
@@ -327,7 +397,9 @@
         // External change (AI agent, CLI): keep it undoable and show it.
         // Merged local edits are still to be saved (the timer is running).
         pushHistory();
-        if (pending) dock = "ai";
+        // Not while the user types in the dock: switching the tab would
+        // remove the field and the typed text with it (UI-002).
+        if (pending && !typingInDock()) dock = "ai";
       }
       recalc();
     } catch (e) {
@@ -342,6 +414,20 @@
         notifyError(e, "load");
       }
     }
+  }
+
+  let dockEl: HTMLElement | undefined = $state();
+  /** A text field in the side panel has the focus. */
+  function typingInDock(): boolean {
+    const a = document.activeElement;
+    return !!dockEl && !!a && dockEl.contains(a) && (a instanceof HTMLInputElement || a instanceof HTMLTextAreaElement || a instanceof HTMLSelectElement);
+  }
+
+  /** Follow mode must not take the user out of unfinished work (UX-001). */
+  function busy(): boolean {
+    if ((drawing?.length ?? 0) > 0 || placing !== false || manualDraft.length > 0) return true;
+    if (dragBase || menu) return true;
+    return isTyping(document.activeElement);
   }
 
   let unlisten: (() => void) | undefined;
@@ -359,11 +445,14 @@
   });
   /** Saves pending edits before the job is left; asks when they cannot be saved. */
   async function leaveGuard(mode: "ask" | "quiet"): Promise<boolean> {
+    // A value still being typed is part of the job: store it first.
+    commitFocused();
+    await tick();
     if (saveState === "dirty" || saveState === "saving" || saveState === "failed") await save();
     if (saveState !== "failed") return true;
     return mode === "ask" && (await confirm(t("editor.leaveUnsaved")));
   }
-  setLeaveGuard(leaveGuard, () => saveState !== "saved");
+  setLeaveGuard(leaveGuard, () => saveState !== "saved", busy);
 
   onDestroy(() => {
     unlisten?.();
@@ -386,6 +475,11 @@
 
   /** Reverts the pending AI changes from the banner, or the latest one from the AI tab. */
   async function revert(all = false) {
+    // Edits not on disk yet would be lost: the store keeps only the edits in
+    // the file, merging the revert onto them (ERR-001).
+    commitFocused();
+    await tick();
+    if (saveState !== "saved" && !(await save())) return;
     try {
       clearTimeout(saveTimer);
       const oldest = pendingList[pendingList.length - 1];
@@ -495,6 +589,32 @@
     commit();
   }
 
+  /**
+   * The bar's "Building height": every wall of the selected part at `h`, its
+   * breaks, half-hips and the objects on it moved with it, in one change.
+   * The core's operation, the same as MCP set_part_height.
+   */
+  async function setPartHeight(h: number) {
+    if (!project || !selection) return;
+    const pi = selection.part;
+    const part = JSON.stringify($state.snapshot(project.parts[pi]));
+    let next: Project;
+    try {
+      next = await api.setPartHeight($state.snapshot(project) as Project, pi, h);
+    } catch (e) {
+      notifyError(e, "calc");
+      return;
+    }
+    // The project may have changed meanwhile (an AI save): apply only to the same part.
+    // (Compared by value: a save in between may hand back equal but new objects.)
+    if (!project || !project.parts[pi] || JSON.stringify($state.snapshot(project.parts[pi])) !== part) return;
+    project.parts = next.parts;
+    project.dormers = next.dormers;
+    project.chimneys = next.chimneys;
+    if (project.manual_lines?.length) project.manual_lines = next.manual_lines ?? [];
+    commit();
+  }
+
   /** Changes an edge length by moving its end vertex along the edge. */
   function setLength(len: number) {
     if (!project || !selection) return;
@@ -514,6 +634,25 @@
     es.splice(selection.edge, 1);
     selection = null;
     commit();
+  }
+
+  /**
+   * Delete / Backspace with a wall selected: the key is easy to hit while
+   * stepping through walls (Backspace meant for a field), and it changes the
+   * footprint, so it asks first (UX-006). The bar's trash button does not.
+   */
+  async function deleteVertexByKey() {
+    if (!project || !selection) return;
+    const sel = selection;
+    const part = project.parts[sel.part];
+    const es = part?.edges;
+    if (!es?.[sel.edge] || (!isMarker(es[sel.edge]) && es.filter((e) => !isMarker(e)).length <= 3)) return;
+    const msg = isMarker(es[sel.edge]) ? t("edge.confirmDeleteMarker") : t("edge.confirmDeleteVertex", { n: sel.edge + 1, name: part.name });
+    // Tauri's dialog plugin makes confirm asynchronous: always await it.
+    if (!(await confirm(msg))) return;
+    // The project or the selection may have changed while the dialog was open.
+    if (project?.parts[sel.part] !== part || selection?.part !== sel.part || selection?.edge !== sel.edge) return;
+    deleteVertex();
   }
 
   function moveVertex(part: number, v: number, x: number, y: number) {
@@ -654,6 +793,35 @@
     commit();
   }
 
+  /**
+   * A manual face drawn where a building was meant: replace it with a part of
+   * the same outline with the new-roof defaults (pitch, eave height,
+   * overhang) so its roof is calculated. The core's operation, the same as
+   * MCP face_to_part.
+   */
+  async function faceToPart() {
+    if (!project || manualSel?.kind !== "face" || !project.manual_faces) return;
+    const index = manualSel.index;
+    const face = project.manual_faces[index];
+    if (!face || face.points.length < 3) return;
+    const n = project.parts.length;
+    const name = n === 0 ? t("editor.mainPart") : t("editor.partN", { n: n + 1 });
+    let next: Project;
+    try {
+      next = await api.faceToPart($state.snapshot(project) as Project, index, name, presets.pitch_deg, presets.eave_height, presets.overhang);
+    } catch (e) {
+      notifyError(e, "calc");
+      return;
+    }
+    // The project may have changed meanwhile (an AI save): apply only to the same face.
+    if (!project?.manual_faces || project.manual_faces[index] !== face) return;
+    project.manual_faces = next.manual_faces;
+    project.parts = next.parts;
+    manualSel = null;
+    selection = { part: n, edge: 0 };
+    commit();
+  }
+
   function deleteManual() {
     if (!project || !manualSel) return;
     if (manualSel.kind === "line") project.manual_lines?.splice(manualSel.index, 1);
@@ -711,9 +879,32 @@
     commit();
   }
 
-  function setWindow(w: RoofWindow) {
+  async function setWindow(w: RoofWindow) {
     if (!project || openSel?.kind !== "window" || !project.windows) return;
-    project.windows[openSel.index] = w;
+    const index = openSel.index;
+    // A window larger than its face would make the face area negative
+    // (MATH-001): refused with the reason, as MCP set_openings refuses it.
+    const windows = project.windows.map((x, i) => (i === index ? w : x));
+    try {
+      const big = await api.checkWindows({ ...$state.snapshot(project), windows } as Project);
+      if (big) {
+        notify({
+          kind: "error",
+          code: "window_too_large",
+          title: t("opening.tooLarge.title"),
+          message: t("opening.tooLarge", { n: big.index + 1, a: num(big.area), f: num(big.face_area) }),
+        });
+        // Same values, new object: the fields show the stored size again.
+        const kept = project?.windows?.[index];
+        if (kept && project?.windows) project.windows[index] = { ...kept };
+        return;
+      }
+    } catch (e) {
+      notifyError(e, "calc");
+      return;
+    }
+    if (!project?.windows || project.windows.length !== windows.length) return;
+    project.windows[index] = w;
     commit();
   }
 
@@ -725,6 +916,9 @@
     openSel = null;
     commit();
   }
+
+  /** The agent is working on this job right now (the pill lights up only then). */
+  const aiHere = $derived(isFresh() && live.status?.project_id === id);
 
   // ---- Objects edited directly in the plan and the 3D view ------------
 
@@ -883,8 +1077,12 @@
       { label: t("tool.transform") + "…", icon: "move", action: () => { selection = { part: pi, edge: selection?.part === pi ? selection.edge : 0 }; openTransform(); } },
       { label: t("menu.duplicatePart"), icon: "copy", action: () => {
         if (!project) return;
-        // Beside the original, 2 m apart (as a new standard roof is placed).
-        const added = transformPart(project, pi, translation(+(w + 2).toFixed(3), 0), 1);
+        // 2 m to the right of everything drawn (as a new standard roof is
+        // placed), so the copy never lands on, and joins, another building
+        // or a manual face (UX-010).
+        const xs = [...project.parts.flatMap((p) => p.edges.map((e) => e.start.x)), ...(project.manual_faces ?? []).flatMap((f) => f.points.map((p) => p.x))];
+        const dx = Math.max(w, Math.max(...xs) - Math.min(...ps.map((p) => p.x))) + 2;
+        const added = transformPart(project, pi, translation(+dx.toFixed(3), 0), 1);
         if (added.length) selection = { part: added[0], edge: 0 };
         commit();
         setTimeout(() => plan?.fit(), 0);
@@ -1055,11 +1253,34 @@
 
   // Drawing a new footprint.
   function startDraw() {
+    // Already drawing: the Insert key keeps going; the toolbar button
+    // (toggle) and the context menu go through cancelDraw, which asks.
+    if (drawing) return;
     selection = null;
     dormerSel = null;
     openSel = null;
     placing = false;
     drawing = [];
+  }
+
+  /**
+   * Stops drawing the footprint. `ask` (a key or a second press of the
+   * Building button, easy to hit by accident) asks first once two or more
+   * corners would be lost; the bar's Cancel button stops at once.
+   */
+  async function cancelDraw(ask: boolean) {
+    const pts = drawing;
+    if (!pts) return;
+    // Tauri's dialog plugin makes confirm asynchronous: always await it.
+    if (ask && pts.length >= 2 && !(await confirm(t("draw.confirmCancel", { n: pts.length })))) return;
+    // Closed or restarted while the question was open.
+    if (drawing !== pts) return;
+    drawing = null;
+  }
+
+  function toggleDraw() {
+    if (drawing) cancelDraw(true);
+    else startDraw();
   }
 
   function drawStep(dx: number, dy: number) {
@@ -1113,13 +1334,10 @@
     savePrefs();
   }
 
-  function rename(e: Event) {
-    if (!project) return;
-    const v = (e.target as HTMLInputElement).value.trim();
-    if (v && v !== project.name) {
-      project.name = v;
-      commit();
-    }
+  function rename(v: string) {
+    if (!project || v === project.name) return;
+    project.name = v;
+    commit();
   }
 
   // macOS keyboards have no Delete key (their "delete" sends Backspace) and
@@ -1167,7 +1385,7 @@
     } else if (del && manualSel && !drawing) {
       deleteManual();
     } else if (del && selection && !drawing) {
-      deleteVertex();
+      deleteVertexByKey();
     }
   }
 </script>
@@ -1182,15 +1400,18 @@
       <button class="crumb" onclick={onback}>{t("lib.title")}</button>
       <span>/</span>
       {#if project}
-        <input class="title" type="text" value={project.name} onchange={rename} aria-label={t("editor.name")} />
+        <input class="title" type="text" use:textfield={{ value: project.name, required: true, onchange: rename }} aria-label={t("editor.name")} />
         {#if project.job.number}<span class="jobno">{project.job.number}</span>{/if}
       {/if}
     </div>
     <div class="spacer"></div>
-    <button class="ai-pill" class:active={isFresh()} onclick={() => { dock = "ai"; dockOpen = true; }} title={t("ai.title")}>
+    <button class="ai-pill" class:active={aiHere} onclick={() => { dock = "ai"; dockOpen = true; }} title={t("ai.title")}>
       <span class="dot"></span>
-      {#if isFresh() && live.status}
-        <strong>{actorName(live.status.actor)}</strong><span class="msg">{live.status.message}</span>
+      {#if aiHere && live.status}
+        <strong>{actorName(live.status.actor)}</strong><span class="msg">{liveText(live.status)}</span>
+      {:else if isFresh() && live.status}
+        <!-- The agent works on another job (or the library): said, not lit up. -->
+        <strong>{actorName(live.status.actor)}</strong><span class="msg">{t("ai.elsewhere", { name: live.status.name ?? "" })}</span>
       {:else}
         <Icon name="sparkle" size={14} />{t("ai.short")}
       {/if}
@@ -1199,34 +1420,38 @@
   </header>
 
   {#if !loadError}
-  <div class="toolbar" role="toolbar">
+  <div class="toolbar" class:compact={compactTools} role="toolbar" bind:this={toolbarEl} use:hscroll>
     <div class="group">
       <button class="tool" onclick={undo} disabled={at <= 0} title="{t('editor.undo')} ({keys('Ctrl+Z')})"><Icon name="undo" /><span>{t("editor.undo")}</span></button>
       <button class="tool" onclick={redo} disabled={at >= historyLen - 1} title="{t('editor.redo')} ({keys('Ctrl+Shift+Z')})"><Icon name="redo" /><span>{t("editor.redo")}</span></button>
     </div>
     <div class="group">
-      <button class="tool" class:on={!!std} onclick={() => (std = { part: null, mode: project?.parts.length ? "replace" : "add" })} title={t("tool.standardHint")}><Icon name="house" /><span>{t("tool.standard")}</span></button>
-      <button class="tool" class:on={!!drawing} onclick={startDraw} title="{t('tool.drawHint')} (Insert)"><Icon name="draw" /><span>{t("tool.draw")}</span></button>
-      <button class="tool" class:on={placing === "dormer"} disabled={!project?.parts.length} onclick={() => togglePlacing("dormer")} title={t("tool.dormerHint")}><Icon name="roof" /><span>{t("tool.dormer")}</span></button>
-      <button class="tool" class:on={placing === "chimney"} disabled={!project?.parts.length} onclick={() => togglePlacing("chimney")} title={t("tool.chimneyHint")}><Icon name="chimney" /><span>{t("tool.chimney")}</span></button>
-      <button class="tool" class:on={placing === "window"} disabled={!project?.parts.length} onclick={() => togglePlacing("window")} title={t("tool.windowHint")}><Icon name="window" /><span>{t("tool.window")}</span></button>
-      <button class="tool" class:on={placing === "hole"} disabled={!project?.parts.length} onclick={() => togglePlacing("hole")} title={t("tool.holeHint")}><Icon name="hole" /><span>{t("tool.hole")}</span></button>
-      <button class="tool" class:on={placing === "line"} disabled={!result} onclick={() => togglePlacing("line")} title={t("tool.lineHint")}><Icon name="line" /><span>{t("tool.line")}</span></button>
-      <button class="tool" class:on={placing === "face"} disabled={!result} onclick={() => togglePlacing("face")} title={t("tool.faceHint")}><Icon name="face" /><span>{t("tool.face")}</span></button>
-      <button class="tool" class:on={!!project?.flat_roof} disabled={!project?.parts.length} onclick={toggleFlat} title={t("tool.flatHint")}><Icon name="flat" /><span>{t("tool.flat")}</span></button>
-      <button class="tool" class:on={!!xform} disabled={!selection} onclick={openTransform} title={t("tool.transformHint")}><Icon name="move" /><span>{t("tool.transform")}</span></button>
+      <button class="tool" class:on={!!std} aria-pressed={!!std} onclick={() => (std = { part: null, mode: project?.parts.length && selection ? "replace" : "add" })} title={t("tool.standardHint")}><Icon name="house" /><span>{t("tool.standard")}</span></button>
+      <button class="tool" class:on={!!drawing} aria-pressed={!!drawing} onclick={toggleDraw} title="{t('tool.drawHint')} (Insert)"><Icon name="draw" /><span>{t("tool.draw")}</span></button>
+      <button class="tool" class:on={placing === "dormer"} aria-pressed={placing === "dormer"} disabled={!project?.parts.length} onclick={() => togglePlacing("dormer")} title={t("tool.dormerHint")}><Icon name="roof" /><span>{t("tool.dormer")}</span></button>
+      <button class="tool" class:on={placing === "chimney"} aria-pressed={placing === "chimney"} disabled={!project?.parts.length} onclick={() => togglePlacing("chimney")} title={t("tool.chimneyHint")}><Icon name="chimney" /><span>{t("tool.chimney")}</span></button>
+      <button class="tool" class:on={placing === "window"} aria-pressed={placing === "window"} disabled={!project?.parts.length} onclick={() => togglePlacing("window")} title={t("tool.windowHint")}><Icon name="window" /><span>{t("tool.window")}</span></button>
+      <button class="tool" class:on={placing === "hole"} aria-pressed={placing === "hole"} disabled={!project?.parts.length} onclick={() => togglePlacing("hole")} title={t("tool.holeHint")}><Icon name="hole" /><span>{t("tool.hole")}</span></button>
+    </div>
+    <div class="group">
+      <button class="tool" class:on={placing === "line"} aria-pressed={placing === "line"} disabled={!result} onclick={() => togglePlacing("line")} title={t("tool.lineHint")}><Icon name="line" /><span>{t("tool.line")}</span></button>
+      <button class="tool" class:on={placing === "face"} aria-pressed={placing === "face"} disabled={!result} onclick={() => togglePlacing("face")} title={t("tool.faceHint")}><Icon name="face" /><span>{t("tool.face")}</span></button>
+      <button class="tool" class:on={!!project?.flat_roof} aria-pressed={!!project?.flat_roof} disabled={!project?.parts.length} onclick={toggleFlat} title={t("tool.flatHint")}><Icon name="flat" /><span>{t("tool.flat")}</span></button>
+    </div>
+    <div class="group">
+      <button class="tool" class:on={!!xform} aria-pressed={!!xform} disabled={!selection} onclick={openTransform} title={t("tool.transformHint")}><Icon name="move" /><span>{t("tool.transform")}</span></button>
       <button class="tool" disabled={!selection} onclick={deletePart} title={t("tool.deletePartHint")}><Icon name="trash" /><span>{t("tool.deletePart")}</span></button>
       <button class="tool" disabled={!hasDrawing(project)} onclick={clearRoof} title={t("tool.clearHint")}><Icon name="eraser" /><span>{t("tool.clear")}</span></button>
     </div>
     <div class="group">
-      <button class="tool" class:on={prefs.layout === "plan"} onclick={() => setLayout("plan")} title={t("editor.plan")}><Icon name="plan" /><span>{t("editor.plan")}</span></button>
-      <button class="tool" class:on={prefs.layout === "split"} onclick={() => setLayout("split")} title={t("editor.both")}><Icon name="split" /><span>{t("editor.both")}</span></button>
-      <button class="tool" class:on={prefs.layout === "3d"} onclick={() => setLayout("3d")} title="F3"><Icon name="cube" /><span>{t("editor.model")}</span></button>
+      <button class="tool" class:on={prefs.layout === "plan"} aria-pressed={prefs.layout === "plan"} onclick={() => setLayout("plan")} title={t("editor.plan")}><Icon name="plan" /><span>{t("editor.plan")}</span></button>
+      <button class="tool" class:on={prefs.layout === "split"} aria-pressed={prefs.layout === "split"} onclick={() => setLayout("split")} title={t("editor.both")}><Icon name="split" /><span>{t("editor.both")}</span></button>
+      <button class="tool" class:on={prefs.layout === "3d"} aria-pressed={prefs.layout === "3d"} onclick={() => setLayout("3d")} title="F3"><Icon name="cube" /><span>{t("editor.model")}</span></button>
       <button class="tool" onclick={() => plan?.fit()} disabled={prefs.layout === "3d"} title={t("plan.fit")}><Icon name="fit" /><span>{t("plan.fit")}</span></button>
-      <button class="tool" class:on={showDims} onclick={() => (showDims = !showDims)} title={t("tool.dims")}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
+      <button class="tool" class:on={showDims} aria-pressed={showDims} onclick={() => (showDims = !showDims)} title={t("tool.dims")}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
     </div>
     <div class="group">
-      <button class="tool" class:on={exporting} disabled={!result} onclick={() => (exporting = true)} title={t("tool.exportHint")}><Icon name="download" /><span>{t("tool.export")}</span></button>
+      <button class="tool" class:on={exporting} aria-pressed={exporting} disabled={!result} onclick={() => (exporting = true)} title={t("tool.exportHint")}><Icon name="download" /><span>{t("tool.export")}</span></button>
     </div>
   </div>
   {/if}
@@ -1241,7 +1466,7 @@
               <strong>
                 {t("review.title", { who: actorName(pending.actor) })}{#if pendingList.length > 1}<span class="steps">{t("review.steps", { n: pendingList.length })}</span>{/if}
               </strong>
-              <span class="review-summary" title={pendingList.map((a) => a.summary).reverse().join(" → ")}>{pendingList.map((a) => a.summary).reverse().join(" → ")}</span>
+              <span class="review-summary" title={pendingList.map((a) => entrySummary(a.summary)).reverse().join(" → ")}>{pendingList.map((a) => entrySummary(a.summary)).reverse().join(" → ")}</span>
               {#if pendingChanges.length}
                 <span class="review-list">
                   {pendingChanges.slice(0, 4).map((c) => describeChange(c, project)).join(" · ")}{pendingChanges.length > 4 ? ` · ${t("review.more", { n: pendingChanges.length - 4 })}` : ""}
@@ -1341,20 +1566,21 @@
             onstep={drawStep}
             onundo={() => drawing?.pop()}
             onclose={finishDraw}
-            oncancel={() => (drawing = null)}
+            oncancel={(ask) => cancelDraw(!!ask)}
           />
         {:else if dormerSel !== null}
           <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} />
         {:else if openSel}
           <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening} />
         {:else if manualSel}
-          <ManualBar {project} bind:sel={manualSel} online={setManualLine} onface={setManualFace} ondelete={deleteManual} />
+          <ManualBar {project} bind:sel={manualSel} online={setManualLine} onface={setManualFace} ontopart={faceToPart} ondelete={deleteManual} />
         {:else}
           <RoofDefBar
             {project}
             bind:selection
             onchange={patchEdge}
             onapplyall={applyAll}
+            onheight={setPartHeight}
             onlength={setLength}
             onpoint={(x, y) => { if (selection) { moveVertex(selection.part, selection.edge, x, y); commit(); } }}
             ondelete={deleteVertex}
@@ -1366,15 +1592,15 @@
       </div>
 
       <aside class:open={dockOpen}>
-        <div class="tabs" role="tablist">
-          <button role="tab" aria-selected={dock === "results"} class:on={dock === "results"} onclick={() => showDock("results")} title={t("dock.results")}><Icon name="chart" size={15} /><span class="tab-label">{t("dock.results")}</span></button>
-          <button role="tab" aria-selected={dock === "breakdown"} class:on={dock === "breakdown"} onclick={() => showDock("breakdown")} title={t("bd.title")}><Icon name="sigma" size={15} /><span class="tab-label">{t("dock.breakdown")}</span></button>
-          <button role="tab" aria-selected={dock === "ai"} class:on={dock === "ai"} onclick={() => showDock("ai")} title={t("dock.ai")}>
+        <div class="tabs" role="tablist" use:tablist>
+          <button role="tab" id={dockIds.tab("results")} aria-controls={dockIds.panel} aria-selected={dock === "results"} class:on={dock === "results"} onclick={() => showDock("results")} title={t("dock.results")}><Icon name="chart" size={15} /><span class="tab-label">{t("dock.results")}</span></button>
+          <button role="tab" id={dockIds.tab("breakdown")} aria-controls={dockIds.panel} aria-selected={dock === "breakdown"} class:on={dock === "breakdown"} onclick={() => showDock("breakdown")} title={t("bd.title")}><Icon name="sigma" size={15} /><span class="tab-label">{t("dock.breakdown")}</span></button>
+          <button role="tab" id={dockIds.tab("ai")} aria-controls={dockIds.panel} aria-selected={dock === "ai"} class:on={dock === "ai"} onclick={() => showDock("ai")} title={t("dock.ai")}>
             <Icon name="sparkle" size={15} /><span class="tab-label">{t("dock.ai")}</span>{#if pending}<i class="badge"></i>{/if}
           </button>
-          <button role="tab" aria-selected={dock === "job"} class:on={dock === "job"} onclick={() => showDock("job")} title={t("dock.job")}><Icon name="briefcase" size={15} /><span class="tab-label">{t("dock.job")}</span></button>
+          <button role="tab" id={dockIds.tab("job")} aria-controls={dockIds.panel} aria-selected={dock === "job"} class:on={dock === "job"} onclick={() => showDock("job")} title={t("dock.job")}><Icon name="briefcase" size={15} /><span class="tab-label">{t("dock.job")}</span></button>
         </div>
-        <div class="dock">
+        <div class="dock" role="tabpanel" id={dockIds.panel} aria-labelledby={dockIds.tab(dock)} bind:this={dockEl}>
           <button class="icon-btn dock-close" onclick={() => (dockOpen = false)} aria-label={t("common.close")} title={t("common.close")}><Icon name="x" size={16} /></button>
           {#if dock === "results"}
             <Results {result} {project} onstore={storeResult} />
@@ -1914,6 +2140,25 @@
     flex: none;
     max-height: 46vh;
     overflow-y: auto;
+  }
+
+  /* Labels that do not fit the window (long languages): icons only, as below. */
+  .toolbar.compact .tool {
+    width: 36px;
+    height: 36px;
+    min-width: 0;
+    padding: 0;
+  }
+  .toolbar.compact .tool span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .toolbar.compact .group {
+    padding-right: 4px;
+    margin-right: 2px;
   }
 
   /* ---- Responsive: half-screen and smaller windows ---- */

@@ -69,10 +69,71 @@ pub fn generate(project: &Project) -> Result<Vec<RoofGeometry>, Failure> {
     if project.parts.is_empty() {
         return Err(Failure::Ours("no roof".into()));
     }
-    let hosts = dormer_hosts(project)?;
-    let mut geos = roofs(project, &hosts)?;
+    let found = find_hosts(project)?;
+    if found.iter().all(Option::is_some) {
+        return generate_with(project, &found);
+    }
+    // A dormer that sits on no roof face is left out, so the roofs stay
+    // DACAD's; the part nearest to it says so (`DormerOffRoof`).
+    let mut kept = project.clone();
+    let mut off = Vec::new();
+    let mut i = 0;
+    kept.dormers.retain(|_| {
+        let on = found[i].is_some();
+        if !on {
+            off.push(i);
+        }
+        i += 1;
+        on
+    });
+    let hosts: Vec<Option<DormerHost>> = found.into_iter().filter(Option::is_some).collect();
+    let mut geos = generate_with(&kept, &hosts)?;
+    for d in off {
+        let at = project.dormers[d]
+            .edges
+            .first()
+            .map_or(project.dormers[d].end, |e| e.start);
+        let near = (0..project.parts.len()).min_by(|&a, &b| {
+            outline_distance(&project.parts[a], at)
+                .total_cmp(&outline_distance(&project.parts[b], at))
+        });
+        if let Some(g) = near.and_then(|p| geos.get_mut(p)) {
+            g.warnings.push(RoofWarning {
+                dormer: Some(d),
+                ..RoofWarning::new(WarningKind::DormerOffRoof, 0.0)
+            });
+        }
+    }
+    Ok(geos)
+}
+
+/// Distance from `q` to the walls of `part` in plan.
+pub(crate) fn outline_distance(part: &crate::model::RoofPart, q: Point2) -> f64 {
+    let o = part.outline();
+    let n = o.len();
+    (0..n)
+        .map(|i| {
+            let (a, b) = (o[i], o[(i + 1) % n]);
+            let (dx, dy) = (b.x - a.x, b.y - a.y);
+            let l2 = dx * dx + dy * dy;
+            let t = if l2 > 0.0 {
+                (((q.x - a.x) * dx + (q.y - a.y) * dy) / l2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            q.distance(Point2::new(a.x + dx * t, a.y + dy * t))
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// [`generate`] with every dormer's host known.
+fn generate_with(
+    project: &Project,
+    hosts: &[Option<DormerHost>],
+) -> Result<Vec<RoofGeometry>, Failure> {
+    let mut geos = roofs(project, hosts)?;
     if !project.roof_openings.is_empty() {
-        record_opening_cuts(project, &hosts, &mut geos)?;
+        record_opening_cuts(project, hosts, &mut geos)?;
     }
     for w in &project.windows {
         apply_window(&mut geos, w);
@@ -110,6 +171,25 @@ fn roofs(project: &Project, hosts: &[Option<DormerHost>]) -> Result<Vec<RoofGeom
     }
 }
 
+/// The area of the building's walls, from the ground up to the roof, as
+/// DACAD's wall stage builds the wall polygons (its list shows the total
+/// as `Stena : 1`). `project` is prepared as for [`generate`].
+pub fn wall_area(project: &Project) -> Result<f64, Failure> {
+    if project.parts.is_empty() {
+        return Err(Failure::Ours("no roof".into()));
+    }
+    let hosts = dormer_hosts(project)?;
+    let (text, _) = write_rd2_with(project, &hosts);
+    let flags = if multiroof::applies(project) {
+        FLAGS_INT
+    } else {
+        FLAGS_SOL
+    };
+    let sol = parse_sol(&run_core(&text, flags)?)?;
+    let walls = wall_stage(&sol).map_err(|e| Failure::Ours(e.to_string()))?;
+    Ok(walls.areas.iter().sum())
+}
+
 /// The core's notices as warnings of the parts they concern: the walls in
 /// line it calculated as one, so that one wall's pitch or pitch breaks
 /// are not used. Dormer walls are left out (a dormer is entered as a
@@ -137,9 +217,8 @@ fn add_notices(geos: &mut [RoofGeometry], map: &Rd2Map, notices: &[Notice]) {
             continue;
         };
         let w = RoofWarning {
-            kind: WarningKind::MergedWalls,
-            value: 0.0,
             edges: vec![ek, ea],
+            ..RoofWarning::new(WarningKind::MergedWalls, 0.0)
         };
         if !geo.warnings.contains(&w) {
             geo.warnings.push(w);
@@ -231,6 +310,15 @@ fn plan(points: &[[f64; 3]]) -> Vec<Point2> {
 /// just behind the dormer's front, from a core run on the roofs alone
 /// (DACAD knows the faces from its own calculation).
 pub fn dormer_hosts(project: &Project) -> Result<Vec<Option<DormerHost>>, Failure> {
+    let hosts = find_hosts(project)?;
+    if hosts.iter().any(Option::is_none) {
+        return Err(Failure::Ours("a dormer on no roof face".into()));
+    }
+    Ok(hosts)
+}
+
+/// [`dormer_hosts`], with `None` for a dormer on no roof face.
+fn find_hosts(project: &Project) -> Result<Vec<Option<DormerHost>>, Failure> {
     let recorded = |d: &crate::model::Dormer| {
         let [a, b] = d.host_wall?;
         project.parts.iter().enumerate().find_map(|(pi, part)| {
@@ -312,9 +400,6 @@ pub fn dormer_hosts(project: &Project) -> Result<Vec<Option<DormerHost>>, Failur
             }
         }
         *host = best.map(|b| b.1);
-    }
-    if hosts.iter().any(Option::is_none) {
-        return Err(Failure::Ours("a dormer on no roof face".into()));
     }
     Ok(hosts)
 }

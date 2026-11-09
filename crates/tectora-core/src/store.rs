@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,6 +31,35 @@ pub const FILES_DIR: &str = ".files";
 pub const USER_ACTOR: &str = "user";
 /// Activity entries kept per project (each holds a full previous version).
 const ACTIVITY_KEEP: usize = 50;
+/// Deleted jobs and removed attachments, one folder per deletion
+/// (`.trash/<entry>/`), so a delete by mistake or by an AI client can be
+/// undone ([`Store::restore`]).
+pub const TRASH_DIR: &str = ".trash";
+/// What was deleted, by whom and why, in each trash folder.
+const TRASH_INFO: &str = "deleted.json";
+/// Trash folders older than this are removed for good on the next delete.
+pub const TRASH_KEEP_DAYS: u64 = 30;
+/// Largest file attached from disk, bytes (as in a job bundle).
+pub const MAX_ATTACHMENT: u64 = 256 * 1024 * 1024;
+
+/// A deleted job or a removed attachment, kept in the library's trash.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrashEntry {
+    /// Folder name in `.trash`; pass it to [`Store::restore`].
+    pub entry: String,
+    /// The job (deleted, or the one the file was attached to).
+    pub id: String,
+    /// The job's name when it was deleted.
+    pub name: String,
+    /// The attachment's name when only a file was removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    pub ts_ms: u64,
+    /// `user` for the desktop app, otherwise the AI client's name.
+    pub actor: String,
+    /// One sentence on why it was deleted.
+    pub summary: String,
+}
 
 /// A file attached to a job.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -85,6 +114,12 @@ pub struct ActivityEntry {
     /// What this change did, computed when it was saved.
     #[serde(default)]
     pub changes: Vec<Change>,
+    /// The project this change saved. A revert merges the inverse of the
+    /// change onto the current file with it as the base, so edits saved
+    /// later without a log entry (the app's autosave) are kept. `None` in
+    /// entries written by Tectora 0.5 and older.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Project>,
 }
 
 impl ActivityEntry {
@@ -137,10 +172,53 @@ pub struct ReviewStatus {
 pub struct LiveStatus {
     pub ts_ms: u64,
     pub actor: String,
-    /// Short description, e.g. "Reading project rodinny-dum".
+    /// Short English description, e.g. "Reading “Rodinný dům”" (logs and
+    /// older apps); for a change, the agent's own summary.
     pub message: String,
     pub project_id: Option<String>,
+    /// The agent saved `project_id` or asked to show it: the app may open it
+    /// (follow mode). Reading or calculating a job does not set it.
+    #[serde(default)]
+    pub follow: bool,
+    /// What the agent is doing, as a code the app translates
+    /// ([`LIVE_KINDS`]); `changed` shows `message`, the agent's summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// The job or file name the sentence names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
+
+/// The codes of [`LiveStatus::kind`] (the app has a sentence for each, in
+/// every UI language: `ai.live.<kind>`).
+pub const LIVE_KINDS: [&str; 18] = [
+    "changed",
+    "settings",
+    "browsing",
+    "reading",
+    "calculating",
+    "explaining",
+    "comparing",
+    "showing",
+    "reverted",
+    "reverted_changes",
+    "copied",
+    "deleted",
+    "restored",
+    "attached",
+    "removed",
+    "exported",
+    "exported_sheet",
+    "imported",
+];
+
+/// Summary prefixes of the change-log entries a revert writes; the app
+/// reads them to show the sentence in the user's language.
+pub const REVERTED_PREFIX: &str = "Reverted: ";
+/// What follows a revert's sentence when the AI gave a reason: the entry
+/// reads `Reverted: <summary> (reason: <reason>)` (the app's
+/// `live.svelte.ts` splits it there).
+pub const REVERT_REASON_OPEN: &str = " (reason: ";
 
 pub fn now_ms() -> u64 {
     SystemTime::now()
@@ -224,6 +302,10 @@ pub enum StoreError {
     /// No recorded change has this timestamp (the log moved on).
     #[error("{id}: no recorded change at {ts_ms}")]
     NoSuchChange { id: String, ts_ms: u64 },
+    /// The job was edited after the change to revert, in values that change
+    /// also set: reverting would overwrite those edits, so nothing is done.
+    #[error("{id}: edited since that change in the same values ({detail})")]
+    RevertConflict { id: String, detail: String },
 }
 
 /// The kinds of file system failure the app explains differently.
@@ -255,6 +337,7 @@ impl StoreError {
             StoreError::NothingToRevert(_) => "nothing_to_revert",
             StoreError::RevertCreated(_) => "revert_created",
             StoreError::NoSuchChange { .. } => "no_such_change",
+            StoreError::RevertConflict { .. } => "revert_conflict",
         }
     }
 
@@ -267,7 +350,8 @@ impl StoreError {
             | StoreError::RevertCreated(id) => Some(id),
             StoreError::Unreadable { id, .. }
             | StoreError::NewerFormat { id, .. }
-            | StoreError::NoSuchChange { id, .. } => Some(id),
+            | StoreError::NoSuchChange { id, .. }
+            | StoreError::RevertConflict { id, .. } => Some(id),
             StoreError::Io { id, .. } => id.as_deref(),
         }
     }
@@ -275,7 +359,9 @@ impl StoreError {
     /// The underlying message (OS or parser error), if any.
     pub fn detail(&self) -> Option<&str> {
         match self {
-            StoreError::Unreadable { detail, .. } | StoreError::Io { detail, .. } => Some(detail),
+            StoreError::Unreadable { detail, .. }
+            | StoreError::Io { detail, .. }
+            | StoreError::RevertConflict { detail, .. } => Some(detail),
             _ => None,
         }
     }
@@ -311,6 +397,58 @@ pub struct BrokenFile {
     pub detail: String,
 }
 
+/// Why work with a file other than the project file failed: an attachment,
+/// a job bundle, an imported file. Like [`StoreError`] it has a stable
+/// `code` the app translates; `detail` is English for the CLI, the MCP
+/// server and the "Details" view.
+///
+/// Codes: those of [`StoreError`], `file_not_found`, `not_a_file` (a folder,
+/// device or pipe), `too_large`, `unsupported_type`, `invalid_name`,
+/// `out_of_range`, `too_many`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{detail}")]
+pub struct FileError {
+    pub code: &'static str,
+    /// The job the error is about, if any.
+    pub id: Option<String>,
+    pub detail: String,
+}
+
+impl FileError {
+    pub fn new(code: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            id: None,
+            detail: detail.into(),
+        }
+    }
+
+    /// An operating system error on `path`, with the code the app explains.
+    pub fn io(path: &Path, e: std::io::Error) -> Self {
+        let code = match e.kind() {
+            std::io::ErrorKind::NotFound => "file_not_found",
+            _ => StoreError::io(None, std::io::Error::new(e.kind(), "")).code(),
+        };
+        Self::new(code, format!("{}: {e}", path.display()))
+    }
+}
+
+impl From<StoreError> for FileError {
+    fn from(e: StoreError) -> Self {
+        FileError {
+            code: e.code(),
+            id: e.id().map(str::to_string),
+            detail: e.to_string(),
+        }
+    }
+}
+
+impl From<FileError> for String {
+    fn from(e: FileError) -> String {
+        e.detail
+    }
+}
+
 fn modified_ms(path: &Path) -> u64 {
     fs::metadata(path)
         .and_then(|m| m.modified())
@@ -325,7 +463,7 @@ fn modified_ms(path: &Path) -> u64 {
 /// server saving the same design at once cannot write into each other's file.
 /// The `schema_version` of a project file's JSON when it is newer than this
 /// app reads, else `None` (also for text that is not JSON).
-fn newer_format(text: &str) -> Option<u64> {
+pub(crate) fn newer_format(text: &str) -> Option<u64> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     let version = v.get("schema_version")?.as_u64()?;
     (version > u64::from(crate::model::SCHEMA_VERSION)).then_some(version)
@@ -339,6 +477,21 @@ fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     fs::rename(&tmp, path).inspect_err(|_| {
         let _ = fs::remove_file(&tmp);
     })
+}
+
+/// What [`Store::save_checked`] and [`Store::save_as_checked`] did: saved,
+/// or found the file changed since the caller's base and left it alone.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CheckedSave {
+    Saved {
+        id: String,
+    },
+    /// Someone else saved the job after the base was read: `current` is the
+    /// file now, to merge with and save again.
+    Conflict {
+        current: Box<Project>,
+    },
 }
 
 /// Longest accepted project id (file names stay well inside the 255-byte
@@ -585,23 +738,78 @@ impl Store {
     /// a colleague's newer one.
     pub fn save(&self, id: Option<String>, project: &Project) -> Result<String, StoreError> {
         let id = id.unwrap_or_else(|| self.new_id(&project.name));
-        let path = self.path(&id)?;
+        let _lock = self.lock(&id);
+        self.write(&id, project)?;
+        Ok(id)
+    }
+
+    /// Saves the app's own edits (like [`Store::save`]) only if the file
+    /// still holds `base`, the version the editor last read or wrote.
+    /// Otherwise the file is left alone and its current content comes back
+    /// as [`CheckedSave::Conflict`], for the editor to merge its edits onto
+    /// and save again: an AI (MCP) save that landed in between is never
+    /// overwritten. The check and the write happen under the job's lock
+    /// file, which every save of every process (app, MCP server, CLI) takes.
+    /// A missing or damaged file is written (repaired with the editor's
+    /// copy, ERR-018); one saved by a newer Tectora is refused.
+    pub fn save_checked(
+        &self,
+        id: &str,
+        project: &Project,
+        base: &Project,
+    ) -> Result<CheckedSave, StoreError> {
+        self.path(id)?;
+        let _lock = self.lock(id);
+        match self.load(id) {
+            Ok(current) if current != *base => {
+                return Ok(CheckedSave::Conflict {
+                    current: Box::new(current),
+                });
+            }
+            Ok(_) | Err(StoreError::NotFound(_) | StoreError::Unreadable { .. }) => {}
+            Err(e) => return Err(e),
+        }
+        self.write(id, project)?;
+        Ok(CheckedSave::Saved { id: id.to_string() })
+    }
+
+    /// Writes the file; the caller holds the job's lock.
+    fn write(&self, id: &str, project: &Project) -> Result<(), StoreError> {
+        let path = self.path(id)?;
         if let Some(version) = fs::read_to_string(&path)
             .ok()
             .and_then(|t| newer_format(&t))
         {
             return Err(StoreError::NewerFormat {
-                id,
+                id: id.to_string(),
                 version,
                 max: crate::model::SCHEMA_VERSION,
             });
         }
         let json = project.to_json().map_err(|e| StoreError::Unreadable {
-            id: id.clone(),
+            id: id.to_string(),
             detail: e.to_string(),
         })?;
-        write_atomic(&path, &json).map_err(|e| StoreError::io(Some(&id), e))?;
-        Ok(id)
+        write_atomic(&path, &json).map_err(|e| StoreError::io(Some(id), e))
+    }
+
+    /// Takes the job's lock file (`.activity/<id>.lock`), held until the
+    /// returned file is dropped, so that reading the current file and
+    /// writing the next one is one step for every process saving the job.
+    /// Best effort: where the folder cannot hold a lock file (read-only,
+    /// a file system without locks), saving goes on without it and the
+    /// write reports its own error.
+    fn lock(&self, id: &str) -> Option<fs::File> {
+        self.path(id).ok()?;
+        fs::create_dir_all(self.activity_dir()).ok()?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.activity_dir().join(format!("{id}.lock")))
+            .ok()?;
+        file.lock().ok()?;
+        Some(file)
     }
 
     /// Saves and records who made the change and why, keeping the previous
@@ -613,19 +821,77 @@ impl Store {
         actor: &str,
         summary: &str,
     ) -> Result<String, StoreError> {
-        let before = match id.as_deref().map(|id| self.load(id)) {
-            // Refused before anything is logged (see `save`).
-            Some(Err(e @ StoreError::NewerFormat { .. })) => return Err(e),
-            Some(r) => r.ok(),
-            None => None,
+        let id = match id {
+            Some(id) => id,
+            None => {
+                let id = self.new_id(&project.name);
+                let _lock = self.lock(&id);
+                self.log_and_write(&id, None, project, actor, summary)?;
+                return Ok(id);
+            }
         };
-        if before.as_ref() == Some(project) {
-            return Ok(id.unwrap_or_default());
+        match self.save_as_checked(&id, project, actor, summary, None)? {
+            CheckedSave::Saved { id } => Ok(id),
+            CheckedSave::Conflict { .. } => unreachable!("no base, no conflict"),
         }
-        let id = id.unwrap_or_else(|| self.new_id(&project.name));
+    }
+
+    /// [`Store::save_as`] of an existing job, only if the file still holds
+    /// `base` (the version the change was made on); otherwise nothing is
+    /// saved or logged and the current file comes back as
+    /// [`CheckedSave::Conflict`]. MCP tools use it, so a user edit the app
+    /// saved while the tool ran is not overwritten.
+    pub fn save_as_checked(
+        &self,
+        id: &str,
+        project: &Project,
+        actor: &str,
+        summary: &str,
+        base: Option<&Project>,
+    ) -> Result<CheckedSave, StoreError> {
+        self.path(id)?;
+        let _lock = self.lock(id);
+        let before = match self.load(id) {
+            // Refused before anything is logged (see `save`).
+            Err(e @ StoreError::NewerFormat { .. }) => return Err(e),
+            r => r.ok(),
+        };
+        if let (Some(base), Some(current)) = (base, before.as_ref())
+            && current != base
+        {
+            return Ok(CheckedSave::Conflict {
+                current: Box::new(current.clone()),
+            });
+        }
+        if before.as_ref() != Some(project) {
+            self.log_and_write(id, before, project, actor, summary)?;
+        }
+        Ok(CheckedSave::Saved { id: id.to_string() })
+    }
+
+    /// Logs the change and writes the file; the caller holds the job's lock.
+    fn log_and_write(
+        &self,
+        id: &str,
+        before: Option<Project>,
+        project: &Project,
+        actor: &str,
+        summary: &str,
+    ) -> Result<(), StoreError> {
+        // A newer file is refused before anything is logged.
+        if let Some(version) = fs::read_to_string(self.path(id)?)
+            .ok()
+            .and_then(|t| newer_format(&t))
+        {
+            return Err(StoreError::NewerFormat {
+                id: id.to_string(),
+                version,
+                max: crate::model::SCHEMA_VERSION,
+            });
+        }
         // Log first: the app reacts to the project file and then reads the log.
         self.append_activity(
-            &id,
+            id,
             ActivityEntry {
                 ts_ms: now_ms(),
                 actor: actor.to_string(),
@@ -635,9 +901,10 @@ impl Store {
                     .map(|b| diff(b, project))
                     .unwrap_or_default(),
                 before,
+                after: Some(project.clone()),
             },
         )?;
-        self.save(Some(id.clone()), project)
+        self.write(id, project)
     }
 
     fn append_activity(&self, id: &str, entry: ActivityEntry) -> Result<(), StoreError> {
@@ -656,8 +923,24 @@ impl Store {
             // place of the oldest kept one, so the pre-AI version is never
             // dropped while the review is open.
             let start = self.pending_start(id, &entries);
-            if start < entries.len() - ACTIVITY_KEEP {
-                keep[0] = &entries[start];
+            let cut = entries.len() - ACTIVITY_KEEP;
+            let merged;
+            if start < cut {
+                // That entry then stands for the changes dropped after it
+                // too: it saved what the last dropped one saved, so "Revert
+                // all" undoes them with it and keeps the user's unlogged
+                // edits in between (ERR-001).
+                let mut first = entries[start].clone();
+                if let Some(after) = entries[cut].after.clone() {
+                    first.changes = first
+                        .before
+                        .as_ref()
+                        .map(|b| diff(b, &after))
+                        .unwrap_or_default();
+                    first.after = Some(after);
+                }
+                merged = first;
+                keep[0] = &merged;
             }
             let text: Vec<String> = keep
                 .iter()
@@ -685,27 +968,37 @@ impl Store {
             .collect()
     }
 
-    /// Restores the version before the latest recorded change.
-    pub fn revert_last(&self, id: &str, actor: &str) -> Result<Project, StoreError> {
-        let last = self
-            .activity(id)
-            .pop()
+    /// Undoes the latest recorded change, keeping later unlogged edits.
+    /// `reason` (an AI client's summary) is logged after what was reverted
+    /// ([`REVERT_REASON_OPEN`]).
+    pub fn revert_last(
+        &self,
+        id: &str,
+        actor: &str,
+        reason: Option<&str>,
+    ) -> Result<Project, StoreError> {
+        let log = self.activity(id);
+        let last = log
+            .last()
             .ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
-        let before = last
-            .before
-            .ok_or_else(|| StoreError::RevertCreated(id.to_string()))?;
-        self.save_as(
-            Some(id.to_string()),
-            &before,
+        self.revert_from(
+            id,
+            &log,
+            log.len() - 1,
             actor,
-            &format!("Reverted: {}", last.summary),
-        )?;
-        Ok(before)
+            with_reason(reason, format!("{REVERTED_PREFIX}{}", last.summary)),
+        )
     }
 
     /// Restores the version from before the change recorded at `ts_ms`,
     /// undoing it and every later change in one step.
-    pub fn revert_to(&self, id: &str, ts_ms: u64, actor: &str) -> Result<Project, StoreError> {
+    pub fn revert_to(
+        &self,
+        id: &str,
+        ts_ms: u64,
+        actor: &str,
+        reason: Option<&str>,
+    ) -> Result<Project, StoreError> {
         let log = self.activity(id);
         let pos =
             log.iter()
@@ -714,18 +1007,99 @@ impl Store {
                     id: id.to_string(),
                     ts_ms,
                 })?;
-        let before = log[pos]
-            .before
-            .clone()
-            .ok_or_else(|| StoreError::RevertCreated(id.to_string()))?;
         let undone = log.len() - pos;
         let summary = if undone == 1 {
-            format!("Reverted: {}", log[pos].summary)
+            format!("{REVERTED_PREFIX}{}", log[pos].summary)
         } else {
             format!("Reverted {undone} changes since: {}", log[pos].summary)
         };
-        self.save_as(Some(id.to_string()), &before, actor, &summary)?;
-        Ok(before)
+        self.revert_from(id, &log, pos, actor, with_reason(reason, summary))
+    }
+
+    /// Undoes `log[pos..]`, latest first: the inverse of each change is
+    /// merged onto the current file with the version it saved as the base.
+    /// The app autosaves the user's own edits without a log entry, so the
+    /// file can be newer than the last entry's result, and an edit can lie
+    /// between two entries; such edits are kept (ERR-001). Refuses, with
+    /// nothing written, when one of them touches a value a reverted change
+    /// set.
+    fn revert_from(
+        &self,
+        id: &str,
+        log: &[ActivityEntry],
+        pos: usize,
+        actor: &str,
+        summary: String,
+    ) -> Result<Project, StoreError> {
+        // The file is read, merged and written back only if nobody saved in
+        // between (the app's autosave); otherwise the merge runs again on
+        // the newer file.
+        for _ in 0..4 {
+            if let Some(p) = self.revert_once(id, log, pos, actor, &summary)? {
+                return Ok(p);
+            }
+        }
+        Err(StoreError::RevertConflict {
+            id: id.to_string(),
+            detail: "the job kept changing while it was reverted".into(),
+        })
+    }
+
+    /// One attempt of [`Store::revert_from`]: `None` when the file changed
+    /// between reading and writing it.
+    fn revert_once(
+        &self,
+        id: &str,
+        log: &[ActivityEntry],
+        pos: usize,
+        actor: &str,
+        summary: &str,
+    ) -> Result<Option<Project>, StoreError> {
+        let value = |p: &Project| {
+            serde_json::to_value(p).map_err(|e| StoreError::Unreadable {
+                id: id.to_string(),
+                detail: e.to_string(),
+            })
+        };
+        let mut current = match self.load(id) {
+            Ok(p) => Some(p),
+            // A file newer than this Tectora is neither read nor written.
+            Err(e @ StoreError::NewerFormat { .. }) => return Err(e),
+            // A damaged file: the version before the change is restored.
+            Err(_) => None,
+        };
+        let base = current.clone();
+        let mut target = None;
+        for entry in log[pos..].iter().rev() {
+            let before = entry
+                .before
+                .clone()
+                .ok_or_else(|| StoreError::RevertCreated(id.to_string()))?;
+            let undone = match (entry.after.as_ref(), current.as_ref()) {
+                (Some(after), Some(cur)) if cur != after => {
+                    let merged =
+                        crate::merge::merge3(&value(after)?, &value(cur)?, &value(&before)?)
+                            .map_err(|paths| StoreError::RevertConflict {
+                                id: id.to_string(),
+                                detail: paths.join(", "),
+                            })?;
+                    serde_json::from_value(merged).map_err(|e| StoreError::Unreadable {
+                        id: id.to_string(),
+                        detail: e.to_string(),
+                    })?
+                }
+                // Unchanged since, written by Tectora 0.5 or older (no
+                // `after`), or no readable file: the version before it.
+                _ => before,
+            };
+            current = Some(undone.clone());
+            target = Some(undone);
+        }
+        let target = target.ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
+        match self.save_as_checked(id, &target, actor, summary, base.as_ref())? {
+            CheckedSave::Saved { .. } => Ok(Some(target)),
+            CheckedSave::Conflict { .. } => Ok(None),
+        }
     }
 
     fn review_path(&self, id: &str) -> Result<PathBuf, StoreError> {
@@ -798,18 +1172,168 @@ impl Store {
         }))
     }
 
-    pub fn delete(&self, id: &str) -> Result<(), StoreError> {
-        fs::remove_file(self.path(id)?).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                StoreError::NotFound(id.to_string())
-            } else {
-                StoreError::io(Some(id), e)
-            }
-        })?;
+    /// Moves job `id` with its history and attached files to the library's
+    /// trash (`.trash/<entry>/`), noting who deleted it and why, so it can
+    /// be restored ([`Store::restore`]). Trash older than
+    /// [`TRASH_KEEP_DAYS`] is removed for good at the same time.
+    pub fn delete(&self, id: &str, actor: &str, summary: &str) -> Result<TrashEntry, StoreError> {
+        let path = self.path(id)?;
+        if !path.is_file() {
+            return Err(StoreError::NotFound(id.to_string()));
+        }
+        // A damaged job can be deleted too, it just has no name to show.
+        let name = self.load(id).map(|p| p.name).unwrap_or_default();
+        let io = |e| StoreError::io(Some(id), e);
+        let (entry, folder) = self.new_trash_folder(id).map_err(io)?;
+        // The project file first: when it cannot be moved nothing is.
+        if let Err(e) = fs::rename(&path, folder.join(format!("{id}.{EXTENSION}"))) {
+            let _ = fs::remove_dir_all(&folder);
+            return Err(io(e));
+        }
+        let _ = fs::rename(self.activity_path(id)?, folder.join("activity.jsonl"));
+        let _ = fs::rename(self.review_path(id)?, folder.join("review.json"));
+        let files = self.files_dir(id)?;
+        if files.is_dir() {
+            let _ = fs::rename(&files, folder.join("files"));
+        }
+        let info = TrashEntry {
+            entry,
+            id: id.to_string(),
+            name,
+            file: None,
+            ts_ms: now_ms(),
+            actor: actor.to_string(),
+            summary: summary.to_string(),
+        };
+        self.write_trash_info(&folder, &info).map_err(io)?;
+        self.prune_trash();
+        Ok(info)
+    }
+
+    /// Removes job `id`, its history and files for good (a half-imported
+    /// bundle that never was the user's job).
+    pub(crate) fn purge(&self, id: &str) -> Result<(), StoreError> {
+        fs::remove_file(self.path(id)?).map_err(|e| StoreError::io(Some(id), e))?;
         let _ = fs::remove_file(self.activity_path(id)?);
         let _ = fs::remove_file(self.review_path(id)?);
         let _ = fs::remove_dir_all(self.files_dir(id)?);
         Ok(())
+    }
+
+    pub fn trash_dir(&self) -> PathBuf {
+        self.dir.join(TRASH_DIR)
+    }
+
+    /// A new, empty folder in the trash for a deletion from job `id`.
+    fn new_trash_folder(&self, id: &str) -> std::io::Result<(String, PathBuf)> {
+        let base = format!("{}-{id}", now_ms());
+        for n in 1..1000 {
+            let entry = if n == 1 {
+                base.clone()
+            } else {
+                format!("{base}-{n}")
+            };
+            let folder = self.trash_dir().join(&entry);
+            fs::create_dir_all(self.trash_dir())?;
+            match fs::create_dir(&folder) {
+                Ok(()) => return Ok((entry, folder)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(std::io::Error::other("too many deletions at once"))
+    }
+
+    fn write_trash_info(&self, folder: &Path, info: &TrashEntry) -> std::io::Result<()> {
+        let text = serde_json::to_string_pretty(info).map_err(std::io::Error::other)?;
+        write_atomic(&folder.join(TRASH_INFO), &text)
+    }
+
+    /// The trash folder `entry`, if it is one (a plain name inside `.trash`).
+    fn trash_folder(&self, entry: &str) -> Option<(PathBuf, TrashEntry)> {
+        if !valid_file_name(entry) {
+            return None;
+        }
+        let folder = self.trash_dir().join(entry);
+        let text = fs::read_to_string(folder.join(TRASH_INFO)).ok()?;
+        let mut info: TrashEntry = serde_json::from_str(&text).ok()?;
+        // The folder name is what restores it, whatever the file says.
+        info.entry = entry.to_string();
+        valid_id(&info.id).then_some((folder, info))
+    }
+
+    /// Deleted jobs and removed files in the trash, newest first.
+    pub fn trash(&self) -> Vec<TrashEntry> {
+        let mut out: Vec<TrashEntry> = fs::read_dir(self.trash_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter_map(|name| self.trash_folder(&name).map(|(_, info)| info))
+            .collect();
+        out.sort_by(|a, b| b.ts_ms.cmp(&a.ts_ms).then(b.entry.cmp(&a.entry)));
+        out
+    }
+
+    /// Removes trash folders older than [`TRASH_KEEP_DAYS`] for good.
+    fn prune_trash(&self) {
+        let keep_ms = TRASH_KEEP_DAYS * 24 * 3600 * 1000;
+        let now = now_ms();
+        for e in self.trash() {
+            if now.saturating_sub(e.ts_ms) > keep_ms {
+                let _ = fs::remove_dir_all(self.trash_dir().join(&e.entry));
+            }
+        }
+    }
+
+    /// Brings a deleted job (with its history and files) or a removed file
+    /// back from the trash; returns the job's id. A job whose id was taken
+    /// in the meantime comes back under a new id, a file under a free name.
+    pub fn restore(&self, entry: &str) -> Result<String, StoreError> {
+        let (folder, info) = self
+            .trash_folder(entry)
+            .ok_or_else(|| StoreError::NotFound(entry.to_string()))?;
+        let io = |e| StoreError::io(Some(&info.id), e);
+        if let Some(name) = &info.file {
+            if !self.exists(&info.id) {
+                return Err(StoreError::NotFound(info.id.clone()));
+            }
+            let src = folder.join("files").join(name);
+            let used = self
+                .free_attachment_name(&info.id, name)
+                .map_err(|e| StoreError::Io {
+                    id: Some(info.id.clone()),
+                    kind: IoKind::Other,
+                    detail: e.detail,
+                })?;
+            let dest = self.files_dir(&info.id)?.join(&used);
+            fs::create_dir_all(self.files_dir(&info.id)?).map_err(io)?;
+            fs::rename(&src, &dest).map_err(io)?;
+            let _ = fs::remove_dir_all(&folder);
+            return Ok(info.id);
+        }
+        let id = if self.exists(&info.id) {
+            self.new_id(if info.name.is_empty() {
+                &info.id
+            } else {
+                &info.name
+            })
+        } else {
+            info.id.clone()
+        };
+        let job = folder.join(format!("{}.{EXTENSION}", info.id));
+        fs::create_dir_all(self.activity_dir()).map_err(io)?;
+        let _ = fs::rename(folder.join("activity.jsonl"), self.activity_path(&id)?);
+        let _ = fs::rename(folder.join("review.json"), self.review_path(&id)?);
+        let files = folder.join("files");
+        if files.is_dir() {
+            fs::create_dir_all(self.dir.join(FILES_DIR)).map_err(io)?;
+            let _ = fs::rename(&files, self.files_dir(&id)?);
+        }
+        // The project file last: the app's watcher sees the job when it is whole.
+        fs::rename(&job, self.path(&id)?).map_err(io)?;
+        let _ = fs::remove_dir_all(&folder);
+        Ok(id)
     }
 
     /// Folder of the files attached to job `id`.
@@ -838,9 +1362,12 @@ impl Store {
             .unwrap_or(false)
     }
 
-    pub fn attachment_path(&self, id: &str, name: &str) -> Result<PathBuf, String> {
+    pub fn attachment_path(&self, id: &str, name: &str) -> Result<PathBuf, FileError> {
         if !valid_file_name(name) {
-            return Err(format!("invalid file name: {name}"));
+            return Err(FileError::new(
+                "invalid_name",
+                format!("invalid file name: {name}"),
+            ));
         }
         Ok(self.files_dir(id)?.join(name))
     }
@@ -870,10 +1397,20 @@ impl Store {
 
     /// Stores `bytes` as an attachment of job `id` under `name`, or under
     /// `name (2)` etc. when that name is taken. Returns the name used.
-    pub fn add_attachment(&self, id: &str, name: &str, bytes: &[u8]) -> Result<String, String> {
+    pub fn add_attachment(&self, id: &str, name: &str, bytes: &[u8]) -> Result<String, FileError> {
         if !self.exists(id) {
-            return Err(format!("no project with id {id}"));
+            return Err(StoreError::NotFound(id.to_string()).into());
         }
+        let used = self.free_attachment_name(id, name)?;
+        let path = self.attachment_path(id, &used)?;
+        let dir = self.files_dir(id)?;
+        fs::create_dir_all(&dir).map_err(|e| FileError::io(&dir, e))?;
+        fs::write(&path, bytes).map_err(|e| FileError::io(&path, e))?;
+        Ok(used)
+    }
+
+    /// `name`, or `name (2)` etc. when job `id` has a file of that name.
+    fn free_attachment_name(&self, id: &str, name: &str) -> Result<String, FileError> {
         let name = name.trim();
         self.attachment_path(id, name)?;
         let (stem, ext) = match name.rfind('.') {
@@ -886,47 +1423,129 @@ impl Store {
             used = format!("{stem} ({n}){ext}");
             n += 1;
         }
-        let path = self.attachment_path(id, &used)?;
-        fs::create_dir_all(path.parent().expect("has a parent")).map_err(|e| e.to_string())?;
-        fs::write(&path, bytes).map_err(|e| e.to_string())?;
         Ok(used)
     }
 
-    /// Copies a file from disk into job `id`'s attachments.
-    pub fn attach_file(&self, id: &str, src: &Path) -> Result<String, String> {
-        let bytes = fs::read(src).map_err(|e| format!("{}: {e}", src.display()))?;
-        let name = src
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| format!("{}: not a file", src.display()))?;
+    /// Copies a file from disk into job `id`'s attachments. Only a regular
+    /// file up to [`MAX_ATTACHMENT`] bytes: a folder, a device (`/dev/zero`,
+    /// which never ends) or a pipe (`/dev/stdin`, which blocks until the
+    /// other end closes) is refused before it is opened (ARCH-001).
+    pub fn attach_file(&self, id: &str, src: &Path) -> Result<String, FileError> {
+        let name = src.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+            FileError::new("not_a_file", format!("{}: not a file", src.display()))
+        })?;
+        let not_a_file = || {
+            FileError::new(
+                "not_a_file",
+                format!(
+                    "{}: not a regular file (a folder, device or pipe)",
+                    src.display()
+                ),
+            )
+        };
+        let too_large = || {
+            FileError::new(
+                "too_large",
+                format!(
+                    "{}: larger than {} MB, the most a job can carry",
+                    src.display(),
+                    MAX_ATTACHMENT >> 20
+                ),
+            )
+        };
+        let meta = fs::metadata(src).map_err(|e| FileError::io(src, e))?;
+        if !meta.is_file() {
+            return Err(not_a_file());
+        }
+        if meta.len() > MAX_ATTACHMENT {
+            return Err(too_large());
+        }
+        let file = fs::File::open(src).map_err(|e| FileError::io(src, e))?;
+        // The path may have been replaced between the check and the open.
+        if !file.metadata().is_ok_and(|m| m.is_file()) {
+            return Err(not_a_file());
+        }
+        let mut bytes = Vec::new();
+        std::io::Read::take(file, MAX_ATTACHMENT + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| FileError::io(src, e))?;
+        if bytes.len() as u64 > MAX_ATTACHMENT {
+            return Err(too_large());
+        }
         self.add_attachment(id, name, &bytes)
     }
 
-    pub fn remove_attachment(&self, id: &str, name: &str) -> Result<(), String> {
-        fs::remove_file(self.attachment_path(id, name)?).map_err(|e| e.to_string())
+    /// Moves attachment `name` of job `id` to the library's trash (see
+    /// [`Store::delete`]).
+    pub fn remove_attachment(
+        &self,
+        id: &str,
+        name: &str,
+        actor: &str,
+        summary: &str,
+    ) -> Result<TrashEntry, FileError> {
+        let path = self.attachment_path(id, name)?;
+        if !path.is_file() {
+            return Err(FileError::io(
+                &path,
+                std::io::Error::from(std::io::ErrorKind::NotFound),
+            ));
+        }
+        let job = self.load(id).map(|p| p.name).unwrap_or_default();
+        let (entry, folder) = self
+            .new_trash_folder(id)
+            .map_err(|e| FileError::io(&self.trash_dir(), e))?;
+        let dest = folder.join("files");
+        let moved = fs::create_dir_all(&dest).and_then(|()| fs::rename(&path, dest.join(name)));
+        if let Err(e) = moved {
+            let _ = fs::remove_dir_all(&folder);
+            return Err(FileError::io(&path, e));
+        }
+        let info = TrashEntry {
+            entry,
+            id: id.to_string(),
+            name: job,
+            file: Some(name.to_string()),
+            ts_ms: now_ms(),
+            actor: actor.to_string(),
+            summary: summary.to_string(),
+        };
+        self.write_trash_info(&folder, &info)
+            .map_err(|e| FileError::io(&folder, e))?;
+        self.prune_trash();
+        Ok(info)
     }
 
     /// Copies all attachments of job `from` to job `to`.
-    pub fn copy_attachments(&self, from: &str, to: &str) -> Result<(), String> {
+    pub fn copy_attachments(&self, from: &str, to: &str) -> Result<(), FileError> {
         for a in self.attachments(from) {
-            let bytes =
-                fs::read(self.attachment_path(from, &a.name)?).map_err(|e| e.to_string())?;
+            let path = self.attachment_path(from, &a.name)?;
+            let bytes = fs::read(&path).map_err(|e| FileError::io(&path, e))?;
             self.add_attachment(to, &a.name, &bytes)?;
         }
         Ok(())
     }
 
     pub fn set_live(&self, status: &LiveStatus) {
-        if fs::create_dir_all(self.activity_dir()).is_ok() {
-            if let Ok(text) = serde_json::to_string(status) {
-                let _ = write_atomic(&self.activity_dir().join(LIVE_FILE), &text);
-            }
+        if fs::create_dir_all(self.activity_dir()).is_ok()
+            && let Ok(text) = serde_json::to_string(status)
+        {
+            let _ = write_atomic(&self.activity_dir().join(LIVE_FILE), &text);
         }
     }
 
     pub fn live(&self) -> Option<LiveStatus> {
         let text = fs::read_to_string(self.activity_dir().join(LIVE_FILE)).ok()?;
         serde_json::from_str(&text).ok()
+    }
+}
+
+/// `what (reason: …)` when a reason is given, else `what`: the sentence
+/// the core wrote stays first, so the app recognises and translates it.
+fn with_reason(reason: Option<&str>, what: String) -> String {
+    match reason.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(r) => format!("{what}{REVERT_REASON_OPEN}{r})"),
+        None => what,
     }
 }
 
@@ -954,7 +1573,10 @@ mod tests {
         let store = temp_store("errors");
         assert_eq!(store.load("nope").unwrap_err().code(), "not_found");
         assert_eq!(store.load("../x").unwrap_err().code(), "invalid_id");
-        assert_eq!(store.delete("nope").unwrap_err().code(), "not_found");
+        assert_eq!(
+            store.delete("nope", USER_ACTOR, "test").unwrap_err().code(),
+            "not_found"
+        );
         fs::write(store.dir.join("bad.tectora"), "{ not json").unwrap();
         let e = store.load("bad").unwrap_err();
         assert_eq!(e.code(), "unreadable");
@@ -1024,8 +1646,162 @@ mod tests {
         assert_eq!(pending.before.as_ref(), Some(&mine));
         let oldest = store.activity(&id)[0].ts_ms;
         assert_eq!(pending.since_ts_ms, oldest);
-        assert_eq!(store.revert_to(&id, oldest, USER_ACTOR).unwrap(), mine);
+        assert_eq!(
+            store.revert_to(&id, oldest, USER_ACTOR, None).unwrap(),
+            mine
+        );
         assert_eq!(store.load(&id).unwrap(), mine);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// The project as the editor sends it back as the base of a checked
+    /// save: through JSON, as the UI holds it.
+    fn through_json(p: &Project) -> Project {
+        serde_json::from_str(&serde_json::to_string(p).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_checked_save_never_overwrites_an_outside_save_made_after_its_base() {
+        // An MCP save landing between the editor's read and its write was
+        // overwritten by the editor's copy (recheck-ce84f6d, new problem 1).
+        let store = temp_store("checked");
+        let base = examples::find("hip").unwrap().project();
+        let id = store.save(None, &base).unwrap();
+        let base = through_json(&store.load(&id).unwrap());
+
+        // The AI saves wall 3 at 41 degrees.
+        let mut ai = base.clone();
+        ai.parts[0].edges[2].pitch_deg = 41.0;
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "AI B")
+            .unwrap();
+
+        // The editor, still on the old base, saves its overhang edit.
+        let mut mine = base.clone();
+        mine.parts[0].edges[0].overhang = 0.77;
+        match store.save_checked(&id, &mine, &base).unwrap() {
+            CheckedSave::Conflict { current } => assert_eq!(*current, ai),
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+        assert_eq!(store.load(&id).unwrap(), ai, "the AI's save is kept");
+
+        // Against the current file as base, the save goes through.
+        let current = through_json(&ai);
+        let mut merged = mine.clone();
+        merged.parts[0].edges[2].pitch_deg = 41.0;
+        assert_eq!(
+            store.save_checked(&id, &merged, &current).unwrap(),
+            CheckedSave::Saved { id: id.clone() }
+        );
+        assert_eq!(store.load(&id).unwrap(), merged);
+        // The editor's own save is still not logged as a change.
+        assert_eq!(store.activity(&id).len(), 1);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_checked_save_repairs_a_missing_or_damaged_file_and_refuses_a_newer_one() {
+        let store = temp_store("checked-repair");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let mut mine = p.clone();
+        mine.parts[0].edges[0].overhang = 0.9;
+        // Deleted outside the app: written again (as an unchecked save is).
+        fs::remove_file(store.path(&id).unwrap()).unwrap();
+        assert!(matches!(
+            store.save_checked(&id, &mine, &p).unwrap(),
+            CheckedSave::Saved { .. }
+        ));
+        assert_eq!(store.load(&id).unwrap(), mine);
+        // Damaged: repaired with the editor's good copy (ERR-018).
+        fs::write(store.path(&id).unwrap(), "{ not json").unwrap();
+        assert!(matches!(
+            store.save_checked(&id, &mine, &p).unwrap(),
+            CheckedSave::Saved { .. }
+        ));
+        assert_eq!(store.load(&id).unwrap(), mine);
+        // Saved by a newer Tectora: refused, file kept.
+        let newer = format!(
+            "{{\"schema_version\": {}, \"name\": \"x\"}}",
+            crate::model::SCHEMA_VERSION + 1
+        );
+        fs::write(store.path(&id).unwrap(), &newer).unwrap();
+        assert_eq!(
+            store.save_checked(&id, &mine, &p).unwrap_err().code(),
+            "newer_format"
+        );
+        assert_eq!(fs::read_to_string(store.path(&id).unwrap()).unwrap(), newer);
+        assert_eq!(
+            store.save_checked("../x", &mine, &p).unwrap_err().code(),
+            "invalid_id"
+        );
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_logged_save_checked_against_its_base_refuses_an_edit_saved_meanwhile() {
+        // MCP side: the app saved the user's edit after the tool loaded the job.
+        let store = temp_store("checked-as");
+        let base = examples::find("hip").unwrap().project();
+        let id = store.save(None, &base).unwrap();
+        let mut user = base.clone();
+        user.parts[0].edges[0].overhang = 0.9;
+        store.save(Some(id.clone()), &user).unwrap();
+        let mut ai = base.clone();
+        ai.parts[0].edges[2].pitch_deg = 41.0;
+        match store
+            .save_as_checked(&id, &ai, "claude", "AI", Some(&base))
+            .unwrap()
+        {
+            CheckedSave::Conflict { current } => assert_eq!(*current, user),
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+        assert_eq!(store.load(&id).unwrap(), user);
+        assert!(store.activity(&id).is_empty(), "nothing logged");
+        // Against the current file it saves and logs.
+        let mut merged = user.clone();
+        merged.parts[0].edges[2].pitch_deg = 41.0;
+        assert_eq!(
+            store
+                .save_as_checked(&id, &merged, "claude", "AI", Some(&user))
+                .unwrap(),
+            CheckedSave::Saved { id: id.clone() }
+        );
+        assert_eq!(store.load(&id).unwrap(), merged);
+        assert_eq!(store.activity(&id)[0].before.as_ref(), Some(&user));
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn saves_of_one_job_wait_for_each_other() {
+        // The check and the write happen under the job's lock file, which
+        // the app and the MCP server (separate processes) both take.
+        let store = temp_store("checked-lock");
+        let base = examples::find("gable").unwrap().project();
+        let id = store.save(None, &base).unwrap();
+        let held = store.lock(&id).expect("lock file");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (dir, id2, b2) = (store.dir.clone(), id.clone(), base.clone());
+        let t = std::thread::spawn(move || {
+            let other = Store::new(dir).unwrap();
+            let mut mine = b2.clone();
+            mine.parts[0].edges[0].overhang = 0.9;
+            let r = other.save_checked(&id2, &mine, &b2).unwrap();
+            tx.send(()).unwrap();
+            r
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "the save waits while the lock is held"
+        );
+        // Meanwhile the holder writes: the waiting save must see it.
+        let mut ai = base.clone();
+        ai.parts[0].edges[2].pitch_deg = 41.0;
+        store.write(&id, &ai).unwrap();
+        drop(held);
+        assert!(matches!(t.join().unwrap(), CheckedSave::Conflict { .. }));
+        assert_eq!(store.load(&id).unwrap(), ai);
         let _ = fs::remove_dir_all(&store.dir);
     }
 
@@ -1103,7 +1879,7 @@ mod tests {
         assert_eq!(s.last_activity.unwrap().actor, "claude");
         store.add_attachment(&id, "plan.pdf", b"%PDF").unwrap();
         assert_eq!(store.summarize(&id).unwrap().files, 1);
-        store.delete(&id).unwrap();
+        store.delete(&id, USER_ACTOR, "test").unwrap();
         assert!(store.summarize(&id).is_err());
         assert!(store.list().is_empty());
         let _ = fs::remove_dir_all(&store.dir);
@@ -1187,7 +1963,7 @@ mod tests {
                 .any(|d| d.key == "roof_area")
         );
 
-        store.delete(&id).unwrap();
+        store.delete(&id, USER_ACTOR, "test").unwrap();
         assert_eq!(store.reviewed_at(&id), 0);
         let _ = fs::remove_dir_all(&store.dir);
     }
@@ -1214,7 +1990,7 @@ mod tests {
             "Steeper front"
         );
 
-        assert_eq!(store.revert_last(&id, USER_ACTOR).unwrap(), a);
+        assert_eq!(store.revert_last(&id, USER_ACTOR, None).unwrap(), a);
         assert_eq!(store.load(&id).unwrap(), a);
 
         // Two agent steps undone together.
@@ -1232,12 +2008,271 @@ mod tests {
         assert_eq!((review.count, review.since_ts_ms), (2, first));
         assert_eq!(review.before.as_ref(), Some(&a), "after the user's revert");
         assert_eq!(review.actors, ["claude"]);
-        assert_eq!(store.revert_to(&id, first, USER_ACTOR).unwrap(), a);
+        assert_eq!(store.revert_to(&id, first, USER_ACTOR, None).unwrap(), a);
         assert_eq!(store.load(&id).unwrap(), a);
         // The user's revert closes the review.
         assert!(store.pending_review(&id).is_none());
-        store.delete(&id).unwrap();
+        store.delete(&id, USER_ACTOR, "test").unwrap();
         assert!(store.activity(&id).is_empty());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ERR-001: the app saves its own edits without a log entry; reverting
+    /// the AI step before them must not throw them away.
+    #[test]
+    fn reverting_an_ai_change_keeps_the_users_later_edits() {
+        let store = temp_store("revert-keeps-user");
+        let a = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
+        let mut ai = a.clone();
+        ai.parts[0].edges[3].pitch_deg = 44.0;
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "Steeper wall 4")
+            .unwrap();
+        let ts = store.activity(&id).last().unwrap().ts_ms;
+        // The user's own correction, autosaved by the app (not logged).
+        let mut mine = ai.clone();
+        mine.parts[0].edges[0].overhang = 0.9;
+        store.save(Some(id.clone()), &mine).unwrap();
+
+        let mut want = a.clone();
+        want.parts[0].edges[0].overhang = 0.9;
+        assert_eq!(store.revert_last(&id, USER_ACTOR, None).unwrap(), want);
+        assert_eq!(store.load(&id).unwrap(), want);
+
+        // The same through "revert all".
+        store
+            .save_as(Some(id.clone()), &mine, USER_ACTOR, "again")
+            .unwrap();
+        let mut ai2 = mine.clone();
+        ai2.parts[0].edges[3].pitch_deg = 44.0;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .save_as(Some(id.clone()), &ai2, "claude", "Steeper wall 4")
+            .unwrap();
+        let ts2 = store.activity(&id).last().unwrap().ts_ms;
+        assert_ne!(ts, ts2);
+        let mut mine2 = ai2.clone();
+        mine2.parts[0].edges[1].overhang = 0.7;
+        store.save(Some(id.clone()), &mine2).unwrap();
+        let mut want2 = want.clone();
+        want2.parts[0].edges[1].overhang = 0.7;
+        assert_eq!(store.revert_to(&id, ts2, USER_ACTOR, None).unwrap(), want2);
+        assert_eq!(store.load(&id).unwrap(), want2);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ERR-001: "Revert all" over several AI steps keeps an edit the user
+    /// made between them (the app autosaves it without a log entry), and
+    /// refuses when that edit is in a value one of the steps set.
+    #[test]
+    fn revert_all_keeps_the_users_edit_between_two_ai_steps() {
+        let store = temp_store("revert-all-between");
+        let a = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
+        let mut ai = a.clone();
+        ai.parts[0].edges[3].pitch_deg = 44.0;
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "Steeper wall 4")
+            .unwrap();
+        let first = store.activity(&id).last().unwrap().ts_ms;
+        let mut mine = ai.clone();
+        mine.parts[0].edges[0].overhang = 0.9;
+        store.save(Some(id.clone()), &mine).unwrap();
+        let mut ai2 = mine.clone();
+        ai2.parts[0].edges[2].pitch_deg = 41.0;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .save_as(Some(id.clone()), &ai2, "claude", "Steeper wall 3")
+            .unwrap();
+
+        let mut want = a.clone();
+        want.parts[0].edges[0].overhang = 0.9;
+        assert_eq!(store.revert_to(&id, first, USER_ACTOR, None).unwrap(), want);
+        assert_eq!(store.load(&id).unwrap(), want);
+
+        // The user's edit between the steps is in the value the first step
+        // set: refused, nothing changed or logged.
+        let mut ai = want.clone();
+        ai.parts[0].edges[3].pitch_deg = 44.0;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "Steeper wall 4")
+            .unwrap();
+        let first = store.activity(&id).last().unwrap().ts_ms;
+        let mut mine = ai.clone();
+        mine.parts[0].edges[3].pitch_deg = 40.0;
+        store.save(Some(id.clone()), &mine).unwrap();
+        let mut ai2 = mine.clone();
+        ai2.parts[0].edges[2].pitch_deg = 41.0;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .save_as(Some(id.clone()), &ai2, "claude", "Steeper wall 3")
+            .unwrap();
+        let n = store.activity(&id).len();
+        let err = store.revert_to(&id, first, USER_ACTOR, None).unwrap_err();
+        assert_eq!(err.code(), "revert_conflict");
+        assert_eq!(store.load(&id).unwrap(), ai2);
+        assert_eq!(store.activity(&id).len(), n, "nothing logged");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// UX-002: a revert's entry starts with the fixed sentence the app
+    /// translates, and the AI's reason follows in a fixed form.
+    #[test]
+    fn a_revert_with_a_reason_starts_with_the_fixed_sentence() {
+        let store = temp_store("revert-reason");
+        let a = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
+        let mut ai = a.clone();
+        ai.parts[0].edges[3].pitch_deg = 44.0;
+        // Distinct times: `revert_to` finds the entry by its time.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "Steeper wall 4")
+            .unwrap();
+        // Distinct times: `revert_to` finds the entry by its time.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store.revert_last(&id, "claude", Some(" undo ")).unwrap();
+        assert_eq!(
+            store.activity(&id).last().unwrap().summary,
+            format!("{REVERTED_PREFIX}Steeper wall 4{REVERT_REASON_OPEN}undo)")
+        );
+        // Distinct times: `revert_to` finds the entry by its time.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "Steeper wall 4")
+            .unwrap();
+        let ts = store.activity(&id)[1].ts_ms;
+        store.revert_to(&id, ts, "claude", Some("back")).unwrap();
+        let s = store.activity(&id).last().unwrap().summary.clone();
+        assert!(
+            s.starts_with("Reverted 3 changes since: Steeper wall 4")
+                && s.ends_with(" (reason: back)"),
+            "{s}"
+        );
+        // Without a reason nothing is added.
+        // Distinct times: `revert_to` finds the entry by its time.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "Again")
+            .unwrap();
+        store.revert_last(&id, "claude", Some("  ")).unwrap();
+        assert_eq!(
+            store.activity(&id).last().unwrap().summary,
+            "Reverted: Again"
+        );
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ERR-001: when the user changed the very value the AI step changed,
+    /// revert refuses and the file stays as it is.
+    #[test]
+    fn revert_refuses_when_the_user_changed_the_same_value() {
+        let store = temp_store("revert-conflict");
+        let a = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
+        let mut ai = a.clone();
+        ai.parts[0].edges[3].pitch_deg = 44.0;
+        // Distinct times: `revert_to` finds the entry by its time.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "Steeper wall 4")
+            .unwrap();
+        let mut mine = ai.clone();
+        mine.parts[0].edges[3].pitch_deg = 40.0;
+        store.save(Some(id.clone()), &mine).unwrap();
+        let n = store.activity(&id).len();
+        let err = store.revert_last(&id, USER_ACTOR, None).unwrap_err();
+        assert_eq!(err.code(), "revert_conflict");
+        assert!(
+            err.detail()
+                .unwrap()
+                .contains("parts[0].edges[3].pitch_deg")
+        );
+        assert_eq!(store.load(&id).unwrap(), mine);
+        assert_eq!(store.activity(&id).len(), n, "nothing logged");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn only_regular_files_of_a_sane_size_are_attached() {
+        // ARCH-001: `/dev/stdin`, devices, FIFOs and folders were read as
+        // files (the MCP server then swallowed its own input, `/dev/zero`
+        // filled the memory).
+        let store = temp_store("attach-checks");
+        let id = store
+            .save(None, &examples::find("gable").unwrap().project())
+            .unwrap();
+        let dir = store.dir.join("in");
+        fs::create_dir_all(&dir).unwrap();
+        let e = store.attach_file(&id, &dir).unwrap_err();
+        assert_eq!(e.code, "not_a_file", "{e}");
+        #[cfg(unix)]
+        for device in ["/dev/null", "/dev/zero", "/dev/stdin"] {
+            let e = store.attach_file(&id, Path::new(device)).unwrap_err();
+            assert_eq!(e.code, "not_a_file", "{device}: {e}");
+        }
+        // Larger than any drawing or photo: refused before it is read
+        // (a sparse file, so the test writes nothing).
+        let big = dir.join("huge.pdf");
+        fs::File::create(&big)
+            .unwrap()
+            .set_len(MAX_ATTACHMENT + 1)
+            .unwrap();
+        assert_eq!(store.attach_file(&id, &big).unwrap_err().code, "too_large");
+        let missing = store.attach_file(&id, &dir.join("gone.pdf")).unwrap_err();
+        assert_eq!(missing.code, "file_not_found");
+        let ok = dir.join("plan.pdf");
+        fs::write(&ok, b"%PDF").unwrap();
+        assert_eq!(store.attach_file(&id, &ok).unwrap(), "plan.pdf");
+        assert_eq!(store.attachments(&id).len(), 1);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn deletes_go_to_the_trash_which_forgets_after_a_month() {
+        // ARCH-004: a delete is reversible, and the trash does not grow forever.
+        let store = temp_store("trash");
+        let id = store
+            .save_as(
+                None,
+                &examples::find("gable").unwrap().project(),
+                "claude",
+                "create",
+            )
+            .unwrap();
+        store.add_attachment(&id, "plan.pdf", b"%PDF").unwrap();
+        let old = store.trash_dir().join("1-old");
+        fs::create_dir_all(&old).unwrap();
+        let stale = TrashEntry {
+            entry: "1-old".into(),
+            id: "old".into(),
+            name: "Old".into(),
+            file: None,
+            ts_ms: 1,
+            actor: USER_ACTOR.into(),
+            summary: "long ago".into(),
+        };
+        fs::write(old.join(TRASH_INFO), serde_json::to_string(&stale).unwrap()).unwrap();
+        let e = store.delete(&id, "claude", "Old draft").unwrap();
+        assert!(!old.exists(), "older than {TRASH_KEEP_DAYS} days");
+        assert!(!store.exists(&id) && store.attachments(&id).is_empty());
+        assert_eq!(store.trash(), std::slice::from_ref(&e));
+        assert_eq!(
+            (e.actor.as_str(), e.summary.as_str()),
+            ("claude", "Old draft")
+        );
+        // The id was taken again meanwhile: the job comes back beside it.
+        store
+            .save(Some(id.clone()), &Project::new("Other"))
+            .unwrap();
+        let back = store.restore(&e.entry).unwrap();
+        assert_ne!(back, id);
+        assert_eq!(store.attachments(&back).len(), 1);
+        assert_eq!(store.activity(&back).len(), 1);
+        assert!(store.trash().is_empty());
+        assert_eq!(store.restore("nope").unwrap_err().code(), "not_found");
         let _ = fs::remove_dir_all(&store.dir);
     }
 }

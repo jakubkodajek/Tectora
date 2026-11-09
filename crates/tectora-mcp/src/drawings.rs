@@ -164,7 +164,7 @@ impl Server {
                 let file = args.get("file").and_then(Value::as_str).ok_or(
                     "with `id`, pass `file`: the name of the attached drawing (see list_files)",
                 )?;
-                self.store.attachment_path(id, file)
+                Ok(self.store.attachment_path(id, file)?)
             }
             (None, None) => Err("pass `path`, or `id` and `file`".into()),
         }
@@ -302,6 +302,8 @@ impl Server {
         let origin = point_arg(o, "origin")?;
         let (id, p) = self.load(o)?;
         self.live(
+            "comparing",
+            Some(&p.name),
             format!("Comparing “{}” with the drawing", p.name),
             Some(&id),
         );

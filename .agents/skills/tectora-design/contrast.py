@@ -2,8 +2,10 @@
 """WCAG contrast check for the Tectora theme tokens. Standard library only.
 
 Reads the CSS custom properties in app/src/app.css for every theme it finds
-(the light `:root` block, the dark `prefers-color-scheme` block and any
-`[data-theme=...]` block) and checks the text / background pairs below.
+(the light `:root` block, the dark `prefers-color-scheme` block as
+"dark (system)" and any `[data-theme=...]` block, e.g. "dark" as picked in
+Settings) and checks the text / background pairs below. The two dark
+blocks are checked separately, so a token missing from one of them shows.
 
     python3 .claude/skills/tectora-design/contrast.py            # app/src/app.css
     python3 .claude/skills/tectora-design/contrast.py path.css --json
@@ -41,6 +43,11 @@ PAIRS: list[tuple[str, str, str]] = [
     ("ai-strong", "ai-soft", "text"),
     ("ai-strong", "surface", "text"),
     ("danger", "surface", "text"),
+    ("status-offer", "status-offer-bg", "text"),
+    ("status-ordered", "status-ordered-bg", "text"),
+    ("status-done", "status-done-bg", "text"),
+    ("code-text", "code-bg", "text"),
+    ("ok", "surface", "ui"),
     ("focus", "surface", "ui"),
     ("line-eave", "surface", "ui"),
     ("line-verge", "surface", "ui"),
@@ -107,7 +114,7 @@ def themes(css: str) -> dict[str, dict[str, str]]:
         if not values:
             continue
         if "prefers-color-scheme: dark" in context:
-            extra.setdefault("dark", {}).update(values)
+            extra.setdefault("dark (system)", {}).update(values)
         elif m := re.search(r"data-theme\s*=\s*['\"]?(\w+)", context):
             extra.setdefault(m.group(1), {}).update(values)
         elif context.endswith(":root"):

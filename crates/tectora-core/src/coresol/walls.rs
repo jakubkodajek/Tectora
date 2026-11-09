@@ -37,6 +37,9 @@ pub struct WallStage {
     pub w3d: String,
     /// The SOL with walls (CRLF).
     pub sol: String,
+    /// The area of every wall face that got a polygon, in SOL order, as
+    /// the SOL with walls records it (DACAD's wall areas, "Wand").
+    pub areas: Vec<f64>,
 }
 
 /// Why the wall stage failed.
@@ -694,7 +697,11 @@ pub fn wall_stage(sol: &CoreSol) -> Result<WallStage, WallError> {
     }
     let _ = write!(s, "\n{n_faces:05}\n\n");
     let mut no = n_lines;
+    let mut areas = Vec::new();
     for (fi, f) in fs.iter().enumerate() {
+        if !emitted[fi].is_empty() {
+            areas.push(wall_area(&f.plane, &emitted[fi]));
+        }
         let _ = write!(s, "{:3} {:3} {:3} ", f.wall, f.sub, f.kind);
         put_f(&mut s, f.area, 10, 5);
         let _ = write!(s, "\n\n\t{:5}\n\n", f.edges.len());
@@ -717,6 +724,7 @@ pub fn wall_stage(sol: &CoreSol) -> Result<WallStage, WallError> {
     Ok(WallStage {
         w3d: crlf(&w3d),
         sol: crlf(&s),
+        areas,
     })
 }
 

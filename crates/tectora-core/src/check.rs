@@ -32,6 +32,9 @@ pub const OVERLAP_TOL: f64 = 0.25;
 /// the area of the faces themselves above which the quantities are suspect
 /// (1 %; DACAD's sweep tolerances alone give up to about 0.5 %).
 pub const AREA_TOL: f64 = 0.01;
+/// Net area below which a face has lost more to its deductions than it
+/// has, m² (a little below zero, for rounding of the joined roofs' cuts).
+pub const OVERCUT_TOL: f64 = 0.01;
 
 /// What is wrong with a calculated roof.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -55,6 +58,36 @@ pub enum WarningKind {
     /// is used, then the wall whose pitch or pitch breaks are ignored.
     /// `value`: 0.
     MergedWalls,
+    /// Several roofs are joined and no face of this part's roof is left:
+    /// another part covers it (a building drawn inside or on top of
+    /// another). The plan shows the walls with no roof. `value`: 0.
+    Covered,
+    /// More is deducted from a roof face than the face has: its area is
+    /// negative, so the roof total is too small. A window larger than the
+    /// face it sits on does it (its `width × height` is deducted as DACAD
+    /// deducts it), and so does the cut of joined roofs where it exceeds
+    /// a face. `edges`: the walls of those faces (dormer faces name
+    /// none). `value`: the area missing below zero, summed, m².
+    CutExceedsFace,
+    /// A dormer sits on no roof face (placed beside the roof or moved off
+    /// it): it is left out of the calculation, so its area, lines and
+    /// material are not in the result. `dormer`: its index. `value`: 0.
+    DormerOffRoof,
+    /// A roof window sits on no roof face: nothing is deducted for it, so
+    /// it is not in the result. `item`: its index in `project.windows`.
+    /// `value`: 0.
+    WindowOffRoof,
+    /// A chimney lies on no roof face: it cuts nothing, so it is not in
+    /// the result. `item`: its index in `project.chimneys`. `value`: 0.
+    ChimneyOffRoof,
+    /// A roof opening lies on no roof face: it cuts nothing, so it is not
+    /// in the result. `item`: its index in `project.roof_openings`.
+    /// `value`: 0.
+    OpeningOffRoof,
+    /// The roof was not calculated by the standard calculation (DACAD's
+    /// core) but by Tectora's own fallback, so its figures may differ from
+    /// the standard result. `value`: 0.
+    NotCalculatedByCore,
 }
 
 /// One finding about a calculated roof.
@@ -67,6 +100,13 @@ pub struct RoofWarning {
     /// `kind` names them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub edges: Vec<usize>,
+    /// The dormer (index into `project.dormers`) the finding is about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dormer: Option<usize>,
+    /// The window, chimney or opening (index into the project's list of
+    /// that kind) the finding is about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item: Option<usize>,
 }
 
 impl RoofWarning {
@@ -76,8 +116,72 @@ impl RoofWarning {
             kind,
             value,
             edges: Vec::new(),
+            dormer: None,
+            item: None,
         }
     }
+}
+
+/// The windows, chimneys and openings of `project` that lie on no face of
+/// the calculated roofs `geos` (same order as `project.parts`): the
+/// calculation leaves them out, so each is reported on the part nearest
+/// to it, as `(part, warning)`. Nothing is reported for a project without
+/// a calculated face (the calculation's error says enough).
+pub fn off_roof(project: &crate::Project, geos: &[RoofGeometry]) -> Vec<(usize, RoofWarning)> {
+    if geos.iter().any(|g| g.error.is_some()) || geos.iter().all(|g| g.faces.is_empty()) {
+        return Vec::new();
+    }
+    let plans: Vec<Vec<Point2>> = geos
+        .iter()
+        .flat_map(|g| &g.faces)
+        .filter(|f| f.polygon.len() >= 3)
+        .map(plan)
+        .collect();
+    let on_roof = |corners: &[Point2]| {
+        let n = corners.len().max(1) as f64;
+        let c = Point2::new(
+            corners.iter().map(|p| p.x).sum::<f64>() / n,
+            corners.iter().map(|p| p.y).sum::<f64>() / n,
+        );
+        plans.iter().any(|poly| {
+            corners.iter().chain([&c]).any(|&q| inside(poly, q))
+                || poly.iter().any(|&q| inside(corners, q))
+        })
+    };
+    let nearest = |q: Point2| {
+        (0..project.parts.len().min(geos.len())).min_by(|&a, &b| {
+            crate::engine::outline_distance(&project.parts[a], q)
+                .total_cmp(&crate::engine::outline_distance(&project.parts[b], q))
+        })
+    };
+    let mut out = Vec::new();
+    let mut report = |kind, item, at: Point2| {
+        if let Some(part) = nearest(at) {
+            out.push((
+                part,
+                RoofWarning {
+                    item: Some(item),
+                    ..RoofWarning::new(kind, 0.0)
+                },
+            ));
+        }
+    };
+    for (i, w) in project.windows.iter().enumerate() {
+        if crate::openings::window_face(geos, w).is_none() {
+            report(WarningKind::WindowOffRoof, i, Point2::new(w.x, w.y));
+        }
+    }
+    for (kind, list) in [
+        (WarningKind::ChimneyOffRoof, &project.chimneys),
+        (WarningKind::OpeningOffRoof, &project.roof_openings),
+    ] {
+        for (i, c) in list.iter().enumerate() {
+            if !c.corners.is_empty() && !on_roof(&c.corners) {
+                report(kind, i, c.corners[0]);
+            }
+        }
+    }
+    out
 }
 
 /// Plan pieces where two faces overlap smaller than this are rounding
@@ -343,7 +447,16 @@ pub fn check(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<Vec<RoofWarning>>
     let outline: Vec<Vec<Point2>> = parts.iter().flat_map(eave_outline).collect();
     let joined = parts.len() > 1;
     geos.iter()
-        .map(|geo| warnings(&outline, geo, joined))
+        .enumerate()
+        .map(|(i, geo)| {
+            let roofed = parts
+                .get(i)
+                .is_some_and(|p| p.edges.iter().any(|e| !e.is_gable()));
+            if joined && roofed && geo.error.is_none() && geo.faces.is_empty() {
+                return vec![RoofWarning::new(WarningKind::Covered, 0.0)];
+            }
+            warnings(&outline, geo, joined)
+        })
         .collect()
 }
 
@@ -362,5 +475,25 @@ fn warnings(outline: &[Vec<Point2>], geo: &RoofGeometry, joined: bool) -> Vec<Ro
     if !joined && m.area > AREA_TOL {
         out.push(RoofWarning::new(WarningKind::AreaMismatch, m.area));
     }
+    if let Some(w) = over_cut(geo) {
+        out.push(w);
+    }
     out
+}
+
+/// The faces (dormer faces too) whose deductions exceed their gross area.
+pub fn over_cut(geo: &RoofGeometry) -> Option<RoofWarning> {
+    let mut missing = 0.0;
+    let mut edges = Vec::new();
+    for f in geo.faces.iter().filter(|f| f.area < -OVERCUT_TOL) {
+        missing -= f.area;
+        if f.edge != usize::MAX && !edges.contains(&f.edge) {
+            edges.push(f.edge);
+        }
+    }
+    edges.sort_unstable();
+    (missing > 0.0).then_some(RoofWarning {
+        edges,
+        ..RoofWarning::new(WarningKind::CutExceedsFace, missing)
+    })
 }

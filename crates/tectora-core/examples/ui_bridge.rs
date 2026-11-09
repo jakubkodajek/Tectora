@@ -10,9 +10,14 @@
 //! (defaults: `target/ui-preview-library`, 7878). Usually started by
 //! `npm run preview` in `app/`.
 //!
-//! Keep the command list in sync with `app/src-tauri/src/lib.rs`. Unknown
+//! Keep the command list in sync with `app/src-tauri/src/lib.rs` (checked by
+//! `tests/app_commands.rs`: names and arguments). Unknown
 //! commands return an error that the preview shows in the browser console.
-//! Listens on 127.0.0.1 only.
+//! Listens on 127.0.0.1 only, and answers only the preview page
+//! (`Origin: http://localhost:<TECTORA_PREVIEW_PORT>`, default 1430) and
+//! clients without a browser (no `Origin`): another web page open in the
+//! developer's browser could otherwise move the jobs folder, copy local files
+//! into the library or write files (ARCH-009).
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -24,7 +29,7 @@ use serde_json::{Value, json};
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::settings::Settings;
 use tectora_core::store::{self, Store, USER_ACTOR, outlines};
-use tectora_core::{Project, assistants, bundle, examples, snapshot};
+use tectora_core::{Project, assistants, bundle, examples};
 
 /// AI apps "connected" in the preview besides Claude Desktop, which always
 /// shows as connected (see `ai_assistants` below).
@@ -51,42 +56,123 @@ fn preview_assistants() -> Vec<Value> {
 /// Largest request body accepted (a project with attachments metadata).
 const MAX_BODY: usize = 64 * 1024 * 1024;
 
-fn arg<T: serde::de::DeserializeOwned>(a: &Value, key: &str) -> Result<T, String> {
+fn arg<T: serde::de::DeserializeOwned>(a: &Value, key: &str) -> Result<T, Fail> {
     serde_json::from_value(a.get(key).cloned().unwrap_or(Value::Null))
-        .map_err(|e| format!("argument {key}: {e}"))
+        .map_err(|e| format!("argument {key}: {e}").into())
 }
 
-fn to_json<T: serde::Serialize>(v: T) -> Result<Value, String> {
-    serde_json::to_value(v).map_err(|e| e.to_string())
+fn to_json<T: serde::Serialize>(v: T) -> Result<Value, Fail> {
+    serde_json::to_value(v).map_err(|e| e.to_string().into())
 }
 
-/// Same as the app's `calc` command: limits, panic guard, problems and
-/// the stored result's status.
-fn calc(project: &Project) -> Result<Value, String> {
-    project.check_limits()?;
-    let mut v = tectora_core::model::guarded(|| tectora_core::report::calc(project))?;
-    v["stored_result"] = to_json(snapshot::status(project))?;
-    Ok(v)
+/// A failed command, as the app's `AppError` gives it: `{code, id, detail}`
+/// for errors with a code (library, files, limits), so the UI shows the same
+/// translated message as in the app; plain text otherwise.
+struct Fail(Value);
+
+impl From<String> for Fail {
+    fn from(e: String) -> Self {
+        Fail(Value::String(e))
+    }
+}
+
+impl From<&str> for Fail {
+    fn from(e: &str) -> Self {
+        Fail(Value::String(e.to_string()))
+    }
+}
+
+impl From<tectora_core::store::StoreError> for Fail {
+    fn from(e: tectora_core::store::StoreError) -> Self {
+        Fail(json!({ "code": e.code(), "id": e.id(), "detail": e.to_string() }))
+    }
+}
+
+impl From<tectora_core::store::FileError> for Fail {
+    fn from(e: tectora_core::store::FileError) -> Self {
+        Fail(json!({ "code": e.code, "id": e.id, "detail": e.detail }))
+    }
+}
+
+fn coded(code: &str, detail: impl std::fmt::Display) -> Fail {
+    Fail(json!({ "code": code, "detail": detail.to_string() }))
+}
+
+/// The calculation commands, with the app's own bodies
+/// (`tectora_core::commands`) and its error codes (`out_of_range`,
+/// `too_many`, `internal`), so the UI shows the same translated message as
+/// in the app.
+fn calc_command(cmd: &str, a: &Value) -> Option<Result<Value, Value>> {
+    use tectora_core::commands;
+    let project = || {
+        arg::<Project>(a, "project")
+            .map_err(|Fail(e)| json!({ "code": "invalid_input", "detail": e }))
+    };
+    let err = |e: commands::CommandError| to_json(e).unwrap_or(Value::Null);
+    Some(match cmd {
+        "calc" => project().and_then(|p| commands::calc(&p).map_err(err)),
+        "calc_breakdown" => project().and_then(|p| commands::calc_breakdown(&p).map_err(err)),
+        "take_snapshot" => project().and_then(|p| {
+            commands::take_snapshot(&p)
+                .map_err(err)
+                .map(|s| to_json(s).unwrap_or(Value::Null))
+        }),
+        "check_windows" => project().and_then(|p| commands::check_windows(&p).map_err(err)),
+        _ => return None,
+    })
 }
 
 /// Loading and saving a job, with the library's own error (see `serve`).
-fn store_command(
-    store: &Store,
-    cmd: &str,
-    a: &Value,
-) -> Option<Result<Value, tectora_core::store::StoreError>> {
+fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fail>> {
     let id = arg::<String>(a, "id").ok()?;
     match cmd {
-        "load_project" => Some(store.load(&id).map(|p| to_json(p).unwrap_or(Value::Null))),
+        "load_project" => Some(
+            store
+                .load(&id)
+                .map(|p| to_json(p).unwrap_or(Value::Null))
+                .map_err(Fail::from),
+        ),
         "save_project" => {
             let project = arg::<Project>(a, "project").ok()?;
-            Some(store.save(Some(id), &project).map(Value::String))
+            Some(
+                store
+                    .save(Some(id), &project)
+                    .map(Value::String)
+                    .map_err(Fail::from),
+            )
+        }
+        // As the app: saved, or `conflict` with the current file.
+        "save_project_checked" => {
+            let project = arg::<Project>(a, "project").ok()?;
+            let base = arg::<Project>(a, "base").ok()?;
+            Some(
+                store
+                    .save_checked(&id, &project, &base)
+                    .map(|r| to_json(r).unwrap_or(Value::Null))
+                    .map_err(Fail::from),
+            )
+        }
+        // Reverts with their codes too (`revert_conflict`, ERR-001).
+        "revert_last_change" => Some(
+            store
+                .revert_last(&id, USER_ACTOR, None)
+                .map(|p| to_json(p).unwrap_or(Value::Null))
+                .map_err(Fail::from),
+        ),
+        "revert_changes" => {
+            let ts = arg::<u64>(a, "tsMs").ok()?;
+            Some(
+                store
+                    .revert_to(&id, ts, USER_ACTOR, None)
+                    .map(|p| to_json(p).unwrap_or(Value::Null))
+                    .map_err(Fail::from),
+            )
         }
         _ => None,
     }
 }
 
-fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
+fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
     let id = || arg::<String>(a, "id");
     match cmd {
         "projects_dir" => to_json(store.dir.display().to_string()),
@@ -94,7 +180,14 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             let (projects, broken) = store.scan()?;
             Ok(json!({ "projects": projects, "broken": broken }))
         }
-        "startup_warnings" => Ok(json!([])),
+        // As the app: a damaged settings file is reported (ERR-005).
+        "startup_warnings" => Ok(json!(
+            Settings::load_checked()
+                .1
+                .map(|d| json!({ "code": "settings_unreadable", "detail": d }))
+                .into_iter()
+                .collect::<Vec<_>>()
+        )),
         // TECTORA_PREVIEW_UPDATE=0.2.0 shows the update offer in the library.
         "update_check" => Ok(std::env::var("TECTORA_PREVIEW_UPDATE").map_or(
             Value::Null,
@@ -112,8 +205,6 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             items.reverse();
             Ok(Value::Array(items))
         }
-        "revert_last_change" => to_json(store.revert_last(&id()?, USER_ACTOR)?),
-        "revert_changes" => to_json(store.revert_to(&id()?, arg(a, "tsMs")?, USER_ACTOR)?),
         "review_status" => to_json(store.review_status(&id()?)?),
         "accept_changes" => to_json(store.mark_reviewed(&id()?, arg(a, "tsMs")?)?),
         "live_status" => to_json(store.live()),
@@ -147,7 +238,10 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             to_json(store.save(arg(a, "id")?, &project)?)
         }
         "normalize_project" => to_json(arg::<Project>(a, "project")?),
-        "delete_project" => to_json(store.delete(&id()?)?),
+        "delete_project" => {
+            store.delete(&id()?, USER_ACTOR, "Deleted in the app")?;
+            Ok(Value::Null)
+        }
         "duplicate_project" => {
             let source = id()?;
             let mut project = store.load(&source)?;
@@ -163,14 +257,20 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
         "attach_files" => {
             let job = id()?;
             let paths: Vec<String> = arg(a, "paths")?;
-            let names: Result<Vec<String>, String> = paths
+            let names: Result<Vec<String>, _> = paths
                 .iter()
                 .map(|p| store.attach_file(&job, &PathBuf::from(p)))
                 .collect();
             to_json(names?)
         }
         "remove_attachment" => {
-            to_json(store.remove_attachment(&id()?, &arg::<String>(a, "name")?)?)
+            store.remove_attachment(
+                &id()?,
+                &arg::<String>(a, "name")?,
+                USER_ACTOR,
+                "Removed in the app",
+            )?;
+            Ok(Value::Null)
         }
         "open_attachment" => Err("open_attachment is not available in the browser preview".into()),
         "export_job" => {
@@ -182,7 +282,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
                 arg::<String>(a, "title")?,
                 arg::<String>(a, "stamp")?,
             );
-            let (list, svg) = tectora_core::export::checked(&arg::<Project>(a, "project")?, &opts)?;
+            let (list, svg) = tectora_core::export::checked(&arg::<Project>(a, "project")?, &opts)
+                .map_err(|d| coded("out_of_range", d))?;
             Ok(serde_json::json!({ "list": list, "svg": svg }))
         }
         "export_plan_file" => {
@@ -196,7 +297,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
                 &arg::<Project>(a, "project")?,
                 &arg::<String>(a, "stamp")?,
                 &ext,
-            )?;
+            )
+            .map_err(|d| coded("out_of_range", d))?;
             std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
@@ -210,10 +312,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             store,
             &PathBuf::from(arg::<String>(a, "path")?),
         )?),
-        "take_snapshot" => to_json(
-            snapshot::take_checked(&arg::<Project>(a, "project")?).map_err(|e| e.to_string())?,
-        ),
         "take_pending_open" => Ok(Value::Null),
+        "take_open_errors" => Ok(serde_json::json!([])),
         "create_standard" | "standard_part" => {
             let kind: StandardRoof = arg(a, "kind")?;
             let part = standard_roof(
@@ -260,13 +360,26 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
             project.name = arg(a, "name")?;
             to_json(store.save(None, &project)?)
         }
-        "calc" => calc(&arg::<Project>(a, "project")?),
-        "calc_breakdown" => {
-            let project = arg::<Project>(a, "project")?;
-            project.check_limits()?;
-            to_json(tectora_core::model::guarded(|| {
-                tectora_core::breakdown::breakdown(&project)
-            })?)
+        "face_to_part" => {
+            let mut project = arg::<Project>(a, "project")?;
+            tectora_core::edit::face_to_part(
+                &mut project,
+                arg(a, "index")?,
+                &arg::<String>(a, "name")?,
+                arg(a, "pitchDeg")?,
+                arg(a, "eaveHeight")?,
+                arg(a, "overhang")?,
+            )?;
+            to_json(project)
+        }
+        "set_part_height" => {
+            let mut project = arg::<Project>(a, "project")?;
+            tectora_core::edit::height::set_part_height(
+                &mut project,
+                arg(a, "part")?,
+                arg(a, "eaveHeight")?,
+            )?;
+            to_json(project)
         }
         // Settings live in `target/ui-preview-config` (see `main`). A new
         // projects folder set through the bridge is served from then on
@@ -283,7 +396,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, String> {
         "open_folder" => Err("open_folder is not available in the browser preview".into()),
         _ => Err(format!(
             "ui_bridge: unknown command {cmd} (add it to crates/tectora-core/examples/ui_bridge.rs)"
-        )),
+        )
+        .into()),
     }
 }
 
@@ -349,11 +463,38 @@ fn events(store: &Store, seen: &mut BTreeMap<PathBuf, SystemTime>) -> Value {
     Value::Array(out)
 }
 
-fn respond(mut stream: TcpStream, status: &str, body: &str) {
+/// The page origins the bridge answers: the preview's Vite server.
+fn allowed_origins() -> Vec<String> {
+    let port = std::env::var("TECTORA_PREVIEW_PORT").unwrap_or_else(|_| "1430".into());
+    vec![
+        format!("http://localhost:{port}"),
+        format!("http://127.0.0.1:{port}"),
+    ]
+}
+
+/// Whether a request may be answered: from the preview page or from a client
+/// without a browser (no `Origin`), and addressed to this computer by its
+/// loopback name (a `Host` of another name is a DNS rebinding page).
+fn allowed(origin: Option<&str>, host: Option<&str>, port: u16) -> bool {
+    let host_ok =
+        host.is_none_or(|h| h == format!("127.0.0.1:{port}") || h == format!("localhost:{port}"));
+    let origin_ok = origin.is_none_or(|o| allowed_origins().iter().any(|a| a == o));
+    host_ok && origin_ok
+}
+
+fn respond(mut stream: TcpStream, status: &str, body: &str, origin: Option<&str>) {
+    // Only the preview page's own origin, never `*`.
+    let cors = origin
+        .map(|o| {
+            format!(
+                "Access-Control-Allow-Origin: {o}\r\nVary: Origin\r\n\
+                 Access-Control-Allow-Headers: content-type\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+            )
+        })
+        .unwrap_or_default();
     let _ = write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\
-         Access-Control-Allow-Headers: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{cors}\
          Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
@@ -361,6 +502,7 @@ fn respond(mut stream: TcpStream, status: &str, body: &str) {
 
 fn serve(
     home: &std::path::Path,
+    port: u16,
     store: &mut Store,
     seen: &mut BTreeMap<PathBuf, SystemTime>,
     stream: TcpStream,
@@ -376,21 +518,39 @@ fn serve(
         .trim_start_matches('/')
         .to_string();
     let mut len = 0usize;
+    let mut origin: Option<String> = None;
+    let mut host: Option<String> = None;
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header)? == 0 || header.trim().is_empty() {
             break;
         }
-        if let Some(v) = header.to_ascii_lowercase().strip_prefix("content-length:") {
-            len = v.trim().parse().unwrap_or(0);
+        let Some((name, value)) = header.split_once(':') else {
+            continue;
+        };
+        let value = value.trim().to_string();
+        // Not a `match` on string literals: `tests/app_commands.rs` reads
+        // those as command arms.
+        let key = name.trim().to_ascii_lowercase();
+        if key == "content-length" {
+            len = value.parse().unwrap_or(0);
+        } else if key == "origin" {
+            origin = Some(value);
+        } else if key == "host" {
+            host = Some(value);
         }
     }
+    if !allowed(origin.as_deref(), host.as_deref(), port) {
+        respond(stream, "403 Forbidden", "{}", None);
+        return Ok(());
+    }
+    let origin = origin.as_deref();
     if method == "OPTIONS" {
-        respond(stream, "204 No Content", "");
+        respond(stream, "204 No Content", "", origin);
         return Ok(());
     }
     if len > MAX_BODY {
-        respond(stream, "413 Payload Too Large", "{}");
+        respond(stream, "413 Payload Too Large", "{}", origin);
         return Ok(());
     }
     let mut body = vec![0; len];
@@ -408,6 +568,7 @@ fn serve(
                         stream,
                         "200 OK",
                         &json!({ "err": e.to_string() }).to_string(),
+                        origin,
                     );
                     return Ok(());
                 }
@@ -442,25 +603,31 @@ fn serve(
             }
             let out = match out {
                 Ok(v) => json!({ "ok": v }),
+                Err(Fail(e)) => json!({ "err": e }),
+            };
+            respond(stream, "200 OK", &out.to_string(), origin);
+            return Ok(());
+        }
+        if let Some(out) = calc_command(&cmd, &args) {
+            let out = match out {
+                Ok(v) => json!({ "ok": v }),
                 Err(e) => json!({ "err": e }),
             };
-            respond(stream, "200 OK", &out.to_string());
+            respond(stream, "200 OK", &out.to_string(), origin);
             return Ok(());
         }
         match store_command(store, &cmd, &args) {
             Some(Ok(v)) => json!({ "ok": v }),
             // Library errors with their stable code, as the Tauri commands
             // give them, so the UI shows the same translated message.
-            Some(Err(e)) => {
-                json!({ "err": { "code": e.code(), "id": e.id(), "detail": e.to_string() } })
-            }
+            Some(Err(Fail(e))) => json!({ "err": e }),
             None => match handle(store, &cmd, &args) {
                 Ok(v) => json!({ "ok": v }),
-                Err(e) => json!({ "err": e }),
+                Err(Fail(e)) => json!({ "err": e }),
             },
         }
     };
-    respond(stream, "200 OK", &out.to_string());
+    respond(stream, "200 OK", &out.to_string(), origin);
     Ok(())
 }
 
@@ -499,7 +666,7 @@ fn main() -> std::io::Result<()> {
     );
     let mut seen = scan(&dir);
     for stream in listener.incoming().flatten() {
-        if let Err(e) = serve(&dir, &mut store, &mut seen, stream) {
+        if let Err(e) = serve(&dir, port, &mut store, &mut seen, stream) {
             eprintln!("ui_bridge: {e}");
         }
     }

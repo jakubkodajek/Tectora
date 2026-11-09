@@ -65,6 +65,9 @@ const KNOWN = new Set([
   "nothing_to_revert",
   "revert_created",
   "no_such_change",
+  "revert_conflict",
+  "save_conflict",
+  "not_saved",
   "unknown_example",
   "open_failed",
   "out_of_range",
@@ -78,6 +81,12 @@ const KNOWN = new Set([
   "ai_not_installed",
   "ai_config_invalid",
   "ai_config_io",
+  "too_large",
+  "not_a_file",
+  "unsupported_type",
+  "invalid_name",
+  "too_many",
+  "settings_unreadable",
 ]);
 
 /** A translated description of an error from `action`. */
@@ -97,7 +106,7 @@ export function describeCalcError(e: CalcError): { title: string; hint: string; 
   return { title: t(`calc.err.${e.kind}`), hint: t(`calc.hint.${e.kind}`), code: e.kind };
 }
 
-/** One input problem, e.g. "Part 2 „Garage“, wall 3: pitch must be between 0° and 180°". */
+/** One input problem, e.g. "Part 2 „Garage“, wall 3: pitch must be between 2° and 178°". */
 export function describeProblem(p: Problem, project: Project): string {
   const n = p.index + 1;
   let where = t(`prob.item.${p.item}`, { n });

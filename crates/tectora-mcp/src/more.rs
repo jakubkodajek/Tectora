@@ -167,7 +167,7 @@ fn apply_dormer_fields(p: &mut DormerParams, args: &Value) -> Result<(), String>
     if let Some(m) = opt::<u8>(args, "material")? {
         p.material = m.max(1);
     }
-    if !(p.width > 0.0) {
+    if p.width.is_nan() || p.width <= 0.0 {
         return Err("width must be positive".into());
     }
     for (name, v) in [
@@ -303,6 +303,29 @@ pub(crate) fn tools() -> Vec<Value> {
             }), &["id", "items", "summary"]),
         }),
         json!({
+            "name": "face_to_part",
+            "description": "Turn a hand-drawn face (`set_manual` faces, index from 0 as get_project lists them) into a building with the same outline, in one change, as the editor's \"Make it a building\": a hand-drawn face only adds its area and calculates no roof; the new part gets every wall as an eave with `pitch_deg`, `eave_height` and `overhang` (default: the user's roof defaults). Use it when a footprint was traced as a face.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "index": { "type": "integer", "minimum": 0, "description": "The hand-drawn face." },
+                "name": { "type": "string", "description": "Name of the new part (default Main for the first part, else Part N)." },
+                "pitch_deg": { "type": "number" },
+                "eave_height": { "type": "number" },
+                "overhang": { "type": "number" },
+                "summary": summary_prop(),
+            }), &["id", "index", "summary"]),
+        }),
+        json!({
+            "name": "set_part_height",
+            "description": "Set the height of a building (part) in one change, as the editor's \"Building height\" field: every wall of the part gets `eave_height` (m above ground); its pitch breaks and half-hips move with it, and so do the dormers, chimneys and hand-drawn lines on it. Where buildings of different heights meet, the roofs are joined by these eave heights, so use it to make a wing lower or higher than the main roof. To change only some walls, use update_edges.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "part": { "type": "integer", "minimum": 0, "description": "Part index (as get_project lists them)." },
+                "eave_height": { "type": "number", "minimum": tectora_core::edit::height::MIN_PART_HEIGHT, "maximum": tectora_core::edit::height::MAX_PART_HEIGHT, "description": "Eave height of every wall, m above ground." },
+                "summary": summary_prop(),
+            }), &["id", "part", "eave_height", "summary"]),
+        }),
+        json!({
             "name": "clear_roof",
             "description": "Remove everything drawn (parts, dormers, chimneys, roof windows, roof openings, hand-drawn lines and faces) and leave an empty canvas, as the editor's Clear. Job data, notes, roof options and the stored result stay; the change can be reverted like any other.",
             "inputSchema": schema(json!({
@@ -404,7 +427,7 @@ pub(crate) fn tools() -> Vec<Value> {
         json!({
             "name": "revert_to",
             "description": "Undo every change of a design made at or after `ts_ms` (from get_history).",
-            "inputSchema": schema(json!({ "id": id, "ts_ms": { "type": "integer" } }), &["id", "ts_ms"]),
+            "inputSchema": schema(json!({ "id": id, "ts_ms": { "type": "integer" }, "summary": summary_prop() }), &["id", "ts_ms", "summary"]),
         }),
         json!({
             "name": "list_examples",
@@ -431,12 +454,22 @@ pub(crate) fn tools() -> Vec<Value> {
                 },
                 "with_files": { "type": "boolean", "description": "Copy the attached drawings and photos (default true)." },
                 "summary": summary_prop()
-            }), &["id", "name"]),
+            }), &["id", "name", "summary"]),
         }),
         json!({
             "name": "delete_project",
-            "description": "Delete a design with its history and attached files. Only when the user asked for it.",
-            "inputSchema": schema(json!({ "id": id }), &["id"]),
+            "description": "Delete a design with its history and attached files. Only when the user asked for it. The job goes to the library's trash (kept 30 days): restore_project with the returned `trash.entry` brings it back.",
+            "inputSchema": schema(json!({ "id": id, "summary": summary_prop() }), &["id", "summary"]),
+        }),
+        json!({
+            "name": "list_deleted",
+            "description": "Jobs and attached files deleted in the last 30 days (by the user in the app or by an AI client), newest first: `entry` (pass it to restore_project), job id and name, `file` for a removed attachment, who deleted it, when (ts_ms) and why (summary).",
+            "inputSchema": schema(json!({}), &[]),
+        }),
+        json!({
+            "name": "restore_project",
+            "description": "Bring a deleted job (with its history and files) or a removed attached file back from the trash. A job whose id is taken by now comes back under a new id; returns the id.",
+            "inputSchema": schema(json!({ "entry": { "type": "string", "description": "`entry` from list_deleted or from the delete_project / remove_file reply." }, "summary": summary_prop() }), &["entry", "summary"]),
         }),
         json!({
             "name": "list_files",
@@ -445,13 +478,13 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "attach_file",
-            "description": "Attach a file from this computer (e.g. the technical drawing the roof was made from) to a job.",
-            "inputSchema": schema(json!({ "id": id, "path": { "type": "string" } }), &["id", "path"]),
+            "description": "Attach a file from this computer (e.g. the technical drawing the roof was made from) to a job. Only a regular file up to 256 MB of a drawing, photo or document type (pdf, png, jpg, jpeg, webp, gif, bmp, tif, tiff, heic, svg, txt, csv, dxf, dwg, xlsx, xls, ods, docx, doc, odt). Attach only files the user gave you for this job; the reply names the folder the file came from.",
+            "inputSchema": schema(json!({ "id": id, "path": { "type": "string", "description": "Absolute path of the file." }, "summary": summary_prop() }), &["id", "path", "summary"]),
         }),
         json!({
             "name": "remove_file",
-            "description": "Remove an attached file from a job.",
-            "inputSchema": schema(json!({ "id": id, "name": { "type": "string" } }), &["id", "name"]),
+            "description": "Remove an attached file from a job. It goes to the library's trash (kept 30 days): restore_project with the returned `trash.entry` brings it back.",
+            "inputSchema": schema(json!({ "id": id, "name": { "type": "string" }, "summary": summary_prop() }), &["id", "name", "summary"]),
         }),
         json!({
             "name": "export_job",
@@ -464,7 +497,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "export_list",
-            "description": "The roof as the text list TERRAN's Excel price sheet reads (the text the user copies with the copy button in the app's Export dialog): roofs, wall definitions, windows, chimneys and openings, roof lines with pitch and length, faces with area and rafter length, and totals by material and line type. Read-only. Give it to the user verbatim; do not translate or reformat it, the price sheet parses it.",
+            "description": "The roof as the text list TERRAN's Excel price sheet reads (the text the user copies with the copy button in the app's Export dialog): faces with pitch, area and rafter length, wall area and area by material, and line lengths by line type. Read-only. Give it to the user verbatim; do not translate or reformat it, the price sheet parses it.",
             "inputSchema": schema(json!({
                 "id": id,
                 "stamp": { "type": "string", "description": "Date in the header, e.g. \"08.11.2026 14:30\"; default: now (UTC)." },
@@ -484,7 +517,7 @@ pub(crate) fn tools() -> Vec<Value> {
         json!({
             "name": "import_job",
             "description": "Add a job from a .tectorajob file, or a .tectora project file from outside the library, as a new design.",
-            "inputSchema": schema(json!({ "path": { "type": "string" } }), &["path"]),
+            "inputSchema": schema(json!({ "path": { "type": "string" }, "summary": summary_prop() }), &["path", "summary"]),
         }),
         json!({
             "name": "store_result",
@@ -508,6 +541,43 @@ impl Server {
             "transform_items" => self.transform_items(args),
             "add_shape_part" => self.add_shape_part(args),
             "delete_items" => self.delete_items(args),
+            "face_to_part" => (|| {
+                let (id, before) = self.load(args)?;
+                let mut p = before.clone();
+                let index: usize = req(args, "index")?;
+                let preset = tectora_core::settings::Settings::load().roof_defaults;
+                let n = p.parts.len();
+                let name = args
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| if n == 0 { "Main".into() } else { format!("Part {}", n + 1) });
+                tectora_core::edit::face_to_part(
+                    &mut p,
+                    index,
+                    &name,
+                    arg_f64(args, "pitch_deg")?.unwrap_or(preset.pitch_deg),
+                    arg_f64(args, "eave_height")?.unwrap_or(preset.eave_height),
+                    arg_f64(args, "overhang")?.unwrap_or(preset.overhang),
+                )?;
+                if let Err(e) = p.validate() {
+                    return Err(e.join("; "));
+                }
+                self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+            })(),
+            "set_part_height" => (|| {
+                let (id, before) = self.load(args)?;
+                let mut p = before.clone();
+                let part: usize = req(args, "part")?;
+                let h = arg_f64(args, "eave_height")?.ok_or("`eave_height` is required")?;
+                if !tectora_core::edit::height::set_part_height(&mut p, part, h)? {
+                    return Err(format!("every wall of part {part} already has eave height {h} m"));
+                }
+                if let Err(e) = p.validate() {
+                    return Err(e.join("; "));
+                }
+                self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+            })(),
             "clear_roof" => (|| {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
@@ -551,8 +621,9 @@ impl Server {
             "revert_to" => (|| {
                 let (id, _) = self.load(args)?;
                 let ts: u64 = req(args, "ts_ms")?;
-                let p = self.store.revert_to(&id, ts, &self.client)?;
-                self.live("Reverted changes".into(), Some(&id));
+                let summary = arg_str(args, "summary")?;
+                let p = self.store.revert_to(&id, ts, &self.client, Some(summary))?;
+                self.live_follow("reverted_changes", Some(&p.name), format!("Reverted changes: {summary}"), &id);
                 Ok(json!({ "id": id, "reverted": true, "quantities": super::quantities(&p) }))
             })(),
             "list_examples" => Ok(json!(EXAMPLES
@@ -583,22 +654,33 @@ impl Server {
                     }
                 };
                 tectora_core::library::prepare_copy(&mut p, arg_str(args, "name")?, job);
-                let summary = match args.get("summary").and_then(Value::as_str) {
-                    Some(s) if !s.trim().is_empty() => s.to_string(),
-                    _ => format!("Copy of {id}"),
-                };
-                let new_id = self.store.save_as(None, &p, &self.client, &summary)?;
+                let summary = arg_str(args, "summary")?;
+                let new_id = self.store.save_as(None, &p, &self.client, summary)?;
                 if args.get("with_files").and_then(Value::as_bool).unwrap_or(true) {
                     self.store.copy_attachments(&id, &new_id)?;
                 }
-                self.live(format!("Copied “{}”", p.name), Some(&new_id));
+                self.live_follow("copied", Some(&p.name), format!("Copied “{}”", p.name), &new_id);
                 Ok(json!({ "id": new_id }))
             })(),
             "delete_project" => (|| {
-                let (id, p) = self.load(args)?;
-                self.store.delete(&id)?;
-                self.live(format!("Deleted “{}”", p.name), None);
-                Ok(json!({ "id": id, "deleted": true }))
+                let id = arg_str(args, "id")?.to_string();
+                let summary = arg_str(args, "summary")?;
+                // A damaged job can be deleted too, so it is not loaded first.
+                let entry = self.store.delete(&id, &self.client, summary)?;
+                self.live("deleted", Some(&entry.name), format!("Deleted “{}”: {summary}", entry.name), None);
+                Ok(json!({
+                    "id": id, "deleted": true, "trash": entry,
+                    "note": "Moved to the library's trash for 30 days; restore_project with trash.entry brings it back.",
+                }))
+            })(),
+            "list_deleted" => Ok(json!(self.store.trash())),
+            "restore_project" => (|| {
+                let entry = arg_str(args, "entry")?;
+                let summary = arg_str(args, "summary")?;
+                let id = self.store.restore(entry)?;
+                let name = self.store.load(&id).map(|p| p.name).unwrap_or_else(|_| id.clone());
+                self.live_follow("restored", Some(&name), format!("Restored “{name}”: {summary}"), &id);
+                Ok(json!({ "id": id, "restored": true }))
             })(),
             "list_files" => self.load(args).map(|(id, _)| {
                 json!(self
@@ -613,16 +695,33 @@ impl Server {
             }),
             "attach_file" => (|| {
                 let (id, _) = self.load(args)?;
-                let name = self.store.attach_file(&id, &PathBuf::from(arg_str(args, "path")?))?;
-                self.live(format!("Attached {name}"), Some(&id));
-                Ok(json!({ "id": id, "name": name }))
+                let summary = arg_str(args, "summary")?;
+                let src = PathBuf::from(arg_str(args, "path")?);
+                if !src.is_absolute() {
+                    return Err("`path` must be an absolute path".into());
+                }
+                // Drawings, photos and documents only: a path from text in a
+                // drawing must not copy a key or a program into a job that
+                // is later handed over (ARCH-001).
+                let name = src.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !tectora_core::store::Store::opens_directly(name) {
+                    return Err(format!(
+                        "{}: only drawings, photos and documents can be attached (pdf, png, jpg, …, dwg, xlsx, docx)",
+                        src.display()
+                    ));
+                }
+                let name = self.store.attach_file(&id, &src)?;
+                self.live_follow("attached", Some(&name), format!("Attached {name}: {summary}"), &id);
+                let from = src.parent().map(|d| d.display().to_string()).unwrap_or_default();
+                Ok(json!({ "id": id, "name": name, "from": from }))
             })(),
             "remove_file" => (|| {
                 let (id, _) = self.load(args)?;
                 let name = arg_str(args, "name")?;
-                self.store.remove_attachment(&id, name)?;
-                self.live(format!("Removed {name}"), Some(&id));
-                Ok(json!({ "id": id, "removed": name }))
+                let summary = arg_str(args, "summary")?;
+                let entry = self.store.remove_attachment(&id, name, &self.client, summary)?;
+                self.live_follow("removed", Some(name), format!("Removed {name}: {summary}"), &id);
+                Ok(json!({ "id": id, "removed": name, "trash": entry }))
             })(),
             "export_job" => (|| {
                 let (id, _) = self.load(args)?;
@@ -636,7 +735,7 @@ impl Server {
                 };
                 let path = bundle::export_path(&self.store, &name)?;
                 let m = bundle::export(&self.store, &id, &path)?;
-                self.live(format!("Exported to {}: {summary}", path.display()), Some(&id));
+                self.live("exported", Some(&path.display().to_string()), format!("Exported to {}: {summary}", path.display()), Some(&id));
                 Ok(json!({ "id": id, "path": path.display().to_string(), "manifest": m }))
             })(),
             "export_list" => (|| {
@@ -673,13 +772,14 @@ impl Server {
                 let path = bundle::export_path_with(&self.store, &name, format)?;
                 let bytes = tectora_core::export::checked_sheet_file(&p, &stamp, format)?;
                 std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-                self.live(format!("Exported sheet to {}: {summary}", path.display()), Some(&id));
+                self.live("exported_sheet", Some(&path.display().to_string()), format!("Exported sheet to {}: {summary}", path.display()), Some(&id));
                 Ok(json!({ "id": id, "path": path.display().to_string() }))
             })(),
             "import_job" => (|| {
                 let path = PathBuf::from(arg_str(args, "path")?);
+                let summary = arg_str(args, "summary")?;
                 let id = bundle::open_path(&self.store, &path)?;
-                self.live(format!("Imported {}", path.display()), Some(&id));
+                self.live_follow("imported", Some(&path.display().to_string()), format!("Imported {}: {summary}", path.display()), &id);
                 Ok(json!({ "id": id }))
             })(),
             "store_result" => (|| {
@@ -954,7 +1054,7 @@ impl Server {
         let mut part = if shape == "regular_polygon" {
             let sides: usize = req(args, "sides")?;
             let side = arg_f64(args, "side")?.ok_or("missing `side`")?;
-            if !(3..=MAX_POLYGON_SIDES).contains(&sides) || !(side > 0.0) {
+            if !(3..=MAX_POLYGON_SIDES).contains(&sides) || side.is_nan() || side <= 0.0 {
                 return Err(format!(
                     "a polygon needs 3 to {MAX_POLYGON_SIDES} sides of positive length"
                 ));
@@ -1024,7 +1124,7 @@ impl Server {
             .map(|v| Ok((arg_str(v, "kind")?.to_string(), req::<usize>(v, "index")?)))
             .collect::<Result<_, String>>()?;
         // Highest index first, so the others keep theirs.
-        list.sort_by(|a, b| b.1.cmp(&a.1));
+        list.sort_by_key(|x| std::cmp::Reverse(x.1));
         list.dedup();
         for (kind, i) in list {
             fn take<T>(v: &mut Vec<T>, i: usize, kind: &str) -> Result<(), String> {
@@ -1666,6 +1766,92 @@ mod tests {
     }
 
     #[test]
+    fn a_hand_drawn_face_becomes_a_building_in_one_save() {
+        let (mut s, id) = setup();
+        let mut p = s.store.load(&id).unwrap();
+        let parts = p.parts.len();
+        p.manual_faces.push(tectora_core::model::ManualFace {
+            points: [(30.0, 0.0), (40.0, 0.0), (40.0, 6.0), (30.0, 6.0)]
+                .iter()
+                .map(|&(x, y)| tectora_core::geom::Point2::new(x, y))
+                .collect(),
+            pitch_deg: 30.0,
+            label: String::new(),
+        });
+        s.store.save(Some(id.clone()), &p).unwrap();
+        let log = s.store.activity(&id).len();
+        call(
+            &mut s,
+            "face_to_part",
+            json!({ "id": id, "index": 0, "pitch_deg": 35, "eave_height": 3, "overhang": 0.4, "summary": "Garage traced as a face" }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert!(p.manual_faces.is_empty());
+        assert_eq!(p.parts.len(), parts + 1);
+        assert_eq!(p.parts[parts].name, format!("Part {}", parts + 1));
+        assert_eq!(s.store.activity(&id).len(), log + 1, "one change");
+        // Reverting it brings the face back and removes the part.
+        s.call_tool(
+            "revert_last_change",
+            &json!({ "id": id, "summary": "The garage stays a face" }),
+        )
+        .unwrap();
+        let p = s.store.load(&id).unwrap();
+        assert_eq!((p.manual_faces.len(), p.parts.len()), (1, parts));
+        assert!(
+            s.call_tool(
+                "face_to_part",
+                &json!({ "id": id, "index": 5, "summary": "x" })
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_building_height_sets_every_wall_in_one_save_and_changes_the_join() {
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "add_part",
+            json!({ "id": id, "summary": "Wing",
+                "part": { "name": "Wing", "points": [[6, 4], [14, 4], [14, 10], [6, 10]], "pitch_deg": 35 } }),
+        );
+        let before = s.store.load(&id).unwrap();
+        let roofs = tectora_core::engine::generate(&before).unwrap();
+        let log = s.store.activity(&id).len();
+        call(
+            &mut s,
+            "set_part_height",
+            json!({ "id": id, "part": 1, "eave_height": 1.8, "summary": "The wing is lower" }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert!(p.parts[1].edges.iter().all(|e| e.eave_height == 1.8));
+        assert_eq!(p.parts[0], before.parts[0]);
+        assert_eq!(s.store.activity(&id).len(), log + 1, "one change");
+        let after = tectora_core::engine::generate(&p).unwrap();
+        let area =
+            |g: &tectora_core::roof::RoofGeometry| g.faces.iter().map(|f| f.area).sum::<f64>();
+        assert!(
+            (area(&roofs[0]) - area(&after[0])).abs() > 0.01,
+            "the main roof is joined anew"
+        );
+        for bad in [
+            json!({ "id": id, "part": 1, "eave_height": 1.8, "summary": "same" }),
+            json!({ "id": id, "part": 9, "eave_height": 3, "summary": "no part" }),
+            json!({ "id": id, "part": 1, "eave_height": -1, "summary": "below ground" }),
+            json!({ "id": id, "part": 1, "eave_height": 5000, "summary": "cm for m" }),
+            json!({ "id": id, "part": 1, "summary": "no height" }),
+        ] {
+            assert!(s.call_tool("set_part_height", &bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            s.store.activity(&id).len(),
+            log + 1,
+            "refused calls save nothing"
+        );
+    }
+
+    #[test]
     fn dormers_manual_lines_and_options() {
         let (mut s, id) = setup();
         let r = call(
@@ -1747,7 +1933,11 @@ mod tests {
         let dir = s.store.dir.clone();
         let drawing = dir.join("plan.pdf");
         std::fs::write(&drawing, b"%PDF").unwrap();
-        call(&mut s, "attach_file", json!({ "id": id, "path": drawing }));
+        call(
+            &mut s,
+            "attach_file",
+            json!({ "id": id, "path": drawing, "summary": "Drawing" }),
+        );
         assert_eq!(
             call(&mut s, "list_files", json!({ "id": id }))[0]["name"],
             "plan.pdf"
@@ -1800,7 +1990,9 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(
-            list.contains("DACHLINIEN") && list.contains("08.11.2026 12:00"),
+            list.contains("STREŠNÉ PLOCHY")
+                && list.contains("LÍNIE")
+                && list.contains("08.11.2026 12:00"),
             "{list}"
         );
         let sheet = call(&mut s, "export_plan", json!({ "id": id, "summary": "s" }))["path"]
@@ -1824,7 +2016,11 @@ mod tests {
         ] {
             assert!(s.call_tool("export_plan", &bad).is_err());
         }
-        let new_id = call(&mut s, "import_job", json!({ "path": out }))["id"]
+        let new_id = call(
+            &mut s,
+            "import_job",
+            json!({ "path": out, "summary": "Received job" }),
+        )["id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1838,7 +2034,7 @@ mod tests {
         let copy = call(
             &mut s,
             "duplicate_project",
-            json!({ "id": id, "name": "Copy" }),
+            json!({ "id": id, "name": "Copy", "summary": "A variant" }),
         )["id"]
             .as_str()
             .unwrap()
@@ -1868,10 +2064,15 @@ mod tests {
             "list_projects",
             json!({ "query": "DVORAK", "sort": "name" }),
         );
+        let found = &found["projects"];
         assert_eq!(found.as_array().unwrap().len(), 1);
         assert_eq!(found[0]["id"], fresh.as_str());
         assert!(found[0]["pitch_range_deg"].is_array());
-        call(&mut s, "delete_project", json!({ "id": fresh }));
+        call(
+            &mut s,
+            "delete_project",
+            json!({ "id": fresh, "summary": "s" }),
+        );
         assert!(
             call(&mut s, "get_history", json!({ "id": id }))
                 .as_array()
@@ -1889,7 +2090,11 @@ mod tests {
         let review = call(&mut s, "get_review", json!({ "id": id }));
         assert!(review["pending"].is_null());
         assert_eq!(review["accepted_ms"], last);
-        call(&mut s, "delete_project", json!({ "id": copy }));
+        call(
+            &mut s,
+            "delete_project",
+            json!({ "id": copy, "summary": "s" }),
+        );
         assert!(!s.store.exists(&copy));
         assert!(
             call(&mut s, "get_schema", json!({}))["$defs"]
@@ -1897,5 +2102,249 @@ mod tests {
                 .is_some()
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn attach_file_takes_only_regular_documents_and_images() {
+        // ARCH-001: devices, folders and private files without a document
+        // extension (`~/.ssh/id_rsa`) were copied into the job.
+        let (mut s, id) = setup();
+        let dir = s.store.dir.join("outside");
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = dir.join("id_rsa");
+        std::fs::write(&key, b"PRIVATE").unwrap();
+        let script = dir.join("plan.pdf.command");
+        std::fs::write(&script, b"#!/bin/sh").unwrap();
+        let mut bad = vec![dir.clone(), key, script];
+        if cfg!(unix) {
+            bad.push(PathBuf::from("/dev/null"));
+        }
+        for path in bad {
+            let r = s.call_tool(
+                "attach_file",
+                &json!({ "id": id, "path": path, "summary": "Drawing" }),
+            );
+            assert!(r.is_err(), "{}: {r:?}", path.display());
+        }
+        let plan = dir.join("plan.pdf");
+        std::fs::write(&plan, b"%PDF").unwrap();
+        // A write without a summary is refused (ARCH-005).
+        assert!(
+            s.call_tool("attach_file", &json!({ "id": id, "path": plan }))
+                .is_err()
+        );
+        let r = call(
+            &mut s,
+            "attach_file",
+            json!({ "id": id, "path": plan, "summary": "The drawing the roof was made from" }),
+        );
+        assert_eq!(r["name"], "plan.pdf");
+        assert_eq!(r["from"], dir.display().to_string());
+        assert_eq!(s.store.attachments(&id).len(), 1);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn every_write_tool_requires_a_summary() {
+        // ARCH-005: AGENTS.md, every MCP write carries a one-sentence summary.
+        const READ_ONLY: &[&str] = &[
+            "tectora_guide",
+            "get_settings",
+            "list_projects",
+            "get_project",
+            "calc",
+            "calc_breakdown",
+            "show_project",
+            "get_history",
+            "get_review",
+            "list_examples",
+            "list_files",
+            "export_list",
+            "get_schema",
+            "list_deleted",
+            "roof_helper",
+            "list_drawings",
+            "drawing_info",
+            "view_drawing",
+            "drawing_lines",
+            "measure_drawing",
+            "drawing_dimensions",
+            "trace_outline",
+        ];
+        let tools = crate::tools();
+        let mut missing = Vec::new();
+        for t in tools.as_array().unwrap() {
+            let name = t["name"].as_str().unwrap();
+            if READ_ONLY.contains(&name) {
+                continue;
+            }
+            let required = t["inputSchema"]["required"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            if !required.iter().any(|r| r == "summary") {
+                missing.push(name.to_string());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "writes without a required summary: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_or_blank_summary_is_refused_by_every_write_tool() {
+        // Re-check of ARCH-005: `"summary": ""` and `"  "` were accepted.
+        let (mut s, id) = setup();
+        let before = s.store.load(&id).unwrap();
+        let log = s.store.activity(&id).len();
+        let tools = crate::tools();
+        let writes: Vec<&str> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| {
+                t["inputSchema"]["required"]
+                    .as_array()
+                    .is_some_and(|r| r.iter().any(|r| r == "summary"))
+            })
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(writes.len() > 20, "{writes:?}");
+        for name in writes {
+            for blank in ["", "   ", "\n\t "] {
+                let e = s
+                    .call_tool(name, &json!({ "id": id, "summary": blank }))
+                    .expect_err(name);
+                assert!(
+                    e.contains("`summary`") && e.contains("empty"),
+                    "{name}: {e}"
+                );
+            }
+        }
+        let e = s
+            .call_tool(
+                "update_edges",
+                &json!({ "id": id, "summary": " ", "changes": [{ "index": 0, "pitch_deg": 30 }] }),
+            )
+            .unwrap_err();
+        assert!(e.contains("summary"), "{e}");
+        assert_eq!(s.store.load(&id).unwrap(), before, "nothing written");
+        assert_eq!(s.store.activity(&id).len(), log, "nothing logged");
+        // A real sentence still works.
+        call(
+            &mut s,
+            "update_edges",
+            json!({ "id": id, "summary": "Flatter wall 1", "changes": [{ "index": 0, "pitch_deg": 30 }] }),
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn deleted_jobs_and_files_go_to_the_trash_and_come_back() {
+        // ARCH-004: delete_project and remove_file deleted for good.
+        let (mut s, id) = setup();
+        let plan = s.store.dir.join("plan.pdf");
+        std::fs::write(&plan, b"%PDF").unwrap();
+        call(
+            &mut s,
+            "attach_file",
+            json!({ "id": id, "path": plan, "summary": "Drawing" }),
+        );
+        assert!(
+            s.call_tool("delete_project", &json!({ "id": id })).is_err(),
+            "no summary"
+        );
+        assert!(s.store.exists(&id));
+        let r = call(
+            &mut s,
+            "remove_file",
+            json!({ "id": id, "name": "plan.pdf", "summary": "Wrong drawing" }),
+        );
+        let file_entry = r["trash"]["entry"].as_str().unwrap().to_string();
+        assert!(s.store.attachments(&id).is_empty());
+        let r = call(
+            &mut s,
+            "delete_project",
+            json!({ "id": id, "summary": "The user asked to remove the old draft" }),
+        );
+        let job_entry = r["trash"]["entry"].as_str().unwrap().to_string();
+        assert!(!s.store.exists(&id));
+        let deleted = call(&mut s, "list_deleted", json!({}));
+        let entries: Vec<&str> = deleted
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["entry"].as_str().unwrap())
+            .collect();
+        assert!(entries.contains(&job_entry.as_str()) && entries.contains(&file_entry.as_str()));
+        assert_eq!(
+            deleted[0]["summary"],
+            "The user asked to remove the old draft"
+        );
+        let r = call(
+            &mut s,
+            "restore_project",
+            json!({ "entry": job_entry, "summary": "Deleted by mistake" }),
+        );
+        assert_eq!(r["id"], id.as_str());
+        assert!(s.store.exists(&id));
+        assert!(!s.store.activity(&id).is_empty(), "history comes back too");
+        call(
+            &mut s,
+            "restore_project",
+            json!({ "entry": file_entry, "summary": "Needed after all" }),
+        );
+        assert_eq!(s.store.attachments(&id).len(), 1);
+        assert!(
+            call(&mut s, "list_deleted", json!({}))
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            s.call_tool(
+                "restore_project",
+                &json!({ "entry": "../x", "summary": "s" })
+            )
+            .is_err()
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn a_damaged_or_newer_job_is_named_as_such_not_missing() {
+        // ERR-008: the store's reason was replaced by "no design with id".
+        let (mut s, _) = setup();
+        std::fs::write(s.store.dir.join("damaged.tectora"), "{ \"name\": ").unwrap();
+        std::fs::write(
+            s.store.dir.join("newer.tectora"),
+            r#"{"schema_version": 999, "name": "x", "parts": []}"#,
+        )
+        .unwrap();
+        let e = s
+            .call_tool("get_project", &json!({ "id": "damaged" }))
+            .unwrap_err();
+        assert!(e.contains("damaged") && e.contains("unreadable"), "{e}");
+        let e = s
+            .call_tool(
+                "update_edges",
+                &json!({ "id": "newer", "changes": [], "summary": "s" }),
+            )
+            .unwrap_err();
+        assert!(
+            e.contains("newer Tectora") && e.contains("newer_format"),
+            "{e}"
+        );
+        let e = s
+            .call_tool("get_project", &json!({ "id": "nope" }))
+            .unwrap_err();
+        assert!(e.contains("list_projects"), "{e}");
+        let list = call(&mut s, "list_projects", json!({}));
+        let broken = list["broken"].as_array().unwrap();
+        let ids: Vec<&str> = broken.iter().map(|b| b["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["damaged", "newer"]);
+        assert_eq!(list["projects"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 }

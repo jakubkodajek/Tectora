@@ -11,7 +11,9 @@
   import { t } from "./i18n.svelte";
   import { hostHeightAt, isDormerFace, slopeAt } from "./dormers";
   import { isConvex, windowOutline } from "./openings";
-  import { chimneyTop, clipConvex, dormerWallLines, onWallLine, planArea, planeOf, type Poly3 } from "./scene3d";
+  import { chimneyTop, clipConvex, crossings, dormerWallLines, manualFacePoly, onWallLine, outgrows, planArea, planeOf, wallTriangles, wallUpToRoof, type Extent, type Poly3 } from "./scene3d";
+  import { isGable } from "./types";
+  import { presets } from "./settings.svelte";
 
   let {
     project,
@@ -39,6 +41,9 @@
   let controls: OrbitControls;
   let content = new THREE.Group();
   let framed = false;
+  /** The extent the camera was last framed for; a scene growing past it reframes (UI-007). */
+  let framedFor: Extent | null = null;
+  const extentOf = (b: THREE.Box3): Extent => ({ min: [b.min.x, b.min.y, b.min.z], max: [b.max.x, b.max.y, b.max.z] });
 
   /** Roof line kind → its plan colour token, so 3D and the plan legend agree. */
   const LINE_TOKENS: Record<string, string> = {
@@ -105,6 +110,23 @@
     return m;
   }
 
+  /** A mesh of the given triangles (indices into `ps`, plan x, y, z). */
+  function indexedMesh(ps: Poly3, idx: number[], mat: THREE.Material, target?: PlanTarget): THREE.Mesh {
+    const g = new THREE.BufferGeometry().setFromPoints(ps.map(v3));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    const m = new THREE.Mesh(g, mat);
+    if (target) m.userData.target = target;
+    return m;
+  }
+
+  /** True when the vertical polygon `g` stands on the wall line a–b (within 2 cm). */
+  function onWall(g: Poly3, a: Point2, b: Point2): boolean {
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < 1e-6) return false;
+    return g.every((p) => Math.abs((p[0] - a.x) * (b.y - a.y) - (p[1] - a.y) * (b.x - a.x)) / len < 0.02);
+  }
+
   /** A prism over a plan polygon from z0 to z1. */
   function prism(corners: Point2[], z0: number, z1: number, mat: THREE.Material, target?: PlanTarget): THREE.Mesh {
     const shape = new THREE.Shape(corners.map((p) => new THREE.Vector2(p.x, p.y)));
@@ -165,14 +187,41 @@
     const holeMat = new THREE.MeshStandardMaterial({ color: token("--scene-hole"), roughness: 1, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2 });
     const selObjMat = new THREE.MeshStandardMaterial({ color: token("--accent"), roughness: 0.6, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -4 });
 
-    // Walls: from ground to each edge's eave height, on the wall line.
+    // Walls: from ground to each edge's eave height, on the wall line. A
+    // gable wall the calculation returns no gable polygon for (a shed
+    // roof's verges and high wall) goes up to the roof, so the building is
+    // closed (UI-010).
     project.parts.forEach((part, pi) => {
       const n = part.edges.length;
+      const rp = result?.parts[pi];
       part.edges.forEach((e, i) => {
         const b = part.edges[(i + 1) % n];
+        const target: PlanTarget = { type: "edge", part: pi, edge: i };
+        if (rp && result && isGable(e) && !rp.geometry.gables.some((g) => onWall(g, e.start, b.start))) {
+          const own = { ...result, parts: [rp] };
+          const cuts = crossings(e.start, b.start, rp.geometry.lines.map((l) => [l.a, l.b]));
+          const wall = wallUpToRoof(e.start, b.start, 0, cuts, (p) => hostHeightAt(own, p));
+          const idx = wall && wallTriangles(wall);
+          if (wall && idx) {
+            content.add(indexedMesh(wall, idx, wallMat, target));
+            return;
+          }
+        }
         const h = Math.max(0.01, Math.min(e.eave_height, b.eave_height));
-        content.add(quad([[e.start.x, e.start.y, 0], [b.start.x, b.start.y, 0], [b.start.x, b.start.y, h], [e.start.x, e.start.y, h]], wallMat, { type: "edge", part: pi, edge: i }));
+        content.add(quad([[e.start.x, e.start.y, 0], [b.start.x, b.start.y, 0], [b.start.x, b.start.y, h], [e.start.x, e.start.y, h]], wallMat, target));
       });
+    });
+
+    // Manual faces: counted in the roof area, so shown in 3D too (UX-009),
+    // as neutral planes of their pitch from the lowest eave.
+    const eaves = project.parts.flatMap((p) => p.edges.map((e) => e.eave_height));
+    const faceBase = eaves.length ? Math.min(...eaves) : presets.eave_height;
+    const manualMat = new THREE.MeshStandardMaterial({ color: token("--scene-wall"), roughness: 0.9, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 });
+    (project.manual_faces ?? []).forEach((f, index) => {
+      const poly = manualFacePoly(f.points, f.pitch_deg, faceBase);
+      if (!poly || planArea(f.points) < 1e-6) return;
+      const target: PlanTarget = { type: "item", item: { kind: "face", index } };
+      content.add(polyMesh(poly, [], same(item, target.item) ? selObjMat : manualMat, target));
     });
 
     // A non-convex opening stops the whole roof calculation (warned in the editor).
@@ -234,16 +283,9 @@
           }
         }
         for (const poly of rp.geometry.gables) {
-          // Triangulate in the wall plane: u along the wall, v = height.
-          const [p0, p1] = poly;
-          const len = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) || 1;
-          const d = [(p1[0] - p0[0]) / len, (p1[1] - p0[1]) / len];
-          const contour = poly.map((p) => new THREE.Vector2((p[0] - p0[0]) * d[0] + (p[1] - p0[1]) * d[1], p[2]));
-          const tris = THREE.ShapeUtils.triangulateShape(contour, []);
-          const g = new THREE.BufferGeometry().setFromPoints(poly.map(v3));
-          g.setIndex(tris.flat());
-          g.computeVertexNormals();
-          content.add(new THREE.Mesh(g, wallMat));
+          // Triangulated in the wall plane (scene3d.wallTriangles, tested).
+          const idx = wallTriangles(poly);
+          if (idx) content.add(indexedMesh(poly, idx, wallMat));
         }
         // Roof lines, grouped by kind, a few px wide so each line code reads
         // against the roof like in the plan.
@@ -315,7 +357,13 @@
     });
 
     scene.add(content);
-    if (!framed && result) frame();
+    if (result && (!framed || growsPastFrame())) frame();
+  }
+
+  /** True when the built scene reaches outside the extent the camera was framed for. */
+  function growsPastFrame(): boolean {
+    const box = new THREE.Box3().setFromObject(content);
+    return !box.isEmpty() && outgrows(framedFor, extentOf(box));
   }
 
   /**
@@ -351,6 +399,9 @@
     camera.updateProjectionMatrix();
     controls.update();
     framed = true;
+    framedFor = extentOf(box);
+    // The framed plan extent (x0, y0, x1, y1), for tests of what the view shows.
+    host.dataset.frame = [box.min.x, -box.max.z, box.max.x, -box.min.z].map((v) => v.toFixed(2)).join(",");
   }
 
   onMount(() => {

@@ -8,6 +8,11 @@
 //! [`WORKER_ENV`] set to the library folder: it caps its own heap with
 //! [`CappedAlloc`], answers one call on stdout and exits. The server kills
 //! it after [`timeout`] and reports a plain error; the session goes on.
+//!
+//! The tools that only calculate a stored design (`calc`, `calc_breakdown`,
+//! `get_project`) run the same way, with [`CALC_TIMEOUT`]: the count limits
+//! of `check_limits` keep a design to seconds, and the worker is the deadline
+//! for whatever still takes too long (ARCH-002).
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::{BufRead, Read, Write};
@@ -29,12 +34,21 @@ const CLIENT_ENV: &str = "TECTORA_DRAWING_CLIENT";
 const TIMEOUT_ENV: &str = "TECTORA_DRAWING_TIMEOUT_S";
 /// Overrides the memory limit, MiB (tests).
 const MEMORY_ENV: &str = "TECTORA_DRAWING_MEMORY_MB";
+/// Overrides the time limit of a calculation, seconds (tests).
+const CALC_TIMEOUT_ENV: &str = "TECTORA_CALC_TIMEOUT_S";
+/// Wall-clock time a calculation over MCP may take.
+const CALC_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Heap a drawing call may use. A dense A0 plot with a 4096 px render
 /// needs a few hundred MB.
 const MEMORY_LIMIT: usize = 1536 * 1024 * 1024;
 /// Wall-clock time a drawing call may take.
 const TIMEOUT: Duration = Duration::from_secs(90);
+
+/// The read-only tools that calculate a whole stored design.
+pub fn calculates(name: &str) -> bool {
+    matches!(name, "calc" | "calc_breakdown" | "get_project")
+}
 
 /// The tools that open a PDF (`list_drawings` only lists file names).
 pub fn opens_pdf(name: &str) -> bool {
@@ -137,8 +151,12 @@ fn env_number(key: &str) -> Option<u64> {
     std::env::var(key).ok()?.trim().parse().ok()
 }
 
-fn timeout() -> Duration {
-    env_number(TIMEOUT_ENV).map_or(TIMEOUT, Duration::from_secs)
+fn timeout(name: &str) -> Duration {
+    if calculates(name) {
+        env_number(CALC_TIMEOUT_ENV).map_or(CALC_TIMEOUT, Duration::from_secs)
+    } else {
+        env_number(TIMEOUT_ENV).map_or(TIMEOUT, Duration::from_secs)
+    }
 }
 
 /// Runs as a drawing worker when [`WORKER_ENV`] is set: answers the one call
@@ -167,14 +185,17 @@ fn worker_call(dir: PathBuf) -> ToolResult {
         .map_err(|e| e.to_string())?;
     let call: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
     let name = call.get("name").and_then(Value::as_str).unwrap_or("");
-    if !opens_pdf(name) {
-        return Err(format!("not a drawing tool: `{name}`"));
+    if !opens_pdf(name) && !calculates(name) {
+        return Err(format!("not a worker tool: `{name}`"));
     }
     let mut server = Server::new(Store::new(dir).map_err(|e| e.to_string())?);
     if let Ok(client) = std::env::var(CLIENT_ENV) {
         server.client = client;
     }
     let args = call.get("args").cloned().unwrap_or(json!({}));
+    if calculates(name) {
+        return tectora_core::model::guarded(|| server.call_tool_unguarded(name, &args))?;
+    }
     tectora_core::model::guarded(|| server.call_drawing(name, &args).unwrap_or(Ok(Value::Null)))?
 }
 
@@ -187,9 +208,17 @@ impl Server {
         Some(self.run_worker(name, args))
     }
 
+    /// A calculating tool in a worker process (see the module docs); `None`
+    /// for the other tools, which run here.
+    pub(crate) fn call_calc_isolated(&self, name: &str, args: &Value) -> Option<ToolResult> {
+        if !calculates(name) || cfg!(test) || std::env::var_os(WORKER_ENV).is_some() {
+            return None;
+        }
+        Some(self.run_worker(name, args))
+    }
+
     fn run_worker(&self, name: &str, args: &Value) -> ToolResult {
-        let exe =
-            std::env::current_exe().map_err(|e| format!("cannot start the drawing reader: {e}"))?;
+        let exe = std::env::current_exe().map_err(|e| format!("cannot start the worker: {e}"))?;
         let mut child = Command::new(exe)
             .arg("mcp")
             .env(WORKER_ENV, &self.store.dir)
@@ -198,7 +227,7 @@ impl Server {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("cannot start the drawing reader: {e}"))?;
+            .map_err(|e| format!("cannot start the worker: {e}"))?;
         let request = json!({ "name": name, "args": args }).to_string();
         if let Some(mut stdin) = child.stdin.take() {
             let _ = writeln!(stdin, "{request}");
@@ -212,7 +241,8 @@ impl Server {
             let _ = stdout.read_to_string(&mut text);
             text
         });
-        let limit = timeout();
+        let limit = timeout(name);
+        let calc = calculates(name);
         let start = Instant::now();
         let status = loop {
             match child.try_wait() {
@@ -223,6 +253,12 @@ impl Server {
                 Ok(None) | Err(_) => {
                     let _ = child.kill();
                     let _ = child.wait();
+                    if calc {
+                        return Err(format!(
+                            "calculating the design took longer than {} s and was stopped; it is too large or too complex. Ask the user to check or split it in the app",
+                            limit.as_secs()
+                        ));
+                    }
                     return Err(format!(
                         "reading the drawing took longer than {} s and was stopped; the PDF is too complex or damaged. Try another export of the drawing (for example a PDF printed from the CAD program, or an image)",
                         limit.as_secs()
@@ -241,6 +277,9 @@ impl Server {
                 .as_str()
                 .unwrap_or("the drawing could not be read")
                 .to_string()),
+            _ if calc => Err(format!(
+                "calculating the design needed more memory than allowed or failed ({status}) and was stopped; ask the user to check it in the app"
+            )),
             _ => Err(format!(
                 "reading the drawing needed more memory than allowed or failed ({status}) and was stopped; the PDF is too complex or damaged. Try another export of the drawing"
             )),

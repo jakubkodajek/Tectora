@@ -127,13 +127,26 @@ test.describe("settings", () => {
 
   test("settings changed over MCP reach the open app", async ({ app, page, mcp }) => {
     await app.open();
-    await mcp.call("update_settings", { roof_defaults: { pitch_deg: 33 }, theme: "dark", locale: "sk" });
+    await mcp.call("update_settings", { roof_defaults: { pitch_deg: 33 }, theme: "dark", locale: "sk", summary: "Defaults as the user asked" });
     // No reload: the app follows the settings file.
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
     await expect(page.getByRole("button", { name: tr("sk", "lib.new") }).first()).toBeVisible();
-    await page.getByRole("button", { name: tr("sk", "settings.button") }).click();
+    await page.getByRole("button", { name: tr("sk", "settings.button"), exact: true }).click();
     const dlg = page.getByRole("dialog", { name: tr("sk", "settings.title") });
     await expect(dlg.locator(".grid3").getByLabel(tr("sk", "edge.pitch"))).toHaveValue("33");
+  });
+
+  test("a damaged settings file is reported at start and kept before it is replaced (ERR-005)", async ({ app, mcp }) => {
+    const damaged = '{ "locale": "de", "projects_dir": "/srv/zakazky", }';
+    fs.writeFileSync(path.join(CONFIG_DIR, "settings.json"), damaged);
+    expect((await mcp.call("get_settings")).effective.settings_error).toContain("trailing comma");
+    await app.open();
+    await expect(app.toasts().filter({ hasText: cs("err.settings_unreadable") })).toBeVisible();
+    const dlg = await openSettings(app);
+    await dlg.getByRole("radio", { name: cs("settings.theme.dark") }).click();
+    await expect.poll(() => settingsFile().theme).toBe("dark");
+    expect(fs.readFileSync(path.join(CONFIG_DIR, "settings.json.bad"), "utf8")).toBe(damaged);
+    app.errors.length = 0;
   });
 
   test("the jobs folder changed while a job is open closes the job (ERR-019)", async ({ app, page }) => {
