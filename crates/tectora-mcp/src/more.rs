@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 use tectora_core::edit::calc::{self as hc, BuildUpEave, ParallelField, Target};
 use tectora_core::edit::dormers::{self, DormerKind, DormerParams};
+use tectora_core::edit::openings::{OpeningBox, opening_box, reshape_opening};
 use tectora_core::edit::probe::{host_height_at, roof_corner_points, roof_height_at, snap_to_roof};
 use tectora_core::edit::round::{
     ArcInput, ArcMode, MAX_ROUND_SEGMENTS, arc_for, opposite_wall, span_between,
@@ -272,6 +273,20 @@ pub(crate) fn tools() -> Vec<Value> {
                 "follow_roof": { "type": "boolean" },
                 "summary": summary_prop(),
             }), &["id", "items", "op", "summary"]),
+        }),
+        json!({
+            "name": "update_opening",
+            "description": "Change the position or size of one chimney, roof opening or roof window, as the object bar of the editor does. A chimney or roof opening is edited through its box: the smallest box around its plan polygon that lines up with its first side, with corner `x`, `y`, `width` along the first side, `depth` across it and `rotation_deg` (direction of the first side); every corner keeps its place in the box, so a rectangle stays a rectangle and any other shape is stretched. `height` is a chimney's top (m) or a window's height up the slope. Omitted fields keep their value; the reply has the new box.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "kind": { "type": "string", "enum": ["chimney", "roof_opening", "window"] },
+                "index": { "type": "integer", "minimum": 0 },
+                "x": { "type": "number" }, "y": { "type": "number" },
+                "width": { "type": "number" }, "depth": { "type": "number" },
+                "rotation_deg": { "type": "number" },
+                "height": { "type": "number" },
+                "summary": summary_prop(),
+            }), &["id", "kind", "index", "summary"]),
         }),
         json!({
             "name": "add_shape_part",
@@ -539,6 +554,7 @@ impl Server {
             "edit_walls" => self.edit_walls(args),
             "transform_part" => self.transform(args),
             "transform_items" => self.transform_items(args),
+            "update_opening" => self.update_opening(args),
             "add_shape_part" => self.add_shape_part(args),
             "delete_items" => self.delete_items(args),
             "face_to_part" => (|| {
@@ -1036,6 +1052,73 @@ impl Server {
         let mut reply = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
         if let Some(o) = reply.as_object_mut() {
             o.insert("items".into(), json!(moved));
+        }
+        Ok(reply)
+    }
+
+    fn update_opening(&self, args: &Value) -> ToolResult {
+        let (id, before) = self.load(args)?;
+        let mut p = before.clone();
+        let index: usize = req(args, "index")?;
+        let kind = arg_str(args, "kind")?;
+        let num = |k: &str| -> Result<Option<f64>, String> {
+            match arg_f64(args, k)? {
+                Some(v) if !v.is_finite() => Err(format!("`{k}` must be a finite number")),
+                v => Ok(v),
+            }
+        };
+        let reply_box = match kind {
+            "window" => {
+                if num("depth")?.is_some() || num("rotation_deg")?.is_some() {
+                    return Err("a roof window has x, y, width and height (up the slope)".into());
+                }
+                let w = p
+                    .windows
+                    .get_mut(index)
+                    .ok_or_else(|| format!("window {index} does not exist"))?;
+                w.x = num("x")?.unwrap_or(w.x);
+                w.y = num("y")?.unwrap_or(w.y);
+                w.width = num("width")?.unwrap_or(w.width);
+                w.height = num("height")?.unwrap_or(w.height);
+                if !(w.width >= 0.01 && w.height >= 0.01 && w.width <= 100.0 && w.height <= 100.0) {
+                    return Err("width and height must be between 0.01 and 100 m".into());
+                }
+                let out = json!({ "x": w.x, "y": w.y, "width": w.width, "height": w.height });
+                tectora_core::edit::check_windows(&p).map_err(|e| e.to_string())?;
+                out
+            }
+            "chimney" | "roof_opening" => {
+                let list = if kind == "chimney" {
+                    &mut p.chimneys
+                } else {
+                    &mut p.roof_openings
+                };
+                let c = list
+                    .get_mut(index)
+                    .ok_or_else(|| format!("{kind} {index} does not exist"))?;
+                let was = opening_box(&c.corners)
+                    .ok_or_else(|| format!("{kind} {index} has no area to resize"))?;
+                let to = OpeningBox {
+                    x: num("x")?.unwrap_or(was.x),
+                    y: num("y")?.unwrap_or(was.y),
+                    width: num("width")?.unwrap_or(was.width),
+                    depth: num("depth")?.unwrap_or(was.depth),
+                    rotation_deg: num("rotation_deg")?.unwrap_or(was.rotation_deg),
+                };
+                c.corners = reshape_opening(&c.corners, &to)?;
+                if let Some(h) = num("height")? {
+                    if kind != "chimney" {
+                        return Err("a roof opening has no height".into());
+                    }
+                    c.height = h;
+                }
+                json!(opening_box(&c.corners))
+            }
+            other => return Err(format!("unknown kind `{other}`")),
+        };
+        let mut reply = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
+        if let Some(o) = reply.as_object_mut() {
+            o.insert("box".into(), reply_box);
         }
         Ok(reply)
     }
@@ -1657,6 +1740,87 @@ mod tests {
             json!({ "id": id, "summary": "c", "changes": [{ "index": g, "clad": false }] }),
         );
         assert!(!s.store.load(&id).unwrap().parts[0].edges[g].clad);
+    }
+
+    #[test]
+    fn update_opening_resizes_a_rotated_chimney_an_opening_and_a_window() {
+        // A chimney placed along a 20° wall: its corners are rounded to mm,
+        // which the old rectangle test refused, so it could not be resized.
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "set_openings",
+            json!({ "id": id, "summary": "c",
+            "chimneys": [{ "x": 4, "y": 1, "width": 0.6, "depth": 0.6, "height": 6, "rotation_deg": 20 }],
+            "roof_openings": [{ "corners": [[2, 1], [2, 2], [3, 2], [3, 1]] }],
+            "windows": [{ "x": 6, "y": 1, "width": 0.78, "height": 1.18 }] }),
+        );
+        let r = call(
+            &mut s,
+            "update_opening",
+            json!({ "id": id, "summary": "w", "kind": "chimney", "index": 0, "width": 1.2, "height": 7 }),
+        );
+        assert!(
+            (r["box"]["width"].as_f64().unwrap() - 1.2).abs() < 2e-3,
+            "{r}"
+        );
+        assert!(
+            (r["box"]["depth"].as_f64().unwrap() - 0.6).abs() < 2e-3,
+            "{r}"
+        );
+        assert!(
+            (r["box"]["rotation_deg"].as_f64().unwrap() - 20.0).abs() < 0.1,
+            "{r}"
+        );
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(p.chimneys[0].corners[0], Point2::new(4.0, 1.0));
+        assert_eq!(p.chimneys[0].height, 7.0);
+        // A clockwise opening keeps its corner order and grows across its
+        // first side, away from the box corner (3, 1).
+        call(
+            &mut s,
+            "update_opening",
+            json!({ "id": id, "summary": "o", "kind": "roof_opening", "index": 0, "depth": 1.5 }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(
+            p.roof_openings[0].corners,
+            [(1.5, 1.0), (1.5, 2.0), (3.0, 2.0), (3.0, 1.0)].map(|(x, y)| Point2::new(x, y))
+        );
+        call(
+            &mut s,
+            "update_opening",
+            json!({ "id": id, "summary": "f", "kind": "window", "index": 0, "width": 1.14 }),
+        );
+        assert_eq!(s.store.load(&id).unwrap().windows[0].width, 1.14);
+        for (args, want) in [
+            (
+                json!({ "kind": "chimney", "index": 0, "width": 0 }),
+                "at least 0.01",
+            ),
+            (
+                json!({ "kind": "chimney", "index": 3, "width": 1 }),
+                "does not exist",
+            ),
+            (
+                json!({ "kind": "roof_opening", "index": 0, "height": 2 }),
+                "no height",
+            ),
+            (
+                json!({ "kind": "window", "index": 0, "depth": 2 }),
+                "up the slope",
+            ),
+            (
+                json!({ "kind": "window", "index": 0, "width": 40, "height": 20 }),
+                "larger",
+            ),
+        ] {
+            let mut a = args.clone();
+            a["id"] = json!(id);
+            a["summary"] = json!("x");
+            let e = s.call_tool("update_opening", &a).unwrap_err();
+            assert!(e.contains(want), "{args}: {e}");
+        }
     }
 
     #[test]
