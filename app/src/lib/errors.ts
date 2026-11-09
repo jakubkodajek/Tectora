@@ -106,7 +106,7 @@ export function describeCalcError(e: CalcError): { title: string; hint: string; 
   return { title: t(`calc.err.${e.kind}`), hint: t(`calc.hint.${e.kind}`), code: e.kind };
 }
 
-/** One input problem, e.g. "Part 2 „Garage“, wall 3: pitch must be between 0° and 180°". */
+/** One input problem, e.g. "Part 2 „Garage“, wall 3: pitch must be between 2° and 178°". */
 export function describeProblem(p: Problem, project: Project): string {
   const n = p.index + 1;
   let where = t(`prob.item.${p.item}`, { n });

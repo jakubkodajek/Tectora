@@ -98,9 +98,11 @@ fn the_summary_carries_each_parts_warnings() {
 #[test]
 fn a_refused_roof_gives_its_code_and_an_english_message() {
     // Re-check: the raw German message of the calculation was printed.
+    // Every wall leaning outward: valid input (DACAD takes 2-178°), but the
+    // faces never close. A pitch of 1° is now refused before the engine.
     let mut p = rect(0.0, 12.0);
     for e in p["parts"][0]["edges"].as_array_mut().unwrap() {
-        e["pitch_deg"] = json!(1);
+        e["pitch_deg"] = json!(120);
     }
     let r = calc(&job("refused", &p));
     let text = r.to_string();

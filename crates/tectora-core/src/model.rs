@@ -451,8 +451,9 @@ pub struct Problem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edge: Option<usize>,
     /// A stable code: `too_few_edges`, `start_nan`, `pitch_range`,
-    /// `eave_nan`, `overhang_negative`, `direction_nan`, `stacked_nan`,
-    /// `end_nan`, `bad_corners` or `bad_size`.
+    /// `eave_nan`, `eave_negative`, `overhang_negative`, `direction_nan`,
+    /// `stacked_nan`, `break_below_eave`, `break_duplicate`, `end_nan`,
+    /// `bad_corners` or `bad_size`.
     pub code: &'static str,
 }
 
@@ -610,6 +611,16 @@ pub struct WallSource {
 /// engine's arithmetic and give NaN geometry; no roof is 1000 km away.
 pub const MAX_COORD: f64 = 1e6;
 
+/// Smallest and largest wall pitch DACAD accepts, degrees (help,
+/// "Voreinstellungen": "Dachneigungen unter 2 Grad oder über 178 Grad sind
+/// nicht zugelassen").
+pub const MIN_PITCH_DEG: f64 = 2.0;
+pub const MAX_PITCH_DEG: f64 = 178.0;
+
+/// Heights closer than this count as the same height for the pitch-break
+/// checks: half of DACAD's 1 cm input step.
+const HEIGHT_EPS: f64 = 0.005;
+
 /// A finite number within [`MAX_COORD`].
 fn sane(v: f64) -> bool {
     v.is_finite() && v.abs() <= MAX_COORD
@@ -648,33 +659,54 @@ fn is_zero(v: &u8) -> bool {
 impl EdgeDef {
     /// What makes this edge unusable for the engine (see [`Project::validate`]).
     /// Codes and English messages of [`EdgeDef::problems`].
-    pub const PROBLEMS: [(&'static str, &'static str); 6] = [
+    pub const PROBLEMS: [(&'static str, &'static str); 9] = [
         ("start_nan", "start point is not a number or out of range"),
-        ("pitch_range", "pitch must be between 0° and 180°"),
+        ("pitch_range", "pitch must be between 2° and 178°"),
         ("eave_nan", "eave height is not a number or out of range"),
+        ("eave_negative", "eave height must be zero or positive"),
         ("overhang_negative", "overhang must be zero or positive"),
         ("direction_nan", "direction is not a number"),
         (
             "stacked_nan",
             "half-hip or pitch break is not a number or out of range",
         ),
+        ("break_below_eave", "pitch break lies below the eave"),
+        ("break_duplicate", "two pitch breaks at the same height"),
     ];
 
     /// What keeps the roof engine from using this edge, as
     /// `(code, English message)`.
-    pub(crate) fn problems(&self) -> impl Iterator<Item = (&'static str, &'static str)> {
+    pub fn problems(&self) -> impl Iterator<Item = (&'static str, &'static str)> {
         let stacked = self
             .half_hip
             .iter()
             .map(|h| (h.height, h.pitch_deg))
             .chain(self.breaks.iter().map(|b| (b.height, b.pitch_deg)));
+        // DACAD's input limits (help, "Voreinstellungen" and
+        // "Dachdefinitionen"): "Dachneigungen unter 2 Grad oder über 178 Grad
+        // sind nicht zugelassen", "Minimale Traufenhöhe ist 0"; pitch-break
+        // errors "Knickhöhe liegt tiefer als Traufe!" and "Knickhöhe bereits
+        // vorhanden!" (DACAD.exe strings 211, 212).
+        let pitch_ok = |p: f64| (MIN_PITCH_DEG..=MAX_PITCH_DEG).contains(&p);
+        let breaks_low = self
+            .breaks
+            .iter()
+            .any(|b| b.height < self.eave_height - HEIGHT_EPS);
+        let breaks_dup = self.breaks.iter().enumerate().any(|(i, a)| {
+            self.breaks[..i]
+                .iter()
+                .any(|b| (a.height - b.height).abs() <= HEIGHT_EPS)
+        });
         let checks = [
             !finite_point(self.start),
-            !(self.pitch_deg > 0.0 && self.pitch_deg < 180.0),
+            !pitch_ok(self.pitch_deg) || self.breaks.iter().any(|b| !pitch_ok(b.pitch_deg)),
             !sane(self.eave_height),
+            self.eave_height < 0.0,
             !(self.overhang >= 0.0 && sane(self.overhang)),
             self.direction_rad.is_some_and(|a| !a.is_finite()),
             stacked.into_iter().any(|(h, p)| !sane(h) || !p.is_finite()),
+            breaks_low,
+            breaks_dup,
         ];
         checks
             .into_iter()
@@ -785,6 +817,38 @@ pub fn json_schema() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edges_outside_dacad_input_limits_are_problems() {
+        // DACAD help: pitch 2-178°, eave height >= 0; strings 211/212:
+        // a pitch break below the eave or twice at one height.
+        let codes = |f: &dyn Fn(&mut EdgeDef)| {
+            let mut e = crate::edit::plain_edge(Point2::new(0.0, 0.0), 40.0, 3.0, 0.5);
+            f(&mut e);
+            e.problems().map(|(c, _)| c).collect::<Vec<_>>()
+        };
+        assert!(codes(&|_| {}).is_empty());
+        assert!(codes(&|e| e.pitch_deg = 2.0).is_empty());
+        assert!(codes(&|e| e.pitch_deg = 178.0).is_empty());
+        assert!(codes(&|e| e.eave_height = 0.0).is_empty());
+        assert_eq!(codes(&|e| e.pitch_deg = 1.9), ["pitch_range"]);
+        assert_eq!(codes(&|e| e.pitch_deg = 178.1), ["pitch_range"]);
+        assert_eq!(codes(&|e| e.eave_height = -0.01), ["eave_negative"]);
+        let brk = |h: f64, p: f64| PitchBreak {
+            height: h,
+            pitch_deg: p,
+        };
+        assert!(codes(&|e| e.breaks = vec![brk(3.0, 30.0), brk(5.0, 20.0)]).is_empty());
+        assert_eq!(
+            codes(&|e| e.breaks = vec![brk(2.9, 30.0)]),
+            ["break_below_eave"]
+        );
+        assert_eq!(
+            codes(&|e| e.breaks = vec![brk(5.0, 30.0), brk(5.004, 20.0)]),
+            ["break_duplicate"]
+        );
+        assert_eq!(codes(&|e| e.breaks = vec![brk(5.0, 1.0)]), ["pitch_range"]);
+    }
 
     #[test]
     fn check_limits_reports_the_bad_value() {
