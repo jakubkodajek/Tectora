@@ -1469,8 +1469,9 @@ LÍNIE
         unique.sort();
         unique.dedup();
         assert_eq!(unique.len(), names.len(), "{names:?}");
-        // Four walls, so the dormer faces follow as Z1.05 and on.
-        assert!(names.contains(&"Z1.05"), "{names:?}");
+        // Dormer faces are listed as a roof of their own after the parts
+        // (`Z<parts+1>.nn`, as the price sheet export names them).
+        assert!(text.lines().any(|l| l.starts_with("Z2.01 ")), "{text}");
         // The plan sheet takes the dormer too.
         assert!(!plan_sheet(&p, &SheetInfo::default()).is_empty());
     }
