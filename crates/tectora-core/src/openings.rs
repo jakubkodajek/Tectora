@@ -22,7 +22,8 @@ use crate::check::{RoofWarning, WarningKind};
 use crate::geom::{Point2, signed_area};
 use crate::model::{Chimney, Project, RoofPart, RoofWindow};
 use crate::roof::{
-    LineKind, Opening, OpeningKind, RoofFace, RoofGeometry, RoofLine, VergeSide, generate,
+    LineKind, Opening, OpeningKind, RoofFace, RoofGeometry, RoofLine, VergeSide, WindowCut,
+    generate,
 };
 use crate::union::to_geo;
 
@@ -611,7 +612,29 @@ pub(crate) fn apply_window(geos: &mut [RoofGeometry], w: &RoofWindow) {
             kind: OpeningKind::Window,
             area: d,
         });
+        geo.window_cuts.push(WindowCut {
+            face: k,
+            width: w.width,
+            height: w.height,
+        });
     }
+}
+
+/// A roof window's outline in plan: `width` level along the face it sits
+/// on and `height` up its slope (shortened by the pitch in plan), from the
+/// lower left corner `(x, y)`. As the editor draws it; a window on no face
+/// is drawn as if on a level roof.
+pub fn window_outline(geos: &[RoofGeometry], w: &RoofWindow) -> Vec<Point2> {
+    let (up, tan) = window_face(geos, w)
+        .and_then(|(g, k)| geos.get(g)?.faces.get(k))
+        .map(slope)
+        .filter(|(up, _)| up.x.hypot(up.y) > 0.5)
+        .unwrap_or((Point2::new(0.0, 1.0), 0.0));
+    let along = Point2::new(up.y, -up.x);
+    let h = w.height / (1.0 + tan * tan).sqrt();
+    let at =
+        |s: f64, t: f64| Point2::new(w.x + along.x * s + up.x * t, w.y + along.y * s + up.y * t);
+    vec![at(0.0, 0.0), at(w.width, 0.0), at(w.width, h), at(0.0, h)]
 }
 
 /// The face a window sits on: (geometry, face) of the first face that
