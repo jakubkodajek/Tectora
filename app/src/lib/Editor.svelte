@@ -25,7 +25,7 @@
   import { followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, transformItem, type ItemRef, type PlanTarget } from "./items";
   import { snapToRoof, type ManualSel } from "./manual";
   import { describeCalcError, describeError, describeProblem, toAppError, type Described } from "./errors";
-  import { notify, notifyError } from "./notify.svelte";
+  import { info, notify, notifyError } from "./notify.svelte";
   import { chimneyFromRect, nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, parseDormer, roofHeightAt, type DormerParams } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
@@ -39,9 +39,12 @@
   import { changedEdges, changedItems, describeChange, describeFigure, ghostOf } from "./changes";
   import { merge3 } from "./merge";
   import { isTyping, releaseLeaveGuard, setLeaveGuard } from "./leave";
+  import { PendingEdits, exclusive } from "./inflight";
   import { m2, num } from "./format";
   import { i18n, t } from "./i18n.svelte";
   import { hscroll } from "./hscroll";
+  import { partLabel } from "./partname";
+  import { exportTitle } from "./exportlist";
   import { tabIds, tablist } from "./tabs";
   import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
@@ -195,6 +198,8 @@
   /** Outside saves merged in a row before a save gives up (`save_conflict`). */
   const SAVE_TRIES = 5;
   let calcSeq = 0;
+  /** Field handlers that ask the core before they change the job: leaving waits for them (ERR-004). */
+  const pendingEdits = new PendingEdits();
 
   const snapshot = () => JSON.stringify(project);
 
@@ -208,6 +213,15 @@
   const calcError = $derived.by(() => {
     const e = result?.parts.find((p) => p.geometry.error)?.geometry.error ?? null;
     return e && !(e.kind === "non_convex_opening" && nonConvex.length) ? e : null;
+  });
+  /** The core gave no roof for a part (the non-convex case too): its figures
+      are zero, so no export and no offer or order from it (ERR-003). */
+  const roofError = $derived(result?.parts.find((p) => p.geometry.error)?.geometry.error ?? null);
+  // No result at all: the calculation failed as a whole (too many breaks,
+  // a value out of range, an internal error) or has not come back yet (DR-002).
+  const blockedReason = $derived(!result || roofError ? t("tool.exportBlocked") : null);
+  $effect(() => {
+    if (roofError) exporting = false;
   });
   const pendingChanges = $derived(pendingList.flatMap((a) => a.changes));
   const highlight = $derived.by(() => {
@@ -448,8 +462,20 @@
   });
   /** Saves pending edits before the job is left; asks when they cannot be saved. */
   async function leaveGuard(mode: "ask" | "quiet"): Promise<boolean> {
+    // A footprint being drawn is not in the job yet: leaving drops it, so
+    // ask as Escape does (UX-013). Follow mode (not the user's) never drops it.
+    const pts = drawing?.length ?? 0;
+    if (pts >= 2) {
+      if (mode === "quiet") return false;
+      // Tauri's dialog plugin makes confirm asynchronous: always await it.
+      if (!(await confirm(t("draw.confirmCancel", { n: pts })))) return false;
+    }
     // A value still being typed is part of the job: store it first.
     commitFocused();
+    await tick();
+    // The stored value may still be with the core (window size check,
+    // building height): it marks the job dirty only when it comes back.
+    await pendingEdits.settled();
     await tick();
     if (saveState === "dirty" || saveState === "saving" || saveState === "failed") await save();
     if (saveState !== "failed") return true;
@@ -463,7 +489,14 @@
     if (saveState === "dirty" || saveState === "failed") save();
   });
 
-  async function accept() {
+  /** Accept or Revert is running: a second press (double-click) must not run it twice (UI-002). */
+  let reviewBusy = $state(false);
+  const reviewAction = exclusive((run: () => Promise<void>) => run(), (b) => (reviewBusy = b));
+  const accept = () => reviewAction(acceptNow);
+  /** Reverts the pending AI changes from the banner, or the latest one from the AI tab. */
+  const revert = (all = false) => reviewAction(() => revertNow(all));
+
+  async function acceptNow() {
     if (!pending) return;
     const ts = pending.ts_ms;
     review = null;
@@ -476,8 +509,17 @@
     await refreshActivity();
   }
 
-  /** Reverts the pending AI changes from the banner, or the latest one from the AI tab. */
-  async function revert(all = false) {
+  async function revertNow(all: boolean) {
+    // Reverting several AI steps at once is one click next to Accept, and
+    // after a reopen it cannot be undone: ask first, naming the steps (UX-011).
+    const steps = pendingList.length;
+    if (all && steps > 1) {
+      // Tauri's dialog plugin makes confirm asynchronous: always await it.
+      if (!(await confirm(t("review.confirmRevertAll", { n: steps })))) return;
+    }
+    // AI steps that came in while the question was open are reverted too
+    // (the user asked for all), and said so (DR-003).
+    const extra = all && steps > 1 ? pendingList.length - steps : 0;
     // Edits not on disk yet would be lost: the store keeps only the edits in
     // the file, merging the revert onto them (ERR-001).
     commitFocused();
@@ -494,6 +536,7 @@
       selection = null;
       recalc();
       focusChange = null;
+      if (extra > 0) info(t("review.revertedMore", { n: extra }));
       await refreshActivity();
     } catch (e) {
       notifyError(e, "revert");
@@ -567,7 +610,10 @@
   }
 
   /** Makes the current result the job's stored result (the offer's figures). */
-  async function storeResult() {
+  const storeResult = () => pendingEdits.track(storeResultNow());
+  async function storeResultNow() {
+    // Zero figures of a roof the core refused are no offer (DR-001).
+    if (blockedReason) return;
     if (!project) return;
     try {
       project.result_snapshot = await api.takeSnapshot(JSON.parse(JSON.stringify(project)));
@@ -597,7 +643,8 @@
    * breaks, half-hips and the objects on it moved with it, in one change.
    * The core's operation, the same as MCP set_part_height.
    */
-  async function setPartHeight(h: number) {
+  const setPartHeight = (h: number) => pendingEdits.track(setPartHeightNow(h));
+  async function setPartHeightNow(h: number) {
     if (!project || !selection) return;
     const pi = selection.part;
     const part = JSON.stringify($state.snapshot(project.parts[pi]));
@@ -650,7 +697,7 @@
     const part = project.parts[sel.part];
     const es = part?.edges;
     if (!es?.[sel.edge] || (!isMarker(es[sel.edge]) && es.filter((e) => !isMarker(e)).length <= 3)) return;
-    const msg = isMarker(es[sel.edge]) ? t("edge.confirmDeleteMarker") : t("edge.confirmDeleteVertex", { n: sel.edge + 1, name: part.name });
+    const msg = isMarker(es[sel.edge]) ? t("edge.confirmDeleteMarker") : t("edge.confirmDeleteVertex", { n: sel.edge + 1, name: partLabel(part.name, sel.part) });
     // Tauri's dialog plugin makes confirm asynchronous: always await it.
     if (!(await confirm(msg))) return;
     // The project or the selection may have changed while the dialog was open.
@@ -823,7 +870,8 @@
    * overhang) so its roof is calculated. The core's operation, the same as
    * MCP face_to_part.
    */
-  async function faceToPart() {
+  const faceToPart = () => pendingEdits.track(faceToPartNow());
+  async function faceToPartNow() {
     if (!project || manualSel?.kind !== "face" || !project.manual_faces) return;
     const index = manualSel.index;
     const face = project.manual_faces[index];
@@ -903,7 +951,8 @@
     commit();
   }
 
-  async function setWindow(w: RoofWindow) {
+  const setWindow = (w: RoofWindow) => pendingEdits.track(setWindowNow(w));
+  async function setWindowNow(w: RoofWindow) {
     if (!project || openSel?.kind !== "window" || !project.windows) return;
     const index = openSel.index;
     // A window larger than its face would make the face area negative
@@ -1181,7 +1230,7 @@
     } else if (target.type === "part") {
       const pi = target.part;
       if (!project.parts[pi]) return;
-      title = project.parts[pi].name;
+      title = partLabel(project.parts[pi].name, pi);
       entries = [...placeEntries(world), { sep: true }, ...partEntries(pi)];
     } else {
       const add = placeEntries(world);
@@ -1212,9 +1261,10 @@
     return true;
   }
 
-  function togglePlacing(kind: "dormer" | "chimney" | "window" | "hole" | "line" | "face") {
+  async function togglePlacing(kind: "dormer" | "chimney" | "window" | "hole" | "line" | "face") {
+    // Another tool ends the footprint being drawn: ask as Escape does (UX-013).
+    if (drawing && !(await cancelDraw(true))) return;
     placing = placing === kind ? false : kind;
-    drawing = null;
   }
 
   function setDormer(d: Dormer) {
@@ -1223,10 +1273,17 @@
     commit();
   }
 
-  function deleteDormer() {
+  /** Asks first (UI-006): one press would remove the dormer with its faces. */
+  async function deleteDormer() {
     if (!project || dormerSel === null) return;
-    project.dormers.splice(dormerSel, 1);
-    dormerSel = null;
+    const index = dormerSel;
+    const dormer = project.dormers[index];
+    // Tauri's dialog plugin makes confirm asynchronous: always await it.
+    if (!(await confirm(t("dormer.confirmDelete", { n: index + 1 })))) return;
+    // The project may have been reloaded (AI edit) while the dialog was open.
+    if (!project || project.dormers[index] !== dormer) return;
+    project.dormers.splice(index, 1);
+    if (dormerSel === index) dormerSel = null;
     commit();
   }
 
@@ -1267,7 +1324,7 @@
     const part = project.parts[index];
     // Tauri's dialog plugin replaces window.confirm with an async version
     // (a Promise is always truthy), so the answer must be awaited.
-    if (!(await confirm(t("editor.confirmDeletePart", { name: part.name })))) return;
+    if (!(await confirm(t("editor.confirmDeletePart", { name: partLabel(part.name, index) })))) return;
     // The project may have been reloaded (AI edit) while the dialog was open.
     if (!project || project.parts[index] !== part) return;
     project.parts.splice(index, 1);
@@ -1292,14 +1349,16 @@
    * Building button, easy to hit by accident) asks first once two or more
    * corners would be lost; the bar's Cancel button stops at once.
    */
-  async function cancelDraw(ask: boolean) {
+  /** Resolves to whether no footprint is being drawn any more. */
+  async function cancelDraw(ask: boolean): Promise<boolean> {
     const pts = drawing;
-    if (!pts) return;
+    if (!pts) return true;
     // Tauri's dialog plugin makes confirm asynchronous: always await it.
-    if (ask && pts.length >= 2 && !(await confirm(t("draw.confirmCancel", { n: pts.length })))) return;
+    if (ask && pts.length >= 2 && !(await confirm(t("draw.confirmCancel", { n: pts.length })))) return false;
     // Closed or restarted while the question was open.
-    if (drawing !== pts) return;
+    if (drawing !== pts) return false;
     drawing = null;
+    return true;
   }
 
   function toggleDraw() {
@@ -1470,12 +1529,12 @@
     <div class="group">
       <button class="tool" class:on={prefs.layout === "plan"} aria-pressed={prefs.layout === "plan"} onclick={() => setLayout("plan")} title={t("editor.plan")}><Icon name="plan" /><span>{t("editor.plan")}</span></button>
       <button class="tool" class:on={prefs.layout === "split"} aria-pressed={prefs.layout === "split"} onclick={() => setLayout("split")} title={t("editor.both")}><Icon name="split" /><span>{t("editor.both")}</span></button>
-      <button class="tool" class:on={prefs.layout === "3d"} aria-pressed={prefs.layout === "3d"} onclick={() => setLayout("3d")} title="F3"><Icon name="cube" /><span>{t("editor.model")}</span></button>
-      <button class="tool" onclick={() => plan?.fit()} disabled={prefs.layout === "3d"} title={t("plan.fit")}><Icon name="fit" /><span>{t("plan.fit")}</span></button>
+      <button class="tool" class:on={prefs.layout === "3d"} aria-pressed={prefs.layout === "3d"} onclick={() => setLayout("3d")} title="{t('editor.modelHint')} (F3)"><Icon name="cube" /><span>{t("editor.model")}</span></button>
+      <button class="tool" onclick={() => plan?.fit()} disabled={prefs.layout === "3d"} title={t("plan.fitHint")}><Icon name="fit" /><span>{t("plan.fit")}</span></button>
       <button class="tool" class:on={showDims} aria-pressed={showDims} onclick={() => (showDims = !showDims)} title={t("tool.dims")}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
     </div>
     <div class="group">
-      <button class="tool" class:on={exporting} aria-pressed={exporting} disabled={!result} onclick={() => (exporting = true)} title={t("tool.exportHint")}><Icon name="download" /><span>{t("tool.export")}</span></button>
+      <button class="tool" class:on={exporting} aria-pressed={exporting} disabled={!result || !!blockedReason} onclick={() => (exporting = true)} title={blockedReason ?? t("tool.exportHint")}><Icon name="download" /><span>{t("tool.export")}</span></button>
     </div>
   </div>
   {/if}
@@ -1505,8 +1564,8 @@
             {#if review?.before}
               <button class="btn sm" class:on={showBefore} aria-pressed={showBefore} onclick={() => (showBefore = !showBefore)} title={t("review.beforeHint")}>{t("review.before")}</button>
             {/if}
-            <button class="btn sm" onclick={() => revert(true)}><Icon name="undo" size={14} />{pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}</button>
-            <button class="btn sm accept" onclick={accept}><Icon name="check" size={14} />{t("review.accept")}</button>
+            <button class="btn sm" disabled={reviewBusy} onclick={() => revert(true)}><Icon name="undo" size={14} />{pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}</button>
+            <button class="btn sm accept" disabled={reviewBusy} onclick={accept}><Icon name="check" size={14} />{t("review.accept")}</button>
           </div>
         {/if}
         {#if calcError}
@@ -1627,13 +1686,13 @@
         <div class="dock" role="tabpanel" id={dockIds.panel} aria-labelledby={dockIds.tab(dock)} bind:this={dockEl}>
           <button class="icon-btn dock-close" onclick={() => (dockOpen = false)} aria-label={t("common.close")} title={t("common.close")}><Icon name="x" size={16} /></button>
           {#if dock === "results"}
-            <Results {result} {project} onstore={storeResult} />
+            <Results {result} {project} onstore={storeResult} blocked={blockedReason} />
           {:else if dock === "breakdown"}
             <Breakdown {project} {result} bind:data={breakdown} onmark={(mk) => (planMark = mk)} />
           {:else if dock === "ai"}
-            <AiPanel {id} {project} {activity} onrevert={() => revert(false)} {onconnect} onfocus={(c) => (focusChange = c)} />
+            <AiPanel {id} {project} {activity} onrevert={() => revert(false)} busy={reviewBusy} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
-            <JobPanel {id} {project} onchange={commit} onsave={save} />
+            <JobPanel {id} {project} onchange={commit} onsave={save} blocked={blockedReason} track={(p) => pendingEdits.track(p)} />
           {/if}
         </div>
       </aside>
@@ -1666,7 +1725,7 @@
 </div>
 
 {#if exporting && project}
-  <ExportDialog {project} title={project.name || id} onclose={() => (exporting = false)} />
+  <ExportDialog {project} title={exportTitle(project, id)} onclose={() => (exporting = false)} />
 {/if}
 
 {#if dormerDlg && project}
@@ -1711,7 +1770,8 @@
 
 {#if std}
   <Modal title={t("std.title")} width={640} onclose={() => (std = null)}>
-    <StandardRoofForm bind:part={std.part} />
+    <!-- A preview still being calculated may come back after the dialog closed. -->
+    <StandardRoofForm bind:part={() => std?.part ?? null, (v) => std && (std.part = v)} />
     {#snippet footer()}
       {#if project && project.parts.length}
         <div class="mode" role="radiogroup">
@@ -2197,9 +2257,10 @@
 
   /* ---- Responsive: half-screen and smaller windows ---- */
   @media (max-width: 1440px) {
+    /* Narrow enough that the labelled toolbar fits 1360 px in Czech. */
     .tool {
       min-width: 0;
-      padding: 0 7px;
+      padding: 0 5px;
     }
   }
   /* Narrow or low window: the toolbar collapses to icons (tooltips keep the names). */

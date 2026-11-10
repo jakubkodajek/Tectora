@@ -2,6 +2,7 @@
 // a translated message for the user plus the original text for "Details".
 
 import { t } from "./i18n.svelte";
+import { isDefaultPartName } from "./partname";
 import type { CalcError, Problem, Project } from "./types";
 
 /** An error as the Tauri commands return it (see app/src-tauri/src/error.rs). */
@@ -86,6 +87,7 @@ const KNOWN = new Set([
   "unsupported_type",
   "invalid_name",
   "too_many",
+  "not_calculated",
   "settings_unreadable",
 ]);
 
@@ -112,7 +114,8 @@ export function describeProblem(p: Problem, project: Project): string {
   let where = t(`prob.item.${p.item}`, { n });
   if (p.item === "part" && project.parts.length > 1) {
     const name = project.parts[p.index]?.name;
-    if (name) where += ` „${name}“`;
+    // A core default name ("Main") would only repeat "Budova 1".
+    if (name && !isDefaultPartName(name)) where += ` „${name}“`;
   }
   if (p.edge !== undefined) where += `, ${t("prob.edge", { n: p.edge + 1 })}`;
   return `${where}: ${t(`prob.${p.code}`)}`;

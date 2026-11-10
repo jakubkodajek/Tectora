@@ -425,6 +425,6 @@ test("3D view: every camera button and fit", async ({ app, page }) => {
     await v.click();
     await expect(v).toHaveAttribute("aria-checked", "true");
   }
-  await page.locator(".view").last().getByRole("button", { name: cs("plan.fit") }).click();
+  await page.locator(".view").last().getByRole("button", { name: cs("view.fit") }).click();
   await expect(page.locator(".view canvas")).toBeVisible();
 });

@@ -24,6 +24,14 @@ Texts live in `app/src/lib/i18n.svelte.ts`: one dictionary per language
   DACAD terms are fine in code comments and docs.
 - **Glossary.** A saved roof is a job: zakázka (cs), zákazka (sk), job (en),
   Auftrag (de), never návrh / design / Entwurf.
+  - One closed wall loop with its roof (a `part` in code) is a building:
+    budova (cs), budova (sk), building (en), Gebäude (de), never část /
+    časť / part / Teil on screen ("Smazat budovu", "budovy: 2"). Default
+    names are "Budova 1", "Budova 2" (`editor.partN`); the core's untouched
+    "Main" / "Part N" are shown through `partLabel` (`lib/partname.ts`).
+  - Czech "Zpět" / Slovak "Späť" is only undo. Back to the library is
+    "Zakázky" / "Zákazky" / "Jobs" / "Aufträge"; each delete button names
+    its scope ("Smazat roh", "Smazat budovu", "Smazat vikýř").
   - de: Traufe, Traufhöhe, Überstand (not Vorsprung), Giebel (edge type;
     Ortgang only for verge lines), Schornstein (not Kamin), Grat, Kehle,
     waagerechte Kehle, Pultabschluss, Knick.

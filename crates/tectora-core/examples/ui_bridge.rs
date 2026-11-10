@@ -398,6 +398,14 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             next.save().map_err(|e| e.code().to_string())?;
             Ok(next.describe())
         }
+        "answer_folder_request" => {
+            let allow = a.get("allow").and_then(Value::as_bool).unwrap_or(false);
+            let next = Settings::load()
+                .answer_folder_request(allow)
+                .map_err(|e| e.code().to_string())?;
+            next.save().map_err(|e| e.code().to_string())?;
+            Ok(next.describe())
+        }
         "open_folder" => Err("open_folder is not available in the browser preview".into()),
         _ => Err(format!(
             "ui_bridge: unknown command {cmd} (add it to crates/tectora-core/examples/ui_bridge.rs)"
@@ -583,7 +591,7 @@ fn serve(
     } else {
         let cmd = path.replace("%7C", "|").replace("%3A", ":");
         let args: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-        if cmd == "update_settings" {
+        if cmd == "update_settings" || cmd == "answer_folder_request" {
             let before = effective_projects_dir();
             let out = handle(store, &cmd, &args);
             // A new jobs folder: serve it from now on, as the app's

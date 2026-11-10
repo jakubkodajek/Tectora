@@ -201,3 +201,34 @@ sessions that use it know where things stand.
   Not verified with a DACAD run: whether DACAD's trapezoid puts the cheek
   eave lower than the front (its picture shows a trapezoid front wall).
 - State: `make check` exit 0, sweeps clean.
+
+## 2026-11-10 · whole-app architecture, UI and UX review (branch claude/project-thread-tnm6jz)
+- Done: review with ux and arch reviewers on Fable 5.2, ui and error
+  hunter on Opus 5.5, five verifiers (one lens each); board
+  `target/review/2026-11-10-8cd1db0-ux/` (70 findings, 17 of 18 S1/S2
+  verified). Fixed: ARCH-053 (pitch-break / dormer-wall limits), ERR-005
+  (torn change-log line), ARCH-043 (dialog:allow-save), ERR-007/008 (MCP
+  part index and unknown keys refused), ERR-004, UI-002, UX-011, UX-013,
+  ERR-003, UI-001, UI-019, UX-017.
+- State: `make check` exit 0; full E2E 211 passed; new `guards.e2e.ts`.
+- Next: Jakub decides the clarity redesign (wall bar "More", one term
+  "Budova", Back vs undo, copy for Excel in Results), ARCH-052 (ask before
+  an AI moves the jobs folder) and the core edit-operation refactor
+  (ARCH-042/045/046). Roof windows (ERR-001/002/010) are in their own thread.
+
+## 2026-11-10 — clarity redesign and AI permission prompts (PR #45, round 2)
+
+- Done (Jakub's decisions 1-5): wall bar shows only everyday fields, the
+  rest behind "Více"; one term "Budova" ("Budova 1", "Budova 2", older
+  default names shown the same); "Zpět" only for undo, labelled delete
+  buttons, dormer delete asks; Results has "Kopírovat pro Excel" (bytes
+  identical to the export list) and an "On the roof" list with deductions;
+  an AI client's folder change is a request the user allows in the app
+  (`settings.folder_request`, Tauri `answer_folder_request`); MCP tools carry
+  readOnly/destructive annotations and Connect AI explains how to stop
+  Claude and Antigravity asking at every step.
+- State: `make check` exit 0 (UI 197 tests), `make sweeps` exit 0, full E2E.
+- Open for Jakub: paste the copy into the real TERRAN price sheet once (the
+  sheet is not in the connected folders); should core/MCP default part names
+  become "Budova N"; a core field for deduction totals; `openings.ts` still
+  picks the window face with its own probe instead of the core's.

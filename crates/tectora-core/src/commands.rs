@@ -74,6 +74,10 @@ pub fn take_snapshot(project: &Project) -> Result<snapshot::ResultSnapshot, Comm
     snapshot::take_checked(project).map_err(|e| match e {
         snapshot::Refused::OutOfRange(d) => CommandError::out_of_range(d),
         snapshot::Refused::Internal(d) => CommandError::internal(d),
+        snapshot::Refused::NotCalculated(detail) => CommandError {
+            code: "not_calculated",
+            detail,
+        },
     })
 }
 

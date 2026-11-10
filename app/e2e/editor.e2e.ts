@@ -295,7 +295,7 @@ test.describe("roof definition bar", () => {
     await def.getByRole("button", { name: cs("edge.flip") }).click();
     p = await waitForProject(id, (p) => Math.abs(p.parts[0].edges[1].direction_rad - (350 * Math.PI) / 180) < 1e-9);
     await areaMatchesCore(page, id);
-    await def.getByRole("button", { name: cs("edge.deleteVertex") }).click();
+    await def.getByRole("button", { name: cs("edge.deleteMarker") }).click();
     await waitForProject(id, (p) => p.parts[0].edges.length === 4);
   });
 

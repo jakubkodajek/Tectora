@@ -52,7 +52,7 @@ fn point(args: &Value, key: &str) -> Result<Option<Point2>, String> {
 }
 
 fn part_index(args: &Value, p: &Project) -> Result<usize, String> {
-    let pi = args.get("part").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let pi = crate::part_arg(args)?;
     if pi >= p.parts.len() {
         return Err(format!(
             "part {pi} does not exist (the design has {} parts)",
@@ -2064,13 +2064,77 @@ mod tests {
     }
 
     #[test]
+    fn a_part_index_that_is_not_a_whole_number_is_refused_not_applied_to_part_0() {
+        // ERR-007: `"part": "1"` edited the first building.
+        let (mut s, id) = setup();
+        let before = s.store.load(&id).unwrap();
+        for bad in [json!("1"), json!(-1), json!(1.5)] {
+            let err = s
+                .call_tool(
+                    "update_edges",
+                    &json!({ "id": id, "part": bad, "changes": [{ "all": true, "pitch_deg": 25 }], "summary": "x" }),
+                )
+                .unwrap_err();
+            assert!(err.contains("part"), "{err}");
+        }
+        assert_eq!(s.store.load(&id).unwrap(), before);
+    }
+
+    #[test]
+    fn a_roof_that_cannot_be_calculated_is_not_stored_as_an_offer() {
+        // DR-001: update_job status=offer and store_result saved 0 m².
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "set_openings",
+            json!({ "id": id, "summary": "chimney",
+                "chimneys": [{ "corners": [[3, 3], [4, 3], [3.5, 3.4], [4, 4], [3, 4]] }] }),
+        );
+        let before = s.store.load(&id).unwrap();
+        for (tool, extra) in [
+            ("update_job", json!({ "status": "offer" })),
+            ("store_result", json!({})),
+        ] {
+            let mut args = json!({ "id": id, "summary": "x" });
+            args.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let err = s.call_tool(tool, &args).unwrap_err();
+            assert!(err.contains("cannot be calculated"), "{tool}: {err}");
+        }
+        assert_eq!(s.store.load(&id).unwrap(), before);
+    }
+
+    #[test]
+    fn a_misspelled_argument_is_refused_instead_of_saving_nothing() {
+        // ERR-008: `pitch` for `pitch_deg` answered "Saved" with no change.
+        let (mut s, id) = setup();
+        let log = s.store.activity(&id).len();
+        let err = s
+            .call_tool(
+                "update_edges",
+                &json!({ "id": id, "changes": [{ "all": true, "pitch": 25 }], "summary": "x" }),
+            )
+            .unwrap_err();
+        assert!(err.contains("`changes[0].pitch`"), "{err}");
+        let err = s
+            .call_tool(
+                "update_job",
+                &json!({ "id": id, "state": "offer", "summary": "x" }),
+            )
+            .unwrap_err();
+        assert!(err.contains("`state`"), "{err}");
+        assert_eq!(s.store.activity(&id).len(), log, "nothing saved");
+    }
+
+    #[test]
     fn a_building_height_sets_every_wall_in_one_save_and_changes_the_join() {
         let (mut s, id) = setup();
         call(
             &mut s,
             "add_part",
             json!({ "id": id, "summary": "Wing",
-                "part": { "name": "Wing", "points": [[6, 4], [14, 4], [14, 10], [6, 10]], "pitch_deg": 35 } }),
+                "part": { "name": "Wing", "points": [[6, 4], [14, 4], [14, 10], [6, 10]], "defaults": { "pitch_deg": 35 } } }),
         );
         let before = s.store.load(&id).unwrap();
         let roofs = tectora_core::engine::generate(&before).unwrap();

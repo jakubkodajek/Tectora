@@ -449,6 +449,57 @@ fn edge_indices(v: &Value, n: usize) -> Result<Vec<usize>, String> {
     Ok(list)
 }
 
+/// The `part` argument: a part index from 0, 0 when left out. A string,
+/// a fraction or a negative number is refused instead of editing part 0
+/// (ERR-007).
+pub(crate) fn part_arg(args: &Value) -> Result<usize, String> {
+    match args.get("part") {
+        None | Some(Value::Null) => Ok(0),
+        Some(v) => v
+            .as_u64()
+            .map(|i| i as usize)
+            .ok_or_else(|| format!("`part` must be a part index from 0, not {v}")),
+    }
+}
+
+/// Collects the keys of `value` that `schema` does not name, as paths
+/// (`changes[0].pitch`). Objects without `properties`, or that allow
+/// additional ones, take any key.
+fn unknown_keys(schema: &Value, value: &Value, path: &str, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            let Some(props) = schema.get("properties").and_then(Value::as_object) else {
+                return;
+            };
+            if schema
+                .get("additionalProperties")
+                .is_some_and(|a| a != false)
+            {
+                return;
+            }
+            for (k, v) in map {
+                let here = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
+                match props.get(k) {
+                    Some(sub) => unknown_keys(sub, v, &here, out),
+                    None => out.push(format!("`{here}`")),
+                }
+            }
+        }
+        Value::Array(items) => {
+            if let Some(sub) = schema.get("items") {
+                for (i, v) in items.iter().enumerate() {
+                    unknown_keys(sub, v, &format!("{path}[{i}]"), out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn schema(props: Value, required: &[&str]) -> Value {
     json!({ "type": "object", "properties": props, "required": required })
 }
@@ -506,8 +557,48 @@ fn tools() -> Value {
     if let Value::Array(a) = &mut list {
         a.extend(more::tools());
         a.extend(drawings::tools());
+        for t in a.iter_mut() {
+            let name = t["name"].as_str().unwrap_or_default().to_string();
+            let ann = annotations(&name, t);
+            t["annotations"] = ann;
+        }
     }
     list
+}
+
+/// Tools that delete or overwrite something the activity log cannot bring
+/// back with Revert (a job, a file, the folders in the settings).
+const DESTRUCTIVE: &[&str] = &[
+    "delete_project",
+    "remove_file",
+    "export_job",
+    "export_plan",
+    "update_settings",
+    "clear_roof",
+    "delete_items",
+];
+
+/// MCP tool annotations (spec 2025-06-18, `ToolAnnotations`). Clients use
+/// them to group tools for their permission prompts: Claude Desktop offers
+/// "Always allow" per group of read-only and write tools, so a user can stop
+/// the prompts for everything that only reads. A tool reads only when it
+/// takes no `summary` (every write needs one, `AGENTS.md`). Everything is
+/// local: no tool reaches the internet.
+fn annotations(name: &str, tool: &Value) -> Value {
+    let writes = tool["inputSchema"]["properties"].get("summary").is_some();
+    let mut title: String = name.replace('_', " ");
+    if let Some(c) = title.get_mut(0..1) {
+        c.make_ascii_uppercase();
+    }
+    let mut a = json!({
+        "title": title,
+        "readOnlyHint": !writes,
+        "openWorldHint": false,
+    });
+    if writes {
+        a["destructiveHint"] = json!(DESTRUCTIVE.contains(&name));
+    }
+    a
 }
 
 fn base_tools() -> Value {
@@ -542,7 +633,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "update_settings",
-            "description": "Change Tectora settings, same as the app's Settings screen. Pass only the keys to change; null resets a folder or the language to its default. Ask the user before moving the projects folder.",
+            "description": "Change Tectora settings, same as the app's Settings screen. Pass only the keys to change; null resets a folder or the language to its default. A new projects_dir or drawings_dir is only a request: the app asks the user to allow it, and the folders stay as they are until then.",
             "inputSchema": schema(json!({
                 "projects_dir": { "type": ["string", "null"], "description": "Absolute path of the design library folder." },
                 "drawings_dir": { "type": ["string", "null"], "description": "Absolute path of the drawings inbox; default <projects_dir>/drawings." },
@@ -874,21 +965,26 @@ impl Server {
             o.remove("summary");
         }
         let old = Settings::load();
-        let next = old
-            .patched(&patch)
+        let (next, asked) = old
+            .patched_by_ai(&patch, &self.client, &summary)
             .map_err(|e| format!("settings not saved: {e}"))?;
         next.save()
             .map_err(|e| format!("settings not saved: {e}"))?;
-        if self.store.dir == old.projects_dir() && next.projects_dir() != old.projects_dir() {
-            self.store = Store::new(next.projects_dir()).map_err(|e| e.to_string())?;
-        }
         self.live(
             "settings",
             None,
             format!("Changed Tectora settings: {summary}"),
             None,
         );
-        Ok(next.describe())
+        let mut out = next.describe();
+        if asked {
+            // The folders change only when the user allows it in the app
+            // (ARCH-052); this server keeps its library until then.
+            out["note"] = json!(
+                "The folder change waits for the user: the app asks them to allow it. Until then the jobs folder and the drawings inbox stay as they are; call get_settings later to see the answer."
+            );
+        }
+        Ok(out)
     }
 
     /// Runs a tool; a panic in the geometry kernel becomes a tool error
@@ -906,6 +1002,23 @@ impl Server {
             .is_some_and(|s| s.trim().is_empty())
         {
             return Err("`summary` is empty: give one sentence for the user on what you change and why (it is shown in the app)".into());
+        }
+        // A misspelled key used to be ignored and the tool still answered
+        // "Saved" with nothing changed (ERR-008): refuse keys the tool's
+        // schema does not name.
+        if let Some(schema) = tools()
+            .as_array()
+            .and_then(|a| a.iter().find(|t| t["name"] == name))
+            .map(|t| t["inputSchema"].clone())
+        {
+            let mut unknown = Vec::new();
+            unknown_keys(&schema, args, "", &mut unknown);
+            if !unknown.is_empty() {
+                return Err(format!(
+                    "unknown argument {} for `{name}`: check the spelling against the tool's input schema",
+                    unknown.join(", ")
+                ));
+            }
         }
         if let Some(r) = self.call_calc_isolated(name, args) {
             return r;
@@ -1110,7 +1223,7 @@ impl Server {
             "update_edges" => {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
-                let pi = args.get("part").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let pi = part_arg(args)?;
                 let part = p
                     .parts
                     .get_mut(pi)
@@ -1141,7 +1254,7 @@ impl Server {
             "set_outline" => {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
-                let pi = args.get("part").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let pi = part_arg(args)?;
                 let old = p
                     .parts
                     .get(pi)
@@ -1207,7 +1320,18 @@ impl Server {
                     }
                 }
                 if let Some(s) = args.get("status").and_then(Value::as_str) {
-                    p.set_status(parse_status(s)?);
+                    let status = parse_status(s)?;
+                    // Leaving the draft stores the result as the offer's
+                    // figures: refused for a roof that cannot be calculated.
+                    if p.job.status == JobStatus::Draft
+                        && status != JobStatus::Draft
+                        && p.result_snapshot.is_none()
+                    {
+                        p.result_snapshot = Some(
+                            tectora_core::snapshot::take_checked(&p).map_err(|e| e.to_string())?,
+                        );
+                    }
+                    p.set_status(status);
                 }
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
             }
@@ -1412,6 +1536,29 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap())
             .collect();
         assert!(names.contains(&"create_project") && names.contains(&"update_edges"));
+        // Annotations let clients group the permission prompt: reads can be
+        // allowed once, every write keeps its summary.
+        let tool = |n: &str| {
+            r["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == n)
+                .unwrap()["annotations"]
+                .clone()
+        };
+        assert_eq!(tool("calc")["readOnlyHint"], true);
+        assert_eq!(tool("list_projects")["readOnlyHint"], true);
+        assert_eq!(tool("update_edges")["readOnlyHint"], false);
+        assert_eq!(tool("update_edges")["destructiveHint"], false);
+        assert_eq!(tool("delete_project")["destructiveHint"], true);
+        assert!(
+            r["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|t| t["annotations"]["openWorldHint"] == false)
+        );
     }
 
     #[test]
@@ -1489,9 +1636,23 @@ mod tests {
                 &json!({ "drawings_dir": inbox.to_string_lossy(), "roof_defaults": { "pitch_deg": 35 }, "summary": "Drawings inbox as the user asked" }),
             )
             .unwrap();
-        assert_eq!(r["effective"]["drawings_dir"], json!(inbox));
+        // The folder waits for the user (ARCH-052, Jakub 2026-11-10: the app
+        // asks); the other keys apply at once.
+        assert_ne!(r["effective"]["drawings_dir"], json!(inbox));
+        assert_eq!(
+            r["settings"]["folder_request"]["changes"]["drawings_dir"],
+            json!(inbox.to_string_lossy())
+        );
+        assert!(r["note"].as_str().unwrap().contains("waits for the user"));
         assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
-        assert!(inbox.is_dir());
+        Settings::load()
+            .answer_folder_request(true)
+            .unwrap()
+            .save()
+            .unwrap();
+        let r = s.call_tool("get_settings", &json!({})).unwrap();
+        assert_eq!(r["effective"]["drawings_dir"], json!(inbox));
+        assert!(r["settings"].get("folder_request").is_none());
         assert!(
             s.call_tool(
                 "update_settings",

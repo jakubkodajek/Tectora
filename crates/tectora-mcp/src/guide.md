@@ -121,9 +121,13 @@ The tools cover every operation of the Tectora editor:
 - Every tool that changes something (a design, a file, the library or the
   settings) needs `summary`: one sentence for the user on what and why (an
   empty or blank one is refused).
+- An argument the tool's input schema does not name is refused
+  (`unknown argument …`), and so is a `part` that is not a whole number
+  from 0: fix the call instead of assuming it was saved.
 - Limits: a design has at most 200 parts, 500 walls per part (2000 in all)
   and 500 of each kind of object (dormers, chimneys, windows, openings,
-  hand-drawn lines and faces); a write over them is refused (`too many …`).
+  hand-drawn lines and faces), 64 pitch breaks per wall (2000 in all); a
+  write over them is refused (`too many …`).
   `calc`, `calc_breakdown` and `get_project` stop after 60 s.
 - Hand-over: `export_job`, `import_job` (`.tectorajob` = project, files,
   history and a preview in one file). `export_job` writes into the
@@ -428,7 +432,9 @@ Never invent dimensions you cannot read; ask the user instead.
 the inbox where the user puts technical drawings to build roofs from. Use the
 `roof_defaults` (pitch, eave height, overhang) when a drawing does not give a
 value, and say so in the summary. `update_settings` changes the same values as
-the app's Settings screen; ask before moving the projects folder. When
+the app's Settings screen. A new jobs folder or drawings inbox is only a
+request: the app asks the user to allow it, and until they do the folders
+stay as they are (`settings.folder_request` shows the open request). When
 `effective.settings_error` is set, the settings file is damaged and the
 defaults (another jobs folder) are in use: tell the user before you change a
 setting (the damaged file is kept as `settings.json.bad` on the next save).

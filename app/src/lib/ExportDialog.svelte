@@ -8,18 +8,12 @@
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
   import { api } from "./api";
+  import { exportPreview, stampNow } from "./exportlist";
   import { t } from "./i18n.svelte";
   import { notify, notifyError } from "./notify.svelte";
   import type { Project } from "./types";
 
   let { project, title, onclose }: { project: Project; title: string; onclose: () => void } = $props();
-
-  /** Local time as `dd.mm.yyyy hh:mm`, the stamp the list and sheet carry. */
-  function stampNow(): string {
-    const d = new Date();
-    const p = (n: number) => String(n).padStart(2, "0");
-    return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
-  }
 
   const stamp = stampNow();
   let list = $state("");
@@ -29,8 +23,7 @@
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 
   $effect(() => {
-    api
-      .exportPreview($state.snapshot(project) as Project, title, stamp)
+    exportPreview($state.snapshot(project) as Project, title, stamp)
       .then((r) => {
         list = r.list;
         svg = r.svg;
@@ -110,6 +103,18 @@
 </script>
 
 <Modal title={t("export.title")} width={980} {onclose}>
+  <!-- The text for the Excel price sheet is the main use: first, with the primary button (UX-004). -->
+  <section class="list">
+    <div class="head">
+      <h3>{t("export.list")}</h3>
+      <button class="btn sm primary" disabled={!list} onclick={copyList} title={t("export.copyListHint")}>
+        <Icon name={copied === "list" ? "check" : "copy"} size={14} />{copied === "list" ? t("export.copied") : t("export.copyList")}
+      </button>
+    </div>
+    <p class="muted">{t("export.listHint")}</p>
+    <pre>{list}</pre>
+  </section>
+
   <section class="sheet">
     <div class="head">
       <h3>{t("export.plan")}</h3>
@@ -118,7 +123,7 @@
           <Icon name={copied === "image" ? "check" : "copy"} size={14} />{copied === "image" ? t("export.copied") : t("export.copyImage")}
         </button>
         <button class="btn sm" disabled={!svg} onclick={savePng}><Icon name="download" size={14} />PNG</button>
-        <button class="btn sm primary" disabled={!svg} onclick={savePdf}><Icon name="download" size={14} />PDF</button>
+        <button class="btn sm" disabled={!svg} onclick={savePdf}><Icon name="download" size={14} />PDF</button>
       </div>
     </div>
     <div class="paper">
@@ -128,17 +133,6 @@
         <span class="muted">{failed ? t("export.failed") : "…"}</span>
       {/if}
     </div>
-  </section>
-
-  <section class="list">
-    <div class="head">
-      <h3>{t("export.list")}</h3>
-      <button class="btn sm" disabled={!list} onclick={copyList} title={t("export.copyListHint")}>
-        <Icon name={copied === "list" ? "check" : "copy"} size={14} />{copied === "list" ? t("export.copied") : t("export.copyList")}
-      </button>
-    </div>
-    <p class="muted">{t("export.listHint")}</p>
-    <pre>{list}</pre>
   </section>
 
   {#snippet footer()}
