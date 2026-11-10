@@ -24,17 +24,21 @@
     project,
     onchange,
     onsave,
+    track = (p) => p,
   }: {
     id: string;
     project: Project;
     onchange: () => void;
     /** Writes pending edits to disk (before an export); false when that failed. */
     onsave: () => Promise<boolean>;
+    /** Registers work that changes the job once the core answers; leaving the job waits for it. */
+    track?: (p: Promise<unknown>) => Promise<unknown>;
   } = $props();
 
   // Leaving the draft status stores the result the offer is made with.
   let status = $state(untrack(() => project.job.status));
-  async function statusChanged() {
+  const statusChanged = () => track(statusChangedNow());
+  async function statusChangedNow() {
     const was = status;
     status = project.job.status;
     if (was === "draft" && status !== "draft" && !project.result_snapshot) {

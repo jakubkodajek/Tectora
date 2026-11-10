@@ -38,6 +38,7 @@
   import { changedEdges, changedItems, describeChange, describeFigure, ghostOf } from "./changes";
   import { merge3 } from "./merge";
   import { isTyping, releaseLeaveGuard, setLeaveGuard } from "./leave";
+  import { PendingEdits, exclusive } from "./inflight";
   import { m2, num } from "./format";
   import { i18n, t } from "./i18n.svelte";
   import { hscroll } from "./hscroll";
@@ -192,6 +193,8 @@
   /** Outside saves merged in a row before a save gives up (`save_conflict`). */
   const SAVE_TRIES = 5;
   let calcSeq = 0;
+  /** Field handlers that ask the core before they change the job: leaving waits for them (ERR-004). */
+  const pendingEdits = new PendingEdits();
 
   const snapshot = () => JSON.stringify(project);
 
@@ -448,6 +451,10 @@
     // A value still being typed is part of the job: store it first.
     commitFocused();
     await tick();
+    // The stored value may still be with the core (window size check,
+    // building height): it marks the job dirty only when it comes back.
+    await pendingEdits.settled();
+    await tick();
     if (saveState === "dirty" || saveState === "saving" || saveState === "failed") await save();
     if (saveState !== "failed") return true;
     return mode === "ask" && (await confirm(t("editor.leaveUnsaved")));
@@ -564,7 +571,8 @@
   }
 
   /** Makes the current result the job's stored result (the offer's figures). */
-  async function storeResult() {
+  const storeResult = () => pendingEdits.track(storeResultNow());
+  async function storeResultNow() {
     if (!project) return;
     try {
       project.result_snapshot = await api.takeSnapshot(JSON.parse(JSON.stringify(project)));
@@ -594,7 +602,8 @@
    * breaks, half-hips and the objects on it moved with it, in one change.
    * The core's operation, the same as MCP set_part_height.
    */
-  async function setPartHeight(h: number) {
+  const setPartHeight = (h: number) => pendingEdits.track(setPartHeightNow(h));
+  async function setPartHeightNow(h: number) {
     if (!project || !selection) return;
     const pi = selection.part;
     const part = JSON.stringify($state.snapshot(project.parts[pi]));
@@ -799,7 +808,8 @@
    * overhang) so its roof is calculated. The core's operation, the same as
    * MCP face_to_part.
    */
-  async function faceToPart() {
+  const faceToPart = () => pendingEdits.track(faceToPartNow());
+  async function faceToPartNow() {
     if (!project || manualSel?.kind !== "face" || !project.manual_faces) return;
     const index = manualSel.index;
     const face = project.manual_faces[index];
@@ -879,7 +889,8 @@
     commit();
   }
 
-  async function setWindow(w: RoofWindow) {
+  const setWindow = (w: RoofWindow) => pendingEdits.track(setWindowNow(w));
+  async function setWindowNow(w: RoofWindow) {
     if (!project || openSel?.kind !== "window" || !project.windows) return;
     const index = openSel.index;
     // A window larger than its face would make the face area negative
@@ -1609,7 +1620,7 @@
           {:else if dock === "ai"}
             <AiPanel {id} {project} {activity} onrevert={() => revert(false)} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
-            <JobPanel {id} {project} onchange={commit} onsave={save} />
+            <JobPanel {id} {project} onchange={commit} onsave={save} track={(p) => pendingEdits.track(p)} />
           {/if}
         </div>
       </aside>
