@@ -8,50 +8,20 @@
   import { areaRows, joinedWith, warningText } from "./results";
   import { partLabel } from "./partname";
   import { api } from "./api";
-  import { exportPreview } from "./exportlist";
-  import Icon from "./Icon.svelte";
-  import { notifyError } from "./notify.svelte";
   import type { CalcBreakdown, CalcResult, Project } from "./types";
 
   let {
     result,
     project = null,
-    title = "",
     onstore,
     blocked = null,
   }: {
     result: CalcResult | null;
     project?: Project | null;
-    /** The title the Excel list carries, as the Export dialog gets it. */
-    title?: string;
     onstore?: () => void;
     /** Why the figures cannot become the offer's stored result now (the core gave no roof), or null. */
     blocked?: string | null;
   } = $props();
-
-  // "Copy for Excel": the Export dialog's list, from the same core command
-  // with the same title and stamp, so both copies are the same text (UX-004).
-  let copied = $state(false);
-  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
-  $effect(() => () => clearTimeout(copiedTimer));
-  async function copyExcel() {
-    if (!project) return;
-    const text = exportPreview($state.snapshot(project) as Project, title).then((r) => r.list);
-    try {
-      // The ClipboardItem gets the promise so Safari (WKWebView) keeps the
-      // user gesture while the core writes the list.
-      if (typeof ClipboardItem !== "undefined") {
-        await navigator.clipboard.write([new ClipboardItem({ "text/plain": text.then((t) => new Blob([t], { type: "text/plain" })) })]);
-      } else {
-        await navigator.clipboard.writeText(await text);
-      }
-      copied = true;
-      clearTimeout(copiedTimer);
-      copiedTimer = setTimeout(() => (copied = false), 1800);
-    } catch (e) {
-      notifyError(e, "export");
-    }
-  }
 
   // What is on the roof (UX-005): counts and window sizes from the job,
   // the area each kind took off the roof from the core's breakdown.
@@ -135,11 +105,6 @@
     {#if totals}<small>{t("res.ridgeHeight", { v: num(totals.ridge_height) })}</small>{/if}
     {#if totals && deductedTotal >= 0.005}<small data-testid="res-deducted">{t("res.obj.netOf", { a: m2(deductedTotal) })}</small>{/if}
   </div>
-  {#if project}
-    <button class="btn sm primary copy" data-testid="res-copy-excel" disabled={!result || !!blocked} title={blocked ?? t("res.copyExcelHint")} onclick={copyExcel}>
-      <Icon name={copied ? "check" : "copy"} size={14} />{copied ? t("export.copied") : t("res.copyExcel")}
-    </button>
-  {/if}
 
   {#if warnings.length}
     <div class="warn" role="status">
@@ -388,9 +353,6 @@
   }
   .btn.sm {
     align-self: flex-start;
-  }
-  .btn.copy :global(svg) {
-    margin-right: 2px;
   }
   .note {
     margin: 0;

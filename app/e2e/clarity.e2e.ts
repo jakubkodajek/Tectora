@@ -170,37 +170,28 @@ test.describe("back, undo and delete say what they do", () => {
 });
 
 test.describe("results for the offer", () => {
-  test("Copy for Excel in Results gives byte for byte the Export dialog's text (UX-004)", async ({ app, page }) => {
-    // One minute for both copies: the list carries a dd.mm.yyyy hh:mm stamp.
-    await page.clock.setFixedTime(new Date("2026-11-10T10:15:00"));
+  test("the Excel text is copied only from Export, as its first section and primary action (UX-004)", async ({ app, page }) => {
+    // Jakub (2026-11-10): no copy button in Results, the Excel text lives in Export only.
     const id = await createExample("hip", "Valba excel");
     const p = await loadProject(id);
     p.windows = [{ x: 6, y: 2, width: 0.78, height: 1.18 }];
     await bridge("save_project", { id, project: p });
     await openEditor(app, "Valba excel");
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-    const read = () => page.evaluate(() => navigator.clipboard.readText());
-
-    await page.evaluate(() => navigator.clipboard.writeText(""));
-    const copy = page.locator(".results").getByRole("button", { name: cs("res.copyExcel") });
-    await copy.click();
-    await expect(page.locator(".results").getByRole("button", { name: cs("export.copied") })).toBeVisible();
-    const fromResults = await read();
-    expect(fromResults).toContain("Valba excel");
+    await expect(page.locator(".results")).toBeVisible();
+    await expect(page.getByTestId("res-copy-excel")).toHaveCount(0);
 
     await page.evaluate(() => navigator.clipboard.writeText(""));
     await page.getByRole("button", { name: cs("tool.export") }).click();
     const dlg = page.getByRole("dialog", { name: cs("export.title") });
-    // The Excel text is the dialog's first section and its primary action.
     const first = dlg.locator("section").first();
     await expect(first.getByRole("heading")).toHaveText(cs("export.list"));
     await expect(first.getByRole("button", { name: cs("export.copyList") })).toHaveClass(/primary/);
     await expect(dlg.getByRole("button", { name: "PDF" })).not.toHaveClass(/primary/);
     await first.getByRole("button", { name: cs("export.copyList") }).click();
     await expect(dlg.getByRole("button", { name: cs("export.copied") })).toBeVisible();
-    const fromExport = await read();
-
-    expect(Buffer.from(fromResults, "utf8").equals(Buffer.from(fromExport, "utf8"))).toBe(true);
+    const fromExport = await page.evaluate(() => navigator.clipboard.readText());
+    expect(fromExport).toContain("Valba excel");
     expect(fromExport).toBe(await dlg.locator("pre").textContent());
   });
 
