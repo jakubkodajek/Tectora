@@ -85,3 +85,36 @@ test.describe("Accept and Revert run once (UI-002)", () => {
     await expect(app.toasts()).toHaveCount(0);
   });
 });
+
+test.describe("Revert all asks first (UX-011)", () => {
+  test("Revert all names the AI steps and keeps them when the user says no", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "Vše");
+    await openEditor(app, "Vše");
+    await mcp.call("update_edges", { id, changes: [{ index: 0, pitch_deg: 30 }], summary: "Krok 1" });
+    await expect(review(page)).toContainText("Krok 1");
+    await mcp.call("update_edges", { id, changes: [{ index: 2, pitch_deg: 26 }], summary: "Krok 2" });
+    await mcp.call("update_job", { id, customer: "AI Zákazník", summary: "Krok 3" });
+    await expect(review(page)).toContainText(cs("review.steps", { n: 3 }));
+    await app.answerConfirm(false);
+    await review(page).getByRole("button", { name: cs("review.revertAll") }).click();
+    await expect.poll(async () => (await app.dialogs()).map((d) => d.message)).toEqual([cs("review.confirmRevertAll", { n: 3 })]);
+    await page.waitForTimeout(800);
+    expect(await pitches(id)).toBe("30,90,26,90");
+    await expect(review(page)).toContainText(cs("review.steps", { n: 3 }));
+    await app.answerConfirm(true);
+    await review(page).getByRole("button", { name: cs("review.revertAll") }).click();
+    const p = await waitForProject(id, (p) => p.parts[0].edges[0].pitch_deg === 40 && p.parts[0].edges[2].pitch_deg === 40);
+    expect(p.job.customer).toBe("");
+    await expect(review(page)).toHaveCount(0);
+  });
+
+  test("Revert of a single AI step from the banner does not ask", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "Jeden");
+    await openEditor(app, "Jeden");
+    await mcp.call("update_edges", { id, changes: [{ index: 0, pitch_deg: 30 }], summary: "Krok 1" });
+    await expect(review(page)).toContainText("Krok 1");
+    await review(page).getByRole("button", { name: cs("ai.revert"), exact: true }).click();
+    await waitForProject(id, (p) => p.parts[0].edges[0].pitch_deg === 40);
+    expect(await app.dialogs()).toEqual([]);
+  });
+});

@@ -488,6 +488,15 @@
   }
 
   async function revertNow(all: boolean) {
+    // Reverting several AI steps at once is one click next to Accept, and
+    // after a reopen it cannot be undone: ask first, naming the steps (UX-011).
+    const steps = pendingList.length;
+    if (all && steps > 1) {
+      // Tauri's dialog plugin makes confirm asynchronous: always await it.
+      if (!(await confirm(t("review.confirmRevertAll", { n: steps })))) return;
+      // More AI steps came in while the question was open: the user agreed to fewer.
+      if (pendingList.length !== steps) return;
+    }
     // Edits not on disk yet would be lost: the store keeps only the edits in
     // the file, merging the revert onto them (ERR-001).
     commitFocused();
