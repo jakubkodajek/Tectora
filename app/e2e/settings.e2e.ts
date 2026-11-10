@@ -136,6 +136,27 @@ test.describe("settings", () => {
     await expect(dlg.locator(".grid3").getByLabel(tr("sk", "edge.pitch"))).toHaveValue("33");
   });
 
+  test("an AI only asks to move the jobs folder; Keep leaves it, Allow moves it (ARCH-052)", async ({ app, page, mcp }) => {
+    await app.open();
+    const before = (await mcp.call("get_settings")).effective.projects_dir;
+    const other = path.join(E2E_DIR, "ai-library");
+    fs.rmSync(other, { recursive: true, force: true });
+    fs.mkdirSync(other, { recursive: true });
+    const r = await mcp.call("update_settings", { projects_dir: other, summary: "Use the shared folder" });
+    expect(r.effective.projects_dir).toBe(before);
+    const dlg = page.getByRole("dialog", { name: cs("folderReq.title") });
+    await expect(dlg).toContainText(other);
+    await expect(dlg).toContainText("Use the shared folder");
+    await dlg.getByRole("button", { name: cs("folderReq.keep") }).click();
+    await expect(dlg).toHaveCount(0);
+    expect((await mcp.call("get_settings")).effective.projects_dir).toBe(before);
+
+    await mcp.call("update_settings", { projects_dir: other, summary: "Use the shared folder" });
+    await dlg.getByRole("button", { name: cs("folderReq.allow") }).click();
+    await expect(dlg).toHaveCount(0);
+    await expect.poll(async () => (await mcp.call("get_settings")).effective.projects_dir).toBe(other);
+  });
+
   test("a damaged settings file is reported at start and kept before it is replaced (ERR-005)", async ({ app, mcp }) => {
     const damaged = '{ "locale": "de", "projects_dir": "/srv/zakazky", }';
     fs.writeFileSync(path.join(CONFIG_DIR, "settings.json"), damaged);

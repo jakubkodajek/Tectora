@@ -77,6 +77,11 @@ pub struct Settings {
     pub roof_defaults: RoofDefaults,
     /// Open the design an AI agent is working on.
     pub follow_ai: bool,
+    /// A change of folders an AI client asked for, waiting for the user
+    /// (review ARCH-052): an AI must not move the jobs folder or the
+    /// drawings inbox on its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder_request: Option<FolderRequest>,
     /// Keys this build does not know, kept as they are.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -91,6 +96,7 @@ impl Default for Settings {
             theme: Theme::System,
             roof_defaults: RoofDefaults::default(),
             follow_ai: true,
+            folder_request: None,
             extra: Map::new(),
         }
     }
@@ -255,6 +261,20 @@ impl Settings {
 }
 
 /// Keys an update may change ([`Settings::patched`]).
+/// Settings an AI client may only ask for ([`Settings::patched_by_ai`]).
+pub const FOLDER_KEYS: [&str; 2] = ["projects_dir", "drawings_dir"];
+
+/// Folders an AI client asked to switch to, with who asked and why.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FolderRequest {
+    /// The `projects_dir` / `drawings_dir` values asked for.
+    pub changes: Map<String, Value>,
+    /// The AI client's name.
+    pub by: String,
+    /// Its one-sentence reason.
+    pub summary: String,
+}
+
 pub const EDITABLE_KEYS: [&str; 6] = [
     "projects_dir",
     "drawings_dir",
@@ -314,6 +334,51 @@ impl Settings {
     /// Settings plus the folders actually in use, for the UI and AI agents.
     /// `effective.settings_error` says why the settings file could not be
     /// read, when it could not (the defaults are in use then).
+    /// Applies `patch` from an AI client: every key but the folders at once,
+    /// the folders (`projects_dir`, `drawings_dir`) only as a
+    /// [`FolderRequest`] the user answers in the app. Returns the settings
+    /// and whether a request was made.
+    pub fn patched_by_ai(
+        &self,
+        patch: &Value,
+        by: &str,
+        summary: &str,
+    ) -> Result<(Settings, bool), SettingsError> {
+        let obj = patch
+            .as_object()
+            .ok_or(SettingsError::InvalidValue("patch"))?;
+        let (folders, rest): (Map<String, Value>, Map<String, Value>) = obj
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .partition(|(k, _)| FOLDER_KEYS.contains(&k.as_str()));
+        let mut next = self.patched(&Value::Object(rest))?;
+        // Only a real change asks the user.
+        let moved = self.patched(&Value::Object(folders.clone()))?;
+        let asks = moved.projects_dir() != self.projects_dir()
+            || moved.drawings_dir() != self.drawings_dir();
+        if asks {
+            next.folder_request = Some(FolderRequest {
+                changes: folders,
+                by: by.to_string(),
+                summary: summary.to_string(),
+            });
+        }
+        Ok((next, asks))
+    }
+
+    /// The user's answer to [`Settings::folder_request`]: `allow` applies it,
+    /// either way it is closed.
+    pub fn answer_folder_request(&self, allow: bool) -> Result<Settings, SettingsError> {
+        let mut next = self.clone();
+        let Some(req) = next.folder_request.take() else {
+            return Ok(next);
+        };
+        if allow {
+            next = next.patched(&Value::Object(req.changes))?;
+        }
+        Ok(next)
+    }
+
     pub fn describe(&self) -> Value {
         serde_json::json!({
             "settings": self,
@@ -364,6 +429,33 @@ pub fn prepare_dir(dir: &Path) -> Result<(), SettingsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ai_only_asks_to_move_the_folders_and_the_user_decides() {
+        // ARCH-052: MCP update_settings moved the jobs folder at once.
+        let s = Settings::default();
+        let patch = serde_json::json!({ "projects_dir": "/elsewhere", "follow_ai": false });
+        let (next, asked) = s
+            .patched_by_ai(&patch, "Claude", "Use the shared folder")
+            .unwrap();
+        assert!(asked);
+        assert_eq!(next.projects_dir(), s.projects_dir(), "folder unchanged");
+        assert!(!next.follow_ai, "other keys apply at once");
+        let req = next.folder_request.clone().unwrap();
+        assert_eq!(
+            (req.by.as_str(), req.summary.as_str()),
+            ("Claude", "Use the shared folder")
+        );
+        let kept = next.answer_folder_request(false).unwrap();
+        assert_eq!(kept.projects_dir(), s.projects_dir());
+        assert!(kept.folder_request.is_none());
+        let moved = next.answer_folder_request(true).unwrap();
+        assert_eq!(moved.projects_dir(), PathBuf::from("/elsewhere"));
+        assert!(moved.folder_request.is_none());
+        // Setting the folder it already is asks nothing.
+        let same = serde_json::json!({ "projects_dir": s.projects_dir() });
+        assert!(!s.patched_by_ai(&same, "Claude", "x").unwrap().1);
+    }
 
     fn tmp(name: &str) -> PathBuf {
         let d =

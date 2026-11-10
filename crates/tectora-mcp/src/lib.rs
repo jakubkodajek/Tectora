@@ -633,7 +633,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "update_settings",
-            "description": "Change Tectora settings, same as the app's Settings screen. Pass only the keys to change; null resets a folder or the language to its default. Ask the user before moving the projects folder.",
+            "description": "Change Tectora settings, same as the app's Settings screen. Pass only the keys to change; null resets a folder or the language to its default. A new projects_dir or drawings_dir is only a request: the app asks the user to allow it, and the folders stay as they are until then.",
             "inputSchema": schema(json!({
                 "projects_dir": { "type": ["string", "null"], "description": "Absolute path of the design library folder." },
                 "drawings_dir": { "type": ["string", "null"], "description": "Absolute path of the drawings inbox; default <projects_dir>/drawings." },
@@ -965,21 +965,26 @@ impl Server {
             o.remove("summary");
         }
         let old = Settings::load();
-        let next = old
-            .patched(&patch)
+        let (next, asked) = old
+            .patched_by_ai(&patch, &self.client, &summary)
             .map_err(|e| format!("settings not saved: {e}"))?;
         next.save()
             .map_err(|e| format!("settings not saved: {e}"))?;
-        if self.store.dir == old.projects_dir() && next.projects_dir() != old.projects_dir() {
-            self.store = Store::new(next.projects_dir()).map_err(|e| e.to_string())?;
-        }
         self.live(
             "settings",
             None,
             format!("Changed Tectora settings: {summary}"),
             None,
         );
-        Ok(next.describe())
+        let mut out = next.describe();
+        if asked {
+            // The folders change only when the user allows it in the app
+            // (ARCH-052); this server keeps its library until then.
+            out["note"] = json!(
+                "The folder change waits for the user: the app asks them to allow it. Until then the jobs folder and the drawings inbox stay as they are; call get_settings later to see the answer."
+            );
+        }
+        Ok(out)
     }
 
     /// Runs a tool; a panic in the geometry kernel becomes a tool error
@@ -1620,9 +1625,23 @@ mod tests {
                 &json!({ "drawings_dir": inbox.to_string_lossy(), "roof_defaults": { "pitch_deg": 35 }, "summary": "Drawings inbox as the user asked" }),
             )
             .unwrap();
-        assert_eq!(r["effective"]["drawings_dir"], json!(inbox));
+        // The folder waits for the user (ARCH-052, Jakub 2026-11-10: the app
+        // asks); the other keys apply at once.
+        assert_ne!(r["effective"]["drawings_dir"], json!(inbox));
+        assert_eq!(
+            r["settings"]["folder_request"]["changes"]["drawings_dir"],
+            json!(inbox.to_string_lossy())
+        );
+        assert!(r["note"].as_str().unwrap().contains("waits for the user"));
         assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
-        assert!(inbox.is_dir());
+        Settings::load()
+            .answer_folder_request(true)
+            .unwrap()
+            .save()
+            .unwrap();
+        let r = s.call_tool("get_settings", &json!({})).unwrap();
+        assert_eq!(r["effective"]["drawings_dir"], json!(inbox));
+        assert!(r["settings"].get("folder_request").is_none());
         assert!(
             s.call_tool(
                 "update_settings",

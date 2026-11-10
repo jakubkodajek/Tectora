@@ -423,7 +423,9 @@ Never invent dimensions you cannot read; ask the user instead.
 the inbox where the user puts technical drawings to build roofs from. Use the
 `roof_defaults` (pitch, eave height, overhang) when a drawing does not give a
 value, and say so in the summary. `update_settings` changes the same values as
-the app's Settings screen; ask before moving the projects folder. When
+the app's Settings screen. A new jobs folder or drawings inbox is only a
+request: the app asks the user to allow it, and until they do the folders
+stay as they are (`settings.folder_request` shows the open request). When
 `effective.settings_error` is set, the settings file is damaged and the
 defaults (another jobs folder) are in use: tell the user before you change a
 setting (the damaged file is kept as `settings.json.bad` on the next save).

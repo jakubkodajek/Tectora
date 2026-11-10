@@ -10,7 +10,8 @@
   import { actorName, live } from "./lib/live.svelte";
   import { info, notify, notifyError } from "./lib/notify.svelte";
   import { isBenignError } from "./lib/inflight";
-  import { applySettings, loadSettings, prefs } from "./lib/settings.svelte";
+  import { app as appSettings, applySettings, loadSettings, prefs } from "./lib/settings.svelte";
+  import FolderRequest from "./lib/FolderRequest.svelte";
   import { hasUnsaved, isBusy, mayLeave } from "./lib/leave";
   import type { BrokenFile, ExampleInfo, LiveStatus, ProjectSummary } from "./lib/types";
 
@@ -208,6 +209,15 @@
   />
 {/if}
 
+{#if appSettings.view?.settings.folder_request}
+  <FolderRequest
+    request={appSettings.view.settings.folder_request}
+    onanswered={async (moved) => {
+      applySettings(await api.getSettings());
+      if (moved) libraryChanged();
+    }}
+  />
+{/if}
 {#if settingsOpen}
   <SettingsDialog onclose={() => (settingsOpen = false)} onlibrarychanged={libraryChanged} />
 {/if}

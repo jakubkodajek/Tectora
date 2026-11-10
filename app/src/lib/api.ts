@@ -86,6 +86,7 @@ export const api = {
     invoke<{ index: number; area: number; face_area: number } | null>("check_windows", { project }),
   getSettings: () => invoke<AppSettingsView>("get_settings"),
   updateSettings: (patch: Record<string, unknown>) => invoke<AppSettingsView>("update_settings", { patch }),
+  answerFolderRequest: (allow: boolean) => invoke<AppSettingsView>("answer_folder_request", { allow }),
   openFolder: (which: "projects" | "drawings" | "settings") => invoke<void>("open_folder", { which }),
   listAttachments: (id: string) => invoke<Attachment[]>("list_attachments", { id }),
   attachFiles: (id: string, paths: string[]) => invoke<string[]>("attach_files", { id, paths }),

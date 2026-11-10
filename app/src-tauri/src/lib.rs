@@ -566,6 +566,18 @@ fn update_settings(app: tauri::AppHandle, patch: Value) -> Result<Value, String>
     Ok(next.describe())
 }
 
+/// The user's answer to a folder change an AI client asked for
+/// (`Settings::folder_request`, ARCH-052): `allow` moves the folders.
+#[tauri::command]
+fn answer_folder_request(app: tauri::AppHandle, allow: bool) -> Result<Value, String> {
+    let next = Settings::load()
+        .answer_folder_request(allow)
+        .map_err(|e| e.code().to_string())?;
+    next.save().map_err(|e| e.code().to_string())?;
+    switch_library(&app, &next).map_err(|_| "not_writable".to_string())?;
+    Ok(next.describe())
+}
+
 /// Opens one of the configured folders in Finder / Explorer.
 #[tauri::command]
 fn open_folder(which: String) -> Result<(), String> {
@@ -866,6 +878,7 @@ pub fn run() {
             take_pending_open,
             get_settings,
             update_settings,
+            answer_folder_request,
             open_folder,
             updates::update_check,
             updates::update_install
