@@ -213,3 +213,170 @@ export function slopeAt(result: CalcResult | null, p: Point2): { up: Point2; tan
   }
   return best && { up: best.up, tan: best.tan };
 }
+
+/** The roof a dormer stands on at the middle of its front: height and rise
+ *  per metre into the roof (tectora-core `edit::dormers::HostSlope`). */
+export interface HostSlope {
+  height: number;
+  tan: number;
+}
+
+/** The side section of the dormer dialog, as tectora-core `edit::dormers::section`. */
+export interface DormerSection {
+  host_pitch_deg: number;
+  wall_height: number;
+  ridge_height: number | null;
+  depth: number | null;
+  top_height: number | null;
+  ridge_length: number | null;
+  roof_length: number | null;
+  host_length: number | null;
+}
+
+export type SectionTarget = { wall_height: number } | { depth: number } | { ridge_length: number };
+
+const MIN_TAN = 1e-3;
+const tanDeg = (d: number) => Math.tan((d * Math.PI) / 180);
+const cosDeg = (d: number) => Math.cos((d * Math.PI) / 180);
+
+/** Rise and slope length of a wall's profile over a horizontal run. */
+function profile(e: EdgeDef, run: number): [number, number] {
+  let z = e.eave_height;
+  let x = 0;
+  let len = 0;
+  let pitch = e.pitch_deg;
+  const breaks = (e.breaks ?? []).filter((b) => b.height > z).sort((a, b) => a.height - b.height);
+  for (const b of breaks) {
+    const t = tanDeg(pitch);
+    if (t <= 0) break;
+    const dx = (b.height - z) / t;
+    if (x + dx >= run) break;
+    len += dx / cosDeg(pitch);
+    x += dx;
+    z = b.height;
+    pitch = b.pitch_deg;
+  }
+  const rest = run - x;
+  return [z + rest * tanDeg(pitch) - e.eave_height, len + rest / cosDeg(pitch)];
+}
+
+function cheekOf(p: DormerParams): EdgeDef | null {
+  if (p.kind === "shed" || p.kind === "general") return null;
+  return buildDormer(p).edges[0];
+}
+
+/** Height of the front wall's top above the eave (the eave is at the overhang's edge). */
+function wallRise(p: DormerParams): number {
+  const c = cheekOf(p);
+  return c ? profile(c, p.overhang)[0] : p.overhang * tanDeg(p.front_pitch_deg);
+}
+
+function ridgeRise(p: DormerParams): [number, number] | null {
+  const c = cheekOf(p);
+  if (!c) return null;
+  const [rise, len] = profile(c, p.width / 2 + p.overhang);
+  return [rise, len - profile(c, p.overhang)[1]];
+}
+
+/** Rust's f64::max: NaN gives the other value. */
+const fmax = (a: number, b: number) => (Number.isNaN(a) ? b : Number.isNaN(b) ? a : Math.max(a, b));
+
+function ridgeStart(p: DormerParams, rise: number): number {
+  let start: number;
+  switch (p.kind) {
+    case "hip":
+      start = rise / tanDeg(p.pitch_deg) - p.overhang;
+      break;
+    case "trapezoid":
+      start = rise / tanDeg(p.front_pitch_deg) - p.overhang;
+      break;
+    case "half_hip":
+      start = (rise - p.half_hip_height) / tanDeg(p.half_hip_pitch_deg) - p.overhang;
+      break;
+    default:
+      start = -p.overhang;
+  }
+  return fmax(start, -p.overhang);
+}
+
+const MIN_SHED_TAN = 1e-2;
+
+/** The dialog's section for a dormer on `host` (tectora-core `section`). */
+export function dormerSection(p: DormerParams, host: HostSlope): DormerSection {
+  const wall = p.eave_height + wallRise(p) - host.height;
+  const s: DormerSection = {
+    host_pitch_deg: (Math.atan(host.tan) * 180) / Math.PI,
+    wall_height: wall,
+    ridge_height: null,
+    depth: null,
+    top_height: null,
+    ridge_length: null,
+    roof_length: null,
+    host_length: null,
+  };
+  let depth: number | null = null;
+  if (p.kind === "shed") {
+    const k = host.tan - tanDeg(p.front_pitch_deg);
+    depth = k > MIN_SHED_TAN && wall >= -1e-6 ? fmax(wall, 0) / k : null;
+    s.roof_length = depth === null ? null : depth / cosDeg(p.front_pitch_deg);
+  } else {
+    const rr = ridgeRise(p);
+    if (rr) {
+      const [rise, cheek] = rr;
+      const top = p.eave_height + rise - host.height;
+      s.ridge_height = p.eave_height + rise;
+      s.roof_length = cheek;
+      depth = host.tan > MIN_TAN && top >= 0 ? top / host.tan : null;
+      s.ridge_length = depth === null ? null : fmax(depth - ridgeStart(p, rise), 0);
+    }
+  }
+  const finite = (v: number | null) => (v !== null && Number.isFinite(v) ? v : null);
+  s.depth = finite(depth);
+  s.ridge_length = finite(s.ridge_length);
+  s.roof_length = finite(s.roof_length);
+  s.top_height = s.depth === null ? null : s.depth * host.tan;
+  s.host_length = s.depth === null ? null : s.depth / Math.cos(Math.atan(host.tan));
+  return s;
+}
+
+/** Why a section value cannot be reached (keys of `dormer.err.*`). */
+export type SectionProblem = "negative" | "no_ridge" | "too_steep" | "flat_roof" | "below_roof" | "bad_pitch";
+
+/** The eave height for a section value (tectora-core `eave_for`), or why not. */
+export function eaveFor(p: DormerParams, host: HostSlope, target: SectionTarget): number | SectionProblem {
+  const ok = (v: number) => v > 0 && v < 90;
+  const pitchesOk =
+    p.kind === "shed"
+      ? ok(p.front_pitch_deg)
+      : p.kind === "trapezoid"
+        ? ok(p.pitch_deg) && ok(p.front_pitch_deg)
+        : p.kind === "half_hip"
+          ? ok(p.pitch_deg) && ok(p.half_hip_pitch_deg)
+          : ok(p.pitch_deg) || p.kind === "round";
+  if (!pitchesOk || !(p.width > 0)) return "bad_pitch";
+  let eave: number;
+  if ("wall_height" in target) {
+    const h = target.wall_height;
+    if (!Number.isFinite(h) || h < 0) return "negative";
+    eave = host.height + h - wallRise(p);
+  } else {
+    const ridge = "ridge_length" in target;
+    const d = ridge ? target.ridge_length : target.depth;
+    if (!Number.isFinite(d) || d <= 0) return "negative";
+    if (p.kind === "shed") {
+      if (ridge) return "no_ridge";
+      const k = host.tan - tanDeg(p.front_pitch_deg);
+      if (k <= MIN_SHED_TAN) return "too_steep";
+      eave = host.height + d * k - wallRise(p);
+    } else {
+      const rr = ridgeRise(p);
+      if (!rr) return "no_ridge";
+      if (host.tan <= MIN_TAN) return "flat_roof";
+      const depth = ridge ? d + ridgeStart(p, rr[0]) : d;
+      eave = host.height + depth * host.tan - rr[0];
+    }
+  }
+  if (!Number.isFinite(eave)) return "bad_pitch";
+  if (eave + wallRise(p) < host.height - 1e-9) return "below_roof";
+  return roundTo(eave, 3);
+}

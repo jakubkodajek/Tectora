@@ -15,12 +15,15 @@
     index = $bindable(),
     onchange,
     ondelete,
+    onedit,
   }: {
     project: Project;
     result: CalcResult | null;
     index: number | null;
     onchange: (d: Dormer) => void;
     ondelete: () => void;
+    /** Opens the dormer window (plan and section). */
+    onedit?: () => void;
   } = $props();
 
   const dormer = $derived(index !== null ? project.dormers[index] : null);
@@ -146,6 +149,9 @@
       </label>
     {/if}
     <div class="spacer"></div>
+    {#if onedit && kind !== "general"}
+      <button class="btn" onclick={onedit} title={t("dormer.editHint")}>{t("dormer.edit")}</button>
+    {/if}
     <button class="icon-btn danger" onclick={ondelete} title={t("dormer.delete")} aria-label={t("dormer.delete")}><Icon name="trash" /></button>
   {/if}
 </div>

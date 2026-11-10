@@ -15,6 +15,7 @@
   import Breakdown from "./Breakdown.svelte";
   import RoofDefBar from "./RoofDefBar.svelte";
   import DormerBar from "./DormerBar.svelte";
+  import DormerDialog from "./DormerDialog.svelte";
   import OpeningBar from "./OpeningBar.svelte";
   import ManualBar from "./ManualBar.svelte";
   import { commitFocused } from "./commitfocus";
@@ -26,7 +27,7 @@
   import { describeCalcError, describeError, describeProblem, toAppError, type Described } from "./errors";
   import { notify, notifyError } from "./notify.svelte";
   import { chimneyFromRect, nonConvexOpenings, openingList, type OpeningSel } from "./openings";
-  import { buildDormer, defaultParams, nearestWallAngle, roofHeightAt } from "./dormers";
+  import { buildDormer, defaultParams, nearestWallAngle, parseDormer, roofHeightAt, type DormerParams } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
   import StandardRoofForm from "./StandardRoofForm.svelte";
   import RoundRoofForm from "./RoundRoofForm.svelte";
@@ -129,6 +130,8 @@
   }
   let drawing = $state<Point2[] | null>(null);
   let dormerSel = $state<number | null>(null);
+  /** The dormer dialog: a new dormer (index null) or dormer `index`. */
+  let dormerDlg = $state<{ index: number | null; params: DormerParams } | null>(null);
   let placing = $state<false | "dormer" | "chimney" | "window" | "hole" | "line" | "face">(false);
   // Hand-drawn roof lines and faces (DACAD: Dachlinieneingabe, Neue Dachfläche).
   let manualSel = $state<ManualSel>(null);
@@ -710,10 +713,31 @@
     const angle = nearestWallAngle(project.parts, { x, y });
     const host = roofHeightAt(result, { x: x - Math.sin(angle) * 0.01, y: y + Math.cos(angle) * 0.01 });
     const eave = +((host ?? presets.eave_height) + 1).toFixed(2);
-    project.dormers.push(buildDormer(defaultParams("gable", { x, y }, angle, eave)));
+    // As DACAD's dormer dialog: the dormer is placed when its window says OK.
+    dormerDlg = { index: null, params: defaultParams("gable", { x, y }, angle, eave) };
+  }
+
+  function editDormer() {
+    if (!project || dormerSel === null) return;
+    const p = parseDormer(project.dormers[dormerSel]);
+    if (p.kind !== "general") dormerDlg = { index: dormerSel, params: p };
+  }
+
+  function applyDormerDialog() {
+    if (!project || !dormerDlg) return;
+    const d = buildDormer($state.snapshot(dormerDlg.params) as DormerParams);
+    const i = dormerDlg.index;
+    if (i === null || i >= project.dormers.length) {
+      project.dormers.push(d);
+      dormerSel = project.dormers.length - 1;
+    } else {
+      d.host_wall = project.dormers[i].host_wall;
+      project.dormers[i] = d;
+      dormerSel = i;
+    }
     selection = null;
     openSel = null;
-    dormerSel = project.dormers.length - 1;
+    dormerDlg = null;
     commit();
   }
 
@@ -1569,7 +1593,7 @@
             oncancel={(ask) => cancelDraw(!!ask)}
           />
         {:else if dormerSel !== null}
-          <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} />
+          <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} onedit={editDormer} />
         {:else if openSel}
           <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening} />
         {:else if manualSel}
@@ -1643,6 +1667,16 @@
 
 {#if exporting && project}
   <ExportDialog {project} title={project.name || id} onclose={() => (exporting = false)} />
+{/if}
+
+{#if dormerDlg && project}
+  <Modal title={dormerDlg.index === null ? t("dormer.dialogNew") : t("dormer.n", { n: dormerDlg.index + 1 })} width={760} onclose={() => (dormerDlg = null)}>
+    <DormerDialog {project} bind:params={dormerDlg.params} />
+    {#snippet footer()}
+      <button class="btn" onclick={() => (dormerDlg = null)}>{t("common.cancel")}</button>
+      <button class="btn primary" onclick={applyDormerDialog}>{t("common.ok")}</button>
+    {/snippet}
+  </Modal>
 {/if}
 
 {#if calc && project}

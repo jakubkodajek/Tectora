@@ -159,6 +159,12 @@ function run(op: string, a: any): any {
       return dm.parseDormer(a);
     case "nearest_wall_angle":
       return dm.nearestWallAngle(a.parts, a.p);
+    case "dormer_section":
+      return dm.dormerSection(a.p, a.host);
+    case "eave_for": {
+      const v = dm.eaveFor(a.p, a.host, a.target);
+      return typeof v === "number" ? v : { error: true };
+    }
   }
   throw new Error(`no TypeScript operation for ${op}: add it to editparity.test.ts`);
 }
