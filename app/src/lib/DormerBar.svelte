@@ -135,7 +135,7 @@
       {/if}
       <div class="end">
         {#if onedit && kind !== "general"}
-          <button class="btn sm" onclick={onedit} title={t("dormer.editHint")}>{t("dormer.edit")}</button>
+          <button class="btn sm edit" onclick={onedit} title={t("dormer.editHint")} aria-label={t("dormer.edit")}><Icon name="draw" size={15} /><span class="label">{t("dormer.edit")}</span></button>
         {/if}
         {#if kind !== "general"}
           <button class="btn sm more-btn" class:on={moreOpen} data-testid="dormer-more" aria-expanded={moreOpen} aria-controls="dormer-more-row"
@@ -298,8 +298,14 @@
   .bar {
     container-type: inline-size;
   }
+  .edit {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
   @container (max-width: 820px) {
-    .del .label {
+    .del .label,
+    .edit .label {
       display: none;
     }
   }

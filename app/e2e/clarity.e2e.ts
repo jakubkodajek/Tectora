@@ -1,6 +1,6 @@
 // Clarity changes from the 2026-11-10 review: the wall and dormer bars show
 // the everyday fields and keep the rest behind "More" (UX-008, UI-008).
-import { bar, openEditor, selectWall } from "./editor";
+import { bar, confirmDormer, openEditor, selectWall } from "./editor";
 import { bridge, createExample, expect, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 
@@ -76,6 +76,7 @@ test.describe("wall bar More row", () => {
     const plan = page.locator(".view .wrap > svg").first();
     const box = (await plan.boundingBox())!;
     await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.35);
+    await confirmDormer(page);
     const db = bar(page, "dormer.title");
     await expect(db.locator(".which strong")).toHaveText(cs("dormer.n", { n: 1 }));
     await expect(db.getByLabel(cs("dormer.width"))).toBeVisible();
@@ -146,6 +147,7 @@ test.describe("back, undo and delete say what they do", () => {
     await page.getByRole("toolbar").first().getByRole("button", { name: cs("tool.dormer"), exact: true }).click();
     const box = (await page.locator(".view .wrap > svg").first().boundingBox())!;
     await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.35);
+    await confirmDormer(page);
     await waitForProject(id, (p) => p.dormers.length === 1);
     const db = bar(page, "dormer.title");
     const del = db.getByRole("button", { name: cs("dormer.delete"), exact: true });
