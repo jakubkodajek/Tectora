@@ -520,6 +520,13 @@ fn check_windows(project: Project) -> CmdResult<Option<tectora_core::edit::Overs
     })
 }
 
+/// The roof under dormer `index` for the dormer dialog
+/// (`tectora_core::commands::dormer_host`), or null off the roof.
+#[tauri::command(async)]
+fn dormer_host(project: Project, index: usize) -> CmdResult<Value> {
+    guard(|| Ok(commands::dormer_host(&project, index)?))
+}
+
 /// The editor's "Make it a building": hand-drawn face `index` replaced by a
 /// part of the same outline (`tectora_core::edit::face_to_part`, the MCP
 /// tool's operation).
@@ -560,6 +567,18 @@ fn get_settings() -> Value {
 fn update_settings(app: tauri::AppHandle, patch: Value) -> Result<Value, String> {
     let next = Settings::load()
         .patched(&patch)
+        .map_err(|e| e.code().to_string())?;
+    next.save().map_err(|e| e.code().to_string())?;
+    switch_library(&app, &next).map_err(|_| "not_writable".to_string())?;
+    Ok(next.describe())
+}
+
+/// The user's answer to a folder change an AI client asked for
+/// (`Settings::folder_request`, ARCH-052): `allow` moves the folders.
+#[tauri::command]
+fn answer_folder_request(app: tauri::AppHandle, allow: bool) -> Result<Value, String> {
+    let next = Settings::load()
+        .answer_folder_request(allow)
         .map_err(|e| e.code().to_string())?;
     next.save().map_err(|e| e.code().to_string())?;
     switch_library(&app, &next).map_err(|_| "not_writable".to_string())?;
@@ -851,6 +870,7 @@ pub fn run() {
             calc,
             calc_breakdown,
             check_windows,
+            dormer_host,
             face_to_part,
             set_part_height,
             list_attachments,
@@ -866,6 +886,7 @@ pub fn run() {
             take_pending_open,
             get_settings,
             update_settings,
+            answer_folder_request,
             open_folder,
             updates::update_check,
             updates::update_install
@@ -903,6 +924,7 @@ mod tests {
             "calc",
             "calc_breakdown",
             "take_snapshot",
+            "dormer_host",
         ] {
             assert!(
                 src.contains(&format!("#[tauri::command(async)]\nfn {name}(")),

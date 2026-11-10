@@ -3,7 +3,7 @@
 // with a decimal comma or dot, and never on the wrong wall. Regression tests
 // for "typed values are not applied, only the spinner arrows work".
 import type { Locator, Page } from "@playwright/test";
-import { bar, openEditor, planXY, selectWall, setField, tool } from "./editor";
+import { bar, openEditor, planXY, selectWall, setField, tool, confirmDormer } from "./editor";
 import { createExample, expect, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 
@@ -236,6 +236,7 @@ test.describe("number fields", () => {
 
     await tool(page, "tool.dormer").click();
     await pressPlan(page, 4, 1);
+    await confirmDormer(page);
     const db = bar(page, "dormer.title");
     await waitForProject(id, (p) => p.dormers.length === 1);
     const dormer = JSON.stringify((await loadProject(id)).dormers[0]);

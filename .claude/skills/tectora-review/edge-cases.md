@@ -108,6 +108,13 @@ polygon for a gable wall (shed roof) still shows closed walls
 (`wallUpToRoof`); manual faces appear in 3D; at any zoom the plan grid stays
 at least 8 px apart (`grid.test.ts`).
 
+Object bars that read a shape back from stored corners (chimney, roof
+opening) must work after every way the corners can be written: placed along
+a wall at any angle (corners rounded to mm), rotated, aligned to a wall,
+mirrored with the part (clockwise), typed as any convex polygon over MCP.
+Never fall back to "edit it in the file"; `openings.test.ts` and
+`edit::openings` tests sweep all angles.
+
 ## 6. Text fields, saves and AI review (@errors, @ux)
 
 Guards: `app/e2e/textfields.e2e.ts`, `app/e2e/saveflows.e2e.ts`,

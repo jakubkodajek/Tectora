@@ -24,24 +24,43 @@
     project,
     onchange,
     onsave,
+    track = (p) => p,
+    blocked = null,
   }: {
     id: string;
     project: Project;
     onchange: () => void;
     /** Writes pending edits to disk (before an export); false when that failed. */
     onsave: () => Promise<boolean>;
+    /** Registers work that changes the job once the core answers; leaving the job waits for it. */
+    track?: (p: Promise<unknown>) => Promise<unknown>;
+    /** Why the roof cannot be offered or ordered now (the core gave no roof), or null. */
+    blocked?: string | null;
   } = $props();
+
+  /** Statuses that make an offer from the figures: not from a roof the core refused (ERR-003). */
+  const OFFER_STATUSES = new Set(["offer", "ordered"]);
+  const refused = (s: string) => !!blocked && OFFER_STATUSES.has(s) && s !== status;
 
   // Leaving the draft status stores the result the offer is made with.
   let status = $state(untrack(() => project.job.status));
-  async function statusChanged() {
+  const statusChanged = () => track(statusChangedNow());
+  async function statusChangedNow() {
     const was = status;
+    if (refused(project.job.status)) {
+      project.job.status = was;
+      return;
+    }
     status = project.job.status;
     if (was === "draft" && status !== "draft" && !project.result_snapshot) {
       try {
         project.result_snapshot = await api.takeSnapshot(JSON.parse(JSON.stringify(project)));
       } catch (e) {
+        // No figures to make the offer with: the job stays a draft (DR-002).
+        project.job.status = was;
+        status = was;
         notifyError(e, "save");
+        return;
       }
     }
     onchange();
@@ -132,8 +151,8 @@
     <label><span>{t("job.number")}</span><input type="text" use:textfield={{ value: project.job.number, onchange: setText((p, v) => (p.job.number = v)) }} /></label>
     <label>
       <span>{t("job.status")}</span>
-      <select bind:value={project.job.status} onchange={statusChanged}>
-        {#each JOB_STATUSES as s}<option value={s}>{t(`status.${s}`)}</option>{/each}
+      <select bind:value={project.job.status} onchange={statusChanged} title={blocked ?? undefined}>
+        {#each JOB_STATUSES as s}<option value={s} disabled={refused(s)}>{t(`status.${s}`)}</option>{/each}
       </select>
     </label>
   </div>

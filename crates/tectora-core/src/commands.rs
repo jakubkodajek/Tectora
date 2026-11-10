@@ -74,6 +74,10 @@ pub fn take_snapshot(project: &Project) -> Result<snapshot::ResultSnapshot, Comm
     snapshot::take_checked(project).map_err(|e| match e {
         snapshot::Refused::OutOfRange(d) => CommandError::out_of_range(d),
         snapshot::Refused::Internal(d) => CommandError::internal(d),
+        snapshot::Refused::NotCalculated(detail) => CommandError {
+            code: "not_calculated",
+            detail,
+        },
     })
 }
 
@@ -84,6 +88,16 @@ pub fn check_windows(project: &Project) -> Result<Value, CommandError> {
     let bad = crate::model::guarded(|| crate::edit::check_windows(project).err())
         .map_err(CommandError::internal)?;
     Ok(serde_json::to_value(bad).unwrap_or(Value::Null))
+}
+
+/// The roof under dormer `index` (`edit::dormers::host_slope`): height and
+/// slope at the middle of its front, `null` off the roof, with the same
+/// guards as [`calc`]. The editor's dormer dialog derives its section from it.
+pub fn dormer_host(project: &Project, index: usize) -> Result<Value, CommandError> {
+    check_input(project)?;
+    let host = crate::model::guarded(|| crate::edit::dormers::host_slope(project, index))
+        .map_err(CommandError::internal)?;
+    Ok(serde_json::to_value(host).unwrap_or(Value::Null))
 }
 
 /// [`Project::check_input`] as a command error, with its code.

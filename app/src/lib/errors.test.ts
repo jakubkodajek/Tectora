@@ -31,6 +31,27 @@ describe("describeError", () => {
     expect(d.detail).toBe("dum: project not found");
   });
 
+  it("too_many names the pitch break and dormer limits and points to the details (DR-004)", () => {
+    for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
+      setLocale(l);
+      const d = describeError({ code: "too_many", detail: "too many pitch breaks of one wall: 65 (at most 64)" }, "load");
+      expect(d.message, l).toContain("64");
+      const text = d.message.toLocaleLowerCase(l);
+      expect(text, l).toContain(DICTS[l]["tool.dormer"].toLocaleLowerCase(l).slice(0, 4));
+      expect(text, l).toContain(DICTS[l]["err.details"].toLocaleLowerCase(l).slice(0, 6));
+      expect(d.detail).toBe("too many pitch breaks of one wall: 65 (at most 64)");
+    }
+  });
+
+  it("not_calculated says the result cannot be stored for the offer", () => {
+    for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
+      setLocale(l);
+      const d = describeError({ code: "not_calculated" }, "save");
+      expect(d.message, l).toBe(DICTS[l]["err.not_calculated"]);
+      expect(d.message, l).not.toBe(DICTS[l]["err.unknown"]);
+    }
+  });
+
   it("recognises Tauri's argument errors as an empty field", () => {
     const e = toAppError("invalid args `project` for command `calc`: invalid type: null, expected f64");
     expect(e.code).toBe("invalid_input");
@@ -67,7 +88,7 @@ describe("calculation errors", () => {
       { name: "Garáž", edges: [] },
     ] as never;
     expect(describeProblem({ item: "part", index: 1, edge: 2, code: "pitch_range" }, p)).toBe(
-      "Část 2 „Garáž“, stěna 3: sklon musí být od 2° do 178°",
+      "Budova 2 „Garáž“, stěna 3: sklon musí být od 2° do 178°",
     );
   });
 });

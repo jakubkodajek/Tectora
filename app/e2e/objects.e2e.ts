@@ -3,7 +3,7 @@
 // 3D view buttons. Each is placed with its tool, edited in its bar, deleted,
 // and checked against the stored file and the core calculation.
 import type { Page } from "@playwright/test";
-import { bar, firstArea, clickPlan, openEditor, selectWall, setField, shownArea, tool } from "./editor";
+import { bar, firstArea, clickPlan, openEditor, selectWall, setField, shownArea, tool, confirmDormer, dormerDialog } from "./editor";
 import { bridge, createExample, expect, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 
@@ -24,6 +24,7 @@ test.describe("dormers", () => {
     await tool(page, "tool.dormer").click();
     await expect(page.getByText(cs("plan.placeDormer"))).toBeVisible();
     await clickPlan(page, 4, 1);
+    await confirmDormer(page);
     const db = bar(page, "dormer.title");
     await expect(db.locator(".which strong")).toHaveText(cs("dormer.n", { n: 1 }));
     let p = await waitForProject(id, (p) => p.dormers.length === 1);
@@ -33,7 +34,8 @@ test.describe("dormers", () => {
 
     await setField(db.getByLabel(cs("dormer.width")), 2.4);
     await setField(db.getByLabel(cs("edge.pitch")), 38);
-    await setField(db.getByLabel(cs("edge.overhang")), 0.2);
+    await setField(db.getByLabel(cs("dormer.frontOverhang")), 0.2);
+    await setField(db.getByLabel(cs("dormer.sideOverhang")), 0.3);
     await db.getByLabel(cs("edge.material")).selectOption("2");
     await areaMatchesCore(page, id);
 
@@ -48,6 +50,7 @@ test.describe("dormers", () => {
     // A second dormer, then step between them.
     await tool(page, "tool.dormer").click();
     await clickPlan(page, 8, 1);
+    await confirmDormer(page);
     await expect(db.locator(".which strong")).toHaveText(cs("dormer.n", { n: 2 }));
     await db.getByRole("button", { name: cs("dormer.prev") }).click();
     await expect(db.locator(".which strong")).toHaveText(cs("dormer.n", { n: 1 }));
@@ -60,6 +63,62 @@ test.describe("dormers", () => {
     await expect(db).toBeVisible();
     await page.keyboard.press("Delete");
     await waitForProject(id, (p) => p.dormers.length === 0);
+    await areaMatchesCore(page, id);
+  });
+
+  test("the dormer window places a dormer by its front height and depth, Cancel places nothing", async ({ app, page }) => {
+    const id = await createExample("hip", "Valba");
+    await openEditor(app, "Valba");
+    await tool(page, "tool.dormer").click();
+    await clickPlan(page, 4, 1);
+    const dlg = dormerDialog(page);
+    await expect(dlg).toBeVisible();
+    await dlg.getByRole("button", { name: cs("common.cancel"), exact: true }).click();
+    await expect(dlg).toBeHidden();
+    expect((await loadProject(id)).dormers).toHaveLength(0);
+
+    await tool(page, "tool.dormer").click();
+    await clickPlan(page, 4, 1);
+    await dlg.getByRole("radio", { name: cs("dormer.shed") }).click();
+    const wall = dlg.getByLabel(cs("dormer.wallHeight"));
+    await expect(wall).toBeEnabled();
+    await setField(wall, "1,2");
+    await setField(dlg.getByLabel(cs("dormer.depth")), "2,5");
+    await expect(dlg.getByLabel(cs("dormer.depth"))).toHaveValue("2,5");
+    await dlg.getByRole("button", { name: cs("common.ok"), exact: true }).click();
+    const p = await waitForProject(id, (p) => p.dormers.length === 1);
+    // The front stands on the roof plane: eave = roof + depth · (tan roof − tan 15°).
+    const front = p.dormers[0].edges[1];
+    expect(front.pitch_deg).toBe(15);
+    expect(front.eave_height).toBeGreaterThan(3);
+    await areaMatchesCore(page, id);
+
+    // Reopened from the bar, it shows the same depth.
+    await bar(page, "dormer.title").getByRole("button", { name: cs("dormer.edit") }).click();
+    const edit = page.getByRole("dialog", { name: cs("dormer.n", { n: 1 }) });
+    const shown = Number((await edit.getByLabel(cs("dormer.depth")).inputValue()).replace(",", "."));
+    expect(Math.abs(shown - 2.5)).toBeLessThan(0.003);
+  });
+
+  test("the dormer window takes front and side overhangs and a trapezoid's back width", async ({ app, page }) => {
+    const id = await createExample("hip", "Valba");
+    await openEditor(app, "Valba");
+    await tool(page, "tool.dormer").click();
+    await clickPlan(page, 4, 1);
+    const dlg = dormerDialog(page);
+    await dlg.getByRole("radio", { name: cs("dormer.trapezoid") }).click();
+    await setField(dlg.getByLabel(cs("dormer.frontOverhang")), "0,4");
+    await setField(dlg.getByLabel(cs("dormer.sideOverhang")), "0,2");
+    const back = dlg.getByLabel(cs("dormer.backWidth"));
+    await expect(back).toBeEnabled();
+    await setField(back, "1,2");
+    await expect(back).toHaveValue("1,2");
+    await dlg.getByRole("button", { name: cs("common.ok"), exact: true }).click();
+    const p = await waitForProject(id, (p) => p.dormers.length === 1);
+    const [left, front, right] = p.dormers[0].edges;
+    expect([front.overhang, left.overhang, right.overhang]).toEqual([0.4, 0.2, 0.2]);
+    // The back width set the cheek pitch.
+    expect(left.pitch_deg).not.toBe(45);
     await areaMatchesCore(page, id);
   });
 
@@ -366,6 +425,6 @@ test("3D view: every camera button and fit", async ({ app, page }) => {
     await v.click();
     await expect(v).toHaveAttribute("aria-checked", "true");
   }
-  await page.locator(".view").last().getByRole("button", { name: cs("plan.fit") }).click();
+  await page.locator(".view").last().getByRole("button", { name: cs("view.fit") }).click();
   await expect(page.locator(".view canvas")).toBeVisible();
 });

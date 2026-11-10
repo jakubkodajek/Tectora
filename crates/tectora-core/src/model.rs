@@ -315,9 +315,30 @@ impl Project {
             (n > max).then(|| format!("too many {what}: {n} (at most {max})"))
         };
         let walls: usize = self.parts.iter().map(|p| p.edges.len()).sum();
+        let dormer_walls: usize = self.dormers.iter().map(|d| d.edges.len()).sum();
+        let all_edges = || {
+            self.parts
+                .iter()
+                .flat_map(|p| &p.edges)
+                .chain(self.dormers.iter().flat_map(|d| &d.edges))
+        };
+        let breaks: usize = all_edges().map(|e| e.breaks.len()).sum();
+        let wall_breaks = all_edges().map(|e| e.breaks.len()).max().unwrap_or(0);
         let mut checks = vec![
             over("parts", self.parts.len(), MAX_PARTS),
             over("walls in all parts", walls, MAX_WALLS),
+            over("walls of all dormers", dormer_walls, MAX_WALLS),
+            over(
+                "walls of one dormer",
+                self.dormers
+                    .iter()
+                    .map(|d| d.edges.len())
+                    .max()
+                    .unwrap_or(0),
+                MAX_PART_WALLS,
+            ),
+            over("pitch breaks of one wall", wall_breaks, MAX_WALL_BREAKS),
+            over("pitch breaks in all walls", breaks, MAX_BREAKS),
             over("dormers", self.dormers.len(), MAX_OBJECTS),
             over("chimneys", self.chimneys.len(), MAX_OBJECTS),
             over("roof windows", self.windows.len(), MAX_OBJECTS),
@@ -353,12 +374,17 @@ impl Project {
         if let Some(obj) = value.as_object_mut() {
             obj.remove("result_snapshot");
         }
-        match first_out_of_range(&value, &mut String::new()) {
-            Some((path, v)) => Err(format!(
+        if let Some((path, v)) = first_out_of_range(&value, &mut String::new()) {
+            return Err(format!(
                 "value {v} at `{path}` is out of range (allowed ±{MAX_ABS_VALUE})"
-            )),
-            None => Ok(()),
+            ));
         }
+        // JSON has no infinity or NaN: such a number is written as null and
+        // the file can no longer be read (MATH-001), so refuse it here.
+        if let Some(why) = non_finite(self) {
+            return Err(format!("a value is not a finite number ({why})"));
+        }
+        Ok(())
     }
 }
 
@@ -376,6 +402,12 @@ pub const MAX_WALLS: usize = 2000;
 /// Most dormers, chimneys, windows, openings, hand-drawn lines or faces,
 /// each.
 pub const MAX_OBJECTS: usize = 500;
+/// Most pitch breaks on one wall. A mansard has one or two; a round
+/// dormer stores up to `MAX_ROUND_SEGMENTS` (30) on its front wall.
+pub const MAX_WALL_BREAKS: usize = 64;
+/// Most pitch breaks of all walls together (ARCH-053: the core's time grows
+/// faster than linearly with the breaks of a wall, 36 000 took 15 s).
+pub const MAX_BREAKS: usize = 2000;
 
 /// Why a design is refused before it is calculated (see
 /// [`Project::check_input`]).
@@ -386,6 +418,15 @@ pub struct InputError {
     pub code: &'static str,
     /// English, for the CLI, the MCP server and the details view.
     pub message: String,
+}
+
+/// Whether the project reads back from its own JSON; `serde_json` writes an
+/// infinite or NaN number as null, which no `f64` field accepts.
+fn non_finite(p: &Project) -> Option<String> {
+    let v = serde_json::to_value(p).ok()?;
+    serde_json::from_value::<Project>(v)
+        .err()
+        .map(|e| e.to_string())
 }
 
 fn first_out_of_range(v: &serde_json::Value, path: &mut String) -> Option<(String, f64)> {
@@ -819,6 +860,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_infinite_number_is_refused_before_it_is_saved_as_null() {
+        // MATH-001: JSON writes inf as null, and the job no longer opens.
+        let mut p = Project::new("t");
+        let mut e = crate::edit::plain_edge(Point2::new(0.0, 0.0), 40.0, 3.0, 0.5);
+        p.parts.push(RoofPart {
+            name: "A".into(),
+            edges: vec![e.clone(); 3],
+        });
+        assert!(p.check_input().is_ok());
+        e.eave_height = f64::INFINITY;
+        p.parts[0].edges[1] = e;
+        assert_eq!(p.check_input().unwrap_err().code, "out_of_range");
+    }
+
+    #[test]
     fn edges_outside_dacad_input_limits_are_problems() {
         // DACAD help: pitch 2-178°, eave height >= 0; strings 211/212:
         // a pitch break below the eave or twice at one height.
@@ -891,6 +947,28 @@ mod tests {
         };
         p.chimneys = vec![c; 501];
         assert!(p.check_limits().unwrap_err().contains("chimneys"));
+
+        // ARCH-053: 36 000 breaks on one wall passed and took 15 s; 300 000
+        // did not finish in 25 minutes.
+        let mut p = gable.clone();
+        let brk = |i: usize| PitchBreak {
+            height: 10.0 + i as f64 * 0.01,
+            pitch_deg: 30.0,
+        };
+        p.parts[0].edges[0].breaks = (0..MAX_WALL_BREAKS).map(brk).collect();
+        assert!(
+            p.check_limits().is_ok(),
+            "a round dormer's breaks still pass"
+        );
+        p.parts[0].edges[0].breaks.push(brk(MAX_WALL_BREAKS));
+        let err = p.check_limits().unwrap_err();
+        assert!(err.contains("pitch breaks of one wall"), "{err}");
+
+        let mut p = gable.clone();
+        p.parts[0].edges[0].breaks = (0..MAX_WALL_BREAKS).map(brk).collect();
+        p.parts = vec![p.parts[0].clone(); MAX_BREAKS / MAX_WALL_BREAKS + 1];
+        let err = p.check_limits().unwrap_err();
+        assert!(err.contains("pitch breaks in all walls"), "{err}");
     }
 
     #[test]

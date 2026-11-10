@@ -66,8 +66,19 @@ The tools cover every operation of the Tectora editor:
   chimneys moved with it). A building has no height of its own besides its
   walls' eave heights; a lower wing is joined to the main roof by them.
 - Dormers: `add_dormer`, `update_dormer` (gable, pointed, hip, half_hip,
-  shed, trapezoid, round); `get_project` lists them with these parameters.
+  shed, trapezoid, round); `get_project` lists them with these parameters
+  and their `section` as the editor's dormer window shows it: roof pitch
+  under the front, front wall height above the roof, depth, ridge length,
+  slope lengths. Instead of `eave_height` give one of `wall_height` (front
+  wall above the roof), `depth` (front to where the dormer meets the roof)
+  or `ridge_length`, as a drawing dimensions them. `overhang` sets the
+  front and cheek overhangs together, `front_overhang` and `side_overhang`
+  apart. A trapezoid's `back_width` (its shed roof's width where it meets
+  the roof, in `section`) sets the cheek pitch instead of `pitch_deg`.
 - Windows, chimneys (also as a rectangle) and roof openings: `set_openings`.
+- Change one chimney, roof opening or window in place (position, width,
+  depth, rotation, chimney top) as the object bar does: `update_opening`.
+  It works on any shape: the box along the first side is stretched.
 - Lines and faces drawn by hand on the roof: `set_manual`. A hand-drawn
   face only adds its area: it is no building and calculates no roof. When a
   footprint was traced as a face, `face_to_part` turns it into a building
@@ -110,9 +121,13 @@ The tools cover every operation of the Tectora editor:
 - Every tool that changes something (a design, a file, the library or the
   settings) needs `summary`: one sentence for the user on what and why (an
   empty or blank one is refused).
+- An argument the tool's input schema does not name is refused
+  (`unknown argument …`), and so is a `part` that is not a whole number
+  from 0: fix the call instead of assuming it was saved.
 - Limits: a design has at most 200 parts, 500 walls per part (2000 in all)
   and 500 of each kind of object (dormers, chimneys, windows, openings,
-  hand-drawn lines and faces); a write over them is refused (`too many …`).
+  hand-drawn lines and faces), 64 pitch breaks per wall (2000 in all); a
+  write over them is refused (`too many …`).
   `calc`, `calc_breakdown` and `get_project` stop after 60 s.
 - Hand-over: `export_job`, `import_job` (`.tectorajob` = project, files,
   history and a preview in one file). `export_job` writes into the
@@ -343,10 +358,8 @@ next to the tiled roof are separate parts with their own material, or left
 out if the offer does not price them; say which. Sheet-metal decks or
 terraces cut into a tiled slope (a low 3–8° roof from the eave inward, with
 a step up to the tiled roof behind) are wide shed dormers with material 2:
-`kind: shed`, `front_pitch_deg` the deck's pitch, and the eave height chosen
-so the dormer meets the roof at the drawn depth (eave height of the roof +
-depth × tan(roof pitch) − depth × tan(deck pitch), roof heights measured at
-the dormer front). A dormer's front must run exactly along its eave: leave
+`kind: shed`, `front_pitch_deg` the deck's pitch, and `depth` the drawn
+depth (the eave height then follows from the roof under the front). A dormer's front must run exactly along its eave: leave
 `angle_deg` out on a wall parallel to the axes, otherwise give the eave's
 direction from `trace_outline` (`edge_directions_deg`); a front a fraction
 of a degree off the eave makes the calculation fail. A roof that runs under
@@ -419,7 +432,9 @@ Never invent dimensions you cannot read; ask the user instead.
 the inbox where the user puts technical drawings to build roofs from. Use the
 `roof_defaults` (pitch, eave height, overhang) when a drawing does not give a
 value, and say so in the summary. `update_settings` changes the same values as
-the app's Settings screen; ask before moving the projects folder. When
+the app's Settings screen. A new jobs folder or drawings inbox is only a
+request: the app asks the user to allow it, and until they do the folders
+stay as they are (`settings.folder_request` shows the open request). When
 `effective.settings_error` is set, the settings file is damaged and the
 defaults (another jobs folder) are in use: tell the user before you change a
 setting (the damaged file is kept as `settings.json.bad` on the next save).

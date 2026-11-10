@@ -362,6 +362,14 @@ export interface AppSettings {
   theme: "system" | "light" | "dark";
   roof_defaults: Presets;
   follow_ai: boolean;
+  /** A folder change an AI client asked for, waiting for the user. */
+  folder_request?: FolderRequest;
+}
+
+export interface FolderRequest {
+  changes: { projects_dir?: string | null; drawings_dir?: string | null };
+  by: string;
+  summary: string;
 }
 
 export interface AppSettingsView {

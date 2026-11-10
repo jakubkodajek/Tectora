@@ -31,7 +31,16 @@ export function savePresets() {
   write("tectora.presets", $state.snapshot(presets));
 }
 
-export const prefs = $state(read("tectora.prefs", { followAi: true, layout: "split" as "split" | "plan" | "3d", libraryView: "list" as "list" | "grid" }));
+export const prefs = $state(
+  read("tectora.prefs", {
+    followAi: true,
+    layout: "split" as "split" | "plan" | "3d",
+    libraryView: "list" as "list" | "grid",
+    /** The wall bar's and the dormer bar's "More" row is open (UX-008). */
+    wallMore: false,
+    dormerMore: false,
+  }),
+);
 
 export function savePrefs() {
   write("tectora.prefs", $state.snapshot(prefs));

@@ -3,6 +3,7 @@
   import type { CalcResult, PlanLabel, PlanMark, Point2, Project, Selection } from "./types";
   import { isGable } from "./types";
   import { t } from "./i18n.svelte";
+  import { partLabel } from "./partname";
   import { windowOutline, type OpeningSel } from "./openings";
   import { codeKind, lineLength, type ManualSel } from "./manual";
   import type { Ghost } from "./changes";
@@ -543,7 +544,7 @@
         d={"M" + part.edges.map((e) => `${sx(e.start.x)},${sy(e.start.y)}`).join("L") + "Z"}
         role="button"
         tabindex="-1"
-        aria-label={part.name}
+        aria-label={partLabel(part.name, pi)}
         onpointerdown={(ev) => pressPart(ev, pi)}
       />
     {/each}

@@ -953,6 +953,13 @@ impl Store {
             .append(true)
             .open(&path)
             .map_err(io)?;
+        // A torn last line (no newline) would swallow this entry too.
+        let torn = fs::read(&path)
+            .ok()
+            .is_some_and(|b| b.last().is_some_and(|&c| c != b'\n'));
+        if torn {
+            writeln!(f).map_err(io)?;
+        }
         writeln!(f, "{line}").map_err(io)
     }
 
@@ -961,10 +968,14 @@ impl Store {
         let Ok(path) = self.activity_path(id) else {
             return Vec::new();
         };
-        fs::read_to_string(path)
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|l| serde_json::from_str(l).ok())
+        // Read bytes, not a string: one torn or invalid line (an interrupted
+        // write) must cost that line only, not the whole history (ERR-005).
+        let Ok(bytes) = fs::read(path) else {
+            return Vec::new();
+        };
+        bytes
+            .split(|&b| b == b'\n')
+            .filter_map(|l| serde_json::from_slice(l).ok())
             .collect()
     }
 
@@ -1965,6 +1976,33 @@ mod tests {
 
         store.delete(&id, USER_ACTOR, "test").unwrap();
         assert_eq!(store.reviewed_at(&id), 0);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_torn_line_in_the_change_log_costs_only_that_line() {
+        // ERR-005: an interrupted write left invalid UTF-8 in the log; the
+        // whole history, the AI review and Revert disappeared, and later
+        // entries were glued to the torn line.
+        let store = temp_store("torn-log");
+        let a = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &a, "claude", "Created").unwrap();
+        let mut f = fs::OpenOptions::new()
+            .append(true)
+            .open(store.activity_path(&id).unwrap())
+            .unwrap();
+        f.write_all(b"{\"P\xc5").unwrap();
+        drop(f);
+        assert_eq!(store.activity(&id).len(), 1, "the good entry stays");
+        let mut b = a.clone();
+        b.parts[0].edges[0].pitch_deg = 45.0;
+        store
+            .save_as(Some(id.clone()), &b, "claude", "Steeper")
+            .unwrap();
+        let log = store.activity(&id);
+        assert_eq!(log.len(), 2, "the entry after the torn line is kept");
+        assert_eq!(log[1].summary, "Steeper");
+        assert!(store.pending_review(&id).is_some());
         let _ = fs::remove_dir_all(&store.dir);
     }
 

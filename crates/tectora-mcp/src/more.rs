@@ -8,7 +8,8 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 use tectora_core::edit::calc::{self as hc, BuildUpEave, ParallelField, Target};
-use tectora_core::edit::dormers::{self, DormerKind, DormerParams};
+use tectora_core::edit::dormers::{self, DormerKind, DormerParams, SectionTarget};
+use tectora_core::edit::openings::{OpeningBox, opening_box, reshape_opening};
 use tectora_core::edit::probe::{host_height_at, roof_corner_points, roof_height_at, snap_to_roof};
 use tectora_core::edit::round::{
     ArcInput, ArcMode, MAX_ROUND_SEGMENTS, arc_for, opposite_wall, span_between,
@@ -51,7 +52,7 @@ fn point(args: &Value, key: &str) -> Result<Option<Point2>, String> {
 }
 
 fn part_index(args: &Value, p: &Project) -> Result<usize, String> {
-    let pi = args.get("part").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let pi = crate::part_arg(args)?;
     if pi >= p.parts.len() {
         return Err(format!(
             "part {pi} does not exist (the design has {} parts)",
@@ -75,8 +76,13 @@ fn edge_index(args: &Value, key: &str, n: usize) -> Result<usize, String> {
     Ok(i)
 }
 
-/// A dormer as the parameters of the dormer dialog.
-pub(crate) fn describe_dormer(index: usize, d: &tectora_core::Dormer) -> Value {
+/// A dormer as the parameters of the dormer dialog, with its side section
+/// on `host` (the roof without dormers, [`dormers::host_roof`]).
+pub(crate) fn describe_dormer(
+    index: usize,
+    d: &tectora_core::Dormer,
+    host: &[tectora_core::roof::RoofGeometry],
+) -> Value {
     let p = dormers::parse_dormer(d);
     let mut v = json!({
         "index": index,
@@ -87,6 +93,7 @@ pub(crate) fn describe_dormer(index: usize, d: &tectora_core::Dormer) -> Value {
         "angle_deg": round(p.angle.to_degrees(), 2),
         "eave_height": p.eave_height,
         "overhang": p.overhang,
+        "side_overhang": p.side_overhang,
     });
     match p.kind {
         DormerKind::Gable | DormerKind::Pointed | DormerKind::Hip | DormerKind::Round => {
@@ -110,7 +117,31 @@ pub(crate) fn describe_dormer(index: usize, d: &tectora_core::Dormer) -> Value {
     if p.material != tectora_core::model::DEFAULT_MATERIAL {
         v["material"] = json!(p.material);
     }
+    if p.kind != DormerKind::General {
+        v["section"] = describe_section(&p, host);
+    }
     v
+}
+
+/// DACAD's dormer dialog section, rounded to mm; null off the roof.
+fn describe_section(p: &DormerParams, host: &[tectora_core::roof::RoofGeometry]) -> Value {
+    let Some(h) = dormers::host_slope_in(host, p) else {
+        return Value::Null;
+    };
+    let s = dormers::section(p, h);
+    let r = |v: Option<f64>| v.map(|v| round(v, 3));
+    json!({
+        "roof_height": round(h.height, 3),
+        "roof_pitch_deg": round(s.host_pitch_deg, 2),
+        "wall_height": round(s.wall_height, 3),
+        "depth": r(s.depth),
+        "ridge_height": r(s.ridge_height),
+        "ridge_length": r(s.ridge_length),
+        "roof_length": r(s.roof_length),
+        "top_height": r(s.top_height),
+        "roof_slope_length": r(s.host_length),
+        "back_width": r(s.back_width),
+    })
 }
 
 fn dormer_props() -> Value {
@@ -119,10 +150,16 @@ fn dormer_props() -> Value {
         "start": { "type": "array", "items": { "type": "number" }, "description": "Plan point [x, y] of the front's left corner seen from outside, on the roof." },
         "width": { "type": "number", "description": "Front width, m (default 2)." },
         "angle_deg": { "type": "number", "description": "Direction of the front wall, degrees; the dormer roof rises to its left. Default: along the nearest eave wall." },
-        "eave_height": { "type": "number", "description": "Dormer eave height, m. Default: roof height at `start` + 1 m." },
+        "eave_height": { "type": "number", "description": "Dormer eave height above ground, m. Default: roof height at `start` + 1 m. Instead give one of wall_height, depth or ridge_length." },
+        "wall_height": { "type": "number", "description": "Front wall height above the roof at the middle of the front, m (as the dormer dialog); sets eave_height." },
+        "depth": { "type": "number", "description": "Horizontal distance from the front to where the dormer's ridge (shed: its roof) runs into the roof, m; sets eave_height." },
+        "ridge_length": { "type": "number", "description": "Ridge length from its front end to the roof, m (not for shed); sets eave_height." },
         "pitch_deg": { "type": "number", "description": "Pitch of the cheek planes (gable, pointed, hip, half_hip, trapezoid), default 45." },
         "front_pitch_deg": { "type": "number", "description": "Pitch of the front plane (shed, trapezoid), default 15." },
-        "overhang": { "type": "number", "description": "Default 0." },
+        "overhang": { "type": "number", "description": "Overhang of the front and the cheeks together, m (default 0); front_overhang and side_overhang set them apart." },
+        "front_overhang": { "type": "number", "description": "Overhang of the front only, m (the dialog's front overhang)." },
+        "side_overhang": { "type": "number", "description": "Overhang of the cheeks only, m; the dormer roof is width + 2 × side_overhang wide." },
+        "back_width": { "type": "number", "description": "trapezoid: width of the shed roof where it meets the roof, m, between 0 and width + 2 × side_overhang; sets pitch_deg (the cheek pitch), so do not give both." },
         "half_hip_height": { "type": "number", "description": "half_hip: height of the clipped part above the dormer eave, default 0.6." },
         "half_hip_pitch_deg": { "type": "number", "description": "half_hip: its pitch, default 60." },
         "segments": { "type": "integer", "description": "round: polygon segments per side; 0 = automatic." },
@@ -150,12 +187,26 @@ fn apply_dormer_fields(p: &mut DormerParams, args: &Value) -> Result<(), String>
         ("eave_height", &mut p.eave_height),
         ("pitch_deg", &mut p.pitch_deg),
         ("front_pitch_deg", &mut p.front_pitch_deg),
-        ("overhang", &mut p.overhang),
         ("half_hip_height", &mut p.half_hip_height),
         ("half_hip_pitch_deg", &mut p.half_hip_pitch_deg),
     ] {
         if let Some(v) = arg_f64(args, key)? {
             *slot = v;
+        }
+    }
+    if let Some(v) = arg_f64(args, "overhang")? {
+        p.overhang = v;
+        p.side_overhang = v;
+    }
+    if let Some(v) = arg_f64(args, "front_overhang")? {
+        p.overhang = v;
+    }
+    if let Some(v) = arg_f64(args, "side_overhang")? {
+        p.side_overhang = v;
+    }
+    for (name, v) in [("overhang", p.overhang), ("side_overhang", p.side_overhang)] {
+        if !(v.is_finite() && v >= 0.0) {
+            return Err(format!("{name} must be 0 or more"));
         }
     }
     if let Some(s) = opt::<u32>(args, "segments")? {
@@ -173,6 +224,7 @@ fn apply_dormer_fields(p: &mut DormerParams, args: &Value) -> Result<(), String>
     for (name, v) in [
         ("pitch_deg", p.pitch_deg),
         ("front_pitch_deg", p.front_pitch_deg),
+        ("half_hip_pitch_deg", p.half_hip_pitch_deg),
     ] {
         if !(0.0 < v && v < 90.0) {
             return Err(format!("{name} must be between 0 and 90"));
@@ -272,6 +324,20 @@ pub(crate) fn tools() -> Vec<Value> {
                 "follow_roof": { "type": "boolean" },
                 "summary": summary_prop(),
             }), &["id", "items", "op", "summary"]),
+        }),
+        json!({
+            "name": "update_opening",
+            "description": "Change the position or size of one chimney, roof opening or roof window, as the object bar of the editor does. A chimney or roof opening is edited through its box: the smallest box around its plan polygon that lines up with its first side, with corner `x`, `y`, `width` along the first side, `depth` across it and `rotation_deg` (direction of the first side); every corner keeps its place in the box, so a rectangle stays a rectangle and any other shape is stretched. `height` is a chimney's top (m) or a window's height up the slope. Omitted fields keep their value; the reply has the new box.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "kind": { "type": "string", "enum": ["chimney", "roof_opening", "window"] },
+                "index": { "type": "integer", "minimum": 0 },
+                "x": { "type": "number" }, "y": { "type": "number" },
+                "width": { "type": "number" }, "depth": { "type": "number" },
+                "rotation_deg": { "type": "number" },
+                "height": { "type": "number" },
+                "summary": summary_prop(),
+            }), &["id", "kind", "index", "summary"]),
         }),
         json!({
             "name": "add_shape_part",
@@ -539,6 +605,7 @@ impl Server {
             "edit_walls" => self.edit_walls(args),
             "transform_part" => self.transform(args),
             "transform_items" => self.transform_items(args),
+            "update_opening" => self.update_opening(args),
             "add_shape_part" => self.add_shape_part(args),
             "delete_items" => self.delete_items(args),
             "face_to_part" => (|| {
@@ -1040,6 +1107,73 @@ impl Server {
         Ok(reply)
     }
 
+    fn update_opening(&self, args: &Value) -> ToolResult {
+        let (id, before) = self.load(args)?;
+        let mut p = before.clone();
+        let index: usize = req(args, "index")?;
+        let kind = arg_str(args, "kind")?;
+        let num = |k: &str| -> Result<Option<f64>, String> {
+            match arg_f64(args, k)? {
+                Some(v) if !v.is_finite() => Err(format!("`{k}` must be a finite number")),
+                v => Ok(v),
+            }
+        };
+        let reply_box = match kind {
+            "window" => {
+                if num("depth")?.is_some() || num("rotation_deg")?.is_some() {
+                    return Err("a roof window has x, y, width and height (up the slope)".into());
+                }
+                let w = p
+                    .windows
+                    .get_mut(index)
+                    .ok_or_else(|| format!("window {index} does not exist"))?;
+                w.x = num("x")?.unwrap_or(w.x);
+                w.y = num("y")?.unwrap_or(w.y);
+                w.width = num("width")?.unwrap_or(w.width);
+                w.height = num("height")?.unwrap_or(w.height);
+                if !(w.width >= 0.01 && w.height >= 0.01 && w.width <= 100.0 && w.height <= 100.0) {
+                    return Err("width and height must be between 0.01 and 100 m".into());
+                }
+                let out = json!({ "x": w.x, "y": w.y, "width": w.width, "height": w.height });
+                tectora_core::edit::check_windows(&p).map_err(|e| e.to_string())?;
+                out
+            }
+            "chimney" | "roof_opening" => {
+                let list = if kind == "chimney" {
+                    &mut p.chimneys
+                } else {
+                    &mut p.roof_openings
+                };
+                let c = list
+                    .get_mut(index)
+                    .ok_or_else(|| format!("{kind} {index} does not exist"))?;
+                let was = opening_box(&c.corners)
+                    .ok_or_else(|| format!("{kind} {index} has no area to resize"))?;
+                let to = OpeningBox {
+                    x: num("x")?.unwrap_or(was.x),
+                    y: num("y")?.unwrap_or(was.y),
+                    width: num("width")?.unwrap_or(was.width),
+                    depth: num("depth")?.unwrap_or(was.depth),
+                    rotation_deg: num("rotation_deg")?.unwrap_or(was.rotation_deg),
+                };
+                c.corners = reshape_opening(&c.corners, &to)?;
+                if let Some(h) = num("height")? {
+                    if kind != "chimney" {
+                        return Err("a roof opening has no height".into());
+                    }
+                    c.height = h;
+                }
+                json!(opening_box(&c.corners))
+            }
+            other => return Err(format!("unknown kind `{other}`")),
+        };
+        let mut reply = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
+        if let Some(o) = reply.as_object_mut() {
+            o.insert("box".into(), reply_box);
+        }
+        Ok(reply)
+    }
+
     fn add_shape_part(&self, args: &Value) -> ToolResult {
         let (id, before) = self.load(args)?;
         let mut p = before.clone();
@@ -1181,6 +1315,47 @@ impl Server {
             (i, params)
         };
         apply_dormer_fields(&mut params, args)?;
+        let targets: Vec<SectionTarget> = [
+            (
+                "wall_height",
+                SectionTarget::WallHeight as fn(f64) -> SectionTarget,
+            ),
+            ("depth", SectionTarget::Depth),
+            ("ridge_length", SectionTarget::RidgeLength),
+        ]
+        .into_iter()
+        .filter_map(|(k, f)| arg_f64(args, k).transpose().map(|v| v.map(f)))
+        .collect::<Result<_, _>>()?;
+        let target = match targets.as_slice() {
+            [] => None,
+            [t] => {
+                if args.get("eave_height").is_some() {
+                    return Err(
+                        "give eave_height or one of wall_height, depth, ridge_length, not both"
+                            .into(),
+                    );
+                }
+                Some(*t)
+            }
+            _ => return Err("give only one of wall_height, depth, ridge_length".into()),
+        };
+        let back_width = arg_f64(args, "back_width")?;
+        if back_width.is_some() {
+            if params.kind != DormerKind::Trapezoid {
+                return Err("back_width is only for a trapezoid dormer".into());
+            }
+            if args.get("pitch_deg").is_some() {
+                return Err(
+                    "give back_width or pitch_deg, not both: the back width sets the cheek pitch"
+                        .into(),
+                );
+            }
+        }
+        if target.is_some() || back_width.is_some() {
+            let host = dormers::host_slope_in(&dormers::host_roof(&p), &params)
+                .ok_or("the dormer's front is not on the roof, so wall_height, depth, ridge_length and back_width cannot be used; give eave_height and pitch_deg")?;
+            params = dormers::solve(&params, host, target, back_width)?;
+        }
         let mut d = dormers::build_dormer(&params);
         if let Some(old) = p.dormers.get(index) {
             d.host_wall = old.host_wall;
@@ -1189,7 +1364,7 @@ impl Server {
             p.dormers.push(d);
         }
         let mut out = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
-        out["dormer"] = describe_dormer(index, &p.dormers[index]);
+        out["dormer"] = describe_dormer(index, &p.dormers[index], &dormers::host_roof(&p));
         Ok(out)
     }
 
@@ -1660,6 +1835,87 @@ mod tests {
     }
 
     #[test]
+    fn update_opening_resizes_a_rotated_chimney_an_opening_and_a_window() {
+        // A chimney placed along a 20° wall: its corners are rounded to mm,
+        // which the old rectangle test refused, so it could not be resized.
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "set_openings",
+            json!({ "id": id, "summary": "c",
+            "chimneys": [{ "x": 4, "y": 1, "width": 0.6, "depth": 0.6, "height": 6, "rotation_deg": 20 }],
+            "roof_openings": [{ "corners": [[2, 1], [2, 2], [3, 2], [3, 1]] }],
+            "windows": [{ "x": 6, "y": 1, "width": 0.78, "height": 1.18 }] }),
+        );
+        let r = call(
+            &mut s,
+            "update_opening",
+            json!({ "id": id, "summary": "w", "kind": "chimney", "index": 0, "width": 1.2, "height": 7 }),
+        );
+        assert!(
+            (r["box"]["width"].as_f64().unwrap() - 1.2).abs() < 2e-3,
+            "{r}"
+        );
+        assert!(
+            (r["box"]["depth"].as_f64().unwrap() - 0.6).abs() < 2e-3,
+            "{r}"
+        );
+        assert!(
+            (r["box"]["rotation_deg"].as_f64().unwrap() - 20.0).abs() < 0.1,
+            "{r}"
+        );
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(p.chimneys[0].corners[0], Point2::new(4.0, 1.0));
+        assert_eq!(p.chimneys[0].height, 7.0);
+        // A clockwise opening keeps its corner order and grows across its
+        // first side, away from the box corner (3, 1).
+        call(
+            &mut s,
+            "update_opening",
+            json!({ "id": id, "summary": "o", "kind": "roof_opening", "index": 0, "depth": 1.5 }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(
+            p.roof_openings[0].corners,
+            [(1.5, 1.0), (1.5, 2.0), (3.0, 2.0), (3.0, 1.0)].map(|(x, y)| Point2::new(x, y))
+        );
+        call(
+            &mut s,
+            "update_opening",
+            json!({ "id": id, "summary": "f", "kind": "window", "index": 0, "width": 1.14 }),
+        );
+        assert_eq!(s.store.load(&id).unwrap().windows[0].width, 1.14);
+        for (args, want) in [
+            (
+                json!({ "kind": "chimney", "index": 0, "width": 0 }),
+                "at least 0.01",
+            ),
+            (
+                json!({ "kind": "chimney", "index": 3, "width": 1 }),
+                "does not exist",
+            ),
+            (
+                json!({ "kind": "roof_opening", "index": 0, "height": 2 }),
+                "no height",
+            ),
+            (
+                json!({ "kind": "window", "index": 0, "depth": 2 }),
+                "up the slope",
+            ),
+            (
+                json!({ "kind": "window", "index": 0, "width": 40, "height": 20 }),
+                "larger",
+            ),
+        ] {
+            let mut a = args.clone();
+            a["id"] = json!(id);
+            a["summary"] = json!("x");
+            let e = s.call_tool("update_opening", &a).unwrap_err();
+            assert!(e.contains(want), "{args}: {e}");
+        }
+    }
+
+    #[test]
     fn transform_items_moves_copies_and_follows_the_roof() {
         let (mut s, id) = setup();
         call(
@@ -1808,13 +2064,77 @@ mod tests {
     }
 
     #[test]
+    fn a_part_index_that_is_not_a_whole_number_is_refused_not_applied_to_part_0() {
+        // ERR-007: `"part": "1"` edited the first building.
+        let (mut s, id) = setup();
+        let before = s.store.load(&id).unwrap();
+        for bad in [json!("1"), json!(-1), json!(1.5)] {
+            let err = s
+                .call_tool(
+                    "update_edges",
+                    &json!({ "id": id, "part": bad, "changes": [{ "all": true, "pitch_deg": 25 }], "summary": "x" }),
+                )
+                .unwrap_err();
+            assert!(err.contains("part"), "{err}");
+        }
+        assert_eq!(s.store.load(&id).unwrap(), before);
+    }
+
+    #[test]
+    fn a_roof_that_cannot_be_calculated_is_not_stored_as_an_offer() {
+        // DR-001: update_job status=offer and store_result saved 0 m².
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "set_openings",
+            json!({ "id": id, "summary": "chimney",
+                "chimneys": [{ "corners": [[3, 3], [4, 3], [3.5, 3.4], [4, 4], [3, 4]] }] }),
+        );
+        let before = s.store.load(&id).unwrap();
+        for (tool, extra) in [
+            ("update_job", json!({ "status": "offer" })),
+            ("store_result", json!({})),
+        ] {
+            let mut args = json!({ "id": id, "summary": "x" });
+            args.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let err = s.call_tool(tool, &args).unwrap_err();
+            assert!(err.contains("cannot be calculated"), "{tool}: {err}");
+        }
+        assert_eq!(s.store.load(&id).unwrap(), before);
+    }
+
+    #[test]
+    fn a_misspelled_argument_is_refused_instead_of_saving_nothing() {
+        // ERR-008: `pitch` for `pitch_deg` answered "Saved" with no change.
+        let (mut s, id) = setup();
+        let log = s.store.activity(&id).len();
+        let err = s
+            .call_tool(
+                "update_edges",
+                &json!({ "id": id, "changes": [{ "all": true, "pitch": 25 }], "summary": "x" }),
+            )
+            .unwrap_err();
+        assert!(err.contains("`changes[0].pitch`"), "{err}");
+        let err = s
+            .call_tool(
+                "update_job",
+                &json!({ "id": id, "state": "offer", "summary": "x" }),
+            )
+            .unwrap_err();
+        assert!(err.contains("`state`"), "{err}");
+        assert_eq!(s.store.activity(&id).len(), log, "nothing saved");
+    }
+
+    #[test]
     fn a_building_height_sets_every_wall_in_one_save_and_changes_the_join() {
         let (mut s, id) = setup();
         call(
             &mut s,
             "add_part",
             json!({ "id": id, "summary": "Wing",
-                "part": { "name": "Wing", "points": [[6, 4], [14, 4], [14, 10], [6, 10]], "pitch_deg": 35 } }),
+                "part": { "name": "Wing", "points": [[6, 4], [14, 4], [14, 10], [6, 10]], "defaults": { "pitch_deg": 35 } } }),
         );
         let before = s.store.load(&id).unwrap();
         let roofs = tectora_core::engine::generate(&before).unwrap();
@@ -1849,6 +2169,82 @@ mod tests {
             log + 1,
             "refused calls save nothing"
         );
+    }
+
+    #[test]
+    fn a_dormer_is_placed_by_its_wall_height_or_depth_as_in_the_dialog() {
+        let (mut s, id) = setup();
+        let r = call(
+            &mut s,
+            "add_dormer",
+            json!({ "id": id, "kind": "shed", "start": [4, 1], "front_pitch_deg": 10, "wall_height": 1.2, "summary": "s" }),
+        );
+        let sec = &r["dormer"]["section"];
+        assert_eq!(sec["wall_height"], 1.2, "{sec}");
+        let depth = sec["depth"].as_f64().unwrap();
+        assert!(depth > 0.0, "{sec}");
+        let r = call(
+            &mut s,
+            "update_dormer",
+            json!({ "id": id, "index": 0, "depth": depth * 2.0, "summary": "s" }),
+        );
+        let got = r["dormer"]["section"]["depth"].as_f64().unwrap();
+        assert!((got - depth * 2.0).abs() < 2e-3, "{got} vs {}", depth * 2.0);
+        let p = call(&mut s, "get_project", json!({ "id": id }));
+        assert_eq!(
+            p["dormers"][0]["section"]["depth"],
+            r["dormer"]["section"]["depth"]
+        );
+        for bad in [
+            json!({ "id": id, "index": 0, "depth": 2, "wall_height": 1, "summary": "s" }),
+            json!({ "id": id, "index": 0, "eave_height": 5, "wall_height": 1, "summary": "s" }),
+            json!({ "id": id, "index": 0, "ridge_length": 2, "summary": "s" }),
+            json!({ "id": id, "index": 0, "wall_height": -1, "summary": "s" }),
+            // MATH-001: an infinite eave was saved as null and broke the job.
+            json!({ "id": id, "index": 0, "kind": "half_hip", "half_hip_pitch_deg": 0, "ridge_length": 1, "summary": "s" }),
+        ] {
+            assert!(s.call_tool("update_dormer", &bad).is_err(), "{bad}");
+        }
+        call(&mut s, "get_project", json!({ "id": id }));
+    }
+
+    #[test]
+    fn a_dormer_takes_front_and_side_overhangs_and_a_back_width() {
+        let (mut s, id) = setup();
+        let r = call(
+            &mut s,
+            "add_dormer",
+            json!({ "id": id, "kind": "trapezoid", "start": [4, 1], "overhang": 0.3, "summary": "s" }),
+        );
+        assert_eq!(r["dormer"]["overhang"], 0.3);
+        assert_eq!(r["dormer"]["side_overhang"], 0.3);
+        let r = call(
+            &mut s,
+            "update_dormer",
+            json!({ "id": id, "index": 0, "front_overhang": 0.5, "side_overhang": 0.15, "wall_height": 1.2, "back_width": 1.0, "summary": "s" }),
+        );
+        let d = &r["dormer"];
+        assert_eq!(d["overhang"], 0.5, "{d}");
+        assert_eq!(d["side_overhang"], 0.15, "{d}");
+        let sec = &d["section"];
+        assert!(
+            (sec["back_width"].as_f64().unwrap() - 1.0).abs() < 2e-3,
+            "{sec}"
+        );
+        assert!(
+            (sec["wall_height"].as_f64().unwrap() - 1.2).abs() < 2e-3,
+            "{sec}"
+        );
+        let p = call(&mut s, "get_project", json!({ "id": id }));
+        assert_eq!(p["dormers"][0]["side_overhang"], 0.15);
+        for bad in [
+            json!({ "id": id, "index": 0, "side_overhang": -0.1, "summary": "s" }),
+            json!({ "id": id, "index": 0, "back_width": 1.0, "pitch_deg": 40, "summary": "s" }),
+            json!({ "id": id, "index": 0, "back_width": 9.0, "summary": "s" }),
+            json!({ "id": id, "index": 0, "kind": "gable", "back_width": 1.0, "summary": "s" }),
+        ] {
+            assert!(s.call_tool("update_dormer", &bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

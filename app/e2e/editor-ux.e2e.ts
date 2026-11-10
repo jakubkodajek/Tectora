@@ -16,7 +16,7 @@ test.describe("editor feedback", () => {
     await def.getByRole("button", { name: cs("def.next") }).focus();
     await app.answerConfirm(false);
     await page.keyboard.press("Backspace");
-    await expect.poll(async () => (await app.dialogs()).map((d) => d.message)).toContain(cs("edge.confirmDeleteVertex", { n: 1, name: (await loadProject(id)).parts[0].name }));
+    await expect.poll(async () => (await app.dialogs()).map((d) => d.message)).toContain(cs("edge.confirmDeleteVertex", { n: 1, name: cs("editor.partN", { n: 1 }) }));
     await page.waitForTimeout(700);
     expect((await loadProject(id)).parts[0].edges).toHaveLength(4);
     await app.answerConfirm(true);

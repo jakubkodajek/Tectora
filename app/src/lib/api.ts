@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppError } from "./errors";
+import type { HostSlope } from "./dormers";
 import type {
   AiAssistant,
   AiAssistantId,
@@ -84,8 +85,11 @@ export const api = {
   /** The first roof window larger than what is left of its face, or null. */
   checkWindows: (project: Project) =>
     invoke<{ index: number; area: number; face_area: number } | null>("check_windows", { project }),
+  /** The roof under dormer `index` at the middle of its front (height, rise per metre into the roof), or null off it. */
+  dormerHost: (project: Project, index: number) => invoke<HostSlope | null>("dormer_host", { project, index }),
   getSettings: () => invoke<AppSettingsView>("get_settings"),
   updateSettings: (patch: Record<string, unknown>) => invoke<AppSettingsView>("update_settings", { patch }),
+  answerFolderRequest: (allow: boolean) => invoke<AppSettingsView>("answer_folder_request", { allow }),
   openFolder: (which: "projects" | "drawings" | "settings") => invoke<void>("open_folder", { which }),
   listAttachments: (id: string) => invoke<Attachment[]>("list_attachments", { id }),
   attachFiles: (id: string, paths: string[]) => invoke<string[]>("attach_files", { id, paths }),

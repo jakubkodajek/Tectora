@@ -13,6 +13,16 @@ export const tool = (page: Page, key: string) =>
 /** The bar under the views (roof definition, dormer, opening, …). */
 export const bar = (page: Page, key: string) => page.getByRole("toolbar", { name: cs(key) });
 
+/** The dormer window that opens when a dormer is placed; OK places it. */
+export const dormerDialog = (page: Page) => page.getByRole("dialog", { name: cs("dormer.dialogNew") });
+
+/** Places the dormer whose window just opened, with its default values. */
+export async function confirmDormer(page: Page) {
+  const dlg = dormerDialog(page);
+  await dlg.getByRole("button", { name: cs("common.ok"), exact: true }).click();
+  await expect(dlg).toBeHidden();
+}
+
 /** Types a value into a field and commits it (the app listens to `change`). */
 export async function setField(field: Locator, value: string | number) {
   await field.fill(String(value));

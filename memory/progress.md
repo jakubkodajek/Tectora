@@ -138,3 +138,97 @@ sessions that use it know where things stand.
   (PR #39 base).
 - Next: gap analysis doc lists the other DACAD gaps; Jakub chose only
   limits + building height for now.
+
+## 2026-11-09 · Resize any chimney or roof opening
+
+- Done: the object bar edits every chimney / roof opening through its box
+  along the first side (`openingBox` / `reshapeOpening`, port in
+  `tectora_core::edit::openings`); before, a chimney placed on a slanted
+  wall, aligned, rotated or mirrored lost its size fields ("edit in job
+  file"). MCP `update_opening` (chimney, roof opening, window) for parity.
+- State: `make check` exit 0, `make sweeps` pass, preview screenshot in
+  project files `chimney-resize-2026-11-09/`.
+
+## 2026-11-10 · Roof windows in the export
+
+- Done: list gets DACAD's `STREŠNÉ OKNÁ` section and one deduction row
+  per window (`Z1.01/k`) and per chimney/opening (`Z1.01:k`, slope
+  length); gross `-Norm` row dropped (DACAD default norm is none); plan
+  sheet draws windows, chimneys, openings with their deductions, dormer
+  footprints and hand-drawn faces/lines. Evidence: DACAD runs P3a/P3c
+  under Wine (PR #43).
+- State: `make check` exit 0.
+- Next: window with a corner on a hip/ridge is not deducted (review
+  ERR-010); `KOMÍN / OTVORY` list section; Jakub to try a paste with a
+  window in the real price sheet.
+- 2026-11-10 (later): plan-sheet labels (line lengths, cut-out areas, face
+  labels) keep clear of every line and label; a window whose corner lies
+  exactly on a ridge/hip/valley is deducted again (review ERR-010). DACAD
+  evidence: window records sit under a wall and DACAD takes w×h off that
+  wall's face wherever the window lies (moved-record runs under Wine).
+
+## 2026-11-10 · dormer window (branch claude/project-thread-j9381s)
+
+- Done: DACAD-style dormer window (type tiles, plan, side section) opens when
+  a dormer is placed and from the dormer bar ("Upravit vikýř"); front wall
+  height above the roof, depth and ridge length set the eave height; roof
+  pitch, slope lengths and rise follow. Core `edit::dormers::{section,
+  eave_for, host_slope}` (closed form, checked against DACAD's dialog numbers
+  for a shed dormer and against the calculated roof for all 7 kinds), TS
+  mirror parity-tested, Tauri/bridge `dormer_host`, MCP `section` and
+  `wall_height`/`depth`/`ridge_length`.
+- State: `make check` exit 0, `make sweeps` clean.
+- Next: Jakub's dad tries it; DACAD's dialog also has separate front and
+  side overhangs and a back width for the trapezoid dormer (not ported, one
+  overhang as before).
+
+## 2026-11-10 · dormer overhangs and trapezoid back width (same branch)
+
+- Done: separate front overhang (front wall) and side overhang (cheeks) in
+  `DormerParams` (`overhang`, `side_overhang`, read back from the edges, so
+  old jobs keep their one overhang), the dormer window (front overhang in the
+  section, side overhang in the plan), the dormer bar and MCP
+  (`overhang` sets both, `front_overhang` / `side_overhang` apart). Trapezoid:
+  `section.back_width` (shed roof width where it meets the roof) and
+  `pitch_for_back_width` / `solve` set the cheek pitch from it. The section
+  of a trapezoid whose shed roof meets the roof before the cheeks close now
+  takes its depth from the shed plane (it wrongly assumed a ridge before).
+  All checked against the calculated roof (depth, ridge, back width) for 4
+  overhang pairs.
+- Evidence: DACAD dialog resources (Schleppgaube 1259 side / 1265 front
+  overhang; Trapezgaube 1245 top, 1247 base, 1248 cheek pitch) and the
+  decompiled dialog init (type 2 = Trapezgaube, needs top < base width).
+  Not verified with a DACAD run: whether DACAD's trapezoid puts the cheek
+  eave lower than the front (its picture shows a trapezoid front wall).
+- State: `make check` exit 0, sweeps clean.
+
+## 2026-11-10 · whole-app architecture, UI and UX review (branch claude/project-thread-tnm6jz)
+- Done: review with ux and arch reviewers on Fable 5.2, ui and error
+  hunter on Opus 5.5, five verifiers (one lens each); board
+  `target/review/2026-11-10-8cd1db0-ux/` (70 findings, 17 of 18 S1/S2
+  verified). Fixed: ARCH-053 (pitch-break / dormer-wall limits), ERR-005
+  (torn change-log line), ARCH-043 (dialog:allow-save), ERR-007/008 (MCP
+  part index and unknown keys refused), ERR-004, UI-002, UX-011, UX-013,
+  ERR-003, UI-001, UI-019, UX-017.
+- State: `make check` exit 0; full E2E 211 passed; new `guards.e2e.ts`.
+- Next: Jakub decides the clarity redesign (wall bar "More", one term
+  "Budova", Back vs undo, copy for Excel in Results), ARCH-052 (ask before
+  an AI moves the jobs folder) and the core edit-operation refactor
+  (ARCH-042/045/046). Roof windows (ERR-001/002/010) are in their own thread.
+
+## 2026-11-10 — clarity redesign and AI permission prompts (PR #45, round 2)
+
+- Done (Jakub's decisions 1-5): wall bar shows only everyday fields, the
+  rest behind "Více"; one term "Budova" ("Budova 1", "Budova 2", older
+  default names shown the same); "Zpět" only for undo, labelled delete
+  buttons, dormer delete asks; Results has "Kopírovat pro Excel" (bytes
+  identical to the export list) and an "On the roof" list with deductions;
+  an AI client's folder change is a request the user allows in the app
+  (`settings.folder_request`, Tauri `answer_folder_request`); MCP tools carry
+  readOnly/destructive annotations and Connect AI explains how to stop
+  Claude and Antigravity asking at every step.
+- State: `make check` exit 0 (UI 197 tests), `make sweeps` exit 0, full E2E.
+- Open for Jakub: paste the copy into the real TERRAN price sheet once (the
+  sheet is not in the connected folders); should core/MCP default part names
+  become "Budova N"; a core field for deduction totals; `openings.ts` still
+  picks the window face with its own probe instead of the core's.

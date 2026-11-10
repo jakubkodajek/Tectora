@@ -80,9 +80,14 @@ export class App {
   readonly errors: string[] = [];
   constructor(readonly page: Page) {}
 
-  /** Opens the app (library screen) in `locale`. */
+  /**
+   * Opens the app (library screen) in `locale`. The wall and dormer bars'
+   * "More" rows start open, so tests reach every field; pass
+   * `prefs: { wallMore: false }` for the closed default a new user sees.
+   */
   async open(opts: { locale?: Locale; theme?: "light" | "dark"; prefs?: Record<string, unknown> } = {}) {
-    const { locale = "cs", theme, prefs } = opts;
+    const { locale = "cs", theme } = opts;
+    const prefs = { wallMore: true, dormerMore: true, ...opts.prefs };
     await this.page.addInitScript(
       ([l, th, pr]) => {
         if (sessionStorage.getItem("e2e-init")) return;
@@ -92,7 +97,7 @@ export class App {
         if (th) localStorage.setItem("tectora.theme", th as string);
         if (pr) localStorage.setItem("tectora.prefs", pr as string);
       },
-      [locale, theme ?? "", prefs ? JSON.stringify(prefs) : ""],
+      [locale, theme ?? "", JSON.stringify(prefs)],
     );
     await this.page.goto(`/preview.html?bridge=${encodeURIComponent(BRIDGE_URL)}`);
     await expect(this.page.locator("header .brand, .editor")).toBeVisible();

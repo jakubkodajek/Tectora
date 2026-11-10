@@ -16,6 +16,7 @@
     onrevert,
     onconnect,
     onfocus,
+    busy = false,
   }: {
     id: string;
     project: Project;
@@ -23,6 +24,8 @@
     onrevert: () => void;
     onconnect: () => void;
     onfocus: (c: Change | null) => void;
+    /** A revert or accept is running: the button waits for it. */
+    busy?: boolean;
   } = $props();
 
   let open = $state<Record<number, boolean>>({});
@@ -75,7 +78,7 @@
           {/if}
         {/if}
         {#if i === 0 && ai}
-          <button class="btn sm" onclick={onrevert}><Icon name="undo" size={14} />{t("ai.revert")}</button>
+          <button class="btn sm" disabled={busy} onclick={onrevert}><Icon name="undo" size={14} />{t("ai.revert")}</button>
         {/if}
       </li>
     {/each}

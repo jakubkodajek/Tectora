@@ -11,10 +11,12 @@
 //!
 //! The layout is byte for byte the list TERRAN's DACAD wrote for a real job
 //! (2026-11-08, test `the_list_is_terrans_dacad_list`): a head line, then
-//! the faces with their rafter length (`STREŠNÉ PLOCHY`), the wall and
-//! material totals (`PLOCHY`, `Stena : 1` first) and the line totals
-//! (`LÍNIE`). Values are checked against a list DACAD wrote for a
-//! 10 × 8 m hip roof under Wine (2026-11-08).
+//! the roof windows when there are any (`STREŠNÉ OKNÁ`), the faces with
+//! their rafter length and their deductions (`STREŠNÉ PLOCHY`), the wall
+//! and material totals (`PLOCHY`, `Stena : 1` first) and the line totals
+//! (`LÍNIE`). Values are checked against lists DACAD wrote under Wine for
+//! a 10 × 8 m hip roof (2026-11-08) and for the same roof with a window
+//! and a chimney (runs P3a and P3c, 2026-11-10).
 //!
 //! The sheet (`__VYPOCTY_<date> CZ.xls`, sheet DATA, pasted at DH69) reads
 //! face areas only from rows 73-115, i.e. the first 41 faces; DACAD's list
@@ -26,7 +28,6 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use crate::Project;
-use crate::quantities::{Norm, norm_totals};
 use crate::roof::{LineKind, RoofGeometry};
 
 /// 60 dashes: DACAD's separator line (DACAD.exe 0x00eae7d4).
@@ -143,8 +144,84 @@ struct ListFace {
     area: f64,
     rafter: Option<f64>,
     material: u8,
-    /// Windows and chimneys cut out of the face, as one negative entry.
-    holes: f64,
+    /// Everything but windows cut out of the face, one negative entry per
+    /// chimney or opening with its length up the slope (see [`cut_rows`]).
+    holes: Vec<Cut>,
+    /// The roof windows on the face (width, height), one negative entry
+    /// each.
+    windows: Vec<(f64, f64)>,
+}
+
+impl ListFace {
+    /// The face's area less everything cut out of it.
+    fn net(&self) -> f64 {
+        self.area
+            - self.holes.iter().map(|h| h.area).sum::<f64>()
+            - self.windows.iter().map(|(w, h)| w * h).sum::<f64>()
+    }
+}
+
+/// The deductions of a face other than windows, `total` m² in all: one
+/// row per chimney and roof opening with its area and its length up the
+/// slope, as DACAD lists the holes of a face (`Z1.01:1 35,00° -0,78m²
+/// Dĺžka krokvy=0,98m`, DACAD run P3a). Where those do not make up the
+/// total (a dormer, a joined roof), one row without a length.
+fn cut_rows(project: &Project, face: &crate::roof::RoofFace, total: f64) -> Vec<Cut> {
+    use geo::{Area, BooleanOps, MultiPolygon};
+    if total <= 1e-9 {
+        return Vec::new();
+    }
+    let outline = MultiPolygon::new(vec![crate::union::to_geo(&crate::openings::plan(face))]);
+    let (up, tan) = crate::openings::slope(face);
+    let sec = (1.0 + tan * tan).sqrt();
+    let mut rows = Vec::new();
+    for (item, c) in project
+        .chimneys
+        .iter()
+        .chain(&project.roof_openings)
+        .enumerate()
+    {
+        if c.corners.len() < 3 {
+            continue;
+        }
+        let cut = outline.intersection(&MultiPolygon::new(vec![crate::union::to_geo(&c.corners)]));
+        let a = cut.unsigned_area();
+        if a < 1e-9 {
+            continue;
+        }
+        let (lo, hi) = cut
+            .0
+            .iter()
+            .flat_map(|p| p.exterior().points())
+            .map(|q| q.x() * up.x + q.y() * up.y)
+            .fold((f64::MAX, f64::MIN), |(lo, hi), t| (lo.min(t), hi.max(t)));
+        let rise = (face.pitch_deg > 0.01 && hi > lo).then_some((hi - lo) * sec);
+        rows.push(Cut {
+            item: Some(item),
+            area: a * sec,
+            rise,
+        });
+    }
+    let sum: f64 = rows.iter().map(|r| r.area).sum();
+    // The core's areas are float32 printed with five decimals.
+    if rows.is_empty() || (sum - total).abs() > 5e-4 {
+        return vec![Cut {
+            item: None,
+            area: total,
+            rise: None,
+        }];
+    }
+    rows
+}
+
+/// One row of [`cut_rows`].
+struct Cut {
+    /// Index in the project's chimneys followed by its roof openings;
+    /// `None` for the rest of the face's deductions in one row.
+    item: Option<usize>,
+    area: f64,
+    /// Length up the slope.
+    rise: Option<f64>,
 }
 
 struct Collected {
@@ -174,18 +251,26 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
         }
         let n_walls = project.parts.get(pi).map_or(0, |p| p.edges.len());
         let mut part_faces = Vec::new();
-        for f in &geo.faces {
+        for (fi, f) in geo.faces.iter().enumerate() {
             let zs = f.polygon.iter().map(|p| p[2]);
             let (lo, hi) = zs.fold((f64::MAX, f64::MIN), |(lo, hi), z| (lo.min(z), hi.max(z)));
             let s = f.pitch_deg.to_radians().sin();
             let rafter = (f.pitch_deg > 0.01 && s > 1e-9 && hi >= lo).then(|| (hi - lo) / s);
+            let windows: Vec<(f64, f64)> = geo
+                .window_cuts
+                .iter()
+                .filter(|w| w.face == fi)
+                .map(|w| (w.width, w.height))
+                .collect();
+            let in_windows: f64 = windows.iter().map(|(w, h)| w * h).sum();
             let mut face = ListFace {
                 name: String::new(),
                 pitch: f.pitch_deg,
                 area: sol_value(f.area + f.deducted),
                 rafter,
                 material: f.material,
-                holes: f.deducted,
+                holes: cut_rows(project, f, f.deducted - in_windows),
+                windows,
             };
             // Dormer faces belong to no wall of the part (edge usize::MAX).
             if f.edge < n_walls {
@@ -203,7 +288,8 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
                 area: c.area,
                 rafter: None,
                 material: c.material,
-                holes: 0.0,
+                holes: Vec::new(),
+                windows: Vec::new(),
             });
         }
         faces.push(part_faces);
@@ -226,7 +312,8 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
             area: f.area(),
             rafter: None,
             material: crate::model::DEFAULT_MATERIAL,
-            holes: 0.0,
+            holes: Vec::new(),
+            windows: Vec::new(),
         });
     dormer_faces.extend(manual);
     Collected {
@@ -263,31 +350,84 @@ pub fn dacad_list(project: &Project, opts: &ListOptions) -> String {
         .saturating_sub(title.chars().count() + opts.stamp.chars().count())
         .max(1);
     let mut out = format!("{title}{}{}", " ".repeat(pad), opts.stamp);
+    let rafter = |r: Option<f64>| {
+        r.map(|r| format!(" Dĺžka krokvy={}", len(sol_value(r))))
+            .unwrap_or_default()
+    };
 
-    // Faces with their rafter length; a face with windows or chimneys is
-    // followed by its deduction.
-    section(&mut out, "STREŠNÉ PLOCHY");
-    for f in c.faces.iter().flatten().chain(&c.other_faces) {
-        let _ = write!(out, "{} {} {}", f.name, deg(f.pitch), area(f.area));
-        if let Some(r) = f.rafter {
-            let _ = write!(out, " Dĺžka krokvy={}", len(sol_value(r)));
+    // Roof windows, named after their face and numbered within it
+    // (`Fenster1.01/1`), before the faces as in DACAD's list (FUN_00d0ac30,
+    // strings 1774-1775; DACAD run P3a, 2026-11-10). Tectora keeps no window
+    // material, which is DACAD's default ("žiadny Materiál", string 1600).
+    let faces = || c.faces.iter().flatten().chain(&c.other_faces);
+    if faces().any(|f| !f.windows.is_empty()) {
+        section(&mut out, "STREŠNÉ OKNÁ");
+        for f in faces() {
+            let face = f.name.strip_prefix('Z').unwrap_or(&f.name);
+            for (k, (w, h)) in f.windows.iter().enumerate() {
+                let _ = writeln!(
+                    out,
+                    " Fenster{face}/{}   Breite = {}   Höhe = {}   Material = žiadny Materiál",
+                    k + 1,
+                    len(*w),
+                    len(*h)
+                );
+            }
         }
-        out.push('\n');
-        if f.holes > 1e-9 {
-            let _ = writeln!(out, "{}:1 {} {}", f.name, deg(f.pitch), area(-f.holes));
+    }
+
+    // Faces with their rafter length. Each face is followed by its
+    // deductions, numbered within the face: chimneys and openings as
+    // `Z1.01:1`, then every window as `Z1.01/2` with the face's rafter
+    // length (DACAD runs P3a, P3c).
+    section(&mut out, "STREŠNÉ PLOCHY");
+    for f in faces() {
+        let _ = writeln!(
+            out,
+            "{} {} {}{}",
+            f.name,
+            deg(f.pitch),
+            area(f.area),
+            rafter(f.rafter)
+        );
+        let mut k = 0;
+        for h in &f.holes {
+            k += 1;
+            let _ = writeln!(
+                out,
+                "{}:{k} {} {}{}",
+                f.name,
+                deg(f.pitch),
+                area(-h.area),
+                rafter(h.rise)
+            );
+        }
+        for (w, h) in &f.windows {
+            k += 1;
+            let _ = writeln!(
+                out,
+                "{}/{k} {} {}{}",
+                f.name,
+                deg(f.pitch),
+                area(-(w * h)),
+                rafter(f.rafter)
+            );
         }
     }
     if project.parts.len() > 1 {
         for (i, fs) in c.faces.iter().enumerate() {
-            let s: f64 = fs.iter().map(|f| f.area - f.holes).sum();
+            let s: f64 = fs.iter().map(ListFace::net).sum();
             let _ = writeln!(out, "   Dach-Nummer {}: normal: S={}", i + 1, area(s));
         }
     }
     out.push_str(DASHES);
     out.push('\n');
 
-    // The wall area, the area per material, then the norm area where it
-    // differs (one material only).
+    // The wall area, then the area per material. DACAD adds a "-Norm" group
+    // only when a measuring norm is set (Konfigurácia > Norma); out of the
+    // box it is "(0) none" and the list has no such row (DACAD runs P3a,
+    // P3c, 2026-11-10). A gross "-Norm" row would also be the last
+    // "Škridla" row the price sheet's lookup finds.
     section(&mut out, "PLOCHY");
     if let Some(w) = crate::openings::wall_area(project).filter(|w| *w > 1e-9) {
         let _ = writeln!(out, "Stena : 1 {}", area(w));
@@ -295,19 +435,12 @@ pub fn dacad_list(project: &Project, opts: &ListOptions) -> String {
     let mut by_material: BTreeMap<u8, f64> = BTreeMap::new();
     for f in c.faces.iter().flatten().chain(&c.other_faces) {
         if f.material > 0 {
-            *by_material.entry(f.material).or_default() += f.area - f.holes;
+            *by_material.entry(f.material).or_default() += f.net();
         }
     }
-    let single = by_material.len() == 1;
     for (m, total) in &by_material {
         let name = material_group(project, *m);
         let _ = writeln!(out, "{name} {}", area(*total));
-        if single {
-            let norm = norm_totals(project, Norm::Din).roof_area;
-            if (norm - total).abs() >= 0.5 * 10f64.powi(-(d as i32)) {
-                let _ = writeln!(out, "{name}-Norm {}", area(norm));
-            }
-        }
     }
 
     // Line totals, sorted by group name like DACAD's group list.
@@ -371,6 +504,24 @@ fn kind_color(kind: LineKind) -> &'static str {
         LineKind::Knick => "#1f9aa8",
         LineKind::Gorge => "#6b4fd8",
         _ => "#8b5a3c",
+    }
+}
+
+/// A line of the plan sheet: from, to, colour, dashed, length.
+type DrawnLine = ([f64; 3], [f64; 3], &'static str, bool, f64);
+
+/// The line kind of a DACAD line code, for its colour.
+fn code_kind(code: &str) -> Option<LineKind> {
+    match code {
+        "T" => Some(LineKind::Eave),
+        "F" => Some(LineKind::Ridge),
+        "G" => Some(LineKind::Hip),
+        "K" => Some(LineKind::Valley),
+        "OL" | "OR" | "OS" | "O" => Some(LineKind::Verge),
+        "P" => Some(LineKind::Pult),
+        "c" => Some(LineKind::Knick),
+        "S" => Some(LineKind::Gorge),
+        _ => None,
     }
 }
 
@@ -479,6 +630,19 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
     for part in &project.parts {
         pts.extend(part.edges.iter().map(|e| [e.start.x, e.start.y]));
     }
+    for c in project.chimneys.iter().chain(&project.roof_openings) {
+        pts.extend(c.corners.iter().map(|p| [p.x, p.y]));
+    }
+    for w in &project.windows {
+        let o = crate::openings::window_outline(&geos, w);
+        pts.extend(o.iter().map(|p| [p.x, p.y]));
+    }
+    for f in &project.manual_faces {
+        pts.extend(f.points.iter().map(|p| [p.x, p.y]));
+    }
+    for l in &project.manual_lines {
+        pts.extend([[l.a[0], l.a[1]], [l.b[0], l.b[1]]]);
+    }
     let foot_h = 46.0;
     let (bx0, by0, bx1, by1) = (
         MARGIN + 20.0,
@@ -515,88 +679,244 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
             });
         }
     }
-    for ch in project.chimneys.iter().chain(&project.roof_openings) {
-        let n = ch.corners.len();
-        for i in 0..n {
-            let (a, b) = (ch.corners[i], ch.corners[(i + 1) % n]);
+    let outline = |shapes: &mut Vec<Shape>, pts: &[[f64; 2]], color, width, dashed| {
+        for i in 0..pts.len() {
             shapes.push(Shape::Line {
-                a: map(a.x, a.y),
-                b: map(b.x, b.y),
-                color: MUTED,
-                width: 0.8,
-                dashed: false,
+                a: pts[i],
+                b: pts[(i + 1) % pts.len()],
+                color,
+                width,
+                dashed,
             });
+        }
+    };
+
+    // What every face loses, as DACAD's plan shows it: the face with its
+    // area before the cut-outs drawn on the sheet, and each window, chimney
+    // and roof opening with the area it takes off ("-0,92m²", DACAD runs
+    // P3a and P3c). Deductions without an outline of their own (the roof
+    // under a dormer, a joined roof) stay in the face's area, so the face
+    // labels less the cut-out labels add up to the total at the foot.
+    let n_cutouts = project.chimneys.len() + project.roof_openings.len();
+    let mut cutout_area = vec![0.0; n_cutouts];
+    let mut face_shown: Vec<Vec<f64>> = Vec::with_capacity(geos.len());
+    for g in &geos {
+        let mut shown = Vec::with_capacity(g.faces.len());
+        for (fi, f) in g.faces.iter().enumerate() {
+            let in_windows: f64 = g
+                .window_cuts
+                .iter()
+                .filter(|w| w.face == fi)
+                .map(|w| w.width * w.height)
+                .sum();
+            let mut a = f.area + in_windows;
+            for c in cut_rows(project, f, f.deducted - in_windows) {
+                if let Some(slot) = c.item.and_then(|i| cutout_area.get_mut(i)) {
+                    *slot += c.area;
+                    a += c.area;
+                }
+            }
+            shown.push(a);
+        }
+        face_shown.push(shown);
+    }
+
+    // Every label is placed after all lines are drawn, so that no label
+    // lands on a line, an outline or another label (see `Obstacles`).
+    // Cut-out labels: (outline on the page, colour, text).
+    let mut cut_labels: Vec<(Vec<[f64; 2]>, &'static str, String)> = Vec::new();
+    // Cut-out outlines on the page: no face label goes inside one.
+    let mut cut_boxes: Vec<[f64; 4]> = Vec::new();
+
+    // Chimneys and roof openings.
+    for (i, ch) in project
+        .chimneys
+        .iter()
+        .chain(&project.roof_openings)
+        .enumerate()
+    {
+        let pts: Vec<[f64; 2]> = ch.corners.iter().map(|p| map(p.x, p.y)).collect();
+        outline(&mut shapes, &pts, MUTED, 0.8, false);
+        cut_boxes.push(bbox(&pts));
+        if let Some(a) = cutout_area.get(i).filter(|a| **a > 1e-9) {
+            cut_labels.push((pts, INK, format!("-{}m²", num(*a, d))));
         }
     }
 
-    // Roof lines with their true length along them.
+    // Roof windows: the outline the editor draws, and the area they take
+    // off their face. A window on no face takes nothing off.
+    for w in &project.windows {
+        let o = crate::openings::window_outline(&geos, w);
+        let pts: Vec<[f64; 2]> = o.iter().map(|p| map(p.x, p.y)).collect();
+        outline(&mut shapes, &pts, BRAND, 0.8, false);
+        cut_boxes.push(bbox(&pts));
+        if crate::openings::window_face(&geos, w).is_some() {
+            cut_labels.push((pts, BRAND, format!("-{}m²", num(w.width * w.height, d))));
+        }
+    }
+
+    // Dormer footprints, dashed: the dormer's own faces and lines are
+    // drawn with the roof.
+    for fp in geos.iter().flat_map(|g| &g.footprints) {
+        let pts: Vec<[f64; 2]> = fp.iter().map(|p| map(p.x, p.y)).collect();
+        outline(&mut shapes, &pts, MUTED, 0.6, true);
+    }
+
+    // Face labels: (face on the page, area, pitch). Hand-drawn faces first.
+    let mut face_labels: Vec<(Vec<[f64; 2]>, String, String)> = Vec::new();
+    for f in project.manual_faces.iter().filter(|f| f.pitch_counts()) {
+        let pts: Vec<[f64; 2]> = f.points.iter().map(|p| map(p.x, p.y)).collect();
+        outline(&mut shapes, &pts, INK, 0.8, false);
+        face_labels.push((
+            pts,
+            format!("{}m²", num(f.area(), d)),
+            format!("{}°", num(f.pitch_deg, 2)),
+        ));
+    }
+    for (g, shown) in geos.iter().zip(&face_shown) {
+        for (f, a) in g.faces.iter().zip(shown) {
+            face_labels.push((
+                f.polygon.iter().map(|p| map(p[0], p[1])).collect(),
+                format!("{}m²", num(*a, d)),
+                format!("{}°", num(f.pitch_deg, 2)),
+            ));
+        }
+    }
+
+    // Roof lines, then the hand-drawn lines (dashed where they do not
+    // count, e.g. dimension lines).
     let label = (7.5_f64).min((scale * 0.45).max(5.0));
+    // (from, to, colour, dashed, length)
+    let mut drawn: Vec<DrawnLine> = Vec::new();
     for g in &geos {
         for l in &g.lines {
-            let (a, b) = (map(l.a[0], l.a[1]), map(l.b[0], l.b[1]));
-            let color = kind_color(l.kind);
-            shapes.push(Shape::Line {
-                a,
-                b,
-                color,
-                width: 1.4,
-                dashed: false,
-            });
-            let plan = (b[0] - a[0]).hypot(b[1] - a[1]);
-            if plan < 18.0 {
-                continue;
-            }
-            // Upright text along the line, just off it.
-            let mut ang = -(b[1] - a[1]).atan2(b[0] - a[0]).to_degrees();
-            if ang > 90.0 {
-                ang -= 180.0;
-            } else if ang <= -90.0 {
-                ang += 180.0;
-            }
-            let r = ang.to_radians();
-            let (nx, ny) = (-r.sin(), -r.cos());
-            let mid = [
-                (a[0] + b[0]) / 2.0 + nx * 2.5,
-                (a[1] + b[1]) / 2.0 + ny * 2.5,
-            ];
-            shapes.push(Shape::Text {
-                at: mid,
-                angle: ang,
-                size: label,
-                color,
-                bold: false,
-                anchor: 0.5,
-                text: format!("{}m", num(l.length(), d)),
-            });
+            drawn.push((l.a, l.b, kind_color(l.kind), false, l.length()));
+        }
+    }
+    for l in &project.manual_lines {
+        let color = code_kind(&l.code).map_or(MUTED, kind_color);
+        drawn.push((l.a, l.b, color, !l.counted(), l.length()));
+    }
+    // Line labels: (from, to, colour, text) on the page.
+    let mut line_labels: Vec<([f64; 2], [f64; 2], &'static str, String)> = Vec::new();
+    for (la, lb, color, dashed, length) in drawn {
+        let (a, b) = (map(la[0], la[1]), map(lb[0], lb[1]));
+        shapes.push(Shape::Line {
+            a,
+            b,
+            color,
+            width: if dashed { 0.8 } else { 1.4 },
+            dashed,
+        });
+        if (b[0] - a[0]).hypot(b[1] - a[1]) >= 18.0 {
+            line_labels.push((a, b, color, format!("{}m", num(length, d))));
         }
     }
 
-    // Faces: area and pitch at the middle of the face.
-    for g in &geos {
-        for f in &g.faces {
-            let poly: Vec<[f64; 2]> = f.polygon.iter().map(|p| map(p[0], p[1])).collect();
-            let Some(c) = centroid(&poly) else { continue };
-            shapes.push(Shape::Text {
-                at: [c[0], c[1] - 1.0],
-                angle: 0.0,
-                size: 8.5,
-                color: INK,
-                bold: false,
-                anchor: 0.5,
-                text: format!("{}m²", num(f.area, d)),
-            });
-            shapes.push(Shape::Text {
-                at: [c[0], c[1] + 10.0],
-                angle: 0.0,
-                size: 9.5,
-                color: BRAND,
-                bold: true,
-                anchor: 0.5,
-                text: format!("{}°", num(f.pitch_deg, 2)),
-            });
+    let mut obstacles = Obstacles::of(&shapes);
+
+    // Cut-out areas: in the cut-out, or as near to it as is free.
+    for (poly, color, text) in cut_labels {
+        let Some(c) = centroid(&poly) else { continue };
+        let at_label = |at: [f64; 2]| Shape::Text {
+            at: [at[0], at[1] + 2.5],
+            angle: 0.0,
+            size: 7.0,
+            color,
+            bold: false,
+            anchor: 0.5,
+            text: text.clone(),
+        };
+        let b = bbox(&poly);
+        let near = [
+            [b[0] - 30.0, b[1] - 30.0],
+            [b[2] + 30.0, b[1] - 30.0],
+            [b[2] + 30.0, b[3] + 30.0],
+            [b[0] - 30.0, b[3] + 30.0],
+        ];
+        let at = free_spot(&near, c, |at| obstacles.free(&[at_label(at)])).unwrap_or(c);
+        obstacles.put(&mut shapes, at_label(at));
+    }
+
+    // Line lengths: upright along the line, just off it, at the middle or,
+    // where that is taken, further along it or on its other side.
+    for (a, b, color, text) in line_labels {
+        let mut ang = -(b[1] - a[1]).atan2(b[0] - a[0]).to_degrees();
+        if ang > 90.0 {
+            ang -= 180.0;
+        } else if ang <= -90.0 {
+            ang += 180.0;
+        }
+        let r = ang.to_radians();
+        // The text's up direction on the page.
+        let (nx, ny) = (-r.sin(), -r.cos());
+        let mut best: Option<(usize, Shape)> = None;
+        'search: for t in [0.5, 0.42, 0.58, 0.34, 0.66, 0.26, 0.74, 0.18, 0.82] {
+            // Above the line the baseline is 2.5 pt off it; below, the
+            // top of the text is.
+            for off in [2.5, -(label * 0.8 + 2.5)] {
+                let s = Shape::Text {
+                    at: [
+                        a[0] + (b[0] - a[0]) * t + nx * off,
+                        a[1] + (b[1] - a[1]) * t + ny * off,
+                    ],
+                    angle: ang,
+                    size: label,
+                    color,
+                    bold: false,
+                    anchor: 0.5,
+                    text: text.clone(),
+                };
+                let cost = obstacles.cost(&s);
+                if best.as_ref().is_none_or(|(c, _)| cost < *c) {
+                    best = Some((cost, s));
+                }
+                if cost == 0 {
+                    break 'search;
+                }
+            }
+        }
+        if let Some((_, s)) = best {
+            obstacles.put(&mut shapes, s);
         }
     }
 
+    // Faces: area and pitch, at the middle of the face or, where a window,
+    // chimney, line or another label is in the way, at the free spot
+    // nearest to it inside the face. Inside a window or chimney is never
+    // free, however large it is.
+    obstacles
+        .quads
+        .extend(cut_boxes.iter().map(|b| box_quad(*b)));
+    for (poly, area_text, pitch_text) in face_labels {
+        let Some(c) = centroid(&poly) else { continue };
+        let rows = |at: [f64; 2]| {
+            [
+                Shape::Text {
+                    at: [at[0], at[1] - 1.0],
+                    angle: 0.0,
+                    size: 8.5,
+                    color: INK,
+                    bold: false,
+                    anchor: 0.5,
+                    text: area_text.clone(),
+                },
+                Shape::Text {
+                    at: [at[0], at[1] + 10.0],
+                    angle: 0.0,
+                    size: 9.5,
+                    color: BRAND,
+                    bold: true,
+                    anchor: 0.5,
+                    text: pitch_text.clone(),
+                },
+            ]
+        };
+        let at = free_spot(&poly, c, |at| obstacles.free(&rows(at))).unwrap_or(c);
+        for s in rows(at) {
+            obstacles.put(&mut shapes, s);
+        }
+    }
     // Foot: total area and line totals by code.
     let fy = PAGE_H - MARGIN - foot_h;
     shapes.push(Shape::Line {
@@ -620,17 +940,7 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
     let mut x = MARGIN + 150.0;
     let codes = crate::quantities::dacad_line_totals(project);
     for (code, v) in codes.iter().filter(|(_, v)| v.abs() > 1e-9) {
-        let kind = match code.as_str() {
-            "T" => Some(LineKind::Eave),
-            "F" => Some(LineKind::Ridge),
-            "G" => Some(LineKind::Hip),
-            "K" => Some(LineKind::Valley),
-            "OL" | "OR" | "OS" | "O" => Some(LineKind::Verge),
-            "P" => Some(LineKind::Pult),
-            "c" => Some(LineKind::Knick),
-            "S" => Some(LineKind::Gorge),
-            _ => None,
-        };
+        let kind = code_kind(code);
         if x > PAGE_W - MARGIN - 60.0 {
             break;
         }
@@ -692,6 +1002,178 @@ fn centroid(poly: &[[f64; 2]]) -> Option<[f64; 2]> {
         return Some([m[0] / n as f64, m[1] / n as f64]);
     }
     Some([cx / (3.0 * a), cy / (3.0 * a)])
+}
+
+/// A text in the PDF's encoding, for measuring it.
+fn ansi(text: &str) -> Vec<u8> {
+    text.chars().map(win_ansi).collect()
+}
+
+/// The bounding box `[x0, y0, x1, y1]` of some points.
+fn bbox(pts: &[[f64; 2]]) -> [f64; 4] {
+    pts.iter()
+        .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
+            [
+                b[0].min(p[0]),
+                b[1].min(p[1]),
+                b[2].max(p[0]),
+                b[3].max(p[1]),
+            ]
+        })
+}
+
+/// A convex quadrilateral on the page.
+type Quad = [[f64; 2]; 4];
+
+fn box_quad(b: [f64; 4]) -> Quad {
+    [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]]
+}
+
+/// The area a text covers on the page, turned with it.
+fn text_quad(s: &Shape) -> Option<Quad> {
+    let Shape::Text {
+        at,
+        angle,
+        size,
+        bold,
+        anchor,
+        text,
+        ..
+    } = s
+    else {
+        return None;
+    };
+    let w = text_width(&ansi(text), *size, *bold);
+    let (x0, x1) = (-w * anchor, w * (1.0 - anchor));
+    let (y0, y1) = (-size * 0.8, size * 0.25);
+    let r = angle.to_radians();
+    let (c, sn) = (r.cos(), r.sin());
+    // Page y points down; the text turns counter-clockwise.
+    Some(
+        [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+            .map(|(x, y)| [at[0] + x * c + y * sn, at[1] - x * sn + y * c]),
+    )
+}
+
+/// Whether two convex polygons (a segment counts as one) overlap, by the
+/// separating axis test; touching is not overlapping.
+fn convex_overlap(a: &[[f64; 2]], b: &[[f64; 2]]) -> bool {
+    for poly in [a, b] {
+        for i in 0..poly.len() {
+            let (p, q) = (poly[i], poly[(i + 1) % poly.len()]);
+            let axis = [p[1] - q[1], q[0] - p[0]];
+            if axis[0].abs() + axis[1].abs() < 1e-12 {
+                continue;
+            }
+            let span = |pts: &[[f64; 2]]| {
+                pts.iter()
+                    .map(|v| v[0] * axis[0] + v[1] * axis[1])
+                    .fold((f64::MAX, f64::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)))
+            };
+            let ((a0, a1), (b0, b1)) = (span(a), span(b));
+            if a1 <= b0 + 1e-9 || b1 <= a0 + 1e-9 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// What a label must keep clear of: the texts already on the sheet and
+/// the boxes no label may enter (as quads), and its lines (as segments),
+/// in page points.
+struct Obstacles {
+    quads: Vec<Quad>,
+    segments: Vec<[[f64; 2]; 2]>,
+}
+
+impl Obstacles {
+    fn of(shapes: &[Shape]) -> Self {
+        let mut o = Obstacles {
+            quads: Vec::new(),
+            segments: Vec::new(),
+        };
+        for s in shapes {
+            match s {
+                Shape::Line { a, b, .. } => o.segments.push([*a, *b]),
+                Shape::Text { .. } => o.quads.extend(text_quad(s)),
+            }
+        }
+        o
+    }
+
+    /// How badly a text would collide: another text counts more than a
+    /// line, so a crowded label at least stays readable.
+    fn cost(&self, s: &Shape) -> usize {
+        let Some(q) = text_quad(s) else { return 0 };
+        3 * self.quads.iter().filter(|x| convex_overlap(*x, &q)).count()
+            + self
+                .segments
+                .iter()
+                .filter(|x| convex_overlap(*x, &q))
+                .count()
+    }
+
+    fn free(&self, texts: &[Shape]) -> bool {
+        texts.iter().all(|s| self.cost(s) == 0)
+    }
+
+    /// Draws the text and keeps later labels off it.
+    fn put(&mut self, shapes: &mut Vec<Shape>, s: Shape) {
+        self.quads.extend(text_quad(&s));
+        shapes.push(s);
+    }
+}
+/// Whether `p` lies inside the polygon (page points).
+fn inside_page(poly: &[[f64; 2]], p: [f64; 2]) -> bool {
+    let mut odd = false;
+    let n = poly.len();
+    for i in 0..n {
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        if (a[1] > p[1]) != (b[1] > p[1])
+            && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0])
+        {
+            odd = !odd;
+        }
+    }
+    odd
+}
+
+/// The point inside `poly` nearest to `c` (on a 3 pt grid) where `free`
+/// holds; `None` when there is none.
+fn free_spot(poly: &[[f64; 2]], c: [f64; 2], free: impl Fn([f64; 2]) -> bool) -> Option<[f64; 2]> {
+    if inside_page(poly, c) && free(c) {
+        return Some(c);
+    }
+    let b = poly
+        .iter()
+        .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
+            [
+                b[0].min(p[0]),
+                b[1].min(p[1]),
+                b[2].max(p[0]),
+                b[3].max(p[1]),
+            ]
+        });
+    if !(b[2] - b[0]).is_finite() || !(b[3] - b[1]).is_finite() {
+        return None;
+    }
+    const STEP: f64 = 3.0;
+    let (nx, ny) = (
+        ((b[2] - b[0]) / STEP) as usize,
+        ((b[3] - b[1]) / STEP) as usize,
+    );
+    // A page is about 280 × 200 steps; bounded either way.
+    if nx.saturating_mul(ny) > 200_000 {
+        return None;
+    }
+    let mut pts: Vec<[f64; 2]> = (0..=nx)
+        .flat_map(|i| (0..=ny).map(move |j| [b[0] + i as f64 * STEP, b[1] + j as f64 * STEP]))
+        .filter(|p| inside_page(poly, *p))
+        .collect();
+    let d2 = |p: &[f64; 2]| (p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2);
+    pts.sort_by(|a, b| d2(a).total_cmp(&d2(b)));
+    pts.into_iter().find(|p| free(*p))
 }
 
 fn esc_xml(s: &str) -> String {
@@ -1060,6 +1542,244 @@ LÍNIE
 6 Odkvap - 60,000m
 ";
 
+    /// DACAD runs P3c (a roof window) and P3a (the same window and a
+    /// chimney), 10 × 8 m hip roof, pitch 35°, eave height 3 m, no
+    /// overhang, calculated in DACAD DE.exe under Wine on 2026-11-10 with
+    /// its default settings (no measuring norm, centimetres). The rows are
+    /// the ones DACAD's list wrote, its section filter left as it is.
+    fn dacad_window_roof(chimney: bool) -> Project {
+        use crate::geom::Point2;
+        let mut p = Project::new("w");
+        p.parts
+            .push(standard_roof(StandardRoof::Hip, 10.0, 8.0, 35.0, 3.0, 0.0));
+        p.windows.push(crate::model::RoofWindow {
+            x: 4.5,
+            y: 0.8,
+            width: 0.78,
+            height: 1.18,
+        });
+        if chimney {
+            p.chimneys.push(crate::model::Chimney {
+                corners: vec![
+                    Point2::new(5.0, 1.5),
+                    Point2::new(5.8, 1.5),
+                    Point2::new(5.8, 2.3),
+                    Point2::new(5.0, 2.3),
+                ],
+                height: 9.0,
+            });
+        }
+        p
+    }
+
+    fn cm(title: &str) -> ListOptions {
+        ListOptions {
+            decimals: 2,
+            ..ListOptions::new(title, "10.11.2026 09:47")
+        }
+    }
+
+    #[test]
+    fn a_roof_window_is_listed_and_deducted_as_dacad_lists_it() {
+        let text = dacad_list(&dacad_window_roof(false), &cm("w"));
+        let rows: Vec<&str> = text.lines().collect();
+        let at = |row: &str| {
+            rows.iter()
+                .position(|r| *r == row)
+                .unwrap_or_else(|| panic!("no row {row:?} in\n{text}"))
+        };
+        // The window section comes before the faces.
+        assert!(at("STREŠNÉ OKNÁ") < at("STREŠNÉ PLOCHY"), "{text}");
+        let w = at(" Fenster1.01/1   Breite = 0,78m   Höhe = 1,18m   Material = žiadny Materiál");
+        assert_eq!(rows[w - 1], DASHES);
+        let f = at("Z1.01 35,00° 29,30m\u{2db} Dĺžka krokvy=4,88m");
+        assert_eq!(
+            rows[f + 1],
+            "Z1.01/1 35,00° -0,92m\u{2db} Dĺžka krokvy=4,88m",
+            "{text}"
+        );
+        at("Škridla -  96,74m\u{2db}");
+        // DACAD's default settings measure to no norm: no gross "-Norm"
+        // row for the price sheet to pick up instead.
+        assert!(!text.contains("-Norm"), "{text}");
+        // The price sheet's face rows add up to the tiled area.
+        let sum: f64 = sheet(&text).faces.iter().map(|f| f.1).sum();
+        assert!((sum - 96.74).abs() < 0.015, "{sum}\n{text}");
+    }
+
+    #[test]
+    fn a_chimney_and_a_window_on_one_face_are_numbered_as_dacad_numbers_them() {
+        let text = dacad_list(&dacad_window_roof(true), &cm("w"));
+        let want = "\
+Z1.01 35,00° 29,30m\u{2db} Dĺžka krokvy=4,88m
+Z1.01:1 35,00° -0,78m\u{2db} Dĺžka krokvy=0,98m
+Z1.01/2 35,00° -0,92m\u{2db} Dĺžka krokvy=4,88m
+Z1.02 35,00° 19,53m\u{2db} Dĺžka krokvy=4,88m
+";
+        assert!(text.contains(want), "{text}");
+        assert!(
+            text.contains(
+                "\n Fenster1.01/1   Breite = 0,78m   Höhe = 1,18m   Material = žiadny Materiál\n"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("\nŠkridla -  95,96m\u{2db}\n"), "{text}");
+    }
+
+    fn texts(shapes: &[Shape]) -> Vec<&str> {
+        shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_plan_sheet_shows_windows_and_chimneys_as_dacads_plan_does() {
+        // DACAD's plan of P3a: the face 29,30m², the window -0,92m², the
+        // chimney -0,78m²; the other faces 19,53m² and 29,30m².
+        let p = dacad_window_roof(true);
+        let info = SheetInfo {
+            stamp: String::new(),
+            decimals: 2,
+        };
+        let shapes = plan_sheet(&p, &info);
+        let t = texts(&shapes);
+        for want in ["-0,92m²", "-0,78m²", "19,53m²"] {
+            assert!(t.contains(&want), "{want} not in {t:?}");
+        }
+        assert_eq!(t.iter().filter(|x| **x == "29,30m²").count(), 2, "{t:?}");
+        // Faces less cut-outs give the total at the foot.
+        assert!(t.contains(&"A = 95,96 m²"), "{t:?}");
+        let window_lines = shapes
+            .iter()
+            .filter(|s| matches!(s, Shape::Line { color, .. } if *color == BRAND))
+            .count();
+        assert_eq!(window_lines, 4);
+        // In plan the window is 0.78 m wide along the eave and
+        // 1.18 m × cos 35° deep.
+        let o =
+            crate::openings::window_outline(&crate::openings::generate_project(&p), &p.windows[0]);
+        // The core's faces are float32.
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(near(o[1].x - o[0].x, 0.78) && near(o[1].y, o[0].y), "{o:?}");
+        assert!(
+            near(o[3].y - o[0].y, 1.18 * 35f64.to_radians().cos()),
+            "{o:?}"
+        );
+    }
+
+    /// Every label on the sheet keeps clear of every line and every other
+    /// label.
+    fn assert_labels_clear(shapes: &[Shape]) {
+        let lines: Vec<[[f64; 2]; 2]> = shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Line { a, b, .. } => Some([*a, *b]),
+                _ => None,
+            })
+            .collect();
+        let texts: Vec<(&str, Quad)> = shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Text { text, .. } => Some((text.as_str(), text_quad(s)?)),
+                _ => None,
+            })
+            .collect();
+        for (i, (t, q)) in texts.iter().enumerate() {
+            for l in &lines {
+                assert!(!convex_overlap(l, q), "{t} on the line {l:?}");
+            }
+            for (u, r) in texts.iter().skip(i + 1) {
+                assert!(!convex_overlap(q, r), "{t} over {u}");
+            }
+        }
+    }
+
+    #[test]
+    fn labels_keep_clear_of_lines_windows_chimneys_and_each_other() {
+        // The window of P3a sits right under the middle of its face.
+        let info = SheetInfo {
+            stamp: String::new(),
+            decimals: 2,
+        };
+        let p = dacad_window_roof(true);
+        let shapes = plan_sheet(&p, &info);
+        assert_labels_clear(&shapes);
+        // The face label is not inside the window either.
+        let window: Vec<[f64; 2]> = shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Line { a, color, .. } if *color == BRAND => Some(*a),
+                _ => None,
+            })
+            .collect();
+        let wq = box_quad(bbox(&window));
+        for s in &shapes {
+            if let Shape::Text { text, .. } = s
+                && (text.ends_with('°') || text.ends_with("m²") && !text.starts_with('-'))
+            {
+                assert!(
+                    !convex_overlap(&text_quad(s).unwrap(), &wq),
+                    "{text} in the window"
+                );
+            }
+        }
+        // A window on the hip and one under a face label, as the user
+        // drew them: the hip's length moves off the window.
+        let mut p = dacad_window_roof(true);
+        let mut w = p.windows[0].clone();
+        w.x = 2.0;
+        w.y = 1.0;
+        w.width = 1.2;
+        w.height = 1.6;
+        p.windows.push(w);
+        let mut w = p.windows[0].clone();
+        w.x = 1.0;
+        w.y = 3.6;
+        p.windows.push(w);
+        assert_labels_clear(&plan_sheet(&p, &info));
+    }
+
+    #[test]
+    fn the_plan_sheet_draws_hand_drawn_faces_and_lines() {
+        use crate::geom::Point2;
+        use crate::model::{ManualFace, ManualLine};
+        let mut p = dacad_window_roof(false);
+        p.manual_faces.push(ManualFace {
+            points: vec![
+                Point2::new(12.0, 0.0),
+                Point2::new(14.0, 0.0),
+                Point2::new(14.0, 3.0),
+                Point2::new(12.0, 3.0),
+            ],
+            pitch_deg: 0.0,
+            label: String::new(),
+        });
+        p.manual_lines.push(ManualLine {
+            a: [12.0, 4.0, 0.0],
+            b: [16.0, 4.0, 0.0],
+            code: "M".into(),
+            length: None,
+            label: String::new(),
+        });
+        let info = SheetInfo {
+            stamp: String::new(),
+            decimals: 2,
+        };
+        let shapes = plan_sheet(&p, &info);
+        let t = texts(&shapes);
+        assert!(t.contains(&"6,00m²") && t.contains(&"4,00m"), "{t:?}");
+        // A dimension line does not count: drawn dashed.
+        assert!(
+            shapes
+                .iter()
+                .any(|s| matches!(s, Shape::Line { dashed: true, color, .. } if *color == MUTED))
+        );
+    }
+
     #[test]
     fn the_list_is_terrans_dacad_list() {
         let text = dacad_list(&terran_l_roof(), &ListOptions::new("L", "08.11.2026 16:26"));
@@ -1242,9 +1962,20 @@ LÍNIE
         };
         let m2 = |t: &str| t.strip_suffix("m\u{2db}").is_some_and(number);
         let m = |t: &str| t.strip_suffix('m').is_some_and(number);
-        if row.is_empty() || row == DASHES || ["STREŠNÉ PLOCHY", "PLOCHY", "LÍNIE"].contains(&row)
+        if row.is_empty()
+            || row == DASHES
+            || ["STREŠNÉ OKNÁ", "STREŠNÉ PLOCHY", "PLOCHY", "LÍNIE"].contains(&row)
         {
             return true;
+        }
+        if let Some(rest) = row.strip_prefix(" Fenster") {
+            // " Fenster1.01/1   Breite = 0,780m   Höhe = 1,180m   Material = žiadny Materiál"
+            let f: Vec<&str> = rest.split("   ").collect();
+            return f.len() == 4
+                && f[0].starts_with(|c: char| c.is_ascii_digit())
+                && f[1].strip_prefix("Breite = ").is_some_and(m)
+                && f[2].strip_prefix("Höhe = ").is_some_and(m)
+                && f[3] == "Material = žiadny Materiál";
         }
         let w: Vec<&str> = row.split(' ').collect();
         if row.starts_with('Z') && row[1..].starts_with(|c: char| c.is_ascii_digit()) {

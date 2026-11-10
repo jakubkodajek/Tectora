@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ui } from "./theme.svelte";
+  import Icon from "./Icon.svelte";
   import { onMount } from "svelte";
   import * as THREE from "three";
   import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
@@ -509,8 +510,8 @@
       <button class:on={view === v} role="radio" aria-checked={view === v} onclick={() => frame(v as View)} title={t(`view.${v}Hint`)}>{t(`view.${v}`)}</button>
     {/each}
   </div>
-  <button class="fit icon-btn" title={t("plan.fit")} aria-label={t("plan.fit")} onclick={() => frame()}>
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
+  <button class="fit icon-btn" title={t("view.fitHint")} aria-label={t("view.fit")} onclick={() => frame()}>
+    <Icon name="fit" size={18} />
   </button>
 </div>
 
