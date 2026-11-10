@@ -211,7 +211,6 @@
         title={moreTitle} onclick={toggleMore}>
         {t("bar.more")}
         {#if moreSet.length}<b class="count" data-testid="def-more-count">{moreSet.length}</b><span class="sr-only" id="def-more-set">{t("bar.moreSet", { list: moreSet.join(", ") })}</span>{/if}
-        <Icon name={moreOpen ? "x" : "right"} size={12} />
       </button>
     {:else}
       <p class="tip">{t("editor.tip")}</p>
@@ -356,6 +355,9 @@
     padding-top: 8px;
     border-top: 1px solid var(--border);
   }
+  .row.more .unit input {
+    width: 92px;
+  }
   /* Stays in view at the row's end when a narrow window scrolls the row. */
   .more-btn {
     position: sticky;
@@ -439,7 +441,7 @@
   }
   /* A long label wraps within its field, so the first row stays one line. */
   label.wrap span {
-    width: 80px;
+    width: 84px;
     white-space: normal;
     line-height: 1.2;
   }
@@ -450,8 +452,9 @@
     position: relative;
   }
   .unit input {
-    width: 80px;
+    width: 84px;
     padding-right: 24px;
+    padding-left: 8px;
   }
   .unit em {
     position: absolute;

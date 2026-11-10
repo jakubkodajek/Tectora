@@ -145,8 +145,7 @@
             title={moreTitle} onclick={toggleMore}>
             {t("bar.more")}
             {#if moreSet.length}<b class="count" data-testid="dormer-more-count">{moreSet.length}</b><span class="sr-only" id="dormer-more-set">{t("bar.moreSet", { list: moreSet.join(", ") })}</span>{/if}
-            <Icon name={moreOpen ? "x" : "right"} size={12} />
-          </button>
+            </button>
         {/if}
         <button class="btn sm ghost danger" onclick={ondelete} title={t("dormer.delete")}><Icon name="trash" size={15} />{t("dormer.delete")}</button>
       </div>
@@ -204,6 +203,9 @@
   .row.more {
     padding-top: 8px;
     border-top: 1px solid var(--border);
+  }
+  .row.more .unit input {
+    width: 92px;
   }
   /* Stays in view at the row's end when a narrow window scrolls the row. */
   /* More and Delete stay in view at the row's end when a narrow window scrolls the row. */
@@ -286,8 +288,9 @@
     position: relative;
   }
   .unit input {
-    width: 80px;
+    width: 84px;
     padding-right: 24px;
+    padding-left: 8px;
   }
   .unit em {
     position: absolute;
