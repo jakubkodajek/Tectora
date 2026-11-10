@@ -223,6 +223,44 @@ test.describe("no export or offer from a roof the core refused (ERR-003)", () =>
     expect((await loadProject(id)).result_snapshot.roof_area).toBe(area);
   });
 
+  const failCmd = (page: Page, cmd: string, code: string) =>
+    page.route(new RegExp(`/${cmd}$`), (r) =>
+      r.fulfill({ contentType: "application/json", headers: { "access-control-allow-origin": "*" }, body: JSON.stringify({ err: { code, detail: "too many pitch breaks of one wall: 65 (at most 64)" } }) }),
+    );
+
+  test("a calculation that fails as a whole blocks export, offer and order too (DR-002)", async ({ app, page }) => {
+    const id = await createExample("hip", "Bez výsledku");
+    await failCmd(page, "calc", "too_many");
+    await openEditor(app, "Bez výsledku");
+    await expect(app.toasts().filter({ hasText: cs("err.too_many") })).toBeVisible();
+    const exp = tool(page, "tool.export");
+    await expect(exp).toBeDisabled();
+    await expect(exp).toHaveAttribute("title", cs("tool.exportBlocked"));
+    await jobTab(page).click();
+    const status = page.locator("aside .job select");
+    await expect(status.locator('option[value="offer"]')).toHaveAttribute("disabled", "");
+    await expect(status.locator('option[value="ordered"]')).toHaveAttribute("disabled", "");
+    expect((await loadProject(id)).job.status).toBe("draft");
+    // The failed calculation is reported on purpose.
+    app.errors.length = 0;
+  });
+
+  test("the job stays a draft when its result cannot be stored (DR-002)", async ({ app, page }) => {
+    const id = await createExample("hip", "Bez snímku");
+    await openEditor(app, "Bez snímku");
+    await failCmd(page, "take_snapshot", "not_calculated");
+    await jobTab(page).click();
+    const status = page.locator("aside .job select");
+    await status.selectOption("offer");
+    await expect(app.toasts()).toHaveCount(1);
+    await expect(status).toHaveValue("draft");
+    await page.waitForTimeout(800);
+    const p = await loadProject(id);
+    expect(p.job.status).toBe("draft");
+    expect(p.result_snapshot ?? null).toBeNull();
+    app.errors.length = 0;
+  });
+
   test("a roof with only a warning still exports and can be offered", async ({ app, page }) => {
     const id = await createExample("gable", "Varování");
     const p = await loadProject(id);

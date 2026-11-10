@@ -212,7 +212,9 @@
   /** The core gave no roof for a part (the non-convex case too): its figures
       are zero, so no export and no offer or order from it (ERR-003). */
   const roofError = $derived(result?.parts.find((p) => p.geometry.error)?.geometry.error ?? null);
-  const blockedReason = $derived(roofError ? t("tool.exportBlocked") : null);
+  // No result at all: the calculation failed as a whole (too many breaks,
+  // a value out of range, an internal error) or has not come back yet (DR-002).
+  const blockedReason = $derived(!result || roofError ? t("tool.exportBlocked") : null);
   $effect(() => {
     if (roofError) exporting = false;
   });

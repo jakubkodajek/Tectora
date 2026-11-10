@@ -56,7 +56,11 @@
       try {
         project.result_snapshot = await api.takeSnapshot(JSON.parse(JSON.stringify(project)));
       } catch (e) {
+        // No figures to make the offer with: the job stays a draft (DR-002).
+        project.job.status = was;
+        status = was;
         notifyError(e, "save");
+        return;
       }
     }
     onchange();
