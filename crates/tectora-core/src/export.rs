@@ -848,28 +848,80 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
         });
     }
 
-    // Faces: area and pitch at the middle of the face.
+    // Faces: area and pitch, at the middle of the face or, where a window,
+    // chimney or another label is in the way, at the free spot nearest to
+    // it inside the face.
+    let mut obstacles = Obstacles::of(&shapes);
+    // Inside a window or chimney is never free, however large it is.
+    let cutouts = project
+        .windows
+        .iter()
+        .map(|w| crate::openings::window_outline(&geos, w))
+        .chain(
+            project
+                .chimneys
+                .iter()
+                .chain(&project.roof_openings)
+                .map(|c| c.corners.clone()),
+        );
+    for o in cutouts {
+        let b = o.iter().map(|p| map(p.x, p.y)).fold(
+            [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
+            |b, p| {
+                [
+                    b[0].min(p[0]),
+                    b[1].min(p[1]),
+                    b[2].max(p[0]),
+                    b[3].max(p[1]),
+                ]
+            },
+        );
+        obstacles.boxes.push(b);
+    }
+    let mut placed: Vec<[f64; 4]> = Vec::new();
     for (g, shown) in geos.iter().zip(&face_shown) {
         for (f, a) in g.faces.iter().zip(shown) {
             let poly: Vec<[f64; 2]> = f.polygon.iter().map(|p| map(p[0], p[1])).collect();
             let Some(c) = centroid(&poly) else { continue };
+            let area_text = format!("{}m²", num(*a, d));
+            let pitch_text = format!("{}°", num(f.pitch_deg, 2));
+            let w = text_width(&ansi(&area_text), 8.5, false).max(text_width(
+                &ansi(&pitch_text),
+                9.5,
+                true,
+            ));
+            // The two rows span 8 pt above the anchor to 13 pt below it.
+            let block = |at: [f64; 2]| {
+                [
+                    at[0] - w / 2.0 - 1.0,
+                    at[1] - 9.0,
+                    at[0] + w / 2.0 + 1.0,
+                    at[1] + 13.0,
+                ]
+            };
+            let at = free_spot(&poly, c, |at| {
+                let b = block(at);
+                !obstacles.hit(b) && !placed.iter().any(|p| overlap(*p, b))
+            })
+            .unwrap_or(c);
+            placed.push(block(at));
             shapes.push(Shape::Text {
-                at: [c[0], c[1] - 1.0],
+                at: [at[0], at[1] - 1.0],
                 angle: 0.0,
                 size: 8.5,
                 color: INK,
                 bold: false,
                 anchor: 0.5,
-                text: format!("{}m²", num(*a, d)),
+                text: area_text,
             });
             shapes.push(Shape::Text {
-                at: [c[0], c[1] + 10.0],
+                at: [at[0], at[1] + 10.0],
                 angle: 0.0,
                 size: 9.5,
                 color: BRAND,
                 bold: true,
                 anchor: 0.5,
-                text: format!("{}°", num(f.pitch_deg, 2)),
+                text: pitch_text,
             });
         }
     }
@@ -959,6 +1011,156 @@ fn centroid(poly: &[[f64; 2]]) -> Option<[f64; 2]> {
         return Some([m[0] / n as f64, m[1] / n as f64]);
     }
     Some([cx / (3.0 * a), cy / (3.0 * a)])
+}
+
+/// A text in the PDF's encoding, for measuring it.
+fn ansi(text: &str) -> Vec<u8> {
+    text.chars().map(win_ansi).collect()
+}
+
+/// Whether two boxes `[x0, y0, x1, y1]` overlap.
+fn overlap(a: [f64; 4], b: [f64; 4]) -> bool {
+    a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
+}
+
+/// What a label must keep clear of: the texts already on the sheet (as
+/// boxes) and its lines (as segments), in page points.
+struct Obstacles {
+    boxes: Vec<[f64; 4]>,
+    segments: Vec<([f64; 2], [f64; 2])>,
+}
+
+impl Obstacles {
+    fn of(shapes: &[Shape]) -> Self {
+        let mut o = Obstacles {
+            boxes: Vec::new(),
+            segments: Vec::new(),
+        };
+        for s in shapes {
+            match s {
+                Shape::Line { a, b, .. } => o.segments.push((*a, *b)),
+                Shape::Text {
+                    at,
+                    angle,
+                    size,
+                    bold,
+                    anchor,
+                    text,
+                    ..
+                } => {
+                    let w = text_width(&ansi(text), *size, *bold);
+                    let (x0, x1) = (-w * anchor, w * (1.0 - anchor));
+                    let (y0, y1) = (-size * 0.8, size * 0.25);
+                    let r = angle.to_radians();
+                    let (c, sn) = (r.cos(), r.sin());
+                    // Page y points down; the text turns counter-clockwise.
+                    let pts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                        .map(|(x, y)| [at[0] + x * c + y * sn, at[1] - x * sn + y * c]);
+                    let bx = pts
+                        .iter()
+                        .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
+                            [
+                                b[0].min(p[0]),
+                                b[1].min(p[1]),
+                                b[2].max(p[0]),
+                                b[3].max(p[1]),
+                            ]
+                        });
+                    o.boxes.push(bx);
+                }
+            }
+        }
+        o
+    }
+
+    fn hit(&self, b: [f64; 4]) -> bool {
+        self.boxes.iter().any(|x| overlap(*x, b))
+            || self
+                .segments
+                .iter()
+                .any(|(p, q)| segment_hits_box(*p, *q, b))
+    }
+}
+
+/// Whether the segment `p`-`q` touches the box `b` (Liang-Barsky).
+fn segment_hits_box(p: [f64; 2], q: [f64; 2], b: [f64; 4]) -> bool {
+    let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
+    let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
+    for (den, num) in [
+        (-dx, p[0] - b[0]),
+        (dx, b[2] - p[0]),
+        (-dy, p[1] - b[1]),
+        (dy, b[3] - p[1]),
+    ] {
+        if den.abs() < 1e-12 {
+            if num < 0.0 {
+                return false;
+            }
+        } else {
+            let t = num / den;
+            if den < 0.0 {
+                t0 = t0.max(t);
+            } else {
+                t1 = t1.min(t);
+            }
+            if t0 > t1 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Whether `p` lies inside the polygon (page points).
+fn inside_page(poly: &[[f64; 2]], p: [f64; 2]) -> bool {
+    let mut odd = false;
+    let n = poly.len();
+    for i in 0..n {
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        if (a[1] > p[1]) != (b[1] > p[1])
+            && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0])
+        {
+            odd = !odd;
+        }
+    }
+    odd
+}
+
+/// The point inside `poly` nearest to `c` (on a 3 pt grid) where `free`
+/// holds; `None` when there is none.
+fn free_spot(poly: &[[f64; 2]], c: [f64; 2], free: impl Fn([f64; 2]) -> bool) -> Option<[f64; 2]> {
+    if inside_page(poly, c) && free(c) {
+        return Some(c);
+    }
+    let b = poly
+        .iter()
+        .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
+            [
+                b[0].min(p[0]),
+                b[1].min(p[1]),
+                b[2].max(p[0]),
+                b[3].max(p[1]),
+            ]
+        });
+    if !(b[2] - b[0]).is_finite() || !(b[3] - b[1]).is_finite() {
+        return None;
+    }
+    const STEP: f64 = 3.0;
+    let (nx, ny) = (
+        ((b[2] - b[0]) / STEP) as usize,
+        ((b[3] - b[1]) / STEP) as usize,
+    );
+    // A page is about 280 × 200 steps; bounded either way.
+    if nx.saturating_mul(ny) > 200_000 {
+        return None;
+    }
+    let mut pts: Vec<[f64; 2]> = (0..=nx)
+        .flat_map(|i| (0..=ny).map(move |j| [b[0] + i as f64 * STEP, b[1] + j as f64 * STEP]))
+        .filter(|p| inside_page(poly, *p))
+        .collect();
+    let d2 = |p: &[f64; 2]| (p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2);
+    pts.sort_by(|a, b| d2(a).total_cmp(&d2(b)));
+    pts.into_iter().find(|p| free(*p))
 }
 
 fn esc_xml(s: &str) -> String {
@@ -1454,6 +1656,65 @@ Z1.02 35,00° 19,53m\u{2db} Dĺžka krokvy=4,88m
             near(o[3].y - o[0].y, 1.18 * 35f64.to_radians().cos()),
             "{o:?}"
         );
+    }
+
+    #[test]
+    fn face_labels_keep_clear_of_windows_and_chimneys() {
+        // The window of P3a sits right under the middle of its face.
+        let p = dacad_window_roof(true);
+        let geos = crate::openings::generate_project(&p);
+        let shapes = plan_sheet(
+            &p,
+            &SheetInfo {
+                stamp: String::new(),
+                decimals: 2,
+            },
+        );
+        let boxes = Obstacles::of(&shapes).boxes;
+        let texts: Vec<(&str, [f64; 4])> = shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .zip(boxes.iter().copied())
+            .collect();
+        // Map the cut-outs onto the page as plan_sheet does: by their
+        // drawn outlines (window: brand colour; chimney: the four grey
+        // sides after the walls).
+        let window: Vec<[f64; 2]> = shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Line { a, color, .. } if *color == BRAND => Some(*a),
+                _ => None,
+            })
+            .collect();
+        let wb = window
+            .iter()
+            .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
+                [
+                    b[0].min(p[0]),
+                    b[1].min(p[1]),
+                    b[2].max(p[0]),
+                    b[3].max(p[1]),
+                ]
+            });
+        assert_eq!(geos.len(), 1);
+        for (t, b) in &texts {
+            if t.ends_with("m²") && !t.starts_with('-') || t.ends_with('°') {
+                assert!(!overlap(*b, wb), "{t} over the window");
+            }
+        }
+        // No two face labels overlap each other or another text.
+        for (i, (t, b)) in texts.iter().enumerate() {
+            for (u, c) in texts.iter().skip(i + 1) {
+                let face = |x: &str| !x.starts_with('-') && (x.ends_with("m²") || x.ends_with('°'));
+                if face(t) || face(u) {
+                    // A face's own two rows are stacked, never overlapping.
+                    assert!(!overlap(*b, *c), "{t} over {u}");
+                }
+            }
+        }
     }
 
     #[test]
