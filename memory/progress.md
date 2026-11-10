@@ -148,3 +148,21 @@ sessions that use it know where things stand.
   file"). MCP `update_opening` (chimney, roof opening, window) for parity.
 - State: `make check` exit 0, `make sweeps` pass, preview screenshot in
   project files `chimney-resize-2026-11-09/`.
+
+## 2026-11-10 · Roof windows in the export
+
+- Done: list gets DACAD's `STREŠNÉ OKNÁ` section and one deduction row
+  per window (`Z1.01/k`) and per chimney/opening (`Z1.01:k`, slope
+  length); gross `-Norm` row dropped (DACAD default norm is none); plan
+  sheet draws windows, chimneys, openings with their deductions, dormer
+  footprints and hand-drawn faces/lines. Evidence: DACAD runs P3a/P3c
+  under Wine (PR #43).
+- State: `make check` exit 0.
+- Next: window with a corner on a hip/ridge is not deducted (review
+  ERR-010); `KOMÍN / OTVORY` list section; Jakub to try a paste with a
+  window in the real price sheet.
+- 2026-11-10 (later): plan-sheet labels (line lengths, cut-out areas, face
+  labels) keep clear of every line and label; a window whose corner lies
+  exactly on a ridge/hip/valley is deducted again (review ERR-010). DACAD
+  evidence: window records sit under a wall and DACAD takes w×h off that
+  wall's face wherever the window lies (moved-record runs under Wine).

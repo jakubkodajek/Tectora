@@ -171,6 +171,10 @@ pub struct RoofGeometry {
     /// Plan outlines of the dormers cut into this roof.
     #[serde(skip)]
     pub footprints: Vec<Vec<Point2>>,
+    /// The roof windows deducted from this roof's faces, in project order
+    /// (for the list export, which names each one after its face).
+    #[serde(skip)]
+    pub window_cuts: Vec<WindowCut>,
     /// Set when DACAD's calculation ends with an error for this project:
     /// DACAD then gives no roof, and neither does the geometry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -257,6 +261,15 @@ pub enum OpeningKind {
 pub struct Opening {
     pub kind: OpeningKind,
     pub area: f64,
+}
+
+/// A roof window deducted from a face: `width × height` in the roof plane.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowCut {
+    /// Index in [`RoofGeometry::faces`].
+    pub face: usize,
+    pub width: f64,
+    pub height: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]
