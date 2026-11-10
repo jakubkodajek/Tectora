@@ -950,6 +950,17 @@ impl Server {
                     format!("Reading “{}”", p.name),
                     Some(&id),
                 );
+                let host = if p.dormers.is_empty() {
+                    Vec::new()
+                } else {
+                    tectora_core::edit::dormers::host_roof(&p)
+                };
+                let dormers: Vec<Value> = p
+                    .dormers
+                    .iter()
+                    .enumerate()
+                    .map(|(i, d)| more::describe_dormer(i, d, &host))
+                    .collect();
                 Ok(json!({
                     "id": id,
                     "name": p.name,
@@ -959,7 +970,7 @@ impl Server {
                     "chimneys": p.chimneys,
                     "windows": p.windows,
                     "roof_openings": p.roof_openings,
-                    "dormers": p.dormers.iter().enumerate().map(|(i, d)| more::describe_dormer(i, d)).collect::<Vec<_>>(),
+                    "dormers": dormers,
                     "manual_lines": p.manual_lines,
                     "manual_faces": p.manual_faces,
                     "flat_roof": p.flat_roof,

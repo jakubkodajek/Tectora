@@ -118,6 +118,11 @@ fn calc_command(cmd: &str, a: &Value) -> Option<Result<Value, Value>> {
                 .map(|s| to_json(s).unwrap_or(Value::Null))
         }),
         "check_windows" => project().and_then(|p| commands::check_windows(&p).map_err(err)),
+        "dormer_host" => project().and_then(|p| {
+            let index = arg::<usize>(a, "index")
+                .map_err(|Fail(e)| json!({ "code": "invalid_input", "detail": e }))?;
+            commands::dormer_host(&p, index).map_err(err)
+        }),
         _ => return None,
     })
 }

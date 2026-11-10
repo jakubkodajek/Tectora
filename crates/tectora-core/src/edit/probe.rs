@@ -59,6 +59,21 @@ pub fn host_height_at(geos: &[RoofGeometry], p: Point2) -> Option<f64> {
         .reduce(f64::max)
 }
 
+/// The face a dormer or chimney stands on at a plan point (as
+/// [`host_height_at`]): its height there and its gradient (dz/dx, dz/dy).
+pub fn host_plane_at(geos: &[RoofGeometry], p: Point2) -> Option<(f64, [f64; 2])> {
+    geos.iter()
+        .flat_map(|g| &g.faces)
+        .filter(|f| f.edge != usize::MAX && f.polygon.len() >= 3 && inside(&f.polygon, p))
+        .filter_map(|f| {
+            let z = plane_z(&f.polygon, p)?;
+            let zx = plane_z(&f.polygon, Point2::new(p.x + 1.0, p.y))? - z;
+            let zy = plane_z(&f.polygon, Point2::new(p.x, p.y + 1.0))? - z;
+            Some((z, [zx, zy]))
+        })
+        .reduce(|a, b| if b.0 > a.0 { b } else { a })
+}
+
 fn key(q: &[f64; 3]) -> [i64; 3] {
     q.map(|v| (v * 1000.0).round() as i64)
 }
