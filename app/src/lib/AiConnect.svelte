@@ -131,6 +131,13 @@
   {/if}
   </div>
 
+  <h4>{t("conn.askTitle")}</h4>
+  <ul class="how">
+    <li><b>Claude</b>: {t("conn.ask.claude")}</li>
+    <li><b>Antigravity</b>: {t("conn.ask.antigravity")}</li>
+    <li>{t("conn.ask.other")}</li>
+  </ul>
+
   <h4>{t("conn.howTitle")}</h4>
   <ol class="how">
     <li>{t("conn.how1")}</li>
