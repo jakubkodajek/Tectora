@@ -56,6 +56,14 @@
   const sourceJob = $derived(projects.find((p) => p.id === source) ?? null);
   let part = $state<RoofPart | null>(null);
   let busy = $state(false);
+  const canCreate = $derived(!busy && !(start === "standard" && !part) && !(start === "past" && !sourceJob));
+
+  /** Enter in a job data field creates the job, as the Create button (UX-017). */
+  function enterCreates(e: KeyboardEvent) {
+    if (e.key !== "Enter" || e.isComposing || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+    e.preventDefault();
+    if (canCreate) create();
+  }
 
   async function create() {
     busy = true;
@@ -88,10 +96,10 @@
 
 <Modal title={t("new.title")} width={720} {onclose}>
   <div class="job">
-    <label class="wide"><span>{t("job.name")}</span><input type="text" bind:value={name} placeholder={t("new.namePlaceholder")} /></label>
-    <label><span>{t("job.number")}</span><input type="text" bind:value={number} /></label>
-    <label><span>{t("job.customer")}</span><input type="text" bind:value={customer} /></label>
-    <label class="wide"><span>{t("job.address")}</span><input type="text" bind:value={address} /></label>
+    <label class="wide"><span>{t("job.name")}</span><input type="text" bind:value={name} placeholder={t("new.namePlaceholder")} onkeydown={enterCreates} /></label>
+    <label><span>{t("job.number")}</span><input type="text" bind:value={number} onkeydown={enterCreates} /></label>
+    <label><span>{t("job.customer")}</span><input type="text" bind:value={customer} onkeydown={enterCreates} /></label>
+    <label class="wide"><span>{t("job.address")}</span><input type="text" bind:value={address} onkeydown={enterCreates} /></label>
   </div>
 
   <div class="tabs" role="tablist" use:tablist>
@@ -147,7 +155,7 @@
 
   {#snippet footer()}
     <button class="btn" onclick={onclose}>{t("common.cancel")}</button>
-    <button class="btn primary" disabled={busy || (start === "standard" && !part) || (start === "past" && !sourceJob)} onclick={create}>{t("new.create")}</button>
+    <button class="btn primary" disabled={!canCreate} onclick={create}>{t("new.create")}</button>
   {/snippet}
 </Modal>
 

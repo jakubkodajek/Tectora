@@ -268,3 +268,27 @@ test.describe("browser noise is not an error (UI-019)", () => {
     app.errors.length = 0;
   });
 });
+
+test.describe("Enter creates the new job (UX-017)", () => {
+  test("Enter in the name field creates the job once Create is enabled", async ({ app, page }) => {
+    await app.open();
+    await slow(page, "standard_part", 900);
+    await page.locator("header").getByRole("button", { name: cs("lib.new") }).click();
+    const dlg = page.getByRole("dialog", { name: cs("new.title") });
+    const name = dlg.getByLabel(cs("job.name"));
+    const create = dlg.getByRole("button", { name: cs("new.create") });
+    await name.fill("Enterem");
+    // The standard roof preview is still on its way: Create is off, so is Enter.
+    await expect(create).toBeDisabled();
+    await name.press("Enter");
+    await expect(dlg).toBeVisible();
+    expect(await listProjects()).toHaveLength(0);
+    await expect(create).toBeEnabled({ timeout: 8000 });
+    await name.press("Enter");
+    await expect(page.locator(".editor .statusbar")).toBeVisible();
+    await expect(dlg).toHaveCount(0);
+    const jobs = await listProjects();
+    expect(jobs.map((j: any) => j.name)).toEqual(["Enterem"]);
+    expect((await loadProject(jobs[0].id)).parts).toHaveLength(1);
+  });
+});
