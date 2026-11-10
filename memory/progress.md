@@ -138,3 +138,17 @@ sessions that use it know where things stand.
   (PR #39 base).
 - Next: gap analysis doc lists the other DACAD gaps; Jakub chose only
   limits + building height for now.
+## 2026-11-10 · dormer window (branch claude/project-thread-j9381s)
+
+- Done: DACAD-style dormer window (type tiles, plan, side section) opens when
+  a dormer is placed and from the dormer bar ("Upravit vikýř"); front wall
+  height above the roof, depth and ridge length set the eave height; roof
+  pitch, slope lengths and rise follow. Core `edit::dormers::{section,
+  eave_for, host_slope}` (closed form, checked against DACAD's dialog numbers
+  for a shed dormer and against the calculated roof for all 7 kinds), TS
+  mirror parity-tested, Tauri/bridge `dormer_host`, MCP `section` and
+  `wall_height`/`depth`/`ridge_length`.
+- State: `make check` exit 0, `make sweeps` clean.
+- Next: Jakub's dad tries it; DACAD's dialog also has separate front and
+  side overhangs and a back width for the trapezoid dormer (not ported, one
+  overhang as before).
