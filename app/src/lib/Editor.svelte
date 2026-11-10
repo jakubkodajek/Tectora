@@ -467,7 +467,14 @@
     if (saveState === "dirty" || saveState === "failed") save();
   });
 
-  async function accept() {
+  /** Accept or Revert is running: a second press (double-click) must not run it twice (UI-002). */
+  let reviewBusy = $state(false);
+  const reviewAction = exclusive((run: () => Promise<void>) => run(), (b) => (reviewBusy = b));
+  const accept = () => reviewAction(acceptNow);
+  /** Reverts the pending AI changes from the banner, or the latest one from the AI tab. */
+  const revert = (all = false) => reviewAction(() => revertNow(all));
+
+  async function acceptNow() {
     if (!pending) return;
     const ts = pending.ts_ms;
     review = null;
@@ -480,8 +487,7 @@
     await refreshActivity();
   }
 
-  /** Reverts the pending AI changes from the banner, or the latest one from the AI tab. */
-  async function revert(all = false) {
+  async function revertNow(all: boolean) {
     // Edits not on disk yet would be lost: the store keeps only the edits in
     // the file, merging the revert onto them (ERR-001).
     commitFocused();
@@ -1492,8 +1498,8 @@
             {#if review?.before}
               <button class="btn sm" class:on={showBefore} aria-pressed={showBefore} onclick={() => (showBefore = !showBefore)} title={t("review.beforeHint")}>{t("review.before")}</button>
             {/if}
-            <button class="btn sm" onclick={() => revert(true)}><Icon name="undo" size={14} />{pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}</button>
-            <button class="btn sm accept" onclick={accept}><Icon name="check" size={14} />{t("review.accept")}</button>
+            <button class="btn sm" disabled={reviewBusy} onclick={() => revert(true)}><Icon name="undo" size={14} />{pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}</button>
+            <button class="btn sm accept" disabled={reviewBusy} onclick={accept}><Icon name="check" size={14} />{t("review.accept")}</button>
           </div>
         {/if}
         {#if calcError}
@@ -1618,7 +1624,7 @@
           {:else if dock === "breakdown"}
             <Breakdown {project} {result} bind:data={breakdown} onmark={(mk) => (planMark = mk)} />
           {:else if dock === "ai"}
-            <AiPanel {id} {project} {activity} onrevert={() => revert(false)} {onconnect} onfocus={(c) => (focusChange = c)} />
+            <AiPanel {id} {project} {activity} onrevert={() => revert(false)} busy={reviewBusy} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
             <JobPanel {id} {project} onchange={commit} onsave={save} track={(p) => pendingEdits.track(p)} />
           {/if}

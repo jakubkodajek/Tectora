@@ -6,7 +6,7 @@
 // ResizeObserver noise is no error (UI-019), Enter creates a new job (UX-017).
 import type { Page, Route } from "@playwright/test";
 import { bar, clickPlan, openEditor, selectWall, tool } from "./editor";
-import { bridge, createExample, expect, listProjects, loadProject, test } from "./fixtures";
+import { bridge, createExample, expect, listProjects, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 
 /** Holds every call of a bridge command for `ms` before it goes through. */
@@ -52,5 +52,36 @@ test.describe("leaving waits for a value still with the core (ERR-004)", () => {
     await expect(libraryRow(page, "Výška")).toBeVisible();
     const edges = (await loadProject(id)).parts[0].edges;
     expect(edges.every((e: any) => e.eave_height === 4.2)).toBe(true);
+  });
+});
+
+const review = (page: Page) => page.locator(".review");
+const pitches = async (id: string) => (await loadProject(id)).parts[0].edges.map((e: any) => e.pitch_deg).join(",");
+
+test.describe("Accept and Revert run once (UI-002)", () => {
+  test("a double-click on Revert in the AI tab reverts only the latest AI step", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "Dvojklik");
+    await openEditor(app, "Dvojklik");
+    await mcp.call("update_edges", { id, changes: [{ index: 0, pitch_deg: 25 }], summary: "Krok A" });
+    await expect(review(page)).toContainText("Krok A");
+    await mcp.call("update_edges", { id, changes: [{ index: 2, pitch_deg: 26 }], summary: "Krok B" });
+    await expect(review(page)).toContainText(cs("review.steps", { n: 2 }));
+    await page.locator("aside .tabs").getByRole("tab", { name: cs("dock.ai") }).click();
+    await slow(page, "revert_last_change", 400);
+    await page.locator("aside .panel").getByRole("button", { name: cs("ai.revert"), exact: true }).first().dblclick();
+    await waitForProject(id, (p) => p.parts[0].edges[2].pitch_deg === 40);
+    await page.waitForTimeout(1500);
+    expect(await pitches(id)).toBe("25,90,40,90");
+  });
+
+  test("a double-click on Accept accepts once and leaves no error", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "Přijmout");
+    await openEditor(app, "Přijmout");
+    await mcp.call("update_edges", { id, changes: [{ index: 0, pitch_deg: 25 }], summary: "Krok A" });
+    await expect(review(page)).toBeVisible();
+    await review(page).getByRole("button", { name: cs("review.accept") }).dblclick();
+    await expect(review(page)).toHaveCount(0);
+    expect(await pitches(id)).toBe("25,90,40,90");
+    await expect(app.toasts()).toHaveCount(0);
   });
 });
