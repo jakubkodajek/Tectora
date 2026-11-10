@@ -13,7 +13,7 @@
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tectora_core::edit::calc::{self, BuildUpEave, ParallelField, Target};
-use tectora_core::edit::dormers::{self, DORMER_KINDS, DormerKind, DormerParams};
+use tectora_core::edit::dormers::{self, DORMER_KINDS, DormerKind, DormerParams, SectionTarget};
 use tectora_core::edit::{round, transform};
 use tectora_core::geom::Point2;
 use tectora_core::model::{Chimney, Dormer, EdgeDef, ManualFace, ManualLine, RoofPart, RoofWindow};
@@ -572,6 +572,7 @@ fn dormer_cases(c: &mut Cases) {
                 pitch_deg: 42.0,
                 front_pitch_deg: 18.0,
                 overhang: 0.25,
+                side_overhang: 0.4,
                 half_hip_height: 0.55,
                 half_hip_pitch_deg: 58.0,
                 segments,
@@ -600,6 +601,78 @@ fn dormer_cases(c: &mut Cases) {
         .iter()
         .map(|(name, _)| json!({ "name": name, "edges": outline_ref(name) }))
         .collect();
+    // The dormer dialog's section and its inverse, on roofs of 10-50°
+    // and a flat one.
+    let hosts = [(3.2, 0.0), (3.5, 0.36), (4.1, 0.839), (2.0, 1.19)];
+    let mut variants: Vec<DormerParams> = built
+        .iter()
+        .filter(|d| d.edges.len() == 3)
+        .map(dormers::parse_dormer)
+        .collect();
+    // No overhang, and pitches the section cannot use (MATH-001).
+    for kind in DORMER_KINDS {
+        let mut q = dormers::default_params(kind, Point2::new(0.0, 0.0), 0.0, 3.6);
+        variants.push(q.clone());
+        // Front and side overhangs apart, a flat-topped trapezoid among them.
+        let mut o = q.clone();
+        o.overhang = 0.5;
+        o.side_overhang = 0.1;
+        o.eave_height = 4.4;
+        variants.push(o);
+        q.pitch_deg = 0.0;
+        q.half_hip_pitch_deg = 0.0;
+        q.front_pitch_deg = 90.0;
+        variants.push(q);
+    }
+    for params in variants {
+        for &(height, tan) in &hosts {
+            let host = dormers::HostSlope { height, tan };
+            c.add(
+                "dormer_section",
+                json!({ "p": to(&params), "host": to(host) }),
+                to(dormers::section(&params, host)),
+            );
+            for target in [
+                SectionTarget::WallHeight(0.8),
+                SectionTarget::WallHeight(-0.1),
+                SectionTarget::Depth(2.7),
+                SectionTarget::RidgeLength(1.9),
+                SectionTarget::RidgeLength(0.0),
+            ] {
+                let out = match dormers::eave_for(&params, host, target) {
+                    Ok(v) => to(v),
+                    Err(_) => json!({ "error": true }),
+                };
+                c.add(
+                    "eave_for",
+                    json!({ "p": to(&params), "host": to(host), "target": to(target) }),
+                    out,
+                );
+            }
+            for width in [0.6, 1.5, 0.0, 9.0] {
+                let out = match dormers::pitch_for_back_width(&params, host, width) {
+                    Ok(v) => to(v),
+                    Err(_) => json!({ "error": true }),
+                };
+                let solved = dormers::solve(
+                    &params,
+                    host,
+                    Some(SectionTarget::WallHeight(1.1)),
+                    Some(width),
+                );
+                c.add(
+                    "solve_dormer",
+                    json!({ "p": to(&params), "host": to(host), "target": to(SectionTarget::WallHeight(1.1)), "width": width }),
+                    solved.map_or_else(|_| json!({ "error": true }), |q| to(&q)),
+                );
+                c.add(
+                    "pitch_for_back_width",
+                    json!({ "p": to(&params), "host": to(host), "width": width }),
+                    out,
+                );
+            }
+        }
+    }
     for q in [(1.0, -0.5), (12.5, 2.0), (6.0, 5.2), (20.0, 20.0)] {
         c.add(
             "nearest_wall_angle",

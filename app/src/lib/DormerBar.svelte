@@ -15,12 +15,15 @@
     index = $bindable(),
     onchange,
     ondelete,
+    onedit,
   }: {
     project: Project;
     result: CalcResult | null;
     index: number | null;
     onchange: (d: Dormer) => void;
     ondelete: () => void;
+    /** Opens the dormer window (plan and section). */
+    onedit?: () => void;
   } = $props();
 
   const dormer = $derived(index !== null ? project.dormers[index] : null);
@@ -141,11 +144,18 @@
         </label>
       {/if}
       <label>
-        <span>{t("edge.overhang")}</span>
+        <span>{t("dormer.frontOverhang")}</span>
         <div class="unit"><input type="text" use:numeric={{ value: params.overhang, step: 0.05, min: 0, onchange: (v) => set({ overhang: v }) }} /><em>m</em></div>
+      </label>
+      <label>
+        <span>{t("dormer.sideOverhang")}</span>
+        <div class="unit"><input type="text" use:numeric={{ value: params.side_overhang, step: 0.05, min: 0, onchange: (v) => set({ side_overhang: v }) }} /><em>m</em></div>
       </label>
     {/if}
     <div class="spacer"></div>
+    {#if onedit && kind !== "general"}
+      <button class="btn" onclick={onedit} title={t("dormer.editHint")}>{t("dormer.edit")}</button>
+    {/if}
     <button class="icon-btn danger" onclick={ondelete} title={t("dormer.delete")} aria-label={t("dormer.delete")}><Icon name="trash" /></button>
   {/if}
 </div>

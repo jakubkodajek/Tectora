@@ -520,6 +520,13 @@ fn check_windows(project: Project) -> CmdResult<Option<tectora_core::edit::Overs
     })
 }
 
+/// The roof under dormer `index` for the dormer dialog
+/// (`tectora_core::commands::dormer_host`), or null off the roof.
+#[tauri::command(async)]
+fn dormer_host(project: Project, index: usize) -> CmdResult<Value> {
+    guard(|| Ok(commands::dormer_host(&project, index)?))
+}
+
 /// The editor's "Make it a building": hand-drawn face `index` replaced by a
 /// part of the same outline (`tectora_core::edit::face_to_part`, the MCP
 /// tool's operation).
@@ -851,6 +858,7 @@ pub fn run() {
             calc,
             calc_breakdown,
             check_windows,
+            dormer_host,
             face_to_part,
             set_part_height,
             list_attachments,
@@ -903,6 +911,7 @@ mod tests {
             "calc",
             "calc_breakdown",
             "take_snapshot",
+            "dormer_host",
         ] {
             assert!(
                 src.contains(&format!("#[tauri::command(async)]\nfn {name}(")),

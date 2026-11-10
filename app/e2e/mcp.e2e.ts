@@ -2,7 +2,7 @@
 // Revert, Revert all, follow mode, library marks) and MCP parity: the same
 // edit made in the editor and over MCP gives the same project.
 import type { Page } from "@playwright/test";
-import { bar, clickPlan, openEditor, selectWall, setField, tool } from "./editor";
+import { bar, clickPlan, openEditor, selectWall, setField, tool, confirmDormer } from "./editor";
 import { bridge, createExample, expect, listProjects, loadProject, test, waitForProject, type App } from "./fixtures";
 import type { Mcp } from "./mcp";
 import { cs } from "./i18n";
@@ -443,6 +443,7 @@ test.describe("MCP parity", () => {
     await parity(app, ids, async () => {
       await tool(page, "tool.dormer").click();
       await clickPlan(page, 4, 1);
+      await confirmDormer(page);
       const db = bar(page, "dormer.title");
       await setField(db.getByRole("textbox", { name: /^X\b/ }), 4);
       await setField(db.getByRole("textbox", { name: /^Y\b/ }), 1);

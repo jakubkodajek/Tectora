@@ -86,6 +86,16 @@ pub fn check_windows(project: &Project) -> Result<Value, CommandError> {
     Ok(serde_json::to_value(bad).unwrap_or(Value::Null))
 }
 
+/// The roof under dormer `index` (`edit::dormers::host_slope`): height and
+/// slope at the middle of its front, `null` off the roof, with the same
+/// guards as [`calc`]. The editor's dormer dialog derives its section from it.
+pub fn dormer_host(project: &Project, index: usize) -> Result<Value, CommandError> {
+    check_input(project)?;
+    let host = crate::model::guarded(|| crate::edit::dormers::host_slope(project, index))
+        .map_err(CommandError::internal)?;
+    Ok(serde_json::to_value(host).unwrap_or(Value::Null))
+}
+
 /// [`Project::check_input`] as a command error, with its code.
 pub fn check_input(project: &Project) -> Result<(), CommandError> {
     project.check_input().map_err(CommandError::input)

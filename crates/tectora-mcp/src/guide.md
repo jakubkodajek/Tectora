@@ -66,7 +66,15 @@ The tools cover every operation of the Tectora editor:
   chimneys moved with it). A building has no height of its own besides its
   walls' eave heights; a lower wing is joined to the main roof by them.
 - Dormers: `add_dormer`, `update_dormer` (gable, pointed, hip, half_hip,
-  shed, trapezoid, round); `get_project` lists them with these parameters.
+  shed, trapezoid, round); `get_project` lists them with these parameters
+  and their `section` as the editor's dormer window shows it: roof pitch
+  under the front, front wall height above the roof, depth, ridge length,
+  slope lengths. Instead of `eave_height` give one of `wall_height` (front
+  wall above the roof), `depth` (front to where the dormer meets the roof)
+  or `ridge_length`, as a drawing dimensions them. `overhang` sets the
+  front and cheek overhangs together, `front_overhang` and `side_overhang`
+  apart. A trapezoid's `back_width` (its shed roof's width where it meets
+  the roof, in `section`) sets the cheek pitch instead of `pitch_deg`.
 - Windows, chimneys (also as a rectangle) and roof openings: `set_openings`.
 - Change one chimney, roof opening or window in place (position, width,
   depth, rotation, chimney top) as the object bar does: `update_opening`.
@@ -346,10 +354,8 @@ next to the tiled roof are separate parts with their own material, or left
 out if the offer does not price them; say which. Sheet-metal decks or
 terraces cut into a tiled slope (a low 3–8° roof from the eave inward, with
 a step up to the tiled roof behind) are wide shed dormers with material 2:
-`kind: shed`, `front_pitch_deg` the deck's pitch, and the eave height chosen
-so the dormer meets the roof at the drawn depth (eave height of the roof +
-depth × tan(roof pitch) − depth × tan(deck pitch), roof heights measured at
-the dormer front). A dormer's front must run exactly along its eave: leave
+`kind: shed`, `front_pitch_deg` the deck's pitch, and `depth` the drawn
+depth (the eave height then follows from the roof under the front). A dormer's front must run exactly along its eave: leave
 `angle_deg` out on a wall parallel to the axes, otherwise give the eave's
 direction from `trace_outline` (`edge_directions_deg`); a front a fraction
 of a degree off the eave makes the calculation fail. A roof that runs under

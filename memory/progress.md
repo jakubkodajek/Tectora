@@ -166,3 +166,38 @@ sessions that use it know where things stand.
   exactly on a ridge/hip/valley is deducted again (review ERR-010). DACAD
   evidence: window records sit under a wall and DACAD takes w×h off that
   wall's face wherever the window lies (moved-record runs under Wine).
+
+## 2026-11-10 · dormer window (branch claude/project-thread-j9381s)
+
+- Done: DACAD-style dormer window (type tiles, plan, side section) opens when
+  a dormer is placed and from the dormer bar ("Upravit vikýř"); front wall
+  height above the roof, depth and ridge length set the eave height; roof
+  pitch, slope lengths and rise follow. Core `edit::dormers::{section,
+  eave_for, host_slope}` (closed form, checked against DACAD's dialog numbers
+  for a shed dormer and against the calculated roof for all 7 kinds), TS
+  mirror parity-tested, Tauri/bridge `dormer_host`, MCP `section` and
+  `wall_height`/`depth`/`ridge_length`.
+- State: `make check` exit 0, `make sweeps` clean.
+- Next: Jakub's dad tries it; DACAD's dialog also has separate front and
+  side overhangs and a back width for the trapezoid dormer (not ported, one
+  overhang as before).
+
+## 2026-11-10 · dormer overhangs and trapezoid back width (same branch)
+
+- Done: separate front overhang (front wall) and side overhang (cheeks) in
+  `DormerParams` (`overhang`, `side_overhang`, read back from the edges, so
+  old jobs keep their one overhang), the dormer window (front overhang in the
+  section, side overhang in the plan), the dormer bar and MCP
+  (`overhang` sets both, `front_overhang` / `side_overhang` apart). Trapezoid:
+  `section.back_width` (shed roof width where it meets the roof) and
+  `pitch_for_back_width` / `solve` set the cheek pitch from it. The section
+  of a trapezoid whose shed roof meets the roof before the cheeks close now
+  takes its depth from the shed plane (it wrongly assumed a ridge before).
+  All checked against the calculated roof (depth, ridge, back width) for 4
+  overhang pairs.
+- Evidence: DACAD dialog resources (Schleppgaube 1259 side / 1265 front
+  overhang; Trapezgaube 1245 top, 1247 base, 1248 cheek pitch) and the
+  decompiled dialog init (type 2 = Trapezgaube, needs top < base width).
+  Not verified with a DACAD run: whether DACAD's trapezoid puts the cheek
+  eave lower than the front (its picture shows a trapezoid front wall).
+- State: `make check` exit 0, sweeps clean.

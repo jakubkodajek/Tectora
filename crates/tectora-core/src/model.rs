@@ -353,12 +353,17 @@ impl Project {
         if let Some(obj) = value.as_object_mut() {
             obj.remove("result_snapshot");
         }
-        match first_out_of_range(&value, &mut String::new()) {
-            Some((path, v)) => Err(format!(
+        if let Some((path, v)) = first_out_of_range(&value, &mut String::new()) {
+            return Err(format!(
                 "value {v} at `{path}` is out of range (allowed ±{MAX_ABS_VALUE})"
-            )),
-            None => Ok(()),
+            ));
         }
+        // JSON has no infinity or NaN: such a number is written as null and
+        // the file can no longer be read (MATH-001), so refuse it here.
+        if let Some(why) = non_finite(self) {
+            return Err(format!("a value is not a finite number ({why})"));
+        }
+        Ok(())
     }
 }
 
@@ -386,6 +391,15 @@ pub struct InputError {
     pub code: &'static str,
     /// English, for the CLI, the MCP server and the details view.
     pub message: String,
+}
+
+/// Whether the project reads back from its own JSON; `serde_json` writes an
+/// infinite or NaN number as null, which no `f64` field accepts.
+fn non_finite(p: &Project) -> Option<String> {
+    let v = serde_json::to_value(p).ok()?;
+    serde_json::from_value::<Project>(v)
+        .err()
+        .map(|e| e.to_string())
 }
 
 fn first_out_of_range(v: &serde_json::Value, path: &mut String) -> Option<(String, f64)> {
@@ -817,6 +831,21 @@ pub fn json_schema() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_infinite_number_is_refused_before_it_is_saved_as_null() {
+        // MATH-001: JSON writes inf as null, and the job no longer opens.
+        let mut p = Project::new("t");
+        let mut e = crate::edit::plain_edge(Point2::new(0.0, 0.0), 40.0, 3.0, 0.5);
+        p.parts.push(RoofPart {
+            name: "A".into(),
+            edges: vec![e.clone(); 3],
+        });
+        assert!(p.check_input().is_ok());
+        e.eave_height = f64::INFINITY;
+        p.parts[0].edges[1] = e;
+        assert_eq!(p.check_input().unwrap_err().code, "out_of_range");
+    }
 
     #[test]
     fn edges_outside_dacad_input_limits_are_problems() {
