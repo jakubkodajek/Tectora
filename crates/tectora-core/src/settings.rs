@@ -289,6 +289,10 @@ impl Settings {
     /// folder or the language to its default). `roof_defaults` may be given
     /// partially. Chosen folders are created and checked.
     pub fn patched(&self, patch: &Value) -> Result<Settings, SettingsError> {
+        self.patched_with(patch, true)
+    }
+
+    fn patched_with(&self, patch: &Value, prepare: bool) -> Result<Settings, SettingsError> {
         let patch = patch
             .as_object()
             .ok_or(SettingsError::InvalidValue("patch"))?;
@@ -319,7 +323,7 @@ impl Settings {
             serde_json::from_value(doc).map_err(|_| SettingsError::InvalidValue("type"))?;
         next.validate()?;
         for key in ["projects_dir", "drawings_dir"] {
-            if patch.contains_key(key) {
+            if prepare && patch.contains_key(key) {
                 let dir = if key == "projects_dir" {
                     next.projects_dir()
                 } else {
@@ -352,8 +356,9 @@ impl Settings {
             .map(|(k, v)| (k.clone(), v.clone()))
             .partition(|(k, _)| FOLDER_KEYS.contains(&k.as_str()));
         let mut next = self.patched(&Value::Object(rest))?;
-        // Only a real change asks the user.
-        let moved = self.patched(&Value::Object(folders.clone()))?;
+        // Only a real change asks the user. Asking creates no folder: that
+        // waits for the user's yes.
+        let moved = self.patched_with(&Value::Object(folders.clone()), false)?;
         let asks = moved.projects_dir() != self.projects_dir()
             || moved.drawings_dir() != self.drawings_dir();
         if asks {
@@ -434,13 +439,15 @@ mod tests {
     fn an_ai_only_asks_to_move_the_folders_and_the_user_decides() {
         // ARCH-052: MCP update_settings moved the jobs folder at once.
         let s = Settings::default();
-        let patch = serde_json::json!({ "projects_dir": "/elsewhere", "follow_ai": false });
+        let target = tmp("ai-folder").join("shared");
+        let patch = serde_json::json!({ "projects_dir": target, "follow_ai": false });
         let (next, asked) = s
             .patched_by_ai(&patch, "Claude", "Use the shared folder")
             .unwrap();
         assert!(asked);
         assert_eq!(next.projects_dir(), s.projects_dir(), "folder unchanged");
         assert!(!next.follow_ai, "other keys apply at once");
+        assert!(!target.exists(), "asking creates no folder");
         let req = next.folder_request.clone().unwrap();
         assert_eq!(
             (req.by.as_str(), req.summary.as_str()),
@@ -450,7 +457,8 @@ mod tests {
         assert_eq!(kept.projects_dir(), s.projects_dir());
         assert!(kept.folder_request.is_none());
         let moved = next.answer_folder_request(true).unwrap();
-        assert_eq!(moved.projects_dir(), PathBuf::from("/elsewhere"));
+        assert_eq!(moved.projects_dir(), target);
+        assert!(target.is_dir(), "the allowed folder is created");
         assert!(moved.folder_request.is_none());
         // Setting the folder it already is asks nothing.
         let same = serde_json::json!({ "projects_dir": s.projects_dir() });
