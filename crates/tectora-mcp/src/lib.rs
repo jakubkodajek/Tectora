@@ -972,8 +972,7 @@ impl Server {
                 return Err(format!(
                     "unknown argument {} for `{name}`: check the spelling against the tool's input schema",
                     unknown.join(", ")
-                )
-                .into());
+                ));
             }
         }
         if let Some(r) = self.call_calc_isolated(name, args) {
