@@ -81,6 +81,11 @@ test.describe("wall bar More row", () => {
     await expect(db.getByLabel(cs("dormer.width"))).toBeVisible();
     await expect(db.getByText(cs("edge.material"), { exact: true })).toHaveCount(0);
     expect((await db.boundingBox())!.height).toBeLessThan(100);
+    // One row without sideways scrolling, the delete still named.
+    const row = db.locator(".row").first();
+    const { client, scroll } = await row.evaluate((r) => ({ client: r.clientWidth, scroll: r.scrollWidth }));
+    expect(scroll, `dormer row overflows by ${scroll - client}px`).toBeLessThanOrEqual(client);
+    await expect(db.getByRole("button", { name: cs("dormer.delete"), exact: true })).toBeVisible();
     await page.getByTestId("dormer-more").click();
     await expect(db.getByText(cs("edge.material"), { exact: true })).toBeVisible();
     expect((await db.boundingBox())!.height).toBeLessThan(180);

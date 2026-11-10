@@ -101,10 +101,6 @@
           <span>{t("dormer.width")}</span>
           <div class="unit"><input type="text" use:numeric={{ value: params.width, step: 0.05, min: 0.1, onchange: (v) => set({ width: v }) }} /><em>m</em></div>
         </label>
-        <label title={host !== null ? t("dormer.hostHint", { h: formatNumber(host, numberLocale(), 2) }) : undefined}>
-          <span>{t("edge.eaveHeight")}</span>
-          <div class="unit"><input type="text" disabled={kind === "pointed"} use:numeric={{ value: params.eave_height, step: 0.05, onchange: (v) => set({ eave_height: v }) }} /><em>m</em></div>
-        </label>
         {#if kind === "round"}
           <label>
             <span>{t("round.segments")}</span>
@@ -133,10 +129,6 @@
             <div class="unit"><input type="text" use:numeric={{ value: params.half_hip_pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => set({ half_hip_pitch_deg: v }) }} /><em>°</em></div>
           </label>
         {/if}
-        <label>
-          <span>{t("edge.overhang")}</span>
-          <div class="unit"><input type="text" use:numeric={{ value: params.overhang, step: 0.05, min: 0, onchange: (v) => set({ overhang: v }) }} /><em>m</em></div>
-        </label>
       {/if}
       <div class="end">
         {#if kind !== "general"}
@@ -145,15 +137,23 @@
             title={moreTitle} onclick={toggleMore}>
             {t("bar.more")}
             {#if moreSet.length}<b class="count" data-testid="dormer-more-count">{moreSet.length}</b><span class="sr-only" id="dormer-more-set">{t("bar.moreSet", { list: moreSet.join(", ") })}</span>{/if}
-            </button>
+          </button>
         {/if}
-        <button class="btn sm ghost danger" onclick={ondelete} title={t("dormer.delete")}><Icon name="trash" size={15} />{t("dormer.delete")}</button>
+        <button class="btn sm ghost danger del" onclick={ondelete} title={t("dormer.delete")} aria-label={t("dormer.delete")}><Icon name="trash" size={15} /><span class="label">{t("dormer.delete")}</span></button>
       </div>
     {/if}
   </div>
 
   {#if params && kind && kind !== "general" && moreOpen}
     <div class="row more" id="dormer-more-row" use:hscroll>
+      <label title={host !== null ? t("dormer.hostHint", { h: formatNumber(host, numberLocale(), 2) }) : undefined}>
+        <span>{t("edge.eaveHeight")}</span>
+        <div class="unit"><input type="text" disabled={kind === "pointed"} use:numeric={{ value: params.eave_height, step: 0.05, onchange: (v) => set({ eave_height: v }) }} /><em>m</em></div>
+      </label>
+      <label>
+        <span>{t("edge.overhang")}</span>
+        <div class="unit"><input type="text" use:numeric={{ value: params.overhang, step: 0.05, min: 0, onchange: (v) => set({ overhang: v }) }} /><em>m</em></div>
+      </label>
       <label>
         <span>X</span>
         <div class="unit"><input type="text" use:numeric={{ value: params.start.x, step: 0.05, onchange: (v) => set({ start: { ...params.start, x: v } }) }} /><em>m</em></div>
@@ -282,7 +282,16 @@
   }
   select {
     height: 34px;
-    min-width: 150px;
+    width: 140px;
+  }
+  /* Where the bar is narrow the delete keeps its tooltip and name but shows only its icon. */
+  .bar {
+    container-type: inline-size;
+  }
+  @container (max-width: 820px) {
+    .del .label {
+      display: none;
+    }
   }
   .unit {
     position: relative;
