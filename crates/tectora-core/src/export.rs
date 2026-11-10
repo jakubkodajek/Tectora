@@ -690,17 +690,6 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
             });
         }
     };
-    let small = |shapes: &mut Vec<Shape>, at: [f64; 2], color, text: String| {
-        shapes.push(Shape::Text {
-            at: [at[0], at[1] + 2.5],
-            angle: 0.0,
-            size: 7.0,
-            color,
-            bold: false,
-            anchor: 0.5,
-            text,
-        });
-    };
 
     // What every face loses, as DACAD's plan shows it: the face with its
     // area before the cut-outs drawn on the sheet, and each window, chimney
@@ -732,6 +721,13 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
         face_shown.push(shown);
     }
 
+    // Every label is placed after all lines are drawn, so that no label
+    // lands on a line, an outline or another label (see `Obstacles`).
+    // Cut-out labels: (outline on the page, colour, text).
+    let mut cut_labels: Vec<(Vec<[f64; 2]>, &'static str, String)> = Vec::new();
+    // Cut-out outlines on the page: no face label goes inside one.
+    let mut cut_boxes: Vec<[f64; 4]> = Vec::new();
+
     // Chimneys and roof openings.
     for (i, ch) in project
         .chimneys
@@ -741,8 +737,9 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
     {
         let pts: Vec<[f64; 2]> = ch.corners.iter().map(|p| map(p.x, p.y)).collect();
         outline(&mut shapes, &pts, MUTED, 0.8, false);
-        if let (Some(c), Some(a)) = (centroid(&pts), cutout_area.get(i).filter(|a| **a > 1e-9)) {
-            small(&mut shapes, c, INK, format!("-{}m²", num(*a, d)));
+        cut_boxes.push(bbox(&pts));
+        if let Some(a) = cutout_area.get(i).filter(|a| **a > 1e-9) {
+            cut_labels.push((pts, INK, format!("-{}m²", num(*a, d))));
         }
     }
 
@@ -752,15 +749,9 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
         let o = crate::openings::window_outline(&geos, w);
         let pts: Vec<[f64; 2]> = o.iter().map(|p| map(p.x, p.y)).collect();
         outline(&mut shapes, &pts, BRAND, 0.8, false);
-        if let Some(c) = centroid(&pts)
-            && crate::openings::window_face(&geos, w).is_some()
-        {
-            small(
-                &mut shapes,
-                c,
-                BRAND,
-                format!("-{}m²", num(w.width * w.height, d)),
-            );
+        cut_boxes.push(bbox(&pts));
+        if crate::openings::window_face(&geos, w).is_some() {
+            cut_labels.push((pts, BRAND, format!("-{}m²", num(w.width * w.height, d))));
         }
     }
 
@@ -771,34 +762,29 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
         outline(&mut shapes, &pts, MUTED, 0.6, true);
     }
 
-    // Hand-drawn faces: outline, area and pitch.
+    // Face labels: (face on the page, area, pitch). Hand-drawn faces first.
+    let mut face_labels: Vec<(Vec<[f64; 2]>, String, String)> = Vec::new();
     for f in project.manual_faces.iter().filter(|f| f.pitch_counts()) {
         let pts: Vec<[f64; 2]> = f.points.iter().map(|p| map(p.x, p.y)).collect();
         outline(&mut shapes, &pts, INK, 0.8, false);
-        if let Some(c) = centroid(&pts) {
-            shapes.push(Shape::Text {
-                at: [c[0], c[1] - 1.0],
-                angle: 0.0,
-                size: 8.5,
-                color: INK,
-                bold: false,
-                anchor: 0.5,
-                text: format!("{}m²", num(f.area(), d)),
-            });
-            shapes.push(Shape::Text {
-                at: [c[0], c[1] + 10.0],
-                angle: 0.0,
-                size: 9.5,
-                color: BRAND,
-                bold: true,
-                anchor: 0.5,
-                text: format!("{}°", num(f.pitch_deg, 2)),
-            });
+        face_labels.push((
+            pts,
+            format!("{}m²", num(f.area(), d)),
+            format!("{}°", num(f.pitch_deg, 2)),
+        ));
+    }
+    for (g, shown) in geos.iter().zip(&face_shown) {
+        for (f, a) in g.faces.iter().zip(shown) {
+            face_labels.push((
+                f.polygon.iter().map(|p| map(p[0], p[1])).collect(),
+                format!("{}m²", num(*a, d)),
+                format!("{}°", num(f.pitch_deg, 2)),
+            ));
         }
     }
 
-    // Roof lines with their true length along them, then the hand-drawn
-    // lines (dashed where they do not count, e.g. dimension lines).
+    // Roof lines, then the hand-drawn lines (dashed where they do not
+    // count, e.g. dimension lines).
     let label = (7.5_f64).min((scale * 0.45).max(5.0));
     // (from, to, colour, dashed, length)
     let mut drawn: Vec<DrawnLine> = Vec::new();
@@ -811,6 +797,8 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
         let color = code_kind(&l.code).map_or(MUTED, kind_color);
         drawn.push((l.a, l.b, color, !l.counted(), l.length()));
     }
+    // Line labels: (from, to, colour, text) on the page.
+    let mut line_labels: Vec<([f64; 2], [f64; 2], &'static str, String)> = Vec::new();
     for (la, lb, color, dashed, length) in drawn {
         let (a, b) = (map(la[0], la[1]), map(lb[0], lb[1]));
         shapes.push(Shape::Line {
@@ -820,11 +808,39 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
             width: if dashed { 0.8 } else { 1.4 },
             dashed,
         });
-        let plan = (b[0] - a[0]).hypot(b[1] - a[1]);
-        if plan < 18.0 {
-            continue;
+        if (b[0] - a[0]).hypot(b[1] - a[1]) >= 18.0 {
+            line_labels.push((a, b, color, format!("{}m", num(length, d))));
         }
-        // Upright text along the line, just off it.
+    }
+
+    let mut obstacles = Obstacles::of(&shapes);
+
+    // Cut-out areas: in the cut-out, or as near to it as is free.
+    for (poly, color, text) in cut_labels {
+        let Some(c) = centroid(&poly) else { continue };
+        let at_label = |at: [f64; 2]| Shape::Text {
+            at: [at[0], at[1] + 2.5],
+            angle: 0.0,
+            size: 7.0,
+            color,
+            bold: false,
+            anchor: 0.5,
+            text: text.clone(),
+        };
+        let b = bbox(&poly);
+        let near = [
+            [b[0] - 30.0, b[1] - 30.0],
+            [b[2] + 30.0, b[1] - 30.0],
+            [b[2] + 30.0, b[3] + 30.0],
+            [b[0] - 30.0, b[3] + 30.0],
+        ];
+        let at = free_spot(&near, c, |at| obstacles.free(&[at_label(at)])).unwrap_or(c);
+        obstacles.put(&mut shapes, at_label(at));
+    }
+
+    // Line lengths: upright along the line, just off it, at the middle or,
+    // where that is taken, further along it or on its other side.
+    for (a, b, color, text) in line_labels {
         let mut ang = -(b[1] - a[1]).atan2(b[0] - a[0]).to_degrees();
         if ang > 90.0 {
             ang -= 180.0;
@@ -832,100 +848,75 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
             ang += 180.0;
         }
         let r = ang.to_radians();
+        // The text's up direction on the page.
         let (nx, ny) = (-r.sin(), -r.cos());
-        let mid = [
-            (a[0] + b[0]) / 2.0 + nx * 2.5,
-            (a[1] + b[1]) / 2.0 + ny * 2.5,
-        ];
-        shapes.push(Shape::Text {
-            at: mid,
-            angle: ang,
-            size: label,
-            color,
-            bold: false,
-            anchor: 0.5,
-            text: format!("{}m", num(length, d)),
-        });
-    }
-
-    // Faces: area and pitch, at the middle of the face or, where a window,
-    // chimney or another label is in the way, at the free spot nearest to
-    // it inside the face.
-    let mut obstacles = Obstacles::of(&shapes);
-    // Inside a window or chimney is never free, however large it is.
-    let cutouts = project
-        .windows
-        .iter()
-        .map(|w| crate::openings::window_outline(&geos, w))
-        .chain(
-            project
-                .chimneys
-                .iter()
-                .chain(&project.roof_openings)
-                .map(|c| c.corners.clone()),
-        );
-    for o in cutouts {
-        let b = o.iter().map(|p| map(p.x, p.y)).fold(
-            [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
-            |b, p| {
-                [
-                    b[0].min(p[0]),
-                    b[1].min(p[1]),
-                    b[2].max(p[0]),
-                    b[3].max(p[1]),
-                ]
-            },
-        );
-        obstacles.boxes.push(b);
-    }
-    let mut placed: Vec<[f64; 4]> = Vec::new();
-    for (g, shown) in geos.iter().zip(&face_shown) {
-        for (f, a) in g.faces.iter().zip(shown) {
-            let poly: Vec<[f64; 2]> = f.polygon.iter().map(|p| map(p[0], p[1])).collect();
-            let Some(c) = centroid(&poly) else { continue };
-            let area_text = format!("{}m²", num(*a, d));
-            let pitch_text = format!("{}°", num(f.pitch_deg, 2));
-            let w = text_width(&ansi(&area_text), 8.5, false).max(text_width(
-                &ansi(&pitch_text),
-                9.5,
-                true,
-            ));
-            // The two rows span 8 pt above the anchor to 13 pt below it.
-            let block = |at: [f64; 2]| {
-                [
-                    at[0] - w / 2.0 - 1.0,
-                    at[1] - 9.0,
-                    at[0] + w / 2.0 + 1.0,
-                    at[1] + 13.0,
-                ]
-            };
-            let at = free_spot(&poly, c, |at| {
-                let b = block(at);
-                !obstacles.hit(b) && !placed.iter().any(|p| overlap(*p, b))
-            })
-            .unwrap_or(c);
-            placed.push(block(at));
-            shapes.push(Shape::Text {
-                at: [at[0], at[1] - 1.0],
-                angle: 0.0,
-                size: 8.5,
-                color: INK,
-                bold: false,
-                anchor: 0.5,
-                text: area_text,
-            });
-            shapes.push(Shape::Text {
-                at: [at[0], at[1] + 10.0],
-                angle: 0.0,
-                size: 9.5,
-                color: BRAND,
-                bold: true,
-                anchor: 0.5,
-                text: pitch_text,
-            });
+        let mut best: Option<(usize, Shape)> = None;
+        'search: for t in [0.5, 0.42, 0.58, 0.34, 0.66, 0.26, 0.74, 0.18, 0.82] {
+            // Above the line the baseline is 2.5 pt off it; below, the
+            // top of the text is.
+            for off in [2.5, -(label * 0.8 + 2.5)] {
+                let s = Shape::Text {
+                    at: [
+                        a[0] + (b[0] - a[0]) * t + nx * off,
+                        a[1] + (b[1] - a[1]) * t + ny * off,
+                    ],
+                    angle: ang,
+                    size: label,
+                    color,
+                    bold: false,
+                    anchor: 0.5,
+                    text: text.clone(),
+                };
+                let cost = obstacles.cost(&s);
+                if best.as_ref().is_none_or(|(c, _)| cost < *c) {
+                    best = Some((cost, s));
+                }
+                if cost == 0 {
+                    break 'search;
+                }
+            }
+        }
+        if let Some((_, s)) = best {
+            obstacles.put(&mut shapes, s);
         }
     }
 
+    // Faces: area and pitch, at the middle of the face or, where a window,
+    // chimney, line or another label is in the way, at the free spot
+    // nearest to it inside the face. Inside a window or chimney is never
+    // free, however large it is.
+    obstacles
+        .quads
+        .extend(cut_boxes.iter().map(|b| box_quad(*b)));
+    for (poly, area_text, pitch_text) in face_labels {
+        let Some(c) = centroid(&poly) else { continue };
+        let rows = |at: [f64; 2]| {
+            [
+                Shape::Text {
+                    at: [at[0], at[1] - 1.0],
+                    angle: 0.0,
+                    size: 8.5,
+                    color: INK,
+                    bold: false,
+                    anchor: 0.5,
+                    text: area_text.clone(),
+                },
+                Shape::Text {
+                    at: [at[0], at[1] + 10.0],
+                    angle: 0.0,
+                    size: 9.5,
+                    color: BRAND,
+                    bold: true,
+                    anchor: 0.5,
+                    text: pitch_text.clone(),
+                },
+            ]
+        };
+        let at = free_spot(&poly, c, |at| obstacles.free(&rows(at))).unwrap_or(c);
+        for s in rows(at) {
+            obstacles.put(&mut shapes, s);
+        }
+    }
     // Foot: total area and line totals by code.
     let fy = PAGE_H - MARGIN - foot_h;
     shapes.push(Shape::Line {
@@ -1018,92 +1009,69 @@ fn ansi(text: &str) -> Vec<u8> {
     text.chars().map(win_ansi).collect()
 }
 
-/// Whether two boxes `[x0, y0, x1, y1]` overlap.
-fn overlap(a: [f64; 4], b: [f64; 4]) -> bool {
-    a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
+/// The bounding box `[x0, y0, x1, y1]` of some points.
+fn bbox(pts: &[[f64; 2]]) -> [f64; 4] {
+    pts.iter()
+        .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
+            [
+                b[0].min(p[0]),
+                b[1].min(p[1]),
+                b[2].max(p[0]),
+                b[3].max(p[1]),
+            ]
+        })
 }
 
-/// What a label must keep clear of: the texts already on the sheet (as
-/// boxes) and its lines (as segments), in page points.
-struct Obstacles {
-    boxes: Vec<[f64; 4]>,
-    segments: Vec<([f64; 2], [f64; 2])>,
+/// A convex quadrilateral on the page.
+type Quad = [[f64; 2]; 4];
+
+fn box_quad(b: [f64; 4]) -> Quad {
+    [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]]
 }
 
-impl Obstacles {
-    fn of(shapes: &[Shape]) -> Self {
-        let mut o = Obstacles {
-            boxes: Vec::new(),
-            segments: Vec::new(),
-        };
-        for s in shapes {
-            match s {
-                Shape::Line { a, b, .. } => o.segments.push((*a, *b)),
-                Shape::Text {
-                    at,
-                    angle,
-                    size,
-                    bold,
-                    anchor,
-                    text,
-                    ..
-                } => {
-                    let w = text_width(&ansi(text), *size, *bold);
-                    let (x0, x1) = (-w * anchor, w * (1.0 - anchor));
-                    let (y0, y1) = (-size * 0.8, size * 0.25);
-                    let r = angle.to_radians();
-                    let (c, sn) = (r.cos(), r.sin());
-                    // Page y points down; the text turns counter-clockwise.
-                    let pts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
-                        .map(|(x, y)| [at[0] + x * c + y * sn, at[1] - x * sn + y * c]);
-                    let bx = pts
-                        .iter()
-                        .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
-                            [
-                                b[0].min(p[0]),
-                                b[1].min(p[1]),
-                                b[2].max(p[0]),
-                                b[3].max(p[1]),
-                            ]
-                        });
-                    o.boxes.push(bx);
-                }
-            }
-        }
-        o
-    }
-
-    fn hit(&self, b: [f64; 4]) -> bool {
-        self.boxes.iter().any(|x| overlap(*x, b))
-            || self
-                .segments
-                .iter()
-                .any(|(p, q)| segment_hits_box(*p, *q, b))
-    }
+/// The area a text covers on the page, turned with it.
+fn text_quad(s: &Shape) -> Option<Quad> {
+    let Shape::Text {
+        at,
+        angle,
+        size,
+        bold,
+        anchor,
+        text,
+        ..
+    } = s
+    else {
+        return None;
+    };
+    let w = text_width(&ansi(text), *size, *bold);
+    let (x0, x1) = (-w * anchor, w * (1.0 - anchor));
+    let (y0, y1) = (-size * 0.8, size * 0.25);
+    let r = angle.to_radians();
+    let (c, sn) = (r.cos(), r.sin());
+    // Page y points down; the text turns counter-clockwise.
+    Some(
+        [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+            .map(|(x, y)| [at[0] + x * c + y * sn, at[1] - x * sn + y * c]),
+    )
 }
 
-/// Whether the segment `p`-`q` touches the box `b` (Liang-Barsky).
-fn segment_hits_box(p: [f64; 2], q: [f64; 2], b: [f64; 4]) -> bool {
-    let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
-    let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
-    for (den, num) in [
-        (-dx, p[0] - b[0]),
-        (dx, b[2] - p[0]),
-        (-dy, p[1] - b[1]),
-        (dy, b[3] - p[1]),
-    ] {
-        if den.abs() < 1e-12 {
-            if num < 0.0 {
-                return false;
+/// Whether two convex polygons (a segment counts as one) overlap, by the
+/// separating axis test; touching is not overlapping.
+fn convex_overlap(a: &[[f64; 2]], b: &[[f64; 2]]) -> bool {
+    for poly in [a, b] {
+        for i in 0..poly.len() {
+            let (p, q) = (poly[i], poly[(i + 1) % poly.len()]);
+            let axis = [p[1] - q[1], q[0] - p[0]];
+            if axis[0].abs() + axis[1].abs() < 1e-12 {
+                continue;
             }
-        } else {
-            let t = num / den;
-            if den < 0.0 {
-                t0 = t0.max(t);
-            } else {
-                t1 = t1.min(t);
-            }
-            if t0 > t1 {
+            let span = |pts: &[[f64; 2]]| {
+                pts.iter()
+                    .map(|v| v[0] * axis[0] + v[1] * axis[1])
+                    .fold((f64::MAX, f64::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)))
+            };
+            let ((a0, a1), (b0, b1)) = (span(a), span(b));
+            if a1 <= b0 + 1e-9 || b1 <= a0 + 1e-9 {
                 return false;
             }
         }
@@ -1111,6 +1079,51 @@ fn segment_hits_box(p: [f64; 2], q: [f64; 2], b: [f64; 4]) -> bool {
     true
 }
 
+/// What a label must keep clear of: the texts already on the sheet and
+/// the boxes no label may enter (as quads), and its lines (as segments),
+/// in page points.
+struct Obstacles {
+    quads: Vec<Quad>,
+    segments: Vec<[[f64; 2]; 2]>,
+}
+
+impl Obstacles {
+    fn of(shapes: &[Shape]) -> Self {
+        let mut o = Obstacles {
+            quads: Vec::new(),
+            segments: Vec::new(),
+        };
+        for s in shapes {
+            match s {
+                Shape::Line { a, b, .. } => o.segments.push([*a, *b]),
+                Shape::Text { .. } => o.quads.extend(text_quad(s)),
+            }
+        }
+        o
+    }
+
+    /// How badly a text would collide: another text counts more than a
+    /// line, so a crowded label at least stays readable.
+    fn cost(&self, s: &Shape) -> usize {
+        let Some(q) = text_quad(s) else { return 0 };
+        3 * self.quads.iter().filter(|x| convex_overlap(*x, &q)).count()
+            + self
+                .segments
+                .iter()
+                .filter(|x| convex_overlap(*x, &q))
+                .count()
+    }
+
+    fn free(&self, texts: &[Shape]) -> bool {
+        texts.iter().all(|s| self.cost(s) == 0)
+    }
+
+    /// Draws the text and keeps later labels off it.
+    fn put(&mut self, shapes: &mut Vec<Shape>, s: Shape) {
+        self.quads.extend(text_quad(&s));
+        shapes.push(s);
+    }
+}
 /// Whether `p` lies inside the polygon (page points).
 fn inside_page(poly: &[[f64; 2]], p: [f64; 2]) -> bool {
     let mut odd = false;
@@ -1658,30 +1671,44 @@ Z1.02 35,00° 19,53m\u{2db} Dĺžka krokvy=4,88m
         );
     }
 
-    #[test]
-    fn face_labels_keep_clear_of_windows_and_chimneys() {
-        // The window of P3a sits right under the middle of its face.
-        let p = dacad_window_roof(true);
-        let geos = crate::openings::generate_project(&p);
-        let shapes = plan_sheet(
-            &p,
-            &SheetInfo {
-                stamp: String::new(),
-                decimals: 2,
-            },
-        );
-        let boxes = Obstacles::of(&shapes).boxes;
-        let texts: Vec<(&str, [f64; 4])> = shapes
+    /// Every label on the sheet keeps clear of every line and every other
+    /// label.
+    fn assert_labels_clear(shapes: &[Shape]) {
+        let lines: Vec<[[f64; 2]; 2]> = shapes
             .iter()
             .filter_map(|s| match s {
-                Shape::Text { text, .. } => Some(text.as_str()),
+                Shape::Line { a, b, .. } => Some([*a, *b]),
                 _ => None,
             })
-            .zip(boxes.iter().copied())
             .collect();
-        // Map the cut-outs onto the page as plan_sheet does: by their
-        // drawn outlines (window: brand colour; chimney: the four grey
-        // sides after the walls).
+        let texts: Vec<(&str, Quad)> = shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Text { text, .. } => Some((text.as_str(), text_quad(s)?)),
+                _ => None,
+            })
+            .collect();
+        for (i, (t, q)) in texts.iter().enumerate() {
+            for l in &lines {
+                assert!(!convex_overlap(l, q), "{t} on the line {l:?}");
+            }
+            for (u, r) in texts.iter().skip(i + 1) {
+                assert!(!convex_overlap(q, r), "{t} over {u}");
+            }
+        }
+    }
+
+    #[test]
+    fn labels_keep_clear_of_lines_windows_chimneys_and_each_other() {
+        // The window of P3a sits right under the middle of its face.
+        let info = SheetInfo {
+            stamp: String::new(),
+            decimals: 2,
+        };
+        let p = dacad_window_roof(true);
+        let shapes = plan_sheet(&p, &info);
+        assert_labels_clear(&shapes);
+        // The face label is not inside the window either.
         let window: Vec<[f64; 2]> = shapes
             .iter()
             .filter_map(|s| match s {
@@ -1689,32 +1716,31 @@ Z1.02 35,00° 19,53m\u{2db} Dĺžka krokvy=4,88m
                 _ => None,
             })
             .collect();
-        let wb = window
-            .iter()
-            .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
-                [
-                    b[0].min(p[0]),
-                    b[1].min(p[1]),
-                    b[2].max(p[0]),
-                    b[3].max(p[1]),
-                ]
-            });
-        assert_eq!(geos.len(), 1);
-        for (t, b) in &texts {
-            if t.ends_with("m²") && !t.starts_with('-') || t.ends_with('°') {
-                assert!(!overlap(*b, wb), "{t} over the window");
+        let wq = box_quad(bbox(&window));
+        for s in &shapes {
+            if let Shape::Text { text, .. } = s
+                && (text.ends_with('°') || text.ends_with("m²") && !text.starts_with('-'))
+            {
+                assert!(
+                    !convex_overlap(&text_quad(s).unwrap(), &wq),
+                    "{text} in the window"
+                );
             }
         }
-        // No two face labels overlap each other or another text.
-        for (i, (t, b)) in texts.iter().enumerate() {
-            for (u, c) in texts.iter().skip(i + 1) {
-                let face = |x: &str| !x.starts_with('-') && (x.ends_with("m²") || x.ends_with('°'));
-                if face(t) || face(u) {
-                    // A face's own two rows are stacked, never overlapping.
-                    assert!(!overlap(*b, *c), "{t} over {u}");
-                }
-            }
-        }
+        // A window on the hip and one under a face label, as the user
+        // drew them: the hip's length moves off the window.
+        let mut p = dacad_window_roof(true);
+        let mut w = p.windows[0].clone();
+        w.x = 2.0;
+        w.y = 1.0;
+        w.width = 1.2;
+        w.height = 1.6;
+        p.windows.push(w);
+        let mut w = p.windows[0].clone();
+        w.x = 1.0;
+        w.y = 3.6;
+        p.windows.push(w);
+        assert_labels_clear(&plan_sheet(&p, &info));
     }
 
     #[test]
