@@ -118,3 +118,46 @@ test.describe("Revert all asks first (UX-011)", () => {
     expect(await app.dialogs()).toEqual([]);
   });
 });
+
+test.describe("a half-drawn footprint is not dropped without asking (UX-013)", () => {
+  async function drawThree(page: Page) {
+    await tool(page, "tool.draw").click();
+    const draw = bar(page, "draw.title");
+    await clickPlan(page, 12.5, 1);
+    const len = draw.getByLabel(cs("draw.length"));
+    await len.fill("3");
+    await len.press("ArrowRight");
+    await len.fill("4");
+    await len.press("ArrowUp");
+    await expect(draw).toContainText(cs("draw.points", { n: 3 }));
+    return draw;
+  }
+
+  test("another tool asks; No keeps drawing, Yes switches the tool", async ({ app, page }) => {
+    await createExample("gable", "Kreslení");
+    await openEditor(app, "Kreslení");
+    const draw = await drawThree(page);
+    await app.answerConfirm(false);
+    await tool(page, "tool.chimney").click();
+    await expect.poll(async () => (await app.dialogs()).map((d) => d.message)).toEqual([cs("draw.confirmCancel", { n: 3 })]);
+    await expect(draw).toContainText(cs("draw.points", { n: 3 }));
+    await expect(tool(page, "tool.chimney")).toHaveAttribute("aria-pressed", "false");
+    await app.answerConfirm(true);
+    await tool(page, "tool.chimney").click();
+    await expect(draw).toHaveCount(0);
+    await expect(tool(page, "tool.chimney")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  test("Back asks; No stays in the editor with the corners, Yes goes to the library", async ({ app, page }) => {
+    await createExample("gable", "Odchod");
+    await openEditor(app, "Odchod");
+    const draw = await drawThree(page);
+    await app.answerConfirm(false);
+    await back(page).click();
+    await expect.poll(async () => (await app.dialogs()).map((d) => d.message)).toEqual([cs("draw.confirmCancel", { n: 3 })]);
+    await expect(draw).toContainText(cs("draw.points", { n: 3 }));
+    await app.answerConfirm(true);
+    await back(page).click();
+    await expect(libraryRow(page, "Odchod")).toBeVisible();
+  });
+});

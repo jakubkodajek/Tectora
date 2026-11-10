@@ -448,6 +448,14 @@
   });
   /** Saves pending edits before the job is left; asks when they cannot be saved. */
   async function leaveGuard(mode: "ask" | "quiet"): Promise<boolean> {
+    // A footprint being drawn is not in the job yet: leaving drops it, so
+    // ask as Escape does (UX-013). Follow mode (not the user's) never drops it.
+    const pts = drawing?.length ?? 0;
+    if (pts >= 2) {
+      if (mode === "quiet") return false;
+      // Tauri's dialog plugin makes confirm asynchronous: always await it.
+      if (!(await confirm(t("draw.confirmCancel", { n: pts })))) return false;
+    }
     // A value still being typed is part of the job: store it first.
     commitFocused();
     await tick();
@@ -1214,9 +1222,10 @@
     return true;
   }
 
-  function togglePlacing(kind: "dormer" | "chimney" | "window" | "hole" | "line" | "face") {
+  async function togglePlacing(kind: "dormer" | "chimney" | "window" | "hole" | "line" | "face") {
+    // Another tool ends the footprint being drawn: ask as Escape does (UX-013).
+    if (drawing && !(await cancelDraw(true))) return;
     placing = placing === kind ? false : kind;
-    drawing = null;
   }
 
   function setDormer(d: Dormer) {
@@ -1294,14 +1303,16 @@
    * Building button, easy to hit by accident) asks first once two or more
    * corners would be lost; the bar's Cancel button stops at once.
    */
-  async function cancelDraw(ask: boolean) {
+  /** Resolves to whether no footprint is being drawn any more. */
+  async function cancelDraw(ask: boolean): Promise<boolean> {
     const pts = drawing;
-    if (!pts) return;
+    if (!pts) return true;
     // Tauri's dialog plugin makes confirm asynchronous: always await it.
-    if (ask && pts.length >= 2 && !(await confirm(t("draw.confirmCancel", { n: pts.length })))) return;
+    if (ask && pts.length >= 2 && !(await confirm(t("draw.confirmCancel", { n: pts.length })))) return false;
     // Closed or restarted while the question was open.
-    if (drawing !== pts) return;
+    if (drawing !== pts) return false;
     drawing = null;
+    return true;
   }
 
   function toggleDraw() {
