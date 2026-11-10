@@ -209,6 +209,13 @@
     const e = result?.parts.find((p) => p.geometry.error)?.geometry.error ?? null;
     return e && !(e.kind === "non_convex_opening" && nonConvex.length) ? e : null;
   });
+  /** The core gave no roof for a part (the non-convex case too): its figures
+      are zero, so no export and no offer or order from it (ERR-003). */
+  const roofError = $derived(result?.parts.find((p) => p.geometry.error)?.geometry.error ?? null);
+  const blockedReason = $derived(roofError ? t("tool.exportBlocked") : null);
+  $effect(() => {
+    if (roofError) exporting = false;
+  });
   const pendingChanges = $derived(pendingList.flatMap((a) => a.changes));
   const highlight = $derived.by(() => {
     if (!project) return new Set<string>();
@@ -1488,7 +1495,7 @@
       <button class="tool" class:on={showDims} aria-pressed={showDims} onclick={() => (showDims = !showDims)} title={t("tool.dims")}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
     </div>
     <div class="group">
-      <button class="tool" class:on={exporting} aria-pressed={exporting} disabled={!result} onclick={() => (exporting = true)} title={t("tool.exportHint")}><Icon name="download" /><span>{t("tool.export")}</span></button>
+      <button class="tool" class:on={exporting} aria-pressed={exporting} disabled={!result || !!blockedReason} onclick={() => (exporting = true)} title={blockedReason ?? t("tool.exportHint")}><Icon name="download" /><span>{t("tool.export")}</span></button>
     </div>
   </div>
   {/if}
@@ -1646,7 +1653,7 @@
           {:else if dock === "ai"}
             <AiPanel {id} {project} {activity} onrevert={() => revert(false)} busy={reviewBusy} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
-            <JobPanel {id} {project} onchange={commit} onsave={save} track={(p) => pendingEdits.track(p)} />
+            <JobPanel {id} {project} onchange={commit} onsave={save} blocked={blockedReason} track={(p) => pendingEdits.track(p)} />
           {/if}
         </div>
       </aside>

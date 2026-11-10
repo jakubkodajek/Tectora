@@ -161,3 +161,60 @@ test.describe("a half-drawn footprint is not dropped without asking (UX-013)", (
     await expect(libraryRow(page, "Odchod")).toBeVisible();
   });
 });
+
+test.describe("no export or offer from a roof the core refused (ERR-003)", () => {
+  const nonConvex = async (name: string) => {
+    const id = await createExample("hip", name);
+    const p = await loadProject(id);
+    p.chimneys = [{ corners: [{ x: 5, y: 3 }, { x: 7, y: 3 }, { x: 6, y: 3.3 }, { x: 7, y: 5 }, { x: 5, y: 5 }], height: 9 }];
+    await bridge("save_project", { id, project: p });
+    return id;
+  };
+  const jobTab = (page: Page) => page.locator("aside .tabs").getByRole("tab", { name: cs("dock.job") });
+
+  test("Export is disabled with the reason while the roof has a calculation error", async ({ app, page }) => {
+    await nonConvex("Chyba");
+    await openEditor(app, "Chyba");
+    await expect(page.locator(".warn-bar").filter({ hasText: cs("opening.nonConvexAll", { n: 1 }) })).toBeVisible();
+    const exp = tool(page, "tool.export");
+    await expect(exp).toBeDisabled();
+    await expect(exp).toHaveAttribute("title", cs("tool.exportBlocked"));
+    // Fixed: export works again.
+    await page.locator(".warn-bar").getByRole("button", { name: cs("opening.show") }).click();
+    await page.keyboard.press("Delete");
+    await expect(exp).toBeEnabled();
+    await expect(exp).toHaveAttribute("title", cs("tool.exportHint"));
+  });
+
+  test("the job cannot be set to offer or ordered while the roof has a calculation error", async ({ app, page }) => {
+    const id = await nonConvex("Nabídka");
+    await openEditor(app, "Nabídka");
+    await jobTab(page).click();
+    const status = page.locator("aside .job select");
+    await expect(status).toHaveAttribute("title", cs("tool.exportBlocked"));
+    // (Playwright's toBeDisabled does not look at <option>.)
+    await expect(status.locator('option[value="offer"]')).toHaveAttribute("disabled", "");
+    await expect(status.locator('option[value="ordered"]')).toHaveAttribute("disabled", "");
+    await expect(status.locator('option[value="draft"]')).not.toHaveAttribute("disabled");
+    await page.waitForTimeout(700);
+    const p = await loadProject(id);
+    expect(p.job.status).toBe("draft");
+    expect(p.result_snapshot ?? null).toBeNull();
+  });
+
+  test("a roof with only a warning still exports and can be offered", async ({ app, page }) => {
+    const id = await createExample("gable", "Varování");
+    const p = await loadProject(id);
+    // A window off the roof: a warning, the roof is still calculated.
+    p.windows = [{ x: 40, y: 40, width: 0.78, height: 1.18 }];
+    await bridge("save_project", { id, project: p });
+    await openEditor(app, "Varování");
+    await expect(page.locator(".results")).toContainText(cs("res.warn.title"));
+    await expect(tool(page, "tool.export")).toBeEnabled();
+    await jobTab(page).click();
+    const status = page.locator("aside .job select");
+    await expect(status.locator('option[value="offer"]')).not.toHaveAttribute("disabled");
+    await status.selectOption("offer");
+    await expect.poll(async () => (await loadProject(id)).job.status).toBe("offer");
+  });
+});
