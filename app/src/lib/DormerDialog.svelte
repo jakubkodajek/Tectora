@@ -7,7 +7,7 @@
   import { api } from "./api";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialIds, materialName } from "./materials";
-  import { DORMER_KINDS, buildDormer, defaultParams, dormerSection, eaveFor, type DormerKind, type DormerParams, type HostSlope, type SectionProblem, type SectionTarget } from "./dormers";
+  import { DORMER_KINDS, buildDormer, defaultParams, dormerSection, eaveFor, solveDormer, type DormerKind, type DormerParams, type HostSlope, type SectionProblem, type SectionTarget } from "./dormers";
   import { MAX_ROUND_SEGMENTS } from "./roundroof";
   import { formatNumber, numeric } from "./numeric.svelte";
   import type { Project } from "./types";
@@ -53,7 +53,9 @@
 
   const angleDeg = $derived(+(((params.angle * 180) / Math.PI + 360) % 360).toFixed(2));
   const fronted = (k: DormerKind) => k === "shed" || k === "trapezoid";
-  const hasRidge = $derived(params.kind !== "shed");
+  /** A shed dormer, or a trapezoid whose shed roof meets the roof before its cheeks close. */
+  const shedTop = $derived(params.kind === "shed" || (params.kind === "trapezoid" && (sec?.back_width ?? 0) > 0));
+  const hasRidge = $derived(!shedTop);
 
   function set(patch: Partial<DormerParams>) {
     const next = { ...params, ...patch };
@@ -87,6 +89,18 @@
       params = { ...params, eave_height: e };
     } else {
       problem = e;
+    }
+  }
+
+  /** A trapezoid's back width sets its cheek pitch; the front wall keeps its height. */
+  function setBackWidth(width: number) {
+    if (!host || !sec) return;
+    const q = solveDormer(params, host, { wall_height: Math.max(0, sec.wall_height) }, width);
+    if (typeof q === "string") {
+      problem = q;
+    } else {
+      problem = null;
+      params = q;
     }
   }
 
@@ -139,7 +153,10 @@
           <path class="dormer" d="M80 175V45H220V175" />
         {:else}
           <path class="dormer" d="M80 175V45H220V175" />
-          {#if params.kind === "hip" || params.kind === "trapezoid" || params.kind === "half_hip"}
+          {#if params.kind === "trapezoid"}
+            <path class="line" d="M80 175L118 45M220 175L182 45" />
+            <path class="dim" d="M118 30H182M118 24V36M182 24V36" />
+          {:else if params.kind === "hip" || params.kind === "half_hip"}
             <path class="line" d="M80 175L150 125L220 175M150 125V45" />
           {:else}
             <path class="line" d="M150 175V45" />
@@ -156,15 +173,20 @@
       <label class="f" style="left:10%;top:50%" title={t("dormer.depth")}>
         <input aria-label={t("dormer.depth")} type="text" disabled={!sec || params.kind === "pointed"} use:numeric={{ value: mm(sec?.depth), step: 0.05, min: 0.01, onchange: (v) => setBy({ depth: v }) }} /><em>m</em>
       </label>
-      <label class="f" style="left:88%;top:50%" title={t("edge.overhang")}>
-        <input aria-label={t("edge.overhang")} type="text" use:numeric={{ value: params.overhang, step: 0.05, min: 0, onchange: (v) => set({ overhang: v }) }} /><em>m</em>
+      <label class="f" style="left:88%;top:50%" title={t("dormer.sideOverhang")}>
+        <input aria-label={t("dormer.sideOverhang")} type="text" use:numeric={{ value: params.side_overhang, step: 0.05, min: 0, onchange: (v) => setShape({ side_overhang: v }) }} /><em>m</em>
       </label>
+      {#if params.kind === "trapezoid"}
+        <label class="f" style="left:50%;top:7%" title={t("dormer.backWidth")}>
+          <input aria-label={t("dormer.backWidth")} type="text" disabled={!sec || sec.back_width === null} use:numeric={{ value: mm(sec?.back_width), step: 0.05, min: 0.01, onchange: (v) => setBackWidth(v) }} /><em>m</em>
+        </label>
+      {/if}
       {#if params.kind === "round"}
         <label class="f" style="left:50%;top:22%" title={t("round.segments")}>
           <input aria-label={t("round.segments")} type="text" use:numeric={{ value: params.segments, step: 1, min: 0, max: MAX_ROUND_SEGMENTS, onchange: (v) => setShape({ segments: Math.round(v) }) }} />
         </label>
       {:else}
-        <label class="f" style="left:50%;top:22%" title={params.kind === "shed" ? t("dormer.frontPitch") : params.kind === "trapezoid" ? t("dormer.cheekPitch") : t("edge.pitch")}>
+        <label class="f" style="left:50%;top:{params.kind === "trapezoid" ? 40 : 22}%" title={params.kind === "shed" ? t("dormer.frontPitch") : params.kind === "trapezoid" ? t("dormer.cheekPitch") : t("edge.pitch")}>
           {#if params.kind === "shed"}
             <input aria-label={t("dormer.frontPitch")} type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => setShape({ front_pitch_deg: v }) }} /><em>°</em>
           {:else}
@@ -173,7 +195,7 @@
         </label>
       {/if}
       {#if params.kind === "trapezoid"}
-        <label class="f" style="left:50%;top:64%" title={t("dormer.frontPitch")}>
+        <label class="f" style="left:50%;top:62%" title={t("dormer.frontPitch")}>
           <input aria-label={t("dormer.frontPitch")} type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => setShape({ front_pitch_deg: v }) }} /><em>°</em>
         </label>
       {/if}
@@ -192,7 +214,7 @@
       <figcaption>{t("dormer.sectionView")}</figcaption>
       <svg viewBox="0 0 300 220" aria-hidden="true">
         <line class="host" x1="20" y1="205" x2="280" y2="35" />
-        {#if params.kind === "shed"}
+        {#if shedTop}
           <line class="front" x1="80" y1="166" x2="80" y2="110" />
           <line class="dormer-top" x1="80" y1="110" x2="250" y2="55" />
           <path class="dim" d="M80 182H250M250 55V182" />
@@ -207,6 +229,9 @@
         {/if}
         <path class="dim arc" d="M48 205A30 30 0 0 0 46 186" />
       </svg>
+      <label class="f" style="left:13%;top:36%" title={t("dormer.frontOverhang")}>
+        <input aria-label={t("dormer.frontOverhang")} type="text" use:numeric={{ value: params.overhang, step: 0.05, min: 0, onchange: (v) => setShape({ overhang: v }) }} /><em>m</em>
+      </label>
       <label class="f" style="left:22%;top:63%" title={t("dormer.wallHeight")}>
         <input aria-label={t("dormer.wallHeight")} type="text" disabled={!host || params.kind === "pointed"} use:numeric={{ value: mm(sec?.wall_height), step: 0.05, min: 0, onchange: (v) => setBy({ wall_height: v }) }} /><em>m</em>
       </label>
@@ -226,7 +251,8 @@
     <div><dt>{t("dormer.hostPitch")}</dt><dd>{fmt(sec?.host_pitch_deg, 2)}°</dd></div>
     <div><dt>{t("dormer.depth")}</dt><dd>{fmt(sec?.depth)} m</dd></div>
     {#if hasRidge}<div><dt>{t("dormer.ridgeLength")}</dt><dd>{fmt(sec?.ridge_length)} m</dd></div>{/if}
-    <div><dt>{params.kind === "shed" ? t("dormer.roofLength") : t("dormer.cheekLength")}</dt><dd>{fmt(params.kind === "round" ? null : sec?.roof_length)} m</dd></div>
+    {#if params.kind === "trapezoid"}<div><dt>{t("dormer.backWidth")}</dt><dd>{fmt(sec?.back_width)} m</dd></div>{/if}
+    <div><dt>{shedTop ? t("dormer.roofLength") : t("dormer.cheekLength")}</dt><dd>{fmt(params.kind === "round" ? null : sec?.roof_length)} m</dd></div>
     <div><dt>{t("dormer.hostLength")}</dt><dd>{fmt(sec?.host_length)} m</dd></div>
     <div><dt>{t("dormer.topHeight")}</dt><dd>{fmt(sec?.top_height)} m</dd></div>
   </dl>

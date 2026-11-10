@@ -34,7 +34,8 @@ test.describe("dormers", () => {
 
     await setField(db.getByLabel(cs("dormer.width")), 2.4);
     await setField(db.getByLabel(cs("edge.pitch")), 38);
-    await setField(db.getByLabel(cs("edge.overhang")), 0.2);
+    await setField(db.getByLabel(cs("dormer.frontOverhang")), 0.2);
+    await setField(db.getByLabel(cs("dormer.sideOverhang")), 0.3);
     await db.getByLabel(cs("edge.material")).selectOption("2");
     await areaMatchesCore(page, id);
 
@@ -97,6 +98,28 @@ test.describe("dormers", () => {
     const edit = page.getByRole("dialog", { name: cs("dormer.n", { n: 1 }) });
     const shown = Number((await edit.getByLabel(cs("dormer.depth")).inputValue()).replace(",", "."));
     expect(Math.abs(shown - 2.5)).toBeLessThan(0.003);
+  });
+
+  test("the dormer window takes front and side overhangs and a trapezoid's back width", async ({ app, page }) => {
+    const id = await createExample("hip", "Valba");
+    await openEditor(app, "Valba");
+    await tool(page, "tool.dormer").click();
+    await clickPlan(page, 4, 1);
+    const dlg = dormerDialog(page);
+    await dlg.getByRole("radio", { name: cs("dormer.trapezoid") }).click();
+    await setField(dlg.getByLabel(cs("dormer.frontOverhang")), "0,4");
+    await setField(dlg.getByLabel(cs("dormer.sideOverhang")), "0,2");
+    const back = dlg.getByLabel(cs("dormer.backWidth"));
+    await expect(back).toBeEnabled();
+    await setField(back, "1,2");
+    await expect(back).toHaveValue("1,2");
+    await dlg.getByRole("button", { name: cs("common.ok"), exact: true }).click();
+    const p = await waitForProject(id, (p) => p.dormers.length === 1);
+    const [left, front, right] = p.dormers[0].edges;
+    expect([front.overhang, left.overhang, right.overhang]).toEqual([0.4, 0.2, 0.2]);
+    // The back width set the cheek pitch.
+    expect(left.pitch_deg).not.toBe(45);
+    await areaMatchesCore(page, id);
   });
 
   test("Escape and a second click on the tool cancel placing", async ({ app, page }) => {

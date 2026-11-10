@@ -71,7 +71,10 @@ The tools cover every operation of the Tectora editor:
   under the front, front wall height above the roof, depth, ridge length,
   slope lengths. Instead of `eave_height` give one of `wall_height` (front
   wall above the roof), `depth` (front to where the dormer meets the roof)
-  or `ridge_length`, as a drawing dimensions them.
+  or `ridge_length`, as a drawing dimensions them. `overhang` sets the
+  front and cheek overhangs together, `front_overhang` and `side_overhang`
+  apart. A trapezoid's `back_width` (its shed roof's width where it meets
+  the roof, in `section`) sets the cheek pitch instead of `pitch_deg`.
 - Windows, chimneys (also as a rectangle) and roof openings: `set_openings`.
 - Lines and faces drawn by hand on the roof: `set_manual`. A hand-drawn
   face only adds its area: it is no building and calculates no roof. When a

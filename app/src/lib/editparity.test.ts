@@ -165,6 +165,14 @@ function run(op: string, a: any): any {
       const v = dm.eaveFor(a.p, a.host, a.target);
       return typeof v === "number" ? v : { error: true };
     }
+    case "solve_dormer": {
+      const v = dm.solveDormer(a.p, a.host, a.target, a.width);
+      return typeof v === "string" ? { error: true } : v;
+    }
+    case "pitch_for_back_width": {
+      const v = dm.pitchForBackWidth(a.p, a.host, a.width);
+      return typeof v === "number" ? v : { error: true };
+    }
   }
   throw new Error(`no TypeScript operation for ${op}: add it to editparity.test.ts`);
 }

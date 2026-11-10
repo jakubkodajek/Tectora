@@ -144,8 +144,12 @@
         </label>
       {/if}
       <label>
-        <span>{t("edge.overhang")}</span>
+        <span>{t("dormer.frontOverhang")}</span>
         <div class="unit"><input type="text" use:numeric={{ value: params.overhang, step: 0.05, min: 0, onchange: (v) => set({ overhang: v }) }} /><em>m</em></div>
+      </label>
+      <label>
+        <span>{t("dormer.sideOverhang")}</span>
+        <div class="unit"><input type="text" use:numeric={{ value: params.side_overhang, step: 0.05, min: 0, onchange: (v) => set({ side_overhang: v }) }} /><em>m</em></div>
       </label>
     {/if}
     <div class="spacer"></div>

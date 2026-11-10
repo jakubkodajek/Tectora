@@ -572,6 +572,7 @@ fn dormer_cases(c: &mut Cases) {
                 pitch_deg: 42.0,
                 front_pitch_deg: 18.0,
                 overhang: 0.25,
+                side_overhang: 0.4,
                 half_hip_height: 0.55,
                 half_hip_pitch_deg: 58.0,
                 segments,
@@ -612,6 +613,12 @@ fn dormer_cases(c: &mut Cases) {
     for kind in DORMER_KINDS {
         let mut q = dormers::default_params(kind, Point2::new(0.0, 0.0), 0.0, 3.6);
         variants.push(q.clone());
+        // Front and side overhangs apart, a flat-topped trapezoid among them.
+        let mut o = q.clone();
+        o.overhang = 0.5;
+        o.side_overhang = 0.1;
+        o.eave_height = 4.4;
+        variants.push(o);
         q.pitch_deg = 0.0;
         q.half_hip_pitch_deg = 0.0;
         q.front_pitch_deg = 90.0;
@@ -639,6 +646,28 @@ fn dormer_cases(c: &mut Cases) {
                 c.add(
                     "eave_for",
                     json!({ "p": to(&params), "host": to(host), "target": to(target) }),
+                    out,
+                );
+            }
+            for width in [0.6, 1.5, 0.0, 9.0] {
+                let out = match dormers::pitch_for_back_width(&params, host, width) {
+                    Ok(v) => to(v),
+                    Err(_) => json!({ "error": true }),
+                };
+                let solved = dormers::solve(
+                    &params,
+                    host,
+                    Some(SectionTarget::WallHeight(1.1)),
+                    Some(width),
+                );
+                c.add(
+                    "solve_dormer",
+                    json!({ "p": to(&params), "host": to(host), "target": to(SectionTarget::WallHeight(1.1)), "width": width }),
+                    solved.map_or_else(|_| json!({ "error": true }), |q| to(&q)),
+                );
+                c.add(
+                    "pitch_for_back_width",
+                    json!({ "p": to(&params), "host": to(host), "width": width }),
                     out,
                 );
             }

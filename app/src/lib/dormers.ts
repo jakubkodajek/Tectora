@@ -24,7 +24,10 @@ export interface DormerParams {
   pitch_deg: number;
   /** Pitch of the front plane (hip, shed, trapezoid). */
   front_pitch_deg: number;
+  /** Overhang of the front. */
   overhang: number;
+  /** Overhang of the cheeks (the dormer roof is width + 2 × this wide). */
+  side_overhang: number;
   /** Krüppelwalm: height and pitch of the clipped part of the front. */
   half_hip_height: number;
   half_hip_pitch_deg: number;
@@ -44,6 +47,7 @@ export function defaultParams(kind: DormerKind, start: Point2, angle: number, ea
     pitch_deg: 45,
     front_pitch_deg: kind === "shed" || kind === "trapezoid" ? 15 : 45,
     overhang: 0,
+    side_overhang: 0,
     half_hip_height: 0.6,
     half_hip_pitch_deg: 60,
     segments: 0,
@@ -56,15 +60,16 @@ export function buildDormer(p: DormerParams): Dormer {
   const end = { x: roundTo(p.start.x + u.x * p.width, 3), y: roundTo(p.start.y + u.y * p.width, 3) };
   const sloped = p.kind !== "shed";
   const frontSloped = p.kind === "hip" || p.kind === "shed" || p.kind === "trapezoid";
-  const base = { eave_height: p.eave_height, overhang: p.overhang, ...(p.material !== 1 ? { material: p.material } : {}) };
+  const base = { eave_height: p.eave_height, ...(p.material !== 1 ? { material: p.material } : {}) };
   // A Rundgaube is a gable dormer whose cheeks follow the Runddach arc (DACAD.HLP);
   // DACAD's default arc is assumed, its dormer dialog is not verified yet.
   const arc =
     p.kind === "round"
-      ? arcFor({ span: p.width, overhang: p.overhang, eave_height: p.eave_height, segments: Math.min(MAX_ROUND_SEGMENTS, p.segments), mode: "default", value: 0 })
+      ? arcFor({ span: p.width, overhang: p.side_overhang, eave_height: p.eave_height, segments: Math.min(MAX_ROUND_SEGMENTS, p.segments), mode: "default", value: 0 })
       : null;
   const cheek = (dir: number, start: Point2): EdgeDef => ({
     ...base,
+    overhang: p.side_overhang,
     start: { ...start },
     pitch_deg: arc ? arc.pitch_deg : sloped ? p.pitch_deg : GABLE_PITCH,
     direction_rad: norm(dir),
@@ -72,6 +77,7 @@ export function buildDormer(p: DormerParams): Dormer {
   });
   const front: EdgeDef = {
     ...base,
+    overhang: p.overhang,
     start: { ...p.start },
     pitch_deg: frontSloped ? (p.kind === "hip" ? p.pitch_deg : p.front_pitch_deg) : GABLE_PITCH,
     half_hip:
@@ -92,6 +98,7 @@ export function parseDormer(d: Dormer): DormerParams {
     ...defaultParams("general", start, angle, f?.eave_height ?? d.edges[0]?.eave_height ?? 0),
     width: Math.hypot(d.end.x - start.x, d.end.y - start.y),
     overhang: f?.overhang ?? 0,
+    side_overhang: (d.edges[0] ?? f)?.overhang ?? 0,
     material: f?.material ?? 1,
   };
   if (d.edges.length !== 3 || a.direction_rad == null || b.direction_rad == null || f.direction_rad != null) return p;
@@ -231,6 +238,8 @@ export interface DormerSection {
   ridge_length: number | null;
   roof_length: number | null;
   host_length: number | null;
+  /** Trapezoid: width of the shed roof where it meets the roof (0 when the cheeks close in a ridge). */
+  back_width: number | null;
 }
 
 export type SectionTarget = { wall_height: number } | { depth: number } | { ridge_length: number };
@@ -265,41 +274,64 @@ function cheekOf(p: DormerParams): EdgeDef | null {
   return buildDormer(p).edges[0];
 }
 
-/** Height of the front wall's top above the eave (the eave is at the overhang's edge). */
+/** Height of the dormer's wall top above its eave (the eave is at the overhang's
+ *  edge): a shed dormer's front wall, the other kinds' cheek walls. */
 function wallRise(p: DormerParams): number {
   const c = cheekOf(p);
-  return c ? profile(c, p.overhang)[0] : p.overhang * tanDeg(p.front_pitch_deg);
+  return c ? profile(c, p.side_overhang)[0] : p.overhang * tanDeg(p.front_pitch_deg);
 }
 
 function ridgeRise(p: DormerParams): [number, number] | null {
   const c = cheekOf(p);
   if (!c) return null;
-  const [rise, len] = profile(c, p.width / 2 + p.overhang);
-  return [rise, len - profile(c, p.overhang)[1]];
+  const [rise, len] = profile(c, p.width / 2 + p.side_overhang);
+  return [rise, len - profile(c, p.side_overhang)[1]];
 }
 
 /** Rust's f64::max: NaN gives the other value. */
 const fmax = (a: number, b: number) => (Number.isNaN(a) ? b : Number.isNaN(b) ? a : Math.max(a, b));
 
 function ridgeStart(p: DormerParams, rise: number): number {
+  const ov = p.overhang;
   let start: number;
   switch (p.kind) {
     case "hip":
-      start = rise / tanDeg(p.pitch_deg) - p.overhang;
+      start = rise / tanDeg(p.pitch_deg) - ov;
       break;
     case "trapezoid":
-      start = rise / tanDeg(p.front_pitch_deg) - p.overhang;
+      start = rise / tanDeg(p.front_pitch_deg) - ov;
       break;
     case "half_hip":
-      start = (rise - p.half_hip_height) / tanDeg(p.half_hip_pitch_deg) - p.overhang;
+      start = (rise - p.half_hip_height) / tanDeg(p.half_hip_pitch_deg) - ov;
       break;
     default:
-      start = -p.overhang;
+      start = -ov;
   }
-  return fmax(start, -p.overhang);
+  return fmax(start, -ov);
 }
 
 const MIN_SHED_TAN = 1e-2;
+
+/** Where a sloped front plane runs into the roof: [depth, rise above the eave]. */
+function frontPlaneTop(p: DormerParams, host: HostSlope): [number, number] | null {
+  const tf = tanDeg(p.front_pitch_deg);
+  const wall = p.eave_height + p.overhang * tf - host.height;
+  const k = host.tan - tf;
+  if (!(k > MIN_SHED_TAN && wall >= -1e-6)) return null;
+  const d = fmax(wall, 0) / k;
+  return [d, (d + p.overhang) * tf];
+}
+
+/** A trapezoid dormer whose shed roof meets the roof before its cheeks close. */
+function trapezoidTop(p: DormerParams, host: HostSlope): [number, number] | null {
+  if (p.kind !== "trapezoid") return null;
+  const rr = ridgeRise(p);
+  if (!rr) return null;
+  const t = frontPlaneTop(p, host);
+  return t && t[1] < rr[0] ? t : null;
+}
+
+const backWidth = (p: DormerParams, rise: number) => p.width + 2 * p.side_overhang - (2 * rise) / tanDeg(p.pitch_deg);
 
 /** The dialog's section for a dormer on `host` (tectora-core `section`). */
 export function dormerSection(p: DormerParams, host: HostSlope): DormerSection {
@@ -313,12 +345,18 @@ export function dormerSection(p: DormerParams, host: HostSlope): DormerSection {
     ridge_length: null,
     roof_length: null,
     host_length: null,
+    back_width: null,
   };
   let depth: number | null = null;
+  const trap = trapezoidTop(p, host);
   if (p.kind === "shed") {
-    const k = host.tan - tanDeg(p.front_pitch_deg);
-    depth = k > MIN_SHED_TAN && wall >= -1e-6 ? fmax(wall, 0) / k : null;
+    const t = frontPlaneTop(p, host);
+    depth = t ? t[0] : null;
     s.roof_length = depth === null ? null : depth / cosDeg(p.front_pitch_deg);
+  } else if (trap) {
+    depth = trap[0];
+    s.roof_length = depth / cosDeg(p.front_pitch_deg);
+    s.back_width = backWidth(p, trap[1]);
   } else {
     const rr = ridgeRise(p);
     if (rr) {
@@ -328,24 +366,25 @@ export function dormerSection(p: DormerParams, host: HostSlope): DormerSection {
       s.roof_length = cheek;
       depth = host.tan > MIN_TAN && top >= 0 ? top / host.tan : null;
       s.ridge_length = depth === null ? null : fmax(depth - ridgeStart(p, rise), 0);
+      if (p.kind === "trapezoid" && depth !== null) s.back_width = 0;
     }
   }
   const finite = (v: number | null) => (v !== null && Number.isFinite(v) ? v : null);
   s.depth = finite(depth);
   s.ridge_length = finite(s.ridge_length);
   s.roof_length = finite(s.roof_length);
+  s.back_width = finite(s.back_width);
   s.top_height = s.depth === null ? null : s.depth * host.tan;
   s.host_length = s.depth === null ? null : s.depth / Math.cos(Math.atan(host.tan));
   return s;
 }
 
 /** Why a section value cannot be reached (keys of `dormer.err.*`). */
-export type SectionProblem = "negative" | "no_ridge" | "too_steep" | "flat_roof" | "below_roof" | "bad_pitch";
+export type SectionProblem = "negative" | "no_ridge" | "too_steep" | "flat_roof" | "below_roof" | "bad_pitch" | "bad_back_width";
 
-/** The eave height for a section value (tectora-core `eave_for`), or why not. */
-export function eaveFor(p: DormerParams, host: HostSlope, target: SectionTarget): number | SectionProblem {
+function paramsOk(p: DormerParams): boolean {
   const ok = (v: number) => v > 0 && v < 90;
-  const pitchesOk =
+  const pitches =
     p.kind === "shed"
       ? ok(p.front_pitch_deg)
       : p.kind === "trapezoid"
@@ -353,7 +392,13 @@ export function eaveFor(p: DormerParams, host: HostSlope, target: SectionTarget)
         : p.kind === "half_hip"
           ? ok(p.pitch_deg) && ok(p.half_hip_pitch_deg)
           : ok(p.pitch_deg) || p.kind === "round";
-  if (!pitchesOk || !(p.width > 0)) return "bad_pitch";
+  const len = (v: number) => Number.isFinite(v) && v >= 0;
+  return pitches && p.width > 0 && Number.isFinite(p.width) && len(p.overhang) && len(p.side_overhang);
+}
+
+/** The eave height for a section value (tectora-core `eave_for`), or why not. */
+export function eaveFor(p: DormerParams, host: HostSlope, target: SectionTarget): number | SectionProblem {
+  if (!paramsOk(p)) return "bad_pitch";
   let eave: number;
   if ("wall_height" in target) {
     const h = target.wall_height;
@@ -363,20 +408,63 @@ export function eaveFor(p: DormerParams, host: HostSlope, target: SectionTarget)
     const ridge = "ridge_length" in target;
     const d = ridge ? target.ridge_length : target.depth;
     if (!Number.isFinite(d) || d <= 0) return "negative";
+    const tf = tanDeg(p.front_pitch_deg);
     if (p.kind === "shed") {
       if (ridge) return "no_ridge";
-      const k = host.tan - tanDeg(p.front_pitch_deg);
+      const k = host.tan - tf;
       if (k <= MIN_SHED_TAN) return "too_steep";
       eave = host.height + d * k - wallRise(p);
     } else {
       const rr = ridgeRise(p);
       if (!rr) return "no_ridge";
       if (host.tan <= MIN_TAN) return "flat_roof";
-      const depth = ridge ? d + ridgeStart(p, rr[0]) : d;
-      eave = host.height + depth * host.tan - rr[0];
+      const shedTop = (d + p.overhang) * tf;
+      if (p.kind === "trapezoid" && !ridge && host.tan - tf > MIN_SHED_TAN && shedTop < rr[0]) {
+        eave = host.height + d * host.tan - shedTop;
+      } else {
+        const depth = ridge ? d + ridgeStart(p, rr[0]) : d;
+        eave = host.height + depth * host.tan - rr[0];
+      }
     }
   }
   if (!Number.isFinite(eave)) return "bad_pitch";
   if (eave + wallRise(p) < host.height - 1e-9) return "below_roof";
   return roundTo(eave, 3);
+}
+
+/** The cheek pitch that gives a trapezoid dormer the back width `width`
+ *  (tectora-core `pitch_for_back_width`), or why not. */
+export function pitchForBackWidth(p: DormerParams, host: HostSlope, width: number): number | SectionProblem {
+  if (p.kind !== "trapezoid") return "no_ridge";
+  const eaveWidth = p.width + 2 * p.side_overhang;
+  if (!Number.isFinite(width) || width <= 0 || width >= eaveWidth) return "bad_back_width";
+  const q = { ...p, pitch_deg: 45 };
+  if (!paramsOk(q)) return "bad_pitch";
+  const t = frontPlaneTop(q, host);
+  if (!t) return "too_steep";
+  if (t[1] <= 1e-6) return "below_roof";
+  const pitch = roundTo((Math.atan((2 * t[1]) / (eaveWidth - width)) * 180) / Math.PI, 2);
+  if (!(pitch > 0 && pitch < 90)) return "bad_back_width";
+  return pitch;
+}
+
+/** The dormer with `target` (its eave) and a trapezoid's `backWidth` (its
+ *  cheek pitch) solved in turn until they settle (tectora-core `solve`). */
+export function solveDormer(p: DormerParams, host: HostSlope, target: SectionTarget | null, backWidth: number | null): DormerParams | SectionProblem {
+  let q = { ...p };
+  for (let i = 0; i < 20; i++) {
+    const before = [q.eave_height, q.pitch_deg];
+    if (target) {
+      const e = eaveFor(q, host, target);
+      if (typeof e !== "number") return e;
+      q = { ...q, eave_height: e };
+    }
+    if (backWidth !== null) {
+      const pitch = pitchForBackWidth(q, host, backWidth);
+      if (typeof pitch !== "number") return pitch;
+      q = { ...q, pitch_deg: pitch };
+    }
+    if (!target || backWidth === null || (before[0] === q.eave_height && before[1] === q.pitch_deg)) break;
+  }
+  return q;
 }

@@ -152,3 +152,23 @@ sessions that use it know where things stand.
 - Next: Jakub's dad tries it; DACAD's dialog also has separate front and
   side overhangs and a back width for the trapezoid dormer (not ported, one
   overhang as before).
+
+## 2026-11-10 · dormer overhangs and trapezoid back width (same branch)
+
+- Done: separate front overhang (front wall) and side overhang (cheeks) in
+  `DormerParams` (`overhang`, `side_overhang`, read back from the edges, so
+  old jobs keep their one overhang), the dormer window (front overhang in the
+  section, side overhang in the plan), the dormer bar and MCP
+  (`overhang` sets both, `front_overhang` / `side_overhang` apart). Trapezoid:
+  `section.back_width` (shed roof width where it meets the roof) and
+  `pitch_for_back_width` / `solve` set the cheek pitch from it. The section
+  of a trapezoid whose shed roof meets the roof before the cheeks close now
+  takes its depth from the shed plane (it wrongly assumed a ridge before).
+  All checked against the calculated roof (depth, ridge, back width) for 4
+  overhang pairs.
+- Evidence: DACAD dialog resources (Schleppgaube 1259 side / 1265 front
+  overhang; Trapezgaube 1245 top, 1247 base, 1248 cheek pitch) and the
+  decompiled dialog init (type 2 = Trapezgaube, needs top < base width).
+  Not verified with a DACAD run: whether DACAD's trapezoid puts the cheek
+  eave lower than the front (its picture shows a trapezoid front wall).
+- State: `make check` exit 0, sweeps clean.
