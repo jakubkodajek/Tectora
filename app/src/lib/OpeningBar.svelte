@@ -80,7 +80,8 @@
       <p class="tip">{t("opening.windowHint")}</p>
     {/if}
     <div class="spacer"></div>
-    <button class="icon-btn danger" onclick={ondelete} title={t("opening.delete")} aria-label={t("opening.delete")}><Icon name="trash" /></button>
+    {@const del = t(sel.kind === "chimney" ? "opening.deleteChimney" : sel.kind === "window" ? "opening.deleteWindow" : "opening.deleteHole")}
+    <button class="btn sm ghost danger" onclick={ondelete} title={del}><Icon name="trash" size={15} />{del}</button>
   {/if}
 </div>
 

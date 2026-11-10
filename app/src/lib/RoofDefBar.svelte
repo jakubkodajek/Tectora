@@ -322,7 +322,8 @@
         {/if}
       </div>
       <div class="actions">
-        <button class="icon-btn danger" disabled={!marker && realWalls <= 3} onclick={ondelete} title={t("edge.deleteVertex")} aria-label={t("edge.deleteVertex")}><Icon name="trash" /></button>
+        <button class="btn sm ghost danger" disabled={!marker && realWalls <= 3} onclick={ondelete}
+          title={marker ? t("edge.deleteMarker") : t("edge.deleteVertexHint")}><Icon name="trash" size={15} />{marker ? t("edge.deleteMarker") : t("edge.deleteVertex")}</button>
       </div>
     </div>
   {/if}

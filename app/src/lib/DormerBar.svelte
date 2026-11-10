@@ -148,7 +148,7 @@
             <Icon name={moreOpen ? "x" : "right"} size={12} />
           </button>
         {/if}
-        <button class="icon-btn danger" onclick={ondelete} title={t("dormer.delete")} aria-label={t("dormer.delete")}><Icon name="trash" /></button>
+        <button class="btn sm ghost danger" onclick={ondelete} title={t("dormer.delete")}><Icon name="trash" size={15} />{t("dormer.delete")}</button>
       </div>
     {/if}
   </div>

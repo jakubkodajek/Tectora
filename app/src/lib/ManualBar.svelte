@@ -82,7 +82,8 @@
     {#if face && ontopart}
       <button class="btn sm" onclick={ontopart} title={t("manual.toPartHint")}><Icon name="house" size={15} />{t("manual.toPart")}</button>
     {/if}
-    <button class="icon-btn danger" onclick={ondelete} title={t("manual.delete")} aria-label={t("manual.delete")}><Icon name="trash" /></button>
+    {@const del = t(sel.kind === "line" ? "manual.deleteLine" : "manual.deleteFace")}
+    <button class="btn sm ghost danger" onclick={ondelete} title={del}><Icon name="trash" size={15} />{del}</button>
   {/if}
 </div>
 

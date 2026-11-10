@@ -1248,10 +1248,17 @@
     commit();
   }
 
-  function deleteDormer() {
+  /** Asks first (UI-006): one press would remove the dormer with its faces. */
+  async function deleteDormer() {
     if (!project || dormerSel === null) return;
-    project.dormers.splice(dormerSel, 1);
-    dormerSel = null;
+    const index = dormerSel;
+    const dormer = project.dormers[index];
+    // Tauri's dialog plugin makes confirm asynchronous: always await it.
+    if (!(await confirm(t("dormer.confirmDelete", { n: index + 1 })))) return;
+    // The project may have been reloaded (AI edit) while the dialog was open.
+    if (!project || project.dormers[index] !== dormer) return;
+    project.dormers.splice(index, 1);
+    if (dormerSel === index) dormerSel = null;
     commit();
   }
 
@@ -1497,8 +1504,8 @@
     <div class="group">
       <button class="tool" class:on={prefs.layout === "plan"} aria-pressed={prefs.layout === "plan"} onclick={() => setLayout("plan")} title={t("editor.plan")}><Icon name="plan" /><span>{t("editor.plan")}</span></button>
       <button class="tool" class:on={prefs.layout === "split"} aria-pressed={prefs.layout === "split"} onclick={() => setLayout("split")} title={t("editor.both")}><Icon name="split" /><span>{t("editor.both")}</span></button>
-      <button class="tool" class:on={prefs.layout === "3d"} aria-pressed={prefs.layout === "3d"} onclick={() => setLayout("3d")} title="F3"><Icon name="cube" /><span>{t("editor.model")}</span></button>
-      <button class="tool" onclick={() => plan?.fit()} disabled={prefs.layout === "3d"} title={t("plan.fit")}><Icon name="fit" /><span>{t("plan.fit")}</span></button>
+      <button class="tool" class:on={prefs.layout === "3d"} aria-pressed={prefs.layout === "3d"} onclick={() => setLayout("3d")} title="{t('editor.modelHint')} (F3)"><Icon name="cube" /><span>{t("editor.model")}</span></button>
+      <button class="tool" onclick={() => plan?.fit()} disabled={prefs.layout === "3d"} title={t("plan.fitHint")}><Icon name="fit" /><span>{t("plan.fit")}</span></button>
       <button class="tool" class:on={showDims} aria-pressed={showDims} onclick={() => (showDims = !showDims)} title={t("tool.dims")}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
     </div>
     <div class="group">
@@ -2215,9 +2222,10 @@
 
   /* ---- Responsive: half-screen and smaller windows ---- */
   @media (max-width: 1440px) {
+    /* Narrow enough that the labelled toolbar fits 1360 px in Czech. */
     .tool {
       min-width: 0;
-      padding: 0 7px;
+      padding: 0 5px;
     }
   }
   /* Narrow or low window: the toolbar collapses to icons (tooltips keep the names). */
