@@ -9,6 +9,7 @@
   import { t } from "./lib/i18n.svelte";
   import { actorName, live } from "./lib/live.svelte";
   import { info, notify, notifyError } from "./lib/notify.svelte";
+  import { isBenignError } from "./lib/inflight";
   import { applySettings, loadSettings, prefs } from "./lib/settings.svelte";
   import { hasUnsaved, isBusy, mayLeave } from "./lib/leave";
   import type { BrokenFile, ExampleInfo, LiveStatus, ProjectSummary } from "./lib/types";
@@ -79,6 +80,8 @@
 
   /** Last resort: anything that slipped through still reaches the user. */
   function onUnexpected(e: unknown) {
+    // Browser noise, not a failure (UI-019).
+    if (isBenignError(e)) return;
     notifyError(e);
   }
 

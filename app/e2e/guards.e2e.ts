@@ -253,3 +253,18 @@ test.describe("the standard roof dialog adds the type picked (UI-001)", () => {
     await expect(app.toasts()).toHaveCount(0);
   });
 });
+
+test.describe("browser noise is not an error (UI-019)", () => {
+  test("a ResizeObserver loop message shows no toast; a real error still does", async ({ app, page }) => {
+    await createExample("gable", "Okno prohlížeče");
+    await openEditor(app, "Okno prohlížeče");
+    await page.evaluate(() => window.dispatchEvent(new ErrorEvent("error", { message: "ResizeObserver loop completed with undelivered notifications." })));
+    await page.evaluate(() => window.dispatchEvent(new ErrorEvent("error", { message: "ResizeObserver loop limit exceeded" })));
+    await page.waitForTimeout(400);
+    await expect(app.toasts()).toHaveCount(0);
+    await page.evaluate(() => window.dispatchEvent(new ErrorEvent("error", { message: "boom", error: new Error("boom") })));
+    await expect(app.toasts()).toHaveCount(1);
+    // The real error above is logged on purpose.
+    app.errors.length = 0;
+  });
+});
