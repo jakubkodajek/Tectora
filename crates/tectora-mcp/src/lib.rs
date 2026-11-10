@@ -557,8 +557,48 @@ fn tools() -> Value {
     if let Value::Array(a) = &mut list {
         a.extend(more::tools());
         a.extend(drawings::tools());
+        for t in a.iter_mut() {
+            let name = t["name"].as_str().unwrap_or_default().to_string();
+            let ann = annotations(&name, t);
+            t["annotations"] = ann;
+        }
     }
     list
+}
+
+/// Tools that delete or overwrite something the activity log cannot bring
+/// back with Revert (a job, a file, the folders in the settings).
+const DESTRUCTIVE: &[&str] = &[
+    "delete_project",
+    "remove_file",
+    "export_job",
+    "export_plan",
+    "update_settings",
+    "clear_roof",
+    "delete_items",
+];
+
+/// MCP tool annotations (spec 2025-06-18, `ToolAnnotations`). Clients use
+/// them to group tools for their permission prompts: Claude Desktop offers
+/// "Always allow" per group of read-only and write tools, so a user can stop
+/// the prompts for everything that only reads. A tool reads only when it
+/// takes no `summary` (every write needs one, `AGENTS.md`). Everything is
+/// local: no tool reaches the internet.
+fn annotations(name: &str, tool: &Value) -> Value {
+    let writes = tool["inputSchema"]["properties"].get("summary").is_some();
+    let mut title: String = name.replace('_', " ");
+    if let Some(c) = title.get_mut(0..1) {
+        c.make_ascii_uppercase();
+    }
+    let mut a = json!({
+        "title": title,
+        "readOnlyHint": !writes,
+        "openWorldHint": false,
+    });
+    if writes {
+        a["destructiveHint"] = json!(DESTRUCTIVE.contains(&name));
+    }
+    a
 }
 
 fn base_tools() -> Value {
@@ -1480,6 +1520,29 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap())
             .collect();
         assert!(names.contains(&"create_project") && names.contains(&"update_edges"));
+        // Annotations let clients group the permission prompt: reads can be
+        // allowed once, every write keeps its summary.
+        let tool = |n: &str| {
+            r["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == n)
+                .unwrap()["annotations"]
+                .clone()
+        };
+        assert_eq!(tool("calc")["readOnlyHint"], true);
+        assert_eq!(tool("list_projects")["readOnlyHint"], true);
+        assert_eq!(tool("update_edges")["readOnlyHint"], false);
+        assert_eq!(tool("update_edges")["destructiveHint"], false);
+        assert_eq!(tool("delete_project")["destructiveHint"], true);
+        assert!(
+            r["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|t| t["annotations"]["openWorldHint"] == false)
+        );
     }
 
     #[test]
