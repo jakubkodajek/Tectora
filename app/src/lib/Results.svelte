@@ -7,20 +7,87 @@
   import { materialName } from "./materials";
   import { areaRows, joinedWith, warningText } from "./results";
   import { partLabel } from "./partname";
-  import type { CalcResult, Project } from "./types";
+  import { api } from "./api";
+  import { exportPreview } from "./exportlist";
+  import Icon from "./Icon.svelte";
+  import { notifyError } from "./notify.svelte";
+  import type { CalcBreakdown, CalcResult, Project } from "./types";
 
   let {
     result,
     project = null,
+    title = "",
     onstore,
     blocked = null,
   }: {
     result: CalcResult | null;
     project?: Project | null;
+    /** The title the Excel list carries, as the Export dialog gets it. */
+    title?: string;
     onstore?: () => void;
     /** Why the figures cannot become the offer's stored result now (the core gave no roof), or null. */
     blocked?: string | null;
   } = $props();
+
+  // "Copy for Excel": the Export dialog's list, from the same core command
+  // with the same title and stamp, so both copies are the same text (UX-004).
+  let copied = $state(false);
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => () => clearTimeout(copiedTimer));
+  async function copyExcel() {
+    if (!project) return;
+    const text = exportPreview($state.snapshot(project) as Project, title).then((r) => r.list);
+    try {
+      // The ClipboardItem gets the promise so Safari (WKWebView) keeps the
+      // user gesture while the core writes the list.
+      if (typeof ClipboardItem !== "undefined") {
+        await navigator.clipboard.write([new ClipboardItem({ "text/plain": text.then((t) => new Blob([t], { type: "text/plain" })) })]);
+      } else {
+        await navigator.clipboard.writeText(await text);
+      }
+      copied = true;
+      clearTimeout(copiedTimer);
+      copiedTimer = setTimeout(() => (copied = false), 1800);
+    } catch (e) {
+      notifyError(e, "export");
+    }
+  }
+
+  // What is on the roof (UX-005): counts and window sizes from the job,
+  // the area each kind took off the roof from the core's breakdown.
+  const objects = $derived(
+    project
+      ? {
+          windows: project.windows ?? [],
+          chimneys: project.chimneys?.length ?? 0,
+          holes: project.roof_openings?.length ?? 0,
+          dormers: project.dormers?.length ?? 0,
+        }
+      : null,
+  );
+  const hasObjects = $derived(!!objects && objects.windows.length + objects.chimneys + objects.holes + objects.dormers > 0);
+  let breakdown = $state<CalcBreakdown | null>(null);
+  let seq = 0;
+  $effect(() => {
+    void result;
+    if (!hasObjects || !project) {
+      breakdown = null;
+      return;
+    }
+    const snapshot = $state.snapshot(project) as Project;
+    const mine = ++seq;
+    api
+      .calcBreakdown(snapshot)
+      .then((b) => mine === seq && (breakdown = b))
+      .catch(() => mine === seq && (breakdown = null));
+  });
+  /** The core's deduction per object kind, summed over the buildings for display. */
+  const deducted = $derived.by(() => {
+    const by: Record<string, number> = {};
+    for (const part of breakdown?.parts ?? []) for (const o of part.openings ?? []) by[o.kind] = (by[o.kind] ?? 0) + o.area;
+    return by;
+  });
+  const deductedTotal = $derived(Object.values(deducted).reduce((a, b) => a + b, 0));
 
   /** The stored result (figures of the offer) against the current one. */
   const stored = $derived(result?.stored_result ?? null);
@@ -66,7 +133,13 @@
     <span>{t("res.area")}</span>
     <strong>{totals ? m2(totals.roof_area) : "—"}</strong>
     {#if totals}<small>{t("res.ridgeHeight", { v: num(totals.ridge_height) })}</small>{/if}
+    {#if totals && deductedTotal >= 0.005}<small data-testid="res-deducted">{t("res.obj.netOf", { a: m2(deductedTotal) })}</small>{/if}
   </div>
+  {#if project}
+    <button class="btn sm primary copy" data-testid="res-copy-excel" disabled={!result || !!blocked} title={blocked ?? t("res.copyExcelHint")} onclick={copyExcel}>
+      <Icon name={copied ? "check" : "copy"} size={14} />{copied ? t("export.copied") : t("res.copyExcel")}
+    </button>
+  {/if}
 
   {#if warnings.length}
     <div class="warn" role="status">
@@ -108,6 +181,33 @@
         {/each}
       </tbody>
     </table>
+  {/if}
+
+  {#if hasObjects && objects}
+    <h4>{t("res.objects")}</h4>
+    <table class="objects" data-testid="res-objects">
+      <tbody>
+        {#if objects.windows.length}
+          <tr>
+            <td>
+              {t("res.obj.windows", { n: objects.windows.length })}
+              <small class="joined">{objects.windows.map((w) => `${num(w.width)} × ${num(w.height)} m`).join(", ")}</small>
+            </td>
+            <td class="v">{#if deducted.window}−{m2(deducted.window)}{/if}</td>
+          </tr>
+        {/if}
+        {#if objects.chimneys}
+          <tr><td>{t("res.obj.chimneys", { n: objects.chimneys })}</td><td class="v">{#if deducted.chimney}−{m2(deducted.chimney)}{/if}</td></tr>
+        {/if}
+        {#if objects.holes}
+          <tr><td>{t("res.obj.holes", { n: objects.holes })}</td><td class="v">{#if deducted.hole}−{m2(deducted.hole)}{/if}</td></tr>
+        {/if}
+        {#if objects.dormers}
+          <tr><td>{t("res.obj.dormers", { n: objects.dormers })}</td><td class="v">{#if deducted.dormer}−{m2(deducted.dormer)}{/if}</td></tr>
+        {/if}
+      </tbody>
+    </table>
+    <p class="note">{t("res.obj.note")}</p>
   {/if}
 
   <h4>{t("res.lines")}</h4>
@@ -288,6 +388,9 @@
   }
   .btn.sm {
     align-self: flex-start;
+  }
+  .btn.copy :global(svg) {
+    margin-right: 2px;
   }
   .note {
     margin: 0;

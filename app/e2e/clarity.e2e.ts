@@ -168,3 +168,62 @@ test.describe("back, undo and delete say what they do", () => {
     expect((await loadProject(id)).parts).toHaveLength(1);
   });
 });
+
+test.describe("results for the offer", () => {
+  test("Copy for Excel in Results gives byte for byte the Export dialog's text (UX-004)", async ({ app, page }) => {
+    // One minute for both copies: the list carries a dd.mm.yyyy hh:mm stamp.
+    await page.clock.setFixedTime(new Date("2026-11-10T10:15:00"));
+    const id = await createExample("hip", "Valba excel");
+    const p = await loadProject(id);
+    p.windows = [{ x: 6, y: 2, width: 0.78, height: 1.18 }];
+    await bridge("save_project", { id, project: p });
+    await openEditor(app, "Valba excel");
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    const read = () => page.evaluate(() => navigator.clipboard.readText());
+
+    await page.evaluate(() => navigator.clipboard.writeText(""));
+    const copy = page.locator(".results").getByRole("button", { name: cs("res.copyExcel") });
+    await copy.click();
+    await expect(page.locator(".results").getByRole("button", { name: cs("export.copied") })).toBeVisible();
+    const fromResults = await read();
+    expect(fromResults).toContain("Valba excel");
+
+    await page.evaluate(() => navigator.clipboard.writeText(""));
+    await page.getByRole("button", { name: cs("tool.export") }).click();
+    const dlg = page.getByRole("dialog", { name: cs("export.title") });
+    // The Excel text is the dialog's first section and its primary action.
+    const first = dlg.locator("section").first();
+    await expect(first.getByRole("heading")).toHaveText(cs("export.list"));
+    await expect(first.getByRole("button", { name: cs("export.copyList") })).toHaveClass(/primary/);
+    await expect(dlg.getByRole("button", { name: "PDF" })).not.toHaveClass(/primary/);
+    await first.getByRole("button", { name: cs("export.copyList") }).click();
+    await expect(dlg.getByRole("button", { name: cs("export.copied") })).toBeVisible();
+    const fromExport = await read();
+
+    expect(Buffer.from(fromResults, "utf8").equals(Buffer.from(fromExport, "utf8"))).toBe(true);
+    expect(fromExport).toBe(await dlg.locator("pre").textContent());
+  });
+
+  test("Results list the roof windows, chimneys, openings and dormers with what each took off (UX-005)", async ({ app, page }) => {
+    const id = await createExample("hip", "Valba okna");
+    const p = await loadProject(id);
+    p.windows = [{ x: 6, y: 2, width: 0.78, height: 1.18 }, { x: 8, y: 2, width: 1.14, height: 1.4 }];
+    p.chimneys = [{ corners: [{ x: 3, y: 2 }, { x: 3.6, y: 2 }, { x: 3.6, y: 2.6 }, { x: 3, y: 2.6 }], height: 8 }];
+    await bridge("save_project", { id, project: p });
+    await openEditor(app, "Valba okna");
+    const objects = page.getByTestId("res-objects");
+    await expect(objects).toContainText(cs("res.obj.windows", { n: 2 }));
+    await expect(objects).toContainText("0,78 × 1,18 m, 1,14 × 1,40 m");
+    await expect(objects).toContainText(cs("res.obj.chimneys", { n: 1 }));
+    await expect(objects).not.toContainText(cs("res.obj.dormers", { n: 0 }));
+    // The deductions are the core's: the same as the breakdown's per kind.
+    const b = await bridge<any>("calc_breakdown", { project: await loadProject(id) });
+    const sum = (k: string) => b.parts.flatMap((x: any) => x.openings ?? []).filter((o: any) => o.kind === k).reduce((a: number, o: any) => a + o.area, 0);
+    const fmt = (v: number) => `−${v.toLocaleString("cs-CZ", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} m²`.replace(/ /g, " ");
+    expect(sum("window")).toBeGreaterThan(0);
+    const text = ((await objects.textContent()) ?? "").replace(/ /g, " ");
+    expect(text).toContain(fmt(sum("window")));
+    expect(text).toContain(fmt(sum("chimney")));
+    await expect(page.getByTestId("res-deducted")).toBeVisible();
+  });
+});
