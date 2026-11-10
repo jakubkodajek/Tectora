@@ -43,6 +43,15 @@ describe("describeError", () => {
     }
   });
 
+  it("not_calculated says the result cannot be stored for the offer", () => {
+    for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
+      setLocale(l);
+      const d = describeError({ code: "not_calculated" }, "save");
+      expect(d.message, l).toBe(DICTS[l]["err.not_calculated"]);
+      expect(d.message, l).not.toBe(DICTS[l]["err.unknown"]);
+    }
+  });
+
   it("recognises Tauri's argument errors as an empty field", () => {
     const e = toAppError("invalid args `project` for command `calc`: invalid type: null, expected f64");
     expect(e.code).toBe("invalid_input");

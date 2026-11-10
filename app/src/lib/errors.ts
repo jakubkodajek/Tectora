@@ -86,6 +86,7 @@ const KNOWN = new Set([
   "unsupported_type",
   "invalid_name",
   "too_many",
+  "not_calculated",
   "settings_unreadable",
 ]);
 
