@@ -108,6 +108,32 @@ test.describe("Revert all asks first (UX-011)", () => {
     await expect(review(page)).toHaveCount(0);
   });
 
+  test("an AI step that arrives while Revert all asks is reverted too, and said so (DR-003)", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "Během");
+    await openEditor(app, "Během");
+    await mcp.call("update_edges", { id, changes: [{ index: 0, pitch_deg: 30 }], summary: "Krok 1" });
+    await expect(review(page)).toContainText("Krok 1");
+    await mcp.call("update_edges", { id, changes: [{ index: 2, pitch_deg: 26 }], summary: "Krok 2" });
+    await expect(review(page)).toContainText(cs("review.steps", { n: 2 }));
+    // The question stays open until the test answers it.
+    await page.evaluate(() => {
+      const w = window as any;
+      w.confirm = (m: string) => {
+        w.__e2e.dialogs.push({ kind: "confirm", message: String(m) });
+        return new Promise((res) => (w.__answer = res));
+      };
+    });
+    await review(page).getByRole("button", { name: cs("review.revertAll") }).click();
+    await expect.poll(() => page.evaluate(() => typeof (window as any).__answer)).toBe("function");
+    await mcp.call("update_job", { id, customer: "AI Zákazník", summary: "Krok 3" });
+    await expect(review(page)).toContainText(cs("review.steps", { n: 3 }));
+    await page.evaluate(() => (window as any).__answer(true));
+    const p = await waitForProject(id, (p) => p.parts[0].edges[0].pitch_deg === 40 && p.parts[0].edges[2].pitch_deg === 40 && p.job.customer === "");
+    expect(p.job.customer).toBe("");
+    await expect(review(page)).toHaveCount(0);
+    await expect(app.toasts().filter({ hasText: cs("review.revertedMore", { n: 1 }) })).toBeVisible();
+  });
+
   test("Revert of a single AI step from the banner does not ask", async ({ app, page, mcp }) => {
     const id = await createExample("gable", "Jeden");
     await openEditor(app, "Jeden");

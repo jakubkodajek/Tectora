@@ -24,7 +24,7 @@
   import { followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, transformItem, type ItemRef, type PlanTarget } from "./items";
   import { snapToRoof, type ManualSel } from "./manual";
   import { describeCalcError, describeError, describeProblem, toAppError, type Described } from "./errors";
-  import { notify, notifyError } from "./notify.svelte";
+  import { info, notify, notifyError } from "./notify.svelte";
   import { chimneyFromRect, nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, roofHeightAt } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
@@ -511,9 +511,10 @@
     if (all && steps > 1) {
       // Tauri's dialog plugin makes confirm asynchronous: always await it.
       if (!(await confirm(t("review.confirmRevertAll", { n: steps })))) return;
-      // More AI steps came in while the question was open: the user agreed to fewer.
-      if (pendingList.length !== steps) return;
     }
+    // AI steps that came in while the question was open are reverted too
+    // (the user asked for all), and said so (DR-003).
+    const extra = all && steps > 1 ? pendingList.length - steps : 0;
     // Edits not on disk yet would be lost: the store keeps only the edits in
     // the file, merging the revert onto them (ERR-001).
     commitFocused();
@@ -530,6 +531,7 @@
       selection = null;
       recalc();
       focusChange = null;
+      if (extra > 0) info(t("review.revertedMore", { n: extra }));
       await refreshActivity();
     } catch (e) {
       notifyError(e, "revert");
