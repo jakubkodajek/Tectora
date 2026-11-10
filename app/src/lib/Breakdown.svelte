@@ -9,6 +9,7 @@
   import { num, plain } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
+  import { partLabel } from "./partname";
   import Modal from "./Modal.svelte";
   import BreakdownDetail from "./BreakdownDetail.svelte";
   import type { BreakdownDetail as Detail, CalcBreakdown, CalcResult, PartDeductions, PlanMark, Project } from "./types";
@@ -126,7 +127,7 @@
     {#each data.parts as part, pi}
       <section>
         <h4 class="part">
-          <span>{many ? `${pi + 1} · ${part.name}` : part.name}</span>
+          <span>{many ? `${pi + 1} · ${partLabel(part.name, pi)}` : partLabel(part.name, pi)}</span>
           <b>{a2(part.roof_area)}</b>
         </h4>
 

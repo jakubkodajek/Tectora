@@ -2,6 +2,7 @@
 
 import { m, m2, num } from "./format";
 import { t } from "./i18n.svelte";
+import { partLabel } from "./partname";
 import { materialName } from "./materials";
 import { windowOutline } from "./openings";
 import type { CalcResult, Change, Chimney, Dormer, FigureDifference, HalfHip, ManualFace, ManualLine, Point2, Project, RoofWindow } from "./types";
@@ -81,10 +82,10 @@ export function describeChange(c: Change, project: Project | null): string {
         return c.kind === "added" ? t("chg.vertexAdded", { n }) : t("chg.vertexRemoved", { n });
       case "part":
         return c.kind === "added"
-          ? t("chg.partAdded", { name: String(c.after) })
-          : t("chg.partRemoved", { name: String(c.before) });
+          ? t("chg.partAdded", { name: partLabel(String(c.after), c.part ?? 0) })
+          : t("chg.partRemoved", { name: partLabel(String(c.before), c.part ?? 0) });
       case "part_name":
-        return t("chg.partName", { b: String(c.after) });
+        return t("chg.partName", { b: partLabel(String(c.after), c.part ?? 0) });
       case "name":
         return t("chg.name", { b: String(c.after) });
       case "notes":

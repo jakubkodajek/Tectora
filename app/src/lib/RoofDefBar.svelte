@@ -19,6 +19,7 @@
   import { materialIds, materialName } from "./materials";
   import { numeric } from "./numeric.svelte";
   import { hscroll } from "./hscroll";
+  import { partLabel } from "./partname";
   import { prefs, presets, savePrefs } from "./settings.svelte";
 
   let {
@@ -53,6 +54,7 @@
 
   const part = $derived(selection ? project.parts[selection.part] : null);
   const edge = $derived(part && selection ? part.edges[selection.edge] : null);
+  const partName = $derived(part && selection ? partLabel(part.name, selection.part) : "");
   const length = $derived.by(() => {
     if (!part || !selection || !edge) return 0;
     const next = part.edges[(selection.edge + 1) % part.edges.length];
@@ -161,7 +163,7 @@
       <div class="which">
         {#if selection && part}
           <strong>{t("def.wall", { n: selection.edge + 1 })}</strong>
-          <span>{t("def.of", { n: part.edges.length })}{project.parts.length > 1 ? ` · ${part.name}` : ""}</span>
+          <span>{t("def.of", { n: part.edges.length })}{project.parts.length > 1 ? ` · ${partName}` : ""}</span>
         {:else}
           <strong>{t("def.title")}</strong>
           <span>{t("def.none")}</span>
@@ -189,7 +191,7 @@
         </label>
       {/if}
       {#if onheight}
-        <label class="wrap" title={buildingHeight === null ? `${t("edge.buildingHeightMixed", { name: part.name })} ${t("edge.buildingHeightHint", { name: part.name })}` : t("edge.buildingHeightHint", { name: part.name })}>
+        <label class="wrap" title={buildingHeight === null ? `${t("edge.buildingHeightMixed", { name: partName })} ${t("edge.buildingHeightHint", { name: partName })}` : t("edge.buildingHeightHint", { name: partName })}>
           <span>{t("edge.buildingHeight")}</span>
           <div class="unit"><input type="text" data-testid="building-height" placeholder={buildingHeight === null ? t("edge.mixed") : undefined}
             use:numeric={{ value: buildingHeight, step: 0.05, min: 0, max: 1000, onchange: onheight }} /><em>m</em></div>

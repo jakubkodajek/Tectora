@@ -6,6 +6,7 @@
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
   import { areaRows, joinedWith, warningText } from "./results";
+  import { partLabel } from "./partname";
   import type { CalcResult, Project } from "./types";
 
   let {
@@ -39,8 +40,8 @@
 
   /** Plausibility warnings of every part, with the part's name when there are several. */
   const warnings = $derived(
-    (result?.parts ?? []).flatMap((p) =>
-      (p.geometry.warnings ?? []).map((w) => ({ part: result!.parts.length > 1 ? p.name : null, text: warningText(w) })),
+    (result?.parts ?? []).flatMap((p, i) =>
+      (p.geometry.warnings ?? []).map((w) => ({ part: result!.parts.length > 1 ? partLabel(p.name, i) : null, text: warningText(w) })),
     ),
   );
   const rows = $derived(
@@ -88,7 +89,7 @@
               {#if a.manual}
                 <small class="joined">{t("bd.manual")}</small>
               {:else if joins[a.part]?.length}
-                <small class="joined">{t("res.joinedTo", { names: joins[a.part].map((j) => result.parts[j]?.name ?? "").join(", ") })}</small>
+                <small class="joined">{t("res.joinedTo", { names: joins[a.part].map((j) => (result.parts[j] ? partLabel(result.parts[j].name, j) : "")).join(", ") })}</small>
               {/if}
             </td>
             <td class="v">{m2(a.area)}</td>

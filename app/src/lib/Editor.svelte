@@ -42,6 +42,7 @@
   import { m2, num } from "./format";
   import { i18n, t } from "./i18n.svelte";
   import { hscroll } from "./hscroll";
+  import { partLabel } from "./partname";
   import { tabIds, tablist } from "./tabs";
   import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
@@ -692,7 +693,7 @@
     const part = project.parts[sel.part];
     const es = part?.edges;
     if (!es?.[sel.edge] || (!isMarker(es[sel.edge]) && es.filter((e) => !isMarker(e)).length <= 3)) return;
-    const msg = isMarker(es[sel.edge]) ? t("edge.confirmDeleteMarker") : t("edge.confirmDeleteVertex", { n: sel.edge + 1, name: part.name });
+    const msg = isMarker(es[sel.edge]) ? t("edge.confirmDeleteMarker") : t("edge.confirmDeleteVertex", { n: sel.edge + 1, name: partLabel(part.name, sel.part) });
     // Tauri's dialog plugin makes confirm asynchronous: always await it.
     if (!(await confirm(msg))) return;
     // The project or the selection may have changed while the dialog was open.
@@ -1204,7 +1205,7 @@
     } else if (target.type === "part") {
       const pi = target.part;
       if (!project.parts[pi]) return;
-      title = project.parts[pi].name;
+      title = partLabel(project.parts[pi].name, pi);
       entries = [...placeEntries(world), { sep: true }, ...partEntries(pi)];
     } else {
       const add = placeEntries(world);
@@ -1291,7 +1292,7 @@
     const part = project.parts[index];
     // Tauri's dialog plugin replaces window.confirm with an async version
     // (a Promise is always truthy), so the answer must be awaited.
-    if (!(await confirm(t("editor.confirmDeletePart", { name: part.name })))) return;
+    if (!(await confirm(t("editor.confirmDeletePart", { name: partLabel(part.name, index) })))) return;
     // The project may have been reloaded (AI edit) while the dialog was open.
     if (!project || project.parts[index] !== part) return;
     project.parts.splice(index, 1);

@@ -82,8 +82,9 @@ test.describe("several buildings", () => {
     // The new building's hips and ridge are in the plan right away.
     await expect.poll(() => roofLines.count()).toBeGreaterThan(before + 3);
     const results = page.locator(".results");
-    const main = (await loadProject(id)).parts[0].name;
-    await expect(results).toContainText(cs("res.joinedTo", { names: main }));
+    // The template's untouched "Main" is shown as the localized "Budova 1" (UX-010).
+    expect((await loadProject(id)).parts[0].name).toBe("Main");
+    await expect(results).toContainText(cs("res.joinedTo", { names: cs("editor.partN", { n: 1 }) }));
     // The second roof's stretches under the main roof's overhang are dashed.
     await expect(page.locator(".roofline.covered").first()).toBeAttached();
     // The results are the core's for the saved job.

@@ -87,3 +87,27 @@ test.describe("wall bar More row", () => {
     await waitForProject(id, (p) => p.dormers.length === 1);
   });
 });
+
+test.describe("one word for a building", () => {
+  test("a job from a template shows its building as Budova 1, not the core's Main (UX-009, UX-010)", async ({ app, page }) => {
+    const id = await createExample("gable", "Sedlo");
+    const p = await loadProject(id);
+    expect(p.parts[0].name).toBe("Main");
+    const second = JSON.parse(JSON.stringify(p.parts[0]));
+    second.name = "Part 2";
+    for (const e of second.edges) e.start.x += 30;
+    p.parts.push(second);
+    await bridge("save_project", { id, project: p });
+    await openEditor(app, "Sedlo");
+    const results = page.locator(".results");
+    await expect(results).toContainText(cs("editor.partN", { n: 1 }));
+    await expect(results).toContainText(cs("editor.partN", { n: 2 }));
+    await expect(results).not.toContainText("Main");
+    await expect(page.locator(".statusbar")).toContainText(cs("status.walls", { n: 8, p: 2 }));
+    await expect(page.getByRole("toolbar").first().getByRole("button", { name: cs("tool.deletePart"), exact: true })).toBeVisible();
+    await selectWall(page, 0);
+    await expect(bar(page, "def.title").locator(".which span")).toContainText(cs("editor.partN", { n: 1 }));
+    // The stored names stay as they are; only the screen localizes them.
+    expect((await loadProject(id)).parts.map((x: any) => x.name)).toEqual(["Main", "Part 2"]);
+  });
+});

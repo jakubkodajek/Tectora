@@ -5,6 +5,7 @@
 
 import { num } from "./format";
 import { t } from "./i18n.svelte";
+import { partLabel } from "./partname";
 import type { CalcResult, RoofWarning } from "./types";
 
 /** The translated sentence of one plausibility warning. */
@@ -43,7 +44,7 @@ export interface AreaRow {
  */
 export function areaRows(result: CalcResult | null): AreaRow[] {
   if (!result) return [];
-  const parts = result.parts.map((p, i) => ({ name: p.name, area: p.quantities.roof_area, part: i, manual: false }));
+  const parts = result.parts.map((p, i) => ({ name: partLabel(p.name, i), area: p.quantities.roof_area, part: i, manual: false }));
   const faces = (result.manual_faces ?? []).map((f, i) => ({
     name: f.label || t("manual.faceN", { n: i + 1 }),
     area: f.area,
