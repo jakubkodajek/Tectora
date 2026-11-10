@@ -150,3 +150,8 @@ sessions that use it know where things stand.
 - Next: window with a corner on a hip/ridge is not deducted (review
   ERR-010); `KOMÍN / OTVORY` list section; Jakub to try a paste with a
   window in the real price sheet.
+- 2026-11-10 (later): plan-sheet labels (line lengths, cut-out areas, face
+  labels) keep clear of every line and label; a window whose corner lies
+  exactly on a ridge/hip/valley is deducted again (review ERR-010). DACAD
+  evidence: window records sit under a wall and DACAD takes w×h off that
+  wall's face wherever the window lies (moved-record runs under Wine).

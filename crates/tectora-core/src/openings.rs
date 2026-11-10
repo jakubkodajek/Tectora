@@ -638,7 +638,15 @@ pub fn window_outline(geos: &[RoofGeometry], w: &RoofWindow) -> Vec<Point2> {
 }
 
 /// The face a window sits on: (geometry, face) of the first face that
-/// holds a point just inside the window's corner.
+/// holds a point just inside the window's corner or, where the corner lies
+/// exactly on a ridge, hip or valley so that no face does, of the first
+/// face whose outline holds the corner itself.
+///
+/// DACAD keeps each window under the wall whose face it was placed on and
+/// always takes its full width × height off that face, also where the
+/// window lies across a line or on another face in plan (DACAD runs P2b and
+/// a window record moved onto the opposite face, 2026-11-10). So a window
+/// on the roof is never left out just because its corner is on a line.
 pub(crate) fn window_face(geos: &[RoofGeometry], w: &RoofWindow) -> Option<(usize, usize)> {
     for (g, geo) in geos.iter().enumerate() {
         let hit = geo.faces.iter().position(|face| {
@@ -657,7 +665,32 @@ pub(crate) fn window_face(geos: &[RoofGeometry], w: &RoofWindow) -> Option<(usiz
             return Some((g, k));
         }
     }
-    None
+    let corner = Point2::new(w.x, w.y);
+    geos.iter().enumerate().find_map(|(g, geo)| {
+        geo.faces
+            .iter()
+            .position(|face| on_or_inside(&plan(face), corner, 1e-4))
+            .map(|k| (g, k))
+    })
+}
+
+/// Whether `p` lies inside the polygon or within `eps` of its outline.
+fn on_or_inside(poly: &[Point2], p: Point2, eps: f64) -> bool {
+    if inside(poly, p) {
+        return true;
+    }
+    let n = poly.len();
+    (0..n).any(|i| {
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 > 0.0 {
+            (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (p.x - a.x - t * dx).hypot(p.y - a.y - t * dy) <= eps
+    })
 }
 
 /// Sutherland–Hodgman: `subject` clipped by the convex CCW polygon `clip`.
@@ -1387,6 +1420,62 @@ mod tests {
             corners: vec![c(x, y), c(x + w, y), c(x + w, y + d), c(x, y + d)],
             height: 0.0,
         }
+    }
+
+    #[test]
+    fn a_window_with_its_corner_on_the_ridge_or_a_hip_is_still_deducted() {
+        // DACAD takes a window's full width × height off its face wherever
+        // it lies; a corner exactly on a line must not drop it.
+        let area = |p: &Project| -> f64 {
+            generate_project(p)
+                .iter()
+                .flat_map(|g| &g.faces)
+                .map(|f| f.area)
+                .sum()
+        };
+        let window = |x, y| RoofWindow {
+            x,
+            y,
+            width: 0.78,
+            height: 1.18,
+        };
+        let bare = gable();
+        let gross = area(&bare);
+        for (x, y) in [(5.0, 4.0), (5.0, 3.99), (0.0, 4.0), (5.0, 0.0)] {
+            let mut p = gable();
+            p.windows.push(window(x, y));
+            let geos = generate_project(&p);
+            assert!(window_face(&geos, &p.windows[0]).is_some(), "({x}, {y})");
+            assert!(
+                (gross - area(&p) - 0.78 * 1.18).abs() < 1e-4,
+                "({x}, {y}): {} of {gross}",
+                area(&p)
+            );
+        }
+        // On a hip roof: a corner on a hip and on the ridge's end.
+        let mut hip = Project::new("h");
+        hip.parts.push(crate::examples::standard_roof(
+            crate::examples::StandardRoof::Hip,
+            10.0,
+            8.0,
+            35.0,
+            3.0,
+            0.0,
+        ));
+        let gross = area(&hip);
+        for (x, y) in [(1.5, 1.5), (8.5, 6.5), (4.0, 4.0)] {
+            let mut p = hip.clone();
+            p.windows.push(window(x, y));
+            assert!(
+                (gross - area(&p) - 0.78 * 1.18).abs() < 1e-4,
+                "({x}, {y}): {} of {gross}",
+                area(&p)
+            );
+        }
+        // Off the roof stays off the roof.
+        let mut p = gable();
+        p.windows.push(window(12.0, 4.0));
+        assert!(window_face(&generate_project(&p), &p.windows[0]).is_none());
     }
 
     fn total(geo: &RoofGeometry, code: &str) -> f64 {
