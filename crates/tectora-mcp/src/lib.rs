@@ -449,6 +449,57 @@ fn edge_indices(v: &Value, n: usize) -> Result<Vec<usize>, String> {
     Ok(list)
 }
 
+/// The `part` argument: a part index from 0, 0 when left out. A string,
+/// a fraction or a negative number is refused instead of editing part 0
+/// (ERR-007).
+pub(crate) fn part_arg(args: &Value) -> Result<usize, String> {
+    match args.get("part") {
+        None | Some(Value::Null) => Ok(0),
+        Some(v) => v
+            .as_u64()
+            .map(|i| i as usize)
+            .ok_or_else(|| format!("`part` must be a part index from 0, not {v}")),
+    }
+}
+
+/// Collects the keys of `value` that `schema` does not name, as paths
+/// (`changes[0].pitch`). Objects without `properties`, or that allow
+/// additional ones, take any key.
+fn unknown_keys(schema: &Value, value: &Value, path: &str, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            let Some(props) = schema.get("properties").and_then(Value::as_object) else {
+                return;
+            };
+            if schema
+                .get("additionalProperties")
+                .is_some_and(|a| a != false)
+            {
+                return;
+            }
+            for (k, v) in map {
+                let here = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
+                match props.get(k) {
+                    Some(sub) => unknown_keys(sub, v, &here, out),
+                    None => out.push(format!("`{here}`")),
+                }
+            }
+        }
+        Value::Array(items) => {
+            if let Some(sub) = schema.get("items") {
+                for (i, v) in items.iter().enumerate() {
+                    unknown_keys(sub, v, &format!("{path}[{i}]"), out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn schema(props: Value, required: &[&str]) -> Value {
     json!({ "type": "object", "properties": props, "required": required })
 }
@@ -907,6 +958,24 @@ impl Server {
         {
             return Err("`summary` is empty: give one sentence for the user on what you change and why (it is shown in the app)".into());
         }
+        // A misspelled key used to be ignored and the tool still answered
+        // "Saved" with nothing changed (ERR-008): refuse keys the tool's
+        // schema does not name.
+        if let Some(schema) = tools()
+            .as_array()
+            .and_then(|a| a.iter().find(|t| t["name"] == name))
+            .map(|t| t["inputSchema"].clone())
+        {
+            let mut unknown = Vec::new();
+            unknown_keys(&schema, args, "", &mut unknown);
+            if !unknown.is_empty() {
+                return Err(format!(
+                    "unknown argument {} for `{name}`: check the spelling against the tool's input schema",
+                    unknown.join(", ")
+                )
+                .into());
+            }
+        }
         if let Some(r) = self.call_calc_isolated(name, args) {
             return r;
         }
@@ -1099,7 +1168,7 @@ impl Server {
             "update_edges" => {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
-                let pi = args.get("part").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let pi = part_arg(args)?;
                 let part = p
                     .parts
                     .get_mut(pi)
@@ -1130,7 +1199,7 @@ impl Server {
             "set_outline" => {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
-                let pi = args.get("part").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let pi = part_arg(args)?;
                 let old = p
                     .parts
                     .get(pi)
