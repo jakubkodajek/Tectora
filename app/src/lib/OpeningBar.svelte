@@ -3,7 +3,7 @@
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
   import type { Chimney, Project, RoofWindow } from "./types";
-  import { chimneyFromRect, isConvex, openingList, rectFromChimney, type ChimneyRect, type OpeningSel } from "./openings";
+  import { isConvex, openingBox, openingList, reshapeOpening, type OpeningBox, type OpeningSel } from "./openings";
   import { numeric } from "./numeric.svelte";
 
   let {
@@ -23,12 +23,14 @@
   const list = $derived(sel ? openingList(project, sel.kind) : []);
   // A roof opening has a chimney's shape, without a top.
   const chimney = $derived(sel && sel.kind !== "window" ? (list[sel.index] as Chimney | undefined) ?? null : null);
-  const rect = $derived(chimney ? rectFromChimney(chimney) : null);
+  const box = $derived(chimney ? openingBox(chimney.corners) : null);
   const win = $derived(sel?.kind === "window" ? (project.windows ?? [])[sel.index] : null);
 
 
-  function setRect(patch: Partial<ChimneyRect>) {
-    if (rect) onchimney(chimneyFromRect({ ...rect, ...patch }));
+  function setBox(patch: Partial<OpeningBox>) {
+    if (!chimney || !box) return;
+    const corners = reshapeOpening(chimney.corners, { ...box, ...patch });
+    if (corners) onchimney({ ...$state.snapshot(chimney), corners });
   }
 
   function step(d: number) {
@@ -55,14 +57,17 @@
       <button class="icon-btn" onclick={() => step(1)} aria-label={t("opening.next")}><Icon name="right" /></button>
     </div>
     {#if chimney}
-      {#if rect}
-        {@render field("X", rect.x, "m", (v) => setRect({ x: v }))}
-        {@render field("Y", rect.y, "m", (v) => setRect({ y: v }))}
-        {@render field(t("opening.width"), rect.width, "m", (v) => setRect({ width: v }), 0.05)}
-        {@render field(t("opening.depth"), rect.depth, "m", (v) => setRect({ depth: v }), 0.05)}
-        {@render field(t("opening.rotation"), rect.rotation, "°", (v) => setRect({ rotation: v }))}
+      {#if box}
+        {@render field("X", box.x, "m", (v) => setBox({ x: v }))}
+        {@render field("Y", box.y, "m", (v) => setBox({ y: v }))}
+        {@render field(t("opening.width"), box.width, "m", (v) => setBox({ width: v }), 0.05)}
+        {@render field(t("opening.depth"), box.depth, "m", (v) => setBox({ depth: v }), 0.05)}
+        {@render field(t("opening.rotation"), +box.rotation.toFixed(1), "°", (v) => setBox({ rotation: v }))}
+        {#if chimney.corners.length !== 4}
+          <p class="tip">{t("opening.polygon", { n: chimney.corners.length })}</p>
+        {/if}
       {:else}
-        <p class="tip">{t("opening.polygon", { n: chimney.corners.length })}</p>
+        <p class="tip warn">{t("opening.noArea")}</p>
       {/if}
       {#if !isConvex(chimney.corners)}
         <p class="tip warn">{t("opening.nonConvex")}</p>

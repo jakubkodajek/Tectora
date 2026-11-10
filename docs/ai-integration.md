@@ -49,6 +49,7 @@ programs; Codex in the ChatGPT desktop app can.
 | `set_part_height` | A building's height: the eave height of every wall of a part in one save, its breaks, half-hips, dormers and chimneys moved with it |
 | `add_dormer`, `update_dormer` | Dormers by kind (gable, pointed, hip, half-hip, shed, trapezoid, round) |
 | `set_openings`, `set_manual`, `face_to_part`, `set_roof_options` | Windows, chimneys, openings (a window larger than its face is refused); hand-drawn lines and faces, a face turned into a building; flat roof, material names |
+| `update_opening` | Position, width, depth, rotation and top of one chimney or roof opening (any shape, stretched in its box along the first side), or position and size of one roof window (the object bar) |
 | `transform_items` | Move, rotate, copy or align to the nearest wall single dormers, chimneys, windows, openings, hand-drawn lines and faces (the plan's drag and right-click menu) |
 | `roof_helper` | Calculation helpers (triangle, two parallels, point in space, merge, hip/valley, build-up, round roof), preview or apply |
 | `update_job`, `store_result` | Job data and status; the stored result for the offer |

@@ -138,3 +138,13 @@ sessions that use it know where things stand.
   (PR #39 base).
 - Next: gap analysis doc lists the other DACAD gaps; Jakub chose only
   limits + building height for now.
+
+## 2026-11-09 · Resize any chimney or roof opening
+
+- Done: the object bar edits every chimney / roof opening through its box
+  along the first side (`openingBox` / `reshapeOpening`, port in
+  `tectora_core::edit::openings`); before, a chimney placed on a slanted
+  wall, aligned, rotated or mirrored lost its size fields ("edit in job
+  file"). MCP `update_opening` (chimney, roof opening, window) for parity.
+- State: `make check` exit 0, `make sweeps` pass, preview screenshot in
+  project files `chimney-resize-2026-11-09/`.
