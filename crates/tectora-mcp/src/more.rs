@@ -1825,6 +1825,31 @@ mod tests {
     }
 
     #[test]
+    fn a_roof_that_cannot_be_calculated_is_not_stored_as_an_offer() {
+        // DR-001: update_job status=offer and store_result saved 0 m².
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "set_openings",
+            json!({ "id": id, "summary": "chimney",
+                "chimneys": [{ "corners": [[3, 3], [4, 3], [3.5, 3.4], [4, 4], [3, 4]] }] }),
+        );
+        let before = s.store.load(&id).unwrap();
+        for (tool, extra) in [
+            ("update_job", json!({ "status": "offer" })),
+            ("store_result", json!({})),
+        ] {
+            let mut args = json!({ "id": id, "summary": "x" });
+            args.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let err = s.call_tool(tool, &args).unwrap_err();
+            assert!(err.contains("cannot be calculated"), "{tool}: {err}");
+        }
+        assert_eq!(s.store.load(&id).unwrap(), before);
+    }
+
+    #[test]
     fn a_misspelled_argument_is_refused_instead_of_saving_nothing() {
         // ERR-008: `pitch` for `pitch_deg` answered "Saved" with no change.
         let (mut s, id) = setup();

@@ -1264,7 +1264,18 @@ impl Server {
                     }
                 }
                 if let Some(s) = args.get("status").and_then(Value::as_str) {
-                    p.set_status(parse_status(s)?);
+                    let status = parse_status(s)?;
+                    // Leaving the draft stores the result as the offer's
+                    // figures: refused for a roof that cannot be calculated.
+                    if p.job.status == JobStatus::Draft
+                        && status != JobStatus::Draft
+                        && p.result_snapshot.is_none()
+                    {
+                        p.result_snapshot = Some(
+                            tectora_core::snapshot::take_checked(&p).map_err(|e| e.to_string())?,
+                        );
+                    }
+                    p.set_status(status);
                 }
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
             }

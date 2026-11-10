@@ -48,6 +48,20 @@ fn r2(v: f64) -> f64 {
 /// `Err(Refused::Internal)` instead of aborting the caller.
 pub fn take_checked(project: &Project) -> Result<ResultSnapshot, Refused> {
     project.check_limits().map_err(Refused::OutOfRange)?;
+    // A part the core gives no roof for counts 0 m²: storing that as the
+    // offer's figures would hide the problem (review ERR-003, DR-001).
+    let failed = crate::model::guarded(|| {
+        crate::openings::generate_project(project)
+            .iter()
+            .position(|g| g.error.is_some())
+    })
+    .map_err(Refused::Internal)?;
+    if let Some(i) = failed {
+        return Err(Refused::NotCalculated(format!(
+            "part {} has no roof",
+            i + 1
+        )));
+    }
     crate::model::guarded(|| take(project)).map_err(Refused::Internal)
 }
 
@@ -58,6 +72,8 @@ pub enum Refused {
     OutOfRange(String),
     /// The roof calculation failed.
     Internal(String),
+    /// A part of the roof cannot be calculated (the detail says which).
+    NotCalculated(String),
 }
 
 impl std::fmt::Display for Refused {
@@ -65,6 +81,7 @@ impl std::fmt::Display for Refused {
         match self {
             Refused::OutOfRange(d) => write!(f, "out of range: {d}"),
             Refused::Internal(d) => f.write_str(d),
+            Refused::NotCalculated(d) => write!(f, "the roof cannot be calculated: {d}"),
         }
     }
 }
@@ -206,6 +223,25 @@ mod tests {
         let mut far = ok.clone();
         far.parts[0].edges[0].start.x = 1e300;
         assert!(matches!(take_checked(&far), Err(Refused::OutOfRange(_))));
+    }
+
+    #[test]
+    fn storing_the_result_of_a_roof_that_cannot_be_calculated_is_refused() {
+        // ERR-003 / DR-001: a non-convex chimney leaves the part without a
+        // roof; the offer stored 0 m² as its figures.
+        let mut p = examples::find("hip").unwrap().project();
+        let pt = |x, y| crate::geom::Point2::new(x, y);
+        p.chimneys = vec![crate::model::Chimney {
+            corners: vec![
+                pt(3.0, 3.0),
+                pt(4.0, 3.0),
+                pt(3.5, 3.4),
+                pt(4.0, 4.0),
+                pt(3.0, 4.0),
+            ],
+            height: 0.0,
+        }];
+        assert!(matches!(take_checked(&p), Err(Refused::NotCalculated(_))));
     }
 
     #[test]
