@@ -12,7 +12,14 @@
     result,
     project = null,
     onstore,
-  }: { result: CalcResult | null; project?: Project | null; onstore?: () => void } = $props();
+    blocked = null,
+  }: {
+    result: CalcResult | null;
+    project?: Project | null;
+    onstore?: () => void;
+    /** Why the figures cannot become the offer's stored result now (the core gave no roof), or null. */
+    blocked?: string | null;
+  } = $props();
 
   /** The stored result (figures of the offer) against the current one. */
   const stored = $derived(result?.stored_result ?? null);
@@ -139,7 +146,7 @@
         <p class="mono">{t("snap.engine", { v: stored.stored.engine_version })}</p>
       {/if}
       {#if stored.differences.length && onstore}
-        <button class="btn sm" onclick={onstore}>{t("snap.store")}</button>
+        <button class="btn sm" disabled={!!blocked} title={blocked ?? undefined} onclick={onstore}>{t("snap.store")}</button>
       {/if}
     </div>
   {/if}

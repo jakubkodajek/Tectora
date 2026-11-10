@@ -202,6 +202,27 @@ test.describe("no export or offer from a roof the core refused (ERR-003)", () =>
     expect(p.result_snapshot ?? null).toBeNull();
   });
 
+  test("the stored result cannot be replaced by the figures of a roof the core refused (DR-001)", async ({ app, page }) => {
+    const id = await createExample("hip", "Uložená");
+    let p = await loadProject(id);
+    p.job.status = "offer";
+    p.result_snapshot = await bridge("take_snapshot", { project: p });
+    await bridge("save_project", { id, project: p });
+    p = await loadProject(id);
+    p.chimneys = [{ corners: [{ x: 5, y: 3 }, { x: 7, y: 3 }, { x: 6, y: 3.3 }, { x: 7, y: 5 }, { x: 5, y: 5 }], height: 9 }];
+    await bridge("save_project", { id, project: p });
+    const area = p.result_snapshot.roof_area;
+    expect(area).toBeGreaterThan(0);
+    await openEditor(app, "Uložená");
+    await page.locator("aside .tabs").getByRole("tab", { name: cs("dock.results") }).click();
+    const store = page.locator(".results").getByRole("button", { name: cs("snap.store") });
+    await expect(store).toBeVisible();
+    await expect(store).toBeDisabled();
+    await expect(store).toHaveAttribute("title", cs("tool.exportBlocked"));
+    await page.waitForTimeout(700);
+    expect((await loadProject(id)).result_snapshot.roof_area).toBe(area);
+  });
+
   test("a roof with only a warning still exports and can be offered", async ({ app, page }) => {
     const id = await createExample("gable", "Varování");
     const p = await loadProject(id);

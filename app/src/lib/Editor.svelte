@@ -603,6 +603,8 @@
   /** Makes the current result the job's stored result (the offer's figures). */
   const storeResult = () => pendingEdits.track(storeResultNow());
   async function storeResultNow() {
+    // Zero figures of a roof the core refused are no offer (DR-001).
+    if (blockedReason) return;
     if (!project) return;
     try {
       project.result_snapshot = await api.takeSnapshot(JSON.parse(JSON.stringify(project)));
@@ -1647,7 +1649,7 @@
         <div class="dock" role="tabpanel" id={dockIds.panel} aria-labelledby={dockIds.tab(dock)} bind:this={dockEl}>
           <button class="icon-btn dock-close" onclick={() => (dockOpen = false)} aria-label={t("common.close")} title={t("common.close")}><Icon name="x" size={16} /></button>
           {#if dock === "results"}
-            <Results {result} {project} onstore={storeResult} />
+            <Results {result} {project} onstore={storeResult} blocked={blockedReason} />
           {:else if dock === "breakdown"}
             <Breakdown {project} {result} bind:data={breakdown} onmark={(mk) => (planMark = mk)} />
           {:else if dock === "ai"}
