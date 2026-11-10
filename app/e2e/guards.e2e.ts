@@ -218,3 +218,38 @@ test.describe("no export or offer from a roof the core refused (ERR-003)", () =>
     await expect.poll(async () => (await loadProject(id)).job.status).toBe("offer");
   });
 });
+
+test.describe("the standard roof dialog adds the type picked (UI-001)", () => {
+  test("OK waits for the preview of the picked type and adds that type", async ({ app, page }) => {
+    const id = await createExample("gable", "Standard");
+    await openEditor(app, "Standard");
+    await slow(page, "standard_part", 900);
+    await tool(page, "tool.standard").click();
+    const dlg = page.getByRole("dialog", { name: cs("std.title") });
+    const ok = dlg.getByRole("button", { name: cs("common.ok") });
+    await expect(ok).toBeEnabled({ timeout: 8000 });
+    await dlg.getByRole("radio", { name: cs("std.hip"), exact: true }).click();
+    await expect(ok).toBeDisabled();
+    await dlg.getByLabel(cs("std.add")).check();
+    await expect(ok).toBeEnabled({ timeout: 8000 });
+    await ok.click();
+    const p = await waitForProject(id, (p) => p.parts.length === 2);
+    // A hip roof: every wall an eave (a gable wall would be at 90°).
+    expect(p.parts[1].edges.every((e: any) => e.pitch_deg !== 90)).toBe(true);
+    await expect(app.toasts()).toHaveCount(0);
+  });
+
+  test("closing the dialog while the preview is calculated leaves no error", async ({ app, page }) => {
+    const id = await createExample("gable", "Zavřít");
+    await openEditor(app, "Zavřít");
+    await slow(page, "standard_part", 900);
+    await tool(page, "tool.standard").click();
+    const dlg = page.getByRole("dialog", { name: cs("std.title") });
+    await dlg.getByRole("radio", { name: cs("std.pyramid"), exact: true }).click();
+    await dlg.getByRole("button", { name: cs("common.cancel") }).click();
+    await expect(dlg).toHaveCount(0);
+    await page.waitForTimeout(1500);
+    expect((await loadProject(id)).parts).toHaveLength(1);
+    await expect(app.toasts()).toHaveCount(0);
+  });
+});

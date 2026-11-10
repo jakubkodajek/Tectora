@@ -30,7 +30,8 @@
   let eave = $state(presets.eave_height);
   let overhang = $state(presets.overhang);
   let preview = $state<{ outline: [number, number][]; lines: [[number, number], [number, number]][]; area: number } | null>(null);
-  let seq = 0;
+  /** A preview for the current values is still being calculated (OK waits for it). */
+  let loading = $state(false);
 
   // Simple elevation sketches of each type (viewBox 0 0 64 40).
   const ICONS: Record<FormKind, string> = {
@@ -80,22 +81,28 @@
     const poly = kind === "polygon";
     const ok = length > 0 && (poly ? sides >= 3 && sides <= 64 : width > 0) && pitch > 0 && pitch < 90;
     const typing = Object.keys(invalid).length > 0;
-    const my = ++seq;
     void sides;
     refused = null;
+    // The part of the previous values is not what OK would now add (a
+    // type picked a moment ago): nothing to add until this one is back (UI-001).
+    part = null;
     if (!ok || typing) {
       // No roof and no preview for values that are not in the fields: the
       // old preview would claim an area the dialog would not create.
-      part = null;
       preview = null;
+      loading = false;
       return;
     }
+    // Newer values, or the dialog closed: this answer is not wanted any more.
+    let current = true;
+    loading = true;
     (poly ? Promise.resolve(polygonPart()) : api.standardPart(params)).then(async (p) => {
-      if (my !== seq) return;
+      if (!current) return;
       const project = emptyProject("preview");
       project.parts = [p];
       const r = await api.calc(project);
-      if (my !== seq) return;
+      if (!current) return;
+      loading = false;
       // Only a part the calculation took may be created.
       part = p;
       preview = {
@@ -104,7 +111,8 @@
         area: r.totals.roof_area,
       };
     }).catch((e) => {
-      if (my !== seq) return;
+      if (!current) return;
+      loading = false;
       // No preview rather than a stale one, and no roof to create: the
       // reason stays in the dialog. A refusal of the values themselves is
       // what the dialog shows; anything else is also reported as an error.
@@ -113,6 +121,9 @@
       refused = describeError(e, "preview").message;
       if (toAppError(e).code !== "out_of_range") notifyError(e, "preview");
     });
+    return () => {
+      current = false;
+    };
   });
 </script>
 
@@ -138,7 +149,7 @@
       <label><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: eave, step: 0.05, min: -100, max: 1000, live: true, onchange: (v) => (eave = v), onvalidity: validity(t("edge.eaveHeight")) }} /><em>m</em></div></label>
       <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: overhang, step: 0.05, min: 0, max: 20, live: true, onchange: (v) => (overhang = v), onvalidity: validity(t("edge.overhang")) }} /><em>m</em></div></label>
     </div>
-    <div class="preview">
+    <div class="preview" class:stale={loading} aria-busy={loading}>
       {#if preview}
         <PlanThumb outlines={[preview.outline]} lines={preview.lines} padding={0.1} />
         <span class="area">{m2(preview.area)}</span>
@@ -190,6 +201,9 @@
     border-color: var(--accent);
     color: var(--accent);
     background: var(--accent-soft);
+  }
+  .preview.stale {
+    opacity: 0.5;
   }
   .row {
     display: grid;

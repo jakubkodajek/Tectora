@@ -1721,7 +1721,8 @@
 
 {#if std}
   <Modal title={t("std.title")} width={640} onclose={() => (std = null)}>
-    <StandardRoofForm bind:part={std.part} />
+    <!-- A preview still being calculated may come back after the dialog closed. -->
+    <StandardRoofForm bind:part={() => std?.part ?? null, (v) => std && (std.part = v)} />
     {#snippet footer()}
       {#if project && project.parts.length}
         <div class="mode" role="radiogroup">
