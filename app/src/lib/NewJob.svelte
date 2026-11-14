@@ -7,7 +7,7 @@
   import PlanThumb from "./PlanThumb.svelte";
   import StandardRoofForm from "./StandardRoofForm.svelte";
   import { api } from "./api";
-  import { m2, relativeTime } from "./format";
+  import { cardArea, m2, relativeTime } from "./format";
   import { notifyError } from "./notify.svelte";
   import { t } from "./i18n.svelte";
   import { tabIds, tablist } from "./tabs";
@@ -151,7 +151,7 @@
               <strong>{p.name}</strong>
               <small>{[p.job.customer, p.job.address].filter(Boolean).join(" · ") || "—"}</small>
             </span>
-            <span class="past-meta"><span>{m2(p.roof_area)}</span><small>{relativeTime(p.modified_ms)}</small></span>
+            <span class="past-meta"><span>{cardArea(p)}</span><small>{relativeTime(p.modified_ms)}</small></span>
           </button>
         {:else}
           <p class="none">{t("new.pastNoMatch")}</p>

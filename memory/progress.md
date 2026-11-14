@@ -248,3 +248,26 @@ sessions that use it know where things stand.
 - State: `make check` exit 0 (Rust 370 passed, UI 217), E2E placement 6/6.
 - Next: Jakub reviews the PR; decide on the departure from DACAD's
   all-or-nothing run (decisions.md 2026-11-14). Open review items in the PR.
+
+## 2026-11-14 - closed 3D buildings and a whole-app sweep (branch claude/project-thread-14l1th)
+- Done: 3D walls go from the ground to the roof's underside over the wall
+  line (`scene3d.wallUnderRoof`), which closes the gap under the roof and
+  the stacked walls of a raised building height; stacked dormers keep their
+  own walls. Review run `target/review/2026-11-14-f5d9531/` (UX, UI, arch
+  and security, tests, silent failures; roof math left to the core thread).
+  Fixed: zero-area chimney / opening (MCP refusal + `bad_size` problem),
+  plan sheet foot wraps instead of dropping line totals, new job ids under
+  a library lock, all-or-nothing delete and restore, synced saves, library
+  listing within 500 ms per job (`figures_pending`), `refused` error code
+  for core refusals, dash for a roof that is not calculated, wall bar
+  limits, double click opens the pressed row, undo keeps the selection.
+- Open for Jakub: MCP `path` arguments reach any file (ARCH-002); a field
+  added without a format-version bump is dropped by the previous release
+  (ARCH-003, building height in 0.7.0); Export dialog shows the raw
+  price-sheet text (UX-003); pitch over 90° only marked, not refused.
+- Open, not started: ARCH-004 (edit operations copied in TypeScript),
+  ARCH-005, UX-004/006/007/008/011-015/017-020, TEST-002..008, UI-006/007/009.
+  The calculation still has to leave out a zero-area chimney from an old
+  file (`cleaned()` in openings.rs, core thread). ERR-001 (ordinary edits
+  ending in a roof error) is with the core thread.
+

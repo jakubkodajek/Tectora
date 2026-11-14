@@ -9,7 +9,7 @@
   import PlanThumb from "./PlanThumb.svelte";
   import ProjectCard from "./ProjectCard.svelte";
   import { api } from "./api";
-  import { m2, relativeTime } from "./format";
+  import { cardArea, m2, relativeTime } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import type { Action } from "./errors";
@@ -331,7 +331,7 @@
                   <td class="c-number">{p.job.number || "—"}</td>
                   <td class="c-customer">{p.job.customer || "—"}</td>
                   <td class="c-status"><span class="chip {p.job.status}">{t(`status.${p.job.status}`)}</span></td>
-                  <td class="num">{m2(p.roof_area)}</td>
+                  <td class="num" title={p.figures_pending ? t("lib.areaPending") : undefined}>{cardArea(p)}</td>
                   <td class="mod c-mod">
                     {relativeTime(p.modified_ms)}
                     {#if p.last_activity && isAi(p.last_activity.actor)}
@@ -363,7 +363,7 @@
           <dt>{t("job.number")}</dt><dd>{selected.job.number || "—"}</dd>
           <dt>{t("job.customer")}</dt><dd>{selected.job.customer || "—"}</dd>
           <dt>{t("job.address")}</dt><dd>{selected.job.address || "—"}</dd>
-          <dt>{t("res.area")}</dt><dd>{m2(selected.roof_area)}</dd>
+          <dt>{t("res.area")}</dt><dd title={selected.figures_pending ? t("lib.areaPending") : undefined}>{cardArea(selected)}</dd>
           <dt>{t("edge.pitch")}</dt><dd>{pitchText(selected.pitch_range)}</dd>
           {#if selected.dormers}<dt>{t("lib.dormers")}</dt><dd>{selected.dormers}</dd>{/if}
           <dt>{t("lib.files")}</dt><dd>{selected.files}</dd>
