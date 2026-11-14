@@ -1279,6 +1279,86 @@ fn the_sloping_ridge_of_a_skewed_hip_roof_is_a_ridge() {
     }
 }
 
+/// From a real drawing (a wing flush with the house's side wall, its
+/// front plane the house's back plane): DACAD's core stops ("Kein
+/// Schnittpunkt berechenbar"), and the sweep gives the house's back face
+/// and the wing's face as two faces in one plane side by side. They are
+/// one face, and the roof calculates with the notice.
+#[test]
+fn a_wing_flush_with_the_house_side_in_the_house_plane_calculates() {
+    let low = 4.0 - 2.0 * tan(38.0);
+    let pr = project(vec![
+        edge(0.0, 0.0, 38.0, 4.0, 0.0),
+        edge(10.0, 0.0, 38.0, 4.0, 0.0),
+        edge(10.0, 6.0, 90.0, low, 0.0),
+        edge(10.0, 8.0, 38.0, low, 0.0),
+        edge(6.0, 8.0, 90.0, low, 0.0),
+        edge(6.0, 6.0, 38.0, 4.0, 0.0),
+        edge(0.0, 6.0, 38.0, 4.0, 0.0),
+    ]);
+    assert!(!standard_calculates(&pr), "the core stops");
+    let roof = calc(&pr);
+    assert!(roof.geos[0].error.is_none(), "{:?}", roof.geos[0].error);
+    assert_eq!(kinds(&roof, 0), vec![WarningKind::NotCalculatedByCore]);
+    assert_eq!(roof.geos[0].faces.len(), 4, "the back plane is one face");
+    // Equal pitch everywhere: area = plan / cos(pitch).
+    let plan = 10.0 * 6.0 + 4.0 * 2.0;
+    assert!(
+        (roof.area - plan / cos(38.0)).abs() < 1e-3,
+        "area {}",
+        roof.area
+    );
+    // (Walls 1 and 2 are in line, which `eave_plan` cannot offset; no
+    // overhang, so the plan is the outline.)
+    let mut sound = Roof {
+        geos: roof.geos.clone(),
+        lines: roof.lines.clone(),
+        area: roof.area,
+    };
+    let notices = take_notices(&mut sound);
+    let mut rep = Report::default();
+    let mut c = rep.case();
+    check_structure_fit(&mut c, &sound, plan, fit_of(&pr, &notices));
+    c.done("wing flush with the house side".into());
+    rep.finish("wing flush with the house side");
+}
+
+/// From a real drawing drawn as one outline: a house with hips, a lower
+/// wing whose roof breaks into the house's back plane, and a narrow
+/// wing between gables. DACAD's core stops; the roof calculates with the
+/// notice, the faces of one plane are one, a steeply falling line between
+/// two opposite walls stays a hip, and no millimetre crumbs of lines
+/// count as valleys or verges.
+#[test]
+fn a_house_with_a_wing_breaking_into_its_back_plane_calculates() {
+    let mut pr = project(vec![
+        edge(0.0, 0.0, 38.0, 4.19, 0.0),
+        edge(23.0, 0.0, 38.0, 5.19, 0.0),
+        edge(23.0, 9.7, 90.0, 2.6, 0.0),
+        edge(23.0, 15.66, 22.0, 2.6, 0.0),
+        edge(13.93, 15.66, 90.0, 2.6, 0.0),
+        edge(13.93, 10.58, 38.0, 4.65, 0.0),
+        edge(9.12, 10.58, 38.0, 4.19, 0.0),
+        edge(9.12, 16.84, 90.0, 4.19, 0.0),
+        edge(0.0, 16.84, 38.0, 4.19, 0.0),
+    ]);
+    pr.parts[0].edges[3].breaks = vec![PitchBreak {
+        height: 4.65,
+        pitch_deg: 38.0,
+    }];
+    assert!(!standard_calculates(&pr), "the core stops");
+    let roof = calc(&pr);
+    assert!(roof.geos[0].error.is_none(), "{:?}", roof.geos[0].error);
+    assert_eq!(kinds(&roof, 0), vec![WarningKind::NotCalculatedByCore]);
+    for l in &roof.geos[0].lines {
+        assert!(l.length() >= 0.01, "crumb {l:?}");
+        if l.dacad_code() == "F" {
+            let run = (l.a[0] - l.b[0]).hypot(l.a[1] - l.b[1]);
+            assert!((l.a[2] - l.b[2]).abs() <= 0.05 * run, "falling ridge {l:?}");
+        }
+    }
+}
+
 /// ERR-001: the built-in U example with the pitch of wall 1 or wall 5
 /// changed to 20..34° ("Nicht geschlossene Fläche(n) vorhanden" in DACAD's
 /// core): every one calculates, soundly, with the notice.

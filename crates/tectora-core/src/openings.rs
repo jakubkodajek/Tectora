@@ -728,14 +728,17 @@ fn depart_logged(
         return None;
     }
     let mut plain = sweep(&bare)?;
-    ridges_between_opposite_walls(part, &mut plain);
+    if let Err(why) = tidy_sweep(part, &mut plain) {
+        log.push(format!("sweep: {why}"));
+        return None;
+    }
     if let Err(why) = crate::check::sound(part, &plain, crate::check::Fit::STANDARD) {
         log.push(format!("sweep: {why}"));
         return None;
     }
     let mut geo = if has_objects(alone) {
         let mut g = sweep(alone).filter(|g| !g.faces.is_empty())?;
-        ridges_between_opposite_walls(part, &mut g);
+        tidy_sweep(part, &mut g).ok()?;
         g
     } else {
         plain
@@ -745,13 +748,29 @@ fn depart_logged(
     Some(geo)
 }
 
+/// The sweep's result where the core stops, made what a roofer reads:
+/// faces of one plane side by side joined, sloping ridges called ridges,
+/// and the millimetre pieces of lines it leaves where events meet
+/// dropped (they would count as valleys and verges of their own).
+fn tidy_sweep(part: &crate::model::RoofPart, geo: &mut RoofGeometry) -> Result<(), String> {
+    const CRUMB: f64 = 0.01;
+    crate::coplanar::join_neighbours_in_one_plane(geo)?;
+    ridges_between_opposite_walls(part, geo);
+    geo.lines.retain(|l| l.length() >= CRUMB);
+    Ok(())
+}
+
 /// The sweep calls a line between two faces a hip when it slopes. Where
 /// the core stops on a skewed outline, the line where the faces of two
 /// opposite walls meet slopes a little and is still the ridge: a hip runs
-/// between the faces of two neighbouring walls, down to their corner.
+/// between the faces of two neighbouring walls, down to their corner, or
+/// falls steeply.
 /// Lines bordering faces of the same or neighbouring walls stay as they are.
 fn ridges_between_opposite_walls(part: &crate::model::RoofPart, geo: &mut RoofGeometry) {
     const NEAR: f64 = 1e-3;
+    // Rise per run up to which such a line is a (sloping) ridge; a skewed
+    // hip roof's ridge rises 0.6 %.
+    const RIDGE_GRADE: f64 = 0.05;
     let n = part.edges.len();
     let close = |p: [f64; 3], q: [f64; 3]| dist3_(p, q) < NEAR;
     let borders = |f: &RoofFace, a: [f64; 3], b: [f64; 3]| {
@@ -772,7 +791,12 @@ fn ridges_between_opposite_walls(part: &crate::model::RoofPart, geo: &mut RoofGe
             continue;
         };
         let neighbours = i == j || (i + 1) % n == j || (j + 1) % n == i;
-        if !neighbours {
+        // Almost level: a line that falls more is a hip even between
+        // opposite walls (down to a gable corner, or from a higher ridge
+        // to a lower one).
+        let run = (l.a[0] - l.b[0]).hypot(l.a[1] - l.b[1]);
+        let level = run > 0.0 && (l.a[2] - l.b[2]).abs() <= RIDGE_GRADE * run;
+        if !neighbours && level {
             l.kind = LineKind::Ridge;
         }
     }

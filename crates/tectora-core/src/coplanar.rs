@@ -388,6 +388,95 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
     Ok(())
 }
 
+/// How far apart, m (and how far from parallel), two face sides of the
+/// sweep may lie and still be one side: it leaves corners of one plane
+/// a few millimetres apart where events meet.
+const SIDE_TOL: f64 = 0.01;
+
+/// Faces that lie in one plane side by side (a side of one along a side
+/// of the other) joined into one, for a roof the sweep calculated:
+/// it leaves a wing's face beside the house face whose plane it continues
+/// as two faces with no line between them. The larger face keeps its
+/// wall. `Err` when two such faces cannot be joined into one simple face.
+pub(crate) fn join_neighbours_in_one_plane(geo: &mut RoofGeometry) -> Result<(), String> {
+    // A side of one runs along a side of the other.
+    let along = |a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]| {
+        let m = [
+            (c[0] + d[0]) / 2.0,
+            (c[1] + d[1]) / 2.0,
+            (c[2] + d[2]) / 2.0,
+        ];
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let l2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+        let cd = [d[0] - c[0], d[1] - c[1], d[2] - c[2]];
+        let lcd = (cd[0] * cd[0] + cd[1] * cd[1] + cd[2] * cd[2]).sqrt();
+        if l2 < 1e-6 || lcd < 2e-3 {
+            return false;
+        }
+        let t = (((m[0] - a[0]) * ab[0] + (m[1] - a[1]) * ab[1] + (m[2] - a[2]) * ab[2]) / l2)
+            .clamp(0.0, 1.0);
+        let q = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
+        let off = ((m[0] - q[0]).powi(2) + (m[1] - q[1]).powi(2) + (m[2] - q[2]).powi(2)).sqrt();
+        let cross = [
+            ab[1] * cd[2] - ab[2] * cd[1],
+            ab[2] * cd[0] - ab[0] * cd[2],
+            ab[0] * cd[1] - ab[1] * cd[0],
+        ];
+        let sin =
+            (cross[0].powi(2) + cross[1].powi(2) + cross[2].powi(2)).sqrt() / (l2.sqrt() * lcd);
+        off < SIDE_TOL && sin < SIDE_TOL
+    };
+    let sides = |f: &RoofFace| {
+        let m = f.polygon.len();
+        (0..m)
+            .map(|i| (f.polygon[i], f.polygon[(i + 1) % m]))
+            .collect::<Vec<_>>()
+    };
+    let shared = |a: &RoofFace, b: &RoofFace| {
+        let (sa, sb) = (sides(a), sides(b));
+        sa.iter().any(|&(p, q)| {
+            sb.iter()
+                .any(|&(c, d)| along(p, q, c, d) || along(c, d, p, q))
+        })
+    };
+    let one_plane = |a: &RoofFace, b: &RoofFace| {
+        let plane = crate::union::Plane::of(a);
+        (a.pitch_deg - b.pitch_deg).abs() < 0.05
+            && b.polygon
+                .iter()
+                .all(|p| (plane.z(Point2::new(p[0], p[1])) - p[2]).abs() < IN_PLANE)
+    };
+    // Each join removes a face: at most as many rounds as faces.
+    for _ in 0..geo.faces.len() {
+        let n = geo.faces.len();
+        let found = (0..n).find_map(|i| {
+            (i + 1..n).find_map(|j| {
+                let (a, b) = (&geo.faces[i], &geo.faces[j]);
+                let real = a.edge != usize::MAX
+                    && b.edge != usize::MAX
+                    && a.polygon.len() >= 3
+                    && b.polygon.len() >= 3;
+                (real && shared(a, b) && one_plane(a, b)).then_some((i, j))
+            })
+        });
+        let Some((i, j)) = found else {
+            return Ok(());
+        };
+        let (big, small) = if geo.faces[i].area >= geo.faces[j].area {
+            (i, j)
+        } else {
+            (j, i)
+        };
+        let pair = Pair {
+            outer: geo.faces[small].edge,
+            inner: geo.faces[big].edge,
+            rise: 0.0,
+        };
+        join(&[pair], geo)?;
+    }
+    Ok(())
+}
+
 /// The pieces of `l` that do not lie inside `poly` (on its boundary or
 /// outside it).
 fn outside_pieces(l: &RoofLine, poly: &[Point2]) -> Vec<RoofLine> {
