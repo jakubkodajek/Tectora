@@ -527,8 +527,10 @@ pub struct Problem {
 /// takes the missing direction as east and ends with a cut error, which
 /// stopped the roof of every building in the job; so such a part is
 /// reported as invalid and left out on its own, like any other invalid
-/// input. 1 mm is below DACAD's own centimetre rounding.
-pub const MIN_WALL_LENGTH: f64 = 0.001;
+/// input. The limit is the core's own: a wall record shorter than 0.01 m
+/// is a point (`coresol::rd2::Wall::zero`), and walls of 1 to 10 mm ended
+/// with the same cut error (review ERR-001, 2026-11-14).
+pub const MIN_WALL_LENGTH: f64 = 0.01;
 
 /// The edges of `part` that are walls of no length (see
 /// [`MIN_WALL_LENGTH`]). Edges imported from a DACAD wall record keep their

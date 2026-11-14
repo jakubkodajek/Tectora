@@ -202,6 +202,11 @@ pub struct State {
     pub n_models: i32,
     pub n_faces: i32,
     pub n_holes: i32,
+    /// Set when a stage stopped because a polygon grew past
+    /// [`super::split::MAX_POLY_EDGES`]; the run then ends with an error of
+    /// ours instead of running out of memory (review MATH-004).
+    #[serde(skip)]
+    pub overflow: bool,
 }
 
 mod mat16 {

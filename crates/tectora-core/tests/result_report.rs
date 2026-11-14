@@ -265,6 +265,26 @@ fn a_wall_of_no_length_leaves_only_its_building_out_and_says_where() {
     assert_eq!(v["problems"][0]["edge"], 1);
     assert!(v["parts"][0]["geometry"]["error"].is_null());
 
+    // A wall of a few mm (a typed 3,006 for 3, a corner snapped next to
+    // another) is a point for the core too and ended the same way
+    // (review ERR-001): left out with its building only.
+    for jog in [0.0011, 0.004, 0.0099] {
+        let mut p4 = Project::new("short wall");
+        p4.parts.push(hip("A", 0.0, 0.0, 8.0, 6.0, 3.0));
+        let mut b = hip("B", 8.0, 1.0, 12.0, 5.0, 3.0);
+        b.edges.insert(2, edge(12.0, 1.0 + jog, 35.0, 3.0, 0.5));
+        p4.parts.push(b);
+        let v = tectora_core::commands::calc(&p4).unwrap();
+        assert_eq!(v["problems"][0]["code"], "zero_length_wall", "jog {jog}");
+        assert!(v["parts"][0]["geometry"]["error"].is_null(), "jog {jog}");
+        assert!(
+            !v["parts"][0]["geometry"]["faces"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     // Direction markers (zero length with a direction) are DACAD walls.
     let mut p3 = Project::new("marker");
     let mut a = hip("A", 0.0, 0.0, 8.0, 6.0, 3.0);
@@ -276,11 +296,12 @@ fn a_wall_of_no_length_leaves_only_its_building_out_and_says_where() {
 }
 
 /// When the core ends with an error, the error names the buildings whose
-/// roof fails on its own too, so the user knows which one to fix (the
-/// other buildings have no roof because DACAD calculates all roofs of a
-/// job in one run). Found by `examples/join_fuzz.rs`.
+/// roof fails on its own too, so the user knows which one to fix, and the
+/// other buildings are calculated without them (DACAD stops every roof of
+/// the job instead; the user asked for this, 2026-11-14). Found by
+/// `examples/join_fuzz.rs`.
 #[test]
-fn a_core_error_names_the_building_that_fails_alone() {
+fn a_building_the_core_fails_on_alone_leaves_the_others_their_roofs() {
     let mut p = Project::new("one bad roof");
     p.parts.push(RoofPart {
         height: None,
@@ -308,11 +329,18 @@ fn a_core_error_names_the_building_that_fails_alone() {
         ],
     });
     let geos = generate_project(&p);
-    let e = geos[0].error.as_ref().expect("the core ends with an error");
+    let e = geos[1]
+        .error
+        .as_ref()
+        .expect("building B ends with an error");
     assert_eq!(e.parts, [1], "{e:?}");
-    assert_eq!(geos[1].error.as_ref().unwrap().parts, [1]);
-    // Building A alone is calculated.
+    // Building A keeps the roof it has on its own.
     let mut a = Project::new("A");
     a.parts.push(p.parts[0].clone());
-    assert!(generate_project(&a)[0].error.is_none());
+    let alone = generate_project(&a);
+    assert!(alone[0].error.is_none());
+    assert!(geos[0].error.is_none(), "{:?}", geos[0].error);
+    assert_eq!(geos[0].faces.len(), alone[0].faces.len());
+    let area = |g: &tectora_core::roof::RoofGeometry| g.faces.iter().map(|f| f.area).sum::<f64>();
+    assert!((area(&geos[0]) - area(&alone[0])).abs() < 1e-9);
 }

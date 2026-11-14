@@ -185,6 +185,9 @@ fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
         Ok(geos) => return geos,
         Err(crate::engine::Failure::Dacad(mut e)) => {
             e.parts = failing_alone(project);
+            if let Some(geos) = without_failing(project, &e) {
+                return geos;
+            }
             return vec![
                 RoofGeometry {
                     error: Some(e),
@@ -221,6 +224,54 @@ fn failing_alone(project: &Project) -> Vec<usize> {
             )
         })
         .collect()
+}
+
+/// After a core error that one or more buildings also end with on their
+/// own (`e.parts`), the other buildings calculated without them: those keep
+/// their roofs and only the failing ones carry the error. DACAD stops the
+/// whole job instead; the user asked that one bad building never takes the
+/// others' roofs (2026-11-14). `None` when no building fails alone, when
+/// all do, or when the rest fails as well: then every building gets the
+/// error, as in DACAD.
+fn without_failing(project: &Project, e: &crate::roof::CalcError) -> Option<Vec<RoofGeometry>> {
+    if e.parts.is_empty() || e.parts.len() >= project.parts.len() {
+        return None;
+    }
+    let keep: Vec<usize> = (0..project.parts.len())
+        .filter(|k| !e.parts.contains(k))
+        .collect();
+    let mut rest = project.clone();
+    rest.parts = keep.iter().map(|&k| project.parts[k].clone()).collect();
+    let mut sub = match crate::engine::generate(&rest) {
+        Ok(geos) => geos,
+        Err(crate::engine::Failure::Ours(_)) => {
+            let mut geos = fallback(&rest);
+            if let Some(g) = geos.first_mut() {
+                g.warnings
+                    .push(RoofWarning::new(WarningKind::NotCalculatedByCore, 0.0));
+            }
+            geos
+        }
+        Err(crate::engine::Failure::Dacad(_)) => return None,
+    };
+    if sub.len() != keep.len() {
+        return None;
+    }
+    let mut out = vec![
+        RoofGeometry {
+            error: Some(e.clone()),
+            ..RoofGeometry::default()
+        };
+        project.parts.len()
+    ];
+    for (i, &k) in keep.iter().enumerate() {
+        let mut g = std::mem::take(&mut sub[i]);
+        for j in g.joined_with.iter_mut() {
+            *j = keep.get(*j).copied().unwrap_or(*j);
+        }
+        out[k] = g;
+    }
+    Some(out)
 }
 
 /// Tectora's own sweep engine, where the core path failed for a reason of

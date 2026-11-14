@@ -15,6 +15,10 @@ pub enum ReadError {
     Int(usize),
     #[error("W3D: unexpected end or token at token {0}")]
     W3d(usize),
+    /// A polygon grew past `split::MAX_POLY_EDGES` (not a read error, but
+    /// reported the same way: the engine falls back to its own sweep).
+    #[error("the roofs split each other into too many pieces")]
+    TooComplex,
 }
 
 /// A whitespace token reader with fscanf-like conversions.
