@@ -180,15 +180,25 @@ fn main() -> ExitCode {
     }
     match run(cli) {
         Ok(v) => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&v).expect("serializable")
-            );
+            print_line(&serde_json::to_string_pretty(&v).expect("serializable"));
             ExitCode::SUCCESS
         }
         Err(e) => {
-            println!("{}", json!({ "ok": false, "error": format!("{e:#}") }));
+            print_line(&json!({ "ok": false, "error": format!("{e:#}") }).to_string());
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Prints the answer. A reader that went away (`tectora calc … | head`) is
+/// not an error worth a panic (ARCH-008); other write errors go to stderr.
+fn print_line(text: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    match writeln!(out, "{text}").and_then(|()| out.flush()) {
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => {
+            eprintln!("tectora: cannot write the answer: {e}");
+        }
+        _ => {}
     }
 }

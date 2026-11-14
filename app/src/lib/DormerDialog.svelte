@@ -13,7 +13,7 @@
   import { formatNumber, numeric } from "./numeric.svelte";
   import type { Placement, Project } from "./types";
   import PlaceFields from "./PlaceFields.svelte";
-  import { notifyError } from "./notify.svelte";
+  import { notifyError, notifyRefusal } from "./notify.svelte";
 
   let {
     project,
@@ -76,9 +76,10 @@
   }
   /** A distance typed: the core moves the dormer there (MCP place_item) and the dialog takes it back. */
   function place(fromEave: number | null, fromLeft: number | null, fromRight: number | null) {
-    track(placeNow(fromEave, fromLeft, fromRight));
+    return track(placeNow(fromEave, fromLeft, fromRight));
   }
-  async function placeNow(fromEave: number | null, fromLeft: number | null, fromRight: number | null) {
+  /** Resolves to the reason when the core refused the distance, so the field shows the stored one again. */
+  async function placeNow(fromEave: number | null, fromLeft: number | null, fromRight: number | null): Promise<string | undefined> {
     const n = ++placeAsked;
     try {
       const next = await api.placeItem(probeProject(), "dormer", 0, fromEave, fromLeft, fromRight);
@@ -88,7 +89,12 @@
       if (q.kind === "general") return;
       params = { ...params, start: q.start, eave_height: q.eave_height };
     } catch (e) {
-      if (!closed) notifyError(e, "calc");
+      if (closed) return;
+      // A distance off the roof face is a refusal with its reason, as in
+      // the editor's bars, not a failed calculation (ERR-003).
+      const why = notifyRefusal(e, "place");
+      if (!why) notifyError(e, "calc");
+      return why ?? t("num.refused");
     }
   }
 

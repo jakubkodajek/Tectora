@@ -4,7 +4,7 @@
 // in both places (UI-022), and leaving right after typing stores the text.
 import type { Locator, Page } from "@playwright/test";
 import { bar, openEditor, selectWall } from "./editor";
-import { createExample, expect, loadProject, test, waitForProject, type App } from "./fixtures";
+import { bridge, createExample, expect, loadProject, test, waitForProject, type App } from "./fixtures";
 import { cs } from "./i18n";
 
 async function typeInto(page: Page, field: Locator, text: string) {
@@ -51,6 +51,33 @@ test.describe("text fields", () => {
     await expect(title).toHaveValue("Valba");
     await page.waitForTimeout(700);
     expect((await loadProject(id)).name).toBe("Valba");
+  });
+
+  test("Escape in the label of a hand-drawn line or face restores it and stores nothing (UI-003)", async ({ app, page }) => {
+    const id = await createExample("gable", "Sedlo");
+    const p0 = await loadProject(id);
+    p0.manual_lines = [{ code: "T", a: [2, 2, 3], b: [8, 2, 3], label: "Okap dvůr" }];
+    p0.manual_faces = [{ points: [{ x: 14, y: 1 }, { x: 17, y: 1 }, { x: 17, y: 5 }, { x: 14, y: 5 }], pitch_deg: 30, label: "Přístavek" }];
+    await bridge("save_project", { id, project: p0 });
+    await openEditor(app, "Sedlo");
+    for (const [kind, select, was] of [
+      ["manual.line", () => page.locator("g.manual-line line.hit").first(), "Okap dvůr"],
+      ["manual.face", () => page.locator("path.manual-face").first(), "Přístavek"],
+    ] as const) {
+      await select().dispatchEvent("pointerdown", { button: 0 });
+      const mb = bar(page, kind);
+      const label = mb.getByLabel(cs("manual.label"));
+      await expect(label, kind).toHaveValue(was);
+      await typeInto(page, label, "ESC-TEST");
+      await label.press("Escape");
+      await expect(label, kind).toHaveValue(was);
+      await expect(label, kind).not.toBeFocused();
+      await page.locator(".view .wrap > svg").first().click({ position: { x: 5, y: 5 } });
+      await page.waitForTimeout(700);
+      const p = await loadProject(id);
+      expect(p.manual_lines[0].label).toBe("Okap dvůr");
+      expect(p.manual_faces[0].label).toBe("Přístavek");
+    }
   });
 
   test("text typed in the Job tab while an AI save arrives is kept and stored", async ({ app, page, mcp }) => {

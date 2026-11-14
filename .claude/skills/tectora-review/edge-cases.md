@@ -208,3 +208,21 @@ fuzz `cargo run --release -p tectora-core --example join_fuzz -- 2000 <seed>`.
   overhangs up to 3 m) is calculated by the core or, where the port faults
   as the original does, by the fallback with its warning; never an error
   toast or a stale roof.
+
+## 11. A building that is not closed in 3D (@ui)
+
+Reviewers: ui. Guards: vitest `scene3d.test.ts` "a closed building in 3D",
+"wallUnderRoof", "dormerFaces"; look at every roof from the four low corner
+orbits, not only from above.
+
+- The eave height is measured at the overhang line, so the roof passes over
+  the wall line higher than the eave: every wall goes from the ground to the
+  underside of the roof over its line (`scene3d.wallUnderRoof`), never to the
+  eave or building height. Neighbouring walls meet at one height.
+- The calculation's gable stands in the verge plane; beside a wall drawn up
+  to the roof it is left out (`gableShownByWall`), or it hangs in front of
+  the building.
+- Walls end on the roof, so they sit further back in depth than the roof
+  (polygon offset) and their top edges never show through it.
+- Dormers one behind the other share cheek lines: each face belongs to the
+  dormer whose front wall it touches (`dormerFaces`).

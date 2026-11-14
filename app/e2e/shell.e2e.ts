@@ -140,6 +140,54 @@ test.describe("library list", () => {
     }
   });
 
+  test("a double click opens the row its first press selected, even when the rows moved under the second (UI-008)", async ({ app, page }) => {
+    for (const n of ["Novák", "Dvořák"]) await createExample("gable", n);
+    await app.open();
+    const row = (name: string) => page.locator("tbody tr").filter({ hasText: name }).first();
+    await expect(row("Dvořák")).toBeVisible();
+    // The first click opens the detail pane and the table narrows: the
+    // second press can land on the next row. Replay that event sequence.
+    await row("Novák").evaluate((a) => {
+      const fire = (el: Element, type: string, detail: number) =>
+        el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, detail }));
+      fire(a, "mousedown", 1);
+      fire(a, "mouseup", 1);
+      fire(a, "click", 1);
+    });
+    await expect(row("Novák")).toHaveClass(/sel/);
+    await row("Dvořák").evaluate((b) => {
+      const fire = (el: Element, type: string, detail: number) =>
+        el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, detail }));
+      fire(b, "mousedown", 2);
+      fire(b, "mouseup", 2);
+      fire(b, "click", 2);
+      fire(b, "dblclick", 2);
+    });
+    await expect(page.locator(".editor input.title")).toHaveValue("Novák");
+  });
+
+  test("selecting a row at 1360×860 keeps the row heights, so the second press stays on it (UI-008)", async ({ app, page }) => {
+    await page.setViewportSize({ width: 1360, height: 860 });
+    for (let i = 1; i <= 22; i++) await createExample(i % 2 ? "t-shape" : "gable", `Řádek ${String(i).padStart(2, "0")} s delším jménem zakázky`);
+    await app.open();
+    const rows = page.locator("tbody tr");
+    const heights = async () => rows.evaluateAll((rs) => rs.map((r) => Math.round(r.getBoundingClientRect().height * 10) / 10));
+    await expect(rows).toHaveCount(22);
+    const before = await heights();
+    await rows.nth(8).click();
+    await expect(page.locator("aside.detail")).toBeVisible();
+    expect(await heights()).toEqual(before);
+  });
+
+  test("the library search shows a focus ring (UI-004)", async ({ app, page }) => {
+    await app.open();
+    const box = page.locator("label.search");
+    const ring = () => box.evaluate((el) => getComputedStyle(el).boxShadow);
+    expect(await ring()).toBe("none");
+    await page.getByPlaceholder(cs("lib.search")).focus();
+    await expect.poll(ring).not.toBe("none");
+  });
+
   test("rows are reached with Tab, moved with arrows and opened with Enter", async ({ app, page }) => {
     await createExample("gable", "Klávesa A");
     await createExample("hip", "Klávesa B");

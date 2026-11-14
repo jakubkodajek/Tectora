@@ -1096,7 +1096,8 @@ impl Server {
                     .map(|p| {
                         json!({
                             "id": p.id, "name": p.name, "job": p.job,
-                            "roof_area_m2": round(p.roof_area, 2), "parts": p.parts,
+                            "roof_area_m2": (!p.figures_pending).then(|| round(p.roof_area, 2)),
+                            "figures_pending": p.figures_pending, "parts": p.parts,
                             "pitch_range_deg": p.pitch_range.map(|[a, b]| [round(a, 2), round(b, 2)]),
                             "dormers": p.dormers, "files": p.files, "has_result": p.has_result,
                             "modified_ms": p.modified_ms, "last_change": p.last_activity,
@@ -1457,6 +1458,21 @@ impl Server {
                             })
                         })
                         .collect::<Result<_, String>>()?;
+                }
+                // A chimney or opening without plan area (width 0 for an
+                // unknown size) would take the whole roof face away.
+                let flat = |list: &[Chimney], what: &str| {
+                    list.iter().position(|c| c.corners.len() >= 3 && !c.has_area()).map(|i| {
+                        format!(
+                            "{what} {} has no plan area: give it its real width and depth (at least 1 cm each), or leave it out and tell the user its size is unknown",
+                            i + 1
+                        )
+                    })
+                };
+                if let Some(e) =
+                    flat(&p.chimneys, "chimney").or(flat(&p.roof_openings, "roof opening"))
+                {
+                    return Err(e);
                 }
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
             }
@@ -1972,6 +1988,37 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.store.load(&id).unwrap().windows.len(), 1);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn set_openings_refuses_a_chimney_or_opening_without_area() {
+        // ERR-002: width 0 was saved and the whole roof came out as 0 m².
+        let mut s = server();
+        let id = gable_job(&mut s, 40.0);
+        let err = s
+            .call_tool(
+                "set_openings",
+                &json!({ "id": id, "summary": "Chimney", "chimneys": [{ "x": 2, "y": 2, "width": 0, "depth": 0, "height": 6 }] }),
+            )
+            .unwrap_err();
+        assert!(err.contains("chimney 1 has no plan area"), "{err}");
+        let line = json!([[2, 2], [3, 2], [4, 2]]);
+        let err = s
+            .call_tool(
+                "set_openings",
+                &json!({ "id": id, "summary": "Opening", "roof_openings": [{ "corners": line }] }),
+            )
+            .unwrap_err();
+        assert!(err.contains("roof opening 1 has no plan area"), "{err}");
+        let p = s.store.load(&id).unwrap();
+        assert!(p.chimneys.is_empty() && p.roof_openings.is_empty());
+        s.call_tool(
+            "set_openings",
+            &json!({ "id": id, "summary": "Chimney", "chimneys": [{ "x": 2, "y": 2, "width": 0.4, "depth": 0.4, "height": 6 }] }),
+        )
+        .unwrap();
+        assert_eq!(s.store.load(&id).unwrap().chimneys.len(), 1);
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 

@@ -125,3 +125,26 @@ test("dark theme renders every screen without errors", async ({ app, page }) => 
   await openEditor(app, "Tma").catch(async () => app.openJob("Tma"));
   await expect(page.locator(".view canvas")).toBeVisible();
 });
+
+for (const locale of ["cs", "de"] as Locale[]) {
+  test(`${locale}: the dock tab labels are whole or hidden in a half-screen editor 960×540, never cut (UI-005)`, async ({ app, page }) => {
+    await page.setViewportSize({ width: 960, height: 540 });
+    await createExample("hip", "Dok");
+    await app.open({ locale });
+    await app.openJob("Dok");
+    const tabs = page.locator("aside .tabs");
+    await expect(tabs).toBeVisible();
+    const labels = () =>
+      tabs.locator(".tab-label").evaluateAll((ls) =>
+        ls.map((l) => {
+          const e = l as HTMLElement;
+          return { text: e.textContent, cut: e.clientWidth > 1 && e.scrollWidth > e.clientWidth + 1 };
+        }),
+      );
+    for (const l of await labels()) expect(l.cut, `${locale}: ${l.text}`).toBe(false);
+    // Each tab still says what it is (tooltip and accessible name).
+    for (const key of ["dock.results", "dock.ai", "dock.job"]) {
+      await expect(tabs.getByRole("tab", { name: tr(locale, key) })).toBeVisible();
+    }
+  });
+}

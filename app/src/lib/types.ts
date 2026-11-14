@@ -159,6 +159,8 @@ export interface ProjectSummary {
   files: number;
   /** The figures an offer was made with are stored. */
   has_result: boolean;
+  /** The roof took longer than the listing waits: no figures yet, a later listing has them. */
+  figures_pending?: boolean;
 }
 
 export interface ExampleInfo {

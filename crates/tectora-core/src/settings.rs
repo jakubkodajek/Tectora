@@ -222,8 +222,11 @@ impl Settings {
         // Unique per process: the app and an MCP server saving at the same
         // time must not rename each other's half-written file.
         let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-        fs::write(&tmp, json).map_err(|e| SettingsError::Io(e.to_string()))?;
-        fs::rename(&tmp, path).map_err(|e| SettingsError::Io(e.to_string()))
+        crate::store::write_synced(&tmp, json.as_bytes())
+            .map_err(|e| SettingsError::Io(e.to_string()))?;
+        fs::rename(&tmp, path).map_err(|e| SettingsError::Io(e.to_string()))?;
+        crate::store::sync_parent(path);
+        Ok(())
     }
 
     /// Checks values only; folders are checked by [`prepare_dir`] when they

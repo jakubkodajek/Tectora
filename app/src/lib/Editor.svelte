@@ -24,8 +24,10 @@
   import { mergeDroppedCorner, moveCorner, samePoint, withoutRepeats } from "./corners";
   import { MCP_KIND, followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, placementOf, transformItem, type ItemRef, type PlanTarget } from "./items";
   import { snapToRoof, type ManualSel } from "./manual";
+  import { keptSelection } from "./selection";
+  import { fitlabels } from "./fitlabels";
   import { describeCalcError, describeError, describeProblem, toAppError, type Described } from "./errors";
-  import { info, notify, notifyError } from "./notify.svelte";
+  import { info, notify, notifyError, notifyRefusal } from "./notify.svelte";
   import { chimneyFromRect, nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, parseDormer, roofHeightAt, type DormerParams } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
@@ -371,7 +373,8 @@
   function restore(i: number) {
     at = i;
     project = JSON.parse(history[i]);
-    selection = null;
+    // The wall stays in the bar when the step kept it (UX-005).
+    selection = keptSelection(project, selection);
     recalc();
     scheduleSave();
   }
@@ -663,7 +666,8 @@
    * MCP set_part_height.
    */
   const setPartHeight = (h: number) => pendingEdits.track(setPartHeightNow(h));
-  async function setPartHeightNow(h: number) {
+  /** Resolves to the reason when the core refused the height, so the field shows the stored one again. */
+  async function setPartHeightNow(h: number): Promise<string | undefined> {
     if (!project || !selection) return;
     const pi = selection.part;
     const part = JSON.stringify($state.snapshot(project.parts[pi]));
@@ -671,8 +675,12 @@
     try {
       next = await api.setPartHeight($state.snapshot(project) as Project, pi, h);
     } catch (e) {
+      // A height the core refuses (an eave below the ground) is a refusal
+      // with its reason, and the field goes back to the stored height (ERR-003).
+      const why = notifyRefusal(e, "height");
+      if (why) return why;
       notifyError(e, "calc");
-      return;
+      return t("num.refused");
     }
     // The project may have changed meanwhile (an AI save): apply only to the same part.
     // (Compared by value: a save in between may hand back equal but new objects.)
@@ -697,7 +705,7 @@
     placeChain = placeChain.then(() => placeItemNow(it, fromEave, fromLeft, fromRight)).catch(() => {});
     return pendingEdits.track(placeChain);
   };
-  async function placeItemNow(it: ItemRef, fromEave: number | null, fromLeft: number | null, fromRight: number | null) {
+  async function placeItemNow(it: ItemRef, fromEave: number | null, fromLeft: number | null, fromRight: number | null): Promise<string | undefined> {
     if (!project) return;
     const before = JSON.stringify($state.snapshot(project));
     let next: Project;
@@ -706,12 +714,10 @@
     } catch (e) {
       // A distance that would take the object off its face is refused: said
       // in the user's language, and the field shows where it still is.
-      const d = describeError(e, "calc");
-      if (d.code === "invalid_input" || /roof face|out of range/.test(d.detail ?? "")) {
-        notify({ kind: "error", code: "place_refused", title: t("place.refusedTitle"), message: t("place.refused"), detail: d.detail });
-      } else notifyError(e, "calc");
+      const why = notifyRefusal(e, "place");
+      if (!why) notifyError(e, "calc");
       recalc();
-      return;
+      return why ?? t("num.refused");
     }
     // Only onto the same job state: an AI save or an edit in between wins.
     if (!project || JSON.stringify($state.snapshot(project)) !== before) return;
@@ -943,7 +949,7 @@
     try {
       next = await api.faceToPart($state.snapshot(project) as Project, index, name, presets.pitch_deg, presets.eave_height, presets.overhang);
     } catch (e) {
-      notifyError(e, "calc");
+      if (!notifyRefusal(e, "face")) notifyError(e, "calc");
       return;
     }
     // The project may have changed meanwhile (an AI save): apply only to the same face.
@@ -1772,11 +1778,11 @@
           />
         {:else if dormerSel !== null}
           <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} onedit={editDormer}
-            onplace={(e, l, r) => { if (dormerSel !== null) placeItem({ kind: "dormer", index: dormerSel }, e, l, r); }} />
+            onplace={(e, l, r) => (dormerSel !== null ? placeItem({ kind: "dormer", index: dormerSel }, e, l, r) : undefined)} />
         {:else if openSel}
           <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening}
             placement={openSel ? placementOf(result, openSel) : null}
-            onplace={(e, l, r) => { if (openSel) placeItem({ kind: openSel.kind, index: openSel.index }, e, l, r); }} />
+            onplace={(e, l, r) => (openSel ? placeItem({ kind: openSel.kind, index: openSel.index }, e, l, r) : undefined)} />
         {:else if manualSel}
           <ManualBar {project} bind:sel={manualSel} online={setManualLine} onface={setManualFace} ontopart={faceToPart} ondelete={deleteManual} />
         {:else}
@@ -1797,7 +1803,7 @@
       </div>
 
       <aside class:open={dockOpen}>
-        <div class="tabs" role="tablist" use:tablist>
+        <div class="tabs" role="tablist" use:tablist use:fitlabels>
           <button role="tab" id={dockIds.tab("results")} aria-controls={dockIds.panel} aria-selected={dock === "results"} class:on={dock === "results"} onclick={() => showDock("results")} title={t("dock.results")}><Icon name="chart" size={15} /><span class="tab-label">{t("dock.results")}</span></button>
           <button role="tab" id={dockIds.tab("breakdown")} aria-controls={dockIds.panel} aria-selected={dock === "breakdown"} class:on={dock === "breakdown"} onclick={() => showDock("breakdown")} title={t("bd.title")}><Icon name="sigma" size={15} /><span class="tab-label">{t("dock.breakdown")}</span></button>
           <button role="tab" id={dockIds.tab("ai")} aria-controls={dockIds.panel} aria-selected={dock === "ai"} class:on={dock === "ai"} onclick={() => showDock("ai")} title={t("dock.ai")}>
@@ -1824,7 +1830,7 @@
       <span class="coords">{cursor ? `X ${num(cursor.x)}   Y ${num(cursor.y)}` : "X —   Y —"}</span>
       <span class="opt">{t("status.snap")}</span>
       <span class="opt">{t("status.walls", { n: wallCount, p: project.parts.length })}</span>
-      {#if result}<span>{t("res.area")}: <b>{m2(result.totals.roof_area)}</b></span>{/if}
+      {#if result}<span data-testid="status-area">{t("res.area")}: <b title={roofError ? t("res.notCalculated") : undefined}>{roofError ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save">
         {#if saveState === "saved"}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
@@ -1855,7 +1861,7 @@
     <div class="obj-dlg" data-testid="object-dialog">
       <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={() => { objDlg = false; deleteOpening(); }}
         placement={placementOf(result, openSel)}
-        onplace={(e, l, r) => { if (openSel) placeItem({ kind: openSel.kind, index: openSel.index }, e, l, r); }} />
+        onplace={(e, l, r) => (openSel ? placeItem({ kind: openSel.kind, index: openSel.index }, e, l, r) : undefined)} />
     </div>
     {#snippet footer()}
       <button class="btn" onclick={() => closeObjDlg(false)}>{t("common.cancel")}</button>
@@ -2313,6 +2319,14 @@
   .tabs button.on {
     color: var(--text);
     border-bottom-color: var(--accent);
+  }
+  /* Labels that would be cut ("KI" to "K") are hidden; icons and tooltips stay (UI-005, fitlabels.ts). */
+  .tabs:global(.compact) .tab-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
   }
   .badge {
     position: absolute;

@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,8 @@ pub const TRASH_DIR: &str = ".trash";
 const TRASH_INFO: &str = "deleted.json";
 /// Trash folders older than this are removed for good on the next delete.
 pub const TRASH_KEEP_DAYS: u64 = 30;
+/// Most files of one name a job keeps (`plan.pdf`, `plan (2).pdf`, …).
+const MAX_SAME_NAME: usize = 10_000;
 /// Largest file attached from disk, bytes (as in a job bundle).
 pub const MAX_ATTACHMENT: u64 = 256 * 1024 * 1024;
 
@@ -92,6 +94,10 @@ pub struct ProjectSummary {
     pub files: usize,
     /// The figures an offer was made with are stored.
     pub has_result: bool,
+    /// The roof took longer than the listing waits for ([`SUMMARY_BUDGET`]):
+    /// `roof_area` and `lines` are empty while it is still calculated in the
+    /// background; a later listing has them (ARCH-001).
+    pub figures_pending: bool,
 }
 
 /// An activity entry without the stored previous version.
@@ -235,12 +241,26 @@ pub fn default_dir() -> PathBuf {
 
 /// Plan view of the inner roof lines (everything except eaves).
 pub fn roof_lines(project: &Project) -> Vec<[[f64; 2]; 2]> {
-    crate::openings::generate_project(project)
-        .into_iter()
-        .flat_map(|g| g.lines)
+    lines_of(&crate::openings::generate_project(project))
+}
+
+/// [`roof_lines`] of roofs already calculated.
+fn lines_of(geos: &[roof::RoofGeometry]) -> Vec<[[f64; 2]; 2]> {
+    geos.iter()
+        .flat_map(|g| &g.lines)
         .filter(|l| l.kind != roof::LineKind::Eave)
         .map(|l| [[l.a[0], l.a[1]], [l.b[0], l.b[1]]])
         .collect()
+}
+
+/// A library card's roof area and plan lines, from one calculation
+/// (ARCH-006).
+fn card_figures(project: &Project) -> (f64, Vec<[[f64; 2]; 2]>) {
+    let geos = crate::openings::generate_project(project);
+    (
+        crate::quantities::roof_totals_of(&geos, project).roof_area,
+        lines_of(&geos),
+    )
 }
 
 pub fn outlines(project: &Project) -> Vec<Vec<[f64; 2]>> {
@@ -255,11 +275,30 @@ pub fn roof_area(project: &Project) -> f64 {
     crate::quantities::roof_totals(project).roof_area
 }
 
+/// How long listing the library waits for one job's roof figures before it
+/// lists the job without them (ARCH-001).
+pub const SUMMARY_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
+
 pub struct Store {
     pub dir: PathBuf,
     /// Summaries by id with the file stamps they were made from, so listing
-    /// a large library does not recalculate every roof each time.
-    cache: Mutex<HashMap<String, (Stamp, ProjectSummary)>>,
+    /// a large library does not recalculate every roof each time. Shared
+    /// with the threads that finish slow roofs in the background.
+    cache: Arc<Mutex<SummaryCache>>,
+    /// How long listing waits for one job's roof figures.
+    summary_budget: std::time::Duration,
+}
+
+#[derive(Default)]
+struct SummaryCache {
+    entries: HashMap<String, (Stamp, ProjectSummary)>,
+    /// Jobs whose figures a background thread is calculating: at most one
+    /// thread per job, however often the library is listed.
+    running: std::collections::HashSet<String>,
+}
+
+fn lock_cache(cache: &Mutex<SummaryCache>) -> std::sync::MutexGuard<'_, SummaryCache> {
+    cache.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// What a cached summary depends on: the project file, its activity log and
@@ -469,14 +508,79 @@ pub(crate) fn newer_format(text: &str) -> Option<u64> {
     (version > u64::from(crate::model::SCHEMA_VERSION)).then_some(version)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Paths whose move fails in this test thread, as a file open in another
+    /// program makes it fail on Windows.
+    static FAIL_MOVE: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Files synced to disk by this test thread.
+    static SYNCED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// `fs::rename`, with a way for tests to make it fail.
+fn move_path(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FAIL_MOVE.with(|f| f.borrow().iter().any(|p| p == from)) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the file is open in another program",
+        ));
+    }
+    fs::rename(from, to)
+}
+
+/// Flushes `file`'s data to the disk (`fsync`, `F_FULLFSYNC` on macOS,
+/// `FlushFileBuffers` on Windows), so a power cut cannot leave it empty
+/// after a rename that already reached the disk (ERR-006).
+pub(crate) fn sync_file(file: &fs::File) -> std::io::Result<()> {
+    file.sync_all()?;
+    #[cfg(test)]
+    SYNCED.with(|s| s.set(s.get() + 1));
+    Ok(())
+}
+
+/// Flushes the folder holding `path`, so a rename into it is on the disk
+/// too. Only where a folder can be opened as a file (macOS, Linux); Windows
+/// keeps the rename in its file system journal. Best effort: some file
+/// systems refuse to sync a folder, and the file itself is already synced.
+pub(crate) fn sync_parent(path: &Path) {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        let dir = if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir
+        };
+        if let Ok(d) = fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// Writes `contents` to `tmp` and syncs it, removing `tmp` again on failure.
+pub(crate) fn write_synced(tmp: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let written = fs::File::create(tmp).and_then(|mut f| {
+        f.write_all(contents)?;
+        sync_file(&f)
+    });
+    if written.is_err() {
+        let _ = fs::remove_file(tmp);
+    }
+    written
+}
+
 fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_extension(format!("{}-{n}.tmp", std::process::id()));
-    fs::write(&tmp, contents)?;
+    write_synced(&tmp, contents.as_bytes())?;
     fs::rename(&tmp, path).inspect_err(|_| {
         let _ = fs::remove_file(&tmp);
-    })
+    })?;
+    sync_parent(path);
+    Ok(())
 }
 
 /// What [`Store::save_checked`] and [`Store::save_as_checked`] did: saved,
@@ -568,8 +672,16 @@ impl Store {
     pub fn at(dir: PathBuf) -> Self {
         Self {
             dir,
-            cache: Mutex::default(),
+            cache: Arc::default(),
+            summary_budget: SUMMARY_BUDGET,
         }
+    }
+
+    /// The same store waiting at most `budget` for one job's roof figures
+    /// when it lists the library.
+    pub fn with_summary_budget(mut self, budget: std::time::Duration) -> Self {
+        self.summary_budget = budget;
+        self
     }
 
     pub fn open_default() -> std::io::Result<Self> {
@@ -596,17 +708,65 @@ impl Store {
         self.path(id).is_ok_and(|p| p.exists())
     }
 
+    /// The library card of job `id`. Its roof figures are waited for at
+    /// most the store's summary budget ([`SUMMARY_BUDGET`]); a roof that
+    /// takes longer is finished in a background thread and the card comes
+    /// back without them (`figures_pending`) until a later call (ARCH-001).
     pub fn summarize(&self, id: &str) -> Result<ProjectSummary, StoreError> {
         let stamp = self.stamp(id)?;
-        let cache = || self.cache.lock().unwrap_or_else(|e| e.into_inner());
         if stamp[0].is_some()
-            && let Some((s, summary)) = cache().get(id)
+            && let Some((s, summary)) = lock_cache(&self.cache).entries.get(id)
             && *s == stamp
         {
             return Ok(summary.clone());
         }
-        let summary = self.summarize_uncached(id)?;
-        cache().insert(id.to_string(), (stamp, summary.clone()));
+        let (mut summary, project) = self.summarize_uncached(id)?;
+        // A broken design still shows up in the library (so it can be opened
+        // and fixed or deleted), just without its roof preview.
+        if project.check_limits().is_err() {
+            lock_cache(&self.cache)
+                .entries
+                .insert(id.to_string(), (stamp, summary.clone()));
+            return Ok(summary);
+        }
+        if !lock_cache(&self.cache).running.insert(id.to_string()) {
+            // An older version of this job is still being calculated: the
+            // next listing after it finishes calculates this one.
+            summary.figures_pending = true;
+            return Ok(summary);
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (cache, job, at) = (Arc::clone(&self.cache), id.to_string(), stamp);
+        let started = std::thread::Builder::new()
+            .name(format!("summary {id}"))
+            .spawn(move || {
+                let figures = crate::model::guarded(|| card_figures(&project)).unwrap_or_default();
+                // Under the lock, so `summarize` either sees the answer or
+                // has left its pending card for this thread to fill in.
+                let mut c = lock_cache(&cache);
+                c.running.remove(&job);
+                if let Some((s, card)) = c.entries.get_mut(&job)
+                    && *s == at
+                    && card.figures_pending
+                {
+                    (card.roof_area, card.lines) = figures.clone();
+                    card.figures_pending = false;
+                }
+                let _ = tx.send(figures);
+            });
+        if started.is_err() {
+            // No thread to be had: listed without its figures this time.
+            lock_cache(&self.cache).running.remove(id);
+            summary.figures_pending = true;
+            return Ok(summary);
+        }
+        let figures = rx.recv_timeout(self.summary_budget).ok();
+        let mut c = lock_cache(&self.cache);
+        match figures.or_else(|| rx.try_recv().ok()) {
+            Some((area, lines)) => (summary.roof_area, summary.lines) = (area, lines),
+            None => summary.figures_pending = true,
+        }
+        c.entries.insert(id.to_string(), (stamp, summary.clone()));
         Ok(summary)
     }
 
@@ -623,30 +783,27 @@ impl Store {
         ])
     }
 
-    fn summarize_uncached(&self, id: &str) -> Result<ProjectSummary, StoreError> {
+    /// The card of job `id` without its roof figures, and the job.
+    fn summarize_uncached(&self, id: &str) -> Result<(ProjectSummary, Project), StoreError> {
         let project = self.load(id)?;
-        // A broken design still shows up in the library (so it can be opened
-        // and fixed or deleted), just without its roof preview.
-        let (area, lines) = project
-            .check_limits()
-            .and_then(|()| crate::model::guarded(|| (roof_area(&project), roof_lines(&project))))
-            .unwrap_or_default();
-        Ok(ProjectSummary {
+        let summary = ProjectSummary {
             id: id.to_string(),
             name: project.name.clone(),
             notes: project.notes.clone(),
             job: project.job.clone(),
             modified_ms: modified_ms(&self.path(id)?),
-            roof_area: area,
+            roof_area: 0.0,
             parts: project.parts.len(),
             outlines: outlines(&project),
-            lines,
+            lines: Vec::new(),
             last_activity: self.activity(id).last().map(ActivityEntry::info),
             pitch_range: crate::library::pitch_range(&project),
             dormers: project.dormers.len(),
             files: self.attachments(id).len(),
             has_result: project.result_snapshot.is_some(),
-        })
+            figures_pending: false,
+        };
+        Ok((summary, project))
     }
 
     pub fn list(&self) -> Vec<ProjectSummary> {
@@ -686,9 +843,8 @@ impl Store {
         ok.sort_by_key(|s| std::cmp::Reverse(s.modified_ms));
         broken.sort_by(|a, b| a.id.cmp(&b.id));
         // Forget deleted projects.
-        self.cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        lock_cache(&self.cache)
+            .entries
             .retain(|id, _| ok.iter().any(|s| &s.id == id));
         Ok((ok, broken))
     }
@@ -714,7 +870,12 @@ impl Store {
         })
     }
 
-    /// Picks an unused id based on the project name.
+    /// Picks an unused id based on the project name: no job file, attached
+    /// files, change log or review mark of that id exists, so a new job never
+    /// adopts what an earlier job of the same name left behind (ERR-005).
+    /// Another process can take the id before it is written: create jobs
+    /// through [`Store::save`] or [`Store::save_as`] with `None`, which pick
+    /// and write it under the library's creation lock.
     pub fn new_id(&self, name: &str) -> String {
         let mut base = slug(name);
         // Leave room for the "-N" suffix and keep clear of device names.
@@ -724,11 +885,41 @@ impl Store {
         }
         let mut id = base.clone();
         let mut n = 2;
-        while self.dir.join(format!("{id}.{EXTENSION}")).exists() {
+        while self.id_used(&id) {
             id = format!("{base}-{n}");
             n += 1;
         }
         id
+    }
+
+    /// Whether anything in the library belongs to job `id`.
+    fn id_used(&self, id: &str) -> bool {
+        let activity = self.activity_dir();
+        [
+            self.dir.join(format!("{id}.{EXTENSION}")),
+            self.dir.join(FILES_DIR).join(id),
+            activity.join(format!("{id}.jsonl")),
+            activity.join(format!("{id}.review.json")),
+        ]
+        .iter()
+        // A path that cannot be checked counts as taken.
+        .any(|p| p.try_exists().unwrap_or(true))
+    }
+
+    /// Takes the library's creation lock (`.activity/.new.lock`, a name no job id can have), held until
+    /// the returned file is dropped: picking a new id and writing its file is
+    /// one step for every process, so two jobs created with one name at the
+    /// same moment get two ids (TEST-001). Best effort, like [`Store::lock`].
+    fn creation_lock(&self) -> Option<fs::File> {
+        fs::create_dir_all(self.activity_dir()).ok()?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.activity_dir().join(".new.lock"))
+            .ok()?;
+        file.lock().ok()?;
+        Some(file)
     }
 
     /// Saves without recording activity (app autosave of its own edits).
@@ -737,6 +928,7 @@ impl Store {
     /// library folder an older app would otherwise write its stale copy over
     /// a colleague's newer one.
     pub fn save(&self, id: Option<String>, project: &Project) -> Result<String, StoreError> {
+        let _creating = id.is_none().then(|| self.creation_lock());
         let id = id.unwrap_or_else(|| self.new_id(&project.name));
         let _lock = self.lock(&id);
         self.write(&id, project)?;
@@ -824,6 +1016,7 @@ impl Store {
         let id = match id {
             Some(id) => id,
             None => {
+                let _creating = self.creation_lock();
                 let id = self.new_id(&project.name);
                 let _lock = self.lock(&id);
                 self.log_and_write(&id, None, project, actor, summary)?;
@@ -960,7 +1153,8 @@ impl Store {
         if torn {
             writeln!(f).map_err(io)?;
         }
-        writeln!(f, "{line}").map_err(io)
+        writeln!(f, "{line}").map_err(io)?;
+        sync_file(&f).map_err(io)
     }
 
     /// Recorded changes of a project, oldest first.
@@ -1195,18 +1389,20 @@ impl Store {
         // A damaged job can be deleted too, it just has no name to show.
         let name = self.load(id).map(|p| p.name).unwrap_or_default();
         let io = |e| StoreError::io(Some(id), e);
+        // No save of this job lands while it is moved.
+        let _lock = self.lock(id);
         let (entry, folder) = self.new_trash_folder(id).map_err(io)?;
-        // The project file first: when it cannot be moved nothing is.
-        if let Err(e) = fs::rename(&path, folder.join(format!("{id}.{EXTENSION}"))) {
-            let _ = fs::remove_dir_all(&folder);
-            return Err(io(e));
-        }
-        let _ = fs::rename(self.activity_path(id)?, folder.join("activity.jsonl"));
-        let _ = fs::rename(self.review_path(id)?, folder.join("review.json"));
-        let files = self.files_dir(id)?;
-        if files.is_dir() {
-            let _ = fs::rename(&files, folder.join("files"));
-        }
+        // Everything or nothing: the attached files first (on Windows a
+        // drawing open in a viewer keeps its folder from moving), the
+        // project file last. A part left behind would show up on the next
+        // job of the same name, or be missing when the job is restored
+        // (ERR-005).
+        let moves = [
+            (self.files_dir(id)?, folder.join("files")),
+            (self.activity_path(id)?, folder.join("activity.jsonl")),
+            (self.review_path(id)?, folder.join("review.json")),
+            (path, folder.join(format!("{id}.{EXTENSION}"))),
+        ];
         let info = TrashEntry {
             entry,
             id: id.to_string(),
@@ -1216,7 +1412,15 @@ impl Store {
             actor: actor.to_string(),
             summary: summary.to_string(),
         };
-        self.write_trash_info(&folder, &info).map_err(io)?;
+        // The note first: a job moved to the trash can always be restored.
+        let noted = self.write_trash_info(&folder, &info);
+        if let Err(e) = noted.and_then(|()| move_all(&moves)) {
+            let _ = fs::remove_file(folder.join(TRASH_INFO));
+            // Only an empty folder goes: whatever could not be moved back
+            // stays there rather than being lost.
+            let _ = fs::remove_dir(&folder);
+            return Err(io(e));
+        }
         self.prune_trash();
         Ok(info)
     }
@@ -1228,6 +1432,9 @@ impl Store {
         let _ = fs::remove_file(self.activity_path(id)?);
         let _ = fs::remove_file(self.review_path(id)?);
         let _ = fs::remove_dir_all(self.files_dir(id)?);
+        // Its lock file too (ARCH-008). Where another process still holds
+        // it (Windows), it stays and the next job of that id reuses it.
+        let _ = fs::remove_file(self.activity_dir().join(format!("{id}.lock")));
         Ok(())
     }
 
@@ -1310,20 +1517,29 @@ impl Store {
                 return Err(StoreError::NotFound(info.id.clone()));
             }
             let src = folder.join("files").join(name);
-            let used = self
-                .free_attachment_name(&info.id, name)
-                .map_err(|e| StoreError::Io {
-                    id: Some(info.id.clone()),
-                    kind: IoKind::Other,
-                    detail: e.detail,
-                })?;
+            // The free name is taken by an empty file the move replaces.
+            let (reserved, used) =
+                self.reserve_attachment_name(&info.id, name)
+                    .map_err(|e| StoreError::Io {
+                        id: Some(info.id.clone()),
+                        kind: IoKind::Other,
+                        detail: e.detail,
+                    })?;
+            drop(reserved);
             let dest = self.files_dir(&info.id)?.join(&used);
-            fs::create_dir_all(self.files_dir(&info.id)?).map_err(io)?;
-            fs::rename(&src, &dest).map_err(io)?;
+            if let Err(e) = move_path(&src, &dest) {
+                let _ = fs::remove_file(&dest);
+                return Err(io(e));
+            }
             let _ = fs::remove_dir_all(&folder);
             return Ok(info.id);
         }
-        let id = if self.exists(&info.id) {
+        if !folder.join(format!("{}.{EXTENSION}", info.id)).is_file() {
+            return Err(StoreError::NotFound(entry.to_string()));
+        }
+        // A new id is picked and taken in one step (see `save`).
+        let _creating = self.creation_lock();
+        let id = if self.id_used(&info.id) {
             self.new_id(if info.name.is_empty() {
                 &info.id
             } else {
@@ -1332,17 +1548,21 @@ impl Store {
         } else {
             info.id.clone()
         };
-        let job = folder.join(format!("{}.{EXTENSION}", info.id));
+        let _lock = self.lock(&id);
         fs::create_dir_all(self.activity_dir()).map_err(io)?;
-        let _ = fs::rename(folder.join("activity.jsonl"), self.activity_path(&id)?);
-        let _ = fs::rename(folder.join("review.json"), self.review_path(&id)?);
-        let files = folder.join("files");
-        if files.is_dir() {
-            fs::create_dir_all(self.dir.join(FILES_DIR)).map_err(io)?;
-            let _ = fs::rename(&files, self.files_dir(&id)?);
-        }
-        // The project file last: the app's watcher sees the job when it is whole.
-        fs::rename(&job, self.path(&id)?).map_err(io)?;
+        fs::create_dir_all(self.dir.join(FILES_DIR)).map_err(io)?;
+        // Everything or nothing, the project file last: the app's watcher
+        // sees the job when it is whole.
+        let moves = [
+            (folder.join("files"), self.files_dir(&id)?),
+            (folder.join("activity.jsonl"), self.activity_path(&id)?),
+            (folder.join("review.json"), self.review_path(&id)?),
+            (
+                folder.join(format!("{}.{EXTENSION}", info.id)),
+                self.path(&id)?,
+            ),
+        ];
+        move_all(&moves).map_err(io)?;
         let _ = fs::remove_dir_all(&folder);
         Ok(id)
     }
@@ -1412,29 +1632,55 @@ impl Store {
         if !self.exists(id) {
             return Err(StoreError::NotFound(id.to_string()).into());
         }
-        let used = self.free_attachment_name(id, name)?;
+        let (mut file, used) = self.reserve_attachment_name(id, name)?;
         let path = self.attachment_path(id, &used)?;
-        let dir = self.files_dir(id)?;
-        fs::create_dir_all(&dir).map_err(|e| FileError::io(&dir, e))?;
-        fs::write(&path, bytes).map_err(|e| FileError::io(&path, e))?;
+        if let Err(e) = file.write_all(bytes).and_then(|()| sync_file(&file)) {
+            drop(file);
+            let _ = fs::remove_file(&path);
+            return Err(FileError::io(&path, e));
+        }
         Ok(used)
     }
 
-    /// `name`, or `name (2)` etc. when job `id` has a file of that name.
-    fn free_attachment_name(&self, id: &str, name: &str) -> Result<String, FileError> {
+    /// Creates the file `name`, or `name (2)` etc. when job `id` has a file
+    /// of that name, and returns it open for writing with the name used.
+    /// The file is created only if it does not exist (`create_new`), so two
+    /// files of one name added at the same moment, by this process or
+    /// another, both keep their bytes (TEST-010).
+    fn reserve_attachment_name(
+        &self,
+        id: &str,
+        name: &str,
+    ) -> Result<(fs::File, String), FileError> {
         let name = name.trim();
         self.attachment_path(id, name)?;
+        let dir = self.files_dir(id)?;
+        fs::create_dir_all(&dir).map_err(|e| FileError::io(&dir, e))?;
         let (stem, ext) = match name.rfind('.') {
             Some(i) if i > 0 => (&name[..i], &name[i..]),
             _ => (name, ""),
         };
-        let mut used = name.to_string();
-        let mut n = 2;
-        while self.attachment_path(id, &used)?.exists() {
-            used = format!("{stem} ({n}){ext}");
-            n += 1;
+        for n in 1..=MAX_SAME_NAME {
+            let used = if n == 1 {
+                name.to_string()
+            } else {
+                format!("{stem} ({n}){ext}")
+            };
+            let path = self.attachment_path(id, &used)?;
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => return Ok((file, used)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(FileError::io(&path, e)),
+            }
         }
-        Ok(used)
+        Err(FileError::new(
+            "too_many",
+            format!("{name}: more than {MAX_SAME_NAME} files of this name"),
+        ))
     }
 
     /// Copies a file from disk into job `id`'s attachments. Only a regular
@@ -1549,6 +1795,27 @@ impl Store {
         let text = fs::read_to_string(self.activity_dir().join(LIVE_FILE)).ok()?;
         serde_json::from_str(&text).ok()
     }
+}
+
+/// Moves each existing `from` to its `to`, in order. When one fails, the
+/// ones already moved go back and the error is returned, so nothing is left
+/// half moved.
+fn move_all(moves: &[(PathBuf, PathBuf)]) -> std::io::Result<()> {
+    let mut done: Vec<&(PathBuf, PathBuf)> = Vec::new();
+    for m in moves {
+        let (from, to) = m;
+        if !from.try_exists()? {
+            continue;
+        }
+        if let Err(e) = move_path(from, to) {
+            for (from, to) in done.into_iter().rev() {
+                let _ = move_path(to, from);
+            }
+            return Err(e);
+        }
+        done.push(m);
+    }
+    Ok(())
 }
 
 /// `what (reason: …)` when a reason is given, else `what`: the sentence
@@ -2311,6 +2578,291 @@ mod tests {
         assert_eq!(store.activity(&back).len(), 1);
         assert!(store.trash().is_empty());
         assert_eq!(store.restore("nope").unwrap_err().code(), "not_found");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn two_new_jobs_with_one_name_saved_at_once_are_both_kept() {
+        // TEST-001: the id was picked before the lock, so both saves got
+        // `novak` and the second replaced the first.
+        use std::sync::{Arc, Barrier};
+        let store = Arc::new(temp_store("same-name"));
+        for round in 0..40 {
+            let barrier = Arc::new(Barrier::new(2));
+            let ids: Vec<String> = (0..2)
+                .map(|k| {
+                    let (s, b) = (store.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        let mut p = Project::new(format!("Novák {round}"));
+                        p.job.customer = format!("customer {k}");
+                        b.wait();
+                        if k == 0 {
+                            s.save(None, &p).unwrap()
+                        } else {
+                            s.save_as(None, &p, "claude", "create").unwrap()
+                        }
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect();
+            assert_ne!(ids[0], ids[1], "round {round}");
+            let customers: Vec<String> = ids
+                .iter()
+                .map(|id| store.load(id).unwrap().job.customer)
+                .collect();
+            assert_ne!(customers[0], customers[1], "round {round}: one job lost");
+        }
+        assert_eq!(store.list().len(), 80);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_second_file_of_one_name_is_kept_beside_the_first() {
+        // TEST-010: one name twice, one after the other and at once.
+        use std::sync::{Arc, Barrier};
+        let store = Arc::new(temp_store("same-file"));
+        let id = store.save(None, &Project::new("Plan")).unwrap();
+        assert_eq!(
+            store.add_attachment(&id, "plan.pdf", b"a").unwrap(),
+            "plan.pdf"
+        );
+        assert_eq!(
+            store.add_attachment(&id, "plan.pdf", b"b").unwrap(),
+            "plan (2).pdf"
+        );
+        let read = |name: &str| fs::read(store.attachment_path(&id, name).unwrap()).unwrap();
+        assert_eq!(
+            (read("plan.pdf"), read("plan (2).pdf")),
+            (b"a".to_vec(), b"b".to_vec())
+        );
+        for round in 0..40 {
+            let name = format!("r{round}.pdf");
+            let barrier = Arc::new(Barrier::new(2));
+            let used: Vec<String> = (0..2u8)
+                .map(|k| {
+                    let (s, b, id, name) =
+                        (store.clone(), barrier.clone(), id.clone(), name.clone());
+                    std::thread::spawn(move || {
+                        b.wait();
+                        s.add_attachment(&id, &name, &[k]).unwrap()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect();
+            assert_ne!(used[0], used[1], "round {round}");
+            let mut bytes: Vec<Vec<u8>> = used.iter().map(|n| read(n)).collect();
+            bytes.sort();
+            assert_eq!(bytes, [vec![0], vec![1]], "round {round}: a file lost");
+        }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_new_job_never_adopts_files_or_history_left_by_an_old_one() {
+        // ERR-005: leftovers of a job named "Novák" must not appear on the
+        // next job of that name.
+        let store = temp_store("leftovers");
+        let files = store.dir.join(FILES_DIR).join("novak");
+        fs::create_dir_all(&files).unwrap();
+        fs::write(files.join("plan.pdf"), b"%PDF old customer").unwrap();
+        fs::create_dir_all(store.activity_dir()).unwrap();
+        let old = Project::new("Novák");
+        let entry = ActivityEntry {
+            ts_ms: 1,
+            actor: "claude".into(),
+            summary: "old".into(),
+            before: None,
+            changes: Vec::new(),
+            after: Some(old.clone()),
+        };
+        fs::write(
+            store.activity_dir().join("novak-2.jsonl"),
+            serde_json::to_string(&entry).unwrap() + "\n",
+        )
+        .unwrap();
+        fs::write(
+            store.activity_dir().join("novak-3.review.json"),
+            r#"{"accepted_ms":5}"#,
+        )
+        .unwrap();
+        for saved in [
+            store.save(None, &old).unwrap(),
+            store.save_as(None, &old, USER_ACTOR, "create").unwrap(),
+        ] {
+            assert!(
+                !["novak", "novak-2", "novak-3"].contains(&saved.as_str()),
+                "{saved}"
+            );
+            assert!(store.attachments(&saved).is_empty());
+            assert!(store.activity(&saved).len() <= 1);
+            assert_eq!(store.reviewed_at(&saved), 0);
+        }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_delete_that_cannot_move_every_file_leaves_the_job_whole() {
+        // ERR-005: a drawing open in a viewer on Windows makes the files
+        // folder unmovable; the delete must then fail with nothing moved.
+        let store = temp_store("delete-fails");
+        let id = store
+            .save_as(None, &Project::new("Novák"), "claude", "create")
+            .unwrap();
+        store.add_attachment(&id, "plan.pdf", b"%PDF").unwrap();
+        store.mark_reviewed(&id, 7).unwrap();
+        let before = fs::read(store.path(&id).unwrap()).unwrap();
+        for stuck in [
+            store.files_dir(&id).unwrap(),
+            store.activity_path(&id).unwrap(),
+            store.review_path(&id).unwrap(),
+            store.path(&id).unwrap(),
+        ] {
+            FAIL_MOVE.with(|f| *f.borrow_mut() = vec![stuck.clone()]);
+            let e = store.delete(&id, USER_ACTOR, "test").unwrap_err();
+            assert_eq!(e.code(), "permission_denied", "{}", stuck.display());
+            assert_eq!(fs::read(store.path(&id).unwrap()).unwrap(), before);
+            assert_eq!(store.attachments(&id).len(), 1, "{}", stuck.display());
+            assert_eq!(store.activity(&id).len(), 1, "{}", stuck.display());
+            assert_eq!(store.reviewed_at(&id), 7, "{}", stuck.display());
+            assert!(store.trash().is_empty(), "{}", stuck.display());
+        }
+        FAIL_MOVE.with(|f| f.borrow_mut().clear());
+        store.delete(&id, USER_ACTOR, "test").unwrap();
+        assert!(!store.exists(&id) && store.attachments(&id).is_empty());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_restore_that_cannot_move_every_file_keeps_the_trash_entry() {
+        let store = temp_store("restore-fails");
+        let id = store
+            .save_as(None, &Project::new("Novák"), "claude", "create")
+            .unwrap();
+        store.add_attachment(&id, "plan.pdf", b"%PDF").unwrap();
+        let e = store.delete(&id, USER_ACTOR, "test").unwrap();
+        let folder = store.trash_dir().join(&e.entry);
+        FAIL_MOVE.with(|f| *f.borrow_mut() = vec![folder.join("files")]);
+        assert_eq!(
+            store.restore(&e.entry).unwrap_err().code(),
+            "permission_denied"
+        );
+        assert!(!store.exists(&id));
+        assert!(store.activity(&id).is_empty());
+        assert_eq!(store.trash().len(), 1);
+        FAIL_MOVE.with(|f| f.borrow_mut().clear());
+        assert_eq!(store.restore(&e.entry).unwrap(), id);
+        assert_eq!(store.attachments(&id).len(), 1);
+        assert_eq!(store.activity(&id).len(), 1);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn saves_are_synced_to_disk_before_they_replace_the_file() {
+        // ERR-006: without a sync a power cut after the rename can leave an
+        // empty job file.
+        let store = temp_store("sync");
+        let synced = || SYNCED.with(|s| s.get());
+        let start = synced();
+        let id = store.save(None, &Project::new("Sync")).unwrap();
+        assert!(synced() > start, "the job file is synced");
+        let start = synced();
+        store
+            .save_as(
+                Some(id.clone()),
+                &Project::new("Sync 2"),
+                "claude",
+                "rename",
+            )
+            .unwrap();
+        assert!(
+            synced() >= start + 2,
+            "the change log and the job file are synced"
+        );
+        let start = synced();
+        store.add_attachment(&id, "plan.pdf", b"%PDF").unwrap();
+        assert!(synced() > start, "an attached file is synced");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// `n` overlapping rectangles with 8 pitch breaks on every wall: within
+    /// every limit, but slow to join (ARCH-001's reproducer).
+    fn slow_project(n: usize) -> Project {
+        let breaks: Vec<serde_json::Value> = (0..8)
+            .map(|k| serde_json::json!({"height": 3.2 + k as f64 * 0.15, "pitch_deg": 40.0 - k as f64 * 3.0}))
+            .collect();
+        let edge = |x: f64, y: f64| serde_json::json!({"start": {"x": x, "y": y}, "pitch_deg": 40.0, "eave_height": 3.0, "overhang": 0.5, "breaks": breaks});
+        let parts: Vec<serde_json::Value> = (0..n)
+            .map(|i| {
+                let (x, y) = (i as f64 * 0.5, i as f64 * 0.3);
+                serde_json::json!({"name": format!("B{i}"), "edges": [edge(x, y), edge(x + 10.0, y), edge(x + 10.0, y + 8.0), edge(x, y + 8.0)]})
+            })
+            .collect();
+        let p = serde_json::json!({"schema_version": 2, "name": "slow", "parts": parts});
+        Project::from_json(&p.to_string()).unwrap()
+    }
+
+    #[test]
+    fn a_slow_job_is_listed_at_once_without_its_figures() {
+        // ARCH-001: one job within the limits blocked listing for minutes.
+        let store =
+            temp_store("slow-scan").with_summary_budget(std::time::Duration::from_millis(100));
+        let slow = slow_project(4);
+        assert!(slow.check_limits().is_ok());
+        let slow_id = store.save(None, &slow).unwrap();
+        let fast_id = store
+            .save(None, &examples::find("gable").unwrap().project())
+            .unwrap();
+        let start = std::time::Instant::now();
+        let (ok, broken) = store.scan().unwrap();
+        let took = start.elapsed();
+        assert!(
+            took < std::time::Duration::from_secs(2),
+            "listing took {took:?}"
+        );
+        assert!(broken.is_empty());
+        let by = |id: &str| ok.iter().find(|s| s.id == id).cloned().expect("listed");
+        let s = by(&slow_id);
+        assert!(s.figures_pending && s.roof_area == 0.0, "{s:?}");
+        assert_eq!((s.parts, s.outlines.len()), (4, 4));
+        let f = by(&fast_id);
+        assert!(!f.figures_pending && f.roof_area > 0.0, "{f:?}");
+        // A second listing does not wait for it again.
+        let start = std::time::Instant::now();
+        assert!(
+            store
+                .list()
+                .iter()
+                .any(|s| s.id == slow_id && s.figures_pending)
+        );
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn figures_left_to_the_background_show_up_in_a_later_listing() {
+        let store = temp_store("late-figures").with_summary_budget(std::time::Duration::ZERO);
+        let id = store
+            .save(None, &examples::find("hip").unwrap().project())
+            .unwrap();
+        let expected = roof_area(&store.load(&id).unwrap());
+        let start = std::time::Instant::now();
+        loop {
+            let s = store.summarize(&id).unwrap();
+            if !s.figures_pending {
+                assert!((s.roof_area - expected).abs() < 1e-9);
+                assert!(!s.lines.is_empty());
+                break;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(60),
+                "never filled in"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         let _ = fs::remove_dir_all(&store.dir);
     }
 }

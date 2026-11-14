@@ -7,6 +7,7 @@
   import { COUNTED, MANUAL_CODES, faceArea, lineLength, type ManualSel } from "./manual";
   import type { ManualFace, ManualLine, Project } from "./types";
   import { numeric } from "./numeric.svelte";
+  import { textfield } from "./textfield";
 
   let {
     project,
@@ -64,7 +65,7 @@
       {/if}
       <label>
         <span>{t("manual.label")}</span>
-        <input type="text" class="text" value={line.label ?? ""} onchange={(e) => online({ ...$state.snapshot(line), label: e.currentTarget.value })} />
+        <input type="text" class="text" data-testid="manual-label" use:textfield={{ value: line.label ?? "", onchange: (v) => online({ ...$state.snapshot(line), label: v }) }} />
       </label>
       <p class="tip">{t(COUNTED.has(line.code) ? "manual.counted" : "manual.notCounted")}</p>
     {:else if face}
@@ -74,7 +75,7 @@
       </label>
       <label>
         <span>{t("manual.label")}</span>
-        <input type="text" class="text" value={face.label ?? ""} onchange={(e) => onface({ ...$state.snapshot(face), label: e.currentTarget.value })} />
+        <input type="text" class="text" data-testid="manual-label" use:textfield={{ value: face.label ?? "", onchange: (v) => onface({ ...$state.snapshot(face), label: v }) }} />
       </label>
       <p class="tip">{t("manual.faceArea", { a: m2(faceArea(face)), n: face.points.length })}</p>
     {/if}

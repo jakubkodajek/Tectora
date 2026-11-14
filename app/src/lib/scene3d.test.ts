@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { ShapeUtils, Vector2 } from "three";
-import { crossings, gableContour, manualFacePoly, outgrows, planArea, wallTriangles, wallUpToRoof, type Poly3 } from "./scene3d";
+import { dormerFaces, dormerWallLines, crossings, gableContour, manualFacePoly, outgrows, planArea, wallTriangles, wallTopAt, wallUnderRoof, gableShownByWall, inwardNormal, type Poly3 } from "./scene3d";
+import { hostHeightAt } from "./dormers";
+import type { CalcResult } from "./types";
 
 /** Area of a planar 3D polygon (half the Newell normal's length). */
 function area3(poly: Poly3): number {
@@ -47,29 +49,119 @@ describe("wallTriangles (what Roof3D draws for a gable, TEST-004)", () => {
   });
 });
 
-describe("wallUpToRoof (walls without a gable from the core, UI-010)", () => {
+describe("wallUnderRoof (walls close the building under the roof)", () => {
   // A shed roof over 0..10 × 0..6: eave on y = 0 at 3 m, rising 0.5 m per m.
   const shed = (p: { x: number; y: number }) => 3 + 0.5 * p.y;
+  const none = () => null;
 
   it("raises a verge wall to the sloping roof (a trapezoid)", () => {
-    const w = wallUpToRoof({ x: 10, y: 0 }, { x: 10, y: 6 }, 0, [], shed)!;
+    const w = wallUnderRoof({ x: 10, y: 0 }, { x: 10, y: 6 }, { x: -1, y: 0 }, [], shed, 3);
     expect(w).toHaveLength(4);
     expect(area3(w)).toBeCloseTo(6 * (3 + 6) / 2, 3);
   });
 
   it("raises the high wall to the roof's top edge", () => {
-    const w = wallUpToRoof({ x: 10, y: 6 }, { x: 0, y: 6 }, 0, [], shed)!;
-    expect(area3(w)).toBeCloseTo(10 * 6, 3);
+    const w = wallUnderRoof({ x: 10, y: 6 }, { x: 0, y: 6 }, { x: 0, y: -1 }, [], shed, 3);
+    expect(area3(w)).toBeCloseTo(10 * 6, 1);
   });
 
-  it("follows a ridge over the wall and gives nothing where no roof is over it", () => {
+  it("follows a ridge over the wall", () => {
     const gable = (p: { x: number; y: number }) => 3 + 0.8 * (3 - Math.abs(p.y - 3));
     const cut = crossings({ x: 0, y: 0 }, { x: 0, y: 6 }, [[[-1, 3, 5.4], [11, 3, 5.4]]]);
     expect(cut).toEqual([0.5]);
-    const w = wallUpToRoof({ x: 0, y: 0 }, { x: 0, y: 6 }, 0, cut, gable)!;
+    const w = wallUnderRoof({ x: 0, y: 0 }, { x: 0, y: 6 }, { x: 1, y: 0 }, cut, gable, 3);
     expect(w).toHaveLength(5);
     expect(area3(w)).toBeCloseTo(6 * 3 + 0.5 * 6 * 2.4, 2);
-    expect(wallUpToRoof({ x: 0, y: 0 }, { x: 0, y: 6 }, 0, [], () => null)).toBeNull();
+  });
+
+  it("stands to the fallback height where no roof is over it", () => {
+    const w = wallUnderRoof({ x: 0, y: 0 }, { x: 0, y: 6 }, { x: 1, y: 0 }, [], none, 2.5);
+    expect(w).toEqual([[0, 0, 0], [0, 6, 0], [0, 6, 2.5], [0, 0, 2.5]]);
+  });
+
+  it("steps where the roof over the wall ends (a vertical edge, still drawable)", () => {
+    // Roof only over the first half of the wall; the rest stands to 2 m.
+    const half = (p: { x: number; y: number }) => (p.y < 3 ? 4 : null);
+    const w = wallUnderRoof({ x: 0, y: 0 }, { x: 0, y: 6 }, { x: 1, y: 0 }, [0.5], half, 2);
+    expect(area3(w)).toBeCloseTo(3 * 4 + 3 * 2, 6);
+    const idx = wallTriangles(w)!;
+    expect(trianglesArea(w, idx)).toBeCloseTo(18, 6);
+  });
+});
+
+describe("a closed building in 3D (no gap under the roof, walls meet at the corners)", () => {
+  // The core's result for a 12 × 8 m gable roof, 40°, eave 3 m, overhang
+  // 0.5 m (tectora calc on the "sedlova-strecha" example): the eave is at the
+  // overhang line, so the roof passes over the wall line 0.42 m above it.
+  const rise = Math.tan((40 * Math.PI) / 180);
+  const ridge = 3 + 4.5 * rise;
+  const faces: Poly3[] = [
+    [[-0.5, 4, ridge], [12.5, 4, ridge], [12.5, -0.5, 3], [-0.5, -0.5, 3]],
+    [[12.5, 4, ridge], [-0.5, 4, ridge], [-0.5, 8.5, 3], [12.5, 8.5, 3]],
+  ];
+  const gables: Poly3[] = [
+    [[12.5, 8.5, 3], [12.5, 4, ridge], [12.5, -0.5, 3]],
+    [[-0.5, 8.5, 3], [-0.5, 4, ridge], [-0.5, -0.5, 3]],
+  ];
+  const result = { parts: [{ geometry: { faces: faces.map((polygon, k) => ({ edge: k * 2, polygon })) } }] } as unknown as CalcResult;
+  const roofAt = (p: { x: number; y: number }) => hostHeightAt(result, p);
+  const corners = [{ x: 0, y: 0 }, { x: 12, y: 0 }, { x: 12, y: 8 }, { x: 0, y: 8 }];
+  const ridgeLine: [Poly3[number], Poly3[number]][] = [[[-0.5, 4, ridge], [12.5, 4, ridge]]];
+  // The building height is below the roof at the wall line on purpose.
+  const walls = corners.map((a, i) => {
+    const b = corners[(i + 1) % 4];
+    const inward = inwardNormal(corners, a, b);
+    return { wall: wallUnderRoof(a, b, inward, crossings(a, b, ridgeLine), roofAt, 3), inward };
+  });
+
+  it("turns the wall normals into the building for either drawing direction", () => {
+    expect(inwardNormal(corners, corners[0], corners[1]).y).toBeCloseTo(1, 12);
+    // The same building drawn clockwise: its first wall is the one on y = 8.
+    const cw = [...corners].reverse();
+    const n = inwardNormal(cw, cw[0], cw[1]);
+    expect(n.x).toBeCloseTo(0, 12);
+    expect(n.y).toBeCloseTo(-1, 12);
+  });
+
+  it("carries every wall up to the roof over its line, not to the eave height", () => {
+    const atWall = 3 + 0.5 * rise;
+    for (const { wall } of walls) {
+      for (let k = 0; k <= 10; k++) {
+        const t = k / 10;
+        const p = { x: wall[0][0] + (wall[1][0] - wall[0][0]) * t, y: wall[0][1] + (wall[1][1] - wall[0][1]) * t };
+        const roof = 3 + (4.5 - Math.abs(p.y - 4)) * rise;
+        expect(wallTopAt(wall, t)).toBeCloseTo(roof, 2);
+      }
+    }
+    expect(wallTopAt(walls[0].wall, 0.5)).toBeCloseTo(atWall, 2);
+    expect(wallTopAt(walls[1].wall, 0.5)).toBeCloseTo(ridge - 0, 0);
+  });
+
+  it("gives neighbouring walls the same height at their shared corner", () => {
+    walls.forEach(({ wall }, i) => {
+      const next = walls[(i + 1) % 4].wall;
+      expect(wallTopAt(wall, 1)).toBeCloseTo(wallTopAt(next, 0), 2);
+    });
+  });
+
+  it("draws every wall as triangles of exactly its area", () => {
+    for (const { wall } of walls) {
+      const idx = wallTriangles(wall)!;
+      expect(trianglesArea(wall, idx)).toBeCloseTo(area3(wall), 6);
+    }
+  });
+
+  it("leaves out the calculation's gable in the verge plane, which the wall replaces", () => {
+    expect(gableShownByWall(gables[0], walls[1].wall, walls[1].inward, 0.5)).toBe(true);
+    expect(gableShownByWall(gables[1], walls[3].wall, walls[3].inward, 0.5)).toBe(true);
+    // Not the gable of the other end, and not one on an eave wall.
+    expect(gableShownByWall(gables[1], walls[1].wall, walls[1].inward, 0.5)).toBe(false);
+    expect(gableShownByWall(gables[0], walls[0].wall, walls[0].inward, 0.5)).toBe(false);
+  });
+
+  it("keeps a gable that rises above the wall (a dormer front on the wall line)", () => {
+    const front: Poly3 = [[4, 0, 3], [6, 0, 3], [6, 0, 5], [5, 0, 5.8], [4, 0, 5]];
+    expect(gableShownByWall(front, walls[0].wall, walls[0].inward, 0.5)).toBe(false);
   });
 });
 
@@ -157,5 +249,36 @@ describe("gableContour", () => {
       [1, 1, 2],
       [1, 1, 3],
     ])).toBeNull();
+  });
+});
+
+describe("dormerFaces (dormers one behind the other, UI-002)", () => {
+  // Two dormers 2 m wide on x = 2..4: fronts on y = 0 and y = 1.6, cheeks
+  // on the shared lines x = 2 and x = 4.
+  const dormer = (y: number) =>
+    dormerWallLines({
+      edges: [
+        { start: { x: 2, y: y + 1 }, direction_rad: -Math.PI / 2 },
+        { start: { x: 2, y } },
+        { start: { x: 4, y }, direction_rad: Math.PI / 2 },
+      ],
+      end: { x: 4, y: y + 1 },
+    } as never);
+  const lines = [dormer(1.6), dormer(0)];
+  // Hip dormers: a front face on the front wall, side faces on a cheek only.
+  const hip = (y: number): Poly3[] => [
+    [[2, y, 4], [4, y, 4], [3, y + 0.5, 4.6]],
+    [[2, y, 4], [3, y + 0.5, 4.6], [3, y + 1.2, 4.6], [2, y + 1.2, 4]],
+    [[4, y, 4], [4, y + 1.2, 4], [3, y + 1.2, 4.6], [3, y + 0.5, 4.6]],
+  ];
+
+  it("gives every face to its own dormer, whichever dormer comes first", () => {
+    expect(dormerFaces(lines, [...hip(1.6), ...hip(0)])).toEqual([0, 0, 0, 1, 1, 1]);
+    expect(dormerFaces(lines, [...hip(0), ...hip(1.6)])).toEqual([1, 1, 1, 0, 0, 0]);
+    expect(dormerFaces([lines[1], lines[0]], [...hip(1.6), ...hip(0)])).toEqual([1, 1, 1, 0, 0, 0]);
+  });
+
+  it("gives -1 to a face on no dormer wall line", () => {
+    expect(dormerFaces(lines, [[[8, 8, 3], [9, 8, 3], [9, 9, 4]]])).toEqual([-1]);
   });
 });

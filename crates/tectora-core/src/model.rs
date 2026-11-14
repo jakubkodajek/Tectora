@@ -216,11 +216,15 @@ impl Project {
         for (ci, c) in self.chimneys.iter().enumerate() {
             if corners(c) {
                 out.push(Problem::of(ProblemItem::Chimney, ci, "bad_corners"));
+            } else if !c.has_area() {
+                out.push(Problem::of(ProblemItem::Chimney, ci, "bad_size"));
             }
         }
         for (ci, c) in self.roof_openings.iter().enumerate() {
             if corners(c) {
                 out.push(Problem::of(ProblemItem::Opening, ci, "bad_corners"));
+            } else if !c.has_area() {
+                out.push(Problem::of(ProblemItem::Opening, ci, "bad_size"));
             }
         }
         for (wi, w) in self.windows.iter().enumerate() {
@@ -923,6 +927,22 @@ pub struct Chimney {
     /// Top height, m above ground. Does not affect quantities.
     #[serde(default)]
     pub height: f64,
+}
+
+/// The smallest plan area of a chimney or roof opening, m² (1 cm²).
+pub const MIN_OPENING_AREA: f64 = 1e-4;
+
+impl Chimney {
+    /// False for a chimney or roof opening without plan area (all corners
+    /// on one point or one line, e.g. width 0 from an AI client or a
+    /// damaged file). The cut treats such a polygon as covering its whole
+    /// face, so the roof area drops to zero without a warning (ERR-002):
+    /// it is a problem of the object ([`Project::problems`]), never input
+    /// for the calculation.
+    pub fn has_area(&self) -> bool {
+        let a = crate::geom::signed_area(&self.corners).abs();
+        a.is_finite() && a >= MIN_OPENING_AREA
+    }
 }
 
 /// A roof window (DACAD: Dachfenster). The position is the plan point of

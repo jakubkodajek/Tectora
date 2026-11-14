@@ -12,8 +12,7 @@
   import { t } from "./i18n.svelte";
   import { hostHeightAt, isDormerFace, slopeAt } from "./dormers";
   import { isConvex, windowOutline } from "./openings";
-  import { chimneyTop, clipConvex, coveredByDormer, crossings, dormerWallLines, manualFacePoly, planBox, onWallLine, outgrows, planArea, planeOf, wallTriangles, wallUpToRoof, type Extent, type Poly3 } from "./scene3d";
-  import { isGable, isMarker } from "./types";
+  import { chimneyTop, clipConvex, coveredByDormer, crossings, dormerFaces, dormerWallLines, manualFacePoly, planBox, onWallLine, outgrows, planArea, planeOf, wallTriangles, wallUnderRoof, gableShownByWall, inwardNormal, type Extent, type Poly3 } from "./scene3d";
   import { presets } from "./settings.svelte";
 
   let {
@@ -170,7 +169,16 @@
     });
     const selMat = roofMat.clone();
     selMat.color.copy(token("--focus"));
-    const wallMat = new THREE.MeshStandardMaterial({ color: token("--scene-wall"), roughness: 0.9, side: THREE.DoubleSide });
+    // Walls end exactly on the underside of the roof: pushed further back in
+    // depth than the roof, so their top edges never show through it (UI-001).
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: token("--scene-wall"),
+      roughness: 0.9,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: 3,
+      polygonOffsetUnits: 6,
+    });
     // A selected dormer is an object: --accent, like in the plan.
     const selDormerMat = roofMat.clone();
     selDormerMat.color.copy(token("--accent"));
@@ -191,40 +199,30 @@
     const holeMat = new THREE.MeshStandardMaterial({ color: token("--scene-hole"), roughness: 1, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2 });
     const selObjMat = new THREE.MeshStandardMaterial({ color: token("--accent"), roughness: 0.6, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -4 });
 
-    // Walls: from ground to each edge's eave height, on the wall line. A
-    // gable wall the calculation returns no gable polygon for (a shed
-    // roof's verges and high wall) goes up to the roof, so the building is
-    // closed (UI-010).
+    // Walls: from the ground up to the underside of the roof over the wall
+    // line (scene3d.wallUnderRoof), so the building is closed from every
+    // side and at every height. The roof decides the top; the building
+    // height is the top only where no roof is over the wall.
+    const allLines = result ? result.parts.flatMap((rp) => rp.geometry.lines.map((l): [Poly3[number], Poly3[number]] => [l.a, l.b])) : [];
+    const walls: { part: number; wall: Poly3; inward: Point2; overhang: number }[] = [];
     project.parts.forEach((part, pi) => {
       const n = part.edges.length;
       const rp = result?.parts[pi];
+      const own = rp && result ? { ...result, parts: [rp] } : null;
+      const corners = part.edges.map((e) => e.start);
       part.edges.forEach((e, i) => {
         const b = part.edges[(i + 1) % n];
+        if (Math.hypot(b.start.x - e.start.x, b.start.y - e.start.y) < 1e-6) return;
         const target: PlanTarget = { type: "edge", part: pi, edge: i };
-        if (rp && result && isGable(e) && !rp.geometry.gables.some((g) => onWall(g, e.start, b.start))) {
-          const own = { ...result, parts: [rp] };
-          const cuts = crossings(e.start, b.start, rp.geometry.lines.map((l) => [l.a, l.b]));
-          const wall = wallUpToRoof(e.start, b.start, 0, cuts, (p) => hostHeightAt(own, p));
-          const idx = wall && wallTriangles(wall);
-          if (wall && idx) {
-            content.add(indexedMesh(wall, idx, wallMat, target));
-            return;
-          }
-        }
-        const h = Math.max(0.01, Math.min(e.eave_height, b.eave_height));
-        // A building with its own height: an eave wall stands up to the
-        // building height, but never through the roof above it (an eave
-        // lower than the building meets the wall below its top). Gable walls
-        // keep the eave: the gable polygon above is in the same plane.
-        let ha = h;
-        let hb = h;
-        if (part.height != null && !isGable(e) && !isMarker(e)) {
-          const own = rp && result ? { ...result, parts: [rp] } : null;
-          const top = (p: Point2) => Math.max(0.01, Math.min(part.height!, (own && hostHeightAt(own, p)) ?? part.height!));
-          ha = top(e.start);
-          hb = top(b.start);
-        }
-        content.add(quad([[e.start.x, e.start.y, 0], [b.start.x, b.start.y, 0], [b.start.x, b.start.y, hb], [e.start.x, e.start.y, ha]], wallMat, target));
+        const inward = inwardNormal(corners, e.start, b.start);
+        const fallback = part.height ?? Math.min(e.eave_height, b.eave_height);
+        // The building's own roof first; under a joined roof the other one.
+        const roofAt = (p: Point2) => hostHeightAt(own, p) ?? hostHeightAt(result, p);
+        const wall = wallUnderRoof(e.start, b.start, inward, crossings(e.start, b.start, allLines), roofAt, fallback);
+        const idx = wallTriangles(wall);
+        if (!idx) return;
+        walls.push({ part: pi, wall, inward, overhang: e.overhang ?? 0 });
+        content.add(indexedMesh(wall, idx, wallMat, target));
       });
     });
 
@@ -249,22 +247,19 @@
     if (result) {
       // Each dormer's wall lines with the plan box of its roof faces: the
       // walls drawn from those faces replace the calculation's gables there.
-      const dormerFaces: Poly3[][] = project.dormers.map(() => []);
-      for (const rp of result.parts) {
-        for (const f of rp.geometry.faces) {
-          if (!isDormerFace(f.edge) || f.polygon.length < 3) continue;
-          const d = dormerLines.findIndex((ls) => f.polygon.some((p, k) => onWallLine(ls, p, f.polygon[(k + 1) % f.polygon.length])));
-          if (d >= 0) dormerFaces[d].push(f.polygon);
-        }
-      }
-      const dormerWalls = dormerLines.map((lines, d) => ({ lines, box: planBox(dormerFaces[d]) }));
+      const dormerPolys = result.parts.flatMap((rp) => rp.geometry.faces.filter((f) => isDormerFace(f.edge)).map((f) => f.polygon));
+      const owners = dormerFaces(dormerLines, dormerPolys);
+      const dormerOf = new Map(dormerPolys.map((poly, k) => [poly, owners[k]]));
+      const facesOf: Poly3[][] = project.dormers.map(() => []);
+      dormerPolys.forEach((poly, k) => {
+        if (owners[k] >= 0 && poly.length >= 3) facesOf[owners[k]].push(poly);
+      });
+      const dormerWalls = dormerLines.map((lines, d) => ({ lines, box: planBox(facesOf[d]) }));
       result.parts.forEach((rp, pi) => {
         for (const f of rp.geometry.faces) {
           if (f.polygon.length < 3) continue;
           const plane = planeOf(f.polygon);
-          const dormer = isDormerFace(f.edge)
-            ? dormerLines.findIndex((ls) => f.polygon.some((p, k) => onWallLine(ls, p, f.polygon[(k + 1) % f.polygon.length])))
-            : -1;
+          const dormer = dormerOf.get(f.polygon) ?? -1;
           // Roof openings: a hole in the face when it lies wholly inside,
           // else a dark patch where it crosses the face.
           const cut: Poly3[] = [];
@@ -311,6 +306,8 @@
         }
         for (const poly of rp.geometry.gables) {
           if (coveredByDormer(poly, dormerWalls)) continue;
+          // The wall under it is drawn up to the roof already.
+          if (walls.some((w) => w.part === pi && gableShownByWall(poly, w.wall, w.inward, w.overhang))) continue;
           // Triangulated in the wall plane (scene3d.wallTriangles, tested).
           const idx = wallTriangles(poly);
           if (idx) content.add(indexedMesh(poly, idx, wallMat));

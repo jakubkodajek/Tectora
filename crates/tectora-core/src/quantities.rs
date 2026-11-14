@@ -61,9 +61,19 @@ pub fn part_quantities(geo: &crate::roof::RoofGeometry) -> crate::roof::RoofQuan
 
 /// Roof quantities summed over all parts.
 pub fn roof_totals(project: &Project) -> crate::roof::RoofQuantities {
+    roof_totals_of(&crate::openings::generate_project(project), project)
+}
+
+/// [`roof_totals`] of roofs already calculated
+/// (`openings::generate_project(project)`), so a caller that needs the
+/// roofs too calculates them once.
+pub fn roof_totals_of(
+    geos: &[crate::roof::RoofGeometry],
+    project: &Project,
+) -> crate::roof::RoofQuantities {
     let mut total = crate::roof::RoofQuantities::default();
-    for geo in crate::openings::generate_project(project) {
-        total.add(&part_quantities(&geo));
+    for geo in geos {
+        total.add(&part_quantities(geo));
     }
     total.add(&manual_quantities(project));
     total

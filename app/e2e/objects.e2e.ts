@@ -318,6 +318,30 @@ test.describe("hand-drawn lines and faces, flat roof", () => {
     await tool(page, "tool.flat").click();
     await waitForProject(id, (p) => !p.flat_roof);
   });
+
+  test("with a flat roof the wall bar's pitch and eave / gable are off and say why (UX-009)", async ({ app, page }) => {
+    const id = await createExample("hip", "Valba");
+    await openEditor(app, "Valba");
+    await selectWall(page, 0);
+    const def = bar(page, "def.title");
+    const pitch = def.getByLabel(cs("edge.pitch"));
+    await expect(pitch).toBeEnabled();
+    await expect(def.getByTestId("flat-note")).toHaveCount(0);
+    await tool(page, "tool.flat").click();
+    await waitForProject(id, (p) => p.flat_roof === true);
+    await expect(pitch).toBeDisabled();
+    await expect(def.getByRole("radio", { name: cs("edge.eave") })).toBeDisabled();
+    await expect(def.getByRole("radio", { name: cs("edge.gable") })).toBeDisabled();
+    await expect(def.getByTestId("flat-note")).toHaveText(cs("edge.flatOff"));
+    await expect(def.getByRole("button", { name: cs("edge.pitchAll") })).toBeDisabled();
+    // The other fields still work.
+    await setField(def.getByLabel(cs("edge.overhang")), "0,6");
+    await waitForProject(id, (p) => p.parts[0].edges[0].overhang === 0.6);
+    await tool(page, "tool.flat").click();
+    await waitForProject(id, (p) => !p.flat_roof);
+    await expect(pitch).toBeEnabled();
+    await expect(def.getByTestId("flat-note")).toHaveCount(0);
+  });
 });
 
 test.describe("parts", () => {

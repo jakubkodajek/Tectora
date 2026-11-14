@@ -2,7 +2,7 @@
   import { tick } from "svelte";
   import Icon from "./Icon.svelte";
   import PlanThumb from "./PlanThumb.svelte";
-  import { m2, relativeTime } from "./format";
+  import { cardArea, m2, relativeTime } from "./format";
   import { t } from "./i18n.svelte";
   import type { ProjectSummary } from "./types";
 
@@ -71,7 +71,7 @@
   <div class="meta">
     <div class="text">
       <h3 title={project.name}>{project.name}</h3>
-      <p class="muted">{relativeTime(project.modified_ms)} · {m2(project.roof_area)}</p>
+      <p class="muted">{relativeTime(project.modified_ms)} · {cardArea(project)}</p>
     </div>
     <div class="menu-wrap">
       <button

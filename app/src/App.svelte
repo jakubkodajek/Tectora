@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { pendingRetryMs } from "./lib/format";
   import { onMount } from "svelte";
   import AiConnect from "./lib/AiConnect.svelte";
   import Editor from "./lib/Editor.svelte";
@@ -23,11 +24,21 @@
   let connect = $state(false);
   let settingsOpen = $state(false);
 
+  let pendingTimer: ReturnType<typeof setTimeout> | undefined;
+  let pendingTries = 0;
+
   async function refresh() {
     try {
       const lib = await api.listProjects();
       projects = lib.projects;
       broken = lib.broken;
+      // A roof over the listing's time budget comes without figures: ask
+      // again until they are there (ARCH-001).
+      clearTimeout(pendingTimer);
+      const pending = lib.projects.some((p) => p.figures_pending);
+      const wait = pendingRetryMs(pending, pendingTries);
+      pendingTries = pending ? pendingTries + 1 : 0;
+      if (wait !== null) pendingTimer = setTimeout(refresh, wait);
     } catch (e) {
       notifyError(e, "list");
     }

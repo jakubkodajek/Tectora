@@ -4,6 +4,8 @@ Short imperative rules learned the hard way. Add one when the same mistake
 happens twice or a review finding would have been prevented by a rule.
 Newest first. Format: `- YYYY-MM-DD: <rule> (why: <one line, with the commit or PR>)`
 
+- 2026-11-14: Draw 3D walls up to the roof over the wall line, never to the eave or building height; the eave is measured at the overhang line (why: gaps under every roof with an overhang and stacked walls, f5d9531).
+- 2026-11-14: Pick a new id and write its file under one lock, and never reuse an id that still has leftovers (why: TEST-001 and ERR-005, two jobs became one and a new job inherited old drawings).
 - 2026-11-10: Check every number a closed form returns with `is_finite` before it reaches the project; serde_json writes inf/NaN as null and the job no longer opens (why: MATH-001 in the dormer-window review, `check_values` now round-trips the project).
 - 2026-11-08: Number fields only through `use:numeric`, never native `type="number"`; commit before the press that changes the selection (why: typed values were lost or landed on the next wall in WebKit; e7e6b5f, `numeric.test.ts` guards it).
 - 2026-11-08: When fixing a bug a user hit, add its class and guard test to `.claude/skills/tectora-review/edge-cases.md` (why: the same input / second-building / 3D-gable bugs reached the user one after another).

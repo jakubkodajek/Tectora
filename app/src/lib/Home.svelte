@@ -9,7 +9,7 @@
   import PlanThumb from "./PlanThumb.svelte";
   import ProjectCard from "./ProjectCard.svelte";
   import { api } from "./api";
-  import { m2, relativeTime } from "./format";
+  import { cardArea, m2, relativeTime } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import type { Action } from "./errors";
@@ -18,6 +18,7 @@
   import { prefs, savePrefs } from "./settings.svelte";
   import { hscroll } from "./hscroll";
   import { tick } from "svelte";
+  import { firstPress } from "./dblclick";
   import type { BrokenFile, ExampleInfo, JobStatus, ProjectSummary } from "./types";
   import { JOB_STATUSES, isAi } from "./types";
 
@@ -94,6 +95,8 @@
   const focusId = $derived(rows.some((p) => p.id === selectedId) ? selectedId : (rows[0]?.id ?? null));
   const filterLabel = $derived(filter === "all" ? t("lib.all") : filter === "ai" ? t("lib.byAi") : filter === "examples" ? t("home.examples") : t(`status.${filter}`));
   let tbody: HTMLElement | undefined = $state();
+  /** The row a double click's first press selected; the detail pane may move the rows before the second (UI-008). */
+  const rowPress = firstPress<string>();
 
   /** Keyboard in the list: arrows / Home / End move the selection, Enter opens. */
   async function onrowkey(e: KeyboardEvent, p: ProjectSummary) {
@@ -318,8 +321,9 @@
                 <tr
                   class:sel={selectedId === p.id}
                   tabindex={focusId === p.id ? 0 : -1}
+                  onmousedown={(e) => e.button === 0 && rowPress.press(p.id, e.detail)}
                   onclick={() => (selectedId = p.id)}
-                  ondblclick={() => onopen(p.id)}
+                  ondblclick={() => onopen(rowPress.target(p.id))}
                   onkeydown={(e) => onrowkey(e, p)}
                 >
                   <td class="th-thumb"><div class="mini"><PlanThumb outlines={p.outlines} lines={p.lines} /></div></td>
@@ -327,7 +331,7 @@
                   <td class="c-number">{p.job.number || "—"}</td>
                   <td class="c-customer">{p.job.customer || "—"}</td>
                   <td class="c-status"><span class="chip {p.job.status}">{t(`status.${p.job.status}`)}</span></td>
-                  <td class="num">{m2(p.roof_area)}</td>
+                  <td class="num" title={p.figures_pending ? t("lib.areaPending") : undefined}>{cardArea(p)}</td>
                   <td class="mod c-mod">
                     {relativeTime(p.modified_ms)}
                     {#if p.last_activity && isAi(p.last_activity.actor)}
@@ -359,7 +363,7 @@
           <dt>{t("job.number")}</dt><dd>{selected.job.number || "—"}</dd>
           <dt>{t("job.customer")}</dt><dd>{selected.job.customer || "—"}</dd>
           <dt>{t("job.address")}</dt><dd>{selected.job.address || "—"}</dd>
-          <dt>{t("res.area")}</dt><dd>{m2(selected.roof_area)}</dd>
+          <dt>{t("res.area")}</dt><dd title={selected.figures_pending ? t("lib.areaPending") : undefined}>{cardArea(selected)}</dd>
           <dt>{t("edge.pitch")}</dt><dd>{pitchText(selected.pitch_range)}</dd>
           {#if selected.dormers}<dt>{t("lib.dormers")}</dt><dd>{selected.dormers}</dd>{/if}
           <dt>{t("lib.files")}</dt><dd>{selected.files}</dd>
@@ -439,6 +443,10 @@
     height: 34px;
     padding: 0;
     box-shadow: none;
+  }
+  /* The field has no border of its own: the ring goes on the search box (UI-004). */
+  .search:focus-within {
+    box-shadow: 0 0 0 2px var(--focus);
   }
   .actions {
     margin-left: auto;
@@ -745,6 +753,8 @@
   .num {
     text-align: right;
     font-variant-numeric: tabular-nums;
+    /* "152,73 m²" on one line: the row keeps its height when the detail pane narrows the table (UI-008). */
+    white-space: nowrap;
   }
   .mod {
     white-space: nowrap;

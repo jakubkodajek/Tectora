@@ -374,12 +374,15 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
                 arg(a, "pitchDeg")?,
                 arg(a, "eaveHeight")?,
                 arg(a, "overhang")?,
-            )?;
+            )
+            .map_err(|d| coded("refused", d))?;
             to_json(project)
         }
         "item_placement" => {
             let project = arg::<Project>(a, "project")?;
-            project.check_input().map_err(|e| e.message)?;
+            project
+                .check_input()
+                .map_err(|e| coded(e.code, e.message))?;
             let it = tectora_core::edit::transform::ItemRef {
                 kind: arg(a, "kind")?,
                 index: arg(a, "index")?,
@@ -388,7 +391,9 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         }
         "place_item" => {
             let mut project = arg::<Project>(a, "project")?;
-            project.check_input().map_err(|e| e.message)?;
+            project
+                .check_input()
+                .map_err(|e| coded(e.code, e.message))?;
             let it = tectora_core::edit::transform::ItemRef {
                 kind: arg(a, "kind")?,
                 index: arg(a, "index")?,
@@ -399,17 +404,21 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
                 arg::<Option<f64>>(a, "fromEave")?,
                 arg::<Option<f64>>(a, "fromLeft")?,
                 arg::<Option<f64>>(a, "fromRight")?,
-            )?;
+            )
+            .map_err(|d| coded("refused", d))?;
             to_json(project)
         }
         "set_part_height" => {
             let mut project = arg::<Project>(a, "project")?;
-            project.check_input().map_err(|e| e.message)?;
+            project
+                .check_input()
+                .map_err(|e| coded(e.code, e.message))?;
             tectora_core::edit::height::set_part_height(
                 &mut project,
                 arg(a, "part")?,
                 arg(a, "height")?,
-            )?;
+            )
+            .map_err(|d| coded("refused", d))?;
             to_json(project)
         }
         // Settings live in `target/ui-preview-config` (see `main`). A new
