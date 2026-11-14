@@ -158,7 +158,7 @@
 
   {#if params && kind && kind !== "general" && moreOpen}
     <div class="row more" id="dormer-more-row" use:hscroll>
-      {#if onplace}<PlaceFields {placement} {onplace} width={84} />{/if}
+      {#if onplace}<PlaceFields {placement} {onplace} />{/if}
       <label title={host !== null ? t("dormer.hostHint", { h: formatNumber(host, numberLocale(), 2) }) : undefined}>
         <span>{t("edge.eaveHeight")}</span>
         <div class="unit"><input type="text" disabled={kind === "pointed"} use:numeric={{ value: params.eave_height, step: 0.05, onchange: (v) => set({ eave_height: v }) }} /><em>m</em></div>

@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import type { CalcResult, PlanLabel, PlanMark, Point2, Project, Selection } from "./types";
   import { isGable } from "./types";
+  import { onWall } from "./corners";
   import { t } from "./i18n.svelte";
   import { partLabel } from "./partname";
   import { windowOutline, type OpeningSel } from "./openings";
@@ -10,8 +11,8 @@
   import { placementOf, type ItemRef, type PlanTarget } from "./items";
   import { fitScale, gridStep as gridStepFor, gridValues } from "./grid";
   import { faceTags } from "./facelabels";
-  import { hostHeightAt } from "./dormers";
-  import { planeOf } from "./scene3d";
+  import { hostHeightAt, isDormerFace } from "./dormers";
+  import { dormerWallLines, onWallLine, planeOf } from "./scene3d";
   import { placeLabels, rotatedBox, underHigherRoof } from "./planlabels";
   import { coveredPieces } from "./planjoin";
   import { numberLocale } from "./i18n.svelte";
@@ -167,6 +168,21 @@
   const placed = $derived.by(() => {
     const it: ItemRef | null = dormerSel !== null ? { kind: "dormer", index: dormerSel } : openSel ? { kind: openSel.kind, index: openSel.index } : null;
     return showDims ? placementOf(result, it) : null;
+  });
+  /** The calculated roof faces of each dormer, so a press anywhere on the
+      dormer picks it, not only on its front line (review UX-003). */
+  const dormerFaces = $derived.by(() => {
+    const out: Point2[][][] = project.dormers.map(() => []);
+    if (!result) return out;
+    const lines = project.dormers.map(dormerWallLines);
+    for (const rp of result.parts) {
+      for (const f of rp.geometry.faces) {
+        if (!isDormerFace(f.edge) || f.polygon.length < 3) continue;
+        const d = lines.findIndex((ls) => f.polygon.some((p, k) => onWallLine(ls, p, f.polygon[(k + 1) % f.polygon.length])));
+        if (d >= 0) out[d].push(f.polygon.map((p) => ({ x: p[0], y: p[1] })));
+      }
+    }
+    return out;
   });
   /** One dimension line in screen space with end ticks; null when too short to draw. */
   function dimLine(a: Point2, b: Point2) {
@@ -363,6 +379,7 @@
       return;
     }
     if (drawing && e.button === 0) {
+      lastDrawPress = performance.now();
       const p = localPoint(e);
       const first = drawing[0];
       // Clicking the first point closes the footprint.
@@ -459,11 +476,27 @@
     capture(e);
   }
 
+  // When the last press of a drawing was, ms: the double-click that ends a
+  // footprint on another building's wall is no corner for that wall
+  // (review UX-001).
+  let lastDrawPress = -Infinity;
+
+  /**
+   * A double-click on a wall adds a corner on that wall: the pointer is
+   * projected onto it and the distance from its start rounded to the grid
+   * step, so the new corner lies on the wall. Rounded to the grid in x and
+   * y, it lay up to a few cm off a slanted wall and bent it, which could
+   * stop every roof (review ERR-002).
+   */
   function edgeDblClick(e: MouseEvent, part: number, edge: number) {
+    if (placing || drawing || performance.now() - lastDrawPress < 800) return;
+    const es = project.parts[part]?.edges;
+    if (!es) return;
+    const a = es[edge].start;
+    const b = es[(edge + 1) % es.length].start;
     const r = svg!.getBoundingClientRect();
-    const x = Math.round(wx(e.clientX - r.left) / SNAP) * SNAP;
-    const y = Math.round(wy(e.clientY - r.top) / SNAP) * SNAP;
-    oninsert(part, edge, +x.toFixed(3), +y.toFixed(3));
+    const q = onWall(a, b, { x: wx(e.clientX - r.left), y: wy(e.clientY - r.top) }, SNAP);
+    if (q) oninsert(part, edge, q.x, q.y);
   }
 
   const lineColor: Record<string, string> = {
@@ -680,6 +713,11 @@
       {@const fs = d.edges.find((x) => x.direction_rad == null)?.start ?? d.edges[0]?.start}
       {#if fs}
         <g class="dormer" class:sel={dormerSel === di} class:changed={highlightItems.has(`dormer:${di}`)}>
+          {#each dormerFaces[di] ?? [] as poly}
+            <path class="dormer-area" d={"M" + poly.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
+              role="button" tabindex="-1" aria-label={t("plan.dormer", { n: di + 1 })}
+              onpointerdown={(ev) => pressItem(ev, { kind: "dormer", index: di })} />
+          {/each}
           {#each d.edges as x, k}
             {#if x.direction_rad != null}
               {@const s0 = k === 0 ? -0.8 : 0.8}
@@ -826,6 +864,11 @@
     stroke: var(--text-2);
     stroke-width: 1.5;
     stroke-dasharray: 4 3;
+  }
+  .dormer-area {
+    fill: transparent;
+    stroke: none;
+    cursor: pointer;
   }
   .dormer .hit {
     stroke: transparent;

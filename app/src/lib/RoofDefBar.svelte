@@ -70,7 +70,8 @@
 
   /**
    * The first row holds what a roofer sets on every wall (eave or gable,
-   * pitch, eave height, overhang); the rest is in the "More" row, opened
+   * pitch, building height, overhang); the rest, this wall's own eave
+   * height first, is in the "More" row, opened
    * per user (UX-008).
    */
   const moreOpen = $derived(!!prefs.wallMore);
@@ -82,6 +83,8 @@
   const moreSet = $derived.by(() => {
     if (!edge || marker) return [] as string[];
     const out: string[] = [];
+    // An eave set lower or higher than the building is said on the button.
+    if (onheight && buildingHeight !== null && Math.abs(edge.eave_height - buildingHeight) > 1e-9) out.push(t("edge.eaveHeight"));
     if (gable && edge.clad) out.push(t("edge.clad"));
     if (gable && edge.half_hip) out.push(t("edge.halfHip"));
     if (!gable && edge.priority) out.push(t("edge.priority"));
@@ -192,10 +195,12 @@
             use:numeric={{ value: buildingHeight, step: 0.05, min: 0, max: 1000, onchange: onheight }} /><em>m</em></div>
         </label>
       {/if}
-      <label title={onheight ? t("edge.eaveHeightHint") : undefined}>
-        <span>{t("edge.eaveHeight")}</span>
-        <div class="unit"><input type="text" data-testid="eave-height" use:numeric={{ value: edge.eave_height, step: 0.05, min: 0, max: 1000, onchange: (v) => onchange({ eave_height: v }) }} /><em>m</em></div>
-      </label>
+      {#if !onheight}
+        <label>
+          <span>{t("edge.eaveHeight")}</span>
+          <div class="unit"><input type="text" data-testid="eave-height" use:numeric={{ value: edge.eave_height, step: 0.05, min: 0, onchange: (v) => onchange({ eave_height: v }) }} /><em>m</em></div>
+        </label>
+      {/if}
       <label>
         <span>{t("edge.overhang")}</span>
         <div class="unit"><input type="text" use:numeric={{ value: edge.overhang, step: 0.05, min: 0, onchange: (v) => onchange({ overhang: v }) }} /><em>m</em></div>
@@ -213,6 +218,15 @@
 
   {#if edge && part && moreOpen}
     <div class="row more" id="def-more-row" use:hscroll>
+      {#if onheight}
+        <!-- This wall's eave: it may lie below the building height (an eave
+             with overhang) or above it; the main row keeps one row at
+             960x540 (review UI-003). -->
+        <label>
+          <span title={t("edge.eaveHeightHint")}>{t("edge.eaveHeight")}</span>
+          <div class="unit"><input type="text" data-testid="eave-height" use:numeric={{ value: edge.eave_height, step: 0.05, min: 0, onchange: (v) => onchange({ eave_height: v }) }} /><em>m</em></div>
+        </label>
+      {/if}
       {#if !marker}
         <label>
           <span>{t("edge.length")}</span>

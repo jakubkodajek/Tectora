@@ -90,7 +90,7 @@ describe("calculation errors", () => {
     ] as never;
     const e = { kind: "open_faces", message: "x", parts: [1] } as const;
     const d = describeCalcError({ ...e, parts: [1] }, p);
-    expect(d.title.startsWith("Budova 2 „Garáž“: ")).toBe(true);
+    expect(d.title.startsWith("Budova 2 „Garáž“ – ")).toBe(true);
     expect(d.hint).toContain("Ostatní budovy");
     // One building, or no culprit: as before.
     expect(describeCalcError({ ...e, parts: [] }, p).title).toBe("Střechu nelze spočítat: plochy se neuzavírají");

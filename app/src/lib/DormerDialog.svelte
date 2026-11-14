@@ -4,6 +4,7 @@
   // wall height is entered above the roof under the front, and the depth,
   // ridge and slope lengths follow from the roof's pitch (tectora-core
   // `edit::dormers::section`, mirrored in dormers.ts and parity-tested).
+  import { onDestroy } from "svelte";
   import { api } from "./api";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialIds, materialName } from "./materials";
@@ -17,11 +18,17 @@
   let {
     project,
     params = $bindable(),
+    track = (p: Promise<unknown>) => p,
   }: {
     project: Project;
     /** The dormer being edited; the dialog's OK takes it from here. */
     params: DormerParams;
+    /** Registers a placement in flight, so OK waits for it (review UI-001). */
+    track?: (p: Promise<unknown>) => Promise<unknown>;
   } = $props();
+  // Set once the dialog is gone: a late answer then writes nothing.
+  let closed = false;
+  onDestroy(() => (closed = true));
 
   // The roof under the front: only where the front stands matters, so it is
   // asked again only when the start, direction or width change.
@@ -68,17 +75,20 @@
     return { ...$state.snapshot(project), dormers: [buildDormer($state.snapshot(params) as DormerParams)] } as Project;
   }
   /** A distance typed: the core moves the dormer there (MCP place_item) and the dialog takes it back. */
-  async function place(fromEave: number | null, fromLeft: number | null, fromRight: number | null) {
+  function place(fromEave: number | null, fromLeft: number | null, fromRight: number | null) {
+    track(placeNow(fromEave, fromLeft, fromRight));
+  }
+  async function placeNow(fromEave: number | null, fromLeft: number | null, fromRight: number | null) {
     const n = ++placeAsked;
     try {
       const next = await api.placeItem(probeProject(), "dormer", 0, fromEave, fromLeft, fromRight);
       const d = next.dormers[0];
-      if (!d || n !== placeAsked) return;
+      if (!d || n !== placeAsked || closed) return;
       const q = parseDormer(d);
       if (q.kind === "general") return;
       params = { ...params, start: q.start, eave_height: q.eave_height };
     } catch (e) {
-      notifyError(e, "calc");
+      if (!closed) notifyError(e, "calc");
     }
   }
 

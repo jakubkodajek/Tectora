@@ -118,7 +118,7 @@ export function describeCalcError(e: CalcError, project?: Project): { title: str
     const where = t("prob.item.part", { n: i + 1 });
     return name && !isDefaultPartName(name) ? `${where} „${name}“` : where;
   });
-  return { title: `${names.join(", ")}: ${title}`, hint: `${hint} ${t("calc.hint.othersWait")}`, code: e.kind };
+  return { title: `${names.join(", ")} – ${title}`, hint: `${hint} ${t("calc.hint.othersWait")}`, code: e.kind };
 }
 
 /** One input problem, e.g. "Part 2 „Garage“, wall 3: pitch must be between 2° and 178°". */

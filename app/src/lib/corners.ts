@@ -6,8 +6,8 @@ import { isMarker } from "./types";
 
 const at = (a: Point2, b: Point2, tol: number) => Math.abs(a.x - b.x) < tol && Math.abs(a.y - b.y) < tol;
 
-/** Two plan points closer than 1 mm (the core's `MIN_WALL_LENGTH`) count as one corner. */
-export const samePoint = (a: Point2, b: Point2) => Math.hypot(a.x - b.x, a.y - b.y) < 0.001;
+/** Two plan points closer than 1 cm (the core's `MIN_WALL_LENGTH`) count as one corner. */
+export const samePoint = (a: Point2, b: Point2) => Math.hypot(a.x - b.x, a.y - b.y) < 0.01;
 
 /**
  * A drawn footprint without repeated corners: a corner on the one before it
@@ -70,4 +70,20 @@ export function mergeDroppedCorner(es: EdgeDef[], v: number): boolean {
   const drop = cornerGroup(es, v).sort((a, b) => b - a);
   for (const j of drop) es.splice(j, 1);
   return true;
+}
+
+/**
+ * The point on wall a–b nearest to `p`, its distance from `a` rounded to
+ * `step` and kept at least 1 cm (the core's shortest wall) from both ends;
+ * null on a wall too short for a corner. Coordinates to the millimetre.
+ */
+export function onWall(a: Point2, b: Point2, p: Point2, step: number): Point2 | null {
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  const min = 0.01;
+  if (len < 2 * min) return null;
+  const [ux, uy] = [(b.x - a.x) / len, (b.y - a.y) / len];
+  let s = (p.x - a.x) * ux + (p.y - a.y) * uy;
+  s = step > 0 ? Math.round(s / step) * step : s;
+  s = Math.min(len - min, Math.max(min, s));
+  return { x: +(a.x + ux * s).toFixed(3), y: +(a.y + uy * s).toFixed(3) };
 }

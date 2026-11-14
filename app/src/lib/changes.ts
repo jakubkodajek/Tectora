@@ -84,6 +84,8 @@ export function describeChange(c: Change, project: Project | null): string {
         return c.kind === "added"
           ? t("chg.partAdded", { name: partLabel(String(c.after), c.part ?? 0) })
           : t("chg.partRemoved", { name: partLabel(String(c.before), c.part ?? 0) });
+      case "building_height":
+        return t("chg.buildingHeight", { a: len(c.before), b: len(c.after) });
       case "part_name":
         return t("chg.partName", { b: partLabel(String(c.after), c.part ?? 0) });
       case "name":

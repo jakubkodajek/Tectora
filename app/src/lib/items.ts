@@ -153,7 +153,12 @@ export function followRoof(project: Project, it: ItemRef, from: Point2, to: Poin
     const c = project.chimneys[it.index];
     c.height = r3(c.height + d);
   } else if (it.kind === "dormer") {
-    for (const e of project.dormers[it.index].edges) e.eave_height = r3(e.eave_height + d);
+    // Breaks and half-hip move with the eave, as in the core (review MATH-001).
+    for (const e of project.dormers[it.index].edges) {
+      e.eave_height = r3(e.eave_height + d);
+      for (const b of e.breaks ?? []) b.height = r3(b.height + d);
+      if (e.half_hip) e.half_hip.height = r3(e.half_hip.height + d);
+    }
   } else if (it.kind === "line") {
     const l = project.manual_lines![it.index];
     const off = { x: to.x - from.x, y: to.y - from.y };

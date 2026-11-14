@@ -219,9 +219,14 @@
   const roofError = $derived(result?.parts.find((p) => p.geometry.error)?.geometry.error ?? null);
   // No result at all: the calculation failed as a whole (too many breaks,
   // a value out of range, an internal error) or has not come back yet (DR-002).
-  const blockedReason = $derived(!result || roofError ? t("tool.exportBlocked") : null);
+  // Input the calculation left out (a building with a wall shorter than
+  // 1 cm, a dormer with a bad value): the figures miss it, so no export or
+  // offer from them either (review UX-002).
+  const blockedReason = $derived(
+    !result || roofError ? t("tool.exportBlocked") : result.problems?.length ? t("tool.exportBlockedProblems") : null,
+  );
   $effect(() => {
-    if (roofError) exporting = false;
+    if (blockedReason) exporting = false;
   });
   const pendingChanges = $derived(pendingList.flatMap((a) => a.changes));
   const highlight = $derived.by(() => {
@@ -572,6 +577,7 @@
   function applyCalc() {
     if (!project || !calc?.patches) return;
     const es = project.parts[calc.part].edges;
+    for (const [, patch] of calc.patches) freezeHeight(project.parts[calc.part], patch);
     for (const [k, patch] of calc.patches) Object.assign(es[k], patch);
     calc = null;
     commit();
@@ -596,6 +602,7 @@
   function applyRound() {
     if (!project || !round?.arc) return;
     const es = project.parts[round.part].edges;
+    freezeHeight(project.parts[round.part], { eave_height: round.eave });
     for (const k of [round.a, round.b]) {
       Object.assign(es[k], {
         pitch_deg: round.arc.pitch_deg,
@@ -682,8 +689,14 @@
    * to the typed distance from the eave or a side of its roof face (the
    * core's operation, the same as MCP place_item).
    */
-  const placeItem = (it: ItemRef, fromEave: number | null, fromLeft: number | null, fromRight: number | null) =>
-    pendingEdits.track(placeItemNow(it, fromEave, fromLeft, fromRight));
+  // One placement at a time, each on the job as the one before left it: a
+  // second distance typed (or an arrow step) while the first was in flight
+  // was dropped (review UI-002).
+  let placeChain: Promise<unknown> = Promise.resolve();
+  const placeItem = (it: ItemRef, fromEave: number | null, fromLeft: number | null, fromRight: number | null) => {
+    placeChain = placeChain.then(() => placeItemNow(it, fromEave, fromLeft, fromRight)).catch(() => {});
+    return pendingEdits.track(placeChain);
+  };
   async function placeItemNow(it: ItemRef, fromEave: number | null, fromLeft: number | null, fromRight: number | null) {
     if (!project) return;
     const before = JSON.stringify($state.snapshot(project));
@@ -808,7 +821,11 @@
     if (p.kind !== "general") dormerDlg = { index: dormerSel, params: p };
   }
 
-  function applyDormerDialog() {
+  async function applyDormerDialog() {
+    // A distance typed into the dialog commits on blur and comes back from
+    // the core: OK takes it once it is there (review UI-001).
+    await tick();
+    await pendingEdits.settled();
     if (!project || !dormerDlg) return;
     const d = buildDormer($state.snapshot(dormerDlg.params) as DormerParams);
     const i = dormerDlg.index;
@@ -1050,9 +1067,26 @@
 
   /** The object dialog of a chimney, roof window or opening (Properties, double-click). */
   let objDlg = $state(false);
+  /** The undo step when the object dialog opened: Cancel goes back to it. */
+  let objDlgAt = 0;
   $effect(() => {
     if (!openSel) objDlg = false;
   });
+
+  /** OK keeps the dialog's edits; Cancel, Escape and × undo them, as the
+      dormer dialog does (review UX-004). */
+  async function closeObjDlg(keep: boolean) {
+    objDlg = false;
+    if (keep) return;
+    // A typed value commits on blur and a placement comes back from the core.
+    await tick();
+    await pendingEdits.settled();
+    if (!project || at <= objDlgAt || !history[objDlgAt]) return;
+    const sel = openSel;
+    project = JSON.parse(history[objDlgAt]);
+    commit();
+    openSel = sel && itemExists(project!, sel) ? sel : null;
+  }
 
   /**
    * Properties of an object, from a double-click or the context menu: the
@@ -1063,7 +1097,10 @@
     if (!project || !itemExists(project, it)) return;
     selectItem(it);
     if (it.kind === "dormer") editDormer();
-    else if (it.kind === "chimney" || it.kind === "window" || it.kind === "hole") objDlg = true;
+    else if (it.kind === "chimney" || it.kind === "window" || it.kind === "hole") {
+      objDlgAt = at;
+      objDlg = true;
+    }
     else focusProperties();
   }
 
@@ -1805,21 +1842,22 @@
 {/if}
 
 {#if objDlg && openSel && project}
-  <Modal title={itemTitle(openSel)} width={760} onclose={() => (objDlg = false)}>
+  <Modal title={itemTitle(openSel)} width={760} onclose={() => closeObjDlg(false)}>
     <div class="obj-dlg" data-testid="object-dialog">
       <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={() => { objDlg = false; deleteOpening(); }}
         placement={placementOf(result, openSel)}
         onplace={(e, l, r) => { if (openSel) placeItem({ kind: openSel.kind, index: openSel.index }, e, l, r); }} />
     </div>
     {#snippet footer()}
-      <button class="btn primary" onclick={() => (objDlg = false)}>{t("common.close")}</button>
+      <button class="btn" onclick={() => closeObjDlg(false)}>{t("common.cancel")}</button>
+      <button class="btn primary" data-testid="object-dialog-ok" onclick={() => closeObjDlg(true)}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
 
 {#if dormerDlg && project}
   <Modal title={dormerDlg.index === null ? t("dormer.dialogNew") : t("dormer.n", { n: dormerDlg.index + 1 })} width={1040} onclose={() => (dormerDlg = null)}>
-    <DormerDialog {project} bind:params={dormerDlg.params} />
+    <DormerDialog {project} bind:params={dormerDlg.params} track={(p) => pendingEdits.track(p)} />
     {#snippet footer()}
       <button class="btn" onclick={() => (dormerDlg = null)}>{t("common.cancel")}</button>
       <button class="btn primary" onclick={applyDormerDialog}>{t("common.ok")}</button>

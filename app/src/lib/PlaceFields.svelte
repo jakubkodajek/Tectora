@@ -10,7 +10,7 @@
   let {
     placement,
     onplace,
-    width = 92,
+    width = 108,
   }: {
     placement: Placement | null;
     /** One distance typed: the others are null (kept). */
@@ -28,11 +28,11 @@
     </label>
     <label title={t("place.fromLeftHint")}>
       <span>{t("place.fromLeft")}</span>
-      <div class="unit"><input type="text" data-testid="place-left" use:numeric={{ value: placement.from_left, digits: 3, step: 0.05, min: -500, max: 500, onchange: (v) => onplace(null, v, null) }} /><em>m</em></div>
+      <div class="unit"><input type="text" data-testid="place-left" use:numeric={{ value: placement.from_left, digits: 3, step: 0.05, min: 0, max: 500, onchange: (v) => onplace(null, v, null) }} /><em>m</em></div>
     </label>
     <label title={t("place.fromRightHint")}>
       <span>{t("place.fromRight")}</span>
-      <div class="unit"><input type="text" data-testid="place-right" use:numeric={{ value: placement.from_right, digits: 3, step: 0.05, min: -500, max: 500, onchange: (v) => onplace(null, null, v) }} /><em>m</em></div>
+      <div class="unit"><input type="text" data-testid="place-right" use:numeric={{ value: placement.from_right, digits: 3, step: 0.05, min: 0, max: 500, onchange: (v) => onplace(null, null, v) }} /><em>m</em></div>
     </label>
   </div>
 {/if}
