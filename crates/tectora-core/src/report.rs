@@ -112,6 +112,34 @@ mod tests {
     }
 
     #[test]
+    fn a_chimney_or_opening_without_area_is_a_problem() {
+        // ERR-002: four corners on one point, as width 0 gives them.
+        let mut p = examples::find("gable").unwrap().project();
+        let dot = crate::model::Chimney {
+            corners: vec![crate::geom::Point2::new(2.0, 2.0); 4],
+            height: 6.0,
+        };
+        p.chimneys.push(dot.clone());
+        p.roof_openings.push(dot);
+        let codes: Vec<(String, String)> = p
+            .problems()
+            .iter()
+            .map(|x| (format!("{:?}", x.item), x.code.to_string()))
+            .collect();
+        assert_eq!(
+            codes,
+            [
+                ("Chimney".to_string(), "bad_size".to_string()),
+                ("Opening".to_string(), "bad_size".to_string())
+            ]
+        );
+        // A small real one (2 cm x 2 cm) is fine.
+        p.roof_openings.clear();
+        p.chimneys[0] = crate::edit::probe::chimney_from_rect(2.0, 2.0, 0.02, 0.02, 0.0, 6.0);
+        assert!(p.problems().is_empty(), "{:?}", p.problems());
+    }
+
+    #[test]
     fn a_valid_project_has_no_problems() {
         let p = examples::find("gable").unwrap().project();
         let v = calc(&p);

@@ -169,7 +169,16 @@
     });
     const selMat = roofMat.clone();
     selMat.color.copy(token("--focus"));
-    const wallMat = new THREE.MeshStandardMaterial({ color: token("--scene-wall"), roughness: 0.9, side: THREE.DoubleSide });
+    // Walls end exactly on the underside of the roof: pushed further back in
+    // depth than the roof, so their top edges never show through it (UI-001).
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: token("--scene-wall"),
+      roughness: 0.9,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: 3,
+      polygonOffsetUnits: 6,
+    });
     // A selected dormer is an object: --accent, like in the plan.
     const selDormerMat = roofMat.clone();
     selDormerMat.color.copy(token("--accent"));
