@@ -8,6 +8,7 @@ pub mod breakdown;
 pub mod bundle;
 pub mod check;
 pub mod commands;
+pub mod coplanar;
 pub mod coresol;
 pub mod dcore;
 pub mod diff;
@@ -34,6 +35,7 @@ pub mod snapshot;
 pub mod store;
 pub mod union;
 pub mod walls;
+pub mod wing_split;
 
 pub use model::{
     Chimney, Dormer, EdgeDef, HalfHip, JobInfo, JobStatus, PitchBreak, Project, RoofPart,

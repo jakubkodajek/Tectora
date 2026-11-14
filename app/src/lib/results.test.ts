@@ -65,6 +65,32 @@ describe("warningText", () => {
     i18n.locale = "cs";
     expect(warningText(kinds[3])).toContain("Střešní okno 1 ");
   });
+  it("says what Tectora did where the standard calculation stops: cm, m and walls from 1 (TEST-007)", () => {
+    const merged: RoofWarning = { kind: "merged_planes", value: 0.0225, edges: [0, 2] };
+    const over: RoofWarning = { kind: "plane_over_wall", value: 2.0977, edges: [0, 2] };
+    const wing: RoofWarning = { kind: "wing_joined", value: 0, edges: [0, 1, 7] };
+    i18n.locale = "cs";
+    expect(warningText(merged)).toContain("stěn 1 a 3");
+    expect(warningText(merged)).toContain("2,25 cm");
+    expect(warningText(over)).toContain("stěny 1");
+    expect(warningText(over)).toContain("stěny 3");
+    expect(warningText(over)).toContain("2,10 m");
+    expect(warningText(wing)).toContain("1, 2, 8");
+    i18n.locale = "en";
+    expect(warningText(merged)).toContain("walls 1 and 3");
+    expect(warningText(merged)).toContain("2.25 cm");
+    expect(warningText(wing)).toContain("walls 1, 2, 8");
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      for (const w of [merged, over, wing, { kind: "not_calculated_by_core", value: 0 } as RoofWarning]) {
+        const text = warningText(w);
+        expect(text, `${locale} ${w.kind}`).not.toContain("{");
+        expect(text, `${locale} ${w.kind}`).not.toMatch(/dacad|res\.warn/i);
+        expect(text.length, `${locale} ${w.kind}`).toBeGreaterThan(30);
+      }
+    }
+  });
+
   it("has every new warning in all four languages", () => {
     for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
       for (const w of kinds) expect(DICTS[locale][`res.warn.${w.kind}`], `${locale} ${w.kind}`).toBeTruthy();
