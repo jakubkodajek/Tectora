@@ -160,6 +160,7 @@ mod tests {
         let mut p = Project::new("FD2");
         p.flat_roof = true;
         p.parts.push(RoofPart {
+            height: None,
             name: "L".into(),
             edges: vec![
                 wall(0.0, 0.0, 3.0, 0.5),

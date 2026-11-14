@@ -232,3 +232,19 @@ sessions that use it know where things stand.
   sheet is not in the connected folders); should core/MCP default part names
   become "Budova N"; a core field for deduction totals; `openings.ts` still
   picks the window face with its own probe instead of the core's.
+
+## 2026-11-14 - building height, roof placements, dormer flicker, join fixes (branch claude/project-thread-syyw67)
+- Done: building height separate from eave height (`RoofPart.height`,
+  eaves may sit lower); distances from eave and side for every roof object
+  (`edit/position.rs`, MCP `place_item`, plan dimension lines); bigger
+  dialogs and Properties by double-click / right-click with Cancel/OK;
+  dormer 3D flicker fixed; joined buildings: walls under 1 cm are a
+  `zero_length_wall` problem, a building the core fails on alone no longer
+  takes the other roofs (`without_failing`), Modellverschnitt edge budget
+  stops the OOM on slightly turned wings. Six reviewers + two verifiers on
+  board `target/review/2026-11-14-cd283f7/`; all confirmed findings fixed.
+  MCP `calc` reports `problems`, exports refuse a job with a left-out or
+  failing building.
+- State: `make check` exit 0 (Rust 370 passed, UI 217), E2E placement 6/6.
+- Next: Jakub reviews the PR; decide on the departure from DACAD's
+  all-or-nothing run (decisions.md 2026-11-14). Open review items in the PR.

@@ -166,6 +166,22 @@ fn diff_part(pi: usize, a: &RoofPart, b: &RoofPart, out: &mut Vec<Change>) {
             json!(b.name),
         ));
     }
+    // The building height as the editor shows it: storing the height a
+    // building already showed (`freeze_height`) is no change (review
+    // TEST-010).
+    let (ha, hb) = (a.building_height(), b.building_height());
+    // Without a stored height on either side it follows the eaves, whose
+    // changes are listed already.
+    if (a.height.is_some() || b.height.is_some()) && ha != hb {
+        out.push(change(
+            ChangeKind::Modified,
+            "building_height",
+            Some(pi),
+            None,
+            json!(ha),
+            json!(hb),
+        ));
+    }
     if a.edges.len() == b.edges.len() {
         for (i, (ea, eb)) in a.edges.iter().zip(&b.edges).enumerate() {
             edge_fields(pi, i, ea, eb, out);
@@ -421,5 +437,19 @@ mod tests {
     fn identical_projects_have_no_changes() {
         let a = examples::find("l-shape").unwrap().project();
         assert!(diff(&a, &a.clone()).is_empty());
+    }
+
+    #[test]
+    fn lists_a_building_height_change_but_not_storing_the_height_shown() {
+        let a = examples::find("hip").unwrap().project();
+        let mut frozen = a.clone();
+        frozen.parts[0].freeze_height();
+        assert!(diff(&a, &frozen).is_empty());
+        let mut b = frozen.clone();
+        b.parts[0].height = Some(b.parts[0].building_height().unwrap() + 1.0);
+        let d = diff(&frozen, &b);
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert_eq!(d[0].field, "building_height");
+        assert_eq!(d[0].part, Some(0));
     }
 }

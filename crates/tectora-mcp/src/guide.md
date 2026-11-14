@@ -61,10 +61,13 @@ The tools cover every operation of the Tectora editor:
 - Parts: `add_part`, `add_shape_part` (standard roofs and regular polygons),
   `transform_part` (move, rotate, mirror, with copies), `delete_items`,
   `clear_roof` (remove everything drawn and start on an empty canvas),
-  `set_part_height` (the editor's "Building height": every wall of a part
-  at one eave height in one save, its breaks, half-hips, dormers and
-  chimneys moved with it). A building has no height of its own besides its
-  walls' eave heights; a lower wing is joined to the main roof by them.
+  `set_part_height` (the editor's "Building height": `height` is the top of
+  the walls; the roof, breaks, half-hips, dormers and chimneys move with it
+  and each wall keeps its own eave; or `eave_height` for every wall at one
+  eave height). The building height is not the eave height: an eave is
+  measured at the overhang line and is usually lower than the wall top, and
+  it changes no roof figure. The roofs are calculated and joined by the
+  walls' eave heights, so a lower wing gets lower eaves.
 - Dormers: `add_dormer`, `update_dormer` (gable, pointed, hip, half_hip,
   shed, trapezoid, round); `get_project` lists them with these parameters
   and their `section` as the editor's dormer window shows it: roof pitch
@@ -88,6 +91,13 @@ The tools cover every operation of the Tectora editor:
   copies them, as the user drags them in the plan or uses their right-click
   menu; on a move chimney tops and dormer eaves follow the roof. `align`
   turns chimneys and roof openings square to the nearest eave wall.
+- Position on the roof like a dimensioned drawing: `get_project` returns
+  `placements` (per dormer, chimney, window and opening: the roof face it
+  sits on, `from_eave` measured along the slope from the eave line to the
+  object's lowest point, `from_eave_plan` the same in plan, `from_left` and
+  `from_right` from the face's side edges at that level). `place_item` moves
+  one object to such distances: `from_eave` and one of `from_left` /
+  `from_right`, each optional, in one save.
 - Flat roof and material names: `set_roof_options`.
 - Calculation helpers of the roof definition: `roof_helper` (simple
   triangle, two parallel walls, point in space, merge faces, hip/valley,
@@ -190,8 +200,16 @@ result; move it onto the roof or delete it. `window_off_roof`,
 move it onto the roof or delete it. `not_calculated_by_core`: the
 figures come from Tectora's fallback engine and may differ from the
 standard result. A part the calculation gave no roof for carries `error`
-(`kind`, `message`): say so instead of reporting 0 m². `joined_with` names
-the parts the calculation actually joined the part's roof with.
+(`kind`, `message`): say so instead of reporting 0 m². When some buildings
+fail on their own, `failing_parts` lists them: only those have no roof, the
+others are calculated without them. A wall shorter than 1 cm is a
+`zero_length_wall` problem that leaves its building out. Every write answers
+with `roof_trouble` (`roof_errors`, `problems`) when after it a building has
+no roof or input is left out: fix it or revert before going on. `calc`
+lists left-out input under `problems`, and `export_list` / `export_plan`
+refuse such a job until it is fixed.
+`joined_with` names the parts the calculation actually joined the part's
+roof with.
 
 ## Turning a technical drawing into a roof
 
@@ -387,7 +405,8 @@ and ask the user; do not invent a value to make a figure fit.
    line = overhang outline minus the overhang dimension).
 3. **Roof definition.** Per edge: eave or gable (elevations / sections),
    pitch, eave height, overhang, half-hips, pitch breaks (`update_edges`).
-   A wing lower or higher than the main roof: `set_part_height` on it.
+   A wing lower or higher than the main roof: `set_part_height` with
+   `eave_height` on it; the wall top from the sections as `height`.
 4. **Dormers** (`add_dormer`), one save for all of them.
 5. **Chimneys, windows, openings** (`set_openings`).
 6. **Check.** First look: `view_drawing` with `overlay` {`id`, `scale`,

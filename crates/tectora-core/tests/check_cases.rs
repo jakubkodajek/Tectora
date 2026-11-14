@@ -81,6 +81,7 @@ fn stepped_overhang_is_sound() {
     // A long eave whose middle part reaches further out, entered as walls
     // in line with zero-length gable walls between them.
     let mut part = RoofPart {
+        height: None,
         name: "A".into(),
         edges: vec![
             edge(0.0, 0.0, 30.0, 3.3, 0.5),
@@ -121,6 +122,7 @@ fn joined_roofs_may_run_on_to_the_other_building() {
     // A lower wing against a higher house: its roof runs on to the house
     // and under the house's overhang.
     let rect = |x0: f64, y0: f64, x1: f64, y1: f64, eave: f64| RoofPart {
+        height: None,
         name: "R".into(),
         edges: vec![
             edge(x0, y0, 40.0, eave, 0.5),
@@ -145,6 +147,7 @@ fn a_building_inside_another_is_reported_as_covered() {
     // A small building drawn inside a larger one keeps no roof face after
     // the join, which used to show the walls with no roof and no message.
     let rect = |x0: f64, y0: f64, x1: f64, y1: f64| RoofPart {
+        height: None,
         name: "R".into(),
         edges: vec![
             edge(x0, y0, 40.0, 3.0, 0.5),
@@ -187,6 +190,7 @@ fn split_front(second_pitch: f64, second_eave: f64, break_on_second: bool) -> Pr
     }
     let mut p = Project::new("split front");
     p.parts.push(RoofPart {
+        height: None,
         name: "A".into(),
         edges: vec![
             edge(0.0, 0.0, 40.0, 3.0, 0.5),
@@ -254,6 +258,7 @@ fn merged_walls_name_the_edges_as_entered() {
 fn plain_gable() -> Project {
     let mut p = Project::new("gable");
     p.parts.push(RoofPart {
+        height: None,
         name: "A".into(),
         edges: vec![
             edge(0.0, 0.0, 40.0, 3.0, 0.0),
@@ -317,6 +322,7 @@ fn joined_rows_whose_cut_exceeds_a_face_are_reported() {
         for col in 0..8 {
             let (x0, y0) = (col as f64 * 9.0, row as f64 * 7.0);
             p.parts.push(RoofPart {
+                height: None,
                 name: format!("R{row}{col}"),
                 edges: vec![
                     edge(x0, y0, 35.0, 3.0, 0.5),

@@ -37,10 +37,11 @@ library and settings file. Tests run one at a time (one shared library).
 | --- | --- |
 | `library.e2e.ts` | new job (all start modes and standard types), examples, search, filters, sort, list / grid, detail pane, card menu, duplicate, delete, import, broken files |
 | `editor.e2e.ts` | layout, F3, fit, dimensions, rename, undo / redo and shortcuts, dock tabs, status bar, every roof definition control, corner drag and insert, calculation and round-roof dialogs, keyboard |
-| `drawing.e2e.ts` | footprint by clicks, typed lengths, arrows, keys, presets, cancel, Insert, standard roof tool |
+| `drawing.e2e.ts` | footprint by clicks, typed lengths, arrows, keys, presets, cancel, Insert, finish by double-click, button and Ctrl+I, standard roof tool |
 | `objects.e2e.ts` | dormers (all kinds), chimneys, windows, openings, non-convex notice, roof lines, faces, flat roof, transform, delete part, 3D view buttons |
+| `placement.e2e.ts` | distances from the eave and the sides (fields, plan dimensions, refusals), Properties dialog by double-click (Cancel / OK), building height vs eave height, one bad building leaves the others their roof |
 | `job.e2e.ts` | job fields, status and stored result, attachments, export / import, material names, deleted or broken job files |
-| `settings.e2e.ts` | language, theme, roof defaults, follow AI, folders, settings changed over MCP |
+| `settings.e2e.ts` | language, theme, roof defaults, follow AI, folders, settings changed over MCP, toolbar labels switch |
 | `i18n.e2e.ts` | cs / sk / en / de on every screen: no raw keys, no DACAD names, nothing outside the window at 1360×860 and 600×420; dark theme |
 | `fields.e2e.ts` | number and text fields: Enter, Tab, Escape, a click on the plan / another wall / a button stores on the right object, decimal comma, refused values, ▲▼ and arrow keys, presets; manual face labels and "make it a building" |
 | `joined.e2e.ts` | a second building: roof at once, "joined to" in the results, dashed lines under a higher roof, a covered building warned, recalculation of both roofs |

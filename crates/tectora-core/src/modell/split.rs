@@ -168,6 +168,14 @@ fn list_mut(st: &mut State, f: usize, cut: bool) -> &mut Vec<Poly> {
 /// The box a polygon's neighbours are tested against is only taken for
 /// pieces: a cutter is tested with the box of its face's last piece (or,
 /// with no piece, whatever box came last before).
+/// Most edges one polygon may have after splitting. A real roof face has a
+/// few dozen; a wing a few mm off and turned by a fraction of a degree made
+/// the pieces split each other without end and asked for gigabytes, which
+/// aborts the process (review MATH-004, `tests/modell_budget.rs`). DACAD's
+/// behaviour on that input is not known. Past this the run stops with
+/// [`State::overflow`] and the engine falls back to its own sweep.
+pub const MAX_POLY_EDGES: usize = 20_000;
+
 pub fn split_all(st: &mut State, tol: &Tol) {
     let t = tol.t01;
     let mut bb_p = [0.0; 4];
@@ -206,6 +214,10 @@ pub fn split_all(st: &mut State, tol: &Tol) {
                                     poly.edges[i] = e;
                                     for (k, &(p1, p2)) in pieces.iter().enumerate().skip(1) {
                                         poly.edges.insert(i + k, Edge { p1, p2, ..template });
+                                    }
+                                    if poly.edges.len() > MAX_POLY_EDGES {
+                                        st.overflow = true;
+                                        return;
                                     }
                                 }
                             }

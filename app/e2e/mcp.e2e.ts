@@ -296,7 +296,8 @@ test.describe("MCP parity", () => {
     }, async () => {
       const p = await loadProject(ids[0]);
       await mcp.call("update_edges", { id: ids[1], changes: [{ index: 2, breaks: p.parts[0].edges[2].breaks.map((b: any) => ({ ...b, height: +(b.height - 4.25 + 3).toFixed(3) })) }], summary: "x" });
-      await mcp.call("set_part_height", { id: ids[1], part: 0, eave_height: 4.25, summary: "x" });
+      // The editor's field is the building height (Jakub 2026-11-14: not the eave height).
+      await mcp.call("set_part_height", { id: ids[1], part: 0, height: 4.25, summary: "x" });
     });
   });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EdgeDef } from "./types";
-import { cornerGroup, mergeDroppedCorner, moveCorner } from "./corners";
+import { cornerGroup, onWall, mergeDroppedCorner, moveCorner, samePoint, withoutRepeats } from "./corners";
 
 const w = (x: number, y: number, marker = false): EdgeDef => ({
   start: { x, y },
@@ -35,5 +35,44 @@ describe("corner drag", () => {
   it("leaves a corner that is only near, not on, its neighbour", () => {
     const es = [w(0, 0), w(9.9, 0), w(10, 0), w(10, 6), w(0, 6)];
     expect(mergeDroppedCorner(es, 1)).toBe(false);
+  });
+});
+
+describe("drawn footprint without repeated corners", () => {
+  const p = (x: number, y: number) => ({ x, y });
+  it("drops a corner clicked twice and a closing corner on the first one", () => {
+    // A wall of no length stopped the roof of every building (zero_length_wall).
+    expect(withoutRepeats([p(0, 0), p(8, 0), p(8, 0), p(8, 6), p(0, 6), p(0, 0)])).toEqual([p(0, 0), p(8, 0), p(8, 6), p(0, 6)]);
+    expect(withoutRepeats([p(0, 0), p(8, 0), p(8, 6), p(0.0004, 0)])).toEqual([p(0, 0), p(8, 0), p(8, 6)]);
+  });
+  it("drops a corner a few mm from the one before, which the core counts as one point", () => {
+    // Walls of 1 to 10 mm stopped every roof as well (review ERR-001).
+    expect(withoutRepeats([p(0, 0), p(8, 0), p(8, 0.006), p(8, 6), p(0, 6)])).toEqual([p(0, 0), p(8, 0), p(8, 6), p(0, 6)]);
+    expect(samePoint(p(1, 1), p(1.0099, 1))).toBe(true);
+  });
+  it("keeps corners 1 cm apart and more", () => {
+    const pts = [p(0, 0), p(0.01, 0), p(8, 6)];
+    expect(withoutRepeats(pts)).toEqual(pts);
+    expect(samePoint(p(1, 1), p(1.01, 1))).toBe(false);
+  });
+});
+
+describe("a corner added on a wall", () => {
+  const p = (x: number, y: number) => ({ x, y });
+  it("lies on a slanted wall, at a grid step from its start (review ERR-002)", () => {
+    const a = p(0, 0);
+    const b = p(6, 3);
+    const q = onWall(a, b, p(2.03, 1.06), 0.05)!;
+    // Off the wall by at most the millimetre rounding.
+    const off = Math.abs((q.x - a.x) * (b.y - a.y) - (q.y - a.y) * (b.x - a.x)) / Math.hypot(6, 3);
+    expect(off).toBeLessThan(0.001);
+    expect(Math.hypot(q.x, q.y)).toBeCloseTo(2.3, 2);
+  });
+  it("stays on an axis wall at grid points and never on its ends", () => {
+    expect(onWall(p(0, 3), p(20, 3), p(7.012, 3.04), 0.05)).toEqual(p(7, 3));
+    expect(onWall(p(0, 3), p(20, 3), p(-1, 3), 0.05)).toEqual(p(0.05, 3));
+    // 2 cm from a corner, zoomed in: never a wall under 1 cm.
+    expect(onWall(p(20.003, 3), p(20.003, 9), p(20.003, 3.02), 0.05)).toEqual(p(20.003, 3.05));
+    expect(onWall(p(0, 0), p(0.06, 0), p(0.03, 0), 0.05)).toBeNull();
   });
 });

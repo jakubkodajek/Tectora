@@ -71,7 +71,7 @@
     if (d && count > 0) {
       e.preventDefault();
       go(d.dx, d.dy);
-    } else if (e.key === "Enter" && count >= 3) {
+    } else if ((e.key === "Enter" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "i")) && count >= 3) {
       e.preventDefault();
       onclose();
     } else if (e.key === "Backspace" && (e.target as HTMLElement).tagName !== "INPUT") {
@@ -118,7 +118,7 @@
   <div class="actions">
     <button class="btn sm" disabled={count === 0} onclick={onundo}><Icon name="undo" size={15} />{t("draw.undo")}</button>
     <button class="btn sm" onclick={() => oncancel(false)}>{t("draw.cancel")}</button>
-    <button class="btn sm primary" disabled={count < 3} onclick={onclose}><Icon name="check" size={15} />{t("draw.close")}</button>
+    <button class="btn sm primary" data-testid="draw-close" disabled={count < 3} onclick={onclose} title={t("draw.closeHint")}><Icon name="check" size={15} />{t("draw.close")}</button>
   </div>
 </div>
 
@@ -199,6 +199,18 @@
     display: flex;
     gap: 8px;
     margin-left: auto;
+  }
+  /* A low window: the finish button stays in sight, the rest scrolls. */
+  @media (max-height: 560px) {
+    .bar {
+      max-height: 42vh;
+      overflow-y: auto;
+    }
+    .actions {
+      order: -1;
+      flex-basis: 100%;
+      justify-content: flex-end;
+    }
   }
   .btn.sm {
     height: 32px;

@@ -1,6 +1,6 @@
 // Drawing footprints: clicks in the plan, typed lengths with the arrow
 // buttons and keys, undo point, cancel, close, presets and the Insert key.
-import { clickPlan, openEditor, selectWall, setField, shownArea, tool } from "./editor";
+import { clickPlan, openEditor, planXY, selectWall, setField, shownArea, tool } from "./editor";
 import { createExample, expect, listProjects, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 
@@ -88,6 +88,39 @@ test.describe("drawing a footprint", () => {
       [8, 6],
       [0, 6],
     ]);
+  });
+
+  test("a double-click on the last corner finishes the building and calculates it (Jakub 2026-11-14)", async ({ app, page }) => {
+    const { draw, id } = await newDrawnJob(app);
+    await clickPlan(page, 0, 0);
+    await clickPlan(page, 10, 0);
+    await clickPlan(page, 10, 7);
+    // The wall that closing will add is shown before closing.
+    await expect(page.getByTestId("draft-close")).toBeVisible();
+    const at = await planXY(page, 0, 7);
+    await page.mouse.dblclick(at.x, at.y);
+    await expect(draw).toHaveCount(0);
+    const p = await waitForProject(id, (p) => p.parts.length === 1);
+    expect(p.parts[0].edges.map((e: any) => [e.start.x, e.start.y])).toEqual([
+      [0, 0],
+      [10, 0],
+      [10, 7],
+      [0, 7],
+    ]);
+    await expect.poll(() => shownArea(page)).toBeGreaterThan(70);
+  });
+
+  test("the finish button and Ctrl+I join the last corner to the first", async ({ app, page }) => {
+    const { draw, id } = await newDrawnJob(app);
+    await clickPlan(page, 0, 0);
+    await clickPlan(page, 6, 0);
+    await clickPlan(page, 6, 5);
+    await expect(draw.getByTestId("draw-close")).toHaveText(cs("draw.close"));
+    await page.keyboard.press("Control+i");
+    await expect(draw).toHaveCount(0);
+    const p = await waitForProject(id, (p) => p.parts.length === 1);
+    expect(p.parts[0].edges).toHaveLength(3);
+    await expect.poll(() => shownArea(page)).toBeGreaterThan(10);
   });
 
   test("a footprint drawn clockwise is stored counter-clockwise", async ({ app, page }) => {

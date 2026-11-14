@@ -48,6 +48,16 @@ fn r2(v: f64) -> f64 {
 /// `Err(Refused::Internal)` instead of aborting the caller.
 pub fn take_checked(project: &Project) -> Result<ResultSnapshot, Refused> {
     project.check_limits().map_err(Refused::OutOfRange)?;
+    // Input the calculation leaves out (a building with a wall shorter than
+    // 1 cm, …) is missing from the figures (review UX-002).
+    if let Some(p) = project.problems().first() {
+        return Err(Refused::NotCalculated(format!(
+            "{:?} {} is left out of the calculation ({})",
+            p.item,
+            p.index + 1,
+            p.code
+        )));
+    }
     // A part the core gives no roof for counts 0 m²: storing that as the
     // offer's figures would hide the problem (review ERR-003, DR-001).
     let failed = crate::model::guarded(|| {

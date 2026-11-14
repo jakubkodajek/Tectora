@@ -101,7 +101,7 @@ fn describe_part(part: &RoofPart) -> Value {
             v
         })
         .collect();
-    json!({ "name": part.name, "edges": edges })
+    json!({ "name": part.name, "building_height": part.building_height(), "edges": edges })
 }
 
 /// A plausibility warning of a calculated roof (`tectora_core::check`),
@@ -191,7 +191,58 @@ pub fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
             "the roof calculation does not finish for this roof; undo the last change or adjust the pitches"
         }
     };
-    json!({ "kind": e.kind, "message": message })
+    let mut v = json!({ "kind": e.kind, "message": message });
+    // Which buildings end with the error on their own too: fix those; the
+    // others are calculated without them (review ARCH-002).
+    if !e.parts.is_empty() {
+        v["failing_parts"] = json!(e.parts);
+        v["message"] = format!(
+            "{message}. The building(s) in failing_parts (indices) fail on their own; the other buildings are calculated without them"
+        )
+        .into();
+    }
+    v
+}
+
+/// Refuses an export while a building has no roof or input is left out:
+/// its figures would be missing from the sheet, as the editor's Export is
+/// blocked then too.
+pub(crate) fn export_ready(project: &Project) -> Result<(), String> {
+    match roof_trouble(project) {
+        None => Ok(()),
+        Some(t) => Err(format!(
+            "not exported: some roofs are not calculated or input is left out; fix them first ({t})"
+        )),
+    }
+}
+
+/// The buildings without a roof after a write, and the input problems that
+/// left a building out, so an AI learns at once that its change broke a
+/// roof instead of reading "Saved" (review ERR-003). Empty when all is well.
+fn roof_trouble(project: &Project) -> Option<Value> {
+    let geos = tectora_core::openings::generate_project(project);
+    let errors: Vec<Value> = geos
+        .iter()
+        .enumerate()
+        .filter_map(|(i, g)| {
+            g.error.as_ref().map(|e| {
+                json!({ "part": i, "name": project.parts.get(i).map(|p| p.name.as_str()), "error": calc_error(e) })
+            })
+        })
+        .collect();
+    let problems: Vec<Value> = project
+        .problems()
+        .iter()
+        .map(|p| serde_json::to_value(p).unwrap_or(Value::Null))
+        .collect();
+    if errors.is_empty() && problems.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "message": "Saved, but some roofs are not calculated; fix them (or revert this change) before you continue",
+        "roof_errors": errors,
+        "problems": problems,
+    }))
 }
 
 fn quantities(project: &Project) -> Value {
@@ -412,6 +463,7 @@ fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
         edges.push(e);
     }
     let mut part = RoofPart {
+        height: None,
         name: v
             .get("name")
             .and_then(Value::as_str)
@@ -879,14 +931,18 @@ impl Server {
             .as_ref()
             .map(|b| diff(b, project))
             .unwrap_or_default();
-        Ok(json!({
+        let mut out = json!({
             "id": id,
             "saved": true,
             "note": "Saved. The change is now visible in the Tectora app for the user to review.",
             "changes": changes,
             "quantities": quantities(project),
             "parts": project.parts.iter().map(describe_part).collect::<Vec<_>>(),
-        }))
+        });
+        if let Some(t) = roof_trouble(project) {
+            out["roof_trouble"] = t;
+        }
+        Ok(out)
     }
 
     /// Saves a change made on `before` (the job as the tool loaded it). When
@@ -1084,6 +1140,9 @@ impl Server {
                     "windows": p.windows,
                     "roof_openings": p.roof_openings,
                     "dormers": dormers,
+                    // Each object's distances from the eave and the sides of
+                    // its face, as place_item takes them.
+                    "placements": tectora_core::edit::position::placements(&p),
                     "manual_lines": p.manual_lines,
                     "manual_faces": p.manual_faces,
                     "flat_roof": p.flat_roof,
@@ -1125,13 +1184,20 @@ impl Server {
                         v
                     })
                     .collect();
-                Ok(json!({
+                let mut out = json!({
                     "id": id,
                     "total": quantities(&p),
                     "parts": parts,
                     "engine_version": tectora_core::snapshot::ENGINE_VERSION,
                     "stored_result": tectora_core::snapshot::status(&p),
-                }))
+                });
+                // Input the calculation left out (a building with a wall
+                // under 1 cm, …): its figures are missing from the totals.
+                let problems = p.problems();
+                if !problems.is_empty() {
+                    out["problems"] = serde_json::to_value(&problems).unwrap_or(Value::Null);
+                }
+                Ok(out)
             }
             "calc_breakdown" => {
                 let (id, p) = self.load(args)?;
@@ -1231,6 +1297,11 @@ impl Server {
                 let changes = arg(args, "changes")?
                     .as_array()
                     .ok_or("`changes` must be a list")?;
+                // A wall's eave is not the building height: the building
+                // keeps the height it shows (RoofPart::freeze_height).
+                if changes.iter().any(|c| c.get("eave_height").is_some()) {
+                    part.freeze_height();
+                }
                 for c in changes {
                     // As the editor's "apply to all walls": a pitch for every
                     // wall leaves gables and direction changes as they are,
@@ -1287,6 +1358,8 @@ impl Server {
                     })
                     .collect();
                 let mut part = RoofPart {
+                    // A new outline keeps the building's height (review ARCH-001).
+                    height: old.height,
                     name: old.name,
                     edges,
                 };
@@ -2024,6 +2097,7 @@ mod tests {
         let mut s = server();
         let mut p = Project::new("Empty");
         p.parts.push(RoofPart {
+            height: None,
             name: "A".into(),
             edges: Vec::new(),
         });

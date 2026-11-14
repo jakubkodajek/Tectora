@@ -12,8 +12,8 @@
   import { t } from "./i18n.svelte";
   import { hostHeightAt, isDormerFace, slopeAt } from "./dormers";
   import { isConvex, windowOutline } from "./openings";
-  import { chimneyTop, clipConvex, crossings, dormerWallLines, manualFacePoly, onWallLine, outgrows, planArea, planeOf, wallTriangles, wallUpToRoof, type Extent, type Poly3 } from "./scene3d";
-  import { isGable } from "./types";
+  import { chimneyTop, clipConvex, coveredByDormer, crossings, dormerWallLines, manualFacePoly, planBox, onWallLine, outgrows, planArea, planeOf, wallTriangles, wallUpToRoof, type Extent, type Poly3 } from "./scene3d";
+  import { isGable, isMarker } from "./types";
   import { presets } from "./settings.svelte";
 
   let {
@@ -23,6 +23,7 @@
     item = null,
     onpick,
     oncontext,
+    onitemdbl,
   }: {
     project: Project;
     result: CalcResult | null;
@@ -33,6 +34,8 @@
     onpick?: (target: PlanTarget) => void;
     /** Right click without dragging. */
     oncontext?: (target: PlanTarget, client: { x: number; y: number }, world: Point2) => void;
+    /** A double-click on an object: open its properties. */
+    onitemdbl?: (item: ItemRef) => void;
   } = $props();
 
   let host: HTMLDivElement;
@@ -209,7 +212,19 @@
           }
         }
         const h = Math.max(0.01, Math.min(e.eave_height, b.eave_height));
-        content.add(quad([[e.start.x, e.start.y, 0], [b.start.x, b.start.y, 0], [b.start.x, b.start.y, h], [e.start.x, e.start.y, h]], wallMat, target));
+        // A building with its own height: an eave wall stands up to the
+        // building height, but never through the roof above it (an eave
+        // lower than the building meets the wall below its top). Gable walls
+        // keep the eave: the gable polygon above is in the same plane.
+        let ha = h;
+        let hb = h;
+        if (part.height != null && !isGable(e) && !isMarker(e)) {
+          const own = rp && result ? { ...result, parts: [rp] } : null;
+          const top = (p: Point2) => Math.max(0.01, Math.min(part.height!, (own && hostHeightAt(own, p)) ?? part.height!));
+          ha = top(e.start);
+          hb = top(b.start);
+        }
+        content.add(quad([[e.start.x, e.start.y, 0], [b.start.x, b.start.y, 0], [b.start.x, b.start.y, hb], [e.start.x, e.start.y, ha]], wallMat, target));
       });
     });
 
@@ -232,6 +247,17 @@
     const dormerLines = project.dormers.map(dormerWallLines);
 
     if (result) {
+      // Each dormer's wall lines with the plan box of its roof faces: the
+      // walls drawn from those faces replace the calculation's gables there.
+      const dormerFaces: Poly3[][] = project.dormers.map(() => []);
+      for (const rp of result.parts) {
+        for (const f of rp.geometry.faces) {
+          if (!isDormerFace(f.edge) || f.polygon.length < 3) continue;
+          const d = dormerLines.findIndex((ls) => f.polygon.some((p, k) => onWallLine(ls, p, f.polygon[(k + 1) % f.polygon.length])));
+          if (d >= 0) dormerFaces[d].push(f.polygon);
+        }
+      }
+      const dormerWalls = dormerLines.map((lines, d) => ({ lines, box: planBox(dormerFaces[d]) }));
       result.parts.forEach((rp, pi) => {
         for (const f of rp.geometry.faces) {
           if (f.polygon.length < 3) continue;
@@ -284,6 +310,7 @@
           }
         }
         for (const poly of rp.geometry.gables) {
+          if (coveredByDormer(poly, dormerWalls)) continue;
           // Triangulated in the wall plane (scene3d.wallTriangles, tested).
           const idx = wallTriangles(poly);
           if (idx) content.add(indexedMesh(poly, idx, wallMat));
@@ -471,6 +498,12 @@
       }
     };
     const noMenu = (e: Event) => e.preventDefault();
+    // A double-click on a dormer, chimney, window or opening opens its properties.
+    const dbl = (e: MouseEvent) => {
+      const h = hit(e as PointerEvent);
+      if (h?.target.type === "item") onitemdbl?.(h.target.item);
+    };
+    el.addEventListener("dblclick", dbl);
     el.addEventListener("pointerdown", down, true);
     el.addEventListener("pointerup", up, true);
     el.addEventListener("contextmenu", noMenu);
@@ -487,6 +520,7 @@
       el.removeEventListener("pointerdown", down, true);
       el.removeEventListener("pointerup", up, true);
       el.removeEventListener("contextmenu", noMenu);
+      el.removeEventListener("dblclick", dbl);
       ro.disconnect();
       controls.dispose();
       renderer.dispose();

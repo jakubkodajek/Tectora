@@ -326,6 +326,19 @@ pub(crate) fn tools() -> Vec<Value> {
             }), &["id", "items", "op", "summary"]),
         }),
         json!({
+            "name": "place_item",
+            "description": "Put a dormer, chimney, roof window or roof opening at given distances on the roof face it stands on, as the editor's dimension fields (\"From eave\", \"From left\" / \"From right\"): `from_eave` is measured along the slope from the lowest edge of the face (the eave at the overhang, or a pitch break) to the object's lowest point; `from_left` or `from_right` level along the eave from the face's edge (verge, hip, valley) to the object, at the height of its lowest point, left and right as seen looking up the slope. An omitted `from_eave` keeps the distance from the eave; omitted side values keep the place along the eave (on a hip or valley face, whose sides slant, the side distances then change). The object must stay on the same face with each given value reached, else nothing is saved and the error says why (distances are 0 or more). The object keeps its height above the roof. get_project lists each object's current `placement`.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "kind": { "type": "string", "enum": ["dormer", "chimney", "window", "roof_opening"] },
+                "index": { "type": "integer", "minimum": 0 },
+                "from_eave": { "type": "number", "description": "m along the slope from the eave edge of the face." },
+                "from_left": { "type": "number", "description": "m from the left edge of the face (give this or from_right)." },
+                "from_right": { "type": "number", "description": "m from the right edge of the face." },
+                "summary": summary_prop(),
+            }), &["id", "kind", "index", "summary"]),
+        }),
+        json!({
             "name": "update_opening",
             "description": "Change the position or size of one chimney, roof opening or roof window, as the object bar of the editor does. A chimney or roof opening is edited through its box: the smallest box around its plan polygon that lines up with its first side, with corner `x`, `y`, `width` along the first side, `depth` across it and `rotation_deg` (direction of the first side); every corner keeps its place in the box, so a rectangle stays a rectangle and any other shape is stretched. `height` is a chimney's top (m) or a window's height up the slope. Omitted fields keep their value; the reply has the new box.",
             "inputSchema": schema(json!({
@@ -383,13 +396,14 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "set_part_height",
-            "description": "Set the height of a building (part) in one change, as the editor's \"Building height\" field: every wall of the part gets `eave_height` (m above ground); its pitch breaks and half-hips move with it, and so do the dormers, chimneys and hand-drawn lines on it. Where buildings of different heights meet, the roofs are joined by these eave heights, so use it to make a wing lower or higher than the main roof. To change only some walls, use update_edges.",
+            "description": "Set the height of a building (part) in one change, as the editor's \"Building height\" and \"Eave height\" fields. Give `height` for the building height (top of the walls, m above ground): the roof moves with it, every wall's eave height, pitch breaks and half-hips shift by the change, and so do the dormers, chimneys and hand-drawn lines on it; each wall keeps its own eave below or above the wall top. The building height itself changes no roof figure (the roof is calculated from the eave heights; an eave is measured at the overhang line and is usually lower than the building). Give `eave_height` instead to put every wall of the part at that eave height (breaks, half-hips and objects move with them) and keep the building height. Where buildings of different heights meet, the roofs are joined by their eave heights, so use it to make a wing lower or higher than the main roof. To change only some walls, use update_edges.",
             "inputSchema": schema(json!({
                 "id": id,
                 "part": { "type": "integer", "minimum": 0, "description": "Part index (as get_project lists them)." },
-                "eave_height": { "type": "number", "minimum": tectora_core::edit::height::MIN_PART_HEIGHT, "maximum": tectora_core::edit::height::MAX_PART_HEIGHT, "description": "Eave height of every wall, m above ground." },
+                "height": { "type": "number", "minimum": tectora_core::edit::height::MIN_PART_HEIGHT, "maximum": tectora_core::edit::height::MAX_PART_HEIGHT, "description": "Building height (top of the walls), m above ground. Give this or eave_height." },
+                "eave_height": { "type": "number", "minimum": tectora_core::edit::height::MIN_PART_HEIGHT, "maximum": tectora_core::edit::height::MAX_PART_HEIGHT, "description": "Eave height of every wall, m above ground. Give this or height." },
                 "summary": summary_prop(),
-            }), &["id", "part", "eave_height", "summary"]),
+            }), &["id", "part", "summary"]),
         }),
         json!({
             "name": "clear_roof",
@@ -606,6 +620,32 @@ impl Server {
             "transform_part" => self.transform(args),
             "transform_items" => self.transform_items(args),
             "update_opening" => self.update_opening(args),
+            "place_item" => (|| {
+                let (id, before) = self.load(args)?;
+                let mut p = before.clone();
+                let kind: tectora_core::edit::transform::ItemKind = serde_json::from_value(
+                    args.get("kind").cloned().unwrap_or(Value::Null),
+                )
+                .map_err(|_| "`kind` must be dormer, chimney, window or roof_opening".to_string())?;
+                let index: usize = req(args, "index")?;
+                let it = tectora_core::edit::transform::ItemRef { kind, index };
+                let moved = tectora_core::edit::position::place(
+                    &mut p,
+                    it,
+                    arg_f64(args, "from_eave")?,
+                    arg_f64(args, "from_left")?,
+                    arg_f64(args, "from_right")?,
+                )?;
+                if !moved {
+                    return Err("the object already is at these distances".into());
+                }
+                if let Err(e) = p.validate() {
+                    return Err(e.join("; "));
+                }
+                let r = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
+                let pl = tectora_core::edit::position::placement(&p, it);
+                Ok(json!({ "saved": r, "placement": pl }))
+            })(),
             "add_shape_part" => self.add_shape_part(args),
             "delete_items" => self.delete_items(args),
             "face_to_part" => (|| {
@@ -636,9 +676,18 @@ impl Server {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
                 let part: usize = req(args, "part")?;
-                let h = arg_f64(args, "eave_height")?.ok_or("`eave_height` is required")?;
-                if !tectora_core::edit::height::set_part_height(&mut p, part, h)? {
-                    return Err(format!("every wall of part {part} already has eave height {h} m"));
+                match (arg_f64(args, "height")?, arg_f64(args, "eave_height")?) {
+                    (Some(h), None) => {
+                        if !tectora_core::edit::height::set_part_height(&mut p, part, h)? {
+                            return Err(format!("part {part} already is {h} m high"));
+                        }
+                    }
+                    (None, Some(h)) => {
+                        if !tectora_core::edit::height::set_part_eave_height(&mut p, part, h)? {
+                            return Err(format!("every wall of part {part} already has eave height {h} m"));
+                        }
+                    }
+                    _ => return Err("give one of `height` (building) or `eave_height` (every wall)".into()),
                 }
                 if let Err(e) = p.validate() {
                     return Err(e.join("; "));
@@ -814,12 +863,16 @@ impl Server {
                 };
                 let title = if p.name.is_empty() { id.clone() } else { p.name.clone() };
                 let opts = tectora_core::export::ListOptions::new(title, stamp);
+                p.check_limits()?;
+                crate::export_ready(&p)?;
                 let (list, _) = tectora_core::export::checked(&p, &opts)?;
                 Ok(json!({ "id": id, "list": list }))
             })(),
             "export_plan" => (|| {
                 let (id, p) = self.load(args)?;
                 let summary = arg_str(args, "summary")?;
+                p.check_limits()?;
+                crate::export_ready(&p)?;
                 if args.get("path").is_some() {
                     return Err("`path` is not accepted: sheets are written to the library's exports folder; pass `name` for the file name".into());
                 }
@@ -1201,6 +1254,7 @@ impl Server {
                 arg_f64(args, "rotation_deg")?.unwrap_or(0.0),
             );
             RoofPart {
+                height: None,
                 name: String::new(),
                 edges: pts
                     .into_iter()
@@ -1573,6 +1627,11 @@ impl Server {
             other => return Err(format!("unknown tool `{other}`")),
         };
         let mut p = before.clone();
+        // A helper that sets eave heights keeps the building's height, as
+        // update_edges does (review ARCH-001).
+        if patches.values().any(|q| q.eave_height.is_some()) {
+            p.parts[pi].freeze_height();
+        }
         let applied = apply_patches(&mut p.parts[pi].edges, &patches);
         let mut out = if args.get("apply").and_then(Value::as_bool) == Some(true)
             && !applied.is_empty()
@@ -2125,6 +2184,159 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("`state`"), "{err}");
         assert_eq!(s.store.activity(&id).len(), log, "nothing saved");
+    }
+
+    #[test]
+    fn a_window_is_placed_by_its_distances_from_the_eave_and_the_side() {
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "set_openings",
+            json!({ "id": id, "windows": [{ "x": 3, "y": 1, "width": 1.14, "height": 1.4 }], "summary": "Window" }),
+        );
+        let r = call(
+            &mut s,
+            "place_item",
+            json!({ "id": id, "kind": "window", "index": 0, "from_eave": 1.5, "from_left": 2.0, "summary": "Window 1.5 m from the eave" }),
+        );
+        let pl = &r["placement"];
+        assert!(
+            (pl["from_eave"].as_f64().unwrap() - 1.5).abs() < 1e-5,
+            "{r}"
+        );
+        assert!(
+            (pl["from_left"].as_f64().unwrap() - 2.0).abs() < 1e-5,
+            "{r}"
+        );
+        let listed = call(&mut s, "get_project", json!({ "id": id }));
+        let w = &listed["placements"]["windows"][0];
+        assert!(
+            (w["from_eave"].as_f64().unwrap() - 1.5).abs() < 1e-5,
+            "{listed}"
+        );
+        for bad in [
+            json!({ "id": id, "kind": "window", "index": 0, "from_eave": 1.5, "from_left": 2.0, "summary": "same" }),
+            json!({ "id": id, "kind": "window", "index": 3, "from_eave": 1.0, "summary": "none" }),
+            json!({ "id": id, "kind": "manual_line", "index": 0, "from_eave": 1.0, "summary": "line" }),
+            json!({ "id": id, "kind": "window", "index": 0, "from_left": 1.0, "from_right": 1.0, "summary": "both" }),
+        ] {
+            assert!(s.call_tool("place_item", &bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_building_height_carries_the_roof_and_keeps_a_lower_eave() {
+        // Jakub (2026-11-14): the building height is not the eave height.
+        let (mut s, id) = setup();
+        let p0 = s.store.load(&id).unwrap();
+        let eave = p0.parts[0].edges[0].eave_height;
+        call(
+            &mut s,
+            "update_edges",
+            json!({ "id": id, "part": 0, "changes": [{ "index": 0, "eave_height": eave - 0.5 }], "summary": "Lower eave" }),
+        );
+        call(
+            &mut s,
+            "set_part_height",
+            json!({ "id": id, "part": 0, "height": eave + 1.0, "summary": "Higher building" }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(p.parts[0].height, Some(eave + 1.0));
+        let e = &p.parts[0].edges;
+        let lowest = e
+            .iter()
+            .map(|e| e.eave_height)
+            .fold(f64::INFINITY, f64::min);
+        assert!((lowest - (eave + 0.5)).abs() < 1e-9, "{lowest}");
+        assert!(
+            e[1..]
+                .iter()
+                .all(|w| (w.eave_height - (eave + 1.0)).abs() < 1e-9),
+            "{e:?}"
+        );
+        for bad in [
+            json!({ "id": id, "part": 0, "height": eave + 1.0, "summary": "same" }),
+            json!({ "id": id, "part": 0, "height": 3, "eave_height": 3, "summary": "both" }),
+            json!({ "id": id, "part": 0, "height": -2, "summary": "below ground" }),
+        ] {
+            assert!(s.call_tool("set_part_height", &bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn moves_new_outlines_and_helpers_keep_the_building_height() {
+        // Review ARCH-001 / TEST-002: these dropped or changed the height
+        // the user typed, so the next height entry moved every eave wrongly.
+        let (mut s, id) = setup();
+        let eave = s.store.load(&id).unwrap().parts[0].edges[0].eave_height;
+        call(
+            &mut s,
+            "set_part_height",
+            json!({ "id": id, "part": 0, "height": eave + 0.4, "summary": "Walls higher than the eave" }),
+        );
+        let h = Some(eave + 0.4);
+        call(
+            &mut s,
+            "transform_part",
+            json!({ "id": id, "part": 0, "op": "move", "dx": 1, "dy": 0, "copies": 1, "summary": "Move and copy" }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(p.parts[0].height, h);
+        assert_eq!(p.parts[1].height, h, "the copy keeps it too");
+        call(
+            &mut s,
+            "transform_part",
+            json!({ "id": id, "part": 1, "op": "rotate", "deg": 90, "summary": "Turn" }),
+        );
+        assert_eq!(s.store.load(&id).unwrap().parts[1].height, h);
+        call(
+            &mut s,
+            "set_outline",
+            json!({ "id": id, "part": 0, "points": [[0, 0], [9, 0], [9, 7], [0, 7]], "summary": "New outline" }),
+        );
+        assert_eq!(s.store.load(&id).unwrap().parts[0].height, h);
+        // A helper that sets eaves on a building without a stored height
+        // stores the height it showed first.
+        let mut p = s.store.load(&id).unwrap();
+        p.parts[0].height = None;
+        let shown = p.parts[0].building_height();
+        s.store.save(Some(id.clone()), &p).unwrap();
+        call(
+            &mut s,
+            "roof_helper",
+            json!({ "id": id, "part": 0, "edge": 0, "tool": "build_up", "thickness": 0.2, "eave": "vertical", "apply": true, "summary": "Build-up" }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(p.parts[0].height, shown);
+    }
+
+    #[test]
+    fn a_write_that_leaves_a_building_without_roof_says_so_and_calc_names_it() {
+        // Review ERR-003 / ARCH-002.
+        let (mut s, id) = setup();
+        let r = call(
+            &mut s,
+            "add_part",
+            json!({ "id": id, "summary": "Wing with a 4 mm jog",
+                "part": { "name": "Wing", "points": [[6, 4], [14, 4], [14, 4.004], [14, 10], [6, 10]], "defaults": { "pitch_deg": 35 } } }),
+        );
+        let t = &r["roof_trouble"];
+        assert_eq!(t["problems"][0]["code"], "zero_length_wall", "{r}");
+        let ok = call(&mut s, "calc", json!({ "id": id }));
+        assert!(
+            ok["parts"][0]["error"].is_null(),
+            "the first building keeps its roof: {ok}"
+        );
+        // calc says the wing was left out, it is not just 0 m².
+        assert_eq!(ok["problems"][0]["code"], "zero_length_wall", "{ok}");
+        // Exports wait, as the editor's Export does (review: MCP parity).
+        for (tool, args) in [
+            ("export_list", json!({ "id": id })),
+            ("export_plan", json!({ "id": id, "summary": "Export" })),
+        ] {
+            let err = s.call_tool(tool, &args).expect_err(tool);
+            assert!(err.contains("not exported"), "{tool}: {err}");
+        }
     }
 
     #[test]

@@ -40,6 +40,7 @@ fn single_part(name: &str, points: &[(f64, f64)], pitches: &[f64]) -> Project {
         })
         .collect();
     let mut part = RoofPart {
+        height: None,
         name: "Main".into(),
         edges,
     };
@@ -215,6 +216,7 @@ pub fn standard_roof(
         })
         .collect();
     RoofPart {
+        height: None,
         name: "Main".into(),
         edges,
     }

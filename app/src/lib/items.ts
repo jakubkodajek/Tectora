@@ -3,7 +3,7 @@
 // rotates and duplicates them. Same rules as tectora-core
 // `edit::transform::{transform_items, follow_roof}` (MCP `transform_items`).
 
-import type { CalcResult, Point2, Project } from "./types";
+import type { CalcResult, Placement, Point2, Project } from "./types";
 import { mapChimney, mapDormer, mapManualFace, mapManualLine, mapWindow, power, rotation, translation, type PlanMap } from "./transform";
 import { hostHeightAt } from "./dormers";
 
@@ -22,6 +22,18 @@ export const MCP_KIND: Record<ItemKind, string> = {
   line: "manual_line",
   face: "manual_face",
 };
+
+/** An object's distances on its roof face from the calculation, if it has any (lines and faces have none). */
+export function placementOf(result: CalcResult | null, it: ItemRef | null): Placement | null {
+  if (!result?.placements || !it) return null;
+  const list =
+    it.kind === "dormer" ? result.placements.dormers
+    : it.kind === "chimney" ? result.placements.chimneys
+    : it.kind === "window" ? result.placements.windows
+    : it.kind === "hole" ? result.placements.roof_openings
+    : null;
+  return list?.[it.index] ?? null;
+}
 
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
 const avg = (pts: Point2[]): Point2 => ({
@@ -141,7 +153,12 @@ export function followRoof(project: Project, it: ItemRef, from: Point2, to: Poin
     const c = project.chimneys[it.index];
     c.height = r3(c.height + d);
   } else if (it.kind === "dormer") {
-    for (const e of project.dormers[it.index].edges) e.eave_height = r3(e.eave_height + d);
+    // Breaks and half-hip move with the eave, as in the core (review MATH-001).
+    for (const e of project.dormers[it.index].edges) {
+      e.eave_height = r3(e.eave_height + d);
+      for (const b of e.breaks ?? []) b.height = r3(b.height + d);
+      if (e.half_hip) e.half_hip.height = r3(e.half_hip.height + d);
+    }
   } else if (it.kind === "line") {
     const l = project.manual_lines![it.index];
     const off = { x: to.x - from.x, y: to.y - from.y };

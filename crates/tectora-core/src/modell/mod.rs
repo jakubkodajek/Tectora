@@ -146,6 +146,9 @@ pub fn run(int: &str, w3d: Option<&str>) -> Result<Output, ReadError> {
     stages::run_range(&mut st, &tol, 0, 1);
     let joins = cutter_models(&st);
     stages::run_range(&mut st, &tol, 1, usize::MAX);
+    if st.overflow {
+        return Err(ReadError::TooComplex);
+    }
     let mut out = output(st, &tol);
     out.joins = joins;
     Ok(out)

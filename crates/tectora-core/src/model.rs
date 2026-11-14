@@ -197,6 +197,14 @@ impl Project {
             if part.edges.len() < 3 {
                 out.push(Problem::of(ProblemItem::Part, pi, "too_few_edges"));
             }
+            for ei in zero_length_walls(part) {
+                out.push(Problem {
+                    item: ProblemItem::Part,
+                    index: pi,
+                    edge: Some(ei),
+                    code: "zero_length_wall",
+                });
+            }
         }
         for (di, d) in self.dormers.iter().enumerate() {
             if !finite_point(d.end) {
@@ -249,6 +257,9 @@ impl Project {
             .map(|(_, m)| *m)
             .unwrap_or(match p.code {
                 "too_few_edges" => "needs at least 3 edges",
+                "zero_length_wall" => {
+                    "has no length (two corners on one point); delete one of the corners"
+                }
                 "end_nan" => "end point is not a number or out of range",
                 "bad_corners" => "needs 3 or more finite corners",
                 "bad_size" => "needs a finite position and a positive size",
@@ -384,6 +395,16 @@ impl Project {
         if let Some(why) = non_finite(self) {
             return Err(format!("a value is not a finite number ({why})"));
         }
+        if let Some((i, h)) = self
+            .parts
+            .iter()
+            .enumerate()
+            .find_map(|(i, p)| p.height.filter(|h| *h < 0.0).map(|h| (i, h)))
+        {
+            return Err(format!(
+                "value {h} at `parts[{i}].height` is out of range (a building height is 0 m or more)"
+            ));
+        }
         Ok(())
     }
 }
@@ -494,8 +515,42 @@ pub struct Problem {
     /// A stable code: `too_few_edges`, `start_nan`, `pitch_range`,
     /// `eave_nan`, `eave_negative`, `overhang_negative`, `direction_nan`,
     /// `stacked_nan`, `break_below_eave`, `break_duplicate`, `end_nan`,
-    /// `bad_corners` or `bad_size`.
+    /// `bad_corners`, `bad_size` or `zero_length_wall`.
     pub code: &'static str,
+}
+
+/// Shortest wall that is not a direction marker, m. Two corners on one
+/// point (a corner clicked twice while drawing, the closing corner drawn
+/// onto the first one) give a wall of no length and no direction. DACAD
+/// has no such wall: every DACAD wall record carries its own direction,
+/// and a zero-length one is a direction change (`direction_rad`). The core
+/// takes the missing direction as east and ends with a cut error, which
+/// stopped the roof of every building in the job; so such a part is
+/// reported as invalid and left out on its own, like any other invalid
+/// input. The limit is the core's own: a wall record shorter than 0.01 m
+/// is a point (`coresol::rd2::Wall::zero`), and walls of 1 to 10 mm ended
+/// with the same cut error (review ERR-001, 2026-11-14).
+pub const MIN_WALL_LENGTH: f64 = 0.01;
+
+/// The edges of `part` that are walls of no length (see
+/// [`MIN_WALL_LENGTH`]). Edges imported from a DACAD wall record keep their
+/// recorded direction and are not listed.
+pub fn zero_length_walls(part: &RoofPart) -> Vec<usize> {
+    let n = part.edges.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    (0..n)
+        .filter(|&i| {
+            let e = &part.edges[i];
+            let next = part.edges[(i + 1) % n].start;
+            e.direction_rad.is_none()
+                && e.source.is_none()
+                && finite_point(e.start)
+                && finite_point(next)
+                && e.start.distance(next) < MIN_WALL_LENGTH
+        })
+        .collect()
 }
 
 impl Problem {
@@ -560,9 +615,44 @@ pub struct RoofPart {
     pub name: String,
     /// Edges in order; edge `i` runs from `edges[i].start` to `edges[i+1].start`.
     pub edges: Vec<EdgeDef>,
+    /// Height of the building: the top of its walls above ground, m.
+    /// Tectora's own value: DACAD has no building height (its core reads
+    /// every height from the walls' roof definitions), so it changes no
+    /// roof figure. The eave height of a wall is its own input and may be
+    /// lower than the building (DACAD measures the eave at the overhang
+    /// line, below the wall top) or higher. `None` in files from before
+    /// the field: the building is as high as its lowest eave, as the
+    /// editor showed it then ([`RoofPart::building_height`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f64>,
 }
 
 impl RoofPart {
+    /// A part with these walls and no building height of its own.
+    pub fn new(name: impl Into<String>, edges: Vec<EdgeDef>) -> Self {
+        RoofPart {
+            name: name.into(),
+            edges,
+            height: None,
+        }
+    }
+
+    /// The building's height ([`RoofPart::height`]), else its lowest eave
+    /// height; `None` for a part without walls.
+    pub fn building_height(&self) -> Option<f64> {
+        self.height
+            .or_else(|| self.edges.iter().map(|e| e.eave_height).reduce(f64::min))
+    }
+
+    /// Gives a part without a height of its own the height it shows now
+    /// (its lowest eave), so that changing a wall's eave height afterwards
+    /// does not change the building height. Called before an eave edit.
+    pub fn freeze_height(&mut self) {
+        if self.height.is_none() {
+            self.height = self.building_height();
+        }
+    }
+
     pub fn outline(&self) -> Vec<Point2> {
         self.edges.iter().map(|e| e.start).collect()
     }
@@ -865,6 +955,7 @@ mod tests {
         let mut p = Project::new("t");
         let mut e = crate::edit::plain_edge(Point2::new(0.0, 0.0), 40.0, 3.0, 0.5);
         p.parts.push(RoofPart {
+            height: None,
             name: "A".into(),
             edges: vec![e.clone(); 3],
         });

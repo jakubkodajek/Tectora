@@ -18,6 +18,7 @@ fn edge(x: f64, y: f64, pitch: f64, eave: f64, overhang: f64) -> EdgeDef {
 
 fn hip(name: &str, x0: f64, y0: f64, x1: f64, y1: f64, eave: f64) -> RoofPart {
     RoofPart {
+        height: None,
         name: name.into(),
         edges: vec![
             edge(x0, y0, 35.0, eave, 0.5),
@@ -71,6 +72,7 @@ fn far_apart_buildings_are_not_joined_and_indices_skip_invalid_parts() {
     p.parts.push(hip("A", 0.0, 0.0, 10.0, 8.0, 3.0));
     // An invalid part in between keeps its slot.
     p.parts.push(RoofPart {
+        height: None,
         name: "bad".into(),
         edges: vec![edge(0.0, 0.0, 30.0, 3.0, 0.5)],
     });
@@ -226,4 +228,119 @@ fn an_object_off_the_roof_is_reported_on_the_nearest_part() {
     assert!(geos[0].warnings.is_empty(), "{:?}", geos[0].warnings);
     let w: Vec<_> = geos[1].warnings.iter().map(|w| (w.kind, w.item)).collect();
     assert_eq!(w, [(WarningKind::WindowOffRoof, Some(0))]);
+}
+
+/// Joined-building regression (2026-11-14, Jakub: "the buildings joined,
+/// the roof was not calculated and an error came up"). Drawing the second
+/// building, its last corner snapped onto its first one (or a corner was
+/// clicked twice): a wall of no length and no direction. The core took the
+/// missing direction as east and ended with a cut error, and one core error
+/// stops the roof of every building in the job.
+#[test]
+fn a_wall_of_no_length_leaves_only_its_building_out_and_says_where() {
+    let mut p = Project::new("drawn twice");
+    p.parts.push(hip("A", 0.0, 0.0, 8.0, 6.0, 3.0));
+    let mut b = hip("B", 8.0, 1.0, 12.0, 5.0, 3.0);
+    // The closing corner on the first one.
+    b.edges.push(edge(8.0, 1.0, 35.0, 3.0, 0.5));
+    p.parts.push(b);
+    let v = tectora_core::commands::calc(&p).unwrap();
+    let problems = v["problems"].as_array().unwrap();
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert_eq!(problems[0]["code"], "zero_length_wall");
+    assert_eq!(problems[0]["index"], 1);
+    assert_eq!(problems[0]["edge"], 4);
+    let a = &v["parts"][0]["geometry"];
+    assert!(a["error"].is_null(), "{a}");
+    assert!(!a["faces"].as_array().unwrap().is_empty());
+
+    // A corner clicked twice in the middle, the same.
+    let mut p2 = Project::new("clicked twice");
+    p2.parts.push(hip("A", 0.0, 0.0, 8.0, 6.0, 3.0));
+    let mut b = hip("B", 8.0, 1.0, 12.0, 5.0, 3.0);
+    b.edges.insert(2, edge(12.0, 1.0, 35.0, 3.0, 0.5));
+    p2.parts.push(b);
+    let v = tectora_core::commands::calc(&p2).unwrap();
+    assert_eq!(v["problems"][0]["code"], "zero_length_wall");
+    assert_eq!(v["problems"][0]["edge"], 1);
+    assert!(v["parts"][0]["geometry"]["error"].is_null());
+
+    // A wall of a few mm (a typed 3,006 for 3, a corner snapped next to
+    // another) is a point for the core too and ended the same way
+    // (review ERR-001): left out with its building only.
+    for jog in [0.0011, 0.004, 0.0099] {
+        let mut p4 = Project::new("short wall");
+        p4.parts.push(hip("A", 0.0, 0.0, 8.0, 6.0, 3.0));
+        let mut b = hip("B", 8.0, 1.0, 12.0, 5.0, 3.0);
+        b.edges.insert(2, edge(12.0, 1.0 + jog, 35.0, 3.0, 0.5));
+        p4.parts.push(b);
+        let v = tectora_core::commands::calc(&p4).unwrap();
+        assert_eq!(v["problems"][0]["code"], "zero_length_wall", "jog {jog}");
+        assert!(v["parts"][0]["geometry"]["error"].is_null(), "jog {jog}");
+        assert!(
+            !v["parts"][0]["geometry"]["faces"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    // Direction markers (zero length with a direction) are DACAD walls.
+    let mut p3 = Project::new("marker");
+    let mut a = hip("A", 0.0, 0.0, 8.0, 6.0, 3.0);
+    let mut m = edge(8.0, 0.0, 35.0, 3.0, 0.5);
+    m.direction_rad = Some(std::f64::consts::FRAC_PI_2);
+    a.edges.insert(1, m);
+    p3.parts.push(a);
+    assert!(p3.problems().is_empty(), "{:?}", p3.problems());
+}
+
+/// When the core ends with an error, the error names the buildings whose
+/// roof fails on its own too, so the user knows which one to fix, and the
+/// other buildings are calculated without them (DACAD stops every roof of
+/// the job instead; the user asked for this, 2026-11-14). Found by
+/// `examples/join_fuzz.rs`.
+#[test]
+fn a_building_the_core_fails_on_alone_leaves_the_others_their_roofs() {
+    let mut p = Project::new("one bad roof");
+    p.parts.push(RoofPart {
+        height: None,
+        name: "A".into(),
+        edges: vec![
+            edge(0.0, 0.0, 30.0, 3.0, 0.6),
+            edge(6.2, 0.0, 90.0, 3.0, 0.6),
+            edge(6.2, 5.9, 30.0, 3.0, 0.6),
+            edge(0.0, 5.9, 90.0, 3.0, 0.6),
+        ],
+    });
+    let mut hh = edge(6.0, 12.8, 90.0, 3.0, 0.5);
+    hh.half_hip = Some(tectora_core::model::HalfHip {
+        height: 5.0,
+        pitch_deg: 50.0,
+    });
+    p.parts.push(RoofPart {
+        height: None,
+        name: "B".into(),
+        edges: vec![
+            edge(2.2, 5.9, 45.0, 3.0, 0.0),
+            edge(6.0, 5.9, 30.0, 2.5, 0.0),
+            hh,
+            edge(2.2, 12.8, 90.0, 3.5, 0.5),
+        ],
+    });
+    let geos = generate_project(&p);
+    let e = geos[1]
+        .error
+        .as_ref()
+        .expect("building B ends with an error");
+    assert_eq!(e.parts, [1], "{e:?}");
+    // Building A keeps the roof it has on its own.
+    let mut a = Project::new("A");
+    a.parts.push(p.parts[0].clone());
+    let alone = generate_project(&a);
+    assert!(alone[0].error.is_none());
+    assert!(geos[0].error.is_none(), "{:?}", geos[0].error);
+    assert_eq!(geos[0].faces.len(), alone[0].faces.len());
+    let area = |g: &tectora_core::roof::RoofGeometry| g.faces.iter().map(|f| f.area).sum::<f64>();
+    assert!((area(&geos[0]) - area(&alone[0])).abs() < 1e-9);
 }

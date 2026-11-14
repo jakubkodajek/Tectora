@@ -2,9 +2,10 @@
   // The selected chimney, roof window or roof opening, docked like the wall bar.
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
-  import type { Chimney, Project, RoofWindow } from "./types";
+  import type { Chimney, Placement, Project, RoofWindow } from "./types";
   import { isConvex, openingBox, openingList, reshapeOpening, type OpeningBox, type OpeningSel } from "./openings";
   import { numeric } from "./numeric.svelte";
+  import PlaceFields from "./PlaceFields.svelte";
 
   let {
     project,
@@ -12,12 +13,17 @@
     onchimney,
     onwindow,
     ondelete,
+    placement = null,
+    onplace,
   }: {
     project: Project;
     sel: OpeningSel;
     onchimney: (c: Chimney) => void;
     onwindow: (w: RoofWindow) => void;
     ondelete: () => void;
+    /** Where the object sits on its face (dimension fields). */
+    placement?: Placement | null;
+    onplace?: (fromEave: number | null, fromLeft: number | null, fromRight: number | null) => void;
   } = $props();
 
   const list = $derived(sel ? openingList(project, sel.kind) : []);
@@ -84,6 +90,7 @@
       {@render field(t("opening.height"), win.height, "m", (v) => onwindow({ ...win, height: v }), 0.05)}
       <p class="tip">{t("opening.windowHint")}</p>
     {/if}
+    {#if onplace}<PlaceFields {placement} {onplace} />{/if}
     <div class="spacer"></div>
     {@const del = t(sel.kind === "chimney" ? "opening.deleteChimney" : sel.kind === "window" ? "opening.deleteWindow" : "opening.deleteHole")}
     <button class="btn sm ghost danger" onclick={ondelete} title={del}><Icon name="trash" size={15} />{del}</button>

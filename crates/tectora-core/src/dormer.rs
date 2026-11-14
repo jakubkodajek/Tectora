@@ -277,6 +277,7 @@ fn footprint(d: &Dormer, reach: f64) -> Option<(RoofPart, usize)> {
         source: None,
     });
     let mut part = RoofPart {
+        height: None,
         name: "dormer".into(),
         edges,
     };

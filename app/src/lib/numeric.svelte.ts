@@ -201,16 +201,26 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
     }
   }
 
+  // The last step stored while its value had not come back yet (a field
+  // whose value returns from the core): the next step goes on from it, so
+  // four quick arrow presses make four steps (review UI-002).
+  let stepped: { from: number | null | undefined; to: number; at: number } | null = null;
+
   function stepBy(dir: number) {
     if (input.disabled || input.readOnly) return;
     const typed = dirty ? parseNumber(input.value) : null;
-    const base = typed ?? opts.value ?? opts.min ?? 0;
+    // Only for a moment: a step the core refused must not stay the base.
+    const waiting = stepped && opts.value === stepped.from && performance.now() - stepped.at < 1500 ? stepped.to : null;
+    const base = typed ?? waiting ?? opts.value ?? opts.min ?? 0;
     const { min, max } = fieldBounds(opts.min, opts.max);
     const v = stepValue(base, dir, opts.step ?? 1, min, max);
     setDirty(false);
     setInvalid(null);
-    if (store(v)) input.value = fmt(v);
-    else input.value = fmt(opts.value);
+    const from = opts.value;
+    if (store(v)) {
+      input.value = fmt(v);
+      stepped = { from, to: v, at: performance.now() };
+    } else input.value = fmt(opts.value);
   }
 
   function onInput() {

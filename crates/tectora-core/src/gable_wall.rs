@@ -206,6 +206,7 @@ fn piece(part: &RoofPart, edges: Vec<(EdgeDef, usize)>) -> Piece {
     let (edges, map) = edges.into_iter().unzip();
     (
         RoofPart {
+            height: None,
             name: part.name.clone(),
             edges,
         },

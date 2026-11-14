@@ -544,14 +544,63 @@ fn face_to_part(
     Ok(project)
 }
 
-/// The editor's "Building height": every wall of part `part` at
-/// `eave_height`, its breaks, half-hips and the objects on it moved with it
-/// (`tectora_core::edit::height::set_part_height`, the MCP tool's operation).
+/// Where a dormer, chimney, roof window or opening sits on its roof face
+/// (`tectora_core::edit::position::placement`): the dormer window asks it
+/// for the dormer being edited. Calculates the roof, so guarded like `calc`.
+#[tauri::command(async)]
+fn item_placement(
+    project: Project,
+    kind: tectora_core::edit::transform::ItemKind,
+    index: usize,
+) -> CmdResult<Option<tectora_core::edit::position::Placement>> {
+    guard(|| {
+        project
+            .check_input()
+            .map_err(|e| AppError::new(e.code).detail(e.message))?;
+        let it = tectora_core::edit::transform::ItemRef { kind, index };
+        Ok(tectora_core::edit::position::placement(&project, it))
+    })
+}
+
+/// The editor's dimension fields of a dormer, chimney, roof window or
+/// opening: moves it to `from_eave` (along the slope) and `from_left` or
+/// `from_right` on its roof face (`tectora_core::edit::position::place`, the
+/// MCP tool place_item). Calculates the roof, so off the main thread and
+/// guarded like `calc`.
+#[tauri::command(async)]
+fn place_item(
+    mut project: Project,
+    kind: tectora_core::edit::transform::ItemKind,
+    index: usize,
+    from_eave: Option<f64>,
+    from_left: Option<f64>,
+    from_right: Option<f64>,
+) -> CmdResult<Project> {
+    guard(|| {
+        project
+            .check_input()
+            .map_err(|e| AppError::new(e.code).detail(e.message))?;
+        let it = tectora_core::edit::transform::ItemRef { kind, index };
+        tectora_core::edit::position::place(&mut project, it, from_eave, from_left, from_right)
+            .map_err(|d| AppError::new("invalid_input").detail(d))?;
+        Ok(project)
+    })
+}
+
+/// The editor's "Building height": part `part` at `height` (top of the
+/// walls), its roof (eaves, breaks, half-hips) and the objects on it moved
+/// by the change (`tectora_core::edit::height::set_part_height`, the MCP
+/// tool's operation).
 #[tauri::command]
-fn set_part_height(mut project: Project, part: usize, eave_height: f64) -> CmdResult<Project> {
-    tectora_core::edit::height::set_part_height(&mut project, part, eave_height)
-        .map_err(|d| AppError::new("invalid_input").detail(d))?;
-    Ok(project)
+fn set_part_height(mut project: Project, part: usize, height: f64) -> CmdResult<Project> {
+    guard(|| {
+        project
+            .check_input()
+            .map_err(|e| AppError::new(e.code).detail(e.message))?;
+        tectora_core::edit::height::set_part_height(&mut project, part, height)
+            .map_err(|d| AppError::new("invalid_input").detail(d))?;
+        Ok(project)
+    })
 }
 
 /// Settings plus the folders in use (see `Settings::describe`).
@@ -873,6 +922,8 @@ pub fn run() {
             dormer_host,
             face_to_part,
             set_part_height,
+            place_item,
+            item_placement,
             list_attachments,
             attach_files,
             remove_attachment,

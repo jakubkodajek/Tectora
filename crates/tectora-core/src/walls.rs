@@ -171,6 +171,7 @@ impl WallList {
                     };
                     k += 1;
                     let mut part = RoofPart {
+                        height: None,
                         name: format!("Part {group}{suffix}"),
                         edges,
                     };

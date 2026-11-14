@@ -364,6 +364,14 @@
           },
           "type": "array"
         },
+        "height": {
+          "description": "Height of the building: the top of its walls above ground, m.\nTectora's own value: DACAD has no building height (its core reads\nevery height from the walls' roof definitions), so it changes no\nroof figure. The eave height of a wall is its own input and may be\nlower than the building (DACAD measures the eave at the overhang\nline, below the wall top) or higher. `None` in files from before\nthe field: the building is as high as its lowest eave, as the\neditor showed it then ([`RoofPart::building_height`]).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "name": {
           "type": "string"
         }

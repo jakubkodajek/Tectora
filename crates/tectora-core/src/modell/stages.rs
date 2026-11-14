@@ -30,6 +30,9 @@ pub fn run_range(st: &mut State, tol: &Tol, from: usize, to: usize) {
         classify_all,
     ];
     for (i, f) in stages.iter().enumerate() {
+        if st.overflow {
+            return;
+        }
         if i >= from && i < to {
             f(st, tol);
         }

@@ -178,3 +178,33 @@ every wall…", `app/e2e/results.e2e.ts`.
 - Windows, chimneys and openings off every roof face carry a warning; the
   result is unchanged.
 - The Results area rows add up to the total, hand-drawn faces included.
+
+## 10. One building stops every roof (@math, @errors, @ux)
+
+Guards: core `a_wall_of_no_length_leaves_only_its_building_out_and_says_where`
+(walls up to 1 cm), `a_building_the_core_fails_on_alone_leaves_the_others_their_roofs`
+(`tests/result_report.rs`), `tests/modell_budget.rs` (a wing 5 mm off and
+turned 0.2° once aborted the process out of memory), vitest
+`corners.test.ts` "drawn footprint without repeated corners" and "a corner
+added on a wall", `errors.test.ts` "names the building whose roof fails on
+its own", MCP `a_write_that_leaves_a_building_without_roof_says_so_and_calc_names_it`;
+fuzz `cargo run --release -p tectora-core --example join_fuzz -- 2000 <seed>`.
+
+- Corners closer than 1 cm (a corner clicked twice, the closing corner
+  snapped onto the first, a typed 3,006 for 3) never reach the core: the
+  drawing drops them, and a file that has them reports `zero_length_wall`
+  for that building only (the core's own rule: a wall under 0.01 m is a
+  point); the other buildings keep their roof.
+- A corner added by double-click lies on the wall (projected, not rounded to
+  the grid), and the double-click that ends a drawing adds none.
+- A core error that a building also ends with on its own leaves only that
+  building without a roof; the rest is calculated without it (a deliberate
+  departure from DACAD's all-or-nothing run, Jakub 2026-11-14). Export and
+  the stored result stay blocked while any building has no roof or any
+  input is left out.
+- The join stage has an edge budget (`modell::split::MAX_POLY_EDGES`): past
+  it the fallback calculates with its warning instead of the process dying.
+- A join of two buildings (touching, overlapping, different eave heights,
+  overhangs up to 3 m) is calculated by the core or, where the port faults
+  as the original does, by the fallback with its warning; never an error
+  toast or a stale roof.

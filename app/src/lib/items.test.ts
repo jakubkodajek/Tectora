@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { emptyProject, type CalcResult, type Project } from "./types";
-import { deleteItem, followRoof, itemCentre, moveItem, rotateItem, transformItem } from "./items";
+import { deleteItem, followRoof, itemCentre, moveItem, placementOf, rotateItem, transformItem } from "./items";
 import { translation } from "./transform";
-import { chimneyTop, clipConvex, dormerWallLines, onWallLine, planArea, planeOf } from "./scene3d";
+import { chimneyTop, clipConvex, coveredByDormer, dormerWallLines, onWallLine, planArea, planBox, planeOf } from "./scene3d";
 
 const project = (): Project => {
   const p = emptyProject("T");
@@ -89,5 +89,59 @@ describe("3D scene geometry", () => {
     const c = { corners: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }], height: 0 };
     expect(chimneyTop(c, (p) => 4 + p.y)).toEqual({ bottom: 3.7, top: 6 });
     expect(chimneyTop({ ...c, height: 8 }, (p) => 4 + p.y).top).toBe(8);
+  });
+});
+
+describe("placementOf", () => {
+  const pl = (from_eave: number) => ({
+    part: 0, edge: 0, pitch_deg: 40, from_eave, from_eave_plan: from_eave, from_left: 1, from_right: 2,
+    eave_line: [{ x: 0, y: 0 }, { x: 1, y: 0 }], left_line: [{ x: 0, y: 0 }, { x: 0, y: 1 }], right_line: [{ x: 1, y: 0 }, { x: 1, y: 1 }],
+  });
+  const result = { placements: { dormers: [pl(1)], chimneys: [pl(2)], windows: [null, pl(3)], roof_openings: [pl(4)] } } as unknown as CalcResult;
+
+  it("finds each kind's distances by its index", () => {
+    expect(placementOf(result, { kind: "dormer", index: 0 })?.from_eave).toBe(1);
+    expect(placementOf(result, { kind: "chimney", index: 0 })?.from_eave).toBe(2);
+    expect(placementOf(result, { kind: "window", index: 1 })?.from_eave).toBe(3);
+    expect(placementOf(result, { kind: "hole", index: 0 })?.from_eave).toBe(4);
+  });
+
+  it("has none off the roof, for other objects or without a result", () => {
+    expect(placementOf(result, { kind: "window", index: 0 })).toBeNull();
+    expect(placementOf(result, { kind: "window", index: 7 })).toBeNull();
+    expect(placementOf(result, { kind: "line", index: 0 } as never)).toBeNull();
+    expect(placementOf(null, { kind: "dormer", index: 0 })).toBeNull();
+  });
+});
+
+describe("coveredByDormer", () => {
+  // A gable dormer 2 m wide on the front y = 0.8, cheeks running +y; the
+  // calculation (koty-test job) returns its gable triangle above the eave.
+  const lines = dormerWallLines({
+    edges: [
+      { start: { x: 6, y: 0.8 }, eave_height: 5.1, pitch_deg: 45, overhang: 0, direction_rad: (3 * Math.PI) / 2 },
+      { start: { x: 6, y: 0.8 }, eave_height: 5.1, pitch_deg: 90, overhang: 0 },
+      { start: { x: 8, y: 0.8 }, eave_height: 5.1, pitch_deg: 45, overhang: 0, direction_rad: Math.PI / 2 },
+    ],
+    end: { x: 8, y: 0.8 },
+  } as never);
+  const box = planBox([
+    [[6, 0.8, 5.1], [7, 0.8, 6.1], [7, 3.2, 6.1], [6, 3.2, 5.1]],
+    [[7, 0.8, 6.1], [8, 0.8, 5.1], [8, 3.2, 5.1], [7, 3.2, 6.1]],
+  ]);
+  const dormers = [{ lines, box }];
+
+  it("drops the dormer's own gable, drawn already as its front wall (no flicker)", () => {
+    expect(coveredByDormer([[8, 0.8, 5.1], [7, 0.8, 6.1], [6, 0.8, 5.1]], dormers)).toBe(true);
+  });
+
+  it("keeps a main gable in the plane of a dormer cheek", () => {
+    // Dormer flush with the building's side: cheek on x = 6 like this gable.
+    expect(coveredByDormer([[6, -0.5, 3], [6, 4, 6.8], [6, 8.5, 3]], dormers)).toBe(false);
+  });
+
+  it("keeps gables elsewhere and with no dormer faces", () => {
+    expect(coveredByDormer([[12.5, 8.5, 3], [12.5, 4, 6.8], [12.5, -0.5, 3]], dormers)).toBe(false);
+    expect(coveredByDormer([[8, 0.8, 5.1], [7, 0.8, 6.1], [6, 0.8, 5.1]], [{ lines, box: null }])).toBe(false);
   });
 });

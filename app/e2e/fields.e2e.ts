@@ -208,9 +208,11 @@ test.describe("number fields", () => {
         const e = (await loadProject(id)).parts[0].edges;
         expect(Math.hypot(e[1].start.x - e[0].start.x, e[1].start.y - e[0].start.y)).toBeCloseTo(cur + 0.5, 3);
       } else if (label === cs("edge.buildingHeight")) {
-        // Every wall of the building, with wall 1's pitch break moved along.
+        // Every wall of the building, with wall 1's pitch break moved along,
+        // and the building's own height (Jakub 2026-11-14).
         const walls = (await loadProject(id)).parts[0].edges.map((_: unknown, k: number) => `0.edges.${k}.eave_height`);
-        expect([...changed].sort(), label).toEqual([...walls, "0.edges.0.breaks.0.height"].sort());
+        expect([...changed].sort(), label).toEqual([...walls, "0.edges.0.breaks.0.height", "0.height"].sort());
+        expect(after["0.height"], label).toBeCloseTo(cur + 0.5, 6);
         for (const k of walls) expect(after[k], label).toBeCloseTo(cur + 0.5, 6);
         expect(after["0.edges.0.breaks.0.height"] - before["0.edges.0.breaks.0.height"], label).toBeCloseTo(0.5, 6);
       } else {

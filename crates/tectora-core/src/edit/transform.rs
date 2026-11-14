@@ -125,6 +125,8 @@ fn map_part(part: &RoofPart, m: Power, name: String) -> RoofPart {
         .first()
         .map_or(Point2::new(0.0, 0.0), |e| e.start);
     RoofPart {
+        // Moving, turning or mirroring keeps the building's height.
+        height: part.height,
         name,
         edges: map_chain(&part.edges, first, m).0,
     }
@@ -539,9 +541,19 @@ pub fn follow_roof(
                 }
             }
             ItemKind::Dormer => {
+                // The dormer's pitch breaks and half-hip move with its eave
+                // (as `set_part_height` moves a building's); left behind, a
+                // half-hip below the new eave ended the core with E00002 and
+                // took every roof (review MATH-001).
                 if let Some(dm) = project.dormers.get_mut(it.index) {
                     for e in &mut dm.edges {
                         e.eave_height = round_to(e.eave_height + d, 3);
+                        for b in &mut e.breaks {
+                            b.height = round_to(b.height + d, 3);
+                        }
+                        if let Some(h) = &mut e.half_hip {
+                            h.height = round_to(h.height + d, 3);
+                        }
                     }
                 }
             }
@@ -632,6 +644,7 @@ mod tests {
     // 10 x 6 counter-clockwise: south eave 30°, east gable, north eave 45°, west eave 40°.
     fn part() -> RoofPart {
         RoofPart {
+            height: None,
             name: "A".into(),
             edges: vec![
                 wall(0.0, 0.0, 30.0),
@@ -752,6 +765,42 @@ mod tests {
             |q| Some(q.y * 0.5),
         );
         assert_eq!(p.chimneys[0].height, 6.5);
+    }
+
+    #[test]
+    fn follow_roof_lifts_a_dormers_half_hip_and_breaks_with_its_eave() {
+        let mut p = with_items();
+        let mut d = crate::edit::dormers::build_dormer(&crate::edit::dormers::default_params(
+            crate::edit::dormers::DormerKind::HalfHip,
+            Point2::new(1.0, 1.0),
+            0.0,
+            4.0,
+        ));
+        d.edges[0].breaks = vec![crate::model::PitchBreak {
+            height: 4.4,
+            pitch_deg: 20.0,
+        }];
+        p.dormers = vec![d];
+        let hh = |p: &Project| {
+            p.dormers[0]
+                .edges
+                .iter()
+                .find_map(|e| e.half_hip.as_ref().map(|h| h.height))
+                .expect("a half-hip dormer has a half-hip")
+        };
+        let (eave, half) = (p.dormers[0].edges[0].eave_height, hh(&p));
+        let it = ItemRef {
+            kind: ItemKind::Dormer,
+            index: 0,
+        };
+        follow_roof(
+            &mut p,
+            &[(it, Point2::new(2.0, 1.0), Point2::new(2.0, 2.0))],
+            |q| Some(q.y * 0.5),
+        );
+        assert_eq!(p.dormers[0].edges[0].eave_height, round_to(eave + 0.5, 3));
+        assert_eq!(hh(&p), round_to(half + 0.5, 3));
+        assert_eq!(p.dormers[0].edges[0].breaks[0].height, 4.9);
     }
 
     #[test]

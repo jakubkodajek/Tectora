@@ -46,11 +46,12 @@ programs; Codex in the ChatGPT desktop app can.
 | `create_standard_roof`, `create_project`, `create_from_example` | Create designs |
 | `add_part`, `add_shape_part`, `transform_part`, `delete_items`, `clear_roof` | Parts: add (standard roofs, regular polygons), move / rotate / mirror / copy, delete anything, clear the whole canvas |
 | `update_edges`, `set_outline`, `edit_walls` | Walls and their roof definitions (incl. clad gable and the direction of a direction change); corners, lengths, direction changes, parallel shift |
-| `set_part_height` | A building's height: the eave height of every wall of a part in one save, its breaks, half-hips, dormers and chimneys moved with it |
+| `set_part_height` | A building's height (`height`, top of the walls; the roof and the objects on it move with it, each eave keeps its offset) or every wall at one eave height (`eave_height`), in one save |
 | `add_dormer`, `update_dormer` | Dormers by kind (gable, pointed, hip, half-hip, shed, trapezoid, round), by eave height or, as the dormer window, by front wall height, depth or ridge length; front and side overhangs apart, a trapezoid by its back width |
 | `set_openings`, `set_manual`, `face_to_part`, `set_roof_options` | Windows, chimneys, openings (a window larger than its face is refused); hand-drawn lines and faces, a face turned into a building; flat roof, material names |
 | `update_opening` | Position, width, depth, rotation and top of one chimney or roof opening (any shape, stretched in its box along the first side), or position and size of one roof window (the object bar) |
 | `transform_items` | Move, rotate, copy or align to the nearest wall single dormers, chimneys, windows, openings, hand-drawn lines and faces (the plan's drag and right-click menu) |
+| `place_item` | Put one dormer, chimney, window or opening at distances on its roof face: from the eave (along the slope) and from the left or right side edge, as the editor's position fields and plan dimensions show them |
 | `roof_helper` | Calculation helpers (triangle, two parallels, point in space, merge, hip/valley, build-up, round roof), preview or apply |
 | `update_job`, `store_result` | Job data and status; the stored result for the offer |
 | `get_history`, `get_review`, `revert_to`, `revert_last_change`, `show_project` | History, review state (accepted or still pending in the app, effect on the figures), undo, focus in the app |

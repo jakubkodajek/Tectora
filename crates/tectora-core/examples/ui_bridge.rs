@@ -377,12 +377,38 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             )?;
             to_json(project)
         }
+        "item_placement" => {
+            let project = arg::<Project>(a, "project")?;
+            project.check_input().map_err(|e| e.message)?;
+            let it = tectora_core::edit::transform::ItemRef {
+                kind: arg(a, "kind")?,
+                index: arg(a, "index")?,
+            };
+            to_json(tectora_core::edit::position::placement(&project, it))
+        }
+        "place_item" => {
+            let mut project = arg::<Project>(a, "project")?;
+            project.check_input().map_err(|e| e.message)?;
+            let it = tectora_core::edit::transform::ItemRef {
+                kind: arg(a, "kind")?,
+                index: arg(a, "index")?,
+            };
+            tectora_core::edit::position::place(
+                &mut project,
+                it,
+                arg::<Option<f64>>(a, "fromEave")?,
+                arg::<Option<f64>>(a, "fromLeft")?,
+                arg::<Option<f64>>(a, "fromRight")?,
+            )?;
+            to_json(project)
+        }
         "set_part_height" => {
             let mut project = arg::<Project>(a, "project")?;
+            project.check_input().map_err(|e| e.message)?;
             tectora_core::edit::height::set_part_height(
                 &mut project,
                 arg(a, "part")?,
-                arg(a, "eaveHeight")?,
+                arg(a, "height")?,
             )?;
             to_json(project)
         }

@@ -80,6 +80,22 @@ describe("calculation errors", () => {
     expect(JSON.stringify(d)).not.toContain("DACAD");
   });
 
+  it("names the building whose roof fails on its own", () => {
+    // One core error stops every roof of the job; the bar says which building to fix.
+    setLocale("cs");
+    const p = emptyProject("x");
+    p.parts = [
+      { name: "Main", edges: [] },
+      { name: "Garáž", edges: [] },
+    ] as never;
+    const e = { kind: "open_faces", message: "x", parts: [1] } as const;
+    const d = describeCalcError({ ...e, parts: [1] }, p);
+    expect(d.title.startsWith("Budova 2 „Garáž“ – ")).toBe(true);
+    expect(d.hint).toContain("Ostatní budovy");
+    // One building, or no culprit: as before.
+    expect(describeCalcError({ ...e, parts: [] }, p).title).toBe("Střechu nelze spočítat: plochy se neuzavírají");
+  });
+
   it("names the part and wall of an input problem", () => {
     setLocale("cs");
     const p = emptyProject("x");

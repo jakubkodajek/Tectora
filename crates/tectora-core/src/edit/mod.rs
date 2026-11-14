@@ -18,6 +18,7 @@ pub mod calc;
 pub mod dormers;
 pub mod height;
 pub mod openings;
+pub mod position;
 pub mod probe;
 pub mod round;
 pub mod transform;
@@ -229,6 +230,7 @@ pub fn face_to_part(
         return Err(format!("hand-drawn face {index} has fewer than 3 corners"));
     }
     let mut part = crate::model::RoofPart {
+        height: None,
         name: name.to_string(),
         edges: face
             .points

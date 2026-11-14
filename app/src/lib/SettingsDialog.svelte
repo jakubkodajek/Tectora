@@ -8,7 +8,7 @@
   import { mayLeave } from "./leave";
   import { LOCALES, i18n, t } from "./i18n.svelte";
   import { numeric } from "./numeric.svelte";
-  import { app, loadSettings, presets, prefs, updateSettings } from "./settings.svelte";
+  import { app, loadSettings, presets, prefs, savePrefs, updateSettings } from "./settings.svelte";
   import { ui, type Theme } from "./theme.svelte";
 
   let { onclose, onlibrarychanged }: { onclose: () => void; onlibrarychanged: () => void } = $props();
@@ -162,6 +162,13 @@
           </div>
         </div>
       </div>
+      <label class="check">
+        <input type="checkbox" role="switch" class="switch" data-testid="tool-labels" checked={prefs.toolLabels} onchange={(e) => { prefs.toolLabels = (e.target as HTMLInputElement).checked; savePrefs(); }} />
+        <span>
+          {t("settings.toolLabels")}
+          <small>{t("settings.toolLabelsHint")}</small>
+        </span>
+      </label>
     </section>
 
     <section>
@@ -375,6 +382,40 @@
     flex-direction: column;
     gap: 2px;
     font-weight: 550;
+  }
+  /* An on/off switch: the knob moves right and fills with the accent when on. */
+  .check input.switch {
+    appearance: none;
+    flex: none;
+    position: relative;
+    width: 34px;
+    height: 20px;
+    margin-top: 1px;
+    border-radius: 10px;
+    background: var(--text-3);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .check input.switch::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--surface);
+    transition: transform 0.15s;
+  }
+  .check input.switch:checked {
+    background: var(--accent);
+  }
+  .check input.switch:checked::after {
+    transform: translateX(14px);
+  }
+  .check input.switch:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
   }
   .check small {
     font-weight: 400;

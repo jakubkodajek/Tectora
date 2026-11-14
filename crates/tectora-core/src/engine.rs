@@ -249,6 +249,7 @@ fn classify(e: CoreError) -> Failure {
             code: e.dacad_code(),
             message_id: id,
             message,
+            parts: Vec::new(),
         })
     };
     match &e {
