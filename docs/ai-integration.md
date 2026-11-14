@@ -51,6 +51,7 @@ programs; Codex in the ChatGPT desktop app can.
 | `set_openings`, `set_manual`, `face_to_part`, `set_roof_options` | Windows, chimneys, openings (a window larger than its face is refused); hand-drawn lines and faces, a face turned into a building; flat roof, material names |
 | `update_opening` | Position, width, depth, rotation and top of one chimney or roof opening (any shape, stretched in its box along the first side), or position and size of one roof window (the object bar) |
 | `transform_items` | Move, rotate, copy or align to the nearest wall single dormers, chimneys, windows, openings, hand-drawn lines and faces (the plan's drag and right-click menu) |
+| `place_item` | Put one dormer, chimney, window or opening at distances on its roof face: from the eave (along the slope) and from the left or right side edge, as the editor's position fields and plan dimensions show them |
 | `roof_helper` | Calculation helpers (triangle, two parallels, point in space, merge, hip/valley, build-up, round roof), preview or apply |
 | `update_job`, `store_result` | Job data and status; the stored result for the offer |
 | `get_history`, `get_review`, `revert_to`, `revert_last_change`, `show_project` | History, review state (accepted or still pending in the app, effect on the figures), undo, focus in the app |

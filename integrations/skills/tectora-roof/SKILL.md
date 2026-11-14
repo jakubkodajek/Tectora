@@ -55,6 +55,10 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    roofs are joined by those eave heights. The building height (`height`,
    top of the walls, from the sections) is a separate value: the eave at
    the overhang edge is usually lower.
+   Where a drawing dimensions a dormer, chimney or window from the eave and
+   from a roof edge, place it with `place_item` (`from_eave` along the
+   slope, `from_left` or `from_right`) and check it against `placements`
+   in `get_project`.
    Each `summary` is one sentence in the user's language
    naming the sheet, e.g. "Sklon uliční strany 42° podle řezu A-A".
 7. In the check step first look at the roof over the drawing:

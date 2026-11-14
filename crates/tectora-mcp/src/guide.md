@@ -91,6 +91,13 @@ The tools cover every operation of the Tectora editor:
   copies them, as the user drags them in the plan or uses their right-click
   menu; on a move chimney tops and dormer eaves follow the roof. `align`
   turns chimneys and roof openings square to the nearest eave wall.
+- Position on the roof like a dimensioned drawing: `get_project` returns
+  `placements` (per dormer, chimney, window and opening: the roof face it
+  sits on, `from_eave` measured along the slope from the eave line to the
+  object's lowest point, `from_eave_plan` the same in plan, `from_left` and
+  `from_right` from the face's side edges at that level). `place_item` moves
+  one object to such distances: `from_eave` and one of `from_left` /
+  `from_right`, each optional, in one save.
 - Flat roof and material names: `set_roof_options`.
 - Calculation helpers of the roof definition: `roof_helper` (simple
   triangle, two parallel walls, point in space, merge faces, hip/valley,
