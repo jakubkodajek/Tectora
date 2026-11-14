@@ -593,9 +593,14 @@ fn place_item(
 /// tool's operation).
 #[tauri::command]
 fn set_part_height(mut project: Project, part: usize, height: f64) -> CmdResult<Project> {
-    tectora_core::edit::height::set_part_height(&mut project, part, height)
-        .map_err(|d| AppError::new("invalid_input").detail(d))?;
-    Ok(project)
+    guard(|| {
+        project
+            .check_input()
+            .map_err(|e| AppError::new(e.code).detail(e.message))?;
+        tectora_core::edit::height::set_part_height(&mut project, part, height)
+            .map_err(|d| AppError::new("invalid_input").detail(d))?;
+        Ok(project)
+    })
 }
 
 /// Settings plus the folders in use (see `Settings::describe`).

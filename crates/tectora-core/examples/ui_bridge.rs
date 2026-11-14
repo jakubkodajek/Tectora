@@ -404,6 +404,7 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         }
         "set_part_height" => {
             let mut project = arg::<Project>(a, "project")?;
+            project.check_input().map_err(|e| e.message)?;
             tectora_core::edit::height::set_part_height(
                 &mut project,
                 arg(a, "part")?,

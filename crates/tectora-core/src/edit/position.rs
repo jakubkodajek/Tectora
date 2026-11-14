@@ -286,14 +286,19 @@ pub fn placements(project: &Project) -> Placements {
     }
 }
 
-/// Largest distance [`place`] accepts, m: beyond any roof face, so a typing
-/// error (cm for m) is refused instead of moving the object off the roof.
+/// Largest distance [`place`] accepts, m (beyond any roof face). A typing
+/// error (cm for m) below it is refused because the object would leave its
+/// face, which [`place`] checks after every step.
 pub const MAX_DISTANCE: f64 = 500.0;
 
 /// Moves object `it` so that it sits `from_eave` (along the slope) above
 /// the lowest edge of its face and `from_left` or `from_right` from the
-/// side, on the face it stands on now. A value left out keeps that
-/// distance. The object keeps its height above the roof (a dormer's eave
+/// side, on the face it stands on now. A value left out keeps the
+/// object's position along that direction: the distance from the eave, or
+/// the place along the eave (on a hip or valley face, whose sides slant,
+/// the side distances then change). It must stay on the same face with
+/// each value given reached, else nothing changes and an error says why.
+/// The object keeps its height above the roof (a dormer's eave
 /// and a chimney's top follow the roof, [`follow_roof`]). Returns whether
 /// it moved.
 pub fn place(
@@ -312,9 +317,11 @@ pub fn place(
         ("from_right", from_right),
     ] {
         if let Some(v) = v
-            && (!v.is_finite() || !(-MAX_DISTANCE..=MAX_DISTANCE).contains(&v))
+            && (!v.is_finite() || !(0.0..=MAX_DISTANCE).contains(&v))
         {
-            return Err(format!("{name} {v} is out of range (±{MAX_DISTANCE} m)"));
+            return Err(format!(
+                "{name} {v:.3} is out of range (0 to {MAX_DISTANCE} m from the edge of its roof face)"
+            ));
         }
     }
     if matches!(it.kind, ItemKind::ManualLine | ItemKind::ManualFace) {
@@ -323,6 +330,7 @@ pub fn place(
         );
     }
     let bare = bare_roof(project);
+    let before = project.clone();
     let Some((now, k)) = locate(project, &bare, it) else {
         return Err("the object stands on no roof face, so it has no distances to set".into());
     };
@@ -338,9 +346,24 @@ pub fn place(
         shift(project, &bare, it, Point2::new(up.x * dv, up.y * dv));
         moved = true;
     }
+    // Every step must leave the object on the face it started on: past a
+    // ridge, hip or pitch break the distances belong to another face, so the
+    // field would show another number than the one typed, and a side step
+    // measured there but applied along this face put objects off the roof
+    // (review MATH-002). Then nothing changes and the call says why.
+    let leave = |project: &mut Project, what: &str| -> Result<bool, String> {
+        *project = before.clone();
+        Err(format!(
+            "the object would leave its roof face ({what}); give a smaller distance"
+        ))
+    };
+    let on_face = |project: &Project| -> Option<Placement> {
+        locate(project, &bare, it).and_then(|(p, k2)| (k2 == k && p.part == now.part).then_some(p))
+    };
     if from_left.is_some() || from_right.is_some() {
-        let again = placement_in(project, &bare, it)
-            .ok_or("the object would leave the roof face; give a smaller distance from the eave")?;
+        let Some(again) = on_face(project) else {
+            return leave(project, "from the eave");
+        };
         let du = match (from_left, from_right) {
             (Some(l), _) => l - again.from_left,
             (_, Some(r)) => again.from_right - r,
@@ -350,6 +373,24 @@ pub fn place(
             shift(project, &bare, it, Point2::new(along.x * du, along.y * du));
             moved = true;
         }
+    }
+    let Some(done) = on_face(project) else {
+        return leave(project, "from the side");
+    };
+    // Each value given is where the object now is (1 mm): a hip face, whose
+    // width changes with the height, cannot reach every pair.
+    let off = |want: Option<f64>, got: f64| want.is_some_and(|w| (w - got).abs() > 1e-3);
+    if off(from_eave, done.from_eave)
+        || off(from_left, done.from_left)
+        || off(from_right, done.from_right)
+    {
+        return leave(project, "the distances do not fit on it");
+    }
+    // A side step must keep the object inside both sides of the face.
+    if (from_left.is_some() || from_right.is_some())
+        && (done.from_left < -1e-3 || done.from_right < -1e-3)
+    {
+        return leave(project, "past the other side");
     }
     Ok(moved)
 }
@@ -587,5 +628,42 @@ mod tests {
         }
         assert!(place(&mut p, it, None, Some(1.0), Some(1.0)).is_err());
         assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_distance_past_the_ridge_or_the_verge_is_refused_and_changes_nothing() {
+        // Gable 10 x 8 m, 0.5 m overhang, 40°: 5.874 m from eave to ridge,
+        // the face 11 m wide (review MATH-002).
+        let mut p = gable(0.5, 40.0);
+        p.windows.push(RoofWindow {
+            x: 2.0,
+            y: 2.0,
+            width: 1.0,
+            height: 1.0,
+        });
+        let it = ItemRef {
+            kind: ItemKind::Window,
+            index: 0,
+        };
+        let before = p.clone();
+        for (eave, left, right) in [
+            (Some(5.5), None, None),      // over the ridge onto the back face
+            (Some(150.0), None, None),    // cm typed for m
+            (None, Some(-1.0), None),     // beyond the verge
+            (None, Some(10.5), None),     // off the other verge
+            (Some(5.5), Some(3.0), None), // the side step after leaving
+            (None, None, Some(-0.2)),     // negative from the right
+        ] {
+            assert!(
+                place(&mut p, it, eave, left, right).is_err(),
+                "{eave:?} {left:?} {right:?}"
+            );
+            assert_eq!(p, before, "{eave:?} {left:?} {right:?}");
+        }
+        assert_eq!(place(&mut p, it, Some(2.0), None, Some(0.5)), Ok(true));
+        let pl = placement(&p, it).unwrap();
+        near(pl.from_eave, 2.0);
+        near(pl.from_right, 0.5);
+        near(pl.from_left, 9.5);
     }
 }

@@ -191,7 +191,46 @@ pub fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
             "the roof calculation does not finish for this roof; undo the last change or adjust the pitches"
         }
     };
-    json!({ "kind": e.kind, "message": message })
+    let mut v = json!({ "kind": e.kind, "message": message });
+    // Which buildings end with the error on their own too: fix those; the
+    // others are calculated without them (review ARCH-002).
+    if !e.parts.is_empty() {
+        v["failing_parts"] = json!(e.parts);
+        v["message"] = format!(
+            "{message}. The building(s) in failing_parts (indices) fail on their own; the other buildings are calculated without them"
+        )
+        .into();
+    }
+    v
+}
+
+/// The buildings without a roof after a write, and the input problems that
+/// left a building out, so an AI learns at once that its change broke a
+/// roof instead of reading "Saved" (review ERR-003). Empty when all is well.
+fn roof_trouble(project: &Project) -> Option<Value> {
+    let geos = tectora_core::openings::generate_project(project);
+    let errors: Vec<Value> = geos
+        .iter()
+        .enumerate()
+        .filter_map(|(i, g)| {
+            g.error.as_ref().map(|e| {
+                json!({ "part": i, "name": project.parts.get(i).map(|p| p.name.as_str()), "error": calc_error(e) })
+            })
+        })
+        .collect();
+    let problems: Vec<Value> = project
+        .problems()
+        .iter()
+        .map(|p| serde_json::to_value(p).unwrap_or(Value::Null))
+        .collect();
+    if errors.is_empty() && problems.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "message": "Saved, but some roofs are not calculated; fix them (or revert this change) before you continue",
+        "roof_errors": errors,
+        "problems": problems,
+    }))
 }
 
 fn quantities(project: &Project) -> Value {
@@ -880,14 +919,18 @@ impl Server {
             .as_ref()
             .map(|b| diff(b, project))
             .unwrap_or_default();
-        Ok(json!({
+        let mut out = json!({
             "id": id,
             "saved": true,
             "note": "Saved. The change is now visible in the Tectora app for the user to review.",
             "changes": changes,
             "quantities": quantities(project),
             "parts": project.parts.iter().map(describe_part).collect::<Vec<_>>(),
-        }))
+        });
+        if let Some(t) = roof_trouble(project) {
+            out["roof_trouble"] = t;
+        }
+        Ok(out)
     }
 
     /// Saves a change made on `before` (the job as the tool loaded it). When
@@ -1296,7 +1339,8 @@ impl Server {
                     })
                     .collect();
                 let mut part = RoofPart {
-                    height: None,
+                    // A new outline keeps the building's height (review ARCH-001).
+                    height: old.height,
                     name: old.name,
                     edges,
                 };

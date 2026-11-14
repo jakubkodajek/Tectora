@@ -140,15 +140,36 @@ pub fn set_part_height(project: &mut Project, part: usize, height: f64) -> Resul
     check(height, "building height")?;
     let p = walls(project, part)?;
     let old = p.building_height().unwrap_or(height);
+    // A height from the file out of range (a damaged or hand-edited job)
+    // would move every eave by an absurd amount (review ARCH-003).
+    check(old, "the building's current height")?;
     let d = round_to(height - old, 3);
     let changed = p.height != Some(height) || d != 0.0;
-    project.parts[part].height = Some(height);
+    let mut next = project.clone();
+    next.parts[part].height = Some(height);
     if d != 0.0 {
-        for e in &mut project.parts[part].edges {
+        for e in &mut next.parts[part].edges {
             shift(e, d);
         }
-        move_objects(project, part, d);
+        // Every eave, break and half-hip stays above ground: an eave lower
+        // than the building would else go below it (review MATH-003).
+        let lowest = next.parts[part]
+            .edges
+            .iter()
+            .flat_map(|e| {
+                std::iter::once(e.eave_height)
+                    .chain(e.breaks.iter().map(|b| b.height))
+                    .chain(e.half_hip.iter().map(|h| h.height))
+            })
+            .fold(f64::INFINITY, f64::min);
+        if lowest < 0.0 {
+            return Err(format!(
+                "at a building height of {height:.3} m an eave would be {lowest:.3} m, below the ground"
+            ));
+        }
+        move_objects(&mut next, part, d);
     }
+    *project = next;
     Ok(changed)
 }
 
@@ -358,5 +379,30 @@ mod tests {
         let back: RoofPart =
             serde_json::from_str(&serde_json::to_string(&p.parts[0]).unwrap()).unwrap();
         assert_eq!(back.height, Some(5.5));
+    }
+
+    #[test]
+    fn a_building_height_that_puts_an_eave_below_ground_is_refused() {
+        let mut p = two_buildings();
+        let base = p.parts[1].edges[0].eave_height;
+        assert!(set_part_height(&mut p, 1, base).unwrap());
+        p.parts[1].edges[0].eave_height = base - 0.4;
+        let before = p.clone();
+        // 0.2 m: the low eave would be at -0.2 m (review MATH-003).
+        assert!(set_part_height(&mut p, 1, 0.2).is_err());
+        assert_eq!(p, before);
+        assert!(set_part_height(&mut p, 1, 0.4).unwrap());
+        assert_eq!(p.parts[1].edges[0].eave_height, 0.0);
+    }
+
+    #[test]
+    fn a_stored_building_height_out_of_range_is_refused() {
+        // 99 999 m passes the file limits; moving from it would put every
+        // eave about 100 km below ground (review ARCH-003).
+        let mut p = two_buildings();
+        p.parts[1].height = Some(99_999.0);
+        let before = p.clone();
+        assert!(set_part_height(&mut p, 1, 3.0).is_err());
+        assert_eq!(p, before);
     }
 }

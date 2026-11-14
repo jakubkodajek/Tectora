@@ -200,8 +200,14 @@ result; move it onto the roof or delete it. `window_off_roof`,
 move it onto the roof or delete it. `not_calculated_by_core`: the
 figures come from Tectora's fallback engine and may differ from the
 standard result. A part the calculation gave no roof for carries `error`
-(`kind`, `message`): say so instead of reporting 0 m². `joined_with` names
-the parts the calculation actually joined the part's roof with.
+(`kind`, `message`): say so instead of reporting 0 m². When some buildings
+fail on their own, `failing_parts` lists them: only those have no roof, the
+others are calculated without them. A wall shorter than 1 cm is a
+`zero_length_wall` problem that leaves its building out. Every write answers
+with `roof_trouble` (`roof_errors`, `problems`) when after it a building has
+no roof or input is left out: fix it or revert before going on.
+`joined_with` names the parts the calculation actually joined the part's
+roof with.
 
 ## Turning a technical drawing into a roof
 
