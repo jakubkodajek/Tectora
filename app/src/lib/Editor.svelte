@@ -704,7 +704,13 @@
     try {
       next = await api.placeItem($state.snapshot(project) as Project, MCP_KIND[it.kind], it.index, fromEave, fromLeft, fromRight);
     } catch (e) {
-      notifyError(e, "calc");
+      // A distance that would take the object off its face is refused: said
+      // in the user's language, and the field shows where it still is.
+      const d = describeError(e, "calc");
+      if (d.code === "invalid_input" || /roof face|out of range/.test(d.detail ?? "")) {
+        notify({ kind: "error", code: "place_refused", title: t("place.refusedTitle"), message: t("place.refused"), detail: d.detail });
+      } else notifyError(e, "calc");
+      recalc();
       return;
     }
     // Only onto the same job state: an AI save or an edit in between wins.
@@ -1083,9 +1089,12 @@
     await pendingEdits.settled();
     if (!project || at <= objDlgAt || !history[objDlgAt]) return;
     const sel = openSel;
-    project = JSON.parse(history[objDlgAt]);
-    commit();
-    openSel = sel && itemExists(project!, sel) ? sel : null;
+    // Back to the step the dialog opened on, and the cancelled edits out of
+    // the history, so Undo does not bring them back.
+    restore(objDlgAt);
+    history = history.slice(0, objDlgAt + 1);
+    historyLen = history.length;
+    openSel = sel && project && itemExists(project, sel) ? sel : null;
   }
 
   /**

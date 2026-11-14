@@ -70,7 +70,9 @@ describe("a corner added on a wall", () => {
   });
   it("stays on an axis wall at grid points and never on its ends", () => {
     expect(onWall(p(0, 3), p(20, 3), p(7.012, 3.04), 0.05)).toEqual(p(7, 3));
-    expect(onWall(p(0, 3), p(20, 3), p(-1, 3), 0.05)).toEqual(p(0.01, 3));
-    expect(onWall(p(0, 0), p(0.015, 0), p(0.01, 0), 0.05)).toBeNull();
+    expect(onWall(p(0, 3), p(20, 3), p(-1, 3), 0.05)).toEqual(p(0.05, 3));
+    // 2 cm from a corner, zoomed in: never a wall under 1 cm.
+    expect(onWall(p(20.003, 3), p(20.003, 9), p(20.003, 3.02), 0.05)).toEqual(p(20.003, 3.05));
+    expect(onWall(p(0, 0), p(0.06, 0), p(0.03, 0), 0.05)).toBeNull();
   });
 });

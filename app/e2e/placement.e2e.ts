@@ -53,13 +53,32 @@ test.describe("distances on the roof", () => {
     const ob = bar(page, "opening.window");
     const before = (await loadProject(id)).windows[0];
     await setField(ob.getByTestId("place-eave"), "150");
-    await expect(page.locator(".toast, [role=alert]").first()).toBeVisible();
+    await expect(page.getByText(cs("place.refusedTitle"))).toBeVisible();
+    // The field shows where the window still is.
+    await expect(ob.getByTestId("place-eave")).not.toHaveValue("150,000");
     await page.waitForTimeout(500);
     expect((await loadProject(id)).windows[0]).toEqual(before);
     // The fields stay, so the value can be typed again (review UI-006).
     await expect(ob.getByTestId("place-eave")).toBeVisible();
     // The refusal is reported (toast and log), as intended.
     app.errors.length = 0;
+  });
+});
+
+test.describe("distances by arrow keys", () => {
+  test("four quick arrow steps move a chimney four steps", async ({ app, page }) => {
+    const id = await createExample("gable", "Sedlo");
+    await withItems(id, (p) => (p.chimneys = [{ corners: [{ x: 8, y: 5.5 }, { x: 8.6, y: 5.5 }, { x: 8.6, y: 6.1 }, { x: 8, y: 6.1 }], height: 0 }]));
+    await openEditor(app, "Sedlo");
+    await clickPlan(page, 8.3, 5.8);
+    const ob = bar(page, "opening.chimney");
+    const left = ob.getByTestId("place-left");
+    await expect(left).toBeVisible();
+    const start = (await placement(id, "chimney", 0)).from_left;
+    await left.focus();
+    for (let i = 0; i < 4; i++) await page.keyboard.press("ArrowUp");
+    // Review UI-002: each step went from the value not yet back from the core.
+    await expect.poll(async () => +((await placement(id, "chimney", 0)).from_left - start).toFixed(3)).toBe(0.2);
   });
 });
 
@@ -76,6 +95,10 @@ test.describe("Properties", () => {
     await waitForProject(id, (p) => p.chimneys[0].height === 9);
     await page.getByRole("button", { name: cs("common.cancel"), exact: true }).click();
     await waitForProject(id, (p) => p.chimneys[0].height === before.height);
+    // Undo does not bring the cancelled edit back.
+    await page.keyboard.press("Control+z");
+    await page.waitForTimeout(500);
+    expect((await loadProject(id)).chimneys[0].height).not.toBe(9);
     await doubleClickPlan(page, 8.3, 5.8);
     await setField(page.getByTestId("object-dialog").getByLabel(cs("opening.top")), 9);
     await page.getByTestId("object-dialog-ok").click();

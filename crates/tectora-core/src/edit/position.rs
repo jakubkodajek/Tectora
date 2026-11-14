@@ -375,7 +375,12 @@ pub fn place(
         }
     }
     let Some(done) = on_face(project) else {
-        return leave(project, "from the side");
+        let what = if from_left.is_some() || from_right.is_some() {
+            "from the side"
+        } else {
+            "from the eave"
+        };
+        return leave(project, what);
     };
     // Each value given is where the object now is (1 mm): a hip face, whose
     // width changes with the height, cannot reach every pair.

@@ -74,12 +74,15 @@ export function mergeDroppedCorner(es: EdgeDef[], v: number): boolean {
 
 /**
  * The point on wall a–b nearest to `p`, its distance from `a` rounded to
- * `step` and kept at least 1 cm (the core's shortest wall) from both ends;
+ * `step` and kept a step, at least 2 cm, from both ends (the core's
+ * shortest wall is 1 cm);
  * null on a wall too short for a corner. Coordinates to the millimetre.
  */
 export function onWall(a: Point2, b: Point2, p: Point2, step: number): Point2 | null {
   const len = Math.hypot(b.x - a.x, b.y - a.y);
-  const min = 0.01;
+  // Two grid steps (at least 2 cm) from either end: 1 cm itself rounds to
+  // 0.0099… and counts as no wall (review: verifier of ERR-002).
+  const min = Math.max(step, 0.02);
   if (len < 2 * min) return null;
   const [ux, uy] = [(b.x - a.x) / len, (b.y - a.y) / len];
   let s = (p.x - a.x) * ux + (p.y - a.y) * uy;
