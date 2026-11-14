@@ -379,11 +379,17 @@
       return;
     }
     if (drawing && e.button === 0) {
-      lastDrawPress = performance.now();
+      const now = performance.now();
       const p = localPoint(e);
       const first = drawing[0];
+      // A double-click ends the footprint at the clicked corner and closes
+      // it with a wall back to the first corner (as wall entry does in
+      // the reference program); its first press already added the corner.
+      const again = lastDrawAt && now - lastDrawPress < DOUBLE_MS && Math.hypot(lastDrawAt.x - p.x, lastDrawAt.y - p.y) < 6;
+      lastDrawPress = now;
+      lastDrawAt = again ? null : p;
       // Clicking the first point closes the footprint.
-      if (first && drawing.length >= 3 && Math.hypot(sx(first.x) - p.x, sy(first.y) - p.y) < 10) {
+      if (first && drawing.length >= 3 && (again || Math.hypot(sx(first.x) - p.x, sy(first.y) - p.y) < 10)) {
         ondrawclose?.();
       } else {
         const w = magnetPoint(p.x, p.y, e.altKey);
@@ -480,6 +486,8 @@
   // footprint on another building's wall is no corner for that wall
   // (review UX-001).
   let lastDrawPress = -Infinity;
+  /** Where the last drawing press was, for the double-click that closes. */
+  let lastDrawAt: { x: number; y: number } | null = null;
 
   /**
    * A double-click on a wall adds a corner on that wall: the pointer is
@@ -815,6 +823,16 @@
           d={"M" + drawing.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") +
             (cursorWorld ? `L${sx(cursorWorld.x)},${sy(cursorWorld.y)}` : "")}
         />
+        {#if drawing.length >= 2}
+          <!-- The wall that closing adds, back to the first corner. -->
+          {@const first = drawing[0]}
+          {@const end = cursorWorld ?? drawing[drawing.length - 1]}
+          {@const c = Math.hypot(first.x - end.x, first.y - end.y)}
+          {#if c > 0.01}
+            <path class="draft-close" data-testid="draft-close" d="M{sx(end.x)},{sy(end.y)}L{sx(first.x)},{sy(first.y)}" />
+            <text class="dim draft-dim close" x={(sx(first.x) + sx(end.x)) / 2} y={(sy(first.y) + sy(end.y)) / 2} dy="14">{lenText(c)}</text>
+          {/if}
+        {/if}
         {#each drawing as p, i}
           <circle class="draft-pt" class:first={i === 0} cx={sx(p.x)} cy={sy(p.y)} r={i === 0 && drawing.length >= 3 ? 7 : 4} />
         {/each}
@@ -1067,6 +1085,14 @@
     stroke: var(--accent);
     stroke-width: 2.5;
     stroke-dasharray: 6 4;
+    pointer-events: none;
+  }
+  .draft-close {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1.5;
+    stroke-dasharray: 2 4;
+    opacity: 0.7;
     pointer-events: none;
   }
   .draft-pt {
