@@ -58,3 +58,12 @@ export function areaRows(result: CalcResult | null): AreaRow[] {
 export function joinedWith(result: CalcResult | null): number[][] {
   return (result?.parts ?? []).map((p) => p.geometry.joined_with ?? []);
 }
+
+/**
+ * Whether the core refused the roof (a part's calculation ended in an
+ * error): its figures are zeros, not a result, so they are shown as "—"
+ * (review ERR-004). One error stops every roof of the job.
+ */
+export function notCalculated(result: CalcResult | null): boolean {
+  return !!result?.parts.some((p) => p.geometry.error);
+}

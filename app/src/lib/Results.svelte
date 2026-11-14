@@ -5,7 +5,7 @@
   import { m, m2, num } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
-  import { areaRows, joinedWith, warningText } from "./results";
+  import { areaRows, joinedWith, notCalculated, warningText } from "./results";
   import { partLabel } from "./partname";
   import { api } from "./api";
   import type { CalcBreakdown, CalcResult, Project } from "./types";
@@ -74,6 +74,9 @@
   );
 
   const totals = $derived(result?.totals ?? null);
+  /** The core gave no roof: the zeros it returns are no figures (ERR-004). */
+  const failed = $derived(notCalculated(result));
+  const NONE = "—";
 
   /** Plausibility warnings of every part, with the part's name when there are several. */
   const warnings = $derived(
@@ -101,9 +104,10 @@
 <div class="results">
   <div class="hero">
     <span>{t("res.area")}</span>
-    <strong>{totals ? m2(totals.roof_area) : "—"}</strong>
-    {#if totals}<small>{t("res.ridgeHeight", { v: num(totals.ridge_height) })}</small>{/if}
-    {#if totals && deductedTotal >= 0.005}<small data-testid="res-deducted">{t("res.obj.netOf", { a: m2(deductedTotal) })}</small>{/if}
+    <strong data-testid="res-area" title={failed ? t("res.notCalculated") : undefined}>{totals && !failed ? m2(totals.roof_area) : NONE}</strong>
+    {#if failed}<small data-testid="res-not-calculated">{t("res.notCalculated")}</small>
+    {:else if totals}<small>{t("res.ridgeHeight", { v: num(totals.ridge_height) })}</small>{/if}
+    {#if totals && !failed && deductedTotal >= 0.005}<small data-testid="res-deducted">{t("res.obj.netOf", { a: m2(deductedTotal) })}</small>{/if}
   </div>
 
   {#if warnings.length}
@@ -130,7 +134,7 @@
                 <small class="joined">{t("res.joinedTo", { names: joins[a.part].map((j) => (result.parts[j] ? partLabel(result.parts[j].name, j) : "")).join(", ") })}</small>
               {/if}
             </td>
-            <td class="v">{m2(a.area)}</td>
+            <td class="v">{failed ? NONE : m2(a.area)}</td>
           </tr>
         {/each}
       </tbody>
@@ -142,7 +146,7 @@
     <table>
       <tbody>
         {#each materials as [mat, a]}
-          <tr><td>{materialName(project, mat)}</td><td class="v">{m2(a)}</td></tr>
+          <tr><td>{materialName(project, mat)}</td><td class="v">{failed ? NONE : m2(a)}</td></tr>
         {/each}
       </tbody>
     </table>
@@ -176,13 +180,13 @@
   {/if}
 
   <h4>{t("res.lines")}</h4>
-  <table>
+  <table data-testid="res-lines">
     <tbody>
       {#each rows as r}
-        <tr class:zero={r.value < 0.005}>
+        <tr class:zero={failed || r.value < 0.005}>
           <td class="code"><i style="background:{r.color}"></i>{r.code}</td>
-          <td>{r.label}{#if r.n}<span class="n">×{r.n}</span>{/if}</td>
-          <td class="v">{m(r.value)}</td>
+          <td>{r.label}{#if r.n && !failed}<span class="n">×{r.n}</span>{/if}</td>
+          <td class="v">{failed ? NONE : m(r.value)}</td>
         </tr>
       {/each}
     </tbody>

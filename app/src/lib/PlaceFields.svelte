@@ -14,7 +14,7 @@
   }: {
     placement: Placement | null;
     /** One distance typed: the others are null (kept). */
-    onplace: (fromEave: number | null, fromLeft: number | null, fromRight: number | null) => void;
+    onplace: (fromEave: number | null, fromLeft: number | null, fromRight: number | null) => unknown;
     /** Field width, px. */
     width?: number;
   } = $props();

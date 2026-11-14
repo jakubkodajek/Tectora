@@ -23,7 +23,7 @@
     ondelete: () => void;
     /** Where the object sits on its face (dimension fields). */
     placement?: Placement | null;
-    onplace?: (fromEave: number | null, fromLeft: number | null, fromRight: number | null) => void;
+    onplace?: (fromEave: number | null, fromLeft: number | null, fromRight: number | null) => unknown;
   } = $props();
 
   const list = $derived(sel ? openingList(project, sel.kind) : []);

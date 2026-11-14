@@ -4,6 +4,7 @@
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
   import { notifyError } from "./notify.svelte";
+  import { EAVE_HEIGHT, OVERHANG } from "./limits";
   import { numeric, parseNumber } from "./numeric.svelte";
   import { presets, savePresets, updateSettings } from "./settings.svelte";
 
@@ -112,8 +113,8 @@
   <div class="presets">
     <span class="lbl">{t("draw.presets")}</span>
     <label><span>{t("edge.pitch")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.pitch_deg, step: 1, min: 1, max: 89, onchange: (v) => preset(v, "pitch_deg") }} /><em>°</em></div></label>
-    <label><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.eave_height, step: 0.05, min: -100, max: 1000, onchange: (v) => preset(v, "eave_height") }} /><em>m</em></div></label>
-    <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.overhang, step: 0.05, min: 0, max: 20, onchange: (v) => preset(v, "overhang") }} /><em>m</em></div></label>
+    <label><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.eave_height, step: 0.05, min: EAVE_HEIGHT.min, max: EAVE_HEIGHT.max, onchange: (v) => preset(v, "eave_height") }} /><em>m</em></div></label>
+    <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.overhang, step: 0.05, min: OVERHANG.min, max: OVERHANG.max, onchange: (v) => preset(v, "overhang") }} /><em>m</em></div></label>
   </div>
   <div class="actions">
     <button class="btn sm" disabled={count === 0} onclick={onundo}><Icon name="undo" size={15} />{t("draw.undo")}</button>

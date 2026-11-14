@@ -540,7 +540,7 @@ fn face_to_part(
     overhang: f64,
 ) -> CmdResult<Project> {
     tectora_core::edit::face_to_part(&mut project, index, &name, pitch_deg, eave_height, overhang)
-        .map_err(|d| AppError::new("invalid_input").detail(d))?;
+        .map_err(|d| AppError::new("refused").detail(d))?;
     Ok(project)
 }
 
@@ -582,7 +582,7 @@ fn place_item(
             .map_err(|e| AppError::new(e.code).detail(e.message))?;
         let it = tectora_core::edit::transform::ItemRef { kind, index };
         tectora_core::edit::position::place(&mut project, it, from_eave, from_left, from_right)
-            .map_err(|d| AppError::new("invalid_input").detail(d))?;
+            .map_err(|d| AppError::new("refused").detail(d))?;
         Ok(project)
     })
 }
@@ -598,7 +598,7 @@ fn set_part_height(mut project: Project, part: usize, height: f64) -> CmdResult<
             .check_input()
             .map_err(|e| AppError::new(e.code).detail(e.message))?;
         tectora_core::edit::height::set_part_height(&mut project, part, height)
-            .map_err(|d| AppError::new("invalid_input").detail(d))?;
+            .map_err(|d| AppError::new("refused").detail(d))?;
         Ok(project)
     })
 }

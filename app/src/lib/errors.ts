@@ -1,7 +1,7 @@
 // Turns errors from the Rust commands (and anything else that throws) into
 // a translated message for the user plus the original text for "Details".
 
-import { t } from "./i18n.svelte";
+import { numberLocale, t } from "./i18n.svelte";
 import { isDefaultPartName } from "./partname";
 import type { CalcError, Problem, Project } from "./types";
 
@@ -89,6 +89,7 @@ const KNOWN = new Set([
   "too_many",
   "not_calculated",
   "settings_unreadable",
+  "refused",
 ]);
 
 /** A translated description of an error from `action`. */
@@ -132,4 +133,42 @@ export function describeProblem(p: Problem, project: Project): string {
   }
   if (p.edge !== undefined) where += `, ${t("prob.edge", { n: p.edge + 1 })}`;
   return `${where}: ${t(`prob.${p.code}`)}`;
+}
+
+/** What the user tried when the core refused a value (the toast's title). */
+export type RefusedAction = "height" | "place" | "face";
+
+const REFUSED_TITLE: Record<RefusedAction, string> = {
+  height: "refuse.title.height",
+  place: "place.refusedTitle",
+  face: "refuse.title.face",
+};
+
+/**
+ * The core's reason for refusing an edit (`code: "refused"`, its English
+ * text in `detail`) in the user's language. The core says why in one of a
+ * few sentences (`edit/height.rs`, `edit/position.rs`, `edit::face_to_part`);
+ * anything else gets a general reason, the original stays under "Details".
+ */
+export function refusalReason(detail: string | undefined): string {
+  const d = detail ?? "";
+  if (/below the ground/.test(d)) return t("refuse.belowGround");
+  if (/leave its roof face/.test(d)) return t("place.refused");
+  if (/stands on no roof face/.test(d)) return t("refuse.noFace");
+  const range = d.match(/out of range \((-?[\d.]+) to (-?[\d.]+) m/);
+  if (range) {
+    const f = (x: string) => new Intl.NumberFormat(numberLocale(), { useGrouping: false, maximumFractionDigits: 3 }).format(+x);
+    return t("num.range", { min: f(range[1]), max: f(range[2]) });
+  }
+  return t("refuse.other");
+}
+
+/**
+ * A value the core refused, described as a refusal (not as a failed
+ * calculation); null when `e` is another error.
+ */
+export function describeRefusal(e: unknown, action: RefusedAction): Described | null {
+  const err = toAppError(e);
+  if (err.code !== "refused") return null;
+  return { code: "refused", title: t(REFUSED_TITLE[action]), message: refusalReason(err.detail), detail: err.detail };
 }

@@ -877,6 +877,16 @@ const cs: Dict = {
   "lib.broken": "Některé soubory ve složce nejde načíst ({n})",
   "lib.brokenHint": "Nezobrazují se v seznamu. Ostatní zakázky jsou v pořádku.",
   "lib.brokenShow": "Které?",
+  "err.refused": "Hodnotu nelze použít, střecha by s ní nešla sestavit.",
+  "refuse.title.height": "Výška budovy nebyla změněna",
+  "refuse.title.face": "Plochu nelze převést na budovu",
+  "refuse.belowGround": "S touto výškou budovy by okap některé stěny ležel pod terénem. Zadejte větší výšku nebo nejdřív zvyšte okap.",
+  "refuse.noFace": "Prvek nestojí na žádné ploše střechy, takže nemá vzdálenosti od okapu a krajů.",
+  "refuse.other": "Střechu s touto hodnotou nelze sestavit. Důvod je v podrobnostech.",
+  "res.notCalculated": "Střecha není spočítaná",
+  "edge.leaning": "převislá plocha",
+  "edge.flatOff": "Plochá střecha: sklon a okap / štít stěn se nepoužijí",
+  "new.pastChosen": "Kopíruje se:",
 };
 
 const sk: Dict = {
@@ -1745,6 +1755,16 @@ const sk: Dict = {
   "lib.broken": "Niektoré súbory v priečinku nemožno načítať ({n})",
   "lib.brokenHint": "Nezobrazujú sa v zozname. Ostatné zákazky sú v poriadku.",
   "lib.brokenShow": "Ktoré?",
+  "err.refused": "Hodnotu nemožno použiť, strecha by sa s ňou nedala zostaviť.",
+  "refuse.title.height": "Výška budovy nebola zmenená",
+  "refuse.title.face": "Plochu nemožno previesť na budovu",
+  "refuse.belowGround": "S touto výškou budovy by odkvap niektorej steny ležal pod terénom. Zadajte väčšiu výšku alebo najprv zvýšte odkvap.",
+  "refuse.noFace": "Prvok nestojí na žiadnej ploche strechy, takže nemá vzdialenosti od odkvapu a okrajov.",
+  "refuse.other": "Strechu s touto hodnotou nemožno zostaviť. Dôvod je v podrobnostiach.",
+  "res.notCalculated": "Strecha nie je vypočítaná",
+  "edge.leaning": "previslá plocha",
+  "edge.flatOff": "Plochá strecha: sklon a odkvap / štít stien sa nepoužijú",
+  "new.pastChosen": "Kopíruje sa:",
 };
 
 const en: Dict = {
@@ -2613,6 +2633,16 @@ const en: Dict = {
   "lib.broken": "Some files in the folder cannot be read ({n})",
   "lib.brokenHint": "They are not shown in the list. All other jobs are fine.",
   "lib.brokenShow": "Which ones?",
+  "err.refused": "The value cannot be used: the roof could not be built with it.",
+  "refuse.title.height": "The building height was not changed",
+  "refuse.title.face": "The face cannot be made a building",
+  "refuse.belowGround": "At this building height the eave of a wall would lie below the ground. Enter a greater height or raise the eave first.",
+  "refuse.noFace": "The element stands on no roof face, so it has no distances from the eave and the sides.",
+  "refuse.other": "The roof cannot be built with this value. The reason is in the details.",
+  "res.notCalculated": "Roof not calculated",
+  "edge.leaning": "overhanging plane",
+  "edge.flatOff": "Flat roof: the walls' pitch and eave / gable are not used",
+  "new.pastChosen": "Copying:",
 };
 
 const de: Dict = {
@@ -3481,6 +3511,16 @@ const de: Dict = {
   "lib.broken": "Einige Dateien im Ordner können nicht gelesen werden ({n})",
   "lib.brokenHint": "Sie erscheinen nicht in der Liste. Alle anderen Aufträge sind in Ordnung.",
   "lib.brokenShow": "Welche?",
+  "err.refused": "Der Wert ist nicht möglich: Das Dach ließe sich damit nicht aufbauen.",
+  "refuse.title.height": "Die Gebäudehöhe wurde nicht geändert",
+  "refuse.title.face": "Die Fläche lässt sich nicht in ein Gebäude umwandeln",
+  "refuse.belowGround": "Bei dieser Gebäudehöhe läge die Traufe einer Wand unter dem Gelände. Geben Sie eine größere Höhe ein oder heben Sie zuerst die Traufe an.",
+  "refuse.noFace": "Das Element steht auf keiner Dachfläche und hat daher keine Abstände zur Traufe und zu den Seiten.",
+  "refuse.other": "Mit diesem Wert lässt sich das Dach nicht aufbauen. Der Grund steht in den Details.",
+  "res.notCalculated": "Dach nicht berechnet",
+  "edge.leaning": "überhängende Fläche",
+  "edge.flatOff": "Flachdach: Neigung und Traufe / Giebel der Wände werden nicht verwendet",
+  "new.pastChosen": "Kopiert wird:",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };

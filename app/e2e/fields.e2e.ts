@@ -342,6 +342,46 @@ test.describe("number fields: bounds and the footprint bar", () => {
     await expect(page.locator(".roofline").first()).toBeAttached();
   });
 
+  test("the wall bar refuses 50 m of overhang and 2000 m of eave height with the range of the New job form (UX-001)", async ({ app, page }) => {
+    const id = await createExample("hip", "Valba");
+    await openEditor(app, "Valba");
+    const def = bar(page, "def.title");
+    await selectWall(page, 0);
+    const before = JSON.stringify((await loadProject(id)).parts);
+    for (const [key, typed, range] of [
+      ["edge.overhang", "50", { min: "0", max: "20" }],
+      ["edge.eaveHeight", "2000", { min: "0", max: "1000" }],
+    ] as const) {
+      const f = def.getByLabel(cs(key));
+      const shown = await f.inputValue();
+      await typeInto(page, f, typed);
+      await page.keyboard.press("Enter");
+      await expect(f, key).toHaveValue(shown);
+      await expect(f, key).toHaveAttribute("aria-invalid", "true");
+      await expect(f, key).toHaveAttribute("title", cs("num.range", range));
+    }
+    await page.waitForTimeout(700);
+    expect(JSON.stringify((await loadProject(id)).parts)).toBe(before);
+    // A plausible value is stored as before.
+    await setField(def.getByLabel(cs("edge.overhang")), "1,2");
+    await waitForProject(id, (p) => p.parts[0].edges[0].overhang === 1.2);
+  });
+
+  test("a pitch over 90° is marked as an overhanging plane next to the field (UX-010)", async ({ app, page }) => {
+    const id = await createExample("hip", "Valba");
+    await openEditor(app, "Valba");
+    const def = bar(page, "def.title");
+    await selectWall(page, 0);
+    await expect(def.getByTestId("pitch-leaning")).toHaveCount(0);
+    await setField(def.getByLabel(cs("edge.pitch")), "95");
+    await waitForProject(id, (p) => p.parts[0].edges[0].pitch_deg === 95);
+    await expect(def.getByTestId("pitch-leaning")).toHaveText(cs("edge.leaning"));
+    await expect(def.getByTestId("pitch-leaning")).toBeVisible();
+    await setField(def.getByLabel(cs("edge.pitch")), "45");
+    await waitForProject(id, (p) => p.parts[0].edges[0].pitch_deg === 45);
+    await expect(def.getByTestId("pitch-leaning")).toHaveCount(0);
+  });
+
   test("the footprint wall length reads numbers like every field and refuses text", async ({ app, page }) => {
     const id = await createExample("gable", "Sedlo");
     await openEditor(app, "Sedlo");

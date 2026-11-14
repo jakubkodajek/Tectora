@@ -18,6 +18,7 @@
   import { prefs, savePrefs } from "./settings.svelte";
   import { hscroll } from "./hscroll";
   import { tick } from "svelte";
+  import { firstPress } from "./dblclick";
   import type { BrokenFile, ExampleInfo, JobStatus, ProjectSummary } from "./types";
   import { JOB_STATUSES, isAi } from "./types";
 
@@ -94,6 +95,8 @@
   const focusId = $derived(rows.some((p) => p.id === selectedId) ? selectedId : (rows[0]?.id ?? null));
   const filterLabel = $derived(filter === "all" ? t("lib.all") : filter === "ai" ? t("lib.byAi") : filter === "examples" ? t("home.examples") : t(`status.${filter}`));
   let tbody: HTMLElement | undefined = $state();
+  /** The row a double click's first press selected; the detail pane may move the rows before the second (UI-008). */
+  const rowPress = firstPress<string>();
 
   /** Keyboard in the list: arrows / Home / End move the selection, Enter opens. */
   async function onrowkey(e: KeyboardEvent, p: ProjectSummary) {
@@ -318,8 +321,9 @@
                 <tr
                   class:sel={selectedId === p.id}
                   tabindex={focusId === p.id ? 0 : -1}
+                  onmousedown={(e) => e.button === 0 && rowPress.press(p.id, e.detail)}
                   onclick={() => (selectedId = p.id)}
-                  ondblclick={() => onopen(p.id)}
+                  ondblclick={() => onopen(rowPress.target(p.id))}
                   onkeydown={(e) => onrowkey(e, p)}
                 >
                   <td class="th-thumb"><div class="mini"><PlanThumb outlines={p.outlines} lines={p.lines} /></div></td>
@@ -439,6 +443,10 @@
     height: 34px;
     padding: 0;
     box-shadow: none;
+  }
+  /* The field has no border of its own: the ring goes on the search box (UI-004). */
+  .search:focus-within {
+    box-shadow: 0 0 0 2px var(--focus);
   }
   .actions {
     margin-left: auto;
@@ -745,6 +753,8 @@
   .num {
     text-align: right;
     font-variant-numeric: tabular-nums;
+    /* "152,73 m²" on one line: the row keeps its height when the detail pane narrows the table (UI-008). */
+    white-space: nowrap;
   }
   .mod {
     white-space: nowrap;

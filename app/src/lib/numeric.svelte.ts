@@ -41,6 +41,8 @@ export interface NumericOptions {
    * Called with a parsed, in-range value that differs from `value`.
    * Return `false` to reject it: the field shows the stored value again.
    * Return a string to reject it with that reason (shown as the tooltip).
+   * A Promise of either (a value the core checks) does the same once it
+   * settles, unless the user typed again meanwhile (review ERR-003).
    */
   onchange: (v: number) => unknown;
   /** Step of the arrow keys and the ▲▼ buttons (default 1). */
@@ -102,6 +104,10 @@ export function stepValue(base: number, dir: number, step: number, min?: number,
   if (min !== undefined && v < min) v = min;
   if (max !== undefined && v > max) v = max;
   return v;
+}
+
+function isThenable(r: unknown): r is PromiseLike<unknown> {
+  return typeof r === "object" && r !== null && typeof (r as PromiseLike<unknown>).then === "function";
 }
 
 export function numeric(input: HTMLInputElement, initial: NumericOptions) {
@@ -171,8 +177,35 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
     refusal = null;
     if (opts.value === v) return true;
     const r = opts.onchange(v);
+    if (isThenable(r)) later(r, v);
     if (typeof r === "string") refusal = r;
     return r !== false && typeof r !== "string";
+  }
+
+  /** Marks the field refused with `why` and shows the stored value again. */
+  function refuse(why: string) {
+    input.value = fmt(opts.value);
+    setInvalid(why);
+    opts.onrefuse?.(why);
+    clearTimer = setTimeout(() => !dirty && setInvalid(null), 2500);
+  }
+
+  /**
+   * An answer that comes later: the typed number is shown meanwhile; a
+   * refusal puts the stored value back and says why, so a refused value
+   * never stays in the field as if stored.
+   */
+  function later(p: PromiseLike<unknown>, v: number) {
+    const shown = fmt(v);
+    const still = () => !dirty && input.value === shown;
+    p.then(
+      (r) => {
+        if ((r === false || typeof r === "string") && still()) refuse(typeof r === "string" ? r : t("num.refused"));
+      },
+      () => {
+        if (still()) refuse(t("num.refused"));
+      },
+    );
   }
 
   /** Stores the typed text if it changed; restores the stored value if it is not a number we take. */
@@ -194,10 +227,7 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
       setInvalid(null);
     } else {
       // Say why for a moment, then the restored value is plain again.
-      const why = reason(text) ?? refusal ?? t("num.refused");
-      setInvalid(why);
-      opts.onrefuse?.(why);
-      clearTimer = setTimeout(() => !dirty && setInvalid(null), 2500);
+      refuse(reason(text) ?? refusal ?? t("num.refused"));
     }
   }
 

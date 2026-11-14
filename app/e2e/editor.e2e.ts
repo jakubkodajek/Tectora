@@ -66,6 +66,24 @@ test.describe("editor shell", () => {
     await expect(page.getByRole("row").filter({ hasText: "Nové jméno" })).toBeVisible();
   });
 
+  test("undo and redo keep the selected wall (UX-005)", async ({ app, page }) => {
+    const id = await createExample("hip", "Valba");
+    await openEditor(app, "Valba");
+    await selectWall(page, 1);
+    const def = bar(page, "def.title");
+    await setField(def.getByLabel(cs("edge.pitch")), 30);
+    await waitForProject(id, (p) => p.parts[0].edges[1].pitch_deg === 30);
+    await tool(page, "editor.undo").click();
+    await waitForProject(id, (p) => p.parts[0].edges[1].pitch_deg === 35);
+    await expect(def.locator(".which strong")).toHaveText(cs("def.wall", { n: 2 }));
+    await expect(def.getByLabel(cs("edge.pitch"))).toHaveValue("35");
+    // The keyboard shortcut does the same (the focus is out of the fields now).
+    await page.keyboard.press("Control+y");
+    await waitForProject(id, (p) => p.parts[0].edges[1].pitch_deg === 30);
+    await expect(def.locator(".which strong")).toHaveText(cs("def.wall", { n: 2 }));
+    await expect(def.getByLabel(cs("edge.pitch"))).toHaveValue("30");
+  });
+
   test("undo / redo with the buttons and with Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y and Cmd+Z", async ({ app, page }) => {
     const id = await createExample("hip", "Valba");
     await openEditor(app, "Valba");

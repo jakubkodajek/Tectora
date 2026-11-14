@@ -30,7 +30,7 @@
     /** Opens the dormer window (plan and section). */
     onedit?: () => void;
     /** A distance on the roof face typed (from eave, left, right; the others null). */
-    onplace?: (fromEave: number | null, fromLeft: number | null, fromRight: number | null) => void;
+    onplace?: (fromEave: number | null, fromLeft: number | null, fromRight: number | null) => unknown;
   } = $props();
   const placement = $derived(index !== null ? placementOf(result, { kind: "dormer", index }) : null);
 

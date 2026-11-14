@@ -54,6 +54,12 @@
     });
   });
   const sourceJob = $derived(projects.find((p) => p.id === source) ?? null);
+  /** The new job's name when none is typed: never the old job's own name, so the two stay apart in the list (UX-016). */
+  const defaultName = $derived(start === "past" && sourceJob ? t("lib.copyName", { name: sourceJob.name }) : t("new.namePlaceholder"));
+  /** Scrolls the preselected past job into view, so it is clear which roof is copied (UX-016). */
+  function showChosen(node: HTMLElement, on: boolean) {
+    if (on) requestAnimationFrame(() => node.scrollIntoView({ block: "nearest" }));
+  }
   let part = $state<RoofPart | null>(null);
   let busy = $state(false);
   const canCreate = $derived(!busy && !(start === "standard" && !part) && !(start === "past" && !sourceJob));
@@ -72,7 +78,7 @@
       if (start === "past") {
         if (!sourceJob) return;
         const job = { number, customer, address };
-        oncreated(await api.duplicateProject(sourceJob.id, name.trim() || sourceJob.name, job, withFiles));
+        oncreated(await api.duplicateProject(sourceJob.id, name.trim() || t("lib.copyName", { name: sourceJob.name }), job, withFiles));
         return;
       }
       let project = emptyProject(title);
@@ -96,7 +102,7 @@
 
 <Modal title={t("new.title")} width={720} {onclose}>
   <div class="job">
-    <label class="wide"><span>{t("job.name")}</span><input type="text" bind:value={name} placeholder={t("new.namePlaceholder")} onkeydown={enterCreates} /></label>
+    <label class="wide"><span>{t("job.name")}</span><input type="text" bind:value={name} placeholder={defaultName} onkeydown={enterCreates} /></label>
     <label><span>{t("job.number")}</span><input type="text" bind:value={number} onkeydown={enterCreates} /></label>
     <label><span>{t("job.customer")}</span><input type="text" bind:value={customer} onkeydown={enterCreates} /></label>
     <label class="wide"><span>{t("job.address")}</span><input type="text" bind:value={address} onkeydown={enterCreates} /></label>
@@ -126,10 +132,20 @@
     {#if projects.length === 0}
       <p class="draw">{t("new.pastEmpty")}</p>
     {:else}
+      {#if sourceJob}
+        <div class="past-chosen" data-testid="past-chosen" aria-live="polite">
+          <span class="muted">{t("new.pastChosen")}</span>
+          <div class="mini"><PlanThumb outlines={sourceJob.outlines} lines={sourceJob.lines} /></div>
+          <span class="past-text">
+            <strong>{sourceJob.name}</strong>
+            <small>{[sourceJob.job.customer, sourceJob.job.address].filter(Boolean).join(" · ") || "—"}</small>
+          </span>
+        </div>
+      {/if}
       <input type="search" class="past-search" placeholder={t("new.pastSearch")} bind:value={pastQuery} />
       <div class="past" role="listbox" aria-label={t("new.past")}>
         {#each past as p (p.id)}
-          <button role="option" aria-selected={source === p.id} class:on={source === p.id} onclick={() => (source = p.id)} ondblclick={create}>
+          <button role="option" aria-selected={source === p.id} class:on={source === p.id} use:showChosen={source === p.id && p.id === initialSource} onclick={() => (source = p.id)} ondblclick={create}>
             <div class="mini"><PlanThumb outlines={p.outlines} lines={p.lines} /></div>
             <span class="past-text">
               <strong>{p.name}</strong>
@@ -234,6 +250,19 @@
   .past-search {
     margin-bottom: 8px;
   }
+  .past-chosen {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .past-chosen > .muted {
+    flex: none;
+    font-size: 12px;
+  }
   .past {
     display: flex;
     flex-direction: column;
@@ -286,7 +315,8 @@
     align-items: flex-end;
     font-variant-numeric: tabular-nums;
   }
-  .past small {
+  .past small,
+  .past-chosen small {
     font-size: 11.5px;
     color: var(--text-2);
   }
