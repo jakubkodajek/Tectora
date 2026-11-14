@@ -1252,6 +1252,33 @@ fn a_hip_roof_with_one_corner_moved_calculates() {
     assert_eq!(departed, 12, "roofs the standard calculation stops on");
 }
 
+/// A hip roof on a skewed rectangle: the line where the two long faces
+/// meet slopes a little, and it is still the ridge (two faces of opposite
+/// walls), not a hip; a hip runs down to a corner between two neighbouring
+/// walls. The offer counts ridge and hip tiles from these lines.
+#[test]
+fn the_sloping_ridge_of_a_skewed_hip_roof_is_a_ridge() {
+    for (c, dy) in [(0, 0.2), (1, -0.2), (2, 0.2), (3, -0.2)] {
+        let mut pts = [(0.0, 0.0), (12.0, 0.0), (12.0, 8.0), (0.0, 8.0)];
+        pts[c].1 += dy;
+        let pr = uniform(&pts, 35.0, 3.0, 0.5);
+        let name = format!("hip corner {c} moved {dy}");
+        let roof = calc(&pr);
+        let hips = roof
+            .geos
+            .iter()
+            .flat_map(|g| &g.lines)
+            .filter(|l| l.dacad_code() == "G")
+            .count();
+        assert_eq!(
+            hips, 4,
+            "{name}: one hip per corner, lines {:?}",
+            roof.lines
+        );
+        assert!(roof.line("F") > 3.0, "{name}: ridge {:?}", roof.lines);
+    }
+}
+
 /// ERR-001: the built-in U example with the pitch of wall 1 or wall 5
 /// changed to 20..34° ("Nicht geschlossene Fläche(n) vorhanden" in DACAD's
 /// core): every one calculates, soundly, with the notice.

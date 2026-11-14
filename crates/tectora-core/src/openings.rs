@@ -727,19 +727,55 @@ fn depart_logged(
         log.push("sweep: too many walls".into());
         return None;
     }
-    let plain = sweep(&bare)?;
+    let mut plain = sweep(&bare)?;
+    ridges_between_opposite_walls(part, &mut plain);
     if let Err(why) = crate::check::sound(part, &plain, crate::check::Fit::STANDARD) {
         log.push(format!("sweep: {why}"));
         return None;
     }
     let mut geo = if has_objects(alone) {
-        sweep(alone).filter(|g| !g.faces.is_empty())?
+        let mut g = sweep(alone).filter(|g| !g.faces.is_empty())?;
+        ridges_between_opposite_walls(part, &mut g);
+        g
     } else {
         plain
     };
     geo.warnings
         .push(RoofWarning::new(WarningKind::NotCalculatedByCore, 0.0));
     Some(geo)
+}
+
+/// The sweep calls a line between two faces a hip when it slopes. Where
+/// the core stops on a skewed outline, the line where the faces of two
+/// opposite walls meet slopes a little and is still the ridge: a hip runs
+/// between the faces of two neighbouring walls, down to their corner.
+/// Lines bordering faces of the same or neighbouring walls stay as they are.
+fn ridges_between_opposite_walls(part: &crate::model::RoofPart, geo: &mut RoofGeometry) {
+    const NEAR: f64 = 1e-3;
+    let n = part.edges.len();
+    let close = |p: [f64; 3], q: [f64; 3]| dist3_(p, q) < NEAR;
+    let borders = |f: &RoofFace, a: [f64; 3], b: [f64; 3]| {
+        let m = f.polygon.len();
+        (0..m).any(|i| {
+            let (p, q) = (f.polygon[i], f.polygon[(i + 1) % m]);
+            (close(p, a) && close(q, b)) || (close(p, b) && close(q, a))
+        })
+    };
+    for l in geo.lines.iter_mut().filter(|l| l.kind == LineKind::Hip) {
+        let walls: Vec<usize> = geo
+            .faces
+            .iter()
+            .filter(|f| f.edge < n && borders(f, l.a, l.b))
+            .map(|f| f.edge)
+            .collect();
+        let &[i, j] = &walls[..] else {
+            continue;
+        };
+        let neighbours = i == j || (i + 1) % n == j || (j + 1) % n == i;
+        if !neighbours {
+            l.kind = LineKind::Ridge;
+        }
+    }
 }
 
 /// After a calculation that gave roofs: a building that stands alone and

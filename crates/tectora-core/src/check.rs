@@ -711,10 +711,10 @@ pub const ERROR_WALLS_RISE: f64 = 0.5;
 
 /// For a part the calculation stops on with `kind`: the outer and inner
 /// wall of the parallel planes most likely at fault, where an outer plane
-/// between two gables lies in, or up to [`ERROR_WALLS_RISE`] below, a
-/// parallel inner one. Such planes never meet, and the walls between them
-/// are gables, so nothing closes the roof there (a wing whose front eave
-/// was lowered until its plane reached the main roof's). Empty when the
+/// lies in, or up to [`ERROR_WALLS_RISE`] below, a parallel inner one.
+/// Such planes never meet, so nothing closes the roof between them (a
+/// wing whose front eave was lowered until its plane reached the main
+/// roof's, with gables or hips beside it). Empty when the
 /// part has no such planes, and for the kinds parallel planes cannot
 /// cause (a non-convex chimney, an invalid wall).
 pub fn coplanar_error_walls(part: &RoofPart, kind: crate::roof::CalcErrorKind) -> Vec<usize> {
@@ -722,16 +722,9 @@ pub fn coplanar_error_walls(part: &RoofPart, kind: crate::roof::CalcErrorKind) -
     if !matches!(kind, K::OpenFaces | K::Cut | K::NoEnd | K::NoSolution) {
         return Vec::new();
     }
-    let n = part.edges.len();
     parallel_planes(part)
         .into_iter()
-        .filter(|p| {
-            p.rise < crate::coplanar::MERGE_TOL
-                && p.rise > -ERROR_WALLS_RISE
-                && [p.outer + n - 1, p.outer + 1]
-                    .iter()
-                    .all(|&k| part.edges[k % n].is_gable())
-        })
+        .filter(|p| p.rise < crate::coplanar::MERGE_TOL && p.rise > -ERROR_WALLS_RISE)
         .min_by(|a, b| a.rise.abs().total_cmp(&b.rise.abs()))
         .map(|p| vec![p.outer, p.inner])
         .unwrap_or_default()
@@ -1326,6 +1319,28 @@ mod tests {
         // Not 0.9 m below, and not above (that roof calculates).
         assert!(coplanar_error_walls(&t(2.0), K::Cut).is_empty());
         assert!(coplanar_error_walls(&t(3.2), K::Cut).is_empty());
+    }
+
+    #[test]
+    fn error_walls_named_for_a_hipped_wing_in_the_house_plane() {
+        use crate::roof::CalcErrorKind as K;
+        // The same T with hips beside the wing front: the core stops too,
+        // and no departure gives a sound roof (the wing's side walls stand
+        // above the joined plane), so the hint must name the two walls.
+        let t = RoofPart::new(
+            "T",
+            vec![
+                edge(5.0, 0.0, 40.0, 2.9),
+                edge(10.0, 0.0, 40.0, 5.0),
+                edge(10.0, 2.5, 40.0, 5.0),
+                edge(15.0, 2.5, 40.0, 5.0),
+                edge(15.0, 7.5, 40.0, 5.0),
+                edge(0.0, 7.5, 40.0, 5.0),
+                edge(0.0, 2.5, 40.0, 5.0),
+                edge(5.0, 2.5, 40.0, 5.0),
+            ],
+        );
+        assert_eq!(coplanar_error_walls(&t, K::OpenFaces), [0, 2]);
     }
 
     #[test]

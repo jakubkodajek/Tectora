@@ -216,7 +216,7 @@ pub fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
     if let [outer, inner] = e.edges[..] {
         v["edges"] = json!(e.edges);
         text.push_str(&format!(
-            ". The roof planes of edges {outer} and {inner} (0-based) are parallel (same direction and pitch) and edge {outer}'s lies in or a little below edge {inner}'s, so they never meet: raise edge {outer}'s eave, or, for a wing with its own ridge, make its side walls eaves and its front wall a gable or a hip"
+            ". The roof planes of edges {outer} and {inner} (0-based) are parallel (same direction and pitch) and edge {outer}'s lies in or a little below edge {inner}'s, so they never meet: raise edge {outer}'s eave, make the side walls beside edge {outer} gables (one shared plane), or, for a wing with its own ridge, make its side walls eaves and its front wall a gable or a hip"
         ));
     }
     // Which buildings end with the error on their own too: fix those; the
