@@ -225,6 +225,14 @@ pub struct CalcError {
     /// the job has one building.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<usize>,
+    /// Tectora's hint where to look, not part of DACAD's message: the
+    /// outer and the inner wall (edge indices of the part) whose roof
+    /// planes are parallel and lie in one plane, or the outer one below
+    /// the inner one, so they never meet
+    /// ([`crate::check::coplanar_error_walls`]). Empty when the part has
+    /// no such walls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<usize>,
 }
 
 /// The groups of DACAD calculation errors the app explains to the user.

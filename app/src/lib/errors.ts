@@ -110,7 +110,11 @@ export function describeError(e: unknown, action?: Action): Described {
  */
 export function describeCalcError(e: CalcError, project?: Project): { title: string; hint: string; code: string } {
   const title = t(`calc.err.${e.kind}`);
-  const hint = t(`calc.hint.${e.kind}`);
+  const [a, b] = e.edges ?? [];
+  const hint =
+    a !== undefined && b !== undefined
+      ? t("calc.hint.parallel", { a: a + 1, b: b + 1 })
+      : t(`calc.hint.${e.kind}`);
   const parts = e.parts ?? [];
   if (!project || project.parts.length < 2 || parts.length === 0) return { title, hint, code: e.kind };
   const names = parts.map((i) => {

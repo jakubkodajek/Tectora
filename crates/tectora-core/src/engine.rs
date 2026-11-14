@@ -250,6 +250,7 @@ fn classify(e: CoreError) -> Failure {
             message_id: id,
             message,
             parts: Vec::new(),
+            edges: Vec::new(),
         })
     };
     match &e {

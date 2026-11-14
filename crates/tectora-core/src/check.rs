@@ -88,6 +88,41 @@ pub enum WarningKind {
     /// core) but by Tectora's own fallback, so its figures may differ from
     /// the standard result. `value`: 0.
     NotCalculatedByCore,
+    /// The roof plane of a wall is parallel to the plane of another wall
+    /// of the building further in (same direction and pitch, not in line)
+    /// and lies above it, so it runs on past that wall's eave as one
+    /// plane: the part in front of the building gets no ridge of its own
+    /// (a wing whose sides are gables, its front an eave). DACAD
+    /// calculates such a roof; it is rarely what was meant. `edges`: the
+    /// outer wall, then the inner wall. `value`: how much higher the outer
+    /// plane lies, m.
+    PlaneOverWall,
+    /// Two parallel roof planes lie in one plane (within
+    /// [`crate::coplanar::MERGE_TOL`]): DACAD stops with an error there,
+    /// Tectora calculates them as one face (Jakub's decision 2026-11-14,
+    /// `coplanar.rs`). Not DACAD's result. `edges`: the front wall, then
+    /// the wall whose plane it continues. `value`: how far apart the two
+    /// planes were, m.
+    MergedPlanes,
+    /// The building's roof did not close in one calculation (a wing whose
+    /// eaves are so low that its roof stays under the house's), so the
+    /// wing was calculated as a building of its own against the house and
+    /// the two roofs joined (Jakub's decision 2026-11-14,
+    /// `wing_split.rs`). DACAD stops with an error here. `edges`: the
+    /// walls of the wing. `value`: 0.
+    WingJoined,
+}
+
+impl WarningKind {
+    /// A hint about the input or a note on what Tectora did beyond the
+    /// standard calculation, not a sign that the roof's geometry is wrong:
+    /// the roof is sound as calculated.
+    pub fn is_notice(self) -> bool {
+        matches!(
+            self,
+            WarningKind::PlaneOverWall | WarningKind::MergedPlanes | WarningKind::WingJoined
+        )
+    }
 }
 
 /// One finding about a calculated roof.
@@ -276,7 +311,7 @@ fn to_geo(pts: &[Point2]) -> Polygon<f64> {
 }
 
 /// True area of a planar 3D polygon.
-fn area3(poly: &[[f64; 3]]) -> f64 {
+pub(crate) fn area3(poly: &[[f64; 3]]) -> f64 {
     let n = poly.len();
     let o = poly[0];
     let mut s = [0.0; 3];
@@ -455,7 +490,11 @@ pub fn check(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<Vec<RoofWarning>>
             if joined && roofed && geo.error.is_none() && geo.faces.is_empty() {
                 return vec![RoofWarning::new(WarningKind::Covered, 0.0)];
             }
-            warnings(&outline, geo, joined)
+            let mut w = warnings(&outline, geo, joined);
+            if let Some(part) = parts.get(i) {
+                w.extend(plane_over_wall(part, geo));
+            }
+            w
         })
         .collect()
 }
@@ -479,6 +518,189 @@ fn warnings(outline: &[Vec<Point2>], geo: &RoofGeometry, joined: bool) -> Vec<Ro
         out.push(w);
     }
     out
+}
+
+/// Two walls of one building whose first roof planes are parallel: same
+/// direction, same pitch, not in line. Their planes never meet; between
+/// them only other planes (hips, a ridge across) can end one of them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParallelPlanes {
+    /// The wall further out (along the walls' outward normal).
+    pub outer: usize,
+    /// The wall further in.
+    pub inner: usize,
+    /// How much higher the outer wall's plane lies than the inner one's,
+    /// at every point, m (negative: lower).
+    pub rise: f64,
+    /// Distance between the two walls' lines, m.
+    pub depth: f64,
+}
+
+/// Directions closer than this (1 − cos of the angle) count as parallel.
+const PARALLEL_COS: f64 = 1e-8;
+/// Pitches closer than this count as equal, degrees.
+const SAME_PITCH: f64 = 1e-3;
+/// Wall lines closer than this are in line (the calculation joins those
+/// walls instead, see [`WarningKind::MergedWalls`]), m.
+const IN_LINE: f64 = 0.01;
+
+/// Every pair of walls of `part` (counter-clockwise, as the calculation
+/// takes it) whose first roof planes are parallel. A wall's plane is
+/// `z = eave + tan(pitch) · (overhang + d − m·p)` with `m` its outward
+/// normal and `d = m·start`, so two such planes differ by a constant.
+pub fn parallel_planes(part: &RoofPart) -> Vec<ParallelPlanes> {
+    let n = part.edges.len();
+    let wall = |i: usize| {
+        let e = &part.edges[i];
+        let b = part.edges[(i + 1) % n].start;
+        let (dx, dy) = (b.x - e.start.x, b.y - e.start.y);
+        let len = dx.hypot(dy);
+        let sloped = e.pitch_deg > 0.0 && e.pitch_deg < crate::model::GABLE_PITCH_DEG;
+        (sloped && len > IN_LINE && e.direction_rad.is_none() && len.is_finite()).then(|| {
+            let m = (dy / len, -dx / len);
+            let d = m.0 * e.start.x + m.1 * e.start.y;
+            let c = e.eave_height + e.pitch_deg.to_radians().tan() * (e.overhang + d);
+            (m, d, c, e.pitch_deg)
+        })
+    };
+    let walls: Vec<_> = (0..n).map(wall).collect();
+    let mut out = Vec::new();
+    for i in 0..n {
+        let Some((mi, di, ci, pi)) = walls[i] else {
+            continue;
+        };
+        for (j, wj) in walls.iter().enumerate().skip(i + 1) {
+            let Some((mj, dj, cj, pj)) = *wj else {
+                continue;
+            };
+            let same_dir = mi.0 * mj.0 + mi.1 * mj.1 > 1.0 - PARALLEL_COS;
+            if !same_dir || (pi - pj).abs() > SAME_PITCH || (di - dj).abs() < IN_LINE {
+                continue;
+            }
+            let (outer, inner, rise) = if di > dj {
+                (i, j, ci - cj)
+            } else {
+                (j, i, cj - ci)
+            };
+            out.push(ParallelPlanes {
+                outer,
+                inner,
+                rise,
+                depth: (di - dj).abs(),
+            });
+        }
+    }
+    out
+}
+
+/// How far a face of the outer wall must reach past the inner wall's eave
+/// line before [`WarningKind::PlaneOverWall`] is reported, m. Faces that
+/// end at a hip or a ridge between the two walls stay in front of it.
+pub const OVER_WALL_TOL: f64 = 0.10;
+/// Rise of an outer plane below which it is the same plane as the inner
+/// one (DACAD merges heights within 1 cm and stops with an error on
+/// planes this close, see [`coplanar_error_walls`]), m.
+pub const SAME_PLANE: f64 = 0.02;
+
+/// [`WarningKind::PlaneOverWall`] for one calculated part: an outer
+/// plane with gables on both sides, higher than a parallel inner one, whose
+/// face reaches past the inner wall's eave line. One warning per outer wall, naming the inner
+/// wall it passes furthest.
+pub fn plane_over_wall(part: &RoofPart, geo: &RoofGeometry) -> Vec<RoofWarning> {
+    if geo.error.is_some() || part.edges.len() < 4 {
+        return Vec::new();
+    }
+    let mut best: Vec<(usize, usize, f64, f64)> = Vec::new();
+    for p in parallel_planes(part) {
+        let n = part.edges.len();
+        // Only gables on both sides leave the outer plane nothing to end
+        // it before the inner plane: with an eave beside it, a hip or a
+        // valley ends it (a hipped wing whose hip face reaches a little
+        // past the main eave, or the two halves of a stepped house, are
+        // sound).
+        let gable_beside = [p.outer + n - 1, p.outer + 1]
+            .iter()
+            .all(|&k| part.edges[k % n].is_gable());
+        if p.rise < SAME_PLANE || !gable_beside {
+            continue;
+        }
+        // A wing stands in front of a longer house wall; a short wall
+        // behind a long one is a notch cut into the house, whose own plane
+        // the long wall's plane rightly runs over (a gable roof with a
+        // corner cut out).
+        let wall_len = |k: usize| {
+            let a = part.edges[k].start;
+            let b = part.edges[(k + 1) % n].start;
+            (b.x - a.x).hypot(b.y - a.y)
+        };
+        let same_line = |k: usize| {
+            let (ek, ei) = (&part.edges[k], &part.edges[p.inner]);
+            k == p.inner
+                || (ek.pitch_deg == ei.pitch_deg
+                    && ek.eave_height == ei.eave_height
+                    && ek.overhang == ei.overhang
+                    && collinear(part, k, p.inner))
+        };
+        let behind: f64 = (0..n).filter(|&k| same_line(k)).map(wall_len).sum();
+        if wall_len(p.outer) >= behind {
+            continue;
+        }
+        let e = &part.edges[p.inner];
+        let b = part.edges[(p.inner + 1) % n].start;
+        let len = (b.x - e.start.x).hypot(b.y - e.start.y);
+        let m = ((b.y - e.start.y) / len, -(b.x - e.start.x) / len);
+        // The inner wall's eave line, as `m·p`.
+        let eave = m.0 * e.start.x + m.1 * e.start.y + e.overhang;
+        let past = geo
+            .faces
+            .iter()
+            .filter(|f| f.edge == p.outer)
+            .flat_map(|f| f.polygon.iter())
+            .map(|q| eave - (m.0 * q[0] + m.1 * q[1]))
+            .fold(f64::NEG_INFINITY, f64::max);
+        if past > OVER_WALL_TOL {
+            match best.iter_mut().find(|b| b.0 == p.outer) {
+                Some(b) if b.3 >= past => {}
+                Some(b) => *b = (p.outer, p.inner, p.rise, past),
+                None => best.push((p.outer, p.inner, p.rise, past)),
+            }
+        }
+    }
+    best.sort_by_key(|b| b.0);
+    best.into_iter()
+        .map(|(outer, inner, rise, _)| RoofWarning {
+            edges: vec![outer, inner],
+            ..RoofWarning::new(WarningKind::PlaneOverWall, rise)
+        })
+        .collect()
+}
+
+/// Whether walls `i` and `j` of `part` lie on one line.
+fn collinear(part: &RoofPart, i: usize, j: usize) -> bool {
+    let n = part.edges.len();
+    let (a, b) = (part.edges[j].start, part.edges[(j + 1) % n].start);
+    let (c, d) = (part.edges[i].start, part.edges[(i + 1) % n].start);
+    let len = (b.x - a.x).hypot(b.y - a.y);
+    if len < IN_LINE {
+        return false;
+    }
+    let off = |p: Point2| ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) / len;
+    off(c).abs() < 1e-6 && off(d).abs() < 1e-6
+}
+
+/// For a part the calculation stops on: the outer and inner wall of the
+/// parallel planes most likely at fault, where an outer plane lies in or
+/// below a parallel inner one. Such planes never meet, and the walls
+/// between them are gables, so nothing closes the roof there (a wing
+/// whose front eave was lowered until its plane reached the main roof's).
+/// Empty when the part has no such planes.
+pub fn coplanar_error_walls(part: &RoofPart) -> Vec<usize> {
+    parallel_planes(part)
+        .into_iter()
+        .filter(|p| p.rise < crate::coplanar::MERGE_TOL)
+        .min_by(|a, b| a.rise.abs().total_cmp(&b.rise.abs()))
+        .map(|p| vec![p.outer, p.inner])
+        .unwrap_or_default()
 }
 
 /// The faces (dormer faces too) whose deductions exceed their gross area.

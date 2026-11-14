@@ -49,6 +49,15 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     for (geo, w) in geos.iter_mut().zip(warnings) {
         geo.warnings.extend(w);
     }
+    // Where the calculation stops: the parallel planes that never meet,
+    // on the buildings that fail (all of them when the job has one).
+    for (i, geo) in geos.iter_mut().enumerate() {
+        if let (Some(e), Some(part)) = (geo.error.as_mut(), clean.parts.get(i))
+            && (e.parts.is_empty() || e.parts.contains(&i))
+        {
+            e.edges = crate::check::coplanar_error_walls(part);
+        }
+    }
     // Windows, chimneys and openings the calculation left out: said, the
     // result unchanged.
     for (part, mut w) in crate::check::off_roof(&clean, &geos) {
@@ -83,6 +92,9 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
                         f.edge = n - 1 - f.edge;
                     }
                     for e in g.warnings.iter_mut().flat_map(|w| w.edges.iter_mut()) {
+                        *e = n - 1 - *e;
+                    }
+                    for e in g.error.iter_mut().flat_map(|e| e.edges.iter_mut()) {
                         *e = n - 1 - *e;
                     }
                 }
@@ -181,9 +193,20 @@ fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
     // Modellverschnitt when there are two or more roofs). Its errors are
     // DACAD's errors: no roof, and the message. Only where the core path
     // fails for a reason of ours does the sweep below take over.
+    // Parallel planes within a few centimetres of one plane: one face,
+    // where DACAD stops with an error or leaves steps of those few
+    // centimetres (Jakub, 2026-11-14; `coplanar.rs`).
+    if let Some(geos) = crate::coplanar::merged(project) {
+        return geos;
+    }
     match crate::engine::generate(project) {
         Ok(geos) => return geos,
         Err(crate::engine::Failure::Dacad(mut e)) => {
+            // A wing whose roof does not close with the house's: the wing
+            // as a building of its own, joined (Jakub, 2026-11-14).
+            if let Some(geos) = crate::wing_split::split_roof(project) {
+                return geos;
+            }
             e.parts = failing_alone(project);
             if let Some(geos) = without_failing(project, &e) {
                 return geos;

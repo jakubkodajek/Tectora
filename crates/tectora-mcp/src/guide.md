@@ -189,7 +189,18 @@ a look; the result is still the standard calculation's, so never "fix" it by
 bending the input, tell the user. `outside_outline`, `overlapping_faces`
 and `area_mismatch`: the roof looks geometrically wrong; check pitches and
 overhangs. `merged_walls`: two walls in line are calculated as one, so the
-second wall's pitch (`edges`) is not used. `covered`: the part has no roof
+second wall's pitch (`edges`) is not used. `plane_over_wall`: a wall's plane
+is parallel to an inner wall's (`edges`: outer, inner) and runs on over its
+eave because the walls beside it are gables: a wing drawn that way has no
+ridge of its own. For a cross-gabled wing make its side walls eaves and its
+front a gable or a hip; ask the user before changing it. A `calc_error` with
+`edges` names two such walls whose planes lie in one plane, or the outer one
+below, so they never meet. Two notices tell what Tectora did where the
+standard calculation stops with an error: `merged_planes` (`edges`: two
+parallel planes within 10 cm of one plane, calculated as one face) and
+`wing_joined` (`edges`: a wing whose eaves are too low to reach the house's
+roof, calculated as a lean-to against the house wall). Pass them on; they
+need no fix. `covered`: the part has no roof
 of its own because another part covers it; move or delete one of them.
 `cut_exceeds_face`: a face lost more than it has (a window larger than its
 face, or joined buildings), so the area is too small. `dormer_off_roof`: the

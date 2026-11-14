@@ -143,6 +143,24 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             w.item.unwrap_or(0)
         ),
         WarningKind::NotCalculatedByCore => "this roof was calculated by Tectora's fallback engine, not by the standard calculation, so its figures may differ from the standard result; tell the user to check the roof".to_string(),
+        WarningKind::PlaneOverWall => {
+            let (outer, inner) = (w.edges.first().map_or(0, |e| *e), w.edges.get(1).map_or(0, |e| *e));
+            format!(
+                "the roof plane of edge {outer} (0-based) is parallel to that of edge {inner} (same direction and pitch) and lies {:.2} m higher, so it runs on past edge {inner}'s eave as one plane: the part in front has no ridge of its own. If it should have one (a wing with a cross gable), make its side walls eaves and its front wall a gable or a hip",
+                w.value
+            )
+        }
+        WarningKind::MergedPlanes => {
+            let (outer, inner) = (w.edges.first().map_or(0, |e| *e), w.edges.get(1).map_or(0, |e| *e));
+            format!(
+                "the roof planes of edges {outer} and {inner} (0-based) lie in one plane ({:.1} cm apart), so Tectora calculated them as one face; the standard calculation stops with an error on such a roof. Tell the user; no change needed unless the planes were meant to differ",
+                w.value * 100.0
+            )
+        }
+        WarningKind::WingJoined => format!(
+            "the roof of this building did not close in one calculation (a wing with eaves too low to reach the house's roof), so the wing with edges {:?} (0-based) was calculated as a building of its own against the house and the two roofs joined; the standard calculation stops with an error on this building. Tell the user",
+            w.edges
+        ),
         WarningKind::MergedWalls => {
             let (kept, ignored) = (w.edges.first(), w.edges.get(1));
             format!(
@@ -192,6 +210,13 @@ pub fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
         }
     };
     let mut v = json!({ "kind": e.kind, "message": message });
+    if let [outer, inner] = e.edges[..] {
+        v["edges"] = json!(e.edges);
+        v["message"] = format!(
+            "{message}. The roof planes of edges {outer} and {inner} (0-based) are parallel (same direction and pitch) and the outer one lies in or below the inner one, so they never meet: raise or lower edge {outer}'s eave by at least a few centimetres, or, for a wing with its own ridge, make its side walls eaves and its front wall a gable or a hip"
+        )
+        .into();
+    }
     // Which buildings end with the error on their own too: fix those; the
     // others are calculated without them (review ARCH-002).
     if !e.parts.is_empty() {

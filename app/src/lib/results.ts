@@ -15,6 +15,16 @@ export function warningText(w: RoofWarning): string {
       const [a, b] = w.edges ?? [0, 0];
       return t("res.warn.merged_walls", { a: a + 1, b: b + 1 });
     }
+    case "plane_over_wall": {
+      const [a, b] = w.edges ?? [0, 0];
+      return t("res.warn.plane_over_wall", { a: a + 1, b: b + 1, v: num(w.value) });
+    }
+    case "merged_planes": {
+      const [a, b] = w.edges ?? [0, 0];
+      return t("res.warn.merged_planes", { a: a + 1, b: b + 1, v: num(w.value * 100) });
+    }
+    case "wing_joined":
+      return t("res.warn.wing_joined", { walls: (w.edges ?? []).map((e) => e + 1).join(", ") });
     case "dormer_off_roof":
       return t("res.warn.dormer_off_roof", { n: (w.dormer ?? 0) + 1 });
     case "window_off_roof":
