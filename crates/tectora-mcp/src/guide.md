@@ -118,7 +118,9 @@ The tools cover every operation of the Tectora editor:
   `list_projects` also returns `broken`: job files the library cannot read
   (`unreadable`: damaged, `newer_format`: saved by a newer Tectora); tell
   the user, do not create a new job beside one. A tool on such a job says
-  why it cannot be opened.
+  why it cannot be opened. A job whose roof takes too long to calculate for
+  the list comes with `figures_pending: true` and `roof_area_m2: null`; use
+  `calc` on it for its figures.
 - Deleting: `delete_project` and `remove_file` move the job (with its
   history and files) or the file to the library's trash for 30 days;
   `list_deleted` shows what is there and `restore_project` brings it back.

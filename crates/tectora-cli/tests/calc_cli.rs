@@ -121,3 +121,28 @@ fn a_refused_roof_gives_its_code_and_an_english_message() {
     assert_eq!(r["calc_error"]["kind"], "open_faces", "{r}");
     assert!(r.get("dacad_error").is_none(), "{r}");
 }
+
+#[test]
+fn a_closed_output_pipe_ends_quietly() {
+    // ARCH-008: `tectora calc job.tectora | head -n 1` panicked with
+    // "failed printing to stdout: Broken pipe" and a backtrace.
+    use std::process::Stdio;
+    let path = job("pipe", &rect(0.0, 12.0));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tectora"))
+        .arg("calc")
+        .arg(&path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The reader goes away before the answer is written.
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(
+        out.status.code().is_some(),
+        "ended by a signal: {:?}",
+        out.status
+    );
+}

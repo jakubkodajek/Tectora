@@ -1096,7 +1096,8 @@ impl Server {
                     .map(|p| {
                         json!({
                             "id": p.id, "name": p.name, "job": p.job,
-                            "roof_area_m2": round(p.roof_area, 2), "parts": p.parts,
+                            "roof_area_m2": (!p.figures_pending).then(|| round(p.roof_area, 2)),
+                            "figures_pending": p.figures_pending, "parts": p.parts,
                             "pitch_range_deg": p.pitch_range.map(|[a, b]| [round(a, 2), round(b, 2)]),
                             "dormers": p.dormers, "files": p.files, "has_result": p.has_result,
                             "modified_ms": p.modified_ms, "last_change": p.last_activity,

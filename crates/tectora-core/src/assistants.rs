@@ -407,14 +407,16 @@ fn write_keeping_mode(file: &Path, text: &str) -> Result<(), ConnectError> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let tmp = file.with_file_name(format!(".{name}.tectora-{}.tmp", std::process::id()));
-    fs::write(&tmp, text).map_err(|e| io_err(&tmp, e))?;
+    crate::store::write_synced(&tmp, text.as_bytes()).map_err(|e| io_err(&tmp, e))?;
     if let Ok(meta) = fs::metadata(file) {
         let _ = fs::set_permissions(&tmp, meta.permissions());
     }
     fs::rename(&tmp, file).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         io_err(file, e)
-    })
+    })?;
+    crate::store::sync_parent(file);
+    Ok(())
 }
 
 /// The file that writing `config` changes: the one a link there leads to,
