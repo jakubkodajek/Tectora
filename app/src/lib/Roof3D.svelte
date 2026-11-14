@@ -12,7 +12,7 @@
   import { t } from "./i18n.svelte";
   import { hostHeightAt, isDormerFace, slopeAt } from "./dormers";
   import { isConvex, windowOutline } from "./openings";
-  import { chimneyTop, clipConvex, coveredByDormer, crossings, dormerWallLines, manualFacePoly, planBox, onWallLine, outgrows, planArea, planeOf, wallTriangles, wallUnderRoof, gableShownByWall, inwardNormal, type Extent, type Poly3 } from "./scene3d";
+  import { chimneyTop, clipConvex, coveredByDormer, crossings, dormerFaces, dormerWallLines, manualFacePoly, planBox, onWallLine, outgrows, planArea, planeOf, wallTriangles, wallUnderRoof, gableShownByWall, inwardNormal, type Extent, type Poly3 } from "./scene3d";
   import { presets } from "./settings.svelte";
 
   let {
@@ -247,22 +247,19 @@
     if (result) {
       // Each dormer's wall lines with the plan box of its roof faces: the
       // walls drawn from those faces replace the calculation's gables there.
-      const dormerFaces: Poly3[][] = project.dormers.map(() => []);
-      for (const rp of result.parts) {
-        for (const f of rp.geometry.faces) {
-          if (!isDormerFace(f.edge) || f.polygon.length < 3) continue;
-          const d = dormerLines.findIndex((ls) => f.polygon.some((p, k) => onWallLine(ls, p, f.polygon[(k + 1) % f.polygon.length])));
-          if (d >= 0) dormerFaces[d].push(f.polygon);
-        }
-      }
-      const dormerWalls = dormerLines.map((lines, d) => ({ lines, box: planBox(dormerFaces[d]) }));
+      const dormerPolys = result.parts.flatMap((rp) => rp.geometry.faces.filter((f) => isDormerFace(f.edge)).map((f) => f.polygon));
+      const owners = dormerFaces(dormerLines, dormerPolys);
+      const dormerOf = new Map(dormerPolys.map((poly, k) => [poly, owners[k]]));
+      const facesOf: Poly3[][] = project.dormers.map(() => []);
+      dormerPolys.forEach((poly, k) => {
+        if (owners[k] >= 0 && poly.length >= 3) facesOf[owners[k]].push(poly);
+      });
+      const dormerWalls = dormerLines.map((lines, d) => ({ lines, box: planBox(facesOf[d]) }));
       result.parts.forEach((rp, pi) => {
         for (const f of rp.geometry.faces) {
           if (f.polygon.length < 3) continue;
           const plane = planeOf(f.polygon);
-          const dormer = isDormerFace(f.edge)
-            ? dormerLines.findIndex((ls) => f.polygon.some((p, k) => onWallLine(ls, p, f.polygon[(k + 1) % f.polygon.length])))
-            : -1;
+          const dormer = dormerOf.get(f.polygon) ?? -1;
           // Roof openings: a hole in the face when it lies wholly inside,
           // else a dark patch where it crosses the face.
           const cut: Poly3[] = [];

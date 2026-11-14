@@ -643,7 +643,14 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
     for l in &project.manual_lines {
         pts.extend([[l.a[0], l.a[1]], [l.b[0], l.b[1]]]);
     }
-    let foot_h = 46.0;
+    // The foot grows by a row for every FOOT_PER_ROW line codes, so no
+    // total is ever left out of the sheet (UX-002).
+    let codes: Vec<(String, f64)> = crate::quantities::dacad_line_totals(project)
+        .into_iter()
+        .filter(|(_, v)| v.abs() > 1e-9)
+        .collect();
+    let foot_extra = foot_rows(codes.len()).saturating_sub(1) as f64 * FOOT_ROW_H;
+    let foot_h = 46.0 + foot_extra;
     let (bx0, by0, bx1, by1) = (
         MARGIN + 20.0,
         MARGIN + 60.0,
@@ -937,15 +944,12 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
         anchor: 0.0,
         text: format!("A = {} m²", num(total, d)),
     });
-    let mut x = MARGIN + 150.0;
-    let codes = crate::quantities::dacad_line_totals(project);
-    for (code, v) in codes.iter().filter(|(_, v)| v.abs() > 1e-9) {
+    for (i, (code, v)) in codes.iter().enumerate() {
         let kind = code_kind(code);
-        if x > PAGE_W - MARGIN - 60.0 {
-            break;
-        }
+        let x = MARGIN + 150.0 + (i % FOOT_PER_ROW) as f64 * FOOT_COL_W;
+        let y = fy + 18.0 + (i / FOOT_PER_ROW) as f64 * FOOT_ROW_H;
         shapes.push(Shape::Text {
-            at: [x, fy + 18.0],
+            at: [x, y],
             angle: 0.0,
             size: 9.0,
             color: kind.map_or(MUTED, kind_color),
@@ -954,7 +958,7 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
             text: code.clone(),
         });
         shapes.push(Shape::Text {
-            at: [x + 16.0, fy + 18.0],
+            at: [x + 16.0, y],
             angle: 0.0,
             size: 9.0,
             color: INK,
@@ -962,10 +966,9 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
             anchor: 0.0,
             text: format!("{} m", num(*v, d)),
         });
-        x += 92.0;
     }
     shapes.push(Shape::Text {
-        at: [MARGIN, fy + 36.0],
+        at: [MARGIN, fy + 36.0 + foot_extra],
         angle: 0.0,
         size: 7.0,
         color: MUTED,
@@ -974,6 +977,17 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
         text: format!("1 : {}", scale_label(scale)),
     });
     shapes
+}
+
+/// Width of one line total in the sheet's foot, height of a foot row, pt,
+/// and how many totals fit in a row beside the area.
+const FOOT_COL_W: f64 = 92.0;
+const FOOT_ROW_H: f64 = 13.0;
+const FOOT_PER_ROW: usize = 7;
+
+/// Rows the foot needs for `n` line totals (at least one).
+fn foot_rows(n: usize) -> usize {
+    n.div_ceil(FOOT_PER_ROW).max(1)
 }
 
 /// The drawing scale, 1 : n, rounded (1 m = `scale` points; 1 pt = 25.4/72 mm).
@@ -2256,6 +2270,51 @@ Z1.02 35,00° 19,53m\u{2db} Dĺžka krokvy=4,88m
         let entry = std::str::from_utf8(&pdf[at + 9 + 20..at + 9 + 30]).unwrap();
         let first: usize = entry.parse().unwrap();
         assert!(pdf[first..].starts_with(b"1 0 obj"));
+    }
+
+    #[test]
+    fn the_sheet_foot_shows_every_line_total() {
+        // UX-002: totals past the page edge were left out without a word.
+        assert_eq!(
+            [0, 1, 7, 8, 14, 15].map(foot_rows),
+            [1, 1, 1, 2, 2, 3],
+            "rows for a number of codes"
+        );
+        // The last column of a row ends on the page.
+        let last = MARGIN + 150.0 + (FOOT_PER_ROW - 1) as f64 * FOOT_COL_W;
+        assert!(last + FOOT_COL_W - 10.0 <= PAGE_W - MARGIN, "{last}");
+        let info = SheetInfo {
+            stamp: "x".into(),
+            decimals: 3,
+        };
+        // A gable roof with four dormers and a chimney: nine line codes.
+        let many = Project::from_json(include_str!(
+            "../../../tests/fixtures/edit/sheet_foot_many_codes.tectora"
+        ))
+        .unwrap();
+        let mut most = 0;
+        let examples = crate::examples::EXAMPLES.iter().map(|ex| ex.project());
+        for p in examples.chain([many]) {
+            let codes: Vec<(String, f64)> = crate::quantities::dacad_line_totals(&p)
+                .into_iter()
+                .filter(|(_, v)| v.abs() > 1e-9)
+                .collect();
+            most = most.max(codes.len());
+            let shapes = plan_sheet(&p, &info);
+            for (code, v) in &codes {
+                let value = format!("{} m", num(*v, 3));
+                let shown = shapes.windows(2).any(|w| {
+                    matches!(&w[0], Shape::Text { text, .. } if text == code)
+                        && matches!(&w[1], Shape::Text { text, at, .. }
+                            if *text == value && at[0] < PAGE_W - MARGIN && at[1] < PAGE_H - MARGIN)
+                });
+                assert!(shown, "{}: {code} {value} is not in the foot", p.name);
+            }
+        }
+        assert!(
+            most > FOOT_PER_ROW,
+            "no job fills more than one row ({most})"
+        );
     }
 
     #[test]

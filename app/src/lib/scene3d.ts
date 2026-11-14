@@ -105,6 +105,36 @@ export function onWallLine(lines: WallLine[], p: [number, number, number], q: [n
   return lines.some((l) => onLine(l, p) && onLine(l, q));
 }
 
+/**
+ * The dormer each roof face belongs to: per polygon the index into
+ * `dormers` (each one's wall lines), or -1 for a face on none of them.
+ * Cheek lines run on without end, so dormers one behind the other share
+ * them (UI-002): a face with an edge on a dormer's own front wall is that
+ * dormer's, and a face that touches only cheek lines goes to the dormer
+ * whose front faces it lies among (their plan box), else to the nearest.
+ */
+export function dormerFaces(dormers: WallLine[][], polygons: Poly3[]): number[] {
+  const touches = (ls: WallLine[], poly: Poly3) => poly.length >= 3 && poly.some((p, k) => onWallLine(ls, p, poly[(k + 1) % poly.length]));
+  const fronts = dormers.map((lines) => lines.filter((l) => l.len !== Infinity));
+  const out = polygons.map((poly) => fronts.findIndex((ls) => touches(ls, poly)));
+  const boxes = dormers.map((_, d) => planBox(polygons.filter((_, k) => out[k] === d)));
+  polygons.forEach((poly, k) => {
+    if (out[k] >= 0) return;
+    const on = dormers.map((lines, d) => (touches(lines, poly) ? d : -1)).filter((d) => d >= 0);
+    if (!on.length) return;
+    const cx = poly.reduce((s, p) => s + p[0], 0) / poly.length;
+    const cy = poly.reduce((s, p) => s + p[1], 0) / poly.length;
+    // Distance from the face's middle to a dormer's box (0 inside it).
+    const dist = (d: number) => {
+      const b = boxes[d];
+      if (!b) return Infinity;
+      return Math.hypot(Math.max(b.minX - cx, 0, cx - b.maxX), Math.max(b.minY - cy, 0, cy - b.maxY));
+    };
+    out[k] = on.reduce((best, d) => (dist(d) < dist(best) ? d : best), on[0]);
+  });
+  return out;
+}
+
 /** Plan extent (x, y) of a dormer's roof faces; null without faces. */
 export type PlanBox = { minX: number; minY: number; maxX: number; maxY: number };
 

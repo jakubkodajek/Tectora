@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ShapeUtils, Vector2 } from "three";
-import { crossings, gableContour, manualFacePoly, outgrows, planArea, wallTriangles, wallTopAt, wallUnderRoof, gableShownByWall, inwardNormal, type Poly3 } from "./scene3d";
+import { dormerFaces, dormerWallLines, crossings, gableContour, manualFacePoly, outgrows, planArea, wallTriangles, wallTopAt, wallUnderRoof, gableShownByWall, inwardNormal, type Poly3 } from "./scene3d";
 import { hostHeightAt } from "./dormers";
 import type { CalcResult } from "./types";
 
@@ -249,5 +249,36 @@ describe("gableContour", () => {
       [1, 1, 2],
       [1, 1, 3],
     ])).toBeNull();
+  });
+});
+
+describe("dormerFaces (dormers one behind the other, UI-002)", () => {
+  // Two dormers 2 m wide on x = 2..4: fronts on y = 0 and y = 1.6, cheeks
+  // on the shared lines x = 2 and x = 4.
+  const dormer = (y: number) =>
+    dormerWallLines({
+      edges: [
+        { start: { x: 2, y: y + 1 }, direction_rad: -Math.PI / 2 },
+        { start: { x: 2, y } },
+        { start: { x: 4, y }, direction_rad: Math.PI / 2 },
+      ],
+      end: { x: 4, y: y + 1 },
+    } as never);
+  const lines = [dormer(1.6), dormer(0)];
+  // Hip dormers: a front face on the front wall, side faces on a cheek only.
+  const hip = (y: number): Poly3[] => [
+    [[2, y, 4], [4, y, 4], [3, y + 0.5, 4.6]],
+    [[2, y, 4], [3, y + 0.5, 4.6], [3, y + 1.2, 4.6], [2, y + 1.2, 4]],
+    [[4, y, 4], [4, y + 1.2, 4], [3, y + 1.2, 4.6], [3, y + 0.5, 4.6]],
+  ];
+
+  it("gives every face to its own dormer, whichever dormer comes first", () => {
+    expect(dormerFaces(lines, [...hip(1.6), ...hip(0)])).toEqual([0, 0, 0, 1, 1, 1]);
+    expect(dormerFaces(lines, [...hip(0), ...hip(1.6)])).toEqual([1, 1, 1, 0, 0, 0]);
+    expect(dormerFaces([lines[1], lines[0]], [...hip(1.6), ...hip(0)])).toEqual([1, 1, 1, 0, 0, 0]);
+  });
+
+  it("gives -1 to a face on no dormer wall line", () => {
+    expect(dormerFaces(lines, [[[8, 8, 3], [9, 8, 3], [9, 9, 4]]])).toEqual([-1]);
   });
 });

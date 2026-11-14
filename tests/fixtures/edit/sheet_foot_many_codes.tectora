@@ -1,0 +1,228 @@
+{
+ "schema_version": 2,
+ "name": "Sheet foot",
+ "notes": "",
+ "job": {
+  "number": "",
+  "customer": "",
+  "address": "",
+  "status": "draft"
+ },
+ "parts": [
+  {
+   "name": "Main",
+   "edges": [
+    {
+     "start": {
+      "x": 0.0,
+      "y": 0.0
+     },
+     "pitch_deg": 40.0,
+     "eave_height": 3.0,
+     "overhang": 0.5
+    },
+    {
+     "start": {
+      "x": 14.0,
+      "y": 0.0
+     },
+     "pitch_deg": 90.0,
+     "eave_height": 3.0,
+     "overhang": 0.5
+    },
+    {
+     "start": {
+      "x": 14.0,
+      "y": 9.0
+     },
+     "pitch_deg": 40.0,
+     "eave_height": 3.0,
+     "overhang": 0.5
+    },
+    {
+     "start": {
+      "x": 0.0,
+      "y": 9.0
+     },
+     "pitch_deg": 90.0,
+     "eave_height": 3.0,
+     "overhang": 0.5
+    }
+   ]
+  }
+ ],
+ "dormers": [
+  {
+   "edges": [
+    {
+     "start": {
+      "x": 2.0,
+      "y": 1.6
+     },
+     "pitch_deg": 45.0,
+     "eave_height": 5.77,
+     "overhang": 0.0,
+     "direction_rad": 4.71238898038469
+    },
+    {
+     "start": {
+      "x": 2.0,
+      "y": 1.6
+     },
+     "pitch_deg": 90.0,
+     "eave_height": 5.77,
+     "overhang": 0.0
+    },
+    {
+     "start": {
+      "x": 4.0,
+      "y": 1.6
+     },
+     "pitch_deg": 45.0,
+     "eave_height": 5.77,
+     "overhang": 0.0,
+     "direction_rad": 1.5707963267948966
+    }
+   ],
+   "end": {
+    "x": 4.0,
+    "y": 1.6
+   }
+  },
+  {
+   "edges": [
+    {
+     "start": {
+      "x": 6.0,
+      "y": 1.6
+     },
+     "pitch_deg": 90.0,
+     "eave_height": 5.77,
+     "overhang": 0.0,
+     "direction_rad": 4.71238898038469
+    },
+    {
+     "start": {
+      "x": 6.0,
+      "y": 1.6
+     },
+     "pitch_deg": 15.0,
+     "eave_height": 5.77,
+     "overhang": 0.0
+    },
+    {
+     "start": {
+      "x": 8.0,
+      "y": 1.6
+     },
+     "pitch_deg": 90.0,
+     "eave_height": 5.77,
+     "overhang": 0.0,
+     "direction_rad": 1.5707963267948966
+    }
+   ],
+   "end": {
+    "x": 8.0,
+    "y": 1.6
+   }
+  },
+  {
+   "edges": [
+    {
+     "start": {
+      "x": 10.0,
+      "y": 1.6
+     },
+     "pitch_deg": 45.0,
+     "eave_height": 5.77,
+     "overhang": 0.0,
+     "direction_rad": 4.71238898038469
+    },
+    {
+     "start": {
+      "x": 10.0,
+      "y": 1.6
+     },
+     "pitch_deg": 45.0,
+     "eave_height": 5.77,
+     "overhang": 0.0
+    },
+    {
+     "start": {
+      "x": 12.0,
+      "y": 1.6
+     },
+     "pitch_deg": 45.0,
+     "eave_height": 5.77,
+     "overhang": 0.0,
+     "direction_rad": 1.5707963267948966
+    }
+   ],
+   "end": {
+    "x": 12.0,
+    "y": 1.6
+   }
+  },
+  {
+   "edges": [
+    {
+     "start": {
+      "x": 2.0,
+      "y": 0.0
+     },
+     "pitch_deg": 45.0,
+     "eave_height": 4.43,
+     "overhang": 0.0,
+     "direction_rad": 4.71238898038469
+    },
+    {
+     "start": {
+      "x": 2.0,
+      "y": 0.0
+     },
+     "pitch_deg": 90.0,
+     "eave_height": 4.43,
+     "overhang": 0.0
+    },
+    {
+     "start": {
+      "x": 4.0,
+      "y": 0.0
+     },
+     "pitch_deg": 45.0,
+     "eave_height": 4.43,
+     "overhang": 0.0,
+     "direction_rad": 1.5707963267948966
+    }
+   ],
+   "end": {
+    "x": 4.0,
+    "y": 0.0
+   }
+  }
+ ],
+ "chimneys": [
+  {
+   "corners": [
+    {
+     "x": 6.0,
+     "y": 6.0
+    },
+    {
+     "x": 6.6,
+     "y": 6.0
+    },
+    {
+     "x": 6.6,
+     "y": 6.6
+    },
+    {
+     "x": 6.0,
+     "y": 6.6
+    }
+   ],
+   "height": 0.0
+  }
+ ],
+ "windows": []
+}
