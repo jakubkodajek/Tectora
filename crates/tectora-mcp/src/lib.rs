@@ -440,8 +440,8 @@ fn parse_points(v: &Value) -> Result<Vec<Point2>, String> {
     Ok(pts.into_iter().map(|[x, y]| Point2::new(x, y)).collect())
 }
 
-/// A new wall: pitch, eave height and overhang from `defaults`, else from
-/// the user's settings (Settings › New roofs).
+/// A new wall: every edge field given in `defaults`; pitch, eave height and
+/// overhang otherwise from the user's settings (Settings › New roofs).
 fn default_edge(defaults: &Value) -> Result<EdgeDef, String> {
     let preset = Settings::load().roof_defaults;
     let edge = EdgeDef {
@@ -459,6 +459,16 @@ fn default_edge(defaults: &Value) -> Result<EdgeDef, String> {
     };
     if let Some((code, msg)) = edge.problems().next() {
         return Err(format!("defaults: {code}: {msg}"));
+    }
+    // Every other field of an edge (gable, breaks, half_hip, material,
+    // priority, clad) applies to every edge too, as the schema says.
+    let mut edge = edge;
+    let basic = ["pitch_deg", "eave_height", "overhang"];
+    let more = defaults
+        .as_object()
+        .is_some_and(|o| o.keys().any(|k| !basic.contains(&k.as_str())));
+    if more {
+        apply_edge_fields(&mut edge, defaults).map_err(|m| format!("defaults: {m}"))?;
     }
     Ok(edge)
 }
@@ -1874,6 +1884,52 @@ mod tests {
             )
             .unwrap();
         r["id"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn every_field_in_defaults_reaches_every_edge() {
+        // Drawing check B1: `defaults` kept only pitch, eave height and
+        // overhang, so a mansard came out as a plain hip roof and
+        // `gable: true` as eaves.
+        let mut s = server();
+        let r = s
+            .call_tool(
+                "create_project",
+                &json!({
+                    "name": "mansard", "summary": "Footprint",
+                    "parts": [{
+                        "points": [[0, 0], [12, 0], [12, 8], [0, 8]],
+                        "defaults": {
+                            "pitch_deg": 60, "eave_height": 3, "overhang": 0.3,
+                            "breaks": [{ "height": 5, "pitch_deg": 25 }],
+                            "material": 2, "priority": 1
+                        }
+                    }]
+                }),
+            )
+            .unwrap();
+        let id = r["id"].as_str().unwrap().to_string();
+        let p = s.store.load(&id).unwrap();
+        for e in &p.parts[0].edges {
+            assert_eq!(e.breaks.len(), 1, "{e:?}");
+            assert_eq!((e.material, e.priority), (2, 1), "{e:?}");
+        }
+        let r = s
+            .call_tool(
+                "add_part",
+                &json!({
+                    "id": id, "summary": "Garage",
+                    "part": {
+                        "points": [[20, 0], [26, 0], [26, 6], [20, 6]],
+                        "defaults": { "gable": true }
+                    }
+                }),
+            )
+            .unwrap();
+        assert!(r.get("error").is_none(), "{r}");
+        let p = s.store.load(&id).unwrap();
+        assert!(p.parts[1].edges.iter().all(|e| e.is_gable()));
+        let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
     #[test]
