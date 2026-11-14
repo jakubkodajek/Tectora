@@ -273,8 +273,8 @@ pub enum Fit {
     /// As `Dacad`, for roofs with eaves at different heights: a higher
     /// roof's overhang lies over a lower roof (a wing whose eave is lower
     /// than the house's runs on under the house's eave), so the faces may
-    /// cover the eave outline more than once there. They must still cover
-    /// all of it.
+    /// cover the eave outline more than once there (up to `OVER_COVER`).
+    /// They must still cover all of it. Notices do not count as warnings.
     DacadSteps,
     /// As `DacadSteps`, for roofs joined from several buildings by the
     /// Modellverschnitt: it snaps corners to float32 grid points of the
@@ -283,6 +283,10 @@ pub enum Fit {
     /// of two buildings drawn by hand gives the same faces).
     DacadJoined,
 }
+
+/// The most of the eave outline's plan area the faces of a roof with eaves
+/// at different heights may cover, as a share of it.
+pub const OVER_COVER: f64 = 1.03;
 
 /// Structural checks every roof without openings must pass:
 ///
@@ -305,11 +309,23 @@ pub fn check_structure_fit(c: &mut Case<'_>, roof: &Roof, plan: f64, fit: Fit) {
         Fit::Exact => (2e-3, 0.0),
         Fit::Dacad | Fit::DacadSteps | Fit::DacadJoined => (0.025, 0.02),
     };
-    // A sound roof gets no plausibility warning (tectora_core::check);
-    // notices (hints about the input, what Tectora did beyond the standard
-    // calculation) say nothing about its geometry.
+    // A sound roof gets no plausibility warning (tectora_core::check).
+    // `PlaneOverWall` is a hint about the input on a roof that is the
+    // standard result, and never counts. The notices of a roof Tectora
+    // calculated where the standard calculation stops (planes joined, a
+    // wing against the house) count for the closed-form and level fits,
+    // whose roofs are all standard results; only the two fits of roofs
+    // with eaves at different heights let them pass.
+    let stepped = matches!(fit, Fit::DacadSteps | Fit::DacadJoined);
     for g in &roof.geos {
-        let warnings: Vec<_> = g.warnings.iter().filter(|w| !w.kind.is_notice()).collect();
+        let warnings: Vec<_> = g
+            .warnings
+            .iter()
+            .filter(|w| {
+                let hint = w.kind == tectora_core::check::WarningKind::PlaneOverWall;
+                !(hint || (stepped && w.kind.is_notice()))
+            })
+            .collect();
         c.ok(
             &format!("plausibility warnings {warnings:?}"),
             warnings.is_empty(),
@@ -403,10 +419,17 @@ pub fn check_structure_fit(c: &mut Case<'_>, roof: &Roof, plan: f64, fit: Fit) {
         // byte-identical to DACAD in its core emulator, is 0.6 mm.
         Fit::Dacad | Fit::DacadSteps | Fit::DacadJoined => 1e-4 * plan.max(1.0) + 1e-3 * sides,
     };
-    if matches!(fit, Fit::DacadSteps | Fit::DacadJoined) {
+    if stepped {
         c.ok(
             &format!("plan not covered: {plan_sum:.4} of {plan:.4}"),
             plan_sum >= plan - tiling,
+        );
+        // A higher roof's overhang over a lower roof covers a strip twice:
+        // at most 2.6 % of the plan in 150 measured wing roofs. A face
+        // emitted twice is far beyond that.
+        c.ok(
+            &format!("plan covered more than once: {plan_sum:.4} of {plan:.4}"),
+            plan_sum <= plan * OVER_COVER + tiling,
         );
     } else {
         c.eq_tol("plan tiling", plan_sum, plan, tiling);

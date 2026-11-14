@@ -351,3 +351,99 @@ fn joined_rows_whose_cut_exceeds_a_face_are_reported() {
         assert_eq!(flagged, negative(g), "part {i}: {:?}", g.warnings);
     }
 }
+
+// ------------------------------------------------ error walls (2026-11-14)
+
+/// A shallow wing between two gables whose plane lies 3 cm under the
+/// house's: the calculation stops, Tectora has no sound roof for it.
+fn shallow_wing_under_the_house_plane() -> Project {
+    let tan25 = 25f64.to_radians().tan();
+    let mut p = Project::new("shallow wing");
+    p.parts.push(RoofPart::new(
+        "A",
+        vec![
+            edge(5.0, 0.0, 25.0, 12.0 - tan25 * 0.3 - 0.03, 0.2),
+            edge(10.0, 0.0, 90.0, 12.0, 0.0),
+            edge(10.0, 0.6, 25.0, 12.0, 0.5),
+            edge(15.0, 0.6, 90.0, 12.0, 0.0),
+            edge(15.0, 5.6, 25.0, 12.0, 0.5),
+            edge(0.0, 5.6, 90.0, 12.0, 0.0),
+            edge(0.0, 0.6, 25.0, 12.0, 0.5),
+            edge(5.0, 0.6, 90.0, 12.0, 0.0),
+        ],
+    ));
+    p
+}
+
+/// The error of a building whose parallel planes never meet names the
+/// outer and the inner wall, as the walls were entered: also for an
+/// outline drawn clockwise (review TEST-006).
+#[test]
+fn a_failing_part_names_its_parallel_walls_also_drawn_clockwise() {
+    let p = shallow_wing_under_the_house_plane();
+    let geos = generate_project(&p);
+    let e = geos[0].error.as_ref().expect("the calculation stops");
+    assert_eq!(e.edges, [0, 2], "{e:?}");
+
+    // The same building drawn the other way round: wall k is wall 7 - k.
+    let mut cw = p.clone();
+    let part = &mut cw.parts[0];
+    let n = part.edges.len();
+    let starts: Vec<_> = part.edges.iter().map(|e| e.start).collect();
+    let defs = part.edges.clone();
+    for k in 0..n {
+        // Wall k of the clockwise outline runs from the end of wall
+        // n-1-k back to its start.
+        part.edges[k] = EdgeDef {
+            start: starts[(n - k) % n],
+            ..defs[n - 1 - k].clone()
+        };
+    }
+    let geos = generate_project(&cw);
+    let e = geos[0].error.as_ref().expect("the calculation stops");
+    assert_eq!(e.edges, [7, 5], "{e:?}");
+}
+
+/// The walls are named only where parallel planes can be the cause
+/// (review ARCH-006, ERR-006): not for a chimney that is not convex, and
+/// not where the outer plane lies far below the inner one, where "raise
+/// the eave a little" is no advice.
+#[test]
+fn error_walls_are_named_only_where_parallel_planes_can_be_the_cause() {
+    let mut p = shallow_wing_under_the_house_plane();
+    p.chimneys.push(tectora_core::Chimney {
+        corners: [(2.0, 2.0), (3.0, 2.0), (2.5, 2.3), (3.0, 3.0), (2.0, 3.0)]
+            .iter()
+            .map(|&(x, y)| tectora_core::geom::Point2::new(x, y))
+            .collect(),
+        height: 14.0,
+    });
+    let geos = generate_project(&p);
+    let e = geos[0].error.as_ref().expect("no roof");
+    assert_eq!(e.kind, tectora_core::roof::CalcErrorKind::NonConvexOpening);
+    assert!(e.edges.is_empty(), "{e:?}");
+
+    // Two low wings between gables, their planes 0.9 m under the house's
+    // (no single cut closes this roof, so the error stands).
+    let mut comb = Project::new("comb");
+    comb.parts.push(RoofPart::new(
+        "A",
+        vec![
+            edge(2.5, 2.5, 90.0, 5.0, 0.5),
+            edge(2.5, 0.0, 40.0, 2.0, 0.5),
+            edge(7.5, 0.0, 90.0, 5.0, 0.5),
+            edge(7.5, 2.5, 90.0, 5.0, 0.5),
+            edge(12.5, 2.5, 90.0, 5.0, 0.5),
+            edge(12.5, 0.0, 40.0, 2.0, 0.5),
+            edge(17.5, 0.0, 90.0, 5.0, 0.5),
+            edge(17.5, 2.5, 90.0, 5.0, 0.5),
+            edge(20.0, 2.5, 90.0, 5.0, 0.5),
+            edge(20.0, 7.5, 40.0, 5.0, 0.5),
+            edge(0.0, 7.5, 90.0, 5.0, 0.5),
+            edge(0.0, 2.5, 40.0, 5.0, 0.5),
+        ],
+    ));
+    let geos = generate_project(&comb);
+    let e = geos[0].error.as_ref().expect("no roof");
+    assert!(e.edges.is_empty(), "{e:?}");
+}

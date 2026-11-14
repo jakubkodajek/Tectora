@@ -55,7 +55,7 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
         if let (Some(e), Some(part)) = (geo.error.as_mut(), clean.parts.get(i))
             && (e.parts.is_empty() || e.parts.contains(&i))
         {
-            e.edges = crate::check::coplanar_error_walls(part);
+            e.edges = crate::check::coplanar_error_walls(part, e.kind);
         }
     }
     // Windows, chimneys and openings the calculation left out: said, the
@@ -91,12 +91,19 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
                     for f in g.faces.iter_mut().filter(|f| f.edge < n) {
                         f.edge = n - 1 - f.edge;
                     }
-                    for e in g.warnings.iter_mut().flat_map(|w| w.edges.iter_mut()) {
-                        *e = n - 1 - *e;
-                    }
-                    for e in g.error.iter_mut().flat_map(|e| e.edges.iter_mut()) {
-                        *e = n - 1 - *e;
-                    }
+                    let flip = |e: &mut usize| {
+                        if *e < n {
+                            *e = n - 1 - *e;
+                        }
+                    };
+                    g.warnings
+                        .iter_mut()
+                        .flat_map(|w| w.edges.iter_mut())
+                        .for_each(flip);
+                    g.error
+                        .iter_mut()
+                        .flat_map(|e| e.edges.iter_mut())
+                        .for_each(flip);
                 }
                 g
             }
@@ -178,123 +185,688 @@ fn cleaned(project: &Project) -> (Project, Slots, KeptIds) {
     (clean, slots, ids)
 }
 
-/// The wall area of the project (DACAD's `Stena` group), `None` for a flat
-/// roof or where the core does not calculate the roof.
+/// The wall area of the project (DACAD's `Stena` group): every roof that
+/// [`generate_project`] gives has one. `None` for a flat roof and where a
+/// building has no roof.
+///
+/// Where the standard calculation gives the roofs, the area is its wall
+/// stage's. Where it stops and a building is calculated another way
+/// ([`depart`]), that building's walls are measured under the roof it got
+/// ([`wall_area_under`]), the same way the wall stage measures them.
 pub fn wall_area(project: &Project) -> Option<f64> {
     if project.flat_roof {
         return None;
     }
     let (clean, _, _) = cleaned(project);
-    crate::engine::wall_area(&clean).ok()
+    if let Ok(a) = crate::engine::wall_area(&clean) {
+        return Some(a);
+    }
+    // The buildings one by one: the wall stage measures every building
+    // under its own roof, before the roofs are joined.
+    let mut total = 0.0;
+    for k in 0..clean.parts.len() {
+        let one = without_objects(&only_part(&clean, k));
+        total += match crate::engine::wall_area(&one) {
+            Ok(a) => a,
+            Err(crate::engine::Failure::Dacad(e)) => {
+                let geo = depart(&one, e.kind)?;
+                wall_area_under(&one.parts[0], &geo)?
+            }
+            Err(crate::engine::Failure::Ours(_)) => return None,
+        };
+    }
+    (!clean.parts.is_empty() && total.is_finite()).then_some(total)
 }
+
+/// The area of the walls of `part` (counter-clockwise) from the ground up
+/// to its roof `geo`, built the way DACAD's wall stage builds the wall
+/// polygons from the core's result (`coresol/walls.rs`, which this
+/// follows step by step on the roof's faces instead of the core SOL):
+///
+/// 1. every roof face against its own wall: the stretches of the wall
+///    inside the face's outline, at the face's height;
+/// 2. a sloped wall without a face of its own (in line with another wall,
+///    or its plane joined with another's) against the faces in its plane;
+/// 3. every wall still open (a gable; a face that does not cover its
+///    wall) against the other faces in turn, until one covers it whole;
+/// 4. stretches at the ground and outlines that repeat another's are
+///    dropped; every stretch left stands down to z = 0.
+///
+/// Equal to the wall stage's area within 1e-3 m² on the catalogue roofs
+/// (test `the_measured_wall_area_is_the_wall_stages`).
+pub(crate) fn wall_area_under(part: &RoofPart, geo: &RoofGeometry) -> Option<f64> {
+    use crate::union::Plane;
+    type P3 = [f64; 3];
+    /// The wall stage's point tolerance, m.
+    const T: f64 = 0.01;
+    /// Its tolerance for matching outlines, m.
+    const T25: f64 = 0.025;
+    let pts = part.outline();
+    let n = pts.len();
+    let faces: Vec<(usize, Vec<Point2>, Plane)> = geo
+        .faces
+        .iter()
+        .filter(|f| f.edge < n && f.pitch_deg < 89.9 && f.polygon.len() >= 3)
+        .map(|f| (f.edge, plan(f), Plane::of(f)))
+        .collect();
+    let eq2 = |p: Point2, q: Point2| (p.x - q.x).abs() < T && (p.y - q.y).abs() < T;
+    let eq3 = |p: P3, q: P3, t: f64| (0..3).all(|k| (p[k] - q[k]).abs() < t);
+    // The crossing list of wall `k` against face `j`: the wall's ends
+    // (flags 1 and 2) and where the lines of the face's sides cross the
+    // wall's line (flag 0), sorted by x, then y.
+    let collect = |(a, b): (Point2, Point2), j: usize| -> Vec<(Point2, u8)> {
+        let mut out = vec![(a, 1u8), (b, 2u8)];
+        let poly = &faces[j].1;
+        let m = poly.len();
+        for i in 0..m {
+            let (c, d) = (poly[i], poly[(i + 1) % m]);
+            let den = (d.x - c.x) * (b.y - a.y) - (d.y - c.y) * (b.x - a.x);
+            if den.abs() < 1e-9 {
+                continue;
+            }
+            let t = ((a.x - c.x) * (b.y - a.y) - (a.y - c.y) * (b.x - a.x)) / den;
+            let o = Point2::new(c.x + (d.x - c.x) * t, c.y + (d.y - c.y) * t);
+            let within = o.x >= c.x.min(d.x) - T
+                && o.x <= c.x.max(d.x) + T
+                && o.y >= c.y.min(d.y) - T
+                && o.y <= c.y.max(d.y) + T;
+            if within && !out.iter().any(|&(q, f)| f == 0 && eq2(o, q)) {
+                out.push((o, 0));
+            }
+        }
+        // The wall stage's two bubble passes (by x, then by y among equal
+        // x), which keep the wall's ends before a crossing at one place.
+        let m = out.len();
+        let mut swapped = true;
+        while swapped {
+            swapped = false;
+            for i in 0..m - 1 {
+                if out[i + 1].0.x < out[i].0.x - T {
+                    out.swap(i, i + 1);
+                    swapped = true;
+                }
+            }
+        }
+        swapped = true;
+        while swapped {
+            swapped = false;
+            for i in 0..m - 1 {
+                if (out[i + 1].0.x - out[i].0.x).abs() < T && out[i + 1].0.y < out[i].0.y - T {
+                    out.swap(i, i + 1);
+                    swapped = true;
+                }
+            }
+        }
+        out
+    };
+    let on_or_in =
+        |poly: &[Point2], p: Point2| inside(poly, p) || crate::union::near_boundary(poly, p, T);
+    // Walks wall `k`'s list against face `j`, adding the stretches inside
+    // the face to `segs`; false when a stretch of the wall is not inside.
+    let walk = |segs: &mut Vec<(P3, P3)>, j: usize, list: &[(Point2, u8)]| -> bool {
+        let (poly, plane) = (&faces[j].1, &faces[j].2);
+        let (mut all, mut within, mut prev) = (true, false, Point2::new(0.0, 0.0));
+        for &(cur, flag) in list {
+            if within && !eq2(cur, prev) {
+                let mid = Point2::new((cur.x + prev.x) / 2.0, (cur.y + prev.y) / 2.0);
+                if !on_or_in(poly, mid) {
+                    all = false;
+                } else {
+                    let (p, q) = (
+                        [prev.x, prev.y, plane.z(prev)],
+                        [cur.x, cur.y, plane.z(cur)],
+                    );
+                    let known = segs.iter().any(|&(a, b)| {
+                        (eq3(p, a, T) && eq3(q, b, T)) || (eq3(p, b, T) && eq3(q, a, T))
+                    });
+                    if !eq3(p, q, T) && !known {
+                        segs.push((p, q));
+                    }
+                }
+            }
+            if within && eq2(cur, prev) {
+                continue;
+            }
+            if flag != 0 {
+                within = !within;
+            }
+            prev = cur;
+        }
+        all
+    };
+    // The wall faces: every roof face with its wall, and every wall
+    // without a roof face.
+    struct Item {
+        wall: usize,
+        own: Option<usize>,
+        /// The wall's line as the wall stage takes it (see `line_of`).
+        line: (Point2, Point2),
+        segs: Vec<([f64; 3], [f64; 3])>,
+        ok: bool,
+    }
+    // The core gives a wall with a roof face its line as far as the wall
+    // stands: past an inner corner it runs on under its own face until
+    // that face ends (a higher wing's side wall standing on the house's
+    // roof; the house wall over a lower wing's roof). Here: until the
+    // face's outline or the next corner of the building on the line, and
+    // no stretch twice.
+    let mut claimed: Vec<(Point2, Point2)> = Vec::new();
+    let mut line_of = |k: usize, j: usize| -> (Point2, Point2) {
+        let (mut a, mut b) = (pts[k], pts[(k + 1) % n]);
+        let poly = &faces[j].1;
+        // The wall's end, the corner before or after it, the way out.
+        for (end, from, beside, neighbour) in [
+            (b, a, pts[(k + 2) % n], (k + 1) % n),
+            (a, b, pts[(k + n - 1) % n], (k + n - 1) % n),
+        ] {
+            // Only a wall whose eave is higher than its neighbour's.
+            if part.edges[k].eave_height < part.edges[neighbour].eave_height + T {
+                continue;
+            }
+            let len = from.distance(end);
+            let (ux, uy) = ((end.x - from.x) / len, (end.y - from.y) / len);
+            // An inner corner: the neighbouring wall turns away to the
+            // outside (the right of a counter-clockwise outline).
+            let turn = ux * (beside.y - end.y) - uy * (beside.x - end.x);
+            let inner = if end == b { turn < -1e-9 } else { turn > 1e-9 };
+            if !inner {
+                continue;
+            }
+            let along = |p: Point2| {
+                (
+                    (p.x - end.x) * ux + (p.y - end.y) * uy,
+                    (p.x - end.x) * uy - (p.y - end.y) * ux,
+                )
+            };
+            let mut stops: Vec<f64> = pts
+                .iter()
+                .map(|&p| along(p))
+                .filter(|&(s, off)| s > T && off.abs() < T)
+                .map(|(s, _)| s)
+                .collect();
+            let m = poly.len();
+            for i in 0..m {
+                let (c, d) = (along(poly[i]), along(poly[(i + 1) % m]));
+                if (c.1 > 0.0) != (d.1 > 0.0) {
+                    let sx = c.0 + (d.0 - c.0) * c.1 / (c.1 - d.1);
+                    if sx > T {
+                        stops.push(sx);
+                    }
+                }
+            }
+            let Some(stop) = stops.into_iter().reduce(f64::min) else {
+                continue;
+            };
+            let at = |t: f64| Point2::new(end.x + ux * t, end.y + uy * t);
+            let mid = at(stop / 2.0);
+            let free = !claimed
+                .iter()
+                .any(|&(p, q)| crate::union::near_boundary(&[p, q], mid, T));
+            if on_or_in(poly, mid) && free {
+                claimed.push((end, at(stop)));
+                if end == b {
+                    b = at(stop);
+                } else {
+                    a = at(stop);
+                }
+            }
+        }
+        (a, b)
+    };
+    // The wall's own first plane, where it is sloped.
+    let plane_of = |k: usize| -> Option<Plane> {
+        let e = &part.edges[k];
+        let (a, b) = (pts[k], pts[(k + 1) % n]);
+        let len = a.distance(b);
+        if e.is_gable() || e.direction_rad.is_some() {
+            return None;
+        }
+        let tan = e.pitch_deg.to_radians().tan();
+        let (mx, my) = ((b.y - a.y) / len, -(b.x - a.x) / len);
+        Some(Plane {
+            a: -mx * tan,
+            b: -my * tan,
+            c: e.eave_height + tan * (e.overhang + mx * a.x + my * a.y),
+        })
+    };
+    let in_plane = |mine: &Plane, j: usize| {
+        let f = &faces[j].2;
+        (f.a - mine.a).abs() < T && (f.b - mine.b).abs() < T && (f.c - mine.c).abs() < T
+    };
+    let mut items: Vec<Item> = Vec::new();
+    for k in 0..n {
+        if pts[k].distance(pts[(k + 1) % n]) < 1e-9 {
+            continue;
+        }
+        let own: Vec<usize> = (0..faces.len()).filter(|&j| faces[j].0 == k).collect();
+        if own.is_empty() {
+            // A sloped wall whose face another wall carries stands under
+            // that face.
+            let carried =
+                plane_of(k).and_then(|mine| (0..faces.len()).find(|&j| in_plane(&mine, j)));
+            items.push(Item {
+                wall: k,
+                own: None,
+                line: carried.map_or((pts[k], pts[(k + 1) % n]), |j| line_of(k, j)),
+                segs: Vec::new(),
+                ok: false,
+            });
+        }
+        let line = own.first().map(|&j| line_of(k, j));
+        for j in own {
+            items.push(Item {
+                wall: k,
+                own: Some(j),
+                line: line.unwrap_or((pts[k], pts[(k + 1) % n])),
+                segs: Vec::new(),
+                ok: false,
+            });
+        }
+    }
+    for it in items.iter_mut() {
+        if let Some(j) = it.own {
+            let list = collect(it.line, j);
+            if list.len() > 2 {
+                it.ok = walk(&mut it.segs, j, &list);
+            }
+        }
+    }
+    for it in items.iter_mut().filter(|it| it.own.is_none()) {
+        let Some(mine) = plane_of(it.wall) else {
+            continue;
+        };
+        for j in 0..faces.len() {
+            if !in_plane(&mine, j) {
+                continue;
+            }
+            let list = collect(it.line, j);
+            if list.len() != 2 && walk(&mut it.segs, j, &list) {
+                it.ok = true;
+                break;
+            }
+        }
+    }
+    for it in items.iter_mut().filter(|it| !it.ok) {
+        for j in 0..faces.len() {
+            if it.own == Some(j) {
+                continue;
+            }
+            let list = collect(it.line, j);
+            if list.len() != 2 && walk(&mut it.segs, j, &list) {
+                break;
+            }
+        }
+    }
+    for it in items.iter_mut() {
+        it.segs.retain(|(p, q)| !(p[2].abs() < T && q[2].abs() < T));
+    }
+    for i in 0..items.len() {
+        for j in 0..items.len() {
+            if i == j || items[i].segs.len() != items[j].segs.len() {
+                continue;
+            }
+            let same = |a: &(P3, P3), b: &(P3, P3)| {
+                (eq3(a.0, b.0, T25) && eq3(a.1, b.1, T25))
+                    || (eq3(a.1, b.0, T25) && eq3(a.0, b.1, T25))
+            };
+            if items[i]
+                .segs
+                .iter()
+                .all(|a| items[j].segs.iter().any(|b| same(a, b)))
+            {
+                items[j].segs.clear();
+            }
+        }
+    }
+    let total: f64 = items
+        .iter()
+        .flat_map(|it| &it.segs)
+        .map(|(p, q)| (p[2] + q[2]) / 2.0 * (q[0] - p[0]).hypot(q[1] - p[1]))
+        .sum();
+    (total.is_finite() && total > 0.0).then_some(total)
+}
+
+/// For tests: [`wall_area_under`] for the one building of `project`
+/// (counter-clockwise) under the roof the calculation gives it.
+#[doc(hidden)]
+pub fn measured_wall_area(project: &Project) -> Option<f64> {
+    let geos = generate_project(project);
+    wall_area_under(project.parts.first()?, geos.first()?)
+}
+
+/// Buildings with more walls are not calculated by the sweep after a core
+/// error.
+const MAX_SWEEP_WALLS: usize = 256;
 
 fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
     // DACAD's own core on the project's RD2 (joined in the
-    // Modellverschnitt when there are two or more roofs). Its errors are
-    // DACAD's errors: no roof, and the message. Only where the core path
-    // fails for a reason of ours does the sweep below take over.
-    // Parallel planes within a few centimetres of one plane: one face,
-    // where DACAD stops with an error or leaves steps of those few
-    // centimetres (Jakub, 2026-11-14; `coplanar.rs`).
-    if let Some(geos) = crate::coplanar::merged(project) {
-        return geos;
-    }
+    // Modellverschnitt when there are two or more roofs), always first:
+    // where it gives a roof, that roof is the result.
     match crate::engine::generate(project) {
-        Ok(geos) => return geos,
-        Err(crate::engine::Failure::Dacad(mut e)) => {
-            // A wing whose roof does not close with the house's: the wing
-            // as a building of its own, joined (Jakub, 2026-11-14).
-            if let Some(geos) = crate::wing_split::split_roof(project) {
-                return geos;
-            }
-            e.parts = failing_alone(project);
-            if let Some(geos) = without_failing(project, &e) {
-                return geos;
-            }
-            return vec![
-                RoofGeometry {
-                    error: Some(e),
-                    ..RoofGeometry::default()
-                };
-                project.parts.len()
-            ];
+        Ok(mut geos) => {
+            // The one exception: a wing's plane a few centimetres above
+            // the house's, which DACAD calculates with a step of those few
+            // centimetres (Jakub, 2026-11-14; `coplanar.rs`).
+            merge_steps(project, &mut geos);
+            geos
         }
-        Err(crate::engine::Failure::Ours(_)) => {}
-    }
-    let mut geos = fallback(project);
-    // Not DACAD's result: say so, once for the job.
-    if let Some(g) = geos.first_mut() {
-        g.warnings
-            .push(RoofWarning::new(WarningKind::NotCalculatedByCore, 0.0));
-    }
-    geos
-}
-
-/// With two or more buildings, the ones whose roof the core does not
-/// calculate on their own either (indices in `project`); see
-/// [`crate::roof::CalcError::parts`]. Runs only after a core error.
-fn failing_alone(project: &Project) -> Vec<usize> {
-    if project.parts.len() < 2 {
-        return Vec::new();
-    }
-    (0..project.parts.len())
-        .filter(|&k| {
-            let mut alone = project.clone();
-            alone.parts = vec![project.parts[k].clone()];
-            matches!(
-                crate::engine::generate(&alone),
-                Err(crate::engine::Failure::Dacad(_))
-            )
-        })
-        .collect()
-}
-
-/// After a core error that one or more buildings also end with on their
-/// own (`e.parts`), the other buildings calculated without them: those keep
-/// their roofs and only the failing ones carry the error. DACAD stops the
-/// whole job instead; the user asked that one bad building never takes the
-/// others' roofs (2026-11-14). `None` when no building fails alone, when
-/// all do, or when the rest fails as well: then every building gets the
-/// error, as in DACAD.
-fn without_failing(project: &Project, e: &crate::roof::CalcError) -> Option<Vec<RoofGeometry>> {
-    if e.parts.is_empty() || e.parts.len() >= project.parts.len() {
-        return None;
-    }
-    let keep: Vec<usize> = (0..project.parts.len())
-        .filter(|k| !e.parts.contains(k))
-        .collect();
-    let mut rest = project.clone();
-    rest.parts = keep.iter().map(|&k| project.parts[k].clone()).collect();
-    let mut sub = match crate::engine::generate(&rest) {
-        Ok(geos) => geos,
+        // Where the core stops, Tectora calculates the building another
+        // way if the result passes its self-check (Jakub, 2026-11-14;
+        // `depart`); else DACAD's error is the result.
+        Err(crate::engine::Failure::Dacad(e)) => {
+            if project.parts.len() == 1 {
+                return match depart(project, e.kind) {
+                    Some(geo) => vec![geo],
+                    None => vec![RoofGeometry {
+                        error: Some(e),
+                        ..RoofGeometry::default()
+                    }],
+                };
+            }
+            several_after_error(project, e)
+        }
+        // A failure of ours: the sweep, said.
         Err(crate::engine::Failure::Ours(_)) => {
-            let mut geos = fallback(&rest);
+            let mut geos = fallback(project);
+            // Not DACAD's result: say so, once for the job.
             if let Some(g) = geos.first_mut() {
                 g.warnings
                     .push(RoofWarning::new(WarningKind::NotCalculatedByCore, 0.0));
             }
             geos
         }
-        Err(crate::engine::Failure::Dacad(_)) => return None,
+    }
+}
+
+/// `project` with only its building `k` (and every dormer, chimney,
+/// opening and window: those beside the building apply to nothing).
+fn only_part(project: &Project, k: usize) -> Project {
+    let mut alone = project.clone();
+    alone.parts = project.parts.get(k).cloned().into_iter().collect();
+    alone
+}
+
+/// `project` without dormers, chimneys, openings and windows.
+fn without_objects(project: &Project) -> Project {
+    let mut bare = project.clone();
+    bare.dormers.clear();
+    bare.chimneys.clear();
+    bare.roof_openings.clear();
+    bare.windows.clear();
+    bare
+}
+
+fn has_objects(project: &Project) -> bool {
+    !(project.dormers.is_empty()
+        && project.chimneys.is_empty()
+        && project.roof_openings.is_empty()
+        && project.windows.is_empty())
+}
+
+/// Whether building `k` stands clear of every other building of
+/// `project`: their eave outlines' bounding boxes do not meet. Only such a
+/// building can be calculated on its own; one that touches another is
+/// joined with it by the standard calculation.
+fn stands_alone(project: &Project, k: usize) -> bool {
+    let bbox = |part: &RoofPart| {
+        let mut b = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        for p in crate::check::eave_outline(part).iter().flatten() {
+            b = [b[0].min(p.x), b[1].min(p.y), b[2].max(p.x), b[3].max(p.y)];
+        }
+        b
     };
-    if sub.len() != keep.len() {
+    let Some(mine) = project.parts.get(k).map(bbox) else {
+        return false;
+    };
+    const GAP: f64 = 0.05;
+    project.parts.iter().enumerate().all(|(j, other)| {
+        let o = bbox(other);
+        j == k
+            || mine[2] + GAP < o[0]
+            || o[2] + GAP < mine[0]
+            || mine[3] + GAP < o[1]
+            || o[3] + GAP < mine[1]
+    })
+}
+
+/// Dormers, chimneys, openings and windows of `alone` (one building)
+/// applied to its roof `geo` calculated without them. `None` when nothing
+/// is left of the roof.
+fn with_objects(alone: &Project, geo: RoofGeometry) -> Option<RoofGeometry> {
+    if !has_objects(alone) {
+        return Some(geo);
+    }
+    let mut geos = vec![geo];
+    apply_extras(alone, &mut geos);
+    geos.pop().filter(|g| !g.faces.is_empty())
+}
+
+/// The roof of the one building of `alone`, on which the standard
+/// calculation stops with an error of `kind`, calculated another way
+/// (Jakub's decision 2026-11-14: where DACAD's core stops, Tectora gives a
+/// practical roof and says so). In order: parallel planes within a few
+/// centimetres joined into one ([`crate::coplanar`]), a low wing as a
+/// building of its own against the house ([`crate::wing_split`]),
+/// Tectora's own sweep engine. Each is calculated without dormers,
+/// chimneys, openings and windows and must pass [`crate::check::sound`];
+/// the first that does is the roof, with its notice (`MergedPlanes`,
+/// `WingJoined`, `NotCalculatedByCore`) and the objects applied to it.
+///
+/// `None`, and DACAD's error stands, when none is sound; when the error
+/// belongs to an object (the building without its objects calculates, or
+/// a chimney is not convex); and for a flat roof.
+fn depart(alone: &Project, kind: crate::roof::CalcErrorKind) -> Option<RoofGeometry> {
+    depart_logged(alone, kind, &mut Vec::new())
+}
+
+/// For dev tools and tests: why each way of [`depart`] was not taken for
+/// the one building of `project` (counter-clockwise, valid), in order,
+/// and whether one gave the roof.
+#[doc(hidden)]
+pub fn departure_log(project: &Project, kind: crate::roof::CalcErrorKind) -> (bool, Vec<String>) {
+    let mut log = Vec::new();
+    let roof = depart_logged(project, kind, &mut log);
+    (roof.is_some(), log)
+}
+
+fn depart_logged(
+    alone: &Project,
+    kind: crate::roof::CalcErrorKind,
+    log: &mut Vec<String>,
+) -> Option<RoofGeometry> {
+    use crate::roof::CalcErrorKind as K;
+    let [part] = &alone.parts[..] else {
+        return None;
+    };
+    if alone.flat_roof || kind == K::NonConvexOpening {
         return None;
     }
-    let mut out = vec![
-        RoofGeometry {
-            error: Some(e.clone()),
-            ..RoofGeometry::default()
+    let convex = alone
+        .chimneys
+        .iter()
+        .chain(&alone.roof_openings)
+        .all(|c| dacad_convex(&c.corners));
+    if !convex {
+        return None;
+    }
+    let bare = without_objects(alone);
+    let kind = if has_objects(alone) {
+        match crate::engine::generate(&bare) {
+            Err(crate::engine::Failure::Dacad(e)) => e.kind,
+            // The building calculates without its objects: the error is
+            // an object's and stands.
+            _ => return None,
+        }
+    } else {
+        kind
+    };
+    match crate::coplanar::merged(&bare) {
+        Ok(geo) => return with_objects(alone, geo),
+        Err(why) => log.push(format!("planes joined: {why}")),
+    }
+    if matches!(kind, K::OpenFaces | K::Cut) {
+        match crate::wing_split::split_roof(&bare).0 {
+            Ok(geo) => return with_objects(alone, geo),
+            Err(why) => log.push(format!("wing split: {why}")),
+        }
+    }
+    // The sweep, with its own line clean-up, checked without the objects.
+    let sweep = |p: &Project| {
+        let mut geos = build_roofs(&bare);
+        apply_extras(p, &mut geos);
+        geos.pop().filter(|_| geos.is_empty())
+    };
+    // Bounded like everything here: the sweep of a building at the wall
+    // limit costs more than the standard calculation.
+    if part.edges.len() > MAX_SWEEP_WALLS {
+        log.push("sweep: too many walls".into());
+        return None;
+    }
+    let plain = sweep(&bare)?;
+    if let Err(why) = crate::check::sound(part, &plain, crate::check::Fit::STANDARD) {
+        log.push(format!("sweep: {why}"));
+        return None;
+    }
+    let mut geo = if has_objects(alone) {
+        sweep(alone).filter(|g| !g.faces.is_empty())?
+    } else {
+        plain
+    };
+    geo.warnings
+        .push(RoofWarning::new(WarningKind::NotCalculatedByCore, 0.0));
+    Some(geo)
+}
+
+/// After a calculation that gave roofs: a building that stands alone and
+/// has a wing whose plane lies a few centimetres above the house's (which
+/// DACAD calculates with a step of those few centimetres) gets the two as
+/// one plane, if that roof is sound. Every other roof stays as the
+/// standard calculation gives it.
+fn merge_steps(project: &Project, geos: &mut [RoofGeometry]) {
+    for k in 0..project.parts.len().min(geos.len()) {
+        let stepped = crate::coplanar::pairs(&project.parts[k])
+            .iter()
+            .any(|p| p.rise > 0.0);
+        let free = geos[k].error.is_none()
+            && geos[k].joined_with.is_empty()
+            && (project.parts.len() == 1 || stands_alone(project, k));
+        if !stepped || !free || project.flat_roof {
+            continue;
+        }
+        let alone = only_part(project, k);
+        let Some(mut geo) = crate::coplanar::merged(&without_objects(&alone))
+            .ok()
+            .and_then(|geo| with_objects(&alone, geo))
+        else {
+            continue;
         };
-        project.parts.len()
-    ];
-    for (i, &k) in keep.iter().enumerate() {
-        let mut g = std::mem::take(&mut sub[i]);
+        // What the standard calculation said about dormers it left out.
+        geo.warnings.extend(
+            geos[k]
+                .warnings
+                .iter()
+                .filter(|w| w.kind == WarningKind::DormerOffRoof)
+                .cloned(),
+        );
+        geos[k] = geo;
+    }
+}
+
+/// With two or more buildings, after the standard calculation stopped
+/// with `e`: DACAD stops the whole job; the user asked that one bad
+/// building never takes the others' roofs (2026-11-14). A building the
+/// standard calculation also stops on alone is calculated alone through
+/// [`depart`] where it stands clear of the others; where that gives no
+/// roof it carries the error and is named in `e.parts`. The other
+/// buildings are calculated together without those. When no building
+/// fails alone (the error comes from the join) or the rest fails as well,
+/// every building without a roof of its own gets the error, as in DACAD.
+fn several_after_error(project: &Project, mut e: crate::roof::CalcError) -> Vec<RoofGeometry> {
+    let n = project.parts.len();
+    // Per building: `None` calculates alone; `Some(None)` fails alone;
+    // `Some(Some(roof))` fails alone and was calculated another way.
+    let alone: Vec<Option<Option<RoofGeometry>>> = (0..n)
+        .map(|k| {
+            let one = only_part(project, k);
+            match crate::engine::generate(&one) {
+                Err(crate::engine::Failure::Dacad(ek)) => Some(
+                    stands_alone(project, k)
+                        .then_some(ek.kind)
+                        .and_then(|kind| depart(&one, kind)),
+                ),
+                _ => None,
+            }
+        })
+        .collect();
+    e.parts = (0..n).filter(|&k| matches!(alone[k], Some(None))).collect();
+    let keep: Vec<usize> = (0..n).filter(|&k| alone[k].is_none()).collect();
+    let failed = |e: &crate::roof::CalcError| RoofGeometry {
+        error: Some(e.clone()),
+        ..RoofGeometry::default()
+    };
+    if keep.len() == n {
+        // Every building calculates alone: the join fails.
+        return vec![failed(&e); n];
+    }
+    let mut rest = project.clone();
+    rest.parts = keep.iter().map(|&k| project.parts[k].clone()).collect();
+    let sub: Option<Vec<RoofGeometry>> = if keep.is_empty() {
+        Some(Vec::new())
+    } else {
+        match crate::engine::generate(&rest) {
+            Ok(geos) => Some(geos),
+            Err(crate::engine::Failure::Ours(_)) => {
+                let mut geos = fallback(&rest);
+                if let Some(g) = geos.first_mut() {
+                    g.warnings
+                        .push(RoofWarning::new(WarningKind::NotCalculatedByCore, 0.0));
+                }
+                Some(geos)
+            }
+            Err(crate::engine::Failure::Dacad(_)) => None,
+        }
+        .filter(|geos| geos.len() == keep.len())
+    };
+    let mut out = vec![failed(&e); n];
+    let departed: Vec<usize> = (0..n)
+        .filter(|&k| matches!(alone[k], Some(Some(_))))
+        .collect();
+    for (k, a) in alone.into_iter().enumerate() {
+        if let Some(Some(geo)) = a {
+            out[k] = geo;
+        }
+    }
+    for (i, mut g) in sub.into_iter().flatten().enumerate() {
+        let Some(&k) = keep.get(i) else {
+            continue;
+        };
         for j in g.joined_with.iter_mut() {
             *j = keep.get(*j).copied().unwrap_or(*j);
         }
+        // A dormer on a building calculated alone is on that building's
+        // roof, not off the others'.
+        g.warnings.retain(|w| {
+            let on_departed = w.kind == WarningKind::DormerOffRoof
+                && w.dormer
+                    .and_then(|d| project.dormers.get(d))
+                    .is_some_and(|d| {
+                        let at = d.edges.first().map_or(d.end, |e| e.start);
+                        let near = (0..n).min_by(|&a, &b| {
+                            crate::engine::outline_distance(&project.parts[a], at)
+                                .total_cmp(&crate::engine::outline_distance(&project.parts[b], at))
+                        });
+                        near.is_some_and(|p| departed.contains(&p))
+                    });
+            !on_departed
+        });
         out[k] = g;
     }
-    Some(out)
+    out
 }
 
 /// Tectora's own sweep engine, where the core path failed for a reason of

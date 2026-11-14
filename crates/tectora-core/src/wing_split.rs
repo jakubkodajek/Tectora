@@ -34,6 +34,11 @@ struct Cut {
     /// For each wall of the wing, the wall of the building; `None` for the
     /// new gable against the house.
     wing_walls: Vec<Option<usize>>,
+    /// Plan area of the wing, m².
+    area: f64,
+    /// Height of the house's roof over the cut's line (the lowest of the
+    /// house walls on it), infinite where those walls are gables.
+    house_top: f64,
 }
 
 const EPS: f64 = 1e-6;
@@ -42,6 +47,15 @@ const INTO_HOUSE: f64 = 0.3;
 /// How much lower than the house's eave a wing's eaves must be, m.
 const LOWER: f64 = 0.01;
 
+/// A corner this far from a wall line lies on it, m: corners of a building
+/// turned out of the axes are rounded to millimetres.
+const ON_LINE: f64 = 5e-3;
+/// Buildings with more walls are not searched for a wing (the search and
+/// the calculations it leads to must stay bounded on any input).
+pub(crate) const MAX_WALLS: usize = 64;
+/// The most cuts calculated for one building.
+pub(crate) const MAX_CUTS: usize = 8;
+
 fn cross(o: Point2, a: Point2, b: Point2) -> f64 {
     (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
 }
@@ -49,7 +63,7 @@ fn cross(o: Point2, a: Point2, b: Point2) -> f64 {
 /// Whether `p` lies on the line through `a` and `b`.
 fn on_line(a: Point2, b: Point2, p: Point2) -> bool {
     let len = a.distance(b);
-    len > EPS && (cross(a, b, p) / len).abs() < 1e-6
+    len > EPS && (cross(a, b, p) / len).abs() < ON_LINE
 }
 
 /// The cuts along a house wall line between two inner corners of `part`
@@ -57,7 +71,7 @@ fn on_line(a: Point2, b: Point2, p: Point2) -> bool {
 fn cuts(part: &RoofPart) -> Vec<Cut> {
     let pts = part.outline();
     let n = pts.len();
-    if n < 6 {
+    if !(6..=MAX_WALLS).contains(&n) {
         return Vec::new();
     }
     let reflex: Vec<usize> = (0..n)
@@ -134,14 +148,25 @@ fn cuts(part: &RoofPart) -> Vec<Cut> {
                 .copied()
                 .chain([(i + n - 1) % n])
                 .collect();
+            let house_top = [(i + n - 1) % n, j]
+                .iter()
+                .map(|&k| &part.edges[k])
+                .filter(|e| !e.is_gable())
+                .map(|e| e.eave_height + e.pitch_deg.to_radians().tan() * e.overhang)
+                .fold(f64::INFINITY, f64::min);
             out.push(Cut {
                 house,
                 house_walls,
                 wing,
                 wing_walls,
+                area: wa,
+                house_top,
             });
         }
     }
+    // The smallest wings first, and a bounded number of them.
+    out.sort_by(|a, b| a.area.total_cmp(&b.area));
+    out.truncate(MAX_CUTS);
     out
 }
 
@@ -269,26 +294,83 @@ fn split(part: &RoofPart, c: &Cut) -> (RoofPart, RoofPart, Vec<usize>) {
     (house, wing, house_map)
 }
 
-/// The roof of a one-building project the core stops on, with a wing cut
-/// off and joined to the house. `None` when no cut calculates.
-pub(crate) fn split_roof(project: &Project) -> Option<Vec<RoofGeometry>> {
-    if project.parts.len() != 1 || project.flat_roof {
-        return None;
+/// The roof of the one building of `bare` (no dormers, chimneys, openings
+/// or windows; the caller applies those to the result) with a wing cut
+/// off and joined to the house, and the number of cuts calculated (at most
+/// [`MAX_CUTS`]). `None` when no cut gives a roof that passes
+/// [`crate::check::sound`].
+pub(crate) fn split_roof(bare: &Project) -> (Result<RoofGeometry, String>, usize) {
+    let [part] = &bare.parts[..] else {
+        return (Err("not one pitched building".into()), 0);
+    };
+    if bare.flat_roof {
+        return (Err("not one pitched building".into()), 0);
     }
-    let part = &project.parts[0];
+    let pts = part.outline();
+    // A wing whose plane lies within a few centimetres of the house's is
+    // one plane with it (`coplanar.rs`), never a lean-to: cut off, its
+    // roof would lie in the house's overhang.
+    let in_plane: Vec<usize> = crate::coplanar::pairs(part)
+        .iter()
+        .map(|p| p.outer)
+        .collect();
+    let mut tried = 0;
+    let mut why = String::from("no wing to cut off");
     for c in cuts(part) {
-        let (house, wing, house_map) = split(part, &c);
-        let mut p = project.clone();
-        p.parts = vec![house, wing];
-        let Ok(geos) = crate::engine::generate(&p) else {
-            continue;
-        };
-        if geos.len() != 2 || geos.iter().any(|g| g.error.is_some() || g.faces.is_empty()) {
+        if c.wing_walls.iter().flatten().any(|w| in_plane.contains(w)) {
+            why = "the wing's plane lies in the house's".into();
             continue;
         }
-        return Some(vec![combine(geos, &c, &house_map)]);
+        tried += 1;
+        let (house, wing, house_map) = split(part, &c);
+        let mut p = bare.clone();
+        p.parts = vec![house, wing];
+        let geos = match crate::engine::generate(&p) {
+            Ok(geos) => geos,
+            Err(e) => {
+                why = e.to_string();
+                continue;
+            }
+        };
+        if geos.len() != 2 || geos.iter().any(|g| g.error.is_some() || g.faces.is_empty()) {
+            why = "house or wing without roof".into();
+            continue;
+        }
+        // The wing's roof must end under the house's roof at the house
+        // wall: one that reaches the wall line above the house's plane is
+        // no lean-to, and the part reaching into the house would show in
+        // the figures.
+        let (Some(&ci), Some(&cj)) = (
+            c.wing.first().and_then(|&v| pts.get(v)),
+            c.wing.last().and_then(|&v| pts.get(v)),
+        ) else {
+            continue;
+        };
+        let len = ci.distance(cj).max(EPS);
+        // Positive towards the house.
+        let behind =
+            |q: &[f64; 3]| ((ci.y - cj.y) * (q[0] - cj.x) - (ci.x - cj.x) * (q[1] - cj.y)) / len;
+        let wing_top = geos[1]
+            .faces
+            .iter()
+            .flat_map(|f| f.polygon.iter())
+            .filter(|q| behind(q) > -ON_LINE)
+            .map(|q| q[2])
+            .fold(f64::NEG_INFINITY, f64::max);
+        if wing_top > c.house_top + 1e-3 {
+            why = format!(
+                "the wing reaches the house wall at {wing_top} m, the house's roof is at {} m",
+                c.house_top
+            );
+            continue;
+        }
+        let geo = combine(geos, &c, &house_map);
+        match crate::check::sound(part, &geo, crate::check::Fit::JOINED) {
+            Ok(()) => return (Ok(geo), tried),
+            Err(e) => why = e,
+        }
     }
-    None
+    (Err(why), tried)
 }
 
 /// The roofs of house and wing as the one building's roof, faces and
@@ -306,11 +388,14 @@ fn combine(geos: Vec<RoofGeometry>, c: &Cut, house_map: &[usize]) -> RoofGeometr
     for f in wing.faces.iter_mut().filter(|f| f.edge != usize::MAX) {
         f.edge = map_wing(f.edge);
     }
+    // A warning naming the wing's new gable keeps the walls it can name.
     for w in house.warnings.iter_mut() {
         w.edges = w.edges.iter().map(|&e| map_house(e)).collect();
+        w.edges.retain(|&e| e != usize::MAX);
     }
     for w in wing.warnings.iter_mut() {
         w.edges = w.edges.iter().map(|&e| map_wing(e)).collect();
+        w.edges.retain(|&e| e != usize::MAX);
     }
     let mut g = house;
     g.faces.append(&mut wing.faces);
@@ -334,4 +419,81 @@ fn combine(geos: Vec<RoofGeometry>, c: &Cut, house_map: &[usize]) -> RoofGeometr
         ..RoofWarning::new(WarningKind::WingJoined, 0.0)
     });
     g
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::DEFAULT_MATERIAL;
+
+    fn edge(x: f64, y: f64, pitch_deg: f64, eave_height: f64) -> EdgeDef {
+        EdgeDef {
+            start: Point2::new(x, y),
+            pitch_deg,
+            eave_height,
+            overhang: 0.5,
+            half_hip: None,
+            breaks: Vec::new(),
+            priority: 0,
+            direction_rad: None,
+            clad: false,
+            source: None,
+            material: DEFAULT_MATERIAL,
+        }
+    }
+
+    /// A house 5 m deep with `k` low wings 5 m wide in front of it, the
+    /// house's front pieces gables: 4k + 4 walls, and no cut closes it.
+    fn comb(k: usize) -> Project {
+        let mut edges = Vec::new();
+        for i in 0..k {
+            let x = 2.5 + 10.0 * i as f64;
+            edges.push(edge(x, 2.5, 90.0, 5.0));
+            edges.push(edge(x, 0.0, 40.0, 2.0));
+            edges.push(edge(x + 5.0, 0.0, 90.0, 5.0));
+            edges.push(edge(x + 5.0, 2.5, 90.0, 5.0));
+        }
+        let w = 10.0 * k as f64;
+        edges.push(edge(w, 2.5, 90.0, 5.0));
+        edges.push(edge(w, 7.5, 40.0, 5.0));
+        edges.push(edge(0.0, 7.5, 90.0, 5.0));
+        edges.push(edge(0.0, 2.5, 40.0, 5.0));
+        let mut p = Project::new("comb");
+        p.parts.push(RoofPart::new("A", edges));
+        p
+    }
+
+    /// The search is bounded on any input (review ERR-001, ARCH-005: a
+    /// 244-wall comb cost 7 000 core runs, 89 s): at most `MAX_CUTS` cuts
+    /// are calculated, and none for a building over `MAX_WALLS` walls.
+    /// Counted, not timed.
+    #[test]
+    fn the_cuts_calculated_for_one_building_are_bounded() {
+        for k in [2, 4, 10, 15] {
+            let p = comb(k);
+            assert!(p.parts[0].edges.len() <= MAX_WALLS);
+            // Every ordered pair of inner corners on the front line is a
+            // candidate: far more than are tried.
+            let (roof, tried) = split_roof(&p);
+            assert!(roof.is_err(), "{k} wings: no cut closes the comb");
+            assert!(tried <= MAX_CUTS, "{k} wings: {tried} cuts calculated");
+            assert!(tried > 0, "{k} wings");
+        }
+        for k in [16, 60, 124] {
+            let p = comb(k);
+            assert!(p.parts[0].edges.len() > MAX_WALLS);
+            assert_eq!(split_roof(&p).1, 0, "{k} wings");
+        }
+    }
+
+    /// The smallest wings come first, so one low wing among many inner
+    /// corners is found within the bound.
+    #[test]
+    fn the_smallest_wing_is_cut_first() {
+        let p = comb(4);
+        let c = cuts(&p.parts[0]);
+        assert_eq!(c.len(), MAX_CUTS);
+        assert!(c.windows(2).all(|w| w[0].area <= w[1].area));
+        assert!((c[0].area - 12.5).abs() < 1e-9, "{}", c[0].area);
+    }
 }

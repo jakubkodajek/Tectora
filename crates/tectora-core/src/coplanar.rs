@@ -19,15 +19,18 @@
 //! linearly with the offset while the topology stays, is taken back to
 //! offset zero (areas, quadratic in the offset, from all three). The faces
 //! that then lie in the back plane are joined into one and the lines
-//! inside them dropped. Where the three results differ in topology, or
-//! the project has more than one building, dormers or openings, nothing is
-//! done and DACAD's error stands.
+//! in that plane between them dropped. Only a front wall between two
+//! gables is joined (beside an eave the standard result is sound), and the
+//! result must pass `check::sound`; where the three results differ in
+//! topology or the result is not sound, nothing is done and DACAD's result
+//! stands. Dormers, chimneys, openings and windows are applied to the
+//! joined roof by the caller (`openings::generate_valid`).
 
 use geo::{BooleanOps, MultiPolygon};
 
-use crate::check::{RoofWarning, WarningKind, parallel_planes};
+use crate::check::{RoofWarning, WarningKind, wing_planes};
 use crate::geom::Point2;
-use crate::model::Project;
+use crate::model::{Project, RoofPart};
 use crate::roof::{RoofFace, RoofGeometry, RoofLine};
 use crate::union::{from_geo, near_boundary, to_geo};
 
@@ -50,37 +53,32 @@ const INSIDE_TOL: f64 = 2e-3;
 
 /// One front wall and the back wall whose plane it continues.
 #[derive(Debug, Clone, Copy)]
-struct Pair {
-    outer: usize,
-    inner: usize,
-    rise: f64,
+pub(crate) struct Pair {
+    pub(crate) outer: usize,
+    pub(crate) inner: usize,
+    pub(crate) rise: f64,
 }
 
-/// The pairs of `project`'s only building whose planes count as one (one
-/// per front wall, the back wall with the smallest rise).
-fn pairs(project: &Project) -> Vec<Pair> {
-    let Some(part) = project.parts.first() else {
-        return Vec::new();
-    };
+/// The pairs of `part` whose planes count as one (one per front wall,
+/// the back wall with the smallest rise). Only a front wall between two
+/// gables, in front of a longer house wall ([`wing_planes`]): beside an
+/// eave a hip or a valley ends the front plane, and the standard result
+/// there is sound (a hipped house with a jog, a hipped wing).
+pub(crate) fn pairs(part: &RoofPart) -> Vec<Pair> {
     let mut out: Vec<Pair> = Vec::new();
-    for p in parallel_planes(part) {
+    for p in wing_planes(part) {
         if p.rise.abs() >= MERGE_TOL {
             continue;
         }
+        let pair = Pair {
+            outer: p.outer,
+            inner: p.inner,
+            rise: p.rise,
+        };
         match out.iter_mut().find(|q| q.outer == p.outer) {
             Some(q) if q.rise.abs() <= p.rise.abs() => {}
-            Some(q) => {
-                *q = Pair {
-                    outer: p.outer,
-                    inner: p.inner,
-                    rise: p.rise,
-                }
-            }
-            None => out.push(Pair {
-                outer: p.outer,
-                inner: p.inner,
-                rise: p.rise,
-            }),
+            Some(q) => *q = pair,
+            None => out.push(pair),
         }
     }
     // A wall both in front of one plane and behind another would move
@@ -91,45 +89,64 @@ fn pairs(project: &Project) -> Vec<Pair> {
     out
 }
 
-/// The roof of a one-building project DACAD stops on because two parallel
-/// planes lie in one plane, calculated with those planes joined. `None`
-/// when the project is not such a case or the calculation cannot be taken
-/// back to the joined plane safely.
-pub(crate) fn merged(project: &Project) -> Option<Vec<RoofGeometry>> {
-    let simple = project.parts.len() == 1
-        && project.dormers.is_empty()
-        && project.chimneys.is_empty()
-        && project.roof_openings.is_empty()
-        && project.windows.is_empty()
-        && !project.flat_roof;
-    if !simple {
-        return None;
+/// The roof of the one building of `bare` (no dormers, chimneys, openings
+/// or windows; the caller applies those to the result) with its parallel
+/// planes within [`MERGE_TOL`] of one plane joined into one face. `Err`
+/// (with the reason, for logs and tests) when the building is not such a case, when the calculation cannot be
+/// taken back to the joined plane safely, or when the result does not pass
+/// [`crate::check::sound`].
+pub(crate) fn merged(bare: &Project) -> Result<RoofGeometry, String> {
+    let [part] = &bare.parts[..] else {
+        return Err("not one building".into());
+    };
+    let plain = bare.dormers.is_empty()
+        && bare.chimneys.is_empty()
+        && bare.roof_openings.is_empty()
+        && bare.windows.is_empty()
+        && !bare.flat_roof;
+    if !plain {
+        return Err("not a bare building".into());
     }
-    let pairs = pairs(project);
+    let pairs = pairs(part);
     if pairs.is_empty() {
-        return None;
+        return Err("no planes to join".into());
     }
     let mut runs = Vec::with_capacity(OFFSETS.len());
     for &d in &OFFSETS {
-        let mut p = project.clone();
+        let mut p = bare.clone();
         for pair in &pairs {
-            p.parts[0].edges[pair.outer].eave_height += d - pair.rise;
+            if let Some(e) = p
+                .parts
+                .first_mut()
+                .and_then(|q| q.edges.get_mut(pair.outer))
+            {
+                e.eave_height += d - pair.rise;
+            }
         }
-        let mut geos = crate::engine::generate(&p).ok()?;
+        let mut geos = crate::engine::generate(&p).map_err(|e| format!("offset {d}: {e}"))?;
         if geos.len() != 1 || geos[0].error.is_some() {
-            return None;
+            return Err(format!("offset {d}: no roof"));
         }
         runs.push(geos.remove(0));
     }
-    let mut geo = extrapolate(&runs)?;
-    join(project, &pairs, &mut geo)?;
+    let mut geo = extrapolate(&runs).ok_or("the offsets differ in topology")?;
+    join(&pairs, &mut geo)?;
+    // The building the result is the roof of: the front walls' eaves in
+    // the back planes.
+    let mut joined = part.clone();
+    for pair in &pairs {
+        if let Some(e) = joined.edges.get_mut(pair.outer) {
+            e.eave_height -= pair.rise;
+        }
+    }
+    crate::check::sound(&joined, &geo, crate::check::Fit::STANDARD)?;
     for p in &pairs {
         geo.warnings.push(RoofWarning {
             edges: vec![p.outer, p.inner],
             ..RoofWarning::new(WarningKind::MergedPlanes, p.rise.abs())
         });
     }
-    Some(vec![geo])
+    Ok(geo)
 }
 
 /// Value at offset 0 of something linear in the offset, `None` when the
@@ -212,77 +229,123 @@ fn extrapolate(r: &[RoofGeometry]) -> Option<RoofGeometry> {
     out.gables.retain(|g| crate::check::area3(g) >= 1e-4);
     out.faces
         .retain(|f| f.polygon.len() >= 3 && f.area.abs() >= 1e-6);
+    // A face that turned over on the way to offset zero: the topology
+    // changes below the lowest offset, which three samples cannot see.
+    if out.faces.iter().any(|f| f.area.is_nan() || f.area <= 0.0) {
+        return None;
+    }
     Some(out)
 }
 
-/// Plan coordinates rounded to 0.1 mm, so that the corners faces share
-/// match exactly when they are joined.
-fn plan_snapped(f: &RoofFace) -> Vec<Point2> {
-    let r = |v: f64| (v * 1e4).round() / 1e4;
-    f.polygon
-        .iter()
-        .map(|p| Point2::new(r(p[0]), r(p[1])))
-        .collect()
+fn plan(f: &RoofFace) -> Vec<Point2> {
+    f.polygon.iter().map(|p| Point2::new(p[0], p[1])).collect()
 }
 
-/// Joins the faces that lie in each back wall's plane (the front walls'
-/// faces and the back wall's own, and those of walls in line with it)
-/// into one face and drops the line pieces inside it.
-fn join(project: &Project, pairs: &[Pair], geo: &mut RoofGeometry) -> Option<()> {
-    let part = &project.parts[0];
-    let planes = parallel_planes(part);
-    for pair in pairs {
-        // Walls whose plane is the back wall's: the back wall, the front
-        // wall, and walls in line with the back wall at its eave.
-        let mut walls = vec![pair.inner, pair.outer];
-        for p in &planes {
-            for (w, other) in [(p.outer, p.inner), (p.inner, p.outer)] {
-                if walls.contains(&other) && !walls.contains(&w) && p.rise.abs() < 1e-6 {
-                    walls.push(w);
-                }
-            }
+/// Corners closer than this are one corner, and a corner this close to
+/// another face's side lies on it, m.
+const STITCH: f64 = 1.5e-3;
+
+/// The plan outlines with the corners they share made identical and
+/// every corner that lies on another outline's side put into that side,
+/// so that outlines that meet along a line share it exactly (the core's
+/// corners are float32, and on a building turned out of the axes a corner
+/// on another face's side misses it by micrometres).
+fn stitched(mut polys: Vec<Vec<Point2>>) -> Vec<Vec<Point2>> {
+    let mut reps: Vec<Point2> = Vec::new();
+    for p in polys.iter_mut().flatten() {
+        match reps.iter().find(|r| r.distance(*p) < STITCH) {
+            Some(r) => *p = *r,
+            None => reps.push(*p),
         }
-        for (i, e) in part.edges.iter().enumerate() {
-            if walls.contains(&i) {
+    }
+    for poly in polys.iter_mut() {
+        poly.dedup();
+        if poly.len() > 1 && poly.first() == poly.last() {
+            poly.pop();
+        }
+        let n = poly.len();
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let (a, b) = (poly[i], poly[(i + 1) % n]);
+            out.push(a);
+            let (dx, dy) = (b.x - a.x, b.y - a.y);
+            let len2 = dx * dx + dy * dy;
+            if len2 < STITCH * STITCH {
                 continue;
             }
-            // In line with the back wall, same plane.
-            let inner = &part.edges[pair.inner];
-            let same = (e.pitch_deg - inner.pitch_deg).abs() < 1e-9
-                && (e.eave_height - inner.eave_height).abs() < 1e-9
-                && (e.overhang - inner.overhang).abs() < 1e-9
-                && in_line(part, i, pair.inner);
-            if same {
-                walls.push(i);
-            }
+            let mut on: Vec<(f64, Point2)> = reps
+                .iter()
+                .filter(|r| **r != a && **r != b)
+                .filter_map(|r| {
+                    let t = ((r.x - a.x) * dx + (r.y - a.y) * dy) / len2;
+                    let foot = Point2::new(a.x + dx * t, a.y + dy * t);
+                    (t > 0.0 && t < 1.0 && foot.distance(*r) < STITCH).then_some((t, *r))
+                })
+                .collect();
+            on.sort_by(|x, y| x.0.total_cmp(&y.0));
+            out.extend(on.into_iter().map(|(_, r)| r));
         }
+        *poly = out;
+    }
+    polys
+}
+
+/// A corner this far from the back plane lies in it, m.
+const IN_PLANE: f64 = 5e-3;
+
+/// Joins the faces that lie in each back wall's plane (the front wall's
+/// face, the back wall's own, and those of walls in line with it) into one
+/// face and drops the line pieces between them. The faces are found by
+/// their plane, not by their walls, so a building turned out of the axes
+/// with corners rounded to millimetres joins like the same building
+/// axis-parallel.
+fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
+    for pair in pairs {
+        let back = geo
+            .faces
+            .iter()
+            .position(|f| f.edge == pair.inner)
+            .ok_or("the back wall has no face")?;
+        if geo.faces[back].polygon.len() < 3 {
+            return Err("the back wall's face is empty".into());
+        }
+        let plane = crate::union::Plane::of(&geo.faces[back]);
+        let in_plane = |f: &RoofFace| {
+            f.polygon.len() >= 3
+                && f.edge != usize::MAX
+                && (f.pitch_deg - geo.faces[back].pitch_deg).abs() < 0.05
+                && f.polygon
+                    .iter()
+                    .all(|p| (plane.z(Point2::new(p[0], p[1])) - p[2]).abs() < IN_PLANE)
+        };
         let members: Vec<usize> = (0..geo.faces.len())
-            .filter(|&k| walls.contains(&geo.faces[k].edge))
+            .filter(|&k| in_plane(&geo.faces[k]))
             .collect();
-        if members.len() < 2 {
-            continue;
+        // The front wall's face must be one of them.
+        if !members.iter().any(|&k| geo.faces[k].edge == pair.outer) {
+            return Err("the front wall's face is not in the back plane".into());
         }
-        let material = geo.faces[members[0]].material;
+        let material = geo.faces[back].material;
         if members.iter().any(|&k| geo.faces[k].material != material) {
-            return None;
+            return Err("the planes have different materials".into());
         }
         let mut union = MultiPolygon::new(vec![]);
-        for &k in &members {
-            union = union.union(&MultiPolygon::new(vec![to_geo(&plan_snapped(
-                &geo.faces[k],
-            ))]));
+        for poly in stitched(members.iter().map(|&k| plan(&geo.faces[k])).collect()) {
+            union = union.union(&MultiPolygon::new(vec![to_geo(&poly)]));
         }
         if union.0.len() != 1 || !union.0[0].interiors().is_empty() {
-            return None;
+            return Err(format!(
+                "the faces in the back plane are {} pieces",
+                union.0.len()
+            ));
         }
         let outline = from_geo(&union.0[0]);
-        // The joined plane: the back wall's face's plane.
-        let back = members
-            .iter()
-            .find(|&&k| geo.faces[k].edge == pair.inner)
-            .copied()
-            .unwrap_or(members[0]);
-        let plane = crate::union::Plane::of(&geo.faces[back]);
+        // Faces that touch in one point only are not one face.
+        let pinched =
+            (0..outline.len()).any(|i| (0..i).any(|j| outline[i].distance(outline[j]) < 1e-3));
+        if outline.len() < 3 || pinched {
+            return Err("the faces in the back plane touch in a point".into());
+        }
         let area: f64 = members.iter().map(|&k| geo.faces[k].area).sum();
         let face = RoofFace {
             edge: pair.inner,
@@ -292,6 +355,7 @@ fn join(project: &Project, pairs: &[Pair], geo: &mut RoofGeometry) -> Option<()>
             deducted: 0.0,
             material,
         };
+        let at = members.first().copied().unwrap_or(0);
         let mut faces: Vec<RoofFace> = geo
             .faces
             .iter()
@@ -299,30 +363,29 @@ fn join(project: &Project, pairs: &[Pair], geo: &mut RoofGeometry) -> Option<()>
             .filter(|(k, _)| !members.contains(k))
             .map(|(_, f)| f.clone())
             .collect();
-        faces.insert(members[0].min(faces.len()), face);
+        faces.insert(at.min(faces.len()), face);
         geo.faces = faces;
+        // Only lines in the joined plane can lie between its faces: a line
+        // of a roof under it (a wall abutment under the overhang) stays.
+        let lies_in = |l: &RoofLine| {
+            [l.a, l.b]
+                .iter()
+                .all(|p| (plane.z(Point2::new(p[0], p[1])) - p[2]).abs() < IN_PLANE)
+        };
         geo.lines = geo
             .lines
             .iter()
-            .flat_map(|l| outside_pieces(l, &outline))
+            .flat_map(|l| {
+                if lies_in(l) {
+                    outside_pieces(l, &outline)
+                } else {
+                    vec![l.clone()]
+                }
+            })
             .filter(|l| l.length() >= MIN_LINE)
             .collect();
     }
-    Some(())
-}
-
-/// Whether walls `i` and `j` of `part` lie on one line.
-fn in_line(part: &crate::model::RoofPart, i: usize, j: usize) -> bool {
-    let n = part.edges.len();
-    let seg = |k: usize| (part.edges[k].start, part.edges[(k + 1) % n].start);
-    let (a, b) = seg(j);
-    let (c, d) = seg(i);
-    let len = a.distance(b);
-    if len < 1e-9 {
-        return false;
-    }
-    let off = |p: Point2| ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) / len;
-    off(c).abs() < 1e-6 && off(d).abs() < 1e-6
+    Ok(())
 }
 
 /// The pieces of `l` that do not lie inside `poly` (on its boundary or
@@ -335,6 +398,20 @@ fn outside_pieces(l: &RoofLine, poly: &[Point2]) -> Vec<RoofLine> {
         let (c, d) = (poly[i], poly[(i + 1) % n]);
         if let Some(t) = crossing(pa, pb, c, d) {
             ts.push(t);
+        }
+    }
+    // A line through a corner of the outline (the corner where a wing's
+    // side meets the house's eave) is split there too: on a building
+    // turned out of the axes it misses the two sides by micrometres.
+    let (dx, dy) = (pb.x - pa.x, pb.y - pa.y);
+    let len2 = dx * dx + dy * dy;
+    if len2 > 1e-12 {
+        for c in poly {
+            let t = ((c.x - pa.x) * dx + (c.y - pa.y) * dy) / len2;
+            let foot = Point2::new(pa.x + dx * t, pa.y + dy * t);
+            if t > 0.0 && t < 1.0 && foot.distance(*c) < INSIDE_TOL {
+                ts.push(t);
+            }
         }
     }
     ts.sort_by(f64::total_cmp);
