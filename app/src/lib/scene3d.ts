@@ -202,29 +202,115 @@ export function crossings(a: Point2, b: Point2, lines: [Poly3[number], Poly3[num
   return out.sort((x, y) => x - y).filter((t, i, ts) => i === 0 || t - ts[i - 1] > 1e-6);
 }
 
+// How far inside the building the roof is read for a wall's top, m: a wall
+// without overhang lies on the edge of its roof face, where "over the wall"
+// is not decided.
+const WALL_INSET = 1e-3;
+
 /**
- * A wall from the ground up to the roof over its line: the bottom edge a–b
- * at `z0`, the top following the roof height at both ends and at every
- * point `cuts` (plan parameters along a–b where the roof's surface bends,
- * e.g. a ridge over a gable wall). Used where the calculation returns no
- * gable polygon for a gable wall (a shed roof's verges and its high wall),
- * so the 3D view shows a closed building [no source: display only].
- * Null when the roof is not over the wall or not above `z0`.
+ * A wall from the ground up to the underside of the roof over its line, so
+ * the building is closed from every side: the bottom edge a–b at z = 0, the
+ * top following the roof between the points `cuts` (plan parameters along
+ * a–b where the roof's surface bends or ends, e.g. a ridge over a gable
+ * wall or the valley of a joined roof). The eave height of a wall is
+ * measured at its overhang line, so the roof passes over the wall line
+ * higher than the eave: a wall drawn to the eave height leaves a gap under
+ * the roof. `inward` is the unit normal of the wall pointing into the
+ * building; `fallback` is the top where no roof is over the wall (no
+ * calculation, or a building left out of it). Each stretch between two cuts
+ * is read inside the stretch, so a step in the roof gives a vertical edge
+ * [no source: display only].
  */
-export function wallUpToRoof(a: Point2, b: Point2, z0: number, cuts: number[], roofAt: (p: Point2) => number | null): Poly3 | null {
-  const ts = [0, ...cuts.filter((t) => t > 0 && t < 1), 1];
+export function wallUnderRoof(a: Point2, b: Point2, inward: Point2, cuts: number[], roofAt: (p: Point2) => number | null, fallback: number): Poly3 {
+  const ts = [0, ...cuts.filter((t) => t > 1e-6 && t < 1 - 1e-6), 1];
+  const at = (t: number): Point2 => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+  const read = (t: number) => {
+    const p = at(t);
+    const z = roofAt({ x: p.x + inward.x * WALL_INSET, y: p.y + inward.y * WALL_INSET });
+    return z !== null && Number.isFinite(z) ? z : null;
+  };
+  const floor = Math.max(0.01, fallback);
   const top: Poly3 = [];
-  for (const t of ts) {
-    // Just inside the ends, so the corner itself (shared with the next
-    // wall's verge or an eave) does not decide.
-    const k = Math.min(1 - 1e-4, Math.max(1e-4, t));
-    const p = { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
-    const z = roofAt(p);
-    if (z === null) return null;
-    top.push([a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, z]);
+  const push = (t: number, z: number) => {
+    const p = at(t);
+    const last = top[top.length - 1];
+    const q: Poly3[number] = [p.x, p.y, Math.max(0.01, z)];
+    if (last && Math.hypot(last[0] - q[0], last[1] - q[1]) < 1e-9 && Math.abs(last[2] - q[2]) < 1e-4) return;
+    top.push(q);
+  };
+  for (let i = 0; i + 1 < ts.length; i++) {
+    const [t0, t1] = [ts[i], ts[i + 1]];
+    const eps = (t1 - t0) / 8;
+    const [k0, k1] = [t0 + eps, t1 - eps];
+    const [z0, z1] = [read(k0), read(k1)];
+    if (z0 === null || z1 === null) {
+      push(t0, z0 ?? z1 ?? floor);
+      push(t1, z1 ?? z0 ?? floor);
+      continue;
+    }
+    // One plane over the stretch: carry the two readings out to its ends.
+    const slope = (z1 - z0) / (k1 - k0);
+    push(t0, z0 - slope * (k0 - t0));
+    push(t1, z1 + slope * (t1 - k1));
   }
-  if (top.every((p) => p[2] <= z0 + 1e-3)) return null;
-  return [[a.x, a.y, z0], [b.x, b.y, z0], ...top.reverse().map((p): Poly3[number] => [p[0], p[1], Math.max(p[2], z0)])];
+  return [[a.x, a.y, 0], [b.x, b.y, 0], ...top.reverse()];
+}
+
+/** Height of the top of a wall from `wallUnderRoof` at plan parameter t (0..1, clamped). */
+export function wallTopAt(wall: Poly3, t: number): number {
+  const [a, b] = [wall[0], wall[1]];
+  const len2 = (b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2 || 1;
+  const param = (p: Poly3[number]) => ((p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1])) / len2;
+  // The top runs from b back to a.
+  const top = wall.slice(2).map((p) => ({ t: param(p), z: p[2] })).reverse();
+  const k = Math.min(1, Math.max(0, t));
+  let best = top[0].z;
+  for (let i = 0; i + 1 < top.length; i++) {
+    const [p, q] = [top[i], top[i + 1]];
+    if (k < p.t - 1e-9 || k > q.t + 1e-9) continue;
+    const z = q.t - p.t < 1e-9 ? Math.max(p.z, q.z) : p.z + ((q.z - p.z) * (k - p.t)) / (q.t - p.t);
+    best = i === 0 ? z : Math.max(best, z);
+    if (k < q.t - 1e-9) return z;
+  }
+  return best;
+}
+
+/**
+ * True when a gable polygon of the calculation is already shown by `wall`
+ * (from `wallUnderRoof`): it stands in the wall's plane or in the plane of
+ * the wall's verge, at most `overhang` m outside it, and nowhere rises
+ * above the wall's top. The calculation puts a gable in the plane of the
+ * overhang line, so beside a wall drawn up to the roof it would hang in
+ * front of the building as a loose sheet, and without overhang it would
+ * lie in the wall's own plane and flicker. A gable that rises above the
+ * wall (a dormer front standing on the wall line) is kept.
+ */
+export function gableShownByWall(gable: Poly3, wall: Poly3, inward: Point2, overhang: number): boolean {
+  if (gable.length < 3) return false;
+  const [a, b] = [wall[0], wall[1]];
+  const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  if (len < 1e-6) return false;
+  const out = gable.map((p) => -((p[0] - a[0]) * inward.x + (p[1] - a[1]) * inward.y));
+  const [lo, hi] = [Math.min(...out), Math.max(...out)];
+  if (hi - lo > ON_LINE || lo < -ON_LINE || hi > Math.max(0, overhang) + ON_LINE) return false;
+  return gable.every((p) => {
+    const t = ((p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1])) / (len * len);
+    // Past the wall's ends lies only the verge over the neighbours' overhang.
+    if (t < -2 / len || t > 1 + 2 / len) return false;
+    return p[2] <= wallTopAt(wall, t) + ON_LINE;
+  });
+}
+
+/** Unit normal of side a–b pointing into the closed plan polygon `pts`. */
+export function inwardNormal(pts: Point2[], a: Point2, b: Point2): Point2 {
+  let s2 = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const [p, q] = [pts[i], pts[(i + 1) % pts.length]];
+    s2 += p.x * q.y - q.x * p.y;
+  }
+  const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  const sign = s2 >= 0 ? 1 : -1;
+  return { x: (-(b.y - a.y) / len) * sign, y: ((b.x - a.x) / len) * sign };
 }
 
 /**
