@@ -28,7 +28,11 @@ impl Rng {
 }
 
 fn snap(v: f64, step: f64) -> f64 {
-    if step > 0.0 { (v / step).round() * step } else { v }
+    if step > 0.0 {
+        (v / step).round() * step
+    } else {
+        v
+    }
 }
 
 fn rect(r: &mut Rng, x: f64, y: f64, w: f64, d: f64, eave: f64, base: &EdgeDef) -> Vec<EdgeDef> {
@@ -55,7 +59,10 @@ fn rect(r: &mut Rng, x: f64, y: f64, w: f64, d: f64, eave: f64, base: &EdgeDef) 
                 e.overhang = r.pick(&[0.0, 0.3, 0.5, 1.0, 3.0]);
                 e.eave_height = eave + r.pick(&[0.0, 0.0, 0.5, -0.5, 1.0]);
                 if e.pitch_deg == 90.0 && r.f() < 0.3 {
-                    e.half_hip = Some(tectora_core::model::HalfHip { height: e.eave_height + 2.0, pitch_deg: 50.0 });
+                    e.half_hip = Some(tectora_core::model::HalfHip {
+                        height: e.eave_height + 2.0,
+                        pitch_deg: 50.0,
+                    });
                 }
                 return e;
             }
@@ -98,10 +105,10 @@ fn main() {
         let side = r.next() % 4;
         let along = snap(r.range(-2.0, 10.0), step);
         let (x, y) = match side {
-            0 => (along, -d2 + into),         // below
-            1 => (w - into, along),           // right
-            2 => (along, d - into),           // above
-            _ => (-w2 + into, along),         // left
+            0 => (along, -d2 + into), // below
+            1 => (w - into, along),   // right
+            2 => (along, d - into),   // above
+            _ => (-w2 + into, along), // left
         };
         let eave2 = r.pick(&[eave, eave, eave - 0.5, eave + 0.5, eave - 1.0]);
         let mut e2 = rect(&mut r, snap(x, step), snap(y, step), w2, d2, eave2, &base);
@@ -122,9 +129,15 @@ fn main() {
             }
             Ok(v) => {
                 let parts = v["parts"].as_array().unwrap();
-                if let Some(e) = parts.iter().find_map(|p| p["geometry"]["error"].as_object()) {
+                if let Some(e) = parts
+                    .iter()
+                    .find_map(|p| p["geometry"]["error"].as_object())
+                {
                     dacad += 1;
-                    Some(format!("DACAD-ERR {}", serde_json::Value::Object(e.clone())))
+                    Some(format!(
+                        "DACAD-ERR {}",
+                        serde_json::Value::Object(e.clone())
+                    ))
                 } else if parts.iter().any(|p| {
                     p["geometry"]["warnings"]
                         .as_array()
@@ -132,10 +145,18 @@ fn main() {
                 }) {
                     fallback += 1;
                     Some("FALLBACK".into())
-                } else if parts.iter().any(|p| p["geometry"]["faces"].as_array().is_none_or(|f| f.is_empty())) {
+                } else if parts.iter().any(|p| {
+                    p["geometry"]["faces"]
+                        .as_array()
+                        .is_none_or(|f| f.is_empty())
+                }) {
                     Some("NO-FACES".into())
                 } else {
-                    if parts.iter().any(|p| p["geometry"]["joined_with"].as_array().is_some_and(|j| !j.is_empty())) {
+                    if parts.iter().any(|p| {
+                        p["geometry"]["joined_with"]
+                            .as_array()
+                            .is_some_and(|j| !j.is_empty())
+                    }) {
                         joined += 1;
                     }
                     None
@@ -151,7 +172,9 @@ fn main() {
                     q.parts = vec![p.parts[k].clone()];
                     tectora_core::commands::calc(&q).is_ok_and(|v| {
                         v["parts"][0]["geometry"]["error"].is_null()
-                            && v["parts"][0]["geometry"]["faces"].as_array().is_some_and(|f| !f.is_empty())
+                            && v["parts"][0]["geometry"]["faces"]
+                                .as_array()
+                                .is_some_and(|f| !f.is_empty())
                     })
                 })
                 .collect();
@@ -171,5 +194,7 @@ fn main() {
         }
     }
     println!("joined {joined}");
-    println!("{bad}/{cases} not calculated: {errs} errors, {dacad} core errors, {fallback} fallback");
+    println!(
+        "{bad}/{cases} not calculated: {errs} errors, {dacad} core errors, {fallback} fallback"
+    );
 }

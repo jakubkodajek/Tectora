@@ -34,6 +34,7 @@ fn edge(start: Point2, pitch_deg: f64, eave_height: f64, overhang: f64) -> EdgeD
 
 fn project(edges: Vec<EdgeDef>) -> Project {
     let mut part = RoofPart {
+        height: None,
         name: "P".into(),
         edges,
     };

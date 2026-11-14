@@ -383,13 +383,14 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "set_part_height",
-            "description": "Set the height of a building (part) in one change, as the editor's \"Building height\" field: every wall of the part gets `eave_height` (m above ground); its pitch breaks and half-hips move with it, and so do the dormers, chimneys and hand-drawn lines on it. Where buildings of different heights meet, the roofs are joined by these eave heights, so use it to make a wing lower or higher than the main roof. To change only some walls, use update_edges.",
+            "description": "Set the height of a building (part) in one change, as the editor's \"Building height\" and \"Eave height\" fields. Give `height` for the building height (top of the walls, m above ground): the roof moves with it, every wall's eave height, pitch breaks and half-hips shift by the change, and so do the dormers, chimneys and hand-drawn lines on it; each wall keeps its own eave below or above the wall top. The building height itself changes no roof figure (the roof is calculated from the eave heights; an eave is measured at the overhang line and is usually lower than the building). Give `eave_height` instead to put every wall of the part at that eave height (breaks, half-hips and objects move with them) and keep the building height. Where buildings of different heights meet, the roofs are joined by their eave heights, so use it to make a wing lower or higher than the main roof. To change only some walls, use update_edges.",
             "inputSchema": schema(json!({
                 "id": id,
                 "part": { "type": "integer", "minimum": 0, "description": "Part index (as get_project lists them)." },
-                "eave_height": { "type": "number", "minimum": tectora_core::edit::height::MIN_PART_HEIGHT, "maximum": tectora_core::edit::height::MAX_PART_HEIGHT, "description": "Eave height of every wall, m above ground." },
+                "height": { "type": "number", "minimum": tectora_core::edit::height::MIN_PART_HEIGHT, "maximum": tectora_core::edit::height::MAX_PART_HEIGHT, "description": "Building height (top of the walls), m above ground. Give this or eave_height." },
+                "eave_height": { "type": "number", "minimum": tectora_core::edit::height::MIN_PART_HEIGHT, "maximum": tectora_core::edit::height::MAX_PART_HEIGHT, "description": "Eave height of every wall, m above ground. Give this or height." },
                 "summary": summary_prop(),
-            }), &["id", "part", "eave_height", "summary"]),
+            }), &["id", "part", "summary"]),
         }),
         json!({
             "name": "clear_roof",
@@ -636,9 +637,18 @@ impl Server {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
                 let part: usize = req(args, "part")?;
-                let h = arg_f64(args, "eave_height")?.ok_or("`eave_height` is required")?;
-                if !tectora_core::edit::height::set_part_height(&mut p, part, h)? {
-                    return Err(format!("every wall of part {part} already has eave height {h} m"));
+                match (arg_f64(args, "height")?, arg_f64(args, "eave_height")?) {
+                    (Some(h), None) => {
+                        if !tectora_core::edit::height::set_part_height(&mut p, part, h)? {
+                            return Err(format!("part {part} already is {h} m high"));
+                        }
+                    }
+                    (None, Some(h)) => {
+                        if !tectora_core::edit::height::set_part_eave_height(&mut p, part, h)? {
+                            return Err(format!("every wall of part {part} already has eave height {h} m"));
+                        }
+                    }
+                    _ => return Err("give one of `height` (building) or `eave_height` (every wall)".into()),
                 }
                 if let Err(e) = p.validate() {
                     return Err(e.join("; "));
@@ -1201,6 +1211,7 @@ impl Server {
                 arg_f64(args, "rotation_deg")?.unwrap_or(0.0),
             );
             RoofPart {
+                height: None,
                 name: String::new(),
                 edges: pts
                     .into_iter()
@@ -2125,6 +2136,45 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("`state`"), "{err}");
         assert_eq!(s.store.activity(&id).len(), log, "nothing saved");
+    }
+
+    #[test]
+    fn a_building_height_carries_the_roof_and_keeps_a_lower_eave() {
+        // Jakub (2026-11-14): the building height is not the eave height.
+        let (mut s, id) = setup();
+        let p0 = s.store.load(&id).unwrap();
+        let eave = p0.parts[0].edges[0].eave_height;
+        call(
+            &mut s,
+            "update_edges",
+            json!({ "id": id, "part": 0, "changes": [{ "index": 0, "eave_height": eave - 0.5 }], "summary": "Lower eave" }),
+        );
+        call(
+            &mut s,
+            "set_part_height",
+            json!({ "id": id, "part": 0, "height": eave + 1.0, "summary": "Higher building" }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(p.parts[0].height, Some(eave + 1.0));
+        let e = &p.parts[0].edges;
+        let lowest = e
+            .iter()
+            .map(|e| e.eave_height)
+            .fold(f64::INFINITY, f64::min);
+        assert!((lowest - (eave + 0.5)).abs() < 1e-9, "{lowest}");
+        assert!(
+            e[1..]
+                .iter()
+                .all(|w| (w.eave_height - (eave + 1.0)).abs() < 1e-9),
+            "{e:?}"
+        );
+        for bad in [
+            json!({ "id": id, "part": 0, "height": eave + 1.0, "summary": "same" }),
+            json!({ "id": id, "part": 0, "height": 3, "eave_height": 3, "summary": "both" }),
+            json!({ "id": id, "part": 0, "height": -2, "summary": "below ground" }),
+        ] {
+            assert!(s.call_tool("set_part_height", &bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

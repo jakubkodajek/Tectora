@@ -49,7 +49,7 @@
   import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
   import type { ActivityItem, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
-  import { GABLE_PITCH, isAi, isGable, isMarker } from "./types";
+  import { GABLE_PITCH, buildingHeight, isAi, isGable, isMarker } from "./types";
 
   let {
     id: idProp,
@@ -623,14 +623,25 @@
     }
   }
 
+  /**
+   * A wall's eave height is not the building height: before an eave edit a
+   * building without a height of its own keeps the one it shows (core
+   * `RoofPart::freeze_height`, MCP update_edges does the same).
+   */
+  function freezeHeight(part: RoofPart, patch: Partial<EdgeDef>) {
+    if ("eave_height" in patch && part.height == null) part.height = buildingHeight(part);
+  }
+
   function patchEdge(patch: Partial<EdgeDef>) {
     if (!project || !selection) return;
+    freezeHeight(project.parts[selection.part], patch);
     Object.assign(project.parts[selection.part].edges[selection.edge], patch);
     commit();
   }
 
   function applyAll(patch: Partial<EdgeDef>) {
     if (!project || !selection) return;
+    freezeHeight(project.parts[selection.part], patch);
     for (const e of project.parts[selection.part].edges) {
       if ("pitch_deg" in patch && (isGable(e) || isMarker(e))) continue;
       Object.assign(e, patch);
@@ -639,9 +650,10 @@
   }
 
   /**
-   * The bar's "Building height": every wall of the selected part at `h`, its
-   * breaks, half-hips and the objects on it moved with it, in one change.
-   * The core's operation, the same as MCP set_part_height.
+   * The bar's "Building height": the selected part at `h` (top of the
+   * walls); its eaves, breaks, half-hips and the objects on it move by the
+   * change, so a lower eave stays lower. The core's operation, the same as
+   * MCP set_part_height.
    */
   const setPartHeight = (h: number) => pendingEdits.track(setPartHeightNow(h));
   async function setPartHeightNow(h: number) {

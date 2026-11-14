@@ -18,6 +18,7 @@ fn edge(x: f64, y: f64, pitch: f64, eave: f64, overhang: f64) -> EdgeDef {
 
 fn hip(name: &str, x0: f64, y0: f64, x1: f64, y1: f64, eave: f64) -> RoofPart {
     RoofPart {
+        height: None,
         name: name.into(),
         edges: vec![
             edge(x0, y0, 35.0, eave, 0.5),
@@ -71,6 +72,7 @@ fn far_apart_buildings_are_not_joined_and_indices_skip_invalid_parts() {
     p.parts.push(hip("A", 0.0, 0.0, 10.0, 8.0, 3.0));
     // An invalid part in between keeps its slot.
     p.parts.push(RoofPart {
+        height: None,
         name: "bad".into(),
         edges: vec![edge(0.0, 0.0, 30.0, 3.0, 0.5)],
     });
@@ -281,6 +283,7 @@ fn a_wall_of_no_length_leaves_only_its_building_out_and_says_where() {
 fn a_core_error_names_the_building_that_fails_alone() {
     let mut p = Project::new("one bad roof");
     p.parts.push(RoofPart {
+        height: None,
         name: "A".into(),
         edges: vec![
             edge(0.0, 0.0, 30.0, 3.0, 0.6),
@@ -295,6 +298,7 @@ fn a_core_error_names_the_building_that_fails_alone() {
         pitch_deg: 50.0,
     });
     p.parts.push(RoofPart {
+        height: None,
         name: "B".into(),
         edges: vec![
             edge(2.2, 5.9, 45.0, 3.0, 0.0),

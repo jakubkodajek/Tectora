@@ -31,6 +31,14 @@ export interface EdgeDef {
 export interface RoofPart {
   name: string;
   edges: EdgeDef[];
+  /** Building height (top of the walls), m; absent: its lowest eave. Changes no roof figure. */
+  height?: number | null;
+}
+
+/** The building's height: its own, else its lowest eave (core `RoofPart::building_height`). */
+export function buildingHeight(part: RoofPart): number | null {
+  if (part.height != null) return part.height;
+  return part.edges.length ? Math.min(...part.edges.map((e) => e.eave_height)) : null;
 }
 
 export type JobStatus = "draft" | "offer" | "ordered" | "done";

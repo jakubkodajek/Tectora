@@ -412,6 +412,7 @@ fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
         edges.push(e);
     }
     let mut part = RoofPart {
+        height: None,
         name: v
             .get("name")
             .and_then(Value::as_str)
@@ -1231,6 +1232,11 @@ impl Server {
                 let changes = arg(args, "changes")?
                     .as_array()
                     .ok_or("`changes` must be a list")?;
+                // A wall's eave is not the building height: the building
+                // keeps the height it shows (RoofPart::freeze_height).
+                if changes.iter().any(|c| c.get("eave_height").is_some()) {
+                    part.freeze_height();
+                }
                 for c in changes {
                     // As the editor's "apply to all walls": a pitch for every
                     // wall leaves gables and direction changes as they are,
@@ -1287,6 +1293,7 @@ impl Server {
                     })
                     .collect();
                 let mut part = RoofPart {
+                    height: None,
                     name: old.name,
                     edges,
                 };
@@ -2024,6 +2031,7 @@ mod tests {
         let mut s = server();
         let mut p = Project::new("Empty");
         p.parts.push(RoofPart {
+            height: None,
             name: "A".into(),
             edges: Vec::new(),
         });

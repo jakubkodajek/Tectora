@@ -382,7 +382,7 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             tectora_core::edit::height::set_part_height(
                 &mut project,
                 arg(a, "part")?,
-                arg(a, "eaveHeight")?,
+                arg(a, "height")?,
             )?;
             to_json(project)
         }

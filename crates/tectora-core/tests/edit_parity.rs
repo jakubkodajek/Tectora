@@ -492,6 +492,7 @@ fn transform_cases(c: &mut Cases) {
     }
     for (name, es) in outlines() {
         let part = RoofPart {
+            height: None,
             name: name.into(),
             edges: from(&es),
         };
@@ -593,6 +594,7 @@ fn dormer_cases(c: &mut Cases) {
     let parts: Vec<RoofPart> = outlines()
         .into_iter()
         .map(|(name, es)| RoofPart {
+            height: None,
             name: name.into(),
             edges: from(&es),
         })

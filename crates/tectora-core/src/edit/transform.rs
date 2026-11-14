@@ -125,6 +125,7 @@ fn map_part(part: &RoofPart, m: Power, name: String) -> RoofPart {
         .first()
         .map_or(Point2::new(0.0, 0.0), |e| e.start);
     RoofPart {
+        height: None,
         name,
         edges: map_chain(&part.edges, first, m).0,
     }
@@ -632,6 +633,7 @@ mod tests {
     // 10 x 6 counter-clockwise: south eave 30°, east gable, north eave 45°, west eave 40°.
     fn part() -> RoofPart {
         RoofPart {
+            height: None,
             name: "A".into(),
             edges: vec![
                 wall(0.0, 0.0, 30.0),

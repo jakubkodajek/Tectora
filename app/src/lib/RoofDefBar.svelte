@@ -15,7 +15,7 @@
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
   import type { EdgeDef, PitchBreak, Project, Selection } from "./types";
-  import { GABLE_PITCH, isGable, isMarker } from "./types";
+  import { GABLE_PITCH, buildingHeight as heightOf, isGable, isMarker } from "./types";
   import { materialIds, materialName } from "./materials";
   import { numeric } from "./numeric.svelte";
   import { hscroll } from "./hscroll";
@@ -65,12 +65,8 @@
   const realWalls = $derived(part ? part.edges.filter((e) => !isMarker(e)).length : 0);
   const directionDeg = $derived(edge?.direction_rad != null ? +(((edge.direction_rad * 180) / Math.PI + 360) % 360).toFixed(2) : 0);
   const breaks = $derived(edge?.breaks ?? []);
-  /** The eave height all walls of the building share; null when they differ. */
-  const buildingHeight = $derived.by(() => {
-    if (!part || part.edges.length === 0) return null;
-    const h = part.edges[0].eave_height;
-    return part.edges.every((e) => e.eave_height === h) ? h : null;
-  });
+  /** The building's height (top of its walls); the eave of each wall is its own value and may be lower. */
+  const buildingHeight = $derived(part ? heightOf(part) : null);
 
   /**
    * The first row holds what a roofer sets on every wall (eave or gable,
@@ -86,7 +82,6 @@
   const moreSet = $derived.by(() => {
     if (!edge || marker) return [] as string[];
     const out: string[] = [];
-    if (onheight && buildingHeight === null) out.push(t("edge.eaveHeight"));
     if (gable && edge.clad) out.push(t("edge.clad"));
     if (gable && edge.half_hip) out.push(t("edge.halfHip"));
     if (!gable && edge.priority) out.push(t("edge.priority"));
@@ -191,17 +186,16 @@
         </label>
       {/if}
       {#if onheight}
-        <label class="wrap" title={buildingHeight === null ? `${t("edge.buildingHeightMixed", { name: partName })} ${t("edge.buildingHeightHint", { name: partName })}` : t("edge.buildingHeightHint", { name: partName })}>
+        <label class="wrap" title={t("edge.buildingHeightHint", { name: partName })}>
           <span>{t("edge.buildingHeight")}</span>
-          <div class="unit"><input type="text" data-testid="building-height" placeholder={buildingHeight === null ? t("edge.mixed") : undefined}
+          <div class="unit"><input type="text" data-testid="building-height"
             use:numeric={{ value: buildingHeight, step: 0.05, min: 0, max: 1000, onchange: onheight }} /><em>m</em></div>
         </label>
-      {:else}
-        <label>
-          <span>{t("edge.eaveHeight")}</span>
-          <div class="unit"><input type="text" use:numeric={{ value: edge.eave_height, step: 0.05, min: 0, onchange: (v) => onchange({ eave_height: v }) }} /><em>m</em></div>
-        </label>
       {/if}
+      <label title={onheight ? t("edge.eaveHeightHint") : undefined}>
+        <span>{t("edge.eaveHeight")}</span>
+        <div class="unit"><input type="text" data-testid="eave-height" use:numeric={{ value: edge.eave_height, step: 0.05, min: 0, max: 1000, onchange: (v) => onchange({ eave_height: v }) }} /><em>m</em></div>
+      </label>
       <label>
         <span>{t("edge.overhang")}</span>
         <div class="unit"><input type="text" use:numeric={{ value: edge.overhang, step: 0.05, min: 0, onchange: (v) => onchange({ overhang: v }) }} /><em>m</em></div>
@@ -219,12 +213,6 @@
 
   {#if edge && part && moreOpen}
     <div class="row more" id="def-more-row" use:hscroll>
-      {#if onheight}
-        <label>
-          <span>{t("edge.eaveHeight")}</span>
-          <div class="unit"><input type="text" use:numeric={{ value: edge.eave_height, step: 0.05, min: 0, onchange: (v) => onchange({ eave_height: v }) }} /><em>m</em></div>
-        </label>
-      {/if}
       {#if !marker}
         <label>
           <span>{t("edge.length")}</span>

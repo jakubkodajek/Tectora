@@ -31,6 +31,7 @@ pub fn edge(x: f64, y: f64, pitch_deg: f64, eave_height: f64, overhang: f64) -> 
 pub fn project(edges: Vec<EdgeDef>) -> Project {
     let mut p = Project::new("analytic");
     p.parts.push(RoofPart {
+        height: None,
         name: "A".into(),
         edges,
     });

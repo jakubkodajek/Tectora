@@ -544,12 +544,13 @@ fn face_to_part(
     Ok(project)
 }
 
-/// The editor's "Building height": every wall of part `part` at
-/// `eave_height`, its breaks, half-hips and the objects on it moved with it
-/// (`tectora_core::edit::height::set_part_height`, the MCP tool's operation).
+/// The editor's "Building height": part `part` at `height` (top of the
+/// walls), its roof (eaves, breaks, half-hips) and the objects on it moved
+/// by the change (`tectora_core::edit::height::set_part_height`, the MCP
+/// tool's operation).
 #[tauri::command]
-fn set_part_height(mut project: Project, part: usize, eave_height: f64) -> CmdResult<Project> {
-    tectora_core::edit::height::set_part_height(&mut project, part, eave_height)
+fn set_part_height(mut project: Project, part: usize, height: f64) -> CmdResult<Project> {
+    tectora_core::edit::height::set_part_height(&mut project, part, height)
         .map_err(|d| AppError::new("invalid_input").detail(d))?;
     Ok(project)
 }

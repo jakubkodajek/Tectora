@@ -76,9 +76,9 @@ export const api = {
     invoke<string>("create_from_example", { exampleId, name: name ?? null }),
   calc: (project: Project) => invoke<CalcResult>("calc", { project }),
   calcBreakdown: (project: Project) => invoke<CalcBreakdown>("calc_breakdown", { project }),
-  /** Every wall of part `part` at `eaveHeight`, with its breaks and the objects on it (the MCP tool set_part_height). */
-  setPartHeight: (project: Project, part: number, eaveHeight: number) =>
-    invoke<Project>("set_part_height", { project, part, eaveHeight }),
+  /** Building `part` at `height` (top of the walls); its roof and the objects on it move by the change (the MCP tool set_part_height). */
+  setPartHeight: (project: Project, part: number, height: number) =>
+    invoke<Project>("set_part_height", { project, part, height }),
   /** Hand-drawn face `index` turned into a building (the MCP tool face_to_part). */
   faceToPart: (project: Project, index: number, name: string, pitchDeg: number, eaveHeight: number, overhang: number) =>
     invoke<Project>("face_to_part", { project, index, name, pitchDeg, eaveHeight, overhang }),

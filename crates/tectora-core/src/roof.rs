@@ -2031,6 +2031,7 @@ fn merge_collinear_walls(part: &RoofPart) -> (RoofPart, Vec<usize>) {
     }
     (
         RoofPart {
+            height: None,
             name: part.name.clone(),
             edges,
         },
@@ -2589,6 +2590,7 @@ mod tests {
             })
             .collect();
         let mut part = RoofPart {
+            height: None,
             name: "t".into(),
             edges,
         };

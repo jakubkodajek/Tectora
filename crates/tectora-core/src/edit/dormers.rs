@@ -862,6 +862,7 @@ mod tests {
         let mut house = crate::Project::new("t");
         let w = |x: f64, y: f64, pitch: f64| plain_edge(Point2::new(x, y), pitch, 3.0, 0.0);
         house.parts.push(RoofPart {
+            height: None,
             name: "A".into(),
             edges: vec![
                 w(0.0, 0.0, 38.0),

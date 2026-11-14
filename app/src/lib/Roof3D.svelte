@@ -13,7 +13,7 @@
   import { hostHeightAt, isDormerFace, slopeAt } from "./dormers";
   import { isConvex, windowOutline } from "./openings";
   import { chimneyTop, clipConvex, crossings, dormerWallLines, manualFacePoly, onWallLine, outgrows, planArea, planeOf, wallTriangles, wallUpToRoof, type Extent, type Poly3 } from "./scene3d";
-  import { isGable } from "./types";
+  import { isGable, isMarker } from "./types";
   import { presets } from "./settings.svelte";
 
   let {
@@ -209,7 +209,19 @@
           }
         }
         const h = Math.max(0.01, Math.min(e.eave_height, b.eave_height));
-        content.add(quad([[e.start.x, e.start.y, 0], [b.start.x, b.start.y, 0], [b.start.x, b.start.y, h], [e.start.x, e.start.y, h]], wallMat, target));
+        // A building with its own height: an eave wall stands up to the
+        // building height, but never through the roof above it (an eave
+        // lower than the building meets the wall below its top). Gable walls
+        // keep the eave: the gable polygon above is in the same plane.
+        let ha = h;
+        let hb = h;
+        if (part.height != null && !isGable(e) && !isMarker(e)) {
+          const own = rp && result ? { ...result, parts: [rp] } : null;
+          const top = (p: Point2) => Math.max(0.01, Math.min(part.height!, (own && hostHeightAt(own, p)) ?? part.height!));
+          ha = top(e.start);
+          hb = top(b.start);
+        }
+        content.add(quad([[e.start.x, e.start.y, 0], [b.start.x, b.start.y, 0], [b.start.x, b.start.y, hb], [e.start.x, e.start.y, ha]], wallMat, target));
       });
     });
 
