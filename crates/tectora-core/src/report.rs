@@ -41,6 +41,9 @@ pub fn calc(project: &Project) -> Value {
         "totals": total,
         "codes": dacad_line_totals(project),
         "problems": project.problems(),
+        // Each object's distances from the eave and the sides of its face
+        // (editor dimension lines; `edit::position`).
+        "placements": crate::edit::position::placements(project),
     })
 }
 

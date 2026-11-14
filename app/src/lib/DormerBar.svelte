@@ -10,6 +10,8 @@
   import { formatNumber, numeric } from "./numeric.svelte";
   import { hscroll } from "./hscroll";
   import { prefs, savePrefs } from "./settings.svelte";
+  import PlaceFields from "./PlaceFields.svelte";
+  import { placementOf } from "./items";
 
   let {
     project,
@@ -18,6 +20,7 @@
     onchange,
     ondelete,
     onedit,
+    onplace,
   }: {
     project: Project;
     result: CalcResult | null;
@@ -26,7 +29,10 @@
     ondelete: () => void;
     /** Opens the dormer window (plan and section). */
     onedit?: () => void;
+    /** A distance on the roof face typed (from eave, left, right; the others null). */
+    onplace?: (fromEave: number | null, fromLeft: number | null, fromRight: number | null) => void;
   } = $props();
+  const placement = $derived(index !== null ? placementOf(result, { kind: "dormer", index }) : null);
 
   const dormer = $derived(index !== null ? project.dormers[index] : null);
   const params = $derived(dormer ? parseDormer(dormer) : null);
@@ -152,6 +158,7 @@
 
   {#if params && kind && kind !== "general" && moreOpen}
     <div class="row more" id="dormer-more-row" use:hscroll>
+      {#if onplace}<PlaceFields {placement} {onplace} width={84} />{/if}
       <label title={host !== null ? t("dormer.hostHint", { h: formatNumber(host, numberLocale(), 2) }) : undefined}>
         <span>{t("edge.eaveHeight")}</span>
         <div class="unit"><input type="text" disabled={kind === "pointed"} use:numeric={{ value: params.eave_height, step: 0.05, onchange: (v) => set({ eave_height: v }) }} /><em>m</em></div>

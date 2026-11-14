@@ -15,6 +15,7 @@ import type {
   JobInfo,
   Library,
   LiveStatus,
+  Placement,
   Project,
   ProjectSummary,
   ResultSnapshot,
@@ -76,6 +77,12 @@ export const api = {
     invoke<string>("create_from_example", { exampleId, name: name ?? null }),
   calc: (project: Project) => invoke<CalcResult>("calc", { project }),
   calcBreakdown: (project: Project) => invoke<CalcBreakdown>("calc_breakdown", { project }),
+  /** Where a dormer, chimney, window or opening sits on its roof face; null off the roof. */
+  itemPlacement: (project: Project, kind: string, index: number) =>
+    invoke<Placement | null>("item_placement", { project, kind, index }),
+  /** Moves a dormer, chimney, window or opening to distances on its roof face (the MCP tool place_item). */
+  placeItem: (project: Project, kind: string, index: number, fromEave: number | null, fromLeft: number | null, fromRight: number | null) =>
+    invoke<Project>("place_item", { project, kind, index, fromEave, fromLeft, fromRight }),
   /** Building `part` at `height` (top of the walls); its roof and the objects on it move by the change (the MCP tool set_part_height). */
   setPartHeight: (project: Project, part: number, height: number) =>
     invoke<Project>("set_part_height", { project, part, height }),

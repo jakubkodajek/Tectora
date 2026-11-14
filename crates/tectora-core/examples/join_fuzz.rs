@@ -68,7 +68,7 @@ fn rect(r: &mut Rng, x: f64, y: f64, w: f64, d: f64, eave: f64, base: &EdgeDef) 
             }
             e.pitch_deg = match (kind, i) {
                 ("gable_x", 1 | 3) | ("gable_y", 0 | 2) => 90.0,
-                ("shed", 1 | 2 | 3) => 90.0,
+                ("shed", 1..=3) => 90.0,
                 _ => pitch,
             };
             e

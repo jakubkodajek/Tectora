@@ -7,7 +7,7 @@
   import { windowOutline, type OpeningSel } from "./openings";
   import { codeKind, lineLength, type ManualSel } from "./manual";
   import type { Ghost } from "./changes";
-  import type { ItemRef, PlanTarget } from "./items";
+  import { placementOf, type ItemRef, type PlanTarget } from "./items";
   import { fitScale, gridStep as gridStepFor, gridValues } from "./grid";
   import { faceTags } from "./facelabels";
   import { hostHeightAt } from "./dormers";
@@ -41,6 +41,7 @@
     manualDraft = [],
     ondrag,
     oncontext,
+    onitemdbl,
   }: {
     project: Project;
     result: CalcResult | null;
@@ -80,6 +81,8 @@
     ondrag?: (target: PlanTarget, dx: number, dy: number, end: boolean) => void;
     /** Right click (or Ctrl+click) without dragging: open the context menu. */
     oncontext?: (target: PlanTarget, client: { x: number; y: number }, world: Point2) => void;
+    /** A double-click on a dormer, chimney, window, opening or hand-drawn shape: open its properties. */
+    onitemdbl?: (item: ItemRef) => void;
   } = $props();
 
   let cursorWorld = $state<Point2 | null>(null);
@@ -157,6 +160,24 @@
   /** A length in the plan, 2 decimals in the UI language (decimal comma in cs, sk, de). */
   const lenText = (v: number) =>
     new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }).format(v);
+  /** A placement distance, 3 decimals like DACAD's dialogs (mm). */
+  const mmText = (v: number) =>
+    new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 3, maximumFractionDigits: 3, useGrouping: false }).format(v);
+  /** The selected dormer, chimney, window or opening, and where it sits on its face (dimension lines). */
+  const placed = $derived.by(() => {
+    const it: ItemRef | null = dormerSel !== null ? { kind: "dormer", index: dormerSel } : openSel ? { kind: openSel.kind, index: openSel.index } : null;
+    return showDims ? placementOf(result, it) : null;
+  });
+  /** One dimension line in screen space with end ticks; null when too short to draw. */
+  function dimLine(a: Point2, b: Point2) {
+    const [x1, y1, x2, y2] = [sx(a.x), sy(a.y), sx(b.x), sy(b.y)];
+    const len = Math.hypot(x2 - x1, y2 - y1);
+    if (len < 1) return { x1, y1, x2, y2, ticks: "", mx: x1, my: y1, short: true };
+    const [nx, ny] = [(-(y2 - y1) / len) * 4, ((x2 - x1) / len) * 4];
+    const ticks = `M${x1 - nx},${y1 - ny}L${x1 + nx},${y1 + ny}M${x2 - nx},${y2 - ny}L${x2 + nx},${y2 + ny}`;
+    return { x1, y1, x2, y2, ticks, mx: (x1 + x2) / 2, my: (y1 + y2) / 2, short: len < 18 };
+  }
+
   /** Rough width of a label in px at the given font size. */
   const textPx = (s: string, size: number) => s.length * size * 0.62 + 8;
 
@@ -282,8 +303,21 @@
     if (b !== 0) return;
     e.stopPropagation();
     selectItem(item);
+    // A second press on the same object within the double-click time opens
+    // its properties (the dormer window, the object dialog). The pointer is
+    // captured for the drag, so the element never sees a dblclick itself.
+    const now = performance.now();
+    const again = lastPress && lastPress.kind === item.kind && lastPress.index === item.index && now - lastPress.t < DOUBLE_MS;
+    lastPress = again ? null : { ...item, t: now };
+    if (again && onitemdbl) {
+      onitemdbl(item);
+      return;
+    }
     startObjDrag(e, { type: "item", item });
   }
+  /** The last press on an object, for the double-click. */
+  let lastPress: (ItemRef & { t: number }) | null = null;
+  const DOUBLE_MS = 450;
 
   /** A press inside a part's outline: drags the selected part, else selects it. */
   function pressPart(e: PointerEvent, part: number) {
@@ -714,6 +748,25 @@
     {#if guides.y !== null}
       <path class="guide" d="M0,{sy(guides.y)}H{width}" />
     {/if}
+    {#if placed}
+      <!-- From the eave (along the slope) and from both sides of the face:
+           the selected object's dimension lines (core edit::position). -->
+      <g class="place-dims" data-testid="place-dims">
+        {#each [
+          { l: placed.eave_line, v: placed.from_eave, key: "eave", tip: t("place.fromEaveHint") },
+          { l: placed.left_line, v: placed.from_left, key: "left", tip: t("place.fromLeftHint") },
+          { l: placed.right_line, v: placed.from_right, key: "right", tip: t("place.fromRightHint") },
+        ] as d (d.key)}
+          {@const g = dimLine(d.l[0], d.l[1])}
+          <g data-dim={d.key}>
+            <title>{d.tip}</title>
+            <line x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} />
+            <path d={g.ticks} />
+            <text class="dim place-dim" x={g.mx} y={g.my} dy={d.key === "eave" ? 0 : -6} dx={d.key === "eave" ? 6 : 0} text-anchor={d.key === "eave" ? "start" : "middle"}>{mmText(d.v)}</text>
+          </g>
+        {/each}
+      </g>
+    {/if}
     {#if placing && cursorWorld}
       <path class="crosshair" d="M{sx(cursorWorld.x) - 9},{sy(cursorWorld.y)}h18M{sx(cursorWorld.x)},{sy(cursorWorld.y) - 9}v18" />
     {/if}
@@ -995,6 +1048,21 @@
     pointer-events: none;
   }
   .edge-dim {
+    dominant-baseline: central;
+  }
+  .place-dims line,
+  .place-dims path {
+    stroke: var(--accent);
+    stroke-width: 1.2;
+    fill: none;
+    pointer-events: none;
+  }
+  .place-dims line {
+    stroke-dasharray: 5 3;
+  }
+  .place-dim {
+    fill: var(--accent);
+    font-weight: 600;
     dominant-baseline: central;
   }
   .dim .no {

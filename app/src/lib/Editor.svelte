@@ -22,7 +22,7 @@
   import { textfield } from "./textfield";
   import ContextMenu, { type MenuEntry, type MenuState } from "./ContextMenu.svelte";
   import { mergeDroppedCorner, moveCorner, samePoint, withoutRepeats } from "./corners";
-  import { followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, transformItem, type ItemRef, type PlanTarget } from "./items";
+  import { MCP_KIND, followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, placementOf, transformItem, type ItemRef, type PlanTarget } from "./items";
   import { snapToRoof, type ManualSel } from "./manual";
   import { describeCalcError, describeError, describeProblem, toAppError, type Described } from "./errors";
   import { info, notify, notifyError } from "./notify.svelte";
@@ -677,6 +677,32 @@
     commit();
   }
 
+  /**
+   * The dimension fields of a dormer, chimney, window or opening: moves it
+   * to the typed distance from the eave or a side of its roof face (the
+   * core's operation, the same as MCP place_item).
+   */
+  const placeItem = (it: ItemRef, fromEave: number | null, fromLeft: number | null, fromRight: number | null) =>
+    pendingEdits.track(placeItemNow(it, fromEave, fromLeft, fromRight));
+  async function placeItemNow(it: ItemRef, fromEave: number | null, fromLeft: number | null, fromRight: number | null) {
+    if (!project) return;
+    const before = JSON.stringify($state.snapshot(project));
+    let next: Project;
+    try {
+      next = await api.placeItem($state.snapshot(project) as Project, MCP_KIND[it.kind], it.index, fromEave, fromLeft, fromRight);
+    } catch (e) {
+      notifyError(e, "calc");
+      return;
+    }
+    // Only onto the same job state: an AI save or an edit in between wins.
+    if (!project || JSON.stringify($state.snapshot(project)) !== before) return;
+    project.dormers = next.dormers;
+    project.chimneys = next.chimneys;
+    project.windows = next.windows;
+    if (next.roof_openings) project.roof_openings = next.roof_openings;
+    commit();
+  }
+
   /** Changes an edge length by moving its end vertex along the edge. */
   function setLength(len: number) {
     if (!project || !selection) return;
@@ -1022,6 +1048,25 @@
     manualSel = it && (it.kind === "line" || it.kind === "face") ? { kind: it.kind, index: it.index } : null;
   }
 
+  /** The object dialog of a chimney, roof window or opening (Properties, double-click). */
+  let objDlg = $state(false);
+  $effect(() => {
+    if (!openSel) objDlg = false;
+  });
+
+  /**
+   * Properties of an object, from a double-click or the context menu: the
+   * dormer window for a dormer, the object dialog for a chimney, window or
+   * opening, the bar's first field for a hand-drawn line or face.
+   */
+  function openProperties(it: ItemRef) {
+    if (!project || !itemExists(project, it)) return;
+    selectItem(it);
+    if (it.kind === "dormer") editDormer();
+    else if (it.kind === "chimney" || it.kind === "window" || it.kind === "hole") objDlg = true;
+    else focusProperties();
+  }
+
   /** The project and roof when a drag started; each step maps from these. */
   let dragBase: { key: string; project: string; result: CalcResult | null; from: Point2 | null } | null = null;
 
@@ -1188,7 +1233,7 @@
       // A window follows its roof face and a dormer faces down its roof: neither turns.
       const turns = it.kind !== "window" && it.kind !== "dormer";
       entries = [
-        { label: t("menu.properties"), icon: "sliders", action: focusProperties },
+        { label: t("menu.properties"), icon: "sliders", action: () => openProperties(it) },
         { label: t("menu.duplicate"), icon: "copy", hint: "Ctrl+D", action: () => duplicateItem(it) },
         ...(turns
           ? [
@@ -1658,6 +1703,7 @@
                 oncursor={(p) => (cursor = p)}
                 ondrag={dragObject}
                 oncontext={openMenu}
+                onitemdbl={openProperties}
               />
             </div>
           {/if}
@@ -1666,7 +1712,7 @@
               <span class="view-label">{t("editor.model")}</span>
               <Roof3D {project} {result} {selection} item={selectedItem}
                 onpick={(tg) => { if (tg.type === "item") selectItem(tg.item); else if (tg.type === "edge") { selectItem(null); selection = { part: tg.part, edge: tg.edge }; } }}
-                oncontext={openMenu} />
+                oncontext={openMenu} onitemdbl={openProperties} />
             </div>
           {/if}
         </div>
@@ -1679,9 +1725,12 @@
             oncancel={(ask) => cancelDraw(!!ask)}
           />
         {:else if dormerSel !== null}
-          <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} onedit={editDormer} />
+          <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} onedit={editDormer}
+            onplace={(e, l, r) => { if (dormerSel !== null) placeItem({ kind: "dormer", index: dormerSel }, e, l, r); }} />
         {:else if openSel}
-          <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening} />
+          <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening}
+            placement={openSel ? placementOf(result, openSel) : null}
+            onplace={(e, l, r) => { if (openSel) placeItem({ kind: openSel.kind, index: openSel.index }, e, l, r); }} />
         {:else if manualSel}
           <ManualBar {project} bind:sel={manualSel} online={setManualLine} onface={setManualFace} ontopart={faceToPart} ondelete={deleteManual} />
         {:else}
@@ -1755,8 +1804,21 @@
   <ExportDialog {project} title={exportTitle(project, id)} onclose={() => (exporting = false)} />
 {/if}
 
+{#if objDlg && openSel && project}
+  <Modal title={itemTitle(openSel)} width={760} onclose={() => (objDlg = false)}>
+    <div class="obj-dlg" data-testid="object-dialog">
+      <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={() => { objDlg = false; deleteOpening(); }}
+        placement={placementOf(result, openSel)}
+        onplace={(e, l, r) => { if (openSel) placeItem({ kind: openSel.kind, index: openSel.index }, e, l, r); }} />
+    </div>
+    {#snippet footer()}
+      <button class="btn primary" onclick={() => (objDlg = false)}>{t("common.close")}</button>
+    {/snippet}
+  </Modal>
+{/if}
+
 {#if dormerDlg && project}
-  <Modal title={dormerDlg.index === null ? t("dormer.dialogNew") : t("dormer.n", { n: dormerDlg.index + 1 })} width={760} onclose={() => (dormerDlg = null)}>
+  <Modal title={dormerDlg.index === null ? t("dormer.dialogNew") : t("dormer.n", { n: dormerDlg.index + 1 })} width={1040} onclose={() => (dormerDlg = null)}>
     <DormerDialog {project} bind:params={dormerDlg.params} />
     {#snippet footer()}
       <button class="btn" onclick={() => (dormerDlg = null)}>{t("common.cancel")}</button>
@@ -1766,7 +1828,7 @@
 {/if}
 
 {#if calc && project}
-  <Modal title={t("calc.title")} width={640} onclose={() => (calc = null)}>
+  <Modal title={t("calc.title")} width={760} onclose={() => (calc = null)}>
     <RoofCalcForm part={project.parts[calc.part]} edge={calc.edge} {result} bind:patches={calc.patches} />
     {#snippet footer()}
       <button class="btn" onclick={() => (calc = null)}>{t("common.cancel")}</button>
@@ -1776,7 +1838,7 @@
 {/if}
 
 {#if round}
-  <Modal title={t("round.title")} width={600} onclose={() => (round = null)}>
+  <Modal title={t("round.title")} width={720} onclose={() => (round = null)}>
     <RoundRoofForm span={round.span} bind:eave={round.eave} bind:overhang={round.overhang} bind:arc={round.arc} />
     {#snippet footer()}
       <button class="btn" onclick={() => (round = null)}>{t("common.cancel")}</button>
@@ -1786,7 +1848,7 @@
 {/if}
 
 {#if xform && project}
-  <Modal title={t("xf.title")} width={560} onclose={() => (xform = null)}>
+  <Modal title={t("xf.title")} width={680} onclose={() => (xform = null)}>
     <TransformForm part={project.parts[xform.part]} edge={xform.edge} bind:mode={xform.mode} bind:op={xform.op} />
     {#snippet footer()}
       <button class="btn" onclick={() => (xform = null)}>{t("common.cancel")}</button>
@@ -1796,7 +1858,7 @@
 {/if}
 
 {#if std}
-  <Modal title={t("std.title")} width={640} onclose={() => (std = null)}>
+  <Modal title={t("std.title")} width={780} onclose={() => (std = null)}>
     <!-- A preview still being calculated may come back after the dialog closed. -->
     <StandardRoofForm bind:part={() => std?.part ?? null, (v) => std && (std.part = v)} />
     {#snippet footer()}
@@ -2257,6 +2319,12 @@
   }
 
   /* Edit bars below the views never take more than about half of a low window. */
+  /* The object bar inside its dialog: no dock border, fields wrap. */
+  .obj-dlg :global(.bar) {
+    border-top: 0;
+    padding: 0;
+    min-height: 0;
+  }
   .main > :global(.bar) {
     flex: none;
     max-height: 46vh;

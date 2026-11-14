@@ -23,6 +23,7 @@
     item = null,
     onpick,
     oncontext,
+    onitemdbl,
   }: {
     project: Project;
     result: CalcResult | null;
@@ -33,6 +34,8 @@
     onpick?: (target: PlanTarget) => void;
     /** Right click without dragging. */
     oncontext?: (target: PlanTarget, client: { x: number; y: number }, world: Point2) => void;
+    /** A double-click on an object: open its properties. */
+    onitemdbl?: (item: ItemRef) => void;
   } = $props();
 
   let host: HTMLDivElement;
@@ -483,6 +486,12 @@
       }
     };
     const noMenu = (e: Event) => e.preventDefault();
+    // A double-click on a dormer, chimney, window or opening opens its properties.
+    const dbl = (e: MouseEvent) => {
+      const h = hit(e as PointerEvent);
+      if (h?.target.type === "item") onitemdbl?.(h.target.item);
+    };
+    el.addEventListener("dblclick", dbl);
     el.addEventListener("pointerdown", down, true);
     el.addEventListener("pointerup", up, true);
     el.addEventListener("contextmenu", noMenu);
@@ -499,6 +508,7 @@
       el.removeEventListener("pointerdown", down, true);
       el.removeEventListener("pointerup", up, true);
       el.removeEventListener("contextmenu", noMenu);
+      el.removeEventListener("dblclick", dbl);
       ro.disconnect();
       controls.dispose();
       renderer.dispose();

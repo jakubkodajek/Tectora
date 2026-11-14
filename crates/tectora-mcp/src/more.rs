@@ -326,6 +326,19 @@ pub(crate) fn tools() -> Vec<Value> {
             }), &["id", "items", "op", "summary"]),
         }),
         json!({
+            "name": "place_item",
+            "description": "Put a dormer, chimney, roof window or roof opening at given distances on the roof face it stands on, as the editor's dimension fields (\"From eave\", \"From left\" / \"From right\"): `from_eave` is measured along the slope from the lowest edge of the face (the eave at the overhang, or a pitch break) to the object's lowest point; `from_left` or `from_right` level along the eave from the face's edge (verge, hip, valley) to the object, at the height of its lowest point, left and right as seen looking up the slope. Omitted values keep their distance; the object keeps its height above the roof. get_project lists each object's current `placement`.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "kind": { "type": "string", "enum": ["dormer", "chimney", "window", "roof_opening"] },
+                "index": { "type": "integer", "minimum": 0 },
+                "from_eave": { "type": "number", "description": "m along the slope from the eave edge of the face." },
+                "from_left": { "type": "number", "description": "m from the left edge of the face (give this or from_right)." },
+                "from_right": { "type": "number", "description": "m from the right edge of the face." },
+                "summary": summary_prop(),
+            }), &["id", "kind", "index", "summary"]),
+        }),
+        json!({
             "name": "update_opening",
             "description": "Change the position or size of one chimney, roof opening or roof window, as the object bar of the editor does. A chimney or roof opening is edited through its box: the smallest box around its plan polygon that lines up with its first side, with corner `x`, `y`, `width` along the first side, `depth` across it and `rotation_deg` (direction of the first side); every corner keeps its place in the box, so a rectangle stays a rectangle and any other shape is stretched. `height` is a chimney's top (m) or a window's height up the slope. Omitted fields keep their value; the reply has the new box.",
             "inputSchema": schema(json!({
@@ -607,6 +620,32 @@ impl Server {
             "transform_part" => self.transform(args),
             "transform_items" => self.transform_items(args),
             "update_opening" => self.update_opening(args),
+            "place_item" => (|| {
+                let (id, before) = self.load(args)?;
+                let mut p = before.clone();
+                let kind: tectora_core::edit::transform::ItemKind = serde_json::from_value(
+                    args.get("kind").cloned().unwrap_or(Value::Null),
+                )
+                .map_err(|_| "`kind` must be dormer, chimney, window or roof_opening".to_string())?;
+                let index: usize = req(args, "index")?;
+                let it = tectora_core::edit::transform::ItemRef { kind, index };
+                let moved = tectora_core::edit::position::place(
+                    &mut p,
+                    it,
+                    arg_f64(args, "from_eave")?,
+                    arg_f64(args, "from_left")?,
+                    arg_f64(args, "from_right")?,
+                )?;
+                if !moved {
+                    return Err("the object already is at these distances".into());
+                }
+                if let Err(e) = p.validate() {
+                    return Err(e.join("; "));
+                }
+                let r = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
+                let pl = tectora_core::edit::position::placement(&p, it);
+                Ok(json!({ "saved": r, "placement": pl }))
+            })(),
             "add_shape_part" => self.add_shape_part(args),
             "delete_items" => self.delete_items(args),
             "face_to_part" => (|| {
@@ -2136,6 +2175,44 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("`state`"), "{err}");
         assert_eq!(s.store.activity(&id).len(), log, "nothing saved");
+    }
+
+    #[test]
+    fn a_window_is_placed_by_its_distances_from_the_eave_and_the_side() {
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "set_openings",
+            json!({ "id": id, "windows": [{ "x": 3, "y": 1, "width": 1.14, "height": 1.4 }], "summary": "Window" }),
+        );
+        let r = call(
+            &mut s,
+            "place_item",
+            json!({ "id": id, "kind": "window", "index": 0, "from_eave": 1.5, "from_left": 2.0, "summary": "Window 1.5 m from the eave" }),
+        );
+        let pl = &r["placement"];
+        assert!(
+            (pl["from_eave"].as_f64().unwrap() - 1.5).abs() < 1e-5,
+            "{r}"
+        );
+        assert!(
+            (pl["from_left"].as_f64().unwrap() - 2.0).abs() < 1e-5,
+            "{r}"
+        );
+        let listed = call(&mut s, "get_project", json!({ "id": id }));
+        let w = &listed["placements"]["windows"][0];
+        assert!(
+            (w["from_eave"].as_f64().unwrap() - 1.5).abs() < 1e-5,
+            "{listed}"
+        );
+        for bad in [
+            json!({ "id": id, "kind": "window", "index": 0, "from_eave": 1.5, "from_left": 2.0, "summary": "same" }),
+            json!({ "id": id, "kind": "window", "index": 3, "from_eave": 1.0, "summary": "none" }),
+            json!({ "id": id, "kind": "manual_line", "index": 0, "from_eave": 1.0, "summary": "line" }),
+            json!({ "id": id, "kind": "window", "index": 0, "from_left": 1.0, "from_right": 1.0, "summary": "both" }),
+        ] {
+            assert!(s.call_tool("place_item", &bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

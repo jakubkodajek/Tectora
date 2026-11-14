@@ -263,6 +263,32 @@ export interface RoofWarning {
   item?: number;
 }
 
+/**
+ * Where an object sits on its roof face (core `edit::position::Placement`):
+ * from the lowest edge of the face along the slope (and in plan), and level
+ * from its left and right edges seen up the slope. The lines are plan
+ * dimension lines [from, to].
+ */
+export interface Placement {
+  part: number;
+  edge: number;
+  pitch_deg: number;
+  from_eave: number;
+  from_eave_plan: number;
+  from_left: number;
+  from_right: number;
+  eave_line: [Point2, Point2];
+  left_line: [Point2, Point2];
+  right_line: [Point2, Point2];
+}
+
+export interface Placements {
+  dormers: (Placement | null)[];
+  chimneys: (Placement | null)[];
+  roof_openings: (Placement | null)[];
+  windows: (Placement | null)[];
+}
+
 export interface CalcResult {
   parts: {
     name: string;
@@ -283,6 +309,8 @@ export interface CalcResult {
   /** Line lengths by DACAD code (T, F, G, K, O, W). */
   codes: Record<string, number>;
   problems: Problem[];
+  /** Each object's distances on its roof face (core `edit::position`), by index; null off the roof. */
+  placements?: Placements;
   stored_result?: SnapshotStatus | null;
 }
 

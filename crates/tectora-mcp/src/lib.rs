@@ -101,7 +101,7 @@ fn describe_part(part: &RoofPart) -> Value {
             v
         })
         .collect();
-    json!({ "name": part.name, "edges": edges })
+    json!({ "name": part.name, "building_height": part.building_height(), "edges": edges })
 }
 
 /// A plausibility warning of a calculated roof (`tectora_core::check`),
@@ -1085,6 +1085,9 @@ impl Server {
                     "windows": p.windows,
                     "roof_openings": p.roof_openings,
                     "dormers": dormers,
+                    // Each object's distances from the eave and the sides of
+                    // its face, as place_item takes them.
+                    "placements": tectora_core::edit::position::placements(&p),
                     "manual_lines": p.manual_lines,
                     "manual_faces": p.manual_faces,
                     "flat_roof": p.flat_roof,

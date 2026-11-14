@@ -18,6 +18,7 @@ pub mod calc;
 pub mod dormers;
 pub mod height;
 pub mod openings;
+pub mod position;
 pub mod probe;
 pub mod round;
 pub mod transform;
