@@ -863,12 +863,16 @@ impl Server {
                 };
                 let title = if p.name.is_empty() { id.clone() } else { p.name.clone() };
                 let opts = tectora_core::export::ListOptions::new(title, stamp);
+                p.check_limits()?;
+                crate::export_ready(&p)?;
                 let (list, _) = tectora_core::export::checked(&p, &opts)?;
                 Ok(json!({ "id": id, "list": list }))
             })(),
             "export_plan" => (|| {
                 let (id, p) = self.load(args)?;
                 let summary = arg_str(args, "summary")?;
+                p.check_limits()?;
+                crate::export_ready(&p)?;
                 if args.get("path").is_some() {
                     return Err("`path` is not accepted: sheets are written to the library's exports folder; pass `name` for the file name".into());
                 }
@@ -2323,6 +2327,16 @@ mod tests {
             ok["parts"][0]["error"].is_null(),
             "the first building keeps its roof: {ok}"
         );
+        // calc says the wing was left out, it is not just 0 m².
+        assert_eq!(ok["problems"][0]["code"], "zero_length_wall", "{ok}");
+        // Exports wait, as the editor's Export does (review: MCP parity).
+        for (tool, args) in [
+            ("export_list", json!({ "id": id })),
+            ("export_plan", json!({ "id": id, "summary": "Export" })),
+        ] {
+            let err = s.call_tool(tool, &args).expect_err(tool);
+            assert!(err.contains("not exported"), "{tool}: {err}");
+        }
     }
 
     #[test]

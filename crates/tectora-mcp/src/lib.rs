@@ -204,6 +204,18 @@ pub fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
     v
 }
 
+/// Refuses an export while a building has no roof or input is left out:
+/// its figures would be missing from the sheet, as the editor's Export is
+/// blocked then too.
+pub(crate) fn export_ready(project: &Project) -> Result<(), String> {
+    match roof_trouble(project) {
+        None => Ok(()),
+        Some(t) => Err(format!(
+            "not exported: some roofs are not calculated or input is left out; fix them first ({t})"
+        )),
+    }
+}
+
 /// The buildings without a roof after a write, and the input problems that
 /// left a building out, so an AI learns at once that its change broke a
 /// roof instead of reading "Saved" (review ERR-003). Empty when all is well.
@@ -1172,13 +1184,20 @@ impl Server {
                         v
                     })
                     .collect();
-                Ok(json!({
+                let mut out = json!({
                     "id": id,
                     "total": quantities(&p),
                     "parts": parts,
                     "engine_version": tectora_core::snapshot::ENGINE_VERSION,
                     "stored_result": tectora_core::snapshot::status(&p),
-                }))
+                });
+                // Input the calculation left out (a building with a wall
+                // under 1 cm, …): its figures are missing from the totals.
+                let problems = p.problems();
+                if !problems.is_empty() {
+                    out["problems"] = serde_json::to_value(&problems).unwrap_or(Value::Null);
+                }
+                Ok(out)
             }
             "calc_breakdown" => {
                 let (id, p) = self.load(args)?;

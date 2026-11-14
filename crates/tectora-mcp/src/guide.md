@@ -205,7 +205,9 @@ fail on their own, `failing_parts` lists them: only those have no roof, the
 others are calculated without them. A wall shorter than 1 cm is a
 `zero_length_wall` problem that leaves its building out. Every write answers
 with `roof_trouble` (`roof_errors`, `problems`) when after it a building has
-no roof or input is left out: fix it or revert before going on.
+no roof or input is left out: fix it or revert before going on. `calc`
+lists left-out input under `problems`, and `export_list` / `export_plan`
+refuse such a job until it is fixed.
 `joined_with` names the parts the calculation actually joined the part's
 roof with.
 
