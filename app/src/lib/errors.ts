@@ -106,15 +106,16 @@ export function describeError(e: unknown, action?: Action): Described {
 /**
  * The roof calculation's error in the user's language. With several
  * buildings, the title names the ones whose roof fails on its own and the
- * hint says the others wait for them (one error stops every roof).
+ * hint says the others wait for them (one error stops every roof). Where
+ * the core names two walls with parallel planes, the hint adds them.
  */
 export function describeCalcError(e: CalcError, project?: Project): { title: string; hint: string; code: string } {
   const title = t(`calc.err.${e.kind}`);
+  // The kind's own hint always; the parallel walls the core names for this
+  // error come on top of it, never instead of it.
   const [a, b] = e.edges ?? [];
-  const hint =
-    a !== undefined && b !== undefined
-      ? t("calc.hint.parallel", { a: a + 1, b: b + 1 })
-      : t(`calc.hint.${e.kind}`);
+  const own = t(`calc.hint.${e.kind}`);
+  const hint = a !== undefined && b !== undefined ? `${own} ${t("calc.hint.parallel", { a: a + 1, b: b + 1 })}` : own;
   const parts = e.parts ?? [];
   if (!project || project.parts.length < 2 || parts.length === 0) return { title, hint, code: e.kind };
   const names = parts.map((i) => {

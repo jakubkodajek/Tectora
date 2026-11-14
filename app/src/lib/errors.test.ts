@@ -96,6 +96,36 @@ describe("calculation errors", () => {
     expect(describeCalcError({ ...e, parts: [] }, p).title).toBe("Střechu nelze spočítat: plochy se neuzavírají");
   });
 
+  it("adds the parallel walls to the kind's own hint, numbered from 1 (TEST-007, ARCH-006)", () => {
+    for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
+      setLocale(l);
+      const plain = describeCalcError({ kind: "cut", message: "x" });
+      expect(plain.hint, l).toBe(DICTS[l]["calc.hint.cut"]);
+      const d = describeCalcError({ kind: "cut", message: "x", edges: [0, 2] });
+      // The kind's hint stays, the walls follow it.
+      expect(d.hint.startsWith(DICTS[l]["calc.hint.cut"] + " "), l).toBe(true);
+      const walls = d.hint.slice(DICTS[l]["calc.hint.cut"].length);
+      expect(walls, l).toMatch(/\b1\b/);
+      expect(walls, l).toMatch(/\b3\b/);
+      expect(walls, l).not.toMatch(/\b[02]\b/);
+      expect(walls, l).not.toContain("{");
+      // One wall is no pair: the kind's hint alone.
+      expect(describeCalcError({ kind: "cut", message: "x", edges: [4] }).hint, l).toBe(DICTS[l]["calc.hint.cut"]);
+      expect(describeCalcError({ kind: "cut", message: "x", edges: [] }).hint, l).toBe(DICTS[l]["calc.hint.cut"]);
+    }
+    // With several buildings the three sentences add up.
+    setLocale("cs");
+    const p = emptyProject("x");
+    p.parts = [
+      { name: "Main", edges: [] },
+      { name: "Garáž", edges: [] },
+    ] as never;
+    const d = describeCalcError({ kind: "open_faces", message: "x", parts: [0], edges: [0, 2] }, p);
+    expect(d.hint).toContain(DICTS.cs["calc.hint.open_faces"]);
+    expect(d.hint).toContain("Roviny stěn 1 a 3");
+    expect(d.hint).toContain("Ostatní budovy");
+  });
+
   it("names the part and wall of an input problem", () => {
     setLocale("cs");
     const p = emptyProject("x");
