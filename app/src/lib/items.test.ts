@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { emptyProject, type CalcResult, type Project } from "./types";
-import { deleteItem, followRoof, itemCentre, moveItem, rotateItem, transformItem } from "./items";
+import { deleteItem, followRoof, itemCentre, moveItem, placementOf, rotateItem, transformItem } from "./items";
 import { translation } from "./transform";
 import { chimneyTop, clipConvex, dormerWallLines, onWallLine, planArea, planeOf } from "./scene3d";
 
@@ -89,5 +89,27 @@ describe("3D scene geometry", () => {
     const c = { corners: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }], height: 0 };
     expect(chimneyTop(c, (p) => 4 + p.y)).toEqual({ bottom: 3.7, top: 6 });
     expect(chimneyTop({ ...c, height: 8 }, (p) => 4 + p.y).top).toBe(8);
+  });
+});
+
+describe("placementOf", () => {
+  const pl = (from_eave: number) => ({
+    part: 0, edge: 0, pitch_deg: 40, from_eave, from_eave_plan: from_eave, from_left: 1, from_right: 2,
+    eave_line: [{ x: 0, y: 0 }, { x: 1, y: 0 }], left_line: [{ x: 0, y: 0 }, { x: 0, y: 1 }], right_line: [{ x: 1, y: 0 }, { x: 1, y: 1 }],
+  });
+  const result = { placements: { dormers: [pl(1)], chimneys: [pl(2)], windows: [null, pl(3)], roof_openings: [pl(4)] } } as unknown as CalcResult;
+
+  it("finds each kind's distances by its index", () => {
+    expect(placementOf(result, { kind: "dormer", index: 0 })?.from_eave).toBe(1);
+    expect(placementOf(result, { kind: "chimney", index: 0 })?.from_eave).toBe(2);
+    expect(placementOf(result, { kind: "window", index: 1 })?.from_eave).toBe(3);
+    expect(placementOf(result, { kind: "hole", index: 0 })?.from_eave).toBe(4);
+  });
+
+  it("has none off the roof, for other objects or without a result", () => {
+    expect(placementOf(result, { kind: "window", index: 0 })).toBeNull();
+    expect(placementOf(result, { kind: "window", index: 7 })).toBeNull();
+    expect(placementOf(result, { kind: "line", index: 0 } as never)).toBeNull();
+    expect(placementOf(null, { kind: "dormer", index: 0 })).toBeNull();
   });
 });
