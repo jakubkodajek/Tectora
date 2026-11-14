@@ -39,6 +39,8 @@ export const prefs = $state(
     /** The wall bar's and the dormer bar's "More" row is open (UX-008). */
     wallMore: false,
     dormerMore: false,
+    /** The editor toolbar keeps its button labels in narrow windows too. */
+    toolLabels: false,
   }),
 );
 

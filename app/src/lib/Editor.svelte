@@ -1618,7 +1618,7 @@
   </header>
 
   {#if !loadError}
-  <div class="toolbar" class:compact={compactTools} role="toolbar" bind:this={toolbarEl} use:hscroll>
+  <div class="toolbar" class:compact={compactTools && !prefs.toolLabels} class:labels={prefs.toolLabels} role="toolbar" bind:this={toolbarEl} use:hscroll>
     <div class="group">
       <button class="tool" onclick={undo} disabled={at <= 0} title="{t('editor.undo')} ({keys('Ctrl+Z')})"><Icon name="undo" /><span>{t("editor.undo")}</span></button>
       <button class="tool" onclick={redo} disabled={at >= historyLen - 1} title="{t('editor.redo')} ({keys('Ctrl+Shift+Z')})"><Icon name="redo" /><span>{t("editor.redo")}</span></button>
@@ -2395,6 +2395,30 @@
   .toolbar.compact .group {
     padding-right: 4px;
     margin-right: 2px;
+  }
+
+  /* Settings > "Always show button labels": labels stay in any window,
+     smaller and on two lines if needed; the toolbar scrolls sideways when
+     even that does not fit. More specific than the rules that hide them. */
+  @media (max-width: 1440px), (max-height: 640px) {
+    .toolbar.labels .tool {
+      width: auto;
+      min-width: 44px;
+      max-width: 76px;
+      height: 50px;
+      padding: 0 4px;
+    }
+    .toolbar.labels .tool span {
+      position: static;
+      width: auto;
+      height: auto;
+      overflow: visible;
+      clip-path: none;
+      font-size: 10.5px;
+      line-height: 1.1;
+      white-space: normal;
+      text-align: center;
+    }
   }
 
   /* ---- Responsive: half-screen and smaller windows ---- */

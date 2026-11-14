@@ -36,6 +36,32 @@ test.describe("settings", () => {
     await expect(page.locator("html")).toHaveAttribute("lang", /de|cs/);
   });
 
+  test("button labels in the editor toolbar can be kept in a small window (Jakub 2026-11-14)", async ({ app, page }) => {
+    await page.setViewportSize({ width: 1100, height: 700 });
+    await createExample("gable", "Sedlo");
+    const label = () => page.getByRole("toolbar").first().getByText(cs("tool.dormer"), { exact: true });
+    await openEditor(app, "Sedlo");
+    // By default a window this narrow shows icons only.
+    await expect.poll(async () => (await label().boundingBox())?.width ?? 0).toBeLessThan(2);
+    await app.open();
+    const dlg = await openSettings(app);
+    await dlg.getByRole("switch", { name: cs("settings.toolLabels") }).check();
+    await page.keyboard.press("Escape");
+    await openEditor(app, "Sedlo");
+    await expect.poll(async () => (await label().boundingBox())?.width ?? 0).toBeGreaterThan(20);
+    // Kept when the app opens again.
+    await openEditor(app, "Sedlo");
+    await expect.poll(async () => (await label().boundingBox())?.width ?? 0).toBeGreaterThan(20);
+    // The switch turns them off again.
+    await app.open();
+    const sw = (await openSettings(app)).getByRole("switch", { name: cs("settings.toolLabels") });
+    await expect(sw).toBeChecked();
+    await sw.uncheck();
+    await page.keyboard.press("Escape");
+    await openEditor(app, "Sedlo");
+    await expect.poll(async () => (await label().boundingBox())?.width ?? 0).toBeLessThan(2);
+  });
+
   test("theme buttons switch light, dark and system", async ({ app, page }) => {
     await app.open();
     const dlg = await openSettings(app);
