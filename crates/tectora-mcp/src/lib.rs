@@ -142,7 +142,7 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             "roof opening {} (0-based) lies on no roof face, so it cuts nothing and is not in the result; move it onto the roof or delete it",
             w.item.unwrap_or(0)
         ),
-        WarningKind::NotCalculatedByCore => "this roof was calculated by Tectora's fallback engine, not by the standard calculation, so its figures may differ from the standard result; tell the user to check the roof".to_string(),
+        WarningKind::NotCalculatedByCore => "the standard calculation stops on this roof (or could not run), so Tectora calculated it with its own engine; where the standard calculation stopped with an error the result passed Tectora's self-check (planar faces at their pitches, every wall's eave height, the plan covered, every line on a face). The figures are not the standard result; tell the user to look at the roof".to_string(),
         WarningKind::PlaneOverWall => {
             let (outer, inner) = (w.edges.first().map_or(0, |e| *e), w.edges.get(1).map_or(0, |e| *e));
             format!(
@@ -153,7 +153,7 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
         WarningKind::MergedPlanes => {
             let (outer, inner) = (w.edges.first().map_or(0, |e| *e), w.edges.get(1).map_or(0, |e| *e));
             format!(
-                "the roof planes of edges {outer} and {inner} (0-based) lie in one plane ({:.1} cm apart), so Tectora calculated them as one face; the standard calculation stops with an error on such a roof. Tell the user; no change needed unless the planes were meant to differ",
+                "the roof planes of edges {outer} and {inner} (0-based) lie in one plane ({:.1} cm apart), so Tectora calculated them as one face, with edge {outer}'s eave in that plane; the standard calculation stops with an error on such a roof or leaves a step of those few centimetres. Tell the user; no change needed unless the planes were meant to differ",
                 w.value * 100.0
             )
         }
@@ -209,23 +209,25 @@ pub fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
             "the roof calculation does not finish for this roof; undo the last change or adjust the pitches"
         }
     };
-    let mut v = json!({ "kind": e.kind, "message": message });
+    // The sentences add up: each says something the others do not
+    // (review ERR-005: the second used to overwrite the first).
+    let mut text = message.to_string();
+    let mut v = json!({ "kind": e.kind });
     if let [outer, inner] = e.edges[..] {
         v["edges"] = json!(e.edges);
-        v["message"] = format!(
-            "{message}. The roof planes of edges {outer} and {inner} (0-based) are parallel (same direction and pitch) and the outer one lies in or below the inner one, so they never meet: raise or lower edge {outer}'s eave by at least a few centimetres, or, for a wing with its own ridge, make its side walls eaves and its front wall a gable or a hip"
-        )
-        .into();
+        text.push_str(&format!(
+            ". The roof planes of edges {outer} and {inner} (0-based) are parallel (same direction and pitch) and edge {outer}'s lies in or a little below edge {inner}'s, so they never meet: raise edge {outer}'s eave, or, for a wing with its own ridge, make its side walls eaves and its front wall a gable or a hip"
+        ));
     }
     // Which buildings end with the error on their own too: fix those; the
     // others are calculated without them (review ARCH-002).
     if !e.parts.is_empty() {
         v["failing_parts"] = json!(e.parts);
-        v["message"] = format!(
-            "{message}. The building(s) in failing_parts (indices) fail on their own; the other buildings are calculated without them"
-        )
-        .into();
+        text.push_str(
+            ". The building(s) in failing_parts (indices) fail on their own; the other buildings are calculated without them",
+        );
     }
+    v["message"] = text.into();
     v
 }
 
@@ -866,7 +868,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer` or `item` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out) and `not_calculated_by_core` (figures from the fallback engine). Tell the user about every warning. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with.",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer` or `item` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out), `plane_over_wall` (a wing's plane runs on over the house's eave: no ridge of its own) and three notices of a roof that is not the standard result because the standard calculation stops on it: `merged_planes` (two parallel planes within 10 cm calculated as one face), `wing_joined` (a low wing calculated as a lean-to against the house) and `not_calculated_by_core` (Tectora's own engine, result self-checked). Tell the user about every warning. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -1972,6 +1974,144 @@ mod tests {
         for german in ["Fläche", "Nicht", "DACAD", "E0000"] {
             assert!(!text.contains(german), "{german} in {text}");
         }
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// Jakub's T: house 15 × 5, wing 5 × 2.5 between two gables, the
+    /// wing's front eave at `front`; `garage` adds a building 40 m away.
+    fn t_house(s: &mut Server, front: f64, garage: bool) -> String {
+        let g = json!({ "gable": true });
+        let mut parts = vec![json!({
+            "points": [[5, 0], [10, 0], [10, 2.5], [15, 2.5], [15, 7.5], [0, 7.5], [0, 2.5], [5, 2.5]],
+            "defaults": { "pitch_deg": 40, "eave_height": 5, "overhang": 0.5 },
+            "edges": [{ "eave_height": front }, g, {}, g, {}, g, {}, g]
+        })];
+        if garage {
+            parts.push(json!({
+                "points": [[40, 0], [46, 0], [46, 5], [40, 5]],
+                "defaults": { "pitch_deg": 30, "eave_height": 3, "overhang": 0.5 }
+            }));
+        }
+        let r = s
+            .call_tool(
+                "create_project",
+                &json!({ "name": "T", "summary": "Footprint", "parts": parts }),
+            )
+            .unwrap();
+        r["id"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn calc_names_merged_planes_and_wing_joined_with_edges() {
+        // TEST-007: the notices of a roof that is not the standard result.
+        let mut s = server();
+        for (front, kind, edges, says) in [
+            (2.9, "merged_planes", json!([0, 2]), "0.2 cm apart"),
+            (2.0, "wing_joined", json!([0, 1, 7]), "edges [0, 1, 7]"),
+        ] {
+            for garage in [false, true] {
+                let id = t_house(&mut s, front, garage);
+                let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+                let part = &r["parts"][0];
+                assert!(part.get("error").is_none(), "{front} {garage}: {r}");
+                let w = &part["warnings"];
+                assert_eq!(w.as_array().map(Vec::len), Some(1), "{front}: {w}");
+                assert_eq!(w[0]["kind"], kind, "{front}: {w}");
+                assert_eq!(w[0]["edges"], edges, "{front}: {w}");
+                let msg = w[0]["message"].as_str().unwrap();
+                assert!(msg.contains(says), "{msg}");
+                assert!(msg.contains("0-based"), "{msg}");
+                if garage {
+                    assert!(r["parts"][1].get("error").is_none(), "{r}");
+                    assert!(r["parts"][1].get("warnings").is_none(), "{r}");
+                }
+                assert!(!r.to_string().contains("DACAD"), "{r}");
+            }
+        }
+        // A hip roof with one corner moved: Tectora's own engine, said.
+        let r = s
+            .call_tool(
+                "create_project",
+                &json!({
+                    "name": "quad", "summary": "Footprint",
+                    "parts": [{ "points": [[0, 0.2], [12, 0], [12, 8], [0, 8]],
+                        "defaults": { "pitch_deg": 35, "eave_height": 3, "overhang": 0.5 } }]
+                }),
+            )
+            .unwrap();
+        let id = r["id"].as_str().unwrap().to_string();
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        let w = &r["parts"][0]["warnings"];
+        assert_eq!(w[0]["kind"], "not_calculated_by_core", "{r}");
+        assert!(
+            w[0]["message"].as_str().unwrap().contains("self-check"),
+            "{w}"
+        );
+        assert!(r["total"]["roof_area_m2"].as_f64().unwrap() > 100.0, "{r}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn calc_error_keeps_every_sentence() {
+        // ERR-005: the parallel-walls sentence and the failing-buildings
+        // sentence add up; ARCH-006: no walls for an object's error.
+        use tectora_core::roof::{CalcError, CalcErrorKind};
+        let e = |kind, edges: &[usize], parts: &[usize]| CalcError {
+            kind,
+            code: None,
+            message_id: None,
+            message: String::new(),
+            parts: parts.to_vec(),
+            edges: edges.to_vec(),
+        };
+        let v = calc_error(&e(CalcErrorKind::Cut, &[0, 2], &[1]));
+        let msg = v["message"].as_str().unwrap();
+        assert!(msg.starts_with("two roof planes never meet"), "{msg}");
+        assert!(
+            msg.contains("edges 0 and 2 (0-based) are parallel"),
+            "{msg}"
+        );
+        assert!(msg.contains("failing_parts"), "{msg}");
+        assert_eq!(v["edges"], json!([0, 2]));
+        assert_eq!(v["failing_parts"], json!([1]));
+        let v = calc_error(&e(CalcErrorKind::Cut, &[], &[]));
+        assert!(v.get("edges").is_none() && v.get("failing_parts").is_none());
+        assert_eq!(
+            v["message"],
+            "two roof planes never meet, so no roof is calculated; check pitches and short walls"
+        );
+
+        // A shallow wing 3 cm under the house's plane beside a garage:
+        // the error of building 0 names its walls and says it fails alone.
+        let mut s = server();
+        let g = json!({ "gable": true, "overhang": 0 });
+        let front = 12.0 - 25f64.to_radians().tan() * 0.3 - 0.03;
+        let r = s
+            .call_tool(
+                "create_project",
+                &json!({
+                    "name": "shallow", "summary": "Footprint",
+                    "parts": [{
+                        "points": [[5, 0], [10, 0], [10, 0.6], [15, 0.6], [15, 5.6], [0, 5.6], [0, 0.6], [5, 0.6]],
+                        "defaults": { "pitch_deg": 25, "eave_height": 12, "overhang": 0.5 },
+                        "edges": [{ "eave_height": front, "overhang": 0.2 }, g, {}, g, {}, g, {}, g]
+                    }, {
+                        "points": [[40, 0], [46, 0], [46, 5], [40, 5]],
+                        "defaults": { "pitch_deg": 30, "eave_height": 3, "overhang": 0.5 }
+                    }]
+                }),
+            )
+            .unwrap();
+        let id = r["id"].as_str().unwrap().to_string();
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        let err = &r["parts"][0]["error"];
+        assert_eq!(err["edges"], json!([0, 2]), "{r}");
+        assert_eq!(err["failing_parts"], json!([0]), "{r}");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("edges 0 and 2"), "{msg}");
+        assert!(msg.contains("fail on their own"), "{msg}");
+        // The garage keeps its roof.
+        assert!(r["parts"][1].get("error").is_none(), "{r}");
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 

@@ -195,11 +195,19 @@ eave because the walls beside it are gables: a wing drawn that way has no
 ridge of its own. For a cross-gabled wing make its side walls eaves and its
 front a gable or a hip; ask the user before changing it. A `calc_error` with
 `edges` names two such walls whose planes lie in one plane, or the outer one
-below, so they never meet. Two notices tell what Tectora did where the
-standard calculation stops with an error: `merged_planes` (`edges`: two
-parallel planes within 10 cm of one plane, calculated as one face) and
-`wing_joined` (`edges`: a wing whose eaves are too low to reach the house's
-roof, calculated as a lean-to against the house wall). Pass them on; they
+a little below, so they never meet. Where the standard calculation stops
+with an error, Tectora calculates the building another way and shows the
+result only if it passes a self-check (planar faces at their pitches, every
+wall's eave height, the plan covered, every line on a face); otherwise the
+error stands. Three notices say which way was taken; the figures are then
+not the standard result: `merged_planes` (`edges`: two parallel planes
+within 10 cm of one plane, calculated as one face; also where the standard
+calculation would leave a step of those few centimetres), `wing_joined`
+(`edges`: a wing whose eaves are too low to reach the house's roof,
+calculated as a lean-to against the house wall) and
+`not_calculated_by_core` (Tectora's own engine). Windows, chimneys,
+openings and dormers are applied to such a roof as to any other, and other
+buildings of the job keep their roofs. Pass the notices on; they
 need no fix. `covered`: the part has no roof
 of its own because another part covers it; move or delete one of them.
 `cut_exceeds_face`: a face lost more than it has (a window larger than its
@@ -208,10 +216,8 @@ dormer (`dormer`, index from 0) sits on no roof face and is left out of the
 result; move it onto the roof or delete it. `window_off_roof`,
 `chimney_off_roof`, `opening_off_roof`: that window, chimney or opening
 (`item`, index from 0) lies on no roof face, so the result leaves it out;
-move it onto the roof or delete it. `not_calculated_by_core`: the
-figures come from Tectora's fallback engine and may differ from the
-standard result. A part the calculation gave no roof for carries `error`
-(`kind`, `message`): say so instead of reporting 0 m². When some buildings
+move it onto the roof or delete it. A part the calculation gave no roof
+for carries `error` (`kind`, `message`): say so instead of reporting 0 m². When some buildings
 fail on their own, `failing_parts` lists them: only those have no roof, the
 others are calculated without them. A wall shorter than 1 cm is a
 `zero_length_wall` problem that leaves its building out. Every write answers
