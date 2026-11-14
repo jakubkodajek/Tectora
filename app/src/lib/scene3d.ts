@@ -91,17 +91,49 @@ export function dormerWallLines(d: Dormer): WallLine[] {
 // How far a roof edge may lie off a wall line and still hang a wall from it, m.
 const ON_LINE = 0.02;
 
+/** True when plan point r lies on wall line l (within ON_LINE). */
+function onLine(l: WallLine, r: readonly number[]): boolean {
+  const [dx, dy] = [r[0] - l.a.x, r[1] - l.a.y];
+  const s = dx * l.dir.x + dy * l.dir.y;
+  const along = l.len === Infinity || (s > -ON_LINE && s < l.len + ON_LINE);
+  return Math.abs(dx * l.dir.y - dy * l.dir.x) < ON_LINE && along;
+}
+
 /** True when the plan segment p–q lies on one of the wall lines. */
 export function onWallLine(lines: WallLine[], p: [number, number, number], q: [number, number, number]): boolean {
   if (Math.hypot(q[0] - p[0], q[1] - p[1]) < 1e-3) return false;
-  return lines.some((l) => {
-    const on = (r: [number, number, number]) => {
-      const [dx, dy] = [r[0] - l.a.x, r[1] - l.a.y];
-      const s = dx * l.dir.x + dy * l.dir.y;
-      const along = l.len === Infinity || (s > -ON_LINE && s < l.len + ON_LINE);
-      return Math.abs(dx * l.dir.y - dy * l.dir.x) < ON_LINE && along;
-    };
-    return on(p) && on(q);
+  return lines.some((l) => onLine(l, p) && onLine(l, q));
+}
+
+/** Plan extent (x, y) of a dormer's roof faces; null without faces. */
+export type PlanBox = { minX: number; minY: number; maxX: number; maxY: number };
+
+/** The plan box around a set of 3D polygons, or null when there are none. */
+export function planBox(polys: Poly3[]): PlanBox | null {
+  const pts = polys.flat();
+  if (!pts.length) return null;
+  return {
+    minX: Math.min(...pts.map((p) => p[0])),
+    minY: Math.min(...pts.map((p) => p[1])),
+    maxX: Math.max(...pts.map((p) => p[0])),
+    maxY: Math.max(...pts.map((p) => p[1])),
+  };
+}
+
+/**
+ * True when a wall polygon of the calculation (a gable) stands on a wall
+ * line of a dormer and within that dormer's roof: the scene already hangs
+ * that dormer's walls from its roof edges down to the main roof, so drawing
+ * the gable as well puts two surfaces in one plane, which flicker
+ * (z-fighting) as the camera moves. A main building's gable in the same
+ * plane as a dormer cheek reaches beyond the dormer and is kept.
+ */
+export function coveredByDormer(poly: Poly3, dormers: { lines: WallLine[]; box: PlanBox | null }[]): boolean {
+  if (poly.length < 3) return false;
+  return dormers.some(({ lines, box }) => {
+    if (!box) return false;
+    const inBox = poly.every((p) => p[0] > box.minX - ON_LINE && p[0] < box.maxX + ON_LINE && p[1] > box.minY - ON_LINE && p[1] < box.maxY + ON_LINE);
+    return inBox && lines.some((l) => poly.every((p) => onLine(l, p)));
   });
 }
 

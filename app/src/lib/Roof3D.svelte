@@ -12,7 +12,7 @@
   import { t } from "./i18n.svelte";
   import { hostHeightAt, isDormerFace, slopeAt } from "./dormers";
   import { isConvex, windowOutline } from "./openings";
-  import { chimneyTop, clipConvex, crossings, dormerWallLines, manualFacePoly, onWallLine, outgrows, planArea, planeOf, wallTriangles, wallUpToRoof, type Extent, type Poly3 } from "./scene3d";
+  import { chimneyTop, clipConvex, coveredByDormer, crossings, dormerWallLines, manualFacePoly, planBox, onWallLine, outgrows, planArea, planeOf, wallTriangles, wallUpToRoof, type Extent, type Poly3 } from "./scene3d";
   import { isGable, isMarker } from "./types";
   import { presets } from "./settings.svelte";
 
@@ -247,6 +247,17 @@
     const dormerLines = project.dormers.map(dormerWallLines);
 
     if (result) {
+      // Each dormer's wall lines with the plan box of its roof faces: the
+      // walls drawn from those faces replace the calculation's gables there.
+      const dormerFaces: Poly3[][] = project.dormers.map(() => []);
+      for (const rp of result.parts) {
+        for (const f of rp.geometry.faces) {
+          if (!isDormerFace(f.edge) || f.polygon.length < 3) continue;
+          const d = dormerLines.findIndex((ls) => f.polygon.some((p, k) => onWallLine(ls, p, f.polygon[(k + 1) % f.polygon.length])));
+          if (d >= 0) dormerFaces[d].push(f.polygon);
+        }
+      }
+      const dormerWalls = dormerLines.map((lines, d) => ({ lines, box: planBox(dormerFaces[d]) }));
       result.parts.forEach((rp, pi) => {
         for (const f of rp.geometry.faces) {
           if (f.polygon.length < 3) continue;
@@ -299,6 +310,7 @@
           }
         }
         for (const poly of rp.geometry.gables) {
+          if (coveredByDormer(poly, dormerWalls)) continue;
           // Triangulated in the wall plane (scene3d.wallTriangles, tested).
           const idx = wallTriangles(poly);
           if (idx) content.add(indexedMesh(poly, idx, wallMat));

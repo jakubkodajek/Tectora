@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { emptyProject, type CalcResult, type Project } from "./types";
 import { deleteItem, followRoof, itemCentre, moveItem, placementOf, rotateItem, transformItem } from "./items";
 import { translation } from "./transform";
-import { chimneyTop, clipConvex, dormerWallLines, onWallLine, planArea, planeOf } from "./scene3d";
+import { chimneyTop, clipConvex, coveredByDormer, dormerWallLines, onWallLine, planArea, planBox, planeOf } from "./scene3d";
 
 const project = (): Project => {
   const p = emptyProject("T");
@@ -111,5 +111,37 @@ describe("placementOf", () => {
     expect(placementOf(result, { kind: "window", index: 7 })).toBeNull();
     expect(placementOf(result, { kind: "line", index: 0 } as never)).toBeNull();
     expect(placementOf(null, { kind: "dormer", index: 0 })).toBeNull();
+  });
+});
+
+describe("coveredByDormer", () => {
+  // A gable dormer 2 m wide on the front y = 0.8, cheeks running +y; the
+  // calculation (koty-test job) returns its gable triangle above the eave.
+  const lines = dormerWallLines({
+    edges: [
+      { start: { x: 6, y: 0.8 }, eave_height: 5.1, pitch_deg: 45, overhang: 0, direction_rad: (3 * Math.PI) / 2 },
+      { start: { x: 6, y: 0.8 }, eave_height: 5.1, pitch_deg: 90, overhang: 0 },
+      { start: { x: 8, y: 0.8 }, eave_height: 5.1, pitch_deg: 45, overhang: 0, direction_rad: Math.PI / 2 },
+    ],
+    end: { x: 8, y: 0.8 },
+  } as never);
+  const box = planBox([
+    [[6, 0.8, 5.1], [7, 0.8, 6.1], [7, 3.2, 6.1], [6, 3.2, 5.1]],
+    [[7, 0.8, 6.1], [8, 0.8, 5.1], [8, 3.2, 5.1], [7, 3.2, 6.1]],
+  ]);
+  const dormers = [{ lines, box }];
+
+  it("drops the dormer's own gable, drawn already as its front wall (no flicker)", () => {
+    expect(coveredByDormer([[8, 0.8, 5.1], [7, 0.8, 6.1], [6, 0.8, 5.1]], dormers)).toBe(true);
+  });
+
+  it("keeps a main gable in the plane of a dormer cheek", () => {
+    // Dormer flush with the building's side: cheek on x = 6 like this gable.
+    expect(coveredByDormer([[6, -0.5, 3], [6, 4, 6.8], [6, 8.5, 3]], dormers)).toBe(false);
+  });
+
+  it("keeps gables elsewhere and with no dormer faces", () => {
+    expect(coveredByDormer([[12.5, 8.5, 3], [12.5, 4, 6.8], [12.5, -0.5, 3]], dormers)).toBe(false);
+    expect(coveredByDormer([[8, 0.8, 5.1], [7, 0.8, 6.1], [6, 0.8, 5.1]], [{ lines, box: null }])).toBe(false);
   });
 });
