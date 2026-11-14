@@ -197,6 +197,14 @@ impl Project {
             if part.edges.len() < 3 {
                 out.push(Problem::of(ProblemItem::Part, pi, "too_few_edges"));
             }
+            for ei in zero_length_walls(part) {
+                out.push(Problem {
+                    item: ProblemItem::Part,
+                    index: pi,
+                    edge: Some(ei),
+                    code: "zero_length_wall",
+                });
+            }
         }
         for (di, d) in self.dormers.iter().enumerate() {
             if !finite_point(d.end) {
@@ -249,6 +257,9 @@ impl Project {
             .map(|(_, m)| *m)
             .unwrap_or(match p.code {
                 "too_few_edges" => "needs at least 3 edges",
+                "zero_length_wall" => {
+                    "has no length (two corners on one point); delete one of the corners"
+                }
                 "end_nan" => "end point is not a number or out of range",
                 "bad_corners" => "needs 3 or more finite corners",
                 "bad_size" => "needs a finite position and a positive size",
@@ -494,8 +505,40 @@ pub struct Problem {
     /// A stable code: `too_few_edges`, `start_nan`, `pitch_range`,
     /// `eave_nan`, `eave_negative`, `overhang_negative`, `direction_nan`,
     /// `stacked_nan`, `break_below_eave`, `break_duplicate`, `end_nan`,
-    /// `bad_corners` or `bad_size`.
+    /// `bad_corners`, `bad_size` or `zero_length_wall`.
     pub code: &'static str,
+}
+
+/// Shortest wall that is not a direction marker, m. Two corners on one
+/// point (a corner clicked twice while drawing, the closing corner drawn
+/// onto the first one) give a wall of no length and no direction. DACAD
+/// has no such wall: every DACAD wall record carries its own direction,
+/// and a zero-length one is a direction change (`direction_rad`). The core
+/// takes the missing direction as east and ends with a cut error, which
+/// stopped the roof of every building in the job; so such a part is
+/// reported as invalid and left out on its own, like any other invalid
+/// input. 1 mm is below DACAD's own centimetre rounding.
+pub const MIN_WALL_LENGTH: f64 = 0.001;
+
+/// The edges of `part` that are walls of no length (see
+/// [`MIN_WALL_LENGTH`]). Edges imported from a DACAD wall record keep their
+/// recorded direction and are not listed.
+pub fn zero_length_walls(part: &RoofPart) -> Vec<usize> {
+    let n = part.edges.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    (0..n)
+        .filter(|&i| {
+            let e = &part.edges[i];
+            let next = part.edges[(i + 1) % n].start;
+            e.direction_rad.is_none()
+                && e.source.is_none()
+                && finite_point(e.start)
+                && finite_point(next)
+                && e.start.distance(next) < MIN_WALL_LENGTH
+        })
+        .collect()
 }
 
 impl Problem {

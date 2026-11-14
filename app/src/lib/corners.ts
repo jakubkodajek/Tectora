@@ -6,6 +6,21 @@ import { isMarker } from "./types";
 
 const at = (a: Point2, b: Point2, tol: number) => Math.abs(a.x - b.x) < tol && Math.abs(a.y - b.y) < tol;
 
+/** Two plan points closer than 1 mm (the core's `MIN_WALL_LENGTH`) count as one corner. */
+export const samePoint = (a: Point2, b: Point2) => Math.hypot(a.x - b.x, a.y - b.y) < 0.001;
+
+/**
+ * A drawn footprint without repeated corners: a corner on the one before it
+ * and closing corners on the first one are dropped, so no wall has zero
+ * length. O(n).
+ */
+export function withoutRepeats(pts: Point2[]): Point2[] {
+  const out: Point2[] = [];
+  for (const p of pts) if (!out.length || !samePoint(out[out.length - 1], p)) out.push(p);
+  while (out.length > 1 && samePoint(out[out.length - 1], out[0])) out.pop();
+  return out;
+}
+
 /** Corner `v` and the direction markers on the same point next to it. O(n). */
 export function cornerGroup(es: EdgeDef[], v: number): number[] {
   const n = es.length;

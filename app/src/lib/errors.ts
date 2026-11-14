@@ -103,9 +103,22 @@ export function describeError(e: unknown, action?: Action): Described {
   };
 }
 
-/** The roof calculation's error in the user's language. */
-export function describeCalcError(e: CalcError): { title: string; hint: string; code: string } {
-  return { title: t(`calc.err.${e.kind}`), hint: t(`calc.hint.${e.kind}`), code: e.kind };
+/**
+ * The roof calculation's error in the user's language. With several
+ * buildings, the title names the ones whose roof fails on its own and the
+ * hint says the others wait for them (one error stops every roof).
+ */
+export function describeCalcError(e: CalcError, project?: Project): { title: string; hint: string; code: string } {
+  const title = t(`calc.err.${e.kind}`);
+  const hint = t(`calc.hint.${e.kind}`);
+  const parts = e.parts ?? [];
+  if (!project || project.parts.length < 2 || parts.length === 0) return { title, hint, code: e.kind };
+  const names = parts.map((i) => {
+    const name = project.parts[i]?.name;
+    const where = t("prob.item.part", { n: i + 1 });
+    return name && !isDefaultPartName(name) ? `${where} „${name}“` : where;
+  });
+  return { title: `${names.join(", ")}: ${title}`, hint: `${hint} ${t("calc.hint.othersWait")}`, code: e.kind };
 }
 
 /** One input problem, e.g. "Part 2 „Garage“, wall 3: pitch must be between 2° and 178°". */

@@ -205,6 +205,8 @@ export interface CalcError {
   message_id?: number;
   /** DACAD's message, in German as DACAD shows it. */
   message: string;
+  /** With several buildings: the ones whose roof fails on its own too (from 0). */
+  parts?: number[];
 }
 
 /** An input the roof engine cannot work with (that part is not calculated). */
@@ -214,6 +216,7 @@ export interface Problem {
   edge?: number;
   code:
     | "too_few_edges"
+    | "zero_length_wall"
     | "start_nan"
     | "pitch_range"
     | "eave_nan"

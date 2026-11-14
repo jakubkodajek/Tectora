@@ -69,6 +69,11 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
                 for j in g.joined_with.iter_mut() {
                     *j = ids.parts.get(*j).copied().unwrap_or(*j);
                 }
+                if let Some(e) = g.error.as_mut() {
+                    for j in e.parts.iter_mut() {
+                        *j = ids.parts.get(*j).copied().unwrap_or(*j);
+                    }
+                }
                 for d in g.warnings.iter_mut().filter_map(|w| w.dormer.as_mut()) {
                     *d = ids.dormers.get(*d).copied().unwrap_or(*d);
                 }
@@ -178,7 +183,8 @@ fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
     // fails for a reason of ours does the sweep below take over.
     match crate::engine::generate(project) {
         Ok(geos) => return geos,
-        Err(crate::engine::Failure::Dacad(e)) => {
+        Err(crate::engine::Failure::Dacad(mut e)) => {
+            e.parts = failing_alone(project);
             return vec![
                 RoofGeometry {
                     error: Some(e),
@@ -196,6 +202,25 @@ fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
             .push(RoofWarning::new(WarningKind::NotCalculatedByCore, 0.0));
     }
     geos
+}
+
+/// With two or more buildings, the ones whose roof the core does not
+/// calculate on their own either (indices in `project`); see
+/// [`crate::roof::CalcError::parts`]. Runs only after a core error.
+fn failing_alone(project: &Project) -> Vec<usize> {
+    if project.parts.len() < 2 {
+        return Vec::new();
+    }
+    (0..project.parts.len())
+        .filter(|&k| {
+            let mut alone = project.clone();
+            alone.parts = vec![project.parts[k].clone()];
+            matches!(
+                crate::engine::generate(&alone),
+                Err(crate::engine::Failure::Dacad(_))
+            )
+        })
+        .collect()
 }
 
 /// Tectora's own sweep engine, where the core path failed for a reason of

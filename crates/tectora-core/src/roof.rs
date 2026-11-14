@@ -217,6 +217,14 @@ pub struct CalcError {
     pub message_id: Option<u32>,
     /// DACAD's message (German, as DACAD shows it).
     pub message: String,
+    /// With two or more buildings: the buildings (part indices, from 0)
+    /// whose roof ends with an error on its own as well. DACAD's core
+    /// calculates all roofs of a job in one run, so one roof's error stops
+    /// them all; this tells the user which building to fix. Empty when
+    /// every building calculates alone (the error comes from the join) or
+    /// the job has one building.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<usize>,
 }
 
 /// The groups of DACAD calculation errors the app explains to the user.

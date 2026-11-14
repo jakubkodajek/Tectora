@@ -178,3 +178,24 @@ every wall…", `app/e2e/results.e2e.ts`.
 - Windows, chimneys and openings off every roof face carry a warning; the
   result is unchanged.
 - The Results area rows add up to the total, hand-drawn faces included.
+
+## 10. One building stops every roof (@math, @errors, @ux)
+
+Guards: core `a_wall_of_no_length_leaves_only_its_building_out_and_says_where`,
+`a_core_error_names_the_building_that_fails_alone` (`tests/result_report.rs`),
+vitest `corners.test.ts` "drawn footprint without repeated corners",
+`errors.test.ts` "names the building whose roof fails on its own"; fuzz
+`cargo run --release -p tectora-core --example join_fuzz -- 2000 <seed>`.
+
+- Two corners on one point (a corner clicked twice, the closing corner
+  snapped onto the first, a typed corner on its neighbour) never reach the
+  core: the drawing drops them, and a file that has them reports
+  `zero_length_wall` for that building only; the other buildings keep their
+  roof.
+- DACAD's core calculates all roofs of a job in one run, so a core error on
+  one roof leaves every building without a roof; the error names the
+  building that fails alone (`CalcError.parts`) and the bar has "Show".
+- A join of two buildings (touching, overlapping, different eave heights,
+  overhangs up to 3 m) is calculated by the core or, where the port faults
+  as the original does, by the fallback with its warning; never an error
+  toast or a stale roof.

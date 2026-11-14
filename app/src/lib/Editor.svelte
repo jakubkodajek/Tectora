@@ -21,7 +21,7 @@
   import { commitFocused } from "./commitfocus";
   import { textfield } from "./textfield";
   import ContextMenu, { type MenuEntry, type MenuState } from "./ContextMenu.svelte";
-  import { mergeDroppedCorner, moveCorner } from "./corners";
+  import { mergeDroppedCorner, moveCorner, samePoint, withoutRepeats } from "./corners";
   import { followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, transformItem, type ItemRef, type PlanTarget } from "./items";
   import { snapToRoof, type ManualSel } from "./manual";
   import { describeCalcError, describeError, describeProblem, toAppError, type Described } from "./errors";
@@ -1372,9 +1372,21 @@
     drawing.push({ x: +(last.x + dx).toFixed(3), y: +(last.y + dy).toFixed(3) });
   }
 
+  /** A clicked corner of the footprint being drawn; a click on the last corner again adds no wall of no length. */
+  function addDrawPoint(x: number, y: number) {
+    if (!drawing) return;
+    const last = drawing[drawing.length - 1];
+    if (last && samePoint(last, { x, y })) return;
+    drawing.push({ x, y });
+  }
+
   function finishDraw() {
-    if (!project || !drawing || drawing.length < 3) return;
-    let pts = drawing;
+    if (!project || !drawing) return;
+    // Two corners on one point make a wall of no length, which the roof
+    // calculation cannot take (core `zero_length_wall`): a corner clicked
+    // twice, or the last corner snapped onto the first one.
+    let pts = withoutRepeats(drawing);
+    if (pts.length < 3) return;
     const area = pts.reduce((s, p, i) => {
       const q = pts[(i + 1) % pts.length];
       return s + p.x * q.y - q.x * p.y;
@@ -1569,7 +1581,7 @@
           </div>
         {/if}
         {#if calcError}
-          {@const d = describeCalcError(calcError)}
+          {@const d = describeCalcError(calcError, project)}
           <div class="warn-bar" role="alert">
             <i class="dot"></i>
             <div class="warn-text">
@@ -1577,6 +1589,9 @@
               <span>{d.hint}</span>
             </div>
             <code>{d.code}</code>
+            {#if calcError.parts?.length && project.parts[calcError.parts[0]]}
+              <button class="btn sm" onclick={() => (selection = { part: calcError!.parts![0], edge: 0 })}>{t("opening.show")}</button>
+            {/if}
             {#if at > 0}<button class="btn sm" onclick={undo}><Icon name="undo" size={14} />{t("editor.undo")}</button>{/if}
           </div>
         {/if}
@@ -1626,7 +1641,7 @@
                 onmove={moveVertex}
                 onmoveend={endVertexDrag}
                 oninsert={insertVertex}
-                ondrawpoint={(x, y) => drawing?.push({ x, y })}
+                ondrawpoint={addDrawPoint}
                 ondrawclose={finishDraw}
                 oncursor={(p) => (cursor = p)}
                 ondrag={dragObject}
@@ -1665,7 +1680,7 @@
             onapplyall={applyAll}
             onheight={setPartHeight}
             onlength={setLength}
-            onpoint={(x, y) => { if (selection) { moveVertex(selection.part, selection.edge, x, y); commit(); } }}
+            onpoint={(x, y) => { if (selection) { moveVertex(selection.part, selection.edge, x, y); endVertexDrag(selection.part, selection.edge); } }}
             ondelete={deleteVertex}
             onmarker={insertMarker}
             onround={opposite !== null ? openRound : undefined}

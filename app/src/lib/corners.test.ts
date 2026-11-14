@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EdgeDef } from "./types";
-import { cornerGroup, mergeDroppedCorner, moveCorner } from "./corners";
+import { cornerGroup, mergeDroppedCorner, moveCorner, samePoint, withoutRepeats } from "./corners";
 
 const w = (x: number, y: number, marker = false): EdgeDef => ({
   start: { x, y },
@@ -35,5 +35,19 @@ describe("corner drag", () => {
   it("leaves a corner that is only near, not on, its neighbour", () => {
     const es = [w(0, 0), w(9.9, 0), w(10, 0), w(10, 6), w(0, 6)];
     expect(mergeDroppedCorner(es, 1)).toBe(false);
+  });
+});
+
+describe("drawn footprint without repeated corners", () => {
+  const p = (x: number, y: number) => ({ x, y });
+  it("drops a corner clicked twice and a closing corner on the first one", () => {
+    // A wall of no length stopped the roof of every building (zero_length_wall).
+    expect(withoutRepeats([p(0, 0), p(8, 0), p(8, 0), p(8, 6), p(0, 6), p(0, 0)])).toEqual([p(0, 0), p(8, 0), p(8, 6), p(0, 6)]);
+    expect(withoutRepeats([p(0, 0), p(8, 0), p(8, 6), p(0.0004, 0)])).toEqual([p(0, 0), p(8, 0), p(8, 6)]);
+  });
+  it("keeps corners 1 mm apart and more", () => {
+    const pts = [p(0, 0), p(0.001, 0), p(8, 6)];
+    expect(withoutRepeats(pts)).toEqual(pts);
+    expect(samePoint(p(1, 1), p(1.0009, 1))).toBe(true);
   });
 });
