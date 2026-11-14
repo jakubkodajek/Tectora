@@ -158,9 +158,11 @@ test.describe("several buildings", () => {
     await areaMatchesCore(page, id);
   });
 
-  test("the building height sets every wall of the building in one change and rejoins both roofs", async ({ app, page }) => {
+  test("the building height moves every wall of the building in one change and rejoins both roofs", async ({ app, page }) => {
     // Jakub 2026-11-08: two hip roofs side by side, the second lower, roofs
     // overlapping; the building's height was only settable wall by wall.
+    // Jakub 2026-11-14: the building height is not the eave height; a wall
+    // whose eave differs keeps its offset.
     const id = await createExample("hip", "Valba");
     const wing = rect(10, 2, 16, 7, 3, "Křídlo");
     wing.edges[2].eave_height = 3.4;
@@ -169,16 +171,15 @@ test.describe("several buildings", () => {
     const def = bar(page, "def.title");
     await selectWall(page, 4, 1);
     const field = def.getByLabel(cs("edge.buildingHeight"));
-    // The wing's walls differ: the field says so instead of showing one of them.
-    await expect(field).toHaveValue("");
-    await expect(field).toHaveAttribute("placeholder", cs("edge.mixed"));
+    // A file without a building height shows its lowest eave.
+    await expect(field).toHaveValue("3");
     const main = (await loadProject(id)).parts[0];
     const core = await coreLines(id);
     await setField(field, "1,8");
-    const saved = await waitForProject(id, (p) => p.parts[1].edges.every((e: any) => e.eave_height === 1.8));
+    const saved = await waitForProject(id, (p) => p.parts[1].height === 1.8);
+    expect(saved.parts[1].edges.map((e: any) => e.eave_height)).toEqual([1.8, 1.8, 2.2, 1.8]);
     expect(saved.parts[0]).toEqual(main);
     await expect(field).toHaveValue("1,8");
-    await expect(def.getByLabel(cs("edge.eaveHeight"))).toHaveValue("1,8");
     // Both roofs are recalculated: the main roof's lines where the wing meets it change too.
     const after = await coreLines(id);
     expect(after[1]).not.toBe(core[1]);
