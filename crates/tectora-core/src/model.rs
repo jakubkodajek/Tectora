@@ -223,6 +223,14 @@ impl Project {
                     code: "zero_length_wall",
                 });
             }
+            for ei in crossing_walls(part) {
+                out.push(Problem {
+                    item: ProblemItem::Part,
+                    index: pi,
+                    edge: Some(ei),
+                    code: "walls_cross",
+                });
+            }
         }
         for (di, d) in self.dormers.iter().enumerate() {
             if !finite_point(d.end) {
@@ -282,6 +290,7 @@ impl Project {
                 "zero_length_wall" => {
                     "has no length (two corners on one point); delete one of the corners"
                 }
+                "walls_cross" => "crosses another wall of the same building; move a corner",
                 "end_nan" => "end point is not a number or out of range",
                 "bad_corners" => "needs 3 or more finite corners",
                 "bad_size" => "needs a finite position and a positive size",
@@ -562,7 +571,7 @@ pub struct Problem {
     /// `eave_nan`, `eave_negative`, `overhang_negative`, `direction_nan`,
     /// `stacked_nan`, `break_below_eave`, `break_duplicate`,
     /// `half_hip_below_eave`, `end_nan`,
-    /// `bad_corners`, `bad_size` or `zero_length_wall`.
+    /// `bad_corners`, `bad_size`, `zero_length_wall` or `walls_cross`.
     pub code: &'static str,
 }
 
@@ -598,6 +607,57 @@ pub fn zero_length_walls(part: &RoofPart) -> Vec<usize> {
                 && e.start.distance(next) < MIN_WALL_LENGTH
         })
         .collect()
+}
+
+/// The first wall of each pair of walls of `part` that cross each other.
+/// A wall loop that crosses itself (a bow tie, a corner dragged over the
+/// opposite wall) is not a building: the core still returned a roof for it,
+/// with faces of one corner and areas of no meaning, and nothing warned
+/// (audit 2026-11-15 HUNTC-002, HUNTIO-009). Only a proper crossing counts:
+/// walls that touch at a corner or run along each other are left alone.
+/// Parts with a direction marker or imported wall records are not checked,
+/// because their walls are not the straight lines between the corners.
+pub fn crossing_walls(part: &RoofPart) -> Vec<usize> {
+    let n = part.edges.len();
+    if n < 4
+        || part
+            .edges
+            .iter()
+            .any(|e| e.direction_rad.is_some() || e.source.is_some() || !finite_point(e.start))
+    {
+        return Vec::new();
+    }
+    let seg = |i: usize| (part.edges[i].start, part.edges[(i + 1) % n].start);
+    // Side of `c` relative to the line a-b, with a tolerance of 1 mm in
+    // distance so that corners lying on a wall do not count as crossing.
+    let side = |a: Point2, b: Point2, c: Point2| {
+        let len = a.distance(b);
+        let cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        if len <= 0.0 || cross.abs() <= 1e-3 * len {
+            0
+        } else if cross > 0.0 {
+            1
+        } else {
+            -1
+        }
+    };
+    let mut out = Vec::new();
+    for i in 0..n {
+        let (a, b) = seg(i);
+        let crosses = (i + 2..n).any(|j| {
+            if (j + 1) % n == i {
+                return false; // neighbours share a corner
+            }
+            let (c, d) = seg(j);
+            let (s1, s2) = (side(a, b, c), side(a, b, d));
+            let (s3, s4) = (side(c, d, a), side(c, d, b));
+            s1 * s2 < 0 && s3 * s4 < 0
+        });
+        if crosses {
+            out.push(i);
+        }
+    }
+    out
 }
 
 impl Problem {
@@ -1097,6 +1157,51 @@ mod tests {
             ["half_hip_below_eave"]
         );
         assert_eq!(codes(&|e| e.half_hip = hh(5.0, f64::NAN)), ["stacked_nan"]);
+    }
+
+    #[test]
+    fn walls_that_cross_are_a_problem() {
+        let part = |pts: &[(f64, f64)]| {
+            RoofPart::new(
+                "A",
+                pts.iter()
+                    .map(|&(x, y)| crate::edit::plain_edge(Point2::new(x, y), 40.0, 3.0, 0.5))
+                    .collect(),
+            )
+        };
+        let rect = part(&[(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)]);
+        assert!(crossing_walls(&rect).is_empty());
+        // Bow tie: walls 0 and 2 cross.
+        let bow = part(&[(0.0, 0.0), (10.0, 0.0), (0.0, 8.0), (10.0, 8.0)]);
+        assert_eq!(crossing_walls(&bow), [1]);
+        // An L and a notch touching a wall at a corner do not cross.
+        let l = part(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 4.0),
+            (5.0, 4.0),
+            (5.0, 8.0),
+            (0.0, 8.0),
+        ]);
+        assert!(crossing_walls(&l).is_empty());
+        let touch = part(&[(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (5.0, 0.0), (0.0, 8.0)]);
+        assert!(crossing_walls(&touch).is_empty());
+        // A corner dragged over the opposite wall.
+        let dragged = part(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 8.0),
+            (5.0, -4.0),
+            (0.0, 8.0),
+        ]);
+        assert!(!crossing_walls(&dragged).is_empty());
+        let mut p = crate::examples::find("gable").unwrap().project();
+        p.parts = vec![bow];
+        assert!(
+            p.problems()
+                .iter()
+                .any(|q| q.code == "walls_cross" && q.edge == Some(1))
+        );
     }
 
     #[test]

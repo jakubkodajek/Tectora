@@ -229,6 +229,7 @@ export interface Problem {
   code:
     | "too_few_edges"
     | "zero_length_wall"
+    | "walls_cross"
     | "start_nan"
     | "pitch_range"
     | "eave_nan"
