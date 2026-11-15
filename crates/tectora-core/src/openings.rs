@@ -734,6 +734,22 @@ fn depart_logged(
             Err(why) => log.push(format!("wing split: {why}")),
         }
     }
+    // A building turned and rounded to centimetres, put back onto common
+    // wall lines (at most a centimetre), then the same two ways.
+    if let Some(straight) = crate::straighten::straightened(part) {
+        let mut sbare = bare.clone();
+        sbare.parts = vec![straight];
+        match crate::coplanar::merged(&sbare) {
+            Ok(geo) => return with_objects(alone, geo),
+            Err(why) => log.push(format!("straightened: planes joined: {why}")),
+        }
+        if matches!(kind, K::OpenFaces | K::Cut) {
+            match crate::wing_split::split_roof(&sbare).0 {
+                Ok(geo) => return with_objects(alone, geo),
+                Err(why) => log.push(format!("straightened: wing split: {why}")),
+            }
+        }
+    }
     // The sweep, with its own line clean-up, checked without the objects.
     let sweep = |p: &Project| {
         let mut geos = build_roofs(&bare);
