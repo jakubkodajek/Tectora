@@ -1002,9 +1002,7 @@ impl Server {
                 "insert_direction_change" => {
                     let i = edge_index(op, "index", n).map_err(at)?;
                     let e = part.edges[i].clone();
-                    let next = part.edges[(i + 1) % n].start;
-                    let ang = (next.y - e.start.y).atan2(next.x - e.start.x)
-                        + std::f64::consts::FRAC_PI_2;
+                    let ang = tectora_core::edit::corners::default_direction(&part.edges, i);
                     // The wall's own definition, as the editor's "Direction
                     // change" button makes it; a gable's marker gets the
                     // pitch for new roofs from the settings.
@@ -1017,7 +1015,7 @@ impl Server {
                             .roof_defaults
                             .pitch_deg;
                     }
-                    marker.direction_rad = Some(ang.rem_euclid(std::f64::consts::TAU));
+                    marker.direction_rad = Some(ang);
                     part.edges.insert(i, marker);
                 }
                 "shift_wall" => {
