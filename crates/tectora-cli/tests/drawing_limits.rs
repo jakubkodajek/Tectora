@@ -11,6 +11,8 @@ use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use serde_json::{Value, json};
 
+// The drawings live in the jobs folder: an AI client reads other paths only
+// after the user allowed them in the app.
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("tectora-limits-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -168,7 +170,7 @@ impl Drop for Mcp {
 #[test]
 fn a_normal_drawing_is_read_through_the_worker() {
     let dir = scratch("plain");
-    let path = dir.join("plan.pdf");
+    let path = dir.join("lib").join("plan.pdf");
     std::fs::write(&path, plain_drawing()).unwrap();
     let mut mcp = Mcp::start(&dir, &[]);
     let (err, text) = mcp.tool("drawing_info", json!({ "path": path }));
@@ -180,7 +182,7 @@ fn a_normal_drawing_is_read_through_the_worker() {
 #[test]
 fn nested_forms_are_stopped_by_the_time_limit_and_the_session_goes_on() {
     let dir = scratch("nested");
-    let path = dir.join("nested.pdf");
+    let path = dir.join("lib").join("nested.pdf");
     std::fs::write(&path, nested_forms(40)).unwrap();
     let mut mcp = Mcp::start(&dir, &[("TECTORA_DRAWING_TIMEOUT_S", "3")]);
     let start = Instant::now();
@@ -196,7 +198,7 @@ fn nested_forms_are_stopped_by_the_time_limit_and_the_session_goes_on() {
 #[test]
 fn an_inflate_bomb_is_stopped_by_the_memory_limit_and_the_session_goes_on() {
     let dir = scratch("bomb");
-    let path = dir.join("bomb.pdf");
+    let path = dir.join("lib").join("bomb.pdf");
     std::fs::write(&path, inflate_bomb(256)).unwrap();
     let mut mcp = Mcp::start(&dir, &[("TECTORA_DRAWING_MEMORY_MB", "64")]);
     let (err, text) = mcp.tool("drawing_info", json!({ "path": path }));

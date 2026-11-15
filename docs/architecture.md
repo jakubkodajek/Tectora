@@ -63,7 +63,8 @@ UI talks to the backend.
 | `coresol/` | DACAD's intermediate files: RD2 reader, core SOL, INT and W3D writers |
 | `roof`, `raised`, `union`, `multiroof`, `gable_wall` | Tectora's own weighted straight-skeleton sweep engine, used only when the core path fails for a reason of ours |
 | `openings`, `dormer`, `flat` | windows, chimneys, openings, dormers and flat roofs applied as DACAD does; `openings::generate_project` is the entry point for every caller |
-| `check` | plausibility warnings for roofs that are DACAD-identical but geometrically odd |
+| `check` | plausibility warnings for roofs that are DACAD-identical but geometrically odd; `check::sound`, the self-check every departure from the core's result must pass |
+| `coplanar`, `wing_split` | the two departures tried where the core stops: parallel planes joined into one face, a low wing calculated as a lean-to against the house wall |
 | `quantities`, `report` | quantities by DACAD line code and by material; `report::calc` builds what the UI, CLI and MCP show |
 | `edit/` | editor operations shared by the UI and MCP: dormer kinds, transforms, round roof, calculation helpers, returning `Patches` |
 | `store` | the job library: one `.tectora` per job, attachments, activity log with previous versions, `live.json` |
@@ -78,7 +79,10 @@ flowchart TD
     F -- yes --> FL[flat::generate_project]
     F -- no --> E[engine::generate]
     E -- Ok --> G[RoofGeometry per part]
-    E -- Failure::Dacad --> ERR[DACAD's error per part,<br/>no roof]
+    E -- Failure::Dacad --> D{building stands alone:<br/>merged planes, lean-to wing<br/>or sweep passes check::sound?}
+    D -- yes --> N[roof with a notice]
+    D -- no --> ERR[DACAD's error per part,<br/>no roof]
+    N --> G
     E -- Failure::Ours --> MR[multiroof / sweep fallback]
     MR --> G
     FL --> G
@@ -88,6 +92,25 @@ flowchart TD
 
 Entry point: `openings::generate_project` (`crates/tectora-core/src/openings.rs`).
 A `Failure::Dacad` is a result, not a bug: DACAD ends with the same error.
+
+**Departures.** Where the core stops on a building that stands clear of the
+others, `openings::generate_valid` tries, on the building without its
+objects, `coplanar::merged` (two parallel wall planes a few centimetres
+apart calculated as one face), `wing_split::split_roof` (a wing whose eave
+is too low to reach the house roof, calculated as a lean-to against the
+house wall) and then the sweep engine. The first result that passes
+`check::sound` is used: faces planar at their walls' pitches and eave
+heights, a simple outline each, the plan covered once, every line on a
+face side, no plausibility warning. Windows, chimneys, openings and dormers
+are then applied as on any roof, and the part carries the notice
+`merged_planes`, `wing_joined` or `not_calculated_by_core`. If none passes,
+DACAD's error stays: an error is better than a wrong roof. A roof the core
+does calculate is never replaced, with one exception: a building alone whose
+two planes are one plane but for a centimetre step gets the merged face
+(`merged_planes`). The wall area of a departed roof comes from
+`openings::wall_area_under`, which repeats the core's wall stage on the
+departed faces. Limits: one wing per building (`wing_split::MAX_CUTS`
+candidates), 64 walls for the split and 256 for the sweep.
 How the core is proven: `docs/core-verification.md` (fixtures, closed forms,
 invariants, properties) and `dcore/PORTING.md` (emulator).
 

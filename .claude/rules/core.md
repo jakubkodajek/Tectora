@@ -18,6 +18,14 @@ paths:
 - Errors that DACAD also ends with are `engine::Failure::Dacad`; anything
   else is `Failure::Ours` and falls back to the sweep engine. Do not blur
   the two.
+- A departure from DACAD exists only in `openings::generate_valid`: after a
+  `Failure::Dacad` (or a centimetre step between two planes that are one) a
+  building standing clear of the others is tried as `coplanar::merged`,
+  `wing_split::split_roof`, then the sweep, without its objects. A result
+  is used only when `check::sound` accepts it and it carries its notice
+  (`MergedPlanes`, `WingJoined`, `NotCalculatedByCore`); otherwise DACAD's
+  error stays. Never loosen `sound` to let a case through: an error is
+  better than a wrong roof. A roof the core calculates is not replaced.
 - Everything reachable from a job file, bundle, Tauri command or MCP call
   runs inside `model::guarded` after the limits check: no `unwrap`, slice
   indexing or unbounded loop on untrusted data.
