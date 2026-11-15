@@ -1652,32 +1652,61 @@ impl Server {
     }
 }
 
+impl Server {
+    /// Answers one line read from the client. A line that is not UTF-8 or
+    /// not JSON gets a parse error instead of ending the session (audit
+    /// 2026-11-15 ERR-002), and a JSON-RPC batch gets one answer per
+    /// request instead of none, which left the client waiting (ERR-003).
+    pub fn respond_line(&mut self, line: &[u8]) -> Option<Value> {
+        let parse_error = |e: String| {
+            Some(json!({
+                "jsonrpc": "2.0", "id": null,
+                "error": { "code": -32700, "message": format!("parse error: {e}") }
+            }))
+        };
+        let text = match std::str::from_utf8(line) {
+            Ok(t) => t,
+            Err(e) => return parse_error(format!("the message is not UTF-8 ({e})")),
+        };
+        if text.trim().is_empty() {
+            return None;
+        }
+        match serde_json::from_str::<Value>(text) {
+            Ok(Value::Array(batch)) if batch.is_empty() => Some(json!({
+                "jsonrpc": "2.0", "id": null,
+                "error": { "code": -32600, "message": "invalid request: empty batch" }
+            })),
+            Ok(Value::Array(batch)) => {
+                let answers: Vec<Value> = batch.iter().filter_map(|m| self.handle(m)).collect();
+                (!answers.is_empty()).then_some(Value::Array(answers))
+            }
+            Ok(msg) => self.handle(&msg),
+            Err(e) => parse_error(e.to_string()),
+        }
+    }
+}
+
 /// Serves MCP over stdin/stdout (one JSON-RPC message per line) until EOF.
 pub fn run_stdio(store: Store) -> io::Result<()> {
     if worker::run_if_worker() {
         return Ok(());
     }
     let mut server = Server::new(store);
-    let stdin = io::stdin();
+    let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
-    for line in stdin.lock().lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if stdin.read_until(b'\n', &mut line)? == 0 {
+            return Ok(());
         }
-        let response = match serde_json::from_str::<Value>(&line) {
-            Ok(msg) => server.handle(&msg),
-            Err(e) => Some(json!({
-                "jsonrpc": "2.0", "id": null,
-                "error": { "code": -32700, "message": format!("parse error: {e}") }
-            })),
-        };
-        if let Some(r) = response {
+        let text = line.strip_suffix(b"\n").unwrap_or(&line);
+        let text = text.strip_suffix(b"\r").unwrap_or(text);
+        if let Some(r) = server.respond_line(text) {
             writeln!(stdout, "{r}")?;
             stdout.flush()?;
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1699,6 +1728,31 @@ mod tests {
             "params": { "protocolVersion": "2025-06-18", "clientInfo": { "name": "test-agent" } }
         }));
         s
+    }
+
+    #[test]
+    fn a_bad_line_or_a_batch_gets_an_answer_and_the_session_goes_on() {
+        let mut s = server();
+        let r = s.respond_line(b"\xff\xfe").unwrap();
+        assert_eq!(r["error"]["code"], -32700);
+        let r = s.respond_line(b"{ not json").unwrap();
+        assert_eq!(r["error"]["code"], -32700);
+        assert!(s.respond_line(b"  ").is_none());
+        let r = s
+            .respond_line(br#"[{"jsonrpc":"2.0","id":7,"method":"ping"},{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","id":8,"method":"ping"}]"#)
+            .unwrap();
+        let ids: Vec<_> = r
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["id"].clone())
+            .collect();
+        assert_eq!(ids, [json!(7), json!(8)]);
+        assert_eq!(s.respond_line(b"[]").unwrap()["error"]["code"], -32600);
+        let r = s
+            .respond_line(br#"{"jsonrpc":"2.0","id":9,"method":"ping"}"#)
+            .unwrap();
+        assert_eq!(r["id"], 9);
     }
 
     #[test]
