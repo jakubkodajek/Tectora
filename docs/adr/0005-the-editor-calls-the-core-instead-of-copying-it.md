@@ -87,11 +87,20 @@ Not yet moved, although they are commit-time operations and should be
   `dormerSection`, `eaveFor`, `solveDormer`, `pitchForBackWidth`,
   `nearestWallAngle` (DormerDialog, DormerBar, Editor; core: `edit::dormers`),
   and with them `roundroof.ts` (`arcFor`, `segmentsFor`,
-  `MAX_ROUND_SEGMENTS`), which only the dormer code still calls. The dormer
-  bar and dialog rebuild the dormer from its parameters on every keystroke and
-  drag step and read it back synchronously in many places; moving them needs
-  those two components restructured around asynchronous answers and is its own
-  change.
+  `MAX_ROUND_SEGMENTS`), which only the dormer code still calls. Left
+  untouched in the last pass because a clean move is a restructuring, not a
+  swap of calls: `DormerBar` renders every field from a synchronous
+  `parseDormer(dormer)` (`$derived`) and saves through `buildDormer`;
+  `DormerDialog` derives its place key, its probe projects and the whole
+  section panel (`dormerSection`, `eaveFor`, `solveDormer`,
+  `pitchForBackWidth`) synchronously from the typed parameters, and
+  `nearestWallAngle` is read synchronously at four click and align sites in
+  `Editor.svelte`. Each needs a parameter state that is refreshed by a debounced
+  core call (`lib/latest.ts`) with the old values kept until the answer
+  arrives, so the bar does not blank on selection, and the dormer E2E specs
+  (objects, placement, fields) re-run unchanged. Moving only
+  `nearestWallAngle` would leave `dormers.ts` half migrated and `roundroof.ts`
+  still needed, so it was not split off.
 - `types.ts` `buildingHeight` and Editor's `freezeHeight`: the wall bar's
   `patchEdge` / `applyAll` edit fields synchronously and commit before the
   press that changes the selection (lessons-learned 2026-11-08). Moving them
