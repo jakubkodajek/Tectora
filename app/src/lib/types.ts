@@ -405,6 +405,17 @@ export interface AppSettings {
   follow_ai: boolean;
   /** A folder change an AI client asked for, waiting for the user. */
   folder_request?: FolderRequest;
+  /** A file outside the job folders an AI client asked to read, waiting for the user. */
+  file_request?: FileRequest;
+  /** Files outside the job folders the user allowed AI clients to read. */
+  allowed_files?: string[];
+}
+
+export interface FileRequest {
+  path: string;
+  by: string;
+  /** read_drawing, attach or import. */
+  purpose: string;
 }
 
 export interface FolderRequest {

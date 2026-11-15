@@ -13,6 +13,7 @@
   import { isBenignError } from "./lib/inflight";
   import { app as appSettings, applySettings, loadSettings, prefs } from "./lib/settings.svelte";
   import FolderRequest from "./lib/FolderRequest.svelte";
+  import FileRequest from "./lib/FileRequest.svelte";
   import { hasUnsaved, isBusy, mayLeave } from "./lib/leave";
   import type { BrokenFile, ExampleInfo, LiveStatus, ProjectSummary } from "./lib/types";
 
@@ -227,6 +228,12 @@
       applySettings(await api.getSettings());
       if (moved) libraryChanged();
     }}
+  />
+{/if}
+{#if appSettings.view?.settings.file_request && !appSettings.view.settings.folder_request}
+  <FileRequest
+    request={appSettings.view.settings.file_request}
+    onanswered={async () => applySettings(await api.getSettings())}
   />
 {/if}
 {#if settingsOpen}

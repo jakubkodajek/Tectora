@@ -634,6 +634,16 @@ fn answer_folder_request(app: tauri::AppHandle, allow: bool) -> Result<Value, St
     Ok(next.describe())
 }
 
+/// The user's answer to a file outside the job folders an AI client asked
+/// to read (`Settings::file_request`, ARCH-002): `allow` lets AI clients
+/// read that one file.
+#[tauri::command]
+fn answer_file_request(allow: bool) -> Result<Value, String> {
+    let next = Settings::load().answer_file_request(allow);
+    next.save().map_err(|e| e.code().to_string())?;
+    Ok(next.describe())
+}
+
 /// Opens one of the configured folders in Finder / Explorer.
 #[tauri::command]
 fn open_folder(which: String) -> Result<(), String> {
@@ -938,6 +948,7 @@ pub fn run() {
             get_settings,
             update_settings,
             answer_folder_request,
+            answer_file_request,
             open_folder,
             updates::update_check,
             updates::update_install

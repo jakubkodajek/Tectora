@@ -459,3 +459,9 @@ stay as they are (`settings.folder_request` shows the open request). When
 `effective.settings_error` is set, the settings file is damaged and the
 defaults (another jobs folder) are in use: tell the user before you change a
 setting (the damaged file is kept as `settings.json.bad` on the next save).
+
+Files: `path` arguments (drawing tools, `attach_file`, `import_job`) take
+files in the jobs folder and the drawings inbox. Any other path is refused
+and the app asks the user to allow that one file; tell the user to answer
+in the Tectora window, then repeat the call. Never go looking for the file
+another way.

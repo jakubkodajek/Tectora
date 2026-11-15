@@ -877,6 +877,47 @@ impl Server {
     /// `store::LIVE_KINDS`, translated in the app) about `name` (the job or
     /// file), with `message` in English for logs and older apps. The app
     /// shows it and never opens the job for it (reading, calculating, exporting).
+    /// Checks a `path` argument of an AI client: a file in the jobs folder
+    /// or the drawings inbox, or one the user allowed, passes. Any other
+    /// path becomes a request the user answers in the app
+    /// (`Settings::file_request`, ARCH-002) and the call is refused until
+    /// then, with the same words whether the file exists or not.
+    pub(crate) fn readable_path(
+        &self,
+        path: &std::path::Path,
+        purpose: &str,
+    ) -> Result<(), String> {
+        if !path.is_absolute() {
+            return Err("`path` must be an absolute path".into());
+        }
+        let settings = Settings::load();
+        if settings.ai_may_read(path, &self.store.dir) {
+            return Ok(());
+        }
+        let asked = settings
+            .asking_for_file(path, &self.client, purpose)
+            .save()
+            .is_ok();
+        // A settings change: the app reads the settings again and asks.
+        self.live(
+            "settings",
+            None,
+            format!("Asked to read {}", path.display()),
+            None,
+        );
+        Err(if asked {
+            format!(
+                "{} is outside the jobs folder and the drawings inbox, so Tectora now asks the user to allow it. Tell the user to answer the question in the Tectora window, then call this tool again with the same path. Do not try other paths or tools to reach the file.",
+                path.display()
+            )
+        } else {
+            format!(
+                "{} is outside the jobs folder and the drawings inbox and the request to the user could not be stored; ask the user to move the file into the drawings inbox (see get_settings).",
+                path.display()
+            )
+        })
+    }
+
     fn live(&self, kind: &str, name: Option<&str>, message: String, project_id: Option<&str>) {
         self.publish(kind, name, message, project_id, false);
     }
@@ -2135,6 +2176,69 @@ mod tests {
     /// `TECTORA_CONFIG_DIR`) run one at a time, so one never sees the
     /// other's half-written defaults.
     static SETTINGS_FILE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn a_file_outside_the_job_folders_waits_for_the_user() {
+        // ARCH-002: drawing tools, attach_file and import_job took any path.
+        let _settings = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner());
+        let base = std::env::temp_dir().join(format!("tectora-mcp-file-{}", std::process::id()));
+        unsafe { std::env::set_var("TECTORA_CONFIG_DIR", base.join("cfg")) };
+        std::fs::create_dir_all(base.join("other")).unwrap();
+        let outside = base.join("other").join("contract.pdf");
+        std::fs::write(&outside, b"%PDF-1.4 not a drawing").unwrap();
+        let missing = base.join("other").join("missing.pdf");
+        let mut s = server();
+        let id = gable_job(&mut s, 40.0);
+        let words = |e: &str, p: &std::path::Path| e.replace(&p.display().to_string(), "<path>");
+        let there = s
+            .call_tool("drawing_info", &json!({ "path": outside }))
+            .unwrap_err();
+        assert!(there.contains("asks the user to allow it"), "{there}");
+        let gone = s
+            .call_tool("drawing_info", &json!({ "path": missing }))
+            .unwrap_err();
+        // No way to tell an existing file from a missing one.
+        assert_eq!(words(&there, &outside), words(&gone, &missing));
+        for (tool, args) in [
+            ("drawing_lines", json!({ "path": outside })),
+            (
+                "attach_file",
+                json!({ "id": id, "path": outside, "summary": "Drawing" }),
+            ),
+            ("import_job", json!({ "path": outside, "summary": "Job" })),
+        ] {
+            let e = s.call_tool(tool, &args).unwrap_err();
+            assert!(e.contains("asks the user to allow it"), "{tool}: {e}");
+        }
+        assert!(s.store.attachments(&id).is_empty());
+        // The request names the file and who asked; the user says yes.
+        let asked = Settings::load();
+        let req = asked.file_request.clone().unwrap();
+        assert_eq!(req.purpose, "import");
+        assert!(req.path.ends_with("other/contract.pdf"), "{:?}", req.path);
+        asked.answer_file_request(true).save().unwrap();
+        s.call_tool(
+            "attach_file",
+            &json!({ "id": id, "path": outside, "summary": "Drawing" }),
+        )
+        .unwrap();
+        assert_eq!(s.store.attachments(&id).len(), 1);
+        // Only that file: its neighbour still waits.
+        assert!(
+            s.call_tool("drawing_info", &json!({ "path": missing }))
+                .is_err()
+        );
+        // An AI client cannot allow a file for itself.
+        assert!(
+            s.call_tool(
+                "update_settings",
+                &json!({ "allowed_files": [missing], "summary": "s" })
+            )
+            .is_err()
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn set_outline_repairs_a_part_without_edges() {

@@ -441,6 +441,12 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             next.save().map_err(|e| e.code().to_string())?;
             Ok(next.describe())
         }
+        "answer_file_request" => {
+            let allow = a.get("allow").and_then(Value::as_bool).unwrap_or(false);
+            let next = Settings::load().answer_file_request(allow);
+            next.save().map_err(|e| e.code().to_string())?;
+            Ok(next.describe())
+        }
         "open_folder" => Err("open_folder is not available in the browser preview".into()),
         _ => Err(format!(
             "ui_bridge: unknown command {cmd} (add it to crates/tectora-core/examples/ui_bridge.rs)"

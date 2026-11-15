@@ -559,7 +559,7 @@ pub(crate) fn tools() -> Vec<Value> {
         json!({
             "name": "attach_file",
             "description": "Attach a file from this computer (e.g. the technical drawing the roof was made from) to a job. Only a regular file up to 256 MB of a drawing, photo or document type (pdf, png, jpg, jpeg, webp, gif, bmp, tif, tiff, heic, svg, txt, csv, dxf, dwg, xlsx, xls, ods, docx, doc, odt). Attach only files the user gave you for this job; the reply names the folder the file came from.",
-            "inputSchema": schema(json!({ "id": id, "path": { "type": "string", "description": "Absolute path of the file." }, "summary": summary_prop() }), &["id", "path", "summary"]),
+            "inputSchema": schema(json!({ "id": id, "path": { "type": "string", "description": "Absolute path of the file. A file outside the jobs folder and the drawings inbox is refused until the user allows it in the app." }, "summary": summary_prop() }), &["id", "path", "summary"]),
         }),
         json!({
             "name": "remove_file",
@@ -597,7 +597,7 @@ pub(crate) fn tools() -> Vec<Value> {
         json!({
             "name": "import_job",
             "description": "Add a job from a .tectorajob file, or a .tectora project file from outside the library, as a new design.",
-            "inputSchema": schema(json!({ "path": { "type": "string" }, "summary": summary_prop() }), &["path", "summary"]),
+            "inputSchema": schema(json!({ "path": { "type": "string", "description": "Absolute path of the file. A file outside the jobs folder and the drawings inbox is refused until the user allows it in the app." }, "summary": summary_prop() }), &["path", "summary"]),
         }),
         json!({
             "name": "store_result",
@@ -813,9 +813,7 @@ impl Server {
                 let (id, _) = self.load(args)?;
                 let summary = arg_str(args, "summary")?;
                 let src = PathBuf::from(arg_str(args, "path")?);
-                if !src.is_absolute() {
-                    return Err("`path` must be an absolute path".into());
-                }
+                self.readable_path(&src, "attach")?;
                 // Drawings, photos and documents only: a path from text in a
                 // drawing must not copy a key or a program into a job that
                 // is later handed over (ARCH-001).
@@ -898,6 +896,7 @@ impl Server {
             "import_job" => (|| {
                 let path = PathBuf::from(arg_str(args, "path")?);
                 let summary = arg_str(args, "summary")?;
+                self.readable_path(&path, "import")?;
                 let id = bundle::open_path(&self.store, &path)?;
                 self.live_follow("imported", Some(&path.display().to_string()), format!("Imported {}: {summary}", path.display()), &id);
                 Ok(json!({ "id": id }))
