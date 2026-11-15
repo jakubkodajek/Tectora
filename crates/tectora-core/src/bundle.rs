@@ -576,11 +576,19 @@ mod tests {
         assert_eq!(export(&store, &id, &file).unwrap_err().code, "too_many");
         assert_eq!(fs::read(&file).unwrap(), b"older bundle");
         // A file that cannot be read stops the export the same way.
-        // A file whose name Tectora refuses (what Finder writes for a "/").
+        // A file whose name Tectora refuses: on macOS and Linux what Finder
+        // writes for a "/"; on Windows a ":" would make an NTFS stream, so a
+        // name over 255 UTF-8 bytes (NTFS counts 200 UTF-16 units).
         let small = store.save(None, &p).unwrap();
         store.add_attachment(&small, "plan.pdf", b"%PDF").unwrap();
         let files = store.files_dir(&small).unwrap();
-        fs::write(files.join("Plan 1:2.pdf"), b"%PDF").unwrap();
+        let refused = if cfg!(windows) {
+            format!("{}.pdf", "ž".repeat(200))
+        } else {
+            "Plan 1:2.pdf".to_string()
+        };
+        assert!(!crate::store::valid_file_name(&refused));
+        fs::write(files.join(&refused), b"%PDF").unwrap();
         assert!(export(&store, &small, &file).is_err());
         assert_eq!(fs::read(&file).unwrap(), b"older bundle");
         let left: Vec<_> = fs::read_dir(&dir)
