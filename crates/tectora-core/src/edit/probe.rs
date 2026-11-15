@@ -159,3 +159,187 @@ pub fn chimney_from_rect(
         height,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::edit::dormers::{DormerKind, build_dormer, default_params};
+    use crate::edit::plain_edge;
+    use crate::model::{Project, RoofPart};
+    use crate::openings::generate_project;
+
+    /// A 12 x 8 m hip roof, 35 deg on every wall, eave 3 m, no overhang.
+    fn hip_house() -> Project {
+        let mut p = Project::new("probe");
+        let w = |x: f64, y: f64| plain_edge(Point2::new(x, y), 35.0, 3.0, 0.0);
+        p.parts.push(RoofPart {
+            height: None,
+            name: "A".into(),
+            edges: vec![w(0.0, 0.0), w(12.0, 0.0), w(12.0, 8.0), w(0.0, 8.0)],
+        });
+        p
+    }
+
+    fn tan35() -> f64 {
+        35f64.to_radians().tan()
+    }
+
+    /// The house with a 2 m gable dormer on the front slope (eave and
+    /// ridge heights from the section dialog, as the editor sets them).
+    fn house_with_dormer() -> Project {
+        use crate::edit::dormers::{SectionTarget, eave_for, host_slope};
+        let mut p = hip_house();
+        let mut d = default_params(DormerKind::Gable, Point2::new(5.0, 1.0), 0.0, 3.0);
+        d.width = 2.0;
+        p.dormers.push(build_dormer(&d));
+        let host = host_slope(&p, 0).unwrap();
+        d.eave_height = eave_for(&d, host, SectionTarget::WallHeight(0.9)).unwrap();
+        p.dormers[0] = build_dormer(&d);
+        p
+    }
+
+    fn near(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-4, "{a} vs {b}");
+    }
+
+    #[test]
+    fn the_roof_height_follows_the_faces_of_a_hip_roof() {
+        // Faces: the long front/back slopes rise 35 deg from y = 0 and
+        // y = 8 to the ridge at y = 4 (height 3 + 4 tan35); the end hips
+        // rise from x = 0 and x = 12 to the ridge ends at x = 4 and 8.
+        let geos = generate_project(&hip_house());
+        near(
+            roof_height_at(&geos, Point2::new(6.0, 4.0)).unwrap(),
+            3.0 + 4.0 * tan35(),
+        );
+        near(
+            roof_height_at(&geos, Point2::new(6.0, 0.5)).unwrap(),
+            3.0 + 0.5 * tan35(),
+        );
+        near(
+            roof_height_at(&geos, Point2::new(1.0, 4.0)).unwrap(),
+            3.0 + tan35(),
+        );
+        assert_eq!(roof_height_at(&geos, Point2::new(-1.0, -1.0)), None);
+        assert_eq!(roof_height_at(&geos, Point2::new(13.0, 4.0)), None);
+        assert_eq!(roof_height_at(&[], Point2::new(6.0, 4.0)), None);
+    }
+
+    #[test]
+    fn the_roof_height_over_a_dormer_is_the_highest_face_not_the_lowest() {
+        // At (6, 1.8) the front slope (3 + 1.8 tan35 = 4.2604) lies under
+        // the dormer's roof; the dormer has its eave at 4.6 m on x = 5 and
+        // 7 and a 45 deg roof, so its ridge on x = 6 is 5.6 m.
+        let geos = generate_project(&house_with_dormer());
+        let q = Point2::new(6.0, 1.8);
+        near(roof_height_at(&geos, q).unwrap(), 5.6);
+        // Beside the dormer there is only the host.
+        near(
+            roof_height_at(&geos, Point2::new(10.0, 1.8)).unwrap(),
+            3.0 + 1.8 * tan35(),
+        );
+    }
+
+    #[test]
+    fn the_host_height_ignores_the_dormers_own_faces() {
+        let geos = generate_project(&house_with_dormer());
+        let q = Point2::new(6.0, 1.8);
+        let host = 3.0 + 1.8 * tan35();
+        near(host_height_at(&geos, q).unwrap(), host);
+        // The same height the bare roof gives.
+        let bare = crate::edit::position::bare_roof(&house_with_dormer());
+        near(host_height_at(&bare, q).unwrap(), host);
+        near(roof_height_at(&bare, q).unwrap(), host);
+        assert_eq!(host_height_at(&geos, Point2::new(-1.0, -1.0)), None);
+    }
+
+    #[test]
+    fn the_host_plane_is_the_slope_under_the_point_with_its_gradient() {
+        let geos = generate_project(&house_with_dormer());
+        let (z, [zx, zy]) = host_plane_at(&geos, Point2::new(6.0, 1.8)).unwrap();
+        near(z, 3.0 + 1.8 * tan35());
+        near(zx, 0.0);
+        near(zy, tan35());
+    }
+
+    #[test]
+    fn a_point_near_a_roof_corner_snaps_to_it_with_its_height() {
+        let geos = generate_project(&hip_house());
+        let on = |p: Point2, tol: f64| snap_to_roof(&geos, p, tol);
+        // The eave corner (0, 0) at 3 m, 5 cm away.
+        let q = on(Point2::new(0.03, 0.04), 0.1);
+        near(q[0], 0.0);
+        near(q[1], 0.0);
+        near(q[2], 3.0);
+        // The ridge end (4, 4) at 3 + 4 tan35.
+        let q = on(Point2::new(4.02, 3.97), 0.1);
+        near(q[0], 4.0);
+        near(q[1], 4.0);
+        near(q[2], 3.0 + 4.0 * tan35());
+    }
+
+    #[test]
+    fn a_point_clear_of_the_roof_points_stays_where_it_is_at_height_0() {
+        let geos = generate_project(&hip_house());
+        let q = snap_to_roof(&geos, Point2::new(1.0, 0.5), 0.1);
+        assert_eq!(q, [1.0, 0.5, 0.0]);
+        // Nothing to snap to.
+        assert_eq!(
+            snap_to_roof(&[], Point2::new(2.0, 3.0), 0.1),
+            [2.0, 3.0, 0.0]
+        );
+        // A corner just outside the tolerance is not taken.
+        let q = snap_to_roof(&geos, Point2::new(0.2, 0.0), 0.1);
+        assert_eq!(q, [0.2, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn the_roof_points_are_listed_once_each() {
+        let geos = generate_project(&hip_house());
+        let pts = roof_point_list(&geos);
+        // 4 eave corners and 2 ridge ends.
+        assert_eq!(pts.len(), 6, "{pts:?}");
+    }
+
+    #[test]
+    fn the_corner_points_have_no_eave_lines_and_start_with_the_highest() {
+        let geos = generate_project(&hip_house());
+        let kinded = roof_corner_points_kinded(&geos);
+        assert!(
+            kinded.iter().all(|(_, k)| *k != LineKind::Eave),
+            "{kinded:?}"
+        );
+        let pts = roof_corner_points(&geos);
+        assert_eq!(pts.len(), 6, "{pts:?}");
+        assert!(pts.windows(2).all(|w| w[0][2] >= w[1][2]), "{pts:?}");
+        // The ridge ends come first.
+        for q in &pts[..2] {
+            near(q[2], 3.0 + 4.0 * tan35());
+        }
+        for q in &pts[2..] {
+            near(q[2], 3.0);
+        }
+    }
+
+    #[test]
+    fn a_roof_line_that_is_only_an_eave_gives_no_corner_point() {
+        // A gable roof: the eave lines run along y = 0 and y = 8 and the
+        // gable ends are verge lines, so only the ends of the non-eave
+        // lines are offered: every point is on a verge or the ridge.
+        let mut p = hip_house();
+        for (i, e) in p.parts[0].edges.iter_mut().enumerate() {
+            e.pitch_deg = if i % 2 == 1 { 90.0 } else { 35.0 };
+        }
+        let geos = generate_project(&p);
+        let eave_ends: Vec<[f64; 3]> = geos
+            .iter()
+            .flat_map(|g| &g.lines)
+            .filter(|l| l.kind == LineKind::Eave)
+            .flat_map(|l| [l.a, l.b])
+            .collect();
+        assert!(!eave_ends.is_empty());
+        let kinded = roof_corner_points_kinded(&geos);
+        assert!(kinded.iter().all(|(_, k)| *k != LineKind::Eave));
+        assert!(!kinded.is_empty());
+    }
+}
