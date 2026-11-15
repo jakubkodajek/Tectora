@@ -1975,10 +1975,7 @@ fn latest_undone(log: &[ActivityEntry]) -> Option<usize> {
         let e = &log[i];
         if let Some(from) = e.undid_from {
             // Everything from that entry on is undone; go on before it.
-            match log[..i].iter().rposition(|x| x.ts_ms == from) {
-                Some(j) => i = j,
-                None => return None,
-            }
+            i = log[..i].iter().rposition(|x| x.ts_ms == from)?;
             continue;
         }
         // A revert logged before reverts recorded what they undid.
