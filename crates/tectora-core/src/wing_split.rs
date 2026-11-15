@@ -327,11 +327,17 @@ struct Search<'a> {
 /// and all joined to the house in one run. `Err` when no way gives a roof
 /// that passes [`crate::check::sound`].
 pub(crate) fn split_roof(bare: &Project) -> (Result<RoofGeometry, String>, usize) {
+    let (roof, tried, _) = split_roof_counted(bare);
+    (roof, tried)
+}
+
+/// [`split_roof`] and the number of core runs the whole search made.
+pub(crate) fn split_roof_counted(bare: &Project) -> (Result<RoofGeometry, String>, usize, usize) {
     let [part] = &bare.parts[..] else {
-        return (Err("not one pitched building".into()), 0);
+        return (Err("not one pitched building".into()), 0, 0);
     };
     if bare.flat_roof {
-        return (Err("not one pitched building".into()), 0);
+        return (Err("not one pitched building".into()), 0, 0);
     }
     // A wing whose plane lies within a few centimetres of the house's is
     // one plane with it (`coplanar.rs`), never a lean-to: cut off, its
@@ -351,8 +357,8 @@ pub(crate) fn split_roof(bare: &Project) -> (Result<RoofGeometry, String>, usize
     let mut tried = 0;
     let found = search.peel(part, &identity, &mut Vec::new(), Some(&mut tried));
     match found {
-        Some(geo) => (Ok(geo), tried),
-        None => (Err(search.why), tried),
+        Some(geo) => (Ok(geo), tried, search.runs),
+        None => (Err(search.why), tried, search.runs),
     }
 }
 
@@ -630,5 +636,27 @@ mod tests {
         for k in [16, 60, 124] {
             assert_eq!(split_roof(&comb(k)).1, 0, "{k} wings");
         }
+    }
+
+    /// The peel makes at most 24 core runs for one building, counted over
+    /// all levels (`tried`, the first-level count, is capped by MAX_CUTS and
+    /// cannot show it). The literal is the budget: raising `MAX_RUNS` is a
+    /// decision, and a hostile comb must not cost more (the 244-wall comb
+    /// of the history cost 7 000 runs, 89 s).
+    #[test]
+    fn the_peel_makes_at_most_max_runs_core_runs_in_all() {
+        for k in [2, 4, 10, 15] {
+            let (roof, _, runs) = split_roof_counted(&comb(k));
+            assert!(roof.is_err(), "{k} wings: no cut closes the comb");
+            assert!(runs <= 24, "{k} wings: {runs} core runs");
+            assert!(runs <= MAX_RUNS, "{k} wings: {runs} core runs");
+        }
+        let (_, tried, runs) = split_roof_counted(&comb(10));
+        assert!(
+            runs > tried,
+            "deeper levels run: {runs} runs, {tried} first-level cuts"
+        );
+        assert_eq!(runs, MAX_RUNS, "a comb of 10 uses the whole budget");
+        assert_eq!(split_roof_counted(&comb(16)).2, 0, "over MAX_WALLS: no run");
     }
 }
