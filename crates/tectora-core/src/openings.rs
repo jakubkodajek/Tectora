@@ -862,14 +862,29 @@ fn merge_steps(project: &Project, geos: &mut [RoofGeometry]) {
         else {
             continue;
         };
-        // What the standard calculation said about dormers it left out.
-        geo.warnings.extend(
-            geos[k]
-                .warnings
-                .iter()
-                .filter(|w| w.kind == WarningKind::DormerOffRoof)
-                .cloned(),
-        );
+        // Each off-roof dormer is reported once, by its nearest building;
+        // what the standard calculation said about dormers it left out
+        // stays where `with_objects` did not say it.
+        let nearest = |w: &RoofWarning| {
+            w.dormer
+                .and_then(|d| project.dormers.get(d))
+                .is_none_or(|d| nearest_part(project, d) == Some(k))
+        };
+        geo.warnings
+            .retain(|w| w.kind != WarningKind::DormerOffRoof || nearest(w));
+        let known: Vec<Option<usize>> = geo
+            .warnings
+            .iter()
+            .filter(|w| w.kind == WarningKind::DormerOffRoof)
+            .map(|w| w.dormer)
+            .collect();
+        let before: Vec<RoofWarning> = geos[k]
+            .warnings
+            .iter()
+            .filter(|w| w.kind == WarningKind::DormerOffRoof && !known.contains(&w.dormer))
+            .cloned()
+            .collect();
+        geo.warnings.extend(before);
         geos[k] = geo;
     }
 }
