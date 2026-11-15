@@ -434,9 +434,9 @@ pub fn dacad_list(project: &Project, opts: &ListOptions) -> String {
     }
     let mut by_material: BTreeMap<u8, f64> = BTreeMap::new();
     for f in c.faces.iter().flatten().chain(&c.other_faces) {
-        if f.material > 0 {
-            *by_material.entry(f.material).or_default() += f.net();
-        }
+        *by_material
+            .entry(crate::roof::counted_material(f.material))
+            .or_default() += f.net();
     }
     for (m, total) in &by_material {
         let name = material_group(project, *m);
@@ -540,9 +540,9 @@ pub fn list_summary(project: &Project, opts: &ListOptions) -> ListSummary {
         .collect();
     let mut by_material: BTreeMap<u8, f64> = BTreeMap::new();
     for f in faces() {
-        if f.material > 0 {
-            *by_material.entry(f.material).or_default() += f.net();
-        }
+        *by_material
+            .entry(crate::roof::counted_material(f.material))
+            .or_default() += f.net();
     }
     let mut groups: BTreeMap<&'static str, (String, f64)> = BTreeMap::new();
     for l in &c.lines {

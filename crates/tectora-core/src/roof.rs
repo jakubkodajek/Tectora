@@ -310,8 +310,17 @@ pub struct RoofQuantities {
     pub area_by_material: Vec<(u8, f64)>,
 }
 
+/// The material a face counts with: materials are numbered from 1, and a
+/// wall with material 0 (a file or an AI client can send it) counts with
+/// the first one, the default of every wall. Otherwise its faces are in
+/// the roof area and in no material's (audit MATH-007).
+pub fn counted_material(material: u8) -> u8 {
+    material.max(1)
+}
+
 /// Adds `area` to `material`'s entry of a list sorted by material.
 pub fn add_material_area(list: &mut Vec<(u8, f64)>, material: u8, area: f64) {
+    let material = counted_material(material);
     match list.binary_search_by_key(&material, |e| e.0) {
         Ok(i) => list[i].1 += area,
         Err(i) => list.insert(i, (material, area)),

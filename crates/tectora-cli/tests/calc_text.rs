@@ -29,7 +29,14 @@ fn calc(path: &PathBuf, summary: bool) -> String {
 /// calculation refuses it.
 fn hip_with_l_chimney() -> Value {
     let pts = [(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)];
-    let l = [(4.0, 1.0), (5.0, 1.0), (5.0, 1.4), (4.4, 1.4), (4.4, 2.0), (4.0, 2.0)];
+    let l = [
+        (4.0, 1.0),
+        (5.0, 1.0),
+        (5.0, 1.4),
+        (4.4, 1.4),
+        (4.4, 2.0),
+        (4.0, 2.0),
+    ];
     json!({
         "name": "Main",
         "parts": [{
@@ -53,13 +60,19 @@ fn a_refused_roof_is_explained_in_english_with_and_without_summary() {
         let v: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["calc_error"]["kind"], "non_convex_opening", "{text}");
         for banned in ["Nicht", "Schornstein", "DACAD", "\\u00d6", "Ö"] {
-            assert!(!text.contains(banned), "summary {summary}: `{banned}` in {text}");
+            assert!(
+                !text.contains(banned),
+                "summary {summary}: `{banned}` in {text}"
+            );
         }
         if !summary {
             let e = &v["parts"][0]["geometry"]["error"];
             assert_eq!(e["kind"], "non_convex_opening", "{text}");
             assert!(
-                e["message"].as_str().unwrap().starts_with("a chimney or roof opening is not convex"),
+                e["message"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("a chimney or roof opening is not convex"),
                 "{text}"
             );
         }

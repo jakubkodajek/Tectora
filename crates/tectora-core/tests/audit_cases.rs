@@ -655,3 +655,49 @@ fn a_roof_with_more_than_200_levels_is_calculated_by_the_standard_calculation() 
         kinds(&roof, 0)
     );
 }
+
+// ------------------------------------------------------------- MATH-007
+
+/// MATH-007: a wall with material 0 (the list starts at 1; a file or an AI
+/// client can send 0). Its faces dropped out of the price-sheet list's
+/// material rows and of the area per material: 76.37 of 152.73 m². The
+/// first material is the one every wall has by default, so such a face
+/// counts with it, everywhere.
+#[test]
+fn a_wall_with_material_0_counts_with_the_first_material() {
+    let mut a = gable("A", 0.0, 0.0, 12.0, 8.0, 40.0, 3.0);
+    a.edges[0].material = 0;
+    let p = job(vec![a]);
+    let whole = 13.0 * 9.0 / cos(40.0);
+    let totals = tectora_core::quantities::roof_totals(&p);
+    near("roof area", totals.roof_area, whole, 0.01);
+    assert_eq!(
+        totals.area_by_material.len(),
+        1,
+        "{:?}",
+        totals.area_by_material
+    );
+    assert_eq!(totals.area_by_material[0].0, 1);
+    near(
+        "area of material 1",
+        totals.area_by_material[0].1,
+        whole,
+        0.01,
+    );
+    // The list for the price sheet.
+    let opts = tectora_core::export::ListOptions::new("audit", "15.11.2026 12:00");
+    let summary = tectora_core::export::list_summary(&p, &opts);
+    let listed: f64 = summary.materials.iter().map(|m| m.area).sum();
+    near("material rows of the list", listed, whole, 0.01);
+    assert_eq!(summary.materials.len(), 1);
+    // The calculation sheet.
+    let b = tectora_core::breakdown::breakdown(&p);
+    assert_eq!(b.materials.len(), 1);
+    assert_eq!(b.materials[0].material, 1);
+    near(
+        "material of the breakdown",
+        b.materials[0].area,
+        whole,
+        0.01,
+    );
+}
