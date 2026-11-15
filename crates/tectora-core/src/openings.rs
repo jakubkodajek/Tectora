@@ -641,9 +641,28 @@ fn with_objects(alone: &Project, geo: RoofGeometry) -> Option<RoofGeometry> {
     if !has_objects(alone) {
         return Some(geo);
     }
+    let off = dormers_off_roof(alone, &geo);
     let mut geos = vec![geo];
     apply_extras(alone, &mut geos);
-    geos.pop().filter(|g| !g.faces.is_empty())
+    let mut geo = geos.pop().filter(|g| !g.faces.is_empty())?;
+    geo.warnings.extend(off);
+    Some(geo)
+}
+
+/// `DormerOffRoof` for each dormer of `alone` that sits on no face of the
+/// bare roof `geo`, as the standard calculation says it
+/// (`engine::generate`). Indices are those of the project.
+fn dormers_off_roof(alone: &Project, geo: &RoofGeometry) -> Vec<RoofWarning> {
+    alone
+        .dormers
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| !crate::dormer::has_home(std::slice::from_ref(geo), d))
+        .map(|(i, _)| RoofWarning {
+            dormer: Some(i),
+            ..RoofWarning::new(WarningKind::DormerOffRoof, 0.0)
+        })
+        .collect()
 }
 
 /// The roof of the one building of `alone`, on which the standard
@@ -737,8 +756,10 @@ fn depart_logged(
         return None;
     }
     let mut geo = if has_objects(alone) {
+        let off = dormers_off_roof(alone, &plain);
         let mut g = sweep(alone).filter(|g| !g.faces.is_empty())?;
         tidy_sweep(part, &mut g).ok()?;
+        g.warnings.extend(off);
         g
     } else {
         plain
@@ -897,7 +918,14 @@ fn several_after_error(project: &Project, mut e: crate::roof::CalcError) -> Vec<
         .filter(|&k| matches!(alone[k], Some(Some(_))))
         .collect();
     for (k, a) in alone.into_iter().enumerate() {
-        if let Some(Some(geo)) = a {
+        if let Some(Some(mut geo)) = a {
+            // Each off-roof dormer is reported once, by its nearest building.
+            geo.warnings.retain(|w| {
+                w.kind != WarningKind::DormerOffRoof
+                    || w.dormer
+                        .and_then(|d| project.dormers.get(d))
+                        .is_none_or(|d| nearest_part(project, d) == Some(k))
+            });
             out[k] = geo;
         }
     }
@@ -915,18 +943,22 @@ fn several_after_error(project: &Project, mut e: crate::roof::CalcError) -> Vec<
                 && w.dormer
                     .and_then(|d| project.dormers.get(d))
                     .is_some_and(|d| {
-                        let at = d.edges.first().map_or(d.end, |e| e.start);
-                        let near = (0..n).min_by(|&a, &b| {
-                            crate::engine::outline_distance(&project.parts[a], at)
-                                .total_cmp(&crate::engine::outline_distance(&project.parts[b], at))
-                        });
-                        near.is_some_and(|p| departed.contains(&p))
+                        nearest_part(project, d).is_some_and(|p| departed.contains(&p))
                     });
             !on_departed
         });
         out[k] = g;
     }
     out
+}
+
+/// The building nearest to the start of dormer `d`.
+fn nearest_part(project: &Project, d: &crate::model::Dormer) -> Option<usize> {
+    let at = d.edges.first().map_or(d.end, |e| e.start);
+    (0..project.parts.len()).min_by(|&a, &b| {
+        crate::engine::outline_distance(&project.parts[a], at)
+            .total_cmp(&crate::engine::outline_distance(&project.parts[b], at))
+    })
 }
 
 /// Tectora's own sweep engine, where the core path failed for a reason of

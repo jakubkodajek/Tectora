@@ -374,16 +374,49 @@ fn wall_levels(def: &EdgeDef, end: Point2, at: Point2) -> Vec<Level> {
     out
 }
 
-/// Cuts dormer `d` into the roofs. `host` is the main-roof wall (definition
-/// and end point) whose plane carries the dormer, as DACAD stores it.
-pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer, host: Option<&(EdgeDef, Point2)>) {
-    // Far enough to pass any host face.
-    let reach = geos
-        .iter()
+/// Far enough to pass any host face.
+fn reach(geos: &[RoofGeometry]) -> f64 {
+    geos.iter()
         .flat_map(|g| g.faces.iter().flat_map(|f| f.polygon.iter()))
         .fold(0.0f64, |m, p| m.max(p[0].abs()).max(p[1].abs()))
         * 4.0
-        + 10.0;
+        + 10.0
+}
+
+/// Seeds: points just behind each real dormer wall.
+fn seeds(d: &Dormer) -> Vec<Point2> {
+    let mut seeds: Vec<Point2> = Vec::new();
+    for (s, e, _) in walls(d) {
+        if s.distance(e) < 1e-6 {
+            continue;
+        }
+        let dir = unit(Point2::new(e.x - s.x, e.y - s.y));
+        seeds.push(Point2::new(
+            (s.x + e.x) / 2.0 - dir.y * 1e-3,
+            (s.y + e.y) / 2.0 + dir.x * 1e-3,
+        ));
+    }
+    seeds
+}
+
+/// Whether `apply_dormer` finds a face of `geos` under dormer `d`: a
+/// footprint exists and a seed lies inside a face's plan.
+pub(crate) fn has_home(geos: &[RoofGeometry], d: &Dormer) -> bool {
+    if footprint(d, reach(geos)).is_none() {
+        return false;
+    }
+    let seeds = seeds(d);
+    geos.iter().any(|g| {
+        g.faces
+            .iter()
+            .any(|f| seeds.iter().any(|&m| inside(&plan(f), m)))
+    })
+}
+
+/// Cuts dormer `d` into the roofs. `host` is the main-roof wall (definition
+/// and end point) whose plane carries the dormer, as DACAD stores it.
+pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer, host: Option<&(EdgeDef, Point2)>) {
+    let reach = reach(geos);
     // The dormer's front: its wall point lowest down the host wall's slope.
     let front = {
         let first = d.edges.first().map_or(Point2::new(0.0, 0.0), |e| e.start);
@@ -406,18 +439,7 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer, host: Option<&(EdgeDe
     };
     let roof = generate(&part);
 
-    // Seeds: points just behind each real dormer wall.
-    let mut seeds: Vec<Point2> = Vec::new();
-    for (s, e, _) in walls(d) {
-        if s.distance(e) < 1e-6 {
-            continue;
-        }
-        let dir = unit(Point2::new(e.x - s.x, e.y - s.y));
-        seeds.push(Point2::new(
-            (s.x + e.x) / 2.0 - dir.y * 1e-3,
-            (s.y + e.y) / 2.0 + dir.x * 1e-3,
-        ));
-    }
+    let seeds = seeds(d);
     let Some(home) = geos.iter().position(|g| {
         g.faces
             .iter()
