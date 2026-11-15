@@ -84,6 +84,10 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
         w.item = w.item.map(|i| kept.get(i).copied().unwrap_or(i));
         geos[part].warnings.push(w);
     }
+    // Objects lying on top of each other: said, each still deducted.
+    for (part, w) in crate::check::overlapping_objects(&clean, &geos) {
+        geos[part].warnings.push(w);
+    }
     slots
         .into_iter()
         .map(|slot| match slot {

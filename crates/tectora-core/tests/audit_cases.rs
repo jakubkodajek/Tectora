@@ -7,8 +7,9 @@
 //! calculation gives are asserted only where they are a closed form.
 
 use tectora_core::check::WarningKind;
+use tectora_core::edit::dormers::{DormerKind, build_dormer, default_params};
 use tectora_core::geom::Point2;
-use tectora_core::model::{Chimney, PitchBreak};
+use tectora_core::model::{Chimney, PitchBreak, RoofWindow};
 use tectora_core::{Project, RoofPart};
 
 mod support;
@@ -147,4 +148,260 @@ fn faces_left_over_the_ridge_by_a_break_at_its_height_are_warned() {
             roof.area
         );
     }
+}
+
+// ------------------------------------------------------------ MATHC-001
+
+/// MATHC-001: two hip roofs that touch, the second with a higher eave.
+/// The join reports the lower roof's north-east hip once as an oblique
+/// verge of 7.40 m and once more as a hip of 0.82 m lying on its first
+/// 0.82 m. The result stays; the doubled piece is said.
+#[test]
+fn a_roof_line_lying_on_another_line_is_warned() {
+    let low = hip("A", 0.0, 0.0, 10.0, 8.0, 40.0, 3.0);
+    let high = hip("B", 10.0, 0.0, 10.0, 8.0, 40.0, 4.5);
+    let roof = calc(&job(vec![low.clone(), high]));
+    assert!(roof.geos.iter().all(|g| g.error.is_none()));
+    // Two hip roofs have no verge: where the result has one, it must warn.
+    let verge = roof.line("OS") + roof.line("OL") + roof.line("OR");
+    if verge > 0.05 {
+        let w = roof.geos[0]
+            .warnings
+            .iter()
+            .find(|w| w.kind == WarningKind::DoubledLine)
+            .unwrap_or_else(|| panic!("verge {verge} m, no warning: {:?}", kinds(&roof, 0)));
+        // The hip stub from the wall corner (10, 8) to the eave corner
+        // (10.5, 8.5): 0.5 in x and y, rising 0.5 tan 40°.
+        near(
+            "doubled length",
+            w.value,
+            (0.5f64 * 0.5 * 2.0 + (0.5 * tan(40.0)).powi(2)).sqrt(),
+            0.02,
+        );
+    }
+    // The lower roof alone has every line once.
+    let roof = calc(&job(vec![low]));
+    assert_eq!(kinds(&roof, 0), vec![]);
+}
+
+// ------------------------------------------------------------ MATHC-002
+
+/// MATHC-002: the calculation works in single precision on the plan's own
+/// coordinates. A 10 × 8 m hip roof (99 / cos 40° = 129.24 m²) comes out
+/// 129.37 m² at 30 km and 2855.85 m² at 70 km from the origin. The result
+/// stays; from 2.5 km on the building says that it stands far out.
+#[test]
+fn a_building_far_from_the_origin_is_warned() {
+    for d in [2500.0, 30_000.0, 70_000.0] {
+        let roof = calc(&job(vec![hip("A", d, d, 10.0, 8.0, 40.0, 3.0)]));
+        assert!(roof.geos[0].error.is_none(), "{d}");
+        let w = roof.geos[0]
+            .warnings
+            .iter()
+            .find(|w| w.kind == WarningKind::FarFromOrigin)
+            .unwrap_or_else(|| panic!("{d} m out: {:?}", kinds(&roof, 0)));
+        near("distance", w.value, d + 10.0, 1e-6);
+    }
+    // Within 2.5 km the area is the closed form and nothing is said.
+    for d in [0.0, 500.0, 2000.0] {
+        let roof = calc(&job(vec![hip("A", d, d, 10.0, 8.0, 40.0, 3.0)]));
+        near("area", roof.area, 11.0 * 9.0 / cos(40.0), 0.05);
+        assert_eq!(kinds(&roof, 0), vec![], "{d} m out");
+    }
+}
+
+// ------------------------------------------------- MATHC-003, HUNTC-004
+
+/// MATHC-003: every eave at 100 m, the calculation's own top level: it
+/// closes every face empty and reports success with 0 m². The result
+/// stays; the building says that its roof has no area.
+#[test]
+fn a_roof_the_calculation_closes_empty_is_warned() {
+    for eave in [100.0, 99.995, 100.006] {
+        let roof = calc(&job(vec![hip("A", 0.0, 0.0, 10.0, 8.0, 40.0, eave)]));
+        let g = &roof.geos[0];
+        if g.error.is_none() && roof.area.abs() < 0.005 {
+            assert!(
+                kinds(&roof, 0).contains(&WarningKind::NoRoofArea),
+                "eave {eave}: 0 m2 with {:?}",
+                kinds(&roof, 0)
+            );
+        }
+    }
+    // An ordinary roof has an area and no such warning.
+    let roof = calc(&job(vec![hip("A", 0.0, 0.0, 10.0, 8.0, 40.0, 3.0)]));
+    assert_eq!(kinds(&roof, 0), vec![]);
+}
+
+/// HUNTC-004: a chimney typed in centimetres (90 × 90 m) or a roof opening
+/// drawn around the whole roof takes every face away. The roof calculates
+/// with 0 m²; it must say so.
+#[test]
+fn a_chimney_or_opening_that_takes_the_whole_roof_is_warned() {
+    let house = hip("A", 0.0, 0.0, 10.0, 8.0, 35.0, 3.0);
+    let mut p = job(vec![house.clone()]);
+    p.chimneys.push(square(-40.0, -40.0, 90.0, 90.0, 7.0));
+    let roof = calc(&p);
+    assert!(roof.geos[0].error.is_none());
+    near("area", roof.area, 0.0, 0.005);
+    assert!(
+        kinds(&roof, 0).contains(&WarningKind::NoRoofArea),
+        "chimney: {:?}",
+        kinds(&roof, 0)
+    );
+    let mut p = job(vec![house]);
+    p.roof_openings.push(square(-1.0, -1.0, 12.0, 10.0, 0.0));
+    let roof = calc(&p);
+    assert!(roof.geos[0].error.is_none());
+    assert!(
+        kinds(&roof, 0).contains(&WarningKind::NoRoofArea),
+        "opening: {:?}",
+        kinds(&roof, 0)
+    );
+}
+
+// ------------------------------------------------------------- MATH-003
+
+/// MATH-003: objects on top of each other are each deducted in full. The
+/// figures stay (a window is its width × height, as the reference deducts
+/// it); the building says that objects overlap.
+#[test]
+fn objects_on_top_of_each_other_are_warned() {
+    let house = || job(vec![gable("A", 0.0, 0.0, 12.0, 8.0, 40.0, 3.0)]);
+    let overlap = |roof: &Roof| {
+        roof.geos[0]
+            .warnings
+            .iter()
+            .find(|w| w.kind == WarningKind::ObjectsOverlap)
+            .map(|w| w.value)
+    };
+    // Two windows on one spot.
+    let mut p = house();
+    p.windows = vec![
+        RoofWindow {
+            x: 5.0,
+            y: 1.0,
+            width: 1.0,
+            height: 1.0,
+        };
+        2
+    ];
+    assert_eq!(overlap(&calc(&p)), Some(1.0), "two windows");
+    // Two chimneys overlapping by a quarter.
+    let mut p = house();
+    p.chimneys = vec![
+        square(5.0, 1.0, 1.0, 1.0, 7.0),
+        square(5.5, 1.5, 1.0, 1.0, 7.0),
+    ];
+    assert_eq!(overlap(&calc(&p)), Some(1.0), "two chimneys");
+    // A window on a chimney and an opening on the same chimney.
+    let mut p = house();
+    p.chimneys = vec![square(5.0, 1.0, 1.0, 1.0, 7.0)];
+    p.roof_openings = vec![square(5.2, 1.2, 0.5, 0.5, 0.0)];
+    p.windows = vec![RoofWindow {
+        x: 5.5,
+        y: 1.5,
+        width: 0.6,
+        height: 0.6,
+    }];
+    assert_eq!(overlap(&calc(&p)), Some(3.0), "window, chimney, opening");
+    // The same dormer twice.
+    let mut p = house();
+    let mut d = default_params(DormerKind::Gable, Point2::new(5.0, 1.0), 0.0, 5.0);
+    d.width = 2.0;
+    p.dormers = vec![build_dormer(&d); 2];
+    assert_eq!(overlap(&calc(&p)), Some(1.0), "two dormers");
+    // Objects side by side: nothing.
+    let mut p = house();
+    p.chimneys = vec![
+        square(5.0, 1.0, 1.0, 1.0, 7.0),
+        square(7.0, 1.0, 1.0, 1.0, 7.0),
+    ];
+    p.windows = vec![RoofWindow {
+        x: 2.0,
+        y: 1.5,
+        width: 0.8,
+        height: 1.0,
+    }];
+    assert_eq!(kinds(&calc(&p), 0), vec![], "side by side");
+}
+
+// ------------------------------------------------------------- MATH-004
+
+/// MATH-004: a dormer whose roof misses its host face before the ridge is
+/// cut with the face's plane continued past the ridge (cheeks at 85°: the
+/// dormer's ridge at 16.4 m over a house ridge at 6.78 m, 309 m² instead
+/// of about 153). The figures stay; the building says that the dormer
+/// rises above the roof.
+#[test]
+fn a_dormer_rising_above_the_roof_it_sits_on_is_warned() {
+    let house = || job(vec![gable("A", 0.0, 0.0, 12.0, 8.0, 40.0, 3.0)]);
+    let ridge = 3.0 + 4.5 * tan(40.0);
+    let above = |roof: &Roof| {
+        roof.geos[0]
+            .warnings
+            .iter()
+            .find(|w| w.kind == WarningKind::DormerAboveRoof)
+            .map(|w| w.value)
+    };
+    // Cheeks at 85°.
+    let mut p = house();
+    let mut d = default_params(DormerKind::Gable, Point2::new(5.0, 1.0), 0.0, 5.0);
+    d.pitch_deg = 85.0;
+    p.dormers = vec![build_dormer(&d)];
+    let roof = calc(&p);
+    if roof.geos[0].error.is_none() && roof.area > 160.0 {
+        let v = above(&roof).unwrap_or_else(|| panic!("steep: {:?}", kinds(&roof, 0)));
+        near("above the ridge", v, 5.0 + tan(85.0) - ridge, 0.05);
+    }
+    // A dormer whose eave is above the house's ridge.
+    let mut p = house();
+    let d = default_params(DormerKind::Gable, Point2::new(5.0, 1.0), 0.0, 8.0);
+    p.dormers = vec![build_dormer(&d)];
+    let roof = calc(&p);
+    if roof.geos[0].error.is_none() && !kinds(&roof, 0).contains(&WarningKind::DormerOffRoof) {
+        assert!(above(&roof).is_some(), "eave 8: {:?}", kinds(&roof, 0));
+    }
+    // An ordinary dormer (eave 5 m, ridge 6 m) stays below the ridge.
+    let mut p = house();
+    let d = default_params(DormerKind::Gable, Point2::new(5.0, 1.0), 0.0, 5.0);
+    p.dormers = vec![build_dormer(&d)];
+    let roof = calc(&p);
+    assert!(roof.geos[0].error.is_none());
+    assert_eq!(kinds(&roof, 0), vec![]);
+}
+
+// ------------------------------------------------------------- MATH-008
+
+/// MATH-008: a building drawn twice, the copy with a lower eave. The join
+/// leaves the copy the strip under the first one's overhang (27.41 m²,
+/// 26 m of eave more). The result stays; the copy says that it stands
+/// inside another building.
+#[test]
+fn a_building_drawn_inside_another_one_is_warned() {
+    let house = gable("House", 0.0, 0.0, 12.0, 8.0, 40.0, 3.0);
+    let copy = gable("Copy", 0.0, 0.0, 12.0, 8.0, 40.0, 2.0);
+    let roof = calc(&job(vec![house.clone(), copy]));
+    assert!(roof.geos.iter().all(|g| g.error.is_none()));
+    if !roof.geos[1].faces.is_empty() {
+        assert!(
+            kinds(&roof, 1).contains(&WarningKind::InsideAnother),
+            "copy: {:?}",
+            kinds(&roof, 1)
+        );
+    }
+    // A smaller building inside the house, lower.
+    let shed = gable("Shed", 2.0, 2.0, 4.0, 3.0, 30.0, 1.0);
+    let roof = calc(&job(vec![house.clone(), shed]));
+    let k = kinds(&roof, 1);
+    assert!(
+        roof.geos[1].error.is_some()
+            || k.contains(&WarningKind::InsideAnother)
+            || k.contains(&WarningKind::Covered),
+        "shed inside: {k:?}"
+    );
+    // An annex against the house is not inside it.
+    let annex = gable("Annex", 12.0, 2.0, 5.0, 4.0, 30.0, 2.5);
+    let roof = calc(&job(vec![house, annex]));
+    assert!(!all_kinds(&roof).contains(&WarningKind::InsideAnother));
 }

@@ -33,6 +33,10 @@ export function warningText(w: RoofWarning): string {
       return t(`res.warn.${w.kind}`, { n: (w.item ?? 0) + 1 });
     case "area_mismatch":
       return t("res.warn.area_mismatch", { v: num(w.value * 100) });
+    case "far_from_origin":
+      return t("res.warn.far_from_origin", { v: num(w.value / 1000) });
+    case "objects_overlap":
+      return t("res.warn.objects_overlap", { n: Math.round(w.value) });
     default:
       return t(`res.warn.${w.kind}`, { v: num(w.value) });
   }

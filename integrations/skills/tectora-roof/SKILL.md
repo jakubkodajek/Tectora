@@ -77,7 +77,12 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    a `covered` part has no roof of its own (move or delete it), a
    `dormer_off_roof` dormer and a `window_off_roof`, `chimney_off_roof` or
    `opening_off_roof` object are not counted, `cut_exceeds_face` means a face
-   lost more than it has; never bend the input to make a warning go away.
+   lost more than it has; `objects_overlap`, `dormer_above_roof`,
+   `inside_another` and `no_roof_area` name an object or building entered
+   twice, too large or too high (fix that object); `doubled_line` means
+   line lengths at a join of two buildings need a look; `far_from_origin`
+   means the plan should be moved to the origin; never bend the input to
+   make a warning go away.
    `merged_planes`, `wing_joined` and `not_calculated_by_core` mean the
    roof is not the standard calculation's result (two planes joined, a low
    wing as a lean-to, the fallback): say so and have the user check it;

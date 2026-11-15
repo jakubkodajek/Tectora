@@ -162,6 +162,24 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             "the roof of this building did not close in one calculation (a wing with eaves too low to reach the house's roof), so the wing with edges {:?} (0-based) was calculated as a building of its own against the house and the two roofs joined; the standard calculation stops with an error on this building. Tell the user",
             w.edges
         ),
+        WarningKind::DoubledLine => format!(
+            "roof lines of the joined roofs lie on top of each other, so {:.2} m is counted twice and one of the two lines usually has a code the roof does not have (a hip reported once more as an oblique verge where two hip roofs with different eave heights touch); the result is kept as calculated. Tell the user to check the line lengths at the join",
+            w.value
+        ),
+        WarningKind::FarFromOrigin => format!(
+            "the building stands {:.1} km from the plan's origin; the calculation works in single precision on plan coordinates, so that far out the roof area can be wrong (about 1 % at 2.5 km, far more beyond 60 km). Move the whole plan close to the origin (transform_part) and calculate again",
+            w.value / 1000.0
+        ),
+        WarningKind::NoRoofArea => "the roof of this building has no area (0.00 m2): a chimney or roof opening larger than the roof took all of it (cm typed as m), or every eave is at about 100 m, where the calculation closes the faces empty; check the chimneys, openings and eave heights".to_string(),
+        WarningKind::ObjectsOverlap => format!(
+            "{:.0} pair(s) of objects on this roof lie on top of each other in plan (windows, chimneys, roof openings, dormers); each is still deducted and its lines counted in full. Usually one object was added twice: delete the duplicate",
+            w.value
+        ),
+        WarningKind::DormerAboveRoof => format!(
+            "a dormer rises {:.2} m above the highest point of the roof it sits on: its roof misses the roof face before the ridge, so the area and line lengths are too large; lower the dormer's pitch or eave height",
+            w.value
+        ),
+        WarningKind::InsideAnother => "this building's walls lie wholly within another building's walls and its roof still adds area and lines (a copy left on its original, a building added twice); delete or move one of them".to_string(),
         WarningKind::MergedWalls => {
             let (kept, ignored) = (w.edges.first(), w.edges.get(1));
             format!(
