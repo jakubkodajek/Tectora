@@ -2049,6 +2049,14 @@ struct HoleEdge {
     twin: Option<([f64; 3], [f64; 3])>,
 }
 
+/// Hole edges of two faces this close are one edge on the line between
+/// the faces, m. The faces of a roof joined from two buildings (a lean-to
+/// wing) have their corners on the join's centimetre grid, so the two
+/// faces' edges along one ridge lie up to a centimetre apart; the
+/// calculation itself takes points within 2 cm as one (audit MATH2-007:
+/// with 0.1 mm the ridge was taken off twice and a back flashing added).
+const SAME_EDGE: f64 = 0.02;
+
 /// A chimney as DACAD's core cuts it (decompiled FUN_00da5160 and its
 /// callers): every face gets its own hole, the chimney clipped by the face,
 /// with corners closer than POINT_EPS in every coordinate (or VALUE_EPS in
@@ -2097,7 +2105,7 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2], walls: &[(Point2, Poi
             return false;
         }
         let t = ((p[0] - a.x) * dx + (p[1] - a.y) * dy) / l2;
-        (-1e-9..=1.0 + 1e-9).contains(&t) && dist3_(p, lerp3(e.c, e.d, t)) < 1e-4
+        (-1e-9..=1.0 + 1e-9).contains(&t) && dist3_(p, lerp3(e.c, e.d, t)) < SAME_EDGE
     };
     let mut drop = vec![false; edges.len()];
     for i in 0..edges.len() {

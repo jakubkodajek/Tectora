@@ -572,3 +572,46 @@ fn a_dormer_on_a_departed_roof_is_recorded_as_a_deduction() {
         near(&format!("front {front}: deducted"), deducted, dormer, 1e-6);
     }
 }
+
+// ------------------------------------------------------------ MATH2-007
+
+/// MATH2-007: a chimney across the ridge takes its width off the ridge
+/// once and has no back flashing (both of its upper sides lie on the
+/// ridge), on every roof. On the house with a lean-to wing the two faces
+/// come from the join, on its centimetre grid, and the ridge was taken
+/// off twice with 1.2 m of back flashing added.
+#[test]
+fn a_chimney_on_the_ridge_of_a_roof_with_a_joined_wing_takes_the_ridge_off_once() {
+    for front in [2.9, 2.0] {
+        let bare = calc(&t_house(front));
+        let mut p = t_house(front);
+        // 0.6 × 0.6 m centred on the ridge (y = 5.0).
+        p.chimneys.push(square(12.0, 4.7, 0.6, 0.6, 9.0));
+        let roof = calc(&p);
+        assert!(roof.geos[0].error.is_none(), "front {front}");
+        near(
+            &format!("front {front}: ridge"),
+            roof.line("F"),
+            bare.line("F") - 0.6,
+            0.005,
+        );
+        near(
+            &format!("front {front}: WH"),
+            roof.line("WH"),
+            bare.line("WH"),
+            0.005,
+        );
+        near(
+            &format!("front {front}: WV"),
+            roof.line("WV"),
+            bare.line("WV") + 1.2,
+            0.005,
+        );
+        near(
+            &format!("front {front}: WS"),
+            roof.line("WS"),
+            bare.line("WS") + 4.0 * 0.3 / cos(40.0),
+            0.005,
+        );
+    }
+}
