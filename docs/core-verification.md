@@ -165,6 +165,20 @@ under `core-tests/census/`. To check one in the DACAD core emulator:
 `cargo run --release -p tectora-core --example dcore_check -- OUT/C1_hips_outside.RD2`
 with DACAD's SO2 next to it.
 
+### Open: faces of material 0 in the list
+
+Materials are numbered from 1; DACAD's string 1600 names material 0 "no
+material" (`model.rs`). A wall with material 0 (a file or an AI client can
+send it) keeps its faces in the roof area, and since audit MATH-007 the
+area per material (`quantities`, `tectora calc`) and the calculation sheet
+(`breakdown`) count them with material 1, the default of every wall. The
+price-sheet list (`export::dacad_list`, `list_summary`) keeps its older
+rule and leaves them out of the material rows (audit-core-r1 MATH-005).
+Whether DACAD's list does the same is not known: a DACAD run of a 12 x 8 m
+gable with one eave wall set to "no material", and its list, settles it.
+If DACAD lists such faces as material 1, the list follows; if not, the
+totals may have to follow the list, or material 0 be refused on input.
+
 ## Plausibility warnings
 
 The engine stays 1:1 with DACAD, including the faulty roofs above. Instead
