@@ -701,3 +701,61 @@ fn a_wall_with_material_0_counts_with_the_first_material() {
         0.01,
     );
 }
+
+// ------------------------------------------------------------ MATH2-009
+
+/// MATH2-009: `roof_cases::joined_buildings_are_sound` checks that joined
+/// buildings have faces and no warnings, nothing about the join itself.
+/// Its first case, a lower garage against the side of a house (both
+/// hipped), by closed forms: the garage's roof ends at the house wall
+/// with a level flashing along its hip face and two short sloping ones,
+/// the house's roof is whole, and two hip roofs have no verge and no
+/// valley.
+#[test]
+fn a_lower_garage_against_a_house_is_joined_by_closed_forms() {
+    let house = hip("House", 0.0, 0.0, 12.0, 8.0, 40.0, 5.0);
+    let garage = hip("Garage", 12.0, 1.0, 6.0, 5.0, 30.0, 3.0);
+    let roof = calc(&job(vec![house, garage]));
+    assert!(roof.geos.iter().all(|g| g.error.is_none()));
+    assert_eq!(all_kinds(&roof), vec![]);
+    let area = |part: usize| roof.geos[part].faces.iter().map(|f| f.area).sum::<f64>();
+    // The house: 13 x 9 m of plan at 40°.
+    near("house area", area(0), 13.0 * 9.0 / cos(40.0), 0.02);
+    // The garage: its 7 x 6 m less the 0.5 m strip behind the house wall.
+    near(
+        "garage area",
+        area(1),
+        (7.0 * 6.0 - 0.5 * 6.0) / cos(30.0),
+        0.02,
+    );
+    // Eaves: the house's 44 m; the garage's east 6 m and 6.5 m each side.
+    near("T", roof.line("T"), 44.0 + 6.0 + 2.0 * 6.5, 0.02);
+    // Ridges: 13 - 9 and 7 - 6.
+    near("F", roof.line("F"), 4.0 + 1.0, 0.02);
+    // Flashing along the garage's west hip face, level, between the two
+    // points where the side faces meet it (0.5 m in from each eave).
+    near("WH", roof.line("WH"), 5.0, 0.02);
+    // And up each side face from the eave to that point.
+    near(
+        "WS",
+        roof.line("WS"),
+        2.0 * slant(0.5, 0.5 * tan(30.0)),
+        0.02,
+    );
+    // Hips: the house's four, the garage's two whole ones and the two
+    // that start at the house wall.
+    let whole = |half: f64, pitch: f64| slant(half * 2f64.sqrt(), half * tan(pitch));
+    near(
+        "G",
+        roof.line("G"),
+        4.0 * whole(4.5, 40.0) + 2.0 * whole(3.0, 30.0) + 2.0 * whole(2.5, 30.0),
+        0.03,
+    );
+    for code in ["OL", "OR", "OS", "K", "P", "WV"] {
+        assert_eq!(roof.line(code), 0.0, "{code} on two hip roofs");
+    }
+    // No crumb of a line.
+    for l in roof.geos.iter().flat_map(|g| &g.lines) {
+        assert!(l.length() >= 0.3, "a line of {} m: {l:?}", l.length());
+    }
+}
