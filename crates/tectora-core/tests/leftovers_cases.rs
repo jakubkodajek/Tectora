@@ -1,12 +1,12 @@
-//! Core leftovers (slug `core-leftovers`, plan acceptance criteria 1 to 9
-//! and 13 to 15): buildings with several low wings, and a dormer that sits
-//! on no face of a roof Tectora calculated where DACAD's core stops.
+//! Core leftovers (slug `core-leftovers`, plan acceptance criteria 1 to 11
+//! and 13 to 15, and the fix-round-1 findings at the end): buildings with
+//! several low wings, centimetre-rounded turns, and a dormer that sits on
+//! no face of a roof Tectora calculated where DACAD's core stops.
 //!
 //! Expected figures are closed forms, not copied outputs. Wing roofs are
 //! Tectora's own departure (Jakub's decision 2026-11-14): the roof is
 //! DACAD's join of the buildings a roofer would draw. The straightening of
-//! centimetre-rounded turns (criteria 10 to 12) is not tested here: it
-//! waits for the owner's decision.
+//! centimetre-rounded turns is `src/straighten.rs` (unit tests there).
 
 use tectora_core::check::WarningKind;
 use tectora_core::edit::dormers::{DormerKind, build_dormer, default_params};
@@ -587,7 +587,6 @@ fn a_dormer_off_a_swept_roof_is_warned() {
 #[test]
 fn a_dormer_on_a_departed_roof_is_not_warned() {
     for (name, base, _, at) in departed_roofs() {
-        let bare = calc(&base);
         let mut p = base.clone();
         p.dormers.push(gable_dormer(at, 8.0));
         let roof = calc(&p);
@@ -601,7 +600,6 @@ fn a_dormer_on_a_departed_roof_is_not_warned() {
             roof.geos[0].faces.iter().any(|f| f.edge == usize::MAX),
             "{name}: the dormer has faces"
         );
-        let _ = bare;
     }
 }
 
@@ -729,4 +727,383 @@ fn a_cm_turned_t_the_core_calculates_is_not_straightened() {
             }
         }
     }
+}
+
+// ============================================================ fix round 1
+// Findings of review core-leftovers-r1 (math.md, errors.md, test.md) and of
+// the bug hunt (findings-bugs.md). Each test names its finding.
+
+/// `p` moved on the site plan by (`dx`, `dy`) metres, to the millimetre.
+fn moved(p: &Project, dx: f64, dy: f64) -> Project {
+    let mm = |v: f64| (v * 1000.0).round() / 1000.0;
+    let mut out = p.clone();
+    for e in out.parts.iter_mut().flat_map(|part| part.edges.iter_mut()) {
+        e.start = Point2::new(mm(e.start.x + dx), mm(e.start.y + dy));
+    }
+    out
+}
+
+/// Area of a 3D polygon from its own corners (Newell, taken from its first
+/// corner so a position far from the origin costs no digits).
+fn polygon_area(poly: &[[f64; 3]]) -> f64 {
+    let o = poly[0];
+    let rel: Vec<[f64; 3]> = poly.iter().map(|v| sub(*v, o)).collect();
+    norm(area_vector(&rel))
+}
+
+fn own_polygons_area(roof: &Roof) -> f64 {
+    roof.faces().map(|f| polygon_area(&f.polygon)).sum()
+}
+
+/// MATH-001 (S1): a turned building drawn far from the origin gets the roof
+/// it has at the origin: the reported area is the area of the roof's own
+/// faces (the merged roof took it from float32 core runs at the position).
+#[test]
+fn departed_roofs_far_from_the_origin_keep_their_area() {
+    let mut bad = Vec::new();
+    // (name, building, turn in degrees, rounding to centimetres, offset)
+    let cases: [(&str, Project, f64, bool, f64); 8] = [
+        ("T 2.9", jakub_t(2.9), 33.0, false, 1000.0),
+        ("T 2.9", jakub_t(2.9), 61.7, false, 2000.0),
+        ("T 2.9", jakub_t(2.9), 17.3, false, 1000.0),
+        ("T 2.9", jakub_t(2.9), 17.3, false, 200.0),
+        ("T 2.9", jakub_t(2.9), 17.3, true, 1000.0),
+        ("T 2.9", jakub_t(2.9), 17.3, true, 500.0),
+        ("T 2.0", jakub_t(2.0), 33.0, true, 1000.0),
+        (
+            "two wings",
+            two_wings(2.0, Side::Gable),
+            33.0,
+            false,
+            1000.0,
+        ),
+    ];
+    for (name, p, deg, cm, off) in cases {
+        let at_origin = if cm {
+            turned_cm(&p, deg)
+        } else {
+            turned(&p, deg)
+        };
+        let near_origin = calc(&at_origin);
+        let far = calc(&moved(&at_origin, off, off));
+        let n = format!("{name} turned {deg} cm {cm} at +{off}");
+        if let Some(e) = &far.geos[0].error {
+            bad.push(format!("{n}: error {e:?}"));
+            continue;
+        }
+        let own = own_polygons_area(&far);
+        if (far.area - own).abs() > 0.01 {
+            bad.push(format!("{n}: reported {:.4}, own faces {own:.4}", far.area));
+        }
+        if (far.area - near_origin.area).abs() > 0.01 {
+            bad.push(format!(
+                "{n}: {:.4} against {:.4} at the origin",
+                far.area, near_origin.area
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// Verge length (DACAD codes OL, OR, OS).
+fn verge(roof: &Roof) -> f64 {
+    roof.line("OL") + roof.line("OR") + roof.line("OS")
+}
+
+/// MATH-002 (S1): where the drawn outline of a centimetre-rounded T gets a
+/// merged roof with three faces (two front planes a few millimetres apart),
+/// it has a stray valley (K) and extra verge (G). The roof is the unturned one.
+#[test]
+fn a_cm_rounded_t_has_no_stray_valley_at_any_of_these_angles() {
+    let straight = calc(&jakub_t(2.9));
+    near("unturned K", straight.line("K"), 0.0, 1e-6);
+    let mut bad = Vec::new();
+    for deg in [2.1, 4.2, 6.5, 7.5, 12.2] {
+        let roof = calc(&turned_cm(&jakub_t(2.9), deg));
+        let n = format!("turned {deg}");
+        if let Some(e) = &roof.geos[0].error {
+            bad.push(format!("{n}: error {e:?}"));
+            continue;
+        }
+        let (k, o) = (roof.line("K"), verge(&roof));
+        let faces = roof.geos[0].faces.len();
+        if k.abs() > 1e-6
+            || (o - verge(&straight)).abs() > 0.05
+            || faces != straight.geos[0].faces.len()
+        {
+            bad.push(format!(
+                "{n}: K {k:.3} (want 0), verge {o:.3} (want {:.3}), faces {faces}",
+                verge(&straight)
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// MATH-004 (S3): the centimetre-rounded T at 4.9 degrees calculates like
+/// the unturned one (a line's corners fell into two clusters).
+#[test]
+fn a_cm_rounded_t_turned_4_9_degrees_calculates() {
+    let straight = calc(&jakub_t(2.9));
+    let roof = calc(&turned_cm(&jakub_t(2.9), 4.9));
+    assert!(roof.geos[0].error.is_none(), "{:?}", roof.geos[0].error);
+    assert_eq!(kinds(&roof, 0), vec![WarningKind::MergedPlanes]);
+    assert_eq!(roof.geos[0].faces.len(), straight.geos[0].faces.len());
+    near("area", roof.area, straight.area, 0.15);
+    near("K", roof.line("K"), 0.0, 1e-6);
+}
+
+/// MATH-003 (S3): Jakub's lean-to T with the right house piece 2 cm out of
+/// line with the left one. Unturned, the core stops on the step (it is a
+/// real step). Turned and rounded to centimetres, the straightening must not
+/// make the step vanish: at 2.5, 3.2 and 5.6 degrees it currently does and
+/// the building gets a roof as if it had not been drawn.
+#[test]
+fn a_two_centimetre_step_between_parallel_wall_lines_survives_a_turn() {
+    let stepped = |deg: f64| {
+        let mut p = jakub_t(2.0);
+        p.parts[0].edges[2].start.y += 0.02;
+        p.parts[0].edges[3].start.y += 0.02;
+        if deg == 0.0 { p } else { turned_cm(&p, deg) }
+    };
+    let straight = calc(&stepped(0.0));
+    assert!(
+        straight.geos[0].error.is_some(),
+        "the unturned step is a DACAD error today: {:?}",
+        kinds(&straight, 0)
+    );
+    let mut bad = Vec::new();
+    for deg in [2.5, 3.2, 5.6] {
+        let roof = calc(&stepped(deg));
+        if roof.geos[0].error.is_none() {
+            bad.push(format!(
+                "turned {deg}: roof {:?}, area {:.3}, as if the step were not drawn",
+                kinds(&roof, 0),
+                roof.area
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// A copy of the T `dx` metres along x, as a second building.
+fn t_copy(front: f64, dx: f64) -> RoofPart {
+    let mut part = jakub_t(front).parts.remove(0);
+    for e in &mut part.edges {
+        e.start.x += dx;
+    }
+    part.name = "copy".into();
+    part
+}
+
+/// ERR-001 (S3): a stepped-plane roof (`merge_steps`, front 2.95 and 3.0)
+/// warns once for its own dormer beside it ...
+#[test]
+fn a_dormer_off_a_stepped_plane_roof_is_warned_once() {
+    for front in [2.95, 3.0] {
+        let mut p = jakub_t(front);
+        p.dormers.push(gable_dormer(Point2::new(-4.0, 4.0), 6.0));
+        let roof = calc(&p);
+        let n = format!("front {front}");
+        assert!(
+            roof.geos[0].error.is_none(),
+            "{n}: {:?}",
+            roof.geos[0].error
+        );
+        assert_eq!(
+            off_roof(&roof, 0),
+            vec![Some(0)],
+            "{n}: {:?}",
+            kinds(&roof, 0)
+        );
+    }
+}
+
+/// ... and a dormer standing on another building is not "off" this one.
+#[test]
+fn a_dormer_on_another_building_is_not_warned_on_a_stepped_plane_roof() {
+    for front in [2.95, 3.0] {
+        for (first, other_front) in [(true, front), (false, front), (true, 2.0), (false, 2.0)] {
+            let mut p = jakub_t(front);
+            let (t, other) = if first {
+                p.parts.push(t_copy(other_front, 40.0));
+                (0, 1)
+            } else {
+                p.parts.insert(0, t_copy(other_front, 40.0));
+                (1, 0)
+            };
+            // On the copy: its house piece spans x 40 to 55, y 2.5 to 7.5.
+            p.dormers.push(gable_dormer(Point2::new(48.0, 4.0), 8.0));
+            let roof = calc(&p);
+            let n = format!("front {front}, stepped T first {first}, other {other_front}");
+            for g in &roof.geos {
+                assert!(g.error.is_none(), "{n}: {:?}", g.error);
+            }
+            assert!(
+                roof.geos[other].faces.iter().any(|f| f.edge == usize::MAX),
+                "{n}: the dormer is cut into the other building"
+            );
+            assert_eq!(off_roof(&roof, t), vec![], "{n}: the stepped T");
+            assert_eq!(off_roof(&roof, other), vec![], "{n}: the other building");
+        }
+    }
+}
+
+/// TEST-001 (S1): a wing whose roof reaches above the house's roof at the
+/// house wall is no lean-to (the wing-top test of `Search::accept`). The low
+/// wing (eave 2.0) is joined, the high one (3.5) is not; two high wings
+/// give no join at all.
+#[test]
+fn a_wing_reaching_above_the_house_wall_is_not_joined_as_a_lean_to() {
+    let joined = |roof: &Roof| -> Vec<Vec<usize>> {
+        roof.geos[0]
+            .warnings
+            .iter()
+            .filter(|w| w.kind == WarningKind::WingJoined)
+            .map(|w| w.edges.clone())
+            .collect()
+    };
+    for (fronts, edges) in [([2.0, 3.5], vec![0, 1, 11]), ([3.5, 2.0], vec![3, 4, 5])] {
+        let p = wings_front(20.0, &[2.5, 12.5], &fronts, Side::Gable);
+        let roof = calc(&p);
+        let n = format!("fronts {fronts:?}");
+        assert!(
+            roof.geos[0].error.is_none(),
+            "{n}: {:?}",
+            roof.geos[0].error
+        );
+        assert_eq!(joined(&roof), vec![edges], "{n}: only the low wing");
+        near(&format!("{n} T"), roof.line("T"), 48.0, 0.01);
+    }
+    let roof = calc(&wings_front(20.0, &[2.5, 12.5], &[3.5, 3.5], Side::Gable));
+    assert_eq!(joined(&roof), Vec::<Vec<usize>>::new(), "two high wings");
+}
+
+/// Pins `MAX_WINGS`: five low wings keep the core's error, with no panic and
+/// no hang (the bound itself is `wing_split::tests::the_peel_is_bounded`).
+#[test]
+fn five_low_wings_keep_the_core_error() {
+    let p = wings_front(50.0, &[2.5, 12.5, 22.5, 32.5, 42.5], &[2.0; 5], Side::Gable);
+    let roof = calc(&p);
+    assert!(
+        roof.geos[0].error.is_some(),
+        "five wings are over the peel's bound: {:?}",
+        kinds(&roof, 0)
+    );
+}
+
+/// The corners of a wing building as literal `(x, y, pitch, eave)` rows
+/// (overhang 0.5, height 5.0), copied from the bug hunt's reproducers.
+fn literal(rows: &[(f64, f64, f64, f64)]) -> Project {
+    has_height(project(
+        rows.iter()
+            .map(|&(x, y, p, h)| edge(x, y, p, h, 0.5))
+            .collect(),
+    ))
+}
+
+/// BUG-2 (S3): three low wings in front of a house, turned 15 degrees and
+/// rounded to centimetres, calculate like the unturned building.
+#[test]
+fn three_wings_turned_15_degrees_and_rounded_calculate_like_the_unturned_one() {
+    let unturned = literal(&[
+        (0.0, 0.0, 40.0, 5.0),
+        (4.0, 0.0, 90.0, 5.0),
+        (4.0, -2.5, 40.0, 2.0),
+        (9.0, -2.5, 90.0, 5.0),
+        (9.0, 0.0, 40.0, 5.0),
+        (12.0, 0.0, 90.0, 5.0),
+        (12.0, -2.5, 40.0, 2.0),
+        (17.0, -2.5, 90.0, 5.0),
+        (17.0, 0.0, 40.0, 5.0),
+        (20.0, 0.0, 90.0, 5.0),
+        (20.0, -2.5, 40.0, 2.0),
+        (25.0, -2.5, 90.0, 5.0),
+        (25.0, 0.0, 40.0, 5.0),
+        (29.0, 0.0, 90.0, 5.0),
+        (29.0, 9.0, 40.0, 5.0),
+        (0.0, 9.0, 90.0, 5.0),
+    ]);
+    let turned15 = literal(&[
+        (0.0, 0.0, 40.0, 5.0),
+        (3.86, 1.04, 90.0, 5.0),
+        (4.51, -1.38, 40.0, 2.0),
+        (9.34, -0.09, 90.0, 5.0),
+        (8.69, 2.33, 40.0, 5.0),
+        (11.59, 3.11, 90.0, 5.0),
+        (12.24, 0.69, 40.0, 2.0),
+        (17.07, 1.99, 90.0, 5.0),
+        (16.42, 4.4, 40.0, 5.0),
+        (19.32, 5.18, 90.0, 5.0),
+        (19.97, 2.76, 40.0, 2.0),
+        (24.8, 4.06, 90.0, 5.0),
+        (24.15, 6.47, 40.0, 5.0),
+        (28.01, 7.51, 90.0, 5.0),
+        (25.68, 16.2, 40.0, 5.0),
+        (-2.33, 8.69, 90.0, 5.0),
+    ]);
+    let straight = calc(&unturned);
+    assert!(
+        straight.geos[0].error.is_none(),
+        "{:?}",
+        straight.geos[0].error
+    );
+    assert_eq!(kinds(&straight, 0), vec![WarningKind::WingJoined]);
+    let roof = calc(&turned15);
+    assert!(
+        roof.geos[0].error.is_none(),
+        "turned 15: {:?}",
+        roof.geos[0].error
+    );
+    assert_eq!(kinds(&roof, 0), vec![WarningKind::WingJoined]);
+    near("area", roof.area, straight.area, 0.5);
+    near("T", roof.line("T"), straight.line("T"), 0.1);
+}
+
+/// BUG-1 (S2): a turned comb building (36 walls, wings on the front side,
+/// cm-rounded) must give a result or an error, never a panic (index out of
+/// bounds in `drop_short_junction_hips`, reached through the sweep).
+#[test]
+fn a_turned_comb_building_gives_a_result_or_an_error_and_never_panics() {
+    let rows: &[(f64, f64, f64, f64)] = &[
+        (0.0, 0.0, 40.0, 5.0),
+        (2.1, 0.06, 12.91770491962296, 1.6561418681328373),
+        (2.22, -3.89, 12.91770491962296, 1.6561418681328373),
+        (14.38, -3.54, 12.91770491962296, 1.6561418681328373),
+        (14.26, 0.41, 40.0, 5.0),
+        (25.18, 0.73, 27.76335139090779, 1.5210112030146732),
+        (25.27, -2.54, 27.76335139090779, 1.5210112030146732),
+        (35.45, -2.24, 27.76335139090779, 1.5210112030146732),
+        (35.36, 1.02, 40.0, 5.0),
+        (39.28, 1.13, 90.0, 5.0),
+        (39.18, 4.54, 90.0, 5.0),
+        (41.03, 4.6, 58.823945531022325, 4.744635913197156),
+        (40.99, 5.88, 90.0, 5.0),
+        (39.15, 5.83, 90.0, 5.0),
+        (38.94, 12.83, 90.0, 5.0),
+        (42.1, 12.92, 29.892683270974988, 3.8296573962249707),
+        (42.05, 14.52, 90.0, 5.0),
+        (38.9, 14.43, 90.0, 5.0),
+        (38.89, 14.83, 40.0, 5.0),
+        (33.93, 14.69, 37.496201914704216, 2.0449269293662784),
+        (33.83, 18.12, 37.496201914704216, 2.0449269293662784),
+        (22.09, 17.78, 37.496201914704216, 2.0449269293662784),
+        (22.19, 14.35, 40.0, 5.0),
+        (-0.39, 13.7, 90.0, 5.0),
+        (-0.36, 12.59, 22.68455010830401, 1.3632346894249725),
+        (-3.59, 12.49, 22.68455010830401, 1.3632346894249725),
+        (-3.52, 10.21, 22.68455010830401, 1.3632346894249725),
+        (-0.3, 10.3, 90.0, 5.0),
+        (-0.24, 8.16, 41.5368681166465, 1.3042488280676645),
+        (-2.22, 8.11, 41.5368681166465, 1.3042488280676645),
+        (-2.15, 5.74, 41.5368681166465, 1.3042488280676645),
+        (-0.17, 5.8, 90.0, 5.0),
+        (-0.12, 4.05, 27.718791491250514, 1.713579277432596),
+        (-3.09, 3.97, 27.718791491250514, 1.713579277432596),
+        (-3.01, 0.96, 27.718791491250514, 1.713579277432596),
+        (-0.03, 1.05, 90.0, 5.0),
+    ];
+    let p = literal(rows);
+    let geos = tectora_core::openings::generate_project(&p);
+    assert_eq!(geos.len(), 1);
 }
