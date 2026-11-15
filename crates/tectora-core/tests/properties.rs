@@ -544,7 +544,7 @@ proptest! {
 
 /// Face geometry checks, for one overhang everywhere or one per edge.
 macro_rules! face_tests {
-    ($name:ident, uniform: $uniform:expr, [$($attr:meta),*]) => {
+    ($name:ident, uniform: $uniform:expr, flat: [$($attr:meta),*], planes: [$($pattr:meta),*]) => {
         mod $name {
             use super::*;
 
@@ -580,7 +580,7 @@ macro_rules! face_tests {
             /// A face at its edge's pitch lies in the edge's plane
             /// (see [`edge_plane_misfits`]).
             #[test]
-            $(#[$attr])*
+            $(#[$pattr])*
             fn faces_lie_in_their_edge_planes(p in tidy_project($uniform)) {
                 let geos = roof(&p)?;
                 let bad = edge_plane_misfits(&p, &geos);
@@ -657,7 +657,7 @@ fn edge_plane_misfits(p: &Project, geos: &[RoofGeometry]) -> Vec<String> {
     bad
 }
 
-face_tests!(faces_uniform_overhang, uniform: true, []);
+face_tests!(faces_uniform_overhang, uniform: true, flat: [], planes: []);
 
 /// The counterexample a random seed drew on PR #16: on a 5-gon with one
 /// overhang, four roof planes nearly meet at the top and DACAD merges their
@@ -755,7 +755,9 @@ fn merged_apex_corner_is_within_dacad_tolerance() {
 face_tests!(
     faces_mixed_overhang,
     uniform: false,
-    [ignore = "DACAD-dependent: with unequal overhangs at sharp corners DACAD's core writes faces bounded by a single line (confirmed: SO2 byte-identical to DACAD's)"]
+    flat: [ignore = "DACAD-dependent: with unequal overhangs at sharp corners DACAD's core writes faces bounded by a single line (confirmed: SO2 byte-identical to DACAD's)"],
+    // Passes (audit TEST-002); the reason above holds only for the flatness test.
+    planes: []
 );
 
 /// Invariance tests, instantiated for a generator; `$attr` lets known bugs
@@ -918,7 +920,7 @@ invariance_tests!(
     mixed_eaves,
     any_project(),
     order: [ignore = "DACAD-dependent: near-simultaneous events follow input order"],
-    placement: [ignore = "known bug: raised eaves give position dependent faces"],
+    placement: [],
     moved: [ignore = "DACAD-dependent: its tolerances are absolute, so moved or scaled roofs differ (confirmed in DACAD)"]
 );
 
