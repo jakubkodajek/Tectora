@@ -301,23 +301,37 @@ pub struct FileRequest {
 /// Most files kept in [`Settings::allowed_files`]; the oldest go first.
 pub const MAX_ALLOWED_FILES: usize = 200;
 
-/// `path` without `.` and `..` and, where the file exists, with links
-/// resolved, so a path cannot leave a folder through `..` or a link.
+/// `path` without `.` and `..` and with the links of its existing part
+/// resolved, so a path cannot leave a folder through `..` or a link. The
+/// deepest folder that exists is resolved and the rest is appended: a file
+/// that is not there yet still compares with its resolved folder (on
+/// Windows a resolved path has another prefix, on macOS the temporary
+/// folder is itself a link).
 fn resolved(path: &Path) -> PathBuf {
-    if let Ok(p) = fs::canonicalize(path) {
-        return p;
-    }
-    let mut out = PathBuf::new();
+    let mut plain = PathBuf::new();
     for c in path.components() {
         match c {
             std::path::Component::ParentDir => {
-                out.pop();
+                plain.pop();
             }
             std::path::Component::CurDir => {}
-            other => out.push(other),
+            other => plain.push(other),
         }
     }
-    out
+    let mut rest = Vec::new();
+    let mut head = plain.as_path();
+    loop {
+        if let Ok(real) = fs::canonicalize(head) {
+            return rest.iter().rev().fold(real, |p, name| p.join(name));
+        }
+        match (head.parent(), head.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                head = parent;
+            }
+            _ => return plain,
+        }
+    }
 }
 
 pub const EDITABLE_KEYS: [&str; 6] = [
@@ -553,6 +567,13 @@ mod tests {
             // A link in the inbox does not carry a file in from outside.
             std::os::unix::fs::symlink(&secret, inbox.join("link.pdf")).unwrap();
             assert!(!s.ai_may_read(&inbox.join("link.pdf"), &library));
+            // A jobs folder reached through a link (the temporary folder
+            // on macOS, a resolved prefix on Windows): a file that is not
+            // there yet is still inside it.
+            let via = base.join("jobs-link");
+            std::os::unix::fs::symlink(&library, &via).unwrap();
+            assert!(s.ai_may_read(&via.join("files/a/plan.pdf"), &via));
+            assert!(!s.ai_may_read(&via.join("../other/missing.pdf"), &via));
         }
         let asked = s.asking_for_file(&secret, "Claude", "attach");
         let req = asked.file_request.clone().unwrap();
