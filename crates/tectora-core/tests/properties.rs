@@ -1062,3 +1062,96 @@ fn area3(poly: &[[f64; 3]]) -> f64 {
     }
     (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt() / 2.0
 }
+
+// ------------------------------------------- deductions larger than a face
+
+/// A roof window of up to 6 x 6 m: larger than many faces, so its
+/// deduction (the full `width x height`, as DACAD deducts it) can leave a
+/// face with a negative area.
+fn large_window() -> impl Strategy<Value = RoofWindow> {
+    (0.5..10.0f64, 0.5..8.0f64, 0.4..6.0f64, 0.4..6.0f64).prop_map(|(x, y, width, height)| {
+        RoofWindow {
+            x,
+            y,
+            width,
+            height,
+        }
+    })
+}
+
+/// Like [`any_project`], with windows up to 6 x 6 m.
+fn overcut_project() -> impl Strategy<Value = Project> {
+    (any_project(), prop::collection::vec(large_window(), 1..4)).prop_map(|(mut p, windows)| {
+        p.windows = windows;
+        p
+    })
+}
+
+/// TEST-002: a face may end below zero (DACAD deducts a window's full
+/// `width x height` whatever the face holds), but never silently. For each
+/// part: some face is below `-OVERCUT_TOL` exactly when the part carries
+/// `cut_exceeds_face`, the warning's value is the area missing below zero,
+/// and it names the walls of those faces. This replaces what the ignored
+/// `face_areas_are_not_negative` meant to guard (it forbids the DACAD
+/// behaviour `cut_exceeds_face` documents, and its generator never draws a
+/// window larger than a face, so it passes and guards nothing). The run
+/// must draw negative faces, or it would guard nothing either.
+#[test]
+fn a_negative_face_area_always_carries_cut_exceeds_face() {
+    use std::cell::Cell;
+    use tectora_core::check::{OVERCUT_TOL, WarningKind};
+
+    let mut runner = proptest::test_runner::TestRunner::new(config(256));
+    let negative = Cell::new(0usize);
+    let result = runner.run(&overcut_project(), |p| {
+        let geos = run(&p).map_err(|e| fail(&p, e))?;
+        for (i, g) in geos.iter().enumerate() {
+            let below: Vec<_> = g.faces.iter().filter(|f| f.area < -OVERCUT_TOL).collect();
+            let warned: Vec<_> = g
+                .warnings
+                .iter()
+                .filter(|w| w.kind == WarningKind::CutExceedsFace)
+                .collect();
+            if below.is_empty() {
+                prop_assert!(
+                    warned.is_empty(),
+                    "part {i}: cut_exceeds_face {warned:?} with no face below zero\n{}",
+                    describe(&p)
+                );
+                continue;
+            }
+            negative.set(negative.get() + 1);
+            prop_assert_eq!(
+                warned.len(),
+                1,
+                "part {}: faces {:?} below zero, warnings {:?}\n{}",
+                i,
+                below.iter().map(|f| f.area).collect::<Vec<_>>(),
+                g.warnings,
+                describe(&p)
+            );
+            let missing: f64 = below.iter().map(|f| -f.area).sum();
+            prop_assert!(
+                (warned[0].value - missing).abs() < 1e-9,
+                "part {i}: warning value {} but {missing} m2 missing",
+                warned[0].value
+            );
+            for f in below.iter().filter(|f| f.edge != usize::MAX) {
+                prop_assert!(
+                    warned[0].edges.contains(&f.edge),
+                    "part {i}: wall {} of a face below zero not named in {:?}",
+                    f.edge,
+                    warned[0].edges
+                );
+            }
+        }
+        Ok(())
+    });
+    if let Err(e) = result {
+        panic!("{e}");
+    }
+    assert!(
+        negative.get() > 0,
+        "no case drew a face below zero: the property guards nothing"
+    );
+}

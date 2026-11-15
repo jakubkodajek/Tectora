@@ -1,11 +1,14 @@
 // The editor's TypeScript operations against tectora_core::edit (TEST-010,
 // ARCH-006): `crates/tectora-core/tests/edit_parity.rs` writes inputs with the
 // core's outputs to tests/fixtures/edit/parity.json; here the same inputs go
-// through roofcalc.ts, roundroof.ts, transform.ts and dormers.ts. A difference
-// means the UI and an AI client (MCP) would get different roofs from the same
-// dialog: fix the TypeScript copy to match the core.
+// through the TypeScript copies that are left (roundroof.ts, transform.ts and
+// dormers.ts; ARCH-004 replaces them by core calls module by module, see
+// docs/adr). A difference means the UI and an AI client (MCP) would get
+// different roofs from the same dialog: fix the TypeScript copy to match the
+// core. The fixture keeps the cases of copies that are gone: the core's own
+// test reads them (`edit_parity.rs`), only this file has nothing left to
+// compare them with.
 import { describe, expect, it } from "vitest";
-import * as rc from "./roofcalc";
 import * as rr from "./roundroof";
 import * as tf from "./transform";
 import * as dm from "./dormers";
@@ -67,90 +70,34 @@ function diff(a: any, b: any, path = ""): string | null {
   return a === b ? null : `${path}: ${JSON.stringify(a)} vs ${JSON.stringify(b)}`;
 }
 
-const FIELDS: Record<string, rc.ParallelField> = {
-  width_a: "widthA",
-  width_b: "widthB",
-  rafter_a: "rafterA",
-  rafter_b: "rafterB",
-  ridge: "ridge",
-  top: "top",
-};
-
 function planMap(m: any): tf.PlanMap {
   if (m.kind === "move") return tf.translation(m.dx, m.dy);
   if (m.kind === "rotate") return tf.rotation(m.centre, m.deg);
   return tf.mirror(m.centre, m.deg);
 }
 
+/** Operations whose TypeScript copy was deleted (ARCH-004): the editor calls the core. */
+const GONE = new Set([
+  "triangle", "triangle_patch", "build_up", "solve", "shift_for", "roof_height", "same_way", "inward", "move_wall",
+  "eave_below_gable", "merge_onto", "merge_by_moving", "hip_pitches", "hip_pitches_from_eaves", "meeting", "parallel",
+  "opposite_wall", "span_between", "part_centre", "offset_wall", "regular_polygon",
+]);
+
 /** Runs one case through the TypeScript copy; the result in the core's JSON shape. */
 function run(op: string, a: any): any {
   switch (op) {
-    case "triangle":
-      return rc.triangle(a.edge, { width: a.width ?? undefined, rafter: a.rafter ?? undefined, ridge: a.ridge ?? undefined }, a.with_overhang);
-    case "triangle_patch":
-      return rc.trianglePatch(a.edge, a.pitch_deg);
-    case "build_up":
-      return rc.buildUp(a.edge, a.d, a.eave);
-    case "solve":
-      return rc.solve(a.edge, a.d, a.z, a.target);
-    case "shift_for":
-      return rc.shiftFor(a.edge, a.d, a.z);
-    case "roof_height":
-      return rc.roofHeight(a.edge, a.d);
-    case "same_way":
-      return rc.sameWay(a.edges, a.i);
-    case "inward":
-      return rc.inward(a.edges, a.i, a.p);
-    case "move_wall":
-      return rc.moveWall(a.edges, a.i, a.delta);
-    case "eave_below_gable":
-      return rc.eaveBelowGable(a.edges, a.i, a.eave);
-    case "merge_onto":
-      return rc.mergeOnto(a.edges, a.ref, a.walls, a.target);
-    case "merge_by_moving":
-      return rc.mergeByMoving(a.edges, a.ref, a.walls);
-    case "hip_pitches":
-      return rc.hipPitches(a.edges, a.i, a.j, a.hip, a.r1, a.r2);
-    case "hip_pitches_from_eaves":
-      return rc.hipPitchesFromEaves(a.edges, a.i, a.j, a.hip, a.e1, a.e2);
-    case "meeting": {
-      const m = rc.meeting(a.a, a.b, a.span);
-      return m && [m.w, m.h];
-    }
-    case "parallel": {
-      let st: rc.ParallelState | null = rc.parallelStart(a.a, a.b, a.span, { w: a.w, h: a.h });
-      for (const [f, v] of a.steps as [string, number][]) st = st && rc.parallelEdit(st, FIELDS[f], v, a.target, a.with_ov);
-      if (!st) return { state: null, patches: null, rafters: null };
-      return {
-        state: { span: st.span, top: st.top, w_a: st.wA, w_b: st.wB, h: st.H, a: st.a, b: st.b, shift_a: st.shiftA, shift_b: st.shiftB, r_a: st.rA ?? null, r_b: st.rB ?? null },
-        patches: a.target === "position" ? null : rc.parallelPatches(st, a.target),
-        rafters: [rc.parallelRafter(st, "a"), rc.parallelRafter(st, "b")],
-      };
-    }
     case "arc_for":
       return rr.arcFor(a);
     case "segments_for":
       return rr.segmentsFor(a.deg, a.radius);
-    case "opposite_wall":
-      return rr.oppositeWall(a.edges, a.i);
-    case "span_between":
-      return rr.spanBetween(a.edges, a.i, a.j);
     case "transform_part": {
       const parts = tf.transformPart(a.project, a.pi, planMap(a.map), a.copies);
       return { project: a.project, parts };
     }
     case "plan_map":
       return planMap(a.map).apply(a.p);
-    case "part_centre":
-      return tf.partCentre(a.part);
     case "inside_outline":
       return tf.insideOutline(a.part, a.p);
-    case "offset_wall": {
-      const ok = tf.offsetWall(a.part, a.ei, a.d);
-      return { ok, part: a.part };
-    }
-    case "regular_polygon":
-      return tf.regularPolygon(a.c, a.sides, a.side, a.rotation_deg);
     case "default_params":
       return dm.defaultParams(a.kind, a.start, a.angle, a.eave);
     case "build_dormer":
@@ -182,7 +129,8 @@ describe("editor operations match tectora_core::edit", () => {
     expect(data.cases?.length ?? 0).toBeGreaterThan(1000);
   });
 
-  const ops = [...new Set((data.cases ?? []).map((c) => c.op))];
+  // Only the operations that still have a TypeScript copy (`run` knows them).
+  const ops = [...new Set((data.cases ?? []).map((c) => c.op))].filter((op) => !GONE.has(op));
   for (const op of ops) {
     it(op, () => {
       const bad: string[] = [];

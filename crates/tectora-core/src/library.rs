@@ -71,8 +71,9 @@ pub fn search(list: Vec<ProjectSummary>, q: &Query) -> Result<Vec<ProjectSummary
                         .is_some_and(|a| a.actor != USER_ACTOR))
                 && from.is_none_or(|f| p.modified_ms >= f)
                 && to.is_none_or(|t| p.modified_ms < t)
-                && q.min_area.is_none_or(|a| p.roof_area >= a)
-                && q.max_area.is_none_or(|a| p.roof_area <= a)
+                // An area not known yet (ARCH-001) hides no job.
+                && (p.figures_pending || q.min_area.is_none_or(|a| p.roof_area >= a))
+                && (p.figures_pending || q.max_area.is_none_or(|a| p.roof_area <= a))
                 && matches_words(p, &words)
         })
         .collect();
@@ -212,6 +213,7 @@ mod tests {
             dormers: 0,
             files: 0,
             has_result: false,
+            figures_pending: false,
         }
     }
 
@@ -318,6 +320,20 @@ mod tests {
             }),
             "a"
         );
+    }
+
+    #[test]
+    fn a_job_whose_area_is_not_known_yet_stays_in_an_area_search() {
+        // ARCH-001: a roof still calculated in the background is listed
+        // with area 0; an area filter must not hide it.
+        let mut slow = summary("slow", "Slow", "", 1, 0.0);
+        slow.figures_pending = true;
+        let small = summary("small", "Small", "", 2, 10.0);
+        let q = Query {
+            min_area: Some(50.0),
+            ..Default::default()
+        };
+        assert_eq!(ids(&search(vec![slow, small], &q).unwrap()), ["slow"]);
     }
 
     #[test]

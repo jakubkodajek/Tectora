@@ -1,15 +1,17 @@
-// Moving, rotating, mirroring and copying a roof part with everything that
-// sits on it (DACAD: Bearbeiten › Verschieben, Drehen, Spiegeln, Elemente
-// kopieren, Kopieren-Drehen, Kopieren-Spiegeln). Plain plan geometry: the
-// roof is recalculated afterwards, so no roof rule is involved.
+// Plan maps for what is dragged with the pointer: the plan draws the moved
+// part or object at once, on every pointer move, so these stay here as
+// presentation (ADR-0005). What is committed (the transform dialog, a
+// duplicated part, the part a drag ends on) is the core's `transform_part`
+// (`api.transformPart`); wall shift, regular polygon and part centre are the
+// core's too.
 
-import type { Chimney, Dormer, EdgeDef, ManualFace, ManualLine, Point2, Project, RoofPart, RoofWindow } from "./types";
+import type { Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanMapSpec, Point2, Project, RoofPart, RoofWindow } from "./types";
 import { roundTo } from "./rounding";
 
 export type TransformMode = "move" | "rotate" | "mirror" | "wall";
 /** What the transform dialog asks for: a map of the part (with copies) or a wall shift. */
 export type TransformOp =
-  | { kind: "map"; map: PlanMap; copies: number }
+  | { kind: "map"; map: PlanMapSpec; copies: number }
   | { kind: "wall"; edge: number; dist: number };
 
 /** An affine plan map; `flips` tells whether it reverses orientation. */
@@ -152,15 +154,6 @@ export function insideOutline(part: RoofPart, p: Point2): boolean {
   return inside;
 }
 
-/** Centre of a part's wall outline (vertex average), the default pivot. */
-export function partCentre(part: RoofPart): Point2 {
-  const n = Math.max(part.edges.length, 1);
-  return pt({
-    x: part.edges.reduce((s, e) => s + e.start.x, 0) / n,
-    y: part.edges.reduce((s, e) => s + e.start.y, 0) / n,
-  });
-}
-
 const centre = (pts: Point2[]): Point2 => ({
   x: pts.reduce((s, p) => s + p.x, 0) / Math.max(pts.length, 1),
   y: pts.reduce((s, p) => s + p.y, 0) / Math.max(pts.length, 1),
@@ -210,52 +203,4 @@ export function transformPart(project: Project, pi: number, m: PlanMap, copies =
     if (faces.length) (project.manual_faces ??= []).push(...faces.map((f) => mapManualFace(f, mk)));
   }
   return added;
-}
-
-/**
- * Moves wall `ei` of a part parallel to itself by `d` metres outward (the
- * roof side is to the left of the wall in a counter-clockwise outline, so
- * outward is to the right), its neighbours stretched to meet it (DACAD:
- * Parallele Linie / Wände ändern). Returns false if a neighbour runs
- * parallel to the wall, where no corner can be found.
- */
-export function offsetWall(part: RoofPart, ei: number, d: number): boolean {
-  const n = part.edges.length;
-  const P = (i: number) => part.edges[((i % n) + n) % n].start;
-  const a = P(ei);
-  const b = P(ei + 1);
-  const len = Math.hypot(b.x - a.x, b.y - a.y);
-  if (len < 1e-9) return false;
-  // Outward normal: right of the wall direction for a CCW outline.
-  const area = part.edges.reduce((s, e, i) => s + e.start.x * P(i + 1).y - P(i + 1).x * e.start.y, 0);
-  const sgn = area >= 0 ? 1 : -1;
-  const u = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
-  const nrm = { x: sgn * u.y, y: -sgn * u.x };
-  const a2 = { x: a.x + nrm.x * d, y: a.y + nrm.y * d };
-  const b2 = { x: b.x + nrm.x * d, y: b.y + nrm.y * d };
-  const meet = (p: Point2, q: Point2, s: Point2): Point2 | null => {
-    // Line p->q (neighbour) with the shifted wall through s along u.
-    const v = { x: q.x - p.x, y: q.y - p.y };
-    const den = v.x * u.y - v.y * u.x;
-    if (Math.abs(den) < 1e-9) return null;
-    const t = ((s.x - p.x) * u.y - (s.y - p.y) * u.x) / den;
-    return { x: p.x + v.x * t, y: p.y + v.y * t };
-  };
-  const na = meet(P(ei - 1), a, a2);
-  const nb = meet(P(ei + 2), b, b2);
-  if (!na || !nb) return false;
-  part.edges[ei].start = pt(na);
-  part.edges[(ei + 1) % n].start = pt(nb);
-  return true;
-}
-
-/** The corners of a regular polygon (DACAD: Vieleck-Eingabe), counter-clockwise from the first corner. */
-export function regularPolygon(c: Point2, sides: number, side: number, rotationDeg = 0): Point2[] {
-  const r = side / (2 * Math.sin(Math.PI / sides));
-  // First wall horizontal at the bottom for rotation 0.
-  const a0 = -Math.PI / 2 - Math.PI / sides + (rotationDeg * Math.PI) / 180;
-  return Array.from({ length: sides }, (_, i) => {
-    const a = a0 + (2 * Math.PI * i) / sides;
-    return pt({ x: c.x + r * Math.cos(a), y: c.y + r * Math.sin(a) });
-  });
 }

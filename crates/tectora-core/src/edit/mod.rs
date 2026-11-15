@@ -1,8 +1,9 @@
 //! Editing operations of the roof editor, shared by the desktop app, the
 //! MCP server and the CLI: dormer kinds, moving / rotating / mirroring /
-//! copying parts, the round-roof arc and the calculation helpers. Each one
-//! is a port of the editor's TypeScript module named in its file, so an AI
-//! agent gets exactly what the user gets from the same dialog.
+//! copying parts, the round-roof arc and the calculation helpers. The editor
+//! calls them (a few are still ports of a TypeScript module named in their
+//! file, ADR-0005), so an AI agent gets exactly what the user gets from the
+//! same dialog.
 //!
 //! The helpers return [`Patches`]: new values for some fields of some walls
 //! of one part, applied with [`apply_patches`].
@@ -15,8 +16,10 @@ use crate::geom::Point2;
 use crate::model::{EdgeDef, HalfHip, PitchBreak, Project};
 
 pub mod calc;
+pub mod corners;
 pub mod dormers;
 pub mod height;
+pub mod helper;
 pub mod openings;
 pub mod position;
 pub mod probe;
@@ -118,6 +121,25 @@ pub fn apply_patches(edges: &mut [EdgeDef], patches: &Patches) -> Patches {
         }
     }
     applied
+}
+
+/// Checks the pitch typed for an eave wall (wall bar, New job, MCP
+/// `update_edges` and `create_standard_roof`): at least `min` and below
+/// 90°. 90° is a gable, set with the eave / gable switch; a pitch over 90°
+/// (a plane leaning out, which DACAD's core takes up to 178°) is almost
+/// always a typo (95 for 45) and is refused at the input (review UX-010).
+/// Files that already carry one still open: the file limits
+/// (`EdgeDef::problems`) keep DACAD's 178°.
+pub fn check_eave_pitch(p: f64, min: f64) -> Result<(), String> {
+    if !p.is_finite() || p < min {
+        return Err(format!("pitch_deg {p} must be at least {min} and below 90"));
+    }
+    if p >= 90.0 {
+        return Err(format!(
+            "pitch_deg {p} must be below 90: use gable for a 90° wall; a pitch over 90° is not taken"
+        ));
+    }
+    Ok(())
 }
 
 /// Rounds to `digits` decimals, halves away from zero; the editor rounds the
@@ -265,6 +287,21 @@ pub fn plain_edge(start: Point2, pitch_deg: f64, eave_height: f64, overhang: f64
 mod tests {
     use super::*;
     use crate::model::{Chimney, ManualLine};
+
+    #[test]
+    fn a_typed_eave_pitch_over_90_is_refused_but_files_keep_dacads_range() {
+        for ok in [2.0, 45.0, 89.99] {
+            assert!(check_eave_pitch(ok, 2.0).is_ok(), "{ok}");
+        }
+        for bad in [1.9, 90.0, 95.0, 178.0, f64::NAN, f64::INFINITY] {
+            assert!(check_eave_pitch(bad, 2.0).is_err(), "{bad}");
+        }
+        // A job saved with a leaning plane still opens (UX-010).
+        let mut e = plain_edge(Point2::new(0.0, 0.0), 95.0, 3.0, 0.5);
+        assert_eq!(e.problems().count(), 0);
+        e.pitch_deg = 179.0;
+        assert!(e.problems().count() > 0);
+    }
 
     #[test]
     fn clear_roof_leaves_an_empty_canvas_and_keeps_the_job() {

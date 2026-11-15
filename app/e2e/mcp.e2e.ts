@@ -2,7 +2,7 @@
 // Revert, Revert all, follow mode, library marks) and MCP parity: the same
 // edit made in the editor and over MCP gives the same project.
 import type { Page } from "@playwright/test";
-import { bar, clickPlan, openEditor, selectWall, setField, tool, confirmDormer } from "./editor";
+import { bar, clickPlan, openEditor, planXY, selectWall, setField, tool, confirmDormer } from "./editor";
 import { bridge, createExample, expect, listProjects, loadProject, test, waitForProject, type App } from "./fixtures";
 import type { Mcp } from "./mcp";
 import { cs } from "./i18n";
@@ -133,6 +133,21 @@ test.describe("live AI changes", () => {
     await expect(review(page)).toContainText("Přesah dle výkresu");
   });
 
+  test("show_project opens the job in follow mode and changes nothing (TEST-004)", async ({ app, page, mcp }) => {
+    const id = await createExample("l-shape", "Elko");
+    await createExample("gable", "Jiná");
+    const before = JSON.stringify(await loadProject(id));
+    await app.open();
+    const r = await mcp.call("show_project", { id });
+    expect(r).toMatchObject({ id, shown: true });
+    await expect(page.locator(".editor input.title")).toHaveValue("Elko");
+    await expect(page.locator("header .ai-pill")).toContainText("Claude");
+    // Showing is no change: no review banner, the file as it was.
+    await expect(review(page)).toHaveCount(0);
+    await page.waitForTimeout(700);
+    expect(JSON.stringify(await loadProject(id))).toBe(before);
+  });
+
   test("follow mode switching jobs right after an edit saves the edit to the right job", async ({ app, page, mcp }) => {
     const a = await createExample("hip", "Moje");
     const b = await createExample("gable", "AI práce");
@@ -256,15 +271,32 @@ async function twin(example: string): Promise<[string, string]> {
   return [await createExample(example, "UI"), await createExample(example, "MCP")];
 }
 
-/** Opens job "UI" in the editor, runs `ui`, waits for the save and compares with the MCP twin. */
+/** The same change to both twins' files before the comparison starts. */
+async function withBoth(ids: [string, string], edit: (p: any) => void) {
+  for (const id of ids) {
+    const p = await loadProject(id);
+    edit(p);
+    await bridge("save_project", { id, project: p });
+  }
+}
+
+/**
+ * Opens job "UI" in the editor, runs `ui`, waits for the save and compares
+ * with the MCP twin. Both twins must have changed: a UI step that saves
+ * nothing and an MCP call that does nothing would otherwise agree (TEST-005).
+ */
 async function parity(app: App, ids: [string, string], ui: () => Promise<void>, viaMcp: () => Promise<unknown>) {
+  const before = JSON.stringify(shape(await loadProject(ids[0])));
+  expect(JSON.stringify(shape(await loadProject(ids[1]))), "the twins start equal").toBe(before);
   await openEditor(app, "UI");
   await ui();
   await app.saved();
   await viaMcp();
+  await expect.poll(async () => JSON.stringify(shape(await loadProject(ids[1]))), { timeout: 8000, message: "the MCP call changed the job" }).not.toBe(before);
   await expect.poll(async () => JSON.stringify(shape(await loadProject(ids[0]))), { timeout: 8000 }).toBe(
     JSON.stringify(shape(await loadProject(ids[1]))),
   );
+  expect(JSON.stringify(shape(await loadProject(ids[0]))), "the editor changed the job").not.toBe(before);
   // And the same calculation result.
   const [a, b] = await Promise.all(ids.map(async (id) => (await bridge<any>("calc", { project: await loadProject(id) })).totals));
   expect(a).toEqual(b);
@@ -515,6 +547,152 @@ test.describe("MCP parity", () => {
     }, () => mcp.call("delete_items", { id: ids[1], items: [{ kind: "part", index: 1 }], summary: "x" }));
   });
 
+  // TEST-005: the editor operations the cases above do not reach.
+
+  test("roof line and hand-drawn face (set_manual)", async ({ app, page, mcp }) => {
+    const ids = await twin("gable");
+    await parity(app, ids, async () => {
+      await tool(page, "tool.line").click();
+      await clickPlan(page, 2, 2);
+      await clickPlan(page, 8, 2);
+      await bar(page, "manual.line").getByLabel(cs("manual.type")).selectOption("T");
+      await waitForProject(ids[0], (p) => p.manual_lines?.[0]?.code === "T");
+      await tool(page, "tool.face").click();
+      for (const [x, y] of [[1, 1], [4, 1], [4, 3], [1, 1]]) await clickPlan(page, x, y);
+      await setField(bar(page, "manual.face").getByLabel(cs("edge.pitch")), 45);
+      await waitForProject(ids[0], (p) => p.manual_faces?.[0]?.pitch_deg === 45);
+    }, () =>
+      mcp.call("set_manual", {
+        id: ids[1],
+        lines: [{ a: [2, 2], b: [8, 2], code: "T" }],
+        faces: [{ points: [[1, 1], [4, 1], [4, 3]], pitch_deg: 45 }],
+        summary: "x",
+      }),
+    );
+  });
+
+  test("calculation helper: build-up thickness (roof_helper build_up)", async ({ app, page, mcp }) => {
+    const ids = await twin("gable");
+    await parity(app, ids, async () => {
+      await selectWall(page, 0);
+      await bar(page, "def.title").getByRole("button", { name: cs("calc.button") }).click();
+      const dlg = page.getByRole("dialog", { name: cs("calc.title") });
+      await dlg.getByRole("tab", { name: cs("calc.buildup") }).click();
+      await setField(dlg.getByRole("textbox", { name: cs("calc.thickness") }), "0,2");
+      await dlg.getByRole("button", { name: cs("common.ok") }).click();
+      await waitForProject(ids[0], (p) => p.parts[0].edges[0].eave_height !== 3 || p.parts[0].edges[0].overhang !== 0.5);
+    }, () => mcp.call("roof_helper", { id: ids[1], edge: 0, tool: "build_up", thickness: 0.2, eave: "normal", apply: true, summary: "x" }));
+  });
+
+  test("round roof (roof_helper round_roof)", async ({ app, page, mcp }) => {
+    const ids = await twin("gable");
+    await parity(app, ids, async () => {
+      await selectWall(page, 0);
+      await bar(page, "def.title").getByRole("button", { name: cs("round.button") }).click();
+      await page.getByRole("dialog", { name: cs("round.title") }).getByRole("button", { name: cs("common.ok") }).click();
+      await waitForProject(ids[0], (p) => (p.parts[0].edges[0].breaks?.length ?? 0) > 0);
+    }, () => mcp.call("roof_helper", { id: ids[1], edge: 0, tool: "round_roof", apply: true, summary: "x" }));
+  });
+
+  test("distances from the eave and the side (place_item)", async ({ app, page, mcp }) => {
+    const ids = await twin("gable");
+    await withBoth(ids, (p) => (p.windows = [{ x: 3, y: 1.5, width: 0.78, height: 1.18 }]));
+    await parity(app, ids, async () => {
+      await clickPlan(page, 3.4, 1.9);
+      const ob = bar(page, "opening.window");
+      await setField(ob.getByTestId("place-eave"), "2");
+      await setField(ob.getByTestId("place-left"), "1,5");
+      await expect(ob.getByTestId("place-left")).toHaveValue("1,500");
+    }, () => mcp.call("place_item", { id: ids[1], kind: "window", index: 0, from_eave: 2, from_left: 1.5, summary: "x" }));
+  });
+
+  test("chimney size and roof opening size (update_opening)", async ({ app, page, mcp }) => {
+    const ids = await twin("hip");
+    const square = (x: number, y: number, a: number) => [{ x, y }, { x: x + a, y }, { x: x + a, y: y + a }, { x, y: y + a }];
+    await withBoth(ids, (p) => {
+      p.chimneys = [{ corners: square(4, 3, 0.6), height: 9 }];
+      p.roof_openings = [{ corners: square(8, 4.5, 1), height: 0 }];
+    });
+    await parity(app, ids, async () => {
+      await clickPlan(page, 4.3, 3.3);
+      const cb = bar(page, "opening.chimney");
+      await setField(cb.getByLabel(cs("opening.width")), "0,9");
+      await setField(cb.getByLabel(cs("opening.depth")), "0,7");
+      await waitForProject(ids[0], (p) => Math.abs(p.chimneys[0].corners[1].x - 4.9) < 1e-6);
+      await page.keyboard.press("Escape");
+      await clickPlan(page, 8.5, 5);
+      const hb = bar(page, "opening.hole");
+      await setField(hb.getByLabel(cs("opening.width")), "1,5");
+      await waitForProject(ids[0], (p) => Math.abs(p.roof_openings[0].corners[1].x - 9.5) < 1e-6);
+    }, async () => {
+      await mcp.call("update_opening", { id: ids[1], kind: "chimney", index: 0, width: 0.9, depth: 0.7, summary: "x" });
+      await mcp.call("update_opening", { id: ids[1], kind: "roof_opening", index: 0, width: 1.5, summary: "x" });
+    });
+  });
+
+  test("rotate a chimney from its menu (transform_items)", async ({ app, page, mcp }) => {
+    const ids = await twin("hip");
+    await withBoth(ids, (p) => (p.chimneys = [{ corners: [{ x: 4, y: 3 }, { x: 5, y: 3 }, { x: 5, y: 3.5 }, { x: 4, y: 3.5 }], height: 9 }]));
+    await parity(app, ids, async () => {
+      const at = await planXY(page, 4.5, 3.25);
+      await page.mouse.click(at.x, at.y, { button: "right" });
+      await page.getByRole("menuitem", { name: cs("menu.rotateLeft") }).click();
+      await waitForProject(ids[0], (p) => Math.abs(p.chimneys[0].corners[0].y - 3) > 1e-6);
+    }, () => mcp.call("transform_items", { id: ids[1], items: [{ kind: "chimney", index: 0 }], op: "rotate", deg: 90, summary: "x" }));
+  });
+
+  test("hand-drawn face made a building (face_to_part)", async ({ app, page, mcp }) => {
+    const ids = await twin("gable");
+    await withBoth(ids, (p) => (p.manual_faces = [{ points: [{ x: 15, y: 1 }, { x: 19, y: 1 }, { x: 19, y: 6 }, { x: 15, y: 6 }], pitch_deg: 30, label: "" }]));
+    await parity(app, ids, async () => {
+      await page.locator("path.manual-face").first().dispatchEvent("pointerdown", { button: 0 });
+      await bar(page, "manual.face").getByRole("button", { name: cs("manual.toPart") }).click();
+      await waitForProject(ids[0], (p) => p.parts.length === 2);
+    }, () => mcp.call("face_to_part", { id: ids[1], index: 0, summary: "x" }));
+  });
+
+  test("standard roof as a new part (add_shape_part)", async ({ app, page, mcp }) => {
+    const ids = await twin("gable");
+    await parity(app, ids, async () => {
+      await tool(page, "tool.standard").click();
+      const dlg = page.getByRole("dialog", { name: cs("std.title") });
+      await dlg.getByRole("radio", { name: cs("std.hip"), exact: true }).click();
+      await setField(dlg.getByLabel(cs("std.length")), 9);
+      await setField(dlg.getByLabel(cs("std.width")), 7);
+      await setField(dlg.getByLabel(cs("edge.pitch")), 30);
+      await setField(dlg.getByLabel(cs("edge.eaveHeight")), 3);
+      await setField(dlg.getByLabel(cs("edge.overhang")), 0.5);
+      await dlg.getByRole("button", { name: cs("common.ok") }).click();
+      await waitForProject(ids[0], (p) => p.parts.length === 2);
+    }, () =>
+      mcp.call("add_shape_part", { id: ids[1], shape: "hip", length: 9, width: 7, pitch_deg: 30, eave_height: 3, overhang: 0.5, summary: "x" }),
+    );
+  });
+
+  test("edit a dormer (update_dormer)", async ({ app, page, mcp }) => {
+    const ids = await twin("hip");
+    // Follow mode would open the job the AI edits instead of the library.
+    await mcp.call("update_settings", { follow_ai: false, summary: "x" });
+    for (const id of ids) await mcp.call("add_dormer", { id, kind: "gable", start: [4, 1], summary: "x" });
+    await parity(app, ids, async () => {
+      await page.locator("g.dormer line.hit").first().dispatchEvent("pointerdown", { button: 0 });
+      const db = bar(page, "dormer.title");
+      await setField(db.getByLabel(cs("dormer.width")), "2,4");
+      await setField(db.getByLabel(cs("edge.pitch")), 38);
+      await waitForProject(ids[0], (p) => p.dormers[0].edges.some((e: any) => e.pitch_deg === 38));
+    }, () => mcp.call("update_dormer", { id: ids[1], index: 0, width: 2.4, pitch_deg: 38, summary: "x" }));
+  });
+
+  test("clear the canvas (clear_roof)", async ({ app, page, mcp }) => {
+    const ids = await twin("hip");
+    await withBoth(ids, (p) => (p.windows = [{ x: 3, y: 1.5, width: 0.78, height: 1.18 }]));
+    await parity(app, ids, async () => {
+      await app.answerConfirm(true);
+      await tool(page, "tool.clear").click();
+      await waitForProject(ids[0], (p) => p.parts.length === 0);
+    }, () => mcp.call("clear_roof", { id: ids[1], summary: "x" }));
+  });
+
   test("every editor feature has an MCP tool", async ({ mcp }) => {
     const tools = new Set(await mcp.tools());
     // Editor feature → MCP tool (CLAUDE.md: a UI feature without its MCP tool is not done).
@@ -535,6 +713,12 @@ test.describe("MCP parity", () => {
       "roof lines and faces": "set_manual",
       "flat roof, material names": "set_roof_options",
       "calculation helpers, round roof": "roof_helper",
+      "distances from the eave and the sides": "place_item",
+      "chimney / opening / window size and position": "update_opening",
+      "move, rotate, copy, align single objects": "transform_items",
+      "make a hand-drawn face a building": "face_to_part",
+      "bring a job to the front": "show_project",
+      "examples to start from": "list_examples",
       "job data, status": "update_job",
       "store result": "store_result",
       "duplicate job": "duplicate_project",

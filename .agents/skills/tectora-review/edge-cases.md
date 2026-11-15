@@ -59,6 +59,12 @@ Guards: `app/e2e/editor-ux.e2e.ts`, `app/e2e/fields.e2e.ts`.
 
 ## 2. Every edit recalculates (@errors, @test)
 
+Guards: `app/e2e/recalc.e2e.ts` (undo, redo, AI save, merge on save,
+standard roof, face to building, move, rotate, mirrored copy, window /
+chimney / dormer, flat roof on and off, delete part, Revert in the banner,
+round roof, calculation helper; a move or rotation compares the roof lines,
+since the area does not change).
+
 After each operation that changes the job (draw, standard roof, copy,
 transform, convert a manual face, undo / redo, an AI save, a merge on save)
 the plan, 3D and results must show the new roof without another action.
@@ -88,6 +94,9 @@ inside, identical; with the same, a lower and a higher eave height. Check:
 - the results equal the core's calculation of the saved file
 
 ## 4. Tools that look alike (@ux)
+
+Guards: vitest `i18n.test.ts` "tools that look alike", `app/e2e/objects.e2e.ts`
+"a manual face is drawn neutral and labelled, not like a building".
 
 A roofer must not be able to mistake one tool for another: "Building" draws a
 building with a calculated roof, "Manual face" only adds one face with a
@@ -235,3 +244,52 @@ a far garage; `a_small_jog_in_a_hipped_house_keeps_the_standard_roof`,
   `MAX_WALLS`, `MAX_SWEEP_WALLS`): an error within seconds, never a hang.
 - A departed roof has a wall area, and an error names walls only where
   their parallel planes can be the cause.
+
+## 12. A building that is not closed in 3D (@ui)
+
+Reviewers: ui. Guards: vitest `scene3d.test.ts` "a closed building in 3D",
+"wallUnderRoof", "dormerFaces"; look at every roof from the four low corner
+orbits, not only from above.
+
+- The eave height is measured at the overhang line, so the roof passes over
+  the wall line higher than the eave: every wall goes from the ground to the
+  underside of the roof over its line (`scene3d.wallUnderRoof`), never to the
+  eave or building height. Neighbouring walls meet at one height.
+- The calculation's gable stands in the verge plane; beside a wall drawn up
+  to the roof it is left out (`gableShownByWall`), or it hangs in front of
+  the building.
+- Walls end on the roof, so they sit further back in depth than the roof
+  (polygon offset) and their top edges never show through it.
+- Dormers one behind the other share cheek lines: each face belongs to the
+  dormer whose front wall it touches (`dormerFaces`).
+
+## 13. Labels of several buildings (@ux, @ui)
+
+Reviewers: ux, ui. Guards: vitest `planlabels.test.ts` ("labels of several
+buildings keep off roof lines and walls", "chooseLabels (UX-018)",
+"wallNumber"), `app/e2e/planflow.e2e.ts` ("two buildings side by side",
+"wall lengths keep off the ridge and face labels off the walls"),
+`app/e2e/joined.e2e.ts` (UX-012). Put a second building 0.3 m beside the
+first, touching it and drawn into it, at 1360x860 and 600x420.
+
+- Wall numbers carry the building ("2.3") once there are several.
+- No wall length sits on another building; the length of a wall facing the
+  other building moves inside, and off the ridge or a hip when a spot along
+  the wall is free (only a wall with no free spot keeps its middle).
+- No face label overlaps a wall length or crosses a wall; a rotated label
+  on a narrow face falls back to the pitch alone.
+- In an AI review the change beside a wall ("40° → 35°") stays inside the
+  plan and clear of the other labels.
+
+## 14. Lengths while drawing (@ux, @ui)
+
+Reviewers: ux, ui. Guards: `app/e2e/planflow.e2e.ts` ("walls drawn so far
+show their lengths while drawing", "a wall by length and typed angle").
+
+- Every wall drawn so far shows its length (`draft-wall-dim`) and the wall
+  under the pointer its running length, in the UI language's decimal format.
+- A length typed in the draw bar, with an arrow key or an angle (absolute or
+  from the previous wall), gives a wall of exactly that length; the label
+  shows it.
+- The labels stay readable in German and Slovak at 600x420 (the draw bar's
+  angle field and the PlaceBar do not clip).

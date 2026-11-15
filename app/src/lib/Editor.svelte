@@ -5,6 +5,9 @@
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import AiPanel from "./AiPanel.svelte";
   import DrawBar from "./DrawBar.svelte";
+  import PlaceBar from "./PlaceBar.svelte";
+  import { lastStep } from "./drawstep";
+  import { stepWall, wallStepKey } from "./wallstep";
   import Icon from "./Icon.svelte";
   import JobPanel from "./JobPanel.svelte";
   import LanguagePicker from "./LanguagePicker.svelte";
@@ -21,22 +24,25 @@
   import { commitFocused } from "./commitfocus";
   import { textfield } from "./textfield";
   import ContextMenu, { type MenuEntry, type MenuState } from "./ContextMenu.svelte";
-  import { mergeDroppedCorner, moveCorner, samePoint, withoutRepeats } from "./corners";
+  import { moveCorner, samePoint } from "./corners";
   import { MCP_KIND, followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, placementOf, transformItem, type ItemRef, type PlanTarget } from "./items";
   import { snapToRoof, type ManualSel } from "./manual";
+  import { keptSelection } from "./selection";
+  import { fitlabels } from "./fitlabels";
   import { describeCalcError, describeError, describeProblem, toAppError, type Described } from "./errors";
-  import { info, notify, notifyError } from "./notify.svelte";
-  import { chimneyFromRect, nonConvexOpenings, openingList, type OpeningSel } from "./openings";
+  import { info, notify, notifyError, notifyRefusal } from "./notify.svelte";
+  import { nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, parseDormer, roofHeightAt, type DormerParams } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
   import StandardRoofForm from "./StandardRoofForm.svelte";
   import RoundRoofForm from "./RoundRoofForm.svelte";
   import RoofCalcForm from "./RoofCalcForm.svelte";
   import TransformForm from "./TransformForm.svelte";
-  import { offsetWall, transformPart, translation, type TransformMode, type TransformOp } from "./transform";
-  import { oppositeWall, spanBetween, type Arc } from "./roundroof";
+  import { transformPart, translation, type TransformMode, type TransformOp } from "./transform";
+  import { latest } from "./latest";
   import { api, onProjectsChanged } from "./api";
   import { changedEdges, changedItems, describeChange, describeFigure, ghostOf } from "./changes";
+  import { wallNotes } from "./wallnotes";
   import { merge3 } from "./merge";
   import { isTyping, releaseLeaveGuard, setLeaveGuard } from "./leave";
   import { PendingEdits, exclusive } from "./inflight";
@@ -48,8 +54,8 @@
   import { tabIds, tablist } from "./tabs";
   import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
-  import type { ActivityItem, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
-  import { GABLE_PITCH, buildingHeight, isAi, isGable, isMarker } from "./types";
+  import type { ActivityItem, Arc, HelperRequest, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
+  import { GABLE_PITCH, buildingHeight, emptyProject, isAi, isGable, isMarker } from "./types";
 
   let {
     id: idProp,
@@ -165,16 +171,40 @@
   let review = $state<ReviewStatus | null>(null);
   /** Show the state before the pending AI changes dashed in the plan. */
   let showBefore = $state(true);
+  /** Small windows show the review banner on one line; this opens its details (UX-017). */
+  let reviewDetails = $state(false);
   let focusChange = $state<Change | null>(null);
   let std = $state<{ part: RoofPart | null; mode: "add" | "replace" } | null>(null);
   let plan: PlanView | undefined = $state();
   // Round-roof helper on the selected wall and the one facing it.
-  let round = $state<{ part: number; a: number; b: number; span: number; eave: number; overhang: number; arc: Arc | null } | null>(null);
-  const opposite = $derived(
-    project && selection && !isMarker(project.parts[selection.part].edges[selection.edge])
-      ? oppositeWall(project.parts[selection.part].edges, selection.edge)
-      : null,
+  let round = $state<{ part: number; a: number; b: number; span: number; eave: number; overhang: number; arc: Arc | null; request: HelperRequest | null } | null>(null);
+  // The wall facing the selected one, from the core (`roof_helper_context`):
+  // the round-roof button shows only where there is one. Asked again, after a
+  // pause, whenever the selected part's walls change.
+  let wallCtx = $state<{ part: number; edge: number; opposite: number | null } | null>(null);
+  const askWall = latest(
+    (part: number, edge: number, walls: Project["parts"][number]) => {
+      const stub = emptyProject("wall");
+      stub.parts = [walls];
+      return api.roofHelperContext(stub, 0, edge).then((c) => ({ part, edge, opposite: c.opposite }));
+    },
+    (c) => (wallCtx = c),
+    (e) => {
+      wallCtx = null;
+      notifyError(e, "calc");
+    },
   );
+  $effect(() => {
+    const sel = selection;
+    const part = sel ? project?.parts[sel.part] : undefined;
+    if (!sel || !part || isMarker(part.edges[sel.edge])) {
+      askWall.stop();
+      wallCtx = null;
+      return;
+    }
+    askWall.ask(sel.part, sel.edge, $state.snapshot(part) as RoofPart);
+  });
+  const opposite = $derived(wallCtx && selection && wallCtx.part === selection.part && wallCtx.edge === selection.edge ? wallCtx.opposite : null);
 
   // Undo history of serialized projects; `cursor` points at the current one.
   let history: string[] = [];
@@ -235,8 +265,37 @@
     return changedEdges(pendingChanges, project);
   });
   const highlightItems = $derived(changedItems(focusChange ? [focusChange] : pendingChanges));
+  /** What the AI changed on each highlighted wall, written beside it in the plan (UX-017). */
+  const reviewNotes = $derived(review ? wallNotes(focusChange ? [focusChange] : pendingChanges) : new Map<string, string>());
+  /**
+   * The roof of the version before the pending AI changes, from the core, so
+   * a pitch, eave or gable change shows the previous roof lines dashed
+   * (UX-017). Fetched once per review state; without it the plan shows only
+   * the outlines, as before.
+   */
+  let beforeResult = $state<CalcResult | null>(null);
+  const beforeKey = $derived(review?.before ? `${review.since_ts_ms}:${review.count}` : "");
+  $effect(() => {
+    const key = beforeKey;
+    beforeResult = null;
+    const before = untrack(() => review?.before);
+    if (!key || !before) return;
+    let live = true;
+    api
+      .calc($state.snapshot(before) as Project)
+      .then((r) => {
+        if (live) beforeResult = r;
+      })
+      // A previous version the core cannot calculate has no lines to show.
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  });
   const ghost = $derived(
-    project && review && showBefore ? ghostOf(focusChange ? [focusChange] : pendingChanges, review.before, project, result) : null,
+    project && review && showBefore
+      ? ghostOf(focusChange ? [focusChange] : pendingChanges, review.before, project, result, beforeResult)
+      : null,
   );
   const wallCount = $derived(project?.parts.reduce((n, p) => n + p.edges.length, 0) ?? 0);
 
@@ -371,7 +430,8 @@
   function restore(i: number) {
     at = i;
     project = JSON.parse(history[i]);
-    selection = null;
+    // The wall stays in the bar when the step kept it (UX-005).
+    selection = keptSelection(project, selection);
     recalc();
     scheduleSave();
   }
@@ -550,7 +610,7 @@
   }
 
   // Calculation helpers on the selected wall.
-  let calc = $state<{ part: number; edge: number; patches: Map<number, Partial<EdgeDef>> | null } | null>(null);
+  let calc = $state<{ part: number; edge: number; request: HelperRequest | null } | null>(null);
 
   /** The move / rotate / mirror / copy dialog for the selected part (DACAD: Bearbeiten). */
   let xform = $state<{ part: number; edge: number | null; mode: TransformMode; op: TransformOp | null } | null>(null);
@@ -560,60 +620,97 @@
     xform = { part: selection.part, edge: selection.edge, mode: "move", op: null };
   }
 
-  function applyTransform() {
+  /** The dialog's OK: the core moves, copies or shifts (the MCP tool transform_part / the wall shift). */
+  const applyTransform = () => pendingEdits.track(applyTransformNow());
+  async function applyTransformNow() {
     if (!project || !xform?.op) return;
     const op = xform.op;
-    if (op.kind === "wall") {
-      if (!offsetWall(project.parts[xform.part], op.edge, op.dist)) return;
-    } else {
-      const parts = transformPart(project, xform.part, op.map, op.copies);
-      if (parts.length) selection = { part: parts[parts.length - 1], edge: 0 };
+    const pi = xform.part;
+    const before = JSON.stringify($state.snapshot(project));
+    let next: Project;
+    let parts: number[] = [];
+    try {
+      if (op.kind === "wall") next = await api.offsetWall($state.snapshot(project) as Project, pi, op.edge, op.dist);
+      else ({ project: next, parts } = await api.transformPart($state.snapshot(project) as Project, pi, op.map, op.copies));
+    } catch (e) {
+      if (!notifyRefusal(e, "transform")) notifyError(e, "calc");
+      return;
     }
+    // An AI save or an edit in between wins.
+    if (!project || JSON.stringify($state.snapshot(project)) !== before) return;
+    adoptProject(next);
+    if (op.kind !== "wall" && parts.length) selection = { part: parts[parts.length - 1], edge: 0 };
     xform = null;
     commit();
     setTimeout(() => plan?.fit(), 0);
   }
 
-  function applyCalc() {
-    if (!project || !calc?.patches) return;
-    const es = project.parts[calc.part].edges;
-    for (const [, patch] of calc.patches) freezeHeight(project.parts[calc.part], patch);
-    for (const [k, patch] of calc.patches) Object.assign(es[k], patch);
+  /** Takes what the core returned for an edit of the parts and the things on them. */
+  function adoptProject(next: Project) {
+    if (!project) return;
+    project.parts = next.parts;
+    project.dormers = next.dormers;
+    project.chimneys = next.chimneys;
+    if (next.windows) project.windows = next.windows;
+    if (next.roof_openings) project.roof_openings = next.roof_openings;
+    if (next.manual_lines) project.manual_lines = next.manual_lines;
+    if (next.manual_faces) project.manual_faces = next.manual_faces;
+  }
+
+  /** The dialog's OK: the core applies the helper's values (the MCP tool roof_helper with apply). */
+  async function applyCalc() {
+    if (!project || !calc?.request) return;
+    await applyHelper(calc.part, calc.edge, calc.request);
     calc = null;
+  }
+
+  /** Applies a helper request to wall `edge` of `part` through the core, onto the same part. */
+  async function applyHelper(part: number, edge: number, request: HelperRequest) {
+    if (!project) return;
+    const before = JSON.stringify($state.snapshot(project.parts[part]));
+    let next: Project;
+    try {
+      next = await api.roofHelperApply($state.snapshot(project) as Project, part, edge, request);
+    } catch (e) {
+      if (!notifyRefusal(e, "helper")) notifyError(e, "calc");
+      return;
+    }
+    // An AI save or an edit in between wins.
+    if (!project || !project.parts[part] || JSON.stringify($state.snapshot(project.parts[part])) !== before) return;
+    project.parts = next.parts;
     commit();
   }
 
-  function openRound() {
-    if (!project || !selection || opposite === null) return;
-    const es = project.parts[selection.part].edges;
-    const e = es[selection.edge];
+  async function openRound() {
+    if (!project || !selection) return;
+    const { part, edge } = selection;
+    let c;
+    try {
+      c = await api.roofHelperContext($state.snapshot(project) as Project, part, edge);
+    } catch (e) {
+      notifyError(e, "calc");
+      return;
+    }
+    if (!project || c.opposite === null) return;
+    const e = project.parts[part].edges[edge];
     round = {
-      part: selection.part,
-      a: selection.edge,
-      b: opposite,
-      span: spanBetween(es, selection.edge, opposite),
+      part,
+      a: edge,
+      b: c.opposite,
+      span: c.span,
       eave: e.eave_height,
       overhang: e.overhang,
       arc: null,
+      request: null,
     };
   }
 
-  /** Sets both walls to the arc's pitch and breaks (DACAD: Runddach). */
-  function applyRound() {
-    if (!project || !round?.arc) return;
-    const es = project.parts[round.part].edges;
-    freezeHeight(project.parts[round.part], { eave_height: round.eave });
-    for (const k of [round.a, round.b]) {
-      Object.assign(es[k], {
-        pitch_deg: round.arc.pitch_deg,
-        eave_height: round.eave,
-        overhang: round.overhang,
-        half_hip: null,
-        breaks: round.arc.breaks.map((b) => ({ ...b })),
-      });
-    }
+  /** Sets both walls to the arc's pitch and breaks (DACAD: Runddach), as the core works them out. */
+  async function applyRound() {
+    if (!project || !round?.arc || !round.request) return;
+    const r = round;
     round = null;
-    commit();
+    await applyHelper(r.part, r.a, r.request!);
   }
 
   /** Makes the current result the job's stored result (the offer's figures). */
@@ -663,7 +760,8 @@
    * MCP set_part_height.
    */
   const setPartHeight = (h: number) => pendingEdits.track(setPartHeightNow(h));
-  async function setPartHeightNow(h: number) {
+  /** Resolves to the reason when the core refused the height, so the field shows the stored one again. */
+  async function setPartHeightNow(h: number): Promise<string | undefined> {
     if (!project || !selection) return;
     const pi = selection.part;
     const part = JSON.stringify($state.snapshot(project.parts[pi]));
@@ -671,8 +769,12 @@
     try {
       next = await api.setPartHeight($state.snapshot(project) as Project, pi, h);
     } catch (e) {
+      // A height the core refuses (an eave below the ground) is a refusal
+      // with its reason, and the field goes back to the stored height (ERR-003).
+      const why = notifyRefusal(e, "height");
+      if (why) return why;
       notifyError(e, "calc");
-      return;
+      return t("num.refused");
     }
     // The project may have changed meanwhile (an AI save): apply only to the same part.
     // (Compared by value: a save in between may hand back equal but new objects.)
@@ -697,7 +799,7 @@
     placeChain = placeChain.then(() => placeItemNow(it, fromEave, fromLeft, fromRight)).catch(() => {});
     return pendingEdits.track(placeChain);
   };
-  async function placeItemNow(it: ItemRef, fromEave: number | null, fromLeft: number | null, fromRight: number | null) {
+  async function placeItemNow(it: ItemRef, fromEave: number | null, fromLeft: number | null, fromRight: number | null): Promise<string | undefined> {
     if (!project) return;
     const before = JSON.stringify($state.snapshot(project));
     let next: Project;
@@ -706,12 +808,10 @@
     } catch (e) {
       // A distance that would take the object off its face is refused: said
       // in the user's language, and the field shows where it still is.
-      const d = describeError(e, "calc");
-      if (d.code === "invalid_input" || /roof face|out of range/.test(d.detail ?? "")) {
-        notify({ kind: "error", code: "place_refused", title: t("place.refusedTitle"), message: t("place.refused"), detail: d.detail });
-      } else notifyError(e, "calc");
+      const why = notifyRefusal(e, "place");
+      if (!why) notifyError(e, "calc");
       recalc();
-      return;
+      return why ?? t("num.refused");
     }
     // Only onto the same job state: an AI save or an edit in between wins.
     if (!project || JSON.stringify($state.snapshot(project)) !== before) return;
@@ -773,10 +873,20 @@
   }
 
   /** End of a corner drag: a corner dropped onto its neighbour merges into it. */
-  function endVertexDrag(part: number, v: number) {
-    const es = project?.parts[part]?.edges;
-    if (es && mergeDroppedCorner(es, v) && selection?.part === part) {
-      selection = { part, edge: Math.min(v, es.length - 1) };
+  const endVertexDrag = (part: number, v: number) => pendingEdits.track(endVertexDragNow(part, v));
+  async function endVertexDragNow(part: number, v: number) {
+    const was = project?.parts[part];
+    if (!project || !was) return;
+    const drawn = JSON.stringify($state.snapshot(was));
+    try {
+      const r = await api.mergeDroppedCorner($state.snapshot(was) as RoofPart, v);
+      // Only onto the part as it was dropped: an edit or an AI save in between wins.
+      if (r.merged && project.parts[part] && JSON.stringify($state.snapshot(project.parts[part])) === drawn) {
+        project.parts[part] = r.part;
+        if (selection?.part === part) selection = { part, edge: Math.min(v, r.part.edges.length - 1) };
+      }
+    } catch (e) {
+      notifyError(e, "calc");
     }
     commit();
   }
@@ -943,7 +1053,7 @@
     try {
       next = await api.faceToPart($state.snapshot(project) as Project, index, name, presets.pitch_deg, presets.eave_height, presets.overhang);
     } catch (e) {
-      notifyError(e, "calc");
+      if (!notifyRefusal(e, "face")) notifyError(e, "calc");
       return;
     }
     // The project may have changed meanwhile (an AI save): apply only to the same face.
@@ -964,25 +1074,43 @@
   }
 
   /** Places a roof opening with its first corner at the click (DACAD: Öffnung). */
-  function placeHole(x: number, y: number) {
+  const placeHole = (x: number, y: number) => pendingEdits.track(placeHoleNow(x, y));
+  async function placeHoleNow(x: number, y: number) {
     if (!project) return;
     placing = false;
-    project.roof_openings ??= [];
     // 1 × 1 m square along the nearest wall [no source: placeholder size].
     const angle = nearestWallAngle(project.parts, { x, y });
-    project.roof_openings.push(chimneyFromRect({ x, y, width: 1, depth: 1, rotation: +((angle * 180) / Math.PI).toFixed(2), height: 0 }));
+    let hole: Chimney;
+    try {
+      hole = await api.chimneyFromRect({ x, y, width: 1, depth: 1, rotation: +((angle * 180) / Math.PI).toFixed(2), height: 0 });
+    } catch (e) {
+      notifyError(e, "calc");
+      return;
+    }
+    if (!project) return;
+    project.roof_openings ??= [];
+    project.roof_openings.push(hole);
     selectOpening({ kind: "hole", index: project.roof_openings.length - 1 });
     commit();
   }
 
   /** Places a chimney with its first corner at the click (DACAD: Schornstein). */
-  function placeChimney(x: number, y: number) {
+  const placeChimney = (x: number, y: number) => pendingEdits.track(placeChimneyNow(x, y));
+  async function placeChimneyNow(x: number, y: number) {
     if (!project) return;
     placing = false;
     // 0.6 m square, top 1 m above the roof there [no source: common size].
     const top = +((roofHeightAt(result, { x: x + 0.3, y: y + 0.3 }) ?? presets.eave_height) + 1).toFixed(2);
     const angle = nearestWallAngle(project.parts, { x, y });
-    project.chimneys.push(chimneyFromRect({ x, y, width: 0.6, depth: 0.6, rotation: +((angle * 180) / Math.PI).toFixed(2), height: top }));
+    let chimney: Chimney;
+    try {
+      chimney = await api.chimneyFromRect({ x, y, width: 0.6, depth: 0.6, rotation: +((angle * 180) / Math.PI).toFixed(2), height: top });
+    } catch (e) {
+      notifyError(e, "calc");
+      return;
+    }
+    if (!project) return;
+    project.chimneys.push(chimney);
     selectOpening({ kind: "chimney", index: project.chimneys.length - 1 });
     commit();
   }
@@ -1134,10 +1262,18 @@
       selectItem(it);
     } else {
       if (!base.parts[target.part]) return;
+      // The plan draws the moved part at once (TypeScript, presentation);
+      // what is saved on release is the core's `transform_part`.
       transformPart(base, target.part, translation(dx, dy));
       const sel = selection;
       project = base;
       selection = sel;
+      if (end) {
+        const from = dragBase.project;
+        dragBase = null;
+        void pendingEdits.track(finishPartDrag(from, target.part, dx, dy));
+        return;
+      }
     }
     if (end) {
       dragBase = null;
@@ -1145,6 +1281,28 @@
     } else {
       recalc();
     }
+  }
+
+  /** A part drag ended: the core's move replaces the drawn one, then it is saved; on a refusal the part goes back. */
+  async function finishPartDrag(from: string, part: number, dx: number, dy: number) {
+    const drawn = JSON.stringify($state.snapshot(project));
+    try {
+      const r = await api.transformPart(JSON.parse(from) as Project, part, { kind: "move", dx, dy }, 0);
+      if (!project || JSON.stringify($state.snapshot(project)) !== drawn) return;
+      const sel = selection;
+      adoptProject(r.project);
+      selection = sel;
+    } catch (e) {
+      if (project && JSON.stringify($state.snapshot(project)) === drawn) {
+        const sel = selection;
+        project = JSON.parse(from) as Project;
+        selection = sel;
+        recalc();
+      }
+      if (!notifyRefusal(e, "transform")) notifyError(e, "calc");
+      return;
+    }
+    commit();
   }
 
   /** Where a copy goes: beside the original, its own size plus 30 cm away
@@ -1258,13 +1416,28 @@
         // or a manual face (UX-010).
         const xs = [...project.parts.flatMap((p) => p.edges.map((e) => e.start.x)), ...(project.manual_faces ?? []).flatMap((f) => f.points.map((p) => p.x))];
         const dx = Math.max(w, Math.max(...xs) - Math.min(...ps.map((p) => p.x))) + 2;
-        const added = transformPart(project, pi, translation(+dx.toFixed(3), 0), 1);
-        if (added.length) selection = { part: added[0], edge: 0 };
-        commit();
-        setTimeout(() => plan?.fit(), 0);
+        void pendingEdits.track(duplicatePart(pi, +dx.toFixed(3)));
       } },
       { label: t("tool.deletePart"), icon: "trash", danger: true, action: () => { selection = { part: pi, edge: 0 }; deletePart(); } },
     ];
+  }
+
+  /** A copy of part `pi` `dx` m to the right, made by the core. */
+  async function duplicatePart(pi: number, dx: number) {
+    if (!project) return;
+    const before = JSON.stringify($state.snapshot(project));
+    let r;
+    try {
+      r = await api.transformPart($state.snapshot(project) as Project, pi, { kind: "move", dx, dy: 0 }, 1);
+    } catch (e) {
+      if (!notifyRefusal(e, "transform")) notifyError(e, "calc");
+      return;
+    }
+    if (!project || JSON.stringify($state.snapshot(project)) !== before) return;
+    adoptProject(r.project);
+    if (r.parts.length) selection = { part: r.parts[0], edge: 0 };
+    commit();
+    setTimeout(() => plan?.fit(), 0);
   }
 
   function openMenu(target: PlanTarget, client: { x: number; y: number }, world: Point2) {
@@ -1315,7 +1488,7 @@
           { label: t("menu.insertPoint"), icon: "plus", action: () => insertVertex(part, edge, on.x, on.y) },
           { label: t("edge.addMarker"), icon: "right", action: insertMarker },
         ]),
-        ...(!marker && !gable ? [{ label: t("calc.button"), icon: "chart", action: () => (calc = { part, edge, patches: null }) }] : []),
+        ...(!marker && !gable ? [{ label: t("calc.button"), icon: "chart", action: () => (calc = { part, edge, request: null }) }] : []),
         { sep: true },
         ...partEntries(part),
       ];
@@ -1483,12 +1656,22 @@
     drawing.push({ x, y });
   }
 
-  function finishDraw() {
+  const finishDraw = () => pendingEdits.track(finishDrawNow());
+  async function finishDrawNow() {
     if (!project || !drawing) return;
     // Two corners on one point make a wall of no length, which the roof
     // calculation cannot take (core `zero_length_wall`): a corner clicked
     // twice, or the last corner snapped onto the first one.
-    let pts = withoutRepeats(drawing);
+    const drawn = JSON.stringify($state.snapshot(drawing));
+    let pts: Point2[];
+    try {
+      pts = await api.withoutRepeats($state.snapshot(drawing) as Point2[]);
+    } catch (e) {
+      notifyError(e, "calc");
+      return;
+    }
+    // Drawing went on or was left while the core answered: this finish is stale.
+    if (!project || !drawing || JSON.stringify($state.snapshot(drawing)) !== drawn) return;
     if (pts.length < 3) return;
     const area = pts.reduce((s, p, i) => {
       const q = pts[(i + 1) % pts.length];
@@ -1562,6 +1745,10 @@
     } else if (mod && e.key.toLowerCase() === "d" && selectedItem && !drawing) {
       e.preventDefault();
       duplicateItem(selectedItem);
+    } else if (!drawing && !placing && dormerSel === null && !openSel && !manualSel && project?.parts.length && wallStepKey(e, false)) {
+      // PageDown / PageUp, Alt+→ / Alt+←: the next or previous wall (UX-006).
+      e.preventDefault();
+      selection = stepWall(project, selection, wallStepKey(e, false));
     } else if (!mod && !drawing && !placing && e.key.startsWith("Arrow") && nudge(e)) {
       // handled
     } else if (e.key === "F3") {
@@ -1658,7 +1845,7 @@
     <div class="body">
       <div class="main">
         {#if pending}
-          <div class="review" role="status">
+          <div class="review" class:open={reviewDetails} role="status">
             <Icon name="sparkle" size={18} />
             <div class="review-text">
               <strong>
@@ -1676,10 +1863,12 @@
                 </span>
               {/if}
             </div>
+            <!-- Only in small windows (CSS): the banner is one line there. -->
+            <button class="btn sm review-more" aria-expanded={reviewDetails} aria-label={t("review.details")} title={t("review.details")} onclick={() => (reviewDetails = !reviewDetails)}><Icon name="list" size={14} /></button>
             {#if review?.before}
-              <button class="btn sm" class:on={showBefore} aria-pressed={showBefore} onclick={() => (showBefore = !showBefore)} title={t("review.beforeHint")}>{t("review.before")}</button>
+              <button class="btn sm" class:on={showBefore} aria-pressed={showBefore} onclick={() => (showBefore = !showBefore)} aria-label={t("review.before")} title={t("review.beforeHint")}><Icon name="eye" size={14} /><span class="lbl">{t("review.before")}</span></button>
             {/if}
-            <button class="btn sm" disabled={reviewBusy} onclick={() => revert(true)}><Icon name="undo" size={14} />{pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}</button>
+            <button class="btn sm" disabled={reviewBusy} onclick={() => revert(true)} aria-label={pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")} title={pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}><Icon name="undo" size={14} /><span class="lbl">{pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}</span></button>
             <button class="btn sm accept" disabled={reviewBusy} onclick={accept}><Icon name="check" size={14} />{t("review.accept")}</button>
           </div>
         {/if}
@@ -1730,6 +1919,7 @@
                 {highlight}
                 {highlightItems}
                 {ghost}
+                wallNotes={reviewNotes}
                 mark={dock === "breakdown" && dockOpen ? planMark : null}
                 {faceLabels}
                 {drawing}
@@ -1765,18 +1955,23 @@
         {#if drawing}
           <DrawBar
             count={drawing.length}
+            prev={lastStep(drawing)}
             onstep={drawStep}
             onundo={() => drawing?.pop()}
             onclose={finishDraw}
             oncancel={(ask) => cancelDraw(!!ask)}
           />
+        {:else if placing}
+          <PlaceBar kind={placing} points={manualDraft.length}
+            onundo={() => (manualDraft = manualDraft.slice(0, -1))}
+            oncancel={() => (placing = false)} />
         {:else if dormerSel !== null}
           <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} onedit={editDormer}
-            onplace={(e, l, r) => { if (dormerSel !== null) placeItem({ kind: "dormer", index: dormerSel }, e, l, r); }} />
+            onplace={(e, l, r) => (dormerSel !== null ? placeItem({ kind: "dormer", index: dormerSel }, e, l, r) : undefined)} />
         {:else if openSel}
-          <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening}
+          <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening} track={(p) => pendingEdits.track(p)}
             placement={openSel ? placementOf(result, openSel) : null}
-            onplace={(e, l, r) => { if (openSel) placeItem({ kind: openSel.kind, index: openSel.index }, e, l, r); }} />
+            onplace={(e, l, r) => (openSel ? placeItem({ kind: openSel.kind, index: openSel.index }, e, l, r) : undefined)} />
         {:else if manualSel}
           <ManualBar {project} bind:sel={manualSel} online={setManualLine} onface={setManualFace} ontopart={faceToPart} ondelete={deleteManual} />
         {:else}
@@ -1791,13 +1986,13 @@
             ondelete={deleteVertex}
             onmarker={insertMarker}
             onround={opposite !== null ? openRound : undefined}
-            oncalc={() => selection && (calc = { part: selection.part, edge: selection.edge, patches: null })}
+            oncalc={() => selection && (calc = { part: selection.part, edge: selection.edge, request: null })}
           />
         {/if}
       </div>
 
       <aside class:open={dockOpen}>
-        <div class="tabs" role="tablist" use:tablist>
+        <div class="tabs" role="tablist" use:tablist use:fitlabels>
           <button role="tab" id={dockIds.tab("results")} aria-controls={dockIds.panel} aria-selected={dock === "results"} class:on={dock === "results"} onclick={() => showDock("results")} title={t("dock.results")}><Icon name="chart" size={15} /><span class="tab-label">{t("dock.results")}</span></button>
           <button role="tab" id={dockIds.tab("breakdown")} aria-controls={dockIds.panel} aria-selected={dock === "breakdown"} class:on={dock === "breakdown"} onclick={() => showDock("breakdown")} title={t("bd.title")}><Icon name="sigma" size={15} /><span class="tab-label">{t("dock.breakdown")}</span></button>
           <button role="tab" id={dockIds.tab("ai")} aria-controls={dockIds.panel} aria-selected={dock === "ai"} class:on={dock === "ai"} onclick={() => showDock("ai")} title={t("dock.ai")}>
@@ -1824,7 +2019,7 @@
       <span class="coords">{cursor ? `X ${num(cursor.x)}   Y ${num(cursor.y)}` : "X —   Y —"}</span>
       <span class="opt">{t("status.snap")}</span>
       <span class="opt">{t("status.walls", { n: wallCount, p: project.parts.length })}</span>
-      {#if result}<span>{t("res.area")}: <b>{m2(result.totals.roof_area)}</b></span>{/if}
+      {#if result}<span data-testid="status-area">{t("res.area")}: <b title={roofError ? t("res.notCalculated") : undefined}>{roofError ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save">
         {#if saveState === "saved"}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
@@ -1853,9 +2048,9 @@
 {#if objDlg && openSel && project}
   <Modal title={itemTitle(openSel)} width={760} onclose={() => closeObjDlg(false)}>
     <div class="obj-dlg" data-testid="object-dialog">
-      <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={() => { objDlg = false; deleteOpening(); }}
+      <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={() => { objDlg = false; deleteOpening(); }} track={(p) => pendingEdits.track(p)}
         placement={placementOf(result, openSel)}
-        onplace={(e, l, r) => { if (openSel) placeItem({ kind: openSel.kind, index: openSel.index }, e, l, r); }} />
+        onplace={(e, l, r) => (openSel ? placeItem({ kind: openSel.kind, index: openSel.index }, e, l, r) : undefined)} />
     </div>
     {#snippet footer()}
       <button class="btn" onclick={() => closeObjDlg(false)}>{t("common.cancel")}</button>
@@ -1876,17 +2071,17 @@
 
 {#if calc && project}
   <Modal title={t("calc.title")} width={760} onclose={() => (calc = null)}>
-    <RoofCalcForm part={project.parts[calc.part]} edge={calc.edge} {result} bind:patches={calc.patches} />
+    <RoofCalcForm {project} partIndex={calc.part} edge={calc.edge} bind:request={calc.request} />
     {#snippet footer()}
       <button class="btn" onclick={() => (calc = null)}>{t("common.cancel")}</button>
-      <button class="btn primary" disabled={!calc?.patches} onclick={applyCalc}>{t("common.ok")}</button>
+      <button class="btn primary" disabled={!calc?.request} onclick={applyCalc}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
 
 {#if round}
   <Modal title={t("round.title")} width={720} onclose={() => (round = null)}>
-    <RoundRoofForm span={round.span} bind:eave={round.eave} bind:overhang={round.overhang} bind:arc={round.arc} />
+    <RoundRoofForm span={round.span} bind:eave={round.eave} bind:overhang={round.overhang} bind:arc={round.arc} bind:request={round.request} />
     {#snippet footer()}
       <button class="btn" onclick={() => (round = null)}>{t("common.cancel")}</button>
       <button class="btn primary" disabled={!round?.arc} onclick={applyRound}>{t("common.ok")}</button>
@@ -2314,6 +2509,14 @@
     color: var(--text);
     border-bottom-color: var(--accent);
   }
+  /* Labels that would be cut ("KI" to "K") are hidden; icons and tooltips stay (UI-005, fitlabels.ts). */
+  .tabs:global(.compact) .tab-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
   .badge {
     position: absolute;
     top: 6px;
@@ -2567,6 +2770,48 @@
     .review,
     .warn-bar {
       padding: 6px 12px;
+    }
+  }
+  .review-more {
+    display: none;
+  }
+  /* Small windows: the review banner keeps to one line of text with the
+     buttons as icons, and "Details" opens the change list (UX-017). */
+  @media (max-height: 640px), (max-width: 760px) {
+    .review {
+      gap: 8px;
+    }
+    .review > :global(svg:first-child) {
+      display: none;
+    }
+    .review-more {
+      display: inline-flex;
+    }
+    .review-more[aria-expanded="true"] {
+      border-color: color-mix(in srgb, var(--ai) 60%, var(--border));
+      color: var(--ai-strong);
+    }
+    .review .btn.sm {
+      padding: 0 9px;
+    }
+    .review .lbl {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+    }
+    .review:not(.open) .review-text strong,
+    .review:not(.open) .review-summary {
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      display: block;
+    }
+    .review:not(.open) .review-list,
+    .review:not(.open) .review-figures {
+      display: none;
     }
   }
 </style>

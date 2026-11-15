@@ -118,7 +118,9 @@ The tools cover every operation of the Tectora editor:
   `list_projects` also returns `broken`: job files the library cannot read
   (`unreadable`: damaged, `newer_format`: saved by a newer Tectora); tell
   the user, do not create a new job beside one. A tool on such a job says
-  why it cannot be opened.
+  why it cannot be opened. A job whose roof takes too long to calculate for
+  the list comes with `figures_pending: true` and `roof_area_m2: null`; use
+  `calc` on it for its figures.
 - Deleting: `delete_project` and `remove_file` move the job (with its
   history and files) or the file to the library's trash for 30 days;
   `list_deleted` shows what is there and `restore_project` brings it back.
@@ -149,6 +151,9 @@ The tools cover every operation of the Tectora editor:
   reads them.
   `export_plan` writes the roof sheet (plan with line lengths, areas and
   pitches) as PDF or SVG into the `exports` folder and returns the path.
+  Pass `line_names` (code → name in the user's language, e.g.
+  `{"T": "Okapy", "WV": "Napojení čelní"}`) for a legend of the line codes
+  at the sheet's foot, as the app's sheet has.
 - `get_schema`: the JSON Schema of the `.tectora` file.
 
 ## Stored result
@@ -474,3 +479,9 @@ stay as they are (`settings.folder_request` shows the open request). When
 `effective.settings_error` is set, the settings file is damaged and the
 defaults (another jobs folder) are in use: tell the user before you change a
 setting (the damaged file is kept as `settings.json.bad` on the next save).
+
+Files: `path` arguments (drawing tools, `attach_file`, `import_job`) take
+files in the jobs folder and the drawings inbox. Any other path is refused
+and the app asks the user to allow that one file; tell the user to answer
+in the Tectora window, then repeat the call. Never go looking for the file
+another way.

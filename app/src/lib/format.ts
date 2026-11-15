@@ -26,3 +26,12 @@ export function relativeTime(ms: number): string {
   if (h < 24) return t("time.h", { n: h });
   return new Date(ms).toLocaleDateString(numberLocale(), { day: "numeric", month: "short", year: "numeric" });
 }
+
+/** The area on a library card: "…" while the roof is still being calculated in the background. */
+export const cardArea = (p: { roof_area: number; figures_pending?: boolean }) => (p.figures_pending ? "…" : m2(p.roof_area));
+
+/** Delay before listing the library again while a card waits for its figures, ms; null to stop asking. */
+export function pendingRetryMs(pending: boolean, tries: number): number | null {
+  if (!pending || tries >= 8) return null;
+  return Math.min(1000 * 2 ** tries, 30000);
+}

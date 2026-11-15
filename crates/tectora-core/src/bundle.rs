@@ -591,6 +591,69 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_bundle_leaves_no_lock_file_behind() {
+        // ARCH-008: every bundle refused after the job was written left
+        // `.activity/<id>.lock`.
+        let dir = std::env::temp_dir().join(format!("tectora-refused-lock-{}", now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        let store = Store::new(dir.join("lib")).unwrap();
+        // A good file, then one Windows reserves: refused after the job and
+        // the first file were written.
+        let b2 = bundle_with(&dir, &[("x.pdf", 0, 1)]);
+        let mut zip = zip::ZipWriter::new_append(
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&b2)
+                .unwrap(),
+        )
+        .unwrap();
+        zip.start_file("files/NUL.pdf", SimpleFileOptions::default())
+            .unwrap();
+        zip.finish().unwrap();
+        let e = import(&store, &b2).unwrap_err();
+        assert!(e.detail.contains("invalid file name"), "{e}");
+        let left: Vec<String> = fs::read_dir(store.activity_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| !n.starts_with('.'))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+        assert!(store.list().is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn one_bundle_imported_twice_at_once_gives_two_jobs() {
+        // TEST-001 for imports.
+        let dir = std::env::temp_dir().join(format!("tectora-import-race-{}", now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        let store = std::sync::Arc::new(Store::new(dir.join("lib")).unwrap());
+        let b = bundle_with(&dir, &[("x.pdf", 0, 1)]);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let ids: Vec<String> = (0..2)
+            .map(|_| {
+                let (s, b, bar) = (store.clone(), b.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    bar.wait();
+                    import(&s, &b).unwrap()
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+        assert_ne!(ids[0], ids[1]);
+        assert_eq!(store.list().len(), 2);
+        for id in &ids {
+            assert_eq!(store.attachments(id).len(), 1, "{id}");
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn a_bundle_with_coordinates_out_of_range_is_refused() {
         let dir = std::env::temp_dir().join(format!("tectora-range-{}", now_ms()));
         let store = Store::new(dir.join("lib")).unwrap();

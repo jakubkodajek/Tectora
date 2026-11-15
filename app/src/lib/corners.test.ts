@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EdgeDef } from "./types";
-import { cornerGroup, onWall, mergeDroppedCorner, moveCorner, samePoint, withoutRepeats } from "./corners";
+import { cornerGroup, onWall, moveCorner, samePoint } from "./corners";
 
 const w = (x: number, y: number, marker = false): EdgeDef => ({
   start: { x, y },
@@ -20,39 +20,14 @@ describe("corner drag", () => {
     expect(es[1].start).toEqual({ x: 11, y: 0 });
     expect(es[0].start).toEqual({ x: 0, y: 0 });
   });
-
-  it("merges a corner dropped on its neighbour, keeping three walls", () => {
-    const es = [w(0, 0), w(5, 0), w(10, 0), w(10, 6), w(0, 6)];
-    es[1].start = { x: 10.002, y: 0 };
-    expect(mergeDroppedCorner(es, 1)).toBe(true);
-    expect(es.map((e) => e.start.x)).toEqual([0, 10, 10, 0]);
-    const tri = [w(0, 0), w(10, 0), w(0, 6)];
-    tri[1].start = { x: 0, y: 6 };
-    expect(mergeDroppedCorner(tri, 1)).toBe(false);
-    expect(tri).toHaveLength(3);
-  });
-
-  it("leaves a corner that is only near, not on, its neighbour", () => {
-    const es = [w(0, 0), w(9.9, 0), w(10, 0), w(10, 6), w(0, 6)];
-    expect(mergeDroppedCorner(es, 1)).toBe(false);
-  });
 });
 
-describe("drawn footprint without repeated corners", () => {
+// Merging a dropped corner and dropping repeated corners are the core's
+// (`edit/corners.rs` tests); here only the plan's own one-point test.
+describe("one point", () => {
   const p = (x: number, y: number) => ({ x, y });
-  it("drops a corner clicked twice and a closing corner on the first one", () => {
-    // A wall of no length stopped the roof of every building (zero_length_wall).
-    expect(withoutRepeats([p(0, 0), p(8, 0), p(8, 0), p(8, 6), p(0, 6), p(0, 0)])).toEqual([p(0, 0), p(8, 0), p(8, 6), p(0, 6)]);
-    expect(withoutRepeats([p(0, 0), p(8, 0), p(8, 6), p(0.0004, 0)])).toEqual([p(0, 0), p(8, 0), p(8, 6)]);
-  });
-  it("drops a corner a few mm from the one before, which the core counts as one point", () => {
-    // Walls of 1 to 10 mm stopped every roof as well (review ERR-001).
-    expect(withoutRepeats([p(0, 0), p(8, 0), p(8, 0.006), p(8, 6), p(0, 6)])).toEqual([p(0, 0), p(8, 0), p(8, 6), p(0, 6)]);
+  it("counts corners a few mm apart as one point and 1 cm as two", () => {
     expect(samePoint(p(1, 1), p(1.0099, 1))).toBe(true);
-  });
-  it("keeps corners 1 cm apart and more", () => {
-    const pts = [p(0, 0), p(0.01, 0), p(8, 6)];
-    expect(withoutRepeats(pts)).toEqual(pts);
     expect(samePoint(p(1, 1), p(1.01, 1))).toBe(false);
   });
 });

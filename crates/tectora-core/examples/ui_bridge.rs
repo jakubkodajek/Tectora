@@ -118,6 +118,44 @@ fn calc_command(cmd: &str, a: &Value) -> Option<Result<Value, Value>> {
                 .map(|s| to_json(s).unwrap_or(Value::Null))
         }),
         "check_windows" => project().and_then(|p| commands::check_windows(&p).map_err(err)),
+        "roof_helper_context" => project().and_then(|p| {
+            let bad = |Fail(e): Fail| json!({ "code": "invalid_input", "detail": e });
+            let (part, edge) = (arg(a, "part").map_err(bad)?, arg(a, "edge").map_err(bad)?);
+            let with_points = arg::<bool>(a, "withPoints").map_err(bad)?;
+            commands::roof_helper_context(&p, part, edge, with_points).map_err(err)
+        }),
+        "roof_helper_preview" => project().and_then(|p| {
+            let bad = |Fail(e): Fail| json!({ "code": "invalid_input", "detail": e });
+            let (part, edge) = (arg(a, "part").map_err(bad)?, arg(a, "edge").map_err(bad)?);
+            let req = arg(a, "request").map_err(bad)?;
+            commands::roof_helper_preview(&p, part, edge, &req).map_err(err)
+        }),
+        "roof_helper_apply" => project().and_then(|p| {
+            let bad = |Fail(e): Fail| json!({ "code": "invalid_input", "detail": e });
+            let (part, edge) = (arg(a, "part").map_err(bad)?, arg(a, "edge").map_err(bad)?);
+            let req = arg(a, "request").map_err(bad)?;
+            commands::roof_helper_apply(&p, part, edge, &req)
+                .map_err(err)
+                .map(|p| to_json(p).unwrap_or(Value::Null))
+        }),
+        "round_arc" => arg::<tectora_core::edit::round::ArcInput>(a, "input")
+            .map_err(|Fail(e)| json!({ "code": "invalid_input", "detail": e }))
+            .and_then(|i| commands::round_arc(&i).map_err(err)),
+        "transform_part" => project().and_then(|p| {
+            let bad = |Fail(e): Fail| json!({ "code": "invalid_input", "detail": e });
+            let part = arg(a, "part").map_err(bad)?;
+            let map = arg(a, "map").map_err(bad)?;
+            let copies = arg(a, "copies").map_err(bad)?;
+            commands::transform_part(&p, part, map, copies).map_err(err)
+        }),
+        "offset_wall" => project().and_then(|p| {
+            let bad = |Fail(e): Fail| json!({ "code": "invalid_input", "detail": e });
+            let (part, edge) = (arg(a, "part").map_err(bad)?, arg(a, "edge").map_err(bad)?);
+            let dist = arg(a, "dist").map_err(bad)?;
+            commands::offset_wall(&p, part, edge, dist)
+                .map_err(err)
+                .map(|p| to_json(p).unwrap_or(Value::Null))
+        }),
         "dormer_host" => project().and_then(|p| {
             let index = arg::<usize>(a, "index")
                 .map_err(|Fail(e)| json!({ "code": "invalid_input", "detail": e }))?;
@@ -287,9 +325,14 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
                 arg::<String>(a, "title")?,
                 arg::<String>(a, "stamp")?,
             );
-            let (list, svg) = tectora_core::export::checked(&arg::<Project>(a, "project")?, &opts)
+            let project = arg::<Project>(a, "project")?;
+            let names =
+                arg::<Option<BTreeMap<String, String>>>(a, "lineNames")?.unwrap_or_default();
+            let (list, svg) = tectora_core::export::checked_named(&project, &opts, &names)
                 .map_err(|d| coded("out_of_range", d))?;
-            Ok(serde_json::json!({ "list": list, "svg": svg }))
+            let summary = tectora_core::export::checked_summary(&project, &opts)
+                .map_err(|d| coded("out_of_range", d))?;
+            Ok(serde_json::json!({ "list": list, "svg": svg, "summary": summary }))
         }
         "export_plan_file" => {
             let path = PathBuf::from(arg::<String>(a, "path")?);
@@ -298,10 +341,13 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
                 .and_then(|e| e.to_str())
                 .unwrap_or_default()
                 .to_ascii_lowercase();
-            let bytes = tectora_core::export::checked_sheet_file(
+            let names =
+                arg::<Option<BTreeMap<String, String>>>(a, "lineNames")?.unwrap_or_default();
+            let bytes = tectora_core::export::checked_sheet_file_named(
                 &arg::<Project>(a, "project")?,
                 &arg::<String>(a, "stamp")?,
                 &ext,
+                &names,
             )
             .map_err(|d| coded("out_of_range", d))?;
             std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
@@ -321,11 +367,14 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         "take_open_errors" => Ok(serde_json::json!([])),
         "create_standard" | "standard_part" => {
             let kind: StandardRoof = arg(a, "kind")?;
+            let pitch: f64 = arg(a, "pitchDeg")?;
+            tectora_core::edit::check_eave_pitch(pitch, f64::MIN_POSITIVE)
+                .map_err(|d| coded("out_of_range", d))?;
             let part = standard_roof(
                 kind,
                 arg(a, "length")?,
                 arg(a, "width")?,
-                arg(a, "pitchDeg")?,
+                pitch,
                 arg(a, "eaveHeight")?,
                 arg(a, "overhang")?,
             );
@@ -365,6 +414,11 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             project.name = arg(a, "name")?;
             to_json(store.save(None, &project)?)
         }
+        "item_geometry" => {
+            let request: tectora_core::commands::GeometryRequest = arg(a, "request")?;
+            tectora_core::commands::item_geometry(&request)
+                .map_err(|e| Fail(to_json(e).unwrap_or(Value::Null)))
+        }
         "face_to_part" => {
             let mut project = arg::<Project>(a, "project")?;
             tectora_core::edit::face_to_part(
@@ -374,12 +428,15 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
                 arg(a, "pitchDeg")?,
                 arg(a, "eaveHeight")?,
                 arg(a, "overhang")?,
-            )?;
+            )
+            .map_err(|d| coded("refused", d))?;
             to_json(project)
         }
         "item_placement" => {
             let project = arg::<Project>(a, "project")?;
-            project.check_input().map_err(|e| e.message)?;
+            project
+                .check_input()
+                .map_err(|e| coded(e.code, e.message))?;
             let it = tectora_core::edit::transform::ItemRef {
                 kind: arg(a, "kind")?,
                 index: arg(a, "index")?,
@@ -388,7 +445,9 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         }
         "place_item" => {
             let mut project = arg::<Project>(a, "project")?;
-            project.check_input().map_err(|e| e.message)?;
+            project
+                .check_input()
+                .map_err(|e| coded(e.code, e.message))?;
             let it = tectora_core::edit::transform::ItemRef {
                 kind: arg(a, "kind")?,
                 index: arg(a, "index")?,
@@ -399,17 +458,21 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
                 arg::<Option<f64>>(a, "fromEave")?,
                 arg::<Option<f64>>(a, "fromLeft")?,
                 arg::<Option<f64>>(a, "fromRight")?,
-            )?;
+            )
+            .map_err(|d| coded("refused", d))?;
             to_json(project)
         }
         "set_part_height" => {
             let mut project = arg::<Project>(a, "project")?;
-            project.check_input().map_err(|e| e.message)?;
+            project
+                .check_input()
+                .map_err(|e| coded(e.code, e.message))?;
             tectora_core::edit::height::set_part_height(
                 &mut project,
                 arg(a, "part")?,
                 arg(a, "height")?,
-            )?;
+            )
+            .map_err(|d| coded("refused", d))?;
             to_json(project)
         }
         // Settings live in `target/ui-preview-config` (see `main`). A new
@@ -429,6 +492,12 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             let next = Settings::load()
                 .answer_folder_request(allow)
                 .map_err(|e| e.code().to_string())?;
+            next.save().map_err(|e| e.code().to_string())?;
+            Ok(next.describe())
+        }
+        "answer_file_request" => {
+            let allow = a.get("allow").and_then(Value::as_bool).unwrap_or(false);
+            let next = Settings::load().answer_file_request(allow);
             next.save().map_err(|e| e.code().to_string())?;
             Ok(next.describe())
         }

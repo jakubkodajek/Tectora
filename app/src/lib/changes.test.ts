@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { changedItems, describeChange, describeFigure, ghostOf } from "./changes";
 import { i18n } from "./i18n.svelte";
-import type { Change, EdgeDef, Project } from "./types";
+import type { CalcResult, Change, EdgeDef, Project } from "./types";
 import { emptyProject } from "./types";
 
 const edge = (x: number, y: number): EdgeDef => ({ start: { x, y }, pitch_deg: 40, eave_height: 3, overhang: 0.5 }) as EdgeDef;
@@ -61,6 +61,32 @@ describe("previous state", () => {
     const changes: Change[] = [{ kind: "modified", field: "pitch_deg", part: 0, edge: 0, before: 40, after: 45 }];
     expect(ghostOf(changes, before, before, null).shapes).toEqual([]);
     expect(ghostOf(changes, null, before, null)).toEqual({ shapes: [], lines: [] });
+  });
+
+  it("shows the previous roof lines of a pitch change, not the ones that stayed (UX-017)", () => {
+    const before = { ...emptyProject("x"), parts: [rect(10)] };
+    const now = { ...emptyProject("x"), parts: [rect(10)] };
+    const roof = (ridgeY: number) =>
+      ({
+        parts: [
+          {
+            geometry: {
+              lines: [
+                { kind: "eave", a: [0, 0, 3], b: [10, 0, 3] },
+                { kind: "ridge", a: [2, ridgeY, 6], b: [8, ridgeY, 6] },
+              ],
+            },
+          },
+        ],
+      }) as unknown as CalcResult;
+    const changes: Change[] = [{ kind: "modified", field: "pitch_deg", part: 0, edge: 0, before: 40, after: 35 }];
+    const g = ghostOf(changes, before, now, roof(4.5), roof(4));
+    expect(g.lines).toEqual([[{ x: 2, y: 4 }, { x: 8, y: 4 }]]);
+    // A change that does not reshape the roof draws no old lines.
+    const named: Change[] = [{ kind: "modified", field: "name", before: "a", after: "b" }];
+    expect(ghostOf(named, before, now, roof(4.5), roof(4)).lines).toEqual([]);
+    // Without the previous roof only outlines are shown, as before.
+    expect(ghostOf(changes, before, now, roof(4.5), null).lines).toEqual([]);
   });
 });
 

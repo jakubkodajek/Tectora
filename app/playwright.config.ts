@@ -1,8 +1,10 @@
 // End-to-end tests of the whole UI in Chromium against the real Rust core:
 // the browser preview (ui_bridge + Vite) on its own ports and library, plus
 // the `tectora mcp` server for the AI flows. Run: `npm run e2e`.
+// Importing e2e/env claims this run's slot (folder and ports), so two runs on
+// one machine do not share a library (see e2e/README.md).
 import { defineConfig } from "@playwright/test";
-import { VITE_PORT } from "./e2e/env";
+import { REPORT_DIR, RESULTS_DIR, VITE_PORT } from "./e2e/env";
 
 const ci = !!process.env.CI;
 
@@ -16,8 +18,8 @@ export default defineConfig({
   retries: ci ? 1 : 0,
   timeout: 45_000,
   expect: { timeout: 8_000 },
-  reporter: ci ? [["github"], ["list"], ["html", { open: "never", outputFolder: "../target/e2e-report" }]] : [["list"]],
-  outputDir: "../target/e2e-results",
+  reporter: ci ? [["github"], ["list"], ["html", { open: "never", outputFolder: REPORT_DIR }]] : [["list"]],
+  outputDir: RESULTS_DIR,
   use: {
     baseURL: `http://localhost:${VITE_PORT}`,
     viewport: { width: 1360, height: 860 },

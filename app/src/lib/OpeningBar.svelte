@@ -3,9 +3,12 @@
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
   import type { Chimney, Placement, Project, RoofWindow } from "./types";
-  import { isConvex, openingBox, openingList, reshapeOpening, type OpeningBox, type OpeningSel } from "./openings";
+  import { isConvex, openingBox, openingList, type OpeningBox, type OpeningSel } from "./openings";
+  import { api } from "./api";
+  import { notifyError } from "./notify.svelte";
   import { numeric } from "./numeric.svelte";
   import PlaceFields from "./PlaceFields.svelte";
+  import { pageStep, stepIndex } from "./itemstep";
 
   let {
     project,
@@ -15,6 +18,7 @@
     ondelete,
     placement = null,
     onplace,
+    track = (p) => p,
   }: {
     project: Project;
     sel: OpeningSel;
@@ -23,7 +27,9 @@
     ondelete: () => void;
     /** Where the object sits on its face (dimension fields). */
     placement?: Placement | null;
-    onplace?: (fromEave: number | null, fromLeft: number | null, fromRight: number | null) => void;
+    onplace?: (fromEave: number | null, fromLeft: number | null, fromRight: number | null) => unknown;
+    /** Registers an edit that waits for the core, so leaving the editor waits for it (ERR-004). */
+    track?: <T>(p: Promise<T>) => Promise<T>;
   } = $props();
 
   const list = $derived(sel ? openingList(project, sel.kind) : []);
@@ -33,15 +39,27 @@
   const win = $derived(sel?.kind === "window" ? (project.windows ?? [])[sel.index] : null);
 
 
-  function setBox(patch: Partial<OpeningBox>) {
+  /** A field of the box typed: the core reshapes the corners; a box it refuses is said at the field. */
+  const setBox = (patch: Partial<OpeningBox>) => track(setBoxNow(patch));
+  async function setBoxNow(patch: Partial<OpeningBox>): Promise<string | undefined> {
     if (!chimney || !box) return;
-    const corners = reshapeOpening(chimney.corners, { ...box, ...patch });
-    if (corners) onchimney({ ...$state.snapshot(chimney), corners });
+    const was = $state.snapshot(chimney);
+    let corners;
+    try {
+      corners = await api.reshapeOpening(was.corners, { ...box, ...patch });
+    } catch (e) {
+      if ((e as { code?: string } | null)?.code === "refused") return t("num.refused");
+      notifyError(e, "calc");
+      return t("num.refused");
+    }
+    // Only onto the chimney it was asked for: a drag or an AI save in between wins.
+    if (!chimney || JSON.stringify($state.snapshot(chimney).corners) !== JSON.stringify(was.corners)) return;
+    onchimney({ ...$state.snapshot(chimney), corners });
   }
 
   function step(d: number) {
-    if (!sel || list.length === 0) return;
-    sel = { kind: sel.kind, index: (sel.index + d + list.length) % list.length };
+    const next = sel ? stepIndex(sel.index, list.length, d) : null;
+    if (sel && next !== null) sel = { kind: sel.kind, index: next };
   }
 </script>
 
@@ -52,15 +70,15 @@
   </label>
 {/snippet}
 
-<div class="bar" role="toolbar" aria-label={t(`opening.${sel?.kind ?? "chimney"}`)}>
+<div class="bar" role="toolbar" aria-label={t(`opening.${sel?.kind ?? "chimney"}`)} use:pageStep={step}>
   {#if sel}
     <div class="nav">
-      <button class="icon-btn" onclick={() => step(-1)} aria-label={t("opening.prev")}><Icon name="left" /></button>
+      <button class="icon-btn" onclick={() => step(-1)} title="{t('opening.prev')} (PageUp)" aria-label={t("opening.prev")}><Icon name="left" /></button>
       <div class="which">
         <strong>{t(`opening.${sel.kind}N`, { n: sel.index + 1 })}</strong>
         <span>{t("def.of", { n: list.length })}</span>
       </div>
-      <button class="icon-btn" onclick={() => step(1)} aria-label={t("opening.next")}><Icon name="right" /></button>
+      <button class="icon-btn" onclick={() => step(1)} title="{t('opening.next')} (PageDown)" aria-label={t("opening.next")}><Icon name="right" /></button>
     </div>
     {#if chimney}
       {#if box}

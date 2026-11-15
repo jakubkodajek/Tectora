@@ -2,33 +2,56 @@
   // DACAD's Runddach dialog: span, overhang and eave come from the two walls;
   // the arc is DACAD's default or is given by radius, ridge height or
   // developed length. A cross-section shows the polygon that will be built.
+  import { api } from "./api";
   import { num } from "./format";
   import { t } from "./i18n.svelte";
+  import { latest } from "./latest";
+  import { notifyError } from "./notify.svelte";
   import { numeric } from "./numeric.svelte";
-  import { MAX_ROUND_SEGMENTS, arcFor, minRadius, type Arc, type ArcMode } from "./roundroof";
+  import { MAX_ROUND_SEGMENTS } from "./roundroof";
+  import type { Arc, ArcMode, HelperRequest, RoundArcAnswer } from "./types";
+  import { onDestroy } from "svelte";
 
   let {
     span,
     eave = $bindable(),
     overhang = $bindable(),
     arc = $bindable(null),
-  }: { span: number; eave: number; overhang: number; arc: Arc | null } = $props();
+    request = $bindable(null),
+  }: { span: number; eave: number; overhang: number; arc: Arc | null; request: HelperRequest | null } = $props();
 
   let mode = $state<ArcMode>("default");
-  // 0 = DACAD's own count, ceil(arc / 11.25°) per side.
+  // 0 = the core's own count, ceil(arc / 11.25°) per side.
   let segments = $state(0);
   let value = $state(0);
 
-  const r0 = $derived(minRadius(span, overhang));
-  // Suggest DACAD's default arc whenever the mode changes.
+  // The arc is worked out by the core (`round_arc`); typing asks again after a pause.
+  let answer = $state<RoundArcAnswer | null>(null);
+  const ask = latest(
+    (input: Parameters<typeof api.roundArc>[0]) => api.roundArc(input),
+    (a) => {
+      answer = a;
+      arc = a.arc;
+    },
+    (e) => {
+      answer = null;
+      arc = null;
+      notifyError(e, "calc");
+    },
+  );
+  onDestroy(() => ask.stop());
+  const r0 = $derived(answer?.min_radius ?? span / 2 + overhang);
+  // Suggest the default arc whenever the mode changes.
   function setMode(m: ArcMode) {
     mode = m;
-    const d = arcFor({ span, overhang, eave_height: eave, segments: 0, mode: "default", value: 0 });
+    const d = answer?.default_arc;
     value = !d ? 0 : m === "radius" ? +d.radius.toFixed(3) : m === "ridge" ? +d.ridge.toFixed(3) : m === "length" ? +d.length.toFixed(3) : 0;
   }
 
   $effect(() => {
-    arc = arcFor({ span, overhang, eave_height: eave, segments: Math.round(segments), mode, value });
+    ask.ask({ span, overhang, eave_height: eave, segments: Math.round(segments), mode, value });
+    // What OK applies: the core works the same values out for both walls.
+    request = { tool: "round_roof", eave_height: eave, overhang, segments: Math.round(segments), mode, value };
   });
 
   // Cross-section preview (viewBox 0 0 200 120), walls at the bottom.

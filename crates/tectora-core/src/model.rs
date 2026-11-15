@@ -6,7 +6,19 @@ use serde::{Deserialize, Serialize};
 use crate::geom::{Point2, signed_area};
 
 /// Current version of the `.tectora` JSON schema.
-pub const SCHEMA_VERSION: u32 = 2;
+///
+/// Raise it whenever a field is added to the model, not only when one
+/// changes meaning: a release that reads an older version does not know the
+/// new field and would drop it silently on its next save (ARCH-003). With
+/// the bump it refuses the file instead (`newer_format`). The test
+/// `every_model_change_has_a_format_version` in `tests/schema.rs` enforces it.
+///
+/// - 1: first format.
+/// - 2: `result_snapshot`.
+/// - 3: fields added to version 2 without a bump (e.g. `parts[].height`,
+///   written by 0.8.0 as version 2) and unknown top-level keys kept
+///   (`Project::extra`). Releases up to 0.8.0 refuse a version 3 file.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Pitch at or above this value (degrees) means a vertical gable wall.
 pub const GABLE_PITCH_DEG: f64 = 89.999;
@@ -48,6 +60,11 @@ pub struct Project {
     /// an offer was made with), with the engine version that calculated it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_snapshot: Option<crate::snapshot::ResultSnapshot>,
+    /// Top-level keys this build does not know (written by a later release
+    /// of the same format version), kept and written back as they are.
+    /// Never read by the core; bounded by [`MAX_EXTRA_BYTES`].
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A line drawn by hand on the calculated roof (DACAD: Dachlinieneingabe).
@@ -158,6 +175,7 @@ impl Project {
             flat_roof: false,
             material_names: Vec::new(),
             result_snapshot: None,
+            extra: serde_json::Map::new(),
         }
     }
 
@@ -216,11 +234,15 @@ impl Project {
         for (ci, c) in self.chimneys.iter().enumerate() {
             if corners(c) {
                 out.push(Problem::of(ProblemItem::Chimney, ci, "bad_corners"));
+            } else if !c.has_area() {
+                out.push(Problem::of(ProblemItem::Chimney, ci, "bad_size"));
             }
         }
         for (ci, c) in self.roof_openings.iter().enumerate() {
             if corners(c) {
                 out.push(Problem::of(ProblemItem::Opening, ci, "bad_corners"));
+            } else if !c.has_area() {
+                out.push(Problem::of(ProblemItem::Opening, ci, "bad_size"));
             }
         }
         for (wi, w) in self.windows.iter().enumerate() {
@@ -271,8 +293,17 @@ impl Project {
         }
     }
 
+    /// The project file's text. Always stamped with the current
+    /// [`SCHEMA_VERSION`]: whatever version the design was read at (or the
+    /// editor made it with), the file holds the current fields, and a
+    /// release that does not know them must refuse it.
     pub fn to_json(&self) -> serde_json::Result<String> {
-        serde_json::to_string_pretty(self)
+        if self.schema_version == SCHEMA_VERSION {
+            return serde_json::to_string_pretty(self);
+        }
+        let mut stamped = self.clone();
+        stamped.schema_version = SCHEMA_VERSION;
+        serde_json::to_string_pretty(&stamped)
     }
 
     /// Reads a project file of this or an older format version, migrating
@@ -373,6 +404,17 @@ impl Project {
             .max()
             .unwrap_or(0);
         checks.push(over("corners of one object", corners, MAX_PART_WALLS));
+        // Unknown top-level keys are kept, not used: bound what they cost.
+        let extra_bytes = self
+            .extra
+            .iter()
+            .map(|(k, v)| k.len() + v.to_string().len())
+            .sum::<usize>();
+        checks.push((extra_bytes > MAX_EXTRA_BYTES).then(|| {
+            format!(
+                "too much data in unknown keys: {extra_bytes} bytes (at most {MAX_EXTRA_BYTES})"
+            )
+        }));
         match checks.into_iter().flatten().next() {
             Some(e) => Err(e),
             None => Ok(()),
@@ -412,6 +454,10 @@ impl Project {
 /// Largest absolute number accepted anywhere in a design: 100 km in
 /// metres, far above any building and far below where f64 geometry breaks.
 pub const MAX_ABS_VALUE: f64 = 1.0e5;
+
+/// Most bytes the unknown top-level keys of a file may hold together
+/// ([`Project::extra`]).
+pub const MAX_EXTRA_BYTES: usize = 64 * 1024;
 
 /// Most parts (buildings, wings) a design may have. Generous: a large
 /// TERRAN job has a few dozen; 200 still calculate in a few seconds.
@@ -582,7 +628,10 @@ fn migrate(v: &mut serde_json::Value) -> serde_json::Result<()> {
             "the file was saved by a newer Tectora (format {version}, this version reads up to {SCHEMA_VERSION})"
         )));
     }
-    // 1 -> 2: adds the optional `result_snapshot`; nothing to convert.
+    // 1 -> 2: adds the optional `result_snapshot`; 2 -> 3: adds the other
+    // optional fields listed at [`SCHEMA_VERSION`]. Every new field is
+    // optional, so there is nothing to convert; the bump makes older
+    // releases refuse what this one writes.
     obj.insert("schema_version".into(), SCHEMA_VERSION.into());
     Ok(())
 }
@@ -923,6 +972,22 @@ pub struct Chimney {
     /// Top height, m above ground. Does not affect quantities.
     #[serde(default)]
     pub height: f64,
+}
+
+/// The smallest plan area of a chimney or roof opening, m² (1 cm²).
+pub const MIN_OPENING_AREA: f64 = 1e-4;
+
+impl Chimney {
+    /// False for a chimney or roof opening without plan area (all corners
+    /// on one point or one line, e.g. width 0 from an AI client or a
+    /// damaged file). The cut treats such a polygon as covering its whole
+    /// face, so the roof area drops to zero without a warning (ERR-002):
+    /// it is a problem of the object ([`Project::problems`]), never input
+    /// for the calculation.
+    pub fn has_area(&self) -> bool {
+        let a = crate::geom::signed_area(&self.corners).abs();
+        a.is_finite() && a >= MIN_OPENING_AREA
+    }
 }
 
 /// A roof window (DACAD: Dachfenster). The position is the plan point of

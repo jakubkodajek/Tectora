@@ -183,6 +183,27 @@ test.describe("settings", () => {
     await expect.poll(async () => (await mcp.call("get_settings")).effective.projects_dir).toBe(other);
   });
 
+  test("an AI only asks to read a file outside the job folders; Deny keeps it out, Allow lets it in (ARCH-002)", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "Sedlo");
+    await app.open();
+    const outside = path.join(E2E_DIR, "elsewhere", "plan.pdf");
+    fs.mkdirSync(path.dirname(outside), { recursive: true });
+    fs.writeFileSync(outside, "%PDF-1.4");
+    const attach = () => (mcp as any).tryCall("attach_file", { id, path: outside, summary: "Attach the plan" });
+    expect((await attach()).isError).toBe(true);
+    const dlg = page.getByRole("dialog", { name: cs("fileReq.title") });
+    await expect(dlg).toContainText(outside);
+    await dlg.getByRole("button", { name: cs("fileReq.deny") }).click();
+    await expect(dlg).toHaveCount(0);
+    expect(settingsFile().allowed_files ?? []).toEqual([]);
+
+    expect((await attach()).isError).toBe(true);
+    await dlg.getByRole("button", { name: cs("folderReq.allow"), exact: true }).click();
+    await expect(dlg).toHaveCount(0);
+    await expect.poll(async () => (await attach()).isError ?? false).toBe(false);
+    expect((await bridge<any[]>("list_attachments", { id })).map((a) => a.name)).toContain("plan.pdf");
+  });
+
   test("a damaged settings file is reported at start and kept before it is replaced (ERR-005)", async ({ app, mcp }) => {
     const damaged = '{ "locale": "de", "projects_dir": "/srv/zakazky", }';
     fs.writeFileSync(path.join(CONFIG_DIR, "settings.json"), damaged);

@@ -2,7 +2,7 @@
 // longer than info messages, repeat errors are merged, and every error
 // keeps its original text under "Details".
 
-import { describeError, type Action } from "./errors";
+import { describeError, describeRefusal, type Action, type RefusedAction } from "./errors";
 
 export interface Toast {
   id: number;
@@ -81,4 +81,16 @@ export function notifyError(e: unknown, action?: Action): number {
     message: d.message,
     detail: d.detail,
   });
+}
+
+/**
+ * Shows a value the core refused as a refusal with the core's reason in the
+ * user's language (not as a failed calculation, review ERR-003) and returns
+ * that reason for the field; null when `e` is not a refusal.
+ */
+export function notifyRefusal(e: unknown, action: RefusedAction): string | null {
+  const d = describeRefusal(e, action);
+  if (!d) return null;
+  notify({ kind: "error", code: d.code, title: d.title, message: d.message, detail: d.detail });
+  return d.message;
 }

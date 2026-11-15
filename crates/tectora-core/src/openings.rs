@@ -32,6 +32,20 @@ const TOL: f64 = 1e-9;
 /// to the slope; every oblique side is WS (DACAD cases C32–C36).
 const LEVEL: f64 = 1.0 - 1e-6;
 
+thread_local! {
+    /// Roof calculations started on this thread, for [`core_runs`].
+    static CORE_RUNS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times [`generate_project`] ran on this thread. One request
+/// (the editor's `calc`, an MCP write, `get_project`, ...) calculates the
+/// roof once and hands the result to every total; tests read this counter
+/// before and after a request so a second calculation cannot creep back
+/// (review ARCH-006).
+pub fn core_runs() -> u64 {
+    CORE_RUNS.with(std::cell::Cell::get)
+}
+
 /// Generates every part of the project with its dormers, windows and
 /// chimneys applied, one geometry per part.
 ///
@@ -40,6 +54,7 @@ const LEVEL: f64 = 1.0 - 1e-6;
 /// that [`Project::validate`] rejects is left out instead of producing NaN:
 /// an invalid part gets an empty geometry.
 pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
+    CORE_RUNS.with(|n| n.set(n.get() + 1));
     if project.flat_roof {
         return crate::flat::generate_project(project);
     }
@@ -160,7 +175,9 @@ fn cleaned(project: &Project) -> (Project, Slots, KeptIds) {
     // Index in `project.parts` of each part in `clean`.
     let part_ids: Vec<usize> = (0..slots.len()).filter(|&i| slots[i].is_some()).collect();
     let ok_poly = |c: &Chimney| {
-        c.corners.len() >= 3 && c.corners.iter().all(|v| v.x.is_finite() && v.y.is_finite())
+        c.has_area()
+            && c.corners.len() >= 3
+            && c.corners.iter().all(|v| v.x.is_finite() && v.y.is_finite())
     };
     let ok_window = |w: &RoofWindow| {
         [w.x, w.y, w.width, w.height].iter().all(|v| v.is_finite())
@@ -2359,6 +2376,27 @@ mod tests {
         Chimney {
             corners: vec![c(x, y), c(x + w, y), c(x + w, y + d), c(x, y + d)],
             height: 0.0,
+        }
+    }
+
+    #[test]
+    fn a_chimney_without_plan_area_in_an_old_file_leaves_the_roof_as_it_is() {
+        // ERR-002: a collapsed chimney from a file written before the guard
+        // took the whole roof area to zero.
+        let plain = crate::report::calc(&gable())["totals"]["roof_area"]
+            .as_f64()
+            .unwrap();
+        assert!(plain > 100.0);
+        for flat in [
+            square(4.0, 1.5, 0.0, 0.0),
+            square(4.0, 1.5, 0.0, 0.6),
+            square(4.0, 1.5, 0.6, 0.0),
+        ] {
+            let mut p = gable();
+            p.chimneys.push(flat.clone());
+            p.roof_openings.push(flat);
+            let v = crate::report::calc(&p);
+            assert_eq!(v["totals"]["roof_area"].as_f64().unwrap(), plain);
         }
     }
 

@@ -323,20 +323,36 @@ fn export_job(state: State<AppState>, id: String, path: String) -> CmdResult<()>
 
 /// The text list for the price sheet and the plan sheet (SVG) of the open
 /// project, for the export dialog.
+/// `line_names` (code → name in the UI language) label the sheet's line
+/// codes; `summary` is the list as numbers for the dialog to show
+/// translated, while `list` stays the price sheet's text.
 #[tauri::command(async)]
-fn export_preview(project: Project, title: String, stamp: String) -> CmdResult<Value> {
+fn export_preview(
+    project: Project,
+    title: String,
+    stamp: String,
+    line_names: Option<std::collections::BTreeMap<String, String>>,
+) -> CmdResult<Value> {
     guard(|| {
         let opts = tectora_core::export::ListOptions::new(title, stamp);
-        let (list, svg) = tectora_core::export::checked(&project, &opts)
+        let names = line_names.unwrap_or_default();
+        let (list, svg) = tectora_core::export::checked_named(&project, &opts, &names)
             .map_err(|d| AppError::new("out_of_range").detail(d))?;
-        Ok(serde_json::json!({ "list": list, "svg": svg }))
+        let summary = tectora_core::export::checked_summary(&project, &opts)
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+        Ok(serde_json::json!({ "list": list, "svg": svg, "summary": summary }))
     })
 }
 
 /// Writes the plan sheet to `path` (from the save dialog) as PDF or SVG,
 /// by its extension.
 #[tauri::command(async)]
-fn export_plan_file(project: Project, stamp: String, path: String) -> CmdResult<()> {
+fn export_plan_file(
+    project: Project,
+    stamp: String,
+    path: String,
+    line_names: Option<std::collections::BTreeMap<String, String>>,
+) -> CmdResult<()> {
     guard(|| {
         let path = PathBuf::from(path);
         let ext = path
@@ -344,7 +360,8 @@ fn export_plan_file(project: Project, stamp: String, path: String) -> CmdResult<
             .and_then(|e| e.to_str())
             .map(str::to_ascii_lowercase)
             .unwrap_or_default();
-        let bytes = tectora_core::export::checked_sheet_file(&project, &stamp, &ext)
+        let names = line_names.unwrap_or_default();
+        let bytes = tectora_core::export::checked_sheet_file_named(&project, &stamp, &ext, &names)
             .map_err(|d| AppError::new("out_of_range").detail(d))?;
         std::fs::write(&path, bytes)
             .map_err(|e| AppError::new("io").detail(format!("{}: {e}", path.display())))?;
@@ -413,6 +430,8 @@ fn create_standard(
     overhang: f64,
 ) -> CmdResult<String> {
     guard(|| {
+        tectora_core::edit::check_eave_pitch(pitch_deg, f64::MIN_POSITIVE)
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
         let mut project = Project::new(name);
         project.parts.push(standard_roof(
             kind,
@@ -437,6 +456,8 @@ fn standard_part(
     overhang: f64,
 ) -> CmdResult<tectora_core::RoofPart> {
     guard(|| {
+        tectora_core::edit::check_eave_pitch(pitch_deg, f64::MIN_POSITIVE)
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
         Ok(standard_roof(
             kind,
             length,
@@ -527,6 +548,92 @@ fn dormer_host(project: Project, index: usize) -> CmdResult<Value> {
     guard(|| Ok(commands::dormer_host(&project, index)?))
 }
 
+/// What the calculation dialog needs to know about wall `edge` of part `part`
+/// (`tectora_core::commands::roof_helper_context`): the facing wall, span,
+/// parallel walls and, when asked, the roof's corner points.
+#[tauri::command(async)]
+fn roof_helper_context(
+    project: Project,
+    part: usize,
+    edge: usize,
+    with_points: bool,
+) -> CmdResult<Value> {
+    guard(|| {
+        Ok(commands::roof_helper_context(
+            &project,
+            part,
+            edge,
+            with_points,
+        )?)
+    })
+}
+
+/// The calculation dialog's live figures for the values typed so far
+/// (`tectora_core::commands::roof_helper_preview`, the MCP tool roof_helper
+/// without `apply`). Nothing is changed; no solution is `refused`.
+#[tauri::command(async)]
+fn roof_helper_preview(
+    project: Project,
+    part: usize,
+    edge: usize,
+    request: tectora_core::edit::helper::HelperRequest,
+) -> CmdResult<Value> {
+    guard(|| {
+        Ok(commands::roof_helper_preview(
+            &project, part, edge, &request,
+        )?)
+    })
+}
+
+/// The calculation dialog's OK: the project with the helper's values applied
+/// (`tectora_core::commands::roof_helper_apply`, the MCP tool roof_helper
+/// with `apply`).
+#[tauri::command(async)]
+fn roof_helper_apply(
+    project: Project,
+    part: usize,
+    edge: usize,
+    request: tectora_core::edit::helper::HelperRequest,
+) -> CmdResult<Project> {
+    guard(|| Ok(commands::roof_helper_apply(&project, part, edge, &request)?))
+}
+
+/// The round-roof dialog's arc for the typed values and the values it gives
+/// both walls (`tectora_core::commands::round_arc`); out of range is `refused`.
+#[tauri::command]
+fn round_arc(input: tectora_core::edit::round::ArcInput) -> CmdResult<Value> {
+    guard(|| Ok(commands::round_arc(&input)?))
+}
+
+/// Shape operations of the object bar and the plan tools: reshape a chimney or
+/// opening to a new box, a chimney from a rectangle, the area of a hand-drawn
+/// face (`tectora_core::commands::item_geometry`, the operations behind the
+/// MCP tools `update_opening` and `set_openings`).
+#[tauri::command]
+fn item_geometry(request: commands::GeometryRequest) -> CmdResult<Value> {
+    guard(|| Ok(commands::item_geometry(&request)?))
+}
+
+/// The transform dialog's OK and "Duplicate part": part `part` moved,
+/// rotated, mirrored or copied with what lies on it
+/// (`tectora_core::commands::transform_part`, the MCP tool transform_part).
+/// Returns `{project, parts}`.
+#[tauri::command(async)]
+fn transform_part(
+    project: Project,
+    part: usize,
+    map: tectora_core::edit::transform::PlanMap,
+    copies: u32,
+) -> CmdResult<Value> {
+    guard(|| Ok(commands::transform_part(&project, part, map, copies)?))
+}
+
+/// The transform dialog's wall shift (`tectora_core::commands::offset_wall`).
+#[tauri::command(async)]
+fn offset_wall(project: Project, part: usize, edge: usize, dist: f64) -> CmdResult<Project> {
+    guard(|| Ok(commands::offset_wall(&project, part, edge, dist)?))
+}
+
 /// The editor's "Make it a building": hand-drawn face `index` replaced by a
 /// part of the same outline (`tectora_core::edit::face_to_part`, the MCP
 /// tool's operation).
@@ -540,7 +647,7 @@ fn face_to_part(
     overhang: f64,
 ) -> CmdResult<Project> {
     tectora_core::edit::face_to_part(&mut project, index, &name, pitch_deg, eave_height, overhang)
-        .map_err(|d| AppError::new("invalid_input").detail(d))?;
+        .map_err(|d| AppError::new("refused").detail(d))?;
     Ok(project)
 }
 
@@ -582,7 +689,7 @@ fn place_item(
             .map_err(|e| AppError::new(e.code).detail(e.message))?;
         let it = tectora_core::edit::transform::ItemRef { kind, index };
         tectora_core::edit::position::place(&mut project, it, from_eave, from_left, from_right)
-            .map_err(|d| AppError::new("invalid_input").detail(d))?;
+            .map_err(|d| AppError::new("refused").detail(d))?;
         Ok(project)
     })
 }
@@ -598,7 +705,7 @@ fn set_part_height(mut project: Project, part: usize, height: f64) -> CmdResult<
             .check_input()
             .map_err(|e| AppError::new(e.code).detail(e.message))?;
         tectora_core::edit::height::set_part_height(&mut project, part, height)
-            .map_err(|d| AppError::new("invalid_input").detail(d))?;
+            .map_err(|d| AppError::new("refused").detail(d))?;
         Ok(project)
     })
 }
@@ -631,6 +738,16 @@ fn answer_folder_request(app: tauri::AppHandle, allow: bool) -> Result<Value, St
         .map_err(|e| e.code().to_string())?;
     next.save().map_err(|e| e.code().to_string())?;
     switch_library(&app, &next).map_err(|_| "not_writable".to_string())?;
+    Ok(next.describe())
+}
+
+/// The user's answer to a file outside the job folders an AI client asked
+/// to read (`Settings::file_request`, ARCH-002): `allow` lets AI clients
+/// read that one file.
+#[tauri::command]
+fn answer_file_request(allow: bool) -> Result<Value, String> {
+    let next = Settings::load().answer_file_request(allow);
+    next.save().map_err(|e| e.code().to_string())?;
     Ok(next.describe())
 }
 
@@ -920,6 +1037,13 @@ pub fn run() {
             calc_breakdown,
             check_windows,
             dormer_host,
+            roof_helper_context,
+            roof_helper_preview,
+            roof_helper_apply,
+            round_arc,
+            item_geometry,
+            transform_part,
+            offset_wall,
             face_to_part,
             set_part_height,
             place_item,
@@ -938,6 +1062,7 @@ pub fn run() {
             get_settings,
             update_settings,
             answer_folder_request,
+            answer_file_request,
             open_folder,
             updates::update_check,
             updates::update_install
@@ -982,5 +1107,44 @@ mod tests {
                 "`{name}` must be #[tauri::command(async)]"
             );
         }
+    }
+
+    /// Double-click open and start-up arguments (TEST-008): Tectora files
+    /// in any case of their extension are taken in order; folders that look
+    /// like one, missing files, other types and flags are not.
+    #[test]
+    fn file_args_take_tectora_files_in_any_case_and_nothing_else() {
+        let dir = std::env::temp_dir().join(format!(
+            "tectora-file-args-{}-{}",
+            std::process::id(),
+            tectora_core::store::now_ms()
+        ));
+        std::fs::create_dir_all(dir.join("folder.tectora")).unwrap();
+        let file = |name: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, "{}").unwrap();
+            p.display().to_string()
+        };
+        let a = file("a.tectora");
+        let b = file("B.TECTORA");
+        let c = file("Zakázka Nový Dům.TectoraJob");
+        let txt = file("notes.txt");
+        let no_ext = file("tectora");
+        let args = vec![
+            "/Applications/Tectora.app/Contents/MacOS/Tectora".to_string(),
+            "--flag".to_string(),
+            a.clone(),
+            dir.join("folder.tectora").display().to_string(),
+            b.clone(),
+            dir.join("missing.tectora").display().to_string(),
+            txt,
+            no_ext,
+            c.clone(),
+        ];
+        let got = super::file_args(args);
+        let want: Vec<std::path::PathBuf> =
+            [a, b, c].iter().map(std::path::PathBuf::from).collect();
+        assert_eq!(got, want);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

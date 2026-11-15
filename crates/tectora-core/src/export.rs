@@ -462,6 +462,123 @@ pub fn dacad_list(project: &Project, opts: &ListOptions) -> String {
     out
 }
 
+/// What the price-sheet list says, as numbers, for the Export dialog to show
+/// in the user's language (review UX-003): the list text itself stays in the
+/// price sheet's words and is what the copy button copies. Same rows and the
+/// same values as [`dacad_list`] (test `the_summary_has_the_lists_rows`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ListSummary {
+    /// Decimals of lengths and areas in the list.
+    pub decimals: usize,
+    pub windows: Vec<SummaryWindow>,
+    pub faces: Vec<SummaryFace>,
+    /// Wall area (`Stena : 1`), m².
+    pub wall_area: Option<f64>,
+    pub materials: Vec<SummaryMaterial>,
+    /// Line totals, one per group of the list, in the list's order.
+    pub lines: Vec<SummaryLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SummaryWindow {
+    /// The face's number in the list without the `Z` (`1.03`).
+    pub face: String,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SummaryFace {
+    /// The face's number in the list without the `Z` (`1.01`).
+    pub name: String,
+    pub pitch: f64,
+    /// Area before deductions, as the face's row of the list.
+    pub area: f64,
+    /// Everything the face's deduction rows take off, m² (positive).
+    pub deducted: f64,
+    pub rafter: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SummaryMaterial {
+    pub material: u8,
+    pub area: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SummaryLine {
+    /// The line code of the group (T, F, G, K, OL, OR, OS, P, c, S, WV, WH,
+    /// WS, …).
+    pub code: String,
+    pub length: f64,
+}
+
+/// The rows of [`dacad_list`] as numbers (see [`ListSummary`]).
+pub fn list_summary(project: &Project, opts: &ListOptions) -> ListSummary {
+    let geos = crate::openings::generate_project(project);
+    let c = collect(project, &geos);
+    let faces = || c.faces.iter().flatten().chain(&c.other_faces);
+    let bare = |n: &str| n.strip_prefix('Z').unwrap_or(n).to_string();
+    let windows = faces()
+        .flat_map(|f| {
+            f.windows.iter().map(|(w, h)| SummaryWindow {
+                face: bare(&f.name),
+                width: *w,
+                height: *h,
+            })
+        })
+        .collect();
+    let face_rows = faces()
+        .map(|f| SummaryFace {
+            name: bare(&f.name),
+            pitch: f.pitch,
+            area: f.area,
+            deducted: f.holes.iter().map(|h| h.area).sum::<f64>()
+                + f.windows.iter().map(|(w, h)| w * h).sum::<f64>(),
+            rafter: f.rafter.map(sol_value),
+        })
+        .collect();
+    let mut by_material: BTreeMap<u8, f64> = BTreeMap::new();
+    for f in faces() {
+        if f.material > 0 {
+            *by_material.entry(f.material).or_default() += f.net();
+        }
+    }
+    let mut groups: BTreeMap<&'static str, (String, f64)> = BTreeMap::new();
+    for l in &c.lines {
+        if l.code == "n" || l.code == "z" {
+            continue;
+        }
+        let g = groups
+            .entry(line_group(&l.code))
+            .or_insert_with(|| (l.code.clone(), 0.0));
+        g.1 += l.length;
+    }
+    ListSummary {
+        decimals: opts.decimals.min(6),
+        windows,
+        faces: face_rows,
+        wall_area: crate::openings::wall_area(project).filter(|w| *w > 1e-9),
+        materials: by_material
+            .into_iter()
+            .map(|(material, area)| SummaryMaterial { material, area })
+            .collect(),
+        lines: groups
+            .into_values()
+            .map(|(code, total)| SummaryLine {
+                length: total - c.minus.get(&code).copied().unwrap_or(0.0),
+                code,
+            })
+            .collect(),
+    }
+}
+
+/// The summary of the list, checked like [`checked`] (for the Export dialog).
+pub fn checked_summary(project: &Project, opts: &ListOptions) -> Result<ListSummary, String> {
+    project.check_limits()?;
+    crate::model::guarded(|| list_summary(project, opts))
+}
+
 /// `dd.mm.yyyy hh:mm` of a Unix time in milliseconds, in UTC (for callers
 /// without the user's clock, e.g. the MCP server; the app passes local time).
 pub fn utc_stamp(ms: u64) -> String {
@@ -521,6 +638,12 @@ fn code_kind(code: &str) -> Option<LineKind> {
         "P" => Some(LineKind::Pult),
         "c" => Some(LineKind::Knick),
         "S" => Some(LineKind::Gorge),
+        // Wall abutments: drawn in the abutment colour, so their codes in
+        // the foot carry it too.
+        "W" => Some(LineKind::Abutment),
+        "WV" => Some(LineKind::AbutmentFront),
+        "WH" => Some(LineKind::AbutmentBack),
+        "WS" => Some(LineKind::AbutmentSide),
         _ => None,
     }
 }
@@ -563,6 +686,18 @@ pub struct SheetInfo {
 /// every face's area and pitch, the job in the head and the totals at the
 /// foot. Page coordinates (A4 landscape, points).
 pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
+    plan_sheet_named(project, info, &BTreeMap::new())
+}
+
+/// [`plan_sheet`] with a legend of the line codes at the foot: `names` maps
+/// a code (T, F, OL, WV, …) to its name in the user's language, given by
+/// the caller (the app's translations; review UX-013). Codes without a
+/// name are left out of the legend; no names, no legend.
+pub fn plan_sheet_named(
+    project: &Project,
+    info: &SheetInfo,
+    names: &BTreeMap<String, String>,
+) -> Vec<Shape> {
     let d = info.decimals.min(6);
     let geos = crate::openings::generate_project(project);
     let mut shapes = Vec::new();
@@ -643,7 +778,18 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
     for l in &project.manual_lines {
         pts.extend([[l.a[0], l.a[1]], [l.b[0], l.b[1]]]);
     }
-    let foot_h = 46.0;
+    // The foot grows by a row for every FOOT_PER_ROW line codes, so no
+    // total is ever left out of the sheet (UX-002).
+    let codes: Vec<(String, f64)> = crate::quantities::dacad_line_totals(project)
+        .into_iter()
+        .filter(|(_, v)| v.abs() > 1e-9)
+        .collect();
+    let foot_extra = foot_rows(codes.len()).saturating_sub(1) as f64 * FOOT_ROW_H;
+    let legend = legend_rows(&codes, names);
+    // The legend's rows start under the totals; the foot grows with them.
+    let legend_y = 18.0 + foot_rows(codes.len()) as f64 * FOOT_ROW_H;
+    let legend_end = legend_y + legend.len().saturating_sub(1) as f64 * LEGEND_ROW_H + 8.0;
+    let foot_h = (46.0 + foot_extra).max(if legend.is_empty() { 0.0 } else { legend_end });
     let (bx0, by0, bx1, by1) = (
         MARGIN + 20.0,
         MARGIN + 60.0,
@@ -838,6 +984,13 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
         obstacles.put(&mut shapes, at_label(at));
     }
 
+    // From here on the inside of a window, chimney or roof opening is
+    // never free: a short side of a chimney gets its length outside the
+    // chimney, not across its outline.
+    obstacles
+        .quads
+        .extend(cut_boxes.iter().map(|b| box_quad(*b)));
+
     // Line lengths: upright along the line, just off it, at the middle or,
     // where that is taken, further along it or on its other side.
     for (a, b, color, text) in line_labels {
@@ -876,7 +1029,12 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
                 }
             }
         }
-        if let Some((_, s)) = best {
+        // A length that would cover another label is left out rather than
+        // made unreadable (UX-011, a chimney's 0,6 m flashing under its
+        // area); the totals at the foot still count the line.
+        if let Some((cost, s)) = best
+            && cost < TEXT_COST
+        {
             obstacles.put(&mut shapes, s);
         }
     }
@@ -884,10 +1042,8 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
     // Faces: area and pitch, at the middle of the face or, where a window,
     // chimney, line or another label is in the way, at the free spot
     // nearest to it inside the face. Inside a window or chimney is never
-    // free, however large it is.
-    obstacles
-        .quads
-        .extend(cut_boxes.iter().map(|b| box_quad(*b)));
+    // free, however large it is (the boxes are obstacles since the line
+    // lengths).
     for (poly, area_text, pitch_text) in face_labels {
         let Some(c) = centroid(&poly) else { continue };
         let rows = |at: [f64; 2]| {
@@ -912,7 +1068,35 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
                 },
             ]
         };
-        let at = free_spot(&poly, c, |at| obstacles.free(&rows(at))).unwrap_or(c);
+        let at = match free_spot(&poly, c, |at| obstacles.free(&rows(at))) {
+            Some(at) => at,
+            // A face too small for its label (a dormer cheek): the label
+            // goes beside it with a thin leader to the face (UX-011).
+            None => {
+                let b = bbox(&poly);
+                let near = box_quad([b[0] - 60.0, b[1] - 60.0, b[2] + 60.0, b[3] + 60.0]);
+                match free_spot(&near, c, |at| obstacles.free(&rows(at))) {
+                    Some(at) => {
+                        let quads: Vec<[f64; 2]> =
+                            rows(at).iter().filter_map(text_quad).flatten().collect();
+                        let lb = bbox(&quads);
+                        let from = [c[0].clamp(lb[0], lb[2]), c[1].clamp(lb[1], lb[3])];
+                        if (from[0] - c[0]).hypot(from[1] - c[1]) > 1.0 {
+                            obstacles.segments.push([from, c]);
+                            shapes.push(Shape::Line {
+                                a: from,
+                                b: c,
+                                color: MUTED,
+                                width: 0.4,
+                                dashed: false,
+                            });
+                        }
+                        at
+                    }
+                    None => c,
+                }
+            }
+        };
         for s in rows(at) {
             obstacles.put(&mut shapes, s);
         }
@@ -937,15 +1121,12 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
         anchor: 0.0,
         text: format!("A = {} m²", num(total, d)),
     });
-    let mut x = MARGIN + 150.0;
-    let codes = crate::quantities::dacad_line_totals(project);
-    for (code, v) in codes.iter().filter(|(_, v)| v.abs() > 1e-9) {
+    for (i, (code, v)) in codes.iter().enumerate() {
         let kind = code_kind(code);
-        if x > PAGE_W - MARGIN - 60.0 {
-            break;
-        }
+        let x = MARGIN + 150.0 + (i % FOOT_PER_ROW) as f64 * FOOT_COL_W;
+        let y = fy + 18.0 + (i / FOOT_PER_ROW) as f64 * FOOT_ROW_H;
         shapes.push(Shape::Text {
-            at: [x, fy + 18.0],
+            at: [x, y],
             angle: 0.0,
             size: 9.0,
             color: kind.map_or(MUTED, kind_color),
@@ -953,8 +1134,10 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
             anchor: 0.0,
             text: code.clone(),
         });
+        // A gap after the code, also after a wide one ("WH", "OR").
+        let gap = (text_width(&ansi(code), 9.0, true) + 3.0).max(16.0);
         shapes.push(Shape::Text {
-            at: [x + 16.0, fy + 18.0],
+            at: [x + gap, y],
             angle: 0.0,
             size: 9.0,
             color: INK,
@@ -962,10 +1145,9 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
             anchor: 0.0,
             text: format!("{} m", num(*v, d)),
         });
-        x += 92.0;
     }
     shapes.push(Shape::Text {
-        at: [MARGIN, fy + 36.0],
+        at: [MARGIN, fy + 36.0 + foot_extra],
         angle: 0.0,
         size: 7.0,
         color: MUTED,
@@ -973,7 +1155,64 @@ pub fn plan_sheet(project: &Project, info: &SheetInfo) -> Vec<Shape> {
         anchor: 0.0,
         text: format!("1 : {}", scale_label(scale)),
     });
+    for (i, row) in legend.into_iter().enumerate() {
+        shapes.push(Shape::Text {
+            at: [MARGIN + 150.0, fy + legend_y + i as f64 * LEGEND_ROW_H],
+            angle: 0.0,
+            size: LEGEND_SIZE,
+            color: MUTED,
+            bold: false,
+            anchor: 0.0,
+            text: row,
+        });
+    }
     shapes
+}
+
+/// Size and row height of the legend at the foot, pt.
+const LEGEND_SIZE: f64 = 7.0;
+const LEGEND_ROW_H: f64 = 9.0;
+
+/// The legend "T Okapy · F Hřebeny · …" of the codes on the sheet, wrapped
+/// to the width of the foot beside the area. Names from the caller are
+/// untrusted: control characters are dropped and a name is cut at 60
+/// characters; at most 64 codes are named.
+fn legend_rows(codes: &[(String, f64)], names: &BTreeMap<String, String>) -> Vec<String> {
+    let width = PAGE_W - 2.0 * MARGIN - 150.0;
+    let mut rows: Vec<String> = Vec::new();
+    for (code, _) in codes.iter().take(64) {
+        let Some(name) = names.get(code) else {
+            continue;
+        };
+        let name: String = name.chars().filter(|c| !c.is_control()).take(60).collect();
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let item = format!("{code} {name}");
+        match rows.last_mut() {
+            Some(last)
+                if text_width(&ansi(&format!("{last} · {item}")), LEGEND_SIZE, false) <= width =>
+            {
+                // SVG collapses runs of spaces: a middle dot keeps the items apart.
+                last.push_str(" · ");
+                last.push_str(&item);
+            }
+            _ => rows.push(item),
+        }
+    }
+    rows
+}
+
+/// Width of one line total in the sheet's foot, height of a foot row, pt,
+/// and how many totals fit in a row beside the area.
+const FOOT_COL_W: f64 = 92.0;
+const FOOT_ROW_H: f64 = 13.0;
+const FOOT_PER_ROW: usize = 7;
+
+/// Rows the foot needs for `n` line totals (at least one).
+fn foot_rows(n: usize) -> usize {
+    n.div_ceil(FOOT_PER_ROW).max(1)
 }
 
 /// The drawing scale, 1 : n, rounded (1 m = `scale` points; 1 pt = 25.4/72 mm).
@@ -1079,6 +1318,10 @@ fn convex_overlap(a: &[[f64; 2]], b: &[[f64; 2]]) -> bool {
     true
 }
 
+/// The cost of a label covering another label (or a window or chimney):
+/// more than any number of lines it may cross.
+const TEXT_COST: usize = 1000;
+
 /// What a label must keep clear of: the texts already on the sheet and
 /// the boxes no label may enter (as quads), and its lines (as segments),
 /// in page points.
@@ -1106,7 +1349,7 @@ impl Obstacles {
     /// line, so a crowded label at least stays readable.
     fn cost(&self, s: &Shape) -> usize {
         let Some(q) = text_quad(s) else { return 0 };
-        3 * self.quads.iter().filter(|x| convex_overlap(*x, &q)).count()
+        TEXT_COST * self.quads.iter().filter(|x| convex_overlap(*x, &q)).count()
             + self
                 .segments
                 .iter()
@@ -1445,6 +1688,15 @@ pub fn sheet_pdf(shapes: &[Shape], title: &str) -> Vec<u8> {
 /// client: the project is checked against the model's limits first and a
 /// failing calculation is an error, never a panic.
 pub fn checked(project: &Project, opts: &ListOptions) -> Result<(String, String), String> {
+    checked_named(project, opts, &BTreeMap::new())
+}
+
+/// [`checked`] with the sheet's legend of line names (see [`plan_sheet_named`]).
+pub fn checked_named(
+    project: &Project,
+    opts: &ListOptions,
+    names: &BTreeMap<String, String>,
+) -> Result<(String, String), String> {
     project.check_limits()?;
     crate::model::guarded(|| {
         let info = SheetInfo {
@@ -1453,21 +1705,35 @@ pub fn checked(project: &Project, opts: &ListOptions) -> Result<(String, String)
         };
         (
             dacad_list(project, opts),
-            sheet_svg(&plan_sheet(project, &info)),
+            sheet_svg(&plan_sheet_named(project, &info, names)),
         )
     })
 }
 
 /// The plan sheet as a file: `pdf` or `svg` bytes, checked like [`checked`].
 pub fn checked_sheet_file(project: &Project, stamp: &str, format: &str) -> Result<Vec<u8>, String> {
+    checked_sheet_file_named(project, stamp, format, &BTreeMap::new())
+}
+
+/// [`checked_sheet_file`] with the sheet's legend of line names.
+pub fn checked_sheet_file_named(
+    project: &Project,
+    stamp: &str,
+    format: &str,
+    names: &BTreeMap<String, String>,
+) -> Result<Vec<u8>, String> {
     project.check_limits()?;
     let info = SheetInfo {
         stamp: stamp.to_string(),
         decimals: 3,
     };
     match format {
-        "pdf" => crate::model::guarded(|| sheet_pdf(&plan_sheet(project, &info), &project.name)),
-        "svg" => crate::model::guarded(|| sheet_svg(&plan_sheet(project, &info)).into_bytes()),
+        "pdf" => crate::model::guarded(|| {
+            sheet_pdf(&plan_sheet_named(project, &info, names), &project.name)
+        }),
+        "svg" => crate::model::guarded(|| {
+            sheet_svg(&plan_sheet_named(project, &info, names)).into_bytes()
+        }),
         other => Err(format!("unknown plan format `{other}` (pdf or svg)")),
     }
 }
@@ -2256,6 +2522,313 @@ Z1.02 35,00° 19,53m\u{2db} Dĺžka krokvy=4,88m
         let entry = std::str::from_utf8(&pdf[at + 9 + 20..at + 9 + 30]).unwrap();
         let first: usize = entry.parse().unwrap();
         assert!(pdf[first..].starts_with(b"1 0 obj"));
+    }
+
+    #[test]
+    fn the_sheet_foot_shows_every_line_total() {
+        // UX-002: totals past the page edge were left out without a word.
+        assert_eq!(
+            [0, 1, 7, 8, 14, 15].map(foot_rows),
+            [1, 1, 1, 2, 2, 3],
+            "rows for a number of codes"
+        );
+        // The last column of a row ends on the page.
+        let last = MARGIN + 150.0 + (FOOT_PER_ROW - 1) as f64 * FOOT_COL_W;
+        assert!(last + FOOT_COL_W - 10.0 <= PAGE_W - MARGIN, "{last}");
+        let info = SheetInfo {
+            stamp: "x".into(),
+            decimals: 3,
+        };
+        // A gable roof with four dormers and a chimney: nine line codes.
+        let many = Project::from_json(include_str!(
+            "../../../tests/fixtures/edit/sheet_foot_many_codes.tectora"
+        ))
+        .unwrap();
+        let mut most = 0;
+        let examples = crate::examples::EXAMPLES.iter().map(|ex| ex.project());
+        for p in examples.chain([many]) {
+            let codes: Vec<(String, f64)> = crate::quantities::dacad_line_totals(&p)
+                .into_iter()
+                .filter(|(_, v)| v.abs() > 1e-9)
+                .collect();
+            most = most.max(codes.len());
+            let shapes = plan_sheet(&p, &info);
+            for (code, v) in &codes {
+                let value = format!("{} m", num(*v, 3));
+                let shown = shapes.windows(2).any(|w| {
+                    matches!(&w[0], Shape::Text { text, .. } if text == code)
+                        && matches!(&w[1], Shape::Text { text, at, .. }
+                            if *text == value && at[0] < PAGE_W - MARGIN && at[1] < PAGE_H - MARGIN)
+                });
+                assert!(shown, "{}: {code} {value} is not in the foot", p.name);
+            }
+        }
+        assert!(
+            most > FOOT_PER_ROW,
+            "no job fills more than one row ({most})"
+        );
+    }
+
+    /// The job of review UX-011: a 12 × 8 m gable roof with a 2 m dormer, a
+    /// 0,6 m chimney, a roof window and a hand-drawn face.
+    fn crowded_job() -> Project {
+        serde_json::from_str(r#"{"schema_version": 2, "name": "ux-tools-cs", "parts": [{"name": "Budova 1", "edges": [
+            {"start": {"x": 0.0, "y": 0.0}, "pitch_deg": 40.0, "eave_height": 3.0, "overhang": 0.5},
+            {"start": {"x": 12.0, "y": 0.0}, "pitch_deg": 90.0, "eave_height": 3.0, "overhang": 0.5},
+            {"start": {"x": 12.0, "y": 8.0}, "pitch_deg": 40.0, "eave_height": 3.0, "overhang": 0.5},
+            {"start": {"x": 0.0, "y": 8.0}, "pitch_deg": 90.0, "eave_height": 3.0, "overhang": 0.5}]}],
+          "dormers": [{"edges": [
+            {"start": {"x": 6.0, "y": 2.0}, "pitch_deg": 45.0, "eave_height": 6.11, "overhang": 0.0, "direction_rad": 4.71238898038469},
+            {"start": {"x": 6.0, "y": 2.0}, "pitch_deg": 90.0, "eave_height": 6.11, "overhang": 0.0},
+            {"start": {"x": 8.0, "y": 2.0}, "pitch_deg": 45.0, "eave_height": 6.11, "overhang": 0.0, "direction_rad": 1.5707963267948966}],
+            "end": {"x": 8.0, "y": 2.0}}],
+          "chimneys": [{"corners": [{"x": 3.0, "y": 6.0}, {"x": 2.4, "y": 6.0}, {"x": 2.4, "y": 5.4}, {"x": 3.0, "y": 5.4}], "height": 5.85}],
+          "windows": [{"x": 9.0, "y": 6.0, "width": 0.78, "height": 1.18}],
+          "manual_faces": [{"points": [{"x": 2.0, "y": -2.0}, {"x": 6.0, "y": -2.0}, {"x": 6.0, "y": -5.0}, {"x": 2.0, "y": -5.0}], "pitch_deg": 30.0}]}"#)
+        .unwrap()
+    }
+
+    /// No label of the sheet covers another one.
+    fn assert_texts_apart(shapes: &[Shape]) {
+        let texts: Vec<(&str, Quad)> = shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Text { text, .. } => Some((text.as_str(), text_quad(s)?)),
+                _ => None,
+            })
+            .collect();
+        for (i, (t, q)) in texts.iter().enumerate() {
+            for (u, r) in texts.iter().skip(i + 1) {
+                assert!(!convex_overlap(q, r), "{t} over {u}");
+            }
+        }
+    }
+
+    #[test]
+    fn labels_at_a_dormer_and_a_chimney_do_not_overlap() {
+        // UX-011: "2,549m²2,549m²", "45,00°45,00°" over the dormer and
+        // "-0,470m²" over "0,600m" at the chimney.
+        let p = crowded_job();
+        for decimals in [2, 3] {
+            let info = SheetInfo {
+                stamp: "14.11.2026 15:00".into(),
+                decimals,
+            };
+            let shapes = plan_sheet(&p, &info);
+            assert_texts_apart(&shapes);
+            // Every face still has its area and pitch on the sheet.
+            let t = texts(&shapes);
+            assert_eq!(t.iter().filter(|x| x.ends_with('°')).count(), 5, "{t:?}");
+        }
+        assert_texts_apart(&plan_sheet(&gable_with_dormer(), &SheetInfo::default()));
+    }
+
+    #[test]
+    fn small_object_lengths_stay_off_the_object_and_foot_codes_match_their_lines() {
+        // Sweep 2026-11-15: the chimney's "0,783m" ran across its own
+        // outline, and WH / WS / WV were grey in the foot but brown on the
+        // plan. Placement and colour only: the figures stay the same.
+        let mut p = crowded_job();
+        // Without the hand-drawn face, at the scale of the sweep's sheet.
+        p.manual_faces.clear();
+        let info = SheetInfo {
+            stamp: String::new(),
+            decimals: 3,
+        };
+        let shapes = plan_sheet(&p, &info);
+        let ch: Vec<[f64; 2]> = shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Line {
+                    a, color, width, ..
+                } if *color == MUTED && *width == 0.8 => Some(*a),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ch.len(), 4, "the chimney's outline");
+        let b = bbox(&ch);
+        // The inside of the chimney, less a hair for lines on its edge.
+        let inside = box_quad([b[0] + 0.5, b[1] + 0.5, b[2] - 0.5, b[3] - 0.5]);
+        let mut lengths = 0;
+        for s in &shapes {
+            if let Shape::Text { text, .. } = s
+                && text.ends_with('m')
+                && !text.ends_with(" m")
+            {
+                lengths += 1;
+                assert!(
+                    !convex_overlap(&text_quad(s).unwrap(), &inside),
+                    "{text} inside the chimney"
+                );
+            }
+        }
+        assert!(lengths > 0);
+        assert_texts_apart(&shapes);
+        // Every foot code has the colour its lines are drawn in.
+        let roof_colors: Vec<&str> = crate::openings::generate_project(&p)
+            .iter()
+            .flat_map(|g| g.lines.iter().map(|l| (l.dacad_code(), kind_color(l.kind))))
+            .filter(|(c, _)| c.starts_with('W'))
+            .map(|(_, col)| col)
+            .collect();
+        assert!(!roof_colors.is_empty(), "the job has wall abutments");
+        let codes = crate::quantities::dacad_line_totals(&p);
+        for (code, _) in codes
+            .iter()
+            .filter(|(c, v)| c.starts_with('W') && **v > 1e-9)
+        {
+            let color = shapes.iter().find_map(|s| match s {
+                Shape::Text {
+                    text,
+                    color,
+                    bold: true,
+                    size,
+                    ..
+                } if text == code && *size == 9.0 => Some(*color),
+                _ => None,
+            });
+            assert_eq!(color, Some(kind_color(code_kind(code).unwrap())), "{code}");
+            assert_ne!(color, Some(MUTED), "{code} is grey");
+            assert!(roof_colors.contains(&color.unwrap()), "{code}");
+        }
+        // A code and its total do not touch ("WH0,600 m").
+        for w in shapes.windows(2) {
+            if let (
+                Shape::Text {
+                    text: code,
+                    at: a,
+                    bold: true,
+                    size,
+                    ..
+                },
+                Shape::Text {
+                    text: value, at: b, ..
+                },
+            ) = (&w[0], &w[1])
+                && *size == 9.0
+                && value.ends_with(" m")
+            {
+                let width = text_width(&ansi(code), 9.0, true);
+                assert!(b[0] - a[0] >= width + 2.0, "{code} touches {value}");
+            }
+        }
+        // The figures are the list's.
+        let t = texts(&shapes);
+        for (code, v) in codes.iter().filter(|(_, v)| **v > 1e-9) {
+            let value = format!("{} m", num(*v, 3));
+            assert!(t.contains(&value.as_str()), "{code} {value}");
+        }
+    }
+
+    #[test]
+    fn the_sheet_foot_names_the_line_codes_it_lists() {
+        // UX-013: the foot had codes only.
+        let p = crowded_job();
+        let names: BTreeMap<String, String> = [
+            ("T", "Okapy"),
+            ("F", "Hřebeny"),
+            ("K", "Úžlabí"),
+            ("OL", "Štítová hrana vlevo"),
+            ("OR", "Štítová hrana vpravo"),
+            ("WV", "Napojení čelní"),
+            ("WS", "Napojení boční"),
+            ("WH", "Napojení zadní\u{7}"),
+            ("G", "Nároží"),
+        ]
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+        let info = SheetInfo::default();
+        let shapes = plan_sheet_named(&p, &info, &names);
+        let legend: String = shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Text {
+                    text, size, color, ..
+                } if *size == LEGEND_SIZE && *color == MUTED && !text.starts_with("1 : ") => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let codes = crate::quantities::dacad_line_totals(&p);
+        for (code, _) in codes.iter().filter(|(_, v)| v.abs() > 1e-9) {
+            let name = names
+                .get(code)
+                .map(|n| n.trim_end_matches('\u{7}'))
+                .unwrap();
+            assert!(
+                legend.contains(&format!("{code} {name}")),
+                "{code} not in {legend}"
+            );
+        }
+        // A code not on the roof is not in the legend; control characters are dropped.
+        assert!(
+            !legend.contains("G Nároží") && !legend.contains('\u{7}'),
+            "{legend}"
+        );
+        assert_texts_apart(&shapes);
+        // Every legend row stays on the page and under the foot's line.
+        for s in &shapes {
+            if let Shape::Text { at, .. } = s {
+                assert!(at[1] < PAGE_H - MARGIN + 1.0, "{s:?}");
+            }
+        }
+        // Without names the sheet is as before.
+        assert_eq!(
+            plan_sheet_named(&p, &info, &BTreeMap::new()),
+            plan_sheet(&p, &info)
+        );
+    }
+
+    #[test]
+    fn the_summary_has_the_lists_rows() {
+        // UX-003: the Export dialog shows the summary in the UI language and
+        // copies the list; both must say the same.
+        let mut all = every_kind_of_roof();
+        all.push(("window".into(), dacad_window_roof(true)));
+        for (name, p) in all {
+            let opts = ListOptions::new(&name, "08.11.2026 20:30");
+            let text = dacad_list(&p, &opts);
+            let s = list_summary(&p, &opts);
+            let d = s.decimals;
+            for f in &s.faces {
+                let row = format!("Z{} {}° {}{M2}", f.name, num(f.pitch, 2), num(f.area, d));
+                assert!(text.contains(&row), "{name}: {row} not in\n{text}");
+            }
+            let face_rows = text
+                .lines()
+                .filter(|l| {
+                    l.strip_prefix('Z')
+                        .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()))
+                        && !l.contains(':')
+                        && !l.contains('/')
+                })
+                .count();
+            assert_eq!(face_rows, s.faces.len(), "{name}");
+            for w in &s.windows {
+                let row = format!("Fenster{}/", w.face);
+                assert!(text.contains(&row), "{name}: {row}");
+            }
+            for l in &s.lines {
+                let row = format!("\n{} {}m\n", line_group(&l.code), num(l.length, d));
+                assert!(text.contains(&row), "{name}: {row:?} not in\n{text}");
+            }
+            let lines_section = text.split("LÍNIE").nth(1).unwrap_or_default();
+            let listed = lines_section.lines().filter(|l| l.ends_with('m')).count();
+            assert_eq!(listed, s.lines.len(), "{name}: {lines_section}");
+            for m in &s.materials {
+                let row = format!("{} {}{M2}", material_group(&p, m.material), num(m.area, d));
+                assert!(text.contains(&row), "{name}: {row}");
+            }
+            if let Some(w) = s.wall_area {
+                assert!(
+                    text.contains(&format!("Stena : 1 {}{M2}", num(w, d))),
+                    "{name}"
+                );
+            }
+        }
     }
 
     #[test]

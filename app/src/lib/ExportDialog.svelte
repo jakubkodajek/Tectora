@@ -7,9 +7,11 @@
   import { save } from "@tauri-apps/plugin-dialog";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
-  import { api } from "./api";
+  import { api, type ListSummary } from "./api";
   import { exportPreview, stampNow } from "./exportlist";
-  import { t } from "./i18n.svelte";
+  import { numberLocale, t } from "./i18n.svelte";
+  import { lineName, lineNames } from "./linecodes";
+  import { materialName } from "./materials";
   import { notify, notifyError } from "./notify.svelte";
   import type { Project } from "./types";
 
@@ -18,6 +20,8 @@
   const stamp = stampNow();
   let list = $state("");
   let svg = $state("");
+  /** The list as numbers, shown translated; `list` stays the price sheet's text (UX-003). */
+  let summary = $state<ListSummary | null>(null);
   let failed = $state(false);
   let copied = $state<"list" | "image" | null>(null);
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
@@ -27,6 +31,7 @@
       .then((r) => {
         list = r.list;
         svg = r.svg;
+        summary = r.summary ?? null;
       })
       .catch((e) => {
         failed = true;
@@ -34,6 +39,13 @@
       });
     return () => clearTimeout(copiedTimer);
   });
+
+  /** A length or area with the list's decimals, in the UI language. */
+  const fix = (v: number) =>
+    new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: summary?.decimals ?? 3, maximumFractionDigits: summary?.decimals ?? 3 }).format(
+      Math.abs(v) < 5e-7 ? 0 : v,
+    );
+  const deg = (v: number) => `${new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v)}°`;
 
   const svgUrl = $derived(svg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}` : "");
   const baseName = $derived((project.name || title || "roof").replace(/[\\/:*?"<>|]+/g, "_"));
@@ -94,7 +106,7 @@
     const path = await save({ defaultPath: `${baseName}.pdf`, filters: [{ name: "PDF", extensions: ["pdf"] }] });
     if (!path) return;
     try {
-      await api.exportPlanFile($state.snapshot(project) as Project, stamp, path);
+      await api.exportPlanFile($state.snapshot(project) as Project, stamp, path, lineNames());
       notify({ kind: "info", title: t("export.saved"), message: path });
     } catch (e) {
       notifyError(e, "export");
@@ -112,7 +124,67 @@
       </button>
     </div>
     <p class="muted">{t("export.listHint")}</p>
-    <pre>{list}</pre>
+    {#if summary}
+      <!-- What the copied text says, in the UI language; the text itself
+           keeps the price sheet's words (UX-003). -->
+      <div class="sum" data-testid="export-summary">
+        <div>
+          <table>
+            <caption>{t("export.sumFaces")}</caption>
+            <thead>
+              <tr><th>{t("export.colFace")}</th><th class="v">{t("export.colPitch")}</th><th class="v">{t("export.colArea")}</th><th class="v">{t("export.colDeducted")}</th><th class="v">{t("export.colRafter")}</th></tr>
+            </thead>
+            <tbody>
+              {#each summary.faces as f}
+                <tr>
+                  <td class="mono">{f.name}</td>
+                  <td class="v">{deg(f.pitch)}</td>
+                  <td class="v">{fix(f.area)} m²</td>
+                  <td class="v">{f.deducted > 5e-7 ? `−${fix(f.deducted)} m²` : ""}</td>
+                  <td class="v">{f.rafter != null ? `${fix(f.rafter)} m` : ""}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+          {#if summary.windows.length}
+            <table>
+              <caption>{t("export.sumWindows")}</caption>
+              <tbody>
+                {#each summary.windows as w}
+                  <tr><td class="mono">{w.face}</td><td class="v">{fix(w.width)} × {fix(w.height)} m</td></tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
+        </div>
+        <div>
+          {#if summary.wall_area != null || summary.materials.length}
+            <table>
+              <caption>{t("export.sumAreas")}</caption>
+              <tbody>
+                {#if summary.wall_area != null}<tr><td>{t("export.wallArea")}</td><td class="v">{fix(summary.wall_area)} m²</td></tr>{/if}
+                {#each summary.materials as mat}
+                  <tr><td>{materialName(project, mat.material)}</td><td class="v">{fix(mat.area)} m²</td></tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
+          <table>
+            <caption>{t("export.sumLines")}</caption>
+            <tbody>
+              {#each summary.lines as l}
+                <tr><td class="mono code">{l.code}</td><td>{lineName(l.code)}</td><td class="v">{fix(l.length)} m</td></tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {/if}
+    <details class="raw" open={!summary}>
+      <summary>{t("export.rawText")}</summary>
+      <p class="muted">{t("export.rawNote")}</p>
+      <pre data-testid="export-list">{list}</pre>
+    </details>
   </section>
 
   <section class="sheet">
@@ -183,6 +255,73 @@
     color: var(--text-2);
     font-size: 12px;
     margin: 0 0 6px;
+  }
+  .sum {
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    gap: 8px 20px;
+    max-height: 260px;
+    overflow: auto;
+    padding: 4px 2px;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+  @media (max-width: 760px) {
+    .sum {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  caption {
+    text-align: left;
+    padding: 8px 0 4px;
+    font-size: 11.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-2);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  th {
+    font-weight: 500;
+    font-size: 11.5px;
+    color: var(--text-2);
+    text-align: left;
+    padding: 2px 6px 4px 0;
+    white-space: nowrap;
+  }
+  td {
+    padding: 3px 6px 3px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .v {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .mono {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
+  }
+  .code {
+    width: 36px;
+    font-weight: 700;
+  }
+  .raw {
+    margin-top: 10px;
+  }
+  .raw summary {
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-2);
+    margin-bottom: 6px;
+  }
+  .raw summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   pre {
     margin: 0;

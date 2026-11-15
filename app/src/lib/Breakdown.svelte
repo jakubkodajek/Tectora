@@ -9,6 +9,7 @@
   import { num, plain } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
+  import { lineName } from "./linecodes";
   import { partLabel } from "./partname";
   import Modal from "./Modal.svelte";
   import BreakdownDetail from "./BreakdownDetail.svelte";
@@ -82,21 +83,8 @@
   const faceRef = (part: number | null, face: number | null) =>
     part === null ? t("bd.manualRef", { n: face ?? 0 }) : face === null ? t("bd.cladRef", { n: part + 1 }) : many ? `${part + 1}.${face}` : `${face}`;
 
-  const lineLabel = (code: string) => {
-    const key: Record<string, string> = {
-      T: "res.eave",
-      F: "res.ridge",
-      G: "res.hipShort",
-      K: "res.valleyShort",
-      OL: "bd.code.OL",
-      OR: "bd.code.OR",
-      OS: "bd.code.OS",
-      P: "res.pult",
-      c: "res.knick",
-      S: "res.gorge",
-    };
-    return t(key[code] ?? "res.abutment");
-  };
+  /** Every code by its own name: WV, WS and WH are no longer all "wall abutment" (UX-013). */
+  const lineLabel = lineName;
 
   const openingLabel = (k: string) =>
     t(k === "window" ? "opening.window" : k === "chimney" ? "opening.chimney" : k === "hole" ? "opening.hole" : "bd.dormer");

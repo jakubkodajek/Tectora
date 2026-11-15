@@ -4,9 +4,15 @@
   import Icon from "./Icon.svelte";
   import { m2 } from "./format";
   import { t } from "./i18n.svelte";
-  import { COUNTED, MANUAL_CODES, faceArea, lineLength, type ManualSel } from "./manual";
+  import { COUNTED, MANUAL_CODES, lineLength, type ManualSel } from "./manual";
+  import { api } from "./api";
+  import { latest } from "./latest";
+  import { notifyError } from "./notify.svelte";
+  import { onDestroy } from "svelte";
   import type { ManualFace, ManualLine, Project } from "./types";
   import { numeric } from "./numeric.svelte";
+  import { textfield } from "./textfield";
+  import { pageStep, stepIndex } from "./itemstep";
 
   let {
     project,
@@ -30,21 +36,42 @@
   const face = $derived(sel?.kind === "face" ? (project.manual_faces ?? [])[sel.index] ?? null : null);
 
 
+  // The face's area comes from the core (`ManualFace::area`), asked again
+  // after a pause while its corners or pitch change.
+  let area = $state<number | null>(null);
+  const askArea = latest(
+    (f: ManualFace) => api.faceArea(f),
+    (a) => (area = a),
+    (e) => {
+      area = null;
+      notifyError(e, "calc");
+    },
+    60,
+  );
+  onDestroy(() => askArea.stop());
+  $effect(() => {
+    if (face) askArea.ask($state.snapshot(face) as ManualFace);
+    else {
+      askArea.stop();
+      area = null;
+    }
+  });
+
   function step(d: number) {
-    if (!sel || list.length === 0) return;
-    sel = { kind: sel.kind, index: (sel.index + d + list.length) % list.length };
+    const next = sel ? stepIndex(sel.index, list.length, d) : null;
+    if (sel && next !== null) sel = { kind: sel.kind, index: next };
   }
 </script>
 
-<div class="bar" role="toolbar" aria-label={t(sel?.kind === "face" ? "manual.face" : "manual.line")}>
+<div class="bar" role="toolbar" aria-label={t(sel?.kind === "face" ? "manual.face" : "manual.line")} use:pageStep={step}>
   {#if sel}
     <div class="nav">
-      <button class="icon-btn" onclick={() => step(-1)} aria-label={t("opening.prev")}><Icon name="left" /></button>
+      <button class="icon-btn" onclick={() => step(-1)} title="{t('opening.prev')} (PageUp)" aria-label={t("opening.prev")}><Icon name="left" /></button>
       <div class="which">
         <strong>{t(sel.kind === "face" ? "manual.faceN" : "manual.lineN", { n: sel.index + 1 })}</strong>
         <span>{t("def.of", { n: list.length })}</span>
       </div>
-      <button class="icon-btn" onclick={() => step(1)} aria-label={t("opening.next")}><Icon name="right" /></button>
+      <button class="icon-btn" onclick={() => step(1)} title="{t('opening.next')} (PageDown)" aria-label={t("opening.next")}><Icon name="right" /></button>
     </div>
     {#if line}
       <label>
@@ -64,7 +91,7 @@
       {/if}
       <label>
         <span>{t("manual.label")}</span>
-        <input type="text" class="text" value={line.label ?? ""} onchange={(e) => online({ ...$state.snapshot(line), label: e.currentTarget.value })} />
+        <input type="text" class="text" data-testid="manual-label" use:textfield={{ value: line.label ?? "", onchange: (v) => online({ ...$state.snapshot(line), label: v }) }} />
       </label>
       <p class="tip">{t(COUNTED.has(line.code) ? "manual.counted" : "manual.notCounted")}</p>
     {:else if face}
@@ -74,9 +101,9 @@
       </label>
       <label>
         <span>{t("manual.label")}</span>
-        <input type="text" class="text" value={face.label ?? ""} onchange={(e) => onface({ ...$state.snapshot(face), label: e.currentTarget.value })} />
+        <input type="text" class="text" data-testid="manual-label" use:textfield={{ value: face.label ?? "", onchange: (v) => onface({ ...$state.snapshot(face), label: v }) }} />
       </label>
-      <p class="tip">{t("manual.faceArea", { a: m2(faceArea(face)), n: face.points.length })}</p>
+      <p class="tip">{t("manual.faceArea", { a: area === null ? "…" : m2(area), n: face.points.length })}</p>
     {/if}
     <div class="spacer"></div>
     {#if face && ontopart}

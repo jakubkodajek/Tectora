@@ -263,3 +263,51 @@ sessions that use it know where things stand.
   cut per building); departures only for buildings standing clear of the
   others; a dormer left off a departed roof gets no warning;
   `tests/invariants.rs` now skips departed roofs (needs Jakub's sign-off).
+
+## 2026-11-14 - closed 3D buildings and a whole-app sweep (branch claude/project-thread-14l1th)
+- Done: 3D walls go from the ground to the roof's underside over the wall
+  line (`scene3d.wallUnderRoof`), which closes the gap under the roof and
+  the stacked walls of a raised building height; stacked dormers keep their
+  own walls. Review run `target/review/2026-11-14-f5d9531/` (UX, UI, arch
+  and security, tests, silent failures; roof math left to the core thread).
+  Fixed: zero-area chimney / opening (MCP refusal + `bad_size` problem),
+  plan sheet foot wraps instead of dropping line totals, new job ids under
+  a library lock, all-or-nothing delete and restore, synced saves, library
+  listing within 500 ms per job (`figures_pending`), `refused` error code
+  for core refusals, dash for a roof that is not calculated, wall bar
+  limits, double click opens the pressed row, undo keeps the selection.
+- Open for Jakub: MCP `path` arguments reach any file (ARCH-002); a field
+  added without a format-version bump is dropped by the previous release
+  (ARCH-003, building height in 0.7.0); Export dialog shows the raw
+  price-sheet text (UX-003); pitch over 90° only marked, not refused.
+- Open, not started: ARCH-004 (edit operations copied in TypeScript),
+  ARCH-005, UX-004/006/007/008/011-015/017-020, TEST-002..008, UI-006/007/009.
+  The calculation still has to leave out a zero-area chimney from an old
+  file (`cleaned()` in openings.rs, core thread). ERR-001 (ordinary edits
+  ending in a roof error) is with the core thread.
+
+## 2026-11-15 - ARCH-004: the editor calls the core (branch claude/project-thread-14l1th)
+- Moved to core commands (`commands.rs`, Tauri, `ui_bridge.rs`, `api.ts`): calculation helpers (`roof_helper_context/preview/apply`, `edit::helper`, also behind MCP `roof_helper`), round-roof arc (`round_arc`), opening reshape / chimney from rectangle / face area / regular polygon / part centre / merge of a dropped corner / drawn footprint without repeats (`item_geometry`), part transform and wall shift (`transform_part`, `offset_wall`). New `edit/helper.rs`, `edit/corners.rs`; `lib/latest.ts` (debounced, newest answer wins) for live figures.
+- Deleted TypeScript: `roofcalc.ts` (+ test), `oppositeWall`, `spanBetween`, `reshapeOpening`, `chimneyFromRect`, `faceArea`, `offsetWall`, `regularPolygon`, `partCentre`, `mergeDroppedCorner`, `withoutRepeats`; 21 `editparity` ops left with their copies (fixture and `edit_parity.rs` unchanged).
+- Still in TypeScript, on purpose (drag-time presentation) or not yet moved: see ADR-0005 (Proposed). Not yet moved: `dormers.ts` dialog logic with `roundroof.ts`'s arc (DormerBar/DormerDialog read it synchronously in `$derived`; needs both components restructured around async answers, see ADR-0005) and `buildingHeight` / `freezeHeight` in the wall bar's edits (needs a serial edit queue).
+
+## 2026-11-15 - the rest of the 2026-11-14 review findings (branch claude/project-thread-14l1th, PR #48)
+- Done: an AI client reads a file outside the jobs folder and the drawings
+  inbox only after the user allowed that file in the app (`file_request`,
+  `allowed_files`; ARCH-002, Jakub's choice). Format version 3 with kept
+  unknown top-level keys and a schema-hash guard test (ARCH-003, ADR-0004
+  Proposed). One calculation per request (ARCH-006). svg / xls / doc shown
+  in their folder (ARCH-005). Editor: eave line, typed angle, lengths while
+  drawing, labels of several buildings, keyboard stepping, placing bar.
+  Results and export: translated table of the copied list, line names,
+  pitch over 90° refused at input, AI review shows the change beside each
+  wall. Tests: E2E run slots, MCP parity requires a change, codes tied to
+  UI texts, round roof closed forms.
+- State: `make check` exit 0, `make sweeps` pass, Playwright 296 passed.
+- Open for Jakub: accept ADR-0004 and ADR-0005; remove or rewrite the old
+  ignored property `face_areas_are_not_negative` (replaced by
+  `a_negative_face_area_always_carries_cut_exceeds_face`); whether the
+  round-roof reference runs become a committed fixture (now read through
+  `DACAD_ROUND`). Not done: `dormers.ts` still copies `edit::dormers`
+  (ADR-0005 inventory); unknown keys below the top level are not kept;
+  Tauri-only behaviour (watcher, quit guard, updater) has no automated test.

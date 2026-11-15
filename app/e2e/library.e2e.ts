@@ -235,6 +235,38 @@ test.describe("library: examples, new job tabs, import, broken files", () => {
     for (const p of all) expect(p.roof_area, p.name).toBeGreaterThan(1);
   });
 
+  test("new job from this roof shows the chosen roof and, without a name, names the copy apart (UX-016)", async ({ app, page }) => {
+    for (let i = 1; i <= 9; i++) await createExample("gable", `Zdroj ${i}`);
+    await app.open();
+    const dlg = page.getByRole("dialog", { name: cs("new.title") });
+    // The job at the end of the dialog's list, out of its view at first.
+    await page.locator("header").getByRole("button", { name: cs("lib.new") }).click();
+    await dlg.getByRole("tab", { name: cs("new.past") }).click();
+    const last = ((await dlg.getByRole("option").last().locator("strong").textContent()) ?? "").trim();
+    expect(last).toMatch(/^Zdroj \d$/);
+    await dlg.getByRole("button", { name: cs("common.cancel") }).click();
+
+    await page.getByRole("row").filter({ hasText: last }).first().click();
+    await page.getByRole("button", { name: cs("card.reuse") }).first().click();
+    await expect(dlg.getByRole("tab", { name: cs("new.past") })).toHaveAttribute("aria-selected", "true");
+    await expect(dlg.getByTestId("past-chosen")).toContainText(last);
+    // The preselected row is scrolled into the list's view.
+    const chosen = dlg.getByRole("option", { selected: true });
+    await expect(chosen).toContainText(last);
+    await expect.poll(async () => {
+      const list = (await dlg.getByRole("listbox").boundingBox())!;
+      const row = (await chosen.boundingBox())!;
+      return row.y >= list.y - 1 && row.y + row.height <= list.y + list.height + 1;
+    }).toBe(true);
+    const name = dlg.getByLabel(cs("job.name"));
+    await expect(name).toHaveAttribute("placeholder", cs("lib.copyName", { name: last }));
+    await dlg.getByRole("button", { name: cs("new.create") }).click();
+    await expect(page.locator(".editor input.title")).toHaveValue(cs("lib.copyName", { name: last }));
+    const names = (await listProjects()).map((p) => p.name);
+    expect(names.filter((n) => n === last)).toHaveLength(1);
+    expect(names).toContain(cs("lib.copyName", { name: last }));
+  });
+
   test("new job by drawing opens an empty plan in draw mode", async ({ app, page }) => {
     await app.open();
     await page.locator("header").getByRole("button", { name: cs("lib.new") }).click();
