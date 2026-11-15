@@ -157,7 +157,7 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             "roof opening {} (0-based) lies on no roof face, so it cuts nothing and is not in the result; move it onto the roof or delete it",
             w.item.unwrap_or(0)
         ),
-        WarningKind::NotCalculatedByCore => "the standard calculation stops on this roof (or could not run), so Tectora calculated it with its own engine; where the standard calculation stopped with an error the result passed Tectora's self-check (planar faces at their pitches, every wall's eave height, the plan covered, every line on a face). The figures are not the standard result; tell the user to look at the roof".to_string(),
+        WarningKind::NotCalculatedByCore => "the standard calculation stops on this roof (or could not run), so Tectora calculated it with its own engine; the roof of a building that stands clear of the others passed Tectora's self-check (planar faces at their pitches, every wall's eave height, the plan covered, every line on a face), buildings that touch each other are joined without that check. The figures are not the standard result; tell the user to look at the roof".to_string(),
         WarningKind::PlaneOverWall => {
             let (outer, inner) = (w.edges.first().map_or(0, |e| *e), w.edges.get(1).map_or(0, |e| *e));
             format!(

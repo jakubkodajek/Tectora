@@ -405,3 +405,51 @@ fn a_building_drawn_inside_another_one_is_warned() {
     let roof = calc(&job(vec![house, annex]));
     assert!(!all_kinds(&roof).contains(&WarningKind::InsideAnother));
 }
+
+// ------------------------------------------------------------ HUNTC-007
+
+/// A 10 × 8 m building with every wall a gable, the front one clad: the
+/// standard calculation cannot run on it and Tectora's own engine gives
+/// it no face.
+fn all_gables_clad(x0: f64) -> RoofPart {
+    let mut a = block("Gables", x0, 0.0, 10.0, 8.0, [(G, 3.0, 0.5); 4]);
+    a.edges[0].clad = true;
+    a
+}
+
+/// HUNTC-007: such a building used to pass as a roof of 0 m² ("ok", no
+/// error, the stored result could be taken). A roof that is not the
+/// standard calculation's is shown only when it passes the self-check:
+/// this one is an error.
+#[test]
+fn a_building_the_fallback_gives_no_roof_is_an_error_not_an_empty_roof() {
+    let roof = calc(&job(vec![all_gables_clad(0.0)]));
+    let g = &roof.geos[0];
+    assert!(
+        g.error.is_some(),
+        "no error: {} faces, {:?}",
+        g.faces.len(),
+        kinds(&roof, 0)
+    );
+    assert!(g.faces.is_empty());
+    // Tectora's own wording, nothing of the reference's.
+    let e = g.error.as_ref().unwrap();
+    assert!(e.code.is_none() && e.message.is_ascii(), "{e:?}");
+}
+
+/// HUNTC-007, several buildings: the building without a roof carries the
+/// error and is named; the hip roof beside it keeps its roof, which is the
+/// standard calculation's (it runs on that building alone).
+#[test]
+fn one_building_without_a_roof_leaves_the_others_theirs_and_says_so() {
+    let house = hip("House", 30.0, 0.0, 10.0, 8.0, 40.0, 3.0);
+    let roof = calc(&job(vec![house, all_gables_clad(0.0)]));
+    let e = roof.geos[1]
+        .error
+        .as_ref()
+        .expect("the gable box is an error");
+    assert_eq!(e.parts, vec![1]);
+    assert!(roof.geos[0].error.is_none());
+    near("house area", roof.area, 11.0 * 9.0 / cos(40.0), 0.05);
+    assert_eq!(kinds(&roof, 0), vec![]);
+}

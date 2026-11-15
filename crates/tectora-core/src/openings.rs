@@ -586,17 +586,118 @@ fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
             }
             several_after_error(project, e)
         }
-        // A failure of ours: the sweep, said.
-        Err(crate::engine::Failure::Ours(_)) => {
-            let mut geos = fallback(project);
-            // Not DACAD's result: say so, once for the job.
-            if let Some(g) = geos.first_mut() {
-                g.warnings
-                    .push(RoofWarning::new(WarningKind::NotCalculatedByCore, 0.0));
-            }
-            geos
+        // A failure of ours: the sweep, checked and said.
+        Err(crate::engine::Failure::Ours(_)) => fallback_checked(project),
+    }
+}
+
+/// The error of a building the standard calculation could not run on
+/// (`Failure::Ours`) and Tectora's own engine gives no sound roof for.
+/// Tectora's own wording: the reference never saw this building.
+fn not_closed(part: Option<usize>) -> crate::roof::CalcError {
+    crate::roof::CalcError {
+        kind: crate::roof::CalcErrorKind::OpenFaces,
+        code: None,
+        message_id: None,
+        message: "the roof faces do not close".into(),
+        parts: part.into_iter().collect(),
+        edges: Vec::new(),
+    }
+}
+
+/// [`fallback`] where the standard calculation could not run for a reason
+/// of ours, used only as far as it can be trusted (audit HUNTC-007: the
+/// fallback's result used to be shown unchecked, a building of 0 m² with
+/// no error, and only the first building said that it was not the
+/// standard result).
+///
+/// A building that stands clear of the others is calculated on its own:
+/// by the standard calculation where that runs on it alone, else by the
+/// sweep, which must pass [`crate::check::sound`] like every roof that is
+/// not the standard calculation's ([`swept`]); where it does not, the
+/// building carries an error and the others keep their roofs. Buildings
+/// that touch are joined by the fallback as before; of those, one without
+/// a roof plane (every wall a gable) and without a face carries the error
+/// too. Every roof given here that is not the standard calculation's says
+/// `NotCalculatedByCore`.
+fn fallback_checked(project: &Project) -> Vec<RoofGeometry> {
+    let n = project.parts.len();
+    let failed = |k: usize| RoofGeometry {
+        error: Some(not_closed((n > 1).then_some(k))),
+        ..RoofGeometry::default()
+    };
+    if n == 1 {
+        return vec![swept(project).unwrap_or_else(|| failed(0))];
+    }
+    let mut geos = fallback(project);
+    geos.resize(n, RoofGeometry::default());
+    for (k, slot) in geos.iter_mut().enumerate() {
+        if stands_alone(project, k) {
+            // On its own the standard calculation may well take it: what
+            // could not run was the job as a whole.
+            let one = only_part(project, k);
+            let roof = match crate::engine::generate(&one) {
+                Ok(mut geos) => geos.pop().filter(|_| geos.is_empty()).ok_or(None),
+                Err(crate::engine::Failure::Dacad(mut e)) => depart(&one, e.kind).ok_or({
+                    e.parts = vec![k];
+                    Some(e)
+                }),
+                Err(crate::engine::Failure::Ours(_)) => swept(&one).ok_or(None),
+            };
+            *slot = match roof {
+                Err(Some(e)) => RoofGeometry {
+                    error: Some(e),
+                    ..RoofGeometry::default()
+                },
+                Err(None) => failed(k),
+                Ok(mut geo) => {
+                    // Each off-roof dormer is reported once, by its
+                    // nearest building.
+                    geo.warnings.retain(|w| {
+                        w.kind != WarningKind::DormerOffRoof
+                            || w.dormer
+                                .and_then(|d| project.dormers.get(d))
+                                .is_none_or(|d| nearest_part(project, d) == Some(k))
+                    });
+                    geo
+                }
+            };
+            continue;
+        }
+        if slot.error.is_some() {
+            continue;
+        }
+        let roofed = project.parts[k].edges.iter().any(|e| !e.is_gable());
+        if slot.faces.is_empty() && !roofed {
+            *slot = failed(k);
+        } else if !slot.faces.is_empty() {
+            slot.warnings
+                .push(RoofWarning::new(WarningKind::NotCalculatedByCore, 0.0));
         }
     }
+    geos
+}
+
+/// The roof of the one building of `alone` from Tectora's own sweep
+/// engine, with its objects and the `NotCalculatedByCore` notice: `None`
+/// unless the roof without objects passes [`crate::check::sound`] (the
+/// last way of [`depart`], on its own).
+fn swept(alone: &Project) -> Option<RoofGeometry> {
+    let [part] = &alone.parts[..] else {
+        return None;
+    };
+    let convex = alone
+        .chimneys
+        .iter()
+        .chain(&alone.roof_openings)
+        .all(|c| dacad_convex(&c.corners));
+    if alone.flat_roof || !convex {
+        return None;
+    }
+    let origin = local_origin(part);
+    let local = to_local(&without_objects(alone), origin);
+    let departed = swept_bare(&local, &mut Vec::new())?;
+    finish_departed(alone, part, origin, departed)
 }
 
 /// `project` with only its building `k` (and every dormer, chimney,
@@ -840,7 +941,19 @@ fn depart_logged(
             _ => kind,
         }
     };
-    let Departed { roof, raw } = departed_bare(&local, kind, budget, log)?;
+    let departed = departed_bare(&local, kind, budget, log)?;
+    finish_departed(alone, part, origin, departed)
+}
+
+/// A roof of [`departed_bare`] moved back from the building's own frame,
+/// with the objects of `alone` applied and, for the sweep's roof, its
+/// notice. `None` when the objects leave nothing of the roof.
+fn finish_departed(
+    alone: &Project,
+    part: &RoofPart,
+    origin: (f64, f64),
+    Departed { roof, raw }: Departed,
+) -> Option<RoofGeometry> {
     let Some(raw) = raw else {
         return with_objects(alone, from_local(roof, origin));
     };
@@ -883,9 +996,9 @@ fn departed_bare(
     log: &mut Vec<String>,
 ) -> Option<Departed> {
     use crate::roof::CalcErrorKind as K;
-    let [part] = &local.parts[..] else {
+    if local.parts.len() != 1 {
         return None;
-    };
+    }
     // A building turned and rounded to centimetres is first put back
     // onto common wall lines (at most a centimetre): the drawn walls can pass
     // `sound` with planes a few millimetres apart (a stray valley).
@@ -901,9 +1014,17 @@ fn departed_bare(
             }
         }
     }
-    // The sweep, with its own line clean-up, checked without the objects.
-    // Bounded like everything here: the sweep of a building at the wall
-    // limit costs more than the standard calculation.
+    swept_bare(local, log)
+}
+
+/// The sweep's roof of the one building of `local` (no objects, in its
+/// own frame), with its own line clean-up, if it passes
+/// [`crate::check::sound`]. Bounded like every departure: the sweep of a
+/// building at the wall limit costs more than the standard calculation.
+fn swept_bare(local: &Project, log: &mut Vec<String>) -> Option<Departed> {
+    let [part] = &local.parts[..] else {
+        return None;
+    };
     if part.edges.len() > MAX_SWEEP_WALLS {
         log.push("sweep: too many walls".into());
         return None;
@@ -1100,10 +1221,17 @@ fn several_after_error(project: &Project, mut e: crate::roof::CalcError) -> Vec<
         match crate::engine::generate(&rest) {
             Ok(geos) => Some(geos),
             Err(crate::engine::Failure::Ours(_)) => {
-                let mut geos = fallback(&rest);
-                if let Some(g) = geos.first_mut() {
-                    g.warnings
-                        .push(RoofWarning::new(WarningKind::NotCalculatedByCore, 0.0));
+                let mut geos = fallback_checked(&rest);
+                // Building numbers of the whole job, not of the rest.
+                for g in geos.iter_mut() {
+                    if let Some(e) = g.error.as_mut() {
+                        if rest.parts.len() == 1 {
+                            e.parts = vec![0];
+                        }
+                        for j in e.parts.iter_mut() {
+                            *j = keep.get(*j).copied().unwrap_or(*j);
+                        }
+                    }
                 }
                 Some(geos)
             }
