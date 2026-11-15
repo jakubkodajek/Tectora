@@ -48,7 +48,7 @@ programs; Codex in the ChatGPT desktop app can.
 | `update_edges`, `set_outline`, `edit_walls` | Walls and their roof definitions (incl. clad gable and the direction of a direction change); corners, lengths, direction changes, parallel shift |
 | `set_part_height` | A building's height (`height`, top of the walls; the roof and the objects on it move with it, each eave keeps its offset) or every wall at one eave height (`eave_height`), in one save |
 | `add_dormer`, `update_dormer` | Dormers by kind (gable, pointed, hip, half-hip, shed, trapezoid, round), by eave height or, as the dormer window, by front wall height, depth or ridge length; front and side overhangs apart, a trapezoid by its back width |
-| `set_openings`, `set_manual`, `face_to_part`, `set_roof_options` | Windows, chimneys, openings (a window larger than its face is refused); hand-drawn lines and faces, a face turned into a building; flat roof, material names |
+| `set_openings`, `set_manual`, `face_to_part`, `set_roof_options` | Windows, chimneys, openings (a window larger than its face is refused on every write, not only here; a hand-drawn face pitch is 0 to 89.9, a typed line length 0 or more); hand-drawn lines and faces, a face turned into a building; flat roof, material names |
 | `update_opening` | Position, width, depth, rotation and top of one chimney or roof opening (any shape, stretched in its box along the first side), or position and size of one roof window (the object bar) |
 | `transform_items` | Move, rotate, copy or align to the nearest wall single dormers, chimneys, windows, openings, hand-drawn lines and faces (the plan's drag and right-click menu) |
 | `place_item` | Put one dormer, chimney, window or opening at distances on its roof face: from the eave (along the slope) and from the left or right side edge, as the editor's position fields and plan dimensions show them |
@@ -59,7 +59,7 @@ programs; Codex in the ChatGPT desktop app can.
 | `list_deleted`, `restore_project` | Deleted jobs and removed files in the trash, and bringing them back |
 | `list_files`, `attach_file`, `remove_file` | Files attached to a job (drawings): regular drawing, photo or document files up to 256 MB; a removed file goes to the trash |
 | `export_job`, `import_job`, `get_schema` | `.tectorajob` bundles, file schema |
-| `export_list`, `export_plan` | The roof for the offer: the text list the Excel price sheet reads (the Export dialog's copy button) and the roof sheet with lengths, areas and pitches as PDF or SVG in the library's `exports` folder |
+| `export_list`, `export_plan` | The roof for the offer: the text list the Excel price sheet reads (the Export dialog's copy button) and the roof sheet with lengths, areas and pitches as PDF or SVG in the library's `exports` folder (PNG only from the app's Export dialog: the web view rasterises the sheet and the core has no rasteriser; an MCP PNG would need one, e.g. `resvg`, a new dependency) |
 | `get_settings`, `update_settings` | App settings shared with the Settings screen: jobs folder, drawings inbox folder, language, theme, defaults for new roofs, follow mode |
 | `list_drawings`, `drawing_info`, `view_drawing`, `drawing_dimensions`, `trace_outline`, `drawing_lines`, `measure_drawing` | Technical drawings (PDF in the drawings inbox or attached to a job): page size and kind, rendered pages and crops with a sheet-mm grid, every dimension chain with its drawn length, an outline snapped to the drawn corners and returned in metres, the exact vector lines and the text-layer labels (filtered, e.g. every height label), measuring between two points against a dimension the AI read, and the calculated roof drawn over the plan (`view_drawing` `overlay`) to check it |
 
@@ -77,7 +77,7 @@ set either key: `update_settings` does not take them.
 ## What the user sees
 
 - Every write goes through `Store::save_as`, which appends an entry to
-  `.activity/<id>.jsonl` with the actor (the MCP client name), the summary, the
+  `.activity/<id>.jsonl` with the actor (the MCP client name; "user" or an empty name is changed to "AI (user)" / "AI", so an AI save is always reviewed), the summary, the
   computed changes and the previous version.
 - The server also writes `.activity/live.json` on each call ("Reading …",
   "Calculating …", or the write summary).

@@ -159,8 +159,29 @@ export interface ProjectSummary {
   files: number;
   /** The figures an offer was made with are stored. */
   has_result: boolean;
+  /** The stored result's roof area (the offer's figure), m²; null without one. */
+  stored_area?: number | null;
+  /** The current figures differ from the stored result's. */
+  result_differs?: boolean;
   /** The roof took longer than the listing waits: no figures yet, a later listing has them. */
   figures_pending?: boolean;
+  /** Buildings the core gave no roof for: as many as `parts`, the roof is not calculated; fewer, the area leaves them out (ERRU-005). */
+  parts_failed?: number;
+}
+
+/** A deleted job or removed file in the library's trash (core `store::TrashEntry`). */
+export interface TrashEntry {
+  /** Pass it to `restoreDeleted`. */
+  entry: string;
+  id: string;
+  /** The job's name when it was deleted. */
+  name: string;
+  /** Set when only an attached file was removed. */
+  file?: string;
+  ts_ms: number;
+  /** "user" for the app, otherwise the AI client's name. */
+  actor: string;
+  summary: string;
 }
 
 export interface ExampleInfo {
@@ -229,6 +250,7 @@ export interface Problem {
   code:
     | "too_few_edges"
     | "zero_length_wall"
+    | "walls_cross"
     | "start_nan"
     | "pitch_range"
     | "eave_nan"
@@ -238,6 +260,7 @@ export interface Problem {
     | "stacked_nan"
     | "break_below_eave"
     | "break_duplicate"
+    | "half_hip_below_eave"
     | "end_nan"
     | "bad_corners"
     | "bad_size";

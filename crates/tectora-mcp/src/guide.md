@@ -47,7 +47,13 @@ slope) and chimneys (convex plan `corners`). Like DACAD, a window deducts
 width × height and adds no lines; a chimney deducts its plan area / cos(pitch)
 and adds WV (downhill), WH (uphill) and WS (sloped sides) abutment lines.
 A window larger than what is left of its roof face is refused: check the
-units (cm read as m) and whether width and height are swapped.
+units (cm read as m) and whether width and height are swapped. The same
+check runs on every write (moving a window, changing a wall or the flat
+roof): an edit that would make a window larger than its face is refused.
+A window side must be 0.01 to 100 m.
+Creating tools refuse a pitch under 2 degrees, a negative eave height or
+overhang and an empty job name; a write that changes nothing answers
+`saved: false`.
 
 ## Everything the editor can do
 
@@ -59,7 +65,8 @@ The tools cover every operation of the Tectora editor:
   `update_edges` (also `clad` for a clad gable and `direction_deg` to turn
   or flip a direction change; with `all` a pitch leaves gables alone).
 - Parts: `add_part`, `add_shape_part` (standard roofs and regular polygons),
-  `transform_part` (move, rotate, mirror, with copies), `delete_items`,
+  `transform_part` (move, rotate, mirror, with copies; a mirror adds 0 or 1
+  copy), `delete_items`,
   `clear_roof` (remove everything drawn and start on an empty canvas),
   `set_part_height` (the editor's "Building height": `height` is the top of
   the walls; the roof, breaks, half-hips, dormers and chimneys move with it
@@ -85,7 +92,8 @@ The tools cover every operation of the Tectora editor:
 - Lines and faces drawn by hand on the roof: `set_manual`. A hand-drawn
   face only adds its area: it is no building and calculates no roof. When a
   footprint was traced as a face, `face_to_part` turns it into a building
-  in one change.
+  in one change. A face pitch is 0 to 89.9 degrees and a typed line length
+  0 or more; anything else is refused.
 - Single objects (dormers, chimneys, windows, openings, hand-drawn lines and
   faces): `transform_items` moves, rotates (about the object's centre) or
   copies them, as the user drags them in the plan or uses their right-click
@@ -120,7 +128,10 @@ The tools cover every operation of the Tectora editor:
   the user, do not create a new job beside one. A tool on such a job says
   why it cannot be opened. A job whose roof takes too long to calculate for
   the list comes with `figures_pending: true` and `roof_area_m2: null`; use
-  `calc` on it for its figures.
+  `calc` on it for its figures. `parts_without_roof` counts the buildings
+  the core gave no roof for: as many as `parts`, the roof is not calculated
+  (`roof_area_m2: null`); fewer, `roof_area_m2` leaves them out. Tell the
+  user, and use `calc` on the job to see why.
 - Deleting: `delete_project` and `remove_file` move the job (with its
   history and files) or the file to the library's trash for 30 days;
   `list_deleted` shows what is there and `restore_project` brings it back.
@@ -150,7 +161,9 @@ The tools cover every operation of the Tectora editor:
   the faces, the wall and material areas and the line totals, as the sheet
   reads them.
   `export_plan` writes the roof sheet (plan with line lengths, areas and
-  pitches) as PDF or SVG into the `exports` folder and returns the path.
+  pitches) as PDF or SVG into the `exports` folder and returns the path. There
+  is no PNG over MCP (the app draws it in its own window): offer the SVG,
+  or ask the user to press PNG in the app's Export dialog.
   Pass `line_names` (code → name in the user's language, e.g.
   `{"T": "Okapy", "WV": "Napojení čelní"}`) for a legend of the line codes
   at the sheet's foot, as the app's sheet has.

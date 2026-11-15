@@ -12,6 +12,8 @@ export interface Bounds {
   max: number;
 }
 
+/** Pitch of an eave plane, degrees: the core calculates no roof under 2° (`model::MIN_PITCH_DEG`, UI-010); 90° is a gable. */
+export const PITCH: Bounds = { min: 2, max: 89.9 };
 /** Overhang, m. */
 export const OVERHANG: Bounds = { min: 0, max: 20 };
 /** Eave height of the presets and the New job form, m (below the ground for a building on a slope). */

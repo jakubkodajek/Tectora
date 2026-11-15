@@ -15,13 +15,17 @@
   import type { Placement, Project } from "./types";
   import PlaceFields from "./PlaceFields.svelte";
   import { notifyError, notifyRefusal } from "./notify.svelte";
+  import { describeError, type Described } from "./errors";
 
   let {
     project,
     params = $bindable(),
     track = (p: Promise<unknown>) => p,
+    roofFailed = false,
   }: {
     project: Project;
+    /** The core gave no roof for a building of the job: no roof under the front is not "off the roof" (ERRU-006). */
+    roofFailed?: boolean;
     /** The dormer being edited; the dialog's OK takes it from here. */
     params: DormerParams;
     /** Registers a placement in flight, so OK waits for it (review UI-001). */
@@ -35,7 +39,8 @@
   // asked again only when the start, direction or width change.
   let host = $state<HostSlope | null>(null);
   let hostReady = $state(false);
-  let hostFailed = $state(false);
+  /** Why the core could not say which roof is under the front (ERRU-006). */
+  let hostError = $state<Described | null>(null);
   const hostKey = $derived(`${params.start.x}|${params.start.y}|${params.angle}|${params.width}`);
   let asked = 0;
   $effect(() => {
@@ -47,13 +52,13 @@
         if (n !== asked) return;
         host = h;
         hostReady = true;
-        hostFailed = false;
+        hostError = null;
       },
-      () => {
+      (e) => {
         if (n !== asked) return;
         host = null;
         hostReady = true;
-        hostFailed = true;
+        hostError = describeError(e, "calc");
       },
     );
   });
@@ -308,7 +313,11 @@
     <div><dt>{t("dormer.topHeight")}</dt><dd>{fmt(sec?.top_height)} m</dd></div>
   </dl>
 
-  {#if hostReady && !host}
+  {#if hostReady && hostError}
+    <p class="note" role="alert" data-testid="dormer-host-error"><i></i><code>{hostError.code}</code> {hostError.message}</p>
+  {:else if hostReady && !host && roofFailed}
+    <p class="note" role="status" data-testid="dormer-roof-failed"><i></i>{t("dormer.roofNotCalculated")}</p>
+  {:else if hostReady && !host}
     <p class="note" role="status"><i></i>{t("dormer.offRoof")}</p>
   {:else if sec && sec.depth === null}
     <p class="note" role="status"><i></i>{t("dormer.noDepth")}</p>

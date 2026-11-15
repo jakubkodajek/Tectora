@@ -1,11 +1,13 @@
 <script lang="ts">
   import { LOCALES, i18n, setLocale, t, type Locale } from "./i18n.svelte";
   import { updateSettings } from "./settings.svelte";
+  import { notifyError } from "./notify.svelte";
 
   function choose(l: Locale) {
     setLocale(l);
-    // Also store it in the settings file; the choice applies even if that fails.
-    updateSettings({ locale: l }).catch(() => {});
+    // Also store it in the settings file; the choice applies for this session
+    // even if that fails, but the user hears that it will not last (ERRU-001).
+    updateSettings({ locale: l }).catch((e) => notifyError(e, "settings"));
   }
 </script>
 

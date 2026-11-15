@@ -49,18 +49,44 @@ impl Default for RoofDefaults {
 }
 
 impl RoofDefaults {
+    /// The ranges every new wall accepts (`EdgeDef::problems`): a default
+    /// the walls then refuse made every new job fail with an error about
+    /// `defaults` (audit 2026-11-15 HUNTIO-007).
+    const PITCH: (f64, f64) = (crate::model::MIN_PITCH_DEG, 89.0);
+    const EAVE: (f64, f64) = (0.0, 1000.0);
+    const OVERHANG: (f64, f64) = (0.0, 20.0);
+
     fn validate(&self) -> Result<(), SettingsError> {
-        let ok = |v: f64, lo: f64, hi: f64| v.is_finite() && (lo..=hi).contains(&v);
-        if !ok(self.pitch_deg, 0.0, 89.0) {
+        let ok = |v: f64, (lo, hi): (f64, f64)| v.is_finite() && (lo..=hi).contains(&v);
+        if !ok(self.pitch_deg, Self::PITCH) {
             return Err(SettingsError::InvalidValue("pitch_deg"));
         }
-        if !ok(self.eave_height, -100.0, 1000.0) {
+        if !ok(self.eave_height, Self::EAVE) {
             return Err(SettingsError::InvalidValue("eave_height"));
         }
-        if !ok(self.overhang, 0.0, 20.0) {
+        if !ok(self.overhang, Self::OVERHANG) {
             return Err(SettingsError::InvalidValue("overhang"));
         }
         Ok(())
+    }
+
+    /// Each value outside its range replaced by the default, so that a
+    /// settings file written before the ranges were tightened still loads
+    /// and can be saved again.
+    fn repaired(self) -> Self {
+        let d = Self::default();
+        let fix = |v: f64, (lo, hi): (f64, f64), dv: f64| {
+            if v.is_finite() && (lo..=hi).contains(&v) {
+                v
+            } else {
+                dv
+            }
+        };
+        Self {
+            pitch_deg: fix(self.pitch_deg, Self::PITCH, d.pitch_deg),
+            eave_height: fix(self.eave_height, Self::EAVE, d.eave_height),
+            overhang: fix(self.overhang, Self::OVERHANG, d.overhang),
+        }
     }
 }
 
@@ -202,8 +228,11 @@ impl Settings {
             }
             Err(e) => return (Self::default(), Some(format!("{}: {e}", path.display()))),
         };
-        match serde_json::from_str(&text) {
-            Ok(s) => (s, None),
+        match serde_json::from_str::<Self>(&text) {
+            Ok(mut s) => {
+                s.roof_defaults = s.roof_defaults.repaired();
+                (s, None)
+            }
             Err(e) => (Self::default(), Some(format!("{}: {e}", path.display()))),
         }
     }
@@ -302,35 +331,47 @@ pub struct FileRequest {
 pub const MAX_ALLOWED_FILES: usize = 200;
 
 /// `path` without `.` and `..` and with the links of its existing part
-/// resolved, so a path cannot leave a folder through `..` or a link. The
-/// deepest folder that exists is resolved and the rest is appended: a file
-/// that is not there yet still compares with its resolved folder (on
-/// Windows a resolved path has another prefix, on macOS the temporary
-/// folder is itself a link).
+/// resolved, so a path cannot leave a folder through `..` or a link. Each
+/// step is resolved before the next `..` is applied, so `inbox/link/..` is
+/// the folder beside the link's target, not `inbox` (ARCH-002). A part that
+/// does not exist yet is appended as written: a file that is not there yet
+/// still compares with its resolved folder (on Windows a resolved path has
+/// another prefix, on macOS the temporary folder is itself a link).
+/// A network path (`\\host\share\…`, device paths) is never touched on
+/// disk, only cleaned as text: resolving it would make the computer contact
+/// that host before anyone allowed it (ARCH-006).
 fn resolved(path: &Path) -> PathBuf {
-    let mut plain = PathBuf::new();
+    use std::path::Component;
+    let offline = is_network_path(path);
+    let mut out = PathBuf::new();
     for c in path.components() {
         match c {
-            std::path::Component::ParentDir => {
-                plain.pop();
+            Component::ParentDir => {
+                out.pop();
             }
-            std::path::Component::CurDir => {}
-            other => plain.push(other),
+            Component::CurDir => {}
+            Component::Prefix(_) => out.push(c),
+            other => {
+                out.push(other);
+                if !offline && let Ok(real) = fs::canonicalize(&out) {
+                    out = real;
+                }
+            }
         }
     }
-    let mut rest = Vec::new();
-    let mut head = plain.as_path();
-    loop {
-        if let Ok(real) = fs::canonicalize(head) {
-            return rest.iter().rev().fold(real, |p, name| p.join(name));
+    out
+}
+
+/// True for a Windows network or device path (`\\host\share`,
+/// `\\?\UNC\…`, `\\.\…`, `\\?\…` other than a drive): opening it
+/// reaches another computer or a device, so it is only compared as text.
+pub fn is_network_path(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    match path.components().next() {
+        Some(Component::Prefix(p)) => {
+            !matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
         }
-        match (head.parent(), head.file_name()) {
-            (Some(parent), Some(name)) => {
-                rest.push(name.to_os_string());
-                head = parent;
-            }
-            _ => return plain,
-        }
+        _ => false,
     }
 }
 
@@ -431,9 +472,23 @@ impl Settings {
     }
 
     /// The user's answer to [`Settings::folder_request`]: `allow` applies it,
-    /// either way it is closed.
-    pub fn answer_folder_request(&self, allow: bool) -> Result<Settings, SettingsError> {
+    /// either way it is closed. `shown` is the `changes` of the request the
+    /// user was shown; when the pending request is another one by now (an AI
+    /// client replaced it), nothing is applied and the new request stays for
+    /// the user to read (ARCH-005).
+    pub fn answer_folder_request(
+        &self,
+        shown: &Map<String, Value>,
+        allow: bool,
+    ) -> Result<Settings, SettingsError> {
         let mut next = self.clone();
+        if next
+            .folder_request
+            .as_ref()
+            .is_none_or(|r| &r.changes != shown)
+        {
+            return Ok(next);
+        }
         let Some(req) = next.folder_request.take() else {
             return Ok(next);
         };
@@ -476,8 +531,15 @@ impl Settings {
 
     /// The user's answer to [`Settings::file_request`]: `allow` adds the
     /// file to [`Settings::allowed_files`], either way the request is closed.
-    pub fn answer_file_request(&self, allow: bool) -> Settings {
+    /// `shown` is the path of the request the user was shown; when the
+    /// pending request names another path by now (an AI client replaced it),
+    /// nothing is allowed and the new request stays for the user to read
+    /// (ARCH-005).
+    pub fn answer_file_request(&self, shown: &Path, allow: bool) -> Settings {
         let mut next = self.clone();
+        if next.file_request.as_ref().is_none_or(|r| r.path != shown) {
+            return next;
+        }
         let Some(req) = next.file_request.take() else {
             return next;
         };
@@ -574,6 +636,17 @@ mod tests {
             std::os::unix::fs::symlink(&library, &via).unwrap();
             assert!(s.ai_may_read(&via.join("files/a/plan.pdf"), &via));
             assert!(!s.ai_may_read(&via.join("../other/missing.pdf"), &via));
+            // ARCH-002 (2026-11-15): a folder link in the inbox and then
+            // `..` lands beside the link's target, not back in the inbox.
+            let shared = base.join("shared");
+            fs::create_dir_all(shared.join("drawings")).unwrap();
+            fs::write(shared.join("private.pdf"), b"x").unwrap();
+            std::os::unix::fs::symlink(shared.join("drawings"), inbox.join("shared")).unwrap();
+            // Lexically this is `inbox/private.pdf`; through the link it is
+            // `shared/private.pdf`, outside.
+            fs::write(inbox.join("private.pdf"), b"x").unwrap();
+            assert!(!s.ai_may_read(&inbox.join("shared/../private.pdf"), &library));
+            assert!(!s.ai_may_read(&inbox.join("shared/./../private.pdf"), &library));
         }
         let asked = s.asking_for_file(&secret, "Claude", "attach");
         let req = asked.file_request.clone().unwrap();
@@ -585,9 +658,9 @@ mod tests {
             !asked.ai_may_read(&secret, &library),
             "asking allows nothing"
         );
-        let kept = asked.answer_file_request(false);
+        let kept = asked.answer_file_request(&req.path, false);
         assert!(kept.file_request.is_none() && !kept.ai_may_read(&secret, &library));
-        let allowed = asked.answer_file_request(true);
+        let allowed = asked.answer_file_request(&req.path, true);
         assert!(allowed.file_request.is_none() && allowed.ai_may_read(&secret, &library));
         assert!(
             !allowed.ai_may_read(&other.join("second.pdf"), &library),
@@ -603,6 +676,65 @@ mod tests {
             .patched(&serde_json::json!({ "follow_ai": false }))
             .unwrap();
         assert!(again.ai_may_read(&secret, &library));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_network_path_is_compared_as_text_and_never_opened() {
+        // ARCH-006: `\\host\share\x.pdf` was resolved (the computer
+        // contacted the host) before it was refused.
+        assert!(!is_network_path(Path::new("/home/a/plan.pdf")));
+        assert!(!is_network_path(Path::new("plan.pdf")));
+        #[cfg(windows)]
+        {
+            for p in [
+                r"\\host\share\x.pdf",
+                r"\\?\UNC\host\share\x.pdf",
+                r"\\.\pipe\x",
+            ] {
+                assert!(is_network_path(Path::new(p)), "{p}");
+            }
+            assert!(!is_network_path(Path::new(r"C:\Users\a\x.pdf")));
+            assert!(!is_network_path(Path::new(r"\\?\C:\Users\a\x.pdf")));
+            let library = tmp("ai-unc").join("jobs");
+            let s = Settings::default();
+            let far = Path::new(r"\\host\share\a\..\x.pdf");
+            assert!(!s.ai_may_read(far, &library));
+            let req = s
+                .asking_for_file(far, "Claude", "attach")
+                .file_request
+                .unwrap();
+            assert_eq!(req.path, PathBuf::from(r"\\host\share\x.pdf"));
+        }
+    }
+
+    #[test]
+    fn an_answer_only_applies_to_the_request_the_user_was_shown() {
+        // ARCH-005: the AI replaced the request before the click.
+        let base = tmp("swap");
+        let (a, b) = (base.join("a.pdf"), base.join("b.pdf"));
+        let asked_b = Settings::default().asking_for_file(&b, "Claude", "attach");
+        let shown_a = resolved(&a);
+        let after = asked_b.answer_file_request(&shown_a, true);
+        assert!(after.allowed_files.is_empty(), "b was not allowed");
+        assert_eq!(after.file_request, asked_b.file_request, "b still waits");
+        // No request open: nothing to allow either.
+        let none = Settings::default().answer_file_request(&shown_a, true);
+        assert!(none.allowed_files.is_empty());
+        // The same for the folders.
+        let patch = |d: &str| serde_json::json!({ "projects_dir": base.join(d) });
+        let (first, _) = Settings::default()
+            .patched_by_ai(&patch("one"), "Claude", "x")
+            .unwrap();
+        let (second, _) = first.patched_by_ai(&patch("two"), "Claude", "y").unwrap();
+        let shown = first.folder_request.clone().unwrap().changes;
+        let kept = second.answer_folder_request(&shown, true).unwrap();
+        assert_eq!(kept.projects_dir(), second.projects_dir(), "not moved");
+        assert!(!base.join("two").exists() && !base.join("one").exists());
+        assert_eq!(
+            kept.folder_request, second.folder_request,
+            "two still waits"
+        );
         let _ = fs::remove_dir_all(&base);
     }
 
@@ -624,10 +756,10 @@ mod tests {
             (req.by.as_str(), req.summary.as_str()),
             ("Claude", "Use the shared folder")
         );
-        let kept = next.answer_folder_request(false).unwrap();
+        let kept = next.answer_folder_request(&req.changes, false).unwrap();
         assert_eq!(kept.projects_dir(), s.projects_dir());
         assert!(kept.folder_request.is_none());
-        let moved = next.answer_folder_request(true).unwrap();
+        let moved = next.answer_folder_request(&req.changes, true).unwrap();
         assert_eq!(moved.projects_dir(), target);
         assert!(target.is_dir(), "the allowed folder is created");
         assert!(moved.folder_request.is_none());
@@ -642,6 +774,23 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn an_old_file_with_defaults_walls_refuse_loads_repaired() {
+        // HUNTIO-007: older releases saved a pitch of 1° or a negative
+        // eave; such a file must load and save again.
+        let d = tmp("repaired");
+        let path = d.join(SETTINGS_FILE);
+        let text = r#"{ "locale": "de", "roof_defaults": { "pitch_deg": 1, "eave_height": -5, "overhang": 0.8 } }"#;
+        fs::write(&path, text).unwrap();
+        let (s, problem) = Settings::load_checked_from(&path);
+        assert!(problem.is_none());
+        assert_eq!(s.locale.as_deref(), Some("de"));
+        assert_eq!(s.roof_defaults.pitch_deg, 40.0);
+        assert_eq!(s.roof_defaults.eave_height, 3.0);
+        assert_eq!(s.roof_defaults.overhang, 0.8);
+        assert!(s.save_to(&path).is_ok());
     }
 
     #[test]
@@ -720,6 +869,13 @@ mod tests {
         let mut s = Settings::default();
         s.roof_defaults.overhang = f64::NAN;
         assert!(s.validate().is_err());
+        // Defaults every new wall would refuse (HUNTIO-007).
+        for (pitch, eave) in [(1.0, 3.0), (0.0, 3.0), (40.0, -5.0)] {
+            let mut s = Settings::default();
+            s.roof_defaults.pitch_deg = pitch;
+            s.roof_defaults.eave_height = eave;
+            assert!(s.validate().is_err(), "{pitch} {eave}");
+        }
         let s = Settings {
             projects_dir: Some(PathBuf::from("relative/dir")),
             ..Settings::default()

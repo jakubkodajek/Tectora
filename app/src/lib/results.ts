@@ -76,8 +76,25 @@ export function joinedWith(result: CalcResult | null): number[][] {
 /**
  * Whether the core refused the roof (a part's calculation ended in an
  * error): its figures are zeros, not a result, so they are shown as "—"
- * (review ERR-004). One error stops every roof of the job.
+ * (review ERR-004). True when any part failed; see `roofState` for the
+ * other parts.
  */
 export function notCalculated(result: CalcResult | null): boolean {
   return !!result?.parts.some((p) => p.geometry.error);
+}
+
+/** The parts the core gave no roof for, by index into `result.parts`. */
+export function failedParts(result: CalcResult | null): number[] {
+  return (result?.parts ?? []).flatMap((p, i) => (p.geometry.error ? [i] : []));
+}
+
+/**
+ * "none": no part has a roof, the figures are zeros; "partial": some parts
+ * have none and the totals are the other parts' (the core calculates them
+ * without the failed ones, ERRU-003); "ok": every part has its roof.
+ */
+export function roofState(result: CalcResult | null): "none" | "partial" | "ok" {
+  const failed = failedParts(result).length;
+  if (!result || failed === 0) return "ok";
+  return failed >= result.parts.length ? "none" : "partial";
 }

@@ -4,6 +4,7 @@
   import { untrack } from "svelte";
   import Icon from "./Icon.svelte";
   import { api } from "./api";
+  import { safeFileName } from "./filename";
   import { t } from "./i18n.svelte";
   import type { Attachment, Project } from "./types";
   import { JOB_STATUSES } from "./types";
@@ -106,7 +107,7 @@
 
   async function exportJob() {
     const path = await save({
-      defaultPath: `${project.name || "job"}.tectorajob`,
+      defaultPath: `${safeFileName(project.name, "job")}.tectorajob`,
       filters: [{ name: "Tectora", extensions: ["tectorajob"] }],
     });
     if (!path) return;

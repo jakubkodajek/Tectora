@@ -306,7 +306,9 @@ test.describe("roof definition bar", () => {
     await selectWall(page, 1);
     await def.getByRole("button", { name: cs("edge.addMarker") }).click();
     let p = await waitForProject(id, (p) => p.parts[0].edges.length === 5);
-    expect(p.parts[0].edges[1].direction_rad).toBeCloseTo(Math.PI, 6);
+    // HUNTC-008: the default is the bisector of the previous wall (east, 0)
+    // and this one (north, 90°), so 45°; wall + 90° broke every example roof.
+    expect(p.parts[0].edges[1].direction_rad).toBeCloseTo(Math.PI / 4, 6);
     await expect(def.locator(".kind")).toHaveText(cs("edge.marker"));
     await setField(def.getByRole("textbox", { name: new RegExp(`^${cs("edge.direction")}`) }), 170);
     p = await waitForProject(id, (p) => Math.abs(p.parts[0].edges[1].direction_rad - (170 * Math.PI) / 180) < 1e-9);

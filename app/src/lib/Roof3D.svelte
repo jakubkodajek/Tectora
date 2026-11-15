@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ui } from "./theme.svelte";
+  import { releaseRenderer } from "./webgl";
   import Icon from "./Icon.svelte";
   import { onMount } from "svelte";
   import * as THREE from "three";
@@ -521,7 +522,7 @@
       el.removeEventListener("dblclick", dbl);
       ro.disconnect();
       controls.dispose();
-      renderer.dispose();
+      releaseRenderer(renderer);
     };
   });
 

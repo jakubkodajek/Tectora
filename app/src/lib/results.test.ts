@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DICTS, i18n } from "./i18n.svelte";
-import { areaRows, joinedWith, warningText } from "./results";
+import { areaRows, failedParts, joinedWith, roofState, warningText } from "./results";
 import type { CalcResult, RoofWarning } from "./types";
 
 const part = (name: string, joined_with?: number[]) => ({
@@ -151,5 +151,19 @@ describe("warningText for every kind", () => {
     expect(warningText(every.area_mismatch)).toContain("3.4");
     expect(warningText(every.merged_walls)).toMatch(/2\b[\s\S]*3\b/);
     i18n.locale = "cs";
+  });
+});
+
+describe("roofState (ERRU-003)", () => {
+  const failing = (name: string) => ({ ...part(name), geometry: { ...part(name).geometry, error: { kind: "open_faces" } } });
+  it("is partial when only some buildings have no roof, so the others keep their figures", () => {
+    const r = { parts: [part("A"), failing("B")] } as unknown as CalcResult;
+    expect(roofState(r)).toBe("partial");
+    expect(failedParts(r)).toEqual([1]);
+  });
+  it("is none when no building has a roof, ok when all have one", () => {
+    expect(roofState({ parts: [failing("A")] } as unknown as CalcResult)).toBe("none");
+    expect(roofState({ parts: [part("A"), part("B")] } as unknown as CalcResult)).toBe("ok");
+    expect(roofState(null)).toBe("ok");
   });
 });

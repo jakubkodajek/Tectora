@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { describeCalcError, describeError, describeProblem, describeRefusal, refusalReason, toAppError } from "./errors";
-import { DICTS, i18n, type Locale } from "./i18n.svelte";
+import { DICTS, i18n, t, type Locale } from "./i18n.svelte";
 
 const setLocale = (l: Locale) => (i18n.locale = l);
 import { emptyProject } from "./types";
@@ -171,5 +171,23 @@ describe("refusals of the core (ERR-003)", () => {
     expect(describeRefusal(new Error("boom"), "place")).toBeNull();
     setLocale("en");
     expect(describeError({ code: "refused" }).message).toBe(DICTS.en["err.refused"]);
+  });
+});
+
+describe("settings command errors (ERRU-002)", () => {
+  it("keeps a bare settings code as the code, not as an unknown error", () => {
+    expect(toAppError("not_writable")).toEqual({ code: "not_writable" });
+    expect(toAppError("io")).toEqual({ code: "io" });
+    // Any other text stays an unknown error with the text as its detail.
+    expect(toAppError("boom").code).toBe("unknown");
+  });
+
+  it("says what is wrong with the folder, under the settings title", () => {
+    const d = describeError("not_writable", "settings");
+    expect(d.code).toBe("not_writable");
+    expect(d.title).toBe(t("err.action.settings"));
+    expect(d.message).toBe(t("settings.err.not_writable"));
+    // From another action the reason is the same.
+    expect(describeError("not_writable", "save").message).toBe(t("settings.err.not_writable"));
   });
 });

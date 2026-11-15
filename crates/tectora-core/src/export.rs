@@ -1513,51 +1513,115 @@ const HELVETICA: [u16; 95] = [
     222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584,
 ];
 
-/// A character in PDF's WinAnsiEncoding (cp1252), letters it lacks without
-/// their accent (č -> c), anything else as "?".
+/// Letters of Czech, Slovak, Polish and Hungarian names that WinAnsi lacks:
+/// the character, the plain letter it is measured as and its Adobe glyph
+/// name. The PDF fonts carry them in codes 1.. through `/Differences`, so
+/// "Dvořák" prints with its háček (MATH2-004).
+const EXTRA_LETTERS: [(char, u8, &str); 31] = [
+    ('č', b'c', "ccaron"),
+    ('Č', b'C', "Ccaron"),
+    ('ď', b'd', "dcaron"),
+    ('Ď', b'D', "Dcaron"),
+    ('ě', b'e', "ecaron"),
+    ('Ě', b'E', "Ecaron"),
+    ('ľ', b'l', "lcaron"),
+    ('Ľ', b'L', "Lcaron"),
+    ('ĺ', b'l', "lacute"),
+    ('Ĺ', b'L', "Lacute"),
+    ('ň', b'n', "ncaron"),
+    ('Ň', b'N', "Ncaron"),
+    ('ř', b'r', "rcaron"),
+    ('Ř', b'R', "Rcaron"),
+    ('ť', b't', "tcaron"),
+    ('Ť', b'T', "Tcaron"),
+    ('ů', b'u', "uring"),
+    ('Ů', b'U', "Uring"),
+    ('ŕ', b'r', "racute"),
+    ('Ŕ', b'R', "Racute"),
+    ('ő', b'o', "ohungarumlaut"),
+    ('Ő', b'O', "Ohungarumlaut"),
+    ('ű', b'u', "uhungarumlaut"),
+    ('Ű', b'U', "Uhungarumlaut"),
+    ('ć', b'c', "cacute"),
+    ('Ć', b'C', "Cacute"),
+    ('ę', b'e', "eogonek"),
+    ('Ę', b'E', "Eogonek"),
+    ('ą', b'a', "aogonek"),
+    ('Ą', b'A', "Aogonek"),
+    ('ł', b'l', "lslash"),
+];
+
+/// A character in PDF's WinAnsiEncoding (cp1252) or, for the letters in
+/// [`EXTRA_LETTERS`], its code 1.. in the fonts' `/Differences`; anything
+/// else as "?".
 fn win_ansi(c: char) -> u8 {
     let u = c as u32;
     if (0x20..0x7f).contains(&u) || (0xa0..=0xff).contains(&u) {
         return u as u8;
     }
+    if let Some(i) = EXTRA_LETTERS.iter().position(|e| e.0 == c) {
+        return i as u8 + 1;
+    }
     match c {
         '€' => 0x80,
         '‚' => 0x82,
+        'ƒ' => 0x83,
         '„' => 0x84,
         '…' => 0x85,
+        '†' => 0x86,
+        '‡' => 0x87,
+        'ˆ' => 0x88,
+        '‰' => 0x89,
+        'Š' => 0x8a,
+        '‹' => 0x8b,
+        'Œ' => 0x8c,
+        'Ž' => 0x8e,
+        '‘' => 0x91,
+        '’' => 0x92,
+        '“' => 0x93,
+        '”' => 0x94,
+        '•' => 0x95,
         '–' => 0x96,
         '—' => 0x97,
-        'Š' => 0x8a,
+        '˜' => 0x98,
+        '™' => 0x99,
         'š' => 0x9a,
-        'Ž' => 0x8e,
+        '›' => 0x9b,
+        'œ' => 0x9c,
         'ž' => 0x9e,
         'Ÿ' => 0x9f,
         '·' => 0xb7,
         'Σ' => b'S',
-        'č' | 'ć' => b'c',
-        'Č' | 'Ć' => b'C',
-        'ď' => b'd',
-        'Ď' => b'D',
-        'ě' | 'ę' => b'e',
-        'Ě' | 'Ę' => b'E',
-        'ľ' | 'ĺ' | 'ł' => b'l',
-        'Ľ' | 'Ĺ' | 'Ł' => b'L',
-        'ň' | 'ń' => b'n',
-        'Ň' | 'Ń' => b'N',
-        'ř' | 'ŕ' => b'r',
-        'Ř' | 'Ŕ' => b'R',
-        'ť' => b't',
-        'Ť' => b'T',
-        'ů' | 'ű' => b'u',
-        'Ů' | 'Ű' => b'U',
-        'ő' => b'o',
-        'Ő' => b'O',
+        // Letters of other languages without a code of their own: the plain letter.
+        'ń' => b'n',
+        'Ń' => b'N',
         'ś' => b's',
         'Ś' => b'S',
         'ź' | 'ż' => b'z',
         'Ź' | 'Ż' => b'Z',
+        'Ł' => b'L',
         _ => b'?',
     }
+}
+
+/// The `/Differences` of the sheet fonts: codes 1.. take the glyphs of
+/// [`EXTRA_LETTERS`].
+fn pdf_differences() -> String {
+    let names: Vec<String> = EXTRA_LETTERS.iter().map(|e| format!("/{}", e.2)).collect();
+    format!("[1 {}]", names.join(" "))
+}
+
+/// The plain ASCII form of a PDF text (for the document title, which the
+/// PDF info dictionary keeps in a literal string).
+fn ascii_fold(text: &str) -> String {
+    text.chars()
+        .filter_map(|c| match EXTRA_LETTERS.iter().find(|e| e.0 == c) {
+            Some(e) => Some(char::from(e.1)),
+            None => Some(win_ansi(c))
+                .filter(|b| (32..=126).contains(b) && !matches!(b, b'(' | b')' | b'\\'))
+                .map(char::from),
+        })
+        .collect()
 }
 
 fn text_width(text: &[u8], size: f64, bold: bool) -> f64 {
@@ -1565,6 +1629,11 @@ fn text_width(text: &[u8], size: f64, bold: bool) -> f64 {
         .iter()
         .map(|&b| match b {
             32..=126 => f64::from(HELVETICA[usize::from(b - 32)]),
+            // The accented letters measure as their plain letter.
+            1..=31 => f64::from(HELVETICA[usize::from(EXTRA_LETTERS[usize::from(b) - 1].1 - 32)]),
+            0x91 | 0x92 => 222.0,
+            0x93 | 0x94 => 333.0,
+            0x95 => 350.0,
             0xb2 => 333.0,
             0xb0 => 400.0,
             0xb7 => 278.0,
@@ -1648,12 +1717,11 @@ pub fn sheet_pdf(shapes: &[Shape], title: &str) -> Vec<u8> {
             }
         }
     }
-    let title: String = title
-        .chars()
-        .map(win_ansi)
-        .filter(|b| (32..=126).contains(b) && !matches!(b, b'(' | b')' | b'\\'))
-        .map(char::from)
-        .collect();
+    let title = ascii_fold(title);
+    let enc = format!(
+        "/Encoding << /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences {} >>",
+        pdf_differences()
+    );
     let objects = [
         "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
@@ -1663,10 +1731,8 @@ pub fn sheet_pdf(shapes: &[Shape], title: &str) -> Vec<u8> {
             f(PAGE_H)
         ),
         format!("<< /Length {} >>\nstream\n{c}endstream", c.len()),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
-            .to_string(),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"
-            .to_string(),
+        format!("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica {enc} >>"),
+        format!("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold {enc} >>"),
         format!("<< /Title ({title}) /Producer (Tectora) >>"),
     ];
     let mut out = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n".to_vec();
@@ -2527,6 +2593,47 @@ Z1.02 35,00° 19,53m\u{2db} Dĺžka krokvy=4,88m
         let entry = std::str::from_utf8(&pdf[at + 9 + 20..at + 9 + 30]).unwrap();
         let first: usize = entry.parse().unwrap();
         assert!(pdf[first..].starts_with(b"1 0 obj"));
+    }
+
+    #[test]
+    fn the_pdf_keeps_czech_letters_and_typographic_quotes() {
+        // MATH2-004: háčky were dropped and quotes turned into "?".
+        let text = |t: &str| Shape::Text {
+            at: [10.0, 10.0],
+            angle: 0.0,
+            size: 9.0,
+            color: "#000000",
+            bold: false,
+            anchor: 0.0,
+            text: t.into(),
+        };
+        let pdf = sheet_pdf(
+            &[
+                text("Dvořák"),
+                text("„U Nováků“ – O’Brien"),
+                text("Žluťoučký"),
+            ],
+            "Dvořak",
+        );
+        let s: String = pdf.iter().map(|&b| char::from(b)).collect();
+        // ř is the 13th extra letter, code 13 = octal 015; á is octal 341.
+        assert!(s.contains("(Dvo\\015\\341k)"), "{s}");
+        // „ \204, “ \223, ů code 17 = octal 021, ’ \222.
+        assert!(
+            s.contains("(\\204U Nov\\341k\\021\\223 \\226 O\\222Brien)"),
+            "{s}"
+        );
+        assert!(!s.contains("O?Brien") && !s.contains("Nov\\341ku?"));
+        for glyph in ["/rcaron", "/uring", "/tcaron", "/ccaron"] {
+            assert!(s.contains(glyph), "{glyph}");
+        }
+        // The title stays plain ASCII.
+        assert!(s.contains("/Title (Dvorak)"));
+        // The accented letter is as wide as its plain letter.
+        assert_eq!(
+            text_width(&ansi("ř"), 10.0, false),
+            text_width(&ansi("r"), 10.0, false)
+        );
     }
 
     #[test]

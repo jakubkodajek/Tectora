@@ -151,6 +151,53 @@ test.describe("dormers", () => {
   });
 });
 
+// ERRU-006: the dormer dialog said "not on the roof" when the roof was not
+// calculated or the core answered with an error.
+test.describe("dormer dialog reasons", () => {
+  test("on a roof the core refused it says the roof is not calculated, not that the front is off the roof", async ({ app, page }) => {
+    const id = await createExample("hip", "Bez střechy");
+    const p = await loadProject(id);
+    p.chimneys = [{ corners: [{ x: 5, y: 3 }, { x: 7, y: 3 }, { x: 6, y: 3.3 }, { x: 7, y: 5 }, { x: 5, y: 5 }], height: 9 }];
+    await bridge("save_project", { id, project: p });
+    await openEditor(app, "Bez střechy");
+    await tool(page, "tool.dormer").click();
+    await clickPlan(page, 4, 1);
+    const dlg = dormerDialog(page);
+    await expect(dlg.getByTestId("dormer-roof-failed")).toHaveText(cs("dormer.roofNotCalculated"));
+    await expect(dlg).not.toContainText(cs("dormer.offRoof"));
+    await dlg.getByRole("button", { name: cs("common.cancel"), exact: true }).click();
+  });
+
+  test("an error from the core is shown with its code, not as off the roof", async ({ app, page }) => {
+    await createExample("hip", "Valba");
+    await openEditor(app, "Valba");
+    await page.route("**/dormer_host", (r) => r.fulfill({ contentType: "application/json", headers: { "access-control-allow-origin": "*" }, body: JSON.stringify({ err: { code: "invalid_input", detail: "test" } }) }));
+    await tool(page, "tool.dormer").click();
+    await clickPlan(page, 4, 1);
+    const dlg = dormerDialog(page);
+    const note = dlg.getByTestId("dormer-host-error");
+    await expect(note).toContainText("invalid_input");
+    await expect(dlg).not.toContainText(cs("dormer.offRoof"));
+    await dlg.getByRole("button", { name: cs("common.cancel"), exact: true }).click();
+  });
+});
+
+test.describe("3D view lifetime", () => {
+  test("switching Plan and Both many times leaves no WebGL context behind (ERRU-008)", async ({ app, page }) => {
+    const warnings: string[] = [];
+    page.on("console", (m) => /too many active webgl contexts/i.test(m.text()) && warnings.push(m.text()));
+    await createExample("hip", "Valba");
+    await openEditor(app, "Valba");
+    for (let i = 0; i < 20; i++) {
+      await tool(page, "editor.plan").click();
+      await expect(page.locator(".view canvas")).toHaveCount(0);
+      await tool(page, "editor.both").click();
+      await expect(page.locator(".view canvas")).toHaveCount(1);
+    }
+    expect(warnings).toEqual([]);
+  });
+});
+
 test.describe("chimneys, windows and openings", () => {
   test("chimney: place, edit position, size, rotation and top, delete", async ({ app, page }) => {
     const id = await createExample("hip", "Valba");

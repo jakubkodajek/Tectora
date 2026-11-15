@@ -575,3 +575,77 @@ mod material_tests {
         assert_eq!(p.material_name(9), "Material 9");
     }
 }
+
+#[cfg(test)]
+mod audit_tests {
+    use super::*;
+    use crate::model::ManualLine;
+    use crate::roof::{RoofFace, RoofGeometry};
+
+    fn line(code: &str, b: [f64; 3]) -> ManualLine {
+        ManualLine {
+            a: [0.0; 3],
+            b,
+            code: code.into(),
+            length: None,
+            label: String::new(),
+        }
+    }
+
+    /// TEST-010: one hand-drawn line per counted code lands in its own
+    /// total, and hips and valleys are counted as well as measured.
+    #[test]
+    fn hand_drawn_lines_count_in_every_total() {
+        let mut p = Project::new("hand");
+        // Lengths are 3-4-5 style triples so every one is exact.
+        p.manual_lines = vec![
+            line("T", [3.0, 4.0, 0.0]),  // 5
+            line("F", [6.0, 8.0, 0.0]),  // 10
+            line("G", [0.0, 3.0, 4.0]),  // 5, hip
+            line("G", [0.0, 6.0, 8.0]),  // 10, hip
+            line("K", [0.0, 12.0, 5.0]), // 13, valley
+            line("K", [0.0, 0.0, 2.0]),  // 2, valley
+            line("K", [0.0, 0.0, 1.0]),  // 1, valley
+            line("OL", [0.0, 0.0, 7.0]), // 7 verge
+            line("OR", [0.0, 0.0, 1.0]), // 1 verge
+            line("P", [0.0, 0.0, 4.0]),  // 4
+            line("c", [0.0, 0.0, 6.0]),  // 6
+            line("S", [0.0, 0.0, 8.0]),  // 8
+            line("WV", [0.0, 0.0, 9.0]), // 9 abutment
+            line("M", [0.0, 0.0, 50.0]), // dimension: counts nowhere
+        ];
+        let q = manual_quantities(&p);
+        let near = |a: f64, b: f64| assert!((a - b).abs() < 1e-9, "{a} vs {b}");
+        near(q.eave_length, 5.0);
+        near(q.ridge_length, 10.0);
+        near(q.hip_length, 15.0);
+        assert_eq!(q.hip_count, 2);
+        near(q.valley_length, 16.0);
+        assert_eq!(q.valley_count, 3);
+        near(q.verge_length, 8.0);
+        near(q.pult_length, 4.0);
+        near(q.knick_length, 6.0);
+        near(q.gorge_length, 8.0);
+        near(q.abutment_length, 9.0);
+        near(q.roof_area, 0.0);
+    }
+
+    /// TEST-010: pitches that differ by 0.01 degrees are listed apart
+    /// (the list is keyed to 0.01 degrees, not 0.1).
+    #[test]
+    fn area_by_pitch_keeps_pitches_a_hundredth_apart() {
+        let face = |pitch_deg: f64, area: f64| RoofFace {
+            edge: 0,
+            pitch_deg,
+            polygon: Vec::new(),
+            area,
+            deducted: 0.0,
+            material: 1,
+        };
+        let geos = [RoofGeometry {
+            faces: vec![face(33.69, 10.0), face(33.7, 20.0), face(33.69, 5.0)],
+            ..Default::default()
+        }];
+        assert_eq!(area_by_pitch_of(&geos), [(33.69, 15.0), (33.7, 20.0)]);
+    }
+}

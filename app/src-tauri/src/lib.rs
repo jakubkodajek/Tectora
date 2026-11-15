@@ -34,6 +34,9 @@ struct AppState {
     /// Why the folder watcher could not start (AI and CLI edits then do not
     /// show up live).
     watcher_error: Mutex<Option<String>>,
+    /// Example jobs seeded on this first start (example id, job id), until
+    /// the UI names them in its language (`name_seeded_examples`).
+    seeded: Mutex<Vec<(String, String)>>,
 }
 
 impl AppState {
@@ -191,7 +194,11 @@ fn load_project(state: State<AppState>, id: String) -> CmdResult<Project> {
 
 #[tauri::command]
 fn save_project(state: State<AppState>, id: Option<String>, project: Project) -> CmdResult<String> {
-    guard(|| Ok(state.store().save(id, &project)?))
+    guard(|| {
+        let before = id.as_deref().and_then(|i| state.store().load(i).ok());
+        commands::check_write(before.as_ref(), &project)?;
+        Ok(state.store().save(id, &project)?)
+    })
 }
 
 /// Saves the editor's edits only if the file still holds `base`, the
@@ -205,7 +212,10 @@ fn save_project_checked(
     project: Project,
     base: Project,
 ) -> CmdResult<tectora_core::store::CheckedSave> {
-    guard(|| Ok(state.store().save_checked(&id, &project, &base)?))
+    guard(|| {
+        commands::check_write(Some(&base), &project)?;
+        Ok(state.store().save_checked(&id, &project, &base)?)
+    })
 }
 
 /// The project as the store writes and reads it (defaults, nulls and empty
@@ -216,16 +226,47 @@ fn normalize_project(project: Project) -> Project {
     project
 }
 
-/// Moves the job to the library's trash (`Store::delete`), from where the
-/// MCP `restore_project` tool or the file manager brings it back.
+/// Moves the job to the library's trash (`Store::delete`); returns the
+/// trash entry, which `restore_deleted` (the library's Trash, the toast's
+/// Restore) and the MCP `restore_project` tool bring back.
 #[tauri::command(async)]
-fn delete_project(state: State<AppState>, id: String) -> CmdResult<()> {
+fn delete_project(
+    state: State<AppState>,
+    id: String,
+) -> CmdResult<tectora_core::store::TrashEntry> {
     guard(|| {
-        state
+        Ok(state
             .store()
-            .delete(&id, USER_ACTOR, "Deleted in the app")?;
-        Ok(())
+            .delete(&id, USER_ACTOR, "Deleted in the app")?)
     })
+}
+
+/// Jobs and files in the library's trash, newest first (`Store::trash`, the
+/// MCP tool `list_deleted`).
+#[tauri::command(async)]
+fn list_deleted(state: State<AppState>) -> CmdResult<Vec<tectora_core::store::TrashEntry>> {
+    guard(|| Ok(state.store().trash()))
+}
+
+/// Brings trash entry `entry` back (`Store::restore`, the MCP tool
+/// `restore_project`); returns the job's id, a new one when the old id was
+/// taken meanwhile. An entry that is not in the trash is `not_found`.
+#[tauri::command(async)]
+fn restore_deleted(state: State<AppState>, entry: String) -> CmdResult<String> {
+    guard(|| Ok(state.store().restore(&entry)?))
+}
+
+/// Gives the example jobs seeded on this first start the names `names`
+/// (example id to name, in the UI's language), so a German first start does
+/// not list Czech names (UX-012). Only jobs seeded in this run whose name
+/// is still the built-in one are renamed; the list is used once.
+#[tauri::command(async)]
+fn name_seeded_examples(
+    state: State<AppState>,
+    names: std::collections::HashMap<String, String>,
+) -> CmdResult<usize> {
+    let seeded = std::mem::take(&mut *state.seeded.lock().unwrap_or_else(|e| e.into_inner()));
+    guard(|| Ok(examples::rename_seeded(&state.store(), &seeded, &names)?))
 }
 
 /// A copy is a new variant: draft, no stored result, the same files. With
@@ -239,6 +280,8 @@ fn duplicate_project(
     with_files: Option<bool>,
 ) -> CmdResult<String> {
     guard(|| {
+        tectora_core::edit::check_job_name(&name)
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
         let mut project = state.store().load(&id)?;
         tectora_core::library::prepare_copy(&mut project, &name, job);
         let new_id = state.store().save(None, &project)?;
@@ -430,8 +473,7 @@ fn create_standard(
     overhang: f64,
 ) -> CmdResult<String> {
     guard(|| {
-        tectora_core::edit::check_eave_pitch(pitch_deg, f64::MIN_POSITIVE)
-            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+        commands::check_new_roof(Some(&name), pitch_deg, eave_height, overhang)?;
         let mut project = Project::new(name);
         project.parts.push(standard_roof(
             kind,
@@ -456,8 +498,7 @@ fn standard_part(
     overhang: f64,
 ) -> CmdResult<tectora_core::RoofPart> {
     guard(|| {
-        tectora_core::edit::check_eave_pitch(pitch_deg, f64::MIN_POSITIVE)
-            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+        commands::check_new_roof(None, pitch_deg, eave_height, overhang)?;
         Ok(standard_roof(
             kind,
             length,
@@ -503,6 +544,8 @@ fn create_from_example(
 #[tauri::command(async)]
 fn new_project(state: State<AppState>, name: String) -> CmdResult<String> {
     guard(|| {
+        tectora_core::edit::check_job_name(&name)
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
         let mut project = examples::find("gable").expect("built-in example").project();
         project.name = name;
         Ok(state.store().save(None, &project)?)
@@ -732,9 +775,15 @@ fn update_settings(app: tauri::AppHandle, patch: Value) -> Result<Value, String>
 /// The user's answer to a folder change an AI client asked for
 /// (`Settings::folder_request`, ARCH-052): `allow` moves the folders.
 #[tauri::command]
-fn answer_folder_request(app: tauri::AppHandle, allow: bool) -> Result<Value, String> {
+fn answer_folder_request(
+    app: tauri::AppHandle,
+    changes: serde_json::Map<String, Value>,
+    allow: bool,
+) -> Result<Value, String> {
+    // `changes` is what the dialog showed; a request replaced meanwhile is
+    // not answered (ARCH-005).
     let next = Settings::load()
-        .answer_folder_request(allow)
+        .answer_folder_request(&changes, allow)
         .map_err(|e| e.code().to_string())?;
     next.save().map_err(|e| e.code().to_string())?;
     switch_library(&app, &next).map_err(|_| "not_writable".to_string())?;
@@ -745,8 +794,10 @@ fn answer_folder_request(app: tauri::AppHandle, allow: bool) -> Result<Value, St
 /// to read (`Settings::file_request`, ARCH-002): `allow` lets AI clients
 /// read that one file.
 #[tauri::command]
-fn answer_file_request(allow: bool) -> Result<Value, String> {
-    let next = Settings::load().answer_file_request(allow);
+fn answer_file_request(path: std::path::PathBuf, allow: bool) -> Result<Value, String> {
+    // `path` is what the dialog showed; a request replaced meanwhile is not
+    // answered (ARCH-005).
+    let next = Settings::load().answer_file_request(&path, allow);
     next.save().map_err(|e| e.code().to_string())?;
     Ok(next.describe())
 }
@@ -987,13 +1038,18 @@ pub fn run() {
                     }
                 }
             };
+            // The jobs seeded now, by example id: the UI names them in its
+            // language once it knows it (`name_seeded_examples`, UX-012).
+            let mut seeded: Vec<(String, String)> = Vec::new();
             // First run: seed the library with a couple of examples. Not
             // when the settings are damaged: the folder is then the default
             // one, not the user's (ERR-005).
             if store.list().is_empty() && Settings::load_checked().1.is_none() {
                 for id in ["gable", "l-shape"] {
-                    if let Some(ex) = examples::find(id) {
-                        let _ = store.save(None, &ex.project());
+                    if let Some(ex) = examples::find(id)
+                        && let Ok(job) = store.save(None, &ex.project())
+                    {
+                        seeded.push((id.to_string(), job));
                     }
                 }
             }
@@ -1003,6 +1059,7 @@ pub fn run() {
                 pending_open: Mutex::new(None),
                 open_errors: Mutex::new(Vec::new()),
                 watcher_error: Mutex::new(None),
+                seeded: Mutex::new(seeded),
             });
             set_watcher(app.handle(), dir);
             open_files(app.handle(), file_args(std::env::args().skip(1)));
@@ -1018,6 +1075,9 @@ pub fn run() {
             save_project_checked,
             normalize_project,
             delete_project,
+            list_deleted,
+            restore_deleted,
+            name_seeded_examples,
             duplicate_project,
             project_activity,
             revert_last_change,

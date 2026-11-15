@@ -61,6 +61,11 @@ pub struct TrashEntry {
     pub actor: String,
     /// One sentence on why it was deleted.
     pub summary: String,
+    /// For a removed file: the trash entry of its job, while that job is
+    /// deleted too. Its id may then be taken by a new job, which must not
+    /// receive the file (audit 2026-11-15 HUNTIO-011).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_in_trash: Option<String>,
 }
 
 /// A file attached to a job.
@@ -98,6 +103,18 @@ pub struct ProjectSummary {
     /// `roof_area` and `lines` are empty while it is still calculated in the
     /// background; a later listing has them (ARCH-001).
     pub figures_pending: bool,
+    /// Buildings the core gave no roof for (ERRU-005): equal to `parts`, the
+    /// roof is not calculated and `roof_area` is no figure; fewer, the roof
+    /// is partly calculated and `roof_area` leaves them out. 0 while
+    /// `figures_pending`.
+    pub parts_failed: usize,
+    /// The roof area of the stored result (the offer's figure), if any
+    /// (UX-008): the library shows it instead of the current one.
+    pub stored_area: Option<f64>,
+    /// The current figures differ from the stored result's
+    /// (`snapshot::status`); false without a stored result or while
+    /// `figures_pending`.
+    pub result_differs: bool,
 }
 
 /// An activity entry without the stored previous version.
@@ -126,6 +143,11 @@ pub struct ActivityEntry {
     /// entries written by Tectora 0.5 and older.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<Project>,
+    /// For a revert: the time of the oldest entry it undid (it undid that
+    /// one and every later one). Lets "revert the latest change" step past
+    /// what a revert already undid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undid_from: Option<u64>,
 }
 
 impl ActivityEntry {
@@ -253,13 +275,18 @@ fn lines_of(geos: &[roof::RoofGeometry]) -> Vec<[[f64; 2]; 2]> {
         .collect()
 }
 
-/// A library card's roof area and plan lines, from one calculation
-/// (ARCH-006).
-fn card_figures(project: &Project) -> (f64, Vec<[[f64; 2]; 2]>) {
+/// A library card's roof figures, from one calculation (ARCH-006).
+type CardFigures = (f64, Vec<[[f64; 2]; 2]>, usize, bool);
+
+/// A library card's roof area, plan lines and the number of buildings the
+/// core gave no roof for (ERRU-005), from one calculation (ARCH-006).
+fn card_figures(project: &Project) -> CardFigures {
     let geos = crate::openings::generate_project(project);
     (
         crate::quantities::roof_totals_of(&geos, project).roof_area,
         lines_of(&geos),
+        geos.iter().filter(|g| g.error.is_some()).count(),
+        crate::snapshot::status_of(&geos, project).is_some_and(|s| !s.differences.is_empty()),
     )
 }
 
@@ -572,10 +599,14 @@ pub(crate) fn write_synced(tmp: &Path, contents: &[u8]) -> std::io::Result<()> {
 }
 
 fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    write_atomic_bytes(path, contents.as_bytes())
+}
+
+fn write_atomic_bytes(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_extension(format!("{}-{n}.tmp", std::process::id()));
-    write_synced(&tmp, contents.as_bytes())?;
+    write_synced(&tmp, contents)?;
     fs::rename(&tmp, path).inspect_err(|_| {
         let _ = fs::remove_file(&tmp);
     })?;
@@ -663,6 +694,23 @@ fn slug(name: &str) -> String {
 }
 
 impl Store {
+    /// Refuses to write when the jobs folder itself is gone (deleted, a
+    /// network drive or USB disk disconnected): it used to be created
+    /// again, empty, and the next saves went into it while the jobs were
+    /// elsewhere (audit 2026-11-15 HUNTIO-010).
+    fn library_present(&self) -> Result<(), StoreError> {
+        if self.dir.is_dir() {
+            return Ok(());
+        }
+        Err(StoreError::io(
+            None,
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("the jobs folder {} is missing", self.dir.display()),
+            ),
+        ))
+    }
+
     pub fn new(dir: PathBuf) -> std::io::Result<Self> {
         fs::create_dir_all(&dir)?;
         Ok(Self::at(dir))
@@ -724,6 +772,7 @@ impl Store {
         // A broken design still shows up in the library (so it can be opened
         // and fixed or deleted), just without its roof preview.
         if project.check_limits().is_err() {
+            summary.parts_failed = summary.parts;
             lock_cache(&self.cache)
                 .entries
                 .insert(id.to_string(), (stamp, summary.clone()));
@@ -740,7 +789,9 @@ impl Store {
         let started = std::thread::Builder::new()
             .name(format!("summary {id}"))
             .spawn(move || {
-                let figures = crate::model::guarded(|| card_figures(&project)).unwrap_or_default();
+                // A roof that panicked has no figures at all (ERRU-005).
+                let figures = crate::model::guarded(|| card_figures(&project))
+                    .unwrap_or_else(|_| (0.0, Vec::new(), project.parts.len(), false));
                 // Under the lock, so `summarize` either sees the answer or
                 // has left its pending card for this thread to fill in.
                 let mut c = lock_cache(&cache);
@@ -749,7 +800,12 @@ impl Store {
                     && *s == at
                     && card.figures_pending
                 {
-                    (card.roof_area, card.lines) = figures.clone();
+                    (
+                        card.roof_area,
+                        card.lines,
+                        card.parts_failed,
+                        card.result_differs,
+                    ) = figures.clone();
                     card.figures_pending = false;
                 }
                 let _ = tx.send(figures);
@@ -763,7 +819,10 @@ impl Store {
         let figures = rx.recv_timeout(self.summary_budget).ok();
         let mut c = lock_cache(&self.cache);
         match figures.or_else(|| rx.try_recv().ok()) {
-            Some((area, lines)) => (summary.roof_area, summary.lines) = (area, lines),
+            Some((area, lines, failed, differs)) => {
+                (summary.roof_area, summary.lines, summary.parts_failed) = (area, lines, failed);
+                summary.result_differs = differs;
+            }
             None => summary.figures_pending = true,
         }
         c.entries.insert(id.to_string(), (stamp, summary.clone()));
@@ -802,6 +861,9 @@ impl Store {
             files: self.attachments(id).len(),
             has_result: project.result_snapshot.is_some(),
             figures_pending: false,
+            parts_failed: 0,
+            stored_area: project.result_snapshot.as_ref().map(|s| s.roof_area),
+            result_differs: false,
         };
         Ok((summary, project))
     }
@@ -911,6 +973,7 @@ impl Store {
     /// one step for every process, so two jobs created with one name at the
     /// same moment get two ids (TEST-001). Best effort, like [`Store::lock`].
     fn creation_lock(&self) -> Option<fs::File> {
+        self.library_present().ok()?;
         fs::create_dir_all(self.activity_dir()).ok()?;
         let file = fs::OpenOptions::new()
             .create(true)
@@ -968,6 +1031,7 @@ impl Store {
     /// Writes the file; the caller holds the job's lock.
     fn write(&self, id: &str, project: &Project) -> Result<(), StoreError> {
         let path = self.path(id)?;
+        self.library_present()?;
         if let Some(version) = fs::read_to_string(&path)
             .ok()
             .and_then(|t| newer_format(&t))
@@ -993,6 +1057,7 @@ impl Store {
     /// write reports its own error.
     fn lock(&self, id: &str) -> Option<fs::File> {
         self.path(id).ok()?;
+        self.library_present().ok()?;
         fs::create_dir_all(self.activity_dir()).ok()?;
         let file = fs::OpenOptions::new()
             .create(true)
@@ -1019,7 +1084,7 @@ impl Store {
                 let _creating = self.creation_lock();
                 let id = self.new_id(&project.name);
                 let _lock = self.lock(&id);
-                self.log_and_write(&id, None, project, actor, summary)?;
+                self.log_and_write(&id, None, project, actor, summary, None)?;
                 return Ok(id);
             }
         };
@@ -1042,6 +1107,20 @@ impl Store {
         summary: &str,
         base: Option<&Project>,
     ) -> Result<CheckedSave, StoreError> {
+        self.save_checked_undoing(id, project, actor, summary, base, None)
+    }
+
+    /// [`Store::save_as_checked`] that records, for a revert, the time of
+    /// the oldest entry it undid.
+    fn save_checked_undoing(
+        &self,
+        id: &str,
+        project: &Project,
+        actor: &str,
+        summary: &str,
+        base: Option<&Project>,
+        undid_from: Option<u64>,
+    ) -> Result<CheckedSave, StoreError> {
         self.path(id)?;
         let _lock = self.lock(id);
         let before = match self.load(id) {
@@ -1057,7 +1136,7 @@ impl Store {
             });
         }
         if before.as_ref() != Some(project) {
-            self.log_and_write(id, before, project, actor, summary)?;
+            self.log_and_write(id, before, project, actor, summary, undid_from)?;
         }
         Ok(CheckedSave::Saved { id: id.to_string() })
     }
@@ -1070,6 +1149,7 @@ impl Store {
         project: &Project,
         actor: &str,
         summary: &str,
+        undid_from: Option<u64>,
     ) -> Result<(), StoreError> {
         // A newer file is refused before anything is logged.
         if let Some(version) = fs::read_to_string(self.path(id)?)
@@ -1082,11 +1162,24 @@ impl Store {
                 max: crate::model::SCHEMA_VERSION,
             });
         }
-        // Log first: the app reacts to the project file and then reads the log.
+        // Log first: the app reacts to the project file and then reads the
+        // log. When the file then cannot be written, the entry is taken out
+        // again: it stood for a change that never happened, shown as pending
+        // in the history and the review (audit 2026-11-15 ERR-008).
+        let log_path = self.activity_path(id)?;
+        let log_before = fs::read(&log_path).ok();
+        // Entries are found and accepted by their time, so each one is later
+        // than the one before, even when two saves fall in one millisecond
+        // (the review's list then had two equal keys, ERRU-009) or the log
+        // came with a clock that is ahead (a received bundle): a change
+        // after an accepted future-dated entry used to count as accepted
+        // too (HUNTIO-005).
+        let last_ts = self.activity(id).last().map_or(0, |e| e.ts_ms);
+        let ts_ms = now_ms().max(last_ts.saturating_add(1));
         self.append_activity(
             id,
             ActivityEntry {
-                ts_ms: now_ms(),
+                ts_ms,
                 actor: actor.to_string(),
                 summary: summary.to_string(),
                 changes: before
@@ -1095,12 +1188,19 @@ impl Store {
                     .unwrap_or_default(),
                 before,
                 after: Some(project.clone()),
+                undid_from,
             },
         )?;
-        self.write(id, project)
+        self.write(id, project).inspect_err(|_| {
+            let _ = match &log_before {
+                Some(bytes) => write_atomic_bytes(&log_path, bytes),
+                None => fs::remove_file(&log_path),
+            };
+        })
     }
 
     fn append_activity(&self, id: &str, entry: ActivityEntry) -> Result<(), StoreError> {
+        self.library_present()?;
         let io = |e| StoreError::io(Some(id), e);
         fs::create_dir_all(self.activity_dir()).map_err(io)?;
         let path = self.activity_path(id)?;
@@ -1183,15 +1283,15 @@ impl Store {
         reason: Option<&str>,
     ) -> Result<Project, StoreError> {
         let log = self.activity(id);
-        let last = log
-            .last()
-            .ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
+        let pos = latest_undone(&log).ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
+        // Reverting from `pos` also undoes the reverts logged after it, so
+        // the job ends as it was before that change.
         self.revert_from(
             id,
             &log,
-            log.len() - 1,
+            pos,
             actor,
-            with_reason(reason, format!("{REVERTED_PREFIX}{}", last.summary)),
+            with_reason(reason, format!("{REVERTED_PREFIX}{}", log[pos].summary)),
         )
     }
 
@@ -1301,7 +1401,16 @@ impl Store {
             target = Some(undone);
         }
         let target = target.ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
-        match self.save_as_checked(id, &target, actor, summary, base.as_ref())? {
+        // The log is a file like the job: a version outside the limits is
+        // not written back into the job (HUNTIO-004).
+        target
+            .check_limits()
+            .map_err(|detail| StoreError::Unreadable {
+                id: id.to_string(),
+                detail,
+            })?;
+        let undid_from = Some(log[pos].ts_ms);
+        match self.save_checked_undoing(id, &target, actor, summary, base.as_ref(), undid_from)? {
             CheckedSave::Saved { .. } => Ok(Some(target)),
             CheckedSave::Conflict { .. } => Ok(None),
         }
@@ -1411,6 +1520,7 @@ impl Store {
             ts_ms: now_ms(),
             actor: actor.to_string(),
             summary: summary.to_string(),
+            job_in_trash: None,
         };
         // The note first: a job moved to the trash can always be restored.
         let noted = self.write_trash_info(&folder, &info);
@@ -1421,8 +1531,29 @@ impl Store {
             let _ = fs::remove_dir(&folder);
             return Err(io(e));
         }
+        // Files removed from this job earlier now belong to the deleted job.
+        self.relink_removed_files(
+            |e| e.id == id && e.job_in_trash.is_none(),
+            |e| {
+                e.job_in_trash = Some(info.entry.clone());
+            },
+        );
         self.prune_trash();
         Ok(info)
+    }
+
+    /// Rewrites the notes of the removed files `pick` selects.
+    fn relink_removed_files(
+        &self,
+        pick: impl Fn(&TrashEntry) -> bool,
+        change: impl Fn(&mut TrashEntry),
+    ) {
+        for mut e in self.trash() {
+            if e.file.is_some() && pick(&e) {
+                change(&mut e);
+                let _ = self.write_trash_info(&self.trash_dir().join(&e.entry), &e);
+            }
+        }
     }
 
     /// Removes job `id`, its history and files for good (a half-imported
@@ -1513,7 +1644,9 @@ impl Store {
             .ok_or_else(|| StoreError::NotFound(entry.to_string()))?;
         let io = |e| StoreError::io(Some(&info.id), e);
         if let Some(name) = &info.file {
-            if !self.exists(&info.id) {
+            // Its job is deleted (another job may have its id now): the job
+            // has to come back first.
+            if info.job_in_trash.is_some() || !self.exists(&info.id) {
                 return Err(StoreError::NotFound(info.id.clone()));
             }
             let src = folder.join("files").join(name);
@@ -1564,6 +1697,15 @@ impl Store {
         ];
         move_all(&moves).map_err(io)?;
         let _ = fs::remove_dir_all(&folder);
+        // Files removed from the job before it was deleted can come back
+        // into it again, under the id it has now.
+        self.relink_removed_files(
+            |e| e.job_in_trash.as_deref() == Some(entry),
+            |e| {
+                e.id = id.clone();
+                e.job_in_trash = None;
+            },
+        );
         Ok(id)
     }
 
@@ -1780,9 +1922,15 @@ impl Store {
             ts_ms: now_ms(),
             actor: actor.to_string(),
             summary: summary.to_string(),
+            job_in_trash: None,
         };
-        self.write_trash_info(&folder, &info)
-            .map_err(|e| FileError::io(&folder, e))?;
+        // Without its note the file could not be found in the trash again:
+        // it goes back to the job.
+        if let Err(e) = self.write_trash_info(&folder, &info) {
+            let _ = fs::rename(dest.join(name), &path);
+            let _ = fs::remove_dir_all(&folder);
+            return Err(FileError::io(&folder, e));
+        }
         self.prune_trash();
         Ok(info)
     }
@@ -1798,7 +1946,8 @@ impl Store {
     }
 
     pub fn set_live(&self, status: &LiveStatus) {
-        if fs::create_dir_all(self.activity_dir()).is_ok()
+        if self.dir.is_dir()
+            && fs::create_dir_all(self.activity_dir()).is_ok()
             && let Ok(text) = serde_json::to_string(status)
         {
             let _ = write_atomic(&self.activity_dir().join(LIVE_FILE), &text);
@@ -1834,6 +1983,41 @@ fn move_all(moves: &[(PathBuf, PathBuf)]) -> std::io::Result<()> {
 
 /// `what (reason: …)` when a reason is given, else `what`: the sentence
 /// the core wrote stays first, so the app recognises and translates it.
+/// How many log entries before it a revert entry undid: 1 for
+/// `Reverted: …`, n for `Reverted n changes since: …`, 0 for a change.
+fn reverted_count(summary: &str) -> usize {
+    if summary.starts_with(REVERTED_PREFIX) {
+        return 1;
+    }
+    summary
+        .strip_prefix("Reverted ")
+        .and_then(|r| r.split_once(" changes since: "))
+        .and_then(|(n, _)| n.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The latest logged change that no later revert undid. A second "revert
+/// the latest change" used to revert the first revert and so put the change
+/// back (audit 2026-11-15 HUNTIO-002); it now undoes one more step.
+fn latest_undone(log: &[ActivityEntry]) -> Option<usize> {
+    let mut i = log.len();
+    while i > 0 {
+        i -= 1;
+        let e = &log[i];
+        if let Some(from) = e.undid_from {
+            // Everything from that entry on is undone; go on before it.
+            i = log[..i].iter().rposition(|x| x.ts_ms == from)?;
+            continue;
+        }
+        // A revert logged before reverts recorded what they undid.
+        match reverted_count(&e.summary) {
+            0 => return Some(i),
+            n => i = i.saturating_sub(n),
+        }
+    }
+    None
+}
+
 fn with_reason(reason: Option<&str>, what: String) -> String {
     match reason.map(str::trim).filter(|r| !r.is_empty()) {
         Some(r) => format!("{what}{REVERT_REASON_OPEN}{r})"),
@@ -2443,6 +2627,153 @@ mod tests {
         let _ = fs::remove_dir_all(&store.dir);
     }
 
+    #[test]
+    fn a_vanished_jobs_folder_is_reported_not_created_again() {
+        let store = temp_store("vanished");
+        let p = examples::find("hip").unwrap().project();
+        store.save_as(None, &p, USER_ACTOR, "create").unwrap();
+        fs::remove_dir_all(&store.dir).unwrap();
+        assert!(store.scan().is_err());
+        store.set_live(&LiveStatus {
+            ts_ms: 1,
+            actor: "claude".into(),
+            message: "x".into(),
+            project_id: None,
+            follow: false,
+            kind: None,
+            name: None,
+        });
+        assert!(store.save_as(None, &p, "claude", "again").is_err());
+        assert!(store.save(None, &p).is_err());
+        assert!(!store.dir.exists());
+    }
+
+    /// HUNTIO-011: a file removed from a job that was then deleted does not
+    /// go into a new job that took the old id; it comes back with its job.
+    #[test]
+    fn a_removed_file_returns_to_its_own_job() {
+        let store = temp_store("trash-file");
+        let p = examples::find("hip").unwrap().project();
+        let mut named = p.clone();
+        named.name = "D".into();
+        let old = store.save_as(None, &named, USER_ACTOR, "create").unwrap();
+        store.add_attachment(&old, "plan.pdf", b"%PDF old").unwrap();
+        let file = store
+            .remove_attachment(&old, "plan.pdf", USER_ACTOR, "not needed")
+            .unwrap();
+        let job = store.delete(&old, USER_ACTOR, "done").unwrap();
+        let new = store.save_as(None, &named, USER_ACTOR, "create").unwrap();
+        assert_eq!(new, old, "the new job takes the free id");
+        assert!(store.restore(&file.entry).is_err());
+        assert!(store.attachments(&new).is_empty());
+        let back = store.restore(&job.entry).unwrap();
+        assert_ne!(back, new);
+        assert_eq!(store.restore(&file.entry).unwrap(), back);
+        assert_eq!(
+            fs::read(store.attachment_path(&back, "plan.pdf").unwrap()).unwrap(),
+            b"%PDF old"
+        );
+        assert!(store.attachments(&new).is_empty());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// HUNTIO-005, ERRU-009: every entry is later than the one before, so
+    /// a log from a clock that is ahead never makes a new change look
+    /// accepted, and two saves in one millisecond get distinct times.
+    #[test]
+    fn log_times_always_increase() {
+        let store = temp_store("monotonic");
+        let a = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
+        // A log entry a day ahead, accepted by the user.
+        let path = store.activity_path(&id).unwrap();
+        let mut log = store.activity(&id);
+        let ahead = now_ms() + 86_400_000;
+        log[0].ts_ms = ahead;
+        let text: String = log
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap() + "\n")
+            .collect();
+        fs::write(&path, text).unwrap();
+        store.mark_reviewed(&id, ahead).unwrap();
+        let mut p = a.clone();
+        for deg in [30.0, 31.0, 32.0] {
+            p.parts[0].edges[0].pitch_deg = deg;
+            store
+                .save_as(Some(id.clone()), &p, "claude", "steeper")
+                .unwrap();
+        }
+        let ts: Vec<u64> = store.activity(&id).iter().map(|e| e.ts_ms).collect();
+        assert!(ts.windows(2).all(|w| w[0] < w[1]), "{ts:?}");
+        assert!(
+            store.pending_review(&id).is_some(),
+            "the AI change waits for review"
+        );
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ERR-008 (audit 2026-11-15): a save that fails after its change was
+    /// logged takes the entry out again, so no phantom change is pending.
+    #[test]
+    fn a_failed_write_leaves_no_log_entry() {
+        let store = temp_store("phantom");
+        let a = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
+        let n = store.activity(&id).len();
+        // The job file cannot be replaced: a folder stands in its place.
+        let path = store.path(&id).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::create_dir_all(path.join("blocker")).unwrap();
+        let mut ai = a.clone();
+        ai.parts[0].edges[0].pitch_deg = 44.0;
+        assert!(
+            store
+                .save_as(Some(id.clone()), &ai, "claude", "steeper")
+                .is_err()
+        );
+        assert_eq!(store.activity(&id).len(), n);
+        assert!(store.pending_review(&id).is_none());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// HUNTIO-002: a second "revert the latest change" undoes one more
+    /// step instead of putting back the change the first one undid.
+    #[test]
+    fn reverting_twice_goes_two_steps_back() {
+        let store = temp_store("revert-twice");
+        let a = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
+        let pitch = |p: &Project| p.parts[0].edges[0].pitch_deg;
+        let mut prev = a.clone();
+        for (deg, what) in [(30.0, "to 30"), (20.0, "to 20")] {
+            let mut next = prev.clone();
+            next.parts[0].edges[0].pitch_deg = deg;
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            store
+                .save_as(Some(id.clone()), &next, "claude", what)
+                .unwrap();
+            prev = next;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert_eq!(
+            pitch(&store.revert_last(&id, "claude", None).unwrap()),
+            30.0
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let back = store.revert_last(&id, "claude", None).unwrap();
+        assert_eq!(pitch(&back), pitch(&a));
+        assert_eq!(
+            store.activity(&id).last().unwrap().summary,
+            format!("{REVERTED_PREFIX}to 30")
+        );
+        // A third one never brings a reverted pitch back.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        if let Ok(p) = store.revert_last(&id, "claude", None) {
+            assert_eq!(pitch(&p), pitch(&a));
+        }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
     /// UX-002: a revert's entry starts with the fixed sentence the app
     /// translates, and the AI's reason follows in a fixed form.
     #[test]
@@ -2579,6 +2910,7 @@ mod tests {
             ts_ms: 1,
             actor: USER_ACTOR.into(),
             summary: "long ago".into(),
+            job_in_trash: None,
         };
         fs::write(old.join(TRASH_INFO), serde_json::to_string(&stale).unwrap()).unwrap();
         let e = store.delete(&id, "claude", "Old draft").unwrap();
@@ -2699,6 +3031,7 @@ mod tests {
             before: None,
             changes: Vec::new(),
             after: Some(old.clone()),
+            undid_from: None,
         };
         fs::write(
             store.activity_dir().join("novak-2.jsonl"),
@@ -2884,6 +3217,81 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// A wall for the listing tests below.
+    fn card_edge(x: f64, y: f64, pitch: f64, eave: f64, overhang: f64) -> serde_json::Value {
+        serde_json::json!({
+            "start": { "x": x, "y": y }, "pitch_deg": pitch,
+            "eave_height": eave, "overhang": overhang,
+        })
+    }
+
+    #[test]
+    fn the_listing_marks_a_roof_the_core_refused_as_not_calculated() {
+        // ERRU-005: a refused roof was listed as 0.00 m², like an empty one.
+        let store = temp_store("card-refused");
+        let walls: Vec<_> = [(0.0, 0.0), (12.0, 0.0), (12.0, 8.0), (0.0, 8.0)]
+            .iter()
+            .map(|&(x, y)| card_edge(x, y, 35.0, 3.0, 0.5))
+            .collect();
+        let corners: Vec<_> = [
+            (4.0, 3.0),
+            (6.0, 3.0),
+            (6.0, 4.0),
+            (5.0, 4.0),
+            (5.0, 5.0),
+            (4.0, 5.0),
+        ]
+        .iter()
+        .map(|&(x, y)| serde_json::json!({ "x": x, "y": y }))
+        .collect();
+        let p = serde_json::json!({
+            "schema_version": 2, "name": "refused",
+            "parts": [{ "name": "A", "edges": walls }],
+            "chimneys": [{ "corners": corners, "height": 9.0 }],
+        });
+        let id = store
+            .save(None, &Project::from_json(&p.to_string()).unwrap())
+            .unwrap();
+        let s = store.summarize(&id).unwrap();
+        assert!(!s.figures_pending, "{s:?}");
+        assert_eq!((s.parts, s.parts_failed), (1, 1), "{s:?}");
+        let ok = store
+            .save(None, &examples::find("hip").unwrap().project())
+            .unwrap();
+        assert_eq!(store.summarize(&ok).unwrap().parts_failed, 0);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn the_listing_marks_a_job_with_one_building_without_roof_as_partly_calculated() {
+        // ERRU-005: the other buildings' area was listed as if complete. The
+        // two buildings of `a_building_the_core_fails_on_alone_leaves_the_others_their_roofs`.
+        let store = temp_store("card-partial");
+        let mut hh = card_edge(6.0, 12.8, 90.0, 3.0, 0.5);
+        hh["half_hip"] = serde_json::json!({ "height": 5.0, "pitch_deg": 50.0 });
+        let p = serde_json::json!({
+            "schema_version": 2, "name": "partial",
+            "parts": [
+                { "name": "A", "edges": [
+                    card_edge(0.0, 0.0, 30.0, 3.0, 0.6), card_edge(6.2, 0.0, 90.0, 3.0, 0.6),
+                    card_edge(6.2, 5.9, 30.0, 3.0, 0.6), card_edge(0.0, 5.9, 90.0, 3.0, 0.6),
+                ] },
+                { "name": "B", "edges": [
+                    card_edge(2.2, 5.9, 45.0, 3.0, 0.0), card_edge(6.0, 5.9, 30.0, 2.5, 0.0),
+                    hh, card_edge(2.2, 12.8, 90.0, 3.5, 0.5),
+                ] },
+            ],
+        });
+        let id = store
+            .save(None, &Project::from_json(&p.to_string()).unwrap())
+            .unwrap();
+        let s = store.summarize(&id).unwrap();
+        assert!(!s.figures_pending, "{s:?}");
+        assert_eq!((s.parts, s.parts_failed), (2, 1), "{s:?}");
+        assert!(s.roof_area > 0.0, "{s:?}");
         let _ = fs::remove_dir_all(&store.dir);
     }
 }

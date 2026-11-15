@@ -480,6 +480,50 @@ proptest! {
         finite(&geos).map_err(|e| fail(&p, e))?;
     }
 
+    /// Half-hips and pitch breaks of any pitch (0 to 120 deg) on any wall,
+    /// also below the eave (audit TEST-009): no panic, finite output, and
+    /// a wall whose definition is out of range is reported as a problem and
+    /// its part is not calculated.
+    #[test]
+    fn half_hips_and_breaks_never_panic_and_bad_ones_are_reported(
+        mut p in any_project(),
+        extras in prop::collection::vec(
+            (
+                prop::option::of((
+                    -2.0..8.0f64,
+                    prop_oneof![Just(0.0), Just(1e-9), Just(1.9), 5.0..85.0f64, Just(90.0), Just(120.0)],
+                )),
+                prop::collection::vec(
+                    (0.0..10.0f64, prop_oneof![Just(0.0), 0.0..95.0f64, Just(90.0)]),
+                    0..3,
+                ),
+            ),
+            16,
+        ),
+    ) {
+        for (e, (hh, breaks)) in p.parts[0].edges.iter_mut().zip(extras) {
+            e.half_hip = hh.map(|(height, pitch_deg)| tectora_core::HalfHip { height, pitch_deg });
+            e.breaks = breaks
+                .into_iter()
+                .map(|(height, pitch_deg)| tectora_core::PitchBreak { height, pitch_deg })
+                .collect();
+        }
+        let geos = run(&p).map_err(|e| fail(&p, e))?;
+        finite(&geos).map_err(|e| fail(&p, e))?;
+        if p.parts[0].edges.iter().any(|e| e.problems().next().is_some()) {
+            prop_assert!(
+                !p.problems().is_empty(),
+                "edge problem not listed by Project::problems\n{}",
+                describe(&p)
+            );
+            prop_assert!(
+                geos[0].faces.is_empty() && geos[0].lines.is_empty(),
+                "part with a problem was calculated\n{}",
+                describe(&p)
+            );
+        }
+    }
+
     /// Openings never take away more than a face holds.
     #[test]
     #[ignore = "known bug #8: window and chimney deductions can exceed the face"]
@@ -500,7 +544,7 @@ proptest! {
 
 /// Face geometry checks, for one overhang everywhere or one per edge.
 macro_rules! face_tests {
-    ($name:ident, uniform: $uniform:expr, [$($attr:meta),*]) => {
+    ($name:ident, uniform: $uniform:expr, flat: [$($attr:meta),*], planes: [$($pattr:meta),*]) => {
         mod $name {
             use super::*;
 
@@ -536,7 +580,7 @@ macro_rules! face_tests {
             /// A face at its edge's pitch lies in the edge's plane
             /// (see [`edge_plane_misfits`]).
             #[test]
-            $(#[$attr])*
+            $(#[$pattr])*
             fn faces_lie_in_their_edge_planes(p in tidy_project($uniform)) {
                 let geos = roof(&p)?;
                 let bad = edge_plane_misfits(&p, &geos);
@@ -613,7 +657,7 @@ fn edge_plane_misfits(p: &Project, geos: &[RoofGeometry]) -> Vec<String> {
     bad
 }
 
-face_tests!(faces_uniform_overhang, uniform: true, []);
+face_tests!(faces_uniform_overhang, uniform: true, flat: [], planes: []);
 
 /// The counterexample a random seed drew on PR #16: on a 5-gon with one
 /// overhang, four roof planes nearly meet at the top and DACAD merges their
@@ -711,7 +755,9 @@ fn merged_apex_corner_is_within_dacad_tolerance() {
 face_tests!(
     faces_mixed_overhang,
     uniform: false,
-    [ignore = "DACAD-dependent: with unequal overhangs at sharp corners DACAD's core writes faces bounded by a single line (confirmed: SO2 byte-identical to DACAD's)"]
+    flat: [ignore = "DACAD-dependent: with unequal overhangs at sharp corners DACAD's core writes faces bounded by a single line (confirmed: SO2 byte-identical to DACAD's)"],
+    // Passes (audit TEST-002); the reason above holds only for the flatness test.
+    planes: []
 );
 
 /// Invariance tests, instantiated for a generator; `$attr` lets known bugs
@@ -874,7 +920,7 @@ invariance_tests!(
     mixed_eaves,
     any_project(),
     order: [ignore = "DACAD-dependent: near-simultaneous events follow input order"],
-    placement: [ignore = "known bug: raised eaves give position dependent faces"],
+    placement: [],
     moved: [ignore = "DACAD-dependent: its tolerances are absolute, so moved or scaled roofs differ (confirmed in DACAD)"]
 );
 
