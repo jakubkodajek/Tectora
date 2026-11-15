@@ -784,29 +784,25 @@ fn depart_logged(
     } else {
         kind
     };
-    match in_local_frame(&bare, crate::coplanar::merged) {
-        Ok(geo) => return with_objects(alone, geo),
-        Err(why) => log.push(format!("planes joined: {why}")),
-    }
-    if matches!(kind, K::OpenFaces | K::Cut) {
-        match in_local_frame(&bare, |p| crate::wing_split::split_roof(p).0) {
-            Ok(geo) => return with_objects(alone, geo),
-            Err(why) => log.push(format!("wing split: {why}")),
-        }
-    }
-    // A building turned and rounded to centimetres, put back onto common
-    // wall lines (at most a centimetre), then the same two ways.
+    // A building turned and rounded to centimetres is first put back onto
+    // common wall lines (at most a centimetre): the drawn walls can pass
+    // `sound` with planes a few millimetres apart (a stray valley).
+    let mut ways: Vec<(&str, Project)> = Vec::new();
     if let Some(straight) = crate::straighten::straightened(part) {
         let mut sbare = bare.clone();
         sbare.parts = vec![straight];
-        match in_local_frame(&sbare, crate::coplanar::merged) {
+        ways.push(("straightened: ", sbare));
+    }
+    ways.push(("", bare.clone()));
+    for (label, way) in &ways {
+        match in_local_frame(way, crate::coplanar::merged) {
             Ok(geo) => return with_objects(alone, geo),
-            Err(why) => log.push(format!("straightened: planes joined: {why}")),
+            Err(why) => log.push(format!("{label}planes joined: {why}")),
         }
         if matches!(kind, K::OpenFaces | K::Cut) {
-            match in_local_frame(&sbare, |p| crate::wing_split::split_roof(p).0) {
+            match in_local_frame(way, |p| crate::wing_split::split_roof(p).0) {
                 Ok(geo) => return with_objects(alone, geo),
-                Err(why) => log.push(format!("straightened: wing split: {why}")),
+                Err(why) => log.push(format!("{label}wing split: {why}")),
             }
         }
     }
