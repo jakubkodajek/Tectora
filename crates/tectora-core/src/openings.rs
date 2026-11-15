@@ -596,39 +596,45 @@ fn without_objects(project: &Project) -> Project {
     bare
 }
 
-/// Buildings farther than this from the origin are calculated moved to it, m
-/// (the core reads float32: far away its areas and corners lose a share of a
-/// square metre and several millimetres).
-const NEAR_ORIGIN: f64 = 20.0;
-
-/// Runs `f`, a departure of the one building of `bare`, in a frame moved
-/// to the building (whole metres) when it stands far from the origin, and
-/// moves the roof back.
-fn in_local_frame(
-    bare: &Project,
-    f: impl Fn(&Project) -> Result<RoofGeometry, String>,
-) -> Result<RoofGeometry, String> {
-    let Some(part) = bare.parts.first().filter(|_| bare.parts.len() == 1) else {
-        return f(bare);
+/// The lowest x and y of a building's corners, to whole centimetres: the
+/// origin of the frame its departures are calculated in. Everything
+/// Tectora calculates where the core stops is calculated there and moved
+/// back, so the roof does not depend on where the building stands on the
+/// site plan (the core reads float32, and tolerances taken from the
+/// project's origin grow with the distance from it). Whole centimetres,
+/// because the join of two roofs works on a centimetre grid: the building
+/// keeps its place on that grid.
+fn local_origin(part: &RoofPart) -> (f64, f64) {
+    let low = |f: fn(&Point2) -> f64| {
+        let v = part
+            .edges
+            .iter()
+            .map(|e| f(&e.start))
+            .fold(f64::INFINITY, f64::min);
+        let cm = (v * 100.0).round() / 100.0;
+        if cm.is_finite() { cm } else { 0.0 }
     };
-    let pts = part.outline();
-    if pts.is_empty() || !pts.iter().all(|p| p.x.is_finite() && p.y.is_finite()) {
-        return f(bare);
-    }
-    let n = pts.len() as f64;
-    let (cx, cy) = (
-        pts.iter().map(|p| p.x).sum::<f64>() / n,
-        pts.iter().map(|p| p.y).sum::<f64>() / n,
-    );
-    if cx.abs().max(cy.abs()) <= NEAR_ORIGIN {
-        return f(bare);
-    }
-    let (ox, oy) = (cx.round(), cy.round());
+    (low(|p| p.x), low(|p| p.y))
+}
+
+/// `bare` (one building, no objects) with its walls moved by `-origin`.
+/// The corners are rounded to micrometres: a drawing in millimetres or
+/// centimetres then has the very same local corners wherever it stands
+/// (the subtraction alone leaves the last bits of a far position).
+fn to_local(bare: &Project, (ox, oy): (f64, f64)) -> Project {
+    let um = |v: f64| {
+        let r = (v * 1e6).round() / 1e6;
+        if r.is_finite() { r } else { v }
+    };
     let mut local = bare.clone();
     for e in local.parts.iter_mut().flat_map(|p| p.edges.iter_mut()) {
-        e.start = Point2::new(e.start.x - ox, e.start.y - oy);
+        e.start = Point2::new(um(e.start.x - ox), um(e.start.y - oy));
     }
-    let mut geo = f(&local)?;
+    local
+}
+
+/// A roof calculated in the frame of [`to_local`], moved back.
+fn from_local(mut geo: RoofGeometry, (ox, oy): (f64, f64)) -> RoofGeometry {
     let back = |q: &mut [f64; 3]| {
         q[0] += ox;
         q[1] += oy;
@@ -653,7 +659,7 @@ fn in_local_frame(
     for p in geo.footprints.iter_mut().flatten() {
         *p = Point2::new(p.x + ox, p.y + oy);
     }
-    Ok(geo)
+    geo
 }
 
 fn has_objects(project: &Project) -> bool {
@@ -740,7 +746,8 @@ fn dormers_off_roof(alone: &Project, geo: &RoofGeometry) -> Vec<RoofWarning> {
 /// belongs to an object (the building without its objects calculates, or
 /// a chimney is not convex); and for a flat roof.
 fn depart(alone: &Project, kind: crate::roof::CalcErrorKind) -> Option<RoofGeometry> {
-    depart_logged(alone, kind, &mut Vec::new())
+    let mut budget = crate::budget::Budget::new();
+    depart_logged(alone, kind, &mut Vec::new(), &mut budget)
 }
 
 /// For dev tools and tests: why each way of [`depart`] was not taken for
@@ -749,14 +756,27 @@ fn depart(alone: &Project, kind: crate::roof::CalcErrorKind) -> Option<RoofGeome
 #[doc(hidden)]
 pub fn departure_log(project: &Project, kind: crate::roof::CalcErrorKind) -> (bool, Vec<String>) {
     let mut log = Vec::new();
-    let roof = depart_logged(project, kind, &mut log);
+    let mut budget = crate::budget::Budget::new();
+    let roof = depart_logged(project, kind, &mut log, &mut budget);
     (roof.is_some(), log)
+}
+
+/// For dev tools and tests: the core runs [`depart`] makes for the one
+/// building of `project` over all its ways, and how many of them end at
+/// the core's own iteration limit (the slow ones). Both are bounded
+/// (`budget.rs`).
+#[doc(hidden)]
+pub fn departure_runs(project: &Project, kind: crate::roof::CalcErrorKind) -> (usize, usize) {
+    let mut budget = crate::budget::Budget::new();
+    depart_logged(project, kind, &mut Vec::new(), &mut budget);
+    budget.runs()
 }
 
 fn depart_logged(
     alone: &Project,
     kind: crate::roof::CalcErrorKind,
     log: &mut Vec<String>,
+    budget: &mut crate::budget::Budget,
 ) -> Option<RoofGeometry> {
     use crate::roof::CalcErrorKind as K;
     let [part] = &alone.parts[..] else {
@@ -784,52 +804,33 @@ fn depart_logged(
     } else {
         kind
     };
-    // A building turned and rounded to centimetres is first put back onto
-    // common wall lines (at most a centimetre): the drawn walls can pass
-    // `sound` with planes a few millimetres apart (a stray valley).
-    let mut ways: Vec<(&str, Project)> = Vec::new();
-    if let Some(straight) = crate::straighten::straightened(part) {
-        let mut sbare = bare.clone();
-        sbare.parts = vec![straight];
-        ways.push(("straightened: ", sbare));
-    }
-    ways.push(("", bare.clone()));
-    for (label, way) in &ways {
-        match in_local_frame(way, crate::coplanar::merged) {
-            Ok(geo) => return with_objects(alone, geo),
-            Err(why) => log.push(format!("{label}planes joined: {why}")),
+    // Everything from here on is calculated in the building's own frame
+    // and moved back: the roof must not depend on where the building
+    // stands on the site plan.
+    let origin = local_origin(part);
+    let local = to_local(&bare, origin);
+    // The error as the core gives it there, too: which ways are tried
+    // hangs on it, and far from the origin the core can stop another way.
+    let kind = if origin == (0.0, 0.0) {
+        kind
+    } else {
+        match budget.run(&local) {
+            Some(Err(crate::engine::Failure::Dacad(e))) => e.kind,
+            _ => kind,
         }
-        if matches!(kind, K::OpenFaces | K::Cut) {
-            match in_local_frame(way, |p| crate::wing_split::split_roof(p).0) {
-                Ok(geo) => return with_objects(alone, geo),
-                Err(why) => log.push(format!("{label}wing split: {why}")),
-            }
-        }
-    }
-    // The sweep, with its own line clean-up, checked without the objects.
-    let sweep = |p: &Project| {
-        let mut geos = build_roofs(&bare);
-        apply_extras(p, &mut geos);
-        geos.pop().filter(|_| geos.is_empty())
     };
-    // Bounded like everything here: the sweep of a building at the wall
-    // limit costs more than the standard calculation.
-    if part.edges.len() > MAX_SWEEP_WALLS {
-        log.push("sweep: too many walls".into());
-        return None;
-    }
-    let mut plain = sweep(&bare)?;
-    if let Err(why) = tidy_sweep(part, &mut plain) {
-        log.push(format!("sweep: {why}"));
-        return None;
-    }
-    if let Err(why) = crate::check::sound(part, &plain, crate::check::Fit::STANDARD) {
-        log.push(format!("sweep: {why}"));
-        return None;
-    }
+    let Departed { roof, raw } = departed_bare(&local, kind, budget, log)?;
+    let Some(raw) = raw else {
+        return with_objects(alone, from_local(roof, origin));
+    };
+    let plain = from_local(roof, origin);
     let mut geo = if has_objects(alone) {
         let off = dormers_off_roof(alone, &plain);
-        let mut g = sweep(alone).filter(|g| !g.faces.is_empty())?;
+        let mut geos = vec![from_local(raw, origin)];
+        apply_extras(alone, &mut geos);
+        let mut g = geos
+            .pop()
+            .filter(|g| geos.is_empty() && !g.faces.is_empty())?;
         tidy_sweep(part, &mut g).ok()?;
         g.warnings.extend(off);
         g
@@ -839,6 +840,86 @@ fn depart_logged(
     geo.warnings
         .push(RoofWarning::new(WarningKind::NotCalculatedByCore, 0.0));
     Some(geo)
+}
+
+/// A roof of [`departed_bare`], in the building's own frame: sound, and
+/// with its notice where planes or wings were joined. For the sweep's
+/// roof also `raw`, the roof as the sweep gave it, for the objects to be
+/// applied to.
+struct Departed {
+    roof: RoofGeometry,
+    raw: Option<RoofGeometry>,
+}
+
+/// The ways of [`depart`] for the one building of `local` (no objects, in
+/// its own frame, [`to_local`]), in order; the first roof that passes
+/// [`crate::check::sound`]. A way that fails says why in `log` and the
+/// next one is tried. All core runs come out of `budget`.
+fn departed_bare(
+    local: &Project,
+    kind: crate::roof::CalcErrorKind,
+    budget: &mut crate::budget::Budget,
+    log: &mut Vec<String>,
+) -> Option<Departed> {
+    use crate::roof::CalcErrorKind as K;
+    let [part] = &local.parts[..] else {
+        return None;
+    };
+    // A building turned and rounded to centimetres is first put back
+    // onto common wall lines (at most a centimetre): the drawn walls can pass
+    // `sound` with planes a few millimetres apart (a stray valley).
+    for (label, way) in straight_and_drawn(local) {
+        match crate::coplanar::merged_within(&way, budget) {
+            Ok(roof) => return Some(Departed { roof, raw: None }),
+            Err(why) => log.push(format!("{label}planes joined: {why}")),
+        }
+        if matches!(kind, K::OpenFaces | K::Cut) {
+            match crate::wing_split::split_roof_within(&way, budget).0 {
+                Ok(roof) => return Some(Departed { roof, raw: None }),
+                Err(why) => log.push(format!("{label}wing split: {why}")),
+            }
+        }
+    }
+    // The sweep, with its own line clean-up, checked without the objects.
+    // Bounded like everything here: the sweep of a building at the wall
+    // limit costs more than the standard calculation.
+    if part.edges.len() > MAX_SWEEP_WALLS {
+        log.push("sweep: too many walls".into());
+        return None;
+    }
+    let mut geos = build_roofs(local);
+    let raw = geos.pop().filter(|_| geos.is_empty())?;
+    let mut geos = vec![raw.clone()];
+    apply_extras(local, &mut geos);
+    let mut plain = geos.pop().filter(|_| geos.is_empty())?;
+    if let Err(why) = tidy_sweep(part, &mut plain) {
+        log.push(format!("sweep: {why}"));
+        return None;
+    }
+    if let Err(why) = crate::check::sound(part, &plain, crate::check::Fit::STANDARD) {
+        log.push(format!("sweep: {why}"));
+        return None;
+    }
+    Some(Departed {
+        roof: plain,
+        raw: Some(raw),
+    })
+}
+
+/// The one building of `local` with its outline straightened
+/// ([`crate::straighten`]), where that moves anything, and as drawn, in
+/// the order the departures try them.
+fn straight_and_drawn(local: &Project) -> Vec<(&'static str, Project)> {
+    let mut ways = Vec::new();
+    if let [part] = &local.parts[..]
+        && let Some(straight) = crate::straighten::straightened(part)
+    {
+        let mut s = local.clone();
+        s.parts = vec![straight];
+        ways.push(("straightened: ", s));
+    }
+    ways.push(("", local.clone()));
+    ways
 }
 
 /// The sweep's result where the core stops, made what a roofer reads:
@@ -902,19 +983,28 @@ fn ridges_between_opposite_walls(part: &crate::model::RoofPart, geo: &mut RoofGe
 /// standard calculation gives it.
 fn merge_steps(project: &Project, geos: &mut [RoofGeometry]) {
     for k in 0..project.parts.len().min(geos.len()) {
-        let stepped = crate::coplanar::pairs(&project.parts[k])
-            .iter()
-            .any(|p| p.rise > 0.0);
+        // In the building's own frame, as every departure: whether the
+        // planes are one must not depend on where the building stands.
+        let origin = local_origin(&project.parts[k]);
+        let alone = only_part(project, k);
+        let local = to_local(&without_objects(&alone), origin);
+        let stepped = local
+            .parts
+            .first()
+            .is_some_and(|p| crate::coplanar::pairs(p).iter().any(|p| p.rise > 0.0));
         let free = geos[k].error.is_none()
             && geos[k].joined_with.is_empty()
             && (project.parts.len() == 1 || stands_alone(project, k));
         if !stepped || !free || project.flat_roof {
             continue;
         }
-        let alone = only_part(project, k);
-        let Some(mut geo) = in_local_frame(&without_objects(&alone), crate::coplanar::merged)
-            .ok()
-            .and_then(|geo| with_objects(&alone, geo))
+        // Straightened first, as where the core stops: on the drawn walls
+        // of a building turned and rounded to centimetres the house's front
+        // pieces are millimetres out of line and only one of them is joined.
+        let Some(mut geo) = straight_and_drawn(&local)
+            .iter()
+            .find_map(|(_, way)| crate::coplanar::merged(way).ok())
+            .and_then(|geo| with_objects(&alone, from_local(geo, origin)))
         else {
             continue;
         };

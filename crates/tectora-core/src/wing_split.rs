@@ -315,6 +315,7 @@ struct Search<'a> {
     bare: &'a Project,
     drawn: &'a RoofPart,
     in_plane: Vec<usize>,
+    budget: &'a mut crate::budget::Budget,
     runs: usize,
     why: String,
 }
@@ -326,13 +327,23 @@ struct Search<'a> {
 /// another (at most [`MAX_WINGS`], at most [`MAX_RUNS`] core runs in all)
 /// and all joined to the house in one run. `Err` when no way gives a roof
 /// that passes [`crate::check::sound`].
+#[cfg(test)]
 pub(crate) fn split_roof(bare: &Project) -> (Result<RoofGeometry, String>, usize) {
     let (roof, tried, _) = split_roof_counted(bare);
     (roof, tried)
 }
 
 /// [`split_roof`] and the number of core runs the whole search made.
+#[cfg(test)]
 pub(crate) fn split_roof_counted(bare: &Project) -> (Result<RoofGeometry, String>, usize, usize) {
+    split_roof_within(bare, &mut crate::budget::Budget::unlimited())
+}
+
+/// [`split_roof_counted`] with its core runs taken from `budget` as well.
+pub(crate) fn split_roof_within(
+    bare: &Project,
+    budget: &mut crate::budget::Budget,
+) -> (Result<RoofGeometry, String>, usize, usize) {
     let [part] = &bare.parts[..] else {
         return (Err("not one pitched building".into()), 0, 0);
     };
@@ -350,6 +361,7 @@ pub(crate) fn split_roof_counted(bare: &Project) -> (Result<RoofGeometry, String
         bare,
         drawn: part,
         in_plane,
+        budget,
         runs: 0,
         why: String::from("no wing to cut off"),
     };
@@ -377,6 +389,10 @@ impl Search<'_> {
         for c in cuts(house) {
             if self.runs >= MAX_RUNS {
                 self.why = "too many cuts to calculate".into();
+                return None;
+            }
+            if self.budget.spent() {
+                self.why = crate::budget::SPENT.into();
                 return None;
             }
             let drawn_wall = |w: &usize| map.get(*w).copied();
@@ -418,7 +434,12 @@ impl Search<'_> {
             p.parts = std::iter::once(rest.clone())
                 .chain(peeled.iter().map(|w| w.wing.clone()))
                 .collect();
-            let result = match crate::engine::generate(&p) {
+            let Some(run) = self.budget.run(&p) else {
+                peeled.pop();
+                self.why = crate::budget::SPENT.into();
+                return None;
+            };
+            let result = match run {
                 Ok(geos) => self.accept(geos, peeled, &rest_map),
                 Err(e) => {
                     let dacad = matches!(e, crate::engine::Failure::Dacad(_));

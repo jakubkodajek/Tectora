@@ -5,6 +5,7 @@
 
 pub mod assistants;
 pub mod breakdown;
+mod budget;
 pub mod bundle;
 pub mod check;
 pub mod commands;
