@@ -1557,3 +1557,122 @@ fn a_roof_calculated_where_the_core_stops_has_a_wall_area() {
         "{area}"
     );
 }
+
+/// Plan area of a polygon (shoelace).
+fn plan_area(pts: &[(f64, f64)]) -> f64 {
+    let n = pts.len();
+    (0..n)
+        .map(|i| pts[i].0 * pts[(i + 1) % n].1 - pts[(i + 1) % n].0 * pts[i].1)
+        .sum::<f64>()
+        .abs()
+        / 2.0
+}
+
+/// The dormer kinds with a closed form, 2 m wide, no overhangs, on the
+/// front slope (38°, eave 3 m, rising in +y from y = 0) of a 12 x 8 m
+/// house with gable ends (audit TEST-007; the existing sweep only holds
+/// the area within 10 m²).
+///
+/// Notation: t = tan 38°, host height z(y) = 3 + t y, so a plane at height
+/// z meets the host at y = (z - 3) / t. The dormer front is at y = 1, its
+/// eave at `ze`, its cheeks rise at 45° towards the ridge on x = 6, so the
+/// ridge is at `zr = ze + 1`. Every dormer face has the area of its plan
+/// polygon over cos(its pitch), and the host loses the dormer's footprint
+/// over cos 38°:
+///   total = bare - footprint / cos 38° + sum(face plan / cos pitch).
+#[test]
+fn dormers_have_their_closed_form_area() {
+    use tectora_core::edit::dormers::{SectionTarget, eave_for, host_slope};
+    let mut house = Project::new("closed form");
+    let w = |x: f64, y: f64, pitch: f64| {
+        tectora_core::edit::plain_edge(Point2::new(x, y), pitch, 3.0, 0.0)
+    };
+    house.parts.push(RoofPart {
+        height: None,
+        name: "A".into(),
+        edges: vec![
+            w(0.0, 0.0, 38.0),
+            w(12.0, 0.0, 90.0),
+            w(12.0, 8.0, 38.0),
+            w(0.0, 8.0, 90.0),
+        ],
+    });
+    let (t, c38) = (tan(38.0), 38f64.to_radians().cos());
+    let bare = 2.0 * 12.0 * 4.0 / c38;
+    let bare_got = calc(&house).area;
+    assert!((bare_got - bare).abs() < 5e-3, "{bare_got} vs {bare}");
+    let y_at = |z: f64| (z - 3.0) / t;
+    for (kind, front) in [
+        (DormerKind::Gable, 45.0),
+        (DormerKind::Pointed, 45.0),
+        (DormerKind::Shed, 15.0),
+        (DormerKind::Trapezoid, 15.0),
+        (DormerKind::Trapezoid, 30.0),
+    ] {
+        let mut p = default_params(kind, Point2::new(5.0, 1.0), 0.0, 3.0);
+        p.front_pitch_deg = front;
+        let mut pr = house.clone();
+        pr.dormers.push(build_dormer(&p));
+        let host = host_slope(&pr, 0).expect("host");
+        p.eave_height = eave_for(&p, host, SectionTarget::WallHeight(0.9)).unwrap();
+        pr.dormers[0] = build_dormer(&p);
+        let ze = p.eave_height;
+        let zr = ze + 1.0;
+        let (ye, yr) = (y_at(ze), y_at(zr));
+        let tf = tan(front);
+        // Plan area and pitch of each dormer face.
+        let mut faces: Vec<(f64, f64)> = match (kind, front as i32) {
+            (DormerKind::Gable | DormerKind::Pointed, _) => {
+                // Two cheeks: the quadrilateral front-ridge-host.
+                let q = plan_area(&[(5.0, 1.0), (5.0, ye), (6.0, yr), (6.0, 1.0)]);
+                vec![(q, 45.0), (q, 45.0)]
+            }
+            (DormerKind::Shed, _) => {
+                // One plane rising at `front` from the front eave: it
+                // meets the host where ze + (y - 1) tf = 3 + t y.
+                let ys = 1.0 + (ze - 3.0 - t * 1.0) / (t - tf);
+                vec![(2.0 * (ys - 1.0), front)]
+            }
+            (DormerKind::Trapezoid, 15) => {
+                // The shed top meets the host at ys and the 45° cheeks at
+                // x = 5 + (y - 1) tf (cheek: z = ze + (x - 5)).
+                let ys = 1.0 + (ze - 3.0 - t * 1.0) / (t - tf);
+                let d = (ys - 1.0) * tf;
+                let cheek = plan_area(&[(5.0, 1.0), (5.0 + d, ys), (5.0, ye)]);
+                let top = plan_area(&[(5.0, 1.0), (5.0 + d, ys), (7.0 - d, ys), (7.0, 1.0)]);
+                vec![(cheek, 45.0), (top, front), (cheek, 45.0)]
+            }
+            (DormerKind::Trapezoid, _) => {
+                // The 30° front closes in the ridge at ya = 1 + 1 / tan30.
+                let ya = 1.0 + 1.0 / tf;
+                let cheek = plan_area(&[(5.0, 1.0), (5.0, ye), (6.0, yr), (6.0, ya)]);
+                let front_face = plan_area(&[(5.0, 1.0), (6.0, ya), (7.0, 1.0)]);
+                vec![(cheek, 45.0), (front_face, front), (cheek, 45.0)]
+            }
+            _ => unreachable!(),
+        };
+        let footprint: f64 = faces.iter().map(|f| f.0).sum();
+        for f in &mut faces {
+            f.0 /= f.1.to_radians().cos();
+        }
+        let want_faces: f64 = faces.iter().map(|f| f.0).sum();
+        let want_total = bare - footprint / c38 + want_faces;
+        let roof = calc(&pr);
+        let geos = &roof.geos;
+        let got_faces: f64 = geos[0]
+            .faces
+            .iter()
+            .filter(|f| f.edge == usize::MAX)
+            .map(|f| f.area)
+            .sum();
+        assert!(
+            (got_faces - want_faces).abs() < 2e-3,
+            "{kind:?} {front}°: dormer faces {got_faces} vs {want_faces}"
+        );
+        assert!(
+            (roof.area - want_total).abs() < 5e-3,
+            "{kind:?} {front}°: total {} vs {want_total}",
+            roof.area
+        );
+    }
+}
