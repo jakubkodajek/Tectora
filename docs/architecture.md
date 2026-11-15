@@ -120,6 +120,15 @@ two planes are one plane but for a centimetre step gets the merged face
 `openings::wall_area_under`, which repeats the core's wall stage on the
 departed faces. Limits: one wing per building (`wing_split::MAX_CUTS`
 candidates), 64 walls for the split and 256 for the sweep.
+
+**A failure of ours.** Where the core path cannot run at all
+(`Failure::Ours`), `openings::fallback_checked` gives each building that
+stands clear of the others its own calculation: the core on that building
+alone where it runs, else the sweep, which must pass `check::sound` too
+(`not_calculated_by_core`). A building with no sound roof carries an error
+of its own ("the roof faces do not close", kind `open_faces`) and the
+others keep their roofs. Buildings that touch each other are joined by the
+fallback without the self-check and each says `not_calculated_by_core`.
 How the core is proven: `docs/core-verification.md` (fixtures, closed forms,
 invariants, properties) and `dcore/PORTING.md` (emulator).
 
