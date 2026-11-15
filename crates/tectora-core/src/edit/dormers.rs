@@ -635,6 +635,32 @@ pub fn host_slope_in(geos: &[crate::roof::RoofGeometry], p: &DormerParams) -> Op
 mod tests {
     use super::*;
 
+    /// TEST-010: a point next to a gable end takes the direction of the
+    /// nearest eave wall, never the gable's (which would turn it by 90 deg).
+    #[test]
+    fn a_dormer_near_a_gable_takes_the_eave_wall_angle() {
+        let w = |x: f64, y: f64, pitch: f64| plain_edge(Point2::new(x, y), pitch, 3.0, 0.0);
+        let part = RoofPart {
+            height: None,
+            name: "A".into(),
+            edges: vec![
+                w(0.0, 0.0, 38.0),
+                w(10.0, 0.0, 90.0),
+                w(10.0, 8.0, 38.0),
+                w(0.0, 8.0, 90.0),
+            ],
+        };
+        let parts = [part];
+        // 0.3 m from the gable end at x = 10, 3 m from the front eave
+        // (y = 0, direction +x: angle 0); the gable runs along +y.
+        let a = nearest_wall_angle(&parts, Point2::new(9.7, 3.0));
+        assert!(a.abs() < 1e-9, "{a}");
+        // Same at the other gable (x = 0, 0.3 m away), near the back eave
+        // (y = 8, direction -x: angle pi).
+        let a = nearest_wall_angle(&parts, Point2::new(0.3, 6.0));
+        assert!((a.abs() - std::f64::consts::PI).abs() < 1e-9, "{a}");
+    }
+
     #[test]
     fn every_kind_reads_back_as_itself() {
         for kind in DORMER_KINDS {

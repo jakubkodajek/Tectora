@@ -397,6 +397,76 @@ mod tests {
         assert!(check_windows(&p).is_ok());
     }
 
+    /// TEST-010: clearing the roof empties every kind of item, including
+    /// the hand-drawn lines and faces, and reports that it did something.
+    #[test]
+    fn clear_roof_removes_every_kind_of_item() {
+        use crate::model::{Chimney, ManualFace, ManualLine, RoofWindow};
+        let full = || {
+            let mut p = gable_12x8();
+            p.chimneys.push(Chimney {
+                corners: vec![
+                    Point2::new(1.0, 1.0),
+                    Point2::new(2.0, 1.0),
+                    Point2::new(2.0, 2.0),
+                ],
+                height: 6.0,
+            });
+            p.roof_openings.push(p.chimneys[0].clone());
+            p.windows.push(RoofWindow {
+                x: 4.0,
+                y: 0.5,
+                width: 1.0,
+                height: 1.0,
+            });
+            p.dormers.push(crate::edit::dormers::build_dormer(
+                &crate::edit::dormers::default_params(
+                    crate::edit::dormers::DormerKind::Gable,
+                    Point2::new(5.0, 1.0),
+                    0.0,
+                    4.0,
+                ),
+            ));
+            p.manual_lines.push(ManualLine {
+                a: [0.0; 3],
+                b: [1.0, 0.0, 0.0],
+                code: "T".into(),
+                length: None,
+                label: String::new(),
+            });
+            p.manual_faces.push(ManualFace {
+                points: vec![
+                    Point2::new(30.0, 0.0),
+                    Point2::new(40.0, 0.0),
+                    Point2::new(40.0, 6.0),
+                ],
+                pitch_deg: 30.0,
+                label: String::new(),
+            });
+            p
+        };
+        let mut p = full();
+        assert!(!p.parts.is_empty() && !p.dormers.is_empty() && !p.chimneys.is_empty());
+        assert!(!p.windows.is_empty() && !p.roof_openings.is_empty());
+        assert!(!p.manual_lines.is_empty() && !p.manual_faces.is_empty());
+        assert!(clear_roof(&mut p));
+        assert!(p.parts.is_empty() && p.dormers.is_empty() && p.chimneys.is_empty());
+        assert!(p.windows.is_empty() && p.roof_openings.is_empty());
+        assert!(p.manual_lines.is_empty(), "hand-drawn lines stay");
+        assert!(p.manual_faces.is_empty(), "hand-drawn faces stay");
+        assert!(!clear_roof(&mut p), "nothing left to clear");
+        // A job with nothing but a hand-drawn face has something to clear.
+        let mut q = full();
+        q.parts.clear();
+        q.dormers.clear();
+        q.chimneys.clear();
+        q.windows.clear();
+        q.roof_openings.clear();
+        q.manual_lines.clear();
+        assert!(clear_roof(&mut q));
+        assert!(q.manual_faces.is_empty());
+    }
+
     #[test]
     fn a_face_becomes_a_building_in_one_change() {
         use crate::model::ManualFace;

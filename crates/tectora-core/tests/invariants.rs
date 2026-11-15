@@ -27,8 +27,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use proptest::prelude::*;
 use tectora_core::check::WarningKind;
 use tectora_core::geom::{Point2, signed_area};
-use tectora_core::openings::generate_project;
 use tectora_core::model::ProblemItem;
+use tectora_core::openings::generate_project;
 use tectora_core::{EdgeDef, HalfHip, PitchBreak, Project};
 
 mod support;
