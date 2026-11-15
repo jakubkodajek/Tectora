@@ -120,6 +120,12 @@ fn calc(project: &Project, summary: bool) -> serde_json::Value {
             }
             if !summary {
                 v["geometry"] = json!(geo);
+                // The geometry's own `error` carries the calculation's
+                // text (German): the sentence above replaces it here too
+                // (audit ERR-005).
+                if let Some(e) = &geo.error {
+                    v["geometry"]["error"] = tectora_mcp::calc_error(e);
+                }
             }
             v
         })

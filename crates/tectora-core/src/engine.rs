@@ -241,6 +241,9 @@ fn parse_sol(out: &Outputs) -> Result<CoreSol, Failure> {
     CoreSol::parse(&String::from_utf8_lossy(&out.sol)).map_err(|e| Failure::Ours(e.to_string()))
 }
 
+/// The message of [`CalcErrorKind::NoEnd`].
+const NO_END_MESSAGE: &str = "the roof calculation does not end";
+
 /// Whether DACAD ends with the same error.
 fn classify(e: CoreError) -> Failure {
     let dacad = |e: &CoreError, kind: CalcErrorKind, id: Option<u32>, message: String| {
@@ -283,7 +286,10 @@ fn classify(e: CoreError) -> Failure {
             &e,
             CalcErrorKind::NoEnd,
             None,
-            "Die Dachberechnung kommt zu keinem Ende (DACAD hängt)".into(),
+            // Tectora's own text (the reference shows nothing: it hangs),
+            // so it names no product and is in English like every text
+            // of ours (audit ERR-005).
+            NO_END_MESSAGE.into(),
         ),
         // File and format errors: our RD2; gaps and faults of the port.
         CoreError::Fatal { .. }
@@ -531,4 +537,25 @@ fn record_opening_cuts(
 pub fn rd2_text(project: &Project) -> Result<(String, Rd2Map), Failure> {
     let hosts = dormer_hosts(project)?;
     Ok(write_rd2_with(project, &hosts))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Audit ERR-005: the text of the error Tectora raises itself (the
+    /// calculation's guard against rounds without end) went out to the CLI
+    /// and to AI clients in German and named the reference product.
+    #[test]
+    fn the_no_end_error_carries_a_neutral_english_text() {
+        let Failure::Dacad(e) = classify(CoreError::Hang("height sweep")) else {
+            panic!("a calculation without end is the reference's failure");
+        };
+        assert_eq!(e.kind, CalcErrorKind::NoEnd);
+        assert!(e.message.is_ascii(), "{}", e.message);
+        let lower = e.message.to_lowercase();
+        for banned in ["dacad", "coin", "dach", "hängt"] {
+            assert!(!lower.contains(banned), "{}", e.message);
+        }
+    }
 }
