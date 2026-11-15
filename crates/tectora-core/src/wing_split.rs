@@ -626,7 +626,7 @@ mod tests {
             assert!(runs <= MAX_RUNS, "{k} wings: {runs} core runs");
             assert!(runs > 0, "{k} wings");
         }
-        assert!(MAX_WINGS >= 2 && MAX_RUNS >= MAX_CUTS);
+        const { assert!(MAX_WINGS >= 2 && MAX_RUNS >= MAX_CUTS) };
         for k in [16, 60, 124] {
             assert_eq!(split_roof(&comb(k)).1, 0, "{k} wings");
         }
