@@ -181,7 +181,7 @@ roof against its walls and the app and MCP show a warning (`RoofGeometry::warnin
 | `no_roof_area` | a building with roofed walls whose calculated roof has faces and no area (an object larger than the roof; every eave at the core's 100 m level) | 0.005 m² |
 | `dormer_above_roof` | highest dormer corner above the highest corner of the building's own faces (the dormer is cut with the host plane continued past the ridge) | 5 cm |
 | `inside_another` | a building whose walls lie within another building's walls (99 % of its plan) while both roofs have faces and its sloped faces do not all lie in the other roof's planes (a box in the house's plane, DACAD cases C60, C63 to C65, splits a face and adds no area) | 2 cm |
-| `objects_overlap` | pairs of windows, chimneys, openings and dormers (front strip) whose plans overlap; each is still deducted in full | 0.01 m² |
+| `objects_overlap` | pairs of windows, chimneys, openings and dormers (front strip) whose plans overlap; each is still deducted in full. A window whose middle lies on a dormer's roof face is not paired with the dormers | 0.01 m² |
 | `merged_walls` | the core joined two walls in line whose pitch or pitch breaks differ (finding 7); `edges` = the wall whose definition is used, then the one whose pitch or breaks are ignored. Comes from the core run itself (`dcore::state::Notice`), not from the geometry | — |
 
 `overlapping_faces` also counts a face of a single building that stands

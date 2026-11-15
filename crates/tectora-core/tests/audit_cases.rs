@@ -865,3 +865,44 @@ fn a_box_in_the_roof_plane_of_the_house_is_not_a_building_inside_another() {
         );
     }
 }
+
+// ------------------------------------------------------- r1 MATH-004
+
+/// r1 MATH-004: a roof window on the roof of a dormer lies within the
+/// dormer in plan, and nothing is on top of anything.
+#[test]
+fn a_window_on_a_dormer_roof_does_not_overlap_the_dormer() {
+    let mut p = job(vec![block(
+        "A",
+        0.0,
+        0.0,
+        12.0,
+        8.0,
+        [
+            (40.0, 3.0, 0.0),
+            (G, 3.0, 0.0),
+            (40.0, 3.0, 0.0),
+            (G, 3.0, 0.0),
+        ],
+    )]);
+    let mut d = default_params(DormerKind::Gable, Point2::new(4.0, 1.0), 0.0, 4.0);
+    d.width = 2.0;
+    d.pitch_deg = 45.0;
+    p.dormers = vec![build_dormer(&d)];
+    p.windows = vec![RoofWindow {
+        x: 4.2,
+        y: 1.05,
+        width: 0.6,
+        height: 0.6,
+    }];
+    let roof = calc(&p);
+    assert!(roof.geos[0].error.is_none());
+    assert!(
+        !kinds(&roof, 0).contains(&WarningKind::ObjectsOverlap),
+        "{:?}",
+        roof.geos[0].warnings
+    );
+    // The same dormer twice still is an overlap.
+    p.dormers.push(p.dormers[0].clone());
+    assert!(kinds(&calc(&p), 0).contains(&WarningKind::ObjectsOverlap));
+}

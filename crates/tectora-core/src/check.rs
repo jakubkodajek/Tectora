@@ -782,7 +782,8 @@ fn in_host_planes(inner: &RoofGeometry, host: &RoofGeometry) -> bool {
 /// `(part, warning)` on the building nearest to the first of each pair,
 /// one warning per building. Windows count with the outline they have on
 /// the calculated roofs `geos` (same order as `project.parts`); a window
-/// on no face has none.
+/// on no face has none, and a window on a dormer's roof is not paired
+/// with the dormers.
 pub fn overlapping_objects(
     project: &crate::Project,
     geos: &[RoofGeometry],
@@ -791,8 +792,27 @@ pub fn overlapping_objects(
         return Vec::new();
     }
     let mut shapes: Vec<Vec<Point2>> = Vec::new();
+    // A window on a dormer's roof lies within the dormer in plan and is
+    // not on top of it (audit-core-r1 MATH-004).
+    let mut on_dormer: Vec<bool> = Vec::new();
+    // The window is booked on the host face it was placed on, whose
+    // outline may still run under the dormer, so the dormer's own faces
+    // are asked: one of them holds the middle of the window.
+    let dormer_faces: Vec<Vec<Point2>> = geos
+        .iter()
+        .flat_map(|g| &g.faces)
+        .filter(|f| f.edge == usize::MAX && f.pitch_deg < 89.9 && f.polygon.len() >= 3)
+        .map(plan)
+        .collect();
     for w in &project.windows {
-        shapes.push(crate::openings::window_outline(geos, w));
+        let outline = crate::openings::window_outline(geos, w);
+        let n = outline.len().max(1) as f64;
+        let mid = Point2::new(
+            outline.iter().map(|p| p.x).sum::<f64>() / n,
+            outline.iter().map(|p| p.y).sum::<f64>() / n,
+        );
+        on_dormer.push(dormer_faces.iter().any(|f| inside(f, mid)));
+        shapes.push(outline);
     }
     for c in project.chimneys.iter().chain(&project.roof_openings) {
         shapes.push(c.corners.clone());
@@ -801,6 +821,7 @@ pub fn overlapping_objects(
     // calculation's result): it counts as a strip `DORMER_STRIP` deep
     // behind each of its walls with a length.
     const DORMER_STRIP: f64 = 0.25;
+    let first_dormer = shapes.len();
     for d in &project.dormers {
         let mut strip = Vec::new();
         for (i, e) in d.edges.iter().enumerate() {
@@ -848,10 +869,13 @@ pub fn overlapping_objects(
         let Some((pi, bi)) = &plans[i] else {
             continue;
         };
-        for pj in &plans[i + 1..] {
+        for (j, pj) in plans.iter().enumerate().skip(i + 1) {
             let Some((pj, bj)) = pj else {
                 continue;
             };
+            if on_dormer.get(i).copied().unwrap_or(false) && j >= first_dormer {
+                continue;
+            }
             if bi[2] <= bj[0] || bj[2] <= bi[0] || bi[3] <= bj[1] || bj[3] <= bi[1] {
                 continue;
             }
