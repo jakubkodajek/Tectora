@@ -626,12 +626,15 @@ fn dormer_above_roof(geo: &RoofGeometry) -> Option<RoofWarning> {
         .then(|| RoofWarning::new(WarningKind::DormerAboveRoof, above))
 }
 
+/// A roof line of a job: its roof, both ends, its bounding box in plan.
+type JobLine = (usize, [f64; 3], [f64; 3], [f64; 4]);
+
 /// Per roof, the length of its lines that lie on another roof line of the
 /// job (of the same roof or another one), each doubled piece counted once
 /// per roof it belongs to.
 fn doubled_lines(geos: &[RoofGeometry]) -> Vec<f64> {
     // (roof, a, b, bounding box in plan)
-    let mut lines: Vec<(usize, [f64; 3], [f64; 3], [f64; 4])> = Vec::new();
+    let mut lines: Vec<JobLine> = Vec::new();
     for (i, geo) in geos.iter().enumerate() {
         if geo.error.is_some() {
             continue;
@@ -679,6 +682,9 @@ fn doubled_lines(geos: &[RoofGeometry]) -> Vec<f64> {
     out
 }
 
+/// A plan outline with its bounding box (min x, min y, max x, max y).
+type PlanShape = (MultiPolygon<f64>, [f64; 4]);
+
 /// The buildings whose walls lie wholly within another building's walls
 /// (99 % of their plan) while both roofs have faces.
 fn inside_another(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<usize> {
@@ -689,7 +695,7 @@ fn inside_another(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<usize> {
         geos.get(i)
             .is_some_and(|g| g.error.is_none() && !g.faces.is_empty())
     };
-    let plans: Vec<Option<(MultiPolygon<f64>, f64, [f64; 4])>> = parts
+    let plans: Vec<Option<(PlanShape, f64)>> = parts
         .iter()
         .enumerate()
         .map(|(i, part)| {
@@ -712,16 +718,16 @@ fn inside_another(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<usize> {
                     bbox[3].max(p.y),
                 ];
             }
-            Some((MultiPolygon::new(vec![to_geo(&pts)]), area, bbox))
+            Some(((MultiPolygon::new(vec![to_geo(&pts)]), bbox), area))
         })
         .collect();
     let mut out = Vec::new();
     for (i, pi) in plans.iter().enumerate() {
-        let Some((poly, area, bi)) = pi else {
+        let Some(((poly, bi), area)) = pi else {
             continue;
         };
         let inside = plans.iter().enumerate().any(|(j, pj)| {
-            let Some((other, _, bj)) = pj else {
+            let Some(((other, bj), _)) = pj else {
                 return false;
             };
             // Within the other's bounding box (to the centimetre) first.
@@ -784,7 +790,7 @@ pub fn overlapping_objects(
             && s.iter().all(|p| p.x.is_finite() && p.y.is_finite())
             && signed_area(s).abs() >= MIN_PIECE
     };
-    let plans: Vec<Option<(MultiPolygon<f64>, [f64; 4])>> = shapes
+    let plans: Vec<Option<PlanShape>> = shapes
         .iter()
         .map(|s| {
             ok(s).then(|| {
