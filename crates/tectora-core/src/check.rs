@@ -855,6 +855,68 @@ fn wall_plane(part: &RoofPart, i: usize) -> Option<((f64, f64), f64)> {
     })
 }
 
+/// Plan area of the overlaps of two faces where one lies clear above the
+/// other (at least [`crate::coplanar::MERGE_TOL`]) at every corner of the
+/// overlap and the overlap lies in the upper face's own overhang strip,
+/// between its wall's line and its eave line. Nothing else explains a plan
+/// area covered more than once.
+fn explained_overlap(part: &RoofPart, geo: &RoofGeometry) -> f64 {
+    let n = part.edges.len();
+    let faces: Vec<&RoofFace> = roof_faces(geo).collect();
+    let plans: Vec<MultiPolygon<f64>> = faces
+        .iter()
+        .map(|f| MultiPolygon::new(vec![to_geo(&plan(f))]))
+        .collect();
+    let planes: Vec<Option<[f64; 3]>> = faces.iter().map(|f| plane_of(&f.polygon)).collect();
+    // Whether `p` lies in the overhang strip of the wall of `face`.
+    let in_strip = |face: &RoofFace, p: Coord<f64>| -> bool {
+        let (Some(e), Some(next)) = (
+            part.edges.get(face.edge),
+            part.edges.get((face.edge + 1) % n),
+        ) else {
+            return false;
+        };
+        let (a, b) = (e.start, next.start);
+        let len = a.distance(b);
+        if len <= 1e-6 {
+            return false;
+        }
+        let out = ((p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x)) / len;
+        out >= -NEAR && out <= e.overhang + NEAR
+    };
+    let mut sum = 0.0;
+    for i in 0..faces.len() {
+        for j in i + 1..faces.len() {
+            let (Some(pi), Some(pj)) = (planes[i], planes[j]) else {
+                continue;
+            };
+            for piece in plans[i].intersection(&plans[j]) {
+                let a = piece.unsigned_area();
+                if a < MIN_PIECE {
+                    continue;
+                }
+                let ring = &piece.exterior().0;
+                let pts = &ring[..ring.len().saturating_sub(1)];
+                let diff = |p: &Coord<f64>| {
+                    (pi[0] - pj[0]) * p.x + (pi[1] - pj[1]) * p.y + (pi[2] - pj[2])
+                };
+                let clear = crate::coplanar::MERGE_TOL;
+                let (upper, ok) = if pts.iter().all(|p| diff(p) >= clear) {
+                    (faces[i], true)
+                } else if pts.iter().all(|p| diff(p) <= -clear) {
+                    (faces[j], true)
+                } else {
+                    (faces[i], false)
+                };
+                if ok && !pts.is_empty() && pts.iter().all(|&p| in_strip(upper, p)) {
+                    sum += a;
+                }
+            }
+        }
+    }
+    sum
+}
+
 /// Whether the roof `geo` of the building `part` (counter-clockwise,
 /// without dormers, chimneys, openings and windows) is a sound roof of
 /// these walls. Every result that is not the standard calculation's must
@@ -1128,7 +1190,12 @@ pub fn sound(part: &RoofPart, geo: &RoofGeometry, fit: Fit) -> Result<(), String
     } else {
         plan * (1.0 + OVER_COVER) + tiling
     };
-    if !(plan_sum >= plan - tiling && plan_sum <= most) {
+    if plan_sum < plan - tiling {
+        return Err(format!("faces cover {plan_sum} m2 of {plan} m2 in plan"));
+    }
+    // Above the cap (a share measured on single wings) only an excess that
+    // is fully explained passes: higher overhangs lying over lower roofs.
+    if plan_sum > most && (level || plan_sum - plan > explained_overlap(part, geo) + tiling) {
         return Err(format!("faces cover {plan_sum} m2 of {plan} m2 in plan"));
     }
     let warnings: Vec<RoofWarning> = check(std::slice::from_ref(part), std::slice::from_ref(geo))
