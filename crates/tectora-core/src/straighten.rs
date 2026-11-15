@@ -9,8 +9,11 @@
 //! the core stops on such a building, the corners may be moved by at most a
 //! centimetre onto common lines before the departures are tried again. The
 //! result is checked against the straightened walls ([`crate::check::sound`]).
-//! A deliberate jog (more than the rounding of a centimetre) is never
-//! flattened.
+//! What holds: no corner moves more than a centimetre, and lines closer
+//! than rounding to centimetres can tell apart (about 1 cm, which
+//! depends on the turn) become one. A parallel offset of 1.5 cm or more
+//! between two lines is kept unless the rounding noise hides it, so a step
+//! is flattened only where a centimetre grid cannot show it.
 
 use crate::geom::{Point2, signed_area};
 use crate::model::RoofPart;
@@ -18,13 +21,15 @@ use crate::wing_split::MAX_WALLS;
 
 /// The most a corner is moved, m.
 pub(crate) const MAX_SHIFT: f64 = 0.01;
-/// Coordinates (in the frame of the walls) at most this far from the first
-/// of their group are one line, m: two corners rounded to centimetres lie up
-/// to sqrt(2) cm apart on one line; a jog of 1.5 cm is none.
-const SNAP: f64 = 0.0145;
-/// A wall this much off the frame's axes is not one of its walls, degrees
-/// (a 1 m wall rounded to centimetres is up to 0.81 degrees off).
-const ALIGNED_DEG: f64 = 1.0;
+/// A wall whose ends are this far off the frame's axes (across the wall) is
+/// not one of its walls, m: the two ends rounded to centimetres are up to
+/// 1.42 cm off, and a little more for the frame's own error.
+const ALIGNED: f64 = 0.0145;
+/// The share of the worst case of rounding (2h) up to which two coordinates
+/// are one line. Measured on turned cm-rounded T-houses: just under the worst
+/// case keeps a 2 cm step apart where the rounding hides most of it, and
+/// still joins the corners of a line at nearly all turns.
+const SPAN_SHARE: f64 = 0.97;
 /// Corners moved less than this are not moved at all, m.
 const NOTHING: f64 = 1e-6;
 
@@ -32,6 +37,31 @@ const NOTHING: f64 = 1e-6;
 fn mod90(angle: f64) -> f64 {
     let q = angle.to_degrees().rem_euclid(90.0);
     if q > 45.0 { q - 90.0 } else { q }
+}
+
+/// How far across a wall of length `len` its far end is from the axis
+/// through its start, for a wall `dev` radians off the nearest axis.
+fn across(len: f64, dev: f64) -> f64 {
+    len * mod90(dev).to_radians().sin().abs()
+}
+
+/// The corners `members` sorted by `value`, in groups that start at a value
+/// and reach at most `span` above it.
+fn groups(members: &[usize], value: &dyn Fn(usize) -> f64, span: f64) -> Vec<Vec<usize>> {
+    let mut order = members.to_vec();
+    order.sort_by(|&a, &b| value(a).total_cmp(&value(b)));
+    let mut out = Vec::new();
+    let mut k = 0;
+    while k < order.len() {
+        let first = value(order[k]);
+        let mut m = k;
+        while m + 1 < order.len() && value(order[m + 1]) - first <= span {
+            m += 1;
+        }
+        out.push(order[k..=m].to_vec());
+        k = m + 1;
+    }
+    out
 }
 
 /// The building with its corners moved (by at most [`MAX_SHIFT`]) onto
@@ -59,48 +89,59 @@ pub(crate) fn straightened(part: &RoofPart) -> Option<RoofPart> {
         .filter(|w| w.0.is_finite())
         .max_by(|a, b| a.0.total_cmp(&b.0))?;
     // The frame: the mean direction (modulo 90 degrees) of the walls near
-    // the longest wall's axes, weighted by length.
+    // the longest wall's axes, weighted by the square of the length.
     let (mut sx, mut sy) = (0.0, 0.0);
     for &(len, ang) in &walls {
-        if len > 0.0 && mod90(ang - longest).abs() <= ALIGNED_DEG {
-            sx += len * (4.0 * ang).cos();
-            sy += len * (4.0 * ang).sin();
+        if len > 0.0 && across(len, ang - longest) <= ALIGNED {
+            sx += len * len * (4.0 * ang).cos();
+            sy += len * len * (4.0 * ang).sin();
         }
     }
     if !(sx.is_finite() && sy.is_finite()) || sx.hypot(sy) < 1e-9 {
         return None;
     }
     let frame = sy.atan2(sx) / 4.0;
-    let (s, c) = frame.sin_cos();
-    // Corners between two walls of the frame, as (index, u, v).
-    let aligned = |i: usize| {
+    // Relative to the middle of the building, so that a turn of the frame
+    // costs no distance far from the origin.
+    let nf = n as f64;
+    let (cx, cy) = (
+        pts.iter().map(|p| p.x).sum::<f64>() / nf,
+        pts.iter().map(|p| p.y).sum::<f64>() / nf,
+    );
+    let frame_of = |frame: f64| -> Vec<(f64, f64)> {
+        let (s, c) = frame.sin_cos();
+        pts.iter()
+            .map(|p| {
+                let (x, y) = (p.x - cx, p.y - cy);
+                (x * c + y * s, -x * s + y * c)
+            })
+            .collect()
+    };
+    // Corners between two walls of the frame.
+    let aligned = |i: usize, frame: f64| {
         let (prev, next) = (walls[(i + n - 1) % n], walls[i]);
         prev.0 > 0.0
             && next.0 > 0.0
-            && mod90(prev.1 - frame).abs() <= ALIGNED_DEG
-            && mod90(next.1 - frame).abs() <= ALIGNED_DEG
+            && across(prev.0, prev.1 - frame) <= ALIGNED
+            && across(next.0, next.1 - frame) <= ALIGNED
     };
-    let mut uv: Vec<(f64, f64)> = pts
-        .iter()
-        .map(|p| (p.x * c + p.y * s, -p.x * s + p.y * c))
-        .collect();
-    let members: Vec<usize> = (0..n).filter(|&i| aligned(i)).collect();
+    let members: Vec<usize> = (0..n).filter(|&i| aligned(i, frame)).collect();
+    let (s, c) = frame.sin_cos();
+    let mut uv = frame_of(frame);
+    // Rounding to centimetres puts a corner up to half a centimetre off in
+    // x and in y, which is `h` along an axis of the frame; two corners of one
+    // line are up to 2h apart. Lines further apart are two lines.
+    let h = 0.005 * (frame.cos().abs() + frame.sin().abs());
+    let span = SPAN_SHARE * 2.0 * h;
     for axis in 0..2 {
         let value = |i: usize| if axis == 0 { uv[i].0 } else { uv[i].1 };
-        let mut order = members.clone();
-        order.sort_by(|&a, &b| value(a).total_cmp(&value(b)));
-        let mut set: Vec<(usize, f64)> = Vec::new();
-        let mut k = 0;
-        while k < order.len() {
-            let first = value(order[k]);
-            let mut m = k;
-            while m + 1 < order.len() && value(order[m + 1]) - first <= SNAP {
-                m += 1;
-            }
-            let mean = order[k..=m].iter().map(|&i| value(i)).sum::<f64>() / (m - k + 1) as f64;
-            set.extend(order[k..=m].iter().map(|&i| (i, mean)));
-            k = m + 1;
-        }
+        let set: Vec<(usize, f64)> = groups(&members, &value, span)
+            .into_iter()
+            .flat_map(|g| {
+                let mean = g.iter().map(|&i| value(i)).sum::<f64>() / g.len() as f64;
+                g.into_iter().map(move |i| (i, mean))
+            })
+            .collect();
         for (i, v) in set {
             if axis == 0 {
                 uv[i].0 = v;
@@ -111,7 +152,7 @@ pub(crate) fn straightened(part: &RoofPart) -> Option<RoofPart> {
     }
     let moved: Vec<Point2> = uv
         .iter()
-        .map(|&(u, v)| Point2::new(u * c - v * s, u * s + v * c))
+        .map(|&(u, v)| Point2::new(u * c - v * s + cx, u * s + v * c + cy))
         .collect();
     let shift = moved
         .iter()
