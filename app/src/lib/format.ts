@@ -1,7 +1,9 @@
 import { numberLocale, t } from "./i18n.svelte";
 
+// A value that rounds to zero is zero: a roof an object took away completely
+// has an area a hair below zero, which Intl prints as "-0,00" (audit HUNTC-004).
 const fmt = (v: number) =>
-  new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
+  new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Math.abs(v) < 0.005 ? 0 : v);
 
 export const m = (v: number) => `${fmt(v)} m`;
 export const m2 = (v: number) => `${fmt(v)} m²`;

@@ -160,7 +160,8 @@ fn calc(project: &Project, summary: bool) -> serde_json::Value {
 }
 
 fn round2(v: f64) -> f64 {
-    (v * 100.0).round() / 100.0
+    // `+ 0.0`: never "-0.0" for a total a hair below zero.
+    (v * 100.0).round() / 100.0 + 0.0
 }
 
 fn main() -> ExitCode {

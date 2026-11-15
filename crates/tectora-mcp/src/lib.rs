@@ -63,7 +63,21 @@ fn arg_f64(args: &Value, key: &str) -> Result<Option<f64>, String> {
 
 fn round(v: f64, digits: i32) -> f64 {
     let f = 10f64.powi(digits);
-    (v * f).round() / f
+    // `+ 0.0`: a total a hair below zero (a roof an object took away
+    // completely) rounds to -0.0, which JSON writes as "-0.0".
+    (v * f).round() / f + 0.0
+}
+
+#[cfg(test)]
+mod round_tests {
+    /// Audit HUNTC-004: an area of -0.00002 m2 was reported as "-0.0".
+    #[test]
+    fn a_total_a_hair_below_zero_is_zero_not_minus_zero() {
+        let v = super::round(-0.0000209, 2);
+        assert_eq!(serde_json::json!(v).to_string(), "0.0");
+        assert_eq!(super::round(-0.006, 2), -0.01);
+        assert_eq!(super::round(152.734, 2), 152.73);
+    }
 }
 
 /// Edge table the agent can reason about (lengths are derived).

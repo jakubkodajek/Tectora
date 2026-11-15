@@ -438,7 +438,8 @@ fn clad_piece(poly: &[[f64; 3]]) -> CladPiece {
 
 fn round_to(v: f64, d: u32) -> f64 {
     let k = 10f64.powi(d as i32);
-    (v * k).round() / k
+    // `+ 0.0`: never "-0.0" for a figure a hair below zero.
+    (v * k).round() / k + 0.0
 }
 
 /// Whether `base - deducted = area` holds as shown with `d` decimals:
