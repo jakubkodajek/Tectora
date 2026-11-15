@@ -226,10 +226,85 @@ pub fn find(id: &str) -> Option<&'static Example> {
     EXAMPLES.iter().find(|e| e.id == id)
 }
 
+/// Longest name [`rename_seeded`] gives a job, characters.
+const MAX_SEEDED_NAME: usize = 200;
+
+/// Gives example jobs seeded on a first start the names the UI chose in its
+/// language (`names`: example id to name), so the library does not greet a
+/// German or English user with Czech names (UX-012). `seeded` holds
+/// (example id, job id) of the jobs seeded; a job whose name is no longer
+/// the example's own (renamed meanwhile) or that is gone is left alone, and
+/// an empty, over-long or control-character name is ignored. Returns how
+/// many jobs were renamed.
+pub fn rename_seeded(
+    store: &crate::store::Store,
+    seeded: &[(String, String)],
+    names: &std::collections::HashMap<String, String>,
+) -> Result<usize, crate::store::StoreError> {
+    let mut renamed = 0;
+    for (example, job) in seeded {
+        let (Some(ex), Some(name)) = (find(example), names.get(example)) else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty()
+            || name.chars().count() > MAX_SEEDED_NAME
+            || name.chars().any(char::is_control)
+        {
+            continue;
+        }
+        let Ok(mut project) = store.load(job) else {
+            continue;
+        };
+        if project.name != ex.name || project.name == name {
+            continue;
+        }
+        project.name = name.to_string();
+        store.save(Some(job.clone()), &project)?;
+        renamed += 1;
+    }
+    Ok(renamed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::roof;
+
+    #[test]
+    fn seeded_examples_take_the_ui_language_names_once() {
+        let dir = std::env::temp_dir().join(format!("tectora-test-seed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::store::Store::new(dir.clone()).unwrap();
+        let gable = store.save(None, &find("gable").unwrap().project()).unwrap();
+        let l = store
+            .save(None, &find("l-shape").unwrap().project())
+            .unwrap();
+        let seeded = vec![
+            ("gable".to_string(), gable.clone()),
+            ("l-shape".to_string(), l.clone()),
+        ];
+        // The user renamed one job before the UI named them: it stays.
+        let mut own = store.load(&l).unwrap();
+        own.name = "Novák".into();
+        store.save(Some(l.clone()), &own).unwrap();
+        let names: std::collections::HashMap<String, String> = [
+            ("gable".to_string(), "Satteldach".to_string()),
+            ("l-shape".to_string(), "Walmdach in L-Form".to_string()),
+        ]
+        .into();
+        assert_eq!(rename_seeded(&store, &seeded, &names).unwrap(), 1);
+        assert_eq!(store.load(&gable).unwrap().name, "Satteldach");
+        assert_eq!(store.load(&l).unwrap().name, "Novák");
+        // Bad names and unknown examples change nothing.
+        let bad: std::collections::HashMap<String, String> = [
+            ("gable".to_string(), " ".to_string()),
+            ("nope".to_string(), "x".to_string()),
+        ]
+        .into();
+        assert_eq!(rename_seeded(&store, &seeded, &bad).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn every_example_generates_a_roof() {

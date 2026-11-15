@@ -41,6 +41,11 @@ describe("translations", () => {
       expect(Object.entries(dict).filter(([, v]) => GERMAN.test(v)).map(([k]) => k), loc).toEqual([]);
     }
   });
+
+  // Glossary: a chimney is "Schornstein" in German, never "Kamin" (UX-007).
+  it("names a chimney Schornstein in German, never Kamin", () => {
+    expect(Object.entries(DICTS.de).filter(([, v]) => /Kamin/.test(v)).map(([k]) => k)).toEqual([]);
+  });
 });
 
 // Edge-cases class 4 (tools that look alike, TEST-012): "Building" draws a

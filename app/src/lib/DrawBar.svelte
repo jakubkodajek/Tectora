@@ -163,8 +163,10 @@
       </button>
     {/each}
   </div>
-  <div class="presets">
-    <span class="lbl">{t("draw.presets")}</span>
+  <!-- App-wide defaults, said as such: a value typed here applies to every
+       later building and job (Settings › New roofs), not only this one (UX-002). -->
+  <div class="presets" role="group" aria-labelledby="draw-presets-lbl" aria-describedby="draw-presets-note" title={t("draw.presetsHint")}>
+    <span class="lbl" id="draw-presets-lbl">{t("draw.presets")}<small id="draw-presets-note" data-testid="draw-presets-note">{t("draw.presetsNote")}</small></span>
     <label><span>{t("edge.pitch")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.pitch_deg, step: 1, min: 1, max: 89, onchange: (v) => preset(v, "pitch_deg") }} /><em>°</em></div></label>
     <label title={t("edge.eaveHeightPresetHint")}><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.eave_height, step: 0.05, min: EAVE_HEIGHT.min, max: EAVE_HEIGHT.max, onchange: (v) => preset(v, "eave_height") }} /><em>m</em></div></label>
     <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.overhang, step: 0.05, min: OVERHANG.min, max: OVERHANG.max, onchange: (v) => preset(v, "overhang") }} /><em>m</em></div></label>
@@ -268,6 +270,16 @@
     align-self: center;
     margin: 0;
     font-weight: 600;
+  }
+  .presets .lbl small {
+    display: block;
+    max-width: 130px;
+    margin-top: 2px;
+    font-weight: 400;
+    font-size: 11px;
+    line-height: 1.2;
+    white-space: normal;
+    color: var(--text-2);
   }
   .presets .unit input {
     width: 76px;

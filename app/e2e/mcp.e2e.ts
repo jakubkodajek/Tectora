@@ -6,6 +6,9 @@ import { bar, clickPlan, openEditor, planXY, selectWall, setField, tool, confirm
 import { bridge, createExample, expect, listProjects, loadProject, test, waitForProject, type App } from "./fixtures";
 import type { Mcp } from "./mcp";
 import { cs } from "./i18n";
+import fs from "node:fs";
+import path from "node:path";
+import { LIBRARY_DIR } from "./env";
 
 const review = (page: Page) => page.locator(".review");
 
@@ -754,5 +757,94 @@ test.describe("MCP parity", () => {
       expect(r.isError, `${tool} ${JSON.stringify(args)}`).toBe(true);
     }
     expect(JSON.stringify(await loadProject(id))).toBe(before);
+  });
+});
+
+// ERRU-010: a dialog open on one building keeps that building, not its
+// index. An AI save that removes or changes it closes the dialog with a note
+// instead of letting OK act on whatever building now has the index.
+test.describe("dialogs open during an AI save", () => {
+  /** A hip house and a copy 28 m to the right; returns the job id. */
+  async function twoBuildings(name: string) {
+    const id = await createExample("hip", name);
+    const p = await loadProject(id);
+    const c = structuredClone(p.parts[0]);
+    for (const e of c.edges) e.start.x += 28;
+    p.parts.push(c);
+    await bridge("save_project", { id, project: p });
+    return id;
+  }
+  const stale = (app: App) => app.toasts().filter({ hasText: cs("editor.dialogStale") });
+
+  test("Edit building: the AI removes the building, OK cannot move the other one", async ({ app, page, mcp }) => {
+    const id = await twoBuildings("Dvě");
+    const x0 = (await loadProject(id)).parts[1].edges[0].start.x;
+    await openEditor(app, "Dvě");
+    await selectWall(page, 0);
+    await tool(page, "tool.transform").click();
+    const dlg = page.getByRole("dialog", { name: cs("xf.title") });
+    await setField(dlg.getByLabel(cs("xf.dx")), 3);
+    await mcp.call("delete_items", { id, items: [{ kind: "part", index: 0 }], summary: "Odstranit dům" });
+    await expect(stale(app)).toBeVisible();
+    await expect(dlg).toHaveCount(0);
+    await page.waitForTimeout(1200);
+    const p = await loadProject(id);
+    expect(p.parts).toHaveLength(1);
+    expect(p.parts[0].edges[0].start.x).toBe(x0);
+  });
+
+  test("Calculate: the AI removes the building, the dialog closes without an error", async ({ app, page, mcp }) => {
+    const id = await twoBuildings("Dvě");
+    await openEditor(app, "Dvě");
+    await selectWall(page, 4, 1);
+    await bar(page, "def.title").getByRole("button", { name: cs("calc.button") }).click();
+    const dlg = page.getByRole("dialog", { name: cs("calc.title") });
+    await expect(dlg).toBeVisible();
+    await mcp.call("delete_items", { id, items: [{ kind: "part", index: 1 }], summary: "Odstranit garáž" });
+    await expect(stale(app)).toBeVisible();
+    await expect(dlg).toHaveCount(0);
+  });
+
+  test("Round roof: the AI changes the building, OK does not apply the old arc", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "Oblouk");
+    await openEditor(app, "Oblouk");
+    await selectWall(page, 0);
+    await bar(page, "def.title").getByRole("button", { name: cs("round.button") }).click();
+    const dlg = page.getByRole("dialog", { name: cs("round.title") });
+    await expect(dlg.getByRole("button", { name: cs("common.ok") })).toBeEnabled();
+    await mcp.call("update_edges", { id, changes: [{ index: 0, overhang: 0.7 }], summary: "Přesah dle výkresu" });
+    await expect(stale(app)).toBeVisible();
+    await expect(dlg).toHaveCount(0);
+    await page.waitForTimeout(1200);
+    const p = await loadProject(id);
+    expect(p.parts[0].edges[0].breaks ?? []).toHaveLength(0);
+    expect(p.parts[0].edges[0].overhang).toBe(0.7);
+  });
+});
+
+// ERRU-009: two change-log entries stamped in the same millisecond (two
+// writers at once, a clock step back) emptied the AI tab with an error.
+test.describe("change log with equal stamps", () => {
+  test("the AI tab lists two entries of the same millisecond", async ({ app, page, mcp }) => {
+    const id = await createExample("hip", "Valba");
+    await openEditor(app, "Valba");
+    await mcp.call("update_edges", { id, changes: [{ index: 0, pitch_deg: 30 }], summary: "První krok" });
+    await mcp.call("update_edges", { id, changes: [{ index: 1, pitch_deg: 31 }], summary: "Druhý krok" });
+    const ai = page.locator("aside .panel");
+    await expect(ai).toContainText("Druhý krok");
+    const log = path.join(LIBRARY_DIR, ".activity", `${id}.jsonl`);
+    const entries = fs.readFileSync(log, "utf8").split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l));
+    expect(entries.length).toBeGreaterThanOrEqual(2);
+    entries[entries.length - 1].ts_ms = entries[entries.length - 2].ts_ms;
+    fs.writeFileSync(log, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+    // The next AI save makes the editor read the change log again.
+    await mcp.call("update_edges", { id, changes: [{ index: 2, pitch_deg: 32 }], summary: "Třetí krok" });
+    await page.locator("aside .tabs").getByRole("tab", { name: cs("dock.ai") }).click();
+    await expect(ai).toContainText("Třetí krok");
+    await expect(ai).toContainText("První krok");
+    await expect(ai).toContainText("Druhý krok");
+    // One row per entry: a duplicate key made Svelte drop rows.
+    await expect(ai.locator("ol > li")).toHaveCount(entries.length + 1);
+    await expect(app.toasts()).toHaveCount(0);
   });
 });

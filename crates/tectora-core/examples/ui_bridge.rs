@@ -33,6 +33,9 @@ use tectora_core::{Project, assistants, bundle, examples};
 
 /// AI apps "connected" in the preview besides Claude Desktop, which always
 /// shows as connected (see `ai_assistants` below).
+/// Example jobs seeded at start (example id, job id), named in the UI's
+/// language by `name_seeded_examples` (as the app does, UX-012).
+static SEEDED: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
 static PREVIEW_CONNECTED: std::sync::Mutex<Vec<assistants::Assistant>> =
     std::sync::Mutex::new(Vec::new());
 
@@ -177,6 +180,10 @@ fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fa
         ),
         "save_project" => {
             let project = arg::<Project>(a, "project").ok()?;
+            let before = store.load(&id).ok();
+            if let Err(e) = tectora_core::commands::check_write(before.as_ref(), &project) {
+                return Some(Err(Fail(to_json(e).unwrap_or(Value::Null))));
+            }
             Some(
                 store
                     .save(Some(id), &project)
@@ -188,6 +195,9 @@ fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fa
         "save_project_checked" => {
             let project = arg::<Project>(a, "project").ok()?;
             let base = arg::<Project>(a, "base").ok()?;
+            if let Err(e) = tectora_core::commands::check_write(Some(&base), &project) {
+                return Some(Err(Fail(to_json(e).unwrap_or(Value::Null))));
+            }
             Some(
                 store
                     .save_checked(&id, &project, &base)
@@ -281,14 +291,19 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             to_json(store.save(arg(a, "id")?, &project)?)
         }
         "normalize_project" => to_json(arg::<Project>(a, "project")?),
-        "delete_project" => {
-            store.delete(&id()?, USER_ACTOR, "Deleted in the app")?;
-            Ok(Value::Null)
+        "delete_project" => to_json(store.delete(&id()?, USER_ACTOR, "Deleted in the app")?),
+        "list_deleted" => to_json(store.trash()),
+        "restore_deleted" => to_json(store.restore(&arg::<String>(a, "entry")?)?),
+        "name_seeded_examples" => {
+            let names: std::collections::HashMap<String, String> = arg(a, "names")?;
+            let seeded = std::mem::take(&mut *SEEDED.lock().unwrap_or_else(|e| e.into_inner()));
+            to_json(examples::rename_seeded(store, &seeded, &names)?)
         }
         "duplicate_project" => {
             let source = id()?;
             let mut project = store.load(&source)?;
             let name: String = arg(a, "name")?;
+            tectora_core::edit::check_job_name(&name).map_err(|d| coded("out_of_range", d))?;
             tectora_core::library::prepare_copy(&mut project, &name, arg(a, "job")?);
             let new_id = store.save(None, &project)?;
             if arg::<Option<bool>>(a, "withFiles")?.unwrap_or(true) {
@@ -368,8 +383,14 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         "create_standard" | "standard_part" => {
             let kind: StandardRoof = arg(a, "kind")?;
             let pitch: f64 = arg(a, "pitchDeg")?;
-            tectora_core::edit::check_eave_pitch(pitch, f64::MIN_POSITIVE)
-                .map_err(|d| coded("out_of_range", d))?;
+            let name = arg::<Option<String>>(a, "name")?;
+            tectora_core::commands::check_new_roof(
+                name.as_deref().filter(|_| cmd == "create_standard"),
+                pitch,
+                arg(a, "eaveHeight")?,
+                arg(a, "overhang")?,
+            )
+            .map_err(|e| Fail(to_json(e).unwrap_or(Value::Null)))?;
             let part = standard_roof(
                 kind,
                 arg(a, "length")?,
@@ -411,7 +432,9 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         }
         "new_project" => {
             let mut project = examples::find("gable").expect("built-in example").project();
-            project.name = arg(a, "name")?;
+            let name: String = arg(a, "name")?;
+            tectora_core::edit::check_job_name(&name).map_err(|d| coded("out_of_range", d))?;
+            project.name = name;
             to_json(store.save(None, &project)?)
         }
         "item_geometry" => {
@@ -489,15 +512,21 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         }
         "answer_folder_request" => {
             let allow = a.get("allow").and_then(Value::as_bool).unwrap_or(false);
+            let shown = a
+                .get("changes")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
             let next = Settings::load()
-                .answer_folder_request(allow)
+                .answer_folder_request(&shown, allow)
                 .map_err(|e| e.code().to_string())?;
             next.save().map_err(|e| e.code().to_string())?;
             Ok(next.describe())
         }
         "answer_file_request" => {
             let allow = a.get("allow").and_then(Value::as_bool).unwrap_or(false);
-            let next = Settings::load().answer_file_request(allow);
+            let shown = a.get("path").and_then(Value::as_str).unwrap_or_default();
+            let next = Settings::load().answer_file_request(std::path::Path::new(shown), allow);
             next.save().map_err(|e| e.code().to_string())?;
             Ok(next.describe())
         }
@@ -762,8 +791,13 @@ fn main() -> std::io::Result<()> {
     if store.list().is_empty() {
         // Same first-run seed as the app, plus a few more shapes to look at.
         for id in ["gable", "l-shape", "hip", "t-shape"] {
-            if let Some(example) = examples::find(id) {
-                let _ = store.save(None, &example.project());
+            if let Some(example) = examples::find(id)
+                && let Ok(job) = store.save(None, &example.project())
+            {
+                SEEDED
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((id.to_string(), job));
             }
         }
     }

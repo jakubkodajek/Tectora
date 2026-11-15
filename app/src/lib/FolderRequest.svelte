@@ -24,10 +24,10 @@
     if (busy) return;
     busy = true;
     try {
-      await api.answerFolderRequest(allow);
+      await api.answerFolderRequest($state.snapshot(request.changes), allow);
       onanswered(allow);
     } catch (e) {
-      notifyError(e, "save");
+      notifyError(e, "settings");
     } finally {
       busy = false;
     }

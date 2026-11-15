@@ -7,6 +7,7 @@
   import Modal from "./Modal.svelte";
   import { api } from "./api";
   import { describeError } from "./errors";
+  import { notifyError } from "./notify.svelte";
   import { t } from "./i18n.svelte";
   import { tabIds, tablist } from "./tabs";
   import { prefs, savePrefs, updateSettings } from "./settings.svelte";
@@ -145,7 +146,7 @@
     <li>{t("conn.how3")}</li>
   </ol>
   <label class="check">
-    <input type="checkbox" bind:checked={prefs.followAi} onchange={() => { savePrefs(); updateSettings({ follow_ai: prefs.followAi }).catch(() => {}); }} />
+    <input type="checkbox" bind:checked={prefs.followAi} onchange={() => { savePrefs(); updateSettings({ follow_ai: prefs.followAi }).catch((e) => notifyError(e, "settings")); }} />
     {t("conn.follow")}
   </label>
 </Modal>

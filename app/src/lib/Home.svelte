@@ -9,17 +9,18 @@
   import PlanThumb from "./PlanThumb.svelte";
   import ProjectCard from "./ProjectCard.svelte";
   import { api } from "./api";
-  import { cardArea, m2, relativeTime } from "./format";
+  import { cardArea, cardAreaNote, cardRoof, m2, relativeTime } from "./format";
+  import { listedArea, offerDiffers, storedArea, storedAreaHint } from "./offer";
   import { numberLocale, t } from "./i18n.svelte";
   import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import type { Action } from "./errors";
-  import { notifyError } from "./notify.svelte";
+  import { notify, notifyError } from "./notify.svelte";
   import UpdateBanner from "./UpdateBanner.svelte";
   import { prefs, savePrefs } from "./settings.svelte";
   import { hscroll } from "./hscroll";
   import { tick } from "svelte";
   import { firstPress } from "./dblclick";
-  import type { BrokenFile, ExampleInfo, JobStatus, ProjectSummary } from "./types";
+  import type { BrokenFile, ExampleInfo, JobStatus, ProjectSummary, TrashEntry } from "./types";
   import { JOB_STATUSES, isAi } from "./types";
 
   let {
@@ -43,7 +44,7 @@
     onsettings: () => void;
   } = $props();
 
-  type Filter = "all" | JobStatus | "ai" | "examples";
+  type Filter = "all" | JobStatus | "ai" | "examples" | "trash";
   type SortKey = "modified" | "name" | "number" | "customer" | "area";
   let query = $state("");
   let filter = $state<Filter>("all");
@@ -72,14 +73,14 @@
     const list = projects.filter((p) => {
       if (year !== null && yearOf(p.modified_ms) !== year) return false;
       if (filter === "ai" && !(p.last_activity && isAi(p.last_activity.actor))) return false;
-      if (filter !== "all" && filter !== "ai" && filter !== "examples" && p.job.status !== filter) return false;
+      if (filter !== "all" && filter !== "ai" && filter !== "examples" && filter !== "trash" && p.job.status !== filter) return false;
       if (!words.length) return true;
       const hay = norm([p.name, p.job.number, p.job.customer, p.job.address, p.notes].join("\n"));
       return words.every((w) => hay.includes(w));
     });
     const key = (p: ProjectSummary): string | number =>
       sort.key === "modified" ? p.modified_ms
-      : sort.key === "area" ? p.roof_area
+      : sort.key === "area" ? listedArea(p)
       : sort.key === "name" ? norm(p.name)
       : sort.key === "number" ? norm(p.job.number)
       : norm(p.job.customer);
@@ -172,10 +173,51 @@
       // Tauri's dialog plugin replaces window.confirm with an async version
       // (a Promise is always truthy), so the answer must be awaited.
       if (!(await confirm(t("home.confirmDelete", { name: p.name })))) return;
-      await run("delete", () => api.deleteProject(p.id));
+      const gone = await run("delete", () => api.deleteProject(p.id));
       if (selectedId === p.id) selectedId = null;
       onchanged();
+      loadTrash();
+      // The confirm promised the trash: say where it went and offer it back at once (UX-010).
+      if (gone) notify({ kind: "info", title: t("home.deleted", { name: gone.name || p.name }), action: { label: t("home.restore"), run: () => restore(gone) } });
     });
+
+  /** Deleted jobs in the library's trash (removed attachments are left out), newest first. */
+  let trash = $state<TrashEntry[]>([]);
+  async function loadTrash() {
+    try {
+      trash = (await api.listDeleted()).filter((e) => !e.file);
+    } catch (e) {
+      trash = [];
+      notifyError(e, "list");
+    }
+  }
+  // Again whenever the library changes (an AI client may delete or restore too).
+  $effect(() => {
+    void projects;
+    loadTrash();
+  });
+
+  /** Brings a deleted job back into the library and selects it. */
+  async function restore(e: TrashEntry) {
+    const id = await run("restore", () => api.restoreDeleted(e.entry));
+    if (!id) return loadTrash();
+    notify({ kind: "info", title: t("home.restored", { name: e.name }) });
+    selectedId = id;
+    onchanged();
+    loadTrash();
+  }
+
+  // First start: the example jobs were seeded with the core's built-in
+  // names; give them the names of the UI language (UX-012). Once per app run.
+  $effect(() => {
+    const names = Object.fromEntries(examples.map((ex) => [ex.id, t(`ex.${ex.id}.name`)]));
+    if (!examples.length) return;
+    api
+      .nameSeededExamples(names)
+      .then((n) => n > 0 && onchanged())
+      .catch((e) => notifyError(e, "list"));
+    return;
+  });
 
   const duplicate = (p: ProjectSummary) =>
     once(p.id, async () => {
@@ -241,12 +283,29 @@
       <button class:on={filter === "examples"} onclick={() => (filter = "examples")}>
         <Icon name="house" size={16} />{t("home.examples")}<span>{examples.length}</span>
       </button>
+      <button class:on={filter === "trash"} onclick={() => (filter = "trash")} title={t("home.trashHint")} data-testid="lib-trash">
+        <Icon name="trash" size={16} />{t("home.trash")}<span>{trash.length}</span>
+      </button>
       <button class="folder" title={dir} onclick={onsettings}><Icon name="folder" size={13} /><span>{`\u200E${dir}\u200E`}</span></button>
     </nav>
 
     <main>
       <UpdateBanner />
-      {#if filter === "examples"}
+      {#if filter === "trash"}
+        <div class="head"><h2>{t("home.trash")} <span class="count">{trash.length}</span></h2><p class="muted">{t("home.trashHint")}</p></div>
+        {#if trash.length === 0}
+          <div class="empty"><p>{t("home.trashEmpty")}</p></div>
+        {:else}
+          <ul class="trash" data-testid="trash-list">
+            {#each trash as e (e.entry)}
+              <li>
+                <div class="trash-text"><strong>{e.name || e.id}</strong><small class="muted">{t("home.deletedWhen", { when: relativeTime(e.ts_ms) })}{#if isAi(e.actor)} · {actorName(e.actor)}{/if}</small></div>
+                <button class="btn sm" onclick={() => restore(e)}><Icon name="undo" size={15} />{t("home.restore")}</button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {:else if filter === "examples"}
         <div class="head"><h2>{t("home.examples")}</h2><p class="muted">{t("home.examplesHint")}</p></div>
         <div class="examples">
           {#each examples as ex (ex.id)}
@@ -331,7 +390,12 @@
                   <td class="c-number">{p.job.number || "—"}</td>
                   <td class="c-customer">{p.job.customer || "—"}</td>
                   <td class="c-status"><span class="chip {p.job.status}">{t(`status.${p.job.status}`)}</span></td>
-                  <td class="num" title={p.figures_pending ? t("lib.areaPending") : undefined}>{cardArea(p)}</td>
+                  {#if storedArea(p) !== null}
+                    <!-- An offer lists the area it was offered with; the current one is in the tooltip (UX-008). -->
+                    <td class="num" title={storedAreaHint(cardArea(p))} data-testid="offer-area">{m2(storedArea(p) ?? 0)}{#if offerDiffers(p)}<small class="differs" title={t("lib.differsHint")}><i></i>{t("lib.differs")}</small>{/if}</td>
+                  {:else}
+                    <td class="num" title={cardAreaNote(p)} data-roof={cardRoof(p)}>{#if cardRoof(p) === "none" || cardRoof(p) === "partial"}<i class="roof-mark" role="img" aria-label={cardAreaNote(p)}></i>{/if}{cardArea(p)}</td>
+                  {/if}
                   <td class="mod c-mod">
                     {relativeTime(p.modified_ms)}
                     {#if p.last_activity && isAi(p.last_activity.actor)}
@@ -346,7 +410,7 @@
       {/if}
     </main>
 
-    {#if filter !== "examples" && prefs.libraryView === "list" && !selected && rows.length}
+    {#if filter !== "examples" && filter !== "trash" && prefs.libraryView === "list" && !selected && rows.length}
       <!-- Half-screen: the detail strip keeps its place while nothing is
            selected, so a click that selects a row never moves the rows (the
            second press of a double-click lands on the same row). -->
@@ -354,7 +418,7 @@
         <div class="big"></div>
         <p class="muted">{t("lib.selectHint")}</p>
       </div>
-    {:else if selected && filter !== "examples" && prefs.libraryView === "list"}
+    {:else if selected && filter !== "examples" && filter !== "trash" && prefs.libraryView === "list"}
       <aside class="detail">
         <div class="big"><PlanThumb outlines={selected.outlines} lines={selected.lines} /></div>
         <h3>{selected.name}</h3>
@@ -363,11 +427,14 @@
           <dt>{t("job.number")}</dt><dd>{selected.job.number || "—"}</dd>
           <dt>{t("job.customer")}</dt><dd>{selected.job.customer || "—"}</dd>
           <dt>{t("job.address")}</dt><dd>{selected.job.address || "—"}</dd>
-          <dt>{t("res.area")}</dt><dd title={selected.figures_pending ? t("lib.areaPending") : undefined}>{cardArea(selected)}</dd>
+          <dt>{t("res.area")}</dt><dd title={cardAreaNote(selected)} data-roof={cardRoof(selected)}>{#if cardRoof(selected) === "none" || cardRoof(selected) === "partial"}<i class="roof-mark" role="img" aria-label={cardAreaNote(selected)}></i>{/if}{cardArea(selected)}</dd>
           <dt>{t("edge.pitch")}</dt><dd>{pitchText(selected.pitch_range)}</dd>
           {#if selected.dormers}<dt>{t("lib.dormers")}</dt><dd>{selected.dormers}</dd>{/if}
           <dt>{t("lib.files")}</dt><dd>{selected.files}</dd>
-          {#if selected.has_result}<dt>{t("lib.stored")}</dt><dd>{t("lib.storedYes")}</dd>{/if}
+          {#if storedArea(selected) !== null}
+            <dt>{t("lib.storedArea")}</dt><dd data-testid="detail-offer-area">{m2(storedArea(selected) ?? 0)}</dd>
+          {/if}
+          {#if selected.has_result}<dt>{t("lib.stored")}</dt><dd>{#if offerDiffers(selected)}<span class="differs" title={t("lib.differsHint")} data-testid="detail-differs"><i></i>{t("lib.differs")}</span>{:else}{t("lib.storedYes")}{/if}</dd>{/if}
           <dt>{t("lib.colModified")}</dt><dd>{relativeTime(selected.modified_ms)}</dd>
         </dl>
         {#if selected.notes}<p class="notes">{selected.notes}</p>{/if}
@@ -602,6 +669,76 @@
     border: 1px solid var(--border);
     background: var(--surface);
     font-size: 13px;
+  }
+  /* An offer whose roof changed since: a small status mark, no tinted panel (UX-008). */
+  .differs {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 6px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+  }
+  td .differs {
+    display: flex;
+    justify-content: flex-end;
+    margin: 2px 0 0;
+  }
+  .differs i {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+    background: var(--ai);
+  }
+  /* The library's trash: deleted jobs with Restore (UX-010). */
+  .trash {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .trash li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+  .trash-text {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+  }
+  .trash-text strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .trash-text small {
+    font-size: 12px;
+  }
+  .trash .btn.sm {
+    height: 30px;
+    padding: 0 10px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  /* A roof the core refused, or refused for some buildings (ERRU-005). */
+  .roof-mark {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 6px;
+    border-radius: 1px;
+    vertical-align: middle;
+    background: var(--danger);
   }
   .broken .dot {
     flex: none;

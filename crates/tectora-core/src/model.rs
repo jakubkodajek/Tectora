@@ -223,6 +223,14 @@ impl Project {
                     code: "zero_length_wall",
                 });
             }
+            for ei in crossing_walls(part) {
+                out.push(Problem {
+                    item: ProblemItem::Part,
+                    index: pi,
+                    edge: Some(ei),
+                    code: "walls_cross",
+                });
+            }
         }
         for (di, d) in self.dormers.iter().enumerate() {
             if !finite_point(d.end) {
@@ -259,19 +267,20 @@ impl Project {
 
     /// The English message of a problem (CLI, MCP).
     fn describe(&self, p: &Problem) -> String {
-        let n = p.index + 1;
+        // 0-based, as every MCP tool argument and `calc.problems` (ERR-007).
+        let n = p.index;
         let at = match p.item {
             ProblemItem::Part => format!(
-                "part {n} ({})",
+                "part index {n} ({})",
                 self.parts
                     .get(p.index)
                     .map(|x| x.name.as_str())
                     .unwrap_or("")
             ),
-            ProblemItem::Dormer => format!("dormer {n}"),
-            ProblemItem::Chimney => format!("chimney {n}"),
-            ProblemItem::Opening => format!("roof opening {n}"),
-            ProblemItem::Window => format!("window {n}"),
+            ProblemItem::Dormer => format!("dormer index {n}"),
+            ProblemItem::Chimney => format!("chimney index {n}"),
+            ProblemItem::Opening => format!("roof opening index {n}"),
+            ProblemItem::Window => format!("window index {n}"),
         };
         let what = EdgeDef::PROBLEMS
             .iter()
@@ -282,13 +291,14 @@ impl Project {
                 "zero_length_wall" => {
                     "has no length (two corners on one point); delete one of the corners"
                 }
+                "walls_cross" => "crosses another wall of the same building; move a corner",
                 "end_nan" => "end point is not a number or out of range",
                 "bad_corners" => "needs 3 or more finite corners",
                 "bad_size" => "needs a finite position and a positive size",
                 other => other,
             });
         match p.edge {
-            Some(e) => format!("{at}, edge {}: {what}", e + 1),
+            Some(e) => format!("{at}, edge index {e}: {what}"),
             None => format!("{at}: {what}"),
         }
     }
@@ -560,8 +570,9 @@ pub struct Problem {
     pub edge: Option<usize>,
     /// A stable code: `too_few_edges`, `start_nan`, `pitch_range`,
     /// `eave_nan`, `eave_negative`, `overhang_negative`, `direction_nan`,
-    /// `stacked_nan`, `break_below_eave`, `break_duplicate`, `end_nan`,
-    /// `bad_corners`, `bad_size` or `zero_length_wall`.
+    /// `stacked_nan`, `break_below_eave`, `break_duplicate`,
+    /// `half_hip_below_eave`, `end_nan`,
+    /// `bad_corners`, `bad_size`, `zero_length_wall` or `walls_cross`.
     pub code: &'static str,
 }
 
@@ -597,6 +608,57 @@ pub fn zero_length_walls(part: &RoofPart) -> Vec<usize> {
                 && e.start.distance(next) < MIN_WALL_LENGTH
         })
         .collect()
+}
+
+/// The first wall of each pair of walls of `part` that cross each other.
+/// A wall loop that crosses itself (a bow tie, a corner dragged over the
+/// opposite wall) is not a building: the core still returned a roof for it,
+/// with faces of one corner and areas of no meaning, and nothing warned
+/// (audit 2026-11-15 HUNTC-002, HUNTIO-009). Only a proper crossing counts:
+/// walls that touch at a corner or run along each other are left alone.
+/// Parts with a direction marker or imported wall records are not checked,
+/// because their walls are not the straight lines between the corners.
+pub fn crossing_walls(part: &RoofPart) -> Vec<usize> {
+    let n = part.edges.len();
+    if n < 4
+        || part
+            .edges
+            .iter()
+            .any(|e| e.direction_rad.is_some() || e.source.is_some() || !finite_point(e.start))
+    {
+        return Vec::new();
+    }
+    let seg = |i: usize| (part.edges[i].start, part.edges[(i + 1) % n].start);
+    // Side of `c` relative to the line a-b, with a tolerance of 1 mm in
+    // distance so that corners lying on a wall do not count as crossing.
+    let side = |a: Point2, b: Point2, c: Point2| {
+        let len = a.distance(b);
+        let cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        if len <= 0.0 || cross.abs() <= 1e-3 * len {
+            0
+        } else if cross > 0.0 {
+            1
+        } else {
+            -1
+        }
+    };
+    let mut out = Vec::new();
+    for i in 0..n {
+        let (a, b) = seg(i);
+        let crosses = (i + 2..n).any(|j| {
+            if (j + 1) % n == i {
+                return false; // neighbours share a corner
+            }
+            let (c, d) = seg(j);
+            let (s1, s2) = (side(a, b, c), side(a, b, d));
+            let (s3, s4) = (side(c, d, a), side(c, d, b));
+            s1 * s2 < 0 && s3 * s4 < 0
+        });
+        if crosses {
+            out.push(i);
+        }
+    }
+    out
 }
 
 impl Problem {
@@ -839,7 +901,7 @@ fn is_zero(v: &u8) -> bool {
 impl EdgeDef {
     /// What makes this edge unusable for the engine (see [`Project::validate`]).
     /// Codes and English messages of [`EdgeDef::problems`].
-    pub const PROBLEMS: [(&'static str, &'static str); 9] = [
+    pub const PROBLEMS: [(&'static str, &'static str); 10] = [
         ("start_nan", "start point is not a number or out of range"),
         ("pitch_range", "pitch must be between 2° and 178°"),
         ("eave_nan", "eave height is not a number or out of range"),
@@ -852,6 +914,7 @@ impl EdgeDef {
         ),
         ("break_below_eave", "pitch break lies below the eave"),
         ("break_duplicate", "two pitch breaks at the same height"),
+        ("half_hip_below_eave", "half-hip lies below the eave"),
     ];
 
     /// What keeps the roof engine from using this edge, as
@@ -868,6 +931,14 @@ impl EdgeDef {
         // errors "Knickhöhe liegt tiefer als Traufe!" and "Knickhöhe bereits
         // vorhanden!" (DACAD.exe strings 211, 212).
         let pitch_ok = |p: f64| (MIN_PITCH_DEG..=MAX_PITCH_DEG).contains(&p);
+        // A half-hip is a roof plane like any other: DACAD's pitch limit
+        // holds for it too, and a pitch of 0 divides by zero in the core
+        // (x87 division by zero in the plane setup). It starts above the
+        // eave like a pitch break.
+        let half_hip_low = self
+            .half_hip
+            .as_ref()
+            .is_some_and(|h| h.height < self.eave_height - HEIGHT_EPS);
         let breaks_low = self
             .breaks
             .iter()
@@ -879,7 +950,12 @@ impl EdgeDef {
         });
         let checks = [
             !finite_point(self.start),
-            !pitch_ok(self.pitch_deg) || self.breaks.iter().any(|b| !pitch_ok(b.pitch_deg)),
+            !pitch_ok(self.pitch_deg)
+                || self.breaks.iter().any(|b| !pitch_ok(b.pitch_deg))
+                || self
+                    .half_hip
+                    .as_ref()
+                    .is_some_and(|h| h.pitch_deg.is_finite() && !pitch_ok(h.pitch_deg)),
             !sane(self.eave_height),
             self.eave_height < 0.0,
             !(self.overhang >= 0.0 && sane(self.overhang)),
@@ -887,6 +963,7 @@ impl EdgeDef {
             stacked.into_iter().any(|(h, p)| !sane(h) || !p.is_finite()),
             breaks_low,
             breaks_dup,
+            half_hip_low,
         ];
         checks
             .into_iter()
@@ -1060,6 +1137,72 @@ mod tests {
             ["break_duplicate"]
         );
         assert_eq!(codes(&|e| e.breaks = vec![brk(5.0, 1.0)]), ["pitch_range"]);
+        // A half-hip is held to the same limits; pitch 0 with a pitch break
+        // on the same gable divided by zero in the core (audit ERR-010).
+        let hh = |h: f64, p: f64| {
+            Some(HalfHip {
+                height: h,
+                pitch_deg: p,
+            })
+        };
+        assert!(codes(&|e| e.half_hip = hh(5.0, 50.0)).is_empty());
+        assert_eq!(codes(&|e| e.half_hip = hh(5.0, 0.0)), ["pitch_range"]);
+        assert_eq!(codes(&|e| e.half_hip = hh(5.0, -10.0)), ["pitch_range"]);
+        assert_eq!(codes(&|e| e.half_hip = hh(5.0, 1.9)), ["pitch_range"]);
+        assert_eq!(
+            codes(&|e| e.half_hip = hh(2.0, 50.0)),
+            ["half_hip_below_eave"]
+        );
+        assert_eq!(
+            codes(&|e| e.half_hip = hh(-1.0, 50.0)),
+            ["half_hip_below_eave"]
+        );
+        assert_eq!(codes(&|e| e.half_hip = hh(5.0, f64::NAN)), ["stacked_nan"]);
+    }
+
+    #[test]
+    fn walls_that_cross_are_a_problem() {
+        let part = |pts: &[(f64, f64)]| {
+            RoofPart::new(
+                "A",
+                pts.iter()
+                    .map(|&(x, y)| crate::edit::plain_edge(Point2::new(x, y), 40.0, 3.0, 0.5))
+                    .collect(),
+            )
+        };
+        let rect = part(&[(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)]);
+        assert!(crossing_walls(&rect).is_empty());
+        // Bow tie: walls 0 and 2 cross.
+        let bow = part(&[(0.0, 0.0), (10.0, 0.0), (0.0, 8.0), (10.0, 8.0)]);
+        assert_eq!(crossing_walls(&bow), [1]);
+        // An L and a notch touching a wall at a corner do not cross.
+        let l = part(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 4.0),
+            (5.0, 4.0),
+            (5.0, 8.0),
+            (0.0, 8.0),
+        ]);
+        assert!(crossing_walls(&l).is_empty());
+        let touch = part(&[(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (5.0, 0.0), (0.0, 8.0)]);
+        assert!(crossing_walls(&touch).is_empty());
+        // A corner dragged over the opposite wall.
+        let dragged = part(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 8.0),
+            (5.0, -4.0),
+            (0.0, 8.0),
+        ]);
+        assert!(!crossing_walls(&dragged).is_empty());
+        let mut p = crate::examples::find("gable").unwrap().project();
+        p.parts = vec![bow];
+        assert!(
+            p.problems()
+                .iter()
+                .any(|q| q.code == "walls_cross" && q.edge == Some(1))
+        );
     }
 
     #[test]

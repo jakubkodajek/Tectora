@@ -363,3 +363,50 @@ test.describe("library: examples, new job tabs, import, broken files", () => {
     await expect(page.getByRole("row").filter({ hasText: "Zvenku" })).toBeVisible();
   });
 });
+
+// ERRU-005: a roof the core refused was listed as 0,00 m², and a job with
+// one building without a roof with the other buildings' area as complete.
+test.describe("library: roofs the core did not calculate", () => {
+  test("a refused roof shows a dash with a mark, a partly calculated job its area with a mark", async ({ app, page }) => {
+    // A hip house with an L-shaped (non-convex) chimney: the core gives no roof.
+    const refused = await createExample("hip", "Nespočítaná");
+    const p = await loadProject(refused);
+    p.chimneys = [{ corners: [[4, 3], [6, 3], [6, 4], [5, 4], [5, 5], [4, 5]].map(([x, y]) => ({ x, y })), height: 9 }];
+    await bridge("save_project", { id: refused, project: p });
+    // Two buildings, the second one the core ends with an error on alone
+    // (core test a_building_the_core_fails_on_alone_leaves_the_others_their_roofs).
+    const partial = await createExample("hip", "Napůl");
+    const q = await loadProject(partial);
+    const wall = (x: number, y: number, pitch: number, eave: number, overhang: number) => ({ ...structuredClone(q.parts[0].edges[0]), start: { x, y }, pitch_deg: pitch, eave_height: eave, overhang, breaks: [], half_hip: null });
+    const hh = { ...wall(6, 12.8, 90, 3, 0.5), half_hip: { height: 5, pitch_deg: 50 } };
+    q.parts = [
+      { ...q.parts[0], name: "A", edges: [wall(0, 0, 30, 3, 0.6), wall(6.2, 0, 90, 3, 0.6), wall(6.2, 5.9, 30, 3, 0.6), wall(0, 5.9, 90, 3, 0.6)] },
+      { ...q.parts[0], name: "B", edges: [wall(2.2, 5.9, 45, 3, 0), wall(6, 5.9, 30, 2.5, 0), hh, wall(2.2, 12.8, 90, 3.5, 0.5)] },
+    ];
+    await bridge("save_project", { id: partial, project: q });
+    const listed = await listProjects();
+    const failedOf = (id: string) => listed.find((s: any) => s.id === id)?.parts_failed;
+    expect(failedOf(refused)).toBe(1);
+    expect(failedOf(partial)).toBe(1);
+
+    await app.open();
+    const row = page.getByRole("row").filter({ hasText: "Nespočítaná" });
+    const area = row.locator("td.num");
+    await expect(area).toHaveText("—");
+    await expect(area).toHaveAttribute("title", cs("res.notCalculated"));
+    await expect(area.locator(".roof-mark")).toHaveCount(1);
+    await row.click();
+    await expect(page.locator("aside.detail dd[data-roof]")).toHaveText("—");
+
+    const half = page.getByRole("row").filter({ hasText: "Napůl" }).locator("td.num");
+    await expect(half).toHaveAttribute("data-roof", "partial");
+    await expect(half).not.toHaveText("—");
+    await expect(half).toHaveAttribute("title", cs("lib.areaPartial", { n: 1, of: 2 }));
+    await expect(half.locator(".roof-mark")).toHaveCount(1);
+
+    await page.getByRole("button", { name: cs("lib.grid") }).click();
+    const card = page.locator("article.card").filter({ has: page.getByRole("heading", { name: "Nespočítaná", exact: true }) });
+    await expect(card.locator(".area")).toHaveText("—");
+    await expect(card.locator(".roof-mark")).toHaveCount(1);
+  });
+});

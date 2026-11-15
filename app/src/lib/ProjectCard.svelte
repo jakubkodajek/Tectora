@@ -2,8 +2,9 @@
   import { tick } from "svelte";
   import Icon from "./Icon.svelte";
   import PlanThumb from "./PlanThumb.svelte";
-  import { cardArea, m2, relativeTime } from "./format";
+  import { cardArea, cardAreaNote, cardRoof, m2, relativeTime } from "./format";
   import { t } from "./i18n.svelte";
+  import { offerDiffers, storedArea, storedAreaHint } from "./offer";
   import type { ProjectSummary } from "./types";
 
   let {
@@ -71,7 +72,7 @@
   <div class="meta">
     <div class="text">
       <h3 title={project.name}>{project.name}</h3>
-      <p class="muted">{relativeTime(project.modified_ms)} · {cardArea(project)}</p>
+      <p class="muted">{relativeTime(project.modified_ms)} · {#if storedArea(project) !== null}<span class="area" title={storedAreaHint(cardArea(project))}>{m2(storedArea(project) ?? 0)}</span>{#if offerDiffers(project)} · <span class="differs" title={t("lib.differsHint")}><i></i>{t("lib.differs")}</span>{/if}{:else}<span class="area" title={cardAreaNote(project)} data-roof={cardRoof(project)}>{#if cardRoof(project) === "none" || cardRoof(project) === "partial"}<i class="roof-mark" role="img" aria-label={cardAreaNote(project)}></i>{/if}{cardArea(project)}</span>{/if}</p>
     </div>
     <div class="menu-wrap">
       <button
@@ -101,6 +102,30 @@
 </article>
 
 <style>
+  /* A roof the core refused, or refused for some buildings (ERRU-005). */
+  /* An offer whose roof changed since (UX-008). */
+  .differs {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .differs i {
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+    background: var(--ai);
+  }
+  .roof-mark {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 5px;
+    border-radius: 1px;
+    vertical-align: middle;
+    background: var(--danger);
+  }
   .card {
     background: var(--surface);
     border: 1px solid var(--border);

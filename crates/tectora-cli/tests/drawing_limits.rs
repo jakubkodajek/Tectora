@@ -268,3 +268,34 @@ fn a_job_too_large_to_calculate_is_refused_or_stopped_and_the_session_goes_on() 
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// ARCH-001: a worker opens the library it is told, never the default one;
+/// an unusable default folder must not stop it from answering.
+#[test]
+fn a_worker_does_not_open_the_default_library() {
+    let dir = scratch("worker-default");
+    // A default library that cannot be created: its parent is a file.
+    let blocker = dir.join("blocker");
+    std::fs::write(&blocker, b"x").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tectora"))
+        .arg("mcp")
+        .env("TECTORA_CONFIG_DIR", dir.join("config"))
+        .env("TECTORA_PROJECTS_DIR", blocker.join("lib"))
+        .env("TECTORA_DRAWING_WORKER", dir.join("lib"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    writeln!(
+        child.stdin.take().unwrap(),
+        "{}",
+        json!({ "name": "calc", "args": { "id": "missing" } })
+    )
+    .unwrap();
+    let out = child.wait_with_output().unwrap();
+    let answer: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("no answer ({e}): {:?}", out.stdout));
+    assert!(answer.get("err").is_some(), "{answer}");
+    assert!(out.status.success(), "{:?}", out.status);
+}

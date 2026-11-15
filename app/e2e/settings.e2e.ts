@@ -230,3 +230,44 @@ test.describe("settings", () => {
     await expect(page.getByRole("button", { name: cs("settings.button") })).toBeVisible();
   });
 });
+
+// ERRU-001 / ERRU-002: a settings file that cannot be written made the
+// language, theme and follow-AI controls do nothing without a word.
+test.describe("settings that cannot be saved", () => {
+  test("language, theme and follow AI say why, and the language picker keeps the language in use", async ({ app, page }) => {
+    await app.open();
+    // A folder where the settings file should be: every save fails.
+    const file = path.join(CONFIG_DIR, "settings.json");
+    fs.rmSync(file, { recursive: true, force: true });
+    fs.mkdirSync(file, { recursive: true });
+    const dlg = await openSettings(app);
+    const errs = dlg.locator("small.err[role=alert]");
+
+    const lang = dlg.getByRole("combobox", { name: cs("lang") });
+    await lang.selectOption("en");
+    await expect(errs).toHaveCount(1);
+    await expect(lang).toHaveValue("cs");
+    await expect(page.getByRole("dialog", { name: cs("settings.title") })).toBeVisible();
+
+    await dlg.getByRole("radio", { name: cs("settings.theme.dark") }).click();
+    await expect(errs).toHaveCount(2);
+    await expect(dlg.getByRole("radio", { name: cs("settings.theme.dark") })).toHaveAttribute("aria-checked", "false");
+
+    const follow = dlg.getByRole("checkbox", { name: new RegExp(cs("settings.followAi")) });
+    const was = await follow.isChecked();
+    await follow.click();
+    await expect(errs).toHaveCount(3);
+    await expect(follow).toBeChecked({ checked: was });
+    // Each says what failed in words, not "unknown".
+    for (const text of await errs.allTextContents()) expect(text.trim().length).toBeGreaterThan(3);
+
+    // The header picker applies the language for this session and says it will not last.
+    await page.keyboard.press("Escape");
+    await page.locator("header label.lang select").selectOption("de");
+    const toast = app.toasts().filter({ hasText: tr("de", "err.action.settings") });
+    await expect(toast).toBeVisible();
+    await expect(toast).not.toContainText("unknown");
+    // The failed saves are logged on purpose.
+    app.errors.length = 0;
+  });
+});

@@ -34,7 +34,18 @@ pub struct Server {
     store: Store,
     /// Name of the connected client, used as the actor in the activity log.
     client: String,
+    /// Set while a calculation that overran [`COMMIT_CALC_TIMEOUT`] still
+    /// runs in its thread: no second one is started beside it (ERR-011).
+    calc_busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// How long a write waits for its calculations (tests shorten it).
+    commit_timeout: std::time::Duration,
 }
+
+/// Longest a write waits for the calculations behind its answer (window
+/// check, quantities). A job inside every limit can still take over a
+/// minute; the write is saved first and the answer says the figures are
+/// missing (ERR-011).
+const COMMIT_CALC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 type ToolResult = Result<Value, String>;
 
@@ -267,14 +278,34 @@ fn roof_trouble_of(geos: &[RoofGeometry], project: &Project) -> Option<Value> {
         .iter()
         .map(|p| serde_json::to_value(p).unwrap_or(Value::Null))
         .collect();
-    if errors.is_empty() && problems.is_empty() {
+    // A face that lost more than it has: a negative area reaches the totals
+    // (HUNTC-003).
+    let cut: Vec<Value> = geos
+        .iter()
+        .enumerate()
+        .flat_map(|(i, g)| {
+            g.warnings
+                .iter()
+                .filter(|w| w.kind == tectora_core::check::WarningKind::CutExceedsFace)
+                .map(move |w| {
+                    let mut v = warning(w);
+                    v["part"] = json!(i);
+                    v
+                })
+        })
+        .collect();
+    if errors.is_empty() && problems.is_empty() && cut.is_empty() {
         return None;
     }
-    Some(json!({
-        "message": "Saved, but some roofs are not calculated; fix them (or revert this change) before you continue",
+    let mut out = json!({
+        "message": "Saved, but some roofs are not calculated or have a negative face; fix them (or revert this change) before you continue",
         "roof_errors": errors,
         "problems": problems,
-    }))
+    });
+    if !cut.is_empty() {
+        out["cut_exceeds_face"] = Value::Array(cut);
+    }
+    Some(out)
 }
 
 fn quantities(project: &Project) -> Value {
@@ -362,7 +393,11 @@ fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
         tectora_core::edit::check_eave_pitch(p, MIN_PITCH_DEG)?;
         edge.pitch_deg = p;
     }
-    match v.get("gable").and_then(Value::as_bool) {
+    let gable = match v.get("gable") {
+        None | Some(Value::Null) => None,
+        Some(g) => Some(g.as_bool().ok_or("gable must be true or false")?),
+    };
+    match gable {
         Some(true) => edge.pitch_deg = GABLE_PITCH_DEG.ceil(),
         Some(false) if edge.is_gable() => {
             edge.pitch_deg = arg_f64(v, "pitch_deg")?.unwrap_or(40.0);
@@ -387,7 +422,18 @@ fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
         Some(h) => {
             let hh: HalfHip =
                 serde_json::from_value(h.clone()).map_err(|e| format!("half_hip: {e}"))?;
+            // Checked like `breaks` (HUNTIO-012): a half-hip is a roof plane.
+            if !edge.is_gable() {
+                return Err("half_hip applies only to a gable wall; set `gable` first".into());
+            }
             edge.half_hip = Some(hh);
+            // The core's own limits (pitch 2..90, not below the eave).
+            if let Some((code, why)) = edge
+                .problems()
+                .find(|(c, _)| ["pitch_range", "stacked_nan", "half_hip_below_eave"].contains(c))
+            {
+                return Err(format!("half_hip: {code}: {why}"));
+            }
         }
         None => {}
     }
@@ -530,7 +576,10 @@ fn edge_indices(v: &Value, n: usize) -> Result<Vec<usize>, String> {
     if v.get("all").and_then(Value::as_bool) == Some(true) {
         return Ok((0..n).collect());
     }
-    let list: Vec<usize> = if let Some(i) = v.get("index").and_then(Value::as_u64) {
+    let list: Vec<usize> = if let Some(i) = v.get("index") {
+        let i = i
+            .as_u64()
+            .ok_or_else(|| format!("`index` must be an edge number from 0, not {i}"))?;
         vec![i as usize]
     } else {
         serde_json::from_value(arg(v, "indices")?.clone())
@@ -914,7 +963,57 @@ impl Server {
         Self {
             store,
             client: "AI".into(),
+            calc_busy: Default::default(),
+            commit_timeout: COMMIT_CALC_TIMEOUT,
         }
+    }
+
+    /// Parts from which a job may take long enough to need the deadline of
+    /// [`Server::within`]: the join of the roofs grows with the square of
+    /// them. Smaller jobs are calculated on the calling thread.
+    const HEAVY_PARTS: usize = 30;
+
+    /// `f` at once for a small job, within the commit timeout for a heavy one.
+    fn bounded<T: Send + 'static>(
+        &self,
+        project: &Project,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> Option<T> {
+        if project.parts.len() < Self::HEAVY_PARTS {
+            Some(f())
+        } else {
+            self.within(f)
+        }
+    }
+
+    /// Runs `f` on its own thread and waits for it at most the commit
+    /// timeout; `None` when it took longer (it then finishes unobserved and
+    /// no other one starts until it has) or panicked.
+    fn within<T: Send + 'static>(&self, f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.calc_busy.swap(true, SeqCst) {
+            return None;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let busy = std::sync::Arc::clone(&self.calc_busy);
+        let started = std::thread::Builder::new()
+            .name("commit calculation".into())
+            .spawn(move || {
+                // Cleared also when `f` panics.
+                struct Clear(std::sync::Arc<std::sync::atomic::AtomicBool>);
+                impl Drop for Clear {
+                    fn drop(&mut self) {
+                        self.0.store(false, SeqCst);
+                    }
+                }
+                let _clear = Clear(busy);
+                let _ = tx.send(f());
+            });
+        if started.is_err() {
+            self.calc_busy.store(false, SeqCst);
+            return None;
+        }
+        rx.recv_timeout(self.commit_timeout).ok()
     }
 
     /// Tells the app what the agent does now: `kind` (one of
@@ -1001,6 +1100,31 @@ impl Server {
         summary: &str,
     ) -> ToolResult {
         project.check_limits()?;
+        // Every write: no window of no size or larger than its face
+        // (HUNTC-003), not only `set_openings`.
+        let skipped_check = if project.windows.is_empty() {
+            false
+        } else {
+            let (b, p) = (before.cloned(), project.clone());
+            let check = move || tectora_core::edit::check_windows_write(b.as_ref(), &p);
+            match self.bounded(project, check) {
+                Some(r) => {
+                    r?;
+                    false
+                }
+                None => true,
+            }
+        };
+        if let (Some(id), Some(b)) = (id, before)
+            && b == project
+        {
+            return Ok(json!({
+                "id": id,
+                "saved": false,
+                "note": "Nothing changed: the job already has these values, so nothing was saved.",
+                "changes": [],
+            }));
+        }
         let (id, before, project) = match (id, before) {
             (Some(id), Some(before)) => self.save_onto_current(id, before, project, summary)?,
             _ => {
@@ -1011,7 +1135,10 @@ impl Server {
             }
         };
         let project = &project;
-        let geos = tectora_core::openings::generate_project(project);
+        let p = project.clone();
+        let geos = self.bounded(project, move || {
+            tectora_core::openings::generate_project(&p)
+        });
         self.live_follow("changed", None, summary.to_string(), &id);
         let changes = before
             .as_ref()
@@ -1022,11 +1149,26 @@ impl Server {
             "saved": true,
             "note": "Saved. The change is now visible in the Tectora app for the user to review.",
             "changes": changes,
-            "quantities": quantities_of(&geos, project),
             "parts": project.parts.iter().map(describe_part).collect::<Vec<_>>(),
         });
-        if let Some(t) = roof_trouble_of(&geos, project) {
-            out["roof_trouble"] = t;
+        match geos {
+            Some(geos) => {
+                out["quantities"] = quantities_of(&geos, project);
+                if let Some(t) = roof_trouble_of(&geos, project) {
+                    out["roof_trouble"] = t;
+                }
+            }
+            None => {
+                out["quantities"] = Value::Null;
+                out["calculation_note"] = json!(
+                    "Saved, but the roof of this job takes too long to calculate here, so no figures are given. Call calc on it (it has its own limit) and tell the user."
+                );
+            }
+        }
+        if skipped_check {
+            out["window_check_skipped"] = json!(
+                "The roof is too slow to check that the roof windows fit their faces; check them with calc."
+            );
         }
         Ok(out)
     }
@@ -1182,8 +1324,11 @@ impl Server {
                     .map(|p| {
                         json!({
                             "id": p.id, "name": p.name, "job": p.job,
-                            "roof_area_m2": (!p.figures_pending).then(|| round(p.roof_area, 2)),
+                            // A roof the core refused has no area, not 0 m² (ERRU-005).
+                            "roof_area_m2": (!p.figures_pending && (p.parts_failed == 0 || p.parts_failed < p.parts))
+                                .then(|| round(p.roof_area, 2)),
                             "figures_pending": p.figures_pending, "parts": p.parts,
+                            "parts_without_roof": p.parts_failed,
                             "pitch_range_deg": p.pitch_range.map(|[a, b]| [round(a, 2), round(b, 2)]),
                             "dormers": p.dormers, "files": p.files, "has_result": p.has_result,
                             "modified_ms": p.modified_ms, "last_change": p.last_activity,
@@ -1336,19 +1481,18 @@ impl Server {
                         "length and width must be positive and pitch between 0 and 90".into(),
                     );
                 }
-                tectora_core::edit::check_eave_pitch(pitch, f64::MIN_POSITIVE)?;
+                let eave = arg_f64(args, "eave_height")?.unwrap_or(preset.eave_height);
+                let overhang = arg_f64(args, "overhang")?.unwrap_or(preset.overhang);
+                // One check for every creating command (ARCH-007).
+                tectora_core::edit::check_new_wall(pitch, eave, overhang)?;
+                tectora_core::edit::check_job_name(arg_str(args, "name")?)?;
                 let mut p = Project::new(arg_str(args, "name")?);
-                p.parts.push(standard_roof(
-                    kind,
-                    length,
-                    width,
-                    pitch,
-                    arg_f64(args, "eave_height")?.unwrap_or(preset.eave_height),
-                    arg_f64(args, "overhang")?.unwrap_or(preset.overhang),
-                ));
+                p.parts
+                    .push(standard_roof(kind, length, width, pitch, eave, overhang));
                 self.commit(None, None, &p, arg_str(args, "summary")?)
             }
             "create_project" => {
+                tectora_core::edit::check_job_name(arg_str(args, "name")?)?;
                 let mut p = Project::new(arg_str(args, "name")?);
                 let parts = arg(args, "parts")?
                     .as_array()
@@ -1467,22 +1611,33 @@ impl Server {
             "update_job" => {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
-                if let Some(s) = args.get("name").and_then(Value::as_str) {
-                    p.name = s.to_string();
+                // A present key of the wrong type is refused, not ignored
+                // (HUNTIO-012).
+                let text = |key: &str| -> Result<Option<String>, String> {
+                    match args.get(key) {
+                        None | Some(Value::Null) => Ok(None),
+                        Some(Value::String(s)) => Ok(Some(s.clone())),
+                        Some(v) => Err(format!("`{key}` must be a string, not {v}")),
+                    }
+                };
+                if let Some(s) = text("name")? {
+                    tectora_core::edit::check_job_name(&s)?;
+                    p.name = s;
                 }
-                if let Some(s) = args.get("notes").and_then(Value::as_str) {
-                    p.notes = s.to_string();
+                if let Some(s) = text("notes")? {
+                    p.notes = s;
                 }
                 for (key, slot) in [
                     ("number", &mut p.job.number),
                     ("customer", &mut p.job.customer),
                     ("address", &mut p.job.address),
                 ] {
-                    if let Some(s) = args.get(key).and_then(Value::as_str) {
-                        *slot = s.to_string();
+                    if let Some(s) = text(key)? {
+                        *slot = s;
                     }
                 }
-                if let Some(s) = args.get("status").and_then(Value::as_str) {
+                if let Some(s) = text("status")? {
+                    let s = s.as_str();
                     let status = parse_status(s)?;
                     // Leaving the draft stores the result as the offer's
                     // figures: refused for a roof that cannot be calculated.
@@ -1553,8 +1708,7 @@ impl Server {
                 let flat = |list: &[Chimney], what: &str| {
                     list.iter().position(|c| c.corners.len() >= 3 && !c.has_area()).map(|i| {
                         format!(
-                            "{what} {} has no plan area: give it its real width and depth (at least 1 cm each), or leave it out and tell the user its size is unknown",
-                            i + 1
+                            "{what} index {i} has no plan area: give it its real width and depth (at least 1 cm each), or leave it out and tell the user its size is unknown"
                         )
                     })
                 };
@@ -1563,6 +1717,8 @@ impl Server {
                 {
                     return Err(e);
                 }
+                // A window of size 0 would block later edits (HUNTC-005).
+                crate::more::refuse_new_problems(&before, &p)?;
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
             }
             "show_project" => {
@@ -1602,7 +1758,7 @@ impl Server {
         let result: Result<Value, (i64, String)> = match method {
             "initialize" => {
                 if let Some(name) = params.pointer("/clientInfo/name").and_then(Value::as_str) {
-                    self.client = name.to_string();
+                    self.client = client_actor(name);
                 }
                 let requested = params
                     .get("protocolVersion")
@@ -1652,37 +1808,127 @@ impl Server {
     }
 }
 
+impl Server {
+    /// Answers one line read from the client. A line that is not UTF-8 or
+    /// not JSON gets a parse error instead of ending the session (audit
+    /// 2026-11-15 ERR-002), and a JSON-RPC batch gets one answer per
+    /// request instead of none, which left the client waiting (ERR-003).
+    pub fn respond_line(&mut self, line: &[u8]) -> Option<Value> {
+        let parse_error = |e: String| {
+            Some(json!({
+                "jsonrpc": "2.0", "id": null,
+                "error": { "code": -32700, "message": format!("parse error: {e}") }
+            }))
+        };
+        let text = match std::str::from_utf8(line) {
+            Ok(t) => t,
+            Err(e) => return parse_error(format!("the message is not UTF-8 ({e})")),
+        };
+        if text.trim().is_empty() {
+            return None;
+        }
+        match serde_json::from_str::<Value>(text) {
+            Ok(Value::Array(batch)) if batch.is_empty() => Some(json!({
+                "jsonrpc": "2.0", "id": null,
+                "error": { "code": -32600, "message": "invalid request: empty batch" }
+            })),
+            Ok(Value::Array(batch)) => {
+                let answers: Vec<Value> = batch.iter().filter_map(|m| self.handle(m)).collect();
+                (!answers.is_empty()).then_some(Value::Array(answers))
+            }
+            Ok(msg) => self.handle(&msg),
+            Err(e) => parse_error(e.to_string()),
+        }
+    }
+}
+
 /// Serves MCP over stdin/stdout (one JSON-RPC message per line) until EOF.
+/// Runs as a calculation or drawing worker when the environment says so
+/// (see `worker`): answers its one call on stdin and returns true. A worker
+/// opens the library it is told, so the entry points call this before they
+/// open any library of their own (ARCH-001): an unusable default folder
+/// must not break `--dir`.
+pub fn run_worker_if_requested() -> bool {
+    worker::run_if_worker()
+}
+
+/// The actor name a client's writes are logged under. The name comes from
+/// the client; one that reads as the user ("user", any case) would make its
+/// saves count as the user's own and skip the review, so it is given a
+/// different name; an empty name is "AI", and the length is capped
+/// (HUNTIO-003).
+fn client_actor(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(60)
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if clean.is_empty() {
+        "AI".into()
+    } else if clean.eq_ignore_ascii_case(tectora_core::store::USER_ACTOR) {
+        format!("AI ({clean})")
+    } else {
+        clean
+    }
+}
+
 pub fn run_stdio(store: Store) -> io::Result<()> {
     if worker::run_if_worker() {
         return Ok(());
     }
     let mut server = Server::new(store);
-    let stdin = io::stdin();
+    let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
-    for line in stdin.lock().lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if stdin.read_until(b'\n', &mut line)? == 0 {
+            return Ok(());
         }
-        let response = match serde_json::from_str::<Value>(&line) {
-            Ok(msg) => server.handle(&msg),
-            Err(e) => Some(json!({
-                "jsonrpc": "2.0", "id": null,
-                "error": { "code": -32700, "message": format!("parse error: {e}") }
-            })),
-        };
-        if let Some(r) = response {
+        let text = line.strip_suffix(b"\n").unwrap_or(&line);
+        let text = text.strip_suffix(b"\r").unwrap_or(text);
+        if let Some(r) = server.respond_line(text) {
             writeln!(stdout, "{r}")?;
             stdout.flush()?;
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_client_named_user_is_still_reviewed() {
+        // HUNTIO-003: its saves were logged as the user's own.
+        for name in ["user", "User", "  USER ", ""] {
+            let mut s = server();
+            s.handle(&json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": { "protocolVersion": "2025-06-18", "clientInfo": { "name": name } }
+            }));
+            let r = s
+                .call_tool(
+                    "create_standard_roof",
+                    &json!({ "name": "A", "type": "gable", "length": 10, "width": 8, "pitch_deg": 40, "summary": "x" }),
+                )
+                .unwrap();
+            let id = r["id"].as_str().unwrap();
+            let log = s.store.activity(id);
+            assert!(!log.is_empty());
+            assert!(
+                log.iter()
+                    .all(|e| e.actor != tectora_core::store::USER_ACTOR && !e.actor.is_empty()),
+                "{name:?}: {:?}",
+                log.iter().map(|e| &e.actor).collect::<Vec<_>>()
+            );
+            let _ = std::fs::remove_dir_all(&s.store.dir);
+        }
+        assert_eq!(client_actor("Claude Desktop"), "Claude Desktop");
+        assert_eq!(client_actor(&"x".repeat(500)).chars().count(), 60);
+    }
 
     fn server() -> Server {
         // Tests run in parallel and remove their folder, so each needs its own.
@@ -1699,6 +1945,31 @@ mod tests {
             "params": { "protocolVersion": "2025-06-18", "clientInfo": { "name": "test-agent" } }
         }));
         s
+    }
+
+    #[test]
+    fn a_bad_line_or_a_batch_gets_an_answer_and_the_session_goes_on() {
+        let mut s = server();
+        let r = s.respond_line(b"\xff\xfe").unwrap();
+        assert_eq!(r["error"]["code"], -32700);
+        let r = s.respond_line(b"{ not json").unwrap();
+        assert_eq!(r["error"]["code"], -32700);
+        assert!(s.respond_line(b"  ").is_none());
+        let r = s
+            .respond_line(br#"[{"jsonrpc":"2.0","id":7,"method":"ping"},{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","id":8,"method":"ping"}]"#)
+            .unwrap();
+        let ids: Vec<_> = r
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["id"].clone())
+            .collect();
+        assert_eq!(ids, [json!(7), json!(8)]);
+        assert_eq!(s.respond_line(b"[]").unwrap()["error"]["code"], -32600);
+        let r = s
+            .respond_line(br#"{"jsonrpc":"2.0","id":9,"method":"ping"}"#)
+            .unwrap();
+        assert_eq!(r["id"], 9);
     }
 
     #[test]
@@ -1823,8 +2094,9 @@ mod tests {
         );
         assert!(r["note"].as_str().unwrap().contains("waits for the user"));
         assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
+        let shown = Settings::load().folder_request.unwrap().changes;
         Settings::load()
-            .answer_folder_request(true)
+            .answer_folder_request(&shown, true)
             .unwrap()
             .save()
             .unwrap();
@@ -2025,6 +2297,47 @@ mod tests {
     }
 
     #[test]
+    fn list_projects_gives_no_area_for_a_roof_the_core_refused() {
+        // ERRU-005: a refused roof was listed as 0 m², like an empty roof.
+        let mut s = server();
+        let walls: Vec<Value> = [(0.0, 0.0), (12.0, 0.0), (12.0, 8.0), (0.0, 8.0)]
+            .iter()
+            .map(|&(x, y)| json!({ "start": { "x": x, "y": y }, "pitch_deg": 35.0, "eave_height": 3.0, "overhang": 0.5 }))
+            .collect();
+        let corners: Vec<Value> = [
+            (4.0, 3.0),
+            (6.0, 3.0),
+            (6.0, 4.0),
+            (5.0, 4.0),
+            (5.0, 5.0),
+            (4.0, 5.0),
+        ]
+        .iter()
+        .map(|&(x, y)| json!({ "x": x, "y": y }))
+        .collect();
+        let p = json!({
+            "schema_version": 2, "name": "refused",
+            "parts": [{ "name": "A", "edges": walls }],
+            "chimneys": [{ "corners": corners, "height": 9.0 }],
+        });
+        let id = s
+            .store
+            .save(None, &Project::from_json(&p.to_string()).unwrap())
+            .unwrap();
+        let r = s.call_tool("list_projects", &json!({})).unwrap();
+        let card = r["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id.as_str())
+            .unwrap()
+            .clone();
+        assert!(card["roof_area_m2"].is_null(), "{card}");
+        assert_eq!(card["parts_without_roof"], 1, "{card}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
     fn edge_input_outside_dacad_limits_is_refused() {
         // DACAD: pitch 2-178°, eave height >= 0, no pitch break below the
         // eave or twice at one height.
@@ -2053,6 +2366,20 @@ mod tests {
                     json!([{ "breaks": [{ "height": 5, "pitch_deg": 30 }, { "height": 5, "pitch_deg": 20 }] }, {}, {}, {}]),
                 ),
                 "break_duplicate",
+            ),
+            (
+                part(
+                    json!({ "pitch_deg": 40, "eave_height": 3 }),
+                    json!([{ "gable": true, "half_hip": { "height": 5, "pitch_deg": 0 }, "breaks": [{ "height": 4, "pitch_deg": 30 }] }, {}, {}, {}]),
+                ),
+                "pitch_range",
+            ),
+            (
+                part(
+                    json!({ "pitch_deg": 40, "eave_height": 3 }),
+                    json!([{ "gable": true, "half_hip": { "height": 2, "pitch_deg": 50 } }, {}, {}, {}]),
+                ),
+                "half_hip_below_eave",
             ),
         ];
         for (args, code) in cases {
@@ -2275,7 +2602,7 @@ mod tests {
                 &json!({ "id": id, "summary": "Chimney", "chimneys": [{ "x": 2, "y": 2, "width": 0, "depth": 0, "height": 6 }] }),
             )
             .unwrap_err();
-        assert!(err.contains("chimney 1 has no plan area"), "{err}");
+        assert!(err.contains("chimney index 0 has no plan area"), "{err}");
         let line = json!([[2, 2], [3, 2], [4, 2]]);
         let err = s
             .call_tool(
@@ -2283,7 +2610,10 @@ mod tests {
                 &json!({ "id": id, "summary": "Opening", "roof_openings": [{ "corners": line }] }),
             )
             .unwrap_err();
-        assert!(err.contains("roof opening 1 has no plan area"), "{err}");
+        assert!(
+            err.contains("roof opening index 0 has no plan area"),
+            "{err}"
+        );
         let p = s.store.load(&id).unwrap();
         assert!(p.chimneys.is_empty() && p.roof_openings.is_empty());
         s.call_tool(
@@ -2448,7 +2778,7 @@ mod tests {
         let req = asked.file_request.clone().unwrap();
         assert_eq!(req.purpose, "import");
         assert!(req.path.ends_with("other/contract.pdf"), "{:?}", req.path);
-        asked.answer_file_request(true).save().unwrap();
+        asked.answer_file_request(&req.path, true).save().unwrap();
         s.call_tool(
             "attach_file",
             &json!({ "id": id, "path": outside, "summary": "Drawing" }),
@@ -2494,6 +2824,39 @@ mod tests {
         assert_eq!(r["parts"][0]["edges"].as_array().unwrap().len(), 4, "{r}");
         let preset = Settings::load().roof_defaults;
         assert_eq!(r["parts"][0]["edges"][0]["pitch_deg"], preset.pitch_deg);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn a_calculation_that_overruns_does_not_block_the_write() {
+        // ERR-011: a write on a job that needs over a minute waited for it.
+        let mut s = server();
+        s.commit_timeout = std::time::Duration::from_millis(50);
+        let slow = || std::thread::sleep(std::time::Duration::from_millis(400));
+        assert_eq!(s.within(slow), None, "answers after the timeout");
+        assert_eq!(s.within(|| 1), None, "no second one beside the running one");
+        // Free again once the running one has finished, also after a panic
+        // (the panic hook may print a backtrace first, so wait for it).
+        let free_within = |s: &Server, v: u8| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if let Some(x) = s.within(move || v) {
+                    return Some(x);
+                }
+                if std::time::Instant::now() > until {
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert_eq!(
+            free_within(&s, 1),
+            Some(1),
+            "free again when it has finished"
+        );
+        assert_eq!(s.within(|| -> u8 { panic!("kernel") }), None);
+        assert_eq!(free_within(&s, 2), Some(2), "a panic frees it too");
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 

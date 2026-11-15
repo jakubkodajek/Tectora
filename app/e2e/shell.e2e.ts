@@ -331,7 +331,7 @@ test.describe("settings roof defaults", () => {
     await pitch.fill("95");
     await pitch.press("Tab");
     await expect(pitch).toHaveAttribute("aria-invalid", "true");
-    const range = cs("num.range", { min: "1", max: "89" });
+    const range = cs("num.range", { min: "2", max: "89" });
     await expect(pitch).toHaveAttribute("title", range);
     await expect(dlg.getByText(range)).toBeVisible();
     await expect(dlg.getByRole("alert")).toHaveText(cs("settings.err.invalid_value"));

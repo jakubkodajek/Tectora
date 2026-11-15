@@ -166,6 +166,11 @@ fn round2(v: f64) -> f64 {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     if let Command::Mcp { dir } = &cli.command {
+        // A worker serves one call in the folder it was given; the default
+        // library is none of its business (ARCH-001).
+        if tectora_mcp::run_worker_if_requested() {
+            return ExitCode::SUCCESS;
+        }
         let store = match dir {
             Some(d) => Store::new(d.clone()),
             None => Store::open_default(),

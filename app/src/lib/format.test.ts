@@ -29,3 +29,27 @@ describe("library card figures still being calculated (ARCH-001)", () => {
     expect(pendingRetryMs(true, 8)).toBeNull();
   });
 });
+
+describe("library card of a roof the core refused (ERRU-005)", () => {
+  it("shows a dash, not 0,00 m², when no building has a roof", async () => {
+    const { cardArea, cardAreaNote, cardRoof } = await import("./format");
+    const p = { roof_area: 0, parts: 1, parts_failed: 1 };
+    expect(cardRoof(p)).toBe("none");
+    expect(cardArea(p)).toBe("—");
+    expect(cardAreaNote(p)).toBeTruthy();
+  });
+
+  it("marks a job where some buildings have no roof as partly calculated", async () => {
+    const { cardArea, cardAreaNote, cardRoof, m2 } = await import("./format");
+    const p = { roof_area: 60.67, parts: 2, parts_failed: 1 };
+    expect(cardRoof(p)).toBe("partial");
+    expect(cardArea(p)).toBe(m2(60.67));
+    expect(cardAreaNote(p)).toBeTruthy();
+  });
+
+  it("leaves a complete roof unmarked", async () => {
+    const { cardAreaNote, cardRoof } = await import("./format");
+    expect(cardRoof({ roof_area: 12, parts: 1, parts_failed: 0 })).toBe("ok");
+    expect(cardAreaNote({ roof_area: 12, parts: 1, parts_failed: 0 })).toBeUndefined();
+  });
+});

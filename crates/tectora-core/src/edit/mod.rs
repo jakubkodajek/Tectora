@@ -176,6 +176,31 @@ pub fn clear_roof(project: &mut Project) -> bool {
     had
 }
 
+/// The steepest pitch a hand-drawn face takes, degrees (the editor's field
+/// stops here; MCP `set_manual` uses the same bound, MATH-006).
+pub const MAX_MANUAL_FACE_PITCH_DEG: f64 = 89.9;
+
+/// Refuses a hand-drawn face pitch outside `0..=89.9` and a typed line
+/// length below 0 or not finite (MATH-005, MATH-006).
+pub fn check_manual_face_pitch(pitch_deg: f64) -> Result<(), String> {
+    if pitch_deg.is_finite() && (0.0..=MAX_MANUAL_FACE_PITCH_DEG).contains(&pitch_deg) {
+        Ok(())
+    } else {
+        Err(format!(
+            "pitch_deg must be between 0 and {MAX_MANUAL_FACE_PITCH_DEG} (got {pitch_deg})"
+        ))
+    }
+}
+
+/// See [`check_manual_face_pitch`]: a typed length must be a number of 0 or more.
+pub fn check_manual_line_length(length: f64) -> Result<(), String> {
+    if length.is_finite() && length >= 0.0 {
+        Ok(())
+    } else {
+        Err(format!("length must be 0 or more (got {length})"))
+    }
+}
+
 /// A roof window whose `width × height` is more than what is left of the
 /// roof face it sits on (after the windows before it): its deduction would
 /// make the face area negative.
@@ -228,6 +253,105 @@ pub fn check_windows(project: &Project) -> Result<(), OversizeWindow> {
         face.area -= area;
     }
     Ok(())
+}
+
+/// Smallest and largest side of a roof window, m (`width` and `height`).
+pub const MIN_WINDOW_SIDE: f64 = 0.01;
+pub const MAX_WINDOW_SIDE: f64 = 100.0;
+
+/// Refuses a roof window that has no usable size: not finite, under 1 cm or
+/// over 100 m on a side (HUNTC-003: 179 m passed `check_values`).
+pub fn check_window_sizes(project: &Project) -> Result<(), String> {
+    let side = MIN_WINDOW_SIDE..=MAX_WINDOW_SIDE;
+    match project
+        .windows
+        .iter()
+        .position(|w| !(side.contains(&w.width) && side.contains(&w.height)))
+    {
+        Some(i) => Err(format!(
+            "roof window {i}: width and height must be between {MIN_WINDOW_SIDE} and {MAX_WINDOW_SIDE} m"
+        )),
+        None => Ok(()),
+    }
+}
+
+/// The roof-window rules for every write (MCP `commit`, the app's save):
+/// no window of unusable size, none larger than its face (also on a flat
+/// roof). Only what the write introduces is refused: a job that already
+/// carries such a window stays editable, and a write that leaves the
+/// windows and the roof as they were is not calculated again.
+pub fn check_windows_write(before: Option<&Project>, after: &Project) -> Result<(), String> {
+    if after.windows.is_empty() {
+        return Ok(());
+    }
+    if let Some(b) = before {
+        let same_roof = b.windows == after.windows
+            && b.parts == after.parts
+            && b.dormers == after.dormers
+            && b.chimneys == after.chimneys
+            && b.roof_openings == after.roof_openings
+            && b.manual_faces == after.manual_faces
+            && b.flat_roof == after.flat_roof;
+        if same_roof {
+            return Ok(());
+        }
+    }
+    let was_bad = |check: &dyn Fn(&Project) -> bool| before.is_some_and(check);
+    if let Err(e) = check_window_sizes(after)
+        && !was_bad(&|b| check_window_sizes(b).is_err())
+    {
+        return Err(e);
+    }
+    if let Err(e) = check_windows(after)
+        && !was_bad(&|b| check_windows(b).is_err())
+    {
+        return Err(e.to_string());
+    }
+    Ok(())
+}
+
+/// The values of a new roof wall as every creating command takes them
+/// (the app's New job and standard roof dialog, MCP `create_standard_roof`
+/// and `add_shape_part`): a pitch from [`crate::model::MIN_PITCH_DEG`] to
+/// below 90, an eave height and an overhang that are numbers of 0 or more
+/// within the file limits (ARCH-007, UI-010).
+pub fn check_new_wall(pitch_deg: f64, eave_height: f64, overhang: f64) -> Result<(), String> {
+    check_eave_pitch(pitch_deg, crate::model::MIN_PITCH_DEG)?;
+    for (name, v) in [("eave_height", eave_height), ("overhang", overhang)] {
+        if !v.is_finite() || !(0.0..=crate::model::MAX_ABS_VALUE).contains(&v) {
+            return Err(format!(
+                "{name} {v} must be a number from 0 to {} m",
+                crate::model::MAX_ABS_VALUE
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A job name must not be empty or blank (the editor refuses it too).
+pub fn check_job_name(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("the job name must not be empty".into());
+    }
+    Ok(())
+}
+
+/// [`check_windows`] for a save that changes `before` into `after`, used by
+/// every write path (MCP `commit`): refuses when a window no longer fits
+/// its face because of the edit (a window moved onto a smaller face, the
+/// flat roof turned on, a wall moved). A job that already had an oversize
+/// window stays editable, so the user can fix it step by step (HUNTC-003).
+pub fn check_windows_change(
+    before: Option<&Project>,
+    after: &Project,
+) -> Result<(), OversizeWindow> {
+    let Err(e) = check_windows(after) else {
+        return Ok(());
+    };
+    match before {
+        Some(b) if check_windows(b).is_err() => Ok(()),
+        _ => Err(e),
+    }
 }
 
 /// Turns hand-drawn face `index` into a building with the same outline:
@@ -386,6 +510,38 @@ mod tests {
     }
 
     #[test]
+    fn a_change_that_makes_a_window_too_large_is_refused_on_every_roof_kind() {
+        use crate::model::RoofWindow;
+        let mut before = gable_12x8();
+        before.windows.push(RoofWindow {
+            x: 40.0,
+            y: 40.0,
+            width: 10.0,
+            height: 9.0,
+        });
+        // Beside the roof: fine. Moved onto it: refused.
+        assert!(check_windows_change(Some(&before), &before).is_ok());
+        let mut moved = before.clone();
+        moved.windows[0].x = 1.0;
+        moved.windows[0].y = 0.0;
+        assert_eq!(
+            check_windows_change(Some(&before), &moved)
+                .unwrap_err()
+                .index,
+            0
+        );
+        // The flat roof gives a face the window does not fit either.
+        let mut flat = before.clone();
+        flat.flat_roof = true;
+        flat.windows[0].x = 1.0;
+        flat.windows[0].y = 1.0;
+        flat.windows[0].width = 30.0;
+        assert!(check_windows_change(Some(&before), &flat).is_err());
+        // A job that was already wrong can still be edited.
+        assert!(check_windows_change(Some(&moved), &moved).is_ok());
+    }
+
+    #[test]
     fn a_window_beside_the_roof_is_not_refused() {
         let mut p = gable_12x8();
         p.windows.push(crate::model::RoofWindow {
@@ -395,6 +551,76 @@ mod tests {
             height: 10.0,
         });
         assert!(check_windows(&p).is_ok());
+    }
+
+    /// TEST-010: clearing the roof empties every kind of item, including
+    /// the hand-drawn lines and faces, and reports that it did something.
+    #[test]
+    fn clear_roof_removes_every_kind_of_item() {
+        use crate::model::{Chimney, ManualFace, ManualLine, RoofWindow};
+        let full = || {
+            let mut p = gable_12x8();
+            p.chimneys.push(Chimney {
+                corners: vec![
+                    Point2::new(1.0, 1.0),
+                    Point2::new(2.0, 1.0),
+                    Point2::new(2.0, 2.0),
+                ],
+                height: 6.0,
+            });
+            p.roof_openings.push(p.chimneys[0].clone());
+            p.windows.push(RoofWindow {
+                x: 4.0,
+                y: 0.5,
+                width: 1.0,
+                height: 1.0,
+            });
+            p.dormers.push(crate::edit::dormers::build_dormer(
+                &crate::edit::dormers::default_params(
+                    crate::edit::dormers::DormerKind::Gable,
+                    Point2::new(5.0, 1.0),
+                    0.0,
+                    4.0,
+                ),
+            ));
+            p.manual_lines.push(ManualLine {
+                a: [0.0; 3],
+                b: [1.0, 0.0, 0.0],
+                code: "T".into(),
+                length: None,
+                label: String::new(),
+            });
+            p.manual_faces.push(ManualFace {
+                points: vec![
+                    Point2::new(30.0, 0.0),
+                    Point2::new(40.0, 0.0),
+                    Point2::new(40.0, 6.0),
+                ],
+                pitch_deg: 30.0,
+                label: String::new(),
+            });
+            p
+        };
+        let mut p = full();
+        assert!(!p.parts.is_empty() && !p.dormers.is_empty() && !p.chimneys.is_empty());
+        assert!(!p.windows.is_empty() && !p.roof_openings.is_empty());
+        assert!(!p.manual_lines.is_empty() && !p.manual_faces.is_empty());
+        assert!(clear_roof(&mut p));
+        assert!(p.parts.is_empty() && p.dormers.is_empty() && p.chimneys.is_empty());
+        assert!(p.windows.is_empty() && p.roof_openings.is_empty());
+        assert!(p.manual_lines.is_empty(), "hand-drawn lines stay");
+        assert!(p.manual_faces.is_empty(), "hand-drawn faces stay");
+        assert!(!clear_roof(&mut p), "nothing left to clear");
+        // A job with nothing but a hand-drawn face has something to clear.
+        let mut q = full();
+        q.parts.clear();
+        q.dormers.clear();
+        q.chimneys.clear();
+        q.windows.clear();
+        q.roof_openings.clear();
+        q.manual_lines.clear();
+        assert!(clear_roof(&mut q));
+        assert!(q.manual_faces.is_empty());
     }
 
     #[test]
@@ -423,5 +649,45 @@ mod tests {
         let geo = &crate::openings::generate_project(&p)[0];
         assert!(geo.error.is_none() && !geo.faces.is_empty());
         assert!(face_to_part(&mut p, 0, "x", 40.0, 3.0, 0.5).is_err());
+    }
+
+    #[test]
+    fn a_write_that_puts_a_window_on_a_flat_face_too_small_for_it_is_refused() {
+        // HUNTC-003: moving the window onto the roof saved -160 m2.
+        let mut p = gable_12x8();
+        p.flat_roof = true;
+        p.windows.push(crate::model::RoofWindow {
+            x: 40.0,
+            y: 40.0,
+            width: 1.45,
+            height: 179.0,
+        });
+        let off_roof = p.clone();
+        assert!(check_windows_write(Some(&off_roof), &off_roof).is_ok());
+        assert!(check_window_sizes(&p).is_err(), "179 m is not a window");
+        p.windows[0] = crate::model::RoofWindow {
+            x: 2.0,
+            y: 2.0,
+            width: 11.0,
+            height: 10.0,
+        };
+        let e = check_windows_write(Some(&gable_12x8()), &p).unwrap_err();
+        assert!(e.contains("roof window 0"), "{e}");
+        // A job that already carries one is not locked by an unrelated edit.
+        assert!(check_windows_write(Some(&p), &p).is_ok());
+    }
+
+    #[test]
+    fn a_new_wall_takes_only_what_the_editor_takes() {
+        assert!(check_new_wall(40.0, 3.0, 0.5).is_ok());
+        for (p, e, o) in [
+            (1.0, 3.0, 0.5),
+            (40.0, -3.0, 0.5),
+            (40.0, 3.0, -1.0),
+            (40.0, f64::NAN, 0.0),
+        ] {
+            assert!(check_new_wall(p, e, o).is_err(), "{p} {e} {o}");
+        }
+        assert!(check_job_name("  ").is_err() && check_job_name("A").is_ok());
     }
 }

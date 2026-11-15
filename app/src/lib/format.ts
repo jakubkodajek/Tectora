@@ -27,8 +27,41 @@ export function relativeTime(ms: number): string {
   return new Date(ms).toLocaleDateString(numberLocale(), { day: "numeric", month: "short", year: "numeric" });
 }
 
-/** The area on a library card: "…" while the roof is still being calculated in the background. */
-export const cardArea = (p: { roof_area: number; figures_pending?: boolean }) => (p.figures_pending ? "…" : m2(p.roof_area));
+/** What the library knows of a job's roof figures. */
+export interface CardFigures {
+  roof_area: number;
+  parts?: number;
+  figures_pending?: boolean;
+  /** Buildings the core gave no roof for. */
+  parts_failed?: number;
+}
+
+/**
+ * The state of a library card's figures: still being calculated, not
+ * calculated (the core gave no roof), partly calculated (some buildings
+ * have no roof, the area leaves them out) or complete (ERRU-005).
+ */
+export function cardRoof(p: CardFigures): "pending" | "none" | "partial" | "ok" {
+  if (p.figures_pending) return "pending";
+  const failed = p.parts_failed ?? 0;
+  if (failed <= 0) return "ok";
+  return failed >= (p.parts ?? failed) ? "none" : "partial";
+}
+
+/** The area on a library card: "…" while the roof is still being calculated, "—" when the core gave none. */
+export function cardArea(p: CardFigures): string {
+  const state = cardRoof(p);
+  return state === "pending" ? "…" : state === "none" ? "—" : m2(p.roof_area);
+}
+
+/** Why a card's area is not the whole roof, for its tooltip and the status mark; undefined when it is. */
+export function cardAreaNote(p: CardFigures): string | undefined {
+  const state = cardRoof(p);
+  if (state === "pending") return t("lib.areaPending");
+  if (state === "none") return t("res.notCalculated");
+  if (state === "partial") return t("lib.areaPartial", { n: p.parts_failed ?? 0, of: p.parts ?? 0 });
+  return undefined;
+}
 
 /** Delay before listing the library again while a card waits for its figures, ms; null to stop asking. */
 export function pendingRetryMs(pending: boolean, tries: number): number | null {

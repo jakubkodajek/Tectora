@@ -214,6 +214,9 @@ mod tests {
             files: 0,
             has_result: false,
             figures_pending: false,
+            parts_failed: 0,
+            stored_area: None,
+            result_differs: false,
         }
     }
 

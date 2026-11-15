@@ -57,3 +57,34 @@ export function onWall(a: Point2, b: Point2, p: Point2, step: number): Point2 | 
   s = Math.min(len - min, Math.max(min, s));
   return { x: +(a.x + ux * s).toFixed(3), y: +(a.y + uy * s).toFixed(3) };
 }
+
+/**
+ * The direction a new direction change at the start of wall `i` gets: the
+ * bisector of the previous wall's direction and this wall's, in radians from
+ * 0 to 2 pi. Port of the core's `edit::corners::default_direction` (the MCP
+ * tool uses that one); our own choice, not DACAD's (HUNTC-008). The old
+ * default, this wall's direction + 90 degrees, never calculated at a
+ * right-angled corner.
+ */
+export function defaultDirection(es: EdgeDef[], i: number): number {
+  const n = es.length;
+  const TAU = 2 * Math.PI;
+  const wrap = (a: number) => ((a % TAU) + TAU) % TAU;
+  const e = es[i];
+  const next = es[(i + 1) % n].start;
+  const dThis = Math.atan2(next.y - e.start.y, next.x - e.start.x);
+  let prev: EdgeDef | undefined;
+  for (let k = 1; k < n; k++) {
+    const c = es[(i + n - k) % n];
+    if (!isMarker(c) && !at(c.start, e.start, 1e-9)) {
+      prev = c;
+      break;
+    }
+  }
+  if (!prev) return wrap(dThis + Math.PI / 4);
+  const dPrev = Math.atan2(e.start.y - prev.start.y, e.start.x - prev.start.x);
+  const x = Math.cos(dPrev) + Math.cos(dThis);
+  const y = Math.sin(dPrev) + Math.sin(dThis);
+  const straight = Math.hypot(x, y) < 1e-6 || (Math.abs(Math.sin(dPrev - dThis)) < 1e-9 && x > 0);
+  return wrap(straight ? dThis + Math.PI / 4 : Math.atan2(y, x));
+}
