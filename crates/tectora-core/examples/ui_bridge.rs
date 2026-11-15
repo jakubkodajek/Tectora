@@ -177,6 +177,10 @@ fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fa
         ),
         "save_project" => {
             let project = arg::<Project>(a, "project").ok()?;
+            let before = store.load(&id).ok();
+            if let Err(e) = tectora_core::commands::check_write(before.as_ref(), &project) {
+                return Some(Err(Fail(to_json(e).unwrap_or(Value::Null))));
+            }
             Some(
                 store
                     .save(Some(id), &project)
@@ -188,6 +192,9 @@ fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fa
         "save_project_checked" => {
             let project = arg::<Project>(a, "project").ok()?;
             let base = arg::<Project>(a, "base").ok()?;
+            if let Err(e) = tectora_core::commands::check_write(Some(&base), &project) {
+                return Some(Err(Fail(to_json(e).unwrap_or(Value::Null))));
+            }
             Some(
                 store
                     .save_checked(&id, &project, &base)
@@ -289,6 +296,7 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             let source = id()?;
             let mut project = store.load(&source)?;
             let name: String = arg(a, "name")?;
+            tectora_core::edit::check_job_name(&name).map_err(|d| coded("out_of_range", d))?;
             tectora_core::library::prepare_copy(&mut project, &name, arg(a, "job")?);
             let new_id = store.save(None, &project)?;
             if arg::<Option<bool>>(a, "withFiles")?.unwrap_or(true) {
@@ -368,8 +376,14 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         "create_standard" | "standard_part" => {
             let kind: StandardRoof = arg(a, "kind")?;
             let pitch: f64 = arg(a, "pitchDeg")?;
-            tectora_core::edit::check_eave_pitch(pitch, f64::MIN_POSITIVE)
-                .map_err(|d| coded("out_of_range", d))?;
+            let name = arg::<Option<String>>(a, "name")?;
+            tectora_core::commands::check_new_roof(
+                name.as_deref().filter(|_| cmd == "create_standard"),
+                pitch,
+                arg(a, "eaveHeight")?,
+                arg(a, "overhang")?,
+            )
+            .map_err(|e| Fail(to_json(e).unwrap_or(Value::Null)))?;
             let part = standard_roof(
                 kind,
                 arg(a, "length")?,
@@ -411,7 +425,9 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         }
         "new_project" => {
             let mut project = examples::find("gable").expect("built-in example").project();
-            project.name = arg(a, "name")?;
+            let name: String = arg(a, "name")?;
+            tectora_core::edit::check_job_name(&name).map_err(|d| coded("out_of_range", d))?;
+            project.name = name;
             to_json(store.save(None, &project)?)
         }
         "item_geometry" => {

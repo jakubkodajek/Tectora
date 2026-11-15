@@ -14,6 +14,38 @@ fn at(a: Point2, b: Point2, tol: f64) -> bool {
     (a.x - b.x).abs() < tol && (a.y - b.y).abs() < tol
 }
 
+/// The direction a new direction change at the start of wall `i` gets
+/// (radians, 0 to 2 pi): the bisector of the previous wall's direction and
+/// this wall's. Walls are cut by their own planes, so a marker at the
+/// previous wall's direction (or its reverse) never calculates, which the old
+/// default (this wall's direction + 90 degrees) was at every right-angled
+/// corner: all 42 default markers on the built-in examples failed, the
+/// bisector calculates all 42 (HUNTC-008). This is our choice; DACAD's own
+/// proposal in its direction dialog is not known. On a straight run the walls
+/// have one direction and the marker is turned 45 degrees from it.
+pub fn default_direction(edges: &[EdgeDef], i: usize) -> f64 {
+    use std::f64::consts::{FRAC_PI_4, TAU};
+    let n = edges.len();
+    let Some(this) = edges.get(i) else { return 0.0 };
+    let next = edges[(i + 1) % n].start;
+    let d_this = (next.y - this.start.y).atan2(next.x - this.start.x);
+    // The previous wall that has a direction (not a marker, not zero length).
+    let prev = (1..n)
+        .map(|k| &edges[(i + n - k) % n])
+        .find(|e| !is_marker(e) && !at(e.start, this.start, 1e-9));
+    let Some(prev) = prev else {
+        return (d_this + FRAC_PI_4).rem_euclid(TAU);
+    };
+    let d_prev = (this.start.y - prev.start.y).atan2(this.start.x - prev.start.x);
+    let (x, y) = (d_prev.cos() + d_this.cos(), d_prev.sin() + d_this.sin());
+    let ang = if x.hypot(y) < 1e-6 || ((d_prev - d_this).sin().abs() < 1e-9 && x > 0.0) {
+        d_this + FRAC_PI_4
+    } else {
+        y.atan2(x)
+    };
+    ang.rem_euclid(TAU)
+}
+
 /// A drawn footprint without repeated corners: a corner on the one before it
 /// and closing corners on the first one are dropped, so no wall has zero
 /// length (closer than the core's `MIN_WALL_LENGTH`). O(n).
@@ -230,5 +262,35 @@ mod tests {
             vec![p(0.0, 0.0), p(4.0, 0.0), p(4.0, 4.0)]
         );
         assert!(without_repeats(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_default_direction_change_calculates_on_every_example_wall() {
+        // HUNTC-008: the old default (wall direction + 90 degrees) made the
+        // roof fail at all 42 walls of the built-in examples.
+        let mut tried = 0;
+        for ex in crate::examples::EXAMPLES {
+            let base = ex.project();
+            for pi in 0..base.parts.len() {
+                for wi in 0..base.parts[pi].edges.len() {
+                    let mut p = base.clone();
+                    let edges = &mut p.parts[pi].edges;
+                    let mut m = edges[wi].clone();
+                    m.half_hip = None;
+                    m.breaks.clear();
+                    m.direction_rad = Some(default_direction(edges, wi));
+                    edges.insert(wi, m);
+                    let geos = crate::openings::generate_project(&p);
+                    assert!(
+                        geos.iter()
+                            .all(|g| g.error.is_none() && !g.faces.is_empty()),
+                        "{} part {pi} wall {wi}",
+                        ex.id
+                    );
+                    tried += 1;
+                }
+            }
+        }
+        assert!(tried >= 42, "{tried}");
     }
 }

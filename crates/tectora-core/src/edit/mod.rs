@@ -230,6 +230,87 @@ pub fn check_windows(project: &Project) -> Result<(), OversizeWindow> {
     Ok(())
 }
 
+/// Smallest and largest side of a roof window, m (`width` and `height`).
+pub const MIN_WINDOW_SIDE: f64 = 0.01;
+pub const MAX_WINDOW_SIDE: f64 = 100.0;
+
+/// Refuses a roof window that has no usable size: not finite, under 1 cm or
+/// over 100 m on a side (HUNTC-003: 179 m passed `check_values`).
+pub fn check_window_sizes(project: &Project) -> Result<(), String> {
+    let side = MIN_WINDOW_SIDE..=MAX_WINDOW_SIDE;
+    match project
+        .windows
+        .iter()
+        .position(|w| !(side.contains(&w.width) && side.contains(&w.height)))
+    {
+        Some(i) => Err(format!(
+            "roof window {i}: width and height must be between {MIN_WINDOW_SIDE} and {MAX_WINDOW_SIDE} m"
+        )),
+        None => Ok(()),
+    }
+}
+
+/// The roof-window rules for every write (MCP `commit`, the app's save):
+/// no window of unusable size, none larger than its face (also on a flat
+/// roof). Only what the write introduces is refused: a job that already
+/// carries such a window stays editable, and a write that leaves the
+/// windows and the roof as they were is not calculated again.
+pub fn check_windows_write(before: Option<&Project>, after: &Project) -> Result<(), String> {
+    if after.windows.is_empty() {
+        return Ok(());
+    }
+    if let Some(b) = before {
+        let same_roof = b.windows == after.windows
+            && b.parts == after.parts
+            && b.dormers == after.dormers
+            && b.chimneys == after.chimneys
+            && b.roof_openings == after.roof_openings
+            && b.manual_faces == after.manual_faces
+            && b.flat_roof == after.flat_roof;
+        if same_roof {
+            return Ok(());
+        }
+    }
+    let was_bad = |check: &dyn Fn(&Project) -> bool| before.is_some_and(check);
+    if let Err(e) = check_window_sizes(after)
+        && !was_bad(&|b| check_window_sizes(b).is_err())
+    {
+        return Err(e);
+    }
+    if let Err(e) = check_windows(after)
+        && !was_bad(&|b| check_windows(b).is_err())
+    {
+        return Err(e.to_string());
+    }
+    Ok(())
+}
+
+/// The values of a new roof wall as every creating command takes them
+/// (the app's New job and standard roof dialog, MCP `create_standard_roof`
+/// and `add_shape_part`): a pitch from [`crate::model::MIN_PITCH_DEG`] to
+/// below 90, an eave height and an overhang that are numbers of 0 or more
+/// within the file limits (ARCH-007, UI-010).
+pub fn check_new_wall(pitch_deg: f64, eave_height: f64, overhang: f64) -> Result<(), String> {
+    check_eave_pitch(pitch_deg, crate::model::MIN_PITCH_DEG)?;
+    for (name, v) in [("eave_height", eave_height), ("overhang", overhang)] {
+        if !v.is_finite() || !(0.0..=crate::model::MAX_ABS_VALUE).contains(&v) {
+            return Err(format!(
+                "{name} {v} must be a number from 0 to {} m",
+                crate::model::MAX_ABS_VALUE
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A job name must not be empty or blank (the editor refuses it too).
+pub fn check_job_name(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("the job name must not be empty".into());
+    }
+    Ok(())
+}
+
 /// Turns hand-drawn face `index` into a building with the same outline:
 /// the face (which only adds its area and calculates no roof) is removed
 /// and a part named `name` takes its place, every wall an eave with the
@@ -493,5 +574,45 @@ mod tests {
         let geo = &crate::openings::generate_project(&p)[0];
         assert!(geo.error.is_none() && !geo.faces.is_empty());
         assert!(face_to_part(&mut p, 0, "x", 40.0, 3.0, 0.5).is_err());
+    }
+
+    #[test]
+    fn a_write_that_puts_a_window_on_a_flat_face_too_small_for_it_is_refused() {
+        // HUNTC-003: moving the window onto the roof saved -160 m2.
+        let mut p = gable_12x8();
+        p.flat_roof = true;
+        p.windows.push(crate::model::RoofWindow {
+            x: 40.0,
+            y: 40.0,
+            width: 1.45,
+            height: 179.0,
+        });
+        let off_roof = p.clone();
+        assert!(check_windows_write(Some(&off_roof), &off_roof).is_ok());
+        assert!(check_window_sizes(&p).is_err(), "179 m is not a window");
+        p.windows[0] = crate::model::RoofWindow {
+            x: 2.0,
+            y: 2.0,
+            width: 11.0,
+            height: 10.0,
+        };
+        let e = check_windows_write(Some(&gable_12x8()), &p).unwrap_err();
+        assert!(e.contains("roof window 0"), "{e}");
+        // A job that already carries one is not locked by an unrelated edit.
+        assert!(check_windows_write(Some(&p), &p).is_ok());
+    }
+
+    #[test]
+    fn a_new_wall_takes_only_what_the_editor_takes() {
+        assert!(check_new_wall(40.0, 3.0, 0.5).is_ok());
+        for (p, e, o) in [
+            (1.0, 3.0, 0.5),
+            (40.0, -3.0, 0.5),
+            (40.0, 3.0, -1.0),
+            (40.0, f64::NAN, 0.0),
+        ] {
+            assert!(check_new_wall(p, e, o).is_err(), "{p} {e} {o}");
+        }
+        assert!(check_job_name("  ").is_err() && check_job_name("A").is_ok());
     }
 }

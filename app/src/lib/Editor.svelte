@@ -24,7 +24,7 @@
   import { commitFocused } from "./commitfocus";
   import { textfield } from "./textfield";
   import ContextMenu, { type MenuEntry, type MenuState } from "./ContextMenu.svelte";
-  import { moveCorner, samePoint } from "./corners";
+  import { defaultDirection, moveCorner, samePoint } from "./corners";
   import { MCP_KIND, followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, placementOf, transformItem, type ItemRef, type PlanTarget } from "./items";
   import { snapToRoof, type ManualSel } from "./manual";
   import { keptSelection } from "./selection";
@@ -905,8 +905,7 @@
     if (!project || !selection) return;
     const es = project.parts[selection.part].edges;
     const e = es[selection.edge];
-    const next = es[(selection.edge + 1) % es.length].start;
-    const ang = Math.atan2(next.y - e.start.y, next.x - e.start.x) + Math.PI / 2;
+    const ang = defaultDirection(es, selection.edge);
     const marker: EdgeDef = {
       ...$state.snapshot(e),
       start: { ...e.start },

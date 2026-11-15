@@ -47,7 +47,12 @@ slope) and chimneys (convex plan `corners`). Like DACAD, a window deducts
 width × height and adds no lines; a chimney deducts its plan area / cos(pitch)
 and adds WV (downhill), WH (uphill) and WS (sloped sides) abutment lines.
 A window larger than what is left of its roof face is refused: check the
-units (cm read as m) and whether width and height are swapped.
+units (cm read as m) and whether width and height are swapped. Every write
+checks this, so moving a window or changing the roof can be refused too; a
+window side must be 0.01 to 100 m.
+Creating tools refuse a pitch under 2 degrees, a negative eave height or
+overhang and an empty job name; a write that changes nothing answers
+`saved: false`.
 
 ## Everything the editor can do
 

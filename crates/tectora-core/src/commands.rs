@@ -420,6 +420,31 @@ pub fn offset_wall(
     Ok(next)
 }
 
+/// The checks of a save from the editor (HUNTC-003): the limits, and no roof
+/// window the write makes unusable or larger than its face
+/// (`edit::check_windows_write`); `before` is the job as it was.
+pub fn check_write(before: Option<&Project>, after: &Project) -> Result<(), CommandError> {
+    check_input(after)?;
+    crate::model::guarded(|| crate::edit::check_windows_write(before, after))
+        .map_err(CommandError::internal)?
+        .map_err(CommandError::out_of_range)
+}
+
+/// The values of a new job or standard roof (`edit::check_new_wall`,
+/// `edit::check_job_name`) as a command error (ARCH-007, UI-010).
+pub fn check_new_roof(
+    name: Option<&str>,
+    pitch_deg: f64,
+    eave_height: f64,
+    overhang: f64,
+) -> Result<(), CommandError> {
+    if let Some(n) = name {
+        crate::edit::check_job_name(n).map_err(CommandError::out_of_range)?;
+    }
+    crate::edit::check_new_wall(pitch_deg, eave_height, overhang)
+        .map_err(CommandError::out_of_range)
+}
+
 /// [`Project::check_input`] as a command error, with its code.
 pub fn check_input(project: &Project) -> Result<(), CommandError> {
     project.check_input().map_err(CommandError::input)

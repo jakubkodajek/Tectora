@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EdgeDef } from "./types";
-import { cornerGroup, onWall, moveCorner, samePoint } from "./corners";
+import { cornerGroup, defaultDirection, onWall, moveCorner, samePoint } from "./corners";
 
 const w = (x: number, y: number, marker = false): EdgeDef => ({
   start: { x, y },
@@ -49,5 +49,14 @@ describe("a corner added on a wall", () => {
     // 2 cm from a corner, zoomed in: never a wall under 1 cm.
     expect(onWall(p(20.003, 3), p(20.003, 9), p(20.003, 3.02), 0.05)).toEqual(p(20.003, 3.05));
     expect(onWall(p(0, 0), p(0.06, 0), p(0.03, 0), 0.05)).toBeNull();
+  });
+});
+
+describe("default direction of a new direction change (HUNTC-008)", () => {
+  it("is the bisector of the previous and this wall, 45 degrees at a right-angled corner", () => {
+    const rect = [w(0, 0), w(12, 0), w(12, 8), w(0, 8)];
+    expect(defaultDirection(rect, 1)).toBeCloseTo(Math.PI / 4, 9);
+    expect(defaultDirection(rect, 2)).toBeCloseTo((3 * Math.PI) / 4, 9);
+    expect(defaultDirection(rect, 0)).toBeCloseTo((7 * Math.PI) / 4, 9);
   });
 });
