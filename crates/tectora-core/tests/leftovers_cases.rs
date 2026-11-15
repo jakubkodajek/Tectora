@@ -1118,3 +1118,275 @@ fn a_turned_comb_building_gives_a_result_or_an_error_and_never_panics() {
     let geos = tectora_core::openings::generate_project(&p);
     assert_eq!(geos.len(), 1);
 }
+
+// ============================================================ fix round 2
+// Findings of review core-leftovers-r2 (math.md) and of the second bug hunt
+// (findings-bugs-r2.md). Each test names its finding.
+
+fn departed(roof: &Roof) -> bool {
+    roof.geos[0].warnings.iter().any(|w| {
+        matches!(
+            w.kind,
+            WarningKind::MergedPlanes | WarningKind::WingJoined | WarningKind::NotCalculatedByCore
+        )
+    })
+}
+
+/// MATH-001 (S2): Jakub's T turned by every tenth of a degree of a quarter
+/// turn and rounded to centimetres gets the unturned roof. The pieces of a
+/// wall line were taken for two lines at 135 (joined plane) and 56
+/// (lean-to) of 3600 turns; what is left are the turns where the rounding
+/// drives the pieces of one line as far apart as it leaves a 2 cm step
+/// (`straighten.rs`). The budgets are the counts measured, not a target.
+#[test]
+fn a_cm_rounded_t_gets_the_unturned_roof_at_nearly_every_turn() {
+    for (front, notice, faces, budget) in [
+        (2.9, WarningKind::MergedPlanes, 2, 3),
+        (2.0, WarningKind::WingJoined, 3, 3),
+    ] {
+        let mut off = Vec::new();
+        for k in 0..900 {
+            let deg = k as f64 * 0.1;
+            let roof = calc(&turned_cm(&jakub_t(front), deg));
+            let same = roof.geos[0].error.is_none()
+                && kinds(&roof, 0) == vec![notice]
+                && roof.geos[0].faces.len() == faces
+                && roof.line("K").abs() < 1e-6;
+            if !same {
+                off.push(deg);
+            }
+        }
+        assert!(
+            off.len() <= budget,
+            "front {front}: not the unturned roof at {} of 900 turns (budget {budget}): {off:?}",
+            off.len()
+        );
+    }
+    // The turns the review named: an error where round 1 gave the roof,
+    // and the sweep's roof with 5 m of the eave called a lean-to edge.
+    let straight = calc(&jakub_t(2.9));
+    for deg in [4.1, 5.3] {
+        let roof = calc(&turned_cm(&jakub_t(2.9), deg));
+        let n = format!("front 2.9 turned {deg}");
+        assert!(
+            roof.geos[0].error.is_none(),
+            "{n}: {:?}",
+            roof.geos[0].error
+        );
+        assert_eq!(kinds(&roof, 0), vec![WarningKind::MergedPlanes], "{n}");
+        near(&format!("{n} T"), roof.line("T"), straight.line("T"), 0.05);
+        near(&format!("{n} P"), roof.line("P"), 0.0, 1e-6);
+        near(&format!("{n} area"), roof.area, straight.area, 0.15);
+    }
+    let roof = calc(&turned_cm(&jakub_t(2.0), 1.9));
+    assert!(roof.geos[0].error.is_none(), "{:?}", roof.geos[0].error);
+    assert_eq!(kinds(&roof, 0), vec![WarningKind::WingJoined]);
+}
+
+/// MATH-002 (S2): whether a stepped roof is merged, and whether the wing's
+/// plane is said to run over the house wall, does not depend on where the
+/// building stands. The rise between two parallel planes was measured from
+/// the project's origin: 500 m away, a wall 0.01 degrees off its direction
+/// was centimetres of rise.
+#[test]
+fn a_stepped_roof_is_merged_wherever_the_building_stands() {
+    let at_origin = turned(&jakub_t(2.95), 0.1);
+    let far = moved(&at_origin, 500.0, 500.0);
+    let (a, b) = (calc(&at_origin), calc(&far));
+    assert_eq!(kinds(&a, 0), vec![WarningKind::MergedPlanes]);
+    assert_eq!(
+        kinds(&b, 0),
+        kinds(&a, 0),
+        "merged at the origin, not at +500"
+    );
+    assert_eq!(b.geos[0].faces.len(), a.geos[0].faces.len());
+    near("valley at +500", b.line("K"), a.line("K"), 0.01);
+    near("verge at +500", verge(&b), verge(&a), 0.01);
+    near("area at +500", b.area, a.area, 0.01);
+    // The planes themselves: same rise and depth at both places.
+    let planes = |p: &Project| tectora_core::check::wing_planes(&p.parts[0]);
+    let (pa, pb) = (planes(&at_origin), planes(&far));
+    assert_eq!(pa.len(), pb.len());
+    for (x, y) in pa.iter().zip(&pb) {
+        assert_eq!((x.outer, x.inner), (y.outer, y.inner));
+        near("rise", y.rise, x.rise, 1e-6);
+        near("depth", y.depth, x.depth, 1e-6);
+    }
+    // The two house-front pieces in line were reported as a plane over a
+    // wall at +500 (turned 4.8 degrees, millimetres).
+    let far = calc(&moved(&turned(&jakub_t(2.9), 4.8), 500.0, 500.0));
+    assert_eq!(kinds(&far, 0), vec![WarningKind::MergedPlanes]);
+}
+
+/// MATH-003 (S2): a stepped roof the core calculates (fronts 2.95 and 2.9)
+/// on a centimetre-rounded turned T is merged without a stray valley: the
+/// merge of a roof the core calculated did not straighten the outline, and
+/// one of the two house-front pieces stayed a face of its own.
+#[test]
+fn a_merged_stepped_roof_has_no_stray_valley() {
+    for (front, deg) in [(2.95, 97.5), (2.9, 12.9), (3.0, 97.5)] {
+        let straight = calc(&jakub_t(front));
+        assert_eq!(kinds(&straight, 0), vec![WarningKind::MergedPlanes]);
+        let roof = calc(&turned_cm(&jakub_t(front), deg));
+        let n = format!("front {front} turned {deg}");
+        assert!(
+            roof.geos[0].error.is_none(),
+            "{n}: {:?}",
+            roof.geos[0].error
+        );
+        assert_eq!(kinds(&roof, 0), vec![WarningKind::MergedPlanes], "{n}");
+        assert_eq!(roof.geos[0].faces.len(), 2, "{n}");
+        near(&format!("{n} K"), roof.line("K"), 0.0, 1e-6);
+        near(&format!("{n} verge"), verge(&roof), verge(&straight), 0.05);
+    }
+}
+
+/// `roof` against `want`, the roof of the same building (`dx`, `dy`) away:
+/// the same notices, faces and lines, every corner where it was.
+fn assert_same_roof_moved(n: &str, roof: &Roof, want: &Roof, dx: f64, dy: f64) {
+    assert_eq!(
+        roof.geos[0].error.as_ref().map(|e| e.kind),
+        want.geos[0].error.as_ref().map(|e| e.kind),
+        "{n}: error"
+    );
+    assert_eq!(kinds(roof, 0), kinds(want, 0), "{n}: notices");
+    assert_eq!(
+        roof.geos[0].faces.len(),
+        want.geos[0].faces.len(),
+        "{n}: faces"
+    );
+    near(&format!("{n} area"), roof.area, want.area, 1e-6);
+    for (code, len) in &want.lines {
+        near(&format!("{n} {code}"), roof.line(code), *len, 1e-6);
+    }
+    for (f, g) in roof.geos[0].faces.iter().zip(&want.geos[0].faces) {
+        assert_eq!(f.edge, g.edge, "{n}: face wall");
+        assert_eq!(f.polygon.len(), g.polygon.len(), "{n}: corners");
+        for (p, q) in f.polygon.iter().zip(&g.polygon) {
+            let d = norm(sub([p[0] - dx, p[1] - dy, p[2]], *q));
+            assert!(d < 1e-6, "{n}: corner {p:?} is {d} m from {q:?} moved");
+        }
+    }
+}
+
+/// BUG-R2-1 (S2): a roof Tectora calculates where the core stops is the
+/// same roof wherever the building stands: every way is tried in the
+/// building's own frame. The literal is building 452 of hunt seed 42 (a
+/// house with one wing, turned 167.9 degrees, centimetres), which got the
+/// sweep's roof at the origin and an error 2.5 km away.
+#[test]
+fn a_departed_roof_does_not_depend_on_where_the_building_stands() {
+    let hunt = has_height(literal(&[
+        (-0.0, 0.0, 40.0, 5.0),
+        (-7.03, 1.51, 90.0, 5.0),
+        (-6.69, 3.08, 29.906062598917956, 5.142476495333693),
+        (-19.87, 5.9, 90.0, 5.0),
+        (-20.2, 4.33, 40.0, 5.0),
+        (-25.95, 5.57, 90.0, 5.0),
+        (-28.49, -6.26, 40.0, 5.0),
+        (-2.54, -11.83, 90.0, 5.0),
+    ]));
+    let cases = [
+        ("hunt 42/452", hunt),
+        ("T 2.9 cm 17.3", turned_cm(&jakub_t(2.9), 17.3)),
+        ("T 2.0 cm 33", turned_cm(&jakub_t(2.0), 33.0)),
+        (
+            "two wings cm 33",
+            turned_cm(&two_wings(2.0, Side::Gable), 33.0),
+        ),
+        ("hip corner moved", departed_hip()),
+    ];
+    for (name, p) in cases {
+        let want = calc(&p);
+        assert!(
+            want.geos[0].error.is_none() && departed(&want),
+            "{name}: not a departed roof at the origin: {:?} {:?}",
+            want.geos[0].error,
+            kinds(&want, 0)
+        );
+        for (dx, dy) in [(-1422.91, 2113.9), (503.2, -437.08), (37.0, 12.5)] {
+            let far = calc(&moved(&p, dx, dy));
+            let n = format!("{name} at ({dx}, {dy})");
+            assert_same_roof_moved(&n, &far, &want, dx, dy);
+        }
+    }
+}
+
+/// BUG-R2-2 (S2): a 44-wall building with wings on all sides, turned and
+/// rounded to centimetres (hunt seed 47, building 281), took 45 to 60 s:
+/// 22 of the wing search's core runs ended at the core's own iteration
+/// limit, half a second each. All ways of one building share one budget of
+/// core runs, and of runs that end at that limit. Counted, not timed.
+#[test]
+fn the_ways_tried_for_one_building_share_one_budget_of_core_runs() {
+    let comb = has_height(literal(&[
+        (0.0, 0.0, 40.0, 5.0),
+        (1.5, -0.84, 15.650285199662658, 4.394324198693518),
+        (-0.2, -3.86, 15.650285199662658, 4.394324198693518),
+        (2.36, -5.31, 15.650285199662658, 4.394324198693518),
+        (4.06, -2.29, 40.0, 5.0),
+        (6.08, -3.42, 90.0, 5.0),
+        (4.93, -5.46, 22.4679022737027, 1.4624954502122707),
+        (8.51, -7.47, 90.0, 5.0),
+        (9.65, -5.44, 40.0, 5.0),
+        (11.47, -6.47, 90.0, 5.0),
+        (9.79, -9.46, 16.03772502023963, 0.616776835849669),
+        (12.47, -10.97, 90.0, 5.0),
+        (14.16, -7.98, 40.0, 5.0),
+        (16.26, -9.17, 41.65503842413344, 3.5450663172972647),
+        (14.72, -11.91, 41.65503842413344, 3.5450663172972647),
+        (17.84, -13.67, 41.65503842413344, 3.5450663172972647),
+        (19.39, -10.93, 40.0, 5.0),
+        (21.52, -12.13, 90.0, 5.0),
+        (20.52, -13.91, 57.37358818089856, 2.3020997221822395),
+        (23.57, -15.63, 90.0, 5.0),
+        (24.58, -13.85, 40.0, 5.0),
+        (25.7, -14.49, 90.0, 5.0),
+        (26.13, -13.72, 90.0, 5.0),
+        (27.77, -14.64, 39.58014157518594, 1.188915497676895),
+        (28.37, -13.57, 90.0, 5.0),
+        (26.73, -12.65, 90.0, 5.0),
+        (27.37, -11.53, 48.49378150751611, 4.964554119740982),
+        (30.73, -13.43, 48.49378150751611, 4.964554119740982),
+        (31.71, -11.69, 48.49378150751611, 4.964554119740982),
+        (28.34, -9.79, 90.0, 5.0),
+        (28.79, -9.0, 37.34544105408092, 2.4744416575381427),
+        (30.25, -9.82, 37.34544105408092, 2.4744416575381427),
+        (31.22, -8.09, 37.34544105408092, 2.4744416575381427),
+        (29.77, -7.27, 90.0, 5.0),
+        (33.02, -1.49, 40.0, 5.0),
+        (31.83, -0.82, 13.28371709256814, 0.5006464958228725),
+        (33.5, 2.13, 13.28371709256814, 0.5006464958228725),
+        (27.63, 5.44, 13.28371709256814, 0.5006464958228725),
+        (25.96, 2.49, 40.0, 5.0),
+        (21.94, 4.75, 57.058586948512605, 2.4807819674015885),
+        (23.56, 7.62, 57.058586948512605, 2.4807819674015885),
+        (20.04, 9.61, 57.058586948512605, 2.4807819674015885),
+        (18.42, 6.74, 40.0, 5.0),
+        (7.32, 12.99, 90.0, 5.0),
+    ]));
+    let kind = match tectora_core::engine::generate(&comb) {
+        Err(tectora_core::engine::Failure::Dacad(e)) => e.kind,
+        other => panic!("the core stops on the comb: {:?}", other.map(|g| g.len())),
+    };
+    let (runs, at_limit) = tectora_core::openings::departure_runs(&comb, kind);
+    assert!(runs <= 64, "{runs} core runs");
+    assert!(
+        at_limit <= 2,
+        "{at_limit} core runs ended at the core's limit"
+    );
+    assert!(runs > 0);
+    // Whatever the result, it is a result: an error or a sound roof.
+    let roof = calc(&comb);
+    assert_eq!(roof.geos.len(), 1);
+    assert!(roof.geos[0].error.is_some() || !roof.geos[0].faces.is_empty());
+    // A building the search closes is not cut short by the budget.
+    let (runs, at_limit) = tectora_core::openings::departure_runs(
+        &three_wings(),
+        tectora_core::roof::CalcErrorKind::Cut,
+    );
+    assert!(
+        runs <= 8 && at_limit == 0,
+        "{runs} runs, {at_limit} at the limit"
+    );
+}
