@@ -23,6 +23,7 @@ import type {
   PlanMapSpec,
   RoundArcAnswer,
   ExampleInfo,
+  FolderRequest,
   JobInfo,
   Library,
   LiveStatus,
@@ -33,6 +34,7 @@ import type {
   ReviewStatus,
   RoofPart,
   StandardKind,
+  TrashEntry,
   UpdateProgress,
 } from "./types";
 
@@ -78,7 +80,14 @@ export const api = {
     invoke<CheckedSave>("save_project_checked", { id, project, base }),
   /** The project in the store's canonical form, as load_project returns it after a save. */
   normalizeProject: (project: Project) => invoke<Project>("normalize_project", { project }),
-  deleteProject: (id: string) => invoke<void>("delete_project", { id }),
+  /** Moves the job to the library's trash; the entry brings it back (`restoreDeleted`). */
+  deleteProject: (id: string) => invoke<TrashEntry>("delete_project", { id }),
+  /** Jobs and files in the library's trash (kept 30 days), newest first. */
+  listDeleted: () => invoke<TrashEntry[]>("list_deleted"),
+  /** Brings a trash entry back; resolves to the job's id (a new one if the old id was taken). */
+  restoreDeleted: (entry: string) => invoke<string>("restore_deleted", { entry }),
+  /** Names the example jobs seeded on this first start in the UI's language (example id to name). */
+  nameSeededExamples: (names: Record<string, string>) => invoke<number>("name_seeded_examples", { names }),
   /** Copies a job as a new draft; `job` starts a new job from a past roof. */
   duplicateProject: (id: string, name: string, job?: Pick<JobInfo, "number" | "customer" | "address">, withFiles = true) =>
     invoke<string>("duplicate_project", { id, name, job: job ? { ...job, status: "draft" } : null, withFiles }),
@@ -165,13 +174,20 @@ export const api = {
   /** Corner `vertex` dropped onto its neighbour: the part with the corner merged into it, or unchanged. */
   mergeDroppedCorner: (part: RoofPart, vertex: number) =>
     invoke<{ part: RoofPart; merged: boolean }>("item_geometry", { request: { op: "merge_dropped_corner", part, vertex } }),
+  /** Wall `edge` set to `length` m with the outline's angles kept (core `edit::corners::set_wall_length`). */
+  setWallLength: (part: RoofPart, edge: number, length: number) =>
+    invoke<{ part: RoofPart }>("item_geometry", { request: { op: "set_wall_length", part, edge, length } }).then((r) => r.part),
   /** A drawn footprint without repeated corners (closer than 1 cm). */
   withoutRepeats: (points: Point2[]) =>
     invoke<{ points: Point2[] }>("item_geometry", { request: { op: "without_repeats", points } }).then((r) => r.points),
   getSettings: () => invoke<AppSettingsView>("get_settings"),
   updateSettings: (patch: Record<string, unknown>) => invoke<AppSettingsView>("update_settings", { patch }),
-  answerFolderRequest: (allow: boolean) => invoke<AppSettingsView>("answer_folder_request", { allow }),
-  answerFileRequest: (allow: boolean) => invoke<AppSettingsView>("answer_file_request", { allow }),
+  /** `changes`: the request the dialog showed; a request replaced meanwhile is not answered. */
+  answerFolderRequest: (changes: FolderRequest["changes"], allow: boolean) =>
+    invoke<AppSettingsView>("answer_folder_request", { changes, allow }),
+  /** `path`: the request the dialog showed; a request replaced meanwhile is not answered. */
+  answerFileRequest: (path: string, allow: boolean) =>
+    invoke<AppSettingsView>("answer_file_request", { path, allow }),
   openFolder: (which: "projects" | "drawings" | "settings") => invoke<void>("open_folder", { which }),
   listAttachments: (id: string) => invoke<Attachment[]>("list_attachments", { id }),
   attachFiles: (id: string, paths: string[]) => invoke<string[]>("attach_files", { id, paths }),

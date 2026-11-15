@@ -5,7 +5,8 @@
   import { m, m2, num } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
-  import { areaRows, joinedWith, notCalculated, warningText } from "./results";
+  import { areaRows, failedParts, joinedWith, roofState, warningText } from "./results";
+  import { inputWarnings } from "./plausible";
   import { legend, lineName, SUB_CODES } from "./linecodes";
   import { partLabel } from "./partname";
   import { api } from "./api";
@@ -75,14 +76,21 @@
   );
 
   const totals = $derived(result?.totals ?? null);
-  /** The core gave no roof: the zeros it returns are no figures (ERR-004). */
-  const failed = $derived(notCalculated(result));
+  /** The core gave no roof at all: the zeros it returns are no figures (ERR-004). */
+  const failed = $derived(roofState(result) === "none");
+  /** Buildings without a roof while the others have theirs: only their rows are "—" (ERRU-003). */
+  const failedSet = $derived(roofState(result) === "partial" ? failedParts(result) : []);
+  const failedNames = $derived(failedSet.map((i) => partLabel(result!.parts[i].name, i)).join(", "));
   const NONE = "—";
 
   /** Plausibility warnings of every part, with the part's name when there are several. */
   const warnings = $derived(
     (result?.parts ?? []).flatMap((p, i) =>
       (p.geometry.warnings ?? []).map((w) => ({ part: result!.parts.length > 1 ? partLabel(p.name, i) : null, text: warningText(w) })),
+    ).concat(
+      // Typed values that are allowed but unlikely (a lost decimal comma,
+      // UX-009) and half-hips or breaks above the ridge (UX-003).
+      inputWarnings(project, result),
     ),
   );
   const rows = $derived(
@@ -113,6 +121,7 @@
     <strong data-testid="res-area" title={failed ? t("res.notCalculated") : undefined}>{totals && !failed ? m2(totals.roof_area) : NONE}</strong>
     {#if failed}<small data-testid="res-not-calculated">{t("res.notCalculated")}</small>
     {:else if totals}<small>{t("res.ridgeHeight", { v: num(totals.ridge_height) })}</small>{/if}
+    {#if failedSet.length}<small data-testid="res-partial">{t("res.partialNote", { names: failedNames })}</small>{/if}
     {#if totals && !failed && deductedTotal >= 0.005}<small data-testid="res-deducted">{t("res.obj.netOf", { a: m2(deductedTotal) })}</small>{/if}
   </div>
 
@@ -140,7 +149,7 @@
                 <small class="joined">{t("res.joinedTo", { names: joins[a.part].map((j) => (result.parts[j] ? partLabel(result.parts[j].name, j) : "")).join(", ") })}</small>
               {/if}
             </td>
-            <td class="v">{failed ? NONE : m2(a.area)}</td>
+            <td class="v">{failed || (!a.manual && failedSet.includes(a.part)) ? NONE : m2(a.area)}</td>
           </tr>
         {/each}
       </tbody>

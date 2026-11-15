@@ -1324,8 +1324,11 @@ impl Server {
                     .map(|p| {
                         json!({
                             "id": p.id, "name": p.name, "job": p.job,
-                            "roof_area_m2": (!p.figures_pending).then(|| round(p.roof_area, 2)),
+                            // A roof the core refused has no area, not 0 m² (ERRU-005).
+                            "roof_area_m2": (!p.figures_pending && (p.parts_failed == 0 || p.parts_failed < p.parts))
+                                .then(|| round(p.roof_area, 2)),
                             "figures_pending": p.figures_pending, "parts": p.parts,
+                            "parts_without_roof": p.parts_failed,
                             "pitch_range_deg": p.pitch_range.map(|[a, b]| [round(a, 2), round(b, 2)]),
                             "dormers": p.dormers, "files": p.files, "has_result": p.has_result,
                             "modified_ms": p.modified_ms, "last_change": p.last_activity,
@@ -1705,8 +1708,7 @@ impl Server {
                 let flat = |list: &[Chimney], what: &str| {
                     list.iter().position(|c| c.corners.len() >= 3 && !c.has_area()).map(|i| {
                         format!(
-                            "{what} {} has no plan area: give it its real width and depth (at least 1 cm each), or leave it out and tell the user its size is unknown",
-                            i + 1
+                            "{what} index {i} has no plan area: give it its real width and depth (at least 1 cm each), or leave it out and tell the user its size is unknown"
                         )
                     })
                 };
@@ -1715,6 +1717,8 @@ impl Server {
                 {
                     return Err(e);
                 }
+                // A window of size 0 would block later edits (HUNTC-005).
+                crate::more::refuse_new_problems(&before, &p)?;
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
             }
             "show_project" => {
@@ -1754,7 +1758,7 @@ impl Server {
         let result: Result<Value, (i64, String)> = match method {
             "initialize" => {
                 if let Some(name) = params.pointer("/clientInfo/name").and_then(Value::as_str) {
-                    self.client = name.to_string();
+                    self.client = client_actor(name);
                 }
                 let requested = params
                     .get("protocolVersion")
@@ -1839,6 +1843,37 @@ impl Server {
 }
 
 /// Serves MCP over stdin/stdout (one JSON-RPC message per line) until EOF.
+/// Runs as a calculation or drawing worker when the environment says so
+/// (see `worker`): answers its one call on stdin and returns true. A worker
+/// opens the library it is told, so the entry points call this before they
+/// open any library of their own (ARCH-001): an unusable default folder
+/// must not break `--dir`.
+pub fn run_worker_if_requested() -> bool {
+    worker::run_if_worker()
+}
+
+/// The actor name a client's writes are logged under. The name comes from
+/// the client; one that reads as the user ("user", any case) would make its
+/// saves count as the user's own and skip the review, so it is given a
+/// different name; an empty name is "AI", and the length is capped
+/// (HUNTIO-003).
+fn client_actor(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(60)
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if clean.is_empty() {
+        "AI".into()
+    } else if clean.eq_ignore_ascii_case(tectora_core::store::USER_ACTOR) {
+        format!("AI ({clean})")
+    } else {
+        clean
+    }
+}
+
 pub fn run_stdio(store: Store) -> io::Result<()> {
     if worker::run_if_worker() {
         return Ok(());
@@ -1864,6 +1899,36 @@ pub fn run_stdio(store: Store) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_client_named_user_is_still_reviewed() {
+        // HUNTIO-003: its saves were logged as the user's own.
+        for name in ["user", "User", "  USER ", ""] {
+            let mut s = server();
+            s.handle(&json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": { "protocolVersion": "2025-06-18", "clientInfo": { "name": name } }
+            }));
+            let r = s
+                .call_tool(
+                    "create_standard_roof",
+                    &json!({ "name": "A", "type": "gable", "length": 10, "width": 8, "pitch_deg": 40, "summary": "x" }),
+                )
+                .unwrap();
+            let id = r["id"].as_str().unwrap();
+            let log = s.store.activity(id);
+            assert!(!log.is_empty());
+            assert!(
+                log.iter()
+                    .all(|e| e.actor != tectora_core::store::USER_ACTOR && !e.actor.is_empty()),
+                "{name:?}: {:?}",
+                log.iter().map(|e| &e.actor).collect::<Vec<_>>()
+            );
+            let _ = std::fs::remove_dir_all(&s.store.dir);
+        }
+        assert_eq!(client_actor("Claude Desktop"), "Claude Desktop");
+        assert_eq!(client_actor(&"x".repeat(500)).chars().count(), 60);
+    }
 
     fn server() -> Server {
         // Tests run in parallel and remove their folder, so each needs its own.
@@ -2029,8 +2094,9 @@ mod tests {
         );
         assert!(r["note"].as_str().unwrap().contains("waits for the user"));
         assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
+        let shown = Settings::load().folder_request.unwrap().changes;
         Settings::load()
-            .answer_folder_request(true)
+            .answer_folder_request(&shown, true)
             .unwrap()
             .save()
             .unwrap();
@@ -2227,6 +2293,47 @@ mod tests {
             (live.kind.as_deref(), live.project_id),
             (Some("browsing"), None)
         );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn list_projects_gives_no_area_for_a_roof_the_core_refused() {
+        // ERRU-005: a refused roof was listed as 0 m², like an empty roof.
+        let mut s = server();
+        let walls: Vec<Value> = [(0.0, 0.0), (12.0, 0.0), (12.0, 8.0), (0.0, 8.0)]
+            .iter()
+            .map(|&(x, y)| json!({ "start": { "x": x, "y": y }, "pitch_deg": 35.0, "eave_height": 3.0, "overhang": 0.5 }))
+            .collect();
+        let corners: Vec<Value> = [
+            (4.0, 3.0),
+            (6.0, 3.0),
+            (6.0, 4.0),
+            (5.0, 4.0),
+            (5.0, 5.0),
+            (4.0, 5.0),
+        ]
+        .iter()
+        .map(|&(x, y)| json!({ "x": x, "y": y }))
+        .collect();
+        let p = json!({
+            "schema_version": 2, "name": "refused",
+            "parts": [{ "name": "A", "edges": walls }],
+            "chimneys": [{ "corners": corners, "height": 9.0 }],
+        });
+        let id = s
+            .store
+            .save(None, &Project::from_json(&p.to_string()).unwrap())
+            .unwrap();
+        let r = s.call_tool("list_projects", &json!({})).unwrap();
+        let card = r["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id.as_str())
+            .unwrap()
+            .clone();
+        assert!(card["roof_area_m2"].is_null(), "{card}");
+        assert_eq!(card["parts_without_roof"], 1, "{card}");
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
@@ -2495,7 +2602,7 @@ mod tests {
                 &json!({ "id": id, "summary": "Chimney", "chimneys": [{ "x": 2, "y": 2, "width": 0, "depth": 0, "height": 6 }] }),
             )
             .unwrap_err();
-        assert!(err.contains("chimney 1 has no plan area"), "{err}");
+        assert!(err.contains("chimney index 0 has no plan area"), "{err}");
         let line = json!([[2, 2], [3, 2], [4, 2]]);
         let err = s
             .call_tool(
@@ -2503,7 +2610,10 @@ mod tests {
                 &json!({ "id": id, "summary": "Opening", "roof_openings": [{ "corners": line }] }),
             )
             .unwrap_err();
-        assert!(err.contains("roof opening 1 has no plan area"), "{err}");
+        assert!(
+            err.contains("roof opening index 0 has no plan area"),
+            "{err}"
+        );
         let p = s.store.load(&id).unwrap();
         assert!(p.chimneys.is_empty() && p.roof_openings.is_empty());
         s.call_tool(
@@ -2668,7 +2778,7 @@ mod tests {
         let req = asked.file_request.clone().unwrap();
         assert_eq!(req.purpose, "import");
         assert!(req.path.ends_with("other/contract.pdf"), "{:?}", req.path);
-        asked.answer_file_request(true).save().unwrap();
+        asked.answer_file_request(&req.path, true).save().unwrap();
         s.call_tool(
             "attach_file",
             &json!({ "id": id, "path": outside, "summary": "Drawing" }),
@@ -2725,11 +2835,28 @@ mod tests {
         let slow = || std::thread::sleep(std::time::Duration::from_millis(400));
         assert_eq!(s.within(slow), None, "answers after the timeout");
         assert_eq!(s.within(|| 1), None, "no second one beside the running one");
+        // Free again once the running one has finished, also after a panic
+        // (the panic hook may print a backtrace first, so wait for it).
+        let free_within = |s: &Server, v: u8| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if let Some(x) = s.within(move || v) {
+                    return Some(x);
+                }
+                if std::time::Instant::now() > until {
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
         std::thread::sleep(std::time::Duration::from_millis(500));
-        assert_eq!(s.within(|| 1), Some(1), "free again when it has finished");
+        assert_eq!(
+            free_within(&s, 1),
+            Some(1),
+            "free again when it has finished"
+        );
         assert_eq!(s.within(|| -> u8 { panic!("kernel") }), None);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        assert_eq!(s.within(|| 2), Some(2), "a panic frees it too");
+        assert_eq!(free_within(&s, 2), Some(2), "a panic frees it too");
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 

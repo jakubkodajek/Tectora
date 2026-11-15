@@ -6,6 +6,7 @@
   // the same output.
   import { save } from "@tauri-apps/plugin-dialog";
   import Modal from "./Modal.svelte";
+  import { safeFileName } from "./filename";
   import Icon from "./Icon.svelte";
   import { api, type ListSummary } from "./api";
   import { exportPreview, stampNow } from "./exportlist";
@@ -48,7 +49,7 @@
   const deg = (v: number) => `${new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v)}°`;
 
   const svgUrl = $derived(svg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}` : "");
-  const baseName = $derived((project.name || title || "roof").replace(/[\\/:*?"<>|]+/g, "_"));
+  const baseName = $derived(safeFileName(project.name || title, "roof"));
 
   function flash(what: "list" | "image") {
     copied = what;

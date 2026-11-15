@@ -17,7 +17,7 @@
     if (busy) return;
     busy = true;
     try {
-      await api.answerFileRequest(allow);
+      await api.answerFileRequest(request.path, allow);
       onanswered();
     } catch (e) {
       notifyError(e, "save");

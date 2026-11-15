@@ -472,9 +472,23 @@ impl Settings {
     }
 
     /// The user's answer to [`Settings::folder_request`]: `allow` applies it,
-    /// either way it is closed.
-    pub fn answer_folder_request(&self, allow: bool) -> Result<Settings, SettingsError> {
+    /// either way it is closed. `shown` is the `changes` of the request the
+    /// user was shown; when the pending request is another one by now (an AI
+    /// client replaced it), nothing is applied and the new request stays for
+    /// the user to read (ARCH-005).
+    pub fn answer_folder_request(
+        &self,
+        shown: &Map<String, Value>,
+        allow: bool,
+    ) -> Result<Settings, SettingsError> {
         let mut next = self.clone();
+        if next
+            .folder_request
+            .as_ref()
+            .is_none_or(|r| &r.changes != shown)
+        {
+            return Ok(next);
+        }
         let Some(req) = next.folder_request.take() else {
             return Ok(next);
         };
@@ -517,8 +531,15 @@ impl Settings {
 
     /// The user's answer to [`Settings::file_request`]: `allow` adds the
     /// file to [`Settings::allowed_files`], either way the request is closed.
-    pub fn answer_file_request(&self, allow: bool) -> Settings {
+    /// `shown` is the path of the request the user was shown; when the
+    /// pending request names another path by now (an AI client replaced it),
+    /// nothing is allowed and the new request stays for the user to read
+    /// (ARCH-005).
+    pub fn answer_file_request(&self, shown: &Path, allow: bool) -> Settings {
         let mut next = self.clone();
+        if next.file_request.as_ref().is_none_or(|r| r.path != shown) {
+            return next;
+        }
         let Some(req) = next.file_request.take() else {
             return next;
         };
@@ -637,9 +658,9 @@ mod tests {
             !asked.ai_may_read(&secret, &library),
             "asking allows nothing"
         );
-        let kept = asked.answer_file_request(false);
+        let kept = asked.answer_file_request(&req.path, false);
         assert!(kept.file_request.is_none() && !kept.ai_may_read(&secret, &library));
-        let allowed = asked.answer_file_request(true);
+        let allowed = asked.answer_file_request(&req.path, true);
         assert!(allowed.file_request.is_none() && allowed.ai_may_read(&secret, &library));
         assert!(
             !allowed.ai_may_read(&other.join("second.pdf"), &library),
@@ -688,6 +709,36 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_only_applies_to_the_request_the_user_was_shown() {
+        // ARCH-005: the AI replaced the request before the click.
+        let base = tmp("swap");
+        let (a, b) = (base.join("a.pdf"), base.join("b.pdf"));
+        let asked_b = Settings::default().asking_for_file(&b, "Claude", "attach");
+        let shown_a = resolved(&a);
+        let after = asked_b.answer_file_request(&shown_a, true);
+        assert!(after.allowed_files.is_empty(), "b was not allowed");
+        assert_eq!(after.file_request, asked_b.file_request, "b still waits");
+        // No request open: nothing to allow either.
+        let none = Settings::default().answer_file_request(&shown_a, true);
+        assert!(none.allowed_files.is_empty());
+        // The same for the folders.
+        let patch = |d: &str| serde_json::json!({ "projects_dir": base.join(d) });
+        let (first, _) = Settings::default()
+            .patched_by_ai(&patch("one"), "Claude", "x")
+            .unwrap();
+        let (second, _) = first.patched_by_ai(&patch("two"), "Claude", "y").unwrap();
+        let shown = first.folder_request.clone().unwrap().changes;
+        let kept = second.answer_folder_request(&shown, true).unwrap();
+        assert_eq!(kept.projects_dir(), second.projects_dir(), "not moved");
+        assert!(!base.join("two").exists() && !base.join("one").exists());
+        assert_eq!(
+            kept.folder_request, second.folder_request,
+            "two still waits"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn an_ai_only_asks_to_move_the_folders_and_the_user_decides() {
         // ARCH-052: MCP update_settings moved the jobs folder at once.
         let s = Settings::default();
@@ -705,10 +756,10 @@ mod tests {
             (req.by.as_str(), req.summary.as_str()),
             ("Claude", "Use the shared folder")
         );
-        let kept = next.answer_folder_request(false).unwrap();
+        let kept = next.answer_folder_request(&req.changes, false).unwrap();
         assert_eq!(kept.projects_dir(), s.projects_dir());
         assert!(kept.folder_request.is_none());
-        let moved = next.answer_folder_request(true).unwrap();
+        let moved = next.answer_folder_request(&req.changes, true).unwrap();
         assert_eq!(moved.projects_dir(), target);
         assert!(target.is_dir(), "the allowed folder is created");
         assert!(moved.folder_request.is_none());

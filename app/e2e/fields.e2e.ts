@@ -4,7 +4,7 @@
 // for "typed values are not applied, only the spinner arrows work".
 import type { Locator, Page } from "@playwright/test";
 import { bar, openEditor, planXY, selectWall, setField, tool, confirmDormer } from "./editor";
-import { bridge, createExample, expect, loadProject, test, waitForProject } from "./fixtures";
+import { bridge, createExample, expect, listProjects, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 
 /** Types into a field like a person: click, select all, type (no fill()). */
@@ -204,10 +204,17 @@ test.describe("number fields", () => {
       const changed = Object.keys({ ...before, ...after }).filter((k) => before[k] !== after[k]);
       seen.push(label);
       if (label === cs("edge.length")) {
-        // The wall's end corner moves along the wall: only wall 2's start.
-        expect(changed.every((k) => k.startsWith("0.edges.1.start.")), `${label}: ${changed}`).toBe(true);
+        // The angles stay (UX-005): the end corner and the corner after it
+        // move along the wall, up to the parallel wall 3, which stretches;
+        // nothing else changes and wall 2 keeps its length.
+        expect(changed.every((k) => k.startsWith("0.edges.1.start.") || k.startsWith("0.edges.2.start.")), `${label}: ${changed}`).toBe(true);
         const e = (await loadProject(id)).parts[0].edges;
+        const was = (k: string) => Number(before[k]);
         expect(Math.hypot(e[1].start.x - e[0].start.x, e[1].start.y - e[0].start.y)).toBeCloseTo(cur + 0.5, 3);
+        expect(Math.hypot(e[2].start.x - e[1].start.x, e[2].start.y - e[1].start.y)).toBeCloseTo(
+          Math.hypot(was("0.edges.2.start.x") - was("0.edges.1.start.x"), was("0.edges.2.start.y") - was("0.edges.1.start.y")),
+          3,
+        );
       } else if (label === cs("edge.buildingHeight")) {
         // Every wall of the building, with wall 1's pitch break moved along,
         // and the building's own height (Jakub 2026-11-14).
@@ -538,6 +545,38 @@ test.describe("number fields: bounds and the footprint bar", () => {
     await expect(ok).toBeEnabled();
     await ok.click();
     await waitForProject(id, (p) => p.parts.length === 2);
+  });
+
+  test("standard roof: a pitch under 2° is refused at the field and creates no roof (UI-010)", async ({ app, page }) => {
+    await app.open();
+    await page.locator("header").getByRole("button", { name: cs("lib.new") }).click();
+    const dlg = page.getByRole("dialog", { name: cs("new.title") });
+    await dlg.getByLabel(cs("job.name")).fill("Plochá");
+    const create = dlg.getByRole("button", { name: cs("new.create") });
+    const pitch = dlg.getByLabel(cs("edge.pitch"));
+    await typeInto(page, pitch, "1,5");
+    await expect(pitch).toHaveAttribute("aria-invalid", "true");
+    await expect(dlg.locator(".preview .area")).toHaveCount(0);
+    await expect(dlg.locator(".preview .why")).toContainText(cs("edge.pitch"));
+    await expect(create).toBeDisabled();
+    await typeInto(page, pitch, "2");
+    await expect(dlg.locator(".preview .area")).toBeVisible();
+    await expect(create).toBeEnabled();
+    // A preview the core answers without a roof is no roof to create either.
+    await page.route("**/calc", (r) =>
+      r.fulfill({
+        contentType: "application/json",
+        headers: { "access-control-allow-origin": "*" },
+        body: JSON.stringify({ ok: { parts: [{ name: "", geometry: { faces: [], lines: [], gables: [], error: { kind: "open_faces" } }, quantities: { roof_area: 0 } }], totals: { roof_area: 0 }, problems: [] } }),
+      }),
+    );
+    await typeInto(page, pitch, "30");
+    await expect(dlg.locator(".preview .why")).toContainText(cs("calc.err.open_faces"));
+    await expect(create).toBeDisabled();
+    await page.unroute("**/calc");
+    await typeInto(page, pitch, "31");
+    await expect(create).toBeEnabled();
+    expect(await listProjects()).toHaveLength(0);
   });
 });
 

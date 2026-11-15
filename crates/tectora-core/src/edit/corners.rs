@@ -121,6 +121,64 @@ pub fn merge_dropped_corner(es: &mut Vec<EdgeDef>, v: usize) -> bool {
     true
 }
 
+/// Wall `i` set to `len` metres with the outline's angles kept (DACAD:
+/// Länge ändern of one wall in a rectangle): its end corner moves along the
+/// wall, and so do the corners after it up to the next wall that runs
+/// parallel to it, which stretches; a rectangle stays a rectangle. Where no
+/// wall after it runs parallel (a triangle), only the end corner moves, with
+/// its direction changes. Corners are rounded to the millimetre. Returns
+/// false for a wall that does not exist, a direction change, a wall of no
+/// length or a length that is not a positive finite number. O(n).
+pub fn set_wall_length(es: &mut [EdgeDef], i: usize, len: f64) -> bool {
+    let n = es.len();
+    if n < 3 || i >= n || is_marker(&es[i]) || !(len.is_finite() && len > 0.0) {
+        return false;
+    }
+    let (a, b) = (es[i].start, es[(i + 1) % n].start);
+    let cur = a.distance(b);
+    if cur < MIN_WALL_LENGTH {
+        return false;
+    }
+    let u = Point2::new((b.x - a.x) / cur, (b.y - a.y) / cur);
+    let d = Point2::new(u.x * (len - cur), u.y * (len - cur));
+    // sin of the angle under which a wall counts as parallel (about 0.6°):
+    // drawn outlines are rounded to the millimetre, so opposite walls of a
+    // turned rectangle are parallel only within that.
+    const PARALLEL: f64 = 0.01;
+    let mut moved = Vec::new();
+    let mut j = (i + 1) % n;
+    let mut closed = false;
+    while j != i {
+        moved.push(j);
+        let next = (j + 1) % n;
+        let w = Point2::new(
+            es[next].start.x - es[j].start.x,
+            es[next].start.y - es[j].start.y,
+        );
+        let l = w.x.hypot(w.y);
+        if !is_marker(&es[j])
+            && l >= MIN_WALL_LENGTH
+            && (u.x * w.y - u.y * w.x).abs() / l < PARALLEL
+        {
+            closed = true;
+            break;
+        }
+        j = next;
+    }
+    if !closed {
+        moved = corner_group(es, (i + 1) % n);
+    }
+    let mm = |v: f64| {
+        let r = (v * 1000.0).round() / 1000.0;
+        if r == 0.0 { 0.0 } else { r }
+    };
+    for k in moved {
+        let p = es[k].start;
+        es[k].start = Point2::new(mm(p.x + d.x), mm(p.y + d.y));
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +350,82 @@ mod tests {
             }
         }
         assert!(tried >= 42, "{tried}");
+    }
+
+    #[test]
+    fn a_longer_wall_keeps_a_rectangle_a_rectangle() {
+        let mut es = vec![
+            wall(0.0, 0.0),
+            wall(12.0, 0.0),
+            wall(12.0, 8.0),
+            wall(0.0, 8.0),
+        ];
+        assert!(set_wall_length(&mut es, 0, 13.0));
+        let pts: Vec<(f64, f64)> = es.iter().map(|e| (e.start.x, e.start.y)).collect();
+        assert_eq!(pts, vec![(0.0, 0.0), (13.0, 0.0), (13.0, 8.0), (0.0, 8.0)]);
+    }
+
+    #[test]
+    fn a_shorter_wall_moves_the_corners_up_to_the_next_parallel_wall() {
+        // L: walls 0 → 14 m, 1 ↑ 7 m, 2 ← 7 m (parallel to wall 0), ...
+        let mut es = vec![
+            wall(0.0, 0.0),
+            wall(14.0, 0.0),
+            wall(14.0, 7.0),
+            wall(7.0, 7.0),
+            wall(7.0, 14.0),
+            wall(0.0, 14.0),
+        ];
+        assert!(set_wall_length(&mut es, 0, 12.0));
+        let pts: Vec<(f64, f64)> = es.iter().map(|e| (e.start.x, e.start.y)).collect();
+        assert_eq!(pts[1..4], [(12.0, 0.0), (12.0, 7.0), (7.0, 7.0)]);
+        assert_eq!(pts[4..], [(7.0, 14.0), (0.0, 14.0)]);
+    }
+
+    #[test]
+    fn a_direction_change_on_a_moved_corner_moves_with_it() {
+        let mut es = vec![
+            wall(0.0, 0.0),
+            marker(4.0, 0.0),
+            wall(4.0, 0.0),
+            wall(4.0, 4.0),
+            wall(0.0, 4.0),
+        ];
+        assert!(set_wall_length(&mut es, 0, 5.0));
+        assert_eq!(
+            (es[1].start.x, es[2].start.x, es[3].start.x),
+            (5.0, 5.0, 5.0)
+        );
+        assert_eq!(es[4].start.x, 0.0);
+    }
+
+    #[test]
+    fn without_a_parallel_wall_only_the_end_corner_moves() {
+        let mut tri = vec![wall(0.0, 0.0), wall(4.0, 0.0), wall(0.0, 3.0)];
+        assert!(set_wall_length(&mut tri, 0, 8.0));
+        let pts: Vec<(f64, f64)> = tri.iter().map(|e| (e.start.x, e.start.y)).collect();
+        assert_eq!(pts, vec![(0.0, 0.0), (8.0, 0.0), (0.0, 3.0)]);
+    }
+
+    #[test]
+    fn a_bad_wall_or_length_changes_nothing() {
+        let mut es = square();
+        for (i, l) in [
+            (9, 5.0),
+            (0, 0.0),
+            (0, -1.0),
+            (0, f64::NAN),
+            (0, f64::INFINITY),
+        ] {
+            assert!(!set_wall_length(&mut es, i, l));
+        }
+        assert_eq!(es, square());
+        let mut m = vec![
+            marker(0.0, 0.0),
+            wall(0.0, 0.0),
+            wall(4.0, 0.0),
+            wall(4.0, 4.0),
+        ];
+        assert!(!set_wall_length(&mut m, 0, 3.0));
     }
 }

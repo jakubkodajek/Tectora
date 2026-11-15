@@ -264,6 +264,14 @@ pub enum GeometryRequest {
     /// A drawn footprint without repeated corners
     /// (`edit::corners::without_repeats`): `{points}`.
     WithoutRepeats { points: Vec<crate::geom::Point2> },
+    /// Wall `edge` of a part set to `length` m with the outline's angles
+    /// kept (`edit::corners::set_wall_length`): `{part}`; `refused` for a
+    /// wall that does not exist or is a direction change.
+    SetWallLength {
+        part: crate::model::RoofPart,
+        edge: usize,
+        length: f64,
+    },
     /// The centre of a part's wall outline, the default pivot
     /// (`edit::transform::part_centre`).
     PartCentre { part: crate::model::RoofPart },
@@ -340,6 +348,23 @@ pub fn item_geometry(req: &GeometryRequest) -> Result<Value, CommandError> {
             let mut part = part.clone();
             let merged = crate::edit::corners::merge_dropped_corner(&mut part.edges, *vertex);
             Ok(serde_json::json!({ "part": part, "merged": merged }))
+        }
+        GeometryRequest::SetWallLength { part, edge, length } => {
+            let pts = part.outline();
+            if !points_ok(&pts) || !in_range(*length) {
+                return Err(bad());
+            }
+            let mut part = part.clone();
+            if !crate::edit::corners::set_wall_length(&mut part.edges, *edge, *length) {
+                return Err(refused(
+                    "the wall does not exist, is a direction change or the length is not positive"
+                        .into(),
+                ));
+            }
+            if !points_ok(&part.outline()) {
+                return Err(bad());
+            }
+            Ok(serde_json::json!({ "part": part }))
         }
         GeometryRequest::WithoutRepeats { points } => {
             if !points_ok(points) {
@@ -728,6 +753,20 @@ mod tests {
         assert_eq!(r["points"].as_array().map(Vec::len), Some(2));
         let c = ask(serde_json::json!({ "op": "part_centre", "part": p.parts[0] })).unwrap();
         assert!(c["centre"]["x"].is_number());
+        // UX-005: a typed wall length keeps the outline's angles.
+        let l = ask(serde_json::json!({ "op": "set_wall_length", "part": p.parts[0], "edge": 0, "length": 20 })).unwrap();
+        let part: crate::model::RoofPart = serde_json::from_value(l["part"].clone()).unwrap();
+        let (e0, e1) = (&p.parts[0].edges, &part.edges);
+        let len = |es: &[crate::model::EdgeDef], i: usize| {
+            es[i].start.distance(es[(i + 1) % es.len()].start)
+        };
+        assert!((len(e1, 0) - 20.0).abs() < 1e-9);
+        assert!(
+            (len(e1, 1) - len(e0, 1)).abs() < 1e-9,
+            "the next wall keeps its length"
+        );
+        assert_eq!(ask(serde_json::json!({ "op": "set_wall_length", "part": p.parts[0], "edge": 99, "length": 5 })).unwrap_err().code, "refused");
+        assert_eq!(ask(serde_json::json!({ "op": "set_wall_length", "part": p.parts[0], "edge": 0, "length": 1e300 })).unwrap_err().code, "out_of_range");
     }
 
     #[test]

@@ -264,6 +264,24 @@ fn patches_json(patches: &Patches) -> Value {
     )
 }
 
+/// Refuses an edit that adds an input problem (`Project::validate`) the
+/// job did not have before. A problem already there (a zero-length wall
+/// from `edit_walls`, which saves, leaving only that building out) does not
+/// block edits of other items (HUNTC-005); indices in the messages are from
+/// 0, as in every tool argument.
+pub(crate) fn refuse_new_problems(before: &Project, after: &Project) -> Result<(), String> {
+    let Err(now) = after.validate() else {
+        return Ok(());
+    };
+    let was = before.validate().err().unwrap_or_default();
+    let new: Vec<String> = now.into_iter().filter(|m| !was.contains(m)).collect();
+    if new.is_empty() {
+        Ok(())
+    } else {
+        Err(new.join("; "))
+    }
+}
+
 fn manual_line(v: &Value, geos: &[tectora_core::roof::RoofGeometry]) -> Result<ManualLine, String> {
     let end = |key: &str| -> Result<[f64; 3], String> {
         let c: Vec<f64> = req(v, key)?;
@@ -284,11 +302,15 @@ fn manual_line(v: &Value, geos: &[tectora_core::roof::RoofGeometry]) -> Result<M
     if !CODES.contains(&code.as_str()) {
         return Err(format!("code `{code}` is not one of {}", CODES.join(", ")));
     }
+    let length = arg_f64(v, "length")?;
+    if let Some(l) = length {
+        tectora_core::edit::check_manual_line_length(l)?;
+    }
     Ok(ManualLine {
         a: end("a")?,
         b: end("b")?,
         code,
-        length: arg_f64(v, "length")?,
+        length,
         label: v
             .get("label")
             .and_then(Value::as_str)
@@ -304,7 +326,7 @@ pub(crate) fn tools() -> Vec<Value> {
     vec![
         json!({
             "name": "edit_walls",
-            "description": "Edit the walls of a part step by step, as in the plan editor. Operations, applied in order: move_point {index, x, y}; insert_point {after, x, y} (new corner on wall `after`, which keeps its roof definition); delete_point {index} (a part keeps at least 3 walls); set_length {index, length} (moves the wall's end point along it); insert_direction_change {index} (a zero-length marker wall at the wall's start that turns the roof, DACAD Richtungswechsel); shift_wall {index, distance} (moves the wall parallel, + outward, its neighbours stretched); rename {name}.",
+            "description": "Edit the walls of a part step by step, as in the plan editor. Operations, applied in order: move_point {index, x, y}; insert_point {after, x, y} (new corner on wall `after`, which keeps its roof definition); delete_point {index} (a part keeps at least 3 walls); set_length {index, length} (the angles stay: the end corner and the corners after it up to the next parallel wall move along the wall, so a rectangle stays a rectangle; with no parallel wall only the end corner moves); insert_direction_change {index} (a zero-length marker wall at the wall's start that turns the roof, DACAD Richtungswechsel); shift_wall {index, distance} (moves the wall parallel, + outward, its neighbours stretched); rename {name}.",
             "inputSchema": schema(json!({
                 "id": id, "part": part,
                 "operations": { "type": "array", "items": { "type": "object", "properties": {
@@ -325,7 +347,7 @@ pub(crate) fn tools() -> Vec<Value> {
                 "dx": { "type": "number" }, "dy": { "type": "number" },
                 "centre": { "type": "array", "items": { "type": "number" }, "description": "rotate/mirror: pivot or a point on the mirror line [x, y]; default the part's centre." },
                 "deg": { "type": "number", "description": "rotate: angle, counter-clockwise; mirror: direction of the mirror line." },
-                "copies": { "type": "integer", "minimum": 0, "maximum": 50 },
+                "copies": { "type": "integer", "minimum": 0, "maximum": 50, "description": "Copies to add (a mirror: 0 or 1)." },
                 "summary": summary_prop(),
             }), &["id", "op", "summary"]),
         }),
@@ -465,12 +487,12 @@ pub(crate) fn tools() -> Vec<Value> {
                     "a": { "type": "array", "items": { "type": "number" } },
                     "b": { "type": "array", "items": { "type": "number" } },
                     "code": { "type": "string", "enum": ["M", "T", "F", "G", "K", "P", "OL", "OR", "OS", "c", "S", "WV", "WH", "WS", "X"] },
-                    "length": { "type": "number", "description": "Length to count instead of the measured one." },
+                    "length": { "type": "number", "minimum": 0, "description": "Length to count instead of the measured one (0 or more)." },
                     "label": { "type": "string" }
                 }, "required": ["a", "b"] } },
                 "faces": { "type": "array", "items": { "type": "object", "properties": {
                     "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } },
-                    "pitch_deg": { "type": "number" }, "label": { "type": "string" }
+                    "pitch_deg": { "type": "number", "minimum": 0, "maximum": 89.9 }, "label": { "type": "string" }
                 }, "required": ["points"] } },
                 "summary": summary_prop(),
             }), &["id", "summary"]),
@@ -607,7 +629,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "export_plan",
-            "description": "Write the roof sheet (A4 landscape plan with line lengths, face areas, pitches and totals; the picture the user adds to the Excel price sheet) to the `exports` folder of the job library as PDF or SVG. The file is named after the job (or `name`); an existing file is never replaced. Returns the path to give the user.",
+            "description": "Write the roof sheet (A4 landscape plan with line lengths, face areas, pitches and totals; the picture the user adds to the Excel price sheet) to the `exports` folder of the job library as PDF or SVG (a PNG can only be saved from the app's Export dialog; there is no PNG here). The file is named after the job (or `name`); an existing file is never replaced. Returns the path to give the user.",
             "inputSchema": schema(json!({
                 "id": id,
                 "format": { "type": "string", "enum": ["pdf", "svg"], "description": "Default: pdf." },
@@ -662,9 +684,7 @@ impl Server {
                 if !moved {
                     return Err("the object already is at these distances".into());
                 }
-                if let Err(e) = p.validate() {
-                    return Err(e.join("; "));
-                }
+                refuse_new_problems(&before, &p)?;
                 let r = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
                 let pl = tectora_core::edit::position::placement(&p, it);
                 Ok(json!({ "saved": r, "placement": pl }))
@@ -690,9 +710,7 @@ impl Server {
                     arg_f64(args, "eave_height")?.unwrap_or(preset.eave_height),
                     arg_f64(args, "overhang")?.unwrap_or(preset.overhang),
                 )?;
-                if let Err(e) = p.validate() {
-                    return Err(e.join("; "));
-                }
+                refuse_new_problems(&before, &p)?;
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
             })(),
             "set_part_height" => (|| {
@@ -712,9 +730,7 @@ impl Server {
                     }
                     _ => return Err("give one of `height` (building) or `eave_height` (every wall)".into()),
                 }
-                if let Err(e) = p.validate() {
-                    return Err(e.join("; "));
-                }
+                refuse_new_problems(&before, &p)?;
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
             })(),
             "clear_roof" => (|| {
@@ -899,6 +915,11 @@ impl Server {
                     return Err("`path` is not accepted: sheets are written to the library's exports folder; pass `name` for the file name".into());
                 }
                 let format = args.get("format").and_then(Value::as_str).unwrap_or("pdf");
+                if format.eq_ignore_ascii_case("png") {
+                    // The app rasterises the sheet in its web view; the core has no
+                    // rasteriser (ARCH-009).
+                    return Err("`png` is not available over MCP: the app draws the PNG in its own window. Use `svg` (the same sheet, opens in any browser or image program) or `pdf`, or tell the user to press PNG in the app's Export dialog".into());
+                }
                 if format != "pdf" && format != "svg" {
                     return Err(format!("`format` must be pdf or svg, not `{format}`"));
                 }
@@ -991,13 +1012,10 @@ impl Server {
                     let len = arg_f64(op, "length")?
                         .filter(|l| *l > 0.0)
                         .ok_or_else(|| at("`length` must be positive".into()))?;
-                    let a = part.edges[i].start;
-                    let b = part.edges[(i + 1) % n].start;
-                    let cur = a.distance(b).max(1e-9);
-                    part.edges[(i + 1) % n].start = Point2::new(
-                        round(a.x + (b.x - a.x) * len / cur, 3),
-                        round(a.y + (b.y - a.y) * len / cur, 3),
-                    );
+                    // As the wall bar's length field: the angles stay (UX-005).
+                    if !tectora_core::edit::corners::set_wall_length(&mut part.edges, i, len) {
+                        return Err(at("the wall is a direction change or has no length".into()));
+                    }
                 }
                 "insert_direction_change" => {
                     let i = edge_index(op, "index", n).map_err(at)?;
@@ -1058,6 +1076,10 @@ impl Server {
         let copies: u32 = opt(args, "copies")?.unwrap_or(0);
         if copies > MAX_COPIES {
             return Err(format!("at most {MAX_COPIES} copies"));
+        }
+        // The second mirror image is the part itself, stacked on it (HUNTC-001).
+        if matches!(m, PlanMap::Mirror { .. }) && copies > 1 {
+            return Err("a mirror adds at most 1 copy (a second mirror image lies on the building itself); use copies 0 or 1, or `rotate` / `move` with copies for a row".into());
         }
         transform_part(&mut p, pi, m, copies);
         self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
@@ -1333,9 +1355,12 @@ impl Server {
             .iter()
             .map(|v| Ok((arg_str(v, "kind")?.to_string(), req::<usize>(v, "index")?)))
             .collect::<Result<_, String>>()?;
-        // Highest index first, so the others keep theirs.
-        list.sort_by_key(|x| std::cmp::Reverse(x.1));
+        // Highest index first within each kind, so the others keep theirs. A
+        // repeated (kind, index) must be adjacent to be dropped, so sort by
+        // both (ERR-001).
+        list.sort();
         list.dedup();
+        list.reverse();
         for (kind, i) in list {
             fn take<T>(v: &mut Vec<T>, i: usize, kind: &str) -> Result<(), String> {
                 if i >= v.len() {
@@ -1464,9 +1489,8 @@ impl Server {
                     let points = super::parse_points(arg(v, "points")?)
                         .map_err(|m| format!("face {i}: {m}"))?;
                     let pitch_deg = arg_f64(v, "pitch_deg")?.unwrap_or(30.0);
-                    if !(0.0..90.0).contains(&pitch_deg) {
-                        return Err(format!("face {i}: pitch_deg must be between 0 and 90"));
-                    }
+                    tectora_core::edit::check_manual_face_pitch(pitch_deg)
+                        .map_err(|m| format!("face {i}: {m}"))?;
                     Ok(ManualFace {
                         points,
                         pitch_deg,
@@ -1687,7 +1711,9 @@ mod tests {
                 &json!({ "id": id, "summary": "w", "windows": [{ "x": 40, "y": 40, "width": 0, "height": 1 }] }),
             )
             .unwrap_err();
-        assert!(e.contains("between"), "{e}");
+        // set_openings' own field check (from the editor-parity work)
+        // answers first; the write check covers the other tools.
+        assert!(e.contains("positive size") || e.contains("between"), "{e}");
     }
 
     #[test]
@@ -2109,6 +2135,182 @@ mod tests {
         assert!(p.parts.is_empty() && p.dormers.is_empty());
         let r = s.call_tool("clear_roof", &json!({ "id": id, "summary": "again" }));
         assert!(r.is_err(), "nothing left to clear");
+    }
+
+    #[test]
+    fn delete_items_deletes_exactly_the_listed_items_in_any_order() {
+        // ERR-001 / TEST-001: a repeated item between other kinds removed
+        // the neighbouring building too.
+        let (mut s, id) = setup();
+        for (k, at) in [(1, 20), (2, 40), (3, 60)] {
+            call(
+                &mut s,
+                "add_shape_part",
+                json!({ "id": id, "shape": "hip", "length": 6, "width": 5, "at": [0, at], "summary": format!("part {k}") }),
+            );
+        }
+        call(
+            &mut s,
+            "set_openings",
+            json!({ "id": id, "summary": "windows",
+                "windows": [
+                    { "x": 2, "y": 1, "width": 0.8, "height": 1.0 },
+                    { "x": 4, "y": 1, "width": 0.8, "height": 1.0 },
+                    { "x": 6, "y": 1, "width": 0.8, "height": 1.0 }] }),
+        );
+        let names = |p: &tectora_core::model::Project| -> Vec<String> {
+            p.parts.iter().map(|x| x.name.clone()).collect()
+        };
+        let before = s.store.load(&id).unwrap();
+        assert_eq!((before.parts.len(), before.windows.len()), (4, 3));
+        let item = |k: &str, i: usize| json!({ "kind": k, "index": i });
+        call(
+            &mut s,
+            "delete_items",
+            json!({ "id": id, "items": [item("part", 1), item("window", 1), item("part", 1)], "summary": "s" }),
+        );
+        let p = s.store.load(&id).unwrap();
+        let mut want = names(&before);
+        want.remove(1);
+        assert_eq!(names(&p), want);
+        assert_eq!(p.windows.len(), 2);
+        // Ascending order deletes the same two.
+        call(
+            &mut s,
+            "delete_items",
+            json!({ "id": id, "items": [item("part", 0), item("part", 2)], "summary": "s" }),
+        );
+        assert_eq!(s.store.load(&id).unwrap().parts.len(), 1);
+        // An item that does not exist saves nothing.
+        let log = s.store.activity(&id).len();
+        assert!(
+            s.call_tool(
+                "delete_items",
+                &json!({ "id": id, "items": [item("dormer", 5)], "summary": "s" })
+            )
+            .is_err()
+        );
+        assert_eq!(s.store.activity(&id).len(), log);
+    }
+
+    #[test]
+    fn moving_a_window_cannot_save_a_window_larger_than_its_face() {
+        // HUNTC-003: -160 m2 roofs were saved by a move.
+        let (mut s, id) = setup();
+        // A window beside the roof is saved; it deducts nothing.
+        call(
+            &mut s,
+            "set_openings",
+            json!({ "id": id, "summary": "far window",
+                "windows": [{ "x": 40, "y": 40, "width": 1.45, "height": 60 }] }),
+        );
+        let before = s.store.load(&id).unwrap();
+        let err = s
+            .call_tool(
+                "transform_items",
+                &json!({ "id": id, "op": "move", "dx": -38, "dy": -38, "summary": "move",
+                    "items": [{ "kind": "window", "index": 0 }] }),
+            )
+            .unwrap_err();
+        assert!(err.contains("larger than"), "{err}");
+        assert_eq!(s.store.load(&id).unwrap(), before, "nothing saved");
+    }
+
+    #[test]
+    fn a_mirror_with_more_than_one_copy_is_refused() {
+        // HUNTC-001: copies 2 saved the building twice on the same spot.
+        let (mut s, id) = setup();
+        let before = s.store.load(&id).unwrap();
+        let err = s
+            .call_tool(
+                "transform_part",
+                &json!({ "id": id, "op": "mirror", "deg": 90, "centre": [12, 4], "copies": 2, "summary": "x" }),
+            )
+            .unwrap_err();
+        assert!(err.contains("mirror adds at most 1"), "{err}");
+        assert_eq!(s.store.load(&id).unwrap(), before);
+    }
+
+    #[test]
+    fn a_bad_item_does_not_block_edits_of_other_items_and_messages_count_from_zero() {
+        // HUNTC-005 / ERR-007.
+        let (mut s, id) = setup();
+        // A window of size 0 is refused where it is made, by its 0-based index.
+        let err = s
+            .call_tool(
+                "set_openings",
+                &json!({ "id": id, "summary": "w", "windows": [
+                    { "x": 2, "y": 1, "width": 0.8, "height": 1.2 },
+                    { "x": 3, "y": 1, "width": 0, "height": 1.2 }] }),
+            )
+            .unwrap_err();
+        assert!(err.contains("window index 1"), "{err}");
+        assert!(s.store.load(&id).unwrap().windows.is_empty());
+        // A zero-length wall saves (only that building is left out) ...
+        call(
+            &mut s,
+            "add_shape_part",
+            json!({ "id": id, "shape": "hip", "length": 6, "width": 5, "at": [0, 20], "summary": "second" }),
+        );
+        call(
+            &mut s,
+            "edit_walls",
+            json!({ "id": id, "part": 0, "summary": "collapse a wall",
+                "operations": [{ "op": "move_point", "index": 1, "x": 0, "y": 0 }] }),
+        );
+        // ... and does not block the height of the other building.
+        call(
+            &mut s,
+            "set_part_height",
+            json!({ "id": id, "part": 1, "height": 4.5, "summary": "second building" }),
+        );
+        // The offer refusal names the faulty building as get_project and calc do.
+        let err = s
+            .call_tool("store_result", &json!({ "id": id, "summary": "x" }))
+            .unwrap_err();
+        assert!(err.contains("Part index 0, edge index"), "{err}");
+    }
+
+    #[test]
+    fn export_plan_says_why_png_is_not_available() {
+        // ARCH-009: the PNG is drawn by the app's web view only.
+        let (mut s, id) = setup();
+        let err = s
+            .call_tool(
+                "export_plan",
+                &json!({ "id": id, "format": "png", "summary": "x" }),
+            )
+            .unwrap_err();
+        assert!(err.contains("svg") && err.contains("app"), "{err}");
+    }
+
+    #[test]
+    fn set_manual_refuses_a_negative_length_and_a_near_vertical_face() {
+        // MATH-005 / MATH-006.
+        let (mut s, id) = setup();
+        let before = s.store.load(&id).unwrap();
+        let line = |l: f64| json!({ "lines": [{ "a": [0, 0, 0], "b": [1, 0, 0], "code": "T", "length": l }] });
+        let face = |d: f64| json!({ "faces": [{ "points": [[20, 0], [24, 0], [24, 3], [20, 3]], "pitch_deg": d }] });
+        for (extra, want) in [
+            (line(-50.0), "length"),
+            (face(89.9999), "pitch_deg"),
+            (face(90.0), "pitch_deg"),
+            (face(-1.0), "pitch_deg"),
+        ] {
+            let mut args = json!({ "id": id, "summary": "x" });
+            args.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let err = s.call_tool("set_manual", &args).unwrap_err();
+            assert!(err.contains(want), "{err}");
+        }
+        assert_eq!(s.store.load(&id).unwrap(), before);
+        call(
+            &mut s,
+            "set_manual",
+            json!({ "id": id, "summary": "x", "lines": [{ "a": [0, 0, 0], "b": [1, 0, 0], "code": "T", "length": 0 }],
+                "faces": [{ "points": [[20, 0], [24, 0], [24, 3], [20, 3]], "pitch_deg": 89.9 }] }),
+        );
     }
 
     #[test]
