@@ -126,6 +126,11 @@ pub struct ActivityEntry {
     /// entries written by Tectora 0.5 and older.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<Project>,
+    /// For a revert: the time of the oldest entry it undid (it undid that
+    /// one and every later one). Lets "revert the latest change" step past
+    /// what a revert already undid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undid_from: Option<u64>,
 }
 
 impl ActivityEntry {
@@ -572,10 +577,14 @@ pub(crate) fn write_synced(tmp: &Path, contents: &[u8]) -> std::io::Result<()> {
 }
 
 fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    write_atomic_bytes(path, contents.as_bytes())
+}
+
+fn write_atomic_bytes(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_extension(format!("{}-{n}.tmp", std::process::id()));
-    write_synced(&tmp, contents.as_bytes())?;
+    write_synced(&tmp, contents)?;
     fs::rename(&tmp, path).inspect_err(|_| {
         let _ = fs::remove_file(&tmp);
     })?;
@@ -1019,7 +1028,7 @@ impl Store {
                 let _creating = self.creation_lock();
                 let id = self.new_id(&project.name);
                 let _lock = self.lock(&id);
-                self.log_and_write(&id, None, project, actor, summary)?;
+                self.log_and_write(&id, None, project, actor, summary, None)?;
                 return Ok(id);
             }
         };
@@ -1042,6 +1051,20 @@ impl Store {
         summary: &str,
         base: Option<&Project>,
     ) -> Result<CheckedSave, StoreError> {
+        self.save_checked_undoing(id, project, actor, summary, base, None)
+    }
+
+    /// [`Store::save_as_checked`] that records, for a revert, the time of
+    /// the oldest entry it undid.
+    fn save_checked_undoing(
+        &self,
+        id: &str,
+        project: &Project,
+        actor: &str,
+        summary: &str,
+        base: Option<&Project>,
+        undid_from: Option<u64>,
+    ) -> Result<CheckedSave, StoreError> {
         self.path(id)?;
         let _lock = self.lock(id);
         let before = match self.load(id) {
@@ -1057,7 +1080,7 @@ impl Store {
             });
         }
         if before.as_ref() != Some(project) {
-            self.log_and_write(id, before, project, actor, summary)?;
+            self.log_and_write(id, before, project, actor, summary, undid_from)?;
         }
         Ok(CheckedSave::Saved { id: id.to_string() })
     }
@@ -1070,6 +1093,7 @@ impl Store {
         project: &Project,
         actor: &str,
         summary: &str,
+        undid_from: Option<u64>,
     ) -> Result<(), StoreError> {
         // A newer file is refused before anything is logged.
         if let Some(version) = fs::read_to_string(self.path(id)?)
@@ -1082,7 +1106,12 @@ impl Store {
                 max: crate::model::SCHEMA_VERSION,
             });
         }
-        // Log first: the app reacts to the project file and then reads the log.
+        // Log first: the app reacts to the project file and then reads the
+        // log. When the file then cannot be written, the entry is taken out
+        // again: it stood for a change that never happened, shown as pending
+        // in the history and the review (audit 2026-11-15 ERR-008).
+        let log_path = self.activity_path(id)?;
+        let log_before = fs::read(&log_path).ok();
         self.append_activity(
             id,
             ActivityEntry {
@@ -1095,9 +1124,15 @@ impl Store {
                     .unwrap_or_default(),
                 before,
                 after: Some(project.clone()),
+                undid_from,
             },
         )?;
-        self.write(id, project)
+        self.write(id, project).inspect_err(|_| {
+            let _ = match &log_before {
+                Some(bytes) => write_atomic_bytes(&log_path, bytes),
+                None => fs::remove_file(&log_path),
+            };
+        })
     }
 
     fn append_activity(&self, id: &str, entry: ActivityEntry) -> Result<(), StoreError> {
@@ -1183,15 +1218,15 @@ impl Store {
         reason: Option<&str>,
     ) -> Result<Project, StoreError> {
         let log = self.activity(id);
-        let last = log
-            .last()
-            .ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
+        let pos = latest_undone(&log).ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
+        // Reverting from `pos` also undoes the reverts logged after it, so
+        // the job ends as it was before that change.
         self.revert_from(
             id,
             &log,
-            log.len() - 1,
+            pos,
             actor,
-            with_reason(reason, format!("{REVERTED_PREFIX}{}", last.summary)),
+            with_reason(reason, format!("{REVERTED_PREFIX}{}", log[pos].summary)),
         )
     }
 
@@ -1301,7 +1336,8 @@ impl Store {
             target = Some(undone);
         }
         let target = target.ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
-        match self.save_as_checked(id, &target, actor, summary, base.as_ref())? {
+        let undid_from = Some(log[pos].ts_ms);
+        match self.save_checked_undoing(id, &target, actor, summary, base.as_ref(), undid_from)? {
             CheckedSave::Saved { .. } => Ok(Some(target)),
             CheckedSave::Conflict { .. } => Ok(None),
         }
@@ -1834,6 +1870,44 @@ fn move_all(moves: &[(PathBuf, PathBuf)]) -> std::io::Result<()> {
 
 /// `what (reason: …)` when a reason is given, else `what`: the sentence
 /// the core wrote stays first, so the app recognises and translates it.
+/// How many log entries before it a revert entry undid: 1 for
+/// `Reverted: …`, n for `Reverted n changes since: …`, 0 for a change.
+fn reverted_count(summary: &str) -> usize {
+    if summary.starts_with(REVERTED_PREFIX) {
+        return 1;
+    }
+    summary
+        .strip_prefix("Reverted ")
+        .and_then(|r| r.split_once(" changes since: "))
+        .and_then(|(n, _)| n.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The latest logged change that no later revert undid. A second "revert
+/// the latest change" used to revert the first revert and so put the change
+/// back (audit 2026-11-15 HUNTIO-002); it now undoes one more step.
+fn latest_undone(log: &[ActivityEntry]) -> Option<usize> {
+    let mut i = log.len();
+    while i > 0 {
+        i -= 1;
+        let e = &log[i];
+        if let Some(from) = e.undid_from {
+            // Everything from that entry on is undone; go on before it.
+            match log[..i].iter().rposition(|x| x.ts_ms == from) {
+                Some(j) => i = j,
+                None => return None,
+            }
+            continue;
+        }
+        // A revert logged before reverts recorded what they undid.
+        match reverted_count(&e.summary) {
+            0 => return Some(i),
+            n => i = i.saturating_sub(n),
+        }
+    }
+    None
+}
+
 fn with_reason(reason: Option<&str>, what: String) -> String {
     match reason.map(str::trim).filter(|r| !r.is_empty()) {
         Some(r) => format!("{what}{REVERT_REASON_OPEN}{r})"),
@@ -2443,6 +2517,68 @@ mod tests {
         let _ = fs::remove_dir_all(&store.dir);
     }
 
+    /// ERR-008 (audit 2026-11-15): a save that fails after its change was
+    /// logged takes the entry out again, so no phantom change is pending.
+    #[test]
+    fn a_failed_write_leaves_no_log_entry() {
+        let store = temp_store("phantom");
+        let a = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
+        let n = store.activity(&id).len();
+        // The job file cannot be replaced: a folder stands in its place.
+        let path = store.path(&id).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::create_dir_all(path.join("blocker")).unwrap();
+        let mut ai = a.clone();
+        ai.parts[0].edges[0].pitch_deg = 44.0;
+        assert!(
+            store
+                .save_as(Some(id.clone()), &ai, "claude", "steeper")
+                .is_err()
+        );
+        assert_eq!(store.activity(&id).len(), n);
+        assert!(store.pending_review(&id).is_none());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// HUNTIO-002: a second "revert the latest change" undoes one more
+    /// step instead of putting back the change the first one undid.
+    #[test]
+    fn reverting_twice_goes_two_steps_back() {
+        let store = temp_store("revert-twice");
+        let a = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
+        let pitch = |p: &Project| p.parts[0].edges[0].pitch_deg;
+        let mut prev = a.clone();
+        for (deg, what) in [(30.0, "to 30"), (20.0, "to 20")] {
+            let mut next = prev.clone();
+            next.parts[0].edges[0].pitch_deg = deg;
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            store
+                .save_as(Some(id.clone()), &next, "claude", what)
+                .unwrap();
+            prev = next;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert_eq!(
+            pitch(&store.revert_last(&id, "claude", None).unwrap()),
+            30.0
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let back = store.revert_last(&id, "claude", None).unwrap();
+        assert_eq!(pitch(&back), pitch(&a));
+        assert_eq!(
+            store.activity(&id).last().unwrap().summary,
+            format!("{REVERTED_PREFIX}to 30")
+        );
+        // A third one never brings a reverted pitch back.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        if let Ok(p) = store.revert_last(&id, "claude", None) {
+            assert_eq!(pitch(&p), pitch(&a));
+        }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
     /// UX-002: a revert's entry starts with the fixed sentence the app
     /// translates, and the AI's reason follows in a fixed form.
     #[test]
@@ -2699,6 +2835,7 @@ mod tests {
             before: None,
             changes: Vec::new(),
             after: Some(old.clone()),
+            undid_from: None,
         };
         fs::write(
             store.activity_dir().join("novak-2.jsonl"),
