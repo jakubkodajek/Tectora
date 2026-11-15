@@ -759,3 +759,67 @@ fn a_lower_garage_against_a_house_is_joined_by_closed_forms() {
         assert!(l.length() >= 0.3, "a line of {} m: {l:?}", l.length());
     }
 }
+
+// ================================================= audit-core-r1 (2026-11-15)
+
+// ------------------------------------------------------- r1 MATH-001
+
+/// The C27 house (12 × 8 m, every wall at 35°, eave 3 m, no overhang) as
+/// DACAD's V1 file stores it, with a 0.6 × 0.6 m hole of height `height`.
+fn c27_walls(height: f64) -> tectora_core::walls::WallList {
+    use std::f64::consts::FRAC_PI_2;
+    use tectora_core::walls::{PlanWall, WallList};
+    let wall = |id: u16, x: f64, y: f64, length: f64, k: f64| PlanWall {
+        id,
+        group: 1,
+        start: Point2::new(x, y),
+        length,
+        stored_length: length,
+        angle_rad: k * FRAC_PI_2,
+        eave_height: 3.0,
+        overhang: 0.0,
+        pitch_deg: 35.0,
+        priority: 0,
+        half_hip: None,
+        breaks: Vec::new(),
+        clad: false,
+        material: tectora_core::model::DEFAULT_MATERIAL,
+    };
+    WallList {
+        walls: vec![
+            wall(1, 0.0, 0.0, 12.0, 0.0),
+            wall(2, 12.0, 0.0, 8.0, 1.0),
+            wall(3, 12.0, 8.0, 12.0, 2.0),
+            wall(4, 0.0, 8.0, 8.0, 3.0),
+        ],
+        chimneys: vec![square(5.7, 1.7, 0.6, 0.6, height)],
+        ..WallList::default()
+    }
+}
+
+/// r1 MATH-001: DACAD stores an opening as a hole of height 0 and a
+/// chimney as a hole with its top height. The wall list kept every hole as
+/// a chimney, and since a chimney below 5 cm is written as the lowest
+/// chimney, a DACAD opening was calculated as a chimney (WH, WS, WV
+/// instead of DACAD's P and verges). The V1 conversion keeps it an
+/// opening: {F 4.0, G 25.25, OL 0.73, OR 0.73, P 0.6, T 40.6}.
+#[test]
+fn a_dacad_hole_of_height_0_is_converted_to_a_roof_opening() {
+    let p = c27_walls(0.0).to_project("C27 opening");
+    assert_eq!(p.chimneys.len(), 0, "{:?}", p.chimneys);
+    assert_eq!(p.roof_openings.len(), 1, "{:?}", p.roof_openings);
+    let roof = calc(&p);
+    assert!(roof.geos[0].error.is_none());
+    near("P", roof.line("P"), 0.6, 0.01);
+    near("OL", roof.line("OL"), 0.73, 0.01);
+    near("OR", roof.line("OR"), 0.73, 0.01);
+    near("T", roof.line("T"), 40.6, 0.01);
+    near("F", roof.line("F"), 4.0, 0.01);
+    near("G", roof.line("G"), 25.25, 0.01);
+    for code in ["WH", "WS", "WV"] {
+        assert_eq!(roof.line(code), 0.0, "{code} on an opening");
+    }
+    // A hole with a top height stays a chimney.
+    let p = c27_walls(9.0).to_project("C27 chimney");
+    assert_eq!((p.chimneys.len(), p.roof_openings.len()), (1, 0));
+}

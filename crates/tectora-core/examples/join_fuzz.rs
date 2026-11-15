@@ -95,6 +95,7 @@ fn main() {
         let mut p: Project = base_project.clone();
         p.dormers.clear();
         p.chimneys.clear();
+        p.roof_openings.clear();
         p.windows.clear();
         p.parts.truncate(1);
         p.parts[0].edges = rect(&mut r, 0.0, 0.0, w, d, eave, &base);
