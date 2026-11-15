@@ -311,3 +311,23 @@ sessions that use it know where things stand.
   `DACAD_ROUND`). Not done: `dormers.ts` still copies `edit::dormers`
   (ADR-0005 inventory); unknown keys below the top level are not kept;
   Tauri-only behaviour (watcher, quit guard, updater) has no automated test.
+
+## 2026-11-15 - pre-release audit 0.9.0 and its core/io fixes (branch claude/project-thread-82j058)
+- Done: whole-app audit with the six reviewers, two bug hunters and
+  verifiers (run 2026-11-15-9d6c06c; summary and boards in the project files,
+  `audit-2026-11-15/`). Fixed here: half-hip pitch under 2° or below the
+  eave is a problem, not a core panic (ERR-010, HUNTC-009); crossing walls
+  of one building are a problem (HUNTC-002); roof defaults stay in the
+  range a new wall accepts (HUNTIO-007); MCP answers a non-UTF-8 line and
+  batches (ERR-002/003); a second AI revert goes one more step back, a
+  failed save logs nothing, log times increase (HUNTIO-002/005, ERR-008,
+  ERRU-009); bundles export only what import accepts, atomically, and bring
+  no unchecked history or program files (ARCH-003, HUNTIO-004/006/014); a
+  removed file returns to its own job and a vanished jobs folder is not
+  re-created (HUNTIO-010/011); folder link plus `..` and UNC paths no longer
+  slip past the AI file check (ARCH-002/006).
+- State: `make check` exit 0 (500 Rust tests, 226 vitest, UI build).
+- Open: the other S2/S3 findings in the audit summary's fix order (MATH-001,
+  MATH-002, MATHC-001, HUNTC-003/007, MATH2-005, ERR-001, ERRU-005/010,
+  TEST-003/009 and the UI/UX S3 list); DormerBar still lets a half-hip
+  pitch go down to 0.1°, which is now reported as a problem.
