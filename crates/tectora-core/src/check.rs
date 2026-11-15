@@ -552,8 +552,19 @@ const IN_LINE: f64 = 0.01;
 /// takes it) whose first roof planes are parallel. A wall's plane is
 /// `z = eave + tan(pitch) · (overhang + d − m·p)` with `m` its outward
 /// normal and `d = m·start`, so two such planes differ by a constant.
+///
+/// `d` is taken from the building's own corner of lowest x and y, not from
+/// the project's origin: two walls count as parallel up to 0.05°, and
+/// measured from an origin hundreds of metres away that angle is
+/// centimetres of `rise` and `depth`, so the same building would be merged
+/// or warned about in one place of the site plan and not in another.
 pub fn parallel_planes(part: &RoofPart) -> Vec<ParallelPlanes> {
     let n = part.edges.len();
+    let low = |f: fn(&crate::model::EdgeDef) -> f64| {
+        let v = part.edges.iter().map(f).fold(f64::INFINITY, f64::min);
+        if v.is_finite() { v } else { 0.0 }
+    };
+    let (rx, ry) = (low(|e| e.start.x), low(|e| e.start.y));
     let wall = |i: usize| {
         let e = &part.edges[i];
         let b = part.edges[(i + 1) % n].start;
@@ -562,7 +573,7 @@ pub fn parallel_planes(part: &RoofPart) -> Vec<ParallelPlanes> {
         let sloped = e.pitch_deg > 0.0 && e.pitch_deg < crate::model::GABLE_PITCH_DEG;
         (sloped && len > IN_LINE && e.direction_rad.is_none() && len.is_finite()).then(|| {
             let m = (dy / len, -dx / len);
-            let d = m.0 * e.start.x + m.1 * e.start.y;
+            let d = m.0 * (e.start.x - rx) + m.1 * (e.start.y - ry);
             let c = e.eave_height + e.pitch_deg.to_radians().tan() * (e.overhang + d);
             (m, d, c, e.pitch_deg)
         })
