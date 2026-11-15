@@ -668,12 +668,19 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer, host: Option<&(EdgeDe
             {
                 let cut = signed_area(&clip_polygon(&plan(f), &c.under)).abs();
                 if cut > 1e-12 {
+                    // Recorded as a deduction, like a window or a chimney:
+                    // the face's outline stays whole, and `area + deducted`
+                    // is what the area check and the calculation sheet
+                    // compare with it (audit MATH2-006).
                     f.area -= cut * sec;
+                    f.deducted += cut * sec;
                     left -= cut;
                 }
             }
             if left > 1e-9 {
-                geos[c.host.0].faces[c.host.1].area -= left * sec;
+                let host = &mut geos[c.host.0].faces[c.host.1];
+                host.area -= left * sec;
+                host.deducted += left * sec;
             }
             removed += signed_area(&c.under).abs() * sec;
             geos[c.host.0].footprints.push(c.under.clone());

@@ -503,3 +503,72 @@ fn a_chimney_without_a_top_height_is_still_a_chimney() {
     near("opening: P", roof.line("P"), 0.6, 0.005);
     assert_eq!(roof.line("WV"), 0.0);
 }
+
+// ------------------------------------------------------------ MATH2-006
+
+/// The T house whose wing front lies in the house's plane (front eave
+/// 2.9 m), which Tectora calculates as one face (`MergedPlanes`), or below
+/// it (2.0 m: a lean-to wing, `WingJoined`).
+fn t_house(front: f64) -> Project {
+    let pts = [
+        (5.0, 0.0),
+        (10.0, 0.0),
+        (10.0, 2.5),
+        (15.0, 2.5),
+        (15.0, 7.5),
+        (0.0, 7.5),
+        (0.0, 2.5),
+        (5.0, 2.5),
+    ];
+    let mut p = project(
+        pts.iter()
+            .enumerate()
+            .map(|(i, &(x, y))| {
+                edge(
+                    x,
+                    y,
+                    if i % 2 == 1 { G } else { 40.0 },
+                    if i == 0 { front } else { 5.0 },
+                    0.5,
+                )
+            })
+            .collect(),
+    );
+    p.parts[0].height = Some(5.0);
+    p
+}
+
+/// MATH2-006: a dormer on a roof Tectora calculated itself took its
+/// footprint off the host face's area without recording it as a
+/// deduction, so the area check saw "1.8 % missing" on a right roof and
+/// the calculation sheet showed `gross - 0 = area`.
+#[test]
+fn a_dormer_on_a_departed_roof_is_recorded_as_a_deduction() {
+    for (front, notice) in [
+        (2.9, WarningKind::MergedPlanes),
+        (2.0, WarningKind::WingJoined),
+    ] {
+        let mut p = t_house(front);
+        let mut d = default_params(DormerKind::Gable, Point2::new(11.5, 3.5), 0.0, 6.4);
+        d.width = 2.0;
+        p.dormers = vec![build_dormer(&d)];
+        let roof = calc(&p);
+        let g = &roof.geos[0];
+        assert!(g.error.is_none(), "front {front}");
+        assert_eq!(kinds(&roof, 0), vec![notice], "front {front}");
+        let dormer: f64 = g
+            .openings
+            .iter()
+            .filter(|o| o.kind == tectora_core::roof::OpeningKind::Dormer)
+            .map(|o| o.area)
+            .sum();
+        assert!(dormer > 1.0, "front {front}: dormer deduction {dormer}");
+        let deducted: f64 = g
+            .faces
+            .iter()
+            .filter(|f| f.edge != usize::MAX)
+            .map(|f| f.deducted)
+            .sum();
+        near(&format!("front {front}: deducted"), deducted, dormer, 1e-6);
+    }
+}
