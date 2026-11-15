@@ -59,6 +59,12 @@ Guards: `app/e2e/editor-ux.e2e.ts`, `app/e2e/fields.e2e.ts`.
 
 ## 2. Every edit recalculates (@errors, @test)
 
+Guards: `app/e2e/recalc.e2e.ts` (undo, redo, AI save, merge on save,
+standard roof, face to building, move, rotate, mirrored copy, window /
+chimney / dormer, flat roof on and off, delete part, Revert in the banner,
+round roof, calculation helper; a move or rotation compares the roof lines,
+since the area does not change).
+
 After each operation that changes the job (draw, standard roof, copy,
 transform, convert a manual face, undo / redo, an AI save, a merge on save)
 the plan, 3D and results must show the new roof without another action.
@@ -88,6 +94,9 @@ inside, identical; with the same, a lower and a higher eave height. Check:
 - the results equal the core's calculation of the saved file
 
 ## 4. Tools that look alike (@ux)
+
+Guards: vitest `i18n.test.ts` "tools that look alike", `app/e2e/objects.e2e.ts`
+"a manual face is drawn neutral and labelled, not like a building".
 
 A roofer must not be able to mistake one tool for another: "Building" draws a
 building with a calculated roof, "Manual face" only adds one face with a

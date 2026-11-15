@@ -14,7 +14,8 @@ fn fixture(name: &str) -> Project {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/check")
         .join(format!("{name}.json"));
-    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    // Through `from_json`, so the older files migrate as they do in the store.
+    Project::from_json(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
 fn kinds(p: &Project) -> Vec<WarningKind> {

@@ -53,9 +53,16 @@ impl std::fmt::Display for CommandError {
 /// input and a kernel panic are errors, never a crash.
 pub fn calc(project: &Project) -> Result<Value, CommandError> {
     check_input(project)?;
-    let mut v =
-        crate::model::guarded(|| crate::report::calc(project)).map_err(CommandError::internal)?;
-    v["stored_result"] = serde_json::to_value(snapshot::status(project)).unwrap_or(Value::Null);
+    // One calculation for the report and the stored result's status.
+    let (mut v, status) = crate::model::guarded(|| {
+        let geos = crate::openings::generate_project(project);
+        (
+            crate::report::calc_of(project, &geos),
+            snapshot::status_of(&geos, project),
+        )
+    })
+    .map_err(CommandError::internal)?;
+    v["stored_result"] = serde_json::to_value(status).unwrap_or(Value::Null);
     Ok(v)
 }
 
@@ -126,6 +133,38 @@ mod tests {
         assert!(v["totals"]["hip_length"].as_f64().unwrap() > 0.0);
         assert!(v.get("stored_result").is_some());
         assert_eq!(v["parts"].as_array().map(Vec::len), Some(1));
+    }
+
+    /// Roof calculations one call of `f` starts (review ARCH-006).
+    fn runs(f: impl FnOnce()) -> u64 {
+        let before = crate::openings::core_runs();
+        f();
+        crate::openings::core_runs() - before
+    }
+
+    #[test]
+    fn one_request_calculates_the_roof_once() {
+        // `calc` calculated the roof 3 times (5 with a stored result) before.
+        let mut p = hip();
+        assert_eq!(runs(|| drop(calc(&p).unwrap())), 1);
+        assert_eq!(runs(|| drop(take_snapshot(&p).unwrap())), 1);
+        assert_eq!(
+            runs(|| drop(crate::snapshot::status(&p))),
+            0,
+            "no stored result"
+        );
+        assert!(p.set_status(crate::model::JobStatus::Offer));
+        assert_eq!(runs(|| drop(calc(&p).unwrap())), 1, "with a stored result");
+        assert_eq!(runs(|| drop(crate::snapshot::status(&p))), 1);
+        // With an object the placements measure it on the bare roof: one
+        // more calculation, of another design.
+        p.chimneys.push(crate::model::Chimney {
+            corners: [(3.0, 3.0), (4.0, 3.0), (4.0, 4.0), (3.0, 4.0)]
+                .map(|(x, y)| crate::geom::Point2::new(x, y))
+                .to_vec(),
+            height: 6.0,
+        });
+        assert_eq!(runs(|| drop(calc(&p).unwrap())), 2, "with a chimney");
     }
 
     #[test]

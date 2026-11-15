@@ -38,6 +38,24 @@ fn opt<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> Result<Option
     }
 }
 
+/// `line_names` of `export_plan`: code → name, at most 64 codes of up to 8
+/// characters and names of up to 60 characters.
+fn line_names_arg(args: &Value) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let names: std::collections::BTreeMap<String, String> =
+        opt(args, "line_names")?.unwrap_or_default();
+    if names.len() > 64
+        || names
+            .iter()
+            .any(|(k, v)| k.chars().count() > 8 || v.chars().count() > 60)
+    {
+        return Err(
+            "`line_names`: at most 64 codes of up to 8 characters, names up to 60 characters"
+                .into(),
+        );
+    }
+    Ok(names)
+}
+
 fn req<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> Result<T, String> {
     opt(args, key)?.ok_or_else(|| format!("missing argument `{key}`"))
 }
@@ -591,6 +609,7 @@ pub(crate) fn tools() -> Vec<Value> {
                 "format": { "type": "string", "enum": ["pdf", "svg"], "description": "Default: pdf." },
                 "name": { "type": "string", "description": "File name without folder or extension; default: the job's id." },
                 "stamp": { "type": "string", "description": "Date on the sheet; default: now (UTC)." },
+                "line_names": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Names of the line codes for the legend at the sheet's foot, in the user's language, e.g. {\"T\": \"Okapy\", \"WV\": \"Napojení čelní\"}; codes without a name are listed without one. Default: no legend." },
                 "summary": summary_prop(),
             }), &["id", "summary"]),
         }),
@@ -818,7 +837,7 @@ impl Server {
                 // drawing must not copy a key or a program into a job that
                 // is later handed over (ARCH-001).
                 let name = src.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !tectora_core::store::Store::opens_directly(name) {
+                if !tectora_core::store::Store::can_attach(name) {
                     return Err(format!(
                         "{}: only drawings, photos and documents can be attached (pdf, png, jpg, …, dwg, xlsx, docx)",
                         src.display()
@@ -888,7 +907,9 @@ impl Server {
                     None => id.clone(),
                 };
                 let path = bundle::export_path_with(&self.store, &name, format)?;
-                let bytes = tectora_core::export::checked_sheet_file(&p, &stamp, format)?;
+                let line_names = line_names_arg(args)?;
+                let bytes =
+                    tectora_core::export::checked_sheet_file_named(&p, &stamp, format, &line_names)?;
                 std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
                 self.live("exported_sheet", Some(&path.display().to_string()), format!("Exported sheet to {}: {summary}", path.display()), Some(&id));
                 Ok(json!({ "id": id, "path": path.display().to_string() }))
@@ -1838,6 +1859,29 @@ mod tests {
     }
 
     #[test]
+    fn a_pitch_over_90_is_refused_as_in_the_wall_bar() {
+        // UX-010: 95 typed for 45 used to make a plane leaning out.
+        let (mut s, id) = setup();
+        let before = s.store.load(&id).unwrap();
+        for pitch in [95.0, 90.0, 178.0] {
+            let err = s
+                .call_tool(
+                    "update_edges",
+                    &json!({ "id": id, "summary": "p", "changes": [{ "index": 0, "pitch_deg": pitch }] }),
+                )
+                .unwrap_err();
+            assert!(err.contains("below 90"), "{pitch}: {err}");
+        }
+        assert_eq!(s.store.load(&id).unwrap().parts, before.parts);
+        call(
+            &mut s,
+            "update_edges",
+            json!({ "id": id, "summary": "p", "changes": [{ "index": 0, "pitch_deg": 89.5 }] }),
+        );
+        assert_eq!(s.store.load(&id).unwrap().parts[0].edges[0].pitch_deg, 89.5);
+    }
+
+    #[test]
     fn all_walls_to_eaves_take_the_given_pitch() {
         // ERR-020: the former gables kept a hard-coded 40°.
         let (mut s, id) = setup();
@@ -2310,6 +2354,28 @@ mod tests {
     }
 
     #[test]
+    fn one_tool_call_calculates_the_roof_once() {
+        // Review ARCH-006: a write calculated it 6 times, get_project up to 9.
+        let (mut s, id) = setup();
+        let runs = |s: &mut Server, name: &str, args: Value| {
+            let before = tectora_core::openings::core_runs();
+            call(s, name, args);
+            tectora_core::openings::core_runs() - before
+        };
+        assert_eq!(runs(&mut s, "get_project", json!({ "id": id })), 1);
+        assert_eq!(runs(&mut s, "calc", json!({ "id": id })), 1);
+        // The write needs one run for the design, which `commit` reuses for
+        // the quantities and the roof trouble.
+        let n = runs(
+            &mut s,
+            "add_part",
+            json!({ "id": id, "summary": "Wing",
+                "part": { "name": "Wing", "points": [[12, 0], [18, 0], [18, 5], [12, 5]], "defaults": { "pitch_deg": 35 } } }),
+        );
+        assert_eq!(n, 1, "a write");
+    }
+
+    #[test]
     fn a_write_that_leaves_a_building_without_roof_says_so_and_calc_names_it() {
         // Review ERR-003 / ARCH-002.
         let (mut s, id) = setup();
@@ -2617,9 +2683,23 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(svg.ends_with("plan.svg"));
+        // The legend of line names, as the app's Export dialog gives it (UX-013).
+        let named = call(
+            &mut s,
+            "export_plan",
+            json!({ "id": id, "format": "svg", "name": "named", "summary": "s",
+                    "line_names": { "T": "Okapy", "F": "Hřebeny" } }),
+        )["path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let text = std::fs::read_to_string(&named).unwrap();
+        assert!(text.contains("T Okapy"), "{text}");
         for bad in [
             json!({ "id": id, "format": "exe", "summary": "s" }),
             json!({ "id": id, "name": "../x", "summary": "s" }),
+            json!({ "id": id, "summary": "s", "line_names": { "T": "x".repeat(61) } }),
+            json!({ "id": id, "summary": "s", "line_names": ["T"] }),
         ] {
             assert!(s.call_tool("export_plan", &bad).is_err());
         }
@@ -2952,6 +3032,286 @@ mod tests {
         let ids: Vec<&str> = broken.iter().map(|b| b["id"].as_str().unwrap()).collect();
         assert_eq!(ids, ["damaged", "newer"]);
         assert_eq!(list["projects"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+}
+
+/// MCP tools no other test called, or called without looking at the result
+/// (TEST-004): the wrapper's arguments (`ts_ms`, `example_id`, `walls`,
+/// `neighbour`, `thickness`) must reach the core operation the editor uses.
+#[cfg(test)]
+mod tool_coverage {
+    use super::*;
+    use tectora_core::store::{Store, now_ms};
+
+    fn server() -> Server {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tectora-mcp-coverage-{}-{}-{n}",
+            now_ms(),
+            std::process::id()
+        ));
+        Server::new(Store::new(dir).unwrap())
+    }
+
+    fn call(s: &mut Server, name: &str, args: Value) -> Value {
+        s.call_tool(name, &args)
+            .unwrap_or_else(|e| panic!("{name}: {e}"))
+    }
+
+    fn example(s: &mut Server, example_id: &str) -> String {
+        let r = call(
+            s,
+            "create_from_example",
+            json!({ "example_id": example_id, "summary": "start" }),
+        );
+        r["id"].as_str().unwrap().to_string()
+    }
+
+    /// The patches a `roof_helper` call returned, as the core's map.
+    fn patches(r: &Value) -> Patches {
+        r["patches"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no patches in {r}"))
+            .iter()
+            .map(|p| {
+                (
+                    p["edge"].as_u64().unwrap() as usize,
+                    serde_json::from_value(p["set"].clone()).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    /// `patches` with only the fields that change the edge (what
+    /// `apply_patches` reports).
+    fn applied(edges: &[tectora_core::EdgeDef], patches: &Patches) -> Patches {
+        let mut es = edges.to_vec();
+        apply_patches(&mut es, patches)
+    }
+
+    #[test]
+    fn revert_to_undoes_every_change_since_the_given_step() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        let original = s.store.load(&id).unwrap();
+        for (k, pitch) in [35.0, 36.0, 37.0].into_iter().enumerate() {
+            // One millisecond apart: the log tells changes apart by ts_ms.
+            std::thread::sleep(std::time::Duration::from_millis(3));
+            call(
+                &mut s,
+                "update_edges",
+                json!({ "id": id, "changes": [{ "index": k, "pitch_deg": pitch }], "summary": format!("step {k}") }),
+            );
+        }
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let steps = history.as_array().unwrap();
+        // Newest first: step 2, step 1, step 0, start.
+        assert_eq!(steps[2]["summary"], "step 0", "{history}");
+        let first = steps[2]["ts_ms"].as_u64().unwrap();
+        let r = call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": first, "summary": "Back to the example" }),
+        );
+        assert_eq!(r["reverted"], true);
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(
+            serde_json::to_value(&p.parts).unwrap(),
+            serde_json::to_value(&original.parts).unwrap()
+        );
+        let log = s.store.activity(&id);
+        assert_eq!(log.len(), 5, "start, 3 steps, one revert");
+        let last = &log[4].summary;
+        assert!(last.contains("Reverted 3 changes since: step 0"), "{last}");
+        assert!(last.contains("Back to the example"), "{last}");
+        // An unknown step changes nothing.
+        let e = s
+            .call_tool(
+                "revert_to",
+                &json!({ "id": id, "ts_ms": 1u64, "summary": "x" }),
+            )
+            .unwrap_err();
+        assert!(e.contains("no recorded change at 1"), "{e}");
+        assert_eq!(s.store.activity(&id).len(), 5);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn create_from_example_makes_the_example_job() {
+        let mut s = server();
+        let list = call(&mut s, "list_examples", json!({}));
+        let ids: Vec<&str> = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect();
+        let want: Vec<&str> = EXAMPLES.iter().map(|e| e.id).collect();
+        assert_eq!(ids, want);
+        for ex in EXAMPLES {
+            let id = example(&mut s, ex.id);
+            let p = s.store.load(&id).unwrap();
+            let core = tectora_core::examples::find(ex.id).unwrap().project();
+            assert_eq!(p.name, core.name, "{}", ex.id);
+            assert_eq!(
+                serde_json::to_value(&p.parts).unwrap(),
+                serde_json::to_value(&core.parts).unwrap(),
+                "{}",
+                ex.id
+            );
+        }
+        let r = call(
+            &mut s,
+            "create_from_example",
+            json!({ "example_id": "hip", "name": "Novák", "summary": "s" }),
+        );
+        let p = s.store.load(r["id"].as_str().unwrap()).unwrap();
+        assert_eq!(p.name, "Novák");
+        let e = s
+            .call_tool(
+                "create_from_example",
+                &json!({ "example_id": "nope", "summary": "s" }),
+            )
+            .unwrap_err();
+        assert!(e.contains("list_examples"), "{e}");
+        assert_eq!(
+            s.store.list().len(),
+            EXAMPLES.len() + 1,
+            "the unknown example made no job"
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn roof_helper_merge_sets_the_core_values() {
+        let mut s = server();
+        // L-shape: walls 2 and 4 both face north; wall 4 (the outer one)
+        // is the reference, wall 2 lies 7 m further in and takes its plane.
+        let id = example(&mut s, "l-shape");
+        let mut p = s.store.load(&id).unwrap();
+        p.parts[0].edges[2].eave_height -= 0.8;
+        p.parts[0].edges[2].pitch_deg = 30.0;
+        s.store.save(Some(id.clone()), &p).unwrap();
+        let es = p.parts[0].edges.clone();
+        assert_eq!(hc::same_way(&es, 4), vec![2, 4]);
+        for target in ["eave", "overhang"] {
+            let t: Target = serde_json::from_value(json!(target)).unwrap();
+            let want = applied(&es, &hc::merge_onto(&es, 4, &[2], t));
+            assert!(!want.is_empty(), "{target}");
+            // Default walls (all parallel ones facing the same way) and the
+            // explicit list give the same.
+            for walls in [Value::Null, json!([2])] {
+                let mut args = json!({ "id": id, "edge": 4, "tool": "merge", "target": target });
+                if !walls.is_null() {
+                    args["walls"] = walls;
+                }
+                let r = call(&mut s, "roof_helper", args);
+                assert_eq!(r["saved"], false);
+                assert_eq!(patches(&r), want, "{target}");
+            }
+        }
+        let want = applied(&es, &hc::merge_by_moving(&es, 4, &[2]).unwrap());
+        let r = call(
+            &mut s,
+            "roof_helper",
+            json!({ "id": id, "edge": 4, "tool": "merge", "target": "position", "walls": [2] }),
+        );
+        assert_eq!(patches(&r), want);
+        let r = call(
+            &mut s,
+            "roof_helper",
+            json!({ "id": id, "edge": 4, "tool": "merge", "target": "eave", "apply": true, "summary": "One plane" }),
+        );
+        assert_eq!(r["saved"], true);
+        let saved = s.store.load(&id).unwrap();
+        let want = applied(&es, &hc::merge_onto(&es, 4, &[2], Target::Eave));
+        let wall2 = want[&2].eave_height.unwrap();
+        assert!((saved.parts[0].edges[2].eave_height - wall2).abs() < 1e-9);
+        assert_eq!(saved.parts[0].edges[2].pitch_deg, es[4].pitch_deg);
+        assert!(
+            s.call_tool(
+                "roof_helper",
+                &json!({ "id": id, "edge": 4, "tool": "merge", "target": "pitch" })
+            )
+            .unwrap_err()
+            .contains("eave, overhang or position")
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn roof_helper_hip_sets_the_core_values() {
+        let mut s = server();
+        let id = example(&mut s, "hip");
+        let es = s.store.load(&id).unwrap().parts[0].edges.clone();
+        let n = es.len();
+        // Measured case of hip_pitches_from_eaves: hip 7.5, pieces 5 and 4.5.
+        type Hip = fn(&[tectora_core::EdgeDef], usize, usize, f64, f64, f64) -> Option<Patches>;
+        let cases: [(&str, f64, f64, Hip); 2] = [
+            ("rafters", 6.0, 5.5, hc::hip_pitches),
+            ("eaves", 5.0, 4.5, hc::hip_pitches_from_eaves),
+        ];
+        for (by, a, b, f) in cases {
+            for (neighbour, other) in [("next", 1), ("prev", n - 1)] {
+                let want = applied(&es, &f(&es, 0, other, 7.5, a, b).unwrap());
+                let r = call(
+                    &mut s,
+                    "roof_helper",
+                    json!({ "id": id, "edge": 0, "tool": "hip", "neighbour": neighbour,
+                            "hip": 7.5, "by": by, "first": a, "second": b }),
+                );
+                let got = patches(&r);
+                assert_eq!(got, want, "{by} {neighbour}");
+                assert_eq!(
+                    got.keys().copied().collect::<Vec<_>>(),
+                    {
+                        let mut k = vec![0, other];
+                        k.sort_unstable();
+                        k
+                    },
+                    "{by} {neighbour}: this wall and the named neighbour"
+                );
+            }
+        }
+        let e = s
+            .call_tool(
+                "roof_helper",
+                &json!({ "id": id, "edge": 0, "tool": "hip", "hip": 7.5, "first": 5 }),
+            )
+            .unwrap_err();
+        assert!(e.contains("second"), "{e}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn roof_helper_build_up_returns_the_core_patch() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        let es = s.store.load(&id).unwrap().parts[0].edges.clone();
+        for (eave, e) in [
+            ("normal", BuildUpEave::Normal),
+            ("horizontal", BuildUpEave::Horizontal),
+            ("vertical", BuildUpEave::Vertical),
+        ] {
+            let core = hc::build_up(&es[0], 0.2, e).unwrap();
+            let want = applied(&es, &Patches::from([(0, core)]));
+            let r = call(
+                &mut s,
+                "roof_helper",
+                json!({ "id": id, "edge": 0, "tool": "build_up", "thickness": 0.2, "eave": eave }),
+            );
+            assert_eq!(patches(&r), want, "{eave}");
+        }
+        let gable = es.iter().position(|e| e.is_gable()).unwrap();
+        assert!(
+            s.call_tool(
+                "roof_helper",
+                &json!({ "id": id, "edge": gable, "tool": "build_up", "thickness": 0.2 })
+            )
+            .is_err()
+        );
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 }

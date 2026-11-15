@@ -14,8 +14,9 @@ use tectora_core::diff::diff;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::geom::Point2;
 use tectora_core::model::{GABLE_PITCH_DEG, MIN_PITCH_DEG};
-use tectora_core::quantities::{area_by_pitch, dacad_line_totals, roof_totals};
+use tectora_core::quantities::{area_by_pitch_of, dacad_line_totals_of, roof_totals_of};
 use tectora_core::roof::LineKind;
+use tectora_core::roof::RoofGeometry;
 use tectora_core::settings::Settings;
 use tectora_core::store::{CheckedSave, LiveStatus, Store, StoreError, now_ms};
 use tectora_core::{
@@ -247,7 +248,11 @@ pub(crate) fn export_ready(project: &Project) -> Result<(), String> {
 /// left a building out, so an AI learns at once that its change broke a
 /// roof instead of reading "Saved" (review ERR-003). Empty when all is well.
 fn roof_trouble(project: &Project) -> Option<Value> {
-    let geos = tectora_core::openings::generate_project(project);
+    roof_trouble_of(&tectora_core::openings::generate_project(project), project)
+}
+
+/// [`roof_trouble`] of roofs already calculated.
+fn roof_trouble_of(geos: &[RoofGeometry], project: &Project) -> Option<Value> {
     let errors: Vec<Value> = geos
         .iter()
         .enumerate()
@@ -273,14 +278,20 @@ fn roof_trouble(project: &Project) -> Option<Value> {
 }
 
 fn quantities(project: &Project) -> Value {
-    let t = roof_totals(project);
+    quantities_of(&tectora_core::openings::generate_project(project), project)
+}
+
+/// [`quantities`] of roofs already calculated: one request calculates the
+/// roof once and hands it to every total (review ARCH-006).
+fn quantities_of(geos: &[RoofGeometry], project: &Project) -> Value {
+    let t = roof_totals_of(geos, project);
     let mut q = json!({
         "roof_area_m2": round(t.roof_area, 2),
         "ridge_height_m": round(t.ridge_height, 2),
         "hip_count": t.hip_count,
         "valley_count": t.valley_count,
-        "lines_by_dacad_code_m": dacad_line_totals(project),
-        "area_by_pitch_m2": area_by_pitch(project)
+        "lines_by_dacad_code_m": dacad_line_totals_of(geos, project),
+        "area_by_pitch_m2": area_by_pitch_of(geos)
             .iter()
             .map(|&(p, a)| json!({ "pitch_deg": p, "area": a }))
             .collect::<Vec<_>>(),
@@ -291,28 +302,27 @@ fn quantities(project: &Project) -> Value {
             .collect::<Vec<_>>(),
     });
     // With more than one material: the lines each one's offer needs.
-    let by_line = tectora_core::quantities::lines_by_material(project);
+    let by_line = tectora_core::quantities::lines_by_material_of(geos);
     if by_line.len() > 1 {
         q["lines_by_material_m"] = by_line
             .into_iter()
             .map(|(m, lines)| json!({ "material": m, "name": project.material_name(m), "lines_by_dacad_code_m": lines }))
             .collect();
     }
-    q["heights_m"] = heights(project);
+    q["heights_m"] = heights(geos, project);
     q
 }
 
 /// The heights a section drawing labels, per part: the distinct heights of
 /// its level eaves and pitch breaks and its highest point, so they can be
 /// checked against the drawing's labels without reading every line.
-fn heights(project: &Project) -> Value {
+fn heights(geos: &[RoofGeometry], project: &Project) -> Value {
     let distinct = |mut v: Vec<f64>| {
         v.sort_by(f64::total_cmp);
         v.dedup_by(|a, b| (*a - *b).abs() < 0.015);
         v
     };
-    tectora_core::openings::generate_project(project)
-        .iter()
+    geos.iter()
         .zip(&project.parts)
         .enumerate()
         .map(|(i, (g, part))| {
@@ -348,11 +358,8 @@ fn parse_status(s: &str) -> Result<JobStatus, String> {
 /// Applies the optional per-edge fields of `v` to `edge`.
 fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
     if let Some(p) = arg_f64(v, "pitch_deg")? {
-        if !(MIN_PITCH_DEG..90.0).contains(&p) {
-            return Err(format!(
-                "pitch_deg {p} must be at least {MIN_PITCH_DEG} and below 90 (use gable for 90)"
-            ));
-        }
+        // The editor's wall bar refuses the same values (UX-010).
+        tectora_core::edit::check_eave_pitch(p, MIN_PITCH_DEG)?;
         edge.pitch_deg = p;
     }
     match v.get("gable").and_then(Value::as_bool) {
@@ -1004,6 +1011,7 @@ impl Server {
             }
         };
         let project = &project;
+        let geos = tectora_core::openings::generate_project(project);
         self.live_follow("changed", None, summary.to_string(), &id);
         let changes = before
             .as_ref()
@@ -1014,10 +1022,10 @@ impl Server {
             "saved": true,
             "note": "Saved. The change is now visible in the Tectora app for the user to review.",
             "changes": changes,
-            "quantities": quantities(project),
+            "quantities": quantities_of(&geos, project),
             "parts": project.parts.iter().map(describe_part).collect::<Vec<_>>(),
         });
-        if let Some(t) = roof_trouble(project) {
+        if let Some(t) = roof_trouble_of(&geos, project) {
             out["roof_trouble"] = t;
         }
         Ok(out)
@@ -1209,6 +1217,7 @@ impl Server {
                     .enumerate()
                     .map(|(i, d)| more::describe_dormer(i, d, &host))
                     .collect();
+                let geos = tectora_core::openings::generate_project(&p);
                 Ok(json!({
                     "id": id,
                     "name": p.name,
@@ -1227,8 +1236,8 @@ impl Server {
                     "flat_roof": p.flat_roof,
                     "materials": (1..=tectora_core::model::DACAD_MATERIALS).map(|m| json!({ "material": m, "name": p.material_name(m) })).collect::<Vec<_>>(),
                     "files": self.store.attachments(&id).iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
-                    "stored_result": tectora_core::snapshot::status(&p),
-                    "quantities": quantities(&p),
+                    "stored_result": tectora_core::snapshot::status_of(&geos, &p),
+                    "quantities": quantities_of(&geos, &p),
                 }))
             }
             "calc" => {
@@ -1239,13 +1248,14 @@ impl Server {
                     format!("Calculating “{}”", p.name),
                     Some(&id),
                 );
+                let geos = tectora_core::openings::generate_project(&p);
                 let parts: Vec<Value> = p
                     .parts
                     .iter()
-                    .zip(tectora_core::openings::generate_project(&p))
+                    .zip(&geos)
                     .map(|(part, geo)| {
                         // Net of the core's negative lines, as the totals.
-                        let q = tectora_core::quantities::part_quantities(&geo);
+                        let q = tectora_core::quantities::part_quantities(geo);
                         let mut v = json!({ "name": part.name, "quantities": q });
                         if !geo.warnings.is_empty() {
                             v["warnings"] = geo.warnings.iter().map(warning).collect();
@@ -1265,10 +1275,10 @@ impl Server {
                     .collect();
                 let mut out = json!({
                     "id": id,
-                    "total": quantities(&p),
+                    "total": quantities_of(&geos, &p),
                     "parts": parts,
                     "engine_version": tectora_core::snapshot::ENGINE_VERSION,
-                    "stored_result": tectora_core::snapshot::status(&p),
+                    "stored_result": tectora_core::snapshot::status_of(&geos, &p),
                 });
                 // Input the calculation left out (a building with a wall
                 // under 1 cm, …): its figures are missing from the totals.
@@ -1326,6 +1336,7 @@ impl Server {
                         "length and width must be positive and pitch between 0 and 90".into(),
                     );
                 }
+                tectora_core::edit::check_eave_pitch(pitch, f64::MIN_POSITIVE)?;
                 let mut p = Project::new(arg_str(args, "name")?);
                 p.parts.push(standard_roof(
                     kind,

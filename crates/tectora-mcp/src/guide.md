@@ -151,6 +151,9 @@ The tools cover every operation of the Tectora editor:
   reads them.
   `export_plan` writes the roof sheet (plan with line lengths, areas and
   pitches) as PDF or SVG into the `exports` folder and returns the path.
+  Pass `line_names` (code → name in the user's language, e.g.
+  `{"T": "Okapy", "WV": "Napojení čelní"}`) for a legend of the line codes
+  at the sheet's foot, as the app's sheet has.
 - `get_schema`: the JSON Schema of the `.tectora` file.
 
 ## Stored result

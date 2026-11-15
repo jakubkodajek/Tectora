@@ -452,6 +452,7 @@
   },
   "$id": "https://github.com/jakubkodajek/tectora/blob/main/docs/tectora.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "properties": {
     "chimneys": {
       "default": [],

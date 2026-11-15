@@ -5,7 +5,7 @@
 use serde_json::{Value, json};
 
 use crate::Project;
-use crate::quantities::{dacad_line_totals, manual_quantities, part_quantities};
+use crate::quantities::{dacad_line_totals_of, manual_quantities, part_quantities};
 use crate::roof::RoofQuantities;
 
 /// Roof geometry and quantities for every part, the area of each
@@ -14,14 +14,20 @@ use crate::roof::RoofQuantities;
 /// DACAD error the calculation ended with is in each part's
 /// `geometry.error`.
 pub fn calc(project: &Project) -> Value {
+    calc_of(project, &crate::openings::generate_project(project))
+}
+
+/// [`calc`] of roofs already calculated (`openings::generate_project`), so
+/// a caller that needs them for more calculates them once.
+pub fn calc_of(project: &Project, geos: &[crate::roof::RoofGeometry]) -> Value {
     let mut total = RoofQuantities::default();
     let parts: Vec<Value> = project
         .parts
         .iter()
-        .zip(crate::openings::generate_project(project))
+        .zip(geos)
         .map(|(part, geometry)| {
             // Net of the core's negative lines, as the totals.
-            let q = part_quantities(&geometry);
+            let q = part_quantities(geometry);
             total.add(&q);
             json!({ "name": part.name, "geometry": geometry, "quantities": q })
         })
@@ -39,7 +45,7 @@ pub fn calc(project: &Project) -> Value {
         "parts": parts,
         "manual_faces": manual_faces,
         "totals": total,
-        "codes": dacad_line_totals(project),
+        "codes": dacad_line_totals_of(geos, project),
         "problems": project.problems(),
         // Each object's distances from the eave and the sides of its face
         // (editor dimension lines; `edit::position`).

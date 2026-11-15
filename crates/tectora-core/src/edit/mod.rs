@@ -120,6 +120,25 @@ pub fn apply_patches(edges: &mut [EdgeDef], patches: &Patches) -> Patches {
     applied
 }
 
+/// Checks the pitch typed for an eave wall (wall bar, New job, MCP
+/// `update_edges` and `create_standard_roof`): at least `min` and below
+/// 90°. 90° is a gable, set with the eave / gable switch; a pitch over 90°
+/// (a plane leaning out, which DACAD's core takes up to 178°) is almost
+/// always a typo (95 for 45) and is refused at the input (review UX-010).
+/// Files that already carry one still open: the file limits
+/// (`EdgeDef::problems`) keep DACAD's 178°.
+pub fn check_eave_pitch(p: f64, min: f64) -> Result<(), String> {
+    if !p.is_finite() || p < min {
+        return Err(format!("pitch_deg {p} must be at least {min} and below 90"));
+    }
+    if p >= 90.0 {
+        return Err(format!(
+            "pitch_deg {p} must be below 90: use gable for a 90° wall; a pitch over 90° is not taken"
+        ));
+    }
+    Ok(())
+}
+
 /// Rounds to `digits` decimals, halves away from zero; the editor rounds the
 /// same way (`app/src/lib/rounding.ts`, checked by `tests/edit_parity.rs`).
 pub(crate) fn round_to(v: f64, digits: i32) -> f64 {
@@ -265,6 +284,21 @@ pub fn plain_edge(start: Point2, pitch_deg: f64, eave_height: f64, overhang: f64
 mod tests {
     use super::*;
     use crate::model::{Chimney, ManualLine};
+
+    #[test]
+    fn a_typed_eave_pitch_over_90_is_refused_but_files_keep_dacads_range() {
+        for ok in [2.0, 45.0, 89.99] {
+            assert!(check_eave_pitch(ok, 2.0).is_ok(), "{ok}");
+        }
+        for bad in [1.9, 90.0, 95.0, 178.0, f64::NAN, f64::INFINITY] {
+            assert!(check_eave_pitch(bad, 2.0).is_err(), "{bad}");
+        }
+        // A job saved with a leaning plane still opens (UX-010).
+        let mut e = plain_edge(Point2::new(0.0, 0.0), 95.0, 3.0, 0.5);
+        assert_eq!(e.problems().count(), 0);
+        e.pitch_deg = 179.0;
+        assert!(e.problems().count() > 0);
+    }
 
     #[test]
     fn clear_roof_leaves_an_empty_canvas_and_keeps_the_job() {

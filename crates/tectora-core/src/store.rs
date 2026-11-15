@@ -1573,24 +1573,38 @@ impl Store {
         Ok(self.dir.join(FILES_DIR).join(id))
     }
 
-    /// Path of attachment `name` of job `id`.
-    /// Whether an attached file may be opened with the system's default app
-    /// by one click: drawings, photos, documents and spreadsheets. Anything
-    /// else (`.exe`, `.command`, `.lnk`, `.js`, `.app`, …) may have come in a
-    /// received bundle; extracted by Tectora it carries no "downloaded from
-    /// the internet" mark, so the system would run it without a warning. The
-    /// app shows such a file in its folder instead.
-    pub fn opens_directly(name: &str) -> bool {
-        const SAFE: &[&str] = &[
+    /// Whether a file of this name may be attached through the MCP server:
+    /// drawings, photos, documents and spreadsheets, also the types that do
+    /// not open by one click ([`Store::opens_directly`]).
+    pub fn can_attach(name: &str) -> bool {
+        const ATTACHABLE: &[&str] = &[
             "pdf", "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "heic", "svg", "txt",
             "csv", "dxf", "dwg", "xlsx", "xls", "ods", "docx", "doc", "odt",
         ];
         // Only the last extension counts: `plan.pdf.exe` is an `.exe`.
         name.rsplit_once('.')
             .map(|(stem, ext)| {
-                !stem.is_empty() && SAFE.contains(&ext.to_ascii_lowercase().as_str())
+                !stem.is_empty() && ATTACHABLE.contains(&ext.to_ascii_lowercase().as_str())
             })
             .unwrap_or(false)
+    }
+
+    /// Whether an attached file may be opened with the system's default app
+    /// by one click: drawings, photos and documents that carry no script.
+    /// Anything else (`.exe`, `.command`, `.lnk`, `.js`, `.app`, ...) may
+    /// have come in a received bundle; extracted by Tectora it carries no
+    /// "downloaded from the internet" mark, so the system would run it
+    /// without a warning. The same holds for `.svg` (the browser runs its
+    /// script) and the legacy `.xls` and `.doc` (macros, and Office opens
+    /// them without Protected View), so those, like `.xlsm`, are shown in
+    /// their folder instead (ARCH-005). The same on macOS and Windows.
+    pub fn opens_directly(name: &str) -> bool {
+        const WITH_CODE: &[&str] = &["svg", "xls", "doc"];
+        let ext = name
+            .rsplit_once('.')
+            .map(|(_, ext)| ext.to_ascii_lowercase())
+            .unwrap_or_default();
+        Self::can_attach(name) && !WITH_CODE.contains(&ext.as_str())
     }
 
     pub fn attachment_path(&self, id: &str, name: &str) -> Result<PathBuf, FileError> {
@@ -1886,6 +1900,13 @@ mod tests {
         for ok in ["plan.pdf", "Foto.JPG", "nabidka.xlsx", "rez A-A.dwg"] {
             assert!(Store::opens_directly(ok), "{ok}");
         }
+        // ARCH-005: these can carry scripts or macros and no download mark,
+        // so their folder is shown; they can still be attached.
+        for risky in ["plan.svg", "PLAN.SVG", "offer.xls", "letter.doc", "a.b.xls"] {
+            assert!(!Store::opens_directly(risky), "{risky}");
+            assert!(Store::can_attach(risky), "{risky}");
+        }
+        assert!(!Store::can_attach("x.exe") && !Store::can_attach("x.xlsm"));
         for bad in [
             "plan.pdf.exe",
             "Plan strechy.pdf.command",

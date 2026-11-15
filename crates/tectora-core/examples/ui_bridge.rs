@@ -287,9 +287,14 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
                 arg::<String>(a, "title")?,
                 arg::<String>(a, "stamp")?,
             );
-            let (list, svg) = tectora_core::export::checked(&arg::<Project>(a, "project")?, &opts)
+            let project = arg::<Project>(a, "project")?;
+            let names =
+                arg::<Option<BTreeMap<String, String>>>(a, "lineNames")?.unwrap_or_default();
+            let (list, svg) = tectora_core::export::checked_named(&project, &opts, &names)
                 .map_err(|d| coded("out_of_range", d))?;
-            Ok(serde_json::json!({ "list": list, "svg": svg }))
+            let summary = tectora_core::export::checked_summary(&project, &opts)
+                .map_err(|d| coded("out_of_range", d))?;
+            Ok(serde_json::json!({ "list": list, "svg": svg, "summary": summary }))
         }
         "export_plan_file" => {
             let path = PathBuf::from(arg::<String>(a, "path")?);
@@ -298,10 +303,13 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
                 .and_then(|e| e.to_str())
                 .unwrap_or_default()
                 .to_ascii_lowercase();
-            let bytes = tectora_core::export::checked_sheet_file(
+            let names =
+                arg::<Option<BTreeMap<String, String>>>(a, "lineNames")?.unwrap_or_default();
+            let bytes = tectora_core::export::checked_sheet_file_named(
                 &arg::<Project>(a, "project")?,
                 &arg::<String>(a, "stamp")?,
                 &ext,
+                &names,
             )
             .map_err(|d| coded("out_of_range", d))?;
             std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
@@ -321,11 +329,14 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         "take_open_errors" => Ok(serde_json::json!([])),
         "create_standard" | "standard_part" => {
             let kind: StandardRoof = arg(a, "kind")?;
+            let pitch: f64 = arg(a, "pitchDeg")?;
+            tectora_core::edit::check_eave_pitch(pitch, f64::MIN_POSITIVE)
+                .map_err(|d| coded("out_of_range", d))?;
             let part = standard_roof(
                 kind,
                 arg(a, "length")?,
                 arg(a, "width")?,
-                arg(a, "pitchDeg")?,
+                pitch,
                 arg(a, "eaveHeight")?,
                 arg(a, "overhang")?,
             );
