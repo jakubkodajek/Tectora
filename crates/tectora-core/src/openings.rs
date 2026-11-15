@@ -596,6 +596,66 @@ fn without_objects(project: &Project) -> Project {
     bare
 }
 
+/// Buildings farther than this from the origin are calculated moved to it, m
+/// (the core reads float32: far away its areas and corners lose a share of a
+/// square metre and several millimetres).
+const NEAR_ORIGIN: f64 = 20.0;
+
+/// Runs `f`, a departure of the one building of `bare`, in a frame moved
+/// to the building (whole metres) when it stands far from the origin, and
+/// moves the roof back.
+fn in_local_frame(
+    bare: &Project,
+    f: impl Fn(&Project) -> Result<RoofGeometry, String>,
+) -> Result<RoofGeometry, String> {
+    let Some(part) = bare.parts.first().filter(|_| bare.parts.len() == 1) else {
+        return f(bare);
+    };
+    let pts = part.outline();
+    if pts.is_empty() || !pts.iter().all(|p| p.x.is_finite() && p.y.is_finite()) {
+        return f(bare);
+    }
+    let n = pts.len() as f64;
+    let (cx, cy) = (
+        pts.iter().map(|p| p.x).sum::<f64>() / n,
+        pts.iter().map(|p| p.y).sum::<f64>() / n,
+    );
+    if cx.abs().max(cy.abs()) <= NEAR_ORIGIN {
+        return f(bare);
+    }
+    let (ox, oy) = (cx.round(), cy.round());
+    let mut local = bare.clone();
+    for e in local.parts.iter_mut().flat_map(|p| p.edges.iter_mut()) {
+        e.start = Point2::new(e.start.x - ox, e.start.y - oy);
+    }
+    let mut geo = f(&local)?;
+    let back = |q: &mut [f64; 3]| {
+        q[0] += ox;
+        q[1] += oy;
+    };
+    for q in geo.faces.iter_mut().flat_map(|f| f.polygon.iter_mut()) {
+        back(q);
+    }
+    for l in geo.lines.iter_mut() {
+        back(&mut l.a);
+        back(&mut l.b);
+    }
+    for q in geo.gables.iter_mut().flatten() {
+        back(q);
+    }
+    for q in geo
+        .clad_faces
+        .iter_mut()
+        .flat_map(|c| c.pieces.iter_mut().flatten())
+    {
+        back(q);
+    }
+    for p in geo.footprints.iter_mut().flatten() {
+        *p = Point2::new(p.x + ox, p.y + oy);
+    }
+    Ok(geo)
+}
+
 fn has_objects(project: &Project) -> bool {
     !(project.dormers.is_empty()
         && project.chimneys.is_empty()
@@ -724,12 +784,12 @@ fn depart_logged(
     } else {
         kind
     };
-    match crate::coplanar::merged(&bare) {
+    match in_local_frame(&bare, crate::coplanar::merged) {
         Ok(geo) => return with_objects(alone, geo),
         Err(why) => log.push(format!("planes joined: {why}")),
     }
     if matches!(kind, K::OpenFaces | K::Cut) {
-        match crate::wing_split::split_roof(&bare).0 {
+        match in_local_frame(&bare, |p| crate::wing_split::split_roof(p).0) {
             Ok(geo) => return with_objects(alone, geo),
             Err(why) => log.push(format!("wing split: {why}")),
         }
@@ -739,12 +799,12 @@ fn depart_logged(
     if let Some(straight) = crate::straighten::straightened(part) {
         let mut sbare = bare.clone();
         sbare.parts = vec![straight];
-        match crate::coplanar::merged(&sbare) {
+        match in_local_frame(&sbare, crate::coplanar::merged) {
             Ok(geo) => return with_objects(alone, geo),
             Err(why) => log.push(format!("straightened: planes joined: {why}")),
         }
         if matches!(kind, K::OpenFaces | K::Cut) {
-            match crate::wing_split::split_roof(&sbare).0 {
+            match in_local_frame(&sbare, |p| crate::wing_split::split_roof(p).0) {
                 Ok(geo) => return with_objects(alone, geo),
                 Err(why) => log.push(format!("straightened: wing split: {why}")),
             }
@@ -856,7 +916,7 @@ fn merge_steps(project: &Project, geos: &mut [RoofGeometry]) {
             continue;
         }
         let alone = only_part(project, k);
-        let Some(mut geo) = crate::coplanar::merged(&without_objects(&alone))
+        let Some(mut geo) = in_local_frame(&without_objects(&alone), crate::coplanar::merged)
             .ok()
             .and_then(|geo| with_objects(&alone, geo))
         else {

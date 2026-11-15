@@ -158,14 +158,6 @@ fn line_at_zero(v: [f64; 3]) -> Option<f64> {
     ((at3 - v[2]).abs() <= LINEAR_TOL).then_some(v[0] - slope * d1)
 }
 
-/// Value at offset 0 of the parabola through the three samples.
-fn parabola_at_zero(v: [f64; 3]) -> f64 {
-    let [d1, d2, d3] = OFFSETS;
-    v[0] * (d2 * d3) / ((d1 - d2) * (d1 - d3))
-        + v[1] * (d1 * d3) / ((d2 - d1) * (d2 - d3))
-        + v[2] * (d1 * d2) / ((d3 - d1) * (d3 - d2))
-}
-
 fn point_at_zero(p: [[f64; 3]; 3]) -> Option<[f64; 3]> {
     let mut out = [0.0; 3];
     for (k, o) in out.iter_mut().enumerate() {
@@ -212,7 +204,9 @@ fn extrapolate(r: &[RoofGeometry]) -> Option<RoofGeometry> {
             return None;
         }
         f.polygon = poly_at_zero([&a.faces[i].polygon, &fb.polygon, &fc.polygon])?;
-        f.area = parabola_at_zero([a.faces[i].area, fb.area, fc.area]);
+        // From the polygon (f64), not the parabola through three float32
+        // areas, which is off by a share of a square metre far from the origin.
+        f.area = crate::check::area3(&f.polygon);
     }
     for (i, l) in out.lines.iter_mut().enumerate() {
         let (lb, lc) = (&b.lines[i], &c.lines[i]);
