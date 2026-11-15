@@ -294,11 +294,38 @@ fn split(part: &RoofPart, c: &Cut) -> (RoofPart, RoofPart, Vec<usize>) {
     (house, wing, house_map)
 }
 
+/// A wing peeled off the building: its part, for each of its walls the wall
+/// of the drawn building (`None` for the new gable), the ends of its cut and
+/// the height of the house's roof over the cut.
+struct Peeled {
+    wing: RoofPart,
+    walls: Vec<Option<usize>>,
+    ends: (Point2, Point2),
+    house_top: f64,
+}
+
+/// The most wings peeled off one building.
+pub(crate) const MAX_WINGS: usize = 4;
+/// The most core runs (joins) for one building, over all the ways of
+/// peeling its wings.
+pub(crate) const MAX_RUNS: usize = 24;
+
+/// The state of one search for the wings of a building.
+struct Search<'a> {
+    bare: &'a Project,
+    drawn: &'a RoofPart,
+    in_plane: Vec<usize>,
+    runs: usize,
+    why: String,
+}
+
 /// The roof of the one building of `bare` (no dormers, chimneys, openings
-/// or windows; the caller applies those to the result) with a wing cut
-/// off and joined to the house, and the number of cuts calculated (at most
-/// [`MAX_CUTS`]). `None` when no cut gives a roof that passes
-/// [`crate::check::sound`].
+/// or windows; the caller applies those to the result) with its low wings
+/// cut off and joined to the house, and the number of cuts of the first
+/// level calculated (at most [`MAX_CUTS`]). Wings are peeled one after
+/// another (at most [`MAX_WINGS`], at most [`MAX_RUNS`] core runs in all)
+/// and all joined to the house in one run. `Err` when no way gives a roof
+/// that passes [`crate::check::sound`].
 pub(crate) fn split_roof(bare: &Project) -> (Result<RoofGeometry, String>, usize) {
     let [part] = &bare.parts[..] else {
         return (Err("not one pitched building".into()), 0);
@@ -306,7 +333,6 @@ pub(crate) fn split_roof(bare: &Project) -> (Result<RoofGeometry, String>, usize
     if bare.flat_roof {
         return (Err("not one pitched building".into()), 0);
     }
-    let pts = part.outline();
     // A wing whose plane lies within a few centimetres of the house's is
     // one plane with it (`coplanar.rs`), never a lean-to: cut off, its
     // roof would lie in the house's overhang.
@@ -314,108 +340,201 @@ pub(crate) fn split_roof(bare: &Project) -> (Result<RoofGeometry, String>, usize
         .iter()
         .map(|p| p.outer)
         .collect();
+    let mut search = Search {
+        bare,
+        drawn: part,
+        in_plane,
+        runs: 0,
+        why: String::from("no wing to cut off"),
+    };
+    let identity: Vec<usize> = (0..part.edges.len()).collect();
     let mut tried = 0;
-    let mut why = String::from("no wing to cut off");
-    for c in cuts(part) {
-        if c.wing_walls.iter().flatten().any(|w| in_plane.contains(w)) {
-            why = "the wing's plane lies in the house's".into();
-            continue;
-        }
-        tried += 1;
-        let (house, wing, house_map) = split(part, &c);
-        let mut p = bare.clone();
-        p.parts = vec![house, wing];
-        let geos = match crate::engine::generate(&p) {
-            Ok(geos) => geos,
-            Err(e) => {
-                why = e.to_string();
+    let found = search.peel(part, &identity, &mut Vec::new(), Some(&mut tried));
+    match found {
+        Some(geo) => (Ok(geo), tried),
+        None => (Err(search.why), tried),
+    }
+}
+
+impl Search<'_> {
+    /// Cuts a wing off `house` (whose walls are `map` of the drawn building's),
+    /// joins it with the wings peeled before; where the core stops on that,
+    /// peels the next wing off the rest of the house.
+    fn peel(
+        &mut self,
+        house: &RoofPart,
+        map: &[usize],
+        peeled: &mut Vec<Peeled>,
+        mut tried: Option<&mut usize>,
+    ) -> Option<RoofGeometry> {
+        let pts = house.outline();
+        for c in cuts(house) {
+            if self.runs >= MAX_RUNS {
+                self.why = "too many cuts to calculate".into();
+                return None;
+            }
+            let drawn_wall = |w: &usize| map.get(*w).copied();
+            let wing_walls: Vec<Option<usize>> = c
+                .wing_walls
+                .iter()
+                .map(|w| w.and_then(|w| drawn_wall(&w)))
+                .collect();
+            if wing_walls
+                .iter()
+                .flatten()
+                .any(|w| self.in_plane.contains(w))
+            {
+                self.why = "the wing's plane lies in the house's".into();
                 continue;
             }
-        };
-        if geos.len() != 2 || geos.iter().any(|g| g.error.is_some() || g.faces.is_empty()) {
-            why = "house or wing without roof".into();
-            continue;
+            let (Some(&ci), Some(&cj)) = (
+                c.wing.first().and_then(|&v| pts.get(v)),
+                c.wing.last().and_then(|&v| pts.get(v)),
+            ) else {
+                continue;
+            };
+            let (rest, wing, house_map) = split(house, &c);
+            if let Some(t) = tried.as_deref_mut() {
+                *t += 1;
+            }
+            self.runs += 1;
+            let rest_map: Vec<usize> = house_map
+                .iter()
+                .map(|&w| map.get(w).copied().unwrap_or(usize::MAX))
+                .collect();
+            peeled.push(Peeled {
+                wing,
+                walls: wing_walls,
+                ends: (ci, cj),
+                house_top: c.house_top,
+            });
+            let mut p = self.bare.clone();
+            p.parts = std::iter::once(rest.clone())
+                .chain(peeled.iter().map(|w| w.wing.clone()))
+                .collect();
+            let result = match crate::engine::generate(&p) {
+                Ok(geos) => self.accept(geos, peeled, &rest_map),
+                Err(e) => {
+                    let dacad = matches!(e, crate::engine::Failure::Dacad(_));
+                    self.why = e.to_string();
+                    if dacad && peeled.len() < MAX_WINGS {
+                        self.peel(&rest, &rest_map, peeled, None)
+                    } else {
+                        None
+                    }
+                }
+            };
+            peeled.pop();
+            if result.is_some() {
+                return result;
+            }
         }
-        // The wing's roof must end under the house's roof at the house
+        None
+    }
+
+    /// The joined roofs of house and wings as the building's roof, when they
+    /// pass the checks.
+    fn accept(
+        &mut self,
+        geos: Vec<RoofGeometry>,
+        peeled: &[Peeled],
+        house_map: &[usize],
+    ) -> Option<RoofGeometry> {
+        if geos.len() != peeled.len() + 1
+            || geos.iter().any(|g| g.error.is_some() || g.faces.is_empty())
+        {
+            self.why = "house or wing without roof".into();
+            return None;
+        }
+        // Each wing's roof must end under the house's roof at the house
         // wall: one that reaches the wall line above the house's plane is
         // no lean-to, and the part reaching into the house would show in
         // the figures.
-        let (Some(&ci), Some(&cj)) = (
-            c.wing.first().and_then(|&v| pts.get(v)),
-            c.wing.last().and_then(|&v| pts.get(v)),
-        ) else {
-            continue;
-        };
-        let len = ci.distance(cj).max(EPS);
-        // Positive towards the house.
-        let behind =
-            |q: &[f64; 3]| ((ci.y - cj.y) * (q[0] - cj.x) - (ci.x - cj.x) * (q[1] - cj.y)) / len;
-        let wing_top = geos[1]
-            .faces
-            .iter()
-            .flat_map(|f| f.polygon.iter())
-            .filter(|q| behind(q) > -ON_LINE)
-            .map(|q| q[2])
-            .fold(f64::NEG_INFINITY, f64::max);
-        if wing_top > c.house_top + 1e-3 {
-            why = format!(
-                "the wing reaches the house wall at {wing_top} m, the house's roof is at {} m",
-                c.house_top
-            );
-            continue;
+        for (w, g) in peeled.iter().zip(geos.iter().skip(1)) {
+            let (ci, cj) = w.ends;
+            let len = ci.distance(cj).max(EPS);
+            // Positive towards the house.
+            let behind = |q: &[f64; 3]| {
+                ((ci.y - cj.y) * (q[0] - cj.x) - (ci.x - cj.x) * (q[1] - cj.y)) / len
+            };
+            let wing_top = g
+                .faces
+                .iter()
+                .flat_map(|f| f.polygon.iter())
+                .filter(|q| behind(q) > -ON_LINE)
+                .map(|q| q[2])
+                .fold(f64::NEG_INFINITY, f64::max);
+            if wing_top > w.house_top + 1e-3 {
+                self.why = format!(
+                    "the wing reaches the house wall at {wing_top} m, the house's roof is at {} m",
+                    w.house_top
+                );
+                return None;
+            }
         }
-        let geo = combine(geos, &c, &house_map);
-        match crate::check::sound(part, &geo, crate::check::Fit::JOINED) {
-            Ok(()) => return (Ok(geo), tried),
-            Err(e) => why = e,
+        let walls: Vec<&[Option<usize>]> = peeled.iter().map(|w| &w.walls[..]).collect();
+        let geo = combine(geos, &walls, house_map);
+        match crate::check::sound(self.drawn, &geo, crate::check::Fit::JOINED) {
+            Ok(()) => Some(geo),
+            Err(e) => {
+                self.why = e;
+                None
+            }
         }
     }
-    (Err(why), tried)
 }
 
-/// The roofs of house and wing as the one building's roof, faces and
+/// The roofs of house and wings as the one building's roof, faces and
 /// warnings naming the building's walls.
-fn combine(geos: Vec<RoofGeometry>, c: &Cut, house_map: &[usize]) -> RoofGeometry {
+fn combine(
+    geos: Vec<RoofGeometry>,
+    wings: &[&[Option<usize>]],
+    house_map: &[usize],
+) -> RoofGeometry {
     let mut it = geos.into_iter();
-    let (mut house, mut wing) = (it.next().unwrap_or_default(), it.next().unwrap_or_default());
+    let mut house = it.next().unwrap_or_default();
     let map_house = |e: usize| house_map.get(e).copied().unwrap_or(usize::MAX);
-    // Faces of the gable against the house (none; it is vertical) or of a
-    // dormer (usize::MAX) keep no wall.
-    let map_wing = |e: usize| c.wing_walls.get(e).copied().flatten().unwrap_or(usize::MAX);
     for f in house.faces.iter_mut().filter(|f| f.edge != usize::MAX) {
         f.edge = map_house(f.edge);
     }
-    for f in wing.faces.iter_mut().filter(|f| f.edge != usize::MAX) {
-        f.edge = map_wing(f.edge);
-    }
-    // A warning naming the wing's new gable keeps the walls it can name.
     for w in house.warnings.iter_mut() {
         w.edges = w.edges.iter().map(|&e| map_house(e)).collect();
         w.edges.retain(|&e| e != usize::MAX);
     }
-    for w in wing.warnings.iter_mut() {
-        w.edges = w.edges.iter().map(|&e| map_wing(e)).collect();
-        w.edges.retain(|&e| e != usize::MAX);
-    }
     let mut g = house;
-    g.faces.append(&mut wing.faces);
-    g.lines.append(&mut wing.lines);
-    g.gables.append(&mut wing.gables);
-    g.clad_area += wing.clad_area;
-    g.clad_faces.append(&mut wing.clad_faces);
-    g.clad_materials.append(&mut wing.clad_materials);
-    g.openings.append(&mut wing.openings);
-    g.other_cuts += wing.other_cuts;
-    g.cut_lines.append(&mut wing.cut_lines);
-    g.minus_lines.append(&mut wing.minus_lines);
-    g.footprints.append(&mut wing.footprints);
-    g.window_cuts.append(&mut wing.window_cuts);
-    g.warnings.append(&mut wing.warnings);
+    let mut all: Vec<usize> = Vec::new();
+    for (mut wing, walls) in it.zip(wings) {
+        // Faces of the gable against the house (none; it is vertical) or of
+        // a dormer (usize::MAX) keep no wall.
+        let map_wing = |e: usize| walls.get(e).copied().flatten().unwrap_or(usize::MAX);
+        for f in wing.faces.iter_mut().filter(|f| f.edge != usize::MAX) {
+            f.edge = map_wing(f.edge);
+        }
+        // A warning naming the wing's new gable keeps the walls it can name.
+        for w in wing.warnings.iter_mut() {
+            w.edges = w.edges.iter().map(|&e| map_wing(e)).collect();
+            w.edges.retain(|&e| e != usize::MAX);
+        }
+        g.faces.append(&mut wing.faces);
+        g.lines.append(&mut wing.lines);
+        g.gables.append(&mut wing.gables);
+        g.clad_area += wing.clad_area;
+        g.clad_faces.append(&mut wing.clad_faces);
+        g.clad_materials.append(&mut wing.clad_materials);
+        g.openings.append(&mut wing.openings);
+        g.other_cuts += wing.other_cuts;
+        g.cut_lines.append(&mut wing.cut_lines);
+        g.minus_lines.append(&mut wing.minus_lines);
+        g.footprints.append(&mut wing.footprints);
+        g.window_cuts.append(&mut wing.window_cuts);
+        g.warnings.append(&mut wing.warnings);
+        all.extend(walls.iter().flatten().copied());
+    }
     g.joined_with.clear();
-    let mut walls: Vec<usize> = c.wing_walls.iter().flatten().copied().collect();
-    walls.sort_unstable();
+    all.sort_unstable();
+    all.dedup();
     g.warnings.push(RoofWarning {
-        edges: walls,
+        edges: all,
         ..RoofWarning::new(WarningKind::WingJoined, 0.0)
     });
     g
@@ -495,5 +614,21 @@ mod tests {
         assert_eq!(c.len(), MAX_CUTS);
         assert!(c.windows(2).all(|w| w[0].area <= w[1].area));
         assert!((c[0].area - 12.5).abs() < 1e-9, "{}", c[0].area);
+    }
+
+    /// The peel is bounded on any input: at most `MAX_RUNS` core runs and
+    /// `MAX_WINGS` levels for the combs, and none over `MAX_WALLS`.
+    #[test]
+    fn the_peel_is_bounded() {
+        for k in [2, 4, 10, 15] {
+            let p = comb(k);
+            let (_, runs) = split_roof(&p);
+            assert!(runs <= MAX_RUNS, "{k} wings: {runs} core runs");
+            assert!(runs > 0, "{k} wings");
+        }
+        assert!(MAX_WINGS >= 2 && MAX_RUNS >= MAX_CUTS);
+        for k in [16, 60, 124] {
+            assert_eq!(split_roof(&comb(k)).1, 0, "{k} wings");
+        }
     }
 }
