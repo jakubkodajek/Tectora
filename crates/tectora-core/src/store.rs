@@ -61,6 +61,11 @@ pub struct TrashEntry {
     pub actor: String,
     /// One sentence on why it was deleted.
     pub summary: String,
+    /// For a removed file: the trash entry of its job, while that job is
+    /// deleted too. Its id may then be taken by a new job, which must not
+    /// receive the file (audit 2026-11-15 HUNTIO-011).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_in_trash: Option<String>,
 }
 
 /// A file attached to a job.
@@ -672,6 +677,23 @@ fn slug(name: &str) -> String {
 }
 
 impl Store {
+    /// Refuses to write when the jobs folder itself is gone (deleted, a
+    /// network drive or USB disk disconnected): it used to be created
+    /// again, empty, and the next saves went into it while the jobs were
+    /// elsewhere (audit 2026-11-15 HUNTIO-010).
+    fn library_present(&self) -> Result<(), StoreError> {
+        if self.dir.is_dir() {
+            return Ok(());
+        }
+        Err(StoreError::io(
+            None,
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("the jobs folder {} is missing", self.dir.display()),
+            ),
+        ))
+    }
+
     pub fn new(dir: PathBuf) -> std::io::Result<Self> {
         fs::create_dir_all(&dir)?;
         Ok(Self::at(dir))
@@ -920,6 +942,7 @@ impl Store {
     /// one step for every process, so two jobs created with one name at the
     /// same moment get two ids (TEST-001). Best effort, like [`Store::lock`].
     fn creation_lock(&self) -> Option<fs::File> {
+        self.library_present().ok()?;
         fs::create_dir_all(self.activity_dir()).ok()?;
         let file = fs::OpenOptions::new()
             .create(true)
@@ -977,6 +1000,7 @@ impl Store {
     /// Writes the file; the caller holds the job's lock.
     fn write(&self, id: &str, project: &Project) -> Result<(), StoreError> {
         let path = self.path(id)?;
+        self.library_present()?;
         if let Some(version) = fs::read_to_string(&path)
             .ok()
             .and_then(|t| newer_format(&t))
@@ -1002,6 +1026,7 @@ impl Store {
     /// write reports its own error.
     fn lock(&self, id: &str) -> Option<fs::File> {
         self.path(id).ok()?;
+        self.library_present().ok()?;
         fs::create_dir_all(self.activity_dir()).ok()?;
         let file = fs::OpenOptions::new()
             .create(true)
@@ -1144,6 +1169,7 @@ impl Store {
     }
 
     fn append_activity(&self, id: &str, entry: ActivityEntry) -> Result<(), StoreError> {
+        self.library_present()?;
         let io = |e| StoreError::io(Some(id), e);
         fs::create_dir_all(self.activity_dir()).map_err(io)?;
         let path = self.activity_path(id)?;
@@ -1463,6 +1489,7 @@ impl Store {
             ts_ms: now_ms(),
             actor: actor.to_string(),
             summary: summary.to_string(),
+            job_in_trash: None,
         };
         // The note first: a job moved to the trash can always be restored.
         let noted = self.write_trash_info(&folder, &info);
@@ -1473,8 +1500,29 @@ impl Store {
             let _ = fs::remove_dir(&folder);
             return Err(io(e));
         }
+        // Files removed from this job earlier now belong to the deleted job.
+        self.relink_removed_files(
+            |e| e.id == id && e.job_in_trash.is_none(),
+            |e| {
+                e.job_in_trash = Some(info.entry.clone());
+            },
+        );
         self.prune_trash();
         Ok(info)
+    }
+
+    /// Rewrites the notes of the removed files `pick` selects.
+    fn relink_removed_files(
+        &self,
+        pick: impl Fn(&TrashEntry) -> bool,
+        change: impl Fn(&mut TrashEntry),
+    ) {
+        for mut e in self.trash() {
+            if e.file.is_some() && pick(&e) {
+                change(&mut e);
+                let _ = self.write_trash_info(&self.trash_dir().join(&e.entry), &e);
+            }
+        }
     }
 
     /// Removes job `id`, its history and files for good (a half-imported
@@ -1565,7 +1613,9 @@ impl Store {
             .ok_or_else(|| StoreError::NotFound(entry.to_string()))?;
         let io = |e| StoreError::io(Some(&info.id), e);
         if let Some(name) = &info.file {
-            if !self.exists(&info.id) {
+            // Its job is deleted (another job may have its id now): the job
+            // has to come back first.
+            if info.job_in_trash.is_some() || !self.exists(&info.id) {
                 return Err(StoreError::NotFound(info.id.clone()));
             }
             let src = folder.join("files").join(name);
@@ -1616,6 +1666,15 @@ impl Store {
         ];
         move_all(&moves).map_err(io)?;
         let _ = fs::remove_dir_all(&folder);
+        // Files removed from the job before it was deleted can come back
+        // into it again, under the id it has now.
+        self.relink_removed_files(
+            |e| e.job_in_trash.as_deref() == Some(entry),
+            |e| {
+                e.id = id.clone();
+                e.job_in_trash = None;
+            },
+        );
         Ok(id)
     }
 
@@ -1832,9 +1891,15 @@ impl Store {
             ts_ms: now_ms(),
             actor: actor.to_string(),
             summary: summary.to_string(),
+            job_in_trash: None,
         };
-        self.write_trash_info(&folder, &info)
-            .map_err(|e| FileError::io(&folder, e))?;
+        // Without its note the file could not be found in the trash again:
+        // it goes back to the job.
+        if let Err(e) = self.write_trash_info(&folder, &info) {
+            let _ = fs::rename(dest.join(name), &path);
+            let _ = fs::remove_dir_all(&folder);
+            return Err(FileError::io(&folder, e));
+        }
         self.prune_trash();
         Ok(info)
     }
@@ -1850,7 +1915,8 @@ impl Store {
     }
 
     pub fn set_live(&self, status: &LiveStatus) {
-        if fs::create_dir_all(self.activity_dir()).is_ok()
+        if self.dir.is_dir()
+            && fs::create_dir_all(self.activity_dir()).is_ok()
             && let Ok(text) = serde_json::to_string(status)
         {
             let _ = write_atomic(&self.activity_dir().join(LIVE_FILE), &text);
@@ -2533,6 +2599,56 @@ mod tests {
         let _ = fs::remove_dir_all(&store.dir);
     }
 
+    #[test]
+    fn a_vanished_jobs_folder_is_reported_not_created_again() {
+        let store = temp_store("vanished");
+        let p = examples::find("hip").unwrap().project();
+        store.save_as(None, &p, USER_ACTOR, "create").unwrap();
+        fs::remove_dir_all(&store.dir).unwrap();
+        assert!(store.scan().is_err());
+        store.set_live(&LiveStatus {
+            ts_ms: 1,
+            actor: "claude".into(),
+            message: "x".into(),
+            project_id: None,
+            follow: false,
+            kind: None,
+            name: None,
+        });
+        assert!(store.save_as(None, &p, "claude", "again").is_err());
+        assert!(store.save(None, &p).is_err());
+        assert!(!store.dir.exists());
+    }
+
+    /// HUNTIO-011: a file removed from a job that was then deleted does not
+    /// go into a new job that took the old id; it comes back with its job.
+    #[test]
+    fn a_removed_file_returns_to_its_own_job() {
+        let store = temp_store("trash-file");
+        let p = examples::find("hip").unwrap().project();
+        let mut named = p.clone();
+        named.name = "D".into();
+        let old = store.save_as(None, &named, USER_ACTOR, "create").unwrap();
+        store.add_attachment(&old, "plan.pdf", b"%PDF old").unwrap();
+        let file = store
+            .remove_attachment(&old, "plan.pdf", USER_ACTOR, "not needed")
+            .unwrap();
+        let job = store.delete(&old, USER_ACTOR, "done").unwrap();
+        let new = store.save_as(None, &named, USER_ACTOR, "create").unwrap();
+        assert_eq!(new, old, "the new job takes the free id");
+        assert!(store.restore(&file.entry).is_err());
+        assert!(store.attachments(&new).is_empty());
+        let back = store.restore(&job.entry).unwrap();
+        assert_ne!(back, new);
+        assert_eq!(store.restore(&file.entry).unwrap(), back);
+        assert_eq!(
+            fs::read(store.attachment_path(&back, "plan.pdf").unwrap()).unwrap(),
+            b"%PDF old"
+        );
+        assert!(store.attachments(&new).is_empty());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
     /// HUNTIO-005, ERRU-009: every entry is later than the one before, so
     /// a log from a clock that is ahead never makes a new change look
     /// accepted, and two saves in one millisecond get distinct times.
@@ -2766,6 +2882,7 @@ mod tests {
             ts_ms: 1,
             actor: USER_ACTOR.into(),
             summary: "long ago".into(),
+            job_in_trash: None,
         };
         fs::write(old.join(TRASH_INFO), serde_json::to_string(&stale).unwrap()).unwrap();
         let e = store.delete(&id, "claude", "Old draft").unwrap();
