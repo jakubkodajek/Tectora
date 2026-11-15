@@ -968,6 +968,24 @@ impl Server {
         }
     }
 
+    /// Parts from which a job may take long enough to need the deadline of
+    /// [`Server::within`]: the join of the roofs grows with the square of
+    /// them. Smaller jobs are calculated on the calling thread.
+    const HEAVY_PARTS: usize = 30;
+
+    /// `f` at once for a small job, within the commit timeout for a heavy one.
+    fn bounded<T: Send + 'static>(
+        &self,
+        project: &Project,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> Option<T> {
+        if project.parts.len() < Self::HEAVY_PARTS {
+            Some(f())
+        } else {
+            self.within(f)
+        }
+    }
+
     /// Runs `f` on its own thread and waits for it at most the commit
     /// timeout; `None` when it took longer (it then finishes unobserved and
     /// no other one starts until it has) or panicked.
@@ -1088,7 +1106,8 @@ impl Server {
             false
         } else {
             let (b, p) = (before.cloned(), project.clone());
-            match self.within(move || tectora_core::edit::check_windows_write(b.as_ref(), &p)) {
+            let check = move || tectora_core::edit::check_windows_write(b.as_ref(), &p);
+            match self.bounded(project, check) {
                 Some(r) => {
                     r?;
                     false
@@ -1117,7 +1136,9 @@ impl Server {
         };
         let project = &project;
         let p = project.clone();
-        let geos = self.within(move || tectora_core::openings::generate_project(&p));
+        let geos = self.bounded(project, move || {
+            tectora_core::openings::generate_project(&p)
+        });
         self.live_follow("changed", None, summary.to_string(), &id);
         let changes = before
             .as_ref()
