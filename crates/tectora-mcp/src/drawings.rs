@@ -30,7 +30,7 @@ pub(crate) const CONTENT_KEY: &str = "$mcp_content";
 
 fn source_props() -> Value {
     json!({
-        "path": { "type": "string", "description": "Absolute path of the PDF (e.g. from list_drawings)." },
+        "path": { "type": "string", "description": "Absolute path of the PDF (e.g. from list_drawings). A file outside the jobs folder and the drawings inbox is refused until the user allows it in the app." },
         "id": { "type": "string", "description": "Job id, with `file`: read an attached drawing instead of `path`." },
         "file": { "type": "string", "description": "Name of the job's attached file (see list_files)." },
         "page": { "type": "integer", "description": "Page index from 0 (default 0)." },
@@ -150,9 +150,7 @@ impl Server {
         ) {
             (Some(p), _) => {
                 let p = PathBuf::from(p);
-                if !p.is_absolute() {
-                    return Err("`path` must be an absolute path".into());
-                }
+                self.readable_path(&p, "read_drawing")?;
                 Ok(p)
             }
             (None, Some(id)) => {

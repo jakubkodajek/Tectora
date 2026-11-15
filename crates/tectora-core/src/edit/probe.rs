@@ -114,6 +114,14 @@ pub fn snap_to_roof(geos: &[RoofGeometry], p: Point2, tol: f64) -> [f64; 3] {
 /// End points of the roof lines other than eaves (ridge, hip and valley
 /// corners), highest first: the points the "point in space" helper offers.
 pub fn roof_corner_points(geos: &[RoofGeometry]) -> Vec<[f64; 3]> {
+    roof_corner_points_kinded(geos)
+        .into_iter()
+        .map(|(q, _)| q)
+        .collect()
+}
+
+/// [`roof_corner_points`] with the kind of the line that first reached each.
+pub fn roof_corner_points_kinded(geos: &[RoofGeometry]) -> Vec<([f64; 3], LineKind)> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for l in geos.iter().flat_map(|g| &g.lines) {
@@ -122,11 +130,11 @@ pub fn roof_corner_points(geos: &[RoofGeometry]) -> Vec<[f64; 3]> {
         }
         for q in [l.a, l.b] {
             if seen.insert(key(&q)) {
-                out.push(q);
+                out.push((q, l.kind));
             }
         }
     }
-    out.sort_by(|a, b| b[2].total_cmp(&a[2]));
+    out.sort_by(|a, b| b.0[2].total_cmp(&a.0[2]));
     out
 }
 

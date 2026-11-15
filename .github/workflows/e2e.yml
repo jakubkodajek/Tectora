@@ -11,6 +11,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read-only token: the job only builds and tests (ARCH-007).
+permissions:
+  contents: read
+
 concurrency:
   group: e2e-${{ github.ref }}
   cancel-in-progress: true

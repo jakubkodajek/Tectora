@@ -42,3 +42,30 @@ describe("translations", () => {
     }
   });
 });
+
+// Edge-cases class 4 (tools that look alike, TEST-012): "Building" draws a
+// building with a calculated roof, "Manual face" adds one face with a pitch,
+// "Flat roof" switches the whole job. A roofer must tell them apart by label
+// and hint in every language.
+describe("tools that look alike", () => {
+  const tools = ["tool.draw", "tool.face", "tool.flat", "tool.standard", "tool.line"] as const;
+  it("building, manual face and flat roof have distinct labels and hints in every language", () => {
+    for (const [loc, d] of Object.entries(DICTS)) {
+      const labels = tools.map((k) => d[k].trim().toLocaleLowerCase(loc));
+      expect(new Set(labels).size, `${loc} labels ${labels.join(" | ")}`).toBe(tools.length);
+      const hints = tools.map((k) => d[`${k}Hint`].trim().toLocaleLowerCase(loc));
+      expect(new Set(hints).size, `${loc} hints`).toBe(tools.length);
+      // "Make it a building" is not a second Building tool.
+      expect(d["manual.toPart"].toLocaleLowerCase(loc), loc).not.toBe(labels[0]);
+      for (const k of tools) expect(d[`${k}Hint`].length, `${loc} ${k}Hint`).toBeGreaterThan(d[k].length);
+    }
+  });
+  it("the manual face hint points to the Building tool by its label", () => {
+    for (const [loc, d] of Object.entries(DICTS)) {
+      // The Building tool by its own label, so a renamed tool is noticed.
+      expect(d["tool.faceHint"], loc).toContain(d["tool.draw"]);
+      // And it is not the hint of the tool it points to.
+      expect(d["tool.faceHint"], loc).not.toBe(d["tool.drawHint"]);
+    }
+  });
+});

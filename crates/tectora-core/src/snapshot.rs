@@ -60,19 +60,18 @@ pub fn take_checked(project: &Project) -> Result<ResultSnapshot, Refused> {
     }
     // A part the core gives no roof for counts 0 m²: storing that as the
     // offer's figures would hide the problem (review ERR-003, DR-001).
-    let failed = crate::model::guarded(|| {
-        crate::openings::generate_project(project)
-            .iter()
-            .position(|g| g.error.is_some())
+    // One calculation for the check and the figures.
+    crate::model::guarded(|| {
+        let geos = crate::openings::generate_project(project);
+        match geos.iter().position(|g| g.error.is_some()) {
+            Some(i) => Err(Refused::NotCalculated(format!(
+                "part {} has no roof",
+                i + 1
+            ))),
+            None => Ok(take_of(&geos, project)),
+        }
     })
-    .map_err(Refused::Internal)?;
-    if let Some(i) = failed {
-        return Err(Refused::NotCalculated(format!(
-            "part {} has no roof",
-            i + 1
-        )));
-    }
-    crate::model::guarded(|| take(project)).map_err(Refused::Internal)
+    .map_err(Refused::Internal)?
 }
 
 /// Why [`take_checked`] stored no result.
@@ -97,13 +96,18 @@ impl std::fmt::Display for Refused {
 }
 
 pub fn take(project: &Project) -> ResultSnapshot {
-    let t = crate::quantities::roof_totals(project);
+    take_of(&crate::openings::generate_project(project), project)
+}
+
+/// [`take`] of roofs already calculated (`openings::generate_project`).
+pub fn take_of(geos: &[crate::roof::RoofGeometry], project: &Project) -> ResultSnapshot {
+    let t = crate::quantities::roof_totals_of(geos, project);
     ResultSnapshot {
         engine_version: ENGINE_VERSION.to_string(),
         taken_ms: crate::store::now_ms(),
         roof_area: r2(t.roof_area),
         ridge_height: r2(t.ridge_height),
-        lines_by_code: crate::quantities::dacad_line_totals(project)
+        lines_by_code: crate::quantities::dacad_line_totals_of(geos, project)
             .into_iter()
             .map(|(k, v)| (k, r2(v)))
             .filter(|(_, v)| v.abs() >= TOLERANCE)
@@ -211,8 +215,14 @@ pub struct SnapshotStatus {
 }
 
 pub fn status(project: &Project) -> Option<SnapshotStatus> {
+    project.result_snapshot.as_ref()?;
+    status_of(&crate::openings::generate_project(project), project)
+}
+
+/// [`status`] of roofs already calculated.
+pub fn status_of(geos: &[crate::roof::RoofGeometry], project: &Project) -> Option<SnapshotStatus> {
     let stored = project.result_snapshot.clone()?;
-    let current = take(project);
+    let current = take_of(geos, project);
     Some(SnapshotStatus {
         differences: compare(&stored, &current),
         engine_changed: stored.engine_version != ENGINE_VERSION,

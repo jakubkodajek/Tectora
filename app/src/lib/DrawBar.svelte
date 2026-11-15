@@ -4,17 +4,22 @@
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
   import { notifyError } from "./notify.svelte";
+  import { EAVE_HEIGHT, OVERHANG } from "./limits";
   import { numeric, parseNumber } from "./numeric.svelte";
   import { presets, savePresets, updateSettings } from "./settings.svelte";
+  import { MAX_ANGLE, angledStep, type Step } from "./drawstep";
 
   let {
     count,
+    prev = null,
     onstep,
     onundo,
     onclose,
     oncancel,
   }: {
     count: number;
+    /** The last wall drawn, for an angle measured from it. */
+    prev?: Step | null;
     onstep: (dx: number, dy: number) => void;
     onundo: () => void;
     onclose: () => void;
@@ -27,6 +32,11 @@
   /** Longest wall the field takes, m [no source: far beyond any building, inside the core's ±100 km]. */
   const MAX_LENGTH = 10000;
   let lengthInput = $state<HTMLInputElement>();
+  /** The typed direction, degrees (0° = right, 90° = up, anticlockwise), or the turn from the last wall (review UX-007). */
+  let angle = $state(0);
+  let angleInput = $state<HTMLInputElement>();
+  /** The angle is a turn from the previous wall instead of a direction on the plan. */
+  let relative = $state(false);
 
   const DIRS: { key: string; dx: number; dy: number; rot: number; name: string }[] = [
     { key: "ArrowLeft", dx: -1, dy: 0, rot: 180, name: "draw.dirLeft" },
@@ -56,9 +66,41 @@
     onstep(+(dx * l).toFixed(3), +(dy * l).toFixed(3));
   }
 
+  /** The angle to draw: the typed text when valid, else null (the field says why). */
+  function typedAngle(): number | null {
+    if (!angleInput) return angle;
+    if (angleInput.getAttribute("aria-invalid") === "true") return null;
+    const v = parseNumber(angleInput.value);
+    return v !== null && Math.abs(v) <= MAX_ANGLE ? v : null;
+  }
+
+  /** Adds a wall of the typed length in the typed angle (Enter in the angle field, or its button). */
+  function goAngle() {
+    const l = typedLength();
+    const a = typedAngle();
+    if (l === null || a === null || count === 0) return;
+    const s = angledStep(l, a, relative ? prev : null);
+    if (!s) return;
+    length = l;
+    angle = a;
+    onstep(s.dx, s.dy);
+  }
+
   function onkeydown(e: KeyboardEvent) {
     const d = DIRS.find((d) => d.key && d.key === e.key);
     const inLength = !!lengthInput && e.target === lengthInput;
+    if (angleInput && e.target === angleInput) {
+      // The angle field's own number keys stay (arrows step it); Enter adds
+      // the wall in that angle, Escape only undoes the typing.
+      if (e.key === "Enter") {
+        e.preventDefault();
+        goAngle();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        angleInput.blur();
+      }
+      return;
+    }
     // The preset fields keep their own keys (Enter stores, arrows step).
     if (!inLength && (e.target as HTMLElement).classList?.contains("num-input")) return;
     if (inLength && e.key === "Escape") {
@@ -102,6 +144,18 @@
     <span>{t("draw.length")}</span>
     <div class="unit"><input type="text" bind:this={lengthInput} use:numeric={{ value: length, digits: 2, step: 0.5, min: 0.01, max: MAX_LENGTH, spinner: false, arrows: false, onchange: (v) => (length = v) }} /><em>m</em></div>
   </label>
+  <div class="angle">
+    <label title={t("draw.angleHint")}>
+      <span>{t("draw.angle")}</span>
+      <div class="unit"><input type="text" bind:this={angleInput} data-testid="draw-angle" use:numeric={{ value: angle, step: 15, min: -MAX_ANGLE, max: MAX_ANGLE, onchange: (v) => (angle = v) }} /><em>°</em></div>
+    </label>
+    <button class="icon-btn go" data-testid="draw-angle-go" disabled={count === 0} onclick={goAngle} title={t("draw.angleGo")} aria-label={t("draw.angleGo")}>
+      <svg width="16" height="16" viewBox="0 0 24 24" style="transform:rotate({-angle}deg)" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h15M13 6l6 6-6 6" /></svg>
+    </button>
+    <label class="check" title={t("draw.relativeHint")}>
+      <input type="checkbox" bind:checked={relative} data-testid="draw-relative" />{t("draw.relative")}
+    </label>
+  </div>
   <div class="arrows" role="group" aria-label={t("draw.direction")}>
     {#each DIRS as d}
       <button class="icon-btn" disabled={count === 0} onclick={() => go(d.dx, d.dy)} title={t(d.name)} aria-label={t(d.name)}>
@@ -112,13 +166,13 @@
   <div class="presets">
     <span class="lbl">{t("draw.presets")}</span>
     <label><span>{t("edge.pitch")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.pitch_deg, step: 1, min: 1, max: 89, onchange: (v) => preset(v, "pitch_deg") }} /><em>°</em></div></label>
-    <label><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.eave_height, step: 0.05, min: -100, max: 1000, onchange: (v) => preset(v, "eave_height") }} /><em>m</em></div></label>
-    <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.overhang, step: 0.05, min: 0, max: 20, onchange: (v) => preset(v, "overhang") }} /><em>m</em></div></label>
+    <label title={t("edge.eaveHeightPresetHint")}><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.eave_height, step: 0.05, min: EAVE_HEIGHT.min, max: EAVE_HEIGHT.max, onchange: (v) => preset(v, "eave_height") }} /><em>m</em></div></label>
+    <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.overhang, step: 0.05, min: OVERHANG.min, max: OVERHANG.max, onchange: (v) => preset(v, "overhang") }} /><em>m</em></div></label>
   </div>
   <div class="actions">
-    <button class="btn sm" disabled={count === 0} onclick={onundo}><Icon name="undo" size={15} />{t("draw.undo")}</button>
+    <button class="btn sm undo" disabled={count === 0} onclick={onundo} aria-label={t("draw.undo")} title={t("draw.undo")}><Icon name="undo" size={15} /><span class="txt">{t("draw.undo")}</span></button>
     <button class="btn sm" onclick={() => oncancel(false)}>{t("draw.cancel")}</button>
-    <button class="btn sm primary" data-testid="draw-close" disabled={count < 3} onclick={onclose} title={t("draw.closeHint")}><Icon name="check" size={15} />{t("draw.close")}</button>
+    <button class="btn sm primary" data-testid="draw-close" disabled={count < 3} onclick={onclose} title={t("draw.closeHint")}><Icon name="check" size={15} /><span class="txt">{t("draw.close")}</span></button>
   </div>
 </div>
 
@@ -169,6 +223,29 @@
     color: var(--text-3);
     font-size: 13px;
   }
+  .angle {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+  }
+  .angle .unit input {
+    width: 76px;
+  }
+  .angle .go {
+    width: 30px;
+    height: 32px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .angle .check {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    height: 32px;
+    font-size: 12px;
+    color: var(--text-2);
+    white-space: nowrap;
+  }
   .arrows {
     display: grid;
     grid-template-columns: repeat(4, 30px);
@@ -217,5 +294,27 @@
     padding: 0 12px;
     font-size: 13px;
     white-space: nowrap;
+  }
+  .actions .btn.primary {
+    min-width: 0;
+  }
+  .btn .txt {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* A narrow window: "Remove last point" is its icon (its name stays the
+     button's label and tooltip), so the German / Slovak finish button fits
+     (sweep 2026-11-15). */
+  @media (max-width: 760px) {
+    .undo .txt {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+    .undo {
+      padding: 0 9px;
+    }
   }
 </style>

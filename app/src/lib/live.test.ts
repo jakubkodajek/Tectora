@@ -51,7 +51,7 @@ describe("entrySummary", () => {
     expect(entrySummary("Sklon 45°")).toBe("Sklon 45°");
     expect(isRevert("Reverted 3 changes since: x") && isRevert("Reverted: x") && !isRevert("Revert the eave")).toBe(true);
     i18n.locale = "de";
-    expect(entrySummary("Reverted: Pitch")).toBe("Rückgängig: Pitch");
+    expect(entrySummary("Reverted: Pitch")).toBe("Verworfen: Pitch");
   });
 
   it("translates a revert with the AI's reason, in every language (UX-002)", () => {
@@ -59,7 +59,7 @@ describe("entrySummary", () => {
       cs: "Vráceno: na část (důvod: zpět)",
       sk: "Vrátené: na část (dôvod: zpět)",
       en: "Reverted: na část (reason: zpět)",
-      de: "Rückgängig: na část (Grund: zpět)",
+      de: "Verworfen: na část (Grund: zpět)",
     };
     for (const [loc, text] of Object.entries(want)) {
       i18n.locale = loc as typeof i18n.locale;

@@ -7,6 +7,7 @@
   import { api } from "./api";
   import { mayLeave } from "./leave";
   import { LOCALES, i18n, t } from "./i18n.svelte";
+  import { radiogroup } from "./tabs";
   import { numeric } from "./numeric.svelte";
   import { app, loadSettings, presets, prefs, savePrefs, updateSettings } from "./settings.svelte";
   import { ui, type Theme } from "./theme.svelte";
@@ -153,7 +154,7 @@
       <div class="row">
         <div class="label"><span>{t("settings.theme")}</span></div>
         <div class="control">
-          <div class="seg" role="radiogroup" aria-label={t("settings.theme")}>
+          <div class="seg" role="radiogroup" use:radiogroup aria-label={t("settings.theme")}>
             {#each THEMES as th}
               <button role="radio" aria-checked={ui.theme === th} class:on={ui.theme === th} onclick={() => save("theme", th)}>
                 {t(`settings.theme.${th}`)}
@@ -183,7 +184,7 @@
           </div>
           {#if refused.pitch_deg}<small class="range" id="range-pitch_deg">{refused.pitch_deg}</small>{/if}
         </label>
-        <label>
+        <label title={t("edge.eaveHeightPresetHint")}>
           <span>{t("edge.eaveHeight")}</span>
           <div class="unit">
             <input type="text" use:numeric={defaultField("eave_height", 0.05)} aria-describedby={refused.eave_height ? "range-eave_height" : undefined} />

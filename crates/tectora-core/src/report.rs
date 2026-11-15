@@ -5,7 +5,7 @@
 use serde_json::{Value, json};
 
 use crate::Project;
-use crate::quantities::{dacad_line_totals, manual_quantities, part_quantities};
+use crate::quantities::{dacad_line_totals_of, manual_quantities, part_quantities};
 use crate::roof::RoofQuantities;
 
 /// Roof geometry and quantities for every part, the area of each
@@ -14,14 +14,20 @@ use crate::roof::RoofQuantities;
 /// DACAD error the calculation ended with is in each part's
 /// `geometry.error`.
 pub fn calc(project: &Project) -> Value {
+    calc_of(project, &crate::openings::generate_project(project))
+}
+
+/// [`calc`] of roofs already calculated (`openings::generate_project`), so
+/// a caller that needs them for more calculates them once.
+pub fn calc_of(project: &Project, geos: &[crate::roof::RoofGeometry]) -> Value {
     let mut total = RoofQuantities::default();
     let parts: Vec<Value> = project
         .parts
         .iter()
-        .zip(crate::openings::generate_project(project))
+        .zip(geos)
         .map(|(part, geometry)| {
             // Net of the core's negative lines, as the totals.
-            let q = part_quantities(&geometry);
+            let q = part_quantities(geometry);
             total.add(&q);
             json!({ "name": part.name, "geometry": geometry, "quantities": q })
         })
@@ -39,7 +45,7 @@ pub fn calc(project: &Project) -> Value {
         "parts": parts,
         "manual_faces": manual_faces,
         "totals": total,
-        "codes": dacad_line_totals(project),
+        "codes": dacad_line_totals_of(geos, project),
         "problems": project.problems(),
         // Each object's distances from the eave and the sides of its face
         // (editor dimension lines; `edit::position`).
@@ -109,6 +115,34 @@ mod tests {
         // Without hand-drawn faces the list is empty.
         let none = calc(&examples::find("gable").unwrap().project());
         assert_eq!(none["manual_faces"], json!([]));
+    }
+
+    #[test]
+    fn a_chimney_or_opening_without_area_is_a_problem() {
+        // ERR-002: four corners on one point, as width 0 gives them.
+        let mut p = examples::find("gable").unwrap().project();
+        let dot = crate::model::Chimney {
+            corners: vec![crate::geom::Point2::new(2.0, 2.0); 4],
+            height: 6.0,
+        };
+        p.chimneys.push(dot.clone());
+        p.roof_openings.push(dot);
+        let codes: Vec<(String, String)> = p
+            .problems()
+            .iter()
+            .map(|x| (format!("{:?}", x.item), x.code.to_string()))
+            .collect();
+        assert_eq!(
+            codes,
+            [
+                ("Chimney".to_string(), "bad_size".to_string()),
+                ("Opening".to_string(), "bad_size".to_string())
+            ]
+        );
+        // A small real one (2 cm x 2 cm) is fine.
+        p.roof_openings.clear();
+        p.chimneys[0] = crate::edit::probe::chimney_from_rect(2.0, 2.0, 0.02, 0.02, 0.0, 6.0);
+        assert!(p.problems().is_empty(), "{:?}", p.problems());
     }
 
     #[test]

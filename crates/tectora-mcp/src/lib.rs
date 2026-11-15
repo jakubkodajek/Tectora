@@ -14,8 +14,9 @@ use tectora_core::diff::diff;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::geom::Point2;
 use tectora_core::model::{GABLE_PITCH_DEG, MIN_PITCH_DEG};
-use tectora_core::quantities::{area_by_pitch, dacad_line_totals, roof_totals};
+use tectora_core::quantities::{area_by_pitch_of, dacad_line_totals_of, roof_totals_of};
 use tectora_core::roof::LineKind;
+use tectora_core::roof::RoofGeometry;
 use tectora_core::settings::Settings;
 use tectora_core::store::{CheckedSave, LiveStatus, Store, StoreError, now_ms};
 use tectora_core::{
@@ -247,7 +248,11 @@ pub(crate) fn export_ready(project: &Project) -> Result<(), String> {
 /// left a building out, so an AI learns at once that its change broke a
 /// roof instead of reading "Saved" (review ERR-003). Empty when all is well.
 fn roof_trouble(project: &Project) -> Option<Value> {
-    let geos = tectora_core::openings::generate_project(project);
+    roof_trouble_of(&tectora_core::openings::generate_project(project), project)
+}
+
+/// [`roof_trouble`] of roofs already calculated.
+fn roof_trouble_of(geos: &[RoofGeometry], project: &Project) -> Option<Value> {
     let errors: Vec<Value> = geos
         .iter()
         .enumerate()
@@ -273,14 +278,20 @@ fn roof_trouble(project: &Project) -> Option<Value> {
 }
 
 fn quantities(project: &Project) -> Value {
-    let t = roof_totals(project);
+    quantities_of(&tectora_core::openings::generate_project(project), project)
+}
+
+/// [`quantities`] of roofs already calculated: one request calculates the
+/// roof once and hands it to every total (review ARCH-006).
+fn quantities_of(geos: &[RoofGeometry], project: &Project) -> Value {
+    let t = roof_totals_of(geos, project);
     let mut q = json!({
         "roof_area_m2": round(t.roof_area, 2),
         "ridge_height_m": round(t.ridge_height, 2),
         "hip_count": t.hip_count,
         "valley_count": t.valley_count,
-        "lines_by_dacad_code_m": dacad_line_totals(project),
-        "area_by_pitch_m2": area_by_pitch(project)
+        "lines_by_dacad_code_m": dacad_line_totals_of(geos, project),
+        "area_by_pitch_m2": area_by_pitch_of(geos)
             .iter()
             .map(|&(p, a)| json!({ "pitch_deg": p, "area": a }))
             .collect::<Vec<_>>(),
@@ -291,28 +302,27 @@ fn quantities(project: &Project) -> Value {
             .collect::<Vec<_>>(),
     });
     // With more than one material: the lines each one's offer needs.
-    let by_line = tectora_core::quantities::lines_by_material(project);
+    let by_line = tectora_core::quantities::lines_by_material_of(geos);
     if by_line.len() > 1 {
         q["lines_by_material_m"] = by_line
             .into_iter()
             .map(|(m, lines)| json!({ "material": m, "name": project.material_name(m), "lines_by_dacad_code_m": lines }))
             .collect();
     }
-    q["heights_m"] = heights(project);
+    q["heights_m"] = heights(geos, project);
     q
 }
 
 /// The heights a section drawing labels, per part: the distinct heights of
 /// its level eaves and pitch breaks and its highest point, so they can be
 /// checked against the drawing's labels without reading every line.
-fn heights(project: &Project) -> Value {
+fn heights(geos: &[RoofGeometry], project: &Project) -> Value {
     let distinct = |mut v: Vec<f64>| {
         v.sort_by(f64::total_cmp);
         v.dedup_by(|a, b| (*a - *b).abs() < 0.015);
         v
     };
-    tectora_core::openings::generate_project(project)
-        .iter()
+    geos.iter()
         .zip(&project.parts)
         .enumerate()
         .map(|(i, (g, part))| {
@@ -348,11 +358,8 @@ fn parse_status(s: &str) -> Result<JobStatus, String> {
 /// Applies the optional per-edge fields of `v` to `edge`.
 fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
     if let Some(p) = arg_f64(v, "pitch_deg")? {
-        if !(MIN_PITCH_DEG..90.0).contains(&p) {
-            return Err(format!(
-                "pitch_deg {p} must be at least {MIN_PITCH_DEG} and below 90 (use gable for 90)"
-            ));
-        }
+        // The editor's wall bar refuses the same values (UX-010).
+        tectora_core::edit::check_eave_pitch(p, MIN_PITCH_DEG)?;
         edge.pitch_deg = p;
     }
     match v.get("gable").and_then(Value::as_bool) {
@@ -914,6 +921,47 @@ impl Server {
     /// `store::LIVE_KINDS`, translated in the app) about `name` (the job or
     /// file), with `message` in English for logs and older apps. The app
     /// shows it and never opens the job for it (reading, calculating, exporting).
+    /// Checks a `path` argument of an AI client: a file in the jobs folder
+    /// or the drawings inbox, or one the user allowed, passes. Any other
+    /// path becomes a request the user answers in the app
+    /// (`Settings::file_request`, ARCH-002) and the call is refused until
+    /// then, with the same words whether the file exists or not.
+    pub(crate) fn readable_path(
+        &self,
+        path: &std::path::Path,
+        purpose: &str,
+    ) -> Result<(), String> {
+        if !path.is_absolute() {
+            return Err("`path` must be an absolute path".into());
+        }
+        let settings = Settings::load();
+        if settings.ai_may_read(path, &self.store.dir) {
+            return Ok(());
+        }
+        let asked = settings
+            .asking_for_file(path, &self.client, purpose)
+            .save()
+            .is_ok();
+        // A settings change: the app reads the settings again and asks.
+        self.live(
+            "settings",
+            None,
+            format!("Asked to read {}", path.display()),
+            None,
+        );
+        Err(if asked {
+            format!(
+                "{} is outside the jobs folder and the drawings inbox, so Tectora now asks the user to allow it. Tell the user to answer the question in the Tectora window, then call this tool again with the same path. Do not try other paths or tools to reach the file.",
+                path.display()
+            )
+        } else {
+            format!(
+                "{} is outside the jobs folder and the drawings inbox and the request to the user could not be stored; ask the user to move the file into the drawings inbox (see get_settings).",
+                path.display()
+            )
+        })
+    }
+
     fn live(&self, kind: &str, name: Option<&str>, message: String, project_id: Option<&str>) {
         self.publish(kind, name, message, project_id, false);
     }
@@ -963,6 +1011,7 @@ impl Server {
             }
         };
         let project = &project;
+        let geos = tectora_core::openings::generate_project(project);
         self.live_follow("changed", None, summary.to_string(), &id);
         let changes = before
             .as_ref()
@@ -973,10 +1022,10 @@ impl Server {
             "saved": true,
             "note": "Saved. The change is now visible in the Tectora app for the user to review.",
             "changes": changes,
-            "quantities": quantities(project),
+            "quantities": quantities_of(&geos, project),
             "parts": project.parts.iter().map(describe_part).collect::<Vec<_>>(),
         });
-        if let Some(t) = roof_trouble(project) {
+        if let Some(t) = roof_trouble_of(&geos, project) {
             out["roof_trouble"] = t;
         }
         Ok(out)
@@ -1133,7 +1182,8 @@ impl Server {
                     .map(|p| {
                         json!({
                             "id": p.id, "name": p.name, "job": p.job,
-                            "roof_area_m2": round(p.roof_area, 2), "parts": p.parts,
+                            "roof_area_m2": (!p.figures_pending).then(|| round(p.roof_area, 2)),
+                            "figures_pending": p.figures_pending, "parts": p.parts,
                             "pitch_range_deg": p.pitch_range.map(|[a, b]| [round(a, 2), round(b, 2)]),
                             "dormers": p.dormers, "files": p.files, "has_result": p.has_result,
                             "modified_ms": p.modified_ms, "last_change": p.last_activity,
@@ -1167,6 +1217,7 @@ impl Server {
                     .enumerate()
                     .map(|(i, d)| more::describe_dormer(i, d, &host))
                     .collect();
+                let geos = tectora_core::openings::generate_project(&p);
                 Ok(json!({
                     "id": id,
                     "name": p.name,
@@ -1185,8 +1236,8 @@ impl Server {
                     "flat_roof": p.flat_roof,
                     "materials": (1..=tectora_core::model::DACAD_MATERIALS).map(|m| json!({ "material": m, "name": p.material_name(m) })).collect::<Vec<_>>(),
                     "files": self.store.attachments(&id).iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
-                    "stored_result": tectora_core::snapshot::status(&p),
-                    "quantities": quantities(&p),
+                    "stored_result": tectora_core::snapshot::status_of(&geos, &p),
+                    "quantities": quantities_of(&geos, &p),
                 }))
             }
             "calc" => {
@@ -1197,13 +1248,14 @@ impl Server {
                     format!("Calculating “{}”", p.name),
                     Some(&id),
                 );
+                let geos = tectora_core::openings::generate_project(&p);
                 let parts: Vec<Value> = p
                     .parts
                     .iter()
-                    .zip(tectora_core::openings::generate_project(&p))
+                    .zip(&geos)
                     .map(|(part, geo)| {
                         // Net of the core's negative lines, as the totals.
-                        let q = tectora_core::quantities::part_quantities(&geo);
+                        let q = tectora_core::quantities::part_quantities(geo);
                         let mut v = json!({ "name": part.name, "quantities": q });
                         if !geo.warnings.is_empty() {
                             v["warnings"] = geo.warnings.iter().map(warning).collect();
@@ -1223,10 +1275,10 @@ impl Server {
                     .collect();
                 let mut out = json!({
                     "id": id,
-                    "total": quantities(&p),
+                    "total": quantities_of(&geos, &p),
                     "parts": parts,
                     "engine_version": tectora_core::snapshot::ENGINE_VERSION,
-                    "stored_result": tectora_core::snapshot::status(&p),
+                    "stored_result": tectora_core::snapshot::status_of(&geos, &p),
                 });
                 // Input the calculation left out (a building with a wall
                 // under 1 cm, …): its figures are missing from the totals.
@@ -1284,6 +1336,7 @@ impl Server {
                         "length and width must be positive and pitch between 0 and 90".into(),
                     );
                 }
+                tectora_core::edit::check_eave_pitch(pitch, f64::MIN_POSITIVE)?;
                 let mut p = Project::new(arg_str(args, "name")?);
                 p.parts.push(standard_roof(
                     kind,
@@ -1494,6 +1547,21 @@ impl Server {
                             })
                         })
                         .collect::<Result<_, String>>()?;
+                }
+                // A chimney or opening without plan area (width 0 for an
+                // unknown size) would take the whole roof face away.
+                let flat = |list: &[Chimney], what: &str| {
+                    list.iter().position(|c| c.corners.len() >= 3 && !c.has_area()).map(|i| {
+                        format!(
+                            "{what} {} has no plan area: give it its real width and depth (at least 1 cm each), or leave it out and tell the user its size is unknown",
+                            i + 1
+                        )
+                    })
+                };
+                if let Some(e) =
+                    flat(&p.chimneys, "chimney").or(flat(&p.roof_openings, "roof opening"))
+                {
+                    return Err(e);
                 }
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
             }
@@ -2197,6 +2265,37 @@ mod tests {
     }
 
     #[test]
+    fn set_openings_refuses_a_chimney_or_opening_without_area() {
+        // ERR-002: width 0 was saved and the whole roof came out as 0 m².
+        let mut s = server();
+        let id = gable_job(&mut s, 40.0);
+        let err = s
+            .call_tool(
+                "set_openings",
+                &json!({ "id": id, "summary": "Chimney", "chimneys": [{ "x": 2, "y": 2, "width": 0, "depth": 0, "height": 6 }] }),
+            )
+            .unwrap_err();
+        assert!(err.contains("chimney 1 has no plan area"), "{err}");
+        let line = json!([[2, 2], [3, 2], [4, 2]]);
+        let err = s
+            .call_tool(
+                "set_openings",
+                &json!({ "id": id, "summary": "Opening", "roof_openings": [{ "corners": line }] }),
+            )
+            .unwrap_err();
+        assert!(err.contains("roof opening 1 has no plan area"), "{err}");
+        let p = s.store.load(&id).unwrap();
+        assert!(p.chimneys.is_empty() && p.roof_openings.is_empty());
+        s.call_tool(
+            "set_openings",
+            &json!({ "id": id, "summary": "Chimney", "chimneys": [{ "x": 2, "y": 2, "width": 0.4, "depth": 0.4, "height": 6 }] }),
+        )
+        .unwrap();
+        assert_eq!(s.store.load(&id).unwrap().chimneys.len(), 1);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
     fn calc_warns_about_a_face_that_lost_more_than_it_has() {
         // A file with an oversize window (written before the check, or by
         // hand) still calculates as DACAD books it, with a warning.
@@ -2309,6 +2408,69 @@ mod tests {
     /// `TECTORA_CONFIG_DIR`) run one at a time, so one never sees the
     /// other's half-written defaults.
     static SETTINGS_FILE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn a_file_outside_the_job_folders_waits_for_the_user() {
+        // ARCH-002: drawing tools, attach_file and import_job took any path.
+        let _settings = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner());
+        let base = std::env::temp_dir().join(format!("tectora-mcp-file-{}", std::process::id()));
+        unsafe { std::env::set_var("TECTORA_CONFIG_DIR", base.join("cfg")) };
+        std::fs::create_dir_all(base.join("other")).unwrap();
+        let outside = base.join("other").join("contract.pdf");
+        std::fs::write(&outside, b"%PDF-1.4 not a drawing").unwrap();
+        let missing = base.join("other").join("missing.pdf");
+        let mut s = server();
+        let id = gable_job(&mut s, 40.0);
+        let words = |e: &str, p: &std::path::Path| e.replace(&p.display().to_string(), "<path>");
+        let there = s
+            .call_tool("drawing_info", &json!({ "path": outside }))
+            .unwrap_err();
+        assert!(there.contains("asks the user to allow it"), "{there}");
+        let gone = s
+            .call_tool("drawing_info", &json!({ "path": missing }))
+            .unwrap_err();
+        // No way to tell an existing file from a missing one.
+        assert_eq!(words(&there, &outside), words(&gone, &missing));
+        for (tool, args) in [
+            ("drawing_lines", json!({ "path": outside })),
+            (
+                "attach_file",
+                json!({ "id": id, "path": outside, "summary": "Drawing" }),
+            ),
+            ("import_job", json!({ "path": outside, "summary": "Job" })),
+        ] {
+            let e = s.call_tool(tool, &args).unwrap_err();
+            assert!(e.contains("asks the user to allow it"), "{tool}: {e}");
+        }
+        assert!(s.store.attachments(&id).is_empty());
+        // The request names the file and who asked; the user says yes.
+        let asked = Settings::load();
+        let req = asked.file_request.clone().unwrap();
+        assert_eq!(req.purpose, "import");
+        assert!(req.path.ends_with("other/contract.pdf"), "{:?}", req.path);
+        asked.answer_file_request(true).save().unwrap();
+        s.call_tool(
+            "attach_file",
+            &json!({ "id": id, "path": outside, "summary": "Drawing" }),
+        )
+        .unwrap();
+        assert_eq!(s.store.attachments(&id).len(), 1);
+        // Only that file: its neighbour still waits.
+        assert!(
+            s.call_tool("drawing_info", &json!({ "path": missing }))
+                .is_err()
+        );
+        // An AI client cannot allow a file for itself.
+        assert!(
+            s.call_tool(
+                "update_settings",
+                &json!({ "allowed_files": [missing], "summary": "s" })
+            )
+            .is_err()
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn set_outline_repairs_a_part_without_edges() {

@@ -83,5 +83,6 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    wing as a lean-to, the fallback): say so and have the user check it;
    `plane_over_wall` is a hint that a wing has no ridge of its own.
 8. When the roof is approved and the user wants it for the offer,
-   `export_plan` writes the roof sheet (PDF) and `export_list` returns the
-   text for the Excel price sheet; give the text verbatim.
+   `export_plan` writes the roof sheet (PDF; pass `line_names` in the
+   user's language for the legend of line codes) and `export_list` returns
+   the text for the Excel price sheet; give the text verbatim.

@@ -14,13 +14,17 @@
   // one row, with previous/next wall buttons, docked under the views.
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
+  import { radiogroup } from "./tabs";
   import type { EdgeDef, PitchBreak, Project, Selection } from "./types";
   import { GABLE_PITCH, buildingHeight as heightOf, isGable, isMarker } from "./types";
   import { materialIds, materialName } from "./materials";
   import { numeric } from "./numeric.svelte";
+  import { OVERHANG, WALL_HEIGHT, within } from "./limits";
   import { hscroll } from "./hscroll";
   import { partLabel } from "./partname";
   import { prefs, presets, savePrefs } from "./settings.svelte";
+  import { tick } from "svelte";
+  import { stepWall, wallStepKey } from "./wallstep";
 
   let {
     project,
@@ -67,6 +71,20 @@
   const breaks = $derived(edge?.breaks ?? []);
   /** The building's height (top of its walls); the eave of each wall is its own value and may be lower. */
   const buildingHeight = $derived(part ? heightOf(part) : null);
+  /** A flat roof ignores the walls' pitch and eave / gable: those fields are off and say why (UX-009). */
+  const flat = $derived(!!project.flat_roof);
+  /** A pitch over 90° makes a plane leaning out: said next to the field, not only in a tooltip (UX-010). */
+  const leaning = $derived(!!edge && !isGable(edge) && edge.pitch_deg > GABLE_PITCH);
+
+  /** Stores a wall value inside `b`, else refuses it with the range (UX-001). */
+  function bounded(b: { min: number; max: number }, patch: (v: number) => Partial<EdgeDef>) {
+    return (v: number) => {
+      const ok = within(v, b);
+      if (ok !== true) return ok;
+      onchange(patch(v));
+      return true;
+    };
+  }
 
   /**
    * The first row holds what a roofer sets on every wall (eave or gable,
@@ -96,21 +114,62 @@
 
   /** Steps through all walls of all parts, like DACAD's NEXT/PREV buttons. */
   function step(d: number) {
-    const all: { part: number; edge: number }[] = project.parts.flatMap((p, pi) => p.edges.map((_, ei) => ({ part: pi, edge: ei })));
-    if (all.length === 0) return;
-    const cur = selection ? all.findIndex((s) => s.part === selection!.part && s.edge === selection!.edge) : -1;
-    selection = all[(cur + d + all.length) % all.length];
+    const next = stepWall(project, selection, d);
+    if (next) selection = next;
+  }
+
+  let barEl = $state<HTMLDivElement>();
+  // The keys are named as on the keyboard; macOS labels Alt as ⌥.
+  const alt = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "⌥" : "Alt+";
+
+  /**
+   * PageDown / PageUp (and Shift+Enter) in a field of the bar: the field
+   * stores its value on the wall it was typed for, the bar steps to the
+   * next wall and the same field takes the focus again, so "pitch, next
+   * wall, pitch" needs no mouse (review UX-006). Keys on the bar's buttons
+   * step too; the editor handles them everywhere else.
+   */
+  $effect(() => {
+    const el = barEl;
+    if (!el) return;
+    el.addEventListener("keydown", onbarkey);
+    return () => el.removeEventListener("keydown", onbarkey);
+  });
+
+  async function onbarkey(e: KeyboardEvent) {
+    const el = e.target as HTMLElement;
+    const field = el instanceof HTMLInputElement && el.type === "text" ? el : null;
+    const d = wallStepKey(e, field !== null || el instanceof HTMLSelectElement);
+    if (!d) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const fields = barEl ? [...barEl.querySelectorAll<HTMLInputElement>("input.num-input")] : [];
+    const at = field ? fields.indexOf(field) : -1;
+    // Blurring commits the typed value before the selection changes.
+    if (field) field.blur();
+    step(d);
+    if (at < 0) return;
+    await tick();
+    const again = barEl ? [...barEl.querySelectorAll<HTMLInputElement>("input.num-input")][at] : undefined;
+    const target = again && !again.disabled ? again : barEl?.querySelector<HTMLInputElement>("input.num-input:not(:disabled)");
+    target?.focus();
+    target?.select();
   }
 
   function setDirection(deg: number) {
     onchange({ direction_rad: (((deg % 360) + 360) % 360) * (Math.PI / 180) });
   }
 
-  /** A pitch for an eave plane: under 90°, or over 90° for a plane leaning out. */
+  /**
+   * A pitch for an eave plane: under 90°. The field's range ends at 90°, so
+   * a pitch over 90° (a plane leaning out) is refused as a typo with the
+   * range, as in the core's `edit::check_eave_pitch`; one already in a file
+   * keeps its mark (UX-010).
+   */
   function setPitch(v: number): boolean | string {
     // 90° is a gable, chosen with the Eave / Gable switch.
     if (Math.abs(v - GABLE_PITCH) <= 0.001) return t("edge.pitch90");
-    if (!(v > 0 && v < 180)) return false;
+    if (!(v > 0 && v < GABLE_PITCH)) return false;
     onchange({ pitch_deg: v });
     return true;
   }
@@ -154,10 +213,10 @@
   }
 </script>
 
-<div class="bar" role="toolbar" aria-label={t("def.title")}>
+<div class="bar" role="toolbar" aria-label={t("def.title")} bind:this={barEl}>
   <div class="row" use:hscroll>
     <div class="nav">
-      <button class="icon-btn" onclick={() => step(-1)} title={t("def.prev")} aria-label={t("def.prev")}><Icon name="left" /></button>
+      <button class="icon-btn" onclick={() => step(-1)} title="{t('def.prev')} (PageUp, {alt}←)" aria-label={t("def.prev")}><Icon name="left" /></button>
       <div class="which">
         {#if selection && part}
           <strong>{t("def.wall", { n: selection.edge + 1 })}</strong>
@@ -167,7 +226,7 @@
           <span>{t("def.none")}</span>
         {/if}
       </div>
-      <button class="icon-btn" onclick={() => step(1)} title={t("def.next")} aria-label={t("def.next")}><Icon name="right" /></button>
+      <button class="icon-btn" onclick={() => step(1)} title="{t('def.next')} (PageDown, {alt}→, Shift+Enter)" aria-label={t("def.next")}><Icon name="right" /></button>
     </div>
 
     {#if edge && part}
@@ -179,31 +238,33 @@
         </label>
         <button class="icon-btn" onclick={() => setDirection(directionDeg + 180)} title={t("edge.flip")} aria-label={t("edge.flip")}><Icon name="refresh" /></button>
       {:else}
-        <div class="seg" role="radiogroup" aria-label={t("edge.type")}>
-          <button class:on={!gable} role="radio" aria-checked={!gable} onclick={() => setType(false)}>{t("edge.eave")}</button>
-          <button class:on={gable} role="radio" aria-checked={gable} onclick={() => setType(true)}>{t("edge.gable")}</button>
+        <div class="seg" class:off={flat} role="radiogroup" use:radiogroup aria-label={t("edge.type")} title={flat ? t("edge.flatOff") : undefined}>
+          <button class:on={!gable} role="radio" aria-checked={!gable} disabled={flat} onclick={() => setType(false)}>{t("edge.eave")}</button>
+          <button class:on={gable} role="radio" aria-checked={gable} disabled={flat} onclick={() => setType(true)}>{t("edge.gable")}</button>
         </div>
-        <label class:off={gable} title={edge.pitch_deg > GABLE_PITCH && !gable ? t("edge.leaningHint") : undefined}>
-          <span>{t("edge.pitch")}</span>
-          <div class="unit"><input type="text" disabled={gable} use:numeric={{ value: gable ? null : edge.pitch_deg, step: 1, min: 2, max: 178, onchange: setPitch }} /><em>°</em></div>
+        <label class:off={gable || flat} title={flat ? t("edge.flatOff") : leaning ? t("edge.leaningHint") : undefined}>
+          <span>{t("edge.pitch")}{#if leaning && !flat}<b class="mark" data-testid="pitch-leaning"><i></i>{t("edge.leaning")}</b>{/if}</span>
+          <div class="unit"><input type="text" disabled={gable || flat} aria-describedby={flat ? "def-flat-note" : undefined}
+            use:numeric={{ value: gable ? null : edge.pitch_deg, step: 1, min: 2, max: 90, onchange: setPitch }} /><em>°</em></div>
         </label>
+        {#if flat}<p class="flat-note" id="def-flat-note" data-testid="flat-note"><i></i>{t("edge.flatOff")}</p>{/if}
       {/if}
       {#if onheight}
         <label class="wrap" title={t("edge.buildingHeightHint", { name: partName })}>
           <span>{t("edge.buildingHeight")}</span>
           <div class="unit"><input type="text" data-testid="building-height"
-            use:numeric={{ value: buildingHeight, step: 0.05, min: 0, max: 1000, onchange: onheight }} /><em>m</em></div>
+            use:numeric={{ value: buildingHeight, step: 0.05, min: WALL_HEIGHT.min, max: WALL_HEIGHT.max, onchange: onheight }} /><em>m</em></div>
         </label>
       {/if}
       {#if !onheight}
         <label>
           <span>{t("edge.eaveHeight")}</span>
-          <div class="unit"><input type="text" data-testid="eave-height" use:numeric={{ value: edge.eave_height, step: 0.05, min: 0, onchange: (v) => onchange({ eave_height: v }) }} /><em>m</em></div>
+          <div class="unit"><input type="text" data-testid="eave-height" use:numeric={{ value: edge.eave_height, step: 0.05, min: 0, onchange: bounded(WALL_HEIGHT, (v) => ({ eave_height: v })) }} /><em>m</em></div>
         </label>
       {/if}
       <label>
         <span>{t("edge.overhang")}</span>
-        <div class="unit"><input type="text" use:numeric={{ value: edge.overhang, step: 0.05, min: 0, onchange: (v) => onchange({ overhang: v }) }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ value: edge.overhang, step: 0.05, min: 0, onchange: bounded(OVERHANG, (v) => ({ overhang: v })) }} /><em>m</em></div>
       </label>
       <button class="btn sm more-btn" class:on={moreOpen} data-testid="def-more" aria-expanded={moreOpen} aria-controls="def-more-row"
         aria-describedby={moreSet.length ? "def-more-set" : undefined}
@@ -224,8 +285,11 @@
              960x540 (review UI-003). -->
         <label>
           <span title={t("edge.eaveHeightHint")}>{t("edge.eaveHeight")}</span>
-          <div class="unit"><input type="text" data-testid="eave-height" use:numeric={{ value: edge.eave_height, step: 0.05, min: 0, onchange: (v) => onchange({ eave_height: v }) }} /><em>m</em></div>
+          <div class="unit"><input type="text" data-testid="eave-height" aria-describedby="def-eave-note" use:numeric={{ value: edge.eave_height, step: 0.05, min: 0, onchange: bounded(WALL_HEIGHT, (v) => ({ eave_height: v })) }} /><em>m</em></div>
         </label>
+        <!-- Said on screen, not only in the tooltip: this is the eave the roof
+             is calculated from, the value the defaults set (UX-008). -->
+        <p class="eave-note" id="def-eave-note" data-testid="eave-note">{t("edge.eaveHeightNote")}</p>
       {/if}
       {#if !marker}
         <label>
@@ -269,7 +333,7 @@
           {#if edge.half_hip}
             <label>
               <span>{t("edge.halfHipHeight")}</span>
-              <div class="unit"><input type="text" use:numeric={{ value: edge.half_hip.height, step: 0.05, onchange: (v) => { if (edge.half_hip) onchange({ half_hip: { ...edge.half_hip, height: v } }); } }} /><em>m</em></div>
+              <div class="unit"><input type="text" use:numeric={{ value: edge.half_hip.height, step: 0.05, min: WALL_HEIGHT.min, max: WALL_HEIGHT.max, onchange: (v) => { if (edge.half_hip) onchange({ half_hip: { ...edge.half_hip, height: v } }); } }} /><em>m</em></div>
             </label>
             <label>
               <span>{t("edge.halfHipPitch")}</span>
@@ -289,7 +353,7 @@
             <div class="break">
               <label>
                 <span>{t("edge.breakHeight", { n: i + 1 })}</span>
-                <div class="unit"><input type="text" use:numeric={{ value: b.height, step: 0.05, min: edge.eave_height, onchange: (v) => setBreak(i, { height: v }) }} /><em>m</em></div>
+                <div class="unit"><input type="text" use:numeric={{ value: b.height, step: 0.05, min: edge.eave_height, max: WALL_HEIGHT.max, onchange: (v) => setBreak(i, { height: v }) }} /><em>m</em></div>
               </label>
               <label>
                 <span>{t("edge.breakPitch")}</span>
@@ -304,7 +368,7 @@
       {/if}
       <div class="actions">
         {#if !gable && !marker}
-          <button class="btn sm" onclick={() => onapplyall({ pitch_deg: edge.pitch_deg })} title={t("edge.pitchAllHint")}>{t("edge.pitchAll")}</button>
+          <button class="btn sm" disabled={flat} onclick={() => onapplyall({ pitch_deg: edge.pitch_deg })} title={flat ? t("edge.flatOff") : t("edge.pitchAllHint")}>{t("edge.pitchAll")}</button>
         {/if}
         <button class="btn sm" onclick={() => onapplyall({ eave_height: edge.eave_height, overhang: edge.overhang })}>{t("edge.heightAll")}</button>
         {#if !gable || edge.clad}
@@ -434,6 +498,14 @@
     color: var(--text);
     box-shadow: var(--shadow);
   }
+  .eave-note {
+    margin: 0 0 7px;
+    max-width: 180px;
+    font-size: 11.5px;
+    line-height: 1.25;
+    color: var(--text-2);
+    white-space: normal;
+  }
   label span {
     display: block;
     margin-bottom: 3px;
@@ -447,11 +519,45 @@
     white-space: normal;
     line-height: 1.2;
   }
-  label.off {
+  label.off,
+  .seg.off {
     opacity: 0.4;
+  }
+  /* Status marks: a small dot and a word, no tinted panel (AGENTS.md). */
+  .mark {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 6px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .mark i,
+  .flat-note i {
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+    background: var(--ai);
+    flex: none;
+  }
+  .flat-note i {
+    background: var(--text-3);
+  }
+  .flat-note {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    align-self: center;
+    max-width: 220px;
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.25;
+    color: var(--text-2);
   }
   .unit {
     position: relative;
+    /* As wide as the field, so the unit stays at its right edge under a wider label (UX-010 mark). */
+    width: max-content;
   }
   .unit input {
     width: 84px;

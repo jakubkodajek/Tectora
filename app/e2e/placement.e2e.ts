@@ -123,6 +123,49 @@ test.describe("building height and eave height", () => {
     p = await waitForProject(id, (p) => p.parts[0].height === 4);
     expect(p.parts[0].edges.map((e: any) => e.eave_height)).toEqual([3.6, 4, 4, 4]);
   });
+
+  test("a building height the core refuses goes back to the stored one and says why (ERR-003)", async ({ app, page }) => {
+    const id = await createExample("gable", "Sedlo");
+    await openEditor(app, "Sedlo");
+    await selectWall(page, 0);
+    const def = bar(page, "def.title");
+    if (!(await def.getByTestId("eave-height").isVisible())) await page.getByTestId("def-more").click();
+    await setField(def.getByTestId("eave-height"), "2");
+    await waitForProject(id, (p) => p.parts[0].edges[0].eave_height === 2);
+    const before = JSON.stringify((await loadProject(id)).parts);
+    const height = def.getByTestId("building-height");
+    // 0.5 m would put the first wall's eave 0.5 m below the ground.
+    await setField(height, "0,5");
+    const toast = app.toasts().filter({ hasText: cs("refuse.title.height") });
+    await expect(toast).toBeVisible();
+    await expect(toast).toContainText(cs("refuse.belowGround"));
+    await expect(toast).toContainText("refused");
+    await expect(app.toasts().filter({ hasText: cs("err.action.calc") })).toHaveCount(0);
+    // The field shows the stored height again, marked with the reason.
+    await expect(height).toHaveValue("3");
+    await expect(height).toHaveAttribute("aria-invalid", "true");
+    await expect(height).toHaveAttribute("title", cs("refuse.belowGround"));
+    await page.waitForTimeout(700);
+    expect(JSON.stringify((await loadProject(id)).parts)).toBe(before);
+  });
+
+  test("a dormer distance off the roof face in the dormer window is a refusal, not a failed roof (ERR-003)", async ({ app, page }) => {
+    const id = await createExample("gable", "Sedlo");
+    await openEditor(app, "Sedlo");
+    await tool(page, "tool.dormer").click();
+    await clickPlan(page, 4, 1);
+    const dlg = page.getByRole("dialog", { name: cs("dormer.dialogNew") });
+    await expect(dlg).toBeVisible();
+    const eave = dlg.getByTestId("place-eave");
+    await expect(eave).not.toHaveValue("");
+    const shown = await eave.inputValue();
+    await setField(eave, "150");
+    await expect(app.toasts().filter({ hasText: cs("place.refusedTitle") })).toBeVisible();
+    await expect(app.toasts().filter({ hasText: cs("err.action.calc") })).toHaveCount(0);
+    await expect(eave).toHaveValue(shown);
+    await dlg.getByRole("button", { name: cs("common.cancel"), exact: true }).click();
+    expect((await loadProject(id)).dormers).toHaveLength(0);
+  });
 });
 
 test.describe("one bad building", () => {

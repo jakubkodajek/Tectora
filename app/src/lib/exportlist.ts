@@ -4,6 +4,7 @@
 // command with the same title and stamp, so the two copies are byte for
 // byte the same text (UX-004).
 import { api } from "./api";
+import { lineNames } from "./linecodes";
 import type { Project } from "./types";
 
 /** Local time as `dd.mm.yyyy hh:mm`, the stamp the list and sheet carry. */
@@ -18,5 +19,5 @@ export const exportTitle = (project: Project, id: string) => project.name || id;
 
 /** The list and the plan sheet (SVG) for `project`, as the Export dialog shows them. */
 export function exportPreview(project: Project, title: string, stamp = stampNow()) {
-  return api.exportPreview(project, title, stamp);
+  return api.exportPreview(project, title, stamp, lineNames());
 }

@@ -4,7 +4,7 @@
 // for "typed values are not applied, only the spinner arrows work".
 import type { Locator, Page } from "@playwright/test";
 import { bar, openEditor, planXY, selectWall, setField, tool, confirmDormer } from "./editor";
-import { createExample, expect, loadProject, test, waitForProject } from "./fixtures";
+import { bridge, createExample, expect, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 
 /** Types into a field like a person: click, select all, type (no fill()). */
@@ -153,7 +153,8 @@ test.describe("number fields", () => {
     await page.keyboard.press("Enter");
     await expect(pitch).toHaveValue(String(start));
     // The refusal says why, then the restored value is plain again.
-    await expect(pitch).toHaveAttribute("title", cs("num.range", { min: "2", max: "178" }));
+    // A pitch over 90° is refused at the field (UX-010; the range was 2 to 178).
+    await expect(pitch).toHaveAttribute("title", cs("num.range", { min: "2", max: "90" }));
     await expect(pitch).not.toHaveAttribute("aria-invalid", "true", { timeout: 5000 });
     await page.waitForTimeout(700);
     expect((await loadProject(id)).parts[0].edges[0].pitch_deg).toBe(start);
@@ -341,6 +342,68 @@ test.describe("number fields: bounds and the footprint bar", () => {
     expect(JSON.stringify((await loadProject(id)).parts)).toBe(before);
     await expect(page.locator(".roofline").first()).toBeAttached();
   });
+
+  test("the wall bar refuses 50 m of overhang and 2000 m of eave height with the range of the New job form (UX-001)", async ({ app, page }) => {
+    const id = await createExample("hip", "Valba");
+    await openEditor(app, "Valba");
+    const def = bar(page, "def.title");
+    await selectWall(page, 0);
+    const before = JSON.stringify((await loadProject(id)).parts);
+    for (const [key, typed, range] of [
+      ["edge.overhang", "50", { min: "0", max: "20" }],
+      ["edge.eaveHeight", "2000", { min: "0", max: "1000" }],
+    ] as const) {
+      const f = def.getByLabel(cs(key));
+      const shown = await f.inputValue();
+      await typeInto(page, f, typed);
+      await page.keyboard.press("Enter");
+      await expect(f, key).toHaveValue(shown);
+      await expect(f, key).toHaveAttribute("aria-invalid", "true");
+      await expect(f, key).toHaveAttribute("title", cs("num.range", range));
+    }
+    await page.waitForTimeout(700);
+    expect(JSON.stringify((await loadProject(id)).parts)).toBe(before);
+    // A plausible value is stored as before.
+    await setField(def.getByLabel(cs("edge.overhang")), "1,2");
+    await waitForProject(id, (p) => p.parts[0].edges[0].overhang === 1.2);
+  });
+
+  test("a pitch over 90° is refused at the field; a file that has one keeps its mark (UX-010)", async ({ app, page }) => {
+    const id = await createExample("hip", "Valba");
+    await openEditor(app, "Valba");
+    const def = bar(page, "def.title");
+    await selectWall(page, 0);
+    const pitch = def.getByLabel(cs("edge.pitch"));
+    const shown = await pitch.inputValue();
+    const before = JSON.stringify((await loadProject(id)).parts);
+    await typeInto(page, pitch, "95");
+    await page.keyboard.press("Enter");
+    await expect(pitch).toHaveValue(shown);
+    await expect(pitch).toHaveAttribute("aria-invalid", "true");
+    await expect(pitch).toHaveAttribute("title", cs("num.range", { min: "2", max: "90" }));
+    await page.waitForTimeout(700);
+    expect(JSON.stringify((await loadProject(id)).parts)).toBe(before);
+    await expect(def.getByTestId("pitch-leaning")).toHaveCount(0);
+    // 89,5° is still an eave plane.
+    await setField(pitch, "89,5");
+    await waitForProject(id, (p) => p.parts[0].edges[0].pitch_deg === 89.5);
+  });
+
+  test("a job saved with a pitch over 90° still opens and marks the wall (UX-010)", async ({ app, page }) => {
+    const id = await createExample("hip", "Valba alt");
+    const p = await loadProject(id);
+    p.parts[0].edges[0].pitch_deg = 95;
+    await bridge("save_project", { id, project: p });
+    await openEditor(app, "Valba alt");
+    const def = bar(page, "def.title");
+    await selectWall(page, 0);
+    await expect(def.getByTestId("pitch-leaning")).toHaveText(cs("edge.leaning"));
+    await expect(def.getByTestId("pitch-leaning")).toBeVisible();
+    await setField(def.getByLabel(cs("edge.pitch")), "45");
+    await waitForProject(id, (q) => q.parts[0].edges[0].pitch_deg === 45);
+    await expect(def.getByTestId("pitch-leaning")).toHaveCount(0);
+  });
+
 
   test("the footprint wall length reads numbers like every field and refuses text", async ({ app, page }) => {
     const id = await createExample("gable", "Sedlo");

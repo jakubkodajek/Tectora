@@ -248,10 +248,11 @@ test.describe("several buildings", () => {
       }
     }
     expect(bad).toEqual([]);
-    // Wall lengths use the UI language's decimal comma (UX-008).
+    // Wall lengths use the UI language's decimal comma (UX-008); with two
+    // buildings each wall number names its building, "2.3" (UX-018).
     const dims = await page.locator(".edge-dim").allTextContents();
     expect(dims.length).toBeGreaterThan(0);
-    for (const d of dims) expect(d, d).toMatch(/^\d+\s+\d+,\d\d$/);
+    for (const d of dims) expect(d, d).toMatch(/^\d+\.\d+\s+\d+,\d\d$/);
     await areaMatchesCore(page, id);
   });
 });

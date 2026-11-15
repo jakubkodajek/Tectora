@@ -39,4 +39,15 @@ describe("components", () => {
     }
     expect(found).toEqual([]);
   });
+
+  it("use no raw rgb / rgba / hsl colours either, so shadows follow the theme (UI-006)", () => {
+    const found: string[] = [];
+    for (const [f, src] of Object.entries(components)) {
+      for (const style of src.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)) {
+        const css = style[1].replace(/\/\*[\s\S]*?\*\//g, "");
+        for (const m of css.matchAll(/\b(?:rgba?|hsla?)\s*\(/g)) found.push(`${f}: ${m[0]}`);
+      }
+    }
+    expect(found).toEqual([]);
+  });
 });

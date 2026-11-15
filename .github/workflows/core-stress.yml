@@ -12,6 +12,10 @@ on:
         description: Cases per property
         default: "20000"
 
+# Read-only token: the job only builds and tests (ARCH-007).
+permissions:
+  contents: read
+
 jobs:
   properties:
     runs-on: ubuntu-24.04

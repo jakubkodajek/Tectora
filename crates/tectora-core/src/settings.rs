@@ -82,6 +82,13 @@ pub struct Settings {
     /// drawings inbox on its own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub folder_request: Option<FolderRequest>,
+    /// A file outside the jobs folder and the drawings inbox that an AI
+    /// client asked to read, waiting for the user (review ARCH-002).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_request: Option<FileRequest>,
+    /// Files outside those folders the user allowed AI clients to read.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allowed_files: Vec<PathBuf>,
     /// Keys this build does not know, kept as they are.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -97,6 +104,8 @@ impl Default for Settings {
             roof_defaults: RoofDefaults::default(),
             follow_ai: true,
             folder_request: None,
+            file_request: None,
+            allowed_files: Vec::new(),
             extra: Map::new(),
         }
     }
@@ -222,8 +231,11 @@ impl Settings {
         // Unique per process: the app and an MCP server saving at the same
         // time must not rename each other's half-written file.
         let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-        fs::write(&tmp, json).map_err(|e| SettingsError::Io(e.to_string()))?;
-        fs::rename(&tmp, path).map_err(|e| SettingsError::Io(e.to_string()))
+        crate::store::write_synced(&tmp, json.as_bytes())
+            .map_err(|e| SettingsError::Io(e.to_string()))?;
+        fs::rename(&tmp, path).map_err(|e| SettingsError::Io(e.to_string()))?;
+        crate::store::sync_parent(path);
+        Ok(())
     }
 
     /// Checks values only; folders are checked by [`prepare_dir`] when they
@@ -273,6 +285,53 @@ pub struct FolderRequest {
     pub by: String,
     /// Its one-sentence reason.
     pub summary: String,
+}
+
+/// A file outside the jobs folder and the drawings inbox an AI client
+/// asked to read, with who asked and what for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileRequest {
+    pub path: PathBuf,
+    /// The AI client's name.
+    pub by: String,
+    /// What the file is wanted for: `read_drawing`, `attach` or `import`.
+    pub purpose: String,
+}
+
+/// Most files kept in [`Settings::allowed_files`]; the oldest go first.
+pub const MAX_ALLOWED_FILES: usize = 200;
+
+/// `path` without `.` and `..` and with the links of its existing part
+/// resolved, so a path cannot leave a folder through `..` or a link. The
+/// deepest folder that exists is resolved and the rest is appended: a file
+/// that is not there yet still compares with its resolved folder (on
+/// Windows a resolved path has another prefix, on macOS the temporary
+/// folder is itself a link).
+fn resolved(path: &Path) -> PathBuf {
+    let mut plain = PathBuf::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                plain.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => plain.push(other),
+        }
+    }
+    let mut rest = Vec::new();
+    let mut head = plain.as_path();
+    loop {
+        if let Ok(real) = fs::canonicalize(head) {
+            return rest.iter().rev().fold(real, |p, name| p.join(name));
+        }
+        match (head.parent(), head.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                head = parent;
+            }
+            _ => return plain,
+        }
+    }
 }
 
 pub const EDITABLE_KEYS: [&str; 6] = [
@@ -384,6 +443,52 @@ impl Settings {
         Ok(next)
     }
 
+    /// Whether an AI client may read the file `path`: it lies in the jobs
+    /// folder (`library`, the one the MCP server works on, or the one in the
+    /// settings), in the drawings inbox, or the user allowed this file
+    /// (ARCH-002). A path outside gets the same answer whether the file
+    /// exists or not.
+    pub fn ai_may_read(&self, path: &Path, library: &Path) -> bool {
+        if !path.is_absolute() {
+            return false;
+        }
+        let file = resolved(path);
+        let roots = [
+            library.to_path_buf(),
+            self.projects_dir(),
+            self.drawings_dir(),
+        ];
+        roots.iter().any(|r| file.starts_with(resolved(r)))
+            || self.allowed_files.iter().any(|a| resolved(a) == file)
+    }
+
+    /// A copy that asks the user to allow `path` for `by`
+    /// ([`Settings::file_request`]); it replaces an older open request.
+    pub fn asking_for_file(&self, path: &Path, by: &str, purpose: &str) -> Settings {
+        let mut next = self.clone();
+        next.file_request = Some(FileRequest {
+            path: resolved(path),
+            by: by.to_string(),
+            purpose: purpose.to_string(),
+        });
+        next
+    }
+
+    /// The user's answer to [`Settings::file_request`]: `allow` adds the
+    /// file to [`Settings::allowed_files`], either way the request is closed.
+    pub fn answer_file_request(&self, allow: bool) -> Settings {
+        let mut next = self.clone();
+        let Some(req) = next.file_request.take() else {
+            return next;
+        };
+        if allow && !next.allowed_files.contains(&req.path) {
+            next.allowed_files.push(req.path);
+            let extra = next.allowed_files.len().saturating_sub(MAX_ALLOWED_FILES);
+            next.allowed_files.drain(..extra);
+        }
+        next
+    }
+
     pub fn describe(&self) -> Value {
         serde_json::json!({
             "settings": self,
@@ -434,6 +539,72 @@ pub fn prepare_dir(dir: &Path) -> Result<(), SettingsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ai_reads_outside_the_job_folders_only_what_the_user_allowed() {
+        // ARCH-002: MCP `path` arguments reached any file on the computer.
+        let base = tmp("ai-file");
+        let (library, inbox, other) = (base.join("jobs"), base.join("inbox"), base.join("other"));
+        for d in [&library, &inbox, &other] {
+            fs::create_dir_all(d).unwrap();
+        }
+        let s = Settings {
+            drawings_dir: Some(inbox.clone()),
+            ..Settings::default()
+        };
+        let secret = other.join("contract.pdf");
+        fs::write(&secret, b"x").unwrap();
+        assert!(s.ai_may_read(&library.join("files/a/plan.pdf"), &library));
+        assert!(s.ai_may_read(&inbox.join("plan.pdf"), &library));
+        assert!(!s.ai_may_read(&secret, &library));
+        // The same answer for a file that is not there, `..` out of the
+        // inbox and a relative path.
+        assert!(!s.ai_may_read(&other.join("missing.pdf"), &library));
+        assert!(!s.ai_may_read(&inbox.join("../other/contract.pdf"), &library));
+        assert!(!s.ai_may_read(Path::new("contract.pdf"), &library));
+        #[cfg(unix)]
+        {
+            // A link in the inbox does not carry a file in from outside.
+            std::os::unix::fs::symlink(&secret, inbox.join("link.pdf")).unwrap();
+            assert!(!s.ai_may_read(&inbox.join("link.pdf"), &library));
+            // A jobs folder reached through a link (the temporary folder
+            // on macOS, a resolved prefix on Windows): a file that is not
+            // there yet is still inside it.
+            let via = base.join("jobs-link");
+            std::os::unix::fs::symlink(&library, &via).unwrap();
+            assert!(s.ai_may_read(&via.join("files/a/plan.pdf"), &via));
+            assert!(!s.ai_may_read(&via.join("../other/missing.pdf"), &via));
+        }
+        let asked = s.asking_for_file(&secret, "Claude", "attach");
+        let req = asked.file_request.clone().unwrap();
+        assert_eq!(
+            (req.by.as_str(), req.purpose.as_str()),
+            ("Claude", "attach")
+        );
+        assert!(
+            !asked.ai_may_read(&secret, &library),
+            "asking allows nothing"
+        );
+        let kept = asked.answer_file_request(false);
+        assert!(kept.file_request.is_none() && !kept.ai_may_read(&secret, &library));
+        let allowed = asked.answer_file_request(true);
+        assert!(allowed.file_request.is_none() && allowed.ai_may_read(&secret, &library));
+        assert!(
+            !allowed.ai_may_read(&other.join("second.pdf"), &library),
+            "only that file"
+        );
+        // An AI client cannot allow a file for itself through the settings.
+        let patch = serde_json::json!({ "allowed_files": [other.join("second.pdf")] });
+        assert!(s.patched_by_ai(&patch, "Claude", "x").is_err());
+        // The list survives a save and a later change of another setting.
+        let again: Settings =
+            serde_json::from_str(&serde_json::to_string(&allowed).unwrap()).unwrap();
+        let again = again
+            .patched(&serde_json::json!({ "follow_ai": false }))
+            .unwrap();
+        assert!(again.ai_may_read(&secret, &library));
+        let _ = fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn an_ai_only_asks_to_move_the_folders_and_the_user_decides() {

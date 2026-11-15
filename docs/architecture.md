@@ -49,7 +49,15 @@ stdin/stdout and opens no window (`app/src-tauri/src/main.rs`).
 | `integrations/skills/tectora-roof` | skill end users give their AI client for drawing-to-roof | MCP tools |
 
 No roof math lives in TypeScript. `app/src/lib/api.ts` is the only place the
-UI talks to the backend.
+UI talks to the backend. Every committed edit (a dialog's OK, a typed field, a
+click that creates something) is an `edit/` operation behind a command in
+`commands.rs`; forms show live figures by asking the core after a short pause
+(`lib/latest.ts`, newest answer wins). What stays in TypeScript is
+presentation that must answer during a pointer drag or draws calculated data,
+and the migration of the older copies is not finished: ADR-0005 lists what
+moved, what stays and why, and what is still to move (`transform.ts`,
+`dormers.ts`, `corners.ts`), with `editparity.test.ts` guarding the copies that
+remain.
 
 ## Inside `tectora-core`
 
@@ -66,7 +74,8 @@ UI talks to the backend.
 | `check` | plausibility warnings for roofs that are DACAD-identical but geometrically odd; `check::sound`, the self-check every departure from the core's result must pass |
 | `coplanar`, `wing_split` | the two departures tried where the core stops: parallel planes joined into one face, a low wing calculated as a lean-to against the house wall |
 | `quantities`, `report` | quantities by DACAD line code and by material; `report::calc` builds what the UI, CLI and MCP show |
-| `edit/` | editor operations shared by the UI and MCP: dormer kinds, transforms, round roof, calculation helpers, returning `Patches` |
+| `edit/` | editor operations shared by the UI and MCP: dormer kinds, transforms, round roof, calculation helpers (`edit::helper` is the one entry the dialog and MCP `roof_helper` call), returning `Patches` |
+| `commands` | the bodies of the app's Tauri commands (calc, helpers, shape operations), shared with the browser preview's bridge and tested in the core crate |
 | `store` | the job library: one `.tectora` per job, attachments, activity log with previous versions, `live.json` |
 | `bundle`, `snapshot`, `diff`, `settings`, `examples` | `.tectorajob` ZIPs, stored result, change lists for review, user settings, example gallery |
 

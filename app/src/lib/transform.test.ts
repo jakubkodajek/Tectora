@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { emptyProject, type EdgeDef, type Point2, type RoofPart } from "./types";
-import { mapPart, mirror, offsetWall, regularPolygon, rotation, transformPart, translation } from "./transform";
+import { mapPart, mirror, rotation, transformPart, translation } from "./transform";
 
 const wall = (x: number, y: number, pitch = 40, extra: Partial<EdgeDef> = {}): EdgeDef => ({
   start: { x, y },
@@ -90,30 +90,6 @@ describe("transformPart", () => {
   });
 });
 
-describe("wall helpers", () => {
-  it("moves a wall outward and stretches its neighbours", () => {
-    const p = part();
-    expect(offsetWall(p, 0, 1)).toBe(true);
-    expect(p.edges.map((e) => e.start)).toEqual([
-      { x: 0, y: -1 },
-      { x: 10, y: -1 },
-      { x: 10, y: 6 },
-      { x: 0, y: 6 },
-    ]);
-    expect(offsetWall(p, 1, -2)).toBe(true);
-    expect(p.edges[1].start).toEqual({ x: 8, y: -1 });
-    expect(p.edges[2].start).toEqual({ x: 8, y: 6 });
-  });
-
-  it("builds a regular polygon with the given side", () => {
-    const pts = regularPolygon({ x: 0, y: 0 }, 6, 4);
-    expect(pts.length).toBe(6);
-    for (let i = 0; i < 6; i++) {
-      const [a, b] = [pts[i], pts[(i + 1) % 6]];
-      expect(Math.hypot(b.x - a.x, b.y - a.y)).toBeCloseTo(4, 2);
-    }
-    // First wall horizontal.
-    expect(pts[0].y).toBeCloseTo(pts[1].y, 6);
-    expect(pts[1].x).toBeGreaterThan(pts[0].x);
-  });
-});
+// offsetWall and regularPolygon are the core's (`edit/transform.rs` tests
+// `moves_a_wall_outward_and_stretches_its_neighbours`,
+// `builds_a_regular_polygon_with_the_given_side`).

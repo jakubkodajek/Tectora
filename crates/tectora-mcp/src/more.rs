@@ -7,18 +7,22 @@
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
-use tectora_core::edit::calc::{self as hc, BuildUpEave, ParallelField, Target};
+#[cfg(test)]
+use tectora_core::edit::apply_patches;
+#[cfg(test)]
+use tectora_core::edit::calc as hc;
+use tectora_core::edit::calc::{BuildUpEave, Target};
+use tectora_core::edit::corners::corner_group;
 use tectora_core::edit::dormers::{self, DormerKind, DormerParams, SectionTarget};
+use tectora_core::edit::helper::{self, HelperRequest, HipBy, Neighbour, ParallelStep};
 use tectora_core::edit::openings::{OpeningBox, opening_box, reshape_opening};
 use tectora_core::edit::probe::{host_height_at, roof_corner_points, roof_height_at, snap_to_roof};
-use tectora_core::edit::round::{
-    ArcInput, ArcMode, MAX_ROUND_SEGMENTS, arc_for, opposite_wall, span_between,
-};
+use tectora_core::edit::round::{ArcMode, MAX_ROUND_SEGMENTS};
 use tectora_core::edit::transform::{
     ItemKind, ItemRef, MAX_COPIES, MAX_POLYGON_SIDES, PlanMap, follow_roof, item_centre,
     offset_wall, part_centre, regular_polygon, transform_items, transform_part,
 };
-use tectora_core::edit::{EdgePatch, Patches, apply_patches, plain_edge};
+use tectora_core::edit::{Patches, plain_edge};
 use tectora_core::examples::{EXAMPLES, StandardRoof, standard_roof};
 use tectora_core::geom::Point2;
 use tectora_core::model::{ManualFace, ManualLine};
@@ -36,6 +40,24 @@ fn opt<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> Result<Option
             .map(Some)
             .map_err(|e| format!("`{key}`: {e}")),
     }
+}
+
+/// `line_names` of `export_plan`: code → name, at most 64 codes of up to 8
+/// characters and names of up to 60 characters.
+fn line_names_arg(args: &Value) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let names: std::collections::BTreeMap<String, String> =
+        opt(args, "line_names")?.unwrap_or_default();
+    if names.len() > 64
+        || names
+            .iter()
+            .any(|(k, v)| k.chars().count() > 8 || v.chars().count() > 60)
+    {
+        return Err(
+            "`line_names`: at most 64 codes of up to 8 characters, names up to 60 characters"
+                .into(),
+        );
+    }
+    Ok(names)
 }
 
 fn req<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> Result<T, String> {
@@ -559,7 +581,7 @@ pub(crate) fn tools() -> Vec<Value> {
         json!({
             "name": "attach_file",
             "description": "Attach a file from this computer (e.g. the technical drawing the roof was made from) to a job. Only a regular file up to 256 MB of a drawing, photo or document type (pdf, png, jpg, jpeg, webp, gif, bmp, tif, tiff, heic, svg, txt, csv, dxf, dwg, xlsx, xls, ods, docx, doc, odt). Attach only files the user gave you for this job; the reply names the folder the file came from.",
-            "inputSchema": schema(json!({ "id": id, "path": { "type": "string", "description": "Absolute path of the file." }, "summary": summary_prop() }), &["id", "path", "summary"]),
+            "inputSchema": schema(json!({ "id": id, "path": { "type": "string", "description": "Absolute path of the file. A file outside the jobs folder and the drawings inbox is refused until the user allows it in the app." }, "summary": summary_prop() }), &["id", "path", "summary"]),
         }),
         json!({
             "name": "remove_file",
@@ -591,13 +613,14 @@ pub(crate) fn tools() -> Vec<Value> {
                 "format": { "type": "string", "enum": ["pdf", "svg"], "description": "Default: pdf." },
                 "name": { "type": "string", "description": "File name without folder or extension; default: the job's id." },
                 "stamp": { "type": "string", "description": "Date on the sheet; default: now (UTC)." },
+                "line_names": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Names of the line codes for the legend at the sheet's foot, in the user's language, e.g. {\"T\": \"Okapy\", \"WV\": \"Napojení čelní\"}; codes without a name are listed without one. Default: no legend." },
                 "summary": summary_prop(),
             }), &["id", "summary"]),
         }),
         json!({
             "name": "import_job",
             "description": "Add a job from a .tectorajob file, or a .tectora project file from outside the library, as a new design.",
-            "inputSchema": schema(json!({ "path": { "type": "string" }, "summary": summary_prop() }), &["path", "summary"]),
+            "inputSchema": schema(json!({ "path": { "type": "string", "description": "Absolute path of the file. A file outside the jobs folder and the drawings inbox is refused until the user allows it in the app." }, "summary": summary_prop() }), &["path", "summary"]),
         }),
         json!({
             "name": "store_result",
@@ -813,14 +836,12 @@ impl Server {
                 let (id, _) = self.load(args)?;
                 let summary = arg_str(args, "summary")?;
                 let src = PathBuf::from(arg_str(args, "path")?);
-                if !src.is_absolute() {
-                    return Err("`path` must be an absolute path".into());
-                }
+                self.readable_path(&src, "attach")?;
                 // Drawings, photos and documents only: a path from text in a
                 // drawing must not copy a key or a program into a job that
                 // is later handed over (ARCH-001).
                 let name = src.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !tectora_core::store::Store::opens_directly(name) {
+                if !tectora_core::store::Store::can_attach(name) {
                     return Err(format!(
                         "{}: only drawings, photos and documents can be attached (pdf, png, jpg, …, dwg, xlsx, docx)",
                         src.display()
@@ -890,7 +911,9 @@ impl Server {
                     None => id.clone(),
                 };
                 let path = bundle::export_path_with(&self.store, &name, format)?;
-                let bytes = tectora_core::export::checked_sheet_file(&p, &stamp, format)?;
+                let line_names = line_names_arg(args)?;
+                let bytes =
+                    tectora_core::export::checked_sheet_file_named(&p, &stamp, format, &line_names)?;
                 std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
                 self.live("exported_sheet", Some(&path.display().to_string()), format!("Exported sheet to {}: {summary}", path.display()), Some(&id));
                 Ok(json!({ "id": id, "path": path.display().to_string() }))
@@ -898,6 +921,7 @@ impl Server {
             "import_job" => (|| {
                 let path = PathBuf::from(arg_str(args, "path")?);
                 let summary = arg_str(args, "summary")?;
+                self.readable_path(&path, "import")?;
                 let id = bundle::open_path(&self.store, &path)?;
                 self.live_follow("imported", Some(&path.display().to_string()), format!("Imported {}: {summary}", path.display()), &id);
                 Ok(json!({ "id": id }))
@@ -1480,60 +1504,31 @@ impl Server {
         let pi = part_index(args, &before)?;
         let es = &before.parts[pi].edges;
         let edge = edge_index(args, "edge", es.len())?;
-        let e = &es[edge];
         let target: Option<Target> = opt(args, "target")?;
         let need_target = || {
             target.ok_or_else(|| "missing `target` (pitch, eave, overhang or position)".to_string())
         };
-        let single = |patch: EdgePatch| Patches::from([(edge, patch)]);
-        let mut extra = json!({});
-        let patches: Patches = match arg_str(args, "tool")? {
-            "triangle" => {
-                let t = hc::triangle(
-                    e,
-                    arg_f64(args, "width")?,
-                    arg_f64(args, "rafter")?,
-                    arg_f64(args, "ridge")?,
-                    opt(args, "width_includes_overhang")?.unwrap_or(false),
-                )
-                .ok_or("give two of width, rafter and ridge that make a triangle")?;
-                extra = json!({ "triangle": t });
-                single(hc::triangle_patch(e, t.pitch_deg))
-            }
+        let req = match arg_str(args, "tool")? {
+            "triangle" => HelperRequest::Triangle {
+                width: arg_f64(args, "width")?,
+                rafter: arg_f64(args, "rafter")?,
+                ridge: arg_f64(args, "ridge")?,
+                width_includes_overhang: opt(args, "width_includes_overhang")?.unwrap_or(false),
+            },
             "parallel" => {
                 let target = need_target()?;
-                let opp = opposite_wall(es, edge).ok_or("this wall has no facing wall")?;
-                if !e.breaks.is_empty() || !es[opp].breaks.is_empty() {
-                    return Err("not available on walls with pitch breaks".into());
-                }
-                let span = span_between(es, edge, opp);
-                let (w, h) = hc::meeting(e, &es[opp], span).ok_or("the two planes do not meet")?;
-                let mut st = hc::parallel_start(e, &es[opp], span, w, h);
-                let with_ov = opt(args, "width_includes_overhang")?.unwrap_or(true);
                 let steps: Vec<Value> = req(args, "steps")?;
-                for (k, s) in steps.iter().enumerate() {
-                    let field: ParallelField = req(s, "field")?;
-                    let v = arg_f64(s, "value")?.ok_or("missing `value`")?;
-                    st = hc::parallel_edit(&st, field, v, target, with_ov)
-                        .ok_or_else(|| format!("step {k}: no solution for this value"))?;
+                let mut parsed = Vec::with_capacity(steps.len());
+                for s in &steps {
+                    parsed.push(ParallelStep {
+                        field: req(s, "field")?,
+                        value: arg_f64(s, "value")?.ok_or("missing `value`")?,
+                    });
                 }
-                extra = json!({ "opposite_edge": opp, "state": st });
-                if target == Target::Position {
-                    tectora_core::edit::combine([
-                        &hc::move_wall(es, edge, st.shift_a),
-                        &hc::move_wall(es, opp, st.shift_b),
-                    ])
-                } else {
-                    let (pa, pb) = hc::parallel_patches(&st, target);
-                    if target == Target::Eave
-                        && (hc::eave_below_gable(es, edge, pa.eave_height.unwrap_or(0.0))
-                            || hc::eave_below_gable(es, opp, pb.eave_height.unwrap_or(0.0)))
-                    {
-                        return Err(
-                            "the eave would end up below the eave of a neighbouring gable".into(),
-                        );
-                    }
-                    Patches::from([(edge, pa), (opp, pb)])
+                HelperRequest::Parallel {
+                    target,
+                    steps: parsed,
+                    width_includes_overhang: opt(args, "width_includes_overhang")?.unwrap_or(true),
                 }
             }
             "point" => {
@@ -1551,88 +1546,44 @@ impl Server {
                         .ok_or_else(|| format!("point_index {i} out of range"))?,
                     (None, None) => return Ok(json!({ "roof_points": corners })),
                 };
-                let d = hc::inward(es, edge, Point2::new(q[0], q[1]));
-                if target == Target::Position {
-                    let sh =
-                        hc::shift_for(e, d, q[2]).ok_or("no wall position reaches that point")?;
-                    hc::move_wall(es, edge, sh)
+                HelperRequest::Point { target, point: q }
+            }
+            "merge" => HelperRequest::Merge {
+                target: need_target()?,
+                walls: opt(args, "walls")?,
+            },
+            "hip" => HelperRequest::Hip {
+                neighbour: match args.get("neighbour").and_then(Value::as_str) {
+                    Some("prev") => Neighbour::Prev,
+                    _ => Neighbour::Next,
+                },
+                by: if args.get("by").and_then(Value::as_str) == Some("eaves") {
+                    HipBy::Eaves
                 } else {
-                    single(
-                        hc::solve(e, d, q[2], target)
-                            .ok_or("no plane of this wall reaches that point")?,
-                    )
-                }
-            }
-            "merge" => {
-                let target = need_target()?;
-                let walls: Vec<usize> =
-                    opt(args, "walls")?.unwrap_or_else(|| hc::same_way(es, edge));
-                match target {
-                    Target::Pitch => {
-                        return Err("merge solves for eave, overhang or position".into());
-                    }
-                    Target::Position => {
-                        hc::merge_by_moving(es, edge, &walls).ok_or("this wall has no slope")?
-                    }
-                    t => hc::merge_onto(es, edge, &walls, t),
-                }
-            }
-            "hip" => {
-                let n = es.len();
-                let other = match args
-                    .get("neighbour")
-                    .and_then(Value::as_str)
-                    .unwrap_or("next")
-                {
-                    "prev" => (edge + n - 1) % n,
-                    _ => (edge + 1) % n,
-                };
-                let hip = arg_f64(args, "hip")?.ok_or("missing `hip`")?;
-                let a = arg_f64(args, "first")?.ok_or("missing `first`")?;
-                let b = arg_f64(args, "second")?.ok_or("missing `second`")?;
-                let f = if args.get("by").and_then(Value::as_str) == Some("eaves") {
-                    hc::hip_pitches_from_eaves
-                } else {
-                    hc::hip_pitches
-                };
-                f(es, edge, other, hip, a, b).ok_or("no pitches fit these lengths (both walls need a slope and the same eave height)")?
-            }
-            "build_up" => {
-                let d = arg_f64(args, "thickness")?.ok_or("missing `thickness`")?;
-                let eave: BuildUpEave = opt(args, "eave")?.unwrap_or_default();
-                single(hc::build_up(e, d, eave).ok_or("not possible on this wall")?)
-            }
-            "round_roof" => {
-                let opp = opposite_wall(es, edge).ok_or("this wall has no facing wall")?;
-                let arc = arc_for(&ArcInput {
-                    span: span_between(es, edge, opp),
-                    overhang: e.overhang,
-                    eave_height: e.eave_height,
-                    segments: opt(args, "segments")?.unwrap_or(0),
-                    mode: opt::<ArcMode>(args, "mode")?.unwrap_or_default(),
-                    value: arg_f64(args, "value")?.unwrap_or(0.0),
-                })
-                .ok_or("the value is out of range for this span")?;
-                let patch = EdgePatch {
-                    pitch_deg: Some(arc.pitch_deg),
-                    eave_height: Some(e.eave_height),
-                    overhang: Some(e.overhang),
-                    breaks: Some(arc.breaks.clone()),
-                    half_hip: Some(None),
-                    ..EdgePatch::default()
-                };
-                extra = json!({ "opposite_edge": opp, "arc": arc });
-                Patches::from([(edge, patch.clone()), (opp, patch)])
-            }
+                    HipBy::Rafters
+                },
+                hip: arg_f64(args, "hip")?.ok_or("missing `hip`")?,
+                first: arg_f64(args, "first")?.ok_or("missing `first`")?,
+                second: arg_f64(args, "second")?.ok_or("missing `second`")?,
+            },
+            "build_up" => HelperRequest::BuildUp {
+                thickness: arg_f64(args, "thickness")?.ok_or("missing `thickness`")?,
+                eave: opt::<BuildUpEave>(args, "eave")?.unwrap_or_default(),
+            },
+            "round_roof" => HelperRequest::RoundRoof {
+                eave_height: None,
+                overhang: None,
+                segments: opt(args, "segments")?.unwrap_or(0),
+                mode: opt::<ArcMode>(args, "mode")?.unwrap_or_default(),
+                value: arg_f64(args, "value")?.unwrap_or(0.0),
+            },
             other => return Err(format!("unknown tool `{other}`")),
         };
+        let helped = helper::run(&before, pi, edge, &req)?;
         let mut p = before.clone();
         // A helper that sets eave heights keeps the building's height, as
         // update_edges does (review ARCH-001).
-        if patches.values().any(|q| q.eave_height.is_some()) {
-            p.parts[pi].freeze_height();
-        }
-        let applied = apply_patches(&mut p.parts[pi].edges, &patches);
+        let applied = helper::apply_to_part(&mut p, pi, &helped.patches);
         let mut out = if args.get("apply").and_then(Value::as_bool) == Some(true)
             && !applied.is_empty()
         {
@@ -1641,10 +1592,17 @@ impl Server {
             json!({ "id": id, "saved": false, "note": "Not saved; call again with apply: true to save." })
         };
         out["patches"] = patches_json(&applied);
-        if let Value::Object(m) = extra {
-            for (k, v) in m {
-                out[k] = v;
-            }
+        if let Some(t) = helped.triangle {
+            out["triangle"] = json!(t);
+        }
+        if let Some(o) = helped.opposite_edge {
+            out["opposite_edge"] = json!(o);
+        }
+        if let Some(st) = &helped.state {
+            out["state"] = json!(st);
+        }
+        if let Some(arc) = &helped.arc {
+            out["arc"] = json!(arc);
         }
         Ok(out)
     }
@@ -1671,34 +1629,6 @@ fn nearest_wall_angle(p: &Project, q: Point2) -> f64 {
         }
     }
     best.1
-}
-
-/// Corner `v` and the direction changes (zero-length marker walls) on the
-/// same point next to it, as the plan editor moves them together
-/// (`app/src/lib/corners.ts`). O(n).
-fn corner_group(es: &[tectora_core::EdgeDef], v: usize) -> Vec<usize> {
-    let n = es.len();
-    let p = es[v].start;
-    let at = |j: usize| (es[j].start.x - p.x).abs() < 1e-6 && (es[j].start.y - p.y).abs() < 1e-6;
-    let marker = |j: usize| es[j].direction_rad.is_some();
-    let mut out = vec![v];
-    for k in 1..n {
-        let j = (v + n - k) % n;
-        if !marker(j) || !at(j) {
-            break;
-        }
-        out.push(j);
-    }
-    for k in 1..n {
-        let (prev, j) = ((v + k - 1) % n, (v + k) % n);
-        if !marker(prev) || !at(j) {
-            break;
-        }
-        out.push(j);
-    }
-    out.sort_unstable();
-    out.dedup();
-    out
 }
 
 #[cfg(test)]
@@ -1836,6 +1766,29 @@ mod tests {
             .call_tool("transform_items", &json!({ "id": id, "summary": "a", "op": "align", "items": [{ "kind": "window", "index": 0 }] }))
             .unwrap_err();
         assert!(err.contains("only chimneys"), "{err}");
+    }
+
+    #[test]
+    fn a_pitch_over_90_is_refused_as_in_the_wall_bar() {
+        // UX-010: 95 typed for 45 used to make a plane leaning out.
+        let (mut s, id) = setup();
+        let before = s.store.load(&id).unwrap();
+        for pitch in [95.0, 90.0, 178.0] {
+            let err = s
+                .call_tool(
+                    "update_edges",
+                    &json!({ "id": id, "summary": "p", "changes": [{ "index": 0, "pitch_deg": pitch }] }),
+                )
+                .unwrap_err();
+            assert!(err.contains("below 90"), "{pitch}: {err}");
+        }
+        assert_eq!(s.store.load(&id).unwrap().parts, before.parts);
+        call(
+            &mut s,
+            "update_edges",
+            json!({ "id": id, "summary": "p", "changes": [{ "index": 0, "pitch_deg": 89.5 }] }),
+        );
+        assert_eq!(s.store.load(&id).unwrap().parts[0].edges[0].pitch_deg, 89.5);
     }
 
     #[test]
@@ -2311,6 +2264,28 @@ mod tests {
     }
 
     #[test]
+    fn one_tool_call_calculates_the_roof_once() {
+        // Review ARCH-006: a write calculated it 6 times, get_project up to 9.
+        let (mut s, id) = setup();
+        let runs = |s: &mut Server, name: &str, args: Value| {
+            let before = tectora_core::openings::core_runs();
+            call(s, name, args);
+            tectora_core::openings::core_runs() - before
+        };
+        assert_eq!(runs(&mut s, "get_project", json!({ "id": id })), 1);
+        assert_eq!(runs(&mut s, "calc", json!({ "id": id })), 1);
+        // The write needs one run for the design, which `commit` reuses for
+        // the quantities and the roof trouble.
+        let n = runs(
+            &mut s,
+            "add_part",
+            json!({ "id": id, "summary": "Wing",
+                "part": { "name": "Wing", "points": [[12, 0], [18, 0], [18, 5], [12, 5]], "defaults": { "pitch_deg": 35 } } }),
+        );
+        assert_eq!(n, 1, "a write");
+    }
+
+    #[test]
     fn a_write_that_leaves_a_building_without_roof_says_so_and_calc_names_it() {
         // Review ERR-003 / ARCH-002.
         let (mut s, id) = setup();
@@ -2618,9 +2593,23 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(svg.ends_with("plan.svg"));
+        // The legend of line names, as the app's Export dialog gives it (UX-013).
+        let named = call(
+            &mut s,
+            "export_plan",
+            json!({ "id": id, "format": "svg", "name": "named", "summary": "s",
+                    "line_names": { "T": "Okapy", "F": "Hřebeny" } }),
+        )["path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let text = std::fs::read_to_string(&named).unwrap();
+        assert!(text.contains("T Okapy"), "{text}");
         for bad in [
             json!({ "id": id, "format": "exe", "summary": "s" }),
             json!({ "id": id, "name": "../x", "summary": "s" }),
+            json!({ "id": id, "summary": "s", "line_names": { "T": "x".repeat(61) } }),
+            json!({ "id": id, "summary": "s", "line_names": ["T"] }),
         ] {
             assert!(s.call_tool("export_plan", &bad).is_err());
         }
@@ -2953,6 +2942,286 @@ mod tests {
         let ids: Vec<&str> = broken.iter().map(|b| b["id"].as_str().unwrap()).collect();
         assert_eq!(ids, ["damaged", "newer"]);
         assert_eq!(list["projects"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+}
+
+/// MCP tools no other test called, or called without looking at the result
+/// (TEST-004): the wrapper's arguments (`ts_ms`, `example_id`, `walls`,
+/// `neighbour`, `thickness`) must reach the core operation the editor uses.
+#[cfg(test)]
+mod tool_coverage {
+    use super::*;
+    use tectora_core::store::{Store, now_ms};
+
+    fn server() -> Server {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tectora-mcp-coverage-{}-{}-{n}",
+            now_ms(),
+            std::process::id()
+        ));
+        Server::new(Store::new(dir).unwrap())
+    }
+
+    fn call(s: &mut Server, name: &str, args: Value) -> Value {
+        s.call_tool(name, &args)
+            .unwrap_or_else(|e| panic!("{name}: {e}"))
+    }
+
+    fn example(s: &mut Server, example_id: &str) -> String {
+        let r = call(
+            s,
+            "create_from_example",
+            json!({ "example_id": example_id, "summary": "start" }),
+        );
+        r["id"].as_str().unwrap().to_string()
+    }
+
+    /// The patches a `roof_helper` call returned, as the core's map.
+    fn patches(r: &Value) -> Patches {
+        r["patches"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no patches in {r}"))
+            .iter()
+            .map(|p| {
+                (
+                    p["edge"].as_u64().unwrap() as usize,
+                    serde_json::from_value(p["set"].clone()).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    /// `patches` with only the fields that change the edge (what
+    /// `apply_patches` reports).
+    fn applied(edges: &[tectora_core::EdgeDef], patches: &Patches) -> Patches {
+        let mut es = edges.to_vec();
+        apply_patches(&mut es, patches)
+    }
+
+    #[test]
+    fn revert_to_undoes_every_change_since_the_given_step() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        let original = s.store.load(&id).unwrap();
+        for (k, pitch) in [35.0, 36.0, 37.0].into_iter().enumerate() {
+            // One millisecond apart: the log tells changes apart by ts_ms.
+            std::thread::sleep(std::time::Duration::from_millis(3));
+            call(
+                &mut s,
+                "update_edges",
+                json!({ "id": id, "changes": [{ "index": k, "pitch_deg": pitch }], "summary": format!("step {k}") }),
+            );
+        }
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let steps = history.as_array().unwrap();
+        // Newest first: step 2, step 1, step 0, start.
+        assert_eq!(steps[2]["summary"], "step 0", "{history}");
+        let first = steps[2]["ts_ms"].as_u64().unwrap();
+        let r = call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": first, "summary": "Back to the example" }),
+        );
+        assert_eq!(r["reverted"], true);
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(
+            serde_json::to_value(&p.parts).unwrap(),
+            serde_json::to_value(&original.parts).unwrap()
+        );
+        let log = s.store.activity(&id);
+        assert_eq!(log.len(), 5, "start, 3 steps, one revert");
+        let last = &log[4].summary;
+        assert!(last.contains("Reverted 3 changes since: step 0"), "{last}");
+        assert!(last.contains("Back to the example"), "{last}");
+        // An unknown step changes nothing.
+        let e = s
+            .call_tool(
+                "revert_to",
+                &json!({ "id": id, "ts_ms": 1u64, "summary": "x" }),
+            )
+            .unwrap_err();
+        assert!(e.contains("no recorded change at 1"), "{e}");
+        assert_eq!(s.store.activity(&id).len(), 5);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn create_from_example_makes_the_example_job() {
+        let mut s = server();
+        let list = call(&mut s, "list_examples", json!({}));
+        let ids: Vec<&str> = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect();
+        let want: Vec<&str> = EXAMPLES.iter().map(|e| e.id).collect();
+        assert_eq!(ids, want);
+        for ex in EXAMPLES {
+            let id = example(&mut s, ex.id);
+            let p = s.store.load(&id).unwrap();
+            let core = tectora_core::examples::find(ex.id).unwrap().project();
+            assert_eq!(p.name, core.name, "{}", ex.id);
+            assert_eq!(
+                serde_json::to_value(&p.parts).unwrap(),
+                serde_json::to_value(&core.parts).unwrap(),
+                "{}",
+                ex.id
+            );
+        }
+        let r = call(
+            &mut s,
+            "create_from_example",
+            json!({ "example_id": "hip", "name": "Novák", "summary": "s" }),
+        );
+        let p = s.store.load(r["id"].as_str().unwrap()).unwrap();
+        assert_eq!(p.name, "Novák");
+        let e = s
+            .call_tool(
+                "create_from_example",
+                &json!({ "example_id": "nope", "summary": "s" }),
+            )
+            .unwrap_err();
+        assert!(e.contains("list_examples"), "{e}");
+        assert_eq!(
+            s.store.list().len(),
+            EXAMPLES.len() + 1,
+            "the unknown example made no job"
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn roof_helper_merge_sets_the_core_values() {
+        let mut s = server();
+        // L-shape: walls 2 and 4 both face north; wall 4 (the outer one)
+        // is the reference, wall 2 lies 7 m further in and takes its plane.
+        let id = example(&mut s, "l-shape");
+        let mut p = s.store.load(&id).unwrap();
+        p.parts[0].edges[2].eave_height -= 0.8;
+        p.parts[0].edges[2].pitch_deg = 30.0;
+        s.store.save(Some(id.clone()), &p).unwrap();
+        let es = p.parts[0].edges.clone();
+        assert_eq!(hc::same_way(&es, 4), vec![2, 4]);
+        for target in ["eave", "overhang"] {
+            let t: Target = serde_json::from_value(json!(target)).unwrap();
+            let want = applied(&es, &hc::merge_onto(&es, 4, &[2], t));
+            assert!(!want.is_empty(), "{target}");
+            // Default walls (all parallel ones facing the same way) and the
+            // explicit list give the same.
+            for walls in [Value::Null, json!([2])] {
+                let mut args = json!({ "id": id, "edge": 4, "tool": "merge", "target": target });
+                if !walls.is_null() {
+                    args["walls"] = walls;
+                }
+                let r = call(&mut s, "roof_helper", args);
+                assert_eq!(r["saved"], false);
+                assert_eq!(patches(&r), want, "{target}");
+            }
+        }
+        let want = applied(&es, &hc::merge_by_moving(&es, 4, &[2]).unwrap());
+        let r = call(
+            &mut s,
+            "roof_helper",
+            json!({ "id": id, "edge": 4, "tool": "merge", "target": "position", "walls": [2] }),
+        );
+        assert_eq!(patches(&r), want);
+        let r = call(
+            &mut s,
+            "roof_helper",
+            json!({ "id": id, "edge": 4, "tool": "merge", "target": "eave", "apply": true, "summary": "One plane" }),
+        );
+        assert_eq!(r["saved"], true);
+        let saved = s.store.load(&id).unwrap();
+        let want = applied(&es, &hc::merge_onto(&es, 4, &[2], Target::Eave));
+        let wall2 = want[&2].eave_height.unwrap();
+        assert!((saved.parts[0].edges[2].eave_height - wall2).abs() < 1e-9);
+        assert_eq!(saved.parts[0].edges[2].pitch_deg, es[4].pitch_deg);
+        assert!(
+            s.call_tool(
+                "roof_helper",
+                &json!({ "id": id, "edge": 4, "tool": "merge", "target": "pitch" })
+            )
+            .unwrap_err()
+            .contains("eave, overhang or position")
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn roof_helper_hip_sets_the_core_values() {
+        let mut s = server();
+        let id = example(&mut s, "hip");
+        let es = s.store.load(&id).unwrap().parts[0].edges.clone();
+        let n = es.len();
+        // Measured case of hip_pitches_from_eaves: hip 7.5, pieces 5 and 4.5.
+        type Hip = fn(&[tectora_core::EdgeDef], usize, usize, f64, f64, f64) -> Option<Patches>;
+        let cases: [(&str, f64, f64, Hip); 2] = [
+            ("rafters", 6.0, 5.5, hc::hip_pitches),
+            ("eaves", 5.0, 4.5, hc::hip_pitches_from_eaves),
+        ];
+        for (by, a, b, f) in cases {
+            for (neighbour, other) in [("next", 1), ("prev", n - 1)] {
+                let want = applied(&es, &f(&es, 0, other, 7.5, a, b).unwrap());
+                let r = call(
+                    &mut s,
+                    "roof_helper",
+                    json!({ "id": id, "edge": 0, "tool": "hip", "neighbour": neighbour,
+                            "hip": 7.5, "by": by, "first": a, "second": b }),
+                );
+                let got = patches(&r);
+                assert_eq!(got, want, "{by} {neighbour}");
+                assert_eq!(
+                    got.keys().copied().collect::<Vec<_>>(),
+                    {
+                        let mut k = vec![0, other];
+                        k.sort_unstable();
+                        k
+                    },
+                    "{by} {neighbour}: this wall and the named neighbour"
+                );
+            }
+        }
+        let e = s
+            .call_tool(
+                "roof_helper",
+                &json!({ "id": id, "edge": 0, "tool": "hip", "hip": 7.5, "first": 5 }),
+            )
+            .unwrap_err();
+        assert!(e.contains("second"), "{e}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn roof_helper_build_up_returns_the_core_patch() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        let es = s.store.load(&id).unwrap().parts[0].edges.clone();
+        for (eave, e) in [
+            ("normal", BuildUpEave::Normal),
+            ("horizontal", BuildUpEave::Horizontal),
+            ("vertical", BuildUpEave::Vertical),
+        ] {
+            let core = hc::build_up(&es[0], 0.2, e).unwrap();
+            let want = applied(&es, &Patches::from([(0, core)]));
+            let r = call(
+                &mut s,
+                "roof_helper",
+                json!({ "id": id, "edge": 0, "tool": "build_up", "thickness": 0.2, "eave": eave }),
+            );
+            assert_eq!(patches(&r), want, "{eave}");
+        }
+        let gable = es.iter().position(|e| e.is_gable()).unwrap();
+        assert!(
+            s.call_tool(
+                "roof_helper",
+                &json!({ "id": id, "edge": gable, "tool": "build_up", "thickness": 0.2 })
+            )
+            .is_err()
+        );
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 }

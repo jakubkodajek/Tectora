@@ -2,15 +2,26 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppError } from "./errors";
 import type { HostSlope } from "./dormers";
+import type { OpeningBox } from "./openings";
 import type {
   AiAssistant,
+  ArcInput,
   AiAssistantId,
   ActivityItem,
   AppSettingsView,
   AvailableUpdate,
   Attachment,
+  Chimney,
+  EdgeDef,
+  ManualFace,
+  Point2,
   CalcBreakdown,
   CalcResult,
+  HelperContext,
+  HelperPreview,
+  HelperRequest,
+  PlanMapSpec,
+  RoundArcAnswer,
   ExampleInfo,
   JobInfo,
   Library,
@@ -26,6 +37,16 @@ import type {
 } from "./types";
 
 /** What a checked save did (`Store::save_checked`). */
+/** The price-sheet list as numbers (`tectora_core::export::ListSummary`). */
+export interface ListSummary {
+  decimals: number;
+  windows: { face: string; width: number; height: number }[];
+  faces: { name: string; pitch: number; area: number; deducted: number; rafter: number | null }[];
+  wall_area: number | null;
+  materials: { material: number; area: number }[];
+  lines: { code: string; length: number }[];
+}
+
 export type CheckedSave = { status: "saved"; id: string } | { status: "conflict"; current: Project };
 
 export interface StandardParams {
@@ -94,9 +115,63 @@ export const api = {
     invoke<{ index: number; area: number; face_area: number } | null>("check_windows", { project }),
   /** The roof under dormer `index` at the middle of its front (height, rise per metre into the roof), or null off it. */
   dormerHost: (project: Project, index: number) => invoke<HostSlope | null>("dormer_host", { project, index }),
+  /** What the calculation dialog needs to know about wall `edge` of `part`: facing wall, span, parallel walls, roof points (`withPoints`). */
+  roofHelperContext: (project: Project, part: number, edge: number, withPoints = false) =>
+    invoke<HelperContext>("roof_helper_context", { project, part, edge, withPoints }),
+  /**
+   * The values a helper works out, nothing changed (the MCP tool roof_helper
+   * without apply). Null: the values have no solution (the core refused).
+   */
+  roofHelperPreview: async (project: Project, part: number, edge: number, request: HelperRequest): Promise<HelperPreview | null> => {
+    try {
+      const r = await invoke<Omit<HelperPreview, "patches"> & { patches?: Record<string, Partial<EdgeDef>> }>("roof_helper_preview", { project, part, edge, request });
+      return { ...r, patches: new Map(Object.entries(r.patches ?? {}).map(([k, v]) => [Number(k), v])) };
+    } catch (e) {
+      if ((e as { code?: string } | null)?.code === "refused") return null;
+      throw e;
+    }
+  },
+  /** The project with a helper's values applied (the MCP tool roof_helper with apply). */
+  roofHelperApply: (project: Project, part: number, edge: number, request: HelperRequest) =>
+    invoke<Project>("roof_helper_apply", { project, part, edge, request }),
+  /** The round-roof dialog's arc for the typed values, the walls' values, DACAD's default arc and the smallest radius. */
+  roundArc: (input: ArcInput) => invoke<RoundArcAnswer>("round_arc", { input }),
+  /**
+   * The corners of a chimney or roof opening stretched and turned so that
+   * their box becomes `to` (the MCP tool update_opening's operation); a box
+   * the core refuses (size out of range, no area) rejects with code "refused".
+   */
+  reshapeOpening: (corners: Point2[], to: OpeningBox) =>
+    invoke<{ corners: Point2[] }>("item_geometry", {
+      request: { op: "reshape_opening", corners, to: { x: to.x, y: to.y, width: to.width, depth: to.depth, rotation_deg: to.rotation } },
+    }).then((r) => r.corners),
+  /** A rectangular chimney from a corner, size and rotation in degrees. */
+  chimneyFromRect: (r: { x: number; y: number; width: number; depth: number; rotation: number; height: number }) =>
+    invoke<Chimney>("item_geometry", { request: { op: "chimney_from_rect", x: r.x, y: r.y, width: r.width, depth: r.depth, rotation_deg: r.rotation, height: r.height } }),
+  /** The sloped area of a hand-drawn face, m². */
+  faceArea: (face: ManualFace) => invoke<{ area: number }>("item_geometry", { request: { op: "face_area", face } }).then((r) => r.area),
+  /** Part `part` moved, rotated, mirrored or copied with what lies on it (the MCP tool transform_part); the project afterwards and the moved or new parts. */
+  transformPart: (project: Project, part: number, map: PlanMapSpec, copies: number) =>
+    invoke<{ project: Project; parts: number[] }>("transform_part", { project, part, map, copies }),
+  /** Wall `edge` moved outward by `dist` m, its neighbours stretched to meet it; "refused" where a neighbour runs parallel. */
+  offsetWall: (project: Project, part: number, edge: number, dist: number) =>
+    invoke<Project>("offset_wall", { project, part, edge, dist }),
+  /** The corners of a regular polygon, counter-clockwise, the first wall along the x axis. */
+  regularPolygon: (centre: Point2, sides: number, side: number, rotationDeg = 0) =>
+    invoke<{ corners: Point2[] }>("item_geometry", { request: { op: "regular_polygon", centre, sides, side, rotation_deg: rotationDeg } }).then((r) => r.corners),
+  /** The centre of a part's wall outline, the transform dialog's default pivot. */
+  partCentre: (part: RoofPart) =>
+    invoke<{ centre: Point2 }>("item_geometry", { request: { op: "part_centre", part } }).then((r) => r.centre),
+  /** Corner `vertex` dropped onto its neighbour: the part with the corner merged into it, or unchanged. */
+  mergeDroppedCorner: (part: RoofPart, vertex: number) =>
+    invoke<{ part: RoofPart; merged: boolean }>("item_geometry", { request: { op: "merge_dropped_corner", part, vertex } }),
+  /** A drawn footprint without repeated corners (closer than 1 cm). */
+  withoutRepeats: (points: Point2[]) =>
+    invoke<{ points: Point2[] }>("item_geometry", { request: { op: "without_repeats", points } }).then((r) => r.points),
   getSettings: () => invoke<AppSettingsView>("get_settings"),
   updateSettings: (patch: Record<string, unknown>) => invoke<AppSettingsView>("update_settings", { patch }),
   answerFolderRequest: (allow: boolean) => invoke<AppSettingsView>("answer_folder_request", { allow }),
+  answerFileRequest: (allow: boolean) => invoke<AppSettingsView>("answer_file_request", { allow }),
   openFolder: (which: "projects" | "drawings" | "settings") => invoke<void>("open_folder", { which }),
   listAttachments: (id: string) => invoke<Attachment[]>("list_attachments", { id }),
   attachFiles: (id: string, paths: string[]) => invoke<string[]>("attach_files", { id, paths }),
@@ -105,12 +180,16 @@ export const api = {
   openAttachment: (id: string, name: string) => invoke<boolean>("open_attachment", { id, name }),
   exportJob: (id: string, path: string) => invoke<void>("export_job", { id, path }),
   importJob: (path: string) => invoke<string>("import_job", { path }),
-  /** The price-sheet text list and the plan sheet (SVG) for the export dialog. */
-  exportPreview: (project: Project, title: string, stamp: string) =>
-    invoke<{ list: string; svg: string }>("export_preview", { project, title, stamp }),
+  /**
+   * The price-sheet text list, the plan sheet (SVG) and the list as numbers
+   * (`summary`, shown translated) for the export dialog; `lineNames` label
+   * the sheet's line codes in the UI language.
+   */
+  exportPreview: (project: Project, title: string, stamp: string, lineNames: Record<string, string> = {}) =>
+    invoke<{ list: string; svg: string; summary: ListSummary }>("export_preview", { project, title, stamp, lineNames }),
   /** Writes the plan sheet as PDF or SVG (by the path's extension). */
-  exportPlanFile: (project: Project, stamp: string, path: string) =>
-    invoke<void>("export_plan_file", { project, stamp, path }),
+  exportPlanFile: (project: Project, stamp: string, path: string, lineNames: Record<string, string> = {}) =>
+    invoke<void>("export_plan_file", { project, stamp, path, lineNames }),
   savePng: (path: string, bytes: number[]) => invoke<void>("save_png", { path, bytes }),
   takeSnapshot: (project: Project) => invoke<ResultSnapshot>("take_snapshot", { project }),
   takePendingOpen: () => invoke<string | null>("take_pending_open"),

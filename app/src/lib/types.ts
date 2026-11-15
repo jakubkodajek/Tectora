@@ -159,6 +159,8 @@ export interface ProjectSummary {
   files: number;
   /** The figures an offer was made with are stored. */
   has_result: boolean;
+  /** The roof took longer than the listing waits: no figures yet, a later listing has them. */
+  figures_pending?: boolean;
 }
 
 export interface ExampleInfo {
@@ -408,6 +410,17 @@ export interface AppSettings {
   follow_ai: boolean;
   /** A folder change an AI client asked for, waiting for the user. */
   folder_request?: FolderRequest;
+  /** A file outside the job folders an AI client asked to read, waiting for the user. */
+  file_request?: FileRequest;
+  /** Files outside the job folders the user allowed AI clients to read. */
+  allowed_files?: string[];
+}
+
+export interface FileRequest {
+  path: string;
+  by: string;
+  /** read_drawing, attach or import. */
+  purpose: string;
 }
 
 export interface FolderRequest {
@@ -622,4 +635,92 @@ export type BreakdownDetail =
 export interface PartDeductions {
   items: { label: string; area: number }[];
   total: number;
+}
+
+// Wire shapes of the core's calculation helpers (`tectora_core::edit::helper`,
+// `edit::round`): the UI only sends values and shows what comes back.
+
+export type ArcMode = "default" | "radius" | "ridge" | "length";
+
+export interface ArcInput {
+  /** Distance between the two wall lines, m. */
+  span: number;
+  overhang: number;
+  eave_height: number;
+  /** Segments on each side of the ridge; 0 = the core's count. */
+  segments: number;
+  mode: ArcMode;
+  /** The radius, ridge height or developed length, by mode. */
+  value: number;
+}
+
+export interface Arc {
+  radius: number;
+  ridge: number;
+  /** Developed length of the whole arc, eave tip to eave tip. */
+  length: number;
+  segments: number;
+  pitch_deg: number;
+  breaks: PitchBreak[];
+}
+
+/** A plan map as the core takes it (`edit::transform::PlanMap`): angles in degrees. */
+export type PlanMapSpec =
+  | { kind: "move"; dx: number; dy: number }
+  | { kind: "rotate"; centre: Point2; deg: number }
+  | { kind: "mirror"; centre: Point2; deg: number };
+
+export type CalcTarget = "pitch" | "eave" | "overhang";
+export type ParallelTarget = CalcTarget | "position";
+export type ParallelField = "width_a" | "width_b" | "rafter_a" | "rafter_b" | "ridge" | "top";
+export type BuildUpEave = "normal" | "horizontal" | "vertical";
+
+/** A helper and its values (`edit::helper::HelperRequest`). */
+export type HelperRequest =
+  | { tool: "triangle"; width?: number | null; rafter?: number | null; ridge?: number | null; width_includes_overhang: boolean }
+  | { tool: "parallel"; target: ParallelTarget; steps: { field: ParallelField; value: number }[]; width_includes_overhang: boolean }
+  | { tool: "point"; target: ParallelTarget; point: [number, number, number] }
+  | { tool: "merge"; target: ParallelTarget; walls: number[] }
+  | { tool: "hip"; neighbour: "next" | "prev"; by: "rafters" | "eaves"; hip: number; first: number; second: number }
+  | { tool: "build_up"; thickness: number; eave: BuildUpEave }
+  | { tool: "round_roof"; eave_height: number; overhang: number; segments: number; mode: ArcMode; value: number };
+
+/** The 2 Parallele dialog's state (`edit::calc::ParallelState`). */
+export interface ParallelState {
+  span: number;
+  top: number;
+  w_a: number;
+  w_b: number;
+  h: number;
+  a: { pitch_deg: number; eave_height: number; overhang: number };
+  b: { pitch_deg: number; eave_height: number; overhang: number };
+  shift_a: number;
+  shift_b: number;
+}
+
+export interface HelperPreview {
+  /** New values by wall; only the fields that differ from the walls now. */
+  patches: Map<number, Partial<EdgeDef>>;
+  /** Values were found and equal what the walls have now. */
+  unchanged: boolean;
+  triangle?: { pitch_deg: number; width: number; rafter: number; ridge: number };
+  state?: ParallelState;
+  rafters?: [number, number];
+  /** Why worked-out values were not taken (an eave below a neighbouring gable's). */
+  refused?: string;
+}
+
+export interface HelperContext {
+  opposite: number | null;
+  span: number;
+  current: { w: number; h: number } | null;
+  breaks: boolean;
+  mates: number[];
+  roof_points?: { p: [number, number, number]; kind: string }[];
+}
+
+export interface RoundArcAnswer {
+  arc: Arc | null;
+  default_arc: Arc | null;
+  min_radius: number;
 }

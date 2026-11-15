@@ -212,6 +212,26 @@ test.describe("no export or offer from a roof the core refused (ERR-003)", () =>
     await expect(exp).toHaveAttribute("title", cs("tool.exportHint"));
   });
 
+  test("a roof the core refused shows no figures in Results and the status bar, only a dash (ERR-004)", async ({ app, page }) => {
+    await nonConvex("Bez čísel");
+    await openEditor(app, "Bez čísel");
+    await page.locator("aside .tabs").getByRole("tab", { name: cs("dock.results") }).click();
+    const results = page.locator(".results");
+    await expect(results.getByTestId("res-not-calculated")).toHaveText(cs("res.notCalculated"));
+    await expect(results.getByTestId("res-area")).toHaveText("—");
+    await expect(page.getByTestId("status-area").locator("b")).toHaveText("—");
+    // No "0,00 m" for the line lengths either.
+    const lines = results.getByTestId("res-lines").locator("td.v");
+    expect(await lines.count()).toBeGreaterThan(0);
+    for (const v of await lines.allTextContents()) expect(v).toBe("—");
+    await expect(results).not.toContainText("0,00");
+    // Fixed: the figures come back.
+    await page.locator(".warn-bar").getByRole("button", { name: cs("opening.show") }).click();
+    await page.keyboard.press("Delete");
+    await expect(results.getByTestId("res-area")).toHaveText(/m²/);
+    await expect(page.getByTestId("status-area").locator("b")).toHaveText(/m²/);
+  });
+
   test("the job cannot be set to offer or ordered while the roof has a calculation error", async ({ app, page }) => {
     const id = await nonConvex("Nabídka");
     await openEditor(app, "Nabídka");

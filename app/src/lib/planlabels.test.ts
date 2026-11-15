@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { overlaps, placeLabels, rotatedBox, underHigherRoof } from "./planlabels";
+import { chooseLabels, insidePolygon, overlaps, placeLabels, rotatedBox, segCrossesBox, underHigherRoof, wallNumber, type Seg } from "./planlabels";
 
 describe("rotatedBox", () => {
   it("is the label box itself without a turn and swaps sides at 90°", () => {
@@ -37,5 +37,79 @@ describe("underHigherRoof", () => {
     expect(underHigherRoof(3.2, 3.22)).toBe(false);
     expect(underHigherRoof(3.2, null)).toBe(false);
     expect(underHigherRoof(null, 5)).toBe(false);
+  });
+});
+
+describe("chooseLabels (UX-018)", () => {
+  it("takes a later candidate when the first overlaps a label kept before", () => {
+    const a = { x0: 0, y0: 0, x1: 40, y1: 12 };
+    const outside = { x0: 30, y0: 2, x1: 70, y1: 14 };
+    const inside = { x0: 80, y0: 2, x1: 120, y1: 14 };
+    expect(chooseLabels([[a], [outside, inside]])).toEqual([0, 1]);
+  });
+  it("skips unusable candidates and drops a label with none that fits", () => {
+    const a = { x0: 0, y0: 0, x1: 40, y1: 12 };
+    expect(chooseLabels([[a], [null, { x0: 50, y0: 0, x1: 60, y1: 10 }], [{ ...a }, null], []])).toEqual([0, 1, -1, -1]);
+  });
+});
+
+describe("insidePolygon", () => {
+  const sq = [
+    { x: 0, y: 0 },
+    { x: 4, y: 0 },
+    { x: 4, y: 4 },
+    { x: 0, y: 4 },
+  ];
+  it("tells points inside a building from points beside it", () => {
+    expect(insidePolygon({ x: 2, y: 2 }, sq)).toBe(true);
+    expect(insidePolygon({ x: 4.3, y: 2 }, sq)).toBe(false);
+    expect(insidePolygon({ x: -1, y: -1 }, sq)).toBe(false);
+  });
+});
+
+describe("wallNumber (UX-018)", () => {
+  it("prefixes the building only when there are several", () => {
+    expect(wallNumber(0, 2, 1)).toBe("3");
+    expect(wallNumber(1, 2, 2)).toBe("2.3");
+    expect(wallNumber(0, 0, 2)).toBe("1.1");
+  });
+});
+
+describe("labels of several buildings keep off roof lines and walls (sweep 2026-11-15)", () => {
+  const box = { x0: 0, y0: 0, x1: 60, y1: 16 };
+  it("segCrossesBox: a line through the label, not one beside it or grazing its edge", () => {
+    expect(segCrossesBox([-10, 8, 70, 8], box)).toBe(true);
+    expect(segCrossesBox([30, -20, 30, 40], box)).toBe(true);
+    expect(segCrossesBox([30, 2, 30, 12], box)).toBe(true);
+    expect(segCrossesBox([-10, 20, 70, 20], box)).toBe(false);
+    expect(segCrossesBox([-10, 1, 70, 1], box)).toBe(false);
+    expect(segCrossesBox([62, -5, 62, 30], box)).toBe(false);
+    expect(segCrossesBox([-20, -20, -5, 30], box)).toBe(false);
+  });
+  it("a shared wall's length moves off the ridge to a free spot along the wall", () => {
+    // Outside is on the other building (null); inside at the middle is on
+    // the ridge (y = 108); inside off the middle is free.
+    const ridge: Seg = [0, 108, 300, 108];
+    const inMid = { x0: 200, y0: 100, x1: 260, y1: 116 };
+    const inOff = { x0: 200, y0: 60, x1: 260, y1: 76 };
+    expect(chooseLabels([[null, inMid, null, inOff]], () => [ridge])).toEqual([3]);
+    // Without a free spot it stays at the middle, on the line.
+    expect(chooseLabels([[null, inMid]], () => [ridge])).toEqual([1]);
+    // On lines everywhere: the spot on the fewest.
+    const hip: Seg = [230, 90, 250, 125];
+    expect(chooseLabels([[null, inMid, null, inOff]], () => [ridge, hip, [0, 70, 300, 70]])).toEqual([3]);
+    expect(chooseLabels([[inMid, inOff]], () => [ridge, [0, 70, 300, 70], [0, 65, 300, 65]])).toEqual([0]);
+    // A label over a kept one is never taken to dodge a line.
+    expect(chooseLabels([[inOff], [null, inMid, null, { ...inOff }]], () => [ridge])).toEqual([0, 1]);
+  });
+  it("a face label that would cross a wall shrinks to the pitch and keeps off the wall's length", () => {
+    const wall: Seg = [450, 300, 450, 500];
+    const dim = { x0: 455, y0: 392, x1: 520, y1: 408 };
+    const full = { x0: 416, y0: 380, x1: 457, y1: 420 };
+    const pitch = { x0: 426, y0: 388, x1: 448, y1: 412 };
+    const lines = (i: number) => (i === 0 ? [] : [wall]);
+    expect(chooseLabels([[dim], [full, pitch]], lines)).toEqual([0, 1]);
+    const wide = { x0: 380, y0: 380, x1: 470, y1: 420 };
+    expect(chooseLabels([[dim], [wide]], lines)).toEqual([0, -1]);
   });
 });

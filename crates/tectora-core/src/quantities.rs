@@ -61,9 +61,19 @@ pub fn part_quantities(geo: &crate::roof::RoofGeometry) -> crate::roof::RoofQuan
 
 /// Roof quantities summed over all parts.
 pub fn roof_totals(project: &Project) -> crate::roof::RoofQuantities {
+    roof_totals_of(&crate::openings::generate_project(project), project)
+}
+
+/// [`roof_totals`] of roofs already calculated
+/// (`openings::generate_project(project)`), so a caller that needs the
+/// roofs too calculates them once.
+pub fn roof_totals_of(
+    geos: &[crate::roof::RoofGeometry],
+    project: &Project,
+) -> crate::roof::RoofQuantities {
     let mut total = crate::roof::RoofQuantities::default();
-    for geo in crate::openings::generate_project(project) {
-        total.add(&part_quantities(&geo));
+    for geo in geos {
+        total.add(&part_quantities(geo));
     }
     total.add(&manual_quantities(project));
     total
@@ -74,8 +84,13 @@ pub fn roof_totals(project: &Project) -> crate::roof::RoofQuantities {
 /// offer or a drawing's area table is checked against. Clad gable areas and
 /// hand-drawn faces have no pitch of their own and are not included.
 pub fn area_by_pitch(project: &Project) -> Vec<(f64, f64)> {
+    area_by_pitch_of(&crate::openings::generate_project(project))
+}
+
+/// [`area_by_pitch`] of roofs already calculated.
+pub fn area_by_pitch_of(geos: &[crate::roof::RoofGeometry]) -> Vec<(f64, f64)> {
     let mut by: std::collections::BTreeMap<i64, f64> = Default::default();
-    for geo in crate::openings::generate_project(project) {
+    for geo in geos {
         for f in &geo.faces {
             *by.entry((f.pitch_deg * 100.0).round() as i64).or_default() += f.area;
         }
@@ -108,13 +123,21 @@ pub fn subtract_minus_lines(q: &mut crate::roof::RoofQuantities, minus: &[(Strin
 /// Line lengths keyed by DACAD's line codes (see `LineKind::dacad_code`),
 /// rounded to centimetres.
 pub fn dacad_line_totals(project: &Project) -> std::collections::BTreeMap<String, f64> {
+    dacad_line_totals_of(&crate::openings::generate_project(project), project)
+}
+
+/// [`dacad_line_totals`] of roofs already calculated.
+pub fn dacad_line_totals_of(
+    geos: &[crate::roof::RoofGeometry],
+    project: &Project,
+) -> std::collections::BTreeMap<String, f64> {
     let mut totals: std::collections::BTreeMap<String, f64> = Default::default();
-    for geo in crate::openings::generate_project(project) {
-        for line in geo.lines {
+    for geo in geos {
+        for line in &geo.lines {
             *totals.entry(line.dacad_code().to_string()).or_default() += line.length();
         }
-        for (code, len) in geo.minus_lines {
-            *totals.entry(code).or_default() -= len;
+        for (code, len) in &geo.minus_lines {
+            *totals.entry(code.clone()).or_default() -= len;
         }
     }
     for line in project.manual_lines.iter().filter(|l| l.counted()) {
@@ -134,7 +157,13 @@ pub fn dacad_line_totals(project: &Project) -> std::collections::BTreeMap<String
 /// as drawn: DACAD's corrections around openings (`minus_lines`) and lines
 /// added by hand are only in [`dacad_line_totals`].
 pub fn lines_by_material(project: &Project) -> Vec<(u8, std::collections::BTreeMap<String, f64>)> {
-    let geos = crate::openings::generate_project(project);
+    lines_by_material_of(&crate::openings::generate_project(project))
+}
+
+/// [`lines_by_material`] of roofs already calculated.
+pub fn lines_by_material_of(
+    geos: &[crate::roof::RoofGeometry],
+) -> Vec<(u8, std::collections::BTreeMap<String, f64>)> {
     let faces: Vec<&crate::roof::RoofFace> = geos.iter().flat_map(|g| &g.faces).collect();
     let mut by: std::collections::BTreeMap<u8, std::collections::BTreeMap<String, f64>> =
         Default::default();
@@ -311,10 +340,15 @@ pub struct NormTotals {
 /// A line piece removed by a chimney or dormer at or below the line limit
 /// is not deducted (DIN 1 m, ÖNORM 2 m, SIA none).
 pub fn norm_totals(project: &Project, norm: Norm) -> NormTotals {
+    norm_totals_of(&crate::openings::generate_project(project), norm)
+}
+
+/// [`norm_totals`] of roofs already calculated.
+pub fn norm_totals_of(geos: &[crate::roof::RoofGeometry], norm: Norm) -> NormTotals {
     const EPS: f64 = 1e-6;
     let mut area = 0.0;
     let mut lines: std::collections::BTreeMap<String, f64> = Default::default();
-    for geo in crate::openings::generate_project(project) {
+    for geo in geos {
         area += geo.faces.iter().map(|f| f.area).sum::<f64>() + geo.clad_area;
         for o in &geo.openings {
             // DACAD deducts roof openings in full under every norm (OP3/OP4).
