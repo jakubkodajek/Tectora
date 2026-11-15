@@ -10,6 +10,7 @@
   import type { CalcResult, Point2, Project, Selection } from "./types";
   import type { ItemRef, PlanTarget } from "./items";
   import { t } from "./i18n.svelte";
+  import { radiogroup } from "./tabs";
   import { hostHeightAt, isDormerFace, slopeAt } from "./dormers";
   import { isConvex, windowOutline } from "./openings";
   import { chimneyTop, clipConvex, coveredByDormer, crossings, dormerFaces, dormerWallLines, manualFacePoly, planBox, onWallLine, outgrows, planArea, planeOf, wallTriangles, wallUnderRoof, gableShownByWall, inwardNormal, type Extent, type Poly3 } from "./scene3d";
@@ -536,7 +537,7 @@
 </script>
 
 <div class="host" bind:this={host}>
-  <div class="views" role="radiogroup" aria-label={t("view.title")}>
+  <div class="views" role="radiogroup" use:radiogroup aria-label={t("view.title")}>
     {#each Object.keys(VIEWS) as v}
       <button class:on={view === v} role="radio" aria-checked={view === v} onclick={() => frame(v as View)} title={t(`view.${v}Hint`)}>{t(`view.${v}`)}</button>
     {/each}

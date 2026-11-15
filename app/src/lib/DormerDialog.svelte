@@ -7,6 +7,7 @@
   import { onDestroy } from "svelte";
   import { api } from "./api";
   import { numberLocale, t } from "./i18n.svelte";
+  import { radiogroup } from "./tabs";
   import { materialIds, materialName } from "./materials";
   import { DORMER_KINDS, buildDormer, defaultParams, dormerSection, parseDormer, eaveFor, solveDormer, type DormerKind, type DormerParams, type HostSlope, type SectionProblem, type SectionTarget } from "./dormers";
   import { MAX_ROUND_SEGMENTS } from "./roundroof";
@@ -178,7 +179,7 @@
 </script>
 
 <div class="dlg">
-  <div class="kinds" role="radiogroup" aria-label={t("dormer.kind")}>
+  <div class="kinds" role="radiogroup" use:radiogroup aria-label={t("dormer.kind")}>
     {#each DORMER_KINDS as k}
       <button
         class="kind"

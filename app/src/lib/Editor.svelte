@@ -5,6 +5,9 @@
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import AiPanel from "./AiPanel.svelte";
   import DrawBar from "./DrawBar.svelte";
+  import PlaceBar from "./PlaceBar.svelte";
+  import { lastStep } from "./drawstep";
+  import { stepWall, wallStepKey } from "./wallstep";
   import Icon from "./Icon.svelte";
   import JobPanel from "./JobPanel.svelte";
   import LanguagePicker from "./LanguagePicker.svelte";
@@ -237,8 +240,35 @@
     return changedEdges(pendingChanges, project);
   });
   const highlightItems = $derived(changedItems(focusChange ? [focusChange] : pendingChanges));
+  /**
+   * The roof of the version before the pending AI changes, from the core, so
+   * a pitch, eave or gable change shows the previous roof lines dashed
+   * (UX-017). Fetched once per review state; without it the plan shows only
+   * the outlines, as before.
+   */
+  let beforeResult = $state<CalcResult | null>(null);
+  const beforeKey = $derived(review?.before ? `${review.since_ts_ms}:${review.count}` : "");
+  $effect(() => {
+    const key = beforeKey;
+    beforeResult = null;
+    const before = untrack(() => review?.before);
+    if (!key || !before) return;
+    let live = true;
+    api
+      .calc($state.snapshot(before) as Project)
+      .then((r) => {
+        if (live) beforeResult = r;
+      })
+      // A previous version the core cannot calculate has no lines to show.
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  });
   const ghost = $derived(
-    project && review && showBefore ? ghostOf(focusChange ? [focusChange] : pendingChanges, review.before, project, result) : null,
+    project && review && showBefore
+      ? ghostOf(focusChange ? [focusChange] : pendingChanges, review.before, project, result, beforeResult)
+      : null,
   );
   const wallCount = $derived(project?.parts.reduce((n, p) => n + p.edges.length, 0) ?? 0);
 
@@ -1568,6 +1598,10 @@
     } else if (mod && e.key.toLowerCase() === "d" && selectedItem && !drawing) {
       e.preventDefault();
       duplicateItem(selectedItem);
+    } else if (!drawing && !placing && dormerSel === null && !openSel && !manualSel && project?.parts.length && wallStepKey(e, false)) {
+      // PageDown / PageUp, Alt+→ / Alt+←: the next or previous wall (UX-006).
+      e.preventDefault();
+      selection = stepWall(project, selection, wallStepKey(e, false));
     } else if (!mod && !drawing && !placing && e.key.startsWith("Arrow") && nudge(e)) {
       // handled
     } else if (e.key === "F3") {
@@ -1771,11 +1805,16 @@
         {#if drawing}
           <DrawBar
             count={drawing.length}
+            prev={lastStep(drawing)}
             onstep={drawStep}
             onundo={() => drawing?.pop()}
             onclose={finishDraw}
             oncancel={(ask) => cancelDraw(!!ask)}
           />
+        {:else if placing}
+          <PlaceBar kind={placing} points={manualDraft.length}
+            onundo={() => (manualDraft = manualDraft.slice(0, -1))}
+            oncancel={() => (placing = false)} />
         {:else if dormerSel !== null}
           <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} onedit={editDormer}
             onplace={(e, l, r) => (dormerSel !== null ? placeItem({ kind: "dormer", index: dormerSel }, e, l, r) : undefined)} />

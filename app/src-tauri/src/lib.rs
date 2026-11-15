@@ -323,20 +323,36 @@ fn export_job(state: State<AppState>, id: String, path: String) -> CmdResult<()>
 
 /// The text list for the price sheet and the plan sheet (SVG) of the open
 /// project, for the export dialog.
+/// `line_names` (code → name in the UI language) label the sheet's line
+/// codes; `summary` is the list as numbers for the dialog to show
+/// translated, while `list` stays the price sheet's text.
 #[tauri::command(async)]
-fn export_preview(project: Project, title: String, stamp: String) -> CmdResult<Value> {
+fn export_preview(
+    project: Project,
+    title: String,
+    stamp: String,
+    line_names: Option<std::collections::BTreeMap<String, String>>,
+) -> CmdResult<Value> {
     guard(|| {
         let opts = tectora_core::export::ListOptions::new(title, stamp);
-        let (list, svg) = tectora_core::export::checked(&project, &opts)
+        let names = line_names.unwrap_or_default();
+        let (list, svg) = tectora_core::export::checked_named(&project, &opts, &names)
             .map_err(|d| AppError::new("out_of_range").detail(d))?;
-        Ok(serde_json::json!({ "list": list, "svg": svg }))
+        let summary = tectora_core::export::checked_summary(&project, &opts)
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+        Ok(serde_json::json!({ "list": list, "svg": svg, "summary": summary }))
     })
 }
 
 /// Writes the plan sheet to `path` (from the save dialog) as PDF or SVG,
 /// by its extension.
 #[tauri::command(async)]
-fn export_plan_file(project: Project, stamp: String, path: String) -> CmdResult<()> {
+fn export_plan_file(
+    project: Project,
+    stamp: String,
+    path: String,
+    line_names: Option<std::collections::BTreeMap<String, String>>,
+) -> CmdResult<()> {
     guard(|| {
         let path = PathBuf::from(path);
         let ext = path
@@ -344,7 +360,8 @@ fn export_plan_file(project: Project, stamp: String, path: String) -> CmdResult<
             .and_then(|e| e.to_str())
             .map(str::to_ascii_lowercase)
             .unwrap_or_default();
-        let bytes = tectora_core::export::checked_sheet_file(&project, &stamp, &ext)
+        let names = line_names.unwrap_or_default();
+        let bytes = tectora_core::export::checked_sheet_file_named(&project, &stamp, &ext, &names)
             .map_err(|d| AppError::new("out_of_range").detail(d))?;
         std::fs::write(&path, bytes)
             .map_err(|e| AppError::new("io").detail(format!("{}: {e}", path.display())))?;
@@ -413,6 +430,8 @@ fn create_standard(
     overhang: f64,
 ) -> CmdResult<String> {
     guard(|| {
+        tectora_core::edit::check_eave_pitch(pitch_deg, f64::MIN_POSITIVE)
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
         let mut project = Project::new(name);
         project.parts.push(standard_roof(
             kind,
@@ -437,6 +456,8 @@ fn standard_part(
     overhang: f64,
 ) -> CmdResult<tectora_core::RoofPart> {
     guard(|| {
+        tectora_core::edit::check_eave_pitch(pitch_deg, f64::MIN_POSITIVE)
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
         Ok(standard_roof(
             kind,
             length,
@@ -993,5 +1014,44 @@ mod tests {
                 "`{name}` must be #[tauri::command(async)]"
             );
         }
+    }
+
+    /// Double-click open and start-up arguments (TEST-008): Tectora files
+    /// in any case of their extension are taken in order; folders that look
+    /// like one, missing files, other types and flags are not.
+    #[test]
+    fn file_args_take_tectora_files_in_any_case_and_nothing_else() {
+        let dir = std::env::temp_dir().join(format!(
+            "tectora-file-args-{}-{}",
+            std::process::id(),
+            tectora_core::store::now_ms()
+        ));
+        std::fs::create_dir_all(dir.join("folder.tectora")).unwrap();
+        let file = |name: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, "{}").unwrap();
+            p.display().to_string()
+        };
+        let a = file("a.tectora");
+        let b = file("B.TECTORA");
+        let c = file("Zakázka Nový Dům.TectoraJob");
+        let txt = file("notes.txt");
+        let no_ext = file("tectora");
+        let args = vec![
+            "/Applications/Tectora.app/Contents/MacOS/Tectora".to_string(),
+            "--flag".to_string(),
+            a.clone(),
+            dir.join("folder.tectora").display().to_string(),
+            b.clone(),
+            dir.join("missing.tectora").display().to_string(),
+            txt,
+            no_ext,
+            c.clone(),
+        ];
+        let got = super::file_args(args);
+        let want: Vec<std::path::PathBuf> =
+            [a, b, c].iter().map(std::path::PathBuf::from).collect();
+        assert_eq!(got, want);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

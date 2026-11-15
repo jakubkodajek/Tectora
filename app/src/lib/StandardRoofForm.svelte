@@ -7,6 +7,7 @@
   import PlanThumb from "./PlanThumb.svelte";
   import { m2 } from "./format";
   import { t } from "./i18n.svelte";
+  import { radiogroup } from "./tabs";
   import { EAVE_HEIGHT, OVERHANG } from "./limits";
   import { numeric } from "./numeric.svelte";
   import { presets } from "./settings.svelte";
@@ -129,7 +130,7 @@
 </script>
 
 <div class="form">
-  <div class="types" role="radiogroup" aria-label={t("std.type")}>
+  <div class="types" role="radiogroup" use:radiogroup aria-label={t("std.type")}>
     {#each KINDS as k}
       <button class="type" class:on={kind === k} role="radio" aria-checked={kind === k} onclick={() => (kind = k)}>
         <svg viewBox="0 0 64 40" aria-hidden="true"><path d={ICONS[k]} /></svg>
@@ -147,7 +148,7 @@
         <label class:off={kind === "pyramid"}><span>{t("std.width")}</span><div class="unit"><input type="text" disabled={kind === "pyramid"} use:numeric={{ value: width, step: 0.1, min: 0.1, max: MAX_SIDE, live: true, onchange: (v) => (width = v), onvalidity: validity(t("std.width")) }} /><em>m</em></div></label>
       {/if}
       <label><span>{t("edge.pitch")}</span><div class="unit"><input type="text" use:numeric={{ value: pitch, step: 1, min: 0.1, max: 89.9, live: true, onchange: (v) => (pitch = v), onvalidity: validity(t("edge.pitch")) }} /><em>°</em></div></label>
-      <label><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: eave, step: 0.05, min: EAVE_HEIGHT.min, max: EAVE_HEIGHT.max, live: true, onchange: (v) => (eave = v), onvalidity: validity(t("edge.eaveHeight")) }} /><em>m</em></div></label>
+      <label title={t("edge.eaveHeightPresetHint")}><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: eave, step: 0.05, min: EAVE_HEIGHT.min, max: EAVE_HEIGHT.max, live: true, onchange: (v) => (eave = v), onvalidity: validity(t("edge.eaveHeight")) }} /><em>m</em></div></label>
       <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: overhang, step: 0.05, min: OVERHANG.min, max: OVERHANG.max, live: true, onchange: (v) => (overhang = v), onvalidity: validity(t("edge.overhang")) }} /><em>m</em></div></label>
     </div>
     <div class="preview" class:stale={loading} aria-busy={loading}>

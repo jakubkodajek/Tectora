@@ -26,6 +26,16 @@ import type {
 } from "./types";
 
 /** What a checked save did (`Store::save_checked`). */
+/** The price-sheet list as numbers (`tectora_core::export::ListSummary`). */
+export interface ListSummary {
+  decimals: number;
+  windows: { face: string; width: number; height: number }[];
+  faces: { name: string; pitch: number; area: number; deducted: number; rafter: number | null }[];
+  wall_area: number | null;
+  materials: { material: number; area: number }[];
+  lines: { code: string; length: number }[];
+}
+
 export type CheckedSave = { status: "saved"; id: string } | { status: "conflict"; current: Project };
 
 export interface StandardParams {
@@ -106,12 +116,16 @@ export const api = {
   openAttachment: (id: string, name: string) => invoke<boolean>("open_attachment", { id, name }),
   exportJob: (id: string, path: string) => invoke<void>("export_job", { id, path }),
   importJob: (path: string) => invoke<string>("import_job", { path }),
-  /** The price-sheet text list and the plan sheet (SVG) for the export dialog. */
-  exportPreview: (project: Project, title: string, stamp: string) =>
-    invoke<{ list: string; svg: string }>("export_preview", { project, title, stamp }),
+  /**
+   * The price-sheet text list, the plan sheet (SVG) and the list as numbers
+   * (`summary`, shown translated) for the export dialog; `lineNames` label
+   * the sheet's line codes in the UI language.
+   */
+  exportPreview: (project: Project, title: string, stamp: string, lineNames: Record<string, string> = {}) =>
+    invoke<{ list: string; svg: string; summary: ListSummary }>("export_preview", { project, title, stamp, lineNames }),
   /** Writes the plan sheet as PDF or SVG (by the path's extension). */
-  exportPlanFile: (project: Project, stamp: string, path: string) =>
-    invoke<void>("export_plan_file", { project, stamp, path }),
+  exportPlanFile: (project: Project, stamp: string, path: string, lineNames: Record<string, string> = {}) =>
+    invoke<void>("export_plan_file", { project, stamp, path, lineNames }),
   savePng: (path: string, bytes: number[]) => invoke<void>("save_png", { path, bytes }),
   takeSnapshot: (project: Project) => invoke<ResultSnapshot>("take_snapshot", { project }),
   takePendingOpen: () => invoke<string | null>("take_pending_open"),

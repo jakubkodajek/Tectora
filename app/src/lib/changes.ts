@@ -141,9 +141,51 @@ export interface Ghost {
 const samePts = (a: Point2[], b: Point2[]) =>
   a.length === b.length && a.every((p, i) => Math.abs(p.x - b[i].x) < 1e-6 && Math.abs(p.y - b[i].y) < 1e-6);
 
-export function ghostOf(changes: Change[], before: Project | null, now: Project, result: CalcResult | null): Ghost {
+/** Changes that reshape the roof without moving an outline: the previous roof lines show them (UX-017). */
+const ROOF_FIELDS = new Set([
+  "pitch_deg",
+  "eave_height",
+  "overhang",
+  "half_hip",
+  "priority",
+  "breaks",
+  "clad",
+  "direction",
+  "building_height",
+  "flat_roof",
+  "vertex",
+  "edge",
+  "part",
+]);
+
+/** The plan lines of a calculated roof, as the core gave them. */
+const planLines = (r: CalcResult | null): [Point2, Point2][] =>
+  (r?.parts ?? []).flatMap((p) => (p.geometry.lines ?? []).map((l) => [{ x: l.a[0], y: l.a[1] }, { x: l.b[0], y: l.b[1] }] as [Point2, Point2]));
+
+const sameSeg = (a: [Point2, Point2], b: [Point2, Point2]) =>
+  samePts(a, b) || samePts(a, [b[1], b[0]]);
+
+/**
+ * `beforeResult` is the core's roof of `before`: for a roof-definition change
+ * its lines that are not in the current roof are part of the ghost, so a
+ * changed pitch or eave shows where the roof was.
+ */
+export function ghostOf(
+  changes: Change[],
+  before: Project | null,
+  now: Project,
+  result: CalcResult | null,
+  beforeResult: CalcResult | null = null,
+): Ghost {
   const ghost: Ghost = { shapes: [], lines: [] };
   if (!before) return ghost;
+  if (beforeResult && changes.some((c) => ROOF_FIELDS.has(c.field))) {
+    const nowLines = planLines(result);
+    for (const l of planLines(beforeResult)) {
+      if (Math.hypot(l[1].x - l[0].x, l[1].y - l[0].y) < 1e-6) continue;
+      if (!nowLines.some((n) => sameSeg(n, l))) ghost.lines.push(l);
+    }
+  }
   // Walls: every part of the previous version whose outline is not there
   // any more, when the changes moved, added or removed corners or parts.
   const outline = (p: Project["parts"][number]) => p.edges.map((e) => e.start);

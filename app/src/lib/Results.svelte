@@ -6,6 +6,7 @@
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
   import { areaRows, joinedWith, notCalculated, warningText } from "./results";
+  import { legend, lineName, SUB_CODES } from "./linecodes";
   import { partLabel } from "./partname";
   import { api } from "./api";
   import type { CalcBreakdown, CalcResult, Project } from "./types";
@@ -99,6 +100,11 @@
         ].filter((r) => r.value >= 0.005 || !["P", "c", "S", "W"].includes(r.code))
       : [],
   );
+  /** The core's lengths by code (OL, OR, WV, …), for the parts of the O and W rows and the legend. */
+  const codes = $derived(result?.codes ?? {});
+  /** "Napojení čelní 2,60 m · boční …": the W row split by kind, which matter for the flashing (UX-013). */
+  const subRows = (code: string) =>
+    (SUB_CODES[code] ?? []).filter((c) => (codes[c] ?? 0) >= 0.005).map((c) => ({ code: c, label: lineName(c), value: codes[c] }));
 </script>
 
 <div class="results">
@@ -185,13 +191,16 @@
       {#each rows as r}
         <tr class:zero={failed || r.value < 0.005}>
           <td class="code"><i style="background:{r.color}"></i>{r.code}</td>
-          <td>{r.label}{#if r.n && !failed}<span class="n">×{r.n}</span>{/if}</td>
+          <td>{r.label}{#if r.n && !failed}<span class="n">×{r.n}</span>{/if}
+            {#if r.code === "W" && !failed && subRows("W").length}
+              <small class="joined" data-testid="res-abutments">{subRows("W").map((s) => `${s.code} ${s.label} ${m(s.value)}`).join(" · ")}</small>
+            {/if}</td>
           <td class="v">{failed ? NONE : m(r.value)}</td>
         </tr>
       {/each}
     </tbody>
   </table>
-  <p class="note">{t("res.note")}</p>
+  <p class="note" data-testid="res-legend">{legend(rows.map((r) => r.code), codes)}</p>
 
   {#if stored}
     <h4>{t("snap.title")}</h4>

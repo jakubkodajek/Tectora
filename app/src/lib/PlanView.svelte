@@ -13,7 +13,8 @@
   import { faceTags } from "./facelabels";
   import { hostHeightAt, isDormerFace } from "./dormers";
   import { dormerWallLines, onWallLine, planeOf } from "./scene3d";
-  import { placeLabels, rotatedBox, underHigherRoof } from "./planlabels";
+  import { chooseLabels, insidePolygon, rotatedBox, underHigherRoof, wallNumber } from "./planlabels";
+  import { draftWalls } from "./drawstep";
   import { coveredPieces } from "./planjoin";
   import { numberLocale } from "./i18n.svelte";
 
@@ -193,6 +194,12 @@
     const ticks = `M${x1 - nx},${y1 - ny}L${x1 + nx},${y1 + ny}M${x2 - nx},${y2 - ny}L${x2 + nx},${y2 + ny}`;
     return { x1, y1, x2, y2, ticks, mx: (x1 + x2) / 2, my: (y1 + y2) / 2, short: len < 18 };
   }
+
+  // Label heights in px with their text halo: an 11 px wall length, a face
+  // label with pitch (16 px) and area (12.5 px), the pitch alone.
+  const DIM_H = 16;
+  const TAG_FULL_H = 40;
+  const TAG_PITCH_H = 23;
 
   /** Rough width of a label in px at the given font size. */
   const textPx = (s: string, size: number) => s.length * size * 0.62 + 8;
@@ -529,9 +536,16 @@
     return Math.hypot(b.x - a.x, b.y - a.y);
   }
 
+  /** The number and length a wall's dimension label shows ("2.3  8,00" with several buildings). */
+  function dimText(part: number, i: number) {
+    return { no: wallNumber(part, i, project.parts.length), len: lenText(edgeLength(part, i)) };
+  }
+
   /** Screen position of a wall's dimension label: beside the wall, on the
-   * outside of the part, so the wall line never runs through the text. */
-  function dimPos(part: number, i: number) {
+   * outside of the part (`inside`: on the inside, used when the outside is
+   * taken by a neighbouring building or another label, UX-018), so the wall
+   * line never runs through the text. */
+  function dimPos(part: number, i: number, inside = false) {
     const es = project.parts[part].edges;
     const a = es[i].start;
     const b = es[(i + 1) % es.length].start;
@@ -543,11 +557,12 @@
       area2 += p.x * q.y - q.x * p.y;
     }
     const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-    const side = area2 >= 0 ? 1 : -1;
+    const side = (area2 >= 0 ? 1 : -1) * (inside ? -1 : 1);
     // Outward normal in world space, then flipped to screen space (y down).
     const nx = (side * (b.y - a.y)) / len;
     const ny = (-side * -(b.x - a.x)) / len;
-    const label = `${i + 1}  ${lenText(edgeLength(part, i))}`;
+    const d = dimText(part, i);
+    const label = `${d.no}  ${d.len}`;
     const halfW = label.length * 3.3;
     const off = 9 + Math.abs(nx) * halfW + Math.abs(ny) * 4;
     return { x: (sx(a.x) + sx(b.x)) / 2 + nx * off, y: (sy(a.y) + sy(b.y)) / 2 + ny * off, w: halfW * 2 + 4 };
@@ -567,24 +582,40 @@
    * buildings drawn into each other keep a readable plan (UX-012).
    */
   const labels = $derived.by(() => {
+    // Each wall length outside its building first, else inside; a side
+    // whose label would sit on another building is not used, so two
+    // buildings side by side keep their lengths apart (UX-018).
+    const outlines = project.parts.map((part) => part.edges.map((e) => e.start));
+    const onOther = (pi: number, x: number, y: number) => {
+      const w = { x: wx(x), y: wy(y) };
+      return outlines.some((o, k) => k !== pi && o.length >= 3 && insidePolygon(w, o));
+    };
     const dims = project.parts.map((part, pi) =>
       part.edges.map((_, i) => {
         if (!showDims || !(scale * edgeLength(pi, i) > 46)) return null;
-        const p = dimPos(pi, i);
-        return { ...p, box: rotatedBox(p.x, p.y, p.w, 13, 0) };
+        return [dimPos(pi, i), dimPos(pi, i, true)].map((p) => (onOther(pi, p.x, p.y) ? null : { ...p, box: rotatedBox(p.x, p.y, p.w, DIM_H, 0) }));
       }),
     );
     const modes = showDims && !faceLabels.length ? tags.map(tagMode) : tags.map(() => null);
+    // A face label that does not fit with its area falls back to the pitch alone.
     const tagBoxes = tags.map((tag, k) => {
       const m = modes[k];
-      if (!m) return null;
-      const w = Math.max(textPx(pitchText(tag.pitch_deg), 16), m === "full" ? textPx(areaText(tag.area), 12.5) : 0);
-      return rotatedBox(sx(tag.x), sy(tag.y), w, m === "full" ? 36 : 20, -tag.angle_deg);
+      if (!m) return [];
+      const pitchBox = rotatedBox(sx(tag.x), sy(tag.y), textPx(pitchText(tag.pitch_deg), 16), TAG_PITCH_H, -tag.angle_deg);
+      if (m === "pitch") return [pitchBox];
+      const w = Math.max(textPx(pitchText(tag.pitch_deg), 16), textPx(areaText(tag.area), 12.5));
+      return [rotatedBox(sx(tag.x), sy(tag.y), w, TAG_FULL_H, -tag.angle_deg), pitchBox];
     });
-    const keep = placeLabels([...dims.flat().map((d) => d?.box ?? null), ...tagBoxes]);
+    const flat = dims.flat();
+    const chosen = chooseLabels([...flat.map((d) => (d ?? []).map((c) => c?.box ?? null)), ...tagBoxes]);
     let k = 0;
-    const dimShown = dims.map((row) => row.map((d) => (keep[k++] ? d : null)));
-    const tagShown = tags.map((_, j) => (keep[k + j] ? modes[j] : null));
+    const dimShown = dims.map((row) =>
+      row.map((d) => {
+        const j = chosen[k++];
+        return d && j >= 0 ? d[j] : null;
+      }),
+    );
+    const tagShown = tags.map((_, j) => (chosen[k + j] === 0 ? modes[j] : chosen[k + j] === 1 ? ("pitch" as const) : null));
     return { dims: dimShown, tags: tagShown };
   });
 </script>
@@ -626,6 +657,7 @@
 
     {#each linePieces as lines}
       {#each lines as l}
+        <!-- Eaves are drawn over the walls below (UX-004). -->
         {#if l.kind !== "eave"}
           {#each l.pieces as piece}
             <line
@@ -700,7 +732,8 @@
           <line class="wall" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)} />
           {#if labels.dims[pi]?.[i]}
             {@const lp = labels.dims[pi][i]!}
-            <text x={lp.x} y={lp.y} class="dim edge-dim"><tspan class="no">{i + 1}</tspan>  {lenText(edgeLength(pi, i))}</text>
+            {@const dt = dimText(pi, i)}
+            <text x={lp.x} y={lp.y} class="dim edge-dim"><tspan class="no">{dt.no}</tspan>  {dt.len}</text>
           {/if}
         </g>
       {/each}
@@ -715,6 +748,25 @@
           aria-label={t("plan.vertex", { n: i + 1 })}
           onpointerdown={(ev) => startVertexDrag(ev, pi, i)}
         />
+      {/each}
+    {/each}
+    <!-- The eave (T) at the overhang, where the results measure it; over the
+         walls, so with no overhang the wall shows the eave too (UX-004). -->
+    {#each linePieces as lines}
+      {#each lines as l}
+        {#if l.kind === "eave"}
+          {#each l.pieces as piece}
+            <line
+              x1={sx(piece.a[0])}
+              y1={sy(piece.a[1])}
+              x2={sx(piece.b[0])}
+              y2={sy(piece.b[1])}
+              stroke={lineColor.eave}
+              class="roofline eave"
+              class:covered={piece.hidden}
+            />
+          {/each}
+        {/if}
       {/each}
     {/each}
     {#each project.dormers as d, di}
@@ -833,6 +885,18 @@
             <text class="dim draft-dim close" x={(sx(first.x) + sx(end.x)) / 2} y={(sy(first.y) + sy(end.y)) / 2} dy="14">{lenText(c)}</text>
           {/if}
         {/if}
+        <!-- Every wall drawn so far keeps its length, as the closed footprint does (UX-014). -->
+        {#each draftWalls(drawing) as w}
+          {@const ax = sx(w.a.x)}
+          {@const ay = sy(w.a.y)}
+          {@const bx = sx(w.b.x)}
+          {@const by = sy(w.b.y)}
+          {@const sl = Math.hypot(bx - ax, by - ay) || 1}
+          {#if sl > 30}
+            <text class="dim draft-dim wall-len" data-testid="draft-wall-dim"
+              x={(ax + bx) / 2 + ((by - ay) / sl) * 12} y={(ay + by) / 2 - ((bx - ax) / sl) * 12}>{lenText(w.length)}</text>
+          {/if}
+        {/each}
         {#each drawing as p, i}
           <circle class="draft-pt" class:first={i === 0} cx={sx(p.x)} cy={sy(p.y)} r={i === 0 && drawing.length >= 3 ? 7 : 4} />
         {/each}
@@ -849,7 +913,8 @@
       {/if}
     {/if}
   </svg>
-  {#if placing}<div class="hint">{t(placing === "dormer" ? "plan.placeDormer" : placing === "chimney" ? "plan.placeChimney" : placing === "hole" ? "plan.placeHole" : placing === "line" ? (manualDraft.length ? "plan.placeLineEnd" : "plan.placeLine") : placing === "face" ? "plan.placeFace" : "plan.placeWindow")}</div>{:else if !drawing}<div class="hint">{t("plan.hint")}</div>{/if}
+  <!-- A placing tool says what to click in the bottom bar (PlaceBar, UX-012). -->
+  {#if !placing && !drawing}<div class="hint">{t("plan.hint")}</div>{/if}
 </div>
 
 <style>
@@ -1016,6 +1081,9 @@
     stroke-width: 1.8;
     stroke-linecap: round;
   }
+  .roofline.eave {
+    pointer-events: none;
+  }
   /* Under a higher roof (joined buildings): still there, but not on top. */
   .roofline.covered {
     stroke-width: 1.4;
@@ -1023,14 +1091,16 @@
     stroke-linecap: butt;
     opacity: 0.55;
   }
+  /* Walls in a neutral colour: blue is the eave line at the overhang, so the
+     blue lines in the plan add up to the eave length in the results (UX-004).
+     A gable wall stays dashed. */
   .edge .wall {
-    stroke: var(--line-eave);
+    stroke: var(--text-2);
     stroke-width: 3;
     stroke-linecap: round;
     pointer-events: none;
   }
   .edge.gable .wall {
-    stroke: var(--line-verge);
     stroke-dasharray: 8 5;
   }
   .edge .glow {

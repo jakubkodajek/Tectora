@@ -19,6 +19,16 @@ export const EAVE_HEIGHT: Bounds = { min: -100, max: 1000 };
 /** Building height, eave height, pitch-break and half-hip heights of a wall, m. */
 export const WALL_HEIGHT: Bounds = { min: 0, max: 1000 };
 
+/** Copies one transform adds, as the core takes them (`edit::transform::MAX_COPIES`). */
+export const COPIES: Bounds = { min: 0, max: 50 };
+/** A mirror adds at most one copy (a second mirror image is the part itself). */
+export const MIRROR_COPIES: Bounds = { min: 0, max: 1 };
+
+/** The bounds of the transform dialog's "Number of copies" field for a mode (review UI-009). */
+export function copiesBounds(mode: string): Bounds {
+  return mode === "mirror" ? MIRROR_COPIES : COPIES;
+}
+
 /**
  * True when `v` lies in `b`; otherwise the field's refusal ("Allowed range
  * 0 to 20"), the same sentence `numeric` shows for its own bounds.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { i18n } from "./i18n.svelte";
-import { OVERHANG, WALL_HEIGHT, within } from "./limits";
+import { COPIES, MIRROR_COPIES, OVERHANG, WALL_HEIGHT, copiesBounds, within } from "./limits";
 
 describe("within (UX-001)", () => {
   it("takes a value inside the bounds", () => {
@@ -18,5 +18,16 @@ describe("within (UX-001)", () => {
     expect(within(-0.1, OVERHANG)).toBe("Allowed range 0 to 20");
     expect(within(1500, WALL_HEIGHT)).toBe("Allowed range 0 to 1000");
     expect(within(NaN, OVERHANG)).not.toBe(true);
+  });
+});
+
+describe("copiesBounds (UI-009)", () => {
+  it("allows 50 copies, one for a mirror, and says the range beyond", () => {
+    expect(copiesBounds("move")).toEqual({ min: 0, max: 50 });
+    expect(copiesBounds("rotate")).toBe(COPIES);
+    expect(copiesBounds("mirror")).toBe(MIRROR_COPIES);
+    i18n.locale = "en";
+    expect(within(120, copiesBounds("move"))).toBe("Allowed range 0 to 50");
+    expect(within(3, copiesBounds("mirror"))).toBe("Allowed range 0 to 1");
   });
 });

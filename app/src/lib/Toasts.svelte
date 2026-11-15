@@ -76,7 +76,7 @@
     background: var(--surface);
     color: var(--text);
     border: 1px solid var(--border);
-    box-shadow: 0 4px 16px rgba(20, 24, 36, 0.08);
+    box-shadow: var(--shadow);
     font-size: 13px;
   }
   .head {

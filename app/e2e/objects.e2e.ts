@@ -306,6 +306,41 @@ test.describe("hand-drawn lines and faces, flat roof", () => {
     await waitForProject(id, (p) => !p.manual_faces?.length);
   });
 
+  test("a manual face is drawn neutral and labelled, not like a building (edge-cases class 4)", async ({ app, page }) => {
+    const id = await createExample("gable", "Sedlo");
+    const p0 = await loadProject(id);
+    p0.manual_faces = [{ points: [{ x: 15, y: 1 }, { x: 19, y: 1 }, { x: 19, y: 6 }, { x: 15, y: 6 }], pitch_deg: 30, label: "" }];
+    await bridge("save_project", { id, project: p0 });
+    await openEditor(app, "Sedlo");
+    await page.keyboard.press("Escape");
+    const face = page.locator("path.manual-face").first();
+    await expect(face).toBeVisible();
+    const look = await face.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      const probe = document.createElement("div");
+      probe.style.color = "var(--accent)";
+      document.body.appendChild(probe);
+      const accent = getComputedStyle(probe).color;
+      probe.style.color = "var(--accent-fill)";
+      const accentFill = getComputedStyle(probe).color;
+      probe.remove();
+      const wall = document.querySelector(".edge .wall");
+      return { stroke: cs.stroke, fill: cs.fill, dash: cs.strokeDasharray, accent, accentFill, wall: wall ? getComputedStyle(wall).stroke : "" };
+    });
+    // Not brick red: the colour of a building's selection and fill.
+    for (const red of [look.accent, look.accentFill]) {
+      expect(look.stroke, "stroke").not.toBe(red);
+      expect(look.fill, "fill").not.toContain(red.replace(/\)$/, ""));
+    }
+    // Dashed like an annotation, and labelled as a manual face.
+    expect(look.dash).not.toBe("none");
+    await expect(page.locator("text.manual-tag")).toContainText(cs("manual.faceN", { n: 1 }));
+    // Selected, it says what it is and offers to become a building.
+    await face.dispatchEvent("pointerdown", { button: 0 });
+    const mb = bar(page, "manual.face");
+    await expect(mb.getByRole("button", { name: cs("manual.toPart") })).toBeVisible();
+  });
+
   test("flat roof toggles on and off", async ({ app, page }) => {
     const id = await createExample("hip", "Valba");
     await openEditor(app, "Valba");
