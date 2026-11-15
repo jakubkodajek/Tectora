@@ -49,18 +49,44 @@ impl Default for RoofDefaults {
 }
 
 impl RoofDefaults {
+    /// The ranges every new wall accepts (`EdgeDef::problems`): a default
+    /// the walls then refuse made every new job fail with an error about
+    /// `defaults` (audit 2026-11-15 HUNTIO-007).
+    const PITCH: (f64, f64) = (crate::model::MIN_PITCH_DEG, 89.0);
+    const EAVE: (f64, f64) = (0.0, 1000.0);
+    const OVERHANG: (f64, f64) = (0.0, 20.0);
+
     fn validate(&self) -> Result<(), SettingsError> {
-        let ok = |v: f64, lo: f64, hi: f64| v.is_finite() && (lo..=hi).contains(&v);
-        if !ok(self.pitch_deg, 0.0, 89.0) {
+        let ok = |v: f64, (lo, hi): (f64, f64)| v.is_finite() && (lo..=hi).contains(&v);
+        if !ok(self.pitch_deg, Self::PITCH) {
             return Err(SettingsError::InvalidValue("pitch_deg"));
         }
-        if !ok(self.eave_height, -100.0, 1000.0) {
+        if !ok(self.eave_height, Self::EAVE) {
             return Err(SettingsError::InvalidValue("eave_height"));
         }
-        if !ok(self.overhang, 0.0, 20.0) {
+        if !ok(self.overhang, Self::OVERHANG) {
             return Err(SettingsError::InvalidValue("overhang"));
         }
         Ok(())
+    }
+
+    /// Each value outside its range replaced by the default, so that a
+    /// settings file written before the ranges were tightened still loads
+    /// and can be saved again.
+    fn repaired(self) -> Self {
+        let d = Self::default();
+        let fix = |v: f64, (lo, hi): (f64, f64), dv: f64| {
+            if v.is_finite() && (lo..=hi).contains(&v) {
+                v
+            } else {
+                dv
+            }
+        };
+        Self {
+            pitch_deg: fix(self.pitch_deg, Self::PITCH, d.pitch_deg),
+            eave_height: fix(self.eave_height, Self::EAVE, d.eave_height),
+            overhang: fix(self.overhang, Self::OVERHANG, d.overhang),
+        }
     }
 }
 
@@ -202,8 +228,11 @@ impl Settings {
             }
             Err(e) => return (Self::default(), Some(format!("{}: {e}", path.display()))),
         };
-        match serde_json::from_str(&text) {
-            Ok(s) => (s, None),
+        match serde_json::from_str::<Self>(&text) {
+            Ok(mut s) => {
+                s.roof_defaults = s.roof_defaults.repaired();
+                (s, None)
+            }
             Err(e) => (Self::default(), Some(format!("{}: {e}", path.display()))),
         }
     }
@@ -645,6 +674,23 @@ mod tests {
     }
 
     #[test]
+    fn an_old_file_with_defaults_walls_refuse_loads_repaired() {
+        // HUNTIO-007: older releases saved a pitch of 1° or a negative
+        // eave; such a file must load and save again.
+        let d = tmp("repaired");
+        let path = d.join(SETTINGS_FILE);
+        let text = r#"{ "locale": "de", "roof_defaults": { "pitch_deg": 1, "eave_height": -5, "overhang": 0.8 } }"#;
+        fs::write(&path, text).unwrap();
+        let (s, problem) = Settings::load_checked_from(&path);
+        assert!(problem.is_none());
+        assert_eq!(s.locale.as_deref(), Some("de"));
+        assert_eq!(s.roof_defaults.pitch_deg, 40.0);
+        assert_eq!(s.roof_defaults.eave_height, 3.0);
+        assert_eq!(s.roof_defaults.overhang, 0.8);
+        assert!(s.save_to(&path).is_ok());
+    }
+
+    #[test]
     fn missing_or_broken_file_gives_defaults() {
         let d = tmp("broken");
         assert_eq!(
@@ -720,6 +766,13 @@ mod tests {
         let mut s = Settings::default();
         s.roof_defaults.overhang = f64::NAN;
         assert!(s.validate().is_err());
+        // Defaults every new wall would refuse (HUNTIO-007).
+        for (pitch, eave) in [(1.0, 3.0), (0.0, 3.0), (40.0, -5.0)] {
+            let mut s = Settings::default();
+            s.roof_defaults.pitch_deg = pitch;
+            s.roof_defaults.eave_height = eave;
+            assert!(s.validate().is_err(), "{pitch} {eave}");
+        }
         let s = Settings {
             projects_dir: Some(PathBuf::from("relative/dir")),
             ..Settings::default()

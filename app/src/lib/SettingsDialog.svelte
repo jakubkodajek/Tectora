@@ -55,7 +55,7 @@
   }
 
   /** Allowed range of each roof default (the same the settings file accepts). */
-  const RANGE = { pitch_deg: [1, 89], eave_height: [-100, 1000], overhang: [0, 20] } as const;
+  const RANGE = { pitch_deg: [2, 89], eave_height: [0, 1000], overhang: [0, 20] } as const;
   type DefaultKey = keyof typeof RANGE;
   /** Why the last value typed in a default field was refused (its allowed range). */
   let refused = $state<Partial<Record<DefaultKey, string>>>({});
