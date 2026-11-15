@@ -571,10 +571,13 @@ pub fn check(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<Vec<RoofWarning>>
             w
         })
         .collect();
-    // Joined roofs only: the join derives every line anew and none of its
-    // reference results has a line on another one. Within one roof the
-    // standard calculation's known faulty roofs (faces folded through each
-    // other) have such lines and are reported as `OverlappingFaces`.
+    // Joined roofs only: the join derives every line anew. Its reference
+    // results have such lines too: M3_0012, equal to DACAD's result, has
+    // an abutment of 0.34 m lying 1 to 2 cm beside the other building's
+    // ridge, and gets this warning on both parts (audit-core-r1
+    // MATH-006). Within one roof the standard calculation's known faulty
+    // roofs (faces folded through each other) have such lines and are
+    // reported as `OverlappingFaces`.
     if joined {
         for (i, len) in doubled_lines(geos).into_iter().enumerate() {
             if len > DOUBLED_TOL {
