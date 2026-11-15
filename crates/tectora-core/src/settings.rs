@@ -331,35 +331,47 @@ pub struct FileRequest {
 pub const MAX_ALLOWED_FILES: usize = 200;
 
 /// `path` without `.` and `..` and with the links of its existing part
-/// resolved, so a path cannot leave a folder through `..` or a link. The
-/// deepest folder that exists is resolved and the rest is appended: a file
-/// that is not there yet still compares with its resolved folder (on
-/// Windows a resolved path has another prefix, on macOS the temporary
-/// folder is itself a link).
+/// resolved, so a path cannot leave a folder through `..` or a link. Each
+/// step is resolved before the next `..` is applied, so `inbox/link/..` is
+/// the folder beside the link's target, not `inbox` (ARCH-002). A part that
+/// does not exist yet is appended as written: a file that is not there yet
+/// still compares with its resolved folder (on Windows a resolved path has
+/// another prefix, on macOS the temporary folder is itself a link).
+/// A network path (`\\host\share\…`, device paths) is never touched on
+/// disk, only cleaned as text: resolving it would make the computer contact
+/// that host before anyone allowed it (ARCH-006).
 fn resolved(path: &Path) -> PathBuf {
-    let mut plain = PathBuf::new();
+    use std::path::Component;
+    let offline = is_network_path(path);
+    let mut out = PathBuf::new();
     for c in path.components() {
         match c {
-            std::path::Component::ParentDir => {
-                plain.pop();
+            Component::ParentDir => {
+                out.pop();
             }
-            std::path::Component::CurDir => {}
-            other => plain.push(other),
+            Component::CurDir => {}
+            Component::Prefix(_) => out.push(c),
+            other => {
+                out.push(other);
+                if !offline && let Ok(real) = fs::canonicalize(&out) {
+                    out = real;
+                }
+            }
         }
     }
-    let mut rest = Vec::new();
-    let mut head = plain.as_path();
-    loop {
-        if let Ok(real) = fs::canonicalize(head) {
-            return rest.iter().rev().fold(real, |p, name| p.join(name));
+    out
+}
+
+/// True for a Windows network or device path (`\\host\share`,
+/// `\\?\UNC\…`, `\\.\…`, `\\?\…` other than a drive): opening it
+/// reaches another computer or a device, so it is only compared as text.
+pub fn is_network_path(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    match path.components().next() {
+        Some(Component::Prefix(p)) => {
+            !matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
         }
-        match (head.parent(), head.file_name()) {
-            (Some(parent), Some(name)) => {
-                rest.push(name.to_os_string());
-                head = parent;
-            }
-            _ => return plain,
-        }
+        _ => false,
     }
 }
 
@@ -603,6 +615,17 @@ mod tests {
             std::os::unix::fs::symlink(&library, &via).unwrap();
             assert!(s.ai_may_read(&via.join("files/a/plan.pdf"), &via));
             assert!(!s.ai_may_read(&via.join("../other/missing.pdf"), &via));
+            // ARCH-002 (2026-11-15): a folder link in the inbox and then
+            // `..` lands beside the link's target, not back in the inbox.
+            let shared = base.join("shared");
+            fs::create_dir_all(shared.join("drawings")).unwrap();
+            fs::write(shared.join("private.pdf"), b"x").unwrap();
+            std::os::unix::fs::symlink(shared.join("drawings"), inbox.join("shared")).unwrap();
+            // Lexically this is `inbox/private.pdf`; through the link it is
+            // `shared/private.pdf`, outside.
+            fs::write(inbox.join("private.pdf"), b"x").unwrap();
+            assert!(!s.ai_may_read(&inbox.join("shared/../private.pdf"), &library));
+            assert!(!s.ai_may_read(&inbox.join("shared/./../private.pdf"), &library));
         }
         let asked = s.asking_for_file(&secret, "Claude", "attach");
         let req = asked.file_request.clone().unwrap();
@@ -633,6 +656,35 @@ mod tests {
             .unwrap();
         assert!(again.ai_may_read(&secret, &library));
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_network_path_is_compared_as_text_and_never_opened() {
+        // ARCH-006: `\\host\share\x.pdf` was resolved (the computer
+        // contacted the host) before it was refused.
+        assert!(!is_network_path(Path::new("/home/a/plan.pdf")));
+        assert!(!is_network_path(Path::new("plan.pdf")));
+        #[cfg(windows)]
+        {
+            for p in [
+                r"\\host\share\x.pdf",
+                r"\\?\UNC\host\share\x.pdf",
+                r"\\.\pipe\x",
+            ] {
+                assert!(is_network_path(Path::new(p)), "{p}");
+            }
+            assert!(!is_network_path(Path::new(r"C:\Users\a\x.pdf")));
+            assert!(!is_network_path(Path::new(r"\\?\C:\Users\a\x.pdf")));
+            let library = tmp("ai-unc").join("jobs");
+            let s = Settings::default();
+            let far = Path::new(r"\\host\share\a\..\x.pdf");
+            assert!(!s.ai_may_read(far, &library));
+            let req = s
+                .asking_for_file(far, "Claude", "attach")
+                .file_request
+                .unwrap();
+            assert_eq!(req.path, PathBuf::from(r"\\host\share\x.pdf"));
+        }
     }
 
     #[test]
