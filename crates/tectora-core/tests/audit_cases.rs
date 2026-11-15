@@ -823,3 +823,45 @@ fn a_dacad_hole_of_height_0_is_converted_to_a_roof_opening() {
     let p = c27_walls(9.0).to_project("C27 chimney");
     assert_eq!((p.chimneys.len(), p.roof_openings.len()), (1, 0));
 }
+
+// ------------------------------------------------------- r1 MATH-002
+
+/// A 10 × 8 m gable house (front and back eaves at 40°, eave 3 m,
+/// overhang 0.5) with a 2 × `depth` m box on its front wall whose front is
+/// an eave in the house's own plane and whose other walls are gables
+/// without overhang (DACAD cases C60, C63).
+fn box_in_the_roof_plane(depth: f64) -> Project {
+    let house = gable("House", 0.0, 0.0, 10.0, 8.0, 40.0, 3.0);
+    let b = block(
+        "Box",
+        4.0,
+        0.0,
+        2.0,
+        depth,
+        [
+            (40.0, 3.0, 0.5),
+            (G, 3.0, 0.0),
+            (G, 3.0, 0.0),
+            (G, 3.0, 0.0),
+        ],
+    );
+    job(vec![house, b])
+}
+
+/// r1 MATH-002: a box in the house's roof plane splits a face (another
+/// material, a solar field); the job's area is the house alone
+/// (11 · 9 / cos 40° = 129.24 m², DACAD's 129.2358). The box adds no
+/// area, so it is not a building drawn inside another one.
+#[test]
+fn a_box_in_the_roof_plane_of_the_house_is_not_a_building_inside_another() {
+    for depth in [1.0, 4.0] {
+        let roof = calc(&box_in_the_roof_plane(depth));
+        assert!(roof.geos.iter().all(|g| g.error.is_none()));
+        near("job area", roof.area, 11.0 * 9.0 / cos(40.0), 0.01);
+        assert!(
+            !all_kinds(&roof).contains(&WarningKind::InsideAnother),
+            "depth {depth}: {:?}",
+            all_kinds(&roof)
+        );
+    }
+}

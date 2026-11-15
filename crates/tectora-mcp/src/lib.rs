@@ -193,7 +193,7 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             "a dormer rises {:.2} m above the highest point of the roof it sits on: its roof misses the roof face before the ridge, so the area and line lengths are too large; lower the dormer's pitch or eave height",
             w.value
         ),
-        WarningKind::InsideAnother => "this building's walls lie wholly within another building's walls and its roof still adds area and lines (a copy left on its original, a building added twice); delete or move one of them".to_string(),
+        WarningKind::InsideAnother => "this building's walls lie wholly within another building's walls and its roof, outside the other roof's planes, still adds area and lines; check whether it is a copy left on its original or a building added twice. A building that marks part of a roof face (for example another material) is meant: keep it and give it the pitch and eave height of the roof around it".to_string(),
         WarningKind::MergedWalls => {
             let (kept, ignored) = (w.edges.first(), w.edges.get(1));
             format!(

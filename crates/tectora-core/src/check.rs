@@ -686,7 +686,12 @@ fn doubled_lines(geos: &[RoofGeometry]) -> Vec<f64> {
 type PlanShape = (MultiPolygon<f64>, [f64; 4]);
 
 /// The buildings whose walls lie wholly within another building's walls
-/// (99 % of their plan) while both roofs have faces.
+/// (99 % of their plan) while both roofs have faces. A building whose
+/// roof lies wholly in the planes of the other one's roof is a box in the
+/// house's own roof plane, which only splits a face (another material, a
+/// solar field): the calculation books its area off the house's faces, so
+/// it adds none, and it is not reported (DACAD cases C60, C63 to C65;
+/// audit-core-r1 MATH-002).
 fn inside_another(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<usize> {
     if parts.len() < 2 {
         return Vec::new();
@@ -737,12 +742,38 @@ fn inside_another(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<usize> {
                 && bi[2] <= bj[2] + IN_LINE
                 && bi[3] <= bj[3] + IN_LINE
                 && poly.intersection(other).unsigned_area() >= 0.99 * area
+                && !in_host_planes(&geos[i], &geos[j])
         });
         if inside {
             out.push(i);
         }
     }
     out
+}
+
+/// Whether every sloped face of `inner` lies in the plane of a face of
+/// `host` (within [`Z_TOL`] at each corner), with at least one such face.
+fn in_host_planes(inner: &RoofGeometry, host: &RoofGeometry) -> bool {
+    let planes: Vec<[f64; 3]> = host
+        .faces
+        .iter()
+        .filter(|f| f.polygon.len() >= 3)
+        .filter_map(|f| plane_of(&f.polygon))
+        .filter(|p| p.iter().all(|v| v.is_finite()))
+        .collect();
+    let mut sloped = inner
+        .faces
+        .iter()
+        .filter(|f| f.pitch_deg < 89.9 && f.polygon.len() >= 3)
+        .peekable();
+    sloped.peek().is_some()
+        && sloped.all(|f| {
+            planes.iter().any(|pl| {
+                f.polygon
+                    .iter()
+                    .all(|v| (pl[0] * v[0] + pl[1] * v[1] + pl[2] - v[2]).abs() < Z_TOL)
+            })
+        })
 }
 
 /// [`WarningKind::ObjectsOverlap`]: the windows, chimneys, openings and

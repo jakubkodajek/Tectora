@@ -198,9 +198,12 @@ counted twice), `no_roof_area` (a chimney or opening took the whole roof, or
 eaves at 100 m), `objects_overlap` (`value` pairs of windows, chimneys,
 openings or dormers on top of each other, each still deducted),
 `dormer_above_roof` (a dormer `value` m higher than the roof it sits on)
-and `inside_another` (a building wholly within another one's walls still
-adds area): the figures are too large or too small; fix the object or
-building named. `far_from_origin`: the building stands 2.5 km or more from
+and `inside_another` (a building wholly within another one's walls whose
+roof leaves the other roof's planes still adds area): the figures are too
+large or too small; fix the object or building named. Never delete an
+`inside_another` building that marks part of a roof face (another
+material): give it the pitch and eave height of the roof around it; a
+building in the other roof's planes is not reported. `far_from_origin`: the building stands 2.5 km or more from
 the plan's origin, where the area loses precision; move the plan to the
 origin. `merged_walls`: two walls in line are calculated as one, so the
 second wall's pitch (`edges`) is not used. `plane_over_wall`: a wall's plane
