@@ -34,7 +34,18 @@ pub struct Server {
     store: Store,
     /// Name of the connected client, used as the actor in the activity log.
     client: String,
+    /// Set while a calculation that overran [`COMMIT_CALC_TIMEOUT`] still
+    /// runs in its thread: no second one is started beside it (ERR-011).
+    calc_busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// How long a write waits for its calculations (tests shorten it).
+    commit_timeout: std::time::Duration,
 }
+
+/// Longest a write waits for the calculations behind its answer (window
+/// check, quantities). A job inside every limit can still take over a
+/// minute; the write is saved first and the answer says the figures are
+/// missing (ERR-011).
+const COMMIT_CALC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 type ToolResult = Result<Value, String>;
 
@@ -952,7 +963,39 @@ impl Server {
         Self {
             store,
             client: "AI".into(),
+            calc_busy: Default::default(),
+            commit_timeout: COMMIT_CALC_TIMEOUT,
         }
+    }
+
+    /// Runs `f` on its own thread and waits for it at most the commit
+    /// timeout; `None` when it took longer (it then finishes unobserved and
+    /// no other one starts until it has) or panicked.
+    fn within<T: Send + 'static>(&self, f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.calc_busy.swap(true, SeqCst) {
+            return None;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let busy = std::sync::Arc::clone(&self.calc_busy);
+        let started = std::thread::Builder::new()
+            .name("commit calculation".into())
+            .spawn(move || {
+                // Cleared also when `f` panics.
+                struct Clear(std::sync::Arc<std::sync::atomic::AtomicBool>);
+                impl Drop for Clear {
+                    fn drop(&mut self) {
+                        self.0.store(false, SeqCst);
+                    }
+                }
+                let _clear = Clear(busy);
+                let _ = tx.send(f());
+            });
+        if started.is_err() {
+            self.calc_busy.store(false, SeqCst);
+            return None;
+        }
+        rx.recv_timeout(self.commit_timeout).ok()
     }
 
     /// Tells the app what the agent does now: `kind` (one of
@@ -1041,7 +1084,18 @@ impl Server {
         project.check_limits()?;
         // Every write: no window of no size or larger than its face
         // (HUNTC-003), not only `set_openings`.
-        tectora_core::edit::check_windows_write(before, project)?;
+        let skipped_check = if project.windows.is_empty() {
+            false
+        } else {
+            let (b, p) = (before.cloned(), project.clone());
+            match self.within(move || tectora_core::edit::check_windows_write(b.as_ref(), &p)) {
+                Some(r) => {
+                    r?;
+                    false
+                }
+                None => true,
+            }
+        };
         if let (Some(id), Some(b)) = (id, before)
             && b == project
         {
@@ -1062,7 +1116,8 @@ impl Server {
             }
         };
         let project = &project;
-        let geos = tectora_core::openings::generate_project(project);
+        let p = project.clone();
+        let geos = self.within(move || tectora_core::openings::generate_project(&p));
         self.live_follow("changed", None, summary.to_string(), &id);
         let changes = before
             .as_ref()
@@ -1073,11 +1128,26 @@ impl Server {
             "saved": true,
             "note": "Saved. The change is now visible in the Tectora app for the user to review.",
             "changes": changes,
-            "quantities": quantities_of(&geos, project),
             "parts": project.parts.iter().map(describe_part).collect::<Vec<_>>(),
         });
-        if let Some(t) = roof_trouble_of(&geos, project) {
-            out["roof_trouble"] = t;
+        match geos {
+            Some(geos) => {
+                out["quantities"] = quantities_of(&geos, project);
+                if let Some(t) = roof_trouble_of(&geos, project) {
+                    out["roof_trouble"] = t;
+                }
+            }
+            None => {
+                out["quantities"] = Value::Null;
+                out["calculation_note"] = json!(
+                    "Saved, but the roof of this job takes too long to calculate here, so no figures are given. Call calc on it (it has its own limit) and tell the user."
+                );
+            }
+        }
+        if skipped_check {
+            out["window_check_skipped"] = json!(
+                "The roof is too slow to check that the roof windows fit their faces; check them with calc."
+            );
         }
         Ok(out)
     }
@@ -2623,6 +2693,22 @@ mod tests {
         assert_eq!(r["parts"][0]["edges"].as_array().unwrap().len(), 4, "{r}");
         let preset = Settings::load().roof_defaults;
         assert_eq!(r["parts"][0]["edges"][0]["pitch_deg"], preset.pitch_deg);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn a_calculation_that_overruns_does_not_block_the_write() {
+        // ERR-011: a write on a job that needs over a minute waited for it.
+        let mut s = server();
+        s.commit_timeout = std::time::Duration::from_millis(50);
+        let slow = || std::thread::sleep(std::time::Duration::from_millis(400));
+        assert_eq!(s.within(slow), None, "answers after the timeout");
+        assert_eq!(s.within(|| 1), None, "no second one beside the running one");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert_eq!(s.within(|| 1), Some(1), "free again when it has finished");
+        assert_eq!(s.within(|| -> u8 { panic!("kernel") }), None);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(s.within(|| 2), Some(2), "a panic frees it too");
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
