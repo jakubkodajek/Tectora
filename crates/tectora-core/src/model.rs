@@ -560,7 +560,8 @@ pub struct Problem {
     pub edge: Option<usize>,
     /// A stable code: `too_few_edges`, `start_nan`, `pitch_range`,
     /// `eave_nan`, `eave_negative`, `overhang_negative`, `direction_nan`,
-    /// `stacked_nan`, `break_below_eave`, `break_duplicate`, `end_nan`,
+    /// `stacked_nan`, `break_below_eave`, `break_duplicate`,
+    /// `half_hip_below_eave`, `end_nan`,
     /// `bad_corners`, `bad_size` or `zero_length_wall`.
     pub code: &'static str,
 }
@@ -839,7 +840,7 @@ fn is_zero(v: &u8) -> bool {
 impl EdgeDef {
     /// What makes this edge unusable for the engine (see [`Project::validate`]).
     /// Codes and English messages of [`EdgeDef::problems`].
-    pub const PROBLEMS: [(&'static str, &'static str); 9] = [
+    pub const PROBLEMS: [(&'static str, &'static str); 10] = [
         ("start_nan", "start point is not a number or out of range"),
         ("pitch_range", "pitch must be between 2° and 178°"),
         ("eave_nan", "eave height is not a number or out of range"),
@@ -852,6 +853,7 @@ impl EdgeDef {
         ),
         ("break_below_eave", "pitch break lies below the eave"),
         ("break_duplicate", "two pitch breaks at the same height"),
+        ("half_hip_below_eave", "half-hip lies below the eave"),
     ];
 
     /// What keeps the roof engine from using this edge, as
@@ -868,6 +870,14 @@ impl EdgeDef {
         // errors "Knickhöhe liegt tiefer als Traufe!" and "Knickhöhe bereits
         // vorhanden!" (DACAD.exe strings 211, 212).
         let pitch_ok = |p: f64| (MIN_PITCH_DEG..=MAX_PITCH_DEG).contains(&p);
+        // A half-hip is a roof plane like any other: DACAD's pitch limit
+        // holds for it too, and a pitch of 0 divides by zero in the core
+        // (x87 division by zero in the plane setup). It starts above the
+        // eave like a pitch break.
+        let half_hip_low = self
+            .half_hip
+            .as_ref()
+            .is_some_and(|h| h.height < self.eave_height - HEIGHT_EPS);
         let breaks_low = self
             .breaks
             .iter()
@@ -879,7 +889,12 @@ impl EdgeDef {
         });
         let checks = [
             !finite_point(self.start),
-            !pitch_ok(self.pitch_deg) || self.breaks.iter().any(|b| !pitch_ok(b.pitch_deg)),
+            !pitch_ok(self.pitch_deg)
+                || self.breaks.iter().any(|b| !pitch_ok(b.pitch_deg))
+                || self
+                    .half_hip
+                    .as_ref()
+                    .is_some_and(|h| h.pitch_deg.is_finite() && !pitch_ok(h.pitch_deg)),
             !sane(self.eave_height),
             self.eave_height < 0.0,
             !(self.overhang >= 0.0 && sane(self.overhang)),
@@ -887,6 +902,7 @@ impl EdgeDef {
             stacked.into_iter().any(|(h, p)| !sane(h) || !p.is_finite()),
             breaks_low,
             breaks_dup,
+            half_hip_low,
         ];
         checks
             .into_iter()
@@ -1060,6 +1076,27 @@ mod tests {
             ["break_duplicate"]
         );
         assert_eq!(codes(&|e| e.breaks = vec![brk(5.0, 1.0)]), ["pitch_range"]);
+        // A half-hip is held to the same limits; pitch 0 with a pitch break
+        // on the same gable divided by zero in the core (audit ERR-010).
+        let hh = |h: f64, p: f64| {
+            Some(HalfHip {
+                height: h,
+                pitch_deg: p,
+            })
+        };
+        assert!(codes(&|e| e.half_hip = hh(5.0, 50.0)).is_empty());
+        assert_eq!(codes(&|e| e.half_hip = hh(5.0, 0.0)), ["pitch_range"]);
+        assert_eq!(codes(&|e| e.half_hip = hh(5.0, -10.0)), ["pitch_range"]);
+        assert_eq!(codes(&|e| e.half_hip = hh(5.0, 1.9)), ["pitch_range"]);
+        assert_eq!(
+            codes(&|e| e.half_hip = hh(2.0, 50.0)),
+            ["half_hip_below_eave"]
+        );
+        assert_eq!(
+            codes(&|e| e.half_hip = hh(-1.0, 50.0)),
+            ["half_hip_below_eave"]
+        );
+        assert_eq!(codes(&|e| e.half_hip = hh(5.0, f64::NAN)), ["stacked_nan"]);
     }
 
     #[test]

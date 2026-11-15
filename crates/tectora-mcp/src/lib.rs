@@ -2054,6 +2054,20 @@ mod tests {
                 ),
                 "break_duplicate",
             ),
+            (
+                part(
+                    json!({ "pitch_deg": 40, "eave_height": 3 }),
+                    json!([{ "gable": true, "half_hip": { "height": 5, "pitch_deg": 0 }, "breaks": [{ "height": 4, "pitch_deg": 30 }] }, {}, {}, {}]),
+                ),
+                "pitch_range",
+            ),
+            (
+                part(
+                    json!({ "pitch_deg": 40, "eave_height": 3 }),
+                    json!([{ "gable": true, "half_hip": { "height": 2, "pitch_deg": 50 } }, {}, {}, {}]),
+                ),
+                "half_hip_below_eave",
+            ),
         ];
         for (args, code) in cases {
             let e = s.call_tool("create_project", &args).unwrap_err();

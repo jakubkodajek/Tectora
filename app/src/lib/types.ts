@@ -238,6 +238,7 @@ export interface Problem {
     | "stacked_nan"
     | "break_below_eave"
     | "break_duplicate"
+    | "half_hip_below_eave"
     | "end_nan"
     | "bad_corners"
     | "bad_size";
