@@ -215,6 +215,8 @@ export interface CalcError {
   message: string;
   /** With several buildings: the ones whose roof fails on its own too (from 0). */
   parts?: number[];
+  /** The outer and inner wall (from 0) whose parallel planes never meet, where the core can tell. */
+  edges?: number[];
 }
 
 /** An input the roof engine cannot work with (that part is not calculated). */
@@ -246,6 +248,9 @@ export interface RoofWarning {
     | "overlapping_faces"
     | "area_mismatch"
     | "merged_walls"
+    | "plane_over_wall"
+    | "merged_planes"
+    | "wing_joined"
     | "covered"
     | "cut_exceeds_face"
     | "dormer_off_roof"
@@ -253,9 +258,9 @@ export interface RoofWarning {
     | "chimney_off_roof"
     | "opening_off_roof"
     | "not_calculated_by_core";
-  /** m outside, m² overlapping, the relative area difference, m² below zero (cut_exceeds_face), else 0. */
+  /** m outside, m² overlapping, the relative area difference, m² below zero (cut_exceeds_face), m higher (plane_over_wall), m apart (merged_planes), else 0. */
   value: number;
-  /** merged_walls: the edge whose pitch is used, then the edge whose pitch and breaks are ignored; cut_exceeds_face: the walls of the faces. */
+  /** merged_walls: the edge whose pitch is used, then the edge whose pitch and breaks are ignored; plane_over_wall, merged_planes: the outer wall, then the inner wall; wing_joined: the wing's walls; cut_exceeds_face: the walls of the faces. */
   edges?: number[];
   /** dormer_off_roof: the dormer's index. */
   dormer?: number;

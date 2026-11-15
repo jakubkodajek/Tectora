@@ -179,6 +179,26 @@ roof against its walls and the app and MCP show a warning (`RoofGeometry::warnin
 | `covered` | several roofs are joined and a part with roofed walls is left with no face (another part covers it, e.g. a building drawn inside another); the result is unchanged | — |
 | `merged_walls` | the core joined two walls in line whose pitch or pitch breaks differ (finding 7); `edges` = the wall whose definition is used, then the one whose pitch or breaks are ignored. Comes from the core run itself (`dcore::state::Notice`), not from the geometry | — |
 
+Four more kinds are notices, not faults. `plane_over_wall` (`value` = m
+higher, `edges` = outer wall, inner wall) is a hint about the input: a wall's
+plane runs on over a parallel inner wall's eave because the walls beside it
+are gables. The other three mark a roof that is not the core's result
+(`docs/architecture.md`, "Departures"):
+
+| Notice | Meaning | `edges` |
+|---|---|---|
+| `merged_planes` | two parallel planes up to 5 cm apart are calculated as one face (`value` = m apart) | outer wall, inner wall |
+| `wing_joined` | a wing too low to reach the house roof is calculated as a lean-to against the house wall | the wing's walls |
+| `not_calculated_by_core` | the roof comes from the sweep engine | — |
+
+Each of them passed `check::sound` (`Fit::STANDARD`: pitch within 0.05°,
+faces planar within 1 mm; `Fit::JOINED` for the lean-to: 0.1° and 12 mm,
+the join stage's centimetre grid). `tests/roof_cases.rs` holds the cases:
+the T house (also turned by 1° to 61.7°, with a window, with a far garage),
+the 11 lean-to wings of the catalogue, the hipped jog, hipped L and hipped
+wing that must keep the standard roof, and the measured wall area against
+the core's own on roofs the core calculates.
+
 Tolerances were set on 2 779 roofs: every DACAD-calculated `.DAD` in the
 project files (golden, samples, mass s1/s2, mr3, core-stress, variants), the
 census's worst 60 and the candidates. Sound roofs stay below 1 cm outside

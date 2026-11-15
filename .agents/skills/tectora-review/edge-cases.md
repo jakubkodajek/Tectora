@@ -208,3 +208,30 @@ fuzz `cargo run --release -p tectora-core --example join_fuzz -- 2000 <seed>`.
   overhangs up to 3 m) is calculated by the core or, where the port faults
   as the original does, by the fallback with its warning; never an error
   toast or a stale roof.
+
+## 11. A roof that is not the core's result (@math, @errors, @test)
+
+Guards: core `tests/roof_cases.rs` (the T house turned, with a window, with
+a far garage; `a_small_jog_in_a_hipped_house_keeps_the_standard_roof`,
+`hipped_l_and_hipped_wing_keep_the_standard_roof`,
+`a_wing_a_few_centimetres_under_the_house_plane_is_never_a_lean_to`,
+`a_doubled_face_fails_the_structure_check`,
+`the_measured_wall_area_is_the_wall_stages`), `check.rs` unit tests for
+`sound`, `wing_split` unit tests (cut budget), MCP
+`calc_names_merged_planes_and_wing_joined_with_edges`.
+
+- A departure (`merged_planes`, `wing_joined`, `not_calculated_by_core`)
+  appears only where the core stops, or leaves a centimetre step, and only
+  after `check::sound` accepted it. A roof the core calculates (hipped jog,
+  hipped L, hipped wing) keeps its figures to the last digit.
+- The same building turned by any angle and rounded to millimetres gives
+  the same areas and lengths, and the same notice.
+- A window, chimney, opening or dormer, or a second building standing
+  clear, never changes which roof the building gets; a faulty object still
+  ends in its own error.
+- A wing only a few centimetres under the house plane is one face or an
+  error, never a lean-to with overlapping faces.
+- Many wings or hundreds of walls stay inside the budget (`MAX_CUTS`,
+  `MAX_WALLS`, `MAX_SWEEP_WALLS`): an error within seconds, never a hang.
+- A departed roof has a wall area, and an error names walls only where
+  their parallel planes can be the cause.

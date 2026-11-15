@@ -74,6 +74,18 @@ fn describe(p: &Project) -> String {
     s
 }
 
+/// Whether DACAD's core gave this roof (no notice of a roof calculated
+/// where the core stops).
+fn standard_result(roof: &Roof) -> bool {
+    use tectora_core::check::WarningKind as K;
+    !roof.geos.iter().flat_map(|g| &g.warnings).any(|w| {
+        matches!(
+            w.kind,
+            K::NotCalculatedByCore | K::MergedPlanes | K::WingJoined
+        )
+    })
+}
+
 /// Runs a [`Report`] check on one roof and turns its failures into a
 /// proptest failure; DACAD errors reject the case.
 fn verdict(
@@ -83,6 +95,14 @@ fn verdict(
 ) -> Result<(), TestCaseError> {
     if let Some(e) = roof.geos.iter().find_map(|g| g.error.as_ref()) {
         return Err(TestCaseError::reject(format!("DACAD error {e:?}")));
+    }
+    // Since 2026-11-14 a roof DACAD's core stops on may be calculated by
+    // Tectora's own engine, with this notice (`openings::depart`). These
+    // properties are about the standard result, so such a case is
+    // rejected exactly as it was while it ended with DACAD's error; the
+    // roofs calculated that way are checked in `roof_cases.rs`.
+    if !standard_result(roof) {
+        return Err(TestCaseError::reject("DACAD error, calculated another way"));
     }
     let mut r = Report::default();
     let mut c = r.case();

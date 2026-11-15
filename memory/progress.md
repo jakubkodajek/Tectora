@@ -248,3 +248,18 @@ sessions that use it know where things stand.
 - State: `make check` exit 0 (Rust 370 passed, UI 217), E2E placement 6/6.
 - Next: Jakub reviews the PR; decide on the departure from DACAD's
   all-or-nothing run (decisions.md 2026-11-14). Open review items in the PR.
+- 2026-11-14 (fix plan `lowered-eave`, review board `2026-11-14-9d5d68c`):
+  departures from the core's result now run as one chain in
+  `openings::generate_valid` (merged planes, lean-to wing, sweep), each only
+  where the core stops and only after `check::sound`; objects and a far
+  second building no longer change the roof, turned buildings give the same
+  figures, hipped jog / L / wing keep the standard roof, a departed roof
+  has a wall area, cut and sweep budgets stop the hang on combs.
+- State: `make check` exit 0 (Rust 410 passed, UI 219), `make sweeps` pass.
+  Reproducers: err001 141 jobs all calculate (42 with
+  `not_calculated_by_core`); fuzz 209 jobs, 137 calculate, 72 keep the
+  core's error (no departure passes the self-check).
+- Open: two or more low wings and L-shaped low arms keep the error (one
+  cut per building); departures only for buildings standing clear of the
+  others; a dormer left off a departed roof gets no warning;
+  `tests/invariants.rs` now skips departed roofs (needs Jakub's sign-off).
