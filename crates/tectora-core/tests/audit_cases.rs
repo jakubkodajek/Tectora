@@ -615,3 +615,43 @@ fn a_chimney_on_the_ridge_of_a_roof_with_a_joined_wing_takes_the_ridge_off_once(
         );
     }
 }
+
+// ------------------------------------------------------------ MATHC-004
+
+/// MATHC-004: 40 × 36 m, every wall at 60° with 55 pitch breaks at heights
+/// no two walls share (220 levels; a wall may have 64 breaks). The
+/// calculation takes one round per level; its guard against rounds without
+/// end stopped at 200 and called the roof one that "does not finish".
+/// The standard calculation must give this roof itself.
+#[test]
+fn a_roof_with_more_than_200_levels_is_calculated_by_the_standard_calculation() {
+    let with_breaks = |n: usize| {
+        let mut a = block("A", 0.0, 0.0, 40.0, 36.0, [(60.0, 3.0, 0.0); 4]);
+        for (i, e) in a.edges.iter_mut().enumerate() {
+            for k in 0..n {
+                e.breaks.push(PitchBreak {
+                    height: 3.1 + 0.25 * k as f64 + 0.05 * i as f64,
+                    pitch_deg: 60.0 - 0.5 * (k + 1) as f64,
+                });
+            }
+        }
+        let mut p = job(vec![a]);
+        for part in p.parts.iter_mut() {
+            part.normalize_ccw();
+        }
+        p
+    };
+    // 45 breaks a wall (180 levels) is within the old guard.
+    assert!(tectora_core::engine::generate(&with_breaks(45)).is_ok());
+    let p = with_breaks(55);
+    let geos =
+        tectora_core::engine::generate(&p).unwrap_or_else(|e| panic!("55 breaks a wall: {e}"));
+    assert_eq!(geos[0].faces.len(), 4 * 56);
+    let roof = calc(&p);
+    assert!(roof.geos[0].error.is_none());
+    assert!(
+        !kinds(&roof, 0).contains(&WarningKind::NotCalculatedByCore),
+        "{:?}",
+        kinds(&roof, 0)
+    );
+}
