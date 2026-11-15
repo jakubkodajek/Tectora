@@ -1112,10 +1112,18 @@ impl Store {
         // in the history and the review (audit 2026-11-15 ERR-008).
         let log_path = self.activity_path(id)?;
         let log_before = fs::read(&log_path).ok();
+        // Entries are found and accepted by their time, so each one is later
+        // than the one before, even when two saves fall in one millisecond
+        // (the review's list then had two equal keys, ERRU-009) or the log
+        // came with a clock that is ahead (a received bundle): a change
+        // after an accepted future-dated entry used to count as accepted
+        // too (HUNTIO-005).
+        let last_ts = self.activity(id).last().map_or(0, |e| e.ts_ms);
+        let ts_ms = now_ms().max(last_ts.saturating_add(1));
         self.append_activity(
             id,
             ActivityEntry {
-                ts_ms: now_ms(),
+                ts_ms,
                 actor: actor.to_string(),
                 summary: summary.to_string(),
                 changes: before
@@ -1336,6 +1344,14 @@ impl Store {
             target = Some(undone);
         }
         let target = target.ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
+        // The log is a file like the job: a version outside the limits is
+        // not written back into the job (HUNTIO-004).
+        target
+            .check_limits()
+            .map_err(|detail| StoreError::Unreadable {
+                id: id.to_string(),
+                detail,
+            })?;
         let undid_from = Some(log[pos].ts_ms);
         match self.save_checked_undoing(id, &target, actor, summary, base.as_ref(), undid_from)? {
             CheckedSave::Saved { .. } => Ok(Some(target)),
@@ -2514,6 +2530,41 @@ mod tests {
         assert_eq!(err.code(), "revert_conflict");
         assert_eq!(store.load(&id).unwrap(), ai2);
         assert_eq!(store.activity(&id).len(), n, "nothing logged");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// HUNTIO-005, ERRU-009: every entry is later than the one before, so
+    /// a log from a clock that is ahead never makes a new change look
+    /// accepted, and two saves in one millisecond get distinct times.
+    #[test]
+    fn log_times_always_increase() {
+        let store = temp_store("monotonic");
+        let a = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
+        // A log entry a day ahead, accepted by the user.
+        let path = store.activity_path(&id).unwrap();
+        let mut log = store.activity(&id);
+        let ahead = now_ms() + 86_400_000;
+        log[0].ts_ms = ahead;
+        let text: String = log
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap() + "\n")
+            .collect();
+        fs::write(&path, text).unwrap();
+        store.mark_reviewed(&id, ahead).unwrap();
+        let mut p = a.clone();
+        for deg in [30.0, 31.0, 32.0] {
+            p.parts[0].edges[0].pitch_deg = deg;
+            store
+                .save_as(Some(id.clone()), &p, "claude", "steeper")
+                .unwrap();
+        }
+        let ts: Vec<u64> = store.activity(&id).iter().map(|e| e.ts_ms).collect();
+        assert!(ts.windows(2).all(|w| w[0] < w[1]), "{ts:?}");
+        assert!(
+            store.pending_review(&id).is_some(),
+            "the AI change waits for review"
+        );
         let _ = fs::remove_dir_all(&store.dir);
     }
 

@@ -117,10 +117,60 @@ pub fn export_path_with(
     ))
 }
 
-/// Writes job `id` of `store` to `dest` as a bundle.
+/// Writes job `id` of `store` to `dest` as a bundle. Nothing is written
+/// to `dest` unless the whole bundle was: it is built beside it and moved
+/// there at the end, so a failed export neither leaves a bundle that lacks
+/// the attached files nor replaces the file that was there (audit
+/// 2026-11-15 HUNTIO-006).
 pub fn export(store: &Store, id: &str, dest: &Path) -> Result<Manifest, FileError> {
     let project = store.load(id)?;
     let attachments = store.attachments(id);
+    // A bundle import refuses is not written: the job would be lost to
+    // whoever receives it (ARCH-003).
+    if attachments.len() > MAX_FILES {
+        return Err(FileError::new(
+            "too_many",
+            format!(
+                "job bundle: too many attached files ({}, at most {MAX_FILES})",
+                attachments.len()
+            ),
+        ));
+    }
+    let total: u64 = attachments.iter().map(|a| a.size).sum();
+    if total > MAX_FILES_TOTAL {
+        return Err(too_large(format!(
+            "the attached files are too large ({} MB, at most {} MB)",
+            total >> 20,
+            MAX_FILES_TOTAL >> 20
+        )));
+    }
+    let part = dest.with_file_name(format!(
+        ".{}.{}.part",
+        dest.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("bundle"),
+        std::process::id()
+    ));
+    let written = write_bundle(store, id, &project, &attachments, &part, dest);
+    let done = written.and_then(|m| {
+        fs::rename(&part, dest)
+            .map_err(|e| FileError::io(dest, e))
+            .map(|()| m)
+    });
+    if done.is_err() {
+        let _ = fs::remove_file(&part);
+    }
+    done
+}
+
+fn write_bundle(
+    store: &Store,
+    id: &str,
+    project: &Project,
+    attachments: &[crate::store::Attachment],
+    part: &Path,
+    dest: &Path,
+) -> Result<Manifest, FileError> {
     let manifest = Manifest {
         format: FORMAT.into(),
         format_version: FORMAT_VERSION,
@@ -129,7 +179,7 @@ pub fn export(store: &Store, id: &str, dest: &Path) -> Result<Manifest, FileErro
         exported_ms: now_ms(),
         files: attachments.iter().map(|a| a.name.clone()).collect(),
     };
-    let file = fs::File::create(dest).map_err(|e| FileError::io(dest, e))?;
+    let file = fs::File::create(part).map_err(|e| FileError::io(dest, e))?;
     let mut zip = zip::ZipWriter::new(file);
     let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     // Writing fails for file system reasons (disk full, folder read-only).
@@ -160,11 +210,11 @@ pub fn export(store: &Store, id: &str, dest: &Path) -> Result<Manifest, FileErro
     let svg = project
         .check_limits()
         .ok()
-        .and_then(|()| crate::model::guarded(|| preview_svg(&project)).ok());
+        .and_then(|()| crate::model::guarded(|| preview_svg(project)).ok());
     if let Some(svg) = svg {
         put("preview.svg", svg.as_bytes())?;
     }
-    for a in &attachments {
+    for a in attachments {
         let path = store.attachment_path(id, &a.name)?;
         let bytes = fs::read(&path).map_err(|e| FileError::io(&path, e))?;
         put(&format!("files/{}", a.name), &bytes)?;
@@ -243,7 +293,19 @@ pub fn import(store: &Store, src: &Path) -> Result<String, FileError> {
         .filter(|n| !n.is_empty() && !n.contains('/'))
         .collect();
     // Checked before anything is written, so a refused bundle leaves no
-    // half-imported job behind.
+    // half-imported job behind. A file Tectora would not attach (a program,
+    // a script) is not taken from a bundle either: extracted here it carries
+    // no "downloaded" mark, so the system would run it without a warning
+    // when it is double-clicked in the job's folder (HUNTIO-014).
+    if let Some(bad) = names
+        .iter()
+        .find(|n| crate::store::valid_file_name(n) && !Store::can_attach(n))
+    {
+        return Err(FileError::new(
+            "unsupported_type",
+            format!("job bundle: `{bad}` is not a file type Tectora attaches"),
+        ));
+    }
     if names.len() > MAX_FILES {
         return Err(too_large(format!(
             "too many attached files ({}, at most {MAX_FILES})",
@@ -264,11 +326,14 @@ pub fn import(store: &Store, src: &Path) -> Result<String, FileError> {
     }
     let id = store.save(None, &project)?;
     let rest = (|| -> Result<(), FileError> {
-        if let Some(history) = history {
+        if let Some((history, last)) = history.as_deref().and_then(received_history) {
             let path = store.activity_path(&id)?;
             let dir = store.activity_dir();
             fs::create_dir_all(&dir).map_err(|e| FileError::io(&dir, e))?;
             fs::write(&path, history).map_err(|e| FileError::io(&path, e))?;
+            // The sender's changes are history, not an AI change waiting
+            // for this user's review.
+            store.mark_reviewed(&id, last)?;
         }
         let mut total = 0u64;
         for name in names {
@@ -287,6 +352,35 @@ pub fn import(store: &Store, src: &Path) -> Result<String, FileError> {
         return Err(e);
     }
     Ok(id)
+}
+
+/// The change log of a received bundle as it is written into the library,
+/// with the time of its last entry. Entries that do not read as a change,
+/// or whose versions are outside the limits a job file is held to, are
+/// left out: a revert writes such a version into the job unchecked
+/// (HUNTIO-004). Times ahead of this computer's clock are moved back, the
+/// order kept, so the next change is later than all of them (HUNTIO-005).
+fn received_history(bytes: &[u8]) -> Option<(String, u64)> {
+    let ok = |p: &Option<Project>| p.as_ref().is_none_or(|p| p.check_limits().is_ok());
+    let mut entries: Vec<crate::store::ActivityEntry> = bytes
+        .split(|&b| b == b'\n')
+        .filter_map(|l| serde_json::from_slice(l).ok())
+        .filter(|e: &crate::store::ActivityEntry| ok(&e.before) && ok(&e.after))
+        .collect();
+    let last = entries.iter().map(|e| e.ts_ms).max()?;
+    let now = now_ms();
+    if last > now {
+        let shift = last - now;
+        for e in &mut entries {
+            e.ts_ms = e.ts_ms.saturating_sub(shift);
+        }
+    }
+    let text: String = entries
+        .iter()
+        .filter_map(|e| serde_json::to_string(e).ok())
+        .map(|l| l + "\n")
+        .collect();
+    Some((text, last.min(now)))
 }
 
 /// The library job for a file the user opened (double-click, drag and drop):
@@ -459,6 +553,94 @@ mod tests {
         assert_eq!(other.load(&new_id).unwrap(), store.load(&id).unwrap());
         assert_eq!(other.attachments(&new_id).len(), 2);
         assert_eq!(other.activity(&new_id).len(), store.activity(&id).len());
+        // The sender's AI change is history for the receiver, not a review.
+        assert!(other.pending_review(&new_id).is_none());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Audit 2026-11-15: ARCH-003 (a bundle import refuses is not written),
+    /// HUNTIO-006 (a failed export leaves the old file and no half bundle).
+    #[test]
+    fn export_refuses_what_import_would_refuse_and_keeps_the_old_file() {
+        let dir = std::env::temp_dir().join(format!("tectora-bundle-lim-{}", now_ms()));
+        let store = Store::new(dir.join("lib")).unwrap();
+        let p = crate::examples::find("hip").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        for i in 0..=MAX_FILES {
+            store
+                .add_attachment(&id, &format!("n{i}.txt"), b"x")
+                .unwrap();
+        }
+        let file = dir.join("job.tectorajob");
+        fs::write(&file, b"older bundle").unwrap();
+        assert_eq!(export(&store, &id, &file).unwrap_err().code, "too_many");
+        assert_eq!(fs::read(&file).unwrap(), b"older bundle");
+        // A file that cannot be read stops the export the same way.
+        // A file whose name Tectora refuses (what Finder writes for a "/").
+        let small = store.save(None, &p).unwrap();
+        store.add_attachment(&small, "plan.pdf", b"%PDF").unwrap();
+        let files = store.files_dir(&small).unwrap();
+        fs::write(files.join("Plan 1:2.pdf"), b"%PDF").unwrap();
+        assert!(export(&store, &small, &file).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"older bundle");
+        let left: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".part"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// HUNTIO-004, HUNTIO-014: a received bundle's log cannot put a version
+    /// outside the limits into the job, and it cannot bring a program.
+    #[test]
+    fn a_received_bundle_cannot_bring_a_bad_history_or_a_program() {
+        let dir = std::env::temp_dir().join(format!("tectora-bundle-hostile-{}", now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        let p = crate::examples::find("gable").unwrap().project();
+        let mut bad = p.clone();
+        bad.parts[0].edges[0].start.x = 1e300;
+        let entry = |before: &Project, ts: u64| {
+            serde_json::to_string(&crate::store::ActivityEntry {
+                ts_ms: ts,
+                actor: "Claude".into(),
+                summary: "x".into(),
+                before: Some(before.clone()),
+                changes: Vec::new(),
+                after: Some(p.clone()),
+                undid_from: None,
+            })
+            .unwrap()
+        };
+        let write = |name: &str, files: &[&str], history: &str| {
+            let path = dir.join(name);
+            let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+            let opts = SimpleFileOptions::default();
+            zip.start_file("project.tectora", opts).unwrap();
+            zip.write_all(p.to_json().unwrap().as_bytes()).unwrap();
+            zip.start_file("history.jsonl", opts).unwrap();
+            zip.write_all(history.as_bytes()).unwrap();
+            for f in files {
+                zip.start_file(format!("files/{f}"), opts).unwrap();
+                zip.write_all(b"MZ").unwrap();
+            }
+            zip.finish().unwrap();
+            path
+        };
+        let store = Store::new(dir.join("lib")).unwrap();
+        let ahead = now_ms() + 86_400_000;
+        let history = entry(&bad, ahead) + "\n" + &entry(&p, ahead + 1) + "\n";
+        let id = import(&store, &write("h.tectorajob", &[], &history)).unwrap();
+        let log = store.activity(&id);
+        assert_eq!(log.len(), 1, "the entry with the bad version is left out");
+        assert!(log[0].ts_ms <= now_ms());
+        assert!(store.pending_review(&id).is_none());
+        for name in ["invoice.pdf.exe", "run.command"] {
+            let err = import(&store, &write("x.tectorajob", &[name], "")).unwrap_err();
+            assert_eq!(err.code, "unsupported_type", "{name}");
+        }
         let _ = fs::remove_dir_all(dir);
     }
 
