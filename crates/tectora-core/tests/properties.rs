@@ -480,6 +480,50 @@ proptest! {
         finite(&geos).map_err(|e| fail(&p, e))?;
     }
 
+    /// Half-hips and pitch breaks of any pitch (0 to 120 deg) on any wall,
+    /// also below the eave (audit TEST-009): no panic, finite output, and
+    /// a wall whose definition is out of range is reported as a problem and
+    /// its part is not calculated.
+    #[test]
+    fn half_hips_and_breaks_never_panic_and_bad_ones_are_reported(
+        mut p in any_project(),
+        extras in prop::collection::vec(
+            (
+                prop::option::of((
+                    -2.0..8.0f64,
+                    prop_oneof![Just(0.0), Just(1e-9), Just(1.9), 5.0..85.0f64, Just(90.0), Just(120.0)],
+                )),
+                prop::collection::vec(
+                    (0.0..10.0f64, prop_oneof![Just(0.0), 0.0..95.0f64, Just(90.0)]),
+                    0..3,
+                ),
+            ),
+            16,
+        ),
+    ) {
+        for (e, (hh, breaks)) in p.parts[0].edges.iter_mut().zip(extras) {
+            e.half_hip = hh.map(|(height, pitch_deg)| tectora_core::HalfHip { height, pitch_deg });
+            e.breaks = breaks
+                .into_iter()
+                .map(|(height, pitch_deg)| tectora_core::PitchBreak { height, pitch_deg })
+                .collect();
+        }
+        let geos = run(&p).map_err(|e| fail(&p, e))?;
+        finite(&geos).map_err(|e| fail(&p, e))?;
+        if p.parts[0].edges.iter().any(|e| e.problems().next().is_some()) {
+            prop_assert!(
+                !p.problems().is_empty(),
+                "edge problem not listed by Project::problems\n{}",
+                describe(&p)
+            );
+            prop_assert!(
+                geos[0].faces.is_empty() && geos[0].lines.is_empty(),
+                "part with a problem was calculated\n{}",
+                describe(&p)
+            );
+        }
+    }
+
     /// Openings never take away more than a face holds.
     #[test]
     #[ignore = "known bug #8: window and chimney deductions can exceed the face"]

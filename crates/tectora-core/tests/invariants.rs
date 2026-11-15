@@ -28,6 +28,7 @@ use proptest::prelude::*;
 use tectora_core::check::WarningKind;
 use tectora_core::geom::{Point2, signed_area};
 use tectora_core::openings::generate_project;
+use tectora_core::model::ProblemItem;
 use tectora_core::{EdgeDef, HalfHip, PitchBreak, Project};
 
 mod support;
@@ -660,8 +661,26 @@ fn wild_edge() -> impl Strategy<Value = EdgeDef> {
         ],
         -2.0..12.0f64,
         prop_oneof![Just(0.0), 0.0..3.0f64, Just(1e-4)],
-        prop::option::of((0.0..12.0f64, 5.0..85.0f64)),
-        prop::collection::vec((0.0..14.0f64, 0.0..95.0f64), 0..3),
+        // Half-hip and break pitches reach 0 and 90 and beyond the limits of
+        // 2-178 deg; the half-hip may start below the eave (audit TEST-009).
+        prop::option::of((
+            -2.0..12.0f64,
+            prop_oneof![
+                Just(0.0),
+                Just(1e-9),
+                5.0..85.0f64,
+                Just(90.0),
+                Just(120.0),
+                Just(1.9)
+            ],
+        )),
+        prop::collection::vec(
+            (
+                0.0..14.0f64,
+                prop_oneof![Just(0.0), 0.0..95.0f64, Just(90.0)],
+            ),
+            0..3,
+        ),
         0u8..2,
         prop::option::of(-7.0..7.0f64),
         any::<bool>(),
@@ -698,6 +717,27 @@ proptest! {
         }
         let geos = catch_unwind(AssertUnwindSafe(|| generate_project(&p)))
             .map_err(|_| TestCaseError::fail(format!("panic on\n{}", describe(&p))))?;
+        // A part with a problem (half-hip pitch outside 2-178 deg, half-hip
+        // or break below the eave, ...) is reported and not calculated.
+        let problems = p.problems();
+        for (i, part) in p.parts.iter().enumerate() {
+            let flagged = problems.iter().any(|pr| {
+                pr.item == ProblemItem::Part
+                    && pr.index == i
+                    && matches!(pr.code, "pitch_range" | "half_hip_below_eave")
+            });
+            if flagged {
+                prop_assert!(
+                    geos[i].faces.is_empty() && geos[i].lines.is_empty(),
+                    "part {i} has a problem but was calculated:\n{}",
+                    describe(&p)
+                );
+                prop_assert!(
+                    part.edges.iter().any(|e| e.problems().next().is_some()),
+                    "problem listed for a part whose edges have none"
+                );
+            }
+        }
         for g in &geos {
             let finite = g.faces.iter().all(|f| f.area.is_finite() && f.polygon.iter().flatten().all(|v| v.is_finite()))
                 && g.lines.iter().all(|l| l.a.iter().chain(&l.b).all(|v| v.is_finite()))
