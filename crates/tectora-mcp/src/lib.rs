@@ -897,7 +897,7 @@ fn base_tools() -> Value {
                             "corners": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 } },
                             "x": { "type": "number" }, "y": { "type": "number" },
                             "width": { "type": "number" }, "depth": { "type": "number" }, "rotation_deg": { "type": "number" },
-                            "height": { "type": "number", "description": "Top height, m (display only)." }
+                            "height": { "type": "number", "description": "Top height, m above ground (drawn in 3D only; a chimney is calculated as a chimney whatever its height, also without one)." }
                         }
                     }
                 },

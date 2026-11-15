@@ -453,3 +453,53 @@ fn one_building_without_a_roof_leaves_the_others_theirs_and_says_so() {
     near("house area", roof.area, 11.0 * 9.0 / cos(40.0), 0.05);
     assert_eq!(kinds(&roof, 0), vec![]);
 }
+
+// ------------------------------------------------------------ MATH2-005
+
+/// MATH2-005: a chimney without a top height (what an AI client sends, and
+/// every file that leaves `height` out) was calculated as a roof opening:
+/// eave, pent and verge lines around it instead of the flashing lines. A
+/// chimney is a chimney whatever its height: 0.6 × 0.6 m on the 40° front
+/// face gives WV 0.6, WH 0.6 and WS 2 · 0.6 / cos 40°.
+#[test]
+fn a_chimney_without_a_top_height_is_still_a_chimney() {
+    let with = |height: f64| {
+        let mut p = job(vec![gable("A", 0.0, 0.0, 15.0, 5.0, 40.0, 3.0)]);
+        p.chimneys.push(square(7.0, 1.0, 0.6, 0.6, height));
+        calc(&p)
+    };
+    let want = with(7.0);
+    near("WV", want.line("WV"), 0.6, 0.005);
+    near("WH", want.line("WH"), 0.6, 0.005);
+    near("WS", want.line("WS"), 1.2 / cos(40.0), 0.005);
+    for height in [0.0, 0.005, 0.04, 0.05, 0.1] {
+        let roof = with(height);
+        assert!(roof.geos[0].error.is_none(), "height {height}");
+        assert_eq!(
+            roof.lines.keys().collect::<Vec<_>>(),
+            want.lines.keys().collect::<Vec<_>>(),
+            "height {height}"
+        );
+        for (code, len) in &want.lines {
+            near(
+                &format!("height {height}: {code}"),
+                roof.line(code),
+                *len,
+                1e-6,
+            );
+        }
+        near(
+            &format!("height {height}: area"),
+            roof.area,
+            want.area,
+            1e-6,
+        );
+        assert_eq!(roof.line("P"), 0.0, "height {height}: a pent line");
+    }
+    // A roof opening is still an opening: its sides are roof edges.
+    let mut p = job(vec![gable("A", 0.0, 0.0, 15.0, 5.0, 40.0, 3.0)]);
+    p.roof_openings.push(square(7.0, 1.0, 0.6, 0.6, 0.0));
+    let roof = calc(&p);
+    near("opening: P", roof.line("P"), 0.6, 0.005);
+    assert_eq!(roof.line("WV"), 0.0);
+}
