@@ -191,7 +191,11 @@ fn load_project(state: State<AppState>, id: String) -> CmdResult<Project> {
 
 #[tauri::command]
 fn save_project(state: State<AppState>, id: Option<String>, project: Project) -> CmdResult<String> {
-    guard(|| Ok(state.store().save(id, &project)?))
+    guard(|| {
+        let before = id.as_deref().and_then(|i| state.store().load(i).ok());
+        commands::check_write(before.as_ref(), &project)?;
+        Ok(state.store().save(id, &project)?)
+    })
 }
 
 /// Saves the editor's edits only if the file still holds `base`, the
@@ -205,7 +209,10 @@ fn save_project_checked(
     project: Project,
     base: Project,
 ) -> CmdResult<tectora_core::store::CheckedSave> {
-    guard(|| Ok(state.store().save_checked(&id, &project, &base)?))
+    guard(|| {
+        commands::check_write(Some(&base), &project)?;
+        Ok(state.store().save_checked(&id, &project, &base)?)
+    })
 }
 
 /// The project as the store writes and reads it (defaults, nulls and empty
@@ -239,6 +246,8 @@ fn duplicate_project(
     with_files: Option<bool>,
 ) -> CmdResult<String> {
     guard(|| {
+        tectora_core::edit::check_job_name(&name)
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
         let mut project = state.store().load(&id)?;
         tectora_core::library::prepare_copy(&mut project, &name, job);
         let new_id = state.store().save(None, &project)?;
@@ -430,8 +439,7 @@ fn create_standard(
     overhang: f64,
 ) -> CmdResult<String> {
     guard(|| {
-        tectora_core::edit::check_eave_pitch(pitch_deg, f64::MIN_POSITIVE)
-            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+        commands::check_new_roof(Some(&name), pitch_deg, eave_height, overhang)?;
         let mut project = Project::new(name);
         project.parts.push(standard_roof(
             kind,
@@ -456,8 +464,7 @@ fn standard_part(
     overhang: f64,
 ) -> CmdResult<tectora_core::RoofPart> {
     guard(|| {
-        tectora_core::edit::check_eave_pitch(pitch_deg, f64::MIN_POSITIVE)
-            .map_err(|d| AppError::new("out_of_range").detail(d))?;
+        commands::check_new_roof(None, pitch_deg, eave_height, overhang)?;
         Ok(standard_roof(
             kind,
             length,
@@ -503,6 +510,8 @@ fn create_from_example(
 #[tauri::command(async)]
 fn new_project(state: State<AppState>, name: String) -> CmdResult<String> {
     guard(|| {
+        tectora_core::edit::check_job_name(&name)
+            .map_err(|d| AppError::new("out_of_range").detail(d))?;
         let mut project = examples::find("gable").expect("built-in example").project();
         project.name = name;
         Ok(state.store().save(None, &project)?)

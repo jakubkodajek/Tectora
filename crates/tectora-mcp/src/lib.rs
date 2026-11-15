@@ -267,14 +267,34 @@ fn roof_trouble_of(geos: &[RoofGeometry], project: &Project) -> Option<Value> {
         .iter()
         .map(|p| serde_json::to_value(p).unwrap_or(Value::Null))
         .collect();
-    if errors.is_empty() && problems.is_empty() {
+    // A face that lost more than it has: a negative area reaches the totals
+    // (HUNTC-003).
+    let cut: Vec<Value> = geos
+        .iter()
+        .enumerate()
+        .flat_map(|(i, g)| {
+            g.warnings
+                .iter()
+                .filter(|w| w.kind == tectora_core::check::WarningKind::CutExceedsFace)
+                .map(move |w| {
+                    let mut v = warning(w);
+                    v["part"] = json!(i);
+                    v
+                })
+        })
+        .collect();
+    if errors.is_empty() && problems.is_empty() && cut.is_empty() {
         return None;
     }
-    Some(json!({
-        "message": "Saved, but some roofs are not calculated; fix them (or revert this change) before you continue",
+    let mut out = json!({
+        "message": "Saved, but some roofs are not calculated or have a negative face; fix them (or revert this change) before you continue",
         "roof_errors": errors,
         "problems": problems,
-    }))
+    });
+    if !cut.is_empty() {
+        out["cut_exceeds_face"] = Value::Array(cut);
+    }
+    Some(out)
 }
 
 fn quantities(project: &Project) -> Value {
@@ -362,7 +382,11 @@ fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
         tectora_core::edit::check_eave_pitch(p, MIN_PITCH_DEG)?;
         edge.pitch_deg = p;
     }
-    match v.get("gable").and_then(Value::as_bool) {
+    let gable = match v.get("gable") {
+        None | Some(Value::Null) => None,
+        Some(g) => Some(g.as_bool().ok_or("gable must be true or false")?),
+    };
+    match gable {
         Some(true) => edge.pitch_deg = GABLE_PITCH_DEG.ceil(),
         Some(false) if edge.is_gable() => {
             edge.pitch_deg = arg_f64(v, "pitch_deg")?.unwrap_or(40.0);
@@ -387,7 +411,18 @@ fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
         Some(h) => {
             let hh: HalfHip =
                 serde_json::from_value(h.clone()).map_err(|e| format!("half_hip: {e}"))?;
+            // Checked like `breaks` (HUNTIO-012): a half-hip is a roof plane.
+            if !edge.is_gable() {
+                return Err("half_hip applies only to a gable wall; set `gable` first".into());
+            }
             edge.half_hip = Some(hh);
+            // The core's own limits (pitch 2..90, not below the eave).
+            if let Some((code, why)) = edge
+                .problems()
+                .find(|(c, _)| ["pitch_range", "stacked_nan", "half_hip_below_eave"].contains(c))
+            {
+                return Err(format!("half_hip: {code}: {why}"));
+            }
         }
         None => {}
     }
@@ -530,7 +565,10 @@ fn edge_indices(v: &Value, n: usize) -> Result<Vec<usize>, String> {
     if v.get("all").and_then(Value::as_bool) == Some(true) {
         return Ok((0..n).collect());
     }
-    let list: Vec<usize> = if let Some(i) = v.get("index").and_then(Value::as_u64) {
+    let list: Vec<usize> = if let Some(i) = v.get("index") {
+        let i = i
+            .as_u64()
+            .ok_or_else(|| format!("`index` must be an edge number from 0, not {i}"))?;
         vec![i as usize]
     } else {
         serde_json::from_value(arg(v, "indices")?.clone())
@@ -1001,6 +1039,19 @@ impl Server {
         summary: &str,
     ) -> ToolResult {
         project.check_limits()?;
+        // Every write: no window of no size or larger than its face
+        // (HUNTC-003), not only `set_openings`.
+        tectora_core::edit::check_windows_write(before, project)?;
+        if let (Some(id), Some(b)) = (id, before)
+            && b == project
+        {
+            return Ok(json!({
+                "id": id,
+                "saved": false,
+                "note": "Nothing changed: the job already has these values, so nothing was saved.",
+                "changes": [],
+            }));
+        }
         let (id, before, project) = match (id, before) {
             (Some(id), Some(before)) => self.save_onto_current(id, before, project, summary)?,
             _ => {
@@ -1336,19 +1387,18 @@ impl Server {
                         "length and width must be positive and pitch between 0 and 90".into(),
                     );
                 }
-                tectora_core::edit::check_eave_pitch(pitch, f64::MIN_POSITIVE)?;
+                let eave = arg_f64(args, "eave_height")?.unwrap_or(preset.eave_height);
+                let overhang = arg_f64(args, "overhang")?.unwrap_or(preset.overhang);
+                // One check for every creating command (ARCH-007).
+                tectora_core::edit::check_new_wall(pitch, eave, overhang)?;
+                tectora_core::edit::check_job_name(arg_str(args, "name")?)?;
                 let mut p = Project::new(arg_str(args, "name")?);
-                p.parts.push(standard_roof(
-                    kind,
-                    length,
-                    width,
-                    pitch,
-                    arg_f64(args, "eave_height")?.unwrap_or(preset.eave_height),
-                    arg_f64(args, "overhang")?.unwrap_or(preset.overhang),
-                ));
+                p.parts
+                    .push(standard_roof(kind, length, width, pitch, eave, overhang));
                 self.commit(None, None, &p, arg_str(args, "summary")?)
             }
             "create_project" => {
+                tectora_core::edit::check_job_name(arg_str(args, "name")?)?;
                 let mut p = Project::new(arg_str(args, "name")?);
                 let parts = arg(args, "parts")?
                     .as_array()
@@ -1467,22 +1517,33 @@ impl Server {
             "update_job" => {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
-                if let Some(s) = args.get("name").and_then(Value::as_str) {
-                    p.name = s.to_string();
+                // A present key of the wrong type is refused, not ignored
+                // (HUNTIO-012).
+                let text = |key: &str| -> Result<Option<String>, String> {
+                    match args.get(key) {
+                        None | Some(Value::Null) => Ok(None),
+                        Some(Value::String(s)) => Ok(Some(s.clone())),
+                        Some(v) => Err(format!("`{key}` must be a string, not {v}")),
+                    }
+                };
+                if let Some(s) = text("name")? {
+                    tectora_core::edit::check_job_name(&s)?;
+                    p.name = s;
                 }
-                if let Some(s) = args.get("notes").and_then(Value::as_str) {
-                    p.notes = s.to_string();
+                if let Some(s) = text("notes")? {
+                    p.notes = s;
                 }
                 for (key, slot) in [
                     ("number", &mut p.job.number),
                     ("customer", &mut p.job.customer),
                     ("address", &mut p.job.address),
                 ] {
-                    if let Some(s) = args.get(key).and_then(Value::as_str) {
-                        *slot = s.to_string();
+                    if let Some(s) = text(key)? {
+                        *slot = s;
                     }
                 }
-                if let Some(s) = args.get("status").and_then(Value::as_str) {
+                if let Some(s) = text("status")? {
+                    let s = s.as_str();
                     let status = parse_status(s)?;
                     // Leaving the draft stores the result as the offer's
                     // figures: refused for a roof that cannot be calculated.

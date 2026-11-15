@@ -792,6 +792,7 @@ impl Server {
                         })
                     }
                 };
+                tectora_core::edit::check_job_name(arg_str(args, "name")?)?;
                 tectora_core::library::prepare_copy(&mut p, arg_str(args, "name")?, job);
                 let summary = arg_str(args, "summary")?;
                 let new_id = self.store.save_as(None, &p, &self.client, summary)?;
@@ -1254,12 +1255,11 @@ impl Server {
     fn add_shape_part(&self, args: &Value) -> ToolResult {
         let (id, before) = self.load(args)?;
         let mut p = before.clone();
-        let pitch = arg_f64(args, "pitch_deg")?.unwrap_or(40.0);
-        let eave = arg_f64(args, "eave_height")?.unwrap_or(3.0);
-        let overhang = arg_f64(args, "overhang")?.unwrap_or(0.5);
-        if !(0.0 < pitch && pitch < 90.0) || overhang < 0.0 {
-            return Err("pitch must be between 0 and 90 and the overhang not negative".into());
-        }
+        let preset = tectora_core::settings::Settings::load().roof_defaults;
+        let pitch = arg_f64(args, "pitch_deg")?.unwrap_or(preset.pitch_deg);
+        let eave = arg_f64(args, "eave_height")?.unwrap_or(preset.eave_height);
+        let overhang = arg_f64(args, "overhang")?.unwrap_or(preset.overhang);
+        tectora_core::edit::check_new_wall(pitch, eave, overhang)?;
         let at = point(args, "at")?;
         let shape = arg_str(args, "shape")?;
         let mut part = if shape == "regular_polygon" {
@@ -1658,6 +1658,86 @@ mod tests {
     fn call(s: &mut Server, name: &str, args: Value) -> Value {
         s.call_tool(name, &args)
             .unwrap_or_else(|e| panic!("{name}: {e}"))
+    }
+
+    #[test]
+    fn moving_a_window_onto_a_face_too_small_for_it_is_refused_on_a_flat_roof() {
+        // HUNTC-003: saved with a roof area of -160 m2 and no warning.
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "set_roof_options",
+            json!({ "id": id, "flat_roof": true, "summary": "flat" }),
+        );
+        call(
+            &mut s,
+            "set_openings",
+            json!({ "id": id, "summary": "w", "windows": [{ "x": 40, "y": 40, "width": 1.45, "height": 90 }] }),
+        );
+        let e = s
+            .call_tool(
+                "transform_items",
+                &json!({ "id": id, "summary": "m", "op": "move", "dx": -38, "dy": -38,
+                         "items": [{ "kind": "window", "index": 0 }] }),
+            )
+            .unwrap_err();
+        assert!(e.contains("larger than"), "{e}");
+        assert_eq!(s.store.load(&id).unwrap().windows[0].x, 40.0);
+        let e = s
+            .call_tool(
+                "set_openings",
+                &json!({ "id": id, "summary": "w", "windows": [{ "x": 40, "y": 40, "width": 0, "height": 1 }] }),
+            )
+            .unwrap_err();
+        assert!(e.contains("between"), "{e}");
+    }
+
+    #[test]
+    fn creating_tools_refuse_what_the_editor_refuses() {
+        // ARCH-007, HUNTIO-012.
+        let (mut s, id) = setup();
+        for (tool, args) in [
+            (
+                "create_standard_roof",
+                json!({ "name": "A", "type": "gable", "length": 10, "width": 8, "pitch_deg": 1, "summary": "s" }),
+            ),
+            (
+                "create_standard_roof",
+                json!({ "name": "A", "type": "gable", "length": 10, "width": 8, "pitch_deg": 30, "eave_height": -3, "summary": "s" }),
+            ),
+            (
+                "create_standard_roof",
+                json!({ "name": " ", "type": "gable", "length": 10, "width": 8, "pitch_deg": 30, "summary": "s" }),
+            ),
+            (
+                "update_job",
+                json!({ "id": id, "name": "  ", "summary": "s" }),
+            ),
+            (
+                "update_job",
+                json!({ "id": id, "customer": ["x"], "summary": "s" }),
+            ),
+            (
+                "update_edges",
+                json!({ "id": id, "part": 0, "changes": [{ "index": -1, "pitch_deg": 30 }], "summary": "s" }),
+            ),
+            (
+                "update_edges",
+                json!({ "id": id, "part": 0, "changes": [{ "index": 0, "gable": "yes" }], "summary": "s" }),
+            ),
+            (
+                "add_shape_part",
+                json!({ "id": id, "shape": "hip", "length": 6, "width": 5, "overhang": -1, "summary": "s" }),
+            ),
+        ] {
+            assert!(s.call_tool(tool, &args).is_err(), "{tool} {args}");
+        }
+        let r = call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "name": "Test", "summary": "same" }),
+        );
+        assert_eq!(r["saved"], false, "{r}");
     }
 
     #[test]
