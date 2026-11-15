@@ -52,7 +52,13 @@ fn warning_kinds() -> Vec<String> {
         | W::NotCalculatedByCore
         | W::PlaneOverWall
         | W::MergedPlanes
-        | W::WingJoined => k,
+        | W::WingJoined
+        | W::DoubledLine
+        | W::FarFromOrigin
+        | W::NoRoofArea
+        | W::ObjectsOverlap
+        | W::DormerAboveRoof
+        | W::InsideAnother => k,
     };
     [
         W::OutsideOutline,
@@ -69,6 +75,12 @@ fn warning_kinds() -> Vec<String> {
         W::PlaneOverWall,
         W::MergedPlanes,
         W::WingJoined,
+        W::DoubledLine,
+        W::FarFromOrigin,
+        W::NoRoofArea,
+        W::ObjectsOverlap,
+        W::DormerAboveRoof,
+        W::InsideAnother,
     ]
     .into_iter()
     .map(|k| name(all(k)))

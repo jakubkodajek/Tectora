@@ -271,10 +271,18 @@ pub fn write_rd2_with(project: &Project, hosts: &[Option<DormerHost>]) -> (Strin
             }
         }
     }
+    // The record's height tells the core a chimney (flashing lines) from
+    // an opening (height 0: its sides are roof edges). In Tectora the kind
+    // is the list the object is in, and the height is written with one
+    // decimal: a chimney without a top height, or one below 5 cm, would
+    // be read as an opening (audit MATH2-005), so it is written as the
+    // lowest chimney the record can hold. The height changes nothing else.
+    const LOWEST_CHIMNEY: f64 = 0.1;
+    let chimney_height = |h: f64| if h >= 0.05 { h } else { LOWEST_CHIMNEY };
     let holes = project
         .chimneys
         .iter()
-        .map(|c| (c, c.height))
+        .map(|c| (c, chimney_height(c.height)))
         .chain(project.roof_openings.iter().map(|c| (c, 0.0)));
     for (k, (c, h)) in holes.enumerate() {
         // DACAD prints the float it stores, ties rounded up (14.65 is

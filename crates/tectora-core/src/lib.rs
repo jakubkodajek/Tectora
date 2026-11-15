@@ -5,6 +5,7 @@
 
 pub mod assistants;
 pub mod breakdown;
+mod budget;
 pub mod bundle;
 pub mod check;
 pub mod commands;
@@ -33,6 +34,7 @@ pub mod roof;
 pub mod settings;
 pub mod snapshot;
 pub mod store;
+mod straighten;
 pub mod union;
 pub mod walls;
 pub mod wing_split;

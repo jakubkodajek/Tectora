@@ -24,8 +24,22 @@ use super::state::{Core, Cut, CutId, Face, FaceId, Notice, TFACE, WallId, ctr};
 
 /// Sweep iterations (both passes) after which the port gives up: the
 /// original loops forever on some inputs, adding segments every round.
-/// Real models need at most a few dozen.
+/// Real models need at most a few dozen. The guard is the port's own, not
+/// the original's: a model with more levels gets more ([`max_iter`]).
 const MAX_ITER: u32 = 200;
+
+/// The iteration guard for a model with `levels` sweep levels. A sweep
+/// that ends takes one iteration per level in each of its two passes, so a
+/// roof with more than about 100 distinct heights (64 pitch breaks a wall
+/// are allowed) ran into the fixed guard although it was making progress
+/// (audit MATHC-004).
+fn max_iter(levels: usize) -> u32 {
+    let per_level = u32::try_from(levels)
+        .unwrap_or(u32::MAX)
+        .saturating_mul(2)
+        .saturating_add(50);
+    MAX_ITER.max(per_level)
+}
 
 thread_local! {
     static LAST_SITE: Cell<&'static str> = const { Cell::new("") };
@@ -111,6 +125,7 @@ impl Sweep<'_, '_> {
     fn run(&mut self, c: &mut Core) -> Result<i32, CoreError> {
         let tol = c.g.tol;
         let mut iter = 0u32;
+        let cap = max_iter(c.levels.len());
         loop {
             if c.g.pass2 != 0 {
                 face_ranges_down(c)?;
@@ -120,7 +135,7 @@ impl Sweep<'_, '_> {
             loop {
                 self.progress(c, 0xa16);
                 iter += 1;
-                if iter > MAX_ITER {
+                if iter > cap {
                     return Err(CoreError::Hang("height sweep"));
                 }
                 let n0 = c.g.counters[ctr::SEGS];

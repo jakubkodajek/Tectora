@@ -433,6 +433,10 @@ pub fn dacad_list(project: &Project, opts: &ListOptions) -> String {
         let _ = writeln!(out, "Stena : 1 {}", area(w));
     }
     let mut by_material: BTreeMap<u8, f64> = BTreeMap::new();
+    // Material 0 is DACAD's "no material" (string 1600): its faces stay
+    // in the roof area and out of the material rows, the list's rule
+    // before audit MATH-007; whether DACAD's list does the same is open
+    // (`docs/core-verification.md`, audit-core-r1 MATH-005).
     for f in c.faces.iter().flatten().chain(&c.other_faces) {
         if f.material > 0 {
             *by_material.entry(f.material).or_default() += f.net();
@@ -539,6 +543,7 @@ pub fn list_summary(project: &Project, opts: &ListOptions) -> ListSummary {
         })
         .collect();
     let mut by_material: BTreeMap<u8, f64> = BTreeMap::new();
+    // Material 0 stays out of the material rows, as in `dacad_list`.
     for f in faces() {
         if f.material > 0 {
             *by_material.entry(f.material).or_default() += f.net();

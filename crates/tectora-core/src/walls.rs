@@ -10,6 +10,9 @@ use crate::model::{Chimney, Dormer, EdgeDef, HalfHip, PitchBreak, Project, RoofP
 /// Endpoint matching tolerance when chaining walls, m: DACAD closes
 /// outlines with gaps up to a centimetre (samples 92091101, 3314_A).
 const CHAIN_TOL: f64 = 0.011;
+/// Hole height from which DACAD's file means a chimney, m: lower holes
+/// (DACAD writes 0.0) are roof openings.
+const DACAD_CHIMNEY_MIN: f64 = 0.05;
 
 /// One plan wall with its roof definition.
 #[derive(Debug, Clone, PartialEq)]
@@ -70,6 +73,8 @@ impl PlanWall {
 pub struct WallList {
     pub walls: Vec<PlanWall>,
     pub windows: Vec<RoofWindow>,
+    /// Every hole of the file, chimneys and roof openings (height below
+    /// 5 cm); [`WallList::to_project`] sorts them.
     pub chimneys: Vec<Chimney>,
     /// Roof records `0x11`: roof number and, for a dormer, the id of the
     /// wall it sits on (DACAD takes the dormer's host plane from it).
@@ -193,7 +198,18 @@ impl WallList {
             }
         }
         project.windows = self.windows.clone();
-        project.chimneys = self.chimneys.clone();
+        // DACAD stores a roof opening as a hole of height 0 and a chimney
+        // as a hole with its top height (written with one decimal, so
+        // below 5 cm it reads as 0). A project keeps the two in their own
+        // lists, and a chimney without a height is calculated as a chimney
+        // (audit-core-r1 MATH-001).
+        let (openings, chimneys): (Vec<Chimney>, Vec<Chimney>) = self
+            .chimneys
+            .iter()
+            .cloned()
+            .partition(|c| c.height < DACAD_CHIMNEY_MIN);
+        project.chimneys = chimneys;
+        project.roof_openings = openings;
         project
     }
 }

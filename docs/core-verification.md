@@ -165,6 +165,20 @@ under `core-tests/census/`. To check one in the DACAD core emulator:
 `cargo run --release -p tectora-core --example dcore_check -- OUT/C1_hips_outside.RD2`
 with DACAD's SO2 next to it.
 
+### Open: faces of material 0 in the list
+
+Materials are numbered from 1; DACAD's string 1600 names material 0 "no
+material" (`model.rs`). A wall with material 0 (a file or an AI client can
+send it) keeps its faces in the roof area, and since audit MATH-007 the
+area per material (`quantities`, `tectora calc`) and the calculation sheet
+(`breakdown`) count them with material 1, the default of every wall. The
+price-sheet list (`export::dacad_list`, `list_summary`) keeps its older
+rule and leaves them out of the material rows (audit-core-r1 MATH-005).
+Whether DACAD's list does the same is not known: a DACAD run of a 12 x 8 m
+gable with one eave wall set to "no material", and its list, settles it.
+If DACAD lists such faces as material 1, the list follows; if not, the
+totals may have to follow the list, or material 0 be refused on input.
+
 ## Plausibility warnings
 
 The engine stays 1:1 with DACAD, including the faulty roofs above. Instead
@@ -177,7 +191,21 @@ roof against its walls and the app and MCP show a warning (`RoofGeometry::warnin
 | `overlapping_faces` | plan area where two faces pass through each other or coincide; a face lying above another one (an overhang over a lower roof) is sound | 0.25 m² |
 | `area_mismatch` | relative difference of the reported face areas (plus deductions) to the faces' own 3D polygons; single roofs only, joined roofs book their pieces by DACAD's own rules | 1 % |
 | `covered` | several roofs are joined and a part with roofed walls is left with no face (another part covers it, e.g. a building drawn inside another); the result is unchanged | — |
+| `doubled_line` | joined roofs only: length of roof line lying on another roof line of the job (the join reports a hip once more as an oblique verge where two hip roofs with different eaves touch; audit MATHC-001) | 5 cm |
+| `no_roof_area` | a building with roofed walls whose calculated roof has faces and no area (an object larger than the roof; every eave at the core's 100 m level) | 0.005 m² |
+| `dormer_above_roof` | highest dormer corner above the highest corner of the building's own faces (the dormer is cut with the host plane continued past the ridge) | 5 cm |
+| `inside_another` | a building whose walls lie within another building's walls (99 % of its plan) while both roofs have faces and its sloped faces do not all lie in the other roof's planes (a box in the house's plane, DACAD cases C60, C63 to C65, splits a face and adds no area) | 2 cm |
+| `objects_overlap` | pairs of windows, chimneys, openings and dormers (front strip) whose plans overlap; each is still deducted in full. A window whose middle lies on a dormer's roof face is not paired with the dormers | 0.01 m² |
 | `merged_walls` | the core joined two walls in line whose pitch or pitch breaks differ (finding 7); `edges` = the wall whose definition is used, then the one whose pitch or breaks are ignored. Comes from the core run itself (`dcore::state::Notice`), not from the geometry | — |
+
+`overlapping_faces` also counts a face of a single building that stands
+over the roof's other faces outside its own overhang strip, and
+`area_mismatch` counts faces the core reports with fewer than three corners
+(both: a pitch break at the ridge height, audit MATH-001).
+
+`far_from_origin` (`value` = m) is a notice about the input: a building
+2.5 km or more from the plan's origin, where the float32 core loses area
+precision (finding 4).
 
 Four more kinds are notices, not faults. `plane_over_wall` (`value` = m
 higher, `edges` = outer wall, inner wall) is a hint about the input: a wall's

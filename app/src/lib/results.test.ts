@@ -123,9 +123,15 @@ describe("warningText for every kind", () => {
     chimney_off_roof: { kind: "chimney_off_roof", value: 0, item: 0 },
     opening_off_roof: { kind: "opening_off_roof", value: 0, item: 0 },
     not_calculated_by_core: { kind: "not_calculated_by_core", value: 0 },
+    doubled_line: { kind: "doubled_line", value: 0.82 },
+    far_from_origin: { kind: "far_from_origin", value: 30010 },
+    no_roof_area: { kind: "no_roof_area", value: 0 },
+    objects_overlap: { kind: "objects_overlap", value: 2 },
+    dormer_above_roof: { kind: "dormer_above_roof", value: 9.65 },
+    inside_another: { kind: "inside_another", value: 0 },
   };
-  it("gives a filled-in sentence for all 14 kinds in all four languages (TEST-003)", () => {
-    expect(Object.keys(every)).toHaveLength(14);
+  it("gives a filled-in sentence for all 20 kinds in all four languages (TEST-003)", () => {
+    expect(Object.keys(every)).toHaveLength(20);
     for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
       i18n.locale = locale;
       for (const w of Object.values(every)) {

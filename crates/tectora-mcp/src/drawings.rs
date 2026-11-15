@@ -323,7 +323,7 @@ impl Server {
             .zip(tectora_core::openings::generate_project(&p))
         {
             if let Some(e) = &g.error {
-                errors.push(format!("{}: {e}", part.name));
+                errors.push(calc_error_line(&part.name, e));
             }
             for f in &g.faces {
                 let pts: Vec<[f64; 2]> = f.polygon.iter().map(|v| to_sheet(v[0], v[1])).collect();
@@ -930,8 +930,37 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// One line of the overlay summary's `calc_errors`: the building and why
+/// it has no roof, in the words of [`crate::calc_error`]. Never the
+/// calculation's own text, which is German (audit ERR-005).
+fn calc_error_line(part: &str, e: &tectora_core::roof::CalcError) -> String {
+    let v = crate::calc_error(e);
+    format!("{part}: {}", v["message"].as_str().unwrap_or("no roof"))
+}
+
 #[cfg(test)]
 mod tests {
+    /// Audit ERR-005: the overlay summary carried the calculation's German
+    /// text ("Main: Nicht konvexer Schornstein/Öffnung wird ignoriert!").
+    #[test]
+    fn overlay_calc_errors_are_english_sentences() {
+        use tectora_core::roof::{CalcError, CalcErrorKind};
+        let e = CalcError {
+            kind: CalcErrorKind::NonConvexOpening,
+            code: None,
+            message_id: Some(2597),
+            message: "Nicht konvexer Schornstein/Öffnung wird ignoriert!".into(),
+            parts: Vec::new(),
+            edges: Vec::new(),
+        };
+        let line = super::calc_error_line("Main", &e);
+        assert!(
+            line.starts_with("Main: a chimney or roof opening is not convex"),
+            "{line}"
+        );
+        assert!(line.is_ascii() && !line.contains("Nicht"), "{line}");
+    }
+
     #[test]
     fn shallow_corners_finds_nearly_straight_corners() {
         // A rectangle with an extra corner on the bottom edge that turns by

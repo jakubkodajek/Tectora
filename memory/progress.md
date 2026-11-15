@@ -312,6 +312,27 @@ sessions that use it know where things stand.
   (ADR-0005 inventory); unknown keys below the top level are not kept;
   Tauri-only behaviour (watcher, quit guard, updater) has no automated test.
 
+## 2026-11-15 - several low wings, cm-turned buildings and the audit's core findings (branch claude/project-thread-lnaes1, PR #50)
+- Done: bounded multi-wing peel (`wing_split.rs`, up to 4 wings) with an
+  explained-overlap branch in `check::sound` (Jakub's decision); `straighten.rs`
+  snaps cm-rounded turned outlines by at most 1 cm (Jakub's decision); the
+  departure chain runs in the building's local frame within one budget of
+  64 core runs (`budget.rs`); `DormerOffRoof` on departed roofs; stale ridge
+  index panic in `drop_short_junction_hips`. Audit 2026-11-15 core findings:
+  six new warnings (`doubled_line`, `far_from_origin`, `no_roof_area`,
+  `objects_overlap`, `dormer_above_roof`, `inside_another`), checked fallback,
+  chimney without height, material 0 in totals, dormer deduction, ridge under
+  a chimney with a joined wing, sweep level cap, neutral no-end text.
+- State: `make check` exit 0, `make sweeps` pass; 209-job fuzz corpus and all
+  105 DACAD fixture projects unchanged. Reviews: target/review/core-leftovers-r1,
+  -r2, audit-core-r1 (copies in /mnt/project-files/core-leftovers-2026-11-15/).
+- Open for Jakub: run the standard core in the building's local frame
+  (origin independence); MATH-002 cross-building overlap warning (patch in the
+  project files, changes the expectation of `joined_buildings_are_sound`);
+  DACAD runs for the ridge-height pitch break, `two_touch_high`, a row of two
+  equal houses (verge at the shared wall), material 0 in the list, and the
+  flush L-shaped low arm.
+
 ## 2026-11-15 - pre-release audit findings in the editor, MCP tools and export (branch claude/project-thread-14l1th)
 - Done (audit board /mnt/project-files/audit-2026-11-15/, IDs are the
   audit's own): ERR-001, HUNTC-003 (MCP writes only), MATH-005/006,

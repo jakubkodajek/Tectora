@@ -96,6 +96,14 @@ pub(crate) fn pairs(part: &RoofPart) -> Vec<Pair> {
 /// taken back to the joined plane safely, or when the result does not pass
 /// [`crate::check::sound`].
 pub(crate) fn merged(bare: &Project) -> Result<RoofGeometry, String> {
+    merged_within(bare, &mut crate::budget::Budget::unlimited())
+}
+
+/// [`merged`] with its core runs taken from `budget`.
+pub(crate) fn merged_within(
+    bare: &Project,
+    budget: &mut crate::budget::Budget,
+) -> Result<RoofGeometry, String> {
     let [part] = &bare.parts[..] else {
         return Err("not one building".into());
     };
@@ -123,7 +131,10 @@ pub(crate) fn merged(bare: &Project) -> Result<RoofGeometry, String> {
                 e.eave_height += d - pair.rise;
             }
         }
-        let mut geos = crate::engine::generate(&p).map_err(|e| format!("offset {d}: {e}"))?;
+        let mut geos = budget
+            .run(&p)
+            .ok_or(crate::budget::SPENT)?
+            .map_err(|e| format!("offset {d}: {e}"))?;
         if geos.len() != 1 || geos[0].error.is_some() {
             return Err(format!("offset {d}: no roof"));
         }
@@ -131,6 +142,7 @@ pub(crate) fn merged(bare: &Project) -> Result<RoofGeometry, String> {
     }
     let mut geo = extrapolate(&runs).ok_or("the offsets differ in topology")?;
     join(&pairs, &mut geo)?;
+    nothing_beside(&pairs, &geo)?;
     // The building the result is the roof of: the front walls' eaves in
     // the back planes.
     let mut joined = part.clone();
@@ -156,14 +168,6 @@ fn line_at_zero(v: [f64; 3]) -> Option<f64> {
     let slope = (v[1] - v[0]) / (d2 - d1);
     let at3 = v[0] + slope * (d3 - d1);
     ((at3 - v[2]).abs() <= LINEAR_TOL).then_some(v[0] - slope * d1)
-}
-
-/// Value at offset 0 of the parabola through the three samples.
-fn parabola_at_zero(v: [f64; 3]) -> f64 {
-    let [d1, d2, d3] = OFFSETS;
-    v[0] * (d2 * d3) / ((d1 - d2) * (d1 - d3))
-        + v[1] * (d1 * d3) / ((d2 - d1) * (d2 - d3))
-        + v[2] * (d1 * d2) / ((d3 - d1) * (d3 - d2))
 }
 
 fn point_at_zero(p: [[f64; 3]; 3]) -> Option<[f64; 3]> {
@@ -212,7 +216,9 @@ fn extrapolate(r: &[RoofGeometry]) -> Option<RoofGeometry> {
             return None;
         }
         f.polygon = poly_at_zero([&a.faces[i].polygon, &fb.polygon, &fc.polygon])?;
-        f.area = parabola_at_zero([a.faces[i].area, fb.area, fc.area]);
+        // From the polygon (f64), not the parabola through three float32
+        // areas, which is off by a share of a square metre far from the origin.
+        f.area = crate::check::area3(&f.polygon);
     }
     for (i, l) in out.lines.iter_mut().enumerate() {
         let (lb, lc) = (&b.lines[i], &c.lines[i]);
@@ -384,6 +390,43 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
             })
             .filter(|l| l.length() >= MIN_LINE)
             .collect();
+    }
+    Ok(())
+}
+
+/// A face whose corners all lie this close to a joined plane, m (and whose
+/// pitch is within [`BESIDE_PITCH`] degrees of it), is a piece of that
+/// plane that was not joined.
+const BESIDE: f64 = 0.05;
+const BESIDE_PITCH: f64 = 0.5;
+
+/// `Err` when a face lies beside a joined plane without being in it: on a
+/// building turned and rounded to centimetres, the house's front pieces
+/// are millimetres out of line, one of them is joined with the wing's
+/// front and the other stays a face of its own with a valley and a verge
+/// between two faces of what is one plane.
+fn nothing_beside(pairs: &[Pair], geo: &RoofGeometry) -> Result<(), String> {
+    for pair in pairs {
+        let Some(joined) = geo.faces.iter().find(|f| f.edge == pair.inner) else {
+            continue;
+        };
+        let plane = crate::union::Plane::of(joined);
+        let beside = geo.faces.iter().find(|f| {
+            f.edge != usize::MAX
+                && f.edge != pair.inner
+                && f.polygon.len() >= 3
+                && f.area >= 0.01
+                && (f.pitch_deg - joined.pitch_deg).abs() < BESIDE_PITCH
+                && f.polygon
+                    .iter()
+                    .all(|p| (plane.z(Point2::new(p[0], p[1])) - p[2]).abs() < BESIDE)
+        });
+        if let Some(f) = beside {
+            return Err(format!(
+                "the face of wall {} lies beside the joined plane, not in it",
+                f.edge
+            ));
+        }
     }
     Ok(())
 }

@@ -74,7 +74,21 @@ fn arg_f64(args: &Value, key: &str) -> Result<Option<f64>, String> {
 
 fn round(v: f64, digits: i32) -> f64 {
     let f = 10f64.powi(digits);
-    (v * f).round() / f
+    // `+ 0.0`: a total a hair below zero (a roof an object took away
+    // completely) rounds to -0.0, which JSON writes as "-0.0".
+    (v * f).round() / f + 0.0
+}
+
+#[cfg(test)]
+mod round_tests {
+    /// Audit HUNTC-004: an area of -0.00002 m2 was reported as "-0.0".
+    #[test]
+    fn a_total_a_hair_below_zero_is_zero_not_minus_zero() {
+        let v = super::round(-0.0000209, 2);
+        assert_eq!(serde_json::json!(v).to_string(), "0.0");
+        assert_eq!(super::round(-0.006, 2), -0.01);
+        assert_eq!(super::round(152.734, 2), 152.73);
+    }
 }
 
 /// Edge table the agent can reason about (lengths are derived).
@@ -154,7 +168,7 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             "roof opening {} (0-based) lies on no roof face, so it cuts nothing and is not in the result; move it onto the roof or delete it",
             w.item.unwrap_or(0)
         ),
-        WarningKind::NotCalculatedByCore => "the standard calculation stops on this roof (or could not run), so Tectora calculated it with its own engine; where the standard calculation stopped with an error the result passed Tectora's self-check (planar faces at their pitches, every wall's eave height, the plan covered, every line on a face). The figures are not the standard result; tell the user to look at the roof".to_string(),
+        WarningKind::NotCalculatedByCore => "the standard calculation stops on this roof (or could not run), so Tectora calculated it with its own engine; the roof of a building that stands clear of the others passed Tectora's self-check (planar faces at their pitches, every wall's eave height, the plan covered, every line on a face), buildings that touch each other are joined without that check. The figures are not the standard result; tell the user to look at the roof".to_string(),
         WarningKind::PlaneOverWall => {
             let (outer, inner) = (w.edges.first().map_or(0, |e| *e), w.edges.get(1).map_or(0, |e| *e));
             format!(
@@ -173,6 +187,24 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             "the roof of this building did not close in one calculation (a wing with eaves too low to reach the house's roof), so the wing with edges {:?} (0-based) was calculated as a building of its own against the house and the two roofs joined; the standard calculation stops with an error on this building. Tell the user",
             w.edges
         ),
+        WarningKind::DoubledLine => format!(
+            "roof lines of the joined roofs lie on top of each other, so {:.2} m is counted twice and one of the two lines usually has a code the roof does not have (a hip reported once more as an oblique verge where two hip roofs with different eave heights touch); the result is kept as calculated. Tell the user to check the line lengths at the join",
+            w.value
+        ),
+        WarningKind::FarFromOrigin => format!(
+            "the building stands {:.1} km from the plan's origin; the calculation works in single precision on plan coordinates, so that far out the roof area can be wrong (about 1 % at 2.5 km, far more beyond 60 km). Move the whole plan close to the origin (transform_part) and calculate again",
+            w.value / 1000.0
+        ),
+        WarningKind::NoRoofArea => "the roof of this building has no area (0.00 m2): a chimney or roof opening larger than the roof took all of it (cm typed as m), or every eave is at about 100 m, where the calculation closes the faces empty; check the chimneys, openings and eave heights".to_string(),
+        WarningKind::ObjectsOverlap => format!(
+            "{:.0} pair(s) of objects on this roof lie on top of each other in plan (windows, chimneys, roof openings, dormers); each is still deducted and its lines counted in full. Usually one object was added twice: delete the duplicate",
+            w.value
+        ),
+        WarningKind::DormerAboveRoof => format!(
+            "a dormer rises {:.2} m above the highest point of the roof it sits on: its roof misses the roof face before the ridge, so the area and line lengths are too large; lower the dormer's pitch or eave height",
+            w.value
+        ),
+        WarningKind::InsideAnother => "this building's walls lie wholly within another building's walls and its roof, outside the other roof's planes, still adds area and lines; check whether it is a copy left on its original or a building added twice. A building that marks part of a roof face (for example another material) is meant: keep it and give it the pitch and eave height of the roof around it".to_string(),
         WarningKind::MergedWalls => {
             let (kept, ignored) = (w.edges.first(), w.edges.get(1));
             format!(
@@ -914,7 +946,7 @@ fn base_tools() -> Value {
                             "corners": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 } },
                             "x": { "type": "number" }, "y": { "type": "number" },
                             "width": { "type": "number" }, "depth": { "type": "number" }, "rotation_deg": { "type": "number" },
-                            "height": { "type": "number", "description": "Top height, m (display only)." }
+                            "height": { "type": "number", "description": "Top height, m above ground (drawn in 3D only; a chimney is calculated as a chimney whatever its height, also without one)." }
                         }
                     }
                 },
@@ -934,7 +966,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer` or `item` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out), `plane_over_wall` (a wing's plane runs on over the house's eave: no ridge of its own) and three notices of a roof that is not the standard result because the standard calculation stops on it: `merged_planes` (two parallel planes within 10 cm calculated as one face), `wing_joined` (a low wing calculated as a lean-to against the house) and `not_calculated_by_core` (Tectora's own engine, result self-checked). Tell the user about every warning. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with.",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer` or `item` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out), `plane_over_wall` (a wing's plane runs on over the house's eave: no ridge of its own), `doubled_line` (joined roofs: a line lies on another one, `value` m counted twice), `no_roof_area` (roofed walls, 0 m² of roof: a chimney or opening took all of it, or eaves at 100 m), `objects_overlap` (`value` pairs of windows, chimneys, openings or dormers on top of each other, each still deducted), `dormer_above_roof` (a dormer `value` m above the roof it sits on: area and lines too large), `inside_another` (a building wholly within another one's walls whose roof leaves the other roof's planes still adds area; keep a building that marks part of a face and give it the roof's pitch and eave height), the notice `far_from_origin` (the building is `value` m, 2.5 km or more, from the origin, where the area loses precision; move the plan to the origin) and three notices of a roof that is not the standard result because the standard calculation stops on it: `merged_planes` (two parallel planes within 10 cm calculated as one face), `wing_joined` (a low wing calculated as a lean-to against the house) and `not_calculated_by_core` (Tectora's own engine, result self-checked). Tell the user about every warning. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {

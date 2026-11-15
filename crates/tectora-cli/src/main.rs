@@ -120,6 +120,12 @@ fn calc(project: &Project, summary: bool) -> serde_json::Value {
             }
             if !summary {
                 v["geometry"] = json!(geo);
+                // The geometry's own `error` carries the calculation's
+                // text (German): the sentence above replaces it here too
+                // (audit ERR-005).
+                if let Some(e) = &geo.error {
+                    v["geometry"]["error"] = tectora_mcp::calc_error(e);
+                }
             }
             v
         })
@@ -160,7 +166,8 @@ fn calc(project: &Project, summary: bool) -> serde_json::Value {
 }
 
 fn round2(v: f64) -> f64 {
-    (v * 100.0).round() / 100.0
+    // `+ 0.0`: never "-0.0" for a total a hair below zero.
+    (v * 100.0).round() / 100.0 + 0.0
 }
 
 fn main() -> ExitCode {

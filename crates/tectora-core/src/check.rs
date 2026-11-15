@@ -111,7 +111,53 @@ pub enum WarningKind {
     /// `wing_split.rs`). DACAD stops with an error here. `edges`: the
     /// walls of the wing. `value`: 0.
     WingJoined,
+    /// Several roofs are joined and a roof line lies on another roof line
+    /// of the job: the same piece is counted twice, and one of the two usually carries a code the
+    /// roof does not have (where two hip roofs with different eave heights
+    /// touch, the join reports a hip once more as an oblique verge; audit
+    /// MATHC-001). The result is kept. `value`: the length counted twice,
+    /// m.
+    DoubledLine,
+    /// The building stands further than [`FAR_ORIGIN`] from the plan's
+    /// origin. The standard calculation works in single precision on the
+    /// plan's own coordinates, so the area loses digits with the distance
+    /// (1.3 % at 2.5 km on a measured roof, a multiple of the roof beyond
+    /// 60 km; audit MATHC-002). The result is kept. `value`: the distance
+    /// of the furthest corner along x or y, m.
+    FarFromOrigin,
+    /// The building has roofed walls and its calculated roof has no area
+    /// (0.00 m²): a chimney or opening larger than the roof took all of it
+    /// (audit HUNTC-004), or the calculation closed every face empty
+    /// (eaves at 100 m, its top level; audit MATHC-003). `value`: 0.
+    NoRoofArea,
+    /// Windows, chimneys, openings or dormers lie on top of each other in
+    /// plan: each is deducted and its lines counted as if it were alone
+    /// (audit MATH-003). Reported on the building nearest to them.
+    /// `value`: the number of overlapping pairs.
+    ObjectsOverlap,
+    /// A dormer's roof rises above the highest point of the roof it sits
+    /// on: its pitch or eave height lets it miss the roof face before the
+    /// ridge, and it is cut with that face's plane continued past the
+    /// ridge (audit MATH-004). `value`: how far above, m.
+    DormerAboveRoof,
+    /// The building's walls lie wholly within the walls of another
+    /// building of the job (a copy left on its original, a building drawn
+    /// twice) and its roof still has faces: they add to the job's area and
+    /// lines (audit MATH-008). `value`: 0.
+    InsideAnother,
 }
+
+/// Distance from the plan's origin (along x or y) from which
+/// [`WarningKind::FarFromOrigin`] is reported, m.
+pub const FAR_ORIGIN: f64 = 2500.0;
+/// Length of roof line lying on another line from which
+/// [`WarningKind::DoubledLine`] is reported, m (the calculation merges
+/// points within 2 cm).
+pub const DOUBLED_TOL: f64 = 0.05;
+/// How far a dormer may rise above the roof it sits on, m.
+pub const DORMER_ABOVE_TOL: f64 = 0.05;
+/// Roof area below which a roof has none, m² (it shows as 0.00).
+pub const NO_AREA: f64 = 0.005;
 
 impl WarningKind {
     /// A hint about the input or a note on what Tectora did beyond the
@@ -120,7 +166,10 @@ impl WarningKind {
     pub fn is_notice(self) -> bool {
         matches!(
             self,
-            WarningKind::PlaneOverWall | WarningKind::MergedPlanes | WarningKind::WingJoined
+            WarningKind::PlaneOverWall
+                | WarningKind::MergedPlanes
+                | WarningKind::WingJoined
+                | WarningKind::FarFromOrigin
         )
     }
 }
@@ -295,6 +344,15 @@ fn roof_faces(geo: &RoofGeometry) -> impl Iterator<Item = &RoofFace> {
         .filter(|f| f.edge != usize::MAX && f.pitch_deg < 89.9 && f.polygon.len() >= 3)
 }
 
+/// The part's own sloped faces whatever their outline: those of
+/// [`roof_faces`] and the ones the calculation left with fewer than three
+/// corners, whose reported area still counts.
+fn area_faces(geo: &RoofGeometry) -> impl Iterator<Item = &RoofFace> {
+    geo.faces
+        .iter()
+        .filter(|f| f.edge != usize::MAX && f.pitch_deg < 89.9)
+}
+
 fn plan(face: &RoofFace) -> Vec<Point2> {
     face.polygon
         .iter()
@@ -461,10 +519,16 @@ pub fn measure(outline: &[Vec<Point2>], geo: &RoofGeometry) -> Measures {
             }
         }
     }
+    // Every face that reports an area, also one without an outline: the
+    // calculation can give a face one or two corners and tens of square
+    // metres (a pitch break at the ridge height; audit MATH-001), and that
+    // area is in the roof total.
     let (mut reported, mut polygons) = (0.0, 0.0);
-    for f in &faces {
+    for f in area_faces(geo) {
         reported += f.area + f.deducted;
-        polygons += area3(&f.polygon);
+        if f.polygon.len() >= 3 {
+            polygons += area3(&f.polygon);
+        }
     }
     if polygons > 0.0 {
         m.area = (reported - polygons).abs() / polygons;
@@ -483,7 +547,8 @@ pub fn measure(outline: &[Vec<Point2>], geo: &RoofGeometry) -> Measures {
 pub fn check(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<Vec<RoofWarning>> {
     let outline: Vec<Vec<Point2>> = parts.iter().flat_map(eave_outline).collect();
     let joined = parts.len() > 1;
-    geos.iter()
+    let mut out: Vec<Vec<RoofWarning>> = geos
+        .iter()
         .enumerate()
         .map(|(i, geo)| {
             let roofed = parts
@@ -492,26 +557,375 @@ pub fn check(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<Vec<RoofWarning>>
             if joined && roofed && geo.error.is_none() && geo.faces.is_empty() {
                 return vec![RoofWarning::new(WarningKind::Covered, 0.0)];
             }
-            let mut w = warnings(&outline, geo, joined);
+            let mut w = warnings(&outline, geo, parts.get(i).filter(|_| !joined));
             if let Some(part) = parts.get(i) {
                 w.extend(plane_over_wall(part, geo));
+                if geo.error.is_none() && !geo.faces.is_empty() {
+                    w.extend(far_from_origin(part));
+                    if roofed && no_area(geo) {
+                        w.push(RoofWarning::new(WarningKind::NoRoofArea, 0.0));
+                    }
+                }
             }
+            w.extend(dormer_above_roof(geo));
             w
         })
+        .collect();
+    // Joined roofs only: the join derives every line anew. Its reference
+    // results have such lines too: M3_0012, equal to DACAD's result, has
+    // an abutment of 0.34 m lying 1 to 2 cm beside the other building's
+    // ridge, and gets this warning on both parts (audit-core-r1
+    // MATH-006). Within one roof the standard calculation's known faulty
+    // roofs (faces folded through each other) have such lines and are
+    // reported as `OverlappingFaces`.
+    if joined {
+        for (i, len) in doubled_lines(geos).into_iter().enumerate() {
+            if len > DOUBLED_TOL {
+                out[i].push(RoofWarning::new(WarningKind::DoubledLine, len));
+            }
+        }
+    }
+    for i in inside_another(parts, geos) {
+        out[i].push(RoofWarning::new(WarningKind::InsideAnother, 0.0));
+    }
+    out
+}
+
+/// [`WarningKind::FarFromOrigin`] for a building with a corner further
+/// than [`FAR_ORIGIN`] from the origin along x or y.
+fn far_from_origin(part: &RoofPart) -> Option<RoofWarning> {
+    let far = part
+        .edges
+        .iter()
+        .map(|e| e.start.x.abs().max(e.start.y.abs()))
+        .fold(0.0, f64::max);
+    (far.is_finite() && far >= FAR_ORIGIN)
+        .then(|| RoofWarning::new(WarningKind::FarFromOrigin, far))
+}
+
+/// Whether a calculated roof with faces has no area to show.
+fn no_area(geo: &RoofGeometry) -> bool {
+    let area = geo.faces.iter().map(|f| f.area).sum::<f64>() + geo.clad_area;
+    area.is_finite() && area < NO_AREA
+}
+
+/// [`WarningKind::DormerAboveRoof`] where a dormer face (no wall of the
+/// building) reaches above every face of the building's own roof.
+fn dormer_above_roof(geo: &RoofGeometry) -> Option<RoofWarning> {
+    if geo.error.is_some() {
+        return None;
+    }
+    let top = |dormer: bool| {
+        geo.faces
+            .iter()
+            .filter(|f| (f.edge == usize::MAX) == dormer)
+            .flat_map(|f| f.polygon.iter())
+            .map(|p| p[2])
+            .filter(|z| z.is_finite())
+            .fold(f64::NEG_INFINITY, f64::max)
+    };
+    let above = top(true) - top(false);
+    (above.is_finite() && above > DORMER_ABOVE_TOL)
+        .then(|| RoofWarning::new(WarningKind::DormerAboveRoof, above))
+}
+
+/// A roof line of a job: its roof, both ends, its bounding box in plan.
+type JobLine = (usize, [f64; 3], [f64; 3], [f64; 4]);
+
+/// Per roof, the length of its lines that lie on another roof line of the
+/// job (of the same roof or another one), each doubled piece counted once
+/// per roof it belongs to.
+fn doubled_lines(geos: &[RoofGeometry]) -> Vec<f64> {
+    // (roof, a, b, bounding box in plan)
+    let mut lines: Vec<JobLine> = Vec::new();
+    for (i, geo) in geos.iter().enumerate() {
+        if geo.error.is_some() {
+            continue;
+        }
+        for l in &geo.lines {
+            let finite = l.a.iter().chain(&l.b).all(|v| v.is_finite());
+            if finite && l.length() > DOUBLED_TOL {
+                let bbox = [
+                    l.a[0].min(l.b[0]) - NEAR,
+                    l.a[1].min(l.b[1]) - NEAR,
+                    l.a[0].max(l.b[0]) + NEAR,
+                    l.a[1].max(l.b[1]) + NEAR,
+                ];
+                lines.push((i, l.a, l.b, bbox));
+            }
+        }
+    }
+    let mut out = vec![0.0; geos.len()];
+    for (k, &(ri, a, b, ba)) in lines.iter().enumerate() {
+        let ab = sub3(b, a);
+        let len = norm3(ab);
+        for &(rj, c, d, bb) in &lines[k + 1..] {
+            if ba[2] < bb[0] || bb[2] < ba[0] || ba[3] < bb[1] || bb[3] < ba[1] {
+                continue;
+            }
+            // Both ends of the second line on the first one's line.
+            let off = |p: [f64; 3]| norm3(cross3(sub3(p, a), ab)) / len;
+            if off(c) > NEAR || off(d) > NEAR {
+                continue;
+            }
+            let at = |p: [f64; 3]| {
+                let q = sub3(p, a);
+                (q[0] * ab[0] + q[1] * ab[1] + q[2] * ab[2]) / len
+            };
+            let (t0, t1) = (at(c).min(at(d)), at(c).max(at(d)));
+            let shared = t1.min(len) - t0.max(0.0);
+            if shared > DOUBLED_TOL {
+                out[ri] += shared;
+                if rj != ri {
+                    out[rj] += shared;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A plan outline with its bounding box (min x, min y, max x, max y).
+type PlanShape = (MultiPolygon<f64>, [f64; 4]);
+
+/// The buildings whose walls lie wholly within another building's walls
+/// (99 % of their plan) while both roofs have faces. A building whose
+/// roof lies wholly in the planes of the other one's roof is a box in the
+/// house's own roof plane, which only splits a face (another material, a
+/// solar field): the calculation books its area off the house's faces, so
+/// it adds none, and it is not reported (DACAD cases C60, C63 to C65;
+/// audit-core-r1 MATH-002).
+fn inside_another(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<usize> {
+    if parts.len() < 2 {
+        return Vec::new();
+    }
+    let shown = |i: usize| {
+        geos.get(i)
+            .is_some_and(|g| g.error.is_none() && !g.faces.is_empty())
+    };
+    let plans: Vec<Option<(PlanShape, f64)>> = parts
+        .iter()
+        .enumerate()
+        .map(|(i, part)| {
+            let pts = part.outline();
+            let area = signed_area(&pts).abs();
+            if !shown(i) || pts.len() < 3 || !area.is_finite() || area < MIN_PIECE {
+                return None;
+            }
+            let mut bbox = [
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ];
+            for p in &pts {
+                bbox = [
+                    bbox[0].min(p.x),
+                    bbox[1].min(p.y),
+                    bbox[2].max(p.x),
+                    bbox[3].max(p.y),
+                ];
+            }
+            Some(((MultiPolygon::new(vec![to_geo(&pts)]), bbox), area))
+        })
+        .collect();
+    let mut out = Vec::new();
+    for (i, pi) in plans.iter().enumerate() {
+        let Some(((poly, bi), area)) = pi else {
+            continue;
+        };
+        let inside = plans.iter().enumerate().any(|(j, pj)| {
+            let Some(((other, bj), _)) = pj else {
+                return false;
+            };
+            // Within the other's bounding box (to the centimetre) first.
+            j != i
+                && bi[0] >= bj[0] - IN_LINE
+                && bi[1] >= bj[1] - IN_LINE
+                && bi[2] <= bj[2] + IN_LINE
+                && bi[3] <= bj[3] + IN_LINE
+                && poly.intersection(other).unsigned_area() >= 0.99 * area
+                && !in_host_planes(&geos[i], &geos[j])
+        });
+        if inside {
+            out.push(i);
+        }
+    }
+    out
+}
+
+/// Whether every sloped face of `inner` lies in the plane of a face of
+/// `host` (within [`Z_TOL`] at each corner), with at least one such face.
+fn in_host_planes(inner: &RoofGeometry, host: &RoofGeometry) -> bool {
+    let planes: Vec<[f64; 3]> = host
+        .faces
+        .iter()
+        .filter(|f| f.polygon.len() >= 3)
+        .filter_map(|f| plane_of(&f.polygon))
+        .filter(|p| p.iter().all(|v| v.is_finite()))
+        .collect();
+    let mut sloped = inner
+        .faces
+        .iter()
+        .filter(|f| f.pitch_deg < 89.9 && f.polygon.len() >= 3)
+        .peekable();
+    sloped.peek().is_some()
+        && sloped.all(|f| {
+            planes.iter().any(|pl| {
+                f.polygon
+                    .iter()
+                    .all(|v| (pl[0] * v[0] + pl[1] * v[1] + pl[2] - v[2]).abs() < Z_TOL)
+            })
+        })
+}
+
+/// [`WarningKind::ObjectsOverlap`]: the windows, chimneys, openings and
+/// dormers of `project` that lie on top of each other in plan (a dormer
+/// with its front wall), as
+/// `(part, warning)` on the building nearest to the first of each pair,
+/// one warning per building. Windows count with the outline they have on
+/// the calculated roofs `geos` (same order as `project.parts`); a window
+/// on no face has none, and a window on a dormer's roof is not paired
+/// with the dormers.
+pub fn overlapping_objects(
+    project: &crate::Project,
+    geos: &[RoofGeometry],
+) -> Vec<(usize, RoofWarning)> {
+    if geos.iter().all(|g| g.error.is_some() || g.faces.is_empty()) {
+        return Vec::new();
+    }
+    let mut shapes: Vec<Vec<Point2>> = Vec::new();
+    // A window on a dormer's roof lies within the dormer in plan and is
+    // not on top of it (audit-core-r1 MATH-004).
+    let mut on_dormer: Vec<bool> = Vec::new();
+    // The window is booked on the host face it was placed on, whose
+    // outline may still run under the dormer, so the dormer's own faces
+    // are asked: one of them holds the middle of the window.
+    let dormer_faces: Vec<Vec<Point2>> = geos
+        .iter()
+        .flat_map(|g| &g.faces)
+        .filter(|f| f.edge == usize::MAX && f.pitch_deg < 89.9 && f.polygon.len() >= 3)
+        .map(plan)
+        .collect();
+    for w in &project.windows {
+        let outline = crate::openings::window_outline(geos, w);
+        let n = outline.len().max(1) as f64;
+        let mid = Point2::new(
+            outline.iter().map(|p| p.x).sum::<f64>() / n,
+            outline.iter().map(|p| p.y).sum::<f64>() / n,
+        );
+        on_dormer.push(dormer_faces.iter().any(|f| inside(f, mid)));
+        shapes.push(outline);
+    }
+    for c in project.chimneys.iter().chain(&project.roof_openings) {
+        shapes.push(c.corners.clone());
+    }
+    // A dormer is stored as its front wall (how far it runs back is the
+    // calculation's result): it counts as a strip `DORMER_STRIP` deep
+    // behind each of its walls with a length.
+    const DORMER_STRIP: f64 = 0.25;
+    let first_dormer = shapes.len();
+    for d in &project.dormers {
+        let mut strip = Vec::new();
+        for (i, e) in d.edges.iter().enumerate() {
+            let (a, b) = (e.start, d.edges.get(i + 1).map_or(d.end, |n| n.start));
+            let len = a.distance(b);
+            if len > 1e-6 && len.is_finite() && strip.is_empty() {
+                // To the left of the wall: the dormer's own side.
+                let (nx, ny) = (-(b.y - a.y) / len, (b.x - a.x) / len);
+                let back =
+                    |p: Point2| Point2::new(p.x + nx * DORMER_STRIP, p.y + ny * DORMER_STRIP);
+                strip = vec![a, b, back(b), back(a)];
+            }
+        }
+        shapes.push(strip);
+    }
+    let ok = |s: &Vec<Point2>| {
+        s.len() >= 3
+            && s.iter().all(|p| p.x.is_finite() && p.y.is_finite())
+            && signed_area(s).abs() >= MIN_PIECE
+    };
+    let plans: Vec<Option<PlanShape>> = shapes
+        .iter()
+        .map(|s| {
+            ok(s).then(|| {
+                let mut bbox = [
+                    f64::INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::NEG_INFINITY,
+                ];
+                for p in s {
+                    bbox = [
+                        bbox[0].min(p.x),
+                        bbox[1].min(p.y),
+                        bbox[2].max(p.x),
+                        bbox[3].max(p.y),
+                    ];
+                }
+                (MultiPolygon::new(vec![to_geo(s)]), bbox)
+            })
+        })
+        .collect();
+    let mut pairs = vec![0usize; project.parts.len().min(geos.len())];
+    for i in 0..plans.len() {
+        let Some((pi, bi)) = &plans[i] else {
+            continue;
+        };
+        for (j, pj) in plans.iter().enumerate().skip(i + 1) {
+            let Some((pj, bj)) = pj else {
+                continue;
+            };
+            if on_dormer.get(i).copied().unwrap_or(false) && j >= first_dormer {
+                continue;
+            }
+            if bi[2] <= bj[0] || bj[2] <= bi[0] || bi[3] <= bj[1] || bj[3] <= bi[1] {
+                continue;
+            }
+            if pi.intersection(pj).unsigned_area() < MIN_PIECE {
+                continue;
+            }
+            let Some(&at) = shapes[i].first() else {
+                continue;
+            };
+            let near = (0..pairs.len()).min_by(|&a, &b| {
+                crate::engine::outline_distance(&project.parts[a], at)
+                    .total_cmp(&crate::engine::outline_distance(&project.parts[b], at))
+            });
+            if let Some(k) = near {
+                pairs[k] += 1;
+            }
+        }
+    }
+    pairs
+        .into_iter()
+        .enumerate()
+        .filter(|&(_, n)| n > 0)
+        .map(|(k, n)| (k, RoofWarning::new(WarningKind::ObjectsOverlap, n as f64)))
         .collect()
 }
 
-fn warnings(outline: &[Vec<Point2>], geo: &RoofGeometry, joined: bool) -> Vec<RoofWarning> {
+/// The warnings of one roof measured against `outline`. `alone`: the
+/// building, when its roof is not joined with another one's.
+fn warnings(
+    outline: &[Vec<Point2>],
+    geo: &RoofGeometry,
+    alone: Option<&RoofPart>,
+) -> Vec<RoofWarning> {
     if geo.error.is_some() || geo.faces.is_empty() {
         return Vec::new();
     }
+    let joined = alone.is_none();
     let m = measure(outline, geo);
     let mut out = Vec::new();
     if m.outside > OUTSIDE_TOL {
         out.push(RoofWarning::new(WarningKind::OutsideOutline, m.outside));
     }
-    if m.overlap > OVERLAP_TOL {
-        out.push(RoofWarning::new(WarningKind::OverlappingFaces, m.overlap));
+    // Faces of one building standing over its roof count like faces
+    // passing through each other.
+    let overlap = m.overlap + alone.map_or(0.0, |part| faces_over_roof(part, geo));
+    if overlap > OVERLAP_TOL {
+        out.push(RoofWarning::new(WarningKind::OverlappingFaces, overlap));
     }
     if !joined && m.area > AREA_TOL {
         out.push(RoofWarning::new(WarningKind::AreaMismatch, m.area));
@@ -552,8 +966,19 @@ const IN_LINE: f64 = 0.01;
 /// takes it) whose first roof planes are parallel. A wall's plane is
 /// `z = eave + tan(pitch) · (overhang + d − m·p)` with `m` its outward
 /// normal and `d = m·start`, so two such planes differ by a constant.
+///
+/// `d` is taken from the building's own corner of lowest x and y, not from
+/// the project's origin: two walls count as parallel up to 0.05°, and
+/// measured from an origin hundreds of metres away that angle is
+/// centimetres of `rise` and `depth`, so the same building would be merged
+/// or warned about in one place of the site plan and not in another.
 pub fn parallel_planes(part: &RoofPart) -> Vec<ParallelPlanes> {
     let n = part.edges.len();
+    let low = |f: fn(&crate::model::EdgeDef) -> f64| {
+        let v = part.edges.iter().map(f).fold(f64::INFINITY, f64::min);
+        if v.is_finite() { v } else { 0.0 }
+    };
+    let (rx, ry) = (low(|e| e.start.x), low(|e| e.start.y));
     let wall = |i: usize| {
         let e = &part.edges[i];
         let b = part.edges[(i + 1) % n].start;
@@ -562,7 +987,7 @@ pub fn parallel_planes(part: &RoofPart) -> Vec<ParallelPlanes> {
         let sloped = e.pitch_deg > 0.0 && e.pitch_deg < crate::model::GABLE_PITCH_DEG;
         (sloped && len > IN_LINE && e.direction_rad.is_none() && len.is_finite()).then(|| {
             let m = (dy / len, -dx / len);
-            let d = m.0 * e.start.x + m.1 * e.start.y;
+            let d = m.0 * (e.start.x - rx) + m.1 * (e.start.y - ry);
             let c = e.eave_height + e.pitch_deg.to_radians().tan() * (e.overhang + d);
             (m, d, c, e.pitch_deg)
         })
@@ -855,6 +1280,131 @@ fn wall_plane(part: &RoofPart, i: usize) -> Option<((f64, f64), f64)> {
     })
 }
 
+/// Whether `p` lies in the overhang strip of the wall of `face`: between
+/// the wall's line and its eave line.
+fn in_overhang_strip(part: &RoofPart, face: &RoofFace, p: Coord<f64>) -> bool {
+    let n = part.edges.len();
+    let (Some(e), Some(next)) = (
+        part.edges.get(face.edge),
+        part.edges.get((face.edge + 1) % n.max(1)),
+    ) else {
+        return false;
+    };
+    let (a, b) = (e.start, next.start);
+    let len = a.distance(b);
+    if len <= 1e-6 {
+        return false;
+    }
+    let out = ((p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x)) / len;
+    out >= -NEAR && out <= e.overhang + NEAR
+}
+
+/// Plan area of the overlaps of two faces where one lies clear above the
+/// other (at least [`crate::coplanar::MERGE_TOL`]) at every corner of the
+/// overlap and the overlap lies in the upper face's own overhang strip,
+/// between its wall's line and its eave line. Nothing else explains a plan
+/// area covered more than once.
+fn explained_overlap(part: &RoofPart, geo: &RoofGeometry) -> f64 {
+    let faces: Vec<&RoofFace> = roof_faces(geo).collect();
+    let plans: Vec<MultiPolygon<f64>> = faces
+        .iter()
+        .map(|f| MultiPolygon::new(vec![to_geo(&plan(f))]))
+        .collect();
+    let planes: Vec<Option<[f64; 3]>> = faces.iter().map(|f| plane_of(&f.polygon)).collect();
+    let in_strip = |face: &RoofFace, p: Coord<f64>| in_overhang_strip(part, face, p);
+    let mut sum = 0.0;
+    for i in 0..faces.len() {
+        for j in i + 1..faces.len() {
+            let (Some(pi), Some(pj)) = (planes[i], planes[j]) else {
+                continue;
+            };
+            for piece in plans[i].intersection(&plans[j]) {
+                let a = piece.unsigned_area();
+                if a < MIN_PIECE {
+                    continue;
+                }
+                let ring = &piece.exterior().0;
+                let pts = &ring[..ring.len().saturating_sub(1)];
+                let diff = |p: &Coord<f64>| {
+                    (pi[0] - pj[0]) * p.x + (pi[1] - pj[1]) * p.y + (pi[2] - pj[2])
+                };
+                let clear = crate::coplanar::MERGE_TOL;
+                let (upper, ok) = if pts.iter().all(|p| diff(p) >= clear) {
+                    (faces[i], true)
+                } else if pts.iter().all(|p| diff(p) <= -clear) {
+                    (faces[j], true)
+                } else {
+                    (faces[i], false)
+                };
+                if ok && !pts.is_empty() && pts.iter().all(|&p| in_strip(upper, p)) {
+                    sum += a;
+                }
+            }
+        }
+    }
+    sum
+}
+
+/// Share of a face's plan that other faces of the roof must lie under
+/// before the face stands over the roof instead of being part of it.
+const OVER_ROOF: f64 = 0.9;
+
+/// Plan area of the faces of one building's roof that stand over the
+/// roof: nearly all of the face ([`OVER_ROOF`]) lies above other faces of
+/// the same roof, touching them at most along a line, and not in its own
+/// wall's overhang strip. A roof's faces lie side by side; only an
+/// overhang reaches over a lower eave. The calculation leaves such faces
+/// above the ridge for a pitch break at the ridge height (audit
+/// MATH-001), and their area is in the roof total.
+fn faces_over_roof(part: &RoofPart, geo: &RoofGeometry) -> f64 {
+    let faces: Vec<&RoofFace> = roof_faces(geo).collect();
+    let plans: Vec<MultiPolygon<f64>> = faces
+        .iter()
+        .map(|f| MultiPolygon::new(vec![to_geo(&plan(f))]))
+        .collect();
+    let planes: Vec<Option<[f64; 3]>> = faces.iter().map(|f| plane_of(&f.polygon)).collect();
+    let mut over = vec![0.0; faces.len()];
+    for i in 0..faces.len() {
+        for j in i + 1..faces.len() {
+            let (Some(pi), Some(pj)) = (planes[i], planes[j]) else {
+                continue;
+            };
+            for piece in plans[i].intersection(&plans[j]) {
+                let a = piece.unsigned_area();
+                if a < MIN_PIECE {
+                    continue;
+                }
+                let ring = &piece.exterior().0;
+                let pts = &ring[..ring.len().saturating_sub(1)];
+                let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+                for p in pts {
+                    let d = (pi[0] - pj[0]) * p.x + (pi[1] - pj[1]) * p.y + (pi[2] - pj[2]);
+                    lo = lo.min(d);
+                    hi = hi.max(d);
+                }
+                let upper = if lo >= -Z_TOL && hi > Z_TOL {
+                    i
+                } else if hi <= Z_TOL && lo < -Z_TOL {
+                    j
+                } else {
+                    continue;
+                };
+                if !pts
+                    .iter()
+                    .all(|&p| in_overhang_strip(part, faces[upper], p))
+                {
+                    over[upper] += a;
+                }
+            }
+        }
+    }
+    (0..faces.len())
+        .map(|i| (plans[i].unsigned_area(), over[i]))
+        .filter(|&(own, over)| own > MIN_PIECE && over >= OVER_ROOF * own)
+        .map(|(own, _)| own)
+        .sum()
+}
+
 /// Whether the roof `geo` of the building `part` (counter-clockwise,
 /// without dormers, chimneys, openings and windows) is a sound roof of
 /// these walls. Every result that is not the standard calculation's must
@@ -1128,7 +1678,12 @@ pub fn sound(part: &RoofPart, geo: &RoofGeometry, fit: Fit) -> Result<(), String
     } else {
         plan * (1.0 + OVER_COVER) + tiling
     };
-    if !(plan_sum >= plan - tiling && plan_sum <= most) {
+    if plan_sum < plan - tiling {
+        return Err(format!("faces cover {plan_sum} m2 of {plan} m2 in plan"));
+    }
+    // Above the cap (a share measured on single wings) only an excess that
+    // is fully explained passes: higher overhangs lying over lower roofs.
+    if plan_sum > most && (level || plan_sum - plan > explained_overlap(part, geo) + tiling) {
         return Err(format!("faces cover {plan_sum} m2 of {plan} m2 in plan"));
     }
     let warnings: Vec<RoofWarning> = check(std::slice::from_ref(part), std::slice::from_ref(geo))

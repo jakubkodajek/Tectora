@@ -438,7 +438,8 @@ fn clad_piece(poly: &[[f64; 3]]) -> CladPiece {
 
 fn round_to(v: f64, d: u32) -> f64 {
     let k = 10f64.powi(d as i32);
-    (v * k).round() / k
+    // `+ 0.0`: never "-0.0" for a figure a hair below zero.
+    (v * k).round() / k + 0.0
 }
 
 /// Whether `base - deducted = area` holds as shown with `d` decimals:
@@ -614,11 +615,14 @@ pub fn from_geometry(project: &Project, geos: &[RoofGeometry]) -> Breakdown {
                 ),
                 vertical,
             });
-            materials.entry(f.material).or_default().push(AreaItem {
-                part: Some(pi),
-                face: Some(no),
-                area: f.area,
-            });
+            materials
+                .entry(crate::roof::counted_material(f.material))
+                .or_default()
+                .push(AreaItem {
+                    part: Some(pi),
+                    face: Some(no),
+                    area: f.area,
+                });
         }
 
         // Clad gables, split by material where the engine knows the walls
@@ -633,11 +637,14 @@ pub fn from_geometry(project: &Project, geos: &[RoofGeometry]) -> Breakdown {
             crate::roof::add_material_area(&mut clad, crate::model::DEFAULT_MATERIAL, rest);
         }
         for &(m, a) in &clad {
-            materials.entry(m).or_default().push(AreaItem {
-                part: Some(pi),
-                face: None,
-                area: a,
-            });
+            materials
+                .entry(crate::roof::counted_material(m))
+                .or_default()
+                .push(AreaItem {
+                    part: Some(pi),
+                    face: None,
+                    area: a,
+                });
         }
 
         let part_area = geo.faces.iter().map(|f| f.area).sum::<f64>() + geo.clad_area;
