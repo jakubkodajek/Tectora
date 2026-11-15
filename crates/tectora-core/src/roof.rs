@@ -1679,6 +1679,8 @@ fn drop_short_junction_hips(geo: &mut RoofGeometry) {
         };
         let ends = [geo.lines[r].a, geo.lines[r].b];
         geo.lines.remove(k);
+        // The ridge's index moved down with the removed hip before it.
+        let r = if r > k { r - 1 } else { r };
         if same_level(hi[2], lo[2]) {
             // Both ridges are one level. DACAD takes the ridges in wall
             // order, and the last one decides where the hips and valleys
