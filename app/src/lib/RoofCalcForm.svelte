@@ -5,21 +5,27 @@
   // valley (DACAD.HLP: Neigungen / Traufenhöhen / Vorsprünge / Lage
   // berechnen) and the build-up correction (Um Aufbaudicke korrigieren).
   // "position" moves walls instead. The result is a patch per wall. The
-  // rules were measured in DACAD itself (roofcalc.test.ts).
+  // rules were measured in DACAD itself (tectora-core `edit/calc.rs` tests).
+  import { onDestroy } from "svelte";
+  import { api } from "./api";
   import { num } from "./format";
   import { t } from "./i18n.svelte";
+  import { latest } from "./latest";
+  import { notifyError } from "./notify.svelte";
   import { tabIds, tablist } from "./tabs";
   import { numeric } from "./numeric.svelte";
-  import { oppositeWall, spanBetween } from "./roundroof";
-  import { buildUp, combine, eaveBelowGable, hipPitches, hipPitchesFromEaves, inward, meeting, mergeByMoving, mergeOnto, moveWall, parallelEdit, parallelPatches, parallelRafter, parallelStart, roofPoints, sameWay, shiftFor, solve, triangle, trianglePatch, type BuildUpEave, type CalcTarget, type ParallelField } from "./roofcalc";
-  import type { CalcResult, EdgeDef, RoofPart } from "./types";
+  import { emptyProject } from "./types";
+  import type { BuildUpEave, CalcTarget, EdgeDef, HelperContext, HelperPreview, HelperRequest, ParallelField, Project, RoofPart } from "./types";
 
+  // Every figure comes from the core (`roof_helper_context`, `roof_helper_preview`);
+  // this form only holds what is typed, asks again after a pause and shows the
+  // answer. OK applies `request` through the core (`roof_helper_apply`).
   let {
-    part,
+    project,
+    partIndex,
     edge,
-    result,
-    patches = $bindable(null),
-  }: { part: RoofPart; edge: number; result: CalcResult | null; patches: Map<number, Partial<EdgeDef>> | null } = $props();
+    request = $bindable(null),
+  }: { project: Project; partIndex: number; edge: number; request: HelperRequest | null } = $props();
   const ids = tabIds("calc");
 
   type Tool = "triangle" | "parallel" | "point" | "merge" | "hip" | "buildup";
@@ -27,25 +33,45 @@
   let tool = $state<Tool>("triangle");
   let target = $state<Target>("pitch");
 
-  const es = $derived(part.edges);
+  const es = $derived(project.parts[partIndex].edges);
   const e = $derived(es[edge]);
-  const opp = $derived(oppositeWall(es, edge));
-  const span = $derived(opp !== null ? spanBetween(es, edge, opp) : 0);
+
+  /** A project of this part alone, which is all a helper reads (the point list needs the whole project). */
+  const only = (part: RoofPart): Project => {
+    const p = emptyProject("helper");
+    p.parts = [part];
+    return p;
+  };
+  const failed = (err: unknown) => notifyError(err, "calc");
+
+  // What the wall's surroundings allow: the facing wall and span, parallel walls, roof points.
+  let ctx = $state<HelperContext | null>(null);
+  const askCtx = latest(
+    (proj: Project, part: number, withPoints: boolean) => api.roofHelperContext(proj, part, edge, withPoints),
+    (c) => (ctx = c),
+    failed,
+  );
+  $effect(() => {
+    const withPoints = tool === "point";
+    // The point tool also lists the roof's corners: the whole project.
+    if (withPoints) askCtx.ask($state.snapshot(project) as Project, partIndex, true);
+    else askCtx.ask(only($state.snapshot(project.parts[partIndex]) as RoofPart), 0, false);
+  });
+  const opp = $derived(ctx?.opposite ?? null);
+  const span = $derived(ctx?.span ?? 0);
+  const current = $derived(ctx?.current ?? null);
+  const parBreaks = $derived(!!ctx?.breaks);
+  const mates = $derived(ctx?.mates ?? []);
 
   // Einfaches Dreieck: two of width, rafter and ridge height (absolute).
   let triWidth = $state<number | null>(null);
   let triRafter = $state<number | null>(null);
   let triRidge = $state<number | null>(null);
-  // DACAD's dialog opens with "Breite inkl. Traufenvorsprung" off.
+  // The dialog opens with "width incl. overhang" off.
   let triWithOv = $state(false);
-  const tri = $derived(
-    triangle(e, { width: triWidth ?? undefined, rafter: triRafter ?? undefined, ridge: triRidge ?? undefined }, triWithOv),
-  );
 
-  // 2 Parallele: the values typed in, applied in order as DACAD's dialog does.
-  const current = $derived(opp !== null ? meeting(e, es[opp], span) : null);
-  const parBreaks = $derived(opp !== null && !!(e.breaks?.length || es[opp].breaks?.length));
-  // DACAD's dialog opens with "Grundrissbreite inkl. Traufenvorsprung" on.
+  // 2 Parallele: the values typed in, applied in order.
+  // The dialog opens with "plan width incl. overhang" on.
   let parWithOv = $state(true);
   let parEdits = $state<[ParallelField, number][]>([]);
   $effect(() => {
@@ -54,33 +80,12 @@
     void parWithOv;
     parEdits = [];
   });
-  const parState = $derived.by(() => {
-    if (opp === null || !current || parBreaks) return null;
-    let st = parallelStart(e, es[opp], span, current);
-    for (const [f, v] of parEdits) {
-      const next = parallelEdit(st, f, v, target, parWithOv);
-      if (!next) return null;
-      st = next;
-    }
-    return st;
-  });
-  const parRefused = $derived.by(() => {
-    if (opp === null || !parState || target !== "eave") return false;
-    const [pa, pb] = parallelPatches(parState, "eave");
-    return eaveBelowGable(es, edge, pa.eave_height!) || eaveBelowGable(es, opp, pb.eave_height!);
-  });
-  const par = $derived.by(() => {
-    if (opp === null || !parState || !parEdits.length || parRefused) return null;
-    if (target === "position") return combine(moveWall(es, edge, parState.shiftA), moveWall(es, opp, parState.shiftB));
-    const [pa, pb] = parallelPatches(parState, target);
-    return new Map([[edge, pa], [opp, pb]]);
-  });
   const parSet = (f: ParallelField, v: number) => {
     parEdits = [...parEdits, [f, v]];
   };
 
   // Punkt im Raum: a computed roof point or one typed in.
-  const points = $derived(roofPoints(result));
+  const points = $derived(ctx?.roof_points ?? []);
   let pick = $state(0);
   let px = $state<number | null>(null);
   let py = $state<number | null>(null);
@@ -92,74 +97,82 @@
     const z = pz ?? q?.[2];
     return x != null && y != null && z != null ? { x, y, z } : null;
   });
-  const pt = $derived.by(() => {
-    if (!point) return null;
-    const d = inward(es, edge, point);
-    if (target === "position") {
-      const sh = shiftFor(e, d, point.z);
-      return sh === null ? null : moveWall(es, edge, sh);
-    }
-    const p = solve(e, d, point.z, target);
-    return p && new Map([[edge, p]]);
-  });
 
   // Flächen zusammenfassen: parallel walls take this wall's plane.
-  const mates = $derived(sameWay(es, edge).filter((k) => k !== edge));
   let chosen = $state<Set<number>>(new Set());
   $effect(() => {
     chosen = new Set(mates);
   });
-  const merged = $derived.by(() => {
-    if (target === "pitch") return null;
-    if (target !== "position") return mergeOnto(es, edge, [...chosen], target);
-    // Each wall moves until its eave (at its overhang) lies on this wall's plane.
-    return mergeByMoving(es, edge, [...chosen]);
-  });
 
   // Grat/Kehle: hip or valley length and both rafter lengths.
   let side = $state<"next" | "prev">("next");
-  const neighbour = $derived(side === "next" ? (edge + 1) % es.length : (edge - 1 + es.length) % es.length);
   let hipBy = $state<"rafters" | "eaves">("rafters");
   let hipLen = $state<number | null>(null);
   let raf1 = $state<number | null>(null);
   let raf2 = $state<number | null>(null);
-  const hip = $derived(
-    hipLen !== null && raf1 !== null && raf2 !== null
-      ? (hipBy === "rafters" ? hipPitches : hipPitchesFromEaves)(es, edge, neighbour, hipLen, raf1, raf2)
-      : null,
-  );
 
   // Um Aufbaudicke korrigieren.
   let thick = $state<number | null>(null);
   let eaveForm = $state<BuildUpEave>("normal");
-  const built = $derived(thick !== null ? buildUp(e, thick, eaveForm) : null);
 
-  $effect(() => {
-    let next: Map<number, Partial<EdgeDef>> | null = null;
-    if (tool === "triangle" && tri) next = new Map([[edge, trianglePatch(e, tri.pitch_deg)]]);
-    else if (tool === "parallel" && par) next = par;
-    else if (tool === "point" && pt) next = pt;
-    else if (tool === "merge" && merged && merged.size) next = merged;
-    else if (tool === "hip" && hip) next = hip;
-    else if (tool === "buildup" && built) next = new Map([[edge, built]]);
-    // Leave out fields that would not change.
-    if (next) {
-      const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
-      next = new Map(
-        [...next]
-          .map(([k, patch]) => [k, Object.fromEntries(Object.entries(patch).filter(([f, v]) => !same(es[k][f as keyof EdgeDef], v)))] as const)
-          .filter(([, patch]) => Object.keys(patch).length > 0),
-      );
+  /** The request the typed values make, or null while they are not complete. */
+  const req = $derived.by((): HelperRequest | null => {
+    if (tool === "triangle") {
+      if (triWidth === null && triRafter === null && triRidge === null) return null;
+      return { tool: "triangle", width: triWidth, rafter: triRafter, ridge: triRidge, width_includes_overhang: triWithOv };
     }
-    unchanged = next !== null && next.size === 0;
-    patches = next && next.size ? next : null;
+    if (tool === "parallel") {
+      if (opp === null || !current || parBreaks) return null;
+      return { tool: "parallel", target, steps: parEdits.map(([field, value]) => ({ field, value })), width_includes_overhang: parWithOv };
+    }
+    if (tool === "point") return point ? { tool: "point", target, point: [point.x, point.y, point.z] } : null;
+    if (tool === "merge") return target === "pitch" ? null : { tool: "merge", target, walls: [...chosen] };
+    if (tool === "hip") {
+      if (hipLen === null || raf1 === null || raf2 === null) return null;
+      return { tool: "hip", neighbour: side, by: hipBy, hip: hipLen, first: raf1, second: raf2 };
+    }
+    return thick === null ? null : { tool: "build_up", thickness: thick, eave: eaveForm };
   });
 
-  /** The inputs give the current state: nothing to apply. */
-  let unchanged = $state(false);
+  // The core's answer to a request; null: no solution for the values.
+  let answered = $state<{ req: HelperRequest; res: HelperPreview | null } | null>(null);
+  const askPreview = latest(
+    (r: HelperRequest, part: RoofPart) => api.roofHelperPreview(only(part), 0, edge, r).then((res) => ({ req: r, res })),
+    (a) => (answered = a),
+    (err) => {
+      answered = null;
+      failed(err);
+    },
+  );
+  onDestroy(() => {
+    askCtx.stop();
+    askPreview.stop();
+  });
+  $effect(() => {
+    if (!req) {
+      askPreview.stop();
+      answered = null;
+      return;
+    }
+    askPreview.ask(req, $state.snapshot(project.parts[partIndex]) as RoofPart);
+  });
+  /** The answer, once it is for the values on screen. */
+  const settled = $derived(answered && req && JSON.stringify(answered.req) === JSON.stringify(req) ? answered : null);
+  const res = $derived(answered?.res ?? null);
+  /** Nothing is applied before a value was typed (the parallel dialog starts from the current state). */
+  const typed = $derived(!(tool === "parallel" && !parEdits.length));
+  const patches = $derived(res && typed && !res.refused ? res.patches : null);
+  const unchanged = $derived(!!res && typed && res.unchanged);
+  const parRefused = $derived(!!res?.refused);
+  $effect(() => {
+    request = settled?.res && typed && !settled.res.refused && settled.res.patches.size ? settled.req : null;
+  });
+  /** The values on screen have no answer yet. */
+  const pending = $derived(!!req && !settled);
   /** Whether the inputs are complete enough to say there is no result. */
   const touched = $derived(
-    (tool === "point" || (tool === "merge" && mates.length)) ||
+    (tool === "point") ||
+      (tool === "merge" && mates.length > 0) ||
       (tool === "parallel" && parEdits.length > 0) ||
       (tool === "buildup" && thick !== null) ||
       (tool === "triangle" && (triWidth !== null || triRafter !== null || triRidge !== null)) ||
@@ -219,15 +232,15 @@
     {#if parBreaks}
       <p class="err">{t("calc.noBreaks")}</p>
     {:else}
-    {@const st = parState}
+    {@const st = res?.state ?? null}
     {@const ovA = parWithOv && st ? st.a.overhang : 0}
     {@const ovB = parWithOv && st ? st.b.overhang : 0}
     <div class="grid">
-      <label><span>{t("calc.widthA")}</span><div class="unit"><input type="text" use:numeric={{ value: st ? +(st.wA + ovA).toFixed(3) : null, step: 0.05, onchange: (v) => parSet("widthA", v) }} /><em>m</em></div></label>
-      <label><span>{t("calc.widthB")}</span><div class="unit"><input type="text" use:numeric={{ value: st ? +(st.wB + ovB).toFixed(3) : null, step: 0.05, onchange: (v) => parSet("widthB", v) }} /><em>m</em></div></label>
-      <label><span>{t("calc.ridge")}</span><div class="unit"><input type="text" use:numeric={{ value: st ? +st.H.toFixed(3) : null, step: 0.05, onchange: (v) => parSet("ridge", v) }} /><em>m</em></div></label>
-      <label><span>{t("calc.rafterA")}</span><div class="unit"><input type="text" use:numeric={{ value: st ? +parallelRafter(st, "a").toFixed(3) : null, step: 0.05, onchange: (v) => parSet("rafterA", v) }} /><em>m</em></div></label>
-      <label><span>{t("calc.rafterB")}</span><div class="unit"><input type="text" use:numeric={{ value: st ? +parallelRafter(st, "b").toFixed(3) : null, step: 0.05, onchange: (v) => parSet("rafterB", v) }} /><em>m</em></div></label>
+      <label><span>{t("calc.widthA")}</span><div class="unit"><input type="text" use:numeric={{ value: st ? +(st.w_a + ovA).toFixed(3) : null, step: 0.05, onchange: (v) => parSet("width_a", v) }} /><em>m</em></div></label>
+      <label><span>{t("calc.widthB")}</span><div class="unit"><input type="text" use:numeric={{ value: st ? +(st.w_b + ovB).toFixed(3) : null, step: 0.05, onchange: (v) => parSet("width_b", v) }} /><em>m</em></div></label>
+      <label><span>{t("calc.ridge")}</span><div class="unit"><input type="text" use:numeric={{ value: st ? +st.h.toFixed(3) : null, step: 0.05, onchange: (v) => parSet("ridge", v) }} /><em>m</em></div></label>
+      <label><span>{t("calc.rafterA")}</span><div class="unit"><input type="text" use:numeric={{ value: st && res?.rafters ? +res.rafters[0].toFixed(3) : null, step: 0.05, onchange: (v) => parSet("rafter_a", v) }} /><em>m</em></div></label>
+      <label><span>{t("calc.rafterB")}</span><div class="unit"><input type="text" use:numeric={{ value: st && res?.rafters ? +res.rafters[1].toFixed(3) : null, step: 0.05, onchange: (v) => parSet("rafter_b", v) }} /><em>m</em></div></label>
       <label><span>{t("calc.top")}</span><div class="unit"><input type="text" use:numeric={{ value: st ? +st.top.toFixed(3) : null, step: 0.05, min: 0, onchange: (v) => parSet("top", v) }} /><em>m</em></div></label>
       <label class="check wide"><input type="checkbox" bind:checked={parWithOv} />{t("calc.withOverhang")}</label>
     </div>
@@ -294,7 +307,7 @@
     </div>
   {/if}
 
-  {#if (patches && patches.size) || touched}
+  {#if (patches && patches.size) || (touched && !pending)}
   <div class="result">
     {#if patches && patches.size}
       {#each [...patches] as [k, patch]}

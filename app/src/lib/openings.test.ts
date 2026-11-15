@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { chimneyFromRect, openingBox, reshapeOpening } from "./openings";
+import { openingBox } from "./openings";
+
+// The editor makes chimneys through the core (`chimney_from_rect`); the same
+// rounding here builds the input. The core's own tests of `reshape_opening`
+// and `chimney_from_rect` (edit/openings.rs) carry the former reshapeOpening
+// cases.
+function chimneyFromRect(r: { x: number; y: number; width: number; depth: number; rotation: number; height: number }) {
+  const a = (r.rotation * Math.PI) / 180;
+  const u = { x: Math.cos(a), y: Math.sin(a) };
+  const p = (s: number, t: number) => ({ x: +(r.x + u.x * s - u.y * t).toFixed(3), y: +(r.y + u.y * s + u.x * t).toFixed(3) });
+  return { corners: [p(0, 0), p(r.width, 0), p(r.width, r.depth), p(0, r.depth)], height: r.height };
+}
 
 describe("openingBox", () => {
   it("reads a chimney placed along a wall at any angle", () => {
@@ -18,35 +29,5 @@ describe("openingBox", () => {
 
   it("gives no box for a polygon without area", () => {
     expect(openingBox([{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 }])).toBeNull();
-  });
-});
-
-describe("reshapeOpening", () => {
-  it("resizes a clockwise (mirrored) rectangle and keeps its corner order", () => {
-    const cw = [{ x: 0, y: 0 }, { x: 0, y: 0.5 }, { x: 0.8, y: 0.5 }, { x: 0.8, y: 0 }];
-    const b = openingBox(cw)!;
-    expect([b.width, b.depth]).toEqual([0.5, 0.8]);
-    expect(reshapeOpening(cw, { ...b, width: 1 })).toEqual([{ x: 0, y: 0 }, { x: 0, y: 1 }, { x: 0.8, y: 1 }, { x: 0.8, y: 0 }]);
-  });
-
-  it("stretches any polygon in its box, as the core does", () => {
-    const hex = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1.5, y: 0.5 }, { x: 1, y: 1 }, { x: 0, y: 1 }, { x: -0.5, y: 0.5 }];
-    const b = openingBox(hex)!;
-    expect(b).toEqual({ x: -0.5, y: 0, width: 2, depth: 1, rotation: 0 });
-    expect(reshapeOpening(hex, { ...b, depth: 2, x: 0.5 })).toEqual([
-      { x: 1, y: 0 }, { x: 2, y: 0 }, { x: 2.5, y: 1 }, { x: 2, y: 2 }, { x: 1, y: 2 }, { x: 0.5, y: 1 },
-    ]);
-  });
-
-  it("keeps the angle when only the width changes and refuses bad sizes", () => {
-    const c = chimneyFromRect({ x: 4, y: 1, width: 0.6, depth: 0.6, rotation: 20, height: 6 }).corners;
-    const b = openingBox(c)!;
-    expect(reshapeOpening(c, b)).toEqual(c);
-    const wide = reshapeOpening(c, { ...b, width: 1.2 })!;
-    const nb = openingBox(wide)!;
-    expect(Math.abs(nb.rotation - b.rotation)).toBeLessThan(0.1);
-    expect(Math.abs(nb.width - 1.2)).toBeLessThan(2e-3);
-    expect(wide[0]).toEqual(c[0]);
-    for (const w of [0, -1, NaN, 1e6]) expect(reshapeOpening(c, { ...b, width: w })).toBeNull();
   });
 });

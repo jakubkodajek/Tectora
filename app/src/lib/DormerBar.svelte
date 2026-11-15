@@ -9,6 +9,7 @@
   import { MAX_ROUND_SEGMENTS } from "./roundroof";
   import { formatNumber, numeric } from "./numeric.svelte";
   import { hscroll } from "./hscroll";
+  import { pageStep, stepIndex } from "./itemstep";
   import { prefs, savePrefs } from "./settings.svelte";
   import PlaceFields from "./PlaceFields.svelte";
   import { placementOf } from "./items";
@@ -77,21 +78,20 @@
   const moreTitle = $derived(moreSet.length ? `${t("dormer.moreHint")}\n${t("bar.moreSet", { list: moreSet.join(", ") })}` : t("dormer.moreHint"));
 
   function step(d: number) {
-    const n = project.dormers.length;
-    if (n === 0) return;
-    index = ((index ?? -1) + d + n) % n;
+    const next = stepIndex(index, project.dormers.length, d);
+    if (next !== null) index = next;
   }
 </script>
 
-<div class="bar" role="toolbar" aria-label={t("dormer.title")}>
+<div class="bar" role="toolbar" aria-label={t("dormer.title")} use:pageStep={step}>
   <div class="row" use:hscroll>
     <div class="nav">
-      <button class="icon-btn" onclick={() => step(-1)} title={t("dormer.prev")} aria-label={t("dormer.prev")}><Icon name="left" /></button>
+      <button class="icon-btn" onclick={() => step(-1)} title="{t('dormer.prev')} (PageUp)" aria-label={t("dormer.prev")}><Icon name="left" /></button>
       <div class="which">
         <strong>{t("dormer.n", { n: (index ?? 0) + 1 })}</strong>
         <span>{t("def.of", { n: project.dormers.length })}</span>
       </div>
-      <button class="icon-btn" onclick={() => step(1)} title={t("dormer.next")} aria-label={t("dormer.next")}><Icon name="right" /></button>
+      <button class="icon-btn" onclick={() => step(1)} title="{t('dormer.next')} (PageDown)" aria-label={t("dormer.next")}><Icon name="right" /></button>
     </div>
 
     {#if params && kind}

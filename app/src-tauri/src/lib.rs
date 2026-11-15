@@ -548,6 +548,92 @@ fn dormer_host(project: Project, index: usize) -> CmdResult<Value> {
     guard(|| Ok(commands::dormer_host(&project, index)?))
 }
 
+/// What the calculation dialog needs to know about wall `edge` of part `part`
+/// (`tectora_core::commands::roof_helper_context`): the facing wall, span,
+/// parallel walls and, when asked, the roof's corner points.
+#[tauri::command(async)]
+fn roof_helper_context(
+    project: Project,
+    part: usize,
+    edge: usize,
+    with_points: bool,
+) -> CmdResult<Value> {
+    guard(|| {
+        Ok(commands::roof_helper_context(
+            &project,
+            part,
+            edge,
+            with_points,
+        )?)
+    })
+}
+
+/// The calculation dialog's live figures for the values typed so far
+/// (`tectora_core::commands::roof_helper_preview`, the MCP tool roof_helper
+/// without `apply`). Nothing is changed; no solution is `refused`.
+#[tauri::command(async)]
+fn roof_helper_preview(
+    project: Project,
+    part: usize,
+    edge: usize,
+    request: tectora_core::edit::helper::HelperRequest,
+) -> CmdResult<Value> {
+    guard(|| {
+        Ok(commands::roof_helper_preview(
+            &project, part, edge, &request,
+        )?)
+    })
+}
+
+/// The calculation dialog's OK: the project with the helper's values applied
+/// (`tectora_core::commands::roof_helper_apply`, the MCP tool roof_helper
+/// with `apply`).
+#[tauri::command(async)]
+fn roof_helper_apply(
+    project: Project,
+    part: usize,
+    edge: usize,
+    request: tectora_core::edit::helper::HelperRequest,
+) -> CmdResult<Project> {
+    guard(|| Ok(commands::roof_helper_apply(&project, part, edge, &request)?))
+}
+
+/// The round-roof dialog's arc for the typed values and the values it gives
+/// both walls (`tectora_core::commands::round_arc`); out of range is `refused`.
+#[tauri::command]
+fn round_arc(input: tectora_core::edit::round::ArcInput) -> CmdResult<Value> {
+    guard(|| Ok(commands::round_arc(&input)?))
+}
+
+/// Shape operations of the object bar and the plan tools: reshape a chimney or
+/// opening to a new box, a chimney from a rectangle, the area of a hand-drawn
+/// face (`tectora_core::commands::item_geometry`, the operations behind the
+/// MCP tools `update_opening` and `set_openings`).
+#[tauri::command]
+fn item_geometry(request: commands::GeometryRequest) -> CmdResult<Value> {
+    guard(|| Ok(commands::item_geometry(&request)?))
+}
+
+/// The transform dialog's OK and "Duplicate part": part `part` moved,
+/// rotated, mirrored or copied with what lies on it
+/// (`tectora_core::commands::transform_part`, the MCP tool transform_part).
+/// Returns `{project, parts}`.
+#[tauri::command(async)]
+fn transform_part(
+    project: Project,
+    part: usize,
+    map: tectora_core::edit::transform::PlanMap,
+    copies: u32,
+) -> CmdResult<Value> {
+    guard(|| Ok(commands::transform_part(&project, part, map, copies)?))
+}
+
+/// The transform dialog's wall shift (`tectora_core::commands::offset_wall`).
+#[tauri::command(async)]
+fn offset_wall(project: Project, part: usize, edge: usize, dist: f64) -> CmdResult<Project> {
+    guard(|| Ok(commands::offset_wall(&project, part, edge, dist)?))
+}
+
 /// The editor's "Make it a building": hand-drawn face `index` replaced by a
 /// part of the same outline (`tectora_core::edit::face_to_part`, the MCP
 /// tool's operation).
@@ -951,6 +1037,13 @@ pub fn run() {
             calc_breakdown,
             check_windows,
             dormer_host,
+            roof_helper_context,
+            roof_helper_preview,
+            roof_helper_apply,
+            round_arc,
+            item_geometry,
+            transform_part,
+            offset_wall,
             face_to_part,
             set_part_height,
             place_item,

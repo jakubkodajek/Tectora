@@ -7,7 +7,9 @@
   import { radiogroup } from "./tabs";
   import type { RoofPart } from "./types";
   import { isMarker } from "./types";
-  import { mirror, partCentre, rotation, translation, type TransformMode, type TransformOp } from "./transform";
+  import { api } from "./api";
+  import { notifyError } from "./notify.svelte";
+  import type { TransformMode, TransformOp } from "./transform";
   import { numeric } from "./numeric.svelte";
   import { copiesBounds } from "./limits";
 
@@ -18,13 +20,24 @@
     op = $bindable(null),
   }: { part: RoofPart; edge: number | null; mode: TransformMode; op: TransformOp | null } = $props();
 
-  // The pivot starts at the part's centre when the dialog opens.
-  const c = untrack(() => partCentre(part));
+  // The pivot starts at the part's centre when the dialog opens (the core
+  // gives it; a pivot typed meanwhile is kept).
   let dx = $state(0);
   let dy = $state(0);
   let angle = $state(90);
-  let cx = $state(c.x);
-  let cy = $state(c.y);
+  let cx = $state(0);
+  let cy = $state(0);
+  let pivotTyped = false;
+  untrack(() => {
+    api.partCentre($state.snapshot(part) as RoofPart).then(
+      (c) => {
+        if (pivotTyped) return;
+        cx = c.x;
+        cy = c.y;
+      },
+      (e) => notifyError(e, "calc"),
+    );
+  });
   let axis = $state(90);
   let copies = $state(0);
   let dist = $state(0.5);
@@ -43,9 +56,9 @@
   $effect(() => {
     const n = Math.max(copyLimit.min, Math.min(copyLimit.max, Math.round(copies || 0)));
     const fin = (...v: number[]) => v.every((x) => Number.isFinite(x));
-    if (mode === "move") op = fin(dx, dy) && (dx || dy) ? { kind: "map", map: translation(dx, dy), copies: n } : null;
-    else if (mode === "rotate") op = fin(angle, cx, cy) && angle % 360 ? { kind: "map", map: rotation({ x: cx, y: cy }, angle), copies: n } : null;
-    else if (mode === "mirror") op = fin(axis, cx, cy) ? { kind: "map", map: mirror({ x: cx, y: cy }, axis), copies: n } : null;
+    if (mode === "move") op = fin(dx, dy) && (dx || dy) ? { kind: "map", map: { kind: "move", dx, dy }, copies: n } : null;
+    else if (mode === "rotate") op = fin(angle, cx, cy) && angle % 360 ? { kind: "map", map: { kind: "rotate", centre: { x: cx, y: cy }, deg: angle }, copies: n } : null;
+    else if (mode === "mirror") op = fin(axis, cx, cy) ? { kind: "map", map: { kind: "mirror", centre: { x: cx, y: cy }, deg: axis }, copies: n } : null;
     else op = wallOk && fin(dist) && dist ? { kind: "wall", edge: edge!, dist } : null;
   });
 </script>
@@ -67,8 +80,8 @@
       {:else}
         <label><span>{t("xf.axis")}</span><div class="unit"><input type="text" use:numeric={{ value: axis, step: 1, live: true, onchange: (v) => (axis = v) }} /><em>°</em></div></label>
       {/if}
-      <label><span>{t("xf.cx")}</span><div class="unit"><input type="text" use:numeric={{ value: cx, step: 0.1, live: true, onchange: (v) => (cx = v) }} /><em>m</em></div></label>
-      <label><span>{t("xf.cy")}</span><div class="unit"><input type="text" use:numeric={{ value: cy, step: 0.1, live: true, onchange: (v) => (cy = v) }} /><em>m</em></div></label>
+      <label><span>{t("xf.cx")}</span><div class="unit"><input type="text" use:numeric={{ value: cx, step: 0.1, live: true, onchange: (v) => ((pivotTyped = true), (cx = v)) }} /><em>m</em></div></label>
+      <label><span>{t("xf.cy")}</span><div class="unit"><input type="text" use:numeric={{ value: cy, step: 0.1, live: true, onchange: (v) => ((pivotTyped = true), (cy = v)) }} /><em>m</em></div></label>
     {:else}
       <label><span>{t("xf.dist")}</span><div class="unit"><input type="text" use:numeric={{ value: dist, step: 0.05, live: true, onchange: (v) => (dist = v) }} /><em>m</em></div></label>
     {/if}

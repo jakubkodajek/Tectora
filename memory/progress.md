@@ -285,3 +285,29 @@ sessions that use it know where things stand.
   The calculation still has to leave out a zero-area chimney from an old
   file (`cleaned()` in openings.rs, core thread). ERR-001 (ordinary edits
   ending in a roof error) is with the core thread.
+
+## 2026-11-15 - ARCH-004: the editor calls the core (branch claude/project-thread-14l1th)
+- Moved to core commands (`commands.rs`, Tauri, `ui_bridge.rs`, `api.ts`): calculation helpers (`roof_helper_context/preview/apply`, `edit::helper`, also behind MCP `roof_helper`), round-roof arc (`round_arc`), opening reshape / chimney from rectangle / face area / regular polygon / part centre / merge of a dropped corner / drawn footprint without repeats (`item_geometry`), part transform and wall shift (`transform_part`, `offset_wall`). New `edit/helper.rs`, `edit/corners.rs`; `lib/latest.ts` (debounced, newest answer wins) for live figures.
+- Deleted TypeScript: `roofcalc.ts` (+ test), `oppositeWall`, `spanBetween`, `reshapeOpening`, `chimneyFromRect`, `faceArea`, `offsetWall`, `regularPolygon`, `partCentre`, `mergeDroppedCorner`, `withoutRepeats`; 21 `editparity` ops left with their copies (fixture and `edit_parity.rs` unchanged).
+- Still in TypeScript, on purpose (drag-time presentation) or not yet moved: see ADR-0005 (Proposed). Not yet moved: `dormers.ts` dialog logic with `roundroof.ts`'s arc, and `buildingHeight` / `freezeHeight` in the wall bar's edits.
+
+## 2026-11-15 - the rest of the 2026-11-14 review findings (branch claude/project-thread-14l1th, PR #48)
+- Done: an AI client reads a file outside the jobs folder and the drawings
+  inbox only after the user allowed that file in the app (`file_request`,
+  `allowed_files`; ARCH-002, Jakub's choice). Format version 3 with kept
+  unknown top-level keys and a schema-hash guard test (ARCH-003, ADR-0004
+  Proposed). One calculation per request (ARCH-006). svg / xls / doc shown
+  in their folder (ARCH-005). Editor: eave line, typed angle, lengths while
+  drawing, labels of several buildings, keyboard stepping, placing bar.
+  Results and export: translated table of the copied list, line names,
+  pitch over 90° refused at input, AI review shows the change beside each
+  wall. Tests: E2E run slots, MCP parity requires a change, codes tied to
+  UI texts, round roof closed forms.
+- State: `make check` exit 0, `make sweeps` pass, Playwright 296 passed.
+- Open for Jakub: accept ADR-0004 and ADR-0005; remove or rewrite the old
+  ignored property `face_areas_are_not_negative` (replaced by
+  `a_negative_face_area_always_carries_cut_exceeds_face`); whether the
+  round-roof reference runs become a committed fixture (now read through
+  `DACAD_ROUND`). Not done: `dormers.ts` still copies `edit::dormers`
+  (ADR-0005 inventory); unknown keys below the top level are not kept;
+  Tauri-only behaviour (watcher, quit guard, updater) has no automated test.

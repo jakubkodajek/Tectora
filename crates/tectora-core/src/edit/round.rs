@@ -5,7 +5,8 @@
 //! RD1-RD4: the default arc spans 45° on each side, a side gets
 //! ceil(arc / 11.25°) segments (15° steps when such a segment's chord would
 //! be under 0.4 m, Rundgaube runs RGa-RGs), and segment k has the pitch
-//! (k + ½)·arc / n. Port of the editor's `roundroof.ts`.
+//! (k + ½)·arc / n. The round-roof dialog calls it through `commands::round_arc`;
+//! `roundroof.ts` keeps a copy only for the round dormer.
 
 // `!(x > 0.0)` and the like are deliberate: they also refuse NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]

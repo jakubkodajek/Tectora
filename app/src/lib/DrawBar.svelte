@@ -170,9 +170,9 @@
     <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.overhang, step: 0.05, min: OVERHANG.min, max: OVERHANG.max, onchange: (v) => preset(v, "overhang") }} /><em>m</em></div></label>
   </div>
   <div class="actions">
-    <button class="btn sm" disabled={count === 0} onclick={onundo}><Icon name="undo" size={15} />{t("draw.undo")}</button>
+    <button class="btn sm undo" disabled={count === 0} onclick={onundo} aria-label={t("draw.undo")} title={t("draw.undo")}><Icon name="undo" size={15} /><span class="txt">{t("draw.undo")}</span></button>
     <button class="btn sm" onclick={() => oncancel(false)}>{t("draw.cancel")}</button>
-    <button class="btn sm primary" data-testid="draw-close" disabled={count < 3} onclick={onclose} title={t("draw.closeHint")}><Icon name="check" size={15} />{t("draw.close")}</button>
+    <button class="btn sm primary" data-testid="draw-close" disabled={count < 3} onclick={onclose} title={t("draw.closeHint")}><Icon name="check" size={15} /><span class="txt">{t("draw.close")}</span></button>
   </div>
 </div>
 
@@ -294,5 +294,27 @@
     padding: 0 12px;
     font-size: 13px;
     white-space: nowrap;
+  }
+  .actions .btn.primary {
+    min-width: 0;
+  }
+  .btn .txt {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* A narrow window: "Remove last point" is its icon (its name stays the
+     button's label and tooltip), so the German / Slovak finish button fits
+     (sweep 2026-11-15). */
+  @media (max-width: 760px) {
+    .undo .txt {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+    .undo {
+      padding: 0 9px;
+    }
   }
 </style>

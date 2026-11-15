@@ -13,8 +13,7 @@
   import { presets } from "./settings.svelte";
   import type { RoofPart, StandardKind } from "./types";
   import { STANDARD_KINDS, emptyProject } from "./types";
-  import { regularPolygon } from "./transform";
-
+  
   let { part = $bindable(null) }: { part: RoofPart | null } = $props();
 
   /** Longest side the dialog takes, m [no source: far beyond any building, inside the core's ±100 km]. */
@@ -46,8 +45,8 @@
   };
 
   /** A regular polygon of eaves with the first wall along the x axis, corners at x, y >= 0. */
-  function polygonPart(): RoofPart {
-    const pts = regularPolygon({ x: 0, y: 0 }, sides, length);
+  async function polygonPart(): Promise<RoofPart> {
+    const pts = await api.regularPolygon({ x: 0, y: 0 }, sides, length);
     const [mx, my] = [Math.min(...pts.map((p) => p.x)), Math.min(...pts.map((p) => p.y))];
     return {
       name: "",
@@ -98,7 +97,7 @@
     // Newer values, or the dialog closed: this answer is not wanted any more.
     let current = true;
     loading = true;
-    (poly ? Promise.resolve(polygonPart()) : api.standardPart(params)).then(async (p) => {
+    (poly ? polygonPart() : api.standardPart(params)).then(async (p) => {
       if (!current) return;
       const project = emptyProject("preview");
       project.parts = [p];

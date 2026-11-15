@@ -118,6 +118,44 @@ fn calc_command(cmd: &str, a: &Value) -> Option<Result<Value, Value>> {
                 .map(|s| to_json(s).unwrap_or(Value::Null))
         }),
         "check_windows" => project().and_then(|p| commands::check_windows(&p).map_err(err)),
+        "roof_helper_context" => project().and_then(|p| {
+            let bad = |Fail(e): Fail| json!({ "code": "invalid_input", "detail": e });
+            let (part, edge) = (arg(a, "part").map_err(bad)?, arg(a, "edge").map_err(bad)?);
+            let with_points = arg::<bool>(a, "withPoints").map_err(bad)?;
+            commands::roof_helper_context(&p, part, edge, with_points).map_err(err)
+        }),
+        "roof_helper_preview" => project().and_then(|p| {
+            let bad = |Fail(e): Fail| json!({ "code": "invalid_input", "detail": e });
+            let (part, edge) = (arg(a, "part").map_err(bad)?, arg(a, "edge").map_err(bad)?);
+            let req = arg(a, "request").map_err(bad)?;
+            commands::roof_helper_preview(&p, part, edge, &req).map_err(err)
+        }),
+        "roof_helper_apply" => project().and_then(|p| {
+            let bad = |Fail(e): Fail| json!({ "code": "invalid_input", "detail": e });
+            let (part, edge) = (arg(a, "part").map_err(bad)?, arg(a, "edge").map_err(bad)?);
+            let req = arg(a, "request").map_err(bad)?;
+            commands::roof_helper_apply(&p, part, edge, &req)
+                .map_err(err)
+                .map(|p| to_json(p).unwrap_or(Value::Null))
+        }),
+        "round_arc" => arg::<tectora_core::edit::round::ArcInput>(a, "input")
+            .map_err(|Fail(e)| json!({ "code": "invalid_input", "detail": e }))
+            .and_then(|i| commands::round_arc(&i).map_err(err)),
+        "transform_part" => project().and_then(|p| {
+            let bad = |Fail(e): Fail| json!({ "code": "invalid_input", "detail": e });
+            let part = arg(a, "part").map_err(bad)?;
+            let map = arg(a, "map").map_err(bad)?;
+            let copies = arg(a, "copies").map_err(bad)?;
+            commands::transform_part(&p, part, map, copies).map_err(err)
+        }),
+        "offset_wall" => project().and_then(|p| {
+            let bad = |Fail(e): Fail| json!({ "code": "invalid_input", "detail": e });
+            let (part, edge) = (arg(a, "part").map_err(bad)?, arg(a, "edge").map_err(bad)?);
+            let dist = arg(a, "dist").map_err(bad)?;
+            commands::offset_wall(&p, part, edge, dist)
+                .map_err(err)
+                .map(|p| to_json(p).unwrap_or(Value::Null))
+        }),
         "dormer_host" => project().and_then(|p| {
             let index = arg::<usize>(a, "index")
                 .map_err(|Fail(e)| json!({ "code": "invalid_input", "detail": e }))?;
@@ -375,6 +413,11 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             let mut project = examples::find("gable").expect("built-in example").project();
             project.name = arg(a, "name")?;
             to_json(store.save(None, &project)?)
+        }
+        "item_geometry" => {
+            let request: tectora_core::commands::GeometryRequest = arg(a, "request")?;
+            tectora_core::commands::item_geometry(&request)
+                .map_err(|e| Fail(to_json(e).unwrap_or(Value::Null)))
         }
         "face_to_part" => {
             let mut project = arg::<Project>(a, "project")?;

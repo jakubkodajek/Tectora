@@ -3,8 +3,9 @@
 //! they solve a wall's plane for its pitch, eave height, overhang or
 //! position from given measures. A wall's plane rises from its eave line,
 //! which lies at the overhang line: z = eave + tan(pitch) · (inward
-//! distance from the wall + overhang). Port of the editor's `roofcalc.ts`;
-//! the rules were measured in DACAD (cases named in the tests).
+//! distance from the wall + overhang). The editor's calculation dialog and the
+//! MCP tool call these through `edit::helper` (its former TypeScript copy
+//! `roofcalc.ts` is gone); the rules were measured in DACAD (cases in the tests).
 
 // `!(x > 0.0)` and the like are deliberate: they also refuse NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]

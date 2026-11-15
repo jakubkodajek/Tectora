@@ -1,8 +1,9 @@
 //! Editing operations of the roof editor, shared by the desktop app, the
 //! MCP server and the CLI: dormer kinds, moving / rotating / mirroring /
-//! copying parts, the round-roof arc and the calculation helpers. Each one
-//! is a port of the editor's TypeScript module named in its file, so an AI
-//! agent gets exactly what the user gets from the same dialog.
+//! copying parts, the round-roof arc and the calculation helpers. The editor
+//! calls them (a few are still ports of a TypeScript module named in their
+//! file, ADR-0005), so an AI agent gets exactly what the user gets from the
+//! same dialog.
 //!
 //! The helpers return [`Patches`]: new values for some fields of some walls
 //! of one part, applied with [`apply_patches`].
@@ -15,8 +16,10 @@ use crate::geom::Point2;
 use crate::model::{EdgeDef, HalfHip, PitchBreak, Project};
 
 pub mod calc;
+pub mod corners;
 pub mod dormers;
 pub mod height;
+pub mod helper;
 pub mod openings;
 pub mod position;
 pub mod probe;

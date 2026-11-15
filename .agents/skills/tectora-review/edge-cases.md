@@ -262,3 +262,34 @@ orbits, not only from above.
   (polygon offset) and their top edges never show through it.
 - Dormers one behind the other share cheek lines: each face belongs to the
   dormer whose front wall it touches (`dormerFaces`).
+
+## 13. Labels of several buildings (@ux, @ui)
+
+Reviewers: ux, ui. Guards: vitest `planlabels.test.ts` ("labels of several
+buildings keep off roof lines and walls", "chooseLabels (UX-018)",
+"wallNumber"), `app/e2e/planflow.e2e.ts` ("two buildings side by side",
+"wall lengths keep off the ridge and face labels off the walls"),
+`app/e2e/joined.e2e.ts` (UX-012). Put a second building 0.3 m beside the
+first, touching it and drawn into it, at 1360x860 and 600x420.
+
+- Wall numbers carry the building ("2.3") once there are several.
+- No wall length sits on another building; the length of a wall facing the
+  other building moves inside, and off the ridge or a hip when a spot along
+  the wall is free (only a wall with no free spot keeps its middle).
+- No face label overlaps a wall length or crosses a wall; a rotated label
+  on a narrow face falls back to the pitch alone.
+- In an AI review the change beside a wall ("40° → 35°") stays inside the
+  plan and clear of the other labels.
+
+## 14. Lengths while drawing (@ux, @ui)
+
+Reviewers: ux, ui. Guards: `app/e2e/planflow.e2e.ts` ("walls drawn so far
+show their lengths while drawing", "a wall by length and typed angle").
+
+- Every wall drawn so far shows its length (`draft-wall-dim`) and the wall
+  under the pointer its running length, in the UI language's decimal format.
+- A length typed in the draw bar, with an arrow key or an angle (absolute or
+  from the previous wall), gives a wall of exactly that length; the label
+  shows it.
+- The labels stay readable in German and Slovak at 600x420 (the draw bar's
+  angle field and the PlaceBar do not clip).

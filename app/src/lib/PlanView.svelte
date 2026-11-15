@@ -13,7 +13,7 @@
   import { faceTags } from "./facelabels";
   import { hostHeightAt, isDormerFace } from "./dormers";
   import { dormerWallLines, onWallLine, planeOf } from "./scene3d";
-  import { chooseLabels, insidePolygon, rotatedBox, underHigherRoof, wallNumber } from "./planlabels";
+  import { chooseLabels, insidePolygon, rotatedBox, underHigherRoof, wallNumber, type Seg } from "./planlabels";
   import { draftWalls } from "./drawstep";
   import { coveredPieces } from "./planjoin";
   import { numberLocale } from "./i18n.svelte";
@@ -28,6 +28,7 @@
     highlight = new Set<string>(),
     highlightItems = new Set<string>(),
     ghost = null,
+    wallNotes = new Map<string, string>(),
     mark = null,
     faceLabels = [],
     drawing = null,
@@ -58,6 +59,8 @@
     highlightItems?: Set<string>;
     /** The state before the pending AI changes, drawn dashed. */
     ghost?: Ghost | null;
+    /** "part:edge" -> what the AI changed on that wall ("40° → 35°"), written beside it (UX-017). */
+    wallNotes?: Map<string, string>;
     /** A face or line the calculation breakdown points at. */
     mark?: PlanMark;
     /** Face numbers of the calculation breakdown. */
@@ -544,8 +547,15 @@
   /** Screen position of a wall's dimension label: beside the wall, on the
    * outside of the part (`inside`: on the inside, used when the outside is
    * taken by a neighbouring building or another label, UX-018), so the wall
-   * line never runs through the text. */
-  function dimPos(part: number, i: number, inside = false) {
+   * line never runs through the text. `t`: where along the wall (0.5 the
+   * middle; off the middle when a roof line is there). */
+  function dimPos(part: number, i: number, inside = false, t = 0.5) {
+    const d = dimText(part, i);
+    return besideWall(part, i, inside, t, `${d.no}  ${d.len}`.length * 3.3);
+  }
+
+  /** A label `halfW` px half wide beside wall `i`, `extra` px further off the wall than a wall length. */
+  function besideWall(part: number, i: number, inside: boolean, t: number, halfW: number, extra = 0) {
     const es = project.parts[part].edges;
     const a = es[i].start;
     const b = es[(i + 1) % es.length].start;
@@ -561,11 +571,8 @@
     // Outward normal in world space, then flipped to screen space (y down).
     const nx = (side * (b.y - a.y)) / len;
     const ny = (-side * -(b.x - a.x)) / len;
-    const d = dimText(part, i);
-    const label = `${d.no}  ${d.len}`;
-    const halfW = label.length * 3.3;
-    const off = 9 + Math.abs(nx) * halfW + Math.abs(ny) * 4;
-    return { x: (sx(a.x) + sx(b.x)) / 2 + nx * off, y: (sy(a.y) + sy(b.y)) / 2 + ny * off, w: halfW * 2 + 4 };
+    const off = 9 + Math.abs(nx) * halfW + Math.abs(ny) * 4 + extra;
+    return { x: sx(a.x) + (sx(b.x) - sx(a.x)) * t + nx * off, y: sy(a.y) + (sy(b.y) - sy(a.y)) * t + ny * off, w: halfW * 2 + 4 };
   }
 
   /** How a face label is written: pitch and area, pitch only, or not at all (too small). */
@@ -593,9 +600,27 @@
     const dims = project.parts.map((part, pi) =>
       part.edges.map((_, i) => {
         if (!showDims || !(scale * edgeLength(pi, i) > 46)) return null;
-        return [dimPos(pi, i), dimPos(pi, i, true)].map((p) => (onOther(pi, p.x, p.y) ? null : { ...p, box: rotatedBox(p.x, p.y, p.w, DIM_H, 0) }));
+        // Outside, inside, then off the middle where a roof line runs
+        // through the middle (a ridge meeting the wall), outside first.
+        const at: [boolean, number][] = [[false, 0.5], [true, 0.5], [false, 0.35], [false, 0.65], [true, 0.35], [true, 0.65]];
+        return at.map(([inside, t]) => dimPos(pi, i, inside, t)).map((p) => (onOther(pi, p.x, p.y) ? null : { ...p, box: rotatedBox(p.x, p.y, p.w, DIM_H, 0) }));
       }),
     );
+    // What the AI changed on a wall, beside it, a row further off than its
+    // length (UX-017); placed before the lengths, it is what the review is for.
+    const notes = [...wallNotes].flatMap(([key, text]) => {
+      const [pi, i] = key.split(":").map(Number);
+      if (!project.parts[pi]?.edges[i]) return [];
+      const halfW = textPx(text, 12) / 2 + 3;
+      const at: [boolean, number][] = [[false, 0.5], [true, 0.5], [false, 0.3], [false, 0.7], [true, 0.3], [true, 0.7]];
+      const cands = at.map(([inside, t]) => {
+        const p = besideWall(pi, i, inside, t, halfW, DIM_H);
+        const box = rotatedBox(p.x, p.y, halfW * 2, DIM_H, 0);
+        // A note cut by the edge of the plan is no use: take one inside.
+        return box.x0 >= 2 && box.y0 >= 2 && box.x1 <= width - 2 && box.y1 <= height - 2 ? { x: p.x, y: p.y, text, box } : null;
+      });
+      return [cands];
+    });
     const modes = showDims && !faceLabels.length ? tags.map(tagMode) : tags.map(() => null);
     // A face label that does not fit with its area falls back to the pitch alone.
     const tagBoxes = tags.map((tag, k) => {
@@ -607,8 +632,20 @@
       return [rotatedBox(sx(tag.x), sy(tag.y), w, TAG_FULL_H, -tag.angle_deg), pitchBox];
     });
     const flat = dims.flat();
-    const chosen = chooseLabels([...flat.map((d) => (d ?? []).map((c) => c?.box ?? null)), ...tagBoxes]);
-    let k = 0;
+    // Wall lengths keep off the roof lines inside the roof (the eave and
+    // verge run along the walls, every wall length sits by them); face
+    // labels keep off the walls, where the wall lengths are.
+    const seg = (a: { x: number; y: number }, b: { x: number; y: number }): Seg => [sx(a.x), sy(a.y), sx(b.x), sy(b.y)];
+    const inner: Seg[] = linePieces.flatMap((ls) =>
+      ls.filter((l) => l.kind !== "eave" && l.kind !== "verge").flatMap((l) => l.pieces.map((pc) => seg({ x: pc.a[0], y: pc.a[1] }, { x: pc.b[0], y: pc.b[1] }))),
+    );
+    const walls: Seg[] = outlines.flatMap((o) => o.map((p, k) => seg(p, o[(k + 1) % o.length])));
+    const chosen = chooseLabels(
+      [...notes.map((n) => n.map((c) => c?.box ?? null)), ...flat.map((d) => (d ?? []).map((c) => c?.box ?? null)), ...tagBoxes],
+      (i) => (i < notes.length + flat.length ? inner : walls),
+    );
+    const noteShown = notes.flatMap((n, j) => (chosen[j] >= 0 && n[chosen[j]] ? [n[chosen[j]]!] : []));
+    let k = notes.length;
     const dimShown = dims.map((row) =>
       row.map((d) => {
         const j = chosen[k++];
@@ -616,7 +653,7 @@
       }),
     );
     const tagShown = tags.map((_, j) => (chosen[k + j] === 0 ? modes[j] : chosen[k + j] === 1 ? ("pitch" as const) : null));
-    return { dims: dimShown, tags: tagShown };
+    return { dims: dimShown, tags: tagShown, notes: noteShown };
   });
 </script>
 
@@ -912,6 +949,9 @@
         <path class="crosshair" d="M{sx(cursorWorld.x) - 9},{sy(cursorWorld.y)}h18M{sx(cursorWorld.x)},{sy(cursorWorld.y) - 9}v18" />
       {/if}
     {/if}
+    {#each labels.notes as n}
+      <text class="wall-note" data-testid="wall-note" x={n.x} y={n.y}>{n.text}</text>
+    {/each}
   </svg>
   <!-- A placing tool says what to click in the bottom bar (PlaceBar, UX-012). -->
   {#if !placing && !drawing}<div class="hint">{t("plan.hint")}</div>{/if}
@@ -1203,6 +1243,21 @@
     fill: var(--accent);
     font-weight: 600;
     dominant-baseline: central;
+  }
+  /* What the AI changed on a wall (UX-017): AI colour, on a halo so it
+     reads over grid and roof lines. */
+  .wall-note {
+    fill: var(--ai-strong);
+    font-size: 12px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    text-anchor: middle;
+    dominant-baseline: middle;
+    pointer-events: none;
+    paint-order: stroke;
+    stroke: var(--surface);
+    stroke-width: 4px;
+    stroke-linejoin: round;
   }
   .dim .no {
     font-weight: 700;

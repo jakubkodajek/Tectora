@@ -7,18 +7,22 @@
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
-use tectora_core::edit::calc::{self as hc, BuildUpEave, ParallelField, Target};
+#[cfg(test)]
+use tectora_core::edit::apply_patches;
+#[cfg(test)]
+use tectora_core::edit::calc as hc;
+use tectora_core::edit::calc::{BuildUpEave, Target};
+use tectora_core::edit::corners::corner_group;
 use tectora_core::edit::dormers::{self, DormerKind, DormerParams, SectionTarget};
+use tectora_core::edit::helper::{self, HelperRequest, HipBy, Neighbour, ParallelStep};
 use tectora_core::edit::openings::{OpeningBox, opening_box, reshape_opening};
 use tectora_core::edit::probe::{host_height_at, roof_corner_points, roof_height_at, snap_to_roof};
-use tectora_core::edit::round::{
-    ArcInput, ArcMode, MAX_ROUND_SEGMENTS, arc_for, opposite_wall, span_between,
-};
+use tectora_core::edit::round::{ArcMode, MAX_ROUND_SEGMENTS};
 use tectora_core::edit::transform::{
     ItemKind, ItemRef, MAX_COPIES, MAX_POLYGON_SIDES, PlanMap, follow_roof, item_centre,
     offset_wall, part_centre, regular_polygon, transform_items, transform_part,
 };
-use tectora_core::edit::{EdgePatch, Patches, apply_patches, plain_edge};
+use tectora_core::edit::{Patches, plain_edge};
 use tectora_core::examples::{EXAMPLES, StandardRoof, standard_roof};
 use tectora_core::geom::Point2;
 use tectora_core::model::{ManualFace, ManualLine};
@@ -1500,60 +1504,31 @@ impl Server {
         let pi = part_index(args, &before)?;
         let es = &before.parts[pi].edges;
         let edge = edge_index(args, "edge", es.len())?;
-        let e = &es[edge];
         let target: Option<Target> = opt(args, "target")?;
         let need_target = || {
             target.ok_or_else(|| "missing `target` (pitch, eave, overhang or position)".to_string())
         };
-        let single = |patch: EdgePatch| Patches::from([(edge, patch)]);
-        let mut extra = json!({});
-        let patches: Patches = match arg_str(args, "tool")? {
-            "triangle" => {
-                let t = hc::triangle(
-                    e,
-                    arg_f64(args, "width")?,
-                    arg_f64(args, "rafter")?,
-                    arg_f64(args, "ridge")?,
-                    opt(args, "width_includes_overhang")?.unwrap_or(false),
-                )
-                .ok_or("give two of width, rafter and ridge that make a triangle")?;
-                extra = json!({ "triangle": t });
-                single(hc::triangle_patch(e, t.pitch_deg))
-            }
+        let req = match arg_str(args, "tool")? {
+            "triangle" => HelperRequest::Triangle {
+                width: arg_f64(args, "width")?,
+                rafter: arg_f64(args, "rafter")?,
+                ridge: arg_f64(args, "ridge")?,
+                width_includes_overhang: opt(args, "width_includes_overhang")?.unwrap_or(false),
+            },
             "parallel" => {
                 let target = need_target()?;
-                let opp = opposite_wall(es, edge).ok_or("this wall has no facing wall")?;
-                if !e.breaks.is_empty() || !es[opp].breaks.is_empty() {
-                    return Err("not available on walls with pitch breaks".into());
-                }
-                let span = span_between(es, edge, opp);
-                let (w, h) = hc::meeting(e, &es[opp], span).ok_or("the two planes do not meet")?;
-                let mut st = hc::parallel_start(e, &es[opp], span, w, h);
-                let with_ov = opt(args, "width_includes_overhang")?.unwrap_or(true);
                 let steps: Vec<Value> = req(args, "steps")?;
-                for (k, s) in steps.iter().enumerate() {
-                    let field: ParallelField = req(s, "field")?;
-                    let v = arg_f64(s, "value")?.ok_or("missing `value`")?;
-                    st = hc::parallel_edit(&st, field, v, target, with_ov)
-                        .ok_or_else(|| format!("step {k}: no solution for this value"))?;
+                let mut parsed = Vec::with_capacity(steps.len());
+                for s in &steps {
+                    parsed.push(ParallelStep {
+                        field: req(s, "field")?,
+                        value: arg_f64(s, "value")?.ok_or("missing `value`")?,
+                    });
                 }
-                extra = json!({ "opposite_edge": opp, "state": st });
-                if target == Target::Position {
-                    tectora_core::edit::combine([
-                        &hc::move_wall(es, edge, st.shift_a),
-                        &hc::move_wall(es, opp, st.shift_b),
-                    ])
-                } else {
-                    let (pa, pb) = hc::parallel_patches(&st, target);
-                    if target == Target::Eave
-                        && (hc::eave_below_gable(es, edge, pa.eave_height.unwrap_or(0.0))
-                            || hc::eave_below_gable(es, opp, pb.eave_height.unwrap_or(0.0)))
-                    {
-                        return Err(
-                            "the eave would end up below the eave of a neighbouring gable".into(),
-                        );
-                    }
-                    Patches::from([(edge, pa), (opp, pb)])
+                HelperRequest::Parallel {
+                    target,
+                    steps: parsed,
+                    width_includes_overhang: opt(args, "width_includes_overhang")?.unwrap_or(true),
                 }
             }
             "point" => {
@@ -1571,88 +1546,44 @@ impl Server {
                         .ok_or_else(|| format!("point_index {i} out of range"))?,
                     (None, None) => return Ok(json!({ "roof_points": corners })),
                 };
-                let d = hc::inward(es, edge, Point2::new(q[0], q[1]));
-                if target == Target::Position {
-                    let sh =
-                        hc::shift_for(e, d, q[2]).ok_or("no wall position reaches that point")?;
-                    hc::move_wall(es, edge, sh)
+                HelperRequest::Point { target, point: q }
+            }
+            "merge" => HelperRequest::Merge {
+                target: need_target()?,
+                walls: opt(args, "walls")?,
+            },
+            "hip" => HelperRequest::Hip {
+                neighbour: match args.get("neighbour").and_then(Value::as_str) {
+                    Some("prev") => Neighbour::Prev,
+                    _ => Neighbour::Next,
+                },
+                by: if args.get("by").and_then(Value::as_str) == Some("eaves") {
+                    HipBy::Eaves
                 } else {
-                    single(
-                        hc::solve(e, d, q[2], target)
-                            .ok_or("no plane of this wall reaches that point")?,
-                    )
-                }
-            }
-            "merge" => {
-                let target = need_target()?;
-                let walls: Vec<usize> =
-                    opt(args, "walls")?.unwrap_or_else(|| hc::same_way(es, edge));
-                match target {
-                    Target::Pitch => {
-                        return Err("merge solves for eave, overhang or position".into());
-                    }
-                    Target::Position => {
-                        hc::merge_by_moving(es, edge, &walls).ok_or("this wall has no slope")?
-                    }
-                    t => hc::merge_onto(es, edge, &walls, t),
-                }
-            }
-            "hip" => {
-                let n = es.len();
-                let other = match args
-                    .get("neighbour")
-                    .and_then(Value::as_str)
-                    .unwrap_or("next")
-                {
-                    "prev" => (edge + n - 1) % n,
-                    _ => (edge + 1) % n,
-                };
-                let hip = arg_f64(args, "hip")?.ok_or("missing `hip`")?;
-                let a = arg_f64(args, "first")?.ok_or("missing `first`")?;
-                let b = arg_f64(args, "second")?.ok_or("missing `second`")?;
-                let f = if args.get("by").and_then(Value::as_str) == Some("eaves") {
-                    hc::hip_pitches_from_eaves
-                } else {
-                    hc::hip_pitches
-                };
-                f(es, edge, other, hip, a, b).ok_or("no pitches fit these lengths (both walls need a slope and the same eave height)")?
-            }
-            "build_up" => {
-                let d = arg_f64(args, "thickness")?.ok_or("missing `thickness`")?;
-                let eave: BuildUpEave = opt(args, "eave")?.unwrap_or_default();
-                single(hc::build_up(e, d, eave).ok_or("not possible on this wall")?)
-            }
-            "round_roof" => {
-                let opp = opposite_wall(es, edge).ok_or("this wall has no facing wall")?;
-                let arc = arc_for(&ArcInput {
-                    span: span_between(es, edge, opp),
-                    overhang: e.overhang,
-                    eave_height: e.eave_height,
-                    segments: opt(args, "segments")?.unwrap_or(0),
-                    mode: opt::<ArcMode>(args, "mode")?.unwrap_or_default(),
-                    value: arg_f64(args, "value")?.unwrap_or(0.0),
-                })
-                .ok_or("the value is out of range for this span")?;
-                let patch = EdgePatch {
-                    pitch_deg: Some(arc.pitch_deg),
-                    eave_height: Some(e.eave_height),
-                    overhang: Some(e.overhang),
-                    breaks: Some(arc.breaks.clone()),
-                    half_hip: Some(None),
-                    ..EdgePatch::default()
-                };
-                extra = json!({ "opposite_edge": opp, "arc": arc });
-                Patches::from([(edge, patch.clone()), (opp, patch)])
-            }
+                    HipBy::Rafters
+                },
+                hip: arg_f64(args, "hip")?.ok_or("missing `hip`")?,
+                first: arg_f64(args, "first")?.ok_or("missing `first`")?,
+                second: arg_f64(args, "second")?.ok_or("missing `second`")?,
+            },
+            "build_up" => HelperRequest::BuildUp {
+                thickness: arg_f64(args, "thickness")?.ok_or("missing `thickness`")?,
+                eave: opt::<BuildUpEave>(args, "eave")?.unwrap_or_default(),
+            },
+            "round_roof" => HelperRequest::RoundRoof {
+                eave_height: None,
+                overhang: None,
+                segments: opt(args, "segments")?.unwrap_or(0),
+                mode: opt::<ArcMode>(args, "mode")?.unwrap_or_default(),
+                value: arg_f64(args, "value")?.unwrap_or(0.0),
+            },
             other => return Err(format!("unknown tool `{other}`")),
         };
+        let helped = helper::run(&before, pi, edge, &req)?;
         let mut p = before.clone();
         // A helper that sets eave heights keeps the building's height, as
         // update_edges does (review ARCH-001).
-        if patches.values().any(|q| q.eave_height.is_some()) {
-            p.parts[pi].freeze_height();
-        }
-        let applied = apply_patches(&mut p.parts[pi].edges, &patches);
+        let applied = helper::apply_to_part(&mut p, pi, &helped.patches);
         let mut out = if args.get("apply").and_then(Value::as_bool) == Some(true)
             && !applied.is_empty()
         {
@@ -1661,10 +1592,17 @@ impl Server {
             json!({ "id": id, "saved": false, "note": "Not saved; call again with apply: true to save." })
         };
         out["patches"] = patches_json(&applied);
-        if let Value::Object(m) = extra {
-            for (k, v) in m {
-                out[k] = v;
-            }
+        if let Some(t) = helped.triangle {
+            out["triangle"] = json!(t);
+        }
+        if let Some(o) = helped.opposite_edge {
+            out["opposite_edge"] = json!(o);
+        }
+        if let Some(st) = &helped.state {
+            out["state"] = json!(st);
+        }
+        if let Some(arc) = &helped.arc {
+            out["arc"] = json!(arc);
         }
         Ok(out)
     }
@@ -1691,34 +1629,6 @@ fn nearest_wall_angle(p: &Project, q: Point2) -> f64 {
         }
     }
     best.1
-}
-
-/// Corner `v` and the direction changes (zero-length marker walls) on the
-/// same point next to it, as the plan editor moves them together
-/// (`app/src/lib/corners.ts`). O(n).
-fn corner_group(es: &[tectora_core::EdgeDef], v: usize) -> Vec<usize> {
-    let n = es.len();
-    let p = es[v].start;
-    let at = |j: usize| (es[j].start.x - p.x).abs() < 1e-6 && (es[j].start.y - p.y).abs() < 1e-6;
-    let marker = |j: usize| es[j].direction_rad.is_some();
-    let mut out = vec![v];
-    for k in 1..n {
-        let j = (v + n - k) % n;
-        if !marker(j) || !at(j) {
-            break;
-        }
-        out.push(j);
-    }
-    for k in 1..n {
-        let (prev, j) = ((v + k - 1) % n, (v + k) % n);
-        if !marker(prev) || !at(j) {
-            break;
-        }
-        out.push(j);
-    }
-    out.sort_unstable();
-    out.dedup();
-    out
 }
 
 #[cfg(test)]

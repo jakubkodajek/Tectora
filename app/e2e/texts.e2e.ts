@@ -133,6 +133,63 @@ test.describe("results and export texts", () => {
     await expect.poll(() => page.locator(".ghost line").count()).toBeGreaterThan(0);
   });
 
+  test("each wall the AI changed says how beside it, and the banner folds to one line in a small window (UX-017)", async ({ app, page, mcp }) => {
+    const id = await createExample("hip", "Valba AI 2");
+    await page.setViewportSize({ width: 1360, height: 860 });
+    await openEditor(app, "Valba AI 2");
+    const before = (await loadProject(id)).parts[0].edges;
+    await mcp.call("update_edges", {
+      id,
+      changes: [{ index: 0, pitch_deg: 30 }, { index: 1, gable: true }, { index: 2, overhang: 0.8 }],
+      summary: "Sklon, štít a přesah podle řezu",
+    });
+    const review = page.locator(".review");
+    await expect(review).toBeVisible();
+    const notes = page.getByTestId("wall-note");
+    const deg = (v: number) => `${String(v).replace(".", ",")}°`;
+    await expect.poll(() => notes.allTextContents().then((t) => t.sort())).toEqual(
+      [`${deg(before[0].pitch_deg)} → 30°`, `${deg(before[1].pitch_deg)} → ${cs("edge.gable")}`, `${cs("edge.overhang")} 0,50 → 0,80 m`].sort(),
+    );
+    // Every note is inside the plan and over no other label.
+    const box = (await page.locator(".view .wrap > svg").first().boundingBox())!;
+    const boxes = await page
+      .locator(".view .wrap > svg")
+      .first()
+      .locator(".wall-note, .edge-dim, .face-tag")
+      .evaluateAll((els) => els.map((e) => ({ t: e.textContent, note: e.classList.contains("wall-note"), r: e.getBoundingClientRect().toJSON() })));
+    for (const n of boxes.filter((b) => b.note)) {
+      expect(n.r.left, n.t!).toBeGreaterThanOrEqual(box.x);
+      expect(n.r.right, n.t!).toBeLessThanOrEqual(box.x + box.width);
+      for (const o of boxes.filter((b) => b !== n)) {
+        const ov = Math.min(n.r.right, o.r.right) - Math.max(n.r.left, o.r.left) > 2 && Math.min(n.r.bottom, o.r.bottom) - Math.max(n.r.top, o.r.top) > 2;
+        expect(ov, `${n.t} / ${o.t}`).toBe(false);
+      }
+    }
+    // The details toggle is only for small windows.
+    const more = review.getByRole("button", { name: cs("review.details") });
+    await expect(more).toBeHidden();
+    await expect(review.locator(".review-list")).toBeVisible();
+
+    await page.setViewportSize({ width: 600, height: 420 });
+    await expect(more).toBeVisible();
+    await expect(review.locator(".review-list")).toBeHidden();
+    expect((await review.boundingBox())!.height).toBeLessThanOrEqual(64);
+    // Revert, Accept and Previous state keep their names and fit the window.
+    for (const key of ["review.before", "ai.revert", "review.accept"]) {
+      const b = review.getByRole("button", { name: cs(key) });
+      await expect(b).toBeVisible();
+      expect((await b.boundingBox())!.x + (await b.boundingBox())!.width).toBeLessThanOrEqual(600);
+    }
+    await shot(page, "ux017-review-folded_cs_600.png");
+    await more.focus();
+    await page.keyboard.press("Enter");
+    await expect(more).toHaveAttribute("aria-expanded", "true");
+    await expect(review.locator(".review-list")).toBeVisible();
+    await shot(page, "ux017-review-open_cs_600.png");
+    await page.keyboard.press("Enter");
+    await expect(review.locator(".review-list")).toBeHidden();
+  });
+
   test("the join note names the other building without declension (UX-020)", async ({ app, page }) => {
     const id = await createExample("gable", "Dvě budovy");
     const p = await loadProject(id);

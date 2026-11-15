@@ -71,16 +71,3 @@ export function lineLength(l: ManualLine): number {
   if (l.length != null) return l.length;
   return Math.hypot(l.b[0] - l.a[0], l.b[1] - l.a[1], l.b[2] - l.a[2]);
 }
-
-/** Sloped area: plan area over the cosine of the pitch (as the engine). */
-export function faceArea(f: ManualFace): number {
-  const n = f.points.length;
-  if (n < 3 || !(f.pitch_deg >= 0 && f.pitch_deg < 90)) return 0;
-  let a = 0;
-  for (let i = 0; i < n; i++) {
-    const p = f.points[i];
-    const q = f.points[(i + 1) % n];
-    a += p.x * q.y - q.x * p.y;
-  }
-  return Math.abs(a) / 2 / Math.cos((f.pitch_deg * Math.PI) / 180);
-}

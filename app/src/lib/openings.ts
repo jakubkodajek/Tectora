@@ -12,31 +12,11 @@ export function openingList(project: Project, kind: OpeningKind): (Chimney | Roo
   return kind === "chimney" ? project.chimneys : kind === "window" ? (project.windows ?? []) : (project.roof_openings ?? []);
 }
 
-/** A rectangular chimney: corner, size and rotation (degrees). */
-export interface ChimneyRect {
-  x: number;
-  y: number;
-  width: number;
-  depth: number;
-  rotation: number;
-  height: number;
-}
-
-export function chimneyFromRect(r: ChimneyRect): Chimney {
-  const a = (r.rotation * Math.PI) / 180;
-  const u = { x: Math.cos(a), y: Math.sin(a) };
-  const v = { x: -u.y, y: u.x };
-  const p = (s: number, t: number) => ({
-    x: +(r.x + u.x * s + v.x * t).toFixed(3),
-    y: +(r.y + u.y * s + v.y * t).toFixed(3),
-  });
-  return { corners: [p(0, 0), p(r.width, 0), p(r.width, r.depth), p(0, r.depth)], height: r.height };
-}
-
 /** Position and size of a chimney or roof opening as the object bar shows
  *  them: the smallest box around its plan polygon that lines up with its
- *  first side. Port of `tectora_core::edit::openings`, which the MCP tool
- *  `update_opening` uses. */
+ *  first side. Presentation only, so the fields follow a chimney while it is
+ *  dragged (ARCH-004, docs/adr): editing a field, and creating a chimney, go
+ *  through the core (`api.reshapeOpening`, `api.chimneyFromRect`). */
 export interface OpeningBox {
   x: number;
   y: number;
@@ -92,29 +72,6 @@ export function openingBox(corners: Point2[]): OpeningBox | null {
   const f = frame(corners);
   if (!f) return null;
   return { x: r3(f.origin.x), y: r3(f.origin.y), width: r3(f.width), depth: r3(f.depth), rotation: r4((Math.atan2(f.u.y, f.u.x) * 180) / Math.PI) };
-}
-
-/** The corners moved, stretched and turned so that their box becomes `to`.
- *  Each corner keeps its place in the box (a rectangle stays a rectangle,
- *  the corner order is kept); values equal to the current box keep the
- *  exact frame, so changing the width alone does not turn the chimney. */
-export function reshapeOpening(corners: Point2[], to: OpeningBox): Point2[] | null {
-  const f = frame(corners);
-  const was = openingBox(corners);
-  if (!f || !was) return null;
-  if (![to.x, to.y, to.rotation, to.width, to.depth].every(Number.isFinite)) return null;
-  if (to.width < 0.01 || to.depth < 0.01 || to.width > 100 || to.depth > 100) return null;
-  const same = (a: number, b: number) => Math.abs(a - b) < 1e-9;
-  let { u, v } = f;
-  if (!same(to.rotation, was.rotation)) {
-    const a = (to.rotation * Math.PI) / 180;
-    u = { x: Math.cos(a), y: Math.sin(a) };
-    v = { x: -u.y, y: u.x };
-  }
-  const o = { x: same(to.x, was.x) ? f.origin.x : to.x, y: same(to.y, was.y) ? f.origin.y : to.y };
-  const w = same(to.width, was.width) ? f.width : to.width;
-  const d = same(to.depth, was.depth) ? f.depth : to.depth;
-  return f.unit.map(([a, b]) => ({ x: r3(o.x + u.x * a * w + v.x * b * d), y: r3(o.y + u.y * a * w + v.y * b * d) }));
 }
 
 /** Plan outline of a roof window lying in the face under its corner. */

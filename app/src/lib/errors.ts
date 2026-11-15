@@ -141,12 +141,14 @@ export function describeProblem(p: Problem, project: Project): string {
 }
 
 /** What the user tried when the core refused a value (the toast's title). */
-export type RefusedAction = "height" | "place" | "face";
+export type RefusedAction = "height" | "place" | "face" | "helper" | "transform";
 
 const REFUSED_TITLE: Record<RefusedAction, string> = {
   height: "refuse.title.height",
   place: "place.refusedTitle",
   face: "refuse.title.face",
+  helper: "refuse.title.helper",
+  transform: "refuse.title.transform",
 };
 
 /**

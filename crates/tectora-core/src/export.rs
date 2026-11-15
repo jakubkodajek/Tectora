@@ -638,6 +638,12 @@ fn code_kind(code: &str) -> Option<LineKind> {
         "P" => Some(LineKind::Pult),
         "c" => Some(LineKind::Knick),
         "S" => Some(LineKind::Gorge),
+        // Wall abutments: drawn in the abutment colour, so their codes in
+        // the foot carry it too.
+        "W" => Some(LineKind::Abutment),
+        "WV" => Some(LineKind::AbutmentFront),
+        "WH" => Some(LineKind::AbutmentBack),
+        "WS" => Some(LineKind::AbutmentSide),
         _ => None,
     }
 }
@@ -978,6 +984,13 @@ pub fn plan_sheet_named(
         obstacles.put(&mut shapes, at_label(at));
     }
 
+    // From here on the inside of a window, chimney or roof opening is
+    // never free: a short side of a chimney gets its length outside the
+    // chimney, not across its outline.
+    obstacles
+        .quads
+        .extend(cut_boxes.iter().map(|b| box_quad(*b)));
+
     // Line lengths: upright along the line, just off it, at the middle or,
     // where that is taken, further along it or on its other side.
     for (a, b, color, text) in line_labels {
@@ -1029,10 +1042,8 @@ pub fn plan_sheet_named(
     // Faces: area and pitch, at the middle of the face or, where a window,
     // chimney, line or another label is in the way, at the free spot
     // nearest to it inside the face. Inside a window or chimney is never
-    // free, however large it is.
-    obstacles
-        .quads
-        .extend(cut_boxes.iter().map(|b| box_quad(*b)));
+    // free, however large it is (the boxes are obstacles since the line
+    // lengths).
     for (poly, area_text, pitch_text) in face_labels {
         let Some(c) = centroid(&poly) else { continue };
         let rows = |at: [f64; 2]| {
@@ -1123,8 +1134,10 @@ pub fn plan_sheet_named(
             anchor: 0.0,
             text: code.clone(),
         });
+        // A gap after the code, also after a wide one ("WH", "OR").
+        let gap = (text_width(&ansi(code), 9.0, true) + 3.0).max(16.0);
         shapes.push(Shape::Text {
-            at: [x + 16.0, y],
+            at: [x + gap, y],
             angle: 0.0,
             size: 9.0,
             color: INK,
@@ -2608,6 +2621,103 @@ Z1.02 35,00° 19,53m\u{2db} Dĺžka krokvy=4,88m
             assert_eq!(t.iter().filter(|x| x.ends_with('°')).count(), 5, "{t:?}");
         }
         assert_texts_apart(&plan_sheet(&gable_with_dormer(), &SheetInfo::default()));
+    }
+
+    #[test]
+    fn small_object_lengths_stay_off_the_object_and_foot_codes_match_their_lines() {
+        // Sweep 2026-11-15: the chimney's "0,783m" ran across its own
+        // outline, and WH / WS / WV were grey in the foot but brown on the
+        // plan. Placement and colour only: the figures stay the same.
+        let mut p = crowded_job();
+        // Without the hand-drawn face, at the scale of the sweep's sheet.
+        p.manual_faces.clear();
+        let info = SheetInfo {
+            stamp: String::new(),
+            decimals: 3,
+        };
+        let shapes = plan_sheet(&p, &info);
+        let ch: Vec<[f64; 2]> = shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Line {
+                    a, color, width, ..
+                } if *color == MUTED && *width == 0.8 => Some(*a),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ch.len(), 4, "the chimney's outline");
+        let b = bbox(&ch);
+        // The inside of the chimney, less a hair for lines on its edge.
+        let inside = box_quad([b[0] + 0.5, b[1] + 0.5, b[2] - 0.5, b[3] - 0.5]);
+        let mut lengths = 0;
+        for s in &shapes {
+            if let Shape::Text { text, .. } = s
+                && text.ends_with('m')
+                && !text.ends_with(" m")
+            {
+                lengths += 1;
+                assert!(
+                    !convex_overlap(&text_quad(s).unwrap(), &inside),
+                    "{text} inside the chimney"
+                );
+            }
+        }
+        assert!(lengths > 0);
+        assert_texts_apart(&shapes);
+        // Every foot code has the colour its lines are drawn in.
+        let roof_colors: Vec<&str> = crate::openings::generate_project(&p)
+            .iter()
+            .flat_map(|g| g.lines.iter().map(|l| (l.dacad_code(), kind_color(l.kind))))
+            .filter(|(c, _)| c.starts_with('W'))
+            .map(|(_, col)| col)
+            .collect();
+        assert!(!roof_colors.is_empty(), "the job has wall abutments");
+        let codes = crate::quantities::dacad_line_totals(&p);
+        for (code, _) in codes
+            .iter()
+            .filter(|(c, v)| c.starts_with('W') && **v > 1e-9)
+        {
+            let color = shapes.iter().find_map(|s| match s {
+                Shape::Text {
+                    text,
+                    color,
+                    bold: true,
+                    size,
+                    ..
+                } if text == code && *size == 9.0 => Some(*color),
+                _ => None,
+            });
+            assert_eq!(color, Some(kind_color(code_kind(code).unwrap())), "{code}");
+            assert_ne!(color, Some(MUTED), "{code} is grey");
+            assert!(roof_colors.contains(&color.unwrap()), "{code}");
+        }
+        // A code and its total do not touch ("WH0,600 m").
+        for w in shapes.windows(2) {
+            if let (
+                Shape::Text {
+                    text: code,
+                    at: a,
+                    bold: true,
+                    size,
+                    ..
+                },
+                Shape::Text {
+                    text: value, at: b, ..
+                },
+            ) = (&w[0], &w[1])
+                && *size == 9.0
+                && value.ends_with(" m")
+            {
+                let width = text_width(&ansi(code), 9.0, true);
+                assert!(b[0] - a[0] >= width + 2.0, "{code} touches {value}");
+            }
+        }
+        // The figures are the list's.
+        let t = texts(&shapes);
+        for (code, v) in codes.iter().filter(|(_, v)| **v > 1e-9) {
+            let value = format!("{} m", num(*v, 3));
+            assert!(t.contains(&value.as_str()), "{code} {value}");
+        }
     }
 
     #[test]
