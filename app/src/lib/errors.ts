@@ -27,7 +27,9 @@ export type Action =
   | "files"
   | "export"
   | "update"
-  | "connect";
+  | "connect"
+  | "restore"
+  | "settings";
 
 export interface Described {
   /** One sentence: what failed. */
@@ -46,6 +48,9 @@ export function isAppError(e: unknown): e is AppError {
 /** Normalizes anything thrown into an AppError. */
 export function toAppError(e: unknown): AppError {
   if (isAppError(e)) return e;
+  // The settings commands reject with a bare code ("not_writable"): keep it
+  // as the code, not as the detail of an unknown error (ERRU-002).
+  if (typeof e === "string" && (KNOWN.has(e) || SETTINGS_CODES.has(e))) return { code: e };
   const text = e instanceof Error ? e.message : typeof e === "string" ? e : JSON.stringify(e);
   // Tauri rejects arguments it cannot deserialize (an emptied number field
   // sends null) before our command runs.
@@ -92,14 +97,19 @@ const KNOWN = new Set([
   "refused",
 ]);
 
+/** Codes of the settings commands, with their messages under `settings.err.<code>`. */
+const SETTINGS_CODES = new Set(["not_absolute", "not_a_folder", "not_writable", "invalid_value", "io"]);
+
 /** A translated description of an error from `action`. */
 export function describeError(e: unknown, action?: Action): Described {
   const err = toAppError(e);
   const code = KNOWN.has(err.code) ? err.code : "unknown";
+  // A settings code says what is wrong with the folder or value (ERRU-002).
+  const settings = SETTINGS_CODES.has(err.code) && (action === "settings" || !KNOWN.has(err.code));
   return {
     code: err.code,
     title: t(action ? `err.action.${action}` : "err.title"),
-    message: t(`err.${code}`, { id: err.id ?? "" }),
+    message: settings ? t(`settings.err.${err.code}`) : t(`err.${code}`, { id: err.id ?? "" }),
     detail: err.detail,
   };
 }

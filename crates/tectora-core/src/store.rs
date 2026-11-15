@@ -98,6 +98,18 @@ pub struct ProjectSummary {
     /// `roof_area` and `lines` are empty while it is still calculated in the
     /// background; a later listing has them (ARCH-001).
     pub figures_pending: bool,
+    /// Buildings the core gave no roof for (ERRU-005): equal to `parts`, the
+    /// roof is not calculated and `roof_area` is no figure; fewer, the roof
+    /// is partly calculated and `roof_area` leaves them out. 0 while
+    /// `figures_pending`.
+    pub parts_failed: usize,
+    /// The roof area of the stored result (the offer's figure), if any
+    /// (UX-008): the library shows it instead of the current one.
+    pub stored_area: Option<f64>,
+    /// The current figures differ from the stored result's
+    /// (`snapshot::status`); false without a stored result or while
+    /// `figures_pending`.
+    pub result_differs: bool,
 }
 
 /// An activity entry without the stored previous version.
@@ -253,13 +265,18 @@ fn lines_of(geos: &[roof::RoofGeometry]) -> Vec<[[f64; 2]; 2]> {
         .collect()
 }
 
-/// A library card's roof area and plan lines, from one calculation
-/// (ARCH-006).
-fn card_figures(project: &Project) -> (f64, Vec<[[f64; 2]; 2]>) {
+/// A library card's roof figures, from one calculation (ARCH-006).
+type CardFigures = (f64, Vec<[[f64; 2]; 2]>, usize, bool);
+
+/// A library card's roof area, plan lines and the number of buildings the
+/// core gave no roof for (ERRU-005), from one calculation (ARCH-006).
+fn card_figures(project: &Project) -> CardFigures {
     let geos = crate::openings::generate_project(project);
     (
         crate::quantities::roof_totals_of(&geos, project).roof_area,
         lines_of(&geos),
+        geos.iter().filter(|g| g.error.is_some()).count(),
+        crate::snapshot::status_of(&geos, project).is_some_and(|s| !s.differences.is_empty()),
     )
 }
 
@@ -724,6 +741,7 @@ impl Store {
         // A broken design still shows up in the library (so it can be opened
         // and fixed or deleted), just without its roof preview.
         if project.check_limits().is_err() {
+            summary.parts_failed = summary.parts;
             lock_cache(&self.cache)
                 .entries
                 .insert(id.to_string(), (stamp, summary.clone()));
@@ -740,7 +758,9 @@ impl Store {
         let started = std::thread::Builder::new()
             .name(format!("summary {id}"))
             .spawn(move || {
-                let figures = crate::model::guarded(|| card_figures(&project)).unwrap_or_default();
+                // A roof that panicked has no figures at all (ERRU-005).
+                let figures = crate::model::guarded(|| card_figures(&project))
+                    .unwrap_or_else(|_| (0.0, Vec::new(), project.parts.len(), false));
                 // Under the lock, so `summarize` either sees the answer or
                 // has left its pending card for this thread to fill in.
                 let mut c = lock_cache(&cache);
@@ -749,7 +769,12 @@ impl Store {
                     && *s == at
                     && card.figures_pending
                 {
-                    (card.roof_area, card.lines) = figures.clone();
+                    (
+                        card.roof_area,
+                        card.lines,
+                        card.parts_failed,
+                        card.result_differs,
+                    ) = figures.clone();
                     card.figures_pending = false;
                 }
                 let _ = tx.send(figures);
@@ -763,7 +788,10 @@ impl Store {
         let figures = rx.recv_timeout(self.summary_budget).ok();
         let mut c = lock_cache(&self.cache);
         match figures.or_else(|| rx.try_recv().ok()) {
-            Some((area, lines)) => (summary.roof_area, summary.lines) = (area, lines),
+            Some((area, lines, failed, differs)) => {
+                (summary.roof_area, summary.lines, summary.parts_failed) = (area, lines, failed);
+                summary.result_differs = differs;
+            }
             None => summary.figures_pending = true,
         }
         c.entries.insert(id.to_string(), (stamp, summary.clone()));
@@ -802,6 +830,9 @@ impl Store {
             files: self.attachments(id).len(),
             has_result: project.result_snapshot.is_some(),
             figures_pending: false,
+            parts_failed: 0,
+            stored_area: project.result_snapshot.as_ref().map(|s| s.roof_area),
+            result_differs: false,
         };
         Ok((summary, project))
     }
@@ -2884,6 +2915,81 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// A wall for the listing tests below.
+    fn card_edge(x: f64, y: f64, pitch: f64, eave: f64, overhang: f64) -> serde_json::Value {
+        serde_json::json!({
+            "start": { "x": x, "y": y }, "pitch_deg": pitch,
+            "eave_height": eave, "overhang": overhang,
+        })
+    }
+
+    #[test]
+    fn the_listing_marks_a_roof_the_core_refused_as_not_calculated() {
+        // ERRU-005: a refused roof was listed as 0.00 m², like an empty one.
+        let store = temp_store("card-refused");
+        let walls: Vec<_> = [(0.0, 0.0), (12.0, 0.0), (12.0, 8.0), (0.0, 8.0)]
+            .iter()
+            .map(|&(x, y)| card_edge(x, y, 35.0, 3.0, 0.5))
+            .collect();
+        let corners: Vec<_> = [
+            (4.0, 3.0),
+            (6.0, 3.0),
+            (6.0, 4.0),
+            (5.0, 4.0),
+            (5.0, 5.0),
+            (4.0, 5.0),
+        ]
+        .iter()
+        .map(|&(x, y)| serde_json::json!({ "x": x, "y": y }))
+        .collect();
+        let p = serde_json::json!({
+            "schema_version": 2, "name": "refused",
+            "parts": [{ "name": "A", "edges": walls }],
+            "chimneys": [{ "corners": corners, "height": 9.0 }],
+        });
+        let id = store
+            .save(None, &Project::from_json(&p.to_string()).unwrap())
+            .unwrap();
+        let s = store.summarize(&id).unwrap();
+        assert!(!s.figures_pending, "{s:?}");
+        assert_eq!((s.parts, s.parts_failed), (1, 1), "{s:?}");
+        let ok = store
+            .save(None, &examples::find("hip").unwrap().project())
+            .unwrap();
+        assert_eq!(store.summarize(&ok).unwrap().parts_failed, 0);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn the_listing_marks_a_job_with_one_building_without_roof_as_partly_calculated() {
+        // ERRU-005: the other buildings' area was listed as if complete. The
+        // two buildings of `a_building_the_core_fails_on_alone_leaves_the_others_their_roofs`.
+        let store = temp_store("card-partial");
+        let mut hh = card_edge(6.0, 12.8, 90.0, 3.0, 0.5);
+        hh["half_hip"] = serde_json::json!({ "height": 5.0, "pitch_deg": 50.0 });
+        let p = serde_json::json!({
+            "schema_version": 2, "name": "partial",
+            "parts": [
+                { "name": "A", "edges": [
+                    card_edge(0.0, 0.0, 30.0, 3.0, 0.6), card_edge(6.2, 0.0, 90.0, 3.0, 0.6),
+                    card_edge(6.2, 5.9, 30.0, 3.0, 0.6), card_edge(0.0, 5.9, 90.0, 3.0, 0.6),
+                ] },
+                { "name": "B", "edges": [
+                    card_edge(2.2, 5.9, 45.0, 3.0, 0.0), card_edge(6.0, 5.9, 30.0, 2.5, 0.0),
+                    hh, card_edge(2.2, 12.8, 90.0, 3.5, 0.5),
+                ] },
+            ],
+        });
+        let id = store
+            .save(None, &Project::from_json(&p.to_string()).unwrap())
+            .unwrap();
+        let s = store.summarize(&id).unwrap();
+        assert!(!s.figures_pending, "{s:?}");
+        assert_eq!((s.parts, s.parts_failed), (2, 1), "{s:?}");
+        assert!(s.roof_area > 0.0, "{s:?}");
         let _ = fs::remove_dir_all(&store.dir);
     }
 }

@@ -55,7 +55,9 @@
     <p class="empty">{t("ai.noHistory")}</p>
   {/if}
   <ol>
-    {#each activity as a, i (a.ts_ms)}
+    <!-- Two entries can share a millisecond (two writers, a clock step): the
+         index keeps the key unique (ERRU-009). -->
+    {#each activity as a, i (`${a.ts_ms}:${i}`)}
       {@const ai = isAi(a.actor)}
       <li class:ai>
         <div class="head">

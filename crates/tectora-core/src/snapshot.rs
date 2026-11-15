@@ -51,11 +51,14 @@ pub fn take_checked(project: &Project) -> Result<ResultSnapshot, Refused> {
     // Input the calculation leaves out (a building with a wall shorter than
     // 1 cm, …) is missing from the figures (review UX-002).
     if let Some(p) = project.problems().first() {
+        // Indices from 0, as `calc.problems` and every MCP tool (ERR-007).
+        let edge = p
+            .edge
+            .map(|e| format!(", edge index {e}"))
+            .unwrap_or_default();
         return Err(Refused::NotCalculated(format!(
-            "{:?} {} is left out of the calculation ({})",
-            p.item,
-            p.index + 1,
-            p.code
+            "{:?} index {}{edge} is left out of the calculation ({})",
+            p.item, p.index, p.code
         )));
     }
     // A part the core gives no roof for counts 0 m²: storing that as the
@@ -65,8 +68,7 @@ pub fn take_checked(project: &Project) -> Result<ResultSnapshot, Refused> {
         let geos = crate::openings::generate_project(project);
         match geos.iter().position(|g| g.error.is_some()) {
             Some(i) => Err(Refused::NotCalculated(format!(
-                "part {} has no roof",
-                i + 1
+                "part index {i} has no roof"
             ))),
             None => Ok(take_of(&geos, project)),
         }

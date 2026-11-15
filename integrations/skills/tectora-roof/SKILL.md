@@ -84,5 +84,6 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    `plane_over_wall` is a hint that a wing has no ridge of its own.
 8. When the roof is approved and the user wants it for the offer,
    `export_plan` writes the roof sheet (PDF; pass `line_names` in the
-   user's language for the legend of line codes) and `export_list` returns
+   user's language for the legend of line codes; PDF or SVG, no PNG: the app's
+   Export dialog has that) and `export_list` returns
    the text for the Excel price sheet; give the text verbatim.

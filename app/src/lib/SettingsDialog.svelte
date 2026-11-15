@@ -11,6 +11,8 @@
   import { numeric } from "./numeric.svelte";
   import { app, loadSettings, presets, prefs, savePrefs, updateSettings } from "./settings.svelte";
   import { ui, type Theme } from "./theme.svelte";
+  import { toAppError } from "./errors";
+  import { notifyError } from "./notify.svelte";
 
   let { onclose, onlibrarychanged }: { onclose: () => void; onlibrarychanged: () => void } = $props();
 
@@ -29,10 +31,11 @@
     if (!app.view) loadSettings().catch(() => {});
   });
 
-  async function save(field: Field, value: unknown) {
+  /** Saves one setting; false when it was not saved (the field shows why, ERRU-001). */
+  async function save(field: Field, value: unknown): Promise<boolean> {
     // The open job is saved into the folder it came from before the folder
     // changes; edits that cannot be saved are left only when the user says so.
-    if (field === "projects_dir" && !(await mayLeave())) return;
+    if (field === "projects_dir" && !(await mayLeave())) return false;
     busy = field;
     const shown = errors[field];
     try {
@@ -41,8 +44,10 @@
       // Keep an error that came up for another value while this one was saving.
       if (errors[field] === shown) delete errors[field];
       if (next.effective.projects_dir !== before) onlibrarychanged();
+      return true;
     } catch (e) {
-      errors[field] = String(e);
+      errors[field] = toAppError(e).code;
+      return false;
     } finally {
       busy = null;
     }
@@ -106,7 +111,7 @@
             <button class="btn" onclick={() => pick("projects_dir")} disabled={!!eff?.projects_dir_from_env || busy !== null}>
               {t("settings.change")}
             </button>
-            <button class="btn ghost" onclick={() => api.openFolder("projects")} title={t("settings.openFolder")}>
+            <button class="btn ghost" onclick={() => api.openFolder("projects").catch((e) => notifyError(e, "files"))} title={t("settings.openFolder")}>
               <Icon name="folder" size={15} />{t("settings.open")}
             </button>
             {#if view?.settings.projects_dir && !eff?.projects_dir_from_env}
@@ -129,7 +134,7 @@
           <code class="path" title={eff?.drawings_dir}>{eff?.drawings_dir ?? "…"}</code>
           <div class="buttons">
             <button class="btn" onclick={() => pick("drawings_dir")} disabled={busy !== null}>{t("settings.change")}</button>
-            <button class="btn ghost" onclick={() => api.openFolder("drawings")} title={t("settings.openFolder")}>
+            <button class="btn ghost" onclick={() => api.openFolder("drawings").catch((e) => notifyError(e, "files"))} title={t("settings.openFolder")}>
               <Icon name="folder" size={15} />{t("settings.open")}
             </button>
             {#if view?.settings.drawings_dir}
@@ -146,9 +151,19 @@
       <div class="row">
         <div class="label"><span>{t("lang")}</span></div>
         <div class="control">
-          <select value={i18n.locale} onchange={(e) => save("locale", (e.target as HTMLSelectElement).value)} aria-label={t("lang")}>
+          <select
+            value={i18n.locale}
+            onchange={async (e) => {
+              const el = e.target as HTMLSelectElement;
+              // A refused choice must not stay shown as the language (ERRU-001).
+              if (!(await save("locale", el.value))) el.value = i18n.locale;
+            }}
+            aria-label={t("lang")}
+            aria-describedby={errors.locale ? "err-locale" : undefined}
+          >
             {#each LOCALES as l}<option value={l.id}>{l.label}</option>{/each}
           </select>
+          {#if errors.locale}<small class="err" id="err-locale" role="alert">{errText(errors.locale)}</small>{/if}
         </div>
       </div>
       <div class="row">
@@ -161,6 +176,7 @@
               </button>
             {/each}
           </div>
+          {#if errors.theme}<small class="err" role="alert">{errText(errors.theme)}</small>{/if}
         </div>
       </div>
       <label class="check">
@@ -207,12 +223,20 @@
     <section>
       <h3>{t("settings.ai")}</h3>
       <label class="check">
-        <input type="checkbox" checked={prefs.followAi} onchange={(e) => save("follow_ai", (e.target as HTMLInputElement).checked)} />
+        <input
+          type="checkbox"
+          checked={prefs.followAi}
+          onchange={async (e) => {
+            const el = e.target as HTMLInputElement;
+            if (!(await save("follow_ai", el.checked))) el.checked = prefs.followAi;
+          }}
+        />
         <span>
           {t("settings.followAi")}
           <small>{t("settings.followAiHint")}</small>
         </span>
       </label>
+      {#if errors.follow_ai}<small class="err" role="alert">{errText(errors.follow_ai)}</small>{/if}
     </section>
 
     <section class="about">
@@ -223,7 +247,7 @@
         <dt>{t("settings.file")}</dt>
         <dd>
           <code class="path" title={eff?.settings_file}>{eff?.settings_file ?? "…"}</code>
-          <button class="icon-btn" onclick={() => api.openFolder("settings")} title={t("settings.openFolder")} aria-label={t("settings.openFolder")}>
+          <button class="icon-btn" onclick={() => api.openFolder("settings").catch((e) => notifyError(e, "files"))} title={t("settings.openFolder")} aria-label={t("settings.openFolder")}>
             <Icon name="folder" size={15} />
           </button>
         </dd>

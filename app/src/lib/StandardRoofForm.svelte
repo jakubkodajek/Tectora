@@ -2,13 +2,13 @@
   // DACAD's "Standard-Dach": pick a basic roof type for a rectangle and
   // enter its dimensions; shows a live plan preview with roof lines.
   import { api } from "./api";
-  import { describeError, toAppError } from "./errors";
+  import { describeCalcError, describeError, describeProblem, toAppError } from "./errors";
   import { notifyError } from "./notify.svelte";
   import PlanThumb from "./PlanThumb.svelte";
   import { m2 } from "./format";
   import { t } from "./i18n.svelte";
   import { radiogroup } from "./tabs";
-  import { EAVE_HEIGHT, OVERHANG } from "./limits";
+  import { EAVE_HEIGHT, OVERHANG, PITCH } from "./limits";
   import { numeric } from "./numeric.svelte";
   import { presets } from "./settings.svelte";
   import type { RoofPart, StandardKind } from "./types";
@@ -80,7 +80,7 @@
   $effect(() => {
     const params = { kind: kind as StandardKind, length, width, pitchDeg: pitch, eaveHeight: eave, overhang };
     const poly = kind === "polygon";
-    const ok = length > 0 && (poly ? sides >= 3 && sides <= 64 : width > 0) && pitch > 0 && pitch < 90;
+    const ok = length > 0 && (poly ? sides >= 3 && sides <= 64 : width > 0) && pitch >= PITCH.min && pitch <= PITCH.max;
     const typing = Object.keys(invalid).length > 0;
     void sides;
     refused = null;
@@ -104,6 +104,19 @@
       const r = await api.calc(project);
       if (!current) return;
       loading = false;
+      // A roof the core did not calculate is no roof to create, though the
+      // call itself succeeded (UI-010): its reason takes the preview's place.
+      const error = r.parts[0]?.geometry.error;
+      if (r.problems?.length || error || !(r.totals.roof_area > 0)) {
+        part = null;
+        preview = null;
+        refused = r.problems?.length
+          ? describeProblem(r.problems[0], project)
+          : error
+            ? describeCalcError(error, project).title
+            : t("res.notCalculated");
+        return;
+      }
       // Only a part the calculation took may be created.
       part = p;
       preview = {
@@ -146,7 +159,7 @@
         <label><span>{t("std.length")}</span><div class="unit"><input type="text" use:numeric={{ value: length, step: 0.1, min: 0.1, max: MAX_SIDE, live: true, onchange: (v) => (length = v), onvalidity: validity(t("std.length")) }} /><em>m</em></div></label>
         <label class:off={kind === "pyramid"}><span>{t("std.width")}</span><div class="unit"><input type="text" disabled={kind === "pyramid"} use:numeric={{ value: width, step: 0.1, min: 0.1, max: MAX_SIDE, live: true, onchange: (v) => (width = v), onvalidity: validity(t("std.width")) }} /><em>m</em></div></label>
       {/if}
-      <label><span>{t("edge.pitch")}</span><div class="unit"><input type="text" use:numeric={{ value: pitch, step: 1, min: 0.1, max: 89.9, live: true, onchange: (v) => (pitch = v), onvalidity: validity(t("edge.pitch")) }} /><em>°</em></div></label>
+      <label><span>{t("edge.pitch")}</span><div class="unit"><input type="text" use:numeric={{ value: pitch, step: 1, min: PITCH.min, max: PITCH.max, live: true, onchange: (v) => (pitch = v), onvalidity: validity(t("edge.pitch")) }} /><em>°</em></div></label>
       <label title={t("edge.eaveHeightPresetHint")}><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: eave, step: 0.05, min: EAVE_HEIGHT.min, max: EAVE_HEIGHT.max, live: true, onchange: (v) => (eave = v), onvalidity: validity(t("edge.eaveHeight")) }} /><em>m</em></div></label>
       <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: overhang, step: 0.05, min: OVERHANG.min, max: OVERHANG.max, live: true, onchange: (v) => (overhang = v), onvalidity: validity(t("edge.overhang")) }} /><em>m</em></div></label>
     </div>

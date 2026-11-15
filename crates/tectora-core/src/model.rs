@@ -259,19 +259,20 @@ impl Project {
 
     /// The English message of a problem (CLI, MCP).
     fn describe(&self, p: &Problem) -> String {
-        let n = p.index + 1;
+        // 0-based, as every MCP tool argument and `calc.problems` (ERR-007).
+        let n = p.index;
         let at = match p.item {
             ProblemItem::Part => format!(
-                "part {n} ({})",
+                "part index {n} ({})",
                 self.parts
                     .get(p.index)
                     .map(|x| x.name.as_str())
                     .unwrap_or("")
             ),
-            ProblemItem::Dormer => format!("dormer {n}"),
-            ProblemItem::Chimney => format!("chimney {n}"),
-            ProblemItem::Opening => format!("roof opening {n}"),
-            ProblemItem::Window => format!("window {n}"),
+            ProblemItem::Dormer => format!("dormer index {n}"),
+            ProblemItem::Chimney => format!("chimney index {n}"),
+            ProblemItem::Opening => format!("roof opening index {n}"),
+            ProblemItem::Window => format!("window index {n}"),
         };
         let what = EdgeDef::PROBLEMS
             .iter()
@@ -288,7 +289,7 @@ impl Project {
                 other => other,
             });
         match p.edge {
-            Some(e) => format!("{at}, edge {}: {what}", e + 1),
+            Some(e) => format!("{at}, edge index {e}: {what}"),
             None => format!("{at}: {what}"),
         }
     }

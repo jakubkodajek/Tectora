@@ -99,6 +99,24 @@ test.describe("plan", () => {
   });
 });
 
+test.describe("wall labels", () => {
+  test("the selected wall's number and length stay apart, \"1 12,00\" never reads \"112,00\" (UI-001)", async ({ app, page }) => {
+    await createExample("gable", "Sedlo");
+    await openEditor(app, "Sedlo");
+    await selectWall(page, 0);
+    const label = plan(page).locator("g.edge.sel .edge-dim");
+    await expect(label).toHaveCount(1);
+    await expect(label).toHaveText(/^1\s+\d+,\d\d$/);
+    const gap = await label.evaluate((el) => {
+      const no = el.querySelector("tspan.no")!.getBoundingClientRect();
+      const len = el.querySelector("tspan.len")!.getBoundingClientRect();
+      return len.left - no.right;
+    });
+    // More than a collapsed space under the 3 px halo.
+    expect(gap).toBeGreaterThanOrEqual(5);
+  });
+});
+
 test.describe("labels of several buildings", () => {
   test("wall lengths keep off the ridge and face labels off the walls where there is room (sweep 2026-11-15)", async ({ app, page }) => {
     const id = await createExample("gable", "Dvě budovy");

@@ -33,6 +33,9 @@ use tectora_core::{Project, assistants, bundle, examples};
 
 /// AI apps "connected" in the preview besides Claude Desktop, which always
 /// shows as connected (see `ai_assistants` below).
+/// Example jobs seeded at start (example id, job id), named in the UI's
+/// language by `name_seeded_examples` (as the app does, UX-012).
+static SEEDED: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
 static PREVIEW_CONNECTED: std::sync::Mutex<Vec<assistants::Assistant>> =
     std::sync::Mutex::new(Vec::new());
 
@@ -281,9 +284,13 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             to_json(store.save(arg(a, "id")?, &project)?)
         }
         "normalize_project" => to_json(arg::<Project>(a, "project")?),
-        "delete_project" => {
-            store.delete(&id()?, USER_ACTOR, "Deleted in the app")?;
-            Ok(Value::Null)
+        "delete_project" => to_json(store.delete(&id()?, USER_ACTOR, "Deleted in the app")?),
+        "list_deleted" => to_json(store.trash()),
+        "restore_deleted" => to_json(store.restore(&arg::<String>(a, "entry")?)?),
+        "name_seeded_examples" => {
+            let names: std::collections::HashMap<String, String> = arg(a, "names")?;
+            let seeded = std::mem::take(&mut *SEEDED.lock().unwrap_or_else(|e| e.into_inner()));
+            to_json(examples::rename_seeded(store, &seeded, &names)?)
         }
         "duplicate_project" => {
             let source = id()?;
@@ -489,15 +496,21 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         }
         "answer_folder_request" => {
             let allow = a.get("allow").and_then(Value::as_bool).unwrap_or(false);
+            let shown = a
+                .get("changes")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
             let next = Settings::load()
-                .answer_folder_request(allow)
+                .answer_folder_request(&shown, allow)
                 .map_err(|e| e.code().to_string())?;
             next.save().map_err(|e| e.code().to_string())?;
             Ok(next.describe())
         }
         "answer_file_request" => {
             let allow = a.get("allow").and_then(Value::as_bool).unwrap_or(false);
-            let next = Settings::load().answer_file_request(allow);
+            let shown = a.get("path").and_then(Value::as_str).unwrap_or_default();
+            let next = Settings::load().answer_file_request(std::path::Path::new(shown), allow);
             next.save().map_err(|e| e.code().to_string())?;
             Ok(next.describe())
         }
@@ -762,8 +775,13 @@ fn main() -> std::io::Result<()> {
     if store.list().is_empty() {
         // Same first-run seed as the app, plus a few more shapes to look at.
         for id in ["gable", "l-shape", "hip", "t-shape"] {
-            if let Some(example) = examples::find(id) {
-                let _ = store.save(None, &example.project());
+            if let Some(example) = examples::find(id)
+                && let Ok(job) = store.save(None, &example.project())
+            {
+                SEEDED
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((id.to_string(), job));
             }
         }
     }

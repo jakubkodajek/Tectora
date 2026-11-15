@@ -8,6 +8,7 @@
   import PlaceBar from "./PlaceBar.svelte";
   import { lastStep } from "./drawstep";
   import { stepWall, wallStepKey } from "./wallstep";
+  import { deleteKeyHint, drawKeyHint, editorTakesUndo, isDrawKey, isMacPlatform, shortcut, undoKey } from "./keys";
   import Icon from "./Icon.svelte";
   import JobPanel from "./JobPanel.svelte";
   import LanguagePicker from "./LanguagePicker.svelte";
@@ -44,6 +45,8 @@
   import { changedEdges, changedItems, describeChange, describeFigure, ghostOf } from "./changes";
   import { wallNotes } from "./wallnotes";
   import { merge3 } from "./merge";
+  import { anchor, stillThere } from "./anchor";
+  import { roofState } from "./results";
   import { isTyping, releaseLeaveGuard, setLeaveGuard } from "./leave";
   import { PendingEdits, exclusive } from "./inflight";
   import { m2, num } from "./format";
@@ -140,7 +143,7 @@
   let drawing = $state<Point2[] | null>(null);
   let dormerSel = $state<number | null>(null);
   /** The dormer dialog: a new dormer (index null) or dormer `index`. */
-  let dormerDlg = $state<{ index: number | null; params: DormerParams } | null>(null);
+  let dormerDlg = $state<{ index: number | null; key: string; params: DormerParams } | null>(null);
   let placing = $state<false | "dormer" | "chimney" | "window" | "hole" | "line" | "face">(false);
   // Hand-drawn roof lines and faces (DACAD: Dachlinieneingabe, Neue Dachfläche).
   let manualSel = $state<ManualSel>(null);
@@ -177,7 +180,7 @@
   let std = $state<{ part: RoofPart | null; mode: "add" | "replace" } | null>(null);
   let plan: PlanView | undefined = $state();
   // Round-roof helper on the selected wall and the one facing it.
-  let round = $state<{ part: number; a: number; b: number; span: number; eave: number; overhang: number; arc: Arc | null; request: HelperRequest | null } | null>(null);
+  let round = $state<{ part: number; key: string; a: number; b: number; span: number; eave: number; overhang: number; arc: Arc | null; request: HelperRequest | null } | null>(null);
   // The wall facing the selected one, from the core (`roof_helper_context`):
   // the round-roof button shows only where there is one. Asked again, after a
   // pause, whenever the selected part's walls change.
@@ -436,8 +439,34 @@
     scheduleSave();
   }
 
-  const undo = () => at > 0 && restore(at - 1);
-  const redo = () => at < history.length - 1 && restore(at + 1);
+  /**
+   * The step that closed a drawn outline, with the corners drawn: undoing
+   * that step opens the draw bar again with them, so one wrong wall is
+   * fixed without drawing the whole building again (UX-004).
+   */
+  let finished: { step: string; corners: Point2[] } | null = null;
+  /** The corners the last undo reopened, to close the draw bar again on redo. */
+  let reopened: string | null = null;
+
+  function undo() {
+    if (at <= 0) return;
+    const reopen = !drawing && finished && history[at] === finished.step ? finished.corners : null;
+    restore(at - 1);
+    if (reopen) {
+      selection = null;
+      placing = false;
+      drawing = reopen.map((p) => ({ ...p }));
+      reopened = JSON.stringify(reopen);
+    }
+  }
+
+  function redo() {
+    if (at >= history.length - 1) return;
+    // Redo of the closed outline: the building comes back, the draw bar goes.
+    if (drawing && reopened === JSON.stringify($state.snapshot(drawing))) drawing = null;
+    reopened = null;
+    restore(at + 1);
+  }
 
   async function load(initial: boolean) {
     const gen = saveGen;
@@ -468,6 +497,9 @@
       const merged = !initial && (saveState === "dirty" || saveState === "failed") && project && lastSaved;
       project = merged ? merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, p) : p;
       lastSaved = json;
+      // A dialog open on a part the outside save removed or changed must not
+      // act on whatever part now has its index (ERRU-010).
+      if (!initial) closeStaleDialogs();
       if (initial) {
         await migrateLocalReview();
         history = [snapshot()];
@@ -609,21 +641,45 @@
     }
   }
 
+  /**
+   * A dialog's part is still at its index as it was when the dialog opened.
+   * An outside save (AI, CLI) that removed or changed it closes the dialog
+   * with a note instead of acting on another part (ERRU-010).
+   */
+  function dialogPartThere(d: { part: number; key: string }): boolean {
+    if (stillThere(project?.parts, { index: d.part, key: d.key })) return true;
+    closeStaleDialogs();
+    return false;
+  }
+
+  /** Closes the dialogs whose part or dormer an outside save removed or changed (ERRU-010). */
+  function closeStaleDialogs() {
+    const parts = project?.parts;
+    let closed = false;
+    if (calc && !stillThere(parts, { index: calc.part, key: calc.key })) (calc = null), (closed = true);
+    if (xform && !stillThere(parts, { index: xform.part, key: xform.key })) (xform = null), (closed = true);
+    if (round && !stillThere(parts, { index: round.part, key: round.key })) (round = null), (closed = true);
+    if (dormerDlg && dormerDlg.index !== null && !stillThere(project?.dormers, { index: dormerDlg.index, key: dormerDlg.key }))
+      (dormerDlg = null), (closed = true);
+    if (closed) info(t("editor.dialogStale"));
+  }
+
   // Calculation helpers on the selected wall.
-  let calc = $state<{ part: number; edge: number; request: HelperRequest | null } | null>(null);
+  let calc = $state<{ part: number; key: string; edge: number; request: HelperRequest | null } | null>(null);
 
   /** The move / rotate / mirror / copy dialog for the selected part (DACAD: Bearbeiten). */
-  let xform = $state<{ part: number; edge: number | null; mode: TransformMode; op: TransformOp | null } | null>(null);
+  let xform = $state<{ part: number; key: string; edge: number | null; mode: TransformMode; op: TransformOp | null } | null>(null);
 
   function openTransform() {
     if (!project || !selection) return;
-    xform = { part: selection.part, edge: selection.edge, mode: "move", op: null };
+    xform = { part: selection.part, key: anchor(project.parts, selection.part).key, edge: selection.edge, mode: "move", op: null };
   }
 
   /** The dialog's OK: the core moves, copies or shifts (the MCP tool transform_part / the wall shift). */
   const applyTransform = () => pendingEdits.track(applyTransformNow());
   async function applyTransformNow() {
     if (!project || !xform?.op) return;
+    if (!dialogPartThere(xform)) return;
     const op = xform.op;
     const pi = xform.part;
     const before = JSON.stringify($state.snapshot(project));
@@ -660,6 +716,7 @@
   /** The dialog's OK: the core applies the helper's values (the MCP tool roof_helper with apply). */
   async function applyCalc() {
     if (!project || !calc?.request) return;
+    if (!dialogPartThere(calc)) return;
     await applyHelper(calc.part, calc.edge, calc.request);
     calc = null;
   }
@@ -695,6 +752,7 @@
     const e = project.parts[part].edges[edge];
     round = {
       part,
+      key: anchor(project.parts, part).key,
       a: edge,
       b: c.opposite,
       span: c.span,
@@ -708,6 +766,7 @@
   /** Sets both walls to the arc's pitch and breaks (DACAD: Runddach), as the core works them out. */
   async function applyRound() {
     if (!project || !round?.arc || !round.request) return;
+    if (!dialogPartThere(round)) return;
     const r = round;
     round = null;
     await applyHelper(r.part, r.a, r.request!);
@@ -823,15 +882,30 @@
   }
 
   /** Changes an edge length by moving its end vertex along the edge. */
-  function setLength(len: number) {
-    if (!project || !selection) return;
-    const es = project.parts[selection.part].edges;
-    const a = es[selection.edge].start;
-    const b = es[(selection.edge + 1) % es.length].start;
-    const cur = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-    b.x = +(a.x + ((b.x - a.x) * len) / cur).toFixed(3);
-    b.y = +(a.y + ((b.y - a.y) * len) / cur).toFixed(3);
+  /**
+   * A typed wall length: the core moves the end corner and the corners after
+   * it along the wall, so the angles stay and a rectangle stays a rectangle
+   * (UX-005, the MCP tool's `set_length`). Resolves to false when refused.
+   */
+  const setLength = (len: number) => pendingEdits.track(setLengthNow(len));
+  async function setLengthNow(len: number): Promise<boolean | string> {
+    if (!project || !selection) return false;
+    const { part, edge } = selection;
+    const was = project.parts[part];
+    if (!was) return false;
+    const before = JSON.stringify($state.snapshot(was));
+    let next: RoofPart;
+    try {
+      next = await api.setWallLength($state.snapshot(was) as RoofPart, edge, len);
+    } catch (e) {
+      notifyError(e, "calc");
+      return false;
+    }
+    // Only onto the part the length was typed for: an edit or an AI save in between wins.
+    if (!project?.parts[part] || JSON.stringify($state.snapshot(project.parts[part])) !== before) return false;
+    project.parts[part].edges = next.edges;
     commit();
+    return true;
   }
 
   function deleteVertex() {
@@ -928,13 +1002,13 @@
     const host = roofHeightAt(result, { x: x - Math.sin(angle) * 0.01, y: y + Math.cos(angle) * 0.01 });
     const eave = +((host ?? presets.eave_height) + 1).toFixed(2);
     // As DACAD's dormer dialog: the dormer is placed when its window says OK.
-    dormerDlg = { index: null, params: defaultParams("gable", { x, y }, angle, eave) };
+    dormerDlg = { index: null, key: "", params: defaultParams("gable", { x, y }, angle, eave) };
   }
 
   function editDormer() {
     if (!project || dormerSel === null) return;
     const p = parseDormer(project.dormers[dormerSel]);
-    if (p.kind !== "general") dormerDlg = { index: dormerSel, params: p };
+    if (p.kind !== "general") dormerDlg = { index: dormerSel, key: anchor(project.dormers, dormerSel).key, params: p };
   }
 
   async function applyDormerDialog() {
@@ -943,6 +1017,11 @@
     await tick();
     await pendingEdits.settled();
     if (!project || !dormerDlg) return;
+    if (dormerDlg.index !== null && !stillThere(project.dormers, { index: dormerDlg.index, key: dormerDlg.key })) {
+      dormerDlg = null;
+      info(t("editor.dialogStale"));
+      return;
+    }
     const d = buildDormer($state.snapshot(dormerDlg.params) as DormerParams);
     const i = dormerDlg.index;
     if (i === null || i >= project.dormers.length) {
@@ -1453,7 +1532,7 @@
       const turns = it.kind !== "window" && it.kind !== "dormer";
       entries = [
         { label: t("menu.properties"), icon: "sliders", action: () => openProperties(it) },
-        { label: t("menu.duplicate"), icon: "copy", hint: "Ctrl+D", action: () => duplicateItem(it) },
+        { label: t("menu.duplicate"), icon: "copy", hint: keys("Ctrl+D"), action: () => duplicateItem(it) },
         ...(turns
           ? [
               { label: t("menu.rotateLeft"), icon: "undo", action: () => turnItem(it, 90) },
@@ -1462,7 +1541,7 @@
           : []),
         ...(it.kind === "chimney" || it.kind === "hole" ? [{ label: t("menu.alignWall"), icon: "fit", action: () => alignItem(it) }] : []),
         { sep: true },
-        { label: t("menu.delete"), icon: "trash", danger: true, hint: "Del", action: () => removeItem(it) },
+        { label: t("menu.delete"), icon: "trash", danger: true, hint: deleteKeyHint(isMac), action: () => removeItem(it) },
       ];
     } else if (target.type === "edge") {
       const { part, edge } = target;
@@ -1488,7 +1567,7 @@
           { label: t("menu.insertPoint"), icon: "plus", action: () => insertVertex(part, edge, on.x, on.y) },
           { label: t("edge.addMarker"), icon: "right", action: insertMarker },
         ]),
-        ...(!marker && !gable ? [{ label: t("calc.button"), icon: "chart", action: () => (calc = { part, edge, request: null }) }] : []),
+        ...(!marker && !gable ? [{ label: t("calc.button"), icon: "chart", action: () => (calc = { part, key: anchor(project?.parts, part).key, edge, request: null }) }] : []),
         { sep: true },
         ...partEntries(part),
       ];
@@ -1501,7 +1580,7 @@
       const canDelete = isMarker(es[vertex]) || es.filter((x) => !isMarker(x)).length > 3;
       entries = [
         { label: t("menu.properties"), icon: "sliders", action: focusProperties },
-        { label: t("menu.deletePoint"), icon: "trash", danger: true, hint: "Del", disabled: !canDelete, action: deleteVertex },
+        { label: t("menu.deletePoint"), icon: "trash", danger: true, hint: deleteKeyHint(isMac), disabled: !canDelete, action: deleteVertex },
       ];
     } else if (target.type === "part") {
       const pi = target.part;
@@ -1513,7 +1592,7 @@
       entries = [
         ...add,
         ...(add.length ? [{ sep: true } as MenuEntry] : []),
-        { label: t("tool.draw"), icon: "draw", hint: "Insert", action: startDraw },
+        { label: t("tool.draw"), icon: "draw", hint: drawKeyHint(isMac), action: startDraw },
         { label: t("tool.standard"), icon: "house", action: () => (std = { part: null, mode: "add" }) },
         { label: t("plan.fit"), icon: "fit", action: () => plan?.fit() },
       ];
@@ -1686,6 +1765,9 @@
     drawing = null;
     selection = { part: n, edge: 0 };
     commit();
+    // Undo right after this step reopens the outline with its corners
+    // instead of leaving an empty plan (UX-004).
+    finished = { step: history[at], corners: JSON.parse(drawn) };
     setTimeout(() => plan?.fit(), 0);
   }
 
@@ -1723,22 +1805,21 @@
 
   // macOS keyboards have no Delete key (their "delete" sends Backspace) and
   // show shortcuts with ⌘.
-  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
-  const keys = (k: string) => (isMac ? k.replace("Ctrl+Shift+", "⇧⌘").replace("Ctrl+", "⌘") : k);
+  const isMac = isMacPlatform();
+  const keys = (k: string) => shortcut(k, isMac);
 
   function onkeydown(e: KeyboardEvent) {
     const mod = e.metaKey || e.ctrlKey;
     const del = e.key === "Delete" || (e.key === "Backspace" && !mod);
     const tag = (e.target as HTMLElement).tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    // A number field with its value stored (nothing typed since Enter):
+    // Ctrl+Z undoes that change, not only the field's text (UX-001).
+    if ((tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") && !editorTakesUndo(e.target as HTMLElement, e)) return;
     // A dialog is open: its keys (Escape closes it) must not edit the roof behind it.
     if (document.querySelector('[role="dialog"]')) return;
-    if (mod && e.key.toLowerCase() === "z") {
+    if (undoKey(e)) {
       e.preventDefault();
-      e.shiftKey ? redo() : undo();
-    } else if (mod && e.key.toLowerCase() === "y") {
-      e.preventDefault();
-      redo();
+      undoKey(e) === "redo" ? redo() : undo();
     } else if (mod && e.key.toLowerCase() === "s") {
       e.preventDefault();
       save();
@@ -1754,7 +1835,9 @@
     } else if (e.key === "F3") {
       e.preventDefault();
       setLayout(prefs.layout === "3d" ? "split" : "3d");
-    } else if (e.key === "Insert") {
+    } else if (isDrawKey(e)) {
+      // Insert, or Ctrl+B / ⌘B: a Mac keyboard has no Insert key (UX-011).
+      e.preventDefault();
       startDraw();
     } else if (e.key === "Escape" && placing) {
       placing = false;
@@ -1812,7 +1895,7 @@
     </div>
     <div class="group">
       <button class="tool" class:on={!!std} aria-pressed={!!std} onclick={() => (std = { part: null, mode: project?.parts.length && selection ? "replace" : "add" })} title={t("tool.standardHint")}><Icon name="house" /><span>{t("tool.standard")}</span></button>
-      <button class="tool" class:on={!!drawing} aria-pressed={!!drawing} onclick={toggleDraw} title="{t('tool.drawHint')} (Insert)"><Icon name="draw" /><span>{t("tool.draw")}</span></button>
+      <button class="tool" class:on={!!drawing} aria-pressed={!!drawing} onclick={toggleDraw} title="{t('tool.drawHint')} ({drawKeyHint(isMac)})"><Icon name="draw" /><span>{t("tool.draw")}</span></button>
       <button class="tool" class:on={placing === "dormer"} aria-pressed={placing === "dormer"} disabled={!project?.parts.length} onclick={() => togglePlacing("dormer")} title={t("tool.dormerHint")}><Icon name="roof" /><span>{t("tool.dormer")}</span></button>
       <button class="tool" class:on={placing === "chimney"} aria-pressed={placing === "chimney"} disabled={!project?.parts.length} onclick={() => togglePlacing("chimney")} title={t("tool.chimneyHint")}><Icon name="chimney" /><span>{t("tool.chimney")}</span></button>
       <button class="tool" class:on={placing === "window"} aria-pressed={placing === "window"} disabled={!project?.parts.length} onclick={() => togglePlacing("window")} title={t("tool.windowHint")}><Icon name="window" /><span>{t("tool.window")}</span></button>
@@ -1977,6 +2060,9 @@
         {:else}
           <RoofDefBar
             {project}
+            {result}
+            ondraw={startDraw}
+            onstandard={() => (std = { part: null, mode: "add" })}
             bind:selection
             onchange={patchEdge}
             onapplyall={applyAll}
@@ -1986,7 +2072,7 @@
             ondelete={deleteVertex}
             onmarker={insertMarker}
             onround={opposite !== null ? openRound : undefined}
-            oncalc={() => selection && (calc = { part: selection.part, edge: selection.edge, request: null })}
+            oncalc={() => selection && (calc = { part: selection.part, key: anchor(project?.parts, selection.part).key, edge: selection.edge, request: null })}
           />
         {/if}
       </div>
@@ -2019,7 +2105,7 @@
       <span class="coords">{cursor ? `X ${num(cursor.x)}   Y ${num(cursor.y)}` : "X —   Y —"}</span>
       <span class="opt">{t("status.snap")}</span>
       <span class="opt">{t("status.walls", { n: wallCount, p: project.parts.length })}</span>
-      {#if result}<span data-testid="status-area">{t("res.area")}: <b title={roofError ? t("res.notCalculated") : undefined}>{roofError ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
+      {#if result}<span data-testid="status-area">{t("res.area")}: <b title={roofError ? t(roofState(result) === "none" ? "res.notCalculated" : "res.calcPartial") : undefined}>{roofState(result) === "none" ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save">
         {#if saveState === "saved"}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
@@ -2061,7 +2147,7 @@
 
 {#if dormerDlg && project}
   <Modal title={dormerDlg.index === null ? t("dormer.dialogNew") : t("dormer.n", { n: dormerDlg.index + 1 })} width={1040} onclose={() => (dormerDlg = null)}>
-    <DormerDialog {project} bind:params={dormerDlg.params} track={(p) => pendingEdits.track(p)} />
+    <DormerDialog {project} roofFailed={!!roofError} bind:params={dormerDlg.params} track={(p) => pendingEdits.track(p)} />
     {#snippet footer()}
       <button class="btn" onclick={() => (dormerDlg = null)}>{t("common.cancel")}</button>
       <button class="btn primary" onclick={applyDormerDialog}>{t("common.ok")}</button>
@@ -2069,7 +2155,7 @@
   </Modal>
 {/if}
 
-{#if calc && project}
+{#if calc && project?.parts[calc.part]}
   <Modal title={t("calc.title")} width={760} onclose={() => (calc = null)}>
     <RoofCalcForm {project} partIndex={calc.part} edge={calc.edge} bind:request={calc.request} />
     {#snippet footer()}
@@ -2089,7 +2175,7 @@
   </Modal>
 {/if}
 
-{#if xform && project}
+{#if xform && project?.parts[xform.part]}
   <Modal title={t("xf.title")} width={680} onclose={() => (xform = null)}>
     <TransformForm part={project.parts[xform.part]} edge={xform.edge} bind:mode={xform.mode} bind:op={xform.op} />
     {#snippet footer()}

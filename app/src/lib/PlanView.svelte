@@ -770,7 +770,7 @@
           {#if labels.dims[pi]?.[i]}
             {@const lp = labels.dims[pi][i]!}
             {@const dt = dimText(pi, i)}
-            <text x={lp.x} y={lp.y} class="dim edge-dim"><tspan class="no">{dt.no}</tspan>  {dt.len}</text>
+            <text x={lp.x} y={lp.y} class="dim edge-dim"><tspan class="no">{dt.no}</tspan> <tspan class="len" dx="4">{dt.len}</tspan></text>
           {/if}
         </g>
       {/each}
@@ -1281,6 +1281,12 @@
   .edge.sel .edge-dim {
     font-weight: 700;
     fill: var(--text);
+  }
+  /* SVG collapses the space between number and length, and the bold length
+     of the selected wall ran into its number ("1 12,00" read as "112,00",
+     UI-001): a real gap, and the length in normal weight. */
+  .edge.sel .edge-dim .len {
+    font-weight: 500;
   }
   svg :global(*:focus) {
     outline: none;

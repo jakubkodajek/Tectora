@@ -176,6 +176,31 @@ pub fn clear_roof(project: &mut Project) -> bool {
     had
 }
 
+/// The steepest pitch a hand-drawn face takes, degrees (the editor's field
+/// stops here; MCP `set_manual` uses the same bound, MATH-006).
+pub const MAX_MANUAL_FACE_PITCH_DEG: f64 = 89.9;
+
+/// Refuses a hand-drawn face pitch outside `0..=89.9` and a typed line
+/// length below 0 or not finite (MATH-005, MATH-006).
+pub fn check_manual_face_pitch(pitch_deg: f64) -> Result<(), String> {
+    if pitch_deg.is_finite() && (0.0..=MAX_MANUAL_FACE_PITCH_DEG).contains(&pitch_deg) {
+        Ok(())
+    } else {
+        Err(format!(
+            "pitch_deg must be between 0 and {MAX_MANUAL_FACE_PITCH_DEG} (got {pitch_deg})"
+        ))
+    }
+}
+
+/// See [`check_manual_face_pitch`]: a typed length must be a number of 0 or more.
+pub fn check_manual_line_length(length: f64) -> Result<(), String> {
+    if length.is_finite() && length >= 0.0 {
+        Ok(())
+    } else {
+        Err(format!("length must be 0 or more (got {length})"))
+    }
+}
+
 /// A roof window whose `width × height` is more than what is left of the
 /// roof face it sits on (after the windows before it): its deduction would
 /// make the face area negative.
@@ -228,6 +253,24 @@ pub fn check_windows(project: &Project) -> Result<(), OversizeWindow> {
         face.area -= area;
     }
     Ok(())
+}
+
+/// [`check_windows`] for a save that changes `before` into `after`, used by
+/// every write path (MCP `commit`): refuses when a window no longer fits
+/// its face because of the edit (a window moved onto a smaller face, the
+/// flat roof turned on, a wall moved). A job that already had an oversize
+/// window stays editable, so the user can fix it step by step (HUNTC-003).
+pub fn check_windows_change(
+    before: Option<&Project>,
+    after: &Project,
+) -> Result<(), OversizeWindow> {
+    let Err(e) = check_windows(after) else {
+        return Ok(());
+    };
+    match before {
+        Some(b) if check_windows(b).is_err() => Ok(()),
+        _ => Err(e),
+    }
 }
 
 /// Turns hand-drawn face `index` into a building with the same outline:
@@ -383,6 +426,38 @@ mod tests {
             height: 5.0,
         });
         assert_eq!(check_windows(&p).unwrap_err().index, 2);
+    }
+
+    #[test]
+    fn a_change_that_makes_a_window_too_large_is_refused_on_every_roof_kind() {
+        use crate::model::RoofWindow;
+        let mut before = gable_12x8();
+        before.windows.push(RoofWindow {
+            x: 40.0,
+            y: 40.0,
+            width: 10.0,
+            height: 9.0,
+        });
+        // Beside the roof: fine. Moved onto it: refused.
+        assert!(check_windows_change(Some(&before), &before).is_ok());
+        let mut moved = before.clone();
+        moved.windows[0].x = 1.0;
+        moved.windows[0].y = 0.0;
+        assert_eq!(
+            check_windows_change(Some(&before), &moved)
+                .unwrap_err()
+                .index,
+            0
+        );
+        // The flat roof gives a face the window does not fit either.
+        let mut flat = before.clone();
+        flat.flat_roof = true;
+        flat.windows[0].x = 1.0;
+        flat.windows[0].y = 1.0;
+        flat.windows[0].width = 30.0;
+        assert!(check_windows_change(Some(&before), &flat).is_err());
+        // A job that was already wrong can still be edited.
+        assert!(check_windows_change(Some(&moved), &moved).is_ok());
     }
 
     #[test]

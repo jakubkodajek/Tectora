@@ -184,4 +184,39 @@ test.describe("one bad building", () => {
     expect(r.parts[0].geometry.error ?? null).toBeNull();
     expect(r.problems[0].code).toBe("zero_length_wall");
   });
+
+  test("a building the core gives no roof leaves the others their figures in Results (ERRU-003)", async ({ app, page }) => {
+    // The two buildings of the core test a_building_the_core_fails_on_alone_leaves_the_others_their_roofs.
+    const id = await createExample("hip", "Dvě");
+    await withItems(id, (p) => {
+      const wall = (x: number, y: number, pitch: number, eave: number, overhang: number) => ({ ...structuredClone(p.parts[0].edges[0]), start: { x, y }, pitch_deg: pitch, eave_height: eave, overhang, breaks: [], half_hip: null });
+      const hh = { ...wall(6, 12.8, 90, 3, 0.5), half_hip: { height: 5, pitch_deg: 50 } };
+      p.parts = [
+        { ...p.parts[0], name: "A", edges: [wall(0, 0, 30, 3, 0.6), wall(6.2, 0, 90, 3, 0.6), wall(6.2, 5.9, 30, 3, 0.6), wall(0, 5.9, 90, 3, 0.6)] },
+        { ...p.parts[0], name: "B", edges: [wall(2.2, 5.9, 45, 3, 0), wall(6, 5.9, 30, 2.5, 0), hh, wall(2.2, 12.8, 90, 3.5, 0.5)] },
+      ];
+    });
+    const r = await bridge<any>("calc", { project: await loadProject(id) });
+    expect(r.parts[0].geometry.error ?? null).toBeNull();
+    expect(r.parts[1].geometry.error).toBeTruthy();
+    await openEditor(app, "Dvě");
+    await page.locator("aside .tabs").getByRole("tab", { name: cs("dock.results") }).click();
+    const results = page.locator(".results");
+    await expect.poll(() => shownArea(page)).toBeCloseTo(r.totals.roof_area, 1);
+    await expect(results.getByTestId("res-partial")).toHaveText(cs("res.partialNote", { names: "B" }));
+    await expect(results.getByTestId("res-not-calculated")).toHaveCount(0);
+    // Only building B's row is a dash.
+    const rows = results.locator("table.areas tr");
+    await expect(rows.nth(0)).toContainText("A");
+    await expect(rows.nth(0).locator("td.v")).toHaveText(/m²/);
+    await expect(rows.nth(1)).toContainText("B");
+    await expect(rows.nth(1).locator("td.v")).toHaveText("—");
+    // Lengths are shown, and the status bar has the area with the note.
+    const eave = results.getByTestId("res-lines").locator("tr").first().locator("td.v");
+    await expect(eave).toHaveText(/\d/);
+    await expect(page.getByTestId("status-area").locator("b")).toHaveText(/m²/);
+    await expect(page.getByTestId("status-area").locator("b")).toHaveAttribute("title", cs("res.calcPartial"));
+    // Export still waits for the building without a roof.
+    await expect(tool(page, "tool.export")).toBeDisabled();
+  });
 });
