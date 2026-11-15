@@ -295,6 +295,15 @@ fn roof_faces(geo: &RoofGeometry) -> impl Iterator<Item = &RoofFace> {
         .filter(|f| f.edge != usize::MAX && f.pitch_deg < 89.9 && f.polygon.len() >= 3)
 }
 
+/// The part's own sloped faces whatever their outline: those of
+/// [`roof_faces`] and the ones the calculation left with fewer than three
+/// corners, whose reported area still counts.
+fn area_faces(geo: &RoofGeometry) -> impl Iterator<Item = &RoofFace> {
+    geo.faces
+        .iter()
+        .filter(|f| f.edge != usize::MAX && f.pitch_deg < 89.9)
+}
+
 fn plan(face: &RoofFace) -> Vec<Point2> {
     face.polygon
         .iter()
@@ -461,10 +470,16 @@ pub fn measure(outline: &[Vec<Point2>], geo: &RoofGeometry) -> Measures {
             }
         }
     }
+    // Every face that reports an area, also one without an outline: the
+    // calculation can give a face one or two corners and tens of square
+    // metres (a pitch break at the ridge height; audit MATH-001), and that
+    // area is in the roof total.
     let (mut reported, mut polygons) = (0.0, 0.0);
-    for f in &faces {
+    for f in area_faces(geo) {
         reported += f.area + f.deducted;
-        polygons += area3(&f.polygon);
+        if f.polygon.len() >= 3 {
+            polygons += area3(&f.polygon);
+        }
     }
     if polygons > 0.0 {
         m.area = (reported - polygons).abs() / polygons;
@@ -492,7 +507,7 @@ pub fn check(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<Vec<RoofWarning>>
             if joined && roofed && geo.error.is_none() && geo.faces.is_empty() {
                 return vec![RoofWarning::new(WarningKind::Covered, 0.0)];
             }
-            let mut w = warnings(&outline, geo, joined);
+            let mut w = warnings(&outline, geo, parts.get(i).filter(|_| !joined));
             if let Some(part) = parts.get(i) {
                 w.extend(plane_over_wall(part, geo));
             }
@@ -501,17 +516,27 @@ pub fn check(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<Vec<RoofWarning>>
         .collect()
 }
 
-fn warnings(outline: &[Vec<Point2>], geo: &RoofGeometry, joined: bool) -> Vec<RoofWarning> {
+/// The warnings of one roof measured against `outline`. `alone`: the
+/// building, when its roof is not joined with another one's.
+fn warnings(
+    outline: &[Vec<Point2>],
+    geo: &RoofGeometry,
+    alone: Option<&RoofPart>,
+) -> Vec<RoofWarning> {
     if geo.error.is_some() || geo.faces.is_empty() {
         return Vec::new();
     }
+    let joined = alone.is_none();
     let m = measure(outline, geo);
     let mut out = Vec::new();
     if m.outside > OUTSIDE_TOL {
         out.push(RoofWarning::new(WarningKind::OutsideOutline, m.outside));
     }
-    if m.overlap > OVERLAP_TOL {
-        out.push(RoofWarning::new(WarningKind::OverlappingFaces, m.overlap));
+    // Faces of one building standing over its roof count like faces
+    // passing through each other.
+    let overlap = m.overlap + alone.map_or(0.0, |part| faces_over_roof(part, geo));
+    if overlap > OVERLAP_TOL {
+        out.push(RoofWarning::new(WarningKind::OverlappingFaces, overlap));
     }
     if !joined && m.area > AREA_TOL {
         out.push(RoofWarning::new(WarningKind::AreaMismatch, m.area));
@@ -866,35 +891,38 @@ fn wall_plane(part: &RoofPart, i: usize) -> Option<((f64, f64), f64)> {
     })
 }
 
+/// Whether `p` lies in the overhang strip of the wall of `face`: between
+/// the wall's line and its eave line.
+fn in_overhang_strip(part: &RoofPart, face: &RoofFace, p: Coord<f64>) -> bool {
+    let n = part.edges.len();
+    let (Some(e), Some(next)) = (
+        part.edges.get(face.edge),
+        part.edges.get((face.edge + 1) % n.max(1)),
+    ) else {
+        return false;
+    };
+    let (a, b) = (e.start, next.start);
+    let len = a.distance(b);
+    if len <= 1e-6 {
+        return false;
+    }
+    let out = ((p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x)) / len;
+    out >= -NEAR && out <= e.overhang + NEAR
+}
+
 /// Plan area of the overlaps of two faces where one lies clear above the
 /// other (at least [`crate::coplanar::MERGE_TOL`]) at every corner of the
 /// overlap and the overlap lies in the upper face's own overhang strip,
 /// between its wall's line and its eave line. Nothing else explains a plan
 /// area covered more than once.
 fn explained_overlap(part: &RoofPart, geo: &RoofGeometry) -> f64 {
-    let n = part.edges.len();
     let faces: Vec<&RoofFace> = roof_faces(geo).collect();
     let plans: Vec<MultiPolygon<f64>> = faces
         .iter()
         .map(|f| MultiPolygon::new(vec![to_geo(&plan(f))]))
         .collect();
     let planes: Vec<Option<[f64; 3]>> = faces.iter().map(|f| plane_of(&f.polygon)).collect();
-    // Whether `p` lies in the overhang strip of the wall of `face`.
-    let in_strip = |face: &RoofFace, p: Coord<f64>| -> bool {
-        let (Some(e), Some(next)) = (
-            part.edges.get(face.edge),
-            part.edges.get((face.edge + 1) % n),
-        ) else {
-            return false;
-        };
-        let (a, b) = (e.start, next.start);
-        let len = a.distance(b);
-        if len <= 1e-6 {
-            return false;
-        }
-        let out = ((p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x)) / len;
-        out >= -NEAR && out <= e.overhang + NEAR
-    };
+    let in_strip = |face: &RoofFace, p: Coord<f64>| in_overhang_strip(part, face, p);
     let mut sum = 0.0;
     for i in 0..faces.len() {
         for j in i + 1..faces.len() {
@@ -926,6 +954,66 @@ fn explained_overlap(part: &RoofPart, geo: &RoofGeometry) -> f64 {
         }
     }
     sum
+}
+
+/// Share of a face's plan that other faces of the roof must lie under
+/// before the face stands over the roof instead of being part of it.
+const OVER_ROOF: f64 = 0.9;
+
+/// Plan area of the faces of one building's roof that stand over the
+/// roof: nearly all of the face ([`OVER_ROOF`]) lies above other faces of
+/// the same roof, touching them at most along a line, and not in its own
+/// wall's overhang strip. A roof's faces lie side by side; only an
+/// overhang reaches over a lower eave. The calculation leaves such faces
+/// above the ridge for a pitch break at the ridge height (audit
+/// MATH-001), and their area is in the roof total.
+fn faces_over_roof(part: &RoofPart, geo: &RoofGeometry) -> f64 {
+    let faces: Vec<&RoofFace> = roof_faces(geo).collect();
+    let plans: Vec<MultiPolygon<f64>> = faces
+        .iter()
+        .map(|f| MultiPolygon::new(vec![to_geo(&plan(f))]))
+        .collect();
+    let planes: Vec<Option<[f64; 3]>> = faces.iter().map(|f| plane_of(&f.polygon)).collect();
+    let mut over = vec![0.0; faces.len()];
+    for i in 0..faces.len() {
+        for j in i + 1..faces.len() {
+            let (Some(pi), Some(pj)) = (planes[i], planes[j]) else {
+                continue;
+            };
+            for piece in plans[i].intersection(&plans[j]) {
+                let a = piece.unsigned_area();
+                if a < MIN_PIECE {
+                    continue;
+                }
+                let ring = &piece.exterior().0;
+                let pts = &ring[..ring.len().saturating_sub(1)];
+                let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+                for p in pts {
+                    let d = (pi[0] - pj[0]) * p.x + (pi[1] - pj[1]) * p.y + (pi[2] - pj[2]);
+                    lo = lo.min(d);
+                    hi = hi.max(d);
+                }
+                let upper = if lo >= -Z_TOL && hi > Z_TOL {
+                    i
+                } else if hi <= Z_TOL && lo < -Z_TOL {
+                    j
+                } else {
+                    continue;
+                };
+                if !pts
+                    .iter()
+                    .all(|&p| in_overhang_strip(part, faces[upper], p))
+                {
+                    over[upper] += a;
+                }
+            }
+        }
+    }
+    (0..faces.len())
+        .map(|i| (plans[i].unsigned_area(), over[i]))
+        .filter(|&(own, over)| own > MIN_PIECE && over >= OVER_ROOF * own)
+        .map(|(own, _)| own)
+        .sum()
 }
 
 /// Whether the roof `geo` of the building `part` (counter-clockwise,
