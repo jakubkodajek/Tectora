@@ -761,14 +761,21 @@ fn own_polygons_area(roof: &Roof) -> f64 {
 #[test]
 fn departed_roofs_far_from_the_origin_keep_their_area() {
     let mut bad = Vec::new();
-    // (name, building, turn in degrees, rounding to centimetres, offset)
-    let cases: [(&str, Project, f64, bool, f64); 8] = [
+    // (name, building, turn in degrees, rounding to centimetres, offset).
+    // Merged-plane roofs report the area of their own f64 polygons, so the
+    // two must agree. A wing joined as a lean-to reports the core's exact
+    // face areas while its polygons sit on the join's 1 cm grid (about
+    // 0.03 m2 apart even at the origin), so for those only far == origin
+    // is asserted.
+    let merged: [(&str, Project, f64, bool, f64); 6] = [
         ("T 2.9", jakub_t(2.9), 33.0, false, 1000.0),
         ("T 2.9", jakub_t(2.9), 61.7, false, 2000.0),
         ("T 2.9", jakub_t(2.9), 17.3, false, 1000.0),
         ("T 2.9", jakub_t(2.9), 17.3, false, 200.0),
         ("T 2.9", jakub_t(2.9), 17.3, true, 1000.0),
         ("T 2.9", jakub_t(2.9), 17.3, true, 500.0),
+    ];
+    let joined: [(&str, Project, f64, bool, f64); 2] = [
         ("T 2.0", jakub_t(2.0), 33.0, true, 1000.0),
         (
             "two wings",
@@ -778,7 +785,11 @@ fn departed_roofs_far_from_the_origin_keep_their_area() {
             1000.0,
         ),
     ];
-    for (name, p, deg, cm, off) in cases {
+    let cases = merged
+        .into_iter()
+        .map(|c| (c, true))
+        .chain(joined.into_iter().map(|c| (c, false)));
+    for ((name, p, deg, cm, off), polygons_exact) in cases {
         let at_origin = if cm {
             turned_cm(&p, deg)
         } else {
@@ -792,7 +803,7 @@ fn departed_roofs_far_from_the_origin_keep_their_area() {
             continue;
         }
         let own = own_polygons_area(&far);
-        if (far.area - own).abs() > 0.01 {
+        if polygons_exact && (far.area - own).abs() > 0.01 {
             bad.push(format!("{n}: reported {:.4}, own faces {own:.4}", far.area));
         }
         if (far.area - near_origin.area).abs() > 0.01 {
