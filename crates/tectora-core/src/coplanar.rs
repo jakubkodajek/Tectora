@@ -366,6 +366,9 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
             deducted,
             material,
         };
+        // The members' own outlines: a line on one of them inside the
+        // joined face lay between two members and goes with the join.
+        let member_plans: Vec<Vec<Point2>> = members.iter().map(|&k| plan(&geo.faces[k])).collect();
         let at = members.first().copied().unwrap_or(0);
         let mut faces: Vec<RoofFace> = Vec::with_capacity(geo.faces.len());
         // Where each old face is now: a member is the joined face, the
@@ -396,10 +399,16 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
         geo.faces = faces;
         // Only lines in the joined plane can lie between its faces: a line
         // of a roof under it (a wall abutment under the overhang) stays.
+        // Lines inside a member (a chimney's or an opening's own lines)
+        // stay whole.
         let lies_in = |l: &RoofLine| {
+            let mid = Point2::new((l.a[0] + l.b[0]) / 2.0, (l.a[1] + l.b[1]) / 2.0);
             [l.a, l.b]
                 .iter()
                 .all(|p| (plane.z(Point2::new(p[0], p[1])) - p[2]).abs() < IN_PLANE)
+                && member_plans
+                    .iter()
+                    .any(|m| near_boundary(m, mid, INSIDE_TOL))
         };
         let lengths = |lines: &[RoofLine]| {
             let mut by: std::collections::BTreeMap<&'static str, f64> = Default::default();
@@ -424,14 +433,27 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
         // A line inside the joined face is gone (a pitch break between two
         // faces of one pitch, a step of a few millimetres), and so is what
         // a chimney on it took off the line: else the line totals would
-        // show a negative length of a line the roof does not have.
+        // show a negative length of a line the roof does not have. Which
+        // line a deduction belongs to is not known here, so a code keeps
+        // its deductions as long as its remaining lines are long enough
+        // for them (a chimney on a pitch break that stays keeps its).
         let after = lengths(&geo.lines);
-        for (code, len) in before {
-            let mut gone = len - after.get(code).copied().unwrap_or(0.0);
+        for code in before.keys() {
+            let left = after.get(code).copied().unwrap_or(0.0);
+            let taken: f64 = geo
+                .minus_lines
+                .iter()
+                .filter(|(c, _)| c == code)
+                .map(|(_, m)| *m)
+                .sum();
+            let mut excess = taken - left;
             for (_, minus) in geo.minus_lines.iter_mut().filter(|(c, _)| c == code) {
-                let take = minus.min(gone).max(0.0);
+                if excess <= 0.0 {
+                    break;
+                }
+                let take = minus.min(excess).max(0.0);
                 *minus -= take;
-                gone -= take;
+                excess -= take;
             }
         }
         geo.minus_lines.retain(|(_, len)| *len > 1e-9);
