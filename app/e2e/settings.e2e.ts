@@ -106,6 +106,8 @@ test.describe("settings", () => {
     const nj = page.getByRole("dialog", { name: cs("new.title") });
     await nj.getByRole("tab", { name: cs("new.draw") }).click();
     await nj.getByRole("button", { name: cs("new.create") }).click();
+    // The new job is written after the click returns: wait for it (TEST-209).
+    await expect.poll(async () => (await listProjects()).length).toBe(1);
     const id = (await listProjects())[0].id;
     await clickPlan(page, 0, 0);
     const len = page.getByRole("toolbar", { name: cs("draw.title") }).getByLabel(cs("draw.length"));
