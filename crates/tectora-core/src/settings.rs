@@ -968,6 +968,31 @@ mod tests {
     }
 
     #[test]
+    fn a_damaged_ai_change_drops_only_itself_from_the_history() {
+        // TEST-106: one unreadable entry between two good ones keeps both
+        // good ones and every other setting of the file.
+        let good = |id: u64| {
+            serde_json::json!({
+                "id": id, "by": "Claude", "summary": "x",
+                "before": { "roof_defaults.pitch_deg": 40 },
+                "after": { "roof_defaults.pitch_deg": 25 },
+            })
+        };
+        let doc = serde_json::json!({
+            "locale": "de",
+            "ai_changes": [good(1), { "id": "x", "by": 3 }, good(2)],
+        });
+        let d = tmp("ai-change-damaged");
+        let path = d.join(SETTINGS_FILE);
+        fs::write(&path, doc.to_string()).unwrap();
+        let s = Settings::load_from(&path);
+        assert_eq!(s.locale.as_deref(), Some("de"), "the file was read");
+        let ids: Vec<u64> = s.ai_changes.iter().map(|c| c.id).collect();
+        assert_eq!(ids, [1, 2]);
+        assert_eq!(s.ai_changes[1].state, AiChangeState::Open);
+    }
+
+    #[test]
     fn an_ai_settings_change_is_recorded_and_the_user_can_revert_it() {
         // UX-003: MCP update_settings changed the roof defaults and the
         // language with no record, no before -> after and no Revert.
