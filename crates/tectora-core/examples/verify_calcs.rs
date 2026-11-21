@@ -717,8 +717,7 @@ fn verify(st: &mut Stats, case: &str, p: &Project) {
     let parse = |t: &str| {
         t.trim()
             .replace(',', ".")
-            .replace('\u{a0}', "")
-            .replace(' ', "")
+            .replace(['\u{a0}', ' '], "")
             .parse::<f64>()
             .ok()
     };
