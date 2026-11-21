@@ -74,6 +74,18 @@ settings; the app asks the user ("Allow AI this file?") and an allowed file
 is added to `allowed_files` (one file, never its folder). An AI client cannot
 set either key: `update_settings` does not take them.
 
+**Settings changes.** `update_settings` applies the language, theme, follow
+mode and the defaults for new roofs at once, and records each call that
+changed something in `ai_changes` in the settings file (who, the summary,
+the changed keys with their values before and after, `state`: `open`,
+`accepted`, `reverted`; the last 20 are kept). The app shows the newest open
+change in a card with the summary and before → after, with Revert (puts back
+the values it changed; a value changed again since stays) and Accept
+(`Settings::answer_ai_change`, Tauri command `answer_ai_change`). The AI tab
+lists the recent settings changes with their answer. Only the user answers;
+an AI client cannot write `ai_changes`. Folder changes are not in it: they
+stay a `folder_request` the user allows or keeps.
+
 ## What the user sees
 
 - Every write goes through `Store::save_as`, which appends an entry to

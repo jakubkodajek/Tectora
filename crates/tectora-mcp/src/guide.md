@@ -500,7 +500,12 @@ the inbox where the user puts technical drawings to build roofs from. Use the
 value, and say so in the summary. `update_settings` changes the same values as
 the app's Settings screen. A new jobs folder or drawings inbox is only a
 request: the app asks the user to allow it, and until they do the folders
-stay as they are (`settings.folder_request` shows the open request). When
+stay as they are (`settings.folder_request` shows the open request). Every
+other change applies at once and is recorded in `settings.ai_changes` with
+your name, your `summary` and the values before and after; the app shows it
+to the user, who accepts it or reverts it (the previous values come back;
+`state` is `open`, `accepted` or `reverted`). Do not change the defaults to
+build one roof: give that roof's values in the roof itself. When
 `effective.settings_error` is set, the settings file is damaged and the
 defaults (another jobs folder) are in use: tell the user before you change a
 setting (the damaged file is kept as `settings.json.bad` on the next save).

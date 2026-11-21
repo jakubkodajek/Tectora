@@ -810,7 +810,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "update_settings",
-            "description": "Change Tectora settings, same as the app's Settings screen. Pass only the keys to change; null resets a folder or the language to its default. A new projects_dir or drawings_dir is only a request: the app asks the user to allow it, and the folders stay as they are until then.",
+            "description": "Change Tectora settings, same as the app's Settings screen. Pass only the keys to change; null resets a folder or the language to its default. A new projects_dir or drawings_dir is only a request: the app asks the user to allow it, and the folders stay as they are until then. Every other change applies at once and is shown to the user with your summary and the values before and after, to accept or revert (`settings.ai_changes`).",
             "inputSchema": schema(json!({
                 "projects_dir": { "type": ["string", "null"], "description": "Absolute path of the design library folder." },
                 "drawings_dir": { "type": ["string", "null"], "description": "Absolute path of the drawings inbox; default <projects_dir>/drawings." },
@@ -1293,12 +1293,23 @@ impl Server {
             None,
         );
         let mut out = next.describe();
+        let mut notes = Vec::new();
+        if next.ai_changes.last().map(|c| c.id) != old.ai_changes.last().map(|c| c.id) {
+            // Applied at once, but the user sees it and can put the old
+            // values back (UX-003).
+            notes.push(
+                "Applied. The app shows the user this change with your summary and the values before and after, to Accept or Revert; call get_settings later to see the answer (`ai_changes`).",
+            );
+        }
         if asked {
             // The folders change only when the user allows it in the app
             // (ARCH-052); this server keeps its library until then.
-            out["note"] = json!(
-                "The folder change waits for the user: the app asks them to allow it. Until then the jobs folder and the drawings inbox stay as they are; call get_settings later to see the answer."
+            notes.push(
+                "The folder change waits for the user: the app asks them to allow it. Until then the jobs folder and the drawings inbox stay as they are; call get_settings later to see the answer.",
             );
+        }
+        if !notes.is_empty() {
+            out["note"] = json!(notes.join(" "));
         }
         Ok(out)
     }
@@ -2149,6 +2160,49 @@ mod tests {
         );
         let r = s.call_tool("get_settings", &json!({})).unwrap();
         assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn an_ai_settings_change_is_recorded_for_the_user_to_revert() {
+        // UX-003: update_settings changed the roof defaults with no record,
+        // no before -> after and no way back.
+        let _settings = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner());
+        let base =
+            std::env::temp_dir().join(format!("tectora-mcp-aichange-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        // Tests touching the settings file hold SETTINGS_FILE, so the env var is safe here.
+        unsafe { std::env::set_var("TECTORA_CONFIG_DIR", base.join("cfg")) };
+        let mut s = server();
+        let r = s
+            .call_tool(
+                "update_settings",
+                &json!({ "roof_defaults": { "pitch_deg": 25, "overhang": 0.9 }, "summary": "Company defaults from the drawings" }),
+            )
+            .unwrap();
+        assert!(r["note"].as_str().unwrap().contains("Revert"), "{r}");
+        let saved = Settings::load();
+        let change = saved.open_ai_change().cloned().expect("recorded");
+        assert_eq!(change.summary, "Company defaults from the drawings");
+        assert_eq!(change.before["roof_defaults.pitch_deg"], 40.0);
+        assert_eq!(change.after["roof_defaults.pitch_deg"], 25.0);
+        assert_eq!(change.before["roof_defaults.overhang"], 0.5);
+        assert_eq!(change.after["roof_defaults.overhang"], 0.9);
+        assert_eq!(
+            r["settings"]["ai_changes"][0]["id"],
+            json!(change.id),
+            "the AI sees the record too"
+        );
+        // The user reverts it in the app.
+        saved
+            .answer_ai_change(change.id, true)
+            .unwrap()
+            .save()
+            .unwrap();
+        let r = s.call_tool("get_settings", &json!({})).unwrap();
+        assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 40.0);
+        assert_eq!(r["settings"]["roof_defaults"]["overhang"], 0.5);
+        assert_eq!(r["settings"]["ai_changes"][0]["state"], "reverted");
         let _ = std::fs::remove_dir_all(&base);
     }
 

@@ -14,7 +14,9 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    eave height, overhang, half-hip) and its six-step order.
 2. Find the drawing: attached by the user, or `list_drawings` (the drawings
    inbox). `get_settings` gives the user's usual `roof_defaults` (pitch, eave
-   height, overhang); say when you used one. `drawing_info` says per page whether it has a text layer, is a
+   height, overhang); say when you used one. Do not change them with
+   `update_settings` for one roof: the user sees every settings change and
+   may revert it. `drawing_info` says per page whether it has a text layer, is a
    vector plot with outlined text, or a scan.
 3. Read it with `view_drawing`: the whole page first (turn sideways sheets
    with `rotate` until the text is upright), then sharp crops (about 300 dpi)
