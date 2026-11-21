@@ -81,22 +81,27 @@
   let dock = $state<"results" | "breakdown" | "ai" | "job">("results");
   const dockIds = tabIds("dock");
 
-  // The toolbar drops its labels (icons + tooltips) whenever the labelled
-  // buttons do not fit the window, e.g. German at 1360 or 1440 px, and takes
-  // them back once the window is wide enough for the width they needed.
+  // The toolbar gives up its labels step by step when the labelled buttons do
+  // not fit the window (German at 1360 or 1440 px, UX-006): first the labels
+  // get smaller and may take two lines, then the view and export buttons drop
+  // theirs, and only then every button shows its icon alone (with tooltips).
+  // It takes each step back once the window is as wide as that step needed.
   let toolbarEl: HTMLDivElement | undefined = $state();
-  let compactTools = $state(false);
-  let labelledWidth = 0;
+  /** 0 full labels, 1 small two-line labels, 2 view and export buttons icon only, 3 all icon only. */
+  let toolLevel = $state(0);
+  const compactTools = $derived(toolLevel >= 3);
+  /** The width the toolbar needed at each level before it took the next one. */
+  let levelWidths: number[] = [];
   function fitToolbar() {
     const el = toolbarEl;
     if (!el) return;
-    if (!compactTools) {
-      if (el.scrollWidth > el.clientWidth + 1) {
-        labelledWidth = el.scrollWidth;
-        compactTools = true;
-      }
-    } else if (el.clientWidth >= labelledWidth) {
-      compactTools = false;
+    if (el.scrollWidth > el.clientWidth + 1) {
+      if (toolLevel >= 3) return;
+      levelWidths[toolLevel] = el.scrollWidth;
+      toolLevel += 1;
+      tick().then(fitToolbar);
+    } else if (toolLevel > 0 && el.clientWidth >= (levelWidths[toolLevel - 1] ?? Infinity)) {
+      toolLevel -= 1;
       tick().then(fitToolbar);
     }
   }
@@ -111,8 +116,8 @@
     // Labels of another language need another width: measure again.
     void i18n.locale;
     untrack(() => {
-      compactTools = false;
-      labelledWidth = 0;
+      toolLevel = 0;
+      levelWidths = [];
       tick().then(fitToolbar);
     });
   });
@@ -1897,7 +1902,7 @@
   </header>
 
   {#if !loadError}
-  <div class="toolbar" class:compact={compactTools && !prefs.toolLabels} class:labels={prefs.toolLabels} role="toolbar" bind:this={toolbarEl} use:hscroll>
+  <div class="toolbar" class:tight={toolLevel >= 1} class:compact-minor={toolLevel >= 2 && !prefs.toolLabels} class:compact={compactTools && !prefs.toolLabels} class:labels={prefs.toolLabels} role="toolbar" bind:this={toolbarEl} use:hscroll>
     <div class="group">
       <button class="tool" onclick={undo} disabled={at <= 0} title="{t('editor.undo')} ({keys('Ctrl+Z')})"><Icon name="undo" /><span>{t("editor.undo")}</span></button>
       <button class="tool" onclick={redo} disabled={at >= historyLen - 1} title="{t('editor.redo')} ({keys('Ctrl+Shift+Z')})"><Icon name="redo" /><span>{t("editor.redo")}</span></button>
@@ -1920,14 +1925,14 @@
       <button class="tool" disabled={!selection} onclick={deletePart} title={t("tool.deletePartHint")}><Icon name="trash" /><span>{t("tool.deletePart")}</span></button>
       <button class="tool" disabled={!hasDrawing(project)} onclick={clearRoof} title={t("tool.clearHint")}><Icon name="eraser" /><span>{t("tool.clear")}</span></button>
     </div>
-    <div class="group">
+    <div class="group minor">
       <button class="tool" class:on={prefs.layout === "plan"} aria-pressed={prefs.layout === "plan"} onclick={() => setLayout("plan")} title={t("editor.plan")}><Icon name="plan" /><span>{t("editor.plan")}</span></button>
       <button class="tool" class:on={prefs.layout === "split"} aria-pressed={prefs.layout === "split"} onclick={() => setLayout("split")} title={t("editor.both")}><Icon name="split" /><span>{t("editor.both")}</span></button>
       <button class="tool" class:on={prefs.layout === "3d"} aria-pressed={prefs.layout === "3d"} onclick={() => setLayout("3d")} title="{t('editor.modelHint')} (F3)"><Icon name="cube" /><span>{t("editor.model")}</span></button>
       <button class="tool" onclick={() => plan?.fit()} disabled={prefs.layout === "3d"} title={t("plan.fitHint")}><Icon name="fit" /><span>{t("plan.fit")}</span></button>
       <button class="tool" class:on={showDims} aria-pressed={showDims} onclick={() => (showDims = !showDims)} title={t("tool.dims")}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
     </div>
-    <div class="group">
+    <div class="group minor">
       <button class="tool" class:on={exporting} aria-pressed={exporting} disabled={!result || !!blockedReason} onclick={() => (exporting = true)} title={blockedReason ?? t("tool.exportHint")}><Icon name="download" /><span>{t("tool.export")}</span></button>
     </div>
   </div>
@@ -2691,7 +2696,35 @@
     overflow-y: auto;
   }
 
-  /* Labels that do not fit the window (long languages): icons only, as below. */
+  /* Labels that do not fit the window (long languages), step by step (UX-006):
+     smaller labels on up to two lines, then the view and export buttons icon
+     only, then every button icon only, as below. */
+  @media (min-width: 1221px) and (min-height: 641px) {
+    .toolbar.tight .tool {
+      min-width: 44px;
+      max-width: 80px;
+      padding: 0 4px;
+    }
+    .toolbar.tight .tool span {
+      font-size: 10.5px;
+      line-height: 1.1;
+      white-space: normal;
+      text-align: center;
+    }
+  }
+  .toolbar.compact-minor .group.minor .tool {
+    width: 36px;
+    height: 36px;
+    min-width: 0;
+    padding: 0;
+  }
+  .toolbar.compact-minor .group.minor .tool span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
   .toolbar.compact .tool {
     width: 36px;
     height: 36px;
