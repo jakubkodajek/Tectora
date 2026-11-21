@@ -135,6 +135,29 @@ struct ResultOrigin {
     checked: String,
 }
 
+/// How many stored results of a job keep their origin: a result put back
+/// by a revert finds its own again (hunt R3 BUG-2).
+const ORIGINS_KEPT: usize = 16;
+
+/// Designs with more walls, pitch breaks and objects than this get no
+/// origin: checking a result on save calculates the roof under the job's
+/// lock, which a hostile file must not hold for a minute (hunt R3 BUG-1).
+/// Their results are only not recalculated.
+const ORIGIN_MAX_ITEMS: usize = 200;
+
+fn design_items(p: &Project) -> usize {
+    p.parts
+        .iter()
+        .flat_map(|part| &part.edges)
+        .map(|e| 1 + e.breaks.len())
+        .sum::<usize>()
+        + p.dormers.len()
+        + p.chimneys.len()
+        + p.windows.len()
+        + p.roof_openings.len()
+        + p.manual_faces.len()
+}
+
 /// An activity entry without the stored previous version.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityInfo {
@@ -942,8 +965,10 @@ impl Store {
         self.path(id)?;
         let _lock = self.lock(id);
         let before = self.load(id)?;
-        let (Some(stored), Some(mut origin)) = (&before.result_snapshot, self.result_origin(id))
-        else {
+        let Some(stored) = &before.result_snapshot else {
+            return Ok(false);
+        };
+        let Some(mut origin) = self.result_origin(id, stored.taken_ms) else {
             return Ok(false);
         };
         // While AI changes wait for review the result stays: Revert and
@@ -961,6 +986,9 @@ impl Store {
             .flatten()
         {
             Some((after, summary)) => {
+                // The old result, put back by a revert, stays reverted.
+                origin.checked = crate::snapshot::ENGINE_VERSION.to_string();
+                let _ = self.write_result_origin(id, &origin);
                 self.log_and_write(id, Some(before), &after, ENGINE_ACTOR, &summary, None)?;
                 Ok(true)
             }
@@ -1121,10 +1149,9 @@ impl Store {
         // of a design edited since (R2-1), which must never be recalculated.
         if let Some(s) = &project.result_snapshot
             && old_taken != Some(s.taken_ms)
-            && self
-                .result_origin(id)
-                .is_none_or(|o| s.taken_ms > o.taken_ms)
+            && self.result_origin(id, s.taken_ms).is_none()
             && s.engine_version == crate::snapshot::ENGINE_VERSION
+            && design_items(project) <= ORIGIN_MAX_ITEMS
             && crate::model::guarded(|| {
                 crate::snapshot::take_checked(project)
                     .is_ok_and(|now| crate::snapshot::compare(s, &now).is_empty())
@@ -1149,15 +1176,32 @@ impl Store {
         Ok(self.activity_dir().join(format!("{id}.result.json")))
     }
 
-    fn result_origin(&self, id: &str) -> Option<ResultOrigin> {
-        let text = fs::read_to_string(self.result_origin_path(id).ok()?).ok()?;
-        serde_json::from_str(&text).ok()
+    fn result_origins(&self, id: &str) -> Vec<ResultOrigin> {
+        self.result_origin_path(id)
+            .ok()
+            .and_then(|p| fs::read_to_string(p).ok())
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
     }
 
+    /// The origin of the stored result taken at `taken_ms`.
+    fn result_origin(&self, id: &str, taken_ms: u64) -> Option<ResultOrigin> {
+        self.result_origins(id)
+            .into_iter()
+            .find(|o| o.taken_ms == taken_ms)
+    }
+
+    /// Records `origin`, replacing the one of the same result; the oldest
+    /// recorded go beyond [`ORIGINS_KEPT`].
     fn write_result_origin(&self, id: &str, origin: &ResultOrigin) -> Result<(), StoreError> {
         let io = |e| StoreError::io(Some(id), e);
+        let mut all = self.result_origins(id);
+        all.retain(|o| o.taken_ms != origin.taken_ms);
+        all.push(origin.clone());
+        let over = all.len().saturating_sub(ORIGINS_KEPT);
+        all.drain(..over);
         fs::create_dir_all(self.activity_dir()).map_err(io)?;
-        let text = serde_json::to_string(origin).map_err(|e| io(e.into()))?;
+        let text = serde_json::to_string(&all).map_err(|e| io(e.into()))?;
         write_atomic(&self.result_origin_path(id)?, &text).map_err(io)
     }
 
@@ -2174,7 +2218,8 @@ mod tests {
         let mut p = examples::find("gable").unwrap().project();
         p.result_snapshot = Some(crate::snapshot::take(&p));
         let id = store.save(None, &p).unwrap();
-        let mut origin = store.result_origin(&id).expect("origin recorded");
+        let taken = p.result_snapshot.as_ref().unwrap().taken_ms;
+        let mut origin = store.result_origin(&id, taken).expect("origin recorded");
         let s = p.result_snapshot.as_mut().unwrap();
         s.engine_version = "0.0.1".into();
         s.roof_area += extra;
@@ -2199,14 +2244,14 @@ mod tests {
         s.engine_version = "0.0.1".into();
         p.result_snapshot = Some(s.clone());
         let id = store.save(None, &p).unwrap();
-        assert!(store.result_origin(&id).is_none());
+        assert!(store.result_origins(&id).is_empty());
         assert!(!store.refresh_stored_result(&id).unwrap());
         assert_eq!(store.load(&id).unwrap().result_snapshot, Some(s.clone()));
         // Nor with this engine's version on figures of the old design.
         s.engine_version = crate::snapshot::ENGINE_VERSION.into();
         p.result_snapshot = Some(s);
         let id = store.save(None, &p).unwrap();
-        assert!(store.result_origin(&id).is_none());
+        assert!(store.result_origins(&id).is_empty());
         let _ = fs::remove_dir_all(&store.dir);
     }
 
@@ -2277,6 +2322,69 @@ mod tests {
     }
 
     #[test]
+    fn an_offer_put_back_by_rejecting_a_new_result_still_follows_the_engine() {
+        // Hunt R3 BUG-2: the origin then described the rejected result.
+        let store = temp_store("refresh-back");
+        let (id, offer) = old_offer(&store);
+        let mut p = offer.clone();
+        let mut s = crate::snapshot::take(&p);
+        s.taken_ms = offer.result_snapshot.as_ref().unwrap().taken_ms + 1000;
+        p.result_snapshot = Some(s);
+        store
+            .save_as(Some(id.clone()), &p, "claude-ai", "Store result")
+            .unwrap();
+        store.revert_last(&id, USER_ACTOR, None).unwrap();
+        assert_eq!(
+            store.load(&id).unwrap().result_snapshot,
+            offer.result_snapshot
+        );
+        assert!(store.refresh_stored_result(&id).unwrap());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_result_stored_after_one_dated_ahead_gets_its_origin() {
+        // Hunt R3 BUG-5: a colleague's clock an hour ahead blocked every
+        // later result.
+        let store = temp_store("refresh-ahead");
+        let mut p = examples::find("gable").unwrap().project();
+        let mut s = crate::snapshot::take(&p);
+        let now = s.taken_ms;
+        s.taken_ms = u64::MAX;
+        p.result_snapshot = Some(s);
+        let id = store.save(None, &p).unwrap();
+        let mut s = crate::snapshot::take(&p);
+        s.taken_ms = now;
+        p.result_snapshot = Some(s);
+        store.save(Some(id.clone()), &p).unwrap();
+        assert!(store.result_origin(&id, now).is_some());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_design_too_large_to_check_on_save_gets_no_origin() {
+        // Hunt R3 BUG-1: checking the result held the job's lock for a
+        // minute on a hostile file.
+        let store = temp_store("refresh-large");
+        let mut p = examples::find("gable").unwrap().project();
+        let e = p.parts[0].edges[0].clone();
+        for _ in 0..ORIGIN_MAX_ITEMS {
+            p.parts[0].edges[0].breaks.push(crate::model::PitchBreak {
+                height: e.eave_height + 1.0,
+                pitch_deg: e.pitch_deg,
+            });
+        }
+        let mut s = crate::snapshot::take(&examples::find("gable").unwrap().project());
+        s.engine_version = crate::snapshot::ENGINE_VERSION.into();
+        p.result_snapshot = Some(s);
+        let t = std::time::Instant::now();
+        let id = store.save(None, &p).unwrap();
+        assert!(store.result_origins(&id).is_empty());
+        assert!(t.elapsed().as_secs() < 5);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
     fn a_purged_job_leaves_no_result_origin_behind() {
         // Hunt R2 BUG-4: a failed bundle import kept `<id>.result.json`
         // and the next job of that name got another id.
@@ -2329,7 +2437,7 @@ mod tests {
         let (id, _) = old_offer_off_by(&store, 0.0);
         assert!(!store.refresh_stored_result(&id).unwrap());
         assert_eq!(
-            store.result_origin(&id).unwrap().checked,
+            store.result_origins(&id)[0].checked,
             crate::snapshot::ENGINE_VERSION
         );
         let _ = fs::remove_dir_all(&store.dir);
