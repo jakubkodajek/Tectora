@@ -828,11 +828,9 @@ pub fn open_regular(path: &Path, max: u64) -> Result<fs::File, FileError> {
 /// File-name friendly id derived from a project name.
 fn slug(name: &str) -> String {
     // Composed first: a name from macOS may come decomposed (HUNTIO-007).
-    let mut s: String = crate::nfc::nfc(name)
-        .to_lowercase()
+    let mut s: String = crate::library::fold(name)
         .chars()
         .map(|c| {
-            let c = crate::library::fold_char(c);
             if c.is_ascii_alphanumeric() {
                 c.to_ascii_lowercase()
             } else {
@@ -2605,6 +2603,12 @@ mod tests {
     #[test]
     fn slug_handles_czech_names() {
         assert_eq!(slug("Rodinný dům Říčany"), "rodinny-dum-ricany");
+        // HUNT-204 item 3: ligatures, `ß` and the three spellings of Å.
+        assert_eq!(slug("ﬁle ﬂat"), "file-flat");
+        assert_eq!(slug("Straße"), "strasse");
+        for a in ["\u{c5}", "A\u{30a}", "\u{212b}"] {
+            assert_eq!(slug(a), "a", "{a:?}");
+        }
         assert_eq!(slug("  "), "navrh");
         let store = Store::at(PathBuf::from("/nonexistent-tectora-dir"));
         assert_eq!(store.new_id("Con"), "con-navrh");

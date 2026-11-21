@@ -113,33 +113,71 @@ fn matches_words(p: &ProjectSummary, words: &[String]) -> bool {
     words.iter().all(|w| hay.contains(w.as_str()))
 }
 
-/// Lower case without the Czech, Slovak and German accents, for search and
-/// sorting ("Říčany" matches "ricany"), composed first so a name typed or
-/// stored decomposed (macOS) matches as well (HUNTIO-007).
+/// Lower case without the accents of the Latin and Greek letters, for
+/// search, sorting and job ids ("Říčany" matches "ricany", "ΣΠΊΤΙ" matches
+/// "σπίτι"), ligatures and `ß` spelled out ("ﬁle" is "file", "Straße"
+/// "strasse"), composed first so a name typed or stored decomposed (macOS)
+/// matches as well (HUNTIO-007, audit 2026-11-21 HUNT-204 item 3).
 pub fn fold(s: &str) -> String {
-    crate::nfc::nfc(s)
-        .to_lowercase()
-        .chars()
-        .map(fold_char)
-        .collect()
+    let mut out = String::with_capacity(s.len());
+    for c in crate::nfc::nfc(s).to_lowercase().chars() {
+        fold_into(c, &mut out);
+    }
+    out
 }
 
-pub(crate) fn fold_char(c: char) -> char {
+/// Pushes the folded form of the lower-case letter `c` onto `out`.
+pub(crate) fn fold_into(c: char, out: &mut String) {
+    let spelled = match c {
+        'ß' => "ss",
+        'æ' => "ae",
+        'œ' => "oe",
+        'þ' => "th",
+        '\u{fb00}' => "ff",
+        '\u{fb01}' => "fi",
+        '\u{fb02}' => "fl",
+        '\u{fb03}' => "ffi",
+        '\u{fb04}' => "ffl",
+        '\u{fb05}' | '\u{fb06}' => "st",
+        _ => "",
+    };
+    if spelled.is_empty() {
+        out.push(fold_char(c));
+    } else {
+        out.push_str(spelled);
+    }
+}
+
+fn fold_char(c: char) -> char {
     match c {
-        'á' | 'ä' | 'à' | 'â' => 'a',
-        'č' | 'ç' => 'c',
-        'ď' => 'd',
-        'é' | 'ě' | 'è' | 'ê' | 'ë' => 'e',
-        'í' | 'î' => 'i',
-        'ĺ' | 'ľ' => 'l',
-        'ň' => 'n',
-        'ó' | 'ô' | 'ö' => 'o',
-        'ŕ' | 'ř' => 'r',
-        'š' | 'ß' => 's',
-        'ť' => 't',
-        'ú' | 'ů' | 'ü' => 'u',
-        'ý' => 'y',
-        'ž' => 'z',
+        'á' | 'ä' | 'à' | 'â' | 'ã' | 'å' | 'ā' | 'ă' | 'ą' | '\u{212b}' => 'a',
+        'č' | 'ç' | 'ć' | 'ĉ' | 'ċ' => 'c',
+        'ď' | 'đ' | 'ð' => 'd',
+        'é' | 'ě' | 'è' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' => 'e',
+        'ĝ' | 'ğ' | 'ġ' | 'ģ' => 'g',
+        'ĥ' | 'ħ' => 'h',
+        'í' | 'î' | 'ì' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => 'i',
+        'ĵ' => 'j',
+        'ķ' => 'k',
+        'ĺ' | 'ľ' | 'ļ' | 'ŀ' | 'ł' => 'l',
+        'ň' | 'ñ' | 'ń' | 'ņ' => 'n',
+        'ó' | 'ô' | 'ö' | 'ò' | 'õ' | 'ø' | 'ō' | 'ŏ' | 'ő' => 'o',
+        'ŕ' | 'ř' | 'ŗ' => 'r',
+        'š' | 'ś' | 'ŝ' | 'ş' => 's',
+        'ť' | 'ţ' | 'ŧ' => 't',
+        'ú' | 'ů' | 'ü' | 'ù' | 'û' | 'ũ' | 'ū' | 'ŭ' | 'ű' | 'ų' => 'u',
+        'ŵ' => 'w',
+        'ý' | 'ÿ' | 'ŷ' => 'y',
+        'ž' | 'ź' | 'ż' => 'z',
+        // Greek: the accents (tonos, dialytika) and the final sigma.
+        'ά' => 'α',
+        'έ' => 'ε',
+        'ή' => 'η',
+        'ί' | 'ϊ' | 'ΐ' => 'ι',
+        'ό' => 'ο',
+        'ύ' | 'ϋ' | 'ΰ' => 'υ',
+        'ώ' => 'ω',
+        'ς' => 'σ',
         c => c,
     }
 }
@@ -255,6 +293,31 @@ mod tests {
         assert_eq!(ids(&search(list.clone(), &q("novak dum")).unwrap()), ["a"]);
         assert_eq!(ids(&search(list.clone(), &q("dvorak")).unwrap()), ["c"]);
         assert!(search(list, &q("novak hala")).unwrap().is_empty());
+    }
+
+    /// Audit 2026-11-21 HUNT-204 item 3: Greek is accent-blind as Czech
+    /// is, and ligatures and `ß` match their spelled-out letters.
+    #[test]
+    fn greek_accents_ligatures_and_sharp_s_are_folded() {
+        let list = vec![
+            summary("a", "Ελληνικό σπίτι", "", 1, 100.0),
+            summary("b", "ΕΛΛΗΝΙΚΟ ΣΠΙΤΙ", "", 2, 30.0),
+            summary("c", "Straße ﬁle", "", 3, 30.0),
+        ];
+        let q = |text: &str| Query {
+            text: text.into(),
+            ..Default::default()
+        };
+        assert_eq!(ids(&search(list.clone(), &q("σπίτι")).unwrap()), ["b", "a"]);
+        assert_eq!(
+            ids(&search(list.clone(), &q("ελληνικος")).unwrap()),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            ids(&search(list.clone(), &q("strasse file")).unwrap()),
+            ["c"]
+        );
+        assert_eq!(ids(&search(list, &q("STRAẞE")).unwrap()), ["c"]);
     }
 
     #[test]
