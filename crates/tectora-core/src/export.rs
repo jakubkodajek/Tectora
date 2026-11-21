@@ -1248,9 +1248,51 @@ fn centroid(poly: &[[f64; 2]]) -> Option<[f64; 2]> {
     Some([cx / (3.0 * a), cy / (3.0 * a)])
 }
 
-/// A text in the PDF's encoding, for measuring it.
+/// A text in the PDF's encoding, as it is written and measured. A symbol
+/// the fonts lack is spelt out (`≥` as `>=`, `№` as `No.`) and a letter
+/// they lack is written without its marks (`ș` as `s`, `ŵ` as `w`), so
+/// only what has no such form (CJK, emoji) becomes "?" (audit 2026-11-21
+/// HUNTIO-007).
 fn ansi(text: &str) -> Vec<u8> {
-    text.chars().map(win_ansi).collect()
+    let mut out = Vec::with_capacity(text.len());
+    for c in text.chars() {
+        let b = win_ansi(c);
+        if b != b'?' || c == '?' {
+            out.push(b);
+        } else if let Some(s) = spelt(c) {
+            out.extend(s.chars().map(win_ansi));
+        } else if let Some(base) = crate::nfc::base_letter(c) {
+            out.push(win_ansi(base));
+        } else {
+            out.push(b'?');
+        }
+    }
+    out
+}
+
+/// The spelling of a symbol users type that the sheet fonts lack, in
+/// characters they have.
+fn spelt(c: char) -> Option<&'static str> {
+    Some(match c {
+        '≥' => ">=",
+        '≤' => "<=",
+        '≠' => "!=",
+        '≈' | '∼' => "~",
+        '№' => "No.",
+        '✓' | '✔' => "OK",
+        '✗' | '✘' => "x",
+        '→' => "->",
+        '←' => "<-",
+        '↔' => "<->",
+        '−' => "-",
+        '∅' | '⌀' => "\u{d8}",
+        '′' => "'",
+        '″' => "\"",
+        '∙' | '⋅' => "\u{b7}",
+        'Ω' => "Ohm",
+        '\u{a0}' | '\u{2009}' | '\u{202f}' => " ",
+        _ => return None,
+    })
 }
 
 /// The bounding box `[x0, y0, x1, y1]` of some points.
@@ -1683,7 +1725,7 @@ pub fn sheet_pdf(shapes: &[Shape], title: &str) -> Vec<u8> {
                 anchor,
                 text,
             } => {
-                let bytes: Vec<u8> = text.chars().map(win_ansi).collect();
+                let bytes = ansi(text);
                 let w = text_width(&bytes, *size, *bold) * anchor;
                 let r = angle.to_radians();
                 let (cs, sn) = (r.cos(), r.sin());
@@ -1812,6 +1854,18 @@ pub fn checked_sheet_file_named(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn symbols_and_letters_the_fonts_lack_are_spelt_not_question_marks() {
+        // HUNTIO-007 item 7: "≥ № ș ț ŵ" in a job name printed as "?".
+        assert_eq!(ansi("≥ 2° № 5"), b">= 2\xb0 No. 5");
+        assert_eq!(ansi("ș ț Ș ŵ ǒ"), b"s t S w o");
+        assert_eq!(ansi("∅ 12"), b"\xd8 12");
+        assert_eq!(ansi("a?b"), b"a?b");
+        // What has no such form stays "?"; the known letters keep their code.
+        assert_eq!(ansi("家"), b"?");
+        assert_eq!(ansi("ř"), [win_ansi('ř')]);
+    }
     use crate::examples::{StandardRoof, standard_roof};
 
     /// The 10 × 8 m hip roof drawn in DACAD under Wine on 2026-11-08:
