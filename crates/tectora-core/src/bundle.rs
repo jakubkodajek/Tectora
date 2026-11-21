@@ -284,12 +284,23 @@ fn write_bundle(
             .map_err(json_err)?
             .as_bytes(),
     )?;
-    put(
-        "project.tectora",
-        project.to_json().map_err(json_err)?.as_bytes(),
-    )?;
+    // A bundle import refuses is not written (HUNT-101): a job file over
+    // what import reads stops the export, a change log over it goes in
+    // with its newest entries only.
+    let text = project.to_json().map_err(json_err)?;
+    if text.len() as u64 > MAX_TEXT_ENTRY {
+        return Err(too_large(format!(
+            "the job is too large to hand over ({} MB, at most {} MB); shorten its notes",
+            text.len() >> 20,
+            MAX_TEXT_ENTRY >> 20
+        )));
+    }
+    put("project.tectora", text.as_bytes())?;
     if let Ok(history) = fs::read(store.activity_path(id)?) {
-        put("history.jsonl", &history)?;
+        let newest = newest_lines(&history, MAX_TEXT_ENTRY as usize);
+        if !newest.is_empty() {
+            put("history.jsonl", newest)?;
+        }
     }
     // The preview runs the roof kernel: a job out of range, one the kernel
     // cannot calculate or one too complex to calculate (`work`) is still
@@ -308,6 +319,20 @@ fn write_bundle(
     }
     zip.finish().map_err(write_err)?;
     Ok(manifest)
+}
+
+/// The newest whole lines of the change log `bytes` that together take at
+/// most `max` bytes (all of it when it fits).
+fn newest_lines(bytes: &[u8], max: usize) -> &[u8] {
+    if bytes.len() <= max {
+        return bytes;
+    }
+    let from = bytes.len() - max;
+    // A line starts after a line break at `from - 1` or later.
+    match bytes[from - 1..].iter().position(|&b| b == b'\n') {
+        Some(at) => &bytes[from + at..],
+        None => &[],
+    }
 }
 
 /// Reads entry `name`, at most `max` bytes (its declared size is checked
@@ -374,7 +399,12 @@ pub fn import(store: &Store, src: &Path) -> Result<String, FileError> {
     if let Some(m) = &manifest {
         serde_json::from_slice::<Manifest>(m).map_err(zip_err)?;
     }
-    let history = read_entry(&mut zip, "history.jsonl", MAX_TEXT_ENTRY)?;
+    // A change log over the limit (bundles exported before HUNT-101) is
+    // left out: the job and its files matter more than its history.
+    let history = match read_entry(&mut zip, "history.jsonl", MAX_TEXT_ENTRY) {
+        Err(e) if e.code == "too_large" => None,
+        h => h?,
+    };
     let names: Vec<String> = zip
         .file_names()
         .filter_map(|n| n.ok())
@@ -631,6 +661,71 @@ mod tests {
         assert_eq!(other.activity(&new_id).len(), store.activity(&id).len());
         // The sender's AI change is history for the receiver, not a review.
         assert!(other.pending_review(&new_id).is_none());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Audit 2026-11-21 HUNT-101: a change log over the size import reads
+    /// (50 changes of a big job) is trimmed to its newest entries on export,
+    /// so the bundle imports; a job import could not read is not exported;
+    /// a bundle written before the fix imports without its log.
+    #[test]
+    fn a_big_change_log_is_trimmed_so_the_bundle_still_imports() {
+        let dir = std::env::temp_dir().join(format!("tectora-bundle-hist-{}", now_ms()));
+        let store = Store::new(dir.join("lib")).unwrap();
+        let p = crate::examples::find("hip").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let mut big = p.clone();
+        big.notes = "n".repeat(512 * 1024);
+        let line = |ts: u64| {
+            serde_json::to_string(&crate::store::ActivityEntry {
+                ts_ms: ts,
+                actor: "Claude".into(),
+                summary: format!("change {ts}"),
+                before: Some(big.clone()),
+                changes: Vec::new(),
+                after: Some(big.clone()),
+                undid_from: None,
+            })
+            .unwrap()
+                + "\n"
+        };
+        let t0 = now_ms() - 1_000_000;
+        let history: String = (0..20).map(|i| line(t0 + i)).collect();
+        assert!(history.len() as u64 > MAX_TEXT_ENTRY);
+        fs::create_dir_all(store.activity_dir()).unwrap();
+        fs::write(store.activity_path(&id).unwrap(), &history).unwrap();
+
+        let file = dir.join("job.tectorajob");
+        export(&store, &id, &file).unwrap();
+        let other = Store::new(dir.join("other")).unwrap();
+        let new_id = import(&other, &file).unwrap();
+        assert_eq!(other.load(&new_id).unwrap(), store.load(&id).unwrap());
+        let log = other.activity(&new_id);
+        assert!(!log.is_empty() && log.len() < 20, "{}", log.len());
+        assert_eq!(log.last().unwrap().summary, format!("change {}", t0 + 19));
+
+        // A bundle from before: its log over the limit is left out, the job
+        // still comes in.
+        let old = dir.join("old.tectorajob");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&old).unwrap());
+        let opts = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .large_file(true);
+        zip.start_file("project.tectora", opts).unwrap();
+        zip.write_all(p.to_json().unwrap().as_bytes()).unwrap();
+        zip.start_file("history.jsonl", opts).unwrap();
+        zip.write_all(history.as_bytes()).unwrap();
+        zip.finish().unwrap();
+        let old_id = import(&other, &old).unwrap();
+        assert!(other.activity(&old_id).is_empty());
+
+        // A job whose own file is over what import reads is not exported.
+        let mut huge = p.clone();
+        huge.notes = "n".repeat(MAX_TEXT_ENTRY as usize + 1);
+        let huge_id = store.save(None, &huge).unwrap();
+        let err = export(&store, &huge_id, &dir.join("huge.tectorajob")).unwrap_err();
+        assert_eq!(err.code, "too_large");
+        assert!(!dir.join("huge.tectorajob").exists());
         let _ = fs::remove_dir_all(dir);
     }
 
