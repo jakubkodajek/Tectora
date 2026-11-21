@@ -225,11 +225,13 @@
 
   {#if stored}
     <h4>{t("snap.title")}</h4>
-    <div class="snap" class:changed={stored.differences.length > 0}>
-      <div class="snap-head">
+    <!-- Figures that leave out a building the calculation cannot take are no
+         comparison: equal figures would read "unchanged" (UX-103). -->
+    <div class="snap" class:changed={stored.differences.length > 0 || !!blocked}>
+      <div class="snap-head" data-testid="snap-state">
         <i class="sq"></i>
-        <span>
-          {stored.differences.length ? t("snap.changed") : t("snap.same")}
+        <span title={blocked ?? undefined}>
+          {blocked ? t("snap.unchecked") : stored.differences.length ? t("snap.changed") : t("snap.same")}
           · {new Date(stored.stored.taken_ms).toLocaleDateString(numberLocale())}
         </span>
       </div>

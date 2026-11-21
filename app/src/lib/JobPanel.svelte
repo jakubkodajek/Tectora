@@ -45,12 +45,10 @@
     current?: () => Project | null;
   } = $props();
 
-  /** Statuses that make an offer from the figures: not from a roof the core refused (ERR-003). */
-  const OFFER_STATUSES = new Set(["offer", "ordered"]);
-  /** Whether status `s` cannot be chosen now: an offer status, or Done when it would have to
-   *  store a result first, while the core gives no roof (ERR-003, UX-005). */
-  const refused = (s: JobStatus) =>
-    !!why && s !== status && (OFFER_STATUSES.has(s) || (s !== "draft" && status === "draft" && !project.result_snapshot));
+  /** Whether status `s` cannot be chosen now: any status past the draft while the core gives
+   *  no roof for a building or leaves input out (ERR-003, UX-005). Done too, also with a stored
+   *  result: the job now has a building the offer's figures do not contain (UX-103). */
+  const refused = (s: JobStatus) => !!why && s !== status && s !== "draft";
   /** Why offer statuses are off: the core gave no roof, or there is no building at all (UX-102). */
   const why = $derived(blocked ?? (hasBuilding(project) ? null : t("res.empty")));
 
