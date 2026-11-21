@@ -12,6 +12,7 @@
   import type { ItemRef, PlanTarget } from "./items";
   import { t } from "./i18n.svelte";
   import { radiogroup } from "./tabs";
+  import { hscroll } from "./hscroll";
   import { hostHeightAt, isDormerFace, slopeAt } from "./dormers";
   import { isConvex, windowOutline } from "./openings";
   import { chimneyTop, clipConvex, coveredByDormer, crossings, dormerFaces, dormerWallLines, manualFacePoly, planBox, onWallLine, outgrows, planArea, planeOf, wallTriangles, wallUnderRoof, gableShownByWall, inwardNormal, type Extent, type Poly3 } from "./scene3d";
@@ -538,7 +539,7 @@
 </script>
 
 <div class="host" bind:this={host}>
-  <div class="views" role="radiogroup" use:radiogroup aria-label={t("view.title")}>
+  <div class="views" role="radiogroup" use:radiogroup use:hscroll aria-label={t("view.title")}>
     {#each Object.keys(VIEWS) as v}
       <button class:on={view === v} role="radio" aria-checked={view === v} onclick={() => frame(v as View)} title={t(`view.${v}Hint`)}>{t(`view.${v}`)}</button>
     {/each}
@@ -597,12 +598,13 @@
     background: var(--surface);
     border: 1px solid var(--border);
   }
-  /* Small 3D view (half-screen split): view buttons stay inside the view. */
+  /* Small 3D view (half-screen split): view buttons stay inside the view; when
+     they still do not fit, the strip scrolls with the wheel and shows its thin
+     scrollbar (UI-002). */
   @container (max-width: 420px) {
     .views {
       max-width: calc(100% - 16px);
       overflow-x: auto;
-      scrollbar-width: none;
     }
     .views button {
       padding: 4px 6px;

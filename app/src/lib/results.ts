@@ -98,3 +98,11 @@ export function roofState(result: CalcResult | null): "none" | "partial" | "ok" 
   if (!result || failed === 0) return "ok";
   return failed >= result.parts.length ? "none" : "partial";
 }
+
+/**
+ * Whether there is no roof yet: no building and no hand-drawn face (an empty
+ * job, or a footprint still being drawn). Its zeros are no figures (UX-011).
+ */
+export function emptyRoof(result: CalcResult | null): boolean {
+  return !result || (result.parts.length === 0 && !(result.manual_faces?.length));
+}
