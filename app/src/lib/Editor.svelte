@@ -1075,16 +1075,22 @@
     const p = snapToRoof(result, { x, y }, ROOF_SNAP);
     const first = manualDraft[0];
     if (first && manualDraft.length >= 3 && Math.hypot(p[0] - first[0], p[1] - first[1]) < ROOF_SNAP) {
-      project.manual_faces ??= [];
-      // DACAD asks for the pitch with 30° filled in.
-      project.manual_faces.push({ points: manualDraft.map((q) => ({ x: q[0], y: q[1] })), pitch_deg: 30 });
-      manualDraft = [];
-      placing = false;
-      selectManual({ kind: "face", index: project.manual_faces.length - 1 });
-      commit();
+      closeFace();
       return;
     }
     manualDraft = [...manualDraft, p];
+  }
+
+  /** Closes the face being drawn (a click on its first corner, Enter or the bar's Close, UX-010). */
+  function closeFace() {
+    if (!project || placing !== "face" || manualDraft.length < 3) return;
+    project.manual_faces ??= [];
+    // DACAD asks for the pitch with 30° filled in.
+    project.manual_faces.push({ points: manualDraft.map((q) => ({ x: q[0], y: q[1] })), pitch_deg: 30 });
+    manualDraft = [];
+    placing = false;
+    selectManual({ kind: "face", index: project.manual_faces.length - 1 });
+    commit();
   }
 
   /** DACAD: Berechnung › Flachdach; dormers are left out of such a roof. */
@@ -1838,6 +1844,10 @@
       // Insert, or Ctrl+B / ⌘B: a Mac keyboard has no Insert key (UX-011).
       e.preventDefault();
       startDraw();
+    } else if (e.key === "Enter" && !mod && placing === "face" && manualDraft.length >= 3 && !(e.target as HTMLElement).closest?.("button, a")) {
+      // Enter closes a hand-drawn face, as it closes a footprint (UX-010).
+      e.preventDefault();
+      closeFace();
     } else if (e.key === "Escape" && placing) {
       placing = false;
     } else if (e.key === "Escape" && !drawing) {
@@ -2046,6 +2056,7 @@
         {:else if placing}
           <PlaceBar kind={placing} points={manualDraft.length}
             onundo={() => (manualDraft = manualDraft.slice(0, -1))}
+            onclose={placing === "face" ? closeFace : undefined}
             oncancel={() => (placing = false)} />
         {:else if dormerSel !== null}
           <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} onedit={editDormer}
