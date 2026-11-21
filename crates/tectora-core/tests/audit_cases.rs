@@ -914,3 +914,66 @@ fn a_window_on_a_dormer_roof_does_not_overlap_the_dormer() {
     p.dormers.push(p.dormers[0].clone());
     assert!(kinds(&calc(&p), 0).contains(&WarningKind::ObjectsOverlap));
 }
+
+// ------------------------------------------------------------ 2026-11-21
+
+fn warned(roof: &Roof, part: usize, kind: WarningKind) -> f64 {
+    roof.geos[part]
+        .warnings
+        .iter()
+        .filter(|w| w.kind == kind)
+        .map(|w| w.value)
+        .sum()
+}
+
+/// Two pyramid roofs 8 x 8 m in a row, same pitch and eave: the join loses
+/// a fifth of the roof (179.3 m² where 17 x 9 m of plan at 40° is
+/// 199.7 m²). The result is the standard calculation's; the plan left
+/// without roof is said.
+#[test]
+fn pyramid_roofs_in_a_row_say_the_plan_left_without_roof() {
+    let roof = calc(&job(vec![
+        hip("left", 0.0, 0.0, 8.0, 8.0, 40.0, 6.0),
+        hip("right", 8.0, 0.0, 8.0, 8.0, 40.0, 6.0),
+    ]));
+    assert!(roof.geos.iter().all(|g| g.error.is_none()));
+    let missing = 17.0 * 9.0 - roof.area * cos(40.0);
+    assert!(missing > 10.0, "plan without roof {missing}");
+    let said =
+        warned(&roof, 0, WarningKind::UncoveredPlan) + warned(&roof, 1, WarningKind::UncoveredPlan);
+    // At least what the area lacks (faces lying over each other in the
+    // join make up part of the rest).
+    assert!(
+        said > missing - 0.05,
+        "said {said}, the area lacks {missing}"
+    );
+}
+
+/// A hipped annex with the house's eave height in front of it: each roof's
+/// overhang on the shared wall lies inside the other building, under its
+/// roof, and is counted. Said on both, about 0.5 m x 4 m at 40° each.
+#[test]
+fn an_annex_of_the_same_eave_says_the_roof_hidden_in_the_house() {
+    let roof = calc(&job(vec![
+        hip("house", 0.0, 0.0, 12.0, 8.0, 40.0, 4.0),
+        hip("annex", 4.0, -4.0, 4.0, 4.0, 40.0, 4.0),
+    ]));
+    assert!(roof.geos.iter().all(|g| g.error.is_none()));
+    let strip = 0.5 * 4.0 / cos(40.0);
+    for part in [0, 1] {
+        let v = warned(&roof, part, WarningKind::HiddenUnderNeighbour);
+        assert!(
+            v > 0.8 * strip && v < 1.3 * strip,
+            "part {part}: hidden {v}, strip {strip}"
+        );
+    }
+    // The lower garage of MATH2-009 has none: its join ends its roof at
+    // the house wall.
+    let garage = calc(&job(vec![
+        hip("House", 0.0, 0.0, 12.0, 8.0, 40.0, 5.0),
+        hip("Garage", 12.0, 1.0, 6.0, 5.0, 30.0, 3.0),
+    ]));
+    for g in &garage.geos {
+        assert!(g.warnings.is_empty(), "{:?}", g.warnings);
+    }
+}

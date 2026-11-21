@@ -145,6 +145,21 @@ pub enum WarningKind {
     /// twice) and its roof still has faces: they add to the job's area and
     /// lines (audit MATH-008). `value`: 0.
     InsideAnother,
+    /// Joined buildings: roof faces of this building lie in plan inside
+    /// another building's walls and below that building's roof, so they
+    /// are hidden in its attic yet counted (an overhang on a shared wall
+    /// where the join does not end the roof at the wall; two buildings of
+    /// the same eave height in a row). The standard calculation gives that
+    /// result and it is kept; setting the overhang of the shared wall to 0
+    /// removes it. `value`: the hidden roof area, m².
+    HiddenUnderNeighbour,
+    /// Joined buildings: part of the plan within this building's eave
+    /// outline (walls pushed out by their overhangs) has no roof face of
+    /// any building over it, so the roof area is too small (two
+    /// pyramid roofs in a row lose a fifth of their area in the join).
+    /// The standard calculation gives that result and it is kept.
+    /// `value`: the plan area without roof, m².
+    UncoveredPlan,
 }
 
 /// Distance from the plan's origin (along x or y) from which
@@ -156,6 +171,14 @@ pub const FAR_ORIGIN: f64 = 2500.0;
 pub const DOUBLED_TOL: f64 = 0.05;
 /// How far a dormer may rise above the roof it sits on, m.
 pub const DORMER_ABOVE_TOL: f64 = 0.05;
+/// Roof area hidden under a neighbour from which
+/// [`WarningKind::HiddenUnderNeighbour`] is reported, m².
+pub const HIDDEN_TOL: f64 = 0.5;
+/// Plan area without roof from which [`WarningKind::UncoveredPlan`] is
+/// reported, m².
+pub const UNCOVERED_TOL: f64 = 0.5;
+/// How far below the neighbour's roof a face must lie to be hidden, m.
+const HIDDEN_BELOW: f64 = 0.05;
 /// Roof area below which a roof has none, m² (it shows as 0.00).
 pub const NO_AREA: f64 = 0.005;
 
@@ -587,6 +610,108 @@ pub fn check(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<Vec<RoofWarning>>
     }
     for i in inside_another(parts, geos) {
         out[i].push(RoofWarning::new(WarningKind::InsideAnother, 0.0));
+    }
+    if joined {
+        for (i, area) in uncovered_plan(parts, geos).into_iter().enumerate() {
+            if area > UNCOVERED_TOL {
+                out[i].push(RoofWarning::new(WarningKind::UncoveredPlan, area));
+            }
+        }
+        for (i, area) in hidden_under_neighbour(parts, geos).into_iter().enumerate() {
+            if area > HIDDEN_TOL && !out[i].iter().any(|w| w.kind == WarningKind::InsideAnother) {
+                out[i].push(RoofWarning::new(WarningKind::HiddenUnderNeighbour, area));
+            }
+        }
+    }
+    out
+}
+
+/// Per building, the plan area within its eave outline that no sloped
+/// roof face of the job covers (dormer faces count), m². Buildings with an
+/// error or without faces, and flat-roofed ones, are left out.
+fn uncovered_plan(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<f64> {
+    let mut out = vec![0.0; geos.len()];
+    if geos.iter().any(|g| g.error.is_some()) {
+        return out;
+    }
+    let mut roof = MultiPolygon::new(vec![]);
+    for f in geos.iter().flat_map(|g| &g.faces) {
+        if f.pitch_deg < 89.9 && f.polygon.len() >= 3 {
+            let pts = plan(f);
+            if signed_area(&pts).abs() > 1e-9 {
+                roof = roof.union(&MultiPolygon::new(vec![to_geo(&pts)]));
+            }
+        }
+    }
+    for (i, part) in parts.iter().enumerate() {
+        let roofed = part.edges.iter().any(|e| !e.is_gable());
+        if !roofed || geos.get(i).is_none_or(|g| g.faces.is_empty()) {
+            continue;
+        }
+        let mut plan_of = MultiPolygon::new(vec![]);
+        for piece in eave_outline(part) {
+            if piece.len() >= 3 && signed_area(&piece).abs() > 1e-9 {
+                plan_of = plan_of.union(&MultiPolygon::new(vec![to_geo(&piece)]));
+            }
+        }
+        out[i] = plan_of.difference(&roof).unsigned_area();
+    }
+    out
+}
+
+/// Per building, the area of its sloped roof faces that lie in plan
+/// inside another building's walls and more than [`HIDDEN_BELOW`] under
+/// that building's roof (judged at the centre of each such piece), m².
+fn hidden_under_neighbour(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<f64> {
+    let mut out = vec![0.0; geos.len()];
+    let ok = |g: &RoofGeometry| g.error.is_none() && !g.faces.is_empty();
+    for (k, g) in geos.iter().enumerate() {
+        if !ok(g) {
+            continue;
+        }
+        for (j, part) in parts.iter().enumerate() {
+            let Some(host) = geos.get(j).filter(|h| j != k && ok(h)) else {
+                continue;
+            };
+            let pts = part.outline();
+            if pts.len() < 3 || !signed_area(&pts).is_finite() {
+                continue;
+            }
+            let walls = MultiPolygon::new(vec![to_geo(&pts)]);
+            let over: Vec<(Polygon<f64>, [f64; 3])> = roof_faces(host)
+                .filter_map(|h| Some((to_geo(&plan(h)), plane_of(&h.polygon)?)))
+                .collect();
+            for f in roof_faces(g) {
+                let Some(plane) = plane_of(&f.polygon) else {
+                    continue;
+                };
+                let face = MultiPolygon::new(vec![to_geo(&plan(f))]);
+                for piece in &face.intersection(&walls).0 {
+                    let a = piece.unsigned_area();
+                    if !(a > MIN_PIECE) {
+                        continue;
+                    }
+                    let ring = &piece.exterior().0;
+                    let m = ring.len().saturating_sub(1).max(1);
+                    let (x, y) = ring.iter().take(m).fold((0.0, 0.0), |s, q| {
+                        (s.0 + q.x / m as f64, s.1 + q.y / m as f64)
+                    });
+                    let z = plane[0] * x + plane[1] * y + plane[2];
+                    let top = over
+                        .iter()
+                        .filter(|(poly, _)| {
+                            use geo::Contains;
+                            poly.contains(&geo::Point::new(x, y))
+                        })
+                        .map(|(_, h)| h[0] * x + h[1] * y + h[2])
+                        .fold(f64::NEG_INFINITY, f64::max);
+                    let cos = f.pitch_deg.to_radians().cos();
+                    if top.is_finite() && top > z + HIDDEN_BELOW && cos > 1e-6 {
+                        out[k] += a / cos;
+                    }
+                }
+            }
+        }
     }
     out
 }

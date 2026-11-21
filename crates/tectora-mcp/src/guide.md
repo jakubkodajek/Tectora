@@ -210,7 +210,12 @@ overhangs. `doubled_line` (joined roofs: a line lies on another one, `value` m
 counted twice), `no_roof_area` (a chimney or opening took the whole roof, or
 eaves at 100 m), `objects_overlap` (`value` pairs of windows, chimneys,
 openings or dormers on top of each other, each still deducted),
-`dormer_above_roof` (a dormer `value` m higher than the roof it sits on)
+`dormer_above_roof` (a dormer `value` m higher than the roof it sits on),
+`hidden_under_neighbour` (joined buildings: `value` m² of this roof lies
+inside another building's walls under its roof, hidden yet counted; the
+overhang of the shared wall set to 0 removes it, ask the user first),
+`uncovered_plan` (joined buildings: `value` m² of plan within this
+building's walls and overhangs has no roof over it, the join lost faces)
 and `inside_another` (a building wholly within another one's walls whose
 roof leaves the other roof's planes still adds area): the figures are too
 large or too small; fix the object or building named. Never delete an
