@@ -148,7 +148,7 @@
         {#if kind === "round"}
           <label>
             <span>{t("round.segments")}</span>
-            <input type="text" use:numeric={{ value: params.segments, step: 1, min: 1, max: MAX_ROUND_SEGMENTS, onchange: (v) => set({ segments: Math.round(v) }) }} />
+            <input type="text" use:numeric={{ value: params.segments, step: 1, min: 0, max: MAX_ROUND_SEGMENTS, onchange: (v) => set({ segments: Math.round(v) }) }} />
           </label>
         {/if}
         {#if kind !== "shed" && kind !== "round"}

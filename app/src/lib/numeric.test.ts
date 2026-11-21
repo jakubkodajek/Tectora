@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { describe, expect, it } from "vitest";
-import { formatNumber, parseNumber, stepValue } from "./numeric.svelte";
+import { STEP_WAIT_MS, formatNumber, parseNumber, stepValue, waitingStep } from "./numeric.svelte";
 
 describe("parseNumber", () => {
   it("takes a comma or a dot as the decimal separator", () => {
@@ -126,5 +126,22 @@ describe("number fields", () => {
     }
     expect(n).toBeGreaterThan(40);
     expect(bad).toEqual([]);
+  });
+});
+
+describe("waitingStep (UI-002, UI-201)", () => {
+  const burst = { from: 2, to: 2.15, at: 1000 };
+  it("goes on from the last step while none came back", () => {
+    expect(waitingStep(burst, 2, 1100)).toBe(2.15);
+  });
+  it("still goes on from the last step when an earlier step of the burst came back", () => {
+    expect(waitingStep(burst, 2.05, 1100)).toBe(2.15);
+    expect(waitingStep(burst, 2.1, 1100)).toBe(2.15);
+  });
+  it("goes on from the stored value once the last step is there, after a while, or after an outside change", () => {
+    expect(waitingStep(burst, 2.15, 1100)).toBeNull();
+    expect(waitingStep(burst, 2, 1000 + STEP_WAIT_MS)).toBeNull();
+    expect(waitingStep(burst, 3, 1100)).toBeNull();
+    expect(waitingStep(null, 2, 1100)).toBeNull();
   });
 });

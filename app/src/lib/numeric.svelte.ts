@@ -110,6 +110,33 @@ function isThenable(r: unknown): r is PromiseLike<unknown> {
   return typeof r === "object" && r !== null && typeof (r as PromiseLike<unknown>).then === "function";
 }
 
+/** A burst of arrow steps: the value it started from, the last step asked for and when. */
+export interface Stepped {
+  from: number | null | undefined;
+  to: number;
+  at: number;
+}
+
+/** How long a step whose value has not come back yet stays the base of the next, ms. */
+export const STEP_WAIT_MS = 1500;
+
+/**
+ * The value the next arrow step goes on from while earlier steps of the
+ * burst are still with the core, or null to go on from the stored value.
+ * The stored value may be any step of the burst that came back meanwhile
+ * (each is checked in turn), so a stored value on the way from `from` to
+ * `to` still waits for `to` (UI-201). Only for a moment: a step the core
+ * refused must not stay the base.
+ */
+export function waitingStep(stepped: Stepped | null, value: number | null | undefined, now: number): number | null {
+  if (!stepped || now - stepped.at >= STEP_WAIT_MS || value === stepped.to) return null;
+  if (value === stepped.from) return stepped.to;
+  if (value == null || stepped.from == null) return null;
+  const lo = Math.min(stepped.from, stepped.to);
+  const hi = Math.max(stepped.from, stepped.to);
+  return value >= lo && value <= hi ? stepped.to : null;
+}
+
 export function numeric(input: HTMLInputElement, initial: NumericOptions) {
   let opts = initial;
   let dirty = false;
@@ -233,23 +260,25 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
 
   // The last step stored while its value had not come back yet (a field
   // whose value returns from the core): the next step goes on from it, so
-  // four quick arrow presses make four steps (review UI-002).
-  let stepped: { from: number | null | undefined; to: number; at: number } | null = null;
+  // four quick arrow presses make four steps (review UI-002, UI-201).
+  let stepped: Stepped | null = null;
 
   function stepBy(dir: number) {
     if (input.disabled || input.readOnly) return;
     const typed = dirty ? parseNumber(input.value) : null;
     // Only for a moment: a step the core refused must not stay the base.
-    const waiting = stepped && opts.value === stepped.from && performance.now() - stepped.at < 1500 ? stepped.to : null;
+    const now = performance.now();
+    const waiting = waitingStep(stepped, opts.value, now);
     const base = typed ?? waiting ?? opts.value ?? opts.min ?? 0;
     const { min, max } = fieldBounds(opts.min, opts.max);
     const v = stepValue(base, dir, opts.step ?? 1, min, max);
     setDirty(false);
     setInvalid(null);
-    const from = opts.value;
+    // A burst of steps keeps the value it started from.
+    const from = waiting !== null && stepped ? stepped.from : opts.value;
     if (store(v)) {
       input.value = fmt(v);
-      stepped = { from, to: v, at: performance.now() };
+      stepped = { from, to: v, at: now };
     } else input.value = fmt(opts.value);
   }
 
