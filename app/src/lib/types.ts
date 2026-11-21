@@ -443,6 +443,19 @@ export interface AppSettings {
   file_request?: FileRequest;
   /** Files outside the job folders the user allowed AI clients to read. */
   allowed_files?: string[];
+  /** Settings changes by AI clients, oldest first (core `AiSettingsChange`). */
+  ai_changes?: AiSettingsChange[];
+}
+
+/** A settings change an AI client made, for the user to accept or revert. */
+export interface AiSettingsChange {
+  id: number;
+  by: string;
+  summary: string;
+  /** Changed values by key: `locale`, `theme`, `follow_ai`, `roof_defaults.<key>`. */
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+  state: "open" | "accepted" | "reverted";
 }
 
 export interface FileRequest {

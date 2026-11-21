@@ -715,6 +715,14 @@ const cs: Dict = {
   "chg.revertedMany": "Vráceno změn: {n}, od: {s}",
   "chg.revertReason": "{s} (důvod: {r})",
   "ai.elsewhere": "jiná zakázka: {name}",
+  "aiChange.title": "{by} změnil nastavení",
+  "aiChange.note": "Změna už platí, i pro nové střechy. Vrátit obnoví předchozí hodnoty.",
+  "aiChange.history": "Nastavení změněná AI",
+  "aiChange.on": "zapnuto",
+  "aiChange.off": "vypnuto",
+  "aiChange.state.open": "čeká na kontrolu",
+  "aiChange.state.accepted": "přijato",
+  "aiChange.state.reverted": "vráceno",
   "ai.history": "Historie změn",
   "ai.noHistory": "Zatím žádné zaznamenané změny od AI.",
   "ai.you": "Vy",
@@ -1675,6 +1683,14 @@ const sk: Dict = {
   "chg.revertedMany": "Vrátené zmeny: {n}, od: {s}",
   "chg.revertReason": "{s} (dôvod: {r})",
   "ai.elsewhere": "iná zákazka: {name}",
+  "aiChange.title": "{by} zmenil nastavenia",
+  "aiChange.note": "Zmena už platí, aj pre nové strechy. Vrátiť obnoví predchádzajúce hodnoty.",
+  "aiChange.history": "Nastavenia zmenené AI",
+  "aiChange.on": "zapnuté",
+  "aiChange.off": "vypnuté",
+  "aiChange.state.open": "čaká na kontrolu",
+  "aiChange.state.accepted": "prijaté",
+  "aiChange.state.reverted": "vrátené",
   "ai.history": "História zmien",
   "ai.noHistory": "Zatiaľ žiadne zaznamenané zmeny od AI.",
   "ai.you": "Vy",
@@ -2635,6 +2651,14 @@ const en: Dict = {
   "chg.revertedMany": "Reverted {n} changes since: {s}",
   "chg.revertReason": "{s} (reason: {r})",
   "ai.elsewhere": "another job: {name}",
+  "aiChange.title": "{by} changed the settings",
+  "aiChange.note": "The change already applies, also to new roofs. Revert puts the previous values back.",
+  "aiChange.history": "Settings changed by AI",
+  "aiChange.on": "on",
+  "aiChange.off": "off",
+  "aiChange.state.open": "waiting for review",
+  "aiChange.state.accepted": "accepted",
+  "aiChange.state.reverted": "reverted",
   "ai.history": "Change history",
   "ai.noHistory": "No recorded AI changes yet.",
   "ai.you": "You",
@@ -3595,6 +3619,14 @@ const de: Dict = {
   "chg.revertedMany": "{n} Änderungen verworfen seit: {s}",
   "chg.revertReason": "{s} (Grund: {r})",
   "ai.elsewhere": "anderer Auftrag: {name}",
+  "aiChange.title": "{by} hat die Einstellungen geändert",
+  "aiChange.note": "Die Änderung gilt bereits, auch für neue Dächer. Verwerfen stellt die vorherigen Werte wieder her.",
+  "aiChange.history": "Von der KI geänderte Einstellungen",
+  "aiChange.on": "ein",
+  "aiChange.off": "aus",
+  "aiChange.state.open": "wartet auf Prüfung",
+  "aiChange.state.accepted": "übernommen",
+  "aiChange.state.reverted": "verworfen",
   "ai.history": "Änderungsverlauf",
   "ai.noHistory": "Noch keine KI-Änderungen aufgezeichnet.",
   "ai.you": "Sie",
@@ -3860,7 +3892,12 @@ function initial(): Locale {
   } catch {
     // Storage unavailable: fall back to the system language.
   }
-  const sys = (navigator.language || "cs").slice(0, 2);
+  return systemLocale();
+}
+
+/** The operating system's language when the app has it, else Czech. */
+export function systemLocale(): Locale {
+  const sys = (typeof navigator !== "undefined" && navigator.language ? navigator.language : "cs").slice(0, 2);
   return (sys in DICTS ? sys : "cs") as Locale;
 }
 

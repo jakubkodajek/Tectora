@@ -32,6 +32,16 @@ export function liveText(s: LiveStatus): string {
   return s.message;
 }
 
+/**
+ * The editor's pill while the agent works outside this job: what it does
+ * when that is not a job (settings, the library), otherwise "another job"
+ * with the job's name, or without a colon when there is no name (UX-003).
+ */
+export function pillText(s: LiveStatus): string {
+  if (!s.project_id) return liveText(s);
+  return s.name ? t("ai.elsewhere", { name: s.name }) : t("ai.otherProject");
+}
+
 /** Prefix the core writes before the summary a revert undid (store.rs `REVERTED_PREFIX`). */
 const REVERTED = "Reverted: ";
 const REVERTED_MANY = /^Reverted (\d+) changes since: /;
