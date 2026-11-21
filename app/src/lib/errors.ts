@@ -30,6 +30,7 @@ export type Action =
   | "connect"
   | "restore"
   | "status"
+  | "storeResult"
   | "settings";
 
 export interface Described {

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { changedItems, describeChange, describeFigure, ghostOf } from "./changes";
+import { changedItems, describeChange, describeFigure, figureName, ghostOf } from "./changes";
 import { i18n } from "./i18n.svelte";
 import type { CalcResult, Change, EdgeDef, Project } from "./types";
 import { emptyProject } from "./types";
@@ -95,5 +95,17 @@ describe("figures", () => {
     const p = emptyProject("x");
     expect(describeFigure({ key: "roof_area", stored: 182.4, current: 195.12 }, p)).toBe("Roof area 182.40 → 195.12 m² (+12.72)");
     expect(describeFigure({ key: "line:F", stored: 10, current: 8.5 }, p)).toBe("F 10.00 → 8.50 m (−1.50)");
+  });
+});
+
+describe("round-3 audit", () => {
+  it("names an AI status change with the status before and after (UX-207)", () => {
+    const p = emptyProject("x");
+    expect(describeChange({ kind: "modified", field: "job.status", before: "draft", after: "ordered" }, p)).toBe("Status: Draft → Ordered");
+  });
+  it("names a line in the stored-offer comparison with its code and name (UX-205)", () => {
+    const p = emptyProject("x");
+    expect(figureName("line:OL", p)).toBe("OL Verge left");
+    expect(figureName("roof_area", p)).toBe("Roof area");
   });
 });

@@ -806,7 +806,8 @@
       project.result_snapshot = snap;
       commit();
     } catch (e) {
-      notifyError(e, "save");
+      // A refusal (no building, no roof), not a failed save of the job (UI-206).
+      notifyError(e, "storeResult");
     }
   }
 

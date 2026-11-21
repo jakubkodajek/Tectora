@@ -5,6 +5,7 @@ import { t } from "./i18n.svelte";
 import { partLabel } from "./partname";
 import { materialName } from "./materials";
 import { windowOutline } from "./openings";
+import { lineName } from "./linecodes";
 import type { CalcResult, Change, Chimney, Dormer, FigureDifference, HalfHip, ManualFace, ManualLine, Point2, Project, RoofWindow } from "./types";
 
 const isVertical = (p: number) => Math.abs(p - 90) <= 0.001;
@@ -93,7 +94,10 @@ export function describeChange(c: Change, project: Project | null): string {
       case "notes":
         return t("chg.notes");
       case "job.status":
-        return t("chg.job", { field: t("job.status"), b: t(`status.${c.after}`) });
+        // Before and after, as every other row (UX-207); an added status has no before.
+        return c.before
+          ? t("chg.jobStatus", { field: t("job.status"), a: t(`status.${c.before}`), b: t(`status.${c.after}`) })
+          : t("chg.job", { field: t("job.status"), b: t(`status.${c.after}`) });
       default:
         if (c.field.startsWith("job.")) {
           return t("chg.job", { field: t(c.field), b: String(c.after) || "—" });
@@ -230,6 +234,11 @@ export function figureLabel(key: string, project: Project | null): string {
   if (key === "ridge_height") return t("snap.ridge");
   if (key.startsWith("line:")) return key.slice(5);
   return materialName(project, Number(key.slice(9)));
+}
+
+/** A figure's name in the stored-offer comparison: a line with its code and name ("OL Verge left", UX-205). */
+export function figureName(key: string, project: Project | null): string {
+  return key.startsWith("line:") ? `${key.slice(5)} ${lineName(key.slice(5))}` : figureLabel(key, project);
 }
 
 export function formatFigure(key: string, v: number): string {
