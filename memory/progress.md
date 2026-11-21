@@ -381,6 +381,16 @@ sessions that use it know where things stand.
   line in plan or 3D shows the `LineInfo` card and draws the line amber
   (`--line-hl`, `--line-hl-edge`).
 - State: `make check` exit 0, i18n sweep clean, contrast pass.
+- Material check (Jakub: "really important"): `tests/material_split.rs`
+  puts every wall of every example variant (dormer, chimney + window,
+  clad gables + breaks, two and joined buildings) in sheet metal in turn:
+  only its own faces change material, the roof is unchanged and the split
+  adds up; list rows equal the results. Found: two walls in line with the
+  same eave height and overhang but different materials are joined into
+  one plane (DACAD's collinear merge ignores material), so the second
+  material vanished silently. Now warned (`merged_materials`); splitting
+  the plane per wall is Jakub's decision (asked 2026-11-21). Hand-drawn
+  faces always count as material 1.
 - Open: line details have no keyboard path in the plan (the Calculation tab
   and MCP cover the figures); a pinned card closes with Esc, × or a second
   click on the line, not with a click on empty plan.

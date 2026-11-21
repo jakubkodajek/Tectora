@@ -145,6 +145,14 @@ pub enum WarningKind {
     /// twice) and its roof still has faces: they add to the job's area and
     /// lines (audit MATH-008). `value`: 0.
     InsideAnother,
+    /// Two walls in line with the same eave height and overhang but
+    /// different roof materials (a wall split by a corner to put sheet
+    /// metal on part of it): the calculation joins them into one roof
+    /// plane, which takes the first wall's material, so the second wall's
+    /// material is not in the area per material. `edges`: the wall whose
+    /// material the plane has, then the wall whose material is not used.
+    /// `value`: 0.
+    MergedMaterials,
 }
 
 /// Distance from the plan's origin (along x or y) from which
@@ -568,6 +576,9 @@ pub fn check(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<Vec<RoofWarning>>
                 }
             }
             w.extend(dormer_above_roof(geo));
+            if let Some(part) = parts.get(i) {
+                w.extend(merged_materials(part, geo));
+            }
             w
         })
         .collect();
@@ -1114,6 +1125,49 @@ pub fn wing_planes(part: &RoofPart) -> Vec<ParallelPlanes> {
             gable_beside && wall_len(p.outer) < behind
         })
         .collect()
+}
+
+/// [`WarningKind::MergedMaterials`] for one calculated part: neighbouring
+/// walls in line, with equal eave height, overhang and cladding, of
+/// different materials, where the roof has faces of one of them only (the
+/// calculation joined them; DACAD's collinear merge compares eave height,
+/// overhang and the clad flag, not the material, `dcore::s1::merge`).
+pub fn merged_materials(part: &RoofPart, geo: &RoofGeometry) -> Vec<RoofWarning> {
+    if geo.error.is_some() || geo.faces.is_empty() {
+        return Vec::new();
+    }
+    let n = part.edges.len();
+    let has_faces = |e: usize| geo.faces.iter().any(|f| f.edge == e);
+    let mut out = Vec::new();
+    for j in 0..n {
+        let k = (j + 1) % n;
+        if j == k {
+            continue;
+        }
+        let (a, b) = (&part.edges[j], &part.edges[k]);
+        if a.is_gable()
+            || b.is_gable()
+            || crate::roof::counted_material(a.material)
+                == crate::roof::counted_material(b.material)
+            || (a.eave_height - b.eave_height).abs() >= IN_LINE
+            || (a.overhang - b.overhang).abs() >= IN_LINE
+            || a.clad != b.clad
+            || !collinear(part, j, k)
+            || !collinear(part, k, j)
+        {
+            continue;
+        }
+        let (kept, lost) = match (has_faces(j), has_faces(k)) {
+            (true, false) => (j, k),
+            (false, true) => (k, j),
+            _ => continue,
+        };
+        out.push(RoofWarning {
+            edges: vec![kept, lost],
+            ..RoofWarning::new(WarningKind::MergedMaterials, 0.0)
+        });
+    }
+    out
 }
 
 /// Whether walls `i` and `j` of `part` lie on one line.
