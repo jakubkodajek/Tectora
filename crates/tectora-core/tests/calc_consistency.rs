@@ -826,3 +826,23 @@ fn a_dormer_valley_crossing_a_joined_break_stays() {
         "K {got:.3}, without the break {want:.3}"
     );
 }
+
+/// Fable R4 S3-a (`m1_209`): a T-shaped hip roof with one eave 2 cm higher,
+/// which the core refuses. Keeping lines across the step (as the dormer
+/// valley rule does) turned it into a swept roof with 2.5 m of valley and
+/// hip along the step; it stays refused, as on the main line.
+#[test]
+fn a_centimetre_step_the_core_refuses_gets_no_seam_of_valley_and_hip() {
+    let p = Project::from_json(r#"{"name": "m1_209", "parts": [{"name": "A", "edges": [{"start": {"x": 0, "y": 0}, "pitch_deg": 45, "eave_height": 6.0, "overhang": 0.5}, {"start": {"x": 10.1, "y": 0}, "pitch_deg": 45, "eave_height": 6.0, "overhang": 0.5}, {"start": {"x": 10.1, "y": 9.71}, "pitch_deg": 45, "eave_height": 6.02, "overhang": 0.5}, {"start": {"x": 7.21, "y": 9.71}, "pitch_deg": 45, "eave_height": 6.0, "overhang": 0.5}, {"start": {"x": 7.21, "y": 14.89}, "pitch_deg": 45, "eave_height": 6.0, "overhang": 0.5}, {"start": {"x": 2.58, "y": 14.89}, "pitch_deg": 45, "eave_height": 6.0, "overhang": 0.5}, {"start": {"x": 2.58, "y": 9.71}, "pitch_deg": 45, "eave_height": 6.0, "overhang": 0.5}, {"start": {"x": 0, "y": 9.71}, "pitch_deg": 45, "eave_height": 6.0, "overhang": 0.5}]}]}"#).unwrap();
+    let geos = generate_project(&p);
+    let g = &geos[0];
+    if g.error.is_none() {
+        let k: f64 = g
+            .lines
+            .iter()
+            .filter(|l| l.dacad_code() == "K")
+            .map(|l| l.length())
+            .sum();
+        assert!(k < 10.0, "K {k:.2} m: the step became a valley");
+    }
+}

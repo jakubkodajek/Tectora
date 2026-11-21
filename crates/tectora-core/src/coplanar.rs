@@ -369,6 +369,20 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
         // The members' own outlines: a line on one of them inside the
         // joined face lay between two members and goes with the join.
         let member_plans: Vec<Vec<Point2>> = members.iter().map(|&k| plan(&geo.faces[k])).collect();
+        // The plan outlines of the dormers' faces: a line with an end on
+        // one is the dormer's (its valley, its abutment).
+        let dormer_plans: Vec<Vec<Point2>> = geo
+            .faces
+            .iter()
+            .filter(|f| f.edge == usize::MAX && f.polygon.len() >= 3)
+            .map(plan)
+            .collect();
+        let dormer_line = |l: &RoofLine| {
+            [l.a, l.b].iter().any(|p| {
+                let p = Point2::new(p[0], p[1]);
+                dormer_plans.iter().any(|d| near_boundary(d, p, INSIDE_TOL))
+            })
+        };
         let at = members.first().copied().unwrap_or(0);
         let mut faces: Vec<RoofFace> = Vec::with_capacity(geo.faces.len());
         // Where each old face is now: a member is the joined face, the
@@ -413,15 +427,16 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
                 .iter()
                 .all(|p| (plane.z(Point2::new(p[0], p[1])) - p[2]).abs() < IN_PLANE)
                 && member_plans.iter().any(|m| {
-                    // The whole line, not only its middle: a dormer valley
-                    // crossing the seam at its middle stays (Fable R3-3).
-                    [
-                        mid,
-                        Point2::new(l.a[0], l.a[1]),
-                        Point2::new(l.b[0], l.b[1]),
-                    ]
-                    .iter()
-                    .all(|&p| near_boundary(m, p, INSIDE_TOL))
+                    // A dormer's line must lie on the outline as a whole: a
+                    // dormer valley crossing the seam at its middle stays
+                    // (Fable R3-3). Other lines go by their middle as
+                    // before, so a valley or hip across a centimetre step
+                    // is still clipped and `sound` judges the roof as
+                    // before (Fable R4 S3-a).
+                    let ends = [Point2::new(l.a[0], l.a[1]), Point2::new(l.b[0], l.b[1])];
+                    near_boundary(m, mid, INSIDE_TOL)
+                        && (!dormer_line(l)
+                            || ends.iter().all(|&p| near_boundary(m, p, INSIDE_TOL)))
                 })
         };
         let lengths = |lines: &[RoofLine]| {
