@@ -217,3 +217,21 @@ describe("settings command errors (ERRU-002)", () => {
     expect(describeError("not_writable", "save").message).toBe(t("settings.err.not_writable"));
   });
 });
+
+describe("round-3 audit: a job too large to export (ARCH-205)", () => {
+  it("names the job's own size, not the attachment limits", () => {
+    setLocale("en");
+    const job = describeError({ code: "too_large", detail: "job bundle: the job is too large to hand over (17 MB, at most 16 MB); shorten its notes" }, "export");
+    expect(job.message).toBe(t("err.job_too_large"));
+    expect(job.message).not.toMatch(/256/);
+    const file = describeError({ code: "too_large", detail: "x.pdf: larger than 256 MB" }, "files");
+    expect(file.message).toBe(t("err.too_large"));
+  });
+  it("titles a refused stored result as a refusal, not as a failed save (UI-206)", () => {
+    setLocale("cs");
+    const d = describeError({ code: "no_building" }, "storeResult");
+    expect(DICTS.cs["err.action.storeResult"]).toBeTruthy();
+    expect(d.title).toBe(DICTS.cs["err.action.storeResult"]);
+    expect(d.title).not.toBe(t("err.action.save"));
+  });
+});

@@ -100,7 +100,9 @@ export function changeState(c: AiSettingsChange): string {
 export function keptNote(c: AiSettingsChange, current?: AppSettings | null): string | null {
   const kept = c.kept ?? [];
   if (!kept.length) return null;
-  const list = kept.map((k) => `${rowLabel({ key: k, label: label(k), before: "", after: "" })} ${current ? changeValue(k, currentValue(current, k)) : ""}`.trim());
+  // "Sklon nových střech 30°": no second colon after the note's own (UX-204).
+  const name = (k: string) => (isRoofKey(k) ? t("settings.newRoofsOf", { label: label(k) }) : label(k));
+  const list = kept.map((k) => `${name(k)} ${current ? changeValue(k, currentValue(current, k)) : ""}`.trim());
   return t("aiChange.kept", { list: list.join(", ") });
 }
 

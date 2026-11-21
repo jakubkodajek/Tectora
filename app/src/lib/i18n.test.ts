@@ -74,3 +74,22 @@ describe("tools that look alike", () => {
     }
   });
 });
+
+// Round-3 audit UX-204: one word per concept in the round-2 texts.
+describe("round-3 wording (UX-204)", () => {
+  it("calls a round dormer's segments by the field's word", () => {
+    // One word for field and message: "segment", as the refusal always said (HUNT-103).
+    for (const loc of ["cs", "sk"] as const) {
+      expect(DICTS[loc]["round.segments"], loc).toMatch(/segment/);
+      expect(DICTS[loc]["dormer.err.segments"], loc).toMatch(/segment/);
+      expect(DICTS[loc]["dormer.err.segments"], loc).not.toMatch(/úsek/);
+    }
+  });
+  it("says Verwerfen for the AI card's revert in German throughout", () => {
+    expect(DICTS.de["aiChange.state.nothing"]).toMatch(/verwerfen/);
+    expect(DICTS.de["aiChange.state.nothing"]).not.toMatch(/zurück/);
+  });
+  it("does not call the AI folder request a move", () => {
+    for (const [loc, d] of Object.entries(DICTS)) expect(d["folderReq.title"], loc).not.toMatch(/Přesun|Presun|Move|verschieben/i);
+  });
+});

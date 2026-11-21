@@ -111,10 +111,12 @@ export function describeError(e: unknown, action?: Action): Described {
   const code = KNOWN.has(err.code) ? err.code : "unknown";
   // A settings code says what is wrong with the folder or value (ERRU-002).
   const settings = SETTINGS_CODES.has(err.code) && (action === "settings" || !KNOWN.has(err.code));
+  // An export refused for the job's own size, not for its files (bundle.rs, ARCH-205).
+  const jobTooLarge = code === "too_large" && /the job is too large to hand over/.test(err.detail ?? "");
   return {
     code: err.code,
     title: t(action ? `err.action.${action}` : "err.title"),
-    message: settings ? t(`settings.err.${err.code}`) : t(`err.${code}`, { id: err.id ?? "" }),
+    message: settings ? t(`settings.err.${err.code}`) : jobTooLarge ? t("err.job_too_large") : t(`err.${code}`, { id: err.id ?? "" }),
     detail: err.detail,
   };
 }
