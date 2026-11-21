@@ -688,7 +688,7 @@ fn hidden_under_neighbour(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<f64>
                 let face = MultiPolygon::new(vec![to_geo(&plan(f))]);
                 for piece in &face.intersection(&walls).0 {
                     let a = piece.unsigned_area();
-                    if !(a > MIN_PIECE) {
+                    if a.is_nan() || a <= MIN_PIECE {
                         continue;
                     }
                     let ring = &piece.exterior().0;
