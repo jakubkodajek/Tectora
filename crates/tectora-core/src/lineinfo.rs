@@ -127,7 +127,8 @@ pub fn line_details_of(project: &Project, geos: &[RoofGeometry]) -> Vec<LineDeta
 /// per code (`minus_lines`), not per line: each code's total is shared out
 /// over that code's lines by how much of each lies on or under those
 /// objects in plan, so the lines of a code add up to the results exactly.
-/// A total no line of its code lies under is left on no line.
+/// What lies on no line of its code (a dormer on the wall line, its eave
+/// on the overhang) comes off the lines of that code nearest an object.
 fn counted_lengths(project: &Project, geo: &RoofGeometry) -> Vec<f64> {
     let mut out: Vec<f64> = geo.lines.iter().map(|l| l.length()).collect();
     if geo.minus_lines.is_empty() {
@@ -139,6 +140,12 @@ fn counted_lengths(project: &Project, geo: &RoofGeometry) -> Vec<f64> {
         .chain(&project.roof_openings)
         .map(|c| c.corners.clone())
         .chain(geo.footprints.iter().cloned())
+        // A dormer's walls closed along the roof wall it stands on.
+        .chain(project.dormers.iter().map(|d| {
+            let mut o: Vec<Point2> = d.edges.iter().map(|e| e.start).collect();
+            o.push(d.end);
+            o
+        }))
         .filter(|c| c.len() >= 3)
         .collect();
     let mut minus: BTreeMap<&str, f64> = BTreeMap::new();
@@ -157,18 +164,68 @@ fn counted_lengths(project: &Project, geo: &RoofGeometry) -> Vec<f64> {
         })
         .collect();
     for (code, m) in minus {
-        let lines: Vec<usize> = (0..geo.lines.len())
+        let mut lines: Vec<usize> = (0..geo.lines.len())
             .filter(|&i| geo.lines[i].dacad_code() == code)
             .collect();
         let total: f64 = lines.iter().map(|&i| under[i]).sum();
-        if total <= 1e-9 {
-            continue;
+        // First the parts that lie on or under an object, scaled down if
+        // they come to more than the total.
+        let share = if total > m { m / total } else { 1.0 };
+        let mut left = m;
+        for &i in &lines {
+            let d = (under[i] * share).min(out[i]);
+            out[i] -= d;
+            left -= d;
         }
-        for i in lines {
-            out[i] = (out[i] - under[i] * m / total).max(0.0);
+        // What lies on no line of the code in plan (a dormer standing on
+        // the wall, its eave on the overhang line; a chimney beside a
+        // verge): taken off the lines of the code nearest to an object.
+        if left > 1e-9 && !objects.is_empty() {
+            let gap = |i: usize| {
+                let l = &geo.lines[i];
+                objects
+                    .iter()
+                    .map(|o| distance(o, l.a, l.b))
+                    .fold(f64::INFINITY, f64::min)
+            };
+            lines.sort_by(|&a, &b| gap(a).total_cmp(&gap(b)));
+            for i in lines {
+                let d = left.min(out[i]);
+                out[i] -= d;
+                left -= d;
+                if left <= 1e-9 {
+                    break;
+                }
+            }
         }
     }
     out
+}
+
+/// Plan distance between the line from `a` to `b` and the outline `poly`
+/// (0 where they touch or the line runs inside).
+fn distance(poly: &[Point2], a: [f64; 3], b: [f64; 3]) -> f64 {
+    let (pa, pb) = (Point2::new(a[0], a[1]), Point2::new(b[0], b[1]));
+    if covered(&[poly.to_vec()], a, b) > 0.0 {
+        return 0.0;
+    }
+    let to_seg = |p: Point2, s: Point2, e: Point2| {
+        let (dx, dy) = (e.x - s.x, e.y - s.y);
+        let l2 = dx * dx + dy * dy;
+        let t = if l2 < 1e-18 {
+            0.0
+        } else {
+            (((p.x - s.x) * dx + (p.y - s.y) * dy) / l2).clamp(0.0, 1.0)
+        };
+        p.distance(Point2::new(s.x + t * dx, s.y + t * dy))
+    };
+    let n = poly.len();
+    let corners = poly.iter().map(|&p| to_seg(p, pa, pb));
+    let ends = (0..n).flat_map(|i| {
+        let (s, e) = (poly[i], poly[(i + 1) % n]);
+        [to_seg(pa, s, e), to_seg(pb, s, e)]
+    });
+    corners.chain(ends).fold(f64::INFINITY, f64::min)
 }
 
 /// How much of the line from `a` to `b` lies on or inside any of `polys`
@@ -410,17 +467,29 @@ mod tests {
             p.roof_openings
                 .push(square(x0 + 1.0, y0 - 1.0, x0 + 3.0, mid_y));
             assert_counted_add_up(&format!("{} hole", ex.id), &p);
+            // Dormers up the slope and standing on the wall line (their
+            // eave taken off the roof's eave on the overhang line, which no
+            // dormer outline covers: audit HUNT-104).
             for (k, kind) in DORMER_KINDS.iter().enumerate() {
-                let e0 = &base.parts[0].edges[0];
-                let host = e0.eave_height + 1.2 * e0.pitch_deg.to_radians().tan();
+                for up in [1.2f64, 0.0, -0.5] {
+                    let e0 = &base.parts[0].edges[0];
+                    let host = e0.eave_height + up.max(0.0) * e0.pitch_deg.to_radians().tan();
+                    let mut p = base.clone();
+                    p.dormers.push(build_dormer(&default_params(
+                        *kind,
+                        Point2::new(x0 + 2.0 + k as f64 * 0.1, y0 + up),
+                        0.0,
+                        (host * 100.0).round() / 100.0 + 1.0,
+                    )));
+                    assert_counted_add_up(&format!("{} dormer {k} at {up}", ex.id), &p);
+                }
+            }
+            // Chimneys on, across and beside the first and last verge.
+            let x1 = pts.iter().fold(f64::MIN, |a, p| a.max(p.x));
+            for x in [x0 - 0.6, x0 - 0.3, x0, x1 - 0.3, x1] {
                 let mut p = base.clone();
-                p.dormers.push(build_dormer(&default_params(
-                    *kind,
-                    Point2::new(x0 + 2.0 + k as f64 * 0.1, y0 + 1.2),
-                    0.0,
-                    (host * 100.0).round() / 100.0 + 1.0,
-                )));
-                assert_counted_add_up(&format!("{} dormer {k}", ex.id), &p);
+                p.chimneys.push(square(x, y0 + 1.5, x + 0.6, y0 + 2.1));
+                assert_counted_add_up(&format!("{} chimney at x {x}", ex.id), &p);
             }
         }
     }
