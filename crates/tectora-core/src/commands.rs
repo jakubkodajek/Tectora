@@ -637,6 +637,25 @@ mod tests {
         );
     }
 
+    /// Audit 2026-11-21 TEST-203: hand-drawn faces alone are figures to
+    /// offer, not "no building".
+    #[test]
+    fn snapshot_of_hand_drawn_faces_only_is_taken() {
+        let mut p = hip();
+        p.parts.clear();
+        p.manual_faces.push(crate::model::ManualFace {
+            points: [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]
+                .iter()
+                .map(|&(x, y)| crate::geom::Point2::new(x, y))
+                .collect(),
+            pitch_deg: 30.0,
+            label: String::new(),
+        });
+        let s = take_snapshot(&p).unwrap();
+        let want = 16.0 / 30f64.to_radians().cos();
+        assert!((s.roof_area - want).abs() < 0.01, "{}", s.roof_area);
+    }
+
     #[test]
     fn breakdown_and_snapshot_match_the_calculation() {
         let p = hip();

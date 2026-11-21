@@ -1220,6 +1220,63 @@ mod tests {
         );
     }
 
+    /// Audit 2026-11-21 TEST-204: two open changes merged into one keep
+    /// the value from before the first, so Revert puts back the user's.
+    #[test]
+    fn a_merged_change_reverts_to_the_value_before_the_first() {
+        let ai = |s: Settings, p: serde_json::Value| s.patched_by_ai(&p, "Claude", "x").unwrap().0;
+        let s = Settings::default();
+        assert_eq!(s.theme, Theme::System);
+        let s = ai(s, serde_json::json!({ "theme": "dark" }));
+        let mut s = ai(s, serde_json::json!({ "theme": "light" }));
+        // More open changes of another key, so the two theme changes are
+        // merged.
+        for i in 0..MAX_AI_CHANGES - 1 {
+            let pitch = 20 + (i % 2) * 5;
+            s = ai(
+                s,
+                serde_json::json!({ "roof_defaults": { "pitch_deg": pitch } }),
+            );
+        }
+        assert_eq!(s.ai_changes.len(), MAX_AI_CHANGES);
+        let merged = s
+            .ai_changes
+            .iter()
+            .find(|c| c.after.contains_key("theme"))
+            .unwrap();
+        assert_eq!(merged.before["theme"], "system", "{merged:?}");
+        assert_eq!(merged.after["theme"], "light", "{merged:?}");
+        let back = s.answer_ai_change(merged.id, true).unwrap();
+        assert_eq!(back.theme, Theme::System);
+    }
+
+    /// TEST-204: accepting a change closes older open changes of only its
+    /// keys; one that also changed another key stays open for review.
+    #[test]
+    fn accepting_a_change_keeps_an_older_change_of_other_keys_open() {
+        let s = Settings::default();
+        let s = s
+            .patched_by_ai(
+                &serde_json::json!({ "roof_defaults": { "pitch_deg": 25 }, "locale": "de" }),
+                "Claude",
+                "Pitch and language",
+            )
+            .unwrap()
+            .0;
+        let s = s
+            .patched_by_ai(
+                &serde_json::json!({ "roof_defaults": { "pitch_deg": 30 } }),
+                "Claude",
+                "Steeper",
+            )
+            .unwrap()
+            .0;
+        let (a, b) = (s.ai_changes[0].id, s.ai_changes[1].id);
+        let s = s.answer_ai_change(b, false).unwrap();
+        assert_eq!(s.ai_changes[0].state, AiChangeState::Open);
+        assert_eq!(s.open_ai_change().map(|c| c.id), Some(a));
+    }
+
     /// Audit 2026-11-21 HUNT-108 item 4: a roof default sent as `null` is
     /// left as it is, not refused as the wrong type.
     #[test]

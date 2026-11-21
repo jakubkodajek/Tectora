@@ -91,4 +91,16 @@ describe("AI settings card against the settings now (UX-104, UX-105)", () => {
     expect(keptNote(pitchOnly({ state: "reverted", kept: ["roof_defaults.pitch_deg"] }), now(30))).toContain("30°");
     expect(keptNote(pitchOnly({ state: "reverted" }), now(40))).toBeNull();
   });
+
+  it("a Revert that kept only one of two values put the other back (TEST-208)", () => {
+    i18n.locale = "cs";
+    const two = change({
+      state: "reverted",
+      before: { "roof_defaults.pitch_deg": 40, locale: null },
+      after: { "roof_defaults.pitch_deg": 25, locale: "de" },
+      kept: ["locale"],
+    });
+    expect(changeState(two)).not.toBe(DICTS.cs["aiChange.state.nothing"]);
+    expect(changeState(two)).toBe(DICTS.cs["aiChange.state.reverted"]);
+  });
 });

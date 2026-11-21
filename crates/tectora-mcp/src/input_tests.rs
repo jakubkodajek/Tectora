@@ -586,3 +586,26 @@ fn blank_looking_summaries_and_names_are_refused() {
         .unwrap_err();
     assert!(e.contains("name"), "{e}");
 }
+
+/// Audit 2026-11-21 TEST-203: a job of hand-drawn faces only can be set
+/// to Offer, and its figures are stored.
+#[test]
+fn a_job_of_hand_drawn_faces_only_stores_its_offer_figures() {
+    let mut s = server();
+    let p = tectora_core::Project::from_json(
+        &json!({
+            "name": "Faces", "parts": [],
+            "manual_faces": [{ "points": [{"x": 0, "y": 0}, {"x": 4, "y": 0}, {"x": 4, "y": 4}, {"x": 0, "y": 4}], "pitch_deg": 30 }],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let id = s.store.save(None, &p).unwrap();
+    s.call_tool(
+        "update_job",
+        &json!({ "id": id, "status": "offer", "summary": "Offer sent" }),
+    )
+    .unwrap();
+    let snap = s.store.load(&id).unwrap().result_snapshot.expect("stored");
+    assert!(snap.roof_area > 18.0, "{}", snap.roof_area);
+}

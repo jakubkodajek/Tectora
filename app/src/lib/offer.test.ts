@@ -45,6 +45,17 @@ describe("what a stored result is calculated from (ERR-102, UX-102)", () => {
     expect(roofInput(b)).not.toBe(roofInput(base()));
   });
 
+  // TEST-208: every input of the roof counts, not only the dormers.
+  for (const field of ["parts", "chimneys", "windows", "roof_openings", "manual_faces", "manual_lines"] as const) {
+    it(`sees a change of ${field}`, () => {
+      const b = { ...base(), [field]: [{ edges: [], x: 1 } as never, {} as never] } as Project;
+      expect(roofInput(b)).not.toBe(roofInput(base()));
+    });
+  }
+  it("sees the flat roof switched on", () => {
+    expect(roofInput({ ...base(), flat_roof: true } as Project)).not.toBe(roofInput(base()));
+  });
+
   it("a job without a building and without a hand-drawn face has nothing to offer", () => {
     expect(hasBuilding(base())).toBe(true);
     expect(hasBuilding({ ...base(), parts: [] })).toBe(false);
