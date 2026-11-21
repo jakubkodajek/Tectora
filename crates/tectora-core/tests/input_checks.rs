@@ -142,3 +142,47 @@ fn a_dormer_below_the_roof_or_flatter_than_2_degrees_is_refused() {
         "out_of_range"
     );
 }
+
+#[test]
+fn the_dormer_checks_hold_at_their_edges() {
+    // Round 2 TEST-103: the checks of MATH-001 / MATH-003 were tested at one
+    // point each, so a 10 cm tolerance below the roof, a 90° pitch and an
+    // unchecked half-hip pitch all passed.
+    let (_, roof) = dormer_job(5.0, 45.0);
+    let host = HostSlope {
+        height: roof,
+        tan: 0.8,
+    };
+    let at = |kind: DormerKind, eave: f64| {
+        let mut q = dormers::default_params(kind, Point2::new(4.0, 1.6), 0.0, eave);
+        q.pitch_deg = 45.0;
+        q
+    };
+    let code = |q: &dormers::DormerParams, host: Option<HostSlope>| {
+        dormers::check_params(q, host).err().map(|e| e.0)
+    };
+    // Below the roof by 5 mm is refused, by half a millimetre (rounding of a
+    // pointed dormer's eave) is not.
+    assert_eq!(
+        code(&at(DormerKind::Gable, roof - 0.005), Some(host)),
+        Some("dormer_below_roof")
+    );
+    assert_eq!(code(&at(DormerKind::Gable, roof - 0.0005), Some(host)), None);
+    // A pitch just under 90° is taken, 90° is not.
+    let mut q = at(DormerKind::Gable, roof + 1.0);
+    q.pitch_deg = 89.9;
+    assert_eq!(code(&q, None), None);
+    q.pitch_deg = 90.0;
+    assert_eq!(code(&q, None), Some("dormer_pitch"));
+    // Every pitch a kind uses is checked, not only the main one.
+    let mut q = at(DormerKind::HalfHip, roof + 1.0);
+    q.half_hip_pitch_deg = 1.0;
+    assert_eq!(code(&q, None), Some("dormer_pitch"));
+    q.half_hip_pitch_deg = 60.0;
+    assert_eq!(code(&q, None), None);
+    let mut q = at(DormerKind::Trapezoid, roof + 1.0);
+    q.front_pitch_deg = 1.0;
+    assert_eq!(code(&q, None), Some("dormer_pitch"));
+    q.front_pitch_deg = 30.0;
+    assert_eq!(code(&q, None), None);
+}
