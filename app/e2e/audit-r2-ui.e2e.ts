@@ -3,7 +3,7 @@
 // pitch Eave brings back belongs to the job it was remembered in (UI-104),
 // Results says why a job has no result (UX-101), and the AI settings card
 // shows current values, says what a Revert kept and fits a small window
-// (UX-104, UX-105, UI-105).
+// (UX-104, UX-105, UI-105); the toolbar drops labels only as far as needed (UX-108).
 import { bar, clickPlan, openEditor, selectWall, setField, tool } from "./editor";
 import { bridge, createExample, expect, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
@@ -105,4 +105,22 @@ test.describe("round-2 audit: plan", () => {
     await card.getByRole("button", { name: cs("review.details") }).click();
     await expect(card).toContainText("Small window.");
   });
+
+  for (const [loc, w, h] of [
+    ["de", 1180, 760],
+    ["cs", 1024, 760],
+    ["cs", 1360, 620],
+  ] as const) {
+    test(`the toolbar keeps the main labels at ${w}×${h} in ${loc} (UX-108)`, async ({ app, page }) => {
+      await page.setViewportSize({ width: w, height: h });
+      await createExample("hip", "Popisky");
+      await app.open({ locale: loc });
+      await app.openJob("Popisky");
+      const bar = page.locator(".editor .toolbar");
+      await expect(bar).not.toHaveClass(/(^|\s)compact(\s|$)/);
+      const labelled = await bar.evaluate((e) => [...e.querySelectorAll(".tool span")].filter((s) => s.getBoundingClientRect().width > 5).length);
+      expect(labelled).toBeGreaterThanOrEqual(12);
+      expect(await bar.evaluate((e) => e.scrollWidth <= e.clientWidth + 1)).toBe(true);
+    });
+  }
 });
