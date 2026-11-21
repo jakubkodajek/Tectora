@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import * as rr from "./roundroof";
 import * as tf from "./transform";
 import * as dm from "./dormers";
+import * as wt from "./walltype";
 import { roundTo } from "./rounding";
 
 const files = import.meta.glob(["../../../tests/fixtures/edit/parity.json"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
@@ -116,6 +117,8 @@ function run(op: string, a: any): any {
       const v = dm.solveDormer(a.p, a.host, a.target, a.width);
       return typeof v === "string" ? { error: true } : v;
     }
+    case "eave_pitch":
+      return wt.eavePitch(a.edges, a.edge, a.own, a.preset);
     case "pitch_for_back_width": {
       const v = dm.pitchForBackWidth(a.p, a.host, a.width);
       return typeof v === "number" ? v : { error: true };

@@ -159,6 +159,12 @@ fn calc_command(cmd: &str, a: &Value) -> Option<Result<Value, Value>> {
                 .map_err(err)
                 .map(|p| to_json(p).unwrap_or(Value::Null))
         }),
+        "check_dormer" => project().and_then(|p| {
+            let index = arg::<usize>(a, "index")
+                .map_err(|Fail(e)| json!({ "code": "invalid_input", "detail": e }))?;
+            commands::check_dormer(&p, index).map_err(err)?;
+            Ok(Value::Null)
+        }),
         "dormer_host" => project().and_then(|p| {
             let index = arg::<usize>(a, "index")
                 .map_err(|Fail(e)| json!({ "code": "invalid_input", "detail": e }))?;
@@ -384,8 +390,10 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             let kind: StandardRoof = arg(a, "kind")?;
             let pitch: f64 = arg(a, "pitchDeg")?;
             let name = arg::<Option<String>>(a, "name")?;
-            tectora_core::commands::check_new_roof(
+            tectora_core::commands::check_standard_roof(
                 name.as_deref().filter(|_| cmd == "create_standard"),
+                arg(a, "length")?,
+                arg(a, "width")?,
                 pitch,
                 arg(a, "eaveHeight")?,
                 arg(a, "overhang")?,

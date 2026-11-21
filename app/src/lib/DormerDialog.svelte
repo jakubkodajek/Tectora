@@ -15,7 +15,8 @@
   import type { Placement, Project } from "./types";
   import PlaceFields from "./PlaceFields.svelte";
   import { notifyError, notifyRefusal } from "./notify.svelte";
-  import { describeError, type Described } from "./errors";
+  import { describeError, dormerRefusal, type Described } from "./errors";
+  import { PITCH } from "./limits";
 
   let {
     project,
@@ -125,6 +126,35 @@
     }
     problem = null;
     params = next;
+  }
+
+  /** Why the core refused the last pitch or eave typed (`check_dormer`), shown under the section. */
+  let refusal = $state<string | null>(null);
+
+  /**
+   * Asks the core whether the dormer with `patch` can be stored (an eave
+   * below the roof, a pitch under 2°: MATH-001, MATH-003) and only then
+   * applies it; a refusal stays on the field with its reason.
+   */
+  async function checked(patch: Partial<DormerParams>, apply: () => void): Promise<true | string | false> {
+    const next = { ...$state.snapshot(params), ...patch } as DormerParams;
+    const probe = { ...$state.snapshot(project), dormers: [buildDormer(next)] } as Project;
+    try {
+      await api.checkDormer(probe, 0);
+    } catch (e) {
+      if (closed) return false;
+      const why = dormerRefusal(e);
+      if (why === null) {
+        notifyError(e, "calc");
+        return false;
+      }
+      refusal = why;
+      return why;
+    }
+    if (closed) return false;
+    refusal = null;
+    apply();
+    return true;
   }
 
   /** Keeps the front wall height when the shape changes, as the dialog does. */
@@ -244,15 +274,15 @@
       {:else}
         <label class="f" style="left:50%;top:{params.kind === "trapezoid" ? 40 : 22}%" title={params.kind === "shed" ? t("dormer.frontPitch") : params.kind === "trapezoid" ? t("dormer.cheekPitch") : t("edge.pitch")}>
           {#if params.kind === "shed"}
-            <input aria-label={t("dormer.frontPitch")} type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => setShape({ front_pitch_deg: v }) }} /><em>°</em>
+            <input aria-label={t("dormer.frontPitch")} type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => checked({ front_pitch_deg: v }, () => setShape({ front_pitch_deg: v })) }} /><em>°</em>
           {:else}
-            <input aria-label={params.kind === "trapezoid" ? t("dormer.cheekPitch") : t("edge.pitch")} type="text" use:numeric={{ value: params.pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => setShape({ pitch_deg: v }) }} /><em>°</em>
+            <input aria-label={params.kind === "trapezoid" ? t("dormer.cheekPitch") : t("edge.pitch")} type="text" use:numeric={{ value: params.pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => checked({ pitch_deg: v }, () => setShape({ pitch_deg: v })) }} /><em>°</em>
           {/if}
         </label>
       {/if}
       {#if params.kind === "trapezoid"}
         <label class="f" style="left:50%;top:62%" title={t("dormer.frontPitch")}>
-          <input aria-label={t("dormer.frontPitch")} type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => setShape({ front_pitch_deg: v }) }} /><em>°</em>
+          <input aria-label={t("dormer.frontPitch")} type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => checked({ front_pitch_deg: v }, () => setShape({ front_pitch_deg: v })) }} /><em>°</em>
         </label>
       {/if}
       {#if params.kind === "half_hip"}
@@ -260,7 +290,7 @@
           <input aria-label={t("dormer.halfHipHeight")} type="text" use:numeric={{ value: params.half_hip_height, step: 0.05, min: 0.05, onchange: (v) => setShape({ half_hip_height: v }) }} /><em>m</em>
         </label>
         <label class="f" style="left:64%;top:64%" title={t("edge.halfHipPitch")}>
-          <input aria-label={t("edge.halfHipPitch")} type="text" use:numeric={{ value: params.half_hip_pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => setShape({ half_hip_pitch_deg: v }) }} /><em>°</em>
+          <input aria-label={t("edge.halfHipPitch")} type="text" use:numeric={{ value: params.half_hip_pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => checked({ half_hip_pitch_deg: v }, () => setShape({ half_hip_pitch_deg: v })) }} /><em>°</em>
         </label>
       {/if}
     </figure>
@@ -325,6 +355,9 @@
   {#if problem}
     <p class="note" role="alert"><i></i><code>{problem}</code> {t(`dormer.err.${problem}`)}</p>
   {/if}
+  {#if refusal}
+    <p class="note" role="alert" data-testid="dormer-refusal"><i></i>{refusal}</p>
+  {/if}
 
   <div class="row place-row">
     <span class="row-title">{t("place.title")}</span>
@@ -338,7 +371,7 @@
   <div class="row">
     <label>
       <span>{t("dormer.eaveAbs")}</span>
-      <div class="unit"><input type="text" disabled={params.kind === "pointed" && !!host} use:numeric={{ value: params.eave_height, step: 0.05, onchange: (v) => set({ eave_height: v }) }} /><em>m</em></div>
+      <div class="unit"><input type="text" disabled={params.kind === "pointed" && !!host} use:numeric={{ value: params.eave_height, step: 0.05, onchange: (v) => checked({ eave_height: v }, () => set({ eave_height: v })) }} /><em>m</em></div>
     </label>
     <label>
       <span>X</span>

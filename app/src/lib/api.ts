@@ -124,6 +124,8 @@ export const api = {
     invoke<{ index: number; area: number; face_area: number } | null>("check_windows", { project }),
   /** The roof under dormer `index` at the middle of its front (height, rise per metre into the roof), or null off it. */
   dormerHost: (project: Project, index: number) => invoke<HostSlope | null>("dormer_host", { project, index }),
+  /** Whether dormer `index` can be stored as it is; refused with `dormer_pitch` or `dormer_below_roof` (core `check_dormer`). */
+  checkDormer: (project: Project, index: number) => invoke<null>("check_dormer", { project, index }),
   /** What the calculation dialog needs to know about wall `edge` of `part`: facing wall, span, parallel walls, roof points (`withPoints`). */
   roofHelperContext: (project: Project, part: number, edge: number, withPoints = false) =>
     invoke<HelperContext>("roof_helper_context", { project, part, edge, withPoints }),

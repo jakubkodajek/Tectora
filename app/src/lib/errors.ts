@@ -172,6 +172,7 @@ export function refusalReason(detail: string | undefined): string {
   if (/below the ground/.test(d)) return t("refuse.belowGround");
   if (/leave its roof face/.test(d)) return t("place.refused");
   if (/stands on no roof face/.test(d)) return t("refuse.noFace");
+  if (/the helper gives values a wall does not take/.test(d)) return t("refuse.helperRange");
   const range = d.match(/out of range \((-?[\d.]+) to (-?[\d.]+) m/);
   if (range) {
     const f = (x: string) => new Intl.NumberFormat(numberLocale(), { useGrouping: false, maximumFractionDigits: 3 }).format(+x);
@@ -188,4 +189,16 @@ export function describeRefusal(e: unknown, action: RefusedAction): Described | 
   const err = toAppError(e);
   if (err.code !== "refused") return null;
   return { code: "refused", title: t(REFUSED_TITLE[action]), message: refusalReason(err.detail), detail: err.detail };
+}
+
+/**
+ * A dormer the core refused to store (`check_dormer`: `dormer_below_roof`,
+ * `dormer_pitch`), as the dormer field's reason in the user's language;
+ * null for any other error (MATH-001, MATH-003).
+ */
+export function dormerRefusal(e: unknown): string | null {
+  const code = toAppError(e).code;
+  if (code === "dormer_below_roof") return t("dormer.err.eave_below_roof");
+  if (code === "dormer_pitch") return t("dormer.err.bad_pitch");
+  return null;
 }
