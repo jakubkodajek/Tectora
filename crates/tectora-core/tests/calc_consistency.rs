@@ -402,3 +402,122 @@ fn generated_roofs_show_the_same_figures_everywhere() {
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
+
+#[test]
+fn a_window_on_a_flat_roof_is_listed_and_drawn_as_a_window() {
+    let mut p = one_building(vec![
+        edge(0.0, 0.0, 45.0, 6.0, 0.4),
+        edge(13.0, 0.0, 45.0, 6.0, 0.4),
+        edge(13.0, 8.0, 45.0, 6.0, 0.4),
+        edge(0.0, 8.0, 45.0, 6.0, 0.4),
+    ]);
+    p.flat_roof = true;
+    p.windows.push(RoofWindow {
+        x: 11.0,
+        y: 0.6,
+        width: 0.78,
+        height: 1.18,
+    });
+    let opts = tectora_core::export::ListOptions::new("t", "01.01.2026 00:00");
+    let list = tectora_core::export::list_summary(&p, &opts);
+    assert_eq!(list.windows.len(), 1, "{list:?}");
+    assert!(tectora_core::export::dacad_list(&p, &opts).contains("Fenster1.01/1"));
+    // On the plan sheet the face's label less the window's is the total.
+    let shapes = tectora_core::export::plan_sheet(
+        &p,
+        &tectora_core::export::SheetInfo {
+            stamp: String::new(),
+            decimals: 3,
+        },
+    );
+    let num = |t: &str| t.replace(',', ".").parse::<f64>().ok();
+    let (mut sum, mut total) = (0.0, None);
+    for s in &shapes {
+        if let tectora_core::export::Shape::Text { text, .. } = s {
+            if let Some(v) = text
+                .strip_prefix("A = ")
+                .and_then(|t| t.strip_suffix(" m²"))
+            {
+                total = num(v);
+            } else if let Some(v) = text.strip_suffix("m²").and_then(num) {
+                sum += v;
+            }
+        }
+    }
+    let total = total.expect("the sheet has a total");
+    assert!((sum - total).abs() < 2e-3, "labels {sum} total {total}");
+    let bad = [deductions_add_up("flat", &p), surfaces_agree("flat", &p)].concat();
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// A shed dormer at the pitch of the roof it stands on never meets that
+/// roof. The standard calculation refuses it; where it stops on the house
+/// already (a half-hip it cannot take) Tectora's own calculation must
+/// refuse it too, not give a dormer running on past the ridge.
+#[test]
+fn a_dormer_that_never_meets_the_roof_is_refused_where_the_core_stops() {
+    let mut gable = edge(10.8, 0.0, 90.0, 4.2, 0.3);
+    gable.half_hip = Some(HalfHip {
+        height: 5.96,
+        pitch_deg: 45.0,
+    });
+    let mut p = one_building(vec![
+        edge(0.0, 0.0, 15.0, 4.2, 0.9),
+        gable,
+        edge(10.8, 8.41, 15.0, 4.2, 0.3),
+        edge(0.0, 8.41, 15.0, 4.2, 0.3),
+    ]);
+    let mut d = tectora_core::edit::dormers::default_params(
+        tectora_core::edit::dormers::DormerKind::Shed,
+        Point2::new(4.48, 2.0),
+        0.0,
+        5.18,
+    );
+    d.width = 2.36;
+    d.front_pitch_deg = 15.0;
+    d.side_overhang = 0.2;
+    p.dormers
+        .push(tectora_core::edit::dormers::build_dormer(&d));
+    let geos = generate_project(&p);
+    assert!(
+        geos[0].error.is_some(),
+        "faces {:?}",
+        geos[0]
+            .faces
+            .iter()
+            .map(|f| (f.edge, f.area))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A pitch break at the wall's own pitch is no line once the sweep joins
+/// the two faces of that one plane; a chimney on it must not leave a
+/// negative pitch-break length in the totals.
+#[test]
+fn a_chimney_on_a_joined_pitch_break_leaves_no_negative_line() {
+    let mut e0 = edge(0.0, 0.0, 15.0, 3.5, 0.3);
+    e0.breaks.push(PitchBreak {
+        height: 4.14,
+        pitch_deg: 15.0,
+    });
+    let mut gable = edge(12.62, 0.0, 90.0, 3.5, 0.3);
+    gable.half_hip = Some(HalfHip {
+        height: 5.44,
+        pitch_deg: 45.0,
+    });
+    let mut p = one_building(vec![
+        e0,
+        gable,
+        edge(12.62, 4.72, 25.0, 3.5, 0.3),
+        edge(0.0, 4.72, 15.0, 3.5, 0.3),
+    ]);
+    p.chimneys.push(square(7.06, 3.86, 7.49, 4.28));
+    p.chimneys.push(square(8.77, 2.04, 9.5, 2.76));
+    let codes = tectora_core::quantities::dacad_line_totals(&p);
+    assert!(
+        codes.values().all(|v| *v >= 0.0),
+        "negative line totals: {codes:?}"
+    );
+    let bad = [deductions_add_up("break", &p), surfaces_agree("break", &p)].concat();
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}

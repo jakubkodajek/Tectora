@@ -364,6 +364,108 @@ fn verify(st: &mut Stats, case: &str, p: &Project) {
         }
     }
 
+    // --- Joined buildings, one eave height, no objects: the roof covers the
+    // union of the eave outlines once, so its net plan area is that union.
+    let same_eaves = p.parts.iter().flat_map(|q| &q.edges).all(|e| {
+        (e.eave_height - p.parts[0].edges[0].eave_height).abs() < 1e-9
+            && e.breaks.is_empty()
+            && e.half_hip.is_none()
+            && !e.clad
+    });
+    let objects = !p.dormers.is_empty()
+        || !p.chimneys.is_empty()
+        || !p.windows.is_empty()
+        || !p.roof_openings.is_empty();
+    if joined && calculated && same_eaves && !objects && !p.flat_roof {
+        let mut out = MultiPolygon::new(vec![]);
+        for part in &p.parts {
+            for piece in tectora_core::check::eave_outline(part) {
+                if piece.len() >= 3 {
+                    out = out.union(&MultiPolygon::new(vec![gpoly(
+                        piece.iter().map(|q| (q.x, q.y)),
+                    )]));
+                }
+            }
+        }
+        let net: f64 = geos
+            .iter()
+            .flat_map(|g| &g.faces)
+            .filter(|f| f.pitch_deg < 89.9)
+            .map(|f| f.area * f.pitch_deg.to_radians().cos())
+            .sum();
+        let want = out.unsigned_area();
+        st.check(
+            if warned {
+                "joined_plan_area_warned"
+            } else {
+                "joined_plan_area"
+            },
+            case,
+            net - want,
+            0.01_f64.max(want * 2e-3),
+            format!("net plan {net:.3} union of eave outlines {want:.3}"),
+        );
+    }
+
+    // --- Joined buildings: no roof face of one building lies inside another
+    // building's walls under that building's roof (counted twice, hidden).
+    if joined && calculated {
+        let mut hidden = 0.0;
+        for (k, g) in geos.iter().enumerate() {
+            for (j, part) in p.parts.iter().enumerate() {
+                if j == k {
+                    continue;
+                }
+                let walls =
+                    MultiPolygon::new(vec![gpoly(part.outline().iter().map(|q| (q.x, q.y)))]);
+                for f in g
+                    .faces
+                    .iter()
+                    .filter(|f| f.polygon.len() >= 3 && f.pitch_deg < 89.9)
+                {
+                    for piece in &MultiPolygon::new(vec![face_plan(f)]).intersection(&walls).0 {
+                        let a = piece.unsigned_area();
+                        if a < 1e-3 {
+                            continue;
+                        }
+                        let pts = &piece.exterior().0;
+                        let m = pts.len().saturating_sub(1).max(1) as f64;
+                        let (x, y) = pts
+                            .iter()
+                            .take(pts.len().saturating_sub(1))
+                            .fold((0.0, 0.0), |s, q| (s.0 + q.x / m, s.1 + q.y / m));
+                        let z = z_at(f, x, y);
+                        // The other building's roof over that point.
+                        let over = geos[j]
+                            .faces
+                            .iter()
+                            .filter(|h| h.polygon.len() >= 3 && h.pitch_deg < 89.9)
+                            .filter(|h| {
+                                use geo::Contains;
+                                face_plan(h).contains(&geo::Point::new(x, y))
+                            })
+                            .map(|h| z_at(h, x, y))
+                            .fold(f64::NEG_INFINITY, f64::max);
+                        if over.is_finite() && over > z + 0.05 {
+                            hidden += a / f.pitch_deg.to_radians().cos();
+                        }
+                    }
+                }
+            }
+        }
+        st.check(
+            if warned {
+                "joined_hidden_area_warned"
+            } else {
+                "joined_hidden_area"
+            },
+            case,
+            hidden,
+            0.05,
+            format!("{hidden:.3} m2 of roof inside another building's walls under its roof"),
+        );
+    }
+
     // --- Every place that shows the result shows the same figures. ---
     let calc = tectora_core::report::calc_of(p, &geos);
     let totals = &calc["totals"];
@@ -603,6 +705,59 @@ fn verify(st: &mut Stats, case: &str, p: &Project) {
         );
     }
 
+    // Plan sheet: face labels less cut-out labels add up to the total.
+    let shapes = tectora_core::export::plan_sheet(
+        p,
+        &tectora_core::export::SheetInfo {
+            stamp: String::new(),
+            decimals: 3,
+        },
+    );
+    let (mut pos, mut neg, mut total, mut n_labels) = (0.0, 0.0, f64::NAN, 0usize);
+    let parse = |t: &str| {
+        t.trim()
+            .replace(',', ".")
+            .replace('\u{a0}', "")
+            .replace(' ', "")
+            .parse::<f64>()
+            .ok()
+    };
+    for s in &shapes {
+        if let tectora_core::export::Shape::Text { text, .. } = s {
+            if let Some(v) = text
+                .strip_prefix("A = ")
+                .and_then(|t| t.strip_suffix(" m²"))
+                .and_then(parse)
+            {
+                total = v;
+            } else if let Some(v) = text.strip_suffix("m²").and_then(parse) {
+                n_labels += 1;
+                if v < 0.0 {
+                    neg -= v;
+                } else {
+                    pos += v;
+                }
+            }
+        }
+    }
+    if calculated && !total.is_nan() {
+        st.check(
+            "sheet_total_vs_results",
+            case,
+            total - roof_area,
+            6e-4,
+            format!("sheet {total} results {roof_area}"),
+        );
+        let clad: f64 = geos.iter().map(|g| g.clad_area).sum();
+        st.check(
+            "sheet_labels_add_up",
+            case,
+            pos - neg - (total - clad),
+            6e-4 * (n_labels as f64 + 1.0),
+            format!("faces {pos:.3} - cut-outs {neg:.3} vs total {total:.3} (clad {clad:.3})"),
+        );
+    }
+
     // Stored result.
     let snap = tectora_core::snapshot::take_of(&geos, p);
     st.check(
@@ -811,6 +966,64 @@ fn random_project(seed: u64) -> Project {
             });
         }
     }
+    // A dormer on the first wall's slope of a plain rectangle.
+    if n == 4 && p.parts.len() == 1 && p.parts[0].edges[0].pitch_deg < 60.0 && r.chance(0.25) {
+        let e0 = &p.parts[0].edges[0];
+        let (w, d) = (maxx - minx, maxy - miny);
+        let y = miny + d * r.range(0.12, 0.25);
+        let x = minx + w * r.range(0.2, 0.5);
+        let host = e0.eave_height + (y - miny + e0.overhang) * e0.pitch_deg.to_radians().tan();
+        let kind = r.pick(&tectora_core::edit::dormers::DORMER_KINDS);
+        let mut dp = tectora_core::edit::dormers::default_params(
+            kind,
+            Point2::new(x, y),
+            0.0,
+            host + r.range(0.2, 0.6),
+        );
+        dp.width = r.range(1.2, 2.5).min(w * 0.4);
+        dp.overhang = r.pick(&[0.0, 0.2]);
+        dp.side_overhang = r.pick(&[0.0, 0.2]);
+        p.dormers
+            .push(tectora_core::edit::dormers::build_dormer(&dp));
+    }
+    if r.chance(0.08) {
+        let (x, y) = (r.range(minx, maxx - 1.0), r.range(miny, maxy - 1.0));
+        if inside(x, y) && inside(x + 0.8, y + 0.8) {
+            p.roof_openings.push(Chimney {
+                corners: vec![
+                    Point2::new(x, y),
+                    Point2::new(x + 0.8, y),
+                    Point2::new(x + 0.8, y + 0.8),
+                    Point2::new(x, y + 0.8),
+                ],
+                height: 0.0,
+            });
+        }
+    }
+    if r.chance(0.06) {
+        let z = eave + 1.0;
+        p.manual_lines.push(tectora_core::model::ManualLine {
+            a: [minx, miny, eave],
+            b: [minx, miny + 2.0, z],
+            code: r.pick(&["T", "F", "WS", "M"]).to_string(),
+            length: if r.chance(0.3) { Some(1.5) } else { None },
+            label: String::new(),
+        });
+    }
+    if r.chance(0.06) {
+        p.manual_faces.push(tectora_core::model::ManualFace {
+            points: vec![
+                Point2::new(maxx + 5.0, 0.0),
+                Point2::new(maxx + 7.0, 0.0),
+                Point2::new(maxx + 7.0, 3.0),
+            ],
+            pitch_deg: r.pick(&[0.0, 20.0, 45.0]),
+            label: String::new(),
+        });
+    }
+    if r.chance(0.03) {
+        p.flat_roof = true;
+    }
     p
 }
 
@@ -871,7 +1084,11 @@ fn main() {
         }
     }
     for s in 0..random {
-        let p = random_project(s + 1);
+        let first: u64 = std::env::var("VERIFY_SEED")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
+        let p = random_project(s + first);
         if std::env::var_os("VERIFY_DUMP").is_some() {
             std::fs::write(
                 format!("target/work/verify/rand/{}.tectora", p.name),
