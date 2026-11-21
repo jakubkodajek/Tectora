@@ -94,7 +94,21 @@ pub fn export_path_with(
     name: &str,
     ext: &str,
 ) -> Result<std::path::PathBuf, FileError> {
-    let bad = name.len() > 100 || !crate::store::valid_file_name(&format!("{name}.{ext}"));
+    // Trailing spaces and dots, and the extension typed with them, are no
+    // part of the name, as `with_extension` takes them for the CLI:
+    // Windows drops them, so "a." would name another file there than on
+    // macOS (HUNT-204 item 1).
+    let mut name = name.trim().trim_end_matches([' ', '.']);
+    let tail = format!(".{ext}");
+    if name.len() >= tail.len()
+        && name.is_char_boundary(name.len() - tail.len())
+        && name[name.len() - tail.len()..].eq_ignore_ascii_case(&tail)
+    {
+        name = name[..name.len() - tail.len()].trim_end_matches([' ', '.']);
+    }
+    let bad = name.is_empty()
+        || name.len() > 100
+        || !crate::store::valid_file_name(&format!("{name}.{ext}"));
     if bad {
         return Err(FileError::new(
             "invalid_name",
@@ -217,8 +231,13 @@ fn check_dest(store: &Store, dest: &Path) -> Result<(), FileError> {
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case(EXTENSION));
-    let stem = name.len().saturating_sub(EXTENSION.len() + 1);
-    if !has_ext || stem == 0 || !crate::store::valid_file_name(name) {
+    // A name of only spaces and dots before the extension is no name on
+    // Windows, which drops them (ARCH-205 item 2).
+    let stem = name
+        .get(..name.len().saturating_sub(EXTENSION.len() + 1))
+        .unwrap_or("")
+        .trim_matches([' ', '.']);
+    if !has_ext || stem.is_empty() || !crate::store::valid_file_name(name) {
         return Err(FileError::new(
             "invalid_name",
             format!(
@@ -1213,6 +1232,35 @@ mod tests {
             with_extension(&dir.join("a.TectoraJob  ")),
             dir.join("a.TectoraJob")
         );
+    }
+
+    /// Audit 2026-11-21 HUNT-204 item 1, ARCH-205 item 2: an export name
+    /// with trailing dots gets one ending, as the CLI's, and a name of only
+    /// spaces and dots is refused.
+    #[test]
+    fn export_names_lose_trailing_dots_and_blank_names_are_refused() {
+        let dir = std::env::temp_dir().join(format!("tectora-export-dots-{}", now_ms()));
+        let store = Store::new(dir.join("lib")).unwrap();
+        let name = |n: &str| {
+            export_path(&store, n).map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        };
+        assert_eq!(name("a.").unwrap(), "a.tectorajob");
+        assert_eq!(name("x.tectorajob..").unwrap(), "x.tectorajob");
+        assert_eq!(name("x.TECTORAJOB").unwrap(), "x.tectorajob");
+        assert_eq!(name("a b ").unwrap(), "a b.tectorajob");
+        for blank in [" . .", "...", ".tectorajob", ""] {
+            assert_eq!(name(blank).unwrap_err().code, "invalid_name", "{blank:?}");
+        }
+        let id = store
+            .save(None, &crate::examples::find("hip").unwrap().project())
+            .unwrap();
+        let typed = with_extension(&dir.join(" . ."));
+        assert_eq!(
+            export(&store, &id, &typed).unwrap_err().code,
+            "invalid_name"
+        );
+        assert!(!typed.exists());
+        let _ = fs::remove_dir_all(dir);
     }
 
     /// Audit 2026-11-21 HUNTIO-001: a job holding a file import refuses
