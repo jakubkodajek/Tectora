@@ -13,7 +13,7 @@
 //! [`WarningKind::MergedWalls`], comes from the calculation itself
 //! (`engine`): walls whose pitch the calculation does not use.
 
-use geo::{Area, BooleanOps, Coord, LineString, MultiPolygon, Polygon};
+use geo::{Area, BooleanOps, Coord, InteriorPoint, LineString, MultiPolygon, Polygon};
 use serde::Serialize;
 
 use crate::geom::{Point2, signed_area};
@@ -691,11 +691,13 @@ fn hidden_under_neighbour(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<f64>
                     if a.is_nan() || a <= MIN_PIECE {
                         continue;
                     }
-                    let ring = &piece.exterior().0;
-                    let m = ring.len().saturating_sub(1).max(1);
-                    let (x, y) = ring.iter().take(m).fold((0.0, 0.0), |s, q| {
-                        (s.0 + q.x / m as f64, s.1 + q.y / m as f64)
-                    });
+                    // A point inside the piece: the mean of its corners
+                    // can lie outside a concave piece (the clipper leaves
+                    // spikes), and the whole piece was then booked.
+                    let Some(at) = piece.interior_point() else {
+                        continue;
+                    };
+                    let (x, y) = (at.x(), at.y());
                     let z = plane[0] * x + plane[1] * y + plane[2];
                     let top = over
                         .iter()
