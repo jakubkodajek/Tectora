@@ -146,3 +146,77 @@ fn a_closed_output_pipe_ends_quietly() {
         out.status
     );
 }
+
+fn calc_status(path: &PathBuf) -> (Option<i32>, Value) {
+    let out = Command::new(env!("CARGO_BIN_EXE_tectora"))
+        .args(["calc", "--summary"])
+        .arg(path)
+        .output()
+        .unwrap();
+    (
+        out.status.code(),
+        serde_json::from_slice(&out.stdout).unwrap(),
+    )
+}
+
+#[test]
+fn one_bad_building_is_left_out_and_reported_as_mcp_does() {
+    // HUNTC-004: a 1 mm wall in the second building refused the whole job
+    // ("invalid project", exit 1) while MCP and the app calculated the rest.
+    let mut p = rect(0.0, 12.0);
+    let mut bad = rect(30.0, 12.0)["parts"][0].clone();
+    bad["name"] = json!("Part 2");
+    bad["edges"].as_array_mut().unwrap().insert(
+        1,
+        json!({ "start": { "x": 42.001, "y": 0.0 }, "pitch_deg": 40, "eave_height": 3, "overhang": 0.5 }),
+    );
+    p["parts"].as_array_mut().unwrap().push(bad);
+    let alone = calc(&job("one-good", &rect(0.0, 12.0)));
+    let (code, r) = calc_status(&job("one-bad", &p));
+    assert_eq!(code, Some(2), "{r}");
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["partial"], true, "{r}");
+    let problems = r["problems"].as_array().unwrap();
+    assert!(
+        problems
+            .iter()
+            .any(|x| x["item"] == "part" && x["index"] == 1 && x["code"] == "zero_length_wall"),
+        "{r}"
+    );
+    assert_eq!(
+        r["quantities"]["roof_area"], alone["quantities"]["roof_area"],
+        "{r}"
+    );
+    // A job without problems is not partial and exits 0.
+    let (code, r) = calc_status(&job("all-good", &rect(0.0, 12.0)));
+    assert_eq!(code, Some(0), "{r}");
+    assert!(r.get("partial").is_none(), "{r}");
+    assert!(r.get("problems").is_none(), "{r}");
+}
+
+#[test]
+fn area_by_material_lists_every_material_by_number_in_english() {
+    // MATH-004: two materials with one name lost one area; ERR-004: the
+    // default names were the reference program's German ones.
+    let mut p = rect(0.0, 12.0);
+    p["parts"][0]["edges"][1]["material"] = json!(2);
+    p["parts"][0]["edges"][3]["material"] = json!(2);
+    p["material_names"] = json!(["Bramac", "Bramac"]);
+    let r = calc(&job("same-name", &p));
+    let rows = r["quantities"]["area_by_material"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{r}");
+    let sum: f64 = rows.iter().map(|x| x["area"].as_f64().unwrap()).sum();
+    let total = r["quantities"]["roof_area"].as_f64().unwrap();
+    assert!((sum - total).abs() < 0.02, "{sum} vs {total}: {r}");
+    assert_eq!(rows[0]["material"], 1, "{r}");
+    assert_eq!(rows[1]["name"], "Bramac", "{r}");
+    let r = calc(&job("default-name", &rect(0.0, 12.0)));
+    assert_eq!(
+        r["quantities"]["area_by_material"][0]["name"], "tiles",
+        "{r}"
+    );
+    let text = r.to_string();
+    for german in ["Ziegel", "Blech"] {
+        assert!(!text.contains(german), "{text}");
+    }
+}

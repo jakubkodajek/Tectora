@@ -322,6 +322,30 @@ fn a_job_too_complex_to_calculate_is_refused_by_every_calculating_tool_and_the_s
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn the_cli_refuses_a_job_too_complex_to_calculate_instead_of_running_for_minutes() {
+    // HUNTIO-004: `tectora calc` on 25 stacked copies took 56 s, on 200 it
+    // never returned.
+    let dir = scratch("cli-complex");
+    let path = dir.join("stack.tectora");
+    std::fs::write(&path, stacked(50)).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_tectora"))
+        .args(["calc", "--summary"])
+        .arg(&path)
+        .env("TECTORA_WORK_LIMIT", "5000000")
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(1), "{v}");
+    assert_eq!(v["ok"], false, "{v}");
+    let e = v["error"].as_str().unwrap();
+    assert!(
+        e.starts_with("too_complex: ") && e.contains("too complex to calculate"),
+        "{e}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// ARCH-001: a worker opens the library it is told, never the default one;
 /// an unusable default folder must not stop it from answering.
 #[test]
