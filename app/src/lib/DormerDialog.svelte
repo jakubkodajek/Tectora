@@ -25,6 +25,7 @@
     roofFailed = false,
     fresh = false,
     blocked = $bindable(null),
+    notice = $bindable(null),
   }: {
     project: Project;
     /** The core gave no roof for a building of the job: no roof under the front is not "off the roof" (ERRU-006). */
@@ -37,6 +38,8 @@
     fresh?: boolean;
     /** Why OK cannot store the dormer as it stands (a refused value, a front off the roof), else null (UI-102, UX-109). */
     blocked?: string | null;
+    /** A warning OK does not wait for (the dormer rises above the roof), for the footer next to OK (UX-109). */
+    notice?: string | null;
   } = $props();
   // Set once the dialog is gone: a late answer then writes nothing.
   let closed = false;
@@ -181,6 +184,10 @@
   const offRoof = $derived(hostReady && !host && !hostError && !roofFailed);
   $effect(() => {
     blocked = refusal ?? (offRoof ? t("dormer.offRoof") : null);
+  });
+  // The section's notes scroll away at small window sizes: the footer repeats this one (UX-109).
+  $effect(() => {
+    notice = aboveRoof !== null ? t("dormer.aboveRoof", { v: fmt(aboveRoof, 2) }) : null;
   });
 
   /**

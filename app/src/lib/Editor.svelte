@@ -157,6 +157,8 @@
   let dormerDlg = $state<{ index: number | null; key: string; params: DormerParams } | null>(null);
   /** Why the dormer dialog's OK cannot store the dormer (the dialog says it), else null. */
   let dormerBlocked = $state<string | null>(null);
+  /** A warning of the dormer dialog OK does not wait for, repeated next to OK. */
+  let dormerNotice = $state<string | null>(null);
   let placing = $state<false | "dormer" | "chimney" | "window" | "hole" | "line" | "face">(false);
   // Hand-drawn roof lines and faces (DACAD: Dachlinieneingabe, Neue Dachfläche).
   let manualSel = $state<ManualSel>(null);
@@ -1024,6 +1026,7 @@
     const eave = +((host ?? presets.eave_height) + 1).toFixed(2);
     // As DACAD's dormer dialog: the dormer is placed when its window says OK.
     dormerBlocked = null;
+    dormerNotice = null;
     dormerDlg = { index: null, key: "", params: defaultParams("gable", { x, y }, angle, eave) };
   }
 
@@ -1031,6 +1034,7 @@
     if (!project || dormerSel === null) return;
     const p = parseDormer(project.dormers[dormerSel]);
     dormerBlocked = null;
+    dormerNotice = null;
     if (p.kind !== "general") dormerDlg = { index: dormerSel, key: anchor(project.dormers, dormerSel).key, params: p };
   }
 
@@ -2186,9 +2190,10 @@
 
 {#if dormerDlg && project}
   <Modal title={dormerDlg.index === null ? t("dormer.dialogNew") : t("dormer.n", { n: dormerDlg.index + 1 })} width={1040} onclose={() => (dormerDlg = null)}>
-    <DormerDialog {project} roofFailed={!!roofError} fresh={dormerDlg.index === null} bind:params={dormerDlg.params} bind:blocked={dormerBlocked} track={(p) => pendingEdits.track(p)} />
+    <DormerDialog {project} roofFailed={!!roofError} fresh={dormerDlg.index === null} bind:params={dormerDlg.params} bind:blocked={dormerBlocked} bind:notice={dormerNotice} track={(p) => pendingEdits.track(p)} />
     {#snippet footer()}
-      {#if dormerBlocked}<p class="dlg-why" role="alert" data-testid="dormer-ok-blocked">{dormerBlocked}</p>{/if}
+      {#if dormerBlocked}<p class="dlg-why" role="alert" data-testid="dormer-ok-blocked">{dormerBlocked}</p>
+      {:else if dormerNotice}<p class="dlg-why" role="status" data-testid="dormer-ok-notice">{dormerNotice}</p>{/if}
       <button class="btn" onclick={() => (dormerDlg = null)}>{t("common.cancel")}</button>
       <button class="btn primary" disabled={!!dormerBlocked} title={dormerBlocked ?? undefined} onclick={applyDormerDialog}>{t("common.ok")}</button>
     {/snippet}

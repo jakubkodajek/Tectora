@@ -3,7 +3,7 @@
 // (UI-101), and the dormer dialog's OK waits for the core's check and stays
 // open on a refusal or a front off the roof (UI-102, UX-109).
 import type { Page } from "@playwright/test";
-import { bar, clickPlan, openEditor, tool } from "./editor";
+import { bar, clickPlan, openEditor, setField, tool } from "./editor";
 import { createExample, expect, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 
@@ -99,4 +99,14 @@ test.describe("round-2 audit: dormers", () => {
     await waitForProject(id, (p) => p.dormers.length === 1);
   });
 
+
+  test("at 600×420 the dormer dialog says next to OK that the dormer rises above the roof (UX-109)", async ({ app, page }) => {
+    await page.setViewportSize({ width: 600, height: 420 });
+    const { dlg, ok } = await newDormer(app, page, "Malý vikýř");
+    await setField(dlg.getByLabel(cs("dormer.wallHeight")), 3);
+    const note = page.getByTestId("dormer-ok-notice");
+    await expect(note).toBeInViewport();
+    await expect(note).toContainText(cs("dormer.aboveRoof", { v: "X" }).split("X")[0].trim());
+    await expect(ok).toBeEnabled();
+  });
 });
