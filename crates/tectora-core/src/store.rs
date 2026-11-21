@@ -978,6 +978,9 @@ impl Store {
             || origin.checked == crate::snapshot::ENGINE_VERSION
             || origin.input != crate::snapshot::input_digest(&before)
             || self.pending_review(id).is_some()
+            // Opening a job recalculates on the caller's thread: only a
+            // design small enough to have got its origin (audit ERR-101).
+            || design_items(&before) > ORIGIN_MAX_ITEMS
         {
             return Ok(false);
         }
