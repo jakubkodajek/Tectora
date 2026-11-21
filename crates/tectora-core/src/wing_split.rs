@@ -542,6 +542,9 @@ fn combine(
             w.edges = w.edges.iter().map(|&e| map_wing(e)).collect();
             w.edges.retain(|&e| e != usize::MAX);
         }
+        // A window names its face by index: the wing's faces follow the
+        // house's.
+        let offset = g.faces.len();
         g.faces.append(&mut wing.faces);
         g.lines.append(&mut wing.lines);
         g.gables.append(&mut wing.gables);
@@ -553,6 +556,9 @@ fn combine(
         g.cut_lines.append(&mut wing.cut_lines);
         g.minus_lines.append(&mut wing.minus_lines);
         g.footprints.append(&mut wing.footprints);
+        for w in &mut wing.window_cuts {
+            w.face += offset;
+        }
         g.window_cuts.append(&mut wing.window_cuts);
         g.warnings.append(&mut wing.warnings);
         all.extend(walls.iter().flatten().copied());

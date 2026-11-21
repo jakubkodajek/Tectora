@@ -352,24 +352,47 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
         if outline.len() < 3 || pinched {
             return Err("the faces in the back plane touch in a point".into());
         }
+        // The joined face keeps what its pieces deducted: on the sweep's
+        // roof the windows, chimneys and openings are already cut out of
+        // them (`finish_departed`), and the list and the breakdown show the
+        // face's gross area as area + deducted.
         let area: f64 = members.iter().map(|&k| geo.faces[k].area).sum();
+        let deducted: f64 = members.iter().map(|&k| geo.faces[k].deducted).sum();
         let face = RoofFace {
             edge: pair.inner,
             pitch_deg: geo.faces[back].pitch_deg,
             polygon: outline.iter().map(|&p| [p.x, p.y, plane.z(p)]).collect(),
             area,
-            deducted: 0.0,
+            deducted,
             material,
         };
         let at = members.first().copied().unwrap_or(0);
-        let mut faces: Vec<RoofFace> = geo
-            .faces
-            .iter()
-            .enumerate()
-            .filter(|(k, _)| !members.contains(k))
-            .map(|(_, f)| f.clone())
-            .collect();
-        faces.insert(at.min(faces.len()), face);
+        let mut faces: Vec<RoofFace> = Vec::with_capacity(geo.faces.len());
+        // Where each old face is now: a member is the joined face, the
+        // others keep their order around it (windows name their face).
+        let mut moved: Vec<usize> = Vec::with_capacity(geo.faces.len());
+        for (k, f) in geo.faces.iter().enumerate() {
+            if members.contains(&k) {
+                moved.push(usize::MAX);
+            } else {
+                moved.push(faces.len());
+                faces.push(f.clone());
+            }
+        }
+        let at = at.min(faces.len());
+        faces.insert(at, face);
+        for m in &mut moved {
+            *m = match *m {
+                usize::MAX => at,
+                i if i >= at => i + 1,
+                i => i,
+            };
+        }
+        for w in &mut geo.window_cuts {
+            if let Some(&to) = moved.get(w.face) {
+                w.face = to;
+            }
+        }
         geo.faces = faces;
         // Only lines in the joined plane can lie between its faces: a line
         // of a roof under it (a wall abutment under the overhang) stays.
