@@ -2745,16 +2745,18 @@
   /* Labels that do not fit the window (long languages), step by step (UX-006):
      smaller labels on up to two lines, then the view and export buttons icon
      only, then every button icon only, as below. */
-  .toolbar.tight .tool {
-    min-width: 44px;
-    max-width: 80px;
-    padding: 0 4px;
-  }
-  .toolbar.tight .tool span {
-    font-size: 10.5px;
-    line-height: 1.1;
-    white-space: normal;
-    text-align: center;
+  @media (min-width: 1221px) and (min-height: 641px) {
+    .toolbar.tight .tool {
+      min-width: 44px;
+      max-width: 80px;
+      padding: 0 4px;
+    }
+    .toolbar.tight .tool span {
+      font-size: 10.5px;
+      line-height: 1.1;
+      white-space: normal;
+      text-align: center;
+    }
   }
   .toolbar.compact-minor .group.minor .tool {
     width: 36px;
@@ -2819,31 +2821,11 @@
       padding: 0 5px;
     }
   }
-  /* Narrower windows: the measured steps above (toolLevel) drop the labels,
-     minor groups first, only as far as needed (UX-108); a low window only
-     makes the buttons lower. Half-screen windows: see below. */
-  @media (max-height: 640px) {
-    .tool {
-      height: 42px;
-      gap: 0;
-    }
-  }
-  @media (max-width: 1100px) {
-    aside {
-      width: 290px;
-    }
-    .statusbar {
-      gap: 12px;
-    }
-  }
-  /* Half-screen: the side panel becomes a rail of tabs that opens over the views;
-     the toolbar wraps instead of overflowing, so it is icons only here
-     (tooltips keep the names). */
-  @media (max-width: 900px) {
+  /* Narrow or low window: the toolbar collapses to icons (tooltips keep the names). */
+  @media (max-width: 1220px), (max-height: 640px) {
     .tool {
       width: 36px;
       height: 36px;
-      min-width: 0;
       padding: 0;
     }
     .tool span {
@@ -2857,6 +2839,17 @@
       padding-right: 4px;
       margin-right: 2px;
     }
+  }
+  @media (max-width: 1100px) {
+    aside {
+      width: 290px;
+    }
+    .statusbar {
+      gap: 12px;
+    }
+  }
+  /* Half-screen: the side panel becomes a rail of tabs that opens over the views. */
+  @media (max-width: 900px) {
     header {
       gap: 4px;
       padding: 6px 8px;
