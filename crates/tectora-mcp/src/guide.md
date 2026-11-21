@@ -280,9 +280,15 @@ move it onto the roof or delete it. A part the calculation gave no roof
 for carries `error` (`kind`, `message`): say so instead of reporting 0 m². When some buildings
 fail on their own, `failing_parts` lists them: only those have no roof, the
 others are calculated without them. A wall shorter than 1 cm is a
-`zero_length_wall` problem that leaves its building out. Every write answers
+`zero_length_wall` problem that leaves its building out, and so is
+`walls_cross` (a wall crossing another one) and `walls_overlap` (walls lying
+on each other: an outline that goes round more than once, such as a point
+list that repeats itself, or a wall drawn back over another one; send each
+corner once). Every write answers
 with `roof_trouble` (`roof_errors`, `problems`) when after it a building has
-no roof or input is left out: fix it or revert before going on. `calc`
+no roof or input is left out: fix it or revert before going on. A write
+also answers with `warnings` (each with `part`, the same entries as calc's
+part `warnings`) when the roof looks wrong after it: tell the user. `calc`
 lists left-out input under `problems`, and `export_list` / `export_plan`
 refuse such a job until it is fixed.
 `joined_with` names the parts the calculation actually joined the part's

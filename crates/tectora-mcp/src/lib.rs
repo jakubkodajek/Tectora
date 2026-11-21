@@ -1384,6 +1384,23 @@ impl Server {
                 if let Some(t) = roof_trouble_of(&geos, project) {
                     out["roof_trouble"] = t;
                 }
+                // The roof's warnings, as calc gives them, so an AI hears
+                // about a roof that looks wrong at the write that made it
+                // (HUNT-106).
+                let warnings: Vec<Value> = geos
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(i, g)| {
+                        g.warnings.iter().map(move |w| {
+                            let mut v = warning(w);
+                            v["part"] = json!(i);
+                            v
+                        })
+                    })
+                    .collect();
+                if !warnings.is_empty() {
+                    out["warnings"] = Value::Array(warnings);
+                }
                 // A job past the draft keeps the figures its offer was made
                 // with: say at once when this write makes them differ
                 // (ERR-006), not only in a later calc.
@@ -2553,6 +2570,44 @@ mod tests {
         let id = s.store.save(None, &ok).unwrap();
         let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
         assert!(r["parts"][0].get("warnings").is_none(), "{r}");
+    }
+
+    /// Audit 2026-11-21 HUNT-106: a write answers with the roof's warnings
+    /// as calc gives them, and an outline drawn round twice is a problem.
+    #[test]
+    fn a_write_answers_with_the_roof_warnings_and_a_doubled_outline_is_refused() {
+        let mut s = server();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/check/C1_hips_outside.json");
+        let p: Project = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let id = s.store.save(None, &p).unwrap();
+        let r = s
+            .call_tool(
+                "update_job",
+                &json!({ "id": id, "number": "2026-7", "summary": "Job number from the order" }),
+            )
+            .unwrap();
+        let w = r["warnings"].as_array().expect("warnings in the answer");
+        assert_eq!(w[0]["kind"], "outside_outline", "{r}");
+        assert_eq!(w[0]["part"], 0);
+
+        let r = s
+            .call_tool(
+                "create_project",
+                &json!({ "name": "twice", "summary": "Footprint from the drawing",
+                         "parts": [{ "points": [[0, 0], [12, 0], [12, 8], [0, 8], [0, 0], [12, 0], [12, 8], [0, 8]],
+                                     "defaults": { "pitch_deg": 35, "eave_height": 3, "overhang": 0.5 } }] }),
+            )
+            .unwrap();
+        let problems = r["roof_trouble"]["problems"]
+            .as_array()
+            .expect("roof_trouble");
+        assert!(
+            problems
+                .iter()
+                .any(|q| q["code"] == "walls_overlap" && q["edge"] == 4),
+            "{r}"
+        );
     }
 
     fn gable_job(s: &mut Server, pitch: f64) -> String {

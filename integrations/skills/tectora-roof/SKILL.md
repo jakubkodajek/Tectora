@@ -68,7 +68,9 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    0.1 m, a dormer below the roof or flatter than 2°, a `roof_helper`
    result no wall takes. Fix the value (often m against cm or mm) and call
    again. When a write answers with `stored_result`, the job's offer
-   figures no longer match the roof: tell the user.
+   figures no longer match the roof: tell the user. When it answers with
+   `warnings` (the roof looks wrong) or `roof_trouble` (for example
+   `walls_overlap`: a point list that goes round twice), fix it first.
 7. In the check step first look at the roof over the drawing:
    `view_drawing` with `overlay` {`id`, `scale`, `origin`} (the
    `origin_sheet_mm` from `trace_outline`) draws the calculated faces and
