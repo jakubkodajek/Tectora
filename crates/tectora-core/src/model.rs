@@ -776,13 +776,28 @@ fn migrate(v: &mut serde_json::Value) -> serde_json::Result<()> {
     };
     // A file without the field is format 1; a field that is no whole
     // number is a damaged file, not format 1 (it could be a newer one).
+    // `2.0` (as some JSON writers put a whole number) is version 2; a whole
+    // number beyond `u64` (`1e30`) is a version this release cannot know
+    // (ARCH-205 item 1).
     let version = match obj.get("schema_version") {
         None => 1,
-        Some(v) => v.as_u64().ok_or_else(|| {
-            serde_json::Error::custom(
-                "the file's format version `schema_version` is not a whole number",
-            )
-        })?,
+        Some(v) => match (v.as_u64(), v.as_f64()) {
+            (Some(n), _) => n,
+            (None, Some(f)) if f.is_finite() && f.fract() == 0.0 && f >= 0.0 => {
+                if f < u64::MAX as f64 {
+                    f as u64
+                } else {
+                    return Err(serde_json::Error::custom(format!(
+                        "the file's format version {f:e} is newer than this Tectora reads (up to {SCHEMA_VERSION}) or the file is damaged"
+                    )));
+                }
+            }
+            _ => {
+                return Err(serde_json::Error::custom(
+                    "the file's format version `schema_version` is not a whole number",
+                ));
+            }
+        },
     };
     if version > u64::from(SCHEMA_VERSION) {
         return Err(serde_json::Error::custom(format!(
@@ -1463,6 +1478,31 @@ mod tests {
         ];
         let spiral = RoofPart::new("A", pts.iter().map(|&(x, y)| edge(x, y)).collect());
         assert!(overlapping_walls(&spiral).is_empty());
+    }
+
+    /// Audit 2026-11-21 ARCH-205 item 1: `2.0` is version 2, `1e30` a
+    /// version too new (or a damaged file), `3.5` no whole number.
+    #[test]
+    fn a_format_version_written_as_a_float_is_read_as_its_number() {
+        let mut v: serde_json::Value = serde_json::from_str(
+            &crate::examples::find("gable")
+                .unwrap()
+                .project()
+                .to_json()
+                .unwrap(),
+        )
+        .unwrap();
+        let with = |v: &mut serde_json::Value, version: &str| {
+            v["schema_version"] = serde_json::from_str(version).unwrap();
+            Project::from_json(&v.to_string())
+        };
+        assert!(with(&mut v, "2.0").is_ok());
+        let e = with(&mut v, "1e30").unwrap_err().to_string();
+        assert!(e.contains("newer") && !e.contains("whole number"), "{e}");
+        let e = with(&mut v, "3.5").unwrap_err().to_string();
+        assert!(e.contains("whole number"), "{e}");
+        let e = with(&mut v, "99").unwrap_err().to_string();
+        assert!(e.contains("newer Tectora"), "{e}");
     }
 
     #[test]

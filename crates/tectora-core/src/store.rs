@@ -555,7 +555,14 @@ fn modified_ms(path: &Path) -> u64 {
 /// app reads, else `None` (also for text that is not JSON).
 pub(crate) fn newer_format(text: &str) -> Option<u64> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
-    let version = v.get("schema_version")?.as_u64()?;
+    let n = v.get("schema_version")?;
+    // `4.0` and `1e30` are whole numbers too (ARCH-205 item 1): such a file
+    // is not overwritten either.
+    let version = n.as_u64().or_else(|| {
+        n.as_f64()
+            .filter(|f| f.is_finite() && f.fract() == 0.0 && *f >= 0.0)
+            .map(|f| f.min(u64::MAX as f64) as u64)
+    })?;
     (version > u64::from(crate::model::SCHEMA_VERSION)).then_some(version)
 }
 
