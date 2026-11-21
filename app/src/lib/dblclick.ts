@@ -34,3 +34,56 @@ export const FRESH_BUTTON_MS = 500;
 export function pressTooSoon(shownAt: number, count: number, at = performance.now()): boolean {
   return count >= 2 || at - shownAt < FRESH_BUTTON_MS;
 }
+
+/** How far a press may be from the one that swapped the bar and still count as its double click, px. */
+export const SAME_SPOT_PX = 8;
+
+export interface Press {
+  x: number;
+  y: number;
+  at: number;
+}
+
+/**
+ * Whether `press` is the second press of a double click whose first press
+ * (`origin`) swapped the bar shown at `shownAt`: it comes within
+ * FRESH_BUTTON_MS of the swap, at the same spot (UI-208). A press elsewhere
+ * on the new bar, or a later one, is the user's own.
+ */
+export function secondPressOnFresh(origin: Press | null, shownAt: number, press: Press): boolean {
+  if (!origin || shownAt - origin.at > FRESH_BUTTON_MS) return false;
+  if (press.at - shownAt >= FRESH_BUTTON_MS) return false;
+  return Math.hypot(press.x - origin.x, press.y - origin.y) <= SAME_SPOT_PX;
+}
+
+let lastPress: Press | null = null;
+if (typeof window !== "undefined") {
+  window.addEventListener("pointerdown", (e) => (lastPress = { x: e.clientX, y: e.clientY, at: performance.now() }), true);
+}
+
+/**
+ * For a bar that appears in place of another one: a click on any of its
+ * buttons, radios or selects that is the second press of the double click
+ * that made it appear is ignored (the first click closed a face and the new
+ * bar has "Make it a building" where "Close face" was, UI-208). Keyboard
+ * presses (`detail` 0) and presses elsewhere go through.
+ */
+export function freshBar(node: HTMLElement) {
+  const origin = lastPress;
+  const shownAt = performance.now();
+  const onclick = (e: MouseEvent) => {
+    if (e.detail === 0) return;
+    const hit = (e.target as Element | null)?.closest?.("button, select, [role=radio], [role=checkbox], input[type=checkbox], input[type=radio]");
+    if (!hit || !node.contains(hit)) return;
+    if (secondPressOnFresh(origin, shownAt, { x: e.clientX, y: e.clientY, at: performance.now() })) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  };
+  node.addEventListener("click", onclick, true);
+  return {
+    destroy() {
+      node.removeEventListener("click", onclick, true);
+    },
+  };
+}

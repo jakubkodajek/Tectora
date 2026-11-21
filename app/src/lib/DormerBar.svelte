@@ -2,6 +2,7 @@
   // DACAD's dormer definition (Gaube definieren): type, width, position,
   // eave height and pitches of the selected dormer, docked like the wall bar.
   import Icon from "./Icon.svelte";
+  import { freshBar } from "./dblclick";
   import { numberLocale, t } from "./i18n.svelte";
   import type { CalcResult, Dormer, Project } from "./types";
   import { materialIds, materialName } from "./materials";
@@ -117,7 +118,7 @@
   }
 </script>
 
-<div class="bar" role="toolbar" aria-label={t("dormer.title")} use:pageStep={step}>
+<div class="bar" role="toolbar" aria-label={t("dormer.title")} use:pageStep={step} use:freshBar>
   <div class="row" use:hscroll>
     <div class="nav">
       <button class="icon-btn" onclick={() => step(-1)} title="{t('dormer.prev')} (PageUp)" aria-label={t("dormer.prev")}><Icon name="left" /></button>

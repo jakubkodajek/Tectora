@@ -1,6 +1,7 @@
 <script lang="ts">
   // The selected chimney, roof window or roof opening, docked like the wall bar.
   import Icon from "./Icon.svelte";
+  import { freshBar } from "./dblclick";
   import { t } from "./i18n.svelte";
   import type { Chimney, Placement, Project, RoofWindow } from "./types";
   import { isConvex, openingBox, openingList, type OpeningBox, type OpeningSel } from "./openings";
@@ -70,7 +71,7 @@
   </label>
 {/snippet}
 
-<div class="bar" role="toolbar" aria-label={t(`opening.${sel?.kind ?? "chimney"}`)} use:pageStep={step}>
+<div class="bar" role="toolbar" aria-label={t(`opening.${sel?.kind ?? "chimney"}`)} use:pageStep={step} use:freshBar>
   {#if sel}
     <div class="nav">
       <button class="icon-btn" onclick={() => step(-1)} title="{t('opening.prev')} (PageUp)" aria-label={t("opening.prev")}><Icon name="left" /></button>
