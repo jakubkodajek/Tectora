@@ -47,6 +47,14 @@ describe("library card of a roof the core refused (ERRU-005)", () => {
     expect(cardAreaNote(p)).toBeTruthy();
   });
 
+  it("counts hand-drawn faces as a roof when every building is without one (ERR-202)", async () => {
+    const { cardArea, cardRoof, m2 } = await import("./format");
+    const p = { roof_area: 23.09, parts: 1, parts_failed: 1, faces: 1 };
+    expect(cardRoof(p)).toBe("partial");
+    expect(cardArea(p)).toBe(m2(23.09));
+    expect(cardArea({ roof_area: 23.09, parts: 0, parts_failed: 0, faces: 1 })).toBe(m2(23.09));
+  });
+
   it("leaves a complete roof unmarked", async () => {
     const { cardAreaNote, cardRoof } = await import("./format");
     expect(cardRoof({ roof_area: 12, parts: 1, parts_failed: 0 })).toBe("ok");

@@ -119,6 +119,20 @@ pub struct ProjectSummary {
     /// `parts_failed` equals `parts`.
     #[serde(default)]
     pub too_complex: bool,
+    /// Hand-drawn faces: with any, the roof is calculated (partly) even when
+    /// every building is without a roof (audit 2026-11-21 ERR-202).
+    #[serde(default)]
+    pub faces: usize,
+}
+
+impl ProjectSummary {
+    /// How much of the roof the card's figures cover; `None` while
+    /// `figures_pending` (see [`crate::quantities::RoofCoverage`]).
+    pub fn coverage(&self) -> Option<crate::quantities::RoofCoverage> {
+        (!self.figures_pending).then(|| {
+            crate::quantities::RoofCoverage::from_counts(self.parts, self.parts_failed, self.faces)
+        })
+    }
 }
 
 /// An activity entry without the stored previous version.
@@ -290,15 +304,7 @@ type CardFigures = (f64, Vec<[[f64; 2]; 2]>, usize, bool);
 /// never shown as the job's whole roof (audit 2026-11-21 ERR-001).
 fn card_figures(project: &Project) -> CardFigures {
     let geos = crate::openings::generate_project(project);
-    let left_out: std::collections::BTreeSet<usize> = project
-        .problems()
-        .iter()
-        .filter(|p| p.item == crate::model::ProblemItem::Part)
-        .map(|p| p.index)
-        .collect();
-    let failed = (0..project.parts.len())
-        .filter(|i| left_out.contains(i) || geos.get(*i).is_some_and(|g| g.error.is_some()))
-        .count();
+    let failed = crate::quantities::parts_without_roof(&geos, project);
     (
         crate::quantities::roof_totals_of(&geos, project).roof_area,
         lines_of(&geos),
@@ -995,6 +1001,7 @@ impl Store {
             stored_area: project.result_snapshot.as_ref().map(|s| s.roof_area),
             result_differs: false,
             too_complex: false,
+            faces: project.manual_faces.len(),
         };
         Ok((summary, project))
     }

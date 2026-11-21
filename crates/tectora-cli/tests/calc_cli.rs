@@ -276,3 +276,41 @@ fn an_answer_that_cannot_be_written_exits_with_an_error() {
     assert_eq!(out.status.code(), Some(1), "{stderr}");
     assert!(stderr.contains("cannot write the answer"), "{stderr}");
 }
+
+#[test]
+fn hand_drawn_faces_are_a_roof_and_an_empty_job_is_no_building() {
+    // Audit 2026-11-21 ERR-202: a broken building plus a hand-drawn face
+    // said `ok: false`, exit 1, next to a calculated area; HUNT-204 item
+    // 2: a job with nothing said `ok: true`, exit 0.
+    let face = json!([{
+        "points": [{"x": 0, "y": 0}, {"x": 6, "y": 0}, {"x": 6, "y": 4}, {"x": 0, "y": 4}],
+        "pitch_deg": 30
+    }]);
+    let mut p = refused(0.0);
+    p["manual_faces"] = face.clone();
+    let (code, r) = calc_status(&job("bad-plus-face", &p));
+    assert_eq!(code, Some(2), "{r}");
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["partial"], true, "{r}");
+    assert_eq!(r["roof_state"], "partial", "{r}");
+    assert!(r["quantities"]["roof_area"].as_f64().unwrap() > 27.0, "{r}");
+    // Only hand-drawn faces: calculated, exit 0, and the area per pitch
+    // adds up to the roof area (HUNT-203).
+    let only = json!({ "name": "Faces", "parts": [], "manual_faces": face });
+    let (code, r) = calc_status(&job("faces-only", &only));
+    assert_eq!(code, Some(0), "{r}");
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["roof_state"], "complete", "{r}");
+    let by_pitch = r["quantities"]["area_by_pitch"].as_array().unwrap();
+    assert_eq!(by_pitch.len(), 1, "{r}");
+    assert_eq!(by_pitch[0]["area"], r["quantities"]["roof_area"], "{r}");
+    // Nothing at all: no building, exit 1.
+    let (code, r) = calc_status(&job("empty", &json!({ "name": "Empty", "parts": [] })));
+    assert_eq!(code, Some(1), "{r}");
+    assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(r["roof_state"], "no_building", "{r}");
+    assert!(
+        r["error"].as_str().unwrap().starts_with("no_building"),
+        "{r}"
+    );
+}

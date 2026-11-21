@@ -169,6 +169,8 @@ export interface ProjectSummary {
   parts_failed?: number;
   /** Too complex to calculate (core work bound): no figures, `parts_failed` equals `parts`. */
   too_complex?: boolean;
+  /** Hand-drawn faces: with any, the roof is (partly) calculated even when every building is without a roof (ERR-202). */
+  faces?: number;
 }
 
 /** A deleted job or removed file in the library's trash (core `store::TrashEntry`). */

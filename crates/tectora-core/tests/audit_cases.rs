@@ -914,3 +914,42 @@ fn a_window_on_a_dormer_roof_does_not_overlap_the_dormer() {
     p.dormers.push(p.dormers[0].clone());
     assert!(kinds(&calc(&p), 0).contains(&WarningKind::ObjectsOverlap));
 }
+
+// ------------------------------------------------------------ HUNT-203 (2026-11-21)
+
+/// HUNT-203: the roof area per pitch adds up to the roof area: hand-drawn
+/// faces count under their own pitch, clad gables under 90°.
+#[test]
+fn the_area_per_pitch_adds_up_to_the_roof_area() {
+    use tectora_core::model::ManualFace;
+    use tectora_core::quantities::{area_by_pitch, roof_totals};
+    let sum = |p: &Project| area_by_pitch(p).iter().map(|&(_, a)| a).sum::<f64>();
+    // Only a 5 x 4 m hand-drawn face at 30°.
+    let mut faces = job(vec![]);
+    faces.manual_faces.push(ManualFace {
+        points: [(0.0, 0.0), (5.0, 0.0), (5.0, 4.0), (0.0, 4.0)]
+            .iter()
+            .map(|&(x, y)| Point2::new(x, y))
+            .collect(),
+        pitch_deg: 30.0,
+        label: String::new(),
+    });
+    let by = area_by_pitch(&faces);
+    assert_eq!(by.len(), 1, "{by:?}");
+    near("face pitch", by[0].0, 30.0, 1e-9);
+    near("face area", by[0].1, 20.0 / cos(30.0), 0.01);
+    // A gable roof with both gables clad, plus the face.
+    let mut clad = gable("House", 0.0, 0.0, 12.0, 8.0, 35.0, 3.0);
+    clad.edges[1].clad = true;
+    clad.edges[3].clad = true;
+    let mut p = job(vec![clad]);
+    p.manual_faces = faces.manual_faces.clone();
+    let total = roof_totals(&p).roof_area;
+    let by = area_by_pitch(&p);
+    assert!(
+        by.iter().any(|&(pitch, a)| pitch == 90.0 && a > 1.0),
+        "{by:?}"
+    );
+    assert!(by.iter().any(|&(pitch, _)| pitch == 30.0), "{by:?}");
+    near("sum per pitch", sum(&p), total, 0.05);
+}

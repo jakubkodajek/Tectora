@@ -50,8 +50,10 @@ enum Command {
     /// roof (each part's `error`) or some buildings or objects have input
     /// problems and are left out (`"partial": true`, the list in
     /// `problems`), as in the app and over MCP; 1 not calculated
-    /// (unreadable, out of range, too complex, no building with a roof, or
-    /// the answer could not be written).
+    /// (unreadable, out of range, too complex, no building and no
+    /// hand-drawn face, no building with a roof and no hand-drawn face, or
+    /// the answer could not be written). `roof_state` says which:
+    /// `complete`, `partial`, `none` or `no_building`.
     Calc {
         input: PathBuf,
         /// Print quantities, warnings and errors only (no geometry).
@@ -120,18 +122,11 @@ fn calc(
     let calc_error = geos.iter().find_map(|g| g.error.clone());
     // Buildings without a roof: the core gave none, or their input left
     // them out (`problems` of the part), as the library card counts them.
-    let left_out: std::collections::BTreeSet<usize> = project
-        .problems()
-        .iter()
-        .filter(|p| p.item == tectora_core::model::ProblemItem::Part)
-        .map(|p| p.index)
-        .collect();
-    let failed = (0..project.parts.len())
-        .filter(|i| left_out.contains(i) || geos.get(*i).is_some_and(|g| g.error.is_some()))
-        .count();
+    let failed = q::parts_without_roof(&geos, project);
+    let coverage = q::RoofCoverage::of(project, failed);
     let lines_by_type = q::dacad_line_totals_of(&geos, project);
     let totals = q::roof_totals_of(&geos, project);
-    let area_by_pitch = q::area_by_pitch_of(&geos);
+    let area_by_pitch = q::area_by_pitch_of(&geos, project);
     let by_line_material = q::lines_by_material_of(&geos);
     let parts: Vec<_> = project
         .parts
@@ -199,16 +194,31 @@ fn calc(
     if !problems.is_empty() {
         out["problems"] = json!(problems);
     }
-    // No building has a roof: nothing is calculated (round 2 ERR-103).
-    if failed > 0 && failed == project.parts.len() {
-        out["ok"] = json!(false);
-        out["partial"] = json!(false);
-        out["error"] = json!(match &out["calc_error"]["kind"] {
-            serde_json::Value::String(k) =>
-                format!("{k}: no building has a roof; see each part's `error`"),
-            _ => "no building has a roof; see each part's `error` and `problems`".to_string(),
-        });
+    match coverage {
+        // Nothing to calculate: the "no building" refusal of a stored
+        // result (HUNT-204).
+        q::RoofCoverage::NoBuilding => {
+            out["ok"] = json!(false);
+            out["partial"] = json!(false);
+            out["error"] = json!(
+                "no_building: the job has no building and no hand-drawn face, so there is no roof"
+            );
+        }
+        // No building has a roof and there is no hand-drawn face: nothing
+        // is calculated (round 2 ERR-103). Hand-drawn faces are a roof, so
+        // a job with them is at most partial (ERR-202).
+        q::RoofCoverage::None => {
+            out["ok"] = json!(false);
+            out["partial"] = json!(false);
+            out["error"] = json!(match &out["calc_error"]["kind"] {
+                serde_json::Value::String(k) =>
+                    format!("{k}: no building has a roof; see each part's `error`"),
+                _ => "no building has a roof; see each part's `error` and `problems`".to_string(),
+            });
+        }
+        q::RoofCoverage::Partial | q::RoofCoverage::Complete => {}
     }
+    out["roof_state"] = json!(coverage);
     out
 }
 

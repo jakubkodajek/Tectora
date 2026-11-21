@@ -81,23 +81,93 @@ pub fn roof_totals_of(
 
 /// Roof area per pitch, m², pitches rounded to 0.01° and sorted. Offers
 /// list the roof area this way (one figure per pitch), so it is what an
-/// offer or a drawing's area table is checked against. Clad gable areas and
-/// hand-drawn faces have no pitch of their own and are not included.
+/// offer or a drawing's area table is checked against. Hand-drawn faces
+/// count under their own pitch and clad gables (walls carrying the roof
+/// material) under 90°, so the figures add up to the roof area (audit
+/// 2026-11-21 HUNT-203).
 pub fn area_by_pitch(project: &Project) -> Vec<(f64, f64)> {
-    area_by_pitch_of(&crate::openings::generate_project(project))
+    area_by_pitch_of(&crate::openings::generate_project(project), project)
 }
 
 /// [`area_by_pitch`] of roofs already calculated.
-pub fn area_by_pitch_of(geos: &[crate::roof::RoofGeometry]) -> Vec<(f64, f64)> {
+pub fn area_by_pitch_of(geos: &[crate::roof::RoofGeometry], project: &Project) -> Vec<(f64, f64)> {
     let mut by: std::collections::BTreeMap<i64, f64> = Default::default();
+    let key = |pitch: f64| (pitch * 100.0).round() as i64;
     for geo in geos {
         for f in &geo.faces {
-            *by.entry((f.pitch_deg * 100.0).round() as i64).or_default() += f.area;
+            *by.entry(key(f.pitch_deg)).or_default() += f.area;
+        }
+        if geo.clad_area != 0.0 {
+            *by.entry(key(90.0)).or_default() += geo.clad_area;
+        }
+    }
+    for f in &project.manual_faces {
+        let a = f.area();
+        if a != 0.0 {
+            *by.entry(key(f.pitch_deg)).or_default() += a;
         }
     }
     by.into_iter()
         .map(|(p, a)| (p as f64 / 100.0, (a * 100.0).round() / 100.0))
         .collect()
+}
+
+/// How much of a job's roof the calculation gave, the one rule the CLI,
+/// MCP `calc` and the library card follow (audit 2026-11-21 ERR-202,
+/// HUNT-204). Hand-drawn faces are roof as much as a building is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoofCoverage {
+    /// No building and no hand-drawn face: nothing to calculate.
+    NoBuilding,
+    /// Every building is without a roof and there is no hand-drawn face.
+    None,
+    /// Some buildings are without a roof (their figures are missing), the
+    /// rest or the hand-drawn faces are calculated.
+    Partial,
+    /// Every building has its roof.
+    Complete,
+}
+
+impl RoofCoverage {
+    /// The coverage of a job whose `parts_without_roof` of its buildings
+    /// have no roof.
+    pub fn of(project: &Project, parts_without_roof: usize) -> RoofCoverage {
+        RoofCoverage::from_counts(
+            project.parts.len(),
+            parts_without_roof,
+            project.manual_faces.len(),
+        )
+    }
+
+    /// The coverage of `parts` buildings, `failed` of them without a roof,
+    /// and `faces` hand-drawn faces.
+    pub fn from_counts(parts: usize, failed: usize, faces: usize) -> RoofCoverage {
+        if parts == 0 && faces == 0 {
+            RoofCoverage::NoBuilding
+        } else if failed == 0 {
+            RoofCoverage::Complete
+        } else if failed >= parts && faces == 0 {
+            RoofCoverage::None
+        } else {
+            RoofCoverage::Partial
+        }
+    }
+}
+
+/// The buildings of `project` without a roof in `geos`: those the core gave
+/// none for and those whose input left them out of the calculation
+/// (`Project::problems` of the part).
+pub fn parts_without_roof(geos: &[crate::roof::RoofGeometry], project: &Project) -> usize {
+    let left_out: std::collections::BTreeSet<usize> = project
+        .problems()
+        .iter()
+        .filter(|p| p.item == crate::model::ProblemItem::Part)
+        .map(|p| p.index)
+        .collect();
+    (0..project.parts.len())
+        .filter(|i| left_out.contains(i) || geos.get(*i).is_some_and(|g| g.error.is_some()))
+        .count()
 }
 
 /// Takes the line pieces DACAD subtracts (`minus_lines`, e.g. a ridge
@@ -646,6 +716,9 @@ mod audit_tests {
             faces: vec![face(33.69, 10.0), face(33.7, 20.0), face(33.69, 5.0)],
             ..Default::default()
         }];
-        assert_eq!(area_by_pitch_of(&geos), [(33.69, 15.0), (33.7, 20.0)]);
+        assert_eq!(
+            area_by_pitch_of(&geos, &Project::new("x")),
+            [(33.69, 15.0), (33.7, 20.0)]
+        );
     }
 }

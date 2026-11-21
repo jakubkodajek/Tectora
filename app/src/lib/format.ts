@@ -38,6 +38,8 @@ export interface CardFigures {
   parts_failed?: number;
   /** Too complex to calculate: no figures (ARCH-102). */
   too_complex?: boolean;
+  /** Hand-drawn faces: a roof even when every building is without one (ERR-202). */
+  faces?: number;
 }
 
 /**
@@ -49,7 +51,7 @@ export function cardRoof(p: CardFigures): "pending" | "none" | "partial" | "ok" 
   if (p.figures_pending) return "pending";
   const failed = p.parts_failed ?? 0;
   if (failed <= 0) return "ok";
-  return failed >= (p.parts ?? failed) ? "none" : "partial";
+  return failed >= (p.parts ?? failed) && !(p.faces ?? 0) ? "none" : "partial";
 }
 
 /** The area on a library card: "…" while the roof is still being calculated, "—" when the core gave none. */
@@ -60,7 +62,7 @@ export function cardArea(p: CardFigures): string {
 
 /** A job with no building and no area (no hand-drawn face either): nothing to show as 0,00 m² (UX-111). */
 function noBuilding(p: CardFigures): boolean {
-  return p.parts === 0 && Math.abs(p.roof_area) < 0.005;
+  return p.parts === 0 && !(p.faces ?? 0) && Math.abs(p.roof_area) < 0.005;
 }
 
 /** Why a card's area is not the whole roof, for its tooltip and the status mark; undefined when it is. */

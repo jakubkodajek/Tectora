@@ -138,8 +138,12 @@ The tools cover every operation of the Tectora editor:
   `calc` on it for its figures. `parts_without_roof` counts the buildings
   without a roof, those the core gave none for and those left out for
   their input (`calc.problems` of the part, a doubled corner, a refused
-  pitch): as many as `parts`, the roof is not calculated
-  (`roof_area_m2: null`); fewer, `roof_area_m2` leaves them out. Tell the
+  pitch): as many as `parts` and no hand-drawn face, the roof is not
+  calculated (`roof_area_m2: null`); fewer, or with hand-drawn faces,
+  `roof_area_m2` leaves them out. `roof_state` says it in one word, as
+  `calc` and `tectora calc` do: `complete`, `partial` (some buildings
+  without a roof), `none` (no roof at all) or `no_building` (no building
+  and no hand-drawn face; `roof_area_m2: null`). Tell the
   user, and use `calc` on the job to see why. `too_complex: true`: the
   job is too complex to calculate (see Limits); read it with
   `get_project` to repair it.
@@ -295,7 +299,8 @@ the end (a closed polygon) is dropped. A wall shorter than 1 cm is a
 `walls_cross` (a wall crossing another one) and `walls_overlap` (walls lying
 on each other: an outline that goes round more than once, such as a point
 list that repeats itself, or a wall drawn back over another one; send each
-corner once). Every write answers
+corner once). Two wings that
+touch only at one corner are fine. Every write answers
 with `roof_trouble` (`roof_errors`, `problems`) when after it a building has
 no roof or input is left out: fix it or revert before going on. A write
 also answers with `warnings` (each with `part`, the same entries as calc's
@@ -514,7 +519,9 @@ and ask the user; do not invent a value to make a figure fit.
    that runs beside its drawn one is a wrong pitch, eave height or
    position. On a turned sheet pass the same `rotate` as for reading it.
    Then `calc` and compare with every figure the drawing prints:
-   roof area per pitch (`area_by_pitch_m2`; a drawing's "plocha střechy" is
+   roof area per pitch (`area_by_pitch_m2`, which adds up to
+   `roof_area_m2`: hand-drawn faces count under their pitch and clad
+   gables under 90°; a drawing's "plocha střechy" is
    sloped area, "půdorysná plocha" is plan area = sloped area × cos pitch),
    ridge and eave heights (`+5,810` labels: `heights_m` lists each part's
    eave and pitch-break heights and its highest point), outline

@@ -14,7 +14,9 @@ use tectora_core::diff::diff;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::geom::Point2;
 use tectora_core::model::{GABLE_PITCH_DEG, MIN_PITCH_DEG};
-use tectora_core::quantities::{area_by_pitch_of, dacad_line_totals_of, roof_totals_of};
+use tectora_core::quantities::{
+    RoofCoverage, area_by_pitch_of, dacad_line_totals_of, roof_totals_of,
+};
 use tectora_core::roof::LineKind;
 use tectora_core::roof::RoofGeometry;
 use tectora_core::settings::{RoofDefaults, Settings};
@@ -399,7 +401,7 @@ fn quantities_of(geos: &[RoofGeometry], project: &Project) -> Value {
         "hip_count": t.hip_count,
         "valley_count": t.valley_count,
         "lines_by_dacad_code_m": dacad_line_totals_of(geos, project),
-        "area_by_pitch_m2": area_by_pitch_of(geos)
+        "area_by_pitch_m2": area_by_pitch_of(geos, project)
             .iter()
             .map(|&(p, a)| json!({ "pitch_deg": p, "area": a }))
             .collect::<Vec<_>>(),
@@ -1629,8 +1631,14 @@ impl Server {
                         json!({
                             "id": p.id, "name": p.name, "job": p.job,
                             // A roof the core refused has no area, not 0 m² (ERRU-005).
-                            "roof_area_m2": (!p.figures_pending && (p.parts_failed == 0 || p.parts_failed < p.parts))
-                                .then(|| round(p.roof_area, 2)),
+                            // Hand-drawn faces are a roof too (ERR-202); a
+                            // job with nothing has no figure.
+                            "roof_area_m2": matches!(
+                                p.coverage(),
+                                Some(RoofCoverage::Complete | RoofCoverage::Partial)
+                            )
+                            .then(|| round(p.roof_area, 2)),
+                            "roof_state": p.coverage(),
                             "figures_pending": p.figures_pending, "parts": p.parts,
                             "parts_without_roof": p.parts_failed, "too_complex": p.too_complex,
                             "pitch_range_deg": p.pitch_range.map(|[a, b]| [round(a, 2), round(b, 2)]),
@@ -1767,6 +1775,10 @@ impl Server {
                 if !problems.is_empty() {
                     out["problems"] = serde_json::to_value(&problems).unwrap_or(Value::Null);
                 }
+                // The one rule of the CLI, `calc` and the library card:
+                // hand-drawn faces are a roof (audit 2026-11-21 ERR-202).
+                let failed = tectora_core::quantities::parts_without_roof(&geos, &p);
+                out["roof_state"] = json!(tectora_core::quantities::RoofCoverage::of(&p, failed));
                 Ok(out)
             }
             "calc_breakdown" => {
@@ -2835,6 +2847,65 @@ mod tests {
             .clone();
         assert!(card["roof_area_m2"].is_null(), "{card}");
         assert_eq!(card["parts_without_roof"], 1, "{card}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn calc_and_the_card_count_hand_drawn_faces_as_a_roof() {
+        // Audit 2026-11-21 ERR-202: a broken building plus a hand-drawn
+        // face was listed without an area while `calc` gave one; HUNT-203:
+        // the area per pitch left the face out.
+        let mut s = server();
+        let p = json!({
+            "schema_version": 3, "name": "faces",
+            "parts": [{ "name": "A", "edges": [
+                { "start": { "x": 0, "y": 0 }, "pitch_deg": 35, "eave_height": 3, "overhang": 0.5 },
+                { "start": { "x": 5, "y": 0 }, "pitch_deg": 35, "eave_height": 3, "overhang": 0.5 }
+            ] }],
+            "manual_faces": [{ "points": [{"x": 0, "y": 0}, {"x": 5, "y": 0}, {"x": 5, "y": 4}, {"x": 0, "y": 4}], "pitch_deg": 30 }],
+        });
+        let id = s
+            .store
+            .save(None, &Project::from_json(&p.to_string()).unwrap())
+            .unwrap();
+        let empty = s
+            .store
+            .save(
+                None,
+                &Project::from_json(r#"{"name": "nothing", "parts": []}"#).unwrap(),
+            )
+            .unwrap();
+        let r = s.call_tool("list_projects", &json!({})).unwrap();
+        let card = |id: &str| {
+            r["projects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["id"] == id)
+                .unwrap()
+                .clone()
+        };
+        let c = card(&id);
+        assert_eq!(c["roof_state"], "partial", "{c}");
+        assert!(c["roof_area_m2"].as_f64().unwrap() > 23.0, "{c}");
+        let c = card(&empty);
+        assert_eq!(c["roof_state"], "no_building", "{c}");
+        assert!(c["roof_area_m2"].is_null(), "{c}");
+        let calc = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        assert_eq!(calc["roof_state"], "partial", "{calc}");
+        let total = &calc["total"];
+        let sum: f64 = total["area_by_pitch_m2"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["area"].as_f64().unwrap())
+            .sum();
+        assert!(
+            (sum - total["roof_area_m2"].as_f64().unwrap()).abs() < 0.02,
+            "{calc}"
+        );
+        let calc = s.call_tool("calc", &json!({ "id": empty })).unwrap();
+        assert_eq!(calc["roof_state"], "no_building", "{calc}");
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
