@@ -68,7 +68,9 @@ read; they are implemented in `crates/tectora-drawing` (pure Rust, `hayro`
 PDF renderer).
 
 **File paths.** The `path` arguments of the drawing tools, `attach_file` and
-`import_job` reach only the jobs folder and the drawings inbox. Any other
+`import_job` reach only the jobs folder and the drawings inbox, and only
+regular files (a folder, device or named pipe is refused before it is
+opened). Any other
 path is refused, existing or not, and stored as `file_request` in the
 settings; the app asks the user ("Allow AI this file?") and an allowed file
 is added to `allowed_files` (one file, never its folder). An AI client cannot

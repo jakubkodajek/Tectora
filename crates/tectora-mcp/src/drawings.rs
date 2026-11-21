@@ -170,15 +170,30 @@ impl Server {
 
     fn open_drawing(&self, args: &Value) -> Result<(PathBuf, Drawing, usize), String> {
         let path = self.drawing_path(args)?;
-        let meta = fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        if meta.len() > tectora_drawing::MAX_PDF_BYTES as u64 {
+        let max = tectora_drawing::MAX_PDF_BYTES as u64;
+        // A named pipe or device in the inbox is refused before it is
+        // opened: it held the worker until its deadline (ARCH-002).
+        let file = tectora_core::store::open_regular(&path, max).map_err(|e| {
+            if e.code == "too_large" {
+                format!(
+                    "{}: {}",
+                    path.display(),
+                    tectora_drawing::DrawingError::TooLarge
+                )
+            } else {
+                e.to_string()
+            }
+        })?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(file, max + 1), &mut bytes)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        if bytes.len() as u64 > max {
             return Err(format!(
                 "{}: {}",
                 path.display(),
                 tectora_drawing::DrawingError::TooLarge
             ));
         }
-        let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let d = Drawing::open(bytes).map_err(|e| format!("{}: {e}", path.display()))?;
         let page = match args.get("page") {
             None | Some(Value::Null) => 0,
@@ -1061,6 +1076,44 @@ mod tests {
 
     fn text(r: &Value) -> Value {
         serde_json::from_str(r["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    /// Audit 2026-11-21 ARCH-002: a named pipe called `*.pdf` held the
+    /// drawing tools until the worker's deadline.
+    #[cfg(unix)]
+    #[test]
+    fn a_named_pipe_is_no_drawing_and_is_refused_at_once() {
+        let dir = std::env::temp_dir().join(format!(
+            "tectora-mcp-fifo-{}-{}",
+            now_ms(),
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pipe = dir.join("pipe.pdf");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made {
+            eprintln!("mkfifo not available, skipped");
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let lib = dir.clone();
+        std::thread::spawn(move || {
+            let mut s = Server::new(Store::new(lib).unwrap());
+            let r = s.call_tool(
+                "drawing_info",
+                &json!({ "path": pipe.display().to_string() }),
+            );
+            let _ = tx.send(r.map(|_| ()).map_err(|e| format!("{e:?}")));
+        });
+        let r = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("refused without waiting for a writer");
+        let e = r.unwrap_err();
+        assert!(e.contains("not a regular file"), "{e}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

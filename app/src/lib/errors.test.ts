@@ -52,6 +52,17 @@ describe("describeError", () => {
     }
   });
 
+  it("a file type a job does not carry is refused with its own message (HUNTIO-001)", () => {
+    for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
+      setLocale(l);
+      const d = describeError({ code: "not_attachable", detail: "mail.msg: only drawings, photos and documents can be attached" }, "files");
+      expect(d.message, l).toBe(DICTS[l]["err.not_attachable"]);
+      expect(d.message, l).not.toBe(DICTS[l]["err.unknown"]);
+      expect(d.message, l).toContain("PDF");
+      expect(d.detail).toContain("mail.msg");
+    }
+  });
+
   it("recognises Tauri's argument errors as an empty field", () => {
     const e = toAppError("invalid args `project` for command `calc`: invalid type: null, expected f64");
     expect(e.code).toBe("invalid_input");

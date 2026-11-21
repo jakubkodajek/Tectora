@@ -328,10 +328,22 @@ pub fn check_new_wall(pitch_deg: f64, eave_height: f64, overhang: f64) -> Result
     Ok(())
 }
 
-/// A job name must not be empty or blank (the editor refuses it too).
+/// A job name must not be empty or blank (the editor refuses it too), and
+/// must not hold control characters (NUL, line breaks, tabs) or invisible
+/// ones (bidirectional overrides, zero-width spaces) that change how the
+/// name reads in the library, the file name and the sheets (HUNTIO-007).
 pub fn check_job_name(name: &str) -> Result<(), String> {
     if name.trim().is_empty() {
         return Err("the job name must not be empty".into());
+    }
+    if let Some(c) = name
+        .chars()
+        .find(|&c| c.is_control() || crate::store::is_invisible(c))
+    {
+        return Err(format!(
+            "the job name must not contain control or invisible characters (U+{:04X}); use one line of plain text",
+            c as u32
+        ));
     }
     Ok(())
 }
@@ -689,5 +701,10 @@ mod tests {
             assert!(check_new_wall(p, e, o).is_err(), "{p} {e} {o}");
         }
         assert!(check_job_name("  ").is_err() && check_job_name("A").is_ok());
+        // HUNTIO-007: one line of visible text.
+        for bad in ["A\r\nB", "A\tB", "A\u{0}B", "file\u{202e}gnp", "A\u{200b}B"] {
+            assert!(check_job_name(bad).is_err(), "{bad:?}");
+        }
+        assert!(check_job_name("Rodinný dům – garáž 6×4 m ≥ 2°").is_ok());
     }
 }

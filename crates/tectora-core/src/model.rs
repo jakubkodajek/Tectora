@@ -400,7 +400,8 @@ impl Project {
         ];
         for (i, part) in self.parts.iter().enumerate() {
             checks.push(over(
-                &format!("walls in part {}", i + 1),
+                // From 0, as every MCP tool and `calc.problems` (HUNTIO-007).
+                &format!("walls in part index {i}"),
                 part.edges.len(),
                 MAX_PART_WALLS,
             ));
@@ -1212,6 +1213,16 @@ mod tests {
         p.parts[0].edges[1].overhang = 1e300;
         let err = p.check_limits().unwrap_err();
         assert!(err.contains("parts[0].edges[1].overhang"), "{err}");
+    }
+
+    #[test]
+    fn the_limits_name_a_part_by_its_index_from_0_as_mcp_does() {
+        // HUNTIO-007 item 5: "part 1" for the only part, index 0.
+        let mut p = crate::examples::find("gable").unwrap().project();
+        let wall = p.parts[0].edges[0].clone();
+        p.parts[0].edges = vec![wall; MAX_PART_WALLS + 1];
+        let err = p.check_limits().unwrap_err();
+        assert!(err.contains("walls in part index 0:"), "{err}");
     }
 
     #[test]

@@ -114,9 +114,14 @@ fn matches_words(p: &ProjectSummary, words: &[String]) -> bool {
 }
 
 /// Lower case without the Czech, Slovak and German accents, for search and
-/// sorting ("Říčany" matches "ricany").
+/// sorting ("Říčany" matches "ricany"), composed first so a name typed or
+/// stored decomposed (macOS) matches as well (HUNTIO-007).
 pub fn fold(s: &str) -> String {
-    s.to_lowercase().chars().map(fold_char).collect()
+    crate::nfc::nfc(s)
+        .to_lowercase()
+        .chars()
+        .map(fold_char)
+        .collect()
 }
 
 pub(crate) fn fold_char(c: char) -> char {
@@ -248,6 +253,26 @@ mod tests {
         assert_eq!(ids(&search(list.clone(), &q("novak dum")).unwrap()), ["a"]);
         assert_eq!(ids(&search(list.clone(), &q("dvorak")).unwrap()), ["c"]);
         assert!(search(list, &q("novak hala")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_decomposed_name_from_macos_is_found_by_its_precomposed_spelling() {
+        // HUNTIO-007: "Nový Dům" typed on macOS (NFD) was not found by
+        // "Dům" or "dum", and the other way round.
+        let list = vec![
+            summary("a", "Nov\u{79}\u{301} D\u{75}\u{30a}m", "", 1, 1.0),
+            summary("b", "Dům", "", 2, 1.0),
+        ];
+        let q = |text: &str| Query {
+            text: text.into(),
+            ..Default::default()
+        };
+        assert_eq!(ids(&search(list.clone(), &q("Dům")).unwrap()), ["b", "a"]);
+        assert_eq!(ids(&search(list.clone(), &q("dum")).unwrap()), ["b", "a"]);
+        assert_eq!(
+            ids(&search(list, &q("D\u{75}\u{30a}m")).unwrap()),
+            ["b", "a"]
+        );
     }
 
     #[test]

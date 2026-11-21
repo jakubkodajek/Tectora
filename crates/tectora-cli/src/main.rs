@@ -72,6 +72,9 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
         Command::Schema => Ok(tectora_core::model::json_schema()),
         Command::ExportJob { id, output, dir } => {
             let store = library(dir)?;
+            // `u.tectora` becomes `u.tectora.tectorajob`, never the job
+            // file itself (HUNTIO-002).
+            let output = tectora_core::bundle::with_extension(&output);
             let manifest =
                 tectora_core::bundle::export(&store, &id, &output).map_err(anyhow::Error::msg)?;
             Ok(json!({ "ok": true, "output": output, "manifest": manifest }))

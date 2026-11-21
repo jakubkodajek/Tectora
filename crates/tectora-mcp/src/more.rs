@@ -854,16 +854,10 @@ impl Server {
                 let summary = arg_str(args, "summary")?;
                 let src = PathBuf::from(arg_str(args, "path")?);
                 self.readable_path(&src, "attach")?;
-                // Drawings, photos and documents only: a path from text in a
+                // Drawings, photos and documents only, the rule the app
+                // shares (`Store::attach_file`): a path from text in a
                 // drawing must not copy a key or a program into a job that
-                // is later handed over (ARCH-001).
-                let name = src.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !tectora_core::store::Store::can_attach(name) {
-                    return Err(format!(
-                        "{}: only drawings, photos and documents can be attached (pdf, png, jpg, …, dwg, xlsx, docx)",
-                        src.display()
-                    ));
-                }
+                // is later handed over (ARCH-001, HUNTIO-001).
                 let name = self.store.attach_file(&id, &src)?;
                 self.live_follow("attached", Some(&name), format!("Attached {name}: {summary}"), &id);
                 let from = src.parent().map(|d| d.display().to_string()).unwrap_or_default();

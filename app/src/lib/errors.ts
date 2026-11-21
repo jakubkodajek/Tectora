@@ -91,6 +91,7 @@ const KNOWN = new Set([
   "not_a_file",
   "unsupported_type",
   "invalid_name",
+  "not_attachable",
   "too_many",
   "not_calculated",
   "settings_unreadable",

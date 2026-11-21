@@ -361,7 +361,10 @@ fn show_folder(dir: &std::path::Path) -> Result<(), String> {
 /// Async: the preview in the bundle runs the roof kernel.
 #[tauri::command(async)]
 fn export_job(state: State<AppState>, id: String, path: String) -> CmdResult<()> {
-    guard(|| Ok(bundle::export(&state.store(), &id, &PathBuf::from(path)).map(|_| ())?))
+    // A name typed without the ending gets it: never the job file itself
+    // or a file of another type (HUNTIO-002).
+    let dest = bundle::with_extension(&PathBuf::from(path));
+    guard(|| Ok(bundle::export(&state.store(), &id, &dest).map(|_| ())?))
 }
 
 /// The text list for the price sheet and the plan sheet (SVG) of the open

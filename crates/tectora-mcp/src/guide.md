@@ -129,7 +129,9 @@ The tools cover every operation of the Tectora editor:
   why it cannot be opened. A job whose roof takes too long to calculate for
   the list comes with `figures_pending: true` and `roof_area_m2: null`; use
   `calc` on it for its figures. `parts_without_roof` counts the buildings
-  the core gave no roof for: as many as `parts`, the roof is not calculated
+  without a roof, those the core gave none for and those left out for
+  their input (`calc.problems` of the part, a doubled corner, a refused
+  pitch): as many as `parts`, the roof is not calculated
   (`roof_area_m2: null`); fewer, `roof_area_m2` leaves them out. Tell the
   user, and use `calc` on the job to see why.
 - Deleting: `delete_project` and `remove_file` move the job (with its
@@ -506,7 +508,8 @@ defaults (another jobs folder) are in use: tell the user before you change a
 setting (the damaged file is kept as `settings.json.bad` on the next save).
 
 Files: `path` arguments (drawing tools, `attach_file`, `import_job`) take
-files in the jobs folder and the drawings inbox. Any other path is refused
+files in the jobs folder and the drawings inbox; a folder, device or named
+pipe is refused as "not a regular file". Any other path is refused
 and the app asks the user to allow that one file; tell the user to answer
 in the Tectora window, then repeat the call. Never go looking for the file
 another way.

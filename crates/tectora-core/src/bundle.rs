@@ -33,6 +33,9 @@ const MAX_FILES: usize = 200;
 /// with the limits above this keeps a small ZIP from filling the disk
 /// (an entry can inflate about 1000:1).
 const MAX_FILES_TOTAL: u64 = 512 * 1024 * 1024;
+/// Largest bundle file opened: the attached files, the project, its log
+/// and the rest of the ZIP at their limits.
+const MAX_BUNDLE: u64 = MAX_FILES_TOTAL + 4 * MAX_TEXT_ENTRY;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
@@ -122,9 +125,26 @@ pub fn export_path_with(
 /// there at the end, so a failed export neither leaves a bundle that lacks
 /// the attached files nor replaces the file that was there (audit
 /// 2026-11-15 HUNTIO-006).
+///
+/// `dest` must end in `.tectorajob` and lie outside the library's own
+/// folders, so an export can never write over a job file or into the
+/// files, change logs or trash of the library (HUNTIO-002); see
+/// [`with_extension`] for a path typed without the ending. A job with an
+/// attached file of a type import refuses is not exported either
+/// (`not_attachable`, HUNTIO-001).
 pub fn export(store: &Store, id: &str, dest: &Path) -> Result<Manifest, FileError> {
+    check_dest(store, dest)?;
     let project = store.load(id)?;
     let attachments = store.attachments(id);
+    if let Some(bad) = attachments.iter().find(|a| !Store::can_attach(&a.name)) {
+        return Err(FileError::new(
+            "not_attachable",
+            format!(
+                "job bundle: the attached file `{}` is not a file type a bundle carries; remove it from the job and export again",
+                bad.name
+            ),
+        ));
+    }
     // A bundle import refuses is not written: the job would be lost to
     // whoever receives it (ARCH-003).
     if attachments.len() > MAX_FILES {
@@ -161,6 +181,72 @@ pub fn export(store: &Store, id: &str, dest: &Path) -> Result<Manifest, FileErro
         let _ = fs::remove_file(&part);
     }
     done
+}
+
+/// `path` with `.tectorajob` added when it does not end in it (in any
+/// case): `job.tectora` becomes `job.tectora.tectorajob`, never the job
+/// file itself. For the CLI and the app's save dialog.
+pub fn with_extension(path: &Path) -> PathBuf {
+    let has = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case(EXTENSION));
+    if has {
+        return path.to_path_buf();
+    }
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{EXTENSION}"));
+    path.with_file_name(name)
+}
+
+/// The rules of [`export`] for its destination.
+fn check_dest(store: &Store, dest: &Path) -> Result<(), FileError> {
+    let name = dest.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let has_ext = dest
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case(EXTENSION));
+    let stem = name.len().saturating_sub(EXTENSION.len() + 1);
+    if !has_ext || stem == 0 || !crate::store::valid_file_name(name) {
+        return Err(FileError::new(
+            "invalid_name",
+            format!(
+                "{}: a job bundle must be a plain file name ending in .{EXTENSION}",
+                dest.display()
+            ),
+        ));
+    }
+    // Compared as the folders really are (links, `..`, the case of a
+    // macOS or Windows file system): the folder of `dest` exists when the
+    // export can write there at all.
+    let Some(parent) = dest.parent() else {
+        return Ok(());
+    };
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    let (Ok(at), Ok(lib)) = (parent.canonicalize(), store.dir.canonicalize()) else {
+        return Ok(());
+    };
+    let inside = [
+        crate::store::FILES_DIR,
+        crate::store::ACTIVITY_DIR,
+        crate::store::TRASH_DIR,
+    ]
+    .iter()
+    .any(|d| at.starts_with(lib.join(d)));
+    if inside {
+        return Err(FileError::new(
+            "invalid_name",
+            format!(
+                "{}: a job bundle cannot be written into the library's own folders; choose another folder",
+                dest.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn write_bundle(
@@ -250,8 +336,10 @@ fn read_entry<R: Read + std::io::Seek>(
 }
 
 /// Adds the job in bundle `src` to `store` as a new job; returns its id.
+/// A named pipe or device called `*.tectorajob` is refused before it is
+/// opened: opening it blocked the MCP server for good (ARCH-002).
 pub fn import(store: &Store, src: &Path) -> Result<String, FileError> {
-    let file = fs::File::open(src).map_err(|e| FileError::io(src, e))?;
+    let file = crate::store::open_regular(src, MAX_BUNDLE)?;
     let mut zip = zip::ZipArchive::new(file).map_err(zip_err)?;
     let manifest = read_entry(&mut zip, "manifest.json", MAX_TEXT_ENTRY)?;
     if let Some(m) = &manifest {
@@ -411,24 +499,11 @@ pub fn open_path(store: &Store, path: &Path) -> Result<String, FileError> {
     {
         return Ok(stem.to_string());
     }
-    let meta = fs::metadata(path).map_err(|e| FileError::io(path, e))?;
-    if !meta.is_file() {
-        return Err(FileError::new(
-            "not_a_file",
-            format!("{}: not a regular file", path.display()),
-        ));
-    }
-    if meta.len() > MAX_TEXT_ENTRY {
-        return Err(FileError::new(
-            "too_large",
-            format!(
-                "{}: larger than {} MB",
-                path.display(),
-                MAX_TEXT_ENTRY >> 20
-            ),
-        ));
-    }
-    let text = fs::read_to_string(path).map_err(|e| FileError::io(path, e))?;
+    let mut text = String::new();
+    crate::store::open_regular(path, MAX_TEXT_ENTRY)?
+        .take(MAX_TEXT_ENTRY)
+        .read_to_string(&mut text)
+        .map_err(|e| FileError::io(path, e))?;
     let project = parse_project(&text, &path.display().to_string())?;
     Ok(store.save(None, &project)?)
 }
@@ -874,6 +949,112 @@ mod tests {
         let new_id = open_path(&store, &outside).unwrap();
         assert_ne!(new_id, id);
         assert_eq!(store.load(&new_id).unwrap(), p);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Audit 2026-11-21 HUNTIO-002: an export over the job's own
+    /// `.tectora` turned the job into a ZIP nothing could open.
+    #[test]
+    fn an_export_writes_only_a_tectorajob_outside_the_library_folders() {
+        let dir = std::env::temp_dir().join(format!("tectora-dest-{}", now_ms()));
+        let store = Store::new(dir.join("lib")).unwrap();
+        let p = crate::examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let own = store.path(&id).unwrap();
+        let before = fs::read(&own).unwrap();
+        fs::create_dir_all(dir.join("out")).unwrap();
+        for dest in [
+            own.clone(),
+            dir.join("out").join("noext"),
+            dir.join("out").join("job.zip"),
+            dir.join("out").join(".tectorajob"),
+            store.files_dir(&id).unwrap().join("x.tectorajob"),
+            store.activity_dir().join("x.tectorajob"),
+            store.trash_dir().join("x.tectorajob"),
+        ] {
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            let e = export(&store, &id, &dest).unwrap_err();
+            assert_eq!(e.code, "invalid_name", "{}: {e}", dest.display());
+        }
+        assert_eq!(fs::read(&own).unwrap(), before, "the job file is kept");
+        assert_eq!(store.load(&id).unwrap(), p);
+        assert!(!dir.join("out").join("noext").exists());
+        // A path typed without the ending gets it, also after `.tectora`.
+        assert_eq!(
+            with_extension(&own),
+            own.with_file_name(format!("{id}.tectora.tectorajob"))
+        );
+        let upper = dir.join("out").join("Job.TECTORAJOB");
+        assert_eq!(with_extension(&upper), upper);
+        export(&store, &id, &with_extension(&own)).unwrap();
+        export(&store, &id, &upper).unwrap();
+        // The library's exports folder, where the MCP server writes.
+        export(&store, &id, &export_path(&store, "x").unwrap()).unwrap();
+        assert_eq!(fs::read(&own).unwrap(), before);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Audit 2026-11-21 HUNTIO-001: a job holding a file import refuses
+    /// (attached by an older Tectora) is not exported to a bundle nobody
+    /// can import.
+    #[test]
+    fn a_job_with_a_file_import_refuses_is_not_exported() {
+        let dir = std::env::temp_dir().join(format!("tectora-refused-type-{}", now_ms()));
+        let store = Store::new(dir.join("lib")).unwrap();
+        let p = crate::examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        store.add_attachment(&id, "plan.pdf", b"%PDF").unwrap();
+        let files = store.files_dir(&id).unwrap();
+        fs::write(files.join("Zpráva od zákazníka.msg"), b"x").unwrap();
+        let file = dir.join("job.tectorajob");
+        let e = export(&store, &id, &file).unwrap_err();
+        assert_eq!(e.code, "not_attachable", "{e}");
+        assert!(e.detail.contains("Zpráva od zákazníka.msg"), "{e}");
+        assert!(!file.exists());
+        fs::remove_file(files.join("Zpráva od zákazníka.msg")).unwrap();
+        export(&store, &id, &file).unwrap();
+        let other = Store::new(dir.join("other")).unwrap();
+        assert!(import(&other, &file).is_ok());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Audit 2026-11-21 ARCH-002: a named pipe called `*.tectorajob` (or
+    /// `*.tectora`) blocked the import, and the MCP server with it.
+    #[cfg(unix)]
+    #[test]
+    fn importing_a_named_pipe_is_refused_without_waiting() {
+        let dir = std::env::temp_dir().join(format!("tectora-fifo-{}", now_ms()));
+        let store = Store::new(dir.join("lib")).unwrap();
+        let mut pipes = Vec::new();
+        for name in ["pipe.tectorajob", "pipe.tectora"] {
+            let pipe = dir.join(name);
+            let made = std::process::Command::new("mkfifo")
+                .arg(&pipe)
+                .status()
+                .is_ok_and(|s| s.success());
+            if !made {
+                eprintln!("mkfifo not available, skipped");
+                return;
+            }
+            pipes.push(pipe);
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let lib = store.dir.clone();
+        std::thread::spawn(move || {
+            let store = Store::at(lib);
+            let codes: Vec<_> = pipes
+                .iter()
+                .map(|p| open_path(&store, p).map_err(|e| e.code))
+                .collect();
+            let _ = tx.send(codes);
+        });
+        let codes = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("refused without waiting for a writer");
+        assert_eq!(codes, [Err("not_a_file"), Err("not_a_file")]);
+        assert!(store.list().is_empty());
         let _ = fs::remove_dir_all(dir);
     }
 

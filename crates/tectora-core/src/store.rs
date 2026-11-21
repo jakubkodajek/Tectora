@@ -278,14 +278,27 @@ fn lines_of(geos: &[roof::RoofGeometry]) -> Vec<[[f64; 2]; 2]> {
 /// A library card's roof figures, from one calculation (ARCH-006).
 type CardFigures = (f64, Vec<[[f64; 2]; 2]>, usize, bool);
 
-/// A library card's roof area, plan lines and the number of buildings the
-/// core gave no roof for (ERRU-005), from one calculation (ARCH-006).
+/// A library card's roof area, plan lines and the number of buildings
+/// without a roof (ERRU-005), from one calculation (ARCH-006). A building
+/// is without a roof when the core gave none or when its input was left
+/// out of the calculation (a wall under 1 cm, crossing walls, a refused
+/// pitch: `Project::problems` of the part), so the area of the others is
+/// never shown as the job's whole roof (audit 2026-11-21 ERR-001).
 fn card_figures(project: &Project) -> CardFigures {
     let geos = crate::openings::generate_project(project);
+    let left_out: std::collections::BTreeSet<usize> = project
+        .problems()
+        .iter()
+        .filter(|p| p.item == crate::model::ProblemItem::Part)
+        .map(|p| p.index)
+        .collect();
+    let failed = (0..project.parts.len())
+        .filter(|i| left_out.contains(i) || geos.get(*i).is_some_and(|g| g.error.is_some()))
+        .count();
     (
         crate::quantities::roof_totals_of(&geos, project).roof_area,
         lines_of(&geos),
-        geos.iter().filter(|g| g.error.is_some()).count(),
+        failed,
         crate::snapshot::status_of(&geos, project).is_some_and(|s| !s.differences.is_empty()),
     )
 }
@@ -469,8 +482,9 @@ pub struct BrokenFile {
 /// server and the "Details" view.
 ///
 /// Codes: those of [`StoreError`], `file_not_found`, `not_a_file` (a folder,
-/// device or pipe), `too_large`, `unsupported_type`, `invalid_name`,
-/// `out_of_range`, `too_many`.
+/// device or pipe), `too_large`, `unsupported_type`, `not_attachable` (a
+/// file type a job does not carry), `invalid_name`, `out_of_range`,
+/// `too_many`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{detail}")]
 pub struct FileError {
@@ -633,30 +647,82 @@ pub enum CheckedSave {
 /// limit of common file systems).
 const MAX_ID_LEN: usize = 120;
 
-/// Names Windows reserves for devices in every folder (`CON.tectora` opens
-/// the console, not a file).
-const WINDOWS_DEVICE_NAMES: &[&str] = &[
-    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
-    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
-];
+/// Whether Windows takes `name` for a device in every folder, after
+/// Microsoft's "Naming Files, Paths, and Namespaces": `CON`, `PRN`, `AUX`,
+/// `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9` (also with the superscript digits
+/// ¹ ² ³), `CONIN$` and `CONOUT$`, in any case, also when an extension
+/// follows (`NUL.pdf`, `con.x.tectora`) or spaces end the stem
+/// (`CON .txt`). `CON.tectora` opens the console, not a file (audit
+/// 2026-11-21 ARCH-004).
+fn is_device_name(name: &str) -> bool {
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_ascii_lowercase();
+    if matches!(
+        stem.as_str(),
+        "con" | "prn" | "aux" | "nul" | "conin$" | "conout$"
+    ) {
+        return true;
+    }
+    let mut rest = stem.chars();
+    let prefix: String = rest.by_ref().take(3).collect();
+    let digit: Vec<char> = rest.collect();
+    (prefix == "com" || prefix == "lpt")
+        && matches!(digit.as_slice(), [d] if d.is_ascii_digit() || matches!(d, '¹' | '²' | '³'))
+}
+
+/// Characters that change how a name reads without being seen: the
+/// Unicode format characters (category Cf) such as the bidirectional
+/// overrides (`file\u{202e}gnp.pdf` shows as "filefdp.png"), zero-width
+/// spaces and joiners, the byte order mark and the soft hyphen (audit
+/// 2026-11-21 HUNTIO-007).
+pub(crate) fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{ad}'
+            | '\u{600}'..='\u{605}'
+            | '\u{61c}'
+            | '\u{6dd}'
+            | '\u{70f}'
+            | '\u{890}'..='\u{891}'
+            | '\u{8e2}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{110bd}'
+            | '\u{110cd}'
+            | '\u{13430}'..='\u{1343f}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0001}'
+            | '\u{e0020}'..='\u{e007f}'
+    )
+}
 
 /// A project id is a plain file name inside the library folder on both
 /// macOS and Windows: no separators, drive or stream prefix (`C:x`,
 /// `x:stream`), characters Windows forbids, hidden names or device names.
 fn valid_id(id: &str) -> bool {
-    id.len() <= MAX_ID_LEN
-        && plain_name(id)
-        && !WINDOWS_DEVICE_NAMES.contains(&id.to_ascii_lowercase().as_str())
+    id.len() <= MAX_ID_LEN && plain_name(id) && !is_device_name(id)
 }
 
 /// No separators, drive or stream prefix, characters Windows forbids,
-/// hidden or trailing-dot names.
+/// control or invisible characters, hidden or trailing-dot names.
 fn plain_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('.')
         && !name.ends_with(['.', ' '])
         && !name.chars().any(|c| {
-            c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+            c.is_control()
+                || is_invisible(c)
+                || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
         })
 }
 
@@ -666,15 +732,66 @@ fn plain_name(name: &str) -> bool {
 /// bundle's `files/C:x.dll` joins to `C:x.dll` on Windows, outside the
 /// library (ARCH-039).
 pub fn valid_file_name(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or("").trim_end();
-    name.len() <= 255
-        && plain_name(name)
-        && !WINDOWS_DEVICE_NAMES.contains(&stem.to_ascii_lowercase().as_str())
+    name.len() <= 255 && plain_name(name) && !is_device_name(name)
+}
+
+fn too_large_file(path: &Path, max: u64) -> FileError {
+    FileError::new(
+        "too_large",
+        format!("{}: larger than {} MB", path.display(), max >> 20),
+    )
+}
+
+/// Opens `path` for reading when it is a regular file of at most `max`
+/// bytes: a folder, a device (`/dev/zero`, which never ends) or a named
+/// pipe (which blocks the open until a writer comes, and with it the MCP
+/// server) is refused before it is opened, `not_a_file`; a larger file is
+/// `too_large`. A path replaced by a pipe between the check and the open
+/// is opened without waiting and refused as well (ARCH-001, ARCH-002).
+pub fn open_regular(path: &Path, max: u64) -> Result<fs::File, FileError> {
+    let not_a_file = || {
+        FileError::new(
+            "not_a_file",
+            format!(
+                "{}: not a regular file (a folder, device or pipe)",
+                path.display()
+            ),
+        )
+    };
+    let meta = fs::metadata(path).map_err(|e| FileError::io(path, e))?;
+    if !meta.is_file() {
+        return Err(not_a_file());
+    }
+    if meta.len() > max {
+        return Err(too_large_file(path, max));
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    // O_NONBLOCK: an open of a pipe returns at once; reads of a regular
+    // file are not changed by it.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, 0o4000);
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, 0x0004);
+    let file = options.open(path).map_err(|e| FileError::io(path, e))?;
+    // The path may have been replaced between the check and the open.
+    match file.metadata() {
+        Ok(m) if m.is_file() && m.len() <= max => Ok(file),
+        Ok(m) if m.is_file() => Err(too_large_file(path, max)),
+        _ => Err(not_a_file()),
+    }
 }
 
 /// File-name friendly id derived from a project name.
 fn slug(name: &str) -> String {
-    let mut s: String = name
+    // Composed first: a name from macOS may come decomposed (HUNTIO-007).
+    let mut s: String = crate::nfc::nfc(name)
         .to_lowercase()
         .chars()
         .map(|c| {
@@ -1808,7 +1925,10 @@ impl Store {
         id: &str,
         name: &str,
     ) -> Result<(fs::File, String), FileError> {
-        let name = name.trim();
+        // Composed, so one name decomposed (from macOS) and precomposed is
+        // one file, never two that look the same (HUNTIO-007).
+        let name = crate::nfc::nfc(name.trim()).into_owned();
+        let name = name.as_str();
         self.attachment_path(id, name)?;
         let dir = self.files_dir(id)?;
         fs::create_dir_all(&dir).map_err(|e| FileError::io(&dir, e))?;
@@ -1842,48 +1962,29 @@ impl Store {
     /// Copies a file from disk into job `id`'s attachments. Only a regular
     /// file up to [`MAX_ATTACHMENT`] bytes: a folder, a device (`/dev/zero`,
     /// which never ends) or a pipe (`/dev/stdin`, which blocks until the
-    /// other end closes) is refused before it is opened (ARCH-001).
+    /// other end closes) is refused before it is opened (ARCH-001). Only a
+    /// type [`Store::can_attach`] takes (`not_attachable`): a bundle import
+    /// refuses any other, so the job could no longer be handed over
+    /// (HUNTIO-001). The same rule for the app and the MCP server.
     pub fn attach_file(&self, id: &str, src: &Path) -> Result<String, FileError> {
         let name = src.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
             FileError::new("not_a_file", format!("{}: not a file", src.display()))
         })?;
-        let not_a_file = || {
-            FileError::new(
-                "not_a_file",
+        let file = open_regular(src, MAX_ATTACHMENT)?;
+        if !Self::can_attach(name) {
+            return Err(FileError::new(
+                "not_attachable",
                 format!(
-                    "{}: not a regular file (a folder, device or pipe)",
-                    src.display()
+                    "{name}: only drawings, photos and documents can be attached (pdf, png, jpg, …, dwg, xlsx, docx)"
                 ),
-            )
-        };
-        let too_large = || {
-            FileError::new(
-                "too_large",
-                format!(
-                    "{}: larger than {} MB, the most a job can carry",
-                    src.display(),
-                    MAX_ATTACHMENT >> 20
-                ),
-            )
-        };
-        let meta = fs::metadata(src).map_err(|e| FileError::io(src, e))?;
-        if !meta.is_file() {
-            return Err(not_a_file());
-        }
-        if meta.len() > MAX_ATTACHMENT {
-            return Err(too_large());
-        }
-        let file = fs::File::open(src).map_err(|e| FileError::io(src, e))?;
-        // The path may have been replaced between the check and the open.
-        if !file.metadata().is_ok_and(|m| m.is_file()) {
-            return Err(not_a_file());
+            ));
         }
         let mut bytes = Vec::new();
         std::io::Read::take(file, MAX_ATTACHMENT + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| FileError::io(src, e))?;
         if bytes.len() as u64 > MAX_ATTACHMENT {
-            return Err(too_large());
+            return Err(too_large_file(src, MAX_ATTACHMENT));
         }
         self.add_attachment(id, name, &bytes)
     }
@@ -3292,6 +3393,166 @@ mod tests {
         assert!(!s.figures_pending, "{s:?}");
         assert_eq!((s.parts, s.parts_failed), (2, 1), "{s:?}");
         assert!(s.roof_area > 0.0, "{s:?}");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-21 ERR-001: a building left out of the calculation
+    /// for its input (here a corner doubled 1 mm away) has no roof either;
+    /// the house's area alone was listed as the job's complete roof.
+    #[test]
+    fn the_listing_counts_a_building_left_out_for_its_input_as_without_roof() {
+        let store = temp_store("card-left-out");
+        let house: Vec<_> = [(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)]
+            .iter()
+            .map(|&(x, y)| card_edge(x, y, 35.0, 3.0, 0.5))
+            .collect();
+        let garage: Vec<_> = [
+            (20.0, 0.0),
+            (26.0, 0.0),
+            (26.0, 0.001),
+            (26.0, 6.0),
+            (20.0, 6.0),
+        ]
+        .iter()
+        .map(|&(x, y)| card_edge(x, y, 35.0, 3.0, 0.5))
+        .collect();
+        let p = serde_json::json!({
+            "schema_version": 2, "name": "left out",
+            "parts": [{ "name": "A", "edges": house }, { "name": "B", "edges": garage }],
+        });
+        let p = Project::from_json(&p.to_string()).unwrap();
+        assert!(
+            p.problems()
+                .iter()
+                .any(|q| q.index == 1 && q.code == "zero_length_wall")
+        );
+        let id = store.save(None, &p).unwrap();
+        let s = store.summarize(&id).unwrap();
+        assert!(!s.figures_pending, "{s:?}");
+        assert_eq!((s.parts, s.parts_failed), (2, 1), "{s:?}");
+        assert!(s.roof_area > 0.0, "{s:?}");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-21 ARCH-004: Microsoft's device names, also with the
+    /// superscript digits, 0, the console names and before a dot in ids.
+    #[test]
+    fn every_windows_device_name_is_refused_in_ids_and_file_names() {
+        let devices = [
+            "COM¹", "com²", "LPT³", "lpt¹", "COM0", "lpt0", "CONIN$", "conout$", "Con", "aux",
+            "COM9", "LPT5",
+        ];
+        for d in devices {
+            for name in [d.to_string(), format!("{d}.pdf"), format!("{d}.x.pdf")] {
+                assert!(!valid_file_name(&name), "{name}");
+            }
+            assert!(!valid_id(d), "{d}");
+        }
+        let store = Store::at(PathBuf::from("/tmp/x"));
+        for id in ["con.x", "com1.x", "nul.tectora", "CONIN$", "lpt²"] {
+            assert!(store.path(id).is_err(), "{id}");
+        }
+        assert!(!valid_file_name("CON .txt"));
+        assert_eq!(store.new_id("Com0"), "com0-navrh");
+        for ok in [
+            "com10.pdf",
+            "comp.pdf",
+            "lpt.pdf",
+            "console.txt",
+            "com-1.pdf",
+            "conin.pdf",
+        ] {
+            assert!(valid_file_name(ok), "{ok}");
+        }
+    }
+
+    /// Audit 2026-11-21 HUNTIO-007: a name decomposed on macOS gives the
+    /// same id and the same attachment as its precomposed spelling, and an
+    /// attachment name cannot hide what it is behind invisible characters.
+    #[test]
+    fn decomposed_names_and_invisible_characters_in_names() {
+        assert_eq!(slug("Nov\u{79}\u{301} D\u{75}\u{30a}m"), "novy-dum");
+        let store = temp_store("names-nfc");
+        let id = store
+            .save(None, &examples::find("gable").unwrap().project())
+            .unwrap();
+        let nfc = "Půdorys přízemí.pdf";
+        let nfd = "P\u{75}\u{30a}dorys pr\u{30c}i\u{301}zemi\u{301}.pdf";
+        assert_eq!(store.add_attachment(&id, nfc, b"a").unwrap(), nfc);
+        assert_eq!(
+            store.add_attachment(&id, nfd, b"b").unwrap(),
+            "Půdorys přízemí (2).pdf"
+        );
+        for bad in [
+            "file\u{202e}gnp.pdf",
+            "plan\u{200b}.pdf",
+            "\u{feff}plan.pdf",
+        ] {
+            assert!(!valid_file_name(bad), "{bad:?}");
+            assert_eq!(
+                store.add_attachment(&id, bad, b"x").unwrap_err().code,
+                "invalid_name"
+            );
+        }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-21 HUNTIO-001: the app attached any file type, and the
+    /// bundle of the job then could not be imported anywhere.
+    #[test]
+    fn only_types_a_bundle_carries_are_attached() {
+        let store = temp_store("attach-types");
+        let id = store
+            .save(None, &examples::find("gable").unwrap().project())
+            .unwrap();
+        let dir = store.dir.join("in");
+        fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "Zpráva od zákazníka.msg",
+            "fotky.zip",
+            "mail.eml",
+            "run.command",
+        ] {
+            let src = dir.join(name);
+            fs::write(&src, b"x").unwrap();
+            let e = store.attach_file(&id, &src).unwrap_err();
+            assert_eq!(e.code, "not_attachable", "{name}: {e}");
+        }
+        assert!(store.attachments(&id).is_empty());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-21 ARCH-002: a named pipe is refused before it is
+    /// opened, so nothing waits for a writer that never comes.
+    #[cfg(unix)]
+    #[test]
+    fn a_named_pipe_is_refused_without_waiting() {
+        let store = temp_store("fifo");
+        let id = store
+            .save(None, &examples::find("gable").unwrap().project())
+            .unwrap();
+        let pipe = store.dir.join("pipe.pdf");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made {
+            eprintln!("mkfifo not available, skipped");
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (dir, p) = (store.dir.clone(), pipe.clone());
+        std::thread::spawn(move || {
+            let store = Store::at(dir);
+            let attach = store.attach_file(&id, &p).map_err(|e| e.code);
+            let open = open_regular(&p, 1 << 20).map(|_| ()).map_err(|e| e.code);
+            let _ = tx.send((attach, open));
+        });
+        let (attach, open) = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("refused without waiting for a writer");
+        assert_eq!(attach, Err("not_a_file"));
+        assert_eq!(open, Err("not_a_file"));
         let _ = fs::remove_dir_all(&store.dir);
     }
 }

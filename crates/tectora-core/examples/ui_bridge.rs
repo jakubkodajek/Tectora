@@ -332,7 +332,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         }
         "open_attachment" => Err("open_attachment is not available in the browser preview".into()),
         "export_job" => {
-            bundle::export(store, &id()?, &PathBuf::from(arg::<String>(a, "path")?))?;
+            let dest = bundle::with_extension(&PathBuf::from(arg::<String>(a, "path")?));
+            bundle::export(store, &id()?, &dest)?;
             Ok(Value::Null)
         }
         "export_preview" => {

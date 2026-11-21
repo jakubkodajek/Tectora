@@ -26,6 +26,7 @@ pub mod merge;
 pub mod model;
 pub mod modell;
 pub mod multiroof;
+pub mod nfc;
 pub mod openings;
 pub mod quantities;
 pub mod raised;
