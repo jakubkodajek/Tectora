@@ -83,9 +83,14 @@ export function notCalculated(result: CalcResult | null): boolean {
   return !!result?.parts.some((p) => p.geometry.error);
 }
 
-/** The parts the core gave no roof for, by index into `result.parts`. */
+/**
+ * The parts without a roof, by index into `result.parts`: the core gave
+ * none, or the part was left out of the calculation for its input (a
+ * problem of the part; it then carries no error, only zeros; ERR-001).
+ */
 export function failedParts(result: CalcResult | null): number[] {
-  return (result?.parts ?? []).flatMap((p, i) => (p.geometry.error ? [i] : []));
+  const leftOut = new Set((result?.problems ?? []).filter((p) => p.item === "part").map((p) => p.index));
+  return (result?.parts ?? []).flatMap((p, i) => (p.geometry.error || leftOut.has(i) ? [i] : []));
 }
 
 /**

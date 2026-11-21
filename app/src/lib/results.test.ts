@@ -166,4 +166,16 @@ describe("roofState (ERRU-003)", () => {
     expect(roofState({ parts: [part("A"), part("B")] } as unknown as CalcResult)).toBe("ok");
     expect(roofState(null)).toBe("ok");
   });
+  it("counts a building left out for its input as without roof (ERR-001, UI-004)", () => {
+    // A pitch of 1° or a doubled corner: the core leaves the part out, so
+    // it has no error, only problems, and its zeros are no figures.
+    const left = { parts: [part("A"), part("B")], problems: [{ item: "part", index: 1, edge: 0, code: "pitch_range" }] };
+    expect(roofState(left as unknown as CalcResult)).toBe("partial");
+    expect(failedParts(left as unknown as CalcResult)).toEqual([1]);
+    const alone = { parts: [part("A")], problems: [{ item: "part", index: 0, code: "too_few_edges" }] };
+    expect(roofState(alone as unknown as CalcResult)).toBe("none");
+    // A refused chimney leaves no building without its roof.
+    const chimney = { parts: [part("A")], problems: [{ item: "chimney", index: 0, code: "bad_size" }] };
+    expect(roofState(chimney as unknown as CalcResult)).toBe("ok");
+  });
 });
