@@ -7,7 +7,7 @@
   import { t } from "./i18n.svelte";
   import { actorName, entrySummary, isFresh, isRevert, live, liveText } from "./live.svelte";
   import type { ActivityItem, Change, Project } from "./types";
-  import { isAi } from "./types";
+  import { ENGINE_ACTOR, isAi } from "./types";
 
   let {
     id,
@@ -61,7 +61,7 @@
       {@const ai = isAi(a.actor)}
       <li class:ai>
         <div class="head">
-          <span class="who" class:ai><Icon name={ai ? "sparkle" : "cursor"} size={13} />{ai ? actorName(a.actor) : t("ai.you")}</span>
+          <span class="who" class:ai><Icon name={ai ? "sparkle" : "cursor"} size={13} />{ai ? actorName(a.actor) : a.actor === ENGINE_ACTOR ? "Tectora" : t("ai.you")}</span>
           <time>{relativeTime(a.ts_ms)}</time>
         </div>
         <p class="summary">{!ai && isRevert(a.summary) ? t("ai.revertedEntry") : entrySummary(a.summary)}</p>

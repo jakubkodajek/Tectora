@@ -214,8 +214,36 @@ pub const REFRESHED_PREFIX: &str = "Stored result recalculated";
 
 /// `a.b.c` as numbers, for comparing engine versions.
 fn version(v: &str) -> Option<(u64, u64, u64)> {
+    // A clean `a.b.c[-pre][+build]` only: the string comes from the file
+    // and goes into the change log.
+    if v.len() > 32
+        || !v
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+    {
+        return None;
+    }
     let mut it = v.split(['.', '-', '+']).map(|n| n.parse::<u64>().ok());
     Some((it.next()??, it.next()??, it.next()??))
+}
+
+/// A fingerprint of what the roof is calculated from: the project without
+/// its name, notes, job data and stored result (FNV-1a over its JSON).
+/// Equal fingerprints mean the design is unchanged.
+pub fn input_digest(project: &Project) -> String {
+    let mut p = project.clone();
+    p.result_snapshot = None;
+    p.name.clear();
+    p.notes.clear();
+    p.job = Default::default();
+    p.extra.clear();
+    let text = serde_json::to_string(&p).unwrap_or_default();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}")
 }
 
 /// The job with its stored result recalculated, where an older engine
@@ -225,6 +253,8 @@ fn version(v: &str) -> Option<(u64, u64, u64)> {
 /// result was stored by this engine or a newer one, the figures are the
 /// same, or the roof cannot be calculated now (then the stored result
 /// stays as the offer had it), with the change log's summary otherwise.
+/// Whether the design changed since the result was stored is not known
+/// here: [`crate::store::Store::refresh_stored_result`] checks that.
 pub fn refreshed(project: &Project) -> Option<(Project, String)> {
     let stored = project.result_snapshot.as_ref()?;
     if version(&stored.engine_version)? >= version(ENGINE_VERSION)? {
@@ -312,6 +342,10 @@ mod tests {
         assert!(refreshed(&stored_by("999.0.0", 2.0)).is_none());
         assert!(refreshed(&stored_by("0.0.1", 0.0)).is_none());
         assert!(refreshed(&stored_by("not a version", 2.0)).is_none());
+        assert!(refreshed(&stored_by("0.0.1-a b", 2.0)).is_none());
+        assert!(refreshed(&stored_by("0.0.1+x\ny", 2.0)).is_none());
+        assert!(refreshed(&stored_by(&format!("0.0.1-{}", "x".repeat(40)), 2.0)).is_none());
+        assert!(refreshed(&stored_by("0.0.1-rc.1+build.5", 2.0)).is_some());
         let mut none = stored_by("0.0.1", 2.0);
         none.result_snapshot = None;
         assert!(refreshed(&none).is_none());

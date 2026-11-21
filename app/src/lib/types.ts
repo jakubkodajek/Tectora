@@ -472,7 +472,9 @@ export interface AppSettingsView {
 }
 
 export const USER_ACTOR = "user";
-export const isAi = (actor: string) => actor !== USER_ACTOR;
+/** Actor of the entries Tectora writes itself (store.rs `ENGINE_ACTOR`): neither the user nor an AI. */
+export const ENGINE_ACTOR = "tectora";
+export const isAi = (actor: string) => actor !== USER_ACTOR && actor !== ENGINE_ACTOR;
 
 export function emptyProject(name: string): Project {
   return {
