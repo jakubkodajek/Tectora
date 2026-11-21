@@ -5,21 +5,39 @@
   // and Accept. Folder changes are not here: they wait in FolderRequest.
   import { api } from "./api";
   import { actorName } from "./live.svelte";
-  import { notifyError } from "./notify.svelte";
+  import { info, notifyError } from "./notify.svelte";
   import { t } from "./i18n.svelte";
-  import { changeRows } from "./settingschange";
-  import type { AiSettingsChange, AppSettingsView } from "./types";
+  import { changeNote, changeRows, keptNote, rowLabel } from "./settingschange";
+  import type { AiSettingsChange, AppSettings, AppSettingsView } from "./types";
 
-  let { change, onanswered }: { change: AiSettingsChange; onanswered: (view: AppSettingsView) => void } = $props();
+  let {
+    change,
+    settings = null,
+    onanswered,
+  }: {
+    change: AiSettingsChange;
+    /** The settings now: a recorded value changed again since shows the current one too (UX-104). */
+    settings?: AppSettings | null;
+    onanswered: (view: AppSettingsView) => void;
+  } = $props();
 
   let busy = $state(false);
-  const rows = $derived(changeRows(change));
+  /** At small window heights the card shows its title row only, until opened (UI-105). */
+  let open = $state(false);
+  const rows = $derived(changeRows(change, settings));
 
   async function answer(revert: boolean) {
     if (busy) return;
     busy = true;
+    // The card goes once the answer is in: `change` is gone with it.
+    const id = change.id;
     try {
-      onanswered(await api.answerAiChange(change.id, revert));
+      const view = await api.answerAiChange(id, revert);
+      // Values changed again since stay as they are: say so, not "reverted" silently (UX-104).
+      const done = view.settings.ai_changes?.find((c) => c.id === id);
+      onanswered(view);
+      const kept = revert && done ? keptNote(done, view.settings) : null;
+      if (kept) info(kept);
     } catch (e) {
       notifyError(e, "settings");
     } finally {
@@ -28,19 +46,24 @@
   }
 </script>
 
-<section class="card" role="status" aria-live="polite" aria-label={t("aiChange.title", { by: actorName(change.by) })}>
-  <div class="head"><span class="dot"></span><strong>{t("aiChange.title", { by: actorName(change.by) })}</strong></div>
-  {#if change.summary}<p class="why">{change.summary}</p>{/if}
-  <dl>
-    {#each rows as r (r.key)}
-      <dt>{r.label}</dt>
-      <dd><code>{r.before}</code> → <code>{r.after}</code></dd>
-    {/each}
-  </dl>
-  <p class="muted">{t("aiChange.note")}</p>
+<section class="card" class:open role="status" aria-live="polite" aria-label={t("aiChange.title", { by: actorName(change.by) })}>
+  <div class="head">
+    <span class="dot"></span><strong>{t("aiChange.title", { by: actorName(change.by) })}</strong>
+    <button class="more" aria-expanded={open} onclick={() => (open = !open)}>{t("review.details")}</button>
+  </div>
+  <div class="details">
+    {#if change.summary}<p class="why">{change.summary}</p>{/if}
+    <dl>
+      {#each rows as r (r.key)}
+        <dt>{rowLabel(r)}</dt>
+        <dd><code>{r.before}</code> → <code>{r.after}</code>{#if r.now}{" "}<span class="now" data-testid="aichange-now">({t("aiChange.now", { v: r.now })})</span>{/if}</dd>
+      {/each}
+    </dl>
+    <p class="muted">{changeNote(change)}</p>
+  </div>
   <div class="foot">
     <button class="btn sm" disabled={busy} onclick={() => answer(true)}>{t("ai.revert")}</button>
-    <button class="btn sm primary" disabled={busy} onclick={() => answer(false)}>{t("review.accept")}</button>
+    <button class="btn sm accept" disabled={busy} onclick={() => answer(false)}>{t("review.accept")}</button>
   </div>
 </section>
 
@@ -104,6 +127,37 @@
     justify-content: flex-end;
     gap: 8px;
     margin-top: 8px;
+  }
+  /* Accept as in the review banner: orange means AI (UI-105). */
+  .btn.accept {
+    background: var(--ai);
+    border-color: var(--ai);
+    color: var(--on-ai);
+  }
+  .now {
+    color: var(--text-2);
+    font-size: 12px;
+  }
+  .more {
+    display: none;
+    margin-left: auto;
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text-2);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  /* At the minimum window size the card is its title row and the answers;
+     the values open with Details, so the plan and the list stay reachable. */
+  @media (max-height: 560px) {
+    .more {
+      display: inline-block;
+    }
+    .card:not(.open) .details {
+      display: none;
+    }
   }
   .btn.sm {
     height: 28px;

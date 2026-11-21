@@ -7,7 +7,7 @@
   import { t } from "./i18n.svelte";
   import { actorName, entrySummary, isFresh, isRevert, live, liveText } from "./live.svelte";
   import { app as appSettings } from "./settings.svelte";
-  import { changeRows } from "./settingschange";
+  import { changeRows, changeState, rowLabel } from "./settingschange";
   import type { ActivityItem, Change, Project } from "./types";
   import { isAi } from "./types";
 
@@ -103,10 +103,10 @@
           <p class="summary">{c.summary}</p>
           <ul>
             {#each changeRows(c) as r (r.key)}
-              <li>{r.label}: {r.before} → {r.after}</li>
+              <li>{rowLabel(r)}: {r.before} → {r.after}</li>
             {/each}
           </ul>
-          <span class="state">{t(`aiChange.state.${c.state}`)}</span>
+          <span class="state">{changeState(c)}</span>
         </li>
       {/each}
     </ol>
