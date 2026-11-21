@@ -26,6 +26,14 @@
   let open = $state(false);
   const rows = $derived(changeRows(change, settings));
 
+  /** The card's height: in narrow windows the toasts stack above it, never over its answers (UX-201). */
+  let cardHeight = $state(0);
+  $effect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--ai-card-space", `${Math.ceil(cardHeight) + 8}px`);
+    return () => root.style.removeProperty("--ai-card-space");
+  });
+
   async function answer(revert: boolean) {
     if (busy) return;
     busy = true;
@@ -46,7 +54,7 @@
   }
 </script>
 
-<section class="card" class:open role="status" aria-live="polite" aria-label={t("aiChange.title", { by: actorName(change.by) })}>
+<section class="card" class:open bind:clientHeight={cardHeight} role="status" aria-live="polite" aria-label={t("aiChange.title", { by: actorName(change.by) })}>
   <div class="head">
     <span class="dot"></span><strong>{t("aiChange.title", { by: actorName(change.by) })}</strong>
     <button class="more" aria-expanded={open} onclick={() => (open = !open)}>{t("review.details")}</button>
