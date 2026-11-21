@@ -450,7 +450,8 @@
   function restore(i: number) {
     at = i;
     project = JSON.parse(history[i]);
-    pruneEavePitches(project!.parts);
+    // The remembered pitches stay: a redo brings the gable back, and Eave
+    // then gives the wall its own pitch again (UX-202).
     // The wall stays in the bar when the step kept it (UX-005).
     selection = keptSelection(project, selection);
     recalc();

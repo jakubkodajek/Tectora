@@ -22,8 +22,9 @@ export function useEavePitchJob(id: string): void {
 
 /**
  * Drops what no wall needs any more: walls that are eaves again (the gable
- * was undone or reverted) or are gone. Called after an undo, a redo and an
- * outside save, so a later gable from elsewhere does not bring it back.
+ * was reverted) or are gone. Called after an outside save, so a later
+ * gable from elsewhere does not bring it back. Not after an undo or a redo:
+ * a redo brings the gable back and Eave must give its own pitch (UX-202).
  */
 export function pruneEavePitches(parts: { edges: EdgeDef[] }[]): void {
   const gables = new Set<string>();
