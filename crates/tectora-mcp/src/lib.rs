@@ -1323,26 +1323,10 @@ impl Server {
         summary: &str,
     ) -> ToolResult {
         project.check_limits()?;
-        // A job text this write sets is one line of plain text (ARCH-104);
-        // one the job already had stays editable around it.
-        for (field, text, old) in [
-            ("number", &project.job.number, before.map(|b| &b.job.number)),
-            (
-                "customer",
-                &project.job.customer,
-                before.map(|b| &b.job.customer),
-            ),
-            (
-                "address",
-                &project.job.address,
-                before.map(|b| &b.job.address),
-            ),
-            ("notes", &project.notes, before.map(|b| &b.notes)),
-        ] {
-            if old != Some(text) {
-                tectora_core::edit::check_job_text(field, text)?;
-            }
-        }
+        // A job text or name this write sets is one line of plain text
+        // (ARCH-104, ARCH-202); one the job already had stays editable
+        // around it (TEST-206).
+        tectora_core::edit::check_texts_change(before, project)?;
         // Every write: no window of no size or larger than its face
         // (HUNTC-003), not only `set_openings`.
         let skipped_check = if project.windows.is_empty() {

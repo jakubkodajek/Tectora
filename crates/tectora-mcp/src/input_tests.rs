@@ -422,3 +422,167 @@ fn a_standard_roof_pitch_is_refused_with_its_real_limits() {
         );
     }
 }
+
+/// Audit 2026-11-21 TEST-205: only a closing corner within 1 cm of the
+/// first is dropped; a real short last wall (a 30 cm jog) stays, and so
+/// does its `edges` entry.
+#[test]
+fn a_short_last_wall_is_not_taken_for_a_repeated_closing_corner() {
+    let mut s = server();
+    let pts = json!([[0, 0], [12, 0], [12, 8], [0, 8], [0, 0.3]]);
+    let r = s
+        .call_tool(
+            "create_project",
+            &json!({ "name": "Jog", "summary": "Footprint with a jog",
+                     "parts": [{ "points": pts }] }),
+        )
+        .unwrap();
+    let id = r["id"].as_str().unwrap().to_string();
+    let part = &s.store.load(&id).unwrap().parts[0];
+    assert_eq!(part.edges.len(), 5);
+    let last = part.edges[4].start.distance(part.edges[0].start);
+    assert!((last - 0.3).abs() < 1e-9, "{last}");
+    let edges: Vec<Value> = (0..5).map(|i| json!({ "pitch_deg": 30 + i })).collect();
+    let r = s
+        .call_tool(
+            "create_project",
+            &json!({ "name": "Jog 2", "summary": "Footprint with a jog",
+                     "parts": [{ "points": pts, "edges": edges }] }),
+        )
+        .unwrap();
+    let id = r["id"].as_str().unwrap().to_string();
+    let part = &s.store.load(&id).unwrap().parts[0];
+    assert_eq!(part.edges.len(), 5);
+    assert_eq!(part.edges[4].pitch_deg, 34.0);
+}
+
+/// Audit 2026-11-21 TEST-206: a job text the job already had (an imported
+/// job with a tab in its customer) does not block other writes; a new
+/// text with one is refused.
+#[test]
+fn a_job_text_it_already_had_does_not_block_other_writes() {
+    let mut s = server();
+    let id = hip_job(&mut s);
+    let mut p = s.store.load(&id).unwrap();
+    p.job.customer = "A\tB".into();
+    p.parts[0].name = "Wing\u{202e}".into();
+    s.store.save(Some(id.clone()), &p).unwrap();
+    s.call_tool(
+        "update_edges",
+        &json!({ "id": id, "changes": [{ "index": 0, "pitch_deg": 30 }], "summary": "Steeper front" }),
+    )
+    .unwrap();
+    let e = s
+        .call_tool(
+            "update_job",
+            &json!({ "id": id, "customer": "A\tC", "summary": "Customer" }),
+        )
+        .unwrap_err();
+    assert!(e.contains("customer"), "{e}");
+}
+
+/// Audit 2026-11-21 TEST-207: notes up to 1 000 000 characters are kept,
+/// one more is refused naming notes.
+#[test]
+fn notes_are_capped_at_a_million_characters() {
+    let mut s = server();
+    let id = hip_job(&mut s);
+    s.call_tool(
+        "update_job",
+        &json!({ "id": id, "notes": "n".repeat(1_000_000), "summary": "Notes" }),
+    )
+    .unwrap();
+    let e = s
+        .call_tool(
+            "update_job",
+            &json!({ "id": id, "notes": "n".repeat(1_000_001), "summary": "Notes" }),
+        )
+        .unwrap_err();
+    assert!(e.contains("notes"), "{e}");
+}
+
+/// Audit 2026-11-21 ARCH-202: the job name of `create_from_example`, the
+/// job texts of `duplicate_project`, part names and material names keep
+/// the text rules of `update_job`.
+#[test]
+fn every_write_keeps_the_text_rules() {
+    let mut s = server();
+    let e = s
+        .call_tool(
+            "create_from_example",
+            &json!({ "example_id": "gable", "name": "Ex\u{202e}elpmaxe\u{0}", "summary": "Example" }),
+        )
+        .unwrap_err();
+    assert!(e.contains("name"), "{e}");
+    let id = hip_job(&mut s);
+    for job in [
+        json!({ "customer": "C\u{0}\u{202e}D" }),
+        json!({ "address": "x".repeat(100_000) }),
+        json!({ "number": "1\n2" }),
+    ] {
+        let e = s
+            .call_tool(
+                "duplicate_project",
+                &json!({ "id": id, "name": "Copy", "job": job, "summary": "Copy for another customer" }),
+            )
+            .unwrap_err();
+        assert!(
+            e.contains("number") || e.contains("customer") || e.contains("address"),
+            "{e}"
+        );
+    }
+    let e = s
+        .call_tool(
+            "set_roof_options",
+            &json!({ "id": id, "material_names": ["T\u{202e}iles\u{0}"], "summary": "Material" }),
+        )
+        .unwrap_err();
+    assert!(e.contains("material name"), "{e}");
+    let e = s
+        .call_tool(
+            "set_roof_options",
+            &json!({ "id": id, "material_names": ["m".repeat(201)], "summary": "Material" }),
+        )
+        .unwrap_err();
+    assert!(e.contains("material name"), "{e}");
+    let e = s
+        .call_tool(
+            "create_project",
+            &json!({ "name": "Wings", "summary": "Footprint",
+                     "parts": [{ "name": "Wing\u{202e}\u{0}", "points": [[0, 0], [12, 0], [12, 8], [0, 8]] }] }),
+        )
+        .unwrap_err();
+    assert!(e.contains("part name"), "{e}");
+}
+
+/// Audit 2026-11-21 ARCH-203: a summary or job name of blank-looking
+/// characters only is empty, and a summary is one line (no U+2028).
+#[test]
+fn blank_looking_summaries_and_names_are_refused() {
+    let mut s = server();
+    let id = hip_job(&mut s);
+    for summary in [
+        "\u{3164}\u{3164}",
+        "\u{2800}",
+        "\u{115f}\u{1160}",
+        "\u{34f}",
+        "\u{fe0f}",
+        "Fix\u{2028}second line",
+    ] {
+        let e = s
+            .call_tool(
+                "update_job",
+                &json!({ "id": id, "notes": "x", "summary": summary }),
+            )
+            .unwrap_err();
+        assert!(e.contains("summary"), "{summary:?}: {e}");
+    }
+    let e = s
+        .call_tool(
+            "create_project",
+            &json!({ "name": "\u{3164}", "summary": "Footprint",
+                     "parts": [{ "points": [[0, 0], [12, 0], [12, 8], [0, 8]] }] }),
+        )
+        .unwrap_err();
+    assert!(e.contains("name"), "{e}");
+}

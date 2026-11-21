@@ -426,13 +426,10 @@ pub fn check_wall_values(
 /// ones (bidirectional overrides, zero-width spaces) that change how the
 /// name reads in the library, the file name and the sheets (HUNTIO-007).
 pub fn check_job_name(name: &str) -> Result<(), String> {
-    if name.trim().is_empty() {
+    if !has_visible(name) {
         return Err("the job name must not be empty".into());
     }
-    if let Some(c) = name
-        .chars()
-        .find(|&c| c.is_control() || crate::store::is_invisible(c))
-    {
+    if let Some(c) = name.chars().find(|&c| not_in_a_line(c)) {
         return Err(format!(
             "the job name must not contain control or invisible characters (U+{:04X}); use one line of plain text",
             c as u32
@@ -466,10 +463,7 @@ pub fn capped(text: &str, max: usize) -> String {
 /// no control or invisible characters (ARCH-104, ARCH-105): it is shown to
 /// the user as the reason for the change.
 pub fn check_summary(summary: &str) -> Result<(), String> {
-    if !summary
-        .chars()
-        .any(|c| !c.is_whitespace() && !c.is_control() && !crate::store::is_invisible(c))
-    {
+    if !has_visible(summary) {
         return Err("`summary` is empty: give one sentence for the user on what you change and why (it is shown in the app)".into());
     }
     if summary.chars().count() > MAX_SUMMARY_CHARS {
@@ -477,10 +471,7 @@ pub fn check_summary(summary: &str) -> Result<(), String> {
             "`summary` is too long: one sentence of at most {MAX_SUMMARY_CHARS} characters"
         ));
     }
-    if let Some(c) = summary
-        .chars()
-        .find(|&c| c.is_control() || crate::store::is_invisible(c))
-    {
+    if let Some(c) = summary.chars().find(|&c| not_in_a_line(c)) {
         return Err(format!(
             "`summary` must not contain control or invisible characters (U+{:04X}); use one line of plain text",
             c as u32
@@ -505,8 +496,11 @@ pub fn check_job_text(field: &str, text: &str) -> Result<(), String> {
         return Err(format!("{field} is too long (at most {max} characters)"));
     }
     if let Some(c) = text.chars().find(|&c| {
-        (c.is_control() && !(notes && matches!(c, '\n' | '\r' | '\t')))
-            || crate::store::is_invisible(c)
+        if notes {
+            not_in_notes(c)
+        } else {
+            not_in_a_line(c)
+        }
     }) {
         return Err(format!(
             "{field} must not contain control or invisible characters (U+{:04X})",
@@ -514,6 +508,177 @@ pub fn check_job_text(field: &str, text: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Longest name of a part, a material or a hand-drawn line or face, in
+/// characters (ARCH-202): it goes into the results, the sheets and the
+/// offer list.
+pub const MAX_LABEL_CHARS: usize = 200;
+
+/// Longest name of who made a change in a received change log, in
+/// characters, as a connected AI client's name (ARCH-201).
+pub const MAX_ACTOR_CHARS: usize = 60;
+
+/// Characters that show as blank although they are neither whitespace nor
+/// format characters (ARCH-203): the Hangul fillers, the combining
+/// grapheme joiner, the Khmer inherent vowels, the variation selectors and
+/// the blank Braille pattern. Allowed in a text, but they do not make it
+/// visible.
+fn looks_blank(c: char) -> bool {
+    matches!(
+        c,
+        '\u{34f}'
+            | '\u{115f}'
+            | '\u{1160}'
+            | '\u{17b4}'
+            | '\u{17b5}'
+            | '\u{2800}'
+            | '\u{3164}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{ffa0}'
+            | '\u{e0100}'..='\u{e01ef}'
+    )
+}
+
+/// Whether `text` has a character one can see (ARCH-104, ARCH-203).
+fn has_visible(text: &str) -> bool {
+    text.chars().any(|c| {
+        !c.is_whitespace() && !c.is_control() && !crate::store::is_invisible(c) && !looks_blank(c)
+    })
+}
+
+/// Characters a one-line text must not hold: control characters,
+/// invisible format characters and the Unicode line and paragraph
+/// separators (U+2028, U+2029), which break the line as `\n` does.
+fn not_in_a_line(c: char) -> bool {
+    c.is_control() || crate::store::is_invisible(c) || matches!(c, '\u{2028}' | '\u{2029}')
+}
+
+/// [`not_in_a_line`] for job notes, which may have line breaks and tabs.
+fn not_in_notes(c: char) -> bool {
+    (c.is_control() && !matches!(c, '\n' | '\r' | '\t')) || crate::store::is_invisible(c)
+}
+
+/// The name of a part, a material or a hand-drawn line or face (`field`):
+/// at most [`MAX_LABEL_CHARS`] characters of one line of plain text, the
+/// character rule of [`check_job_name`] (ARCH-202). It may be empty.
+pub fn check_label(field: &str, text: &str) -> Result<(), String> {
+    if text.chars().count() > MAX_LABEL_CHARS {
+        return Err(format!(
+            "{field} is too long (at most {MAX_LABEL_CHARS} characters)"
+        ));
+    }
+    if let Some(c) = text.chars().find(|&c| not_in_a_line(c)) {
+        return Err(format!(
+            "{field} must not contain control or invisible characters (U+{:04X})",
+            c as u32
+        ));
+    }
+    Ok(())
+}
+
+/// The texts of `after` a write sets, checked by the rules above: the job
+/// name, number, customer, address and notes, and the names of parts,
+/// materials and hand-drawn lines and faces. A text `before` already had
+/// is not checked, so a job that came with one (an imported job, an old
+/// file) stays editable around it (ARCH-104, TEST-206).
+pub fn check_texts_change(before: Option<&Project>, after: &Project) -> Result<(), String> {
+    if before.map(|b| &b.name) != Some(&after.name) {
+        check_job_name(&after.name)?;
+    }
+    for (field, text, old) in [
+        ("number", &after.job.number, before.map(|b| &b.job.number)),
+        (
+            "customer",
+            &after.job.customer,
+            before.map(|b| &b.job.customer),
+        ),
+        (
+            "address",
+            &after.job.address,
+            before.map(|b| &b.job.address),
+        ),
+        ("notes", &after.notes, before.map(|b| &b.notes)),
+    ] {
+        if old != Some(text) {
+            check_job_text(field, text)?;
+        }
+    }
+    // Whether `before` had `text` among the texts `of` gives.
+    fn had<'a, T: 'a>(
+        before: Option<&'a Project>,
+        list: impl Fn(&'a Project) -> &'a [T],
+        of: impl Fn(&'a T) -> &'a String,
+        text: &String,
+    ) -> bool {
+        before.is_some_and(|b| list(b).iter().any(|x| of(x) == text))
+    }
+    for part in &after.parts {
+        if !had(before, |b| &b.parts, |p| &p.name, &part.name) {
+            check_label("part name", &part.name)?;
+        }
+    }
+    for name in &after.material_names {
+        if !had(before, |b| &b.material_names, |m| m, name) {
+            check_label("material name", name)?;
+        }
+    }
+    for l in &after.manual_lines {
+        if !had(before, |b| &b.manual_lines, |x| &x.label, &l.label) {
+            check_label("line label", &l.label)?;
+        }
+    }
+    for f in &after.manual_faces {
+        if !had(before, |b| &b.manual_faces, |x| &x.label, &f.label) {
+            check_label("face label", &f.label)?;
+        }
+    }
+    Ok(())
+}
+
+/// `text` with the characters `drop` names removed and cut to `max`
+/// characters (with `…`).
+fn cleaned(text: &str, max: usize, drop: fn(char) -> bool) -> String {
+    let kept: String = text.chars().filter(|&c| !drop(c)).collect();
+    capped(&kept, max)
+}
+
+/// A one-line text from outside (a received job, a change log): control,
+/// invisible and line-separator characters removed, cut to `max`
+/// characters (ARCH-201).
+pub fn clean_line(text: &str, max: usize) -> String {
+    cleaned(text, max, not_in_a_line)
+}
+
+/// Makes the texts of a job from outside (a received bundle, a `.tectora`
+/// file opened from elsewhere, a version in its change log) keep the rules
+/// a write is held to, by removing what they forbid and cutting what is
+/// too long, so the job opens and stays editable (ARCH-201): job name
+/// (`fallback` when nothing visible is left), number, customer, address,
+/// notes and the names of parts, materials and hand-drawn lines and faces.
+pub fn clean_received(project: &mut Project, fallback: &str) {
+    project.name = clean_line(&project.name, MAX_JOB_TEXT_CHARS);
+    if !has_visible(&project.name) {
+        let f = clean_line(fallback, MAX_JOB_TEXT_CHARS);
+        project.name = if has_visible(&f) { f } else { "Job".into() };
+    }
+    let job = &mut project.job;
+    for text in [&mut job.number, &mut job.customer, &mut job.address] {
+        *text = clean_line(text, MAX_JOB_TEXT_CHARS);
+    }
+    project.notes = cleaned(&project.notes, MAX_NOTES_CHARS, not_in_notes);
+    for part in &mut project.parts {
+        part.name = clean_line(&part.name, MAX_LABEL_CHARS);
+    }
+    for name in &mut project.material_names {
+        *name = clean_line(name, MAX_LABEL_CHARS);
+    }
+    for l in &mut project.manual_lines {
+        l.label = clean_line(&l.label, MAX_LABEL_CHARS);
+    }
+    for f in &mut project.manual_faces {
+        f.label = clean_line(&f.label, MAX_LABEL_CHARS);
+    }
 }
 
 /// [`check_windows`] for a save that changes `before` into `after`, used by

@@ -814,7 +814,11 @@ impl Server {
                     }
                 };
                 tectora_core::edit::check_job_name(arg_str(args, "name")?)?;
+                let original = p.clone();
                 tectora_core::library::prepare_copy(&mut p, arg_str(args, "name")?, job);
+                // The copy's new job texts keep the rules of `update_job`
+                // (ARCH-202); what the original had is copied as it is.
+                tectora_core::edit::check_texts_change(Some(&original), &p)?;
                 let summary = arg_str(args, "summary")?;
                 let new_id = self.store.save_as(None, &p, &self.client, summary)?;
                 if args.get("with_files").and_then(Value::as_bool).unwrap_or(true) {

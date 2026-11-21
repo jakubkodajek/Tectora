@@ -403,10 +403,13 @@ pub fn import(store: &Store, src: &Path) -> Result<String, FileError> {
         .ok_or_else(|| zip_err("no project in the file"))?;
     // A project from a newer Tectora is `newer_format` whatever the
     // manifest says.
-    let project = parse_project(
+    let mut project = parse_project(
         &String::from_utf8(text).map_err(zip_err)?,
         "job bundle: project.tectora",
     )?;
+    // The texts keep the rules of a write: no control or invisible
+    // characters, nothing too long (ARCH-201).
+    crate::edit::clean_received(&mut project, &file_stem(src));
     if let Some(m) = &manifest {
         serde_json::from_slice::<Manifest>(m).map_err(zip_err)?;
     }
@@ -497,6 +500,16 @@ fn received_history(bytes: &[u8]) -> Option<(String, u64)> {
         .filter_map(|l| serde_json::from_slice(l).ok())
         .filter(|e: &crate::store::ActivityEntry| ok(&e.before) && ok(&e.after))
         .collect();
+    // Who and why as a write keeps them, and the versions a revert puts
+    // back with the texts of a received job (ARCH-201).
+    for e in &mut entries {
+        e.summary = crate::edit::clean_line(&e.summary, crate::edit::MAX_SUMMARY_CHARS);
+        e.actor = crate::edit::clean_line(&e.actor, crate::edit::MAX_ACTOR_CHARS);
+        for p in [&mut e.before, &mut e.after].into_iter().flatten() {
+            let name = p.name.clone();
+            crate::edit::clean_received(p, &name);
+        }
+    }
     let last = entries.iter().map(|e| e.ts_ms).max()?;
     let now = now_ms();
     if last > now {
@@ -546,8 +559,16 @@ pub fn open_path(store: &Store, path: &Path) -> Result<String, FileError> {
         .take(MAX_TEXT_ENTRY)
         .read_to_string(&mut text)
         .map_err(|e| FileError::io(path, e))?;
-    let project = parse_project(&text, &path.display().to_string())?;
+    let mut project = parse_project(&text, &path.display().to_string())?;
+    crate::edit::clean_received(&mut project, &file_stem(path));
     Ok(store.save(None, &project)?)
+}
+
+/// The file name of `path` without its extension, for a job name.
+fn file_stem(path: &Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// What opening several files (double-click, start-up arguments) gave.
@@ -831,6 +852,78 @@ mod tests {
             let err = import(&store, &write("x.tectorajob", &[name], "")).unwrap_err();
             assert_eq!(err.code, "unsupported_type", "{name}");
         }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Audit 2026-11-21 ARCH-201, TEST-206: a received job keeps the text
+    /// rules of a write: control and bidirectional characters are dropped,
+    /// over-long texts and the change log's summaries and actors are cut,
+    /// and the job still opens. The same for a `.tectora` from outside.
+    #[test]
+    fn a_received_job_and_its_log_keep_the_text_rules() {
+        let dir = std::env::temp_dir().join(format!("tectora-bundle-text-{}", now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut p = crate::examples::find("gable").unwrap().project();
+        p.name = "Evil\u{202e}raboof".into();
+        p.job.number = "N\u{0}\u{202e}1".into();
+        p.job.customer = "A\u{202e}B".into();
+        p.job.address = "X\u{7}Y".into();
+        p.notes = "line 1\nline\t2\u{202e}".into();
+        p.parts[0].name = "Wing\u{202e}\u{0}".into();
+        p.material_names = vec!["m".repeat(5000)];
+        let entry = serde_json::to_string(&crate::store::ActivityEntry {
+            ts_ms: 1,
+            actor: "x".repeat(10_000),
+            summary: "S".repeat(100_000) + "\u{202e}",
+            before: None,
+            changes: Vec::new(),
+            after: Some(p.clone()),
+            undid_from: None,
+        })
+        .unwrap();
+        let path = dir.join("evil.tectorajob");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        let opts = SimpleFileOptions::default();
+        zip.start_file("project.tectora", opts).unwrap();
+        zip.write_all(p.to_json().unwrap().as_bytes()).unwrap();
+        zip.start_file("history.jsonl", opts).unwrap();
+        zip.write_all(entry.as_bytes()).unwrap();
+        zip.finish().unwrap();
+        let store = Store::new(dir.join("lib")).unwrap();
+        let check = |got: &Project| {
+            assert_eq!(got.name, "Evilraboof");
+            assert_eq!(got.job.number, "N1");
+            assert_eq!(got.job.customer, "AB");
+            assert_eq!(got.job.address, "XY");
+            assert_eq!(got.notes, "line 1\nline\t2");
+            assert_eq!(got.parts[0].name, "Wing");
+            assert_eq!(
+                got.material_names[0].chars().count(),
+                crate::edit::MAX_LABEL_CHARS
+            );
+            assert!(crate::edit::check_texts_change(None, got).is_ok());
+        };
+        let id = import(&store, &path).unwrap();
+        check(&store.load(&id).unwrap());
+        let log = store.activity(&id);
+        assert_eq!(log.len(), 1);
+        assert_eq!(
+            log[0].summary.chars().count(),
+            crate::edit::MAX_SUMMARY_CHARS
+        );
+        assert!(!log[0].summary.contains('\u{202e}'));
+        assert_eq!(log[0].actor.chars().count(), crate::edit::MAX_ACTOR_CHARS);
+        check(log[0].after.as_ref().unwrap());
+        // A `.tectora` opened from elsewhere; a name of nothing visible
+        // takes the file's.
+        let outside = dir.join("Garage.tectora");
+        let mut q = p.clone();
+        q.name = "\u{202e}\u{0}".into();
+        fs::write(&outside, q.to_json().unwrap()).unwrap();
+        let id = open_path(&store, &outside).unwrap();
+        let got = store.load(&id).unwrap();
+        assert_eq!(got.name, "Garage");
+        assert_eq!(got.job.customer, "AB");
         let _ = fs::remove_dir_all(dir);
     }
 
