@@ -752,6 +752,26 @@ fn too_large_file(path: &Path, max: u64) -> FileError {
     )
 }
 
+/// Largest job file read, bytes. A job within the limits
+/// (`Project::check_limits`, notes of at most a million characters) is far
+/// smaller; the bound keeps a file of several GB copied in by mistake, or
+/// a link to `/dev/zero`, from filling the memory (ARCH-204).
+pub const MAX_JOB_FILE: u64 = 64 * 1024 * 1024;
+
+/// The text of the job file at `path`, through [`open_regular`] with
+/// [`MAX_JOB_FILE`]: a named pipe, a device or a folder is `not_a_file`
+/// instead of hanging or reading for ever, a larger file `too_large`
+/// (ARCH-204). For the library, the CLI and files opened from elsewhere.
+pub fn read_job_text(path: &Path) -> Result<String, FileError> {
+    let mut text = String::new();
+    std::io::Read::read_to_string(
+        &mut std::io::Read::take(open_regular(path, MAX_JOB_FILE)?, MAX_JOB_FILE),
+        &mut text,
+    )
+    .map_err(|e| FileError::io(path, e))?;
+    Ok(text)
+}
+
 /// Opens `path` for reading when it is a regular file of at most `max`
 /// bytes: a folder, a device (`/dev/zero`, which never ends) or a named
 /// pipe (which blocks the open until a writer comes, and with it the MCP
@@ -1050,13 +1070,32 @@ impl Store {
     }
 
     pub fn load(&self, id: &str) -> Result<Project, StoreError> {
-        let text = fs::read_to_string(self.path(id)?).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                StoreError::NotFound(id.to_string())
-            } else {
-                StoreError::io(Some(id), e)
+        let path = self.path(id)?;
+        // Bounded, and never blocked by a pipe or a device named like a
+        // job (ARCH-204).
+        let text = match read_job_text(&path) {
+            Ok(t) => t,
+            Err(e) if e.code == "not_a_file" || e.code == "too_large" => {
+                return Err(StoreError::Unreadable {
+                    id: id.to_string(),
+                    detail: e.detail,
+                });
             }
-        })?;
+            Err(e) if e.code == "file_not_found" => {
+                return Err(StoreError::NotFound(id.to_string()));
+            }
+            Err(e) => {
+                return Err(StoreError::Io {
+                    id: Some(id.to_string()),
+                    kind: match e.code {
+                        "permission_denied" => IoKind::PermissionDenied,
+                        "disk_full" => IoKind::DiskFull,
+                        _ => IoKind::Other,
+                    },
+                    detail: e.detail,
+                });
+            }
+        };
         if let Some(version) = newer_format(&text) {
             return Err(StoreError::NewerFormat {
                 id: id.to_string(),
@@ -1170,10 +1209,7 @@ impl Store {
     fn write(&self, id: &str, project: &Project) -> Result<(), StoreError> {
         let path = self.path(id)?;
         self.library_present()?;
-        if let Some(version) = fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| newer_format(&t))
-        {
+        if let Some(version) = read_job_text(&path).ok().and_then(|t| newer_format(&t)) {
             return Err(StoreError::NewerFormat {
                 id: id.to_string(),
                 version,
@@ -1290,7 +1326,7 @@ impl Store {
         undid_from: Option<u64>,
     ) -> Result<(), StoreError> {
         // A newer file is refused before anything is logged.
-        if let Some(version) = fs::read_to_string(self.path(id)?)
+        if let Some(version) = read_job_text(&self.path(id)?)
             .ok()
             .and_then(|t| newer_format(&t))
         {
@@ -2174,6 +2210,65 @@ mod tests {
     fn temp_store(name: &str) -> Store {
         let dir = std::env::temp_dir().join(format!("tectora-test-{name}-{}", now_ms()));
         Store::new(dir).unwrap()
+    }
+
+    /// Audit 2026-11-21 ARCH-204: a named pipe or a link to a device named
+    /// like a job is listed as broken without waiting or reading for ever.
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_or_device_named_like_a_job_is_broken_not_a_hang() {
+        let store = temp_store("fifo");
+        let id = store
+            .save(None, &examples::find("hip").unwrap().project())
+            .unwrap();
+        let fifo = store.dir.join("f.tectora");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .is_ok_and(|s| s.success());
+        std::os::unix::fs::symlink("/dev/zero", store.dir.join("z.tectora")).unwrap();
+        let started = std::time::Instant::now();
+        let (ok, broken) = store.scan().unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        assert!(ok.iter().any(|s| s.id == id));
+        let codes: Vec<(&str, &str)> = broken.iter().map(|b| (b.id.as_str(), b.code)).collect();
+        assert!(codes.contains(&("z", "unreadable")), "{codes:?}");
+        if made {
+            assert!(codes.contains(&("f", "unreadable")), "{codes:?}");
+        }
+        assert_eq!(store.load("z").unwrap_err().code(), "unreadable");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ARCH-204: a job file over [`MAX_JOB_FILE`] is not read.
+    #[test]
+    fn a_job_file_over_the_size_bound_is_not_read() {
+        let store = temp_store("huge");
+        let f = fs::File::create(store.dir.join("big.tectora")).unwrap();
+        f.set_len(MAX_JOB_FILE + 1).unwrap();
+        let e = store.load("big").unwrap_err();
+        assert_eq!(e.code(), "unreadable");
+        assert!(e.to_string().contains("larger than"), "{e}");
+        assert_eq!(store.load("none").unwrap_err().code(), "not_found");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-21 TEST-207: the store keeps at most
+    /// `MAX_SUMMARY_CHARS` of a summary, ending in "…".
+    #[test]
+    fn a_long_summary_is_capped_in_the_log() {
+        let store = temp_store("cap");
+        let p = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &p, "AI", &"s".repeat(5000)).unwrap();
+        let log = store.activity(&id);
+        let summary = &log.last().unwrap().summary;
+        assert_eq!(
+            summary.chars().count(),
+            crate::edit::MAX_SUMMARY_CHARS,
+            "{summary}"
+        );
+        assert!(summary.ends_with('…'));
+        let _ = fs::remove_dir_all(&store.dir);
     }
 
     #[test]

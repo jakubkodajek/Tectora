@@ -1,10 +1,9 @@
 //! `tectora` command-line interface. Output is JSON so AI agents can drive it.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use tectora_core::Project;
@@ -63,8 +62,34 @@ enum Command {
 }
 
 fn load(path: &Path) -> Result<Project> {
-    let bytes = fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
-    let text = String::from_utf8(bytes).context("project file is not UTF-8")?;
+    // A job bundle is a ZIP, not a project file (HUNT-204 item 4). Read
+    // through `open_regular`, which never waits on a pipe.
+    let zip_magic = || {
+        tectora_core::store::open_regular(path, u64::MAX)
+            .ok()
+            .and_then(|mut f| {
+                let mut magic = [0u8; 4];
+                std::io::Read::read_exact(&mut f, &mut magic).ok()?;
+                Some(magic)
+            })
+            .is_some_and(|m| m == *b"PK\x03\x04")
+    };
+    let bundle = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case(tectora_core::bundle::EXTENSION))
+        || zip_magic();
+    if bundle {
+        anyhow::bail!(
+            "{} is a job bundle (.{}), not a project file: add it to the library with `tectora import-job`",
+            path.display(),
+            tectora_core::bundle::EXTENSION
+        );
+    }
+    // Bounded, and a pipe or device is refused instead of hanging or
+    // reading until the memory is gone (ARCH-204).
+    let text = tectora_core::store::read_job_text(path)
+        .map_err(|e| anyhow::anyhow!("cannot read {}: {}", path.display(), e.detail))?;
     Ok(Project::from_json(&text)?)
 }
 

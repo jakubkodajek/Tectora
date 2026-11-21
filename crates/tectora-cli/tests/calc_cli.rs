@@ -314,3 +314,48 @@ fn hand_drawn_faces_are_a_roof_and_an_empty_job_is_no_building() {
         "{r}"
     );
 }
+
+#[test]
+fn a_bundle_a_pipe_or_a_device_is_refused_with_a_reason() {
+    // HUNT-204 item 4: a bundle was "not UTF-8"; ARCH-204: a pipe hung
+    // and `/dev/zero` read until the memory was gone.
+    let dir = std::env::temp_dir().join(format!("tectora-cli-odd-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let zip = dir.join("job.tectorajob");
+    std::fs::write(&zip, b"PK\x03\x04rest of a zip").unwrap();
+    let renamed = dir.join("job-as.tectora");
+    std::fs::write(&renamed, b"PK\x03\x04rest of a zip").unwrap();
+    for path in [&zip, &renamed] {
+        let (code, r) = calc_status(path);
+        assert_eq!(code, Some(1), "{r}");
+        let e = r["error"].as_str().unwrap();
+        assert!(e.contains("job bundle") && e.contains("import-job"), "{e}");
+    }
+    #[cfg(unix)]
+    {
+        let fifo = dir.join("fifo.tectora");
+        let _ = std::fs::remove_file(&fifo);
+        let made = Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .is_ok_and(|s| s.success());
+        let zero = dir.join("zero.tectora");
+        let _ = std::fs::remove_file(&zero);
+        std::os::unix::fs::symlink("/dev/zero", &zero).unwrap();
+        let mut paths = vec![zero];
+        if made {
+            paths.push(fifo);
+        }
+        for path in &paths {
+            let started = std::time::Instant::now();
+            let (code, r) = calc_status(path);
+            assert!(started.elapsed() < std::time::Duration::from_secs(20));
+            assert_eq!(code, Some(1), "{r}");
+            assert!(
+                r["error"].as_str().unwrap().contains("not a regular file"),
+                "{r}"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
