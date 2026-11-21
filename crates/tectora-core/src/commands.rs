@@ -128,8 +128,9 @@ pub fn dormer_host(project: &Project, index: usize) -> Result<Value, CommandErro
 
 /// Whether dormer `index` of `project` can be saved as it is
 /// (`edit::dormers::check_params` on the roof under its front): `Ok` or the
-/// code `dormer_pitch` / `dormer_below_roof` with the English reason. The
-/// editor's dormer bar and dialog ask it before they store a value, as MCP
+/// code `dormer_pitch` / `dormer_segments` / `dormer_below_roof` with the
+/// English reason. The editor's dormer bar and dialog ask it before they
+/// store a value, as MCP
 /// `add_dormer` / `update_dormer` do (MATH-001, MATH-003).
 pub fn check_dormer(project: &Project, index: usize) -> Result<(), CommandError> {
     check_input(project)?;

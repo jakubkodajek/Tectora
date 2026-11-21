@@ -184,7 +184,7 @@ fn dormer_props() -> Value {
         "back_width": { "type": "number", "description": "trapezoid: width of the shed roof where it meets the roof, m, between 0 and width + 2 × side_overhang; sets pitch_deg (the cheek pitch), so do not give both." },
         "half_hip_height": { "type": "number", "description": "half_hip: height of the clipped part above the dormer eave, default 0.6." },
         "half_hip_pitch_deg": { "type": "number", "description": "half_hip: its pitch, default 60." },
-        "segments": { "type": "integer", "description": "round: polygon segments per side; 0 = automatic." },
+        "segments": { "type": "integer", "description": "round: polygon segments per side; 0 = automatic. Too many for the width (the flattest segment under 2°) is refused with `dormer_segments`." },
         "material": { "type": "integer", "minimum": 1, "description": "Roof material number, default 1." }
     })
 }

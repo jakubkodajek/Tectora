@@ -196,12 +196,13 @@ export function describeRefusal(e: unknown, action: RefusedAction): Described | 
 
 /**
  * A dormer the core refused to store (`check_dormer`: `dormer_below_roof`,
- * `dormer_pitch`), as the dormer field's reason in the user's language;
+ * `dormer_pitch`, `dormer_segments`), as the dormer field's reason in the user's language;
  * null for any other error (MATH-001, MATH-003).
  */
 export function dormerRefusal(e: unknown): string | null {
   const code = toAppError(e).code;
   if (code === "dormer_below_roof") return t("dormer.err.eave_below_roof");
   if (code === "dormer_pitch") return t("dormer.err.bad_pitch");
+  if (code === "dormer_segments") return t("dormer.err.segments");
   return null;
 }
