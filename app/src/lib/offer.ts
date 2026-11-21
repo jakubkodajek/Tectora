@@ -4,7 +4,7 @@
 // and the "differs" flag come from the core's library summary.
 
 import { t } from "./i18n.svelte";
-import type { Project, ProjectSummary } from "./types";
+import type { Project, ProjectSummary, ResultSnapshot } from "./types";
 
 type OfferFigures = Pick<ProjectSummary, "has_result" | "stored_area" | "result_differs">;
 
@@ -42,4 +42,28 @@ export function roofInput(p: Project): string {
 /** Whether the job has anything to calculate: a building or a hand-drawn face (UX-102, UX-111). */
 export function hasBuilding(p: Pick<Project, "parts" | "manual_faces">): boolean {
   return p.parts.length > 0 || (p.manual_faces?.length ?? 0) > 0;
+}
+
+/** Smallest change of a figure that counts, m or m² (core `snapshot::TOLERANCE`). */
+const TOLERANCE = 0.005;
+/** The material every face has unless the user picks another (core `model::DEFAULT_MATERIAL`). */
+const DEFAULT_MATERIAL = 1;
+
+/**
+ * Whether the figures of two results the core took differ, by the rule of
+ * the core's `snapshot::compare` (area, ridge height, every line code, and
+ * the areas by material once the roof has more than the default one): a
+ * job offered again keeps its stored result, and the user is told when the
+ * roof now gives other figures (UX-206). Comparison only, no roof math.
+ */
+export function snapshotDiffers(stored: ResultSnapshot, current: ResultSnapshot): boolean {
+  const off = (a: number, b: number) => Math.abs(a - b) >= TOLERANCE;
+  if (off(stored.roof_area, current.roof_area) || off(stored.ridge_height, current.ridge_height)) return true;
+  const codes = new Set([...Object.keys(stored.lines_by_code), ...Object.keys(current.lines_by_code)]);
+  for (const c of codes) if (off(stored.lines_by_code[c] ?? 0, current.lines_by_code[c] ?? 0)) return true;
+  const mats = new Set([...stored.area_by_material, ...current.area_by_material].map((m) => m.material));
+  if ([...mats].every((m) => m === DEFAULT_MATERIAL)) return false;
+  const area = (s: ResultSnapshot, m: number) => s.area_by_material.find((x) => x.material === m)?.area ?? 0;
+  for (const m of mats) if (off(area(stored, m), area(current, m))) return true;
+  return false;
 }
