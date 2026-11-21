@@ -611,7 +611,7 @@ fn no_area(geo: &RoofGeometry) -> bool {
 
 /// [`WarningKind::DormerAboveRoof`] where a dormer face (no wall of the
 /// building) reaches above every face of the building's own roof.
-fn dormer_above_roof(geo: &RoofGeometry) -> Option<RoofWarning> {
+pub(crate) fn dormer_above_roof(geo: &RoofGeometry) -> Option<RoofWarning> {
     if geo.error.is_some() {
         return None;
     }

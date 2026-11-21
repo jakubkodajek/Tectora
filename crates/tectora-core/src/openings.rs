@@ -955,7 +955,7 @@ fn finish_departed(
     Departed { roof, raw }: Departed,
 ) -> Option<RoofGeometry> {
     let Some(raw) = raw else {
-        return with_objects(alone, from_local(roof, origin));
+        return with_objects(alone, from_local(roof, origin)).filter(dormers_stay_under_the_roof);
     };
     let plain = from_local(roof, origin);
     let mut geo = if has_objects(alone) {
@@ -971,9 +971,22 @@ fn finish_departed(
     } else {
         plain
     };
+    if !dormers_stay_under_the_roof(&geo) {
+        return None;
+    }
     geo.warnings
         .push(RoofWarning::new(WarningKind::NotCalculatedByCore, 0.0));
     Some(geo)
+}
+
+/// Whether every dormer of a roof Tectora calculated where the core stops
+/// ends at the roof: a dormer whose roof never meets the host's (a shed
+/// dormer at the host's pitch, say) runs on above the ridge and gives
+/// tens of m² of dormer and a host face of negative area. The core refuses
+/// such a dormer on a roof it calculates ("faces do not close"), so its
+/// error stands here too: an error is better than a wrong roof.
+fn dormers_stay_under_the_roof(geo: &RoofGeometry) -> bool {
+    crate::check::dormer_above_roof(geo).is_none()
 }
 
 /// A roof of [`departed_bare`], in the building's own frame: sound, and
