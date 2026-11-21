@@ -14,7 +14,7 @@
   import { numberLocale, t } from "./i18n.svelte";
   import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import type { Action } from "./errors";
-  import { notify, notifyError } from "./notify.svelte";
+  import { dismiss, notify, notifyError } from "./notify.svelte";
   import UpdateBanner from "./UpdateBanner.svelte";
   import { prefs, savePrefs } from "./settings.svelte";
   import { hscroll } from "./hscroll";
@@ -178,7 +178,7 @@
       onchanged();
       loadTrash();
       // The confirm promised the trash: say where it went and offer it back at once (UX-010).
-      if (gone) notify({ kind: "info", title: t("home.deleted", { name: gone.name || p.name }), action: { label: t("home.restore"), run: () => restore(gone) } });
+      if (gone) deleteToasts[gone.entry] = notify({ kind: "info", title: t("home.deleted", { name: gone.name || p.name }), action: { label: t("home.restore"), run: () => restore(gone) } });
     });
 
   /** Deleted jobs in the library's trash (removed attachments are left out), newest first. */
@@ -197,15 +197,24 @@
     loadTrash();
   });
 
-  /** Brings a deleted job back into the library and selects it. */
-  async function restore(e: TrashEntry) {
-    const id = await run("restore", () => api.restoreDeleted(e.entry));
-    if (!id) return loadTrash();
-    notify({ kind: "info", title: t("home.restored", { name: e.name }) });
-    selectedId = id;
-    onchanged();
-    loadTrash();
-  }
+  /** The delete toast offering each trash entry back, so a restore from the
+   *  trash list takes the offer away (UI-001). */
+  const deleteToasts: Record<string, number> = {};
+
+  /** Brings a deleted job back into the library and selects it. Once: a
+   *  double click must not restore and then report the entry missing (UI-001). */
+  const restore = (e: TrashEntry) =>
+    once(`trash:${e.entry}`, async () => {
+      const id = await run("restore", () => api.restoreDeleted(e.entry));
+      if (!id) return loadTrash();
+      if (deleteToasts[e.entry] !== undefined) dismiss(deleteToasts[e.entry]);
+      delete deleteToasts[e.entry];
+      trash = trash.filter((x) => x.entry !== e.entry);
+      notify({ kind: "info", title: t("home.restored", { name: e.name }) });
+      selectedId = id;
+      onchanged();
+      loadTrash();
+    });
 
   // First start: the example jobs were seeded with the core's built-in
   // names; give them the names of the UI language (UX-012). Once per app run.
@@ -300,7 +309,7 @@
             {#each trash as e (e.entry)}
               <li>
                 <div class="trash-text"><strong>{e.name || e.id}</strong><small class="muted">{t("home.deletedWhen", { when: relativeTime(e.ts_ms) })}{#if isAi(e.actor)} · {actorName(e.actor)}{/if}</small></div>
-                <button class="btn sm" onclick={() => restore(e)}><Icon name="undo" size={15} />{t("home.restore")}</button>
+                <button class="btn sm" disabled={!!busy[`trash:${e.entry}`]} onclick={() => restore(e)}><Icon name="undo" size={15} />{t("home.restore")}</button>
               </li>
             {/each}
           </ul>

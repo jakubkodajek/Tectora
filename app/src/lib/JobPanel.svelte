@@ -6,10 +6,11 @@
   import { api } from "./api";
   import { safeFileName } from "./filename";
   import { t } from "./i18n.svelte";
-  import type { Attachment, Project } from "./types";
+  import type { Attachment, JobStatus, Project } from "./types";
   import { JOB_STATUSES } from "./types";
   import { DACAD_MATERIALS, defaultMaterialName } from "./materials";
   import { textfield } from "./textfield";
+  import { fileSize } from "./format";
 
   /** Opens an attached file; files that are not drawings or documents are only shown in their folder. */
   async function openFile(name: string) {
@@ -41,29 +42,46 @@
 
   /** Statuses that make an offer from the figures: not from a roof the core refused (ERR-003). */
   const OFFER_STATUSES = new Set(["offer", "ordered"]);
-  const refused = (s: string) => !!blocked && OFFER_STATUSES.has(s) && s !== status;
+  /** Whether status `s` cannot be chosen now: an offer status, or Done when it would have to
+   *  store a result first, while the core gives no roof (ERR-003, UX-005). */
+  const refused = (s: JobStatus) =>
+    !!blocked && s !== status && (OFFER_STATUSES.has(s) || (s !== "draft" && status === "draft" && !project.result_snapshot));
+
+  /** The job as the editor holds it now: a status change writes through it, never through the
+   *  unbound prop (UI-010, ERRU-004), as `setText` does for the texts. */
+  const job = (p: Project) => p;
 
   // Leaving the draft status stores the result the offer is made with.
-  let status = $state(untrack(() => project.job.status));
-  const statusChanged = () => track(statusChangedNow());
-  async function statusChangedNow() {
+  let status = $state<JobStatus>(untrack(() => project.job.status));
+  $effect(() => {
+    // An AI save or an undo may change the status under the panel.
+    const now = project.job.status;
+    untrack(() => (status = now));
+  });
+  const statusChanged = (e: Event) => {
+    const sel = e.currentTarget as HTMLSelectElement;
+    return track(statusChangedNow(sel.value as JobStatus, sel));
+  };
+  async function statusChangedNow(next: JobStatus, sel: HTMLSelectElement) {
     const was = status;
-    if (refused(project.job.status)) {
-      project.job.status = was;
+    const p = job(project);
+    if (refused(next)) {
+      sel.value = was;
       return;
     }
-    status = project.job.status;
-    if (was === "draft" && status !== "draft" && !project.result_snapshot) {
+    if (was === "draft" && next !== "draft" && !p.result_snapshot) {
       try {
-        project.result_snapshot = await api.takeSnapshot(JSON.parse(JSON.stringify(project)));
+        p.result_snapshot = await api.takeSnapshot(JSON.parse(JSON.stringify(p)));
       } catch (e) {
         // No figures to make the offer with: the job stays a draft (DR-002).
-        project.job.status = was;
-        status = was;
-        notifyError(e, "save");
+        // Not a failed save: the job on disk is fine, the status was refused (UX-005).
+        sel.value = was;
+        notifyError(e, "status");
         return;
       }
     }
+    p.job.status = next;
+    status = next;
     onchange();
   }
 
@@ -93,16 +111,25 @@
     loadFiles();
   }
 
+  /** Files with a removal under way: a double click asks once and removes once (UI-009). */
+  let removing = $state<Record<string, boolean>>({});
+
   async function removeFile(name: string) {
-    // Tauri's dialog plugin makes window.confirm asynchronous (a Promise is
-    // always truthy), so the answer must be awaited.
-    if (!(await confirm(t("files.confirmRemove", { name })))) return;
+    if (removing[name]) return;
+    removing[name] = true;
     try {
-      await api.removeAttachment(id, name);
-    } catch (e) {
-      notifyError(e, "files");
+      // Tauri's dialog plugin makes window.confirm asynchronous (a Promise is
+      // always truthy), so the answer must be awaited.
+      if (!(await confirm(t("files.confirmRemove", { name })))) return;
+      try {
+        await api.removeAttachment(id, name);
+      } catch (e) {
+        notifyError(e, "files");
+      }
+      await loadFiles();
+    } finally {
+      delete removing[name];
     }
-    loadFiles();
   }
 
   async function exportJob() {
@@ -124,7 +151,6 @@
     }
   }
 
-  const size = (b: number) => (b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(0)} kB` : `${(b / 1048576).toFixed(1)} MB`);
 
   const ids = Array.from({ length: DACAD_MATERIALS }, (_, i) => i + 1);
 
@@ -152,7 +178,7 @@
     <label><span>{t("job.number")}</span><input type="text" use:textfield={{ value: project.job.number, onchange: setText((p, v) => (p.job.number = v)) }} /></label>
     <label>
       <span>{t("job.status")}</span>
-      <select bind:value={project.job.status} onchange={statusChanged} title={blocked ?? undefined}>
+      <select value={status} onchange={statusChanged} title={blocked ?? undefined}>
         {#each JOB_STATUSES as s}<option value={s} disabled={refused(s)}>{t(`status.${s}`)}</option>{/each}
       </select>
     </label>
@@ -166,8 +192,8 @@
       {#each files as f (f.name)}
         <li>
           <button class="link" onclick={() => openFile(f.name)} title={t("files.open")}>{f.name}</button>
-          <span class="size">{size(f.size)}</span>
-          <button class="icon" onclick={() => removeFile(f.name)} title={t("files.remove")} aria-label={t("files.remove")}><Icon name="trash" size={14} /></button>
+          <span class="size">{fileSize(f.size)}</span>
+          <button class="icon" disabled={!!removing[f.name]} onclick={() => removeFile(f.name)} title={t("files.remove")} aria-label={t("files.remove")}><Icon name="trash" size={14} /></button>
         </li>
       {/each}
     </ul>

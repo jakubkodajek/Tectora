@@ -70,3 +70,12 @@ export function pendingRetryMs(pending: boolean, tries: number): number | null {
   if (!pending || tries >= 8) return null;
   return Math.min(1000 * 2 ** tries, 30000);
 }
+
+/** A file size in the given locale's number format: "512 B", "152 kB", "1,5 MB" (UI-010). */
+export function fileSize(b: number, locale: string = numberLocale()): string {
+  const f = (v: number, d: number) => new Intl.NumberFormat(locale, { maximumFractionDigits: d, minimumFractionDigits: d }).format(v);
+  if (!Number.isFinite(b) || b < 0) return "—";
+  if (b < 1024) return `${f(b, 0)} B`;
+  if (b < 1048576) return `${f(b / 1024, 0)} kB`;
+  return `${f(b / 1048576, 1)} MB`;
+}
