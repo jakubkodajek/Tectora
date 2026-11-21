@@ -17,13 +17,15 @@ use tectora_core::model::{GABLE_PITCH_DEG, MIN_PITCH_DEG};
 use tectora_core::quantities::{area_by_pitch_of, dacad_line_totals_of, roof_totals_of};
 use tectora_core::roof::LineKind;
 use tectora_core::roof::RoofGeometry;
-use tectora_core::settings::Settings;
+use tectora_core::settings::{RoofDefaults, Settings};
 use tectora_core::store::{CheckedSave, LiveStatus, Store, StoreError, now_ms};
 use tectora_core::{
     Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow,
 };
 
 mod drawings;
+#[cfg(test)]
+mod input_tests;
 mod more;
 mod worker;
 
@@ -59,6 +61,16 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     arg(args, key)?
         .as_str()
         .ok_or_else(|| format!("`{key}` must be a string"))
+}
+
+/// An optional text argument: a string, or left out / null. Any other
+/// value is refused, never dropped (HUNTIO-012, ERR-002).
+pub(crate) fn text_arg(args: &Value, key: &str) -> Result<Option<String>, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(v) => Err(format!("`{key}` must be a string, not {v}")),
+    }
 }
 
 fn arg_f64(args: &Value, key: &str) -> Result<Option<f64>, String> {
@@ -279,12 +291,45 @@ pub fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
 /// its figures would be missing from the sheet, as the editor's Export is
 /// blocked then too.
 pub(crate) fn export_ready(project: &Project) -> Result<(), String> {
-    match roof_trouble(project) {
-        None => Ok(()),
-        Some(t) => Err(format!(
-            "not exported: some roofs are not calculated or input is left out; fix them first ({t})"
-        )),
+    let Some(t) = roof_trouble(project) else {
+        return Ok(());
+    };
+    // Its own sentence, nothing of the write path's "Saved, but … revert"
+    // (ERR-008): nothing was saved, and there is nothing to revert.
+    let mut why: Vec<String> = Vec::new();
+    for e in t["roof_errors"].as_array().into_iter().flatten() {
+        why.push(format!(
+            "building {} has no roof ({}: {})",
+            e["part"],
+            e["error"]["kind"].as_str().unwrap_or("error"),
+            e["error"]["message"].as_str().unwrap_or("")
+        ));
     }
+    for p in t["problems"].as_array().into_iter().flatten() {
+        let edge = p["edge"]
+            .as_u64()
+            .map(|e| format!(", wall {e}"))
+            .unwrap_or_default();
+        why.push(format!(
+            "{} {}{edge} is left out ({})",
+            p["item"].as_str().unwrap_or("item"),
+            p["index"],
+            p["code"].as_str().unwrap_or("problem")
+        ));
+    }
+    for c in t["cut_exceeds_face"].as_array().into_iter().flatten() {
+        why.push(format!(
+            "building {}: {}",
+            c["part"],
+            c["message"]
+                .as_str()
+                .unwrap_or("a face lost more than it has")
+        ));
+    }
+    Err(format!(
+        "not exported: {}. Fix the job first (calc lists the details); nothing was written.",
+        why.join("; ")
+    ))
 }
 
 /// The buildings without a roof after a write, and the input problems that
@@ -420,6 +465,17 @@ fn parse_status(s: &str) -> Result<JobStatus, String> {
 
 /// Applies the optional per-edge fields of `v` to `edge`.
 fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
+    apply_edge_fields_with(edge, v, None)
+}
+
+/// [`apply_edge_fields`]; `eave_fallback` is the pitch a gable turned into
+/// an eave without a `pitch_deg` gets (`edit::eave_pitch`: the nearest eave
+/// wall's, as in the editor), else the user's default pitch (ARCH-005).
+fn apply_edge_fields_with(
+    edge: &mut EdgeDef,
+    v: &Value,
+    eave_fallback: Option<f64>,
+) -> Result<(), String> {
     if let Some(p) = arg_f64(v, "pitch_deg")? {
         // The editor's wall bar refuses the same values (UX-010).
         tectora_core::edit::check_eave_pitch(p, MIN_PITCH_DEG)?;
@@ -432,7 +488,10 @@ fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
     match gable {
         Some(true) => edge.pitch_deg = GABLE_PITCH_DEG.ceil(),
         Some(false) if edge.is_gable() => {
-            edge.pitch_deg = arg_f64(v, "pitch_deg")?.unwrap_or(40.0);
+            edge.pitch_deg = match arg_f64(v, "pitch_deg")? {
+                Some(p) => p,
+                None => eave_fallback.unwrap_or_else(|| Settings::load().roof_defaults.pitch_deg),
+            };
             edge.half_hip = None;
         }
         _ => {}
@@ -605,6 +664,10 @@ fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
 
 /// Selected edge indices: `indices: [..]`, `all: true`, or `index`.
 fn edge_indices(v: &Value, n: usize) -> Result<Vec<usize>, String> {
+    // `n - 1` of an empty part read "0..18446744073709551615" (ERR-007).
+    if n == 0 {
+        return Err("the part has no walls; give it an outline with set_outline first".to_string());
+    }
     if v.get("all").and_then(Value::as_bool) == Some(true) {
         return Ok((0..n).collect());
     }
@@ -677,13 +740,125 @@ fn unknown_keys(schema: &Value, value: &Value, path: &str, out: &mut Vec<String>
     }
 }
 
+/// Argument paths whose enum the tool checks with its own explanation
+/// (`export_plan` says why `png` is not available over MCP).
+const ENUMS_EXPLAINED_BY_TOOL: &[&str] = &["format"];
+
+/// Checks `value` against the types, enums and item counts of `schema`
+/// (the tool's published `inputSchema`): a value of the wrong type or
+/// outside an enum used to be dropped or replaced by a default, and the
+/// tool still answered "Saved" (ERR-002, ERR-005). `null` counts as left
+/// out, as every tool reads it. Number ranges stay with each tool, which
+/// says why a value is out of range. Returns the first mismatch, with its
+/// path.
+fn schema_mismatch(schema: &Value, value: &Value, path: &str) -> Option<String> {
+    if value.is_null() {
+        return None;
+    }
+    // Enums a tool answers itself with a better reason.
+    if ENUMS_EXPLAINED_BY_TOOL.contains(&path) && value.is_string() {
+        return None;
+    }
+    // The value as the client sent it, cut so an answer never echoes a
+    // whole document.
+    let shown: String = {
+        let t = value.to_string();
+        if t.chars().count() > 60 {
+            format!("{}…", t.chars().take(60).collect::<String>())
+        } else {
+            t
+        }
+    };
+    let at = if path.is_empty() {
+        "the arguments".to_string()
+    } else {
+        format!("`{path}`")
+    };
+    let is = |t: &str| match t {
+        "string" => value.is_string(),
+        "boolean" => value.is_boolean(),
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "number" => value.is_number(),
+        "integer" => {
+            value.is_i64()
+                || value.is_u64()
+                || value
+                    .as_f64()
+                    .is_some_and(|f| f.is_finite() && f.fract() == 0.0)
+        }
+        "null" => value.is_null(),
+        _ => true,
+    };
+    let types: Vec<&str> = match schema.get("type") {
+        Some(Value::String(t)) => vec![t.as_str()],
+        Some(Value::Array(ts)) => ts.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    if !types.is_empty() && !types.iter().any(|t| is(t)) {
+        let want: Vec<&str> = types.iter().copied().filter(|t| *t != "null").collect();
+        return Some(format!("{at} must be {}, not {shown}", want.join(" or ")));
+    }
+    if let Some(options) = schema.get("enum").and_then(Value::as_array)
+        && !options.contains(value)
+    {
+        let list: Vec<String> = options
+            .iter()
+            .filter(|o| !o.is_null())
+            .map(|o| o.as_str().map_or_else(|| o.to_string(), str::to_string))
+            .collect();
+        return Some(format!(
+            "{at} must be one of {}, not {shown}",
+            list.join(", ")
+        ));
+    }
+    match value {
+        Value::Object(map) => {
+            let props = schema.get("properties").and_then(Value::as_object);
+            let extra = schema.get("additionalProperties").filter(|a| a.is_object());
+            for (k, v) in map {
+                let here = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
+                if let Some(sub) = props.and_then(|p| p.get(k)).or(extra)
+                    && let Some(m) = schema_mismatch(sub, v, &here)
+                {
+                    return Some(m);
+                }
+            }
+            None
+        }
+        Value::Array(items) => {
+            let n = items.len() as u64;
+            if let Some(min) = schema.get("minItems").and_then(Value::as_u64)
+                && n < min
+            {
+                return Some(format!("{at} must have at least {min} entries, not {n}"));
+            }
+            if let Some(max) = schema.get("maxItems").and_then(Value::as_u64)
+                && n > max
+            {
+                return Some(format!("{at} must have at most {max} entries, not {n}"));
+            }
+            let sub = schema.get("items")?;
+            items
+                .iter()
+                .enumerate()
+                .find_map(|(i, v)| schema_mismatch(sub, v, &format!("{path}[{i}]")))
+        }
+        _ => None,
+    }
+}
+
 fn schema(props: Value, required: &[&str]) -> Value {
     json!({ "type": "object", "properties": props, "required": required })
 }
 
 fn edge_props() -> Value {
     json!({
-        "pitch_deg": { "type": "number", "description": "Roof pitch rising from the edge, degrees (0–90)." },
+        "pitch_deg": { "type": "number", "description": "Roof pitch rising from the edge, degrees: 2 to below 90 for an eave (use `gable` for a gable wall)." },
         "gable": { "type": "boolean", "description": "true = gable wall (no roof plane rises from it)." },
         "eave_height": { "type": "number", "description": "Eave height above ±0.00 at the overhang line, m." },
         "overhang": { "type": "number", "description": "Horizontal eave overhang, m." },
@@ -819,9 +994,9 @@ fn base_tools() -> Value {
                 "roof_defaults": {
                     "type": "object",
                     "properties": {
-                        "pitch_deg": { "type": "number", "minimum": 0, "maximum": 89 },
-                        "eave_height": { "type": "number" },
-                        "overhang": { "type": "number", "minimum": 0 }
+                        "pitch_deg": { "type": "number", "minimum": RoofDefaults::PITCH.0, "maximum": RoofDefaults::PITCH.1 },
+                        "eave_height": { "type": "number", "minimum": RoofDefaults::EAVE.0, "maximum": RoofDefaults::EAVE.1 },
+                        "overhang": { "type": "number", "minimum": RoofDefaults::OVERHANG.0, "maximum": RoofDefaults::OVERHANG.1 }
                     }
                 },
                 "follow_ai": { "type": "boolean" },
@@ -1189,6 +1364,33 @@ impl Server {
                 if let Some(t) = roof_trouble_of(&geos, project) {
                     out["roof_trouble"] = t;
                 }
+                // A job past the draft keeps the figures its offer was made
+                // with: say at once when this write makes them differ
+                // (ERR-006), not only in a later calc.
+                if let Some(st) = tectora_core::snapshot::status_of(&geos, project)
+                    && !st.differences.is_empty()
+                {
+                    let status = serde_json::to_value(project.job.status)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_string))
+                        .unwrap_or_default();
+                    let area = st.differences.iter().find(|d| d.key == "roof_area");
+                    let figures = match area {
+                        Some(d) => format!(
+                            " (roof area stored {} m², now {} m²)",
+                            round(d.stored, 2),
+                            round(d.current, 2)
+                        ),
+                        None => String::new(),
+                    };
+                    out["note"] = json!(format!(
+                        "Saved. The change is now visible in the Tectora app for the user to review. The job is `{status}` and its stored offer figures differ from the roof now{figures}: tell the user, and call store_result only if they want the offer figures replaced."
+                    ));
+                    out["stored_result"] = json!({
+                        "status": status,
+                        "differences": st.differences,
+                    });
+                }
             }
             None => {
                 out["quantities"] = Value::Null;
@@ -1283,9 +1485,9 @@ impl Server {
         let old = Settings::load();
         let (next, asked) = old
             .patched_by_ai(&patch, &self.client, &summary)
-            .map_err(|e| format!("settings not saved: {e}"))?;
+            .map_err(|e| format!("settings not saved: {}", e.explain()))?;
         next.save()
-            .map_err(|e| format!("settings not saved: {e}"))?;
+            .map_err(|e| format!("settings not saved: {}", e.explain()))?;
         self.live(
             "settings",
             None,
@@ -1333,6 +1535,11 @@ impl Server {
                 return Err(format!(
                     "unknown argument {} for `{name}`: check the spelling against the tool's input schema",
                     unknown.join(", ")
+                ));
+            }
+            if let Some(m) = schema_mismatch(&schema, args, "") {
+                return Err(format!(
+                    "{m} (`{name}`'s input schema); nothing was changed"
                 ));
             }
         }
@@ -1517,10 +1724,15 @@ impl Server {
                 let overhang = arg_f64(args, "overhang")?.unwrap_or(preset.overhang);
                 // One check for every creating command (ARCH-007).
                 tectora_core::edit::check_new_wall(pitch, eave, overhang)?;
+                // The standard-roof form's bounds (ARCH-001): 4 mm typed for
+                // 4 m gave a job without a roof.
+                tectora_core::edit::check_standard_size(length, width)?;
                 tectora_core::edit::check_job_name(arg_str(args, "name")?)?;
-                let mut p = Project::new(arg_str(args, "name")?);
+                let empty = Project::new(arg_str(args, "name")?);
+                let mut p = empty.clone();
                 p.parts
                     .push(standard_roof(kind, length, width, pitch, eave, overhang));
+                crate::more::refuse_new_problems(&empty, &p)?;
                 self.commit(None, None, &p, arg_str(args, "summary")?)
             }
             "create_project" => {
@@ -1536,19 +1748,19 @@ impl Server {
                     p.parts
                         .push(parse_part(v, i).map_err(|m| format!("part {i}: {m}"))?);
                 }
-                if let Some(job) = args.get("job") {
+                if let Some(job) = args.get("job").filter(|j| !j.is_null()) {
                     for (key, slot) in [
                         ("number", &mut p.job.number),
                         ("customer", &mut p.job.customer),
                         ("address", &mut p.job.address),
                     ] {
-                        if let Some(s) = job.get(key).and_then(Value::as_str) {
-                            *slot = s.to_string();
+                        if let Some(s) = text_arg(job, key).map_err(|m| format!("job.{m}"))? {
+                            *slot = s;
                         }
                     }
                 }
-                if let Some(n) = args.get("notes").and_then(Value::as_str) {
-                    p.notes = n.to_string();
+                if let Some(n) = text_arg(args, "notes")? {
+                    p.notes = n;
                 }
                 self.commit(None, None, &p, arg_str(args, "summary")?)
             }
@@ -1579,11 +1791,17 @@ impl Server {
                     if let Some(o) = no_pitch.as_object_mut() {
                         o.remove("pitch_deg");
                     }
+                    let preset = Settings::load().roof_defaults.pitch_deg;
                     for i in edge_indices(c, part.edges.len())? {
                         let e = &part.edges[i];
                         let keep = all && ((e.is_gable() && !to_eave) || e.direction_rad.is_some());
-                        apply_edge_fields(&mut part.edges[i], if keep { &no_pitch } else { c })
-                            .map_err(|m| format!("edge {i}: {m}"))?;
+                        let fallback = tectora_core::edit::eave_pitch(&part.edges, i, None, preset);
+                        apply_edge_fields_with(
+                            &mut part.edges[i],
+                            if keep { &no_pitch } else { c },
+                            Some(fallback),
+                        )
+                        .map_err(|m| format!("edge {i}: {m}"))?;
                     }
                 }
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
@@ -1645,13 +1863,7 @@ impl Server {
                 let mut p = before.clone();
                 // A present key of the wrong type is refused, not ignored
                 // (HUNTIO-012).
-                let text = |key: &str| -> Result<Option<String>, String> {
-                    match args.get(key) {
-                        None | Some(Value::Null) => Ok(None),
-                        Some(Value::String(s)) => Ok(Some(s.clone())),
-                        Some(v) => Err(format!("`{key}` must be a string, not {v}")),
-                    }
-                };
+                let text = |key: &str| text_arg(args, key);
                 if let Some(s) = text("name")? {
                     tectora_core::edit::check_job_name(&s)?;
                     p.name = s;
@@ -1784,6 +1996,31 @@ impl Server {
 
     /// Handles one JSON-RPC message; returns the response for requests.
     pub fn handle(&mut self, msg: &Value) -> Option<Value> {
+        // A message that is not an object, or a request without a method,
+        // is an invalid request (JSON-RPC 2.0, -32600): it is answered, with
+        // id null when it has none, instead of left without an answer
+        // (HUNTIO-007).
+        let invalid = |id: Value, why: &str| {
+            Some(json!({
+                "jsonrpc": "2.0", "id": id,
+                "error": { "code": -32600, "message": format!("invalid request: {why}") }
+            }))
+        };
+        if !msg.is_object() {
+            return invalid(Value::Null, "a message must be a JSON object");
+        }
+        if msg.get("method").is_none()
+            && (msg.get("result").is_some() || msg.get("error").is_some())
+        {
+            // A response from the client: this server sends no requests.
+            return None;
+        }
+        if !msg.get("method").is_some_and(Value::is_string) {
+            return invalid(
+                msg.get("id").cloned().unwrap_or(Value::Null),
+                "`method` is missing or not a string",
+            );
+        }
         let id = msg.get("id").cloned();
         let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
         let params = msg.get("params").cloned().unwrap_or(json!({}));

@@ -67,6 +67,15 @@ Every write requires a `summary` sentence for the user. The drawing tools only
 read; they are implemented in `crates/tectora-drawing` (pure Rust, `hayro`
 PDF renderer).
 
+**Arguments.** Every call is checked against the tool's published
+`inputSchema` before it runs: an unknown key, a value of the wrong type and
+a value outside an `enum` are refused and nothing is saved (number ranges
+are checked by each tool, with its own reason). A write to a job past the
+draft whose figures then differ from its stored result says so in its
+`note` and returns `stored_result.differences`. A request line that is
+not a JSON object, or has no `method`, is answered with JSON-RPC
+`-32600` (invalid request).
+
 **File paths.** The `path` arguments of the drawing tools, `attach_file` and
 `import_job` reach only the jobs folder and the drawings inbox. Any other
 path is refused, existing or not, and stored as `file_request` in the
