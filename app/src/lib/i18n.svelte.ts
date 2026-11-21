@@ -984,13 +984,13 @@ const cs: Dict = {
   "lineinfo.uncounted": "nakresleno {v} m, část pod komínem, otvorem nebo vikýřem se nepočítá",
   "lineinfo.height": "Výška",
   "lineinfo.heights": "Výška od – do",
-  "lineinfo.slope": "Sklon hrany",
+  "lineinfo.slope": "Sklon linie",
   "lineinfo.faces": "Plochy",
   "lineinfo.wall": "Stěna {n}",
   "lineinfo.dormer": "Vikýř",
-  "lineinfo.close": "Zavřít detail hrany",
-  "lineinfo.pinHint": "Kliknutím na hranu ji připnete, Esc zavře.",
-  "lineinfo.title": "Detail hrany",
+  "lineinfo.close": "Zavřít detail linie",
+  "lineinfo.pinHint": "Kliknutím na linii ji připnete, Esc zavře.",
+  "lineinfo.title": "Detail linie",
 };
 
 const sk: Dict = {
@@ -1966,13 +1966,13 @@ const sk: Dict = {
   "lineinfo.uncounted": "nakreslené {v} m, časť pod komínom, otvorom alebo vikierom sa nepočíta",
   "lineinfo.height": "Výška",
   "lineinfo.heights": "Výška od – do",
-  "lineinfo.slope": "Sklon hrany",
+  "lineinfo.slope": "Sklon línie",
   "lineinfo.faces": "Plochy",
   "lineinfo.wall": "Stena {n}",
   "lineinfo.dormer": "Vikier",
-  "lineinfo.close": "Zavrieť detail hrany",
-  "lineinfo.pinHint": "Kliknutím na hranu ju pripnete, Esc zavrie.",
-  "lineinfo.title": "Detail hrany",
+  "lineinfo.close": "Zavrieť detail línie",
+  "lineinfo.pinHint": "Kliknutím na líniu ju pripnete, Esc zavrie.",
+  "lineinfo.title": "Detail línie",
 };
 
 const en: Dict = {
