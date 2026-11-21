@@ -999,7 +999,7 @@ fn base_tools() -> Value {
             "inputSchema": schema(json!({
                 "id": { "type": "string" },
                 "part": { "type": "integer", "minimum": 0, "description": "Only this part's lines." },
-                "code": { "type": "string", "enum": LINE_CODES, "description": "Only lines of this DACAD code; \"O\" also matches OL, OR and OS, \"W\" also WV, WH and WS." }
+                "code": { "type": "string", "description": format!("Only lines of this DACAD code, one of {}; \"O\" also matches OL, OR and OS, \"W\" also WV, WH and WS.", LINE_CODES.join(", ")) }
             }), &["id"]),
         },
         {
