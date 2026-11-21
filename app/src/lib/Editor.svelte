@@ -77,6 +77,8 @@
 
   let project = $state<Project | null>(null);
   let result = $state<CalcResult | null>(null);
+  /** Why the last calculation of the whole job failed, for Results to keep saying it (UX-101). */
+  let calcFailure = $state<Described | null>(null);
   let selection = $state<Selection>(null);
   let saveState = $state<"saved" | "saving" | "dirty" | "failed">("saved");
   /** Why the project could not be opened (shown instead of the editor). */
@@ -318,9 +320,9 @@
     const seq = ++calcSeq;
     try {
       const r = await api.calc($state.snapshot(project) as Project);
-      if (seq === calcSeq) result = r;
+      if (seq === calcSeq) (result = r), (calcFailure = null);
     } catch (e) {
-      if (seq === calcSeq) result = null;
+      if (seq === calcSeq) (result = null), (calcFailure = describeError(e, "calc"));
       notifyError(e, "calc");
     }
   }
@@ -2126,7 +2128,7 @@
         <div class="dock" role="tabpanel" id={dockIds.panel} aria-labelledby={dockIds.tab(dock)} bind:this={dockEl}>
           <button class="icon-btn dock-close" onclick={() => (dockOpen = false)} aria-label={t("common.close")} title={t("common.close")}><Icon name="x" size={16} /></button>
           {#if dock === "results"}
-            <Results {result} {project} onstore={storeResult} blocked={blockedReason} />
+            <Results {result} {project} onstore={storeResult} blocked={blockedReason} failure={calcFailure} />
           {:else if dock === "breakdown"}
             <Breakdown {project} {result} bind:data={breakdown} onmark={(mk) => (planMark = mk)} />
           {:else if dock === "ai"}

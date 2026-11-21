@@ -1,6 +1,7 @@
 // Guards for the round-2 audit (2026-11-21) UI findings on the plan: a
 // double click on Close face adds the face and keeps it (UI-103), and the
-// pitch Eave brings back belongs to the job it was remembered in (UI-104).
+// pitch Eave brings back belongs to the job it was remembered in (UI-104),
+// and Results says why a job has no result (UX-101).
 import { bar, clickPlan, openEditor, selectWall, setField, tool } from "./editor";
 import { createExample, expect, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
@@ -48,5 +49,19 @@ test.describe("round-2 audit: plan", () => {
     const p = await waitForProject(b, (p) => p.parts[0].edges[1].pitch_deg !== 90);
     expect(p.parts[0].edges[1].pitch_deg).toBe(neighbour);
     expect(p.parts[0].edges[1].pitch_deg).not.toBe(50);
+  });
+
+  test("a job the calculation refuses says why in Results, not that it has no building (UX-101)", async ({ app, page }) => {
+    await createExample("hip", "Složitá");
+    await page.route(/\/calc$/, (r) =>
+      r.fulfill({ contentType: "application/json", headers: { "access-control-allow-origin": "*" }, body: JSON.stringify({ err: { code: "too_complex", detail: "too complex" } }) }),
+    );
+    await openEditor(app, "Složitá");
+    const results = page.locator(".results");
+    await expect(results.getByTestId("res-calc-failed")).toContainText("too_complex");
+    await expect(results.getByTestId("res-calc-failed")).toContainText(cs("err.too_complex"));
+    await expect(results.getByTestId("res-empty")).toHaveCount(0);
+    await expect(results.getByTestId("res-area")).toHaveText("—");
+    app.errors.length = 0;
   });
 });
