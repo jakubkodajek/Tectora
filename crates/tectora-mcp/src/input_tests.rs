@@ -374,3 +374,51 @@ fn invisible_or_long_summaries_and_control_characters_in_job_texts_are_refused()
         ("Novák", "Line one\nLine two")
     );
 }
+
+/// Audit 2026-11-21 HUNT-108 item 2: a footprint written as a closed
+/// polygon (the first corner repeated at the end, as most tools write it)
+/// gets four walls, not a fifth wall of no length that leaves the building
+/// out.
+#[test]
+fn a_repeated_closing_corner_is_dropped() {
+    let mut s = server();
+    let r = s
+        .call_tool(
+            "create_project",
+            &json!({ "name": "Closed", "summary": "Footprint from the drawing",
+                     "parts": [{ "points": [[0, 0], [12, 0], [12, 8], [0, 8], [0, 0]] }] }),
+        )
+        .unwrap();
+    assert!(r.get("roof_trouble").is_none(), "{r}");
+    let id = r["id"].as_str().unwrap().to_string();
+    assert_eq!(s.store.load(&id).unwrap().parts[0].edges.len(), 4);
+    let r = s
+        .call_tool(
+            "set_outline",
+            &json!({ "id": id, "summary": "Wider footprint",
+                     "points": [[0, 0], [14, 0], [14, 8], [0, 8], [0, 0]] }),
+        )
+        .unwrap();
+    assert!(r.get("roof_trouble").is_none(), "{r}");
+    assert_eq!(s.store.load(&id).unwrap().parts[0].edges.len(), 4);
+}
+
+/// Audit 2026-11-21 HUNT-108 item 5: a standard roof's pitch of 90 is
+/// refused with its real limit (below 90, at least 2), not "between 0 and
+/// 90".
+#[test]
+fn a_standard_roof_pitch_is_refused_with_its_real_limits() {
+    let mut s = server();
+    for pitch in [90.0, 1.99] {
+        let e = s
+            .call_tool(
+                "create_standard_roof",
+                &json!({ "name": "A", "type": "gable", "length": 10, "width": 8, "pitch_deg": pitch, "summary": "Standard roof" }),
+            )
+            .unwrap_err();
+        assert!(
+            e.contains("pitch_deg") && !e.contains("between 0"),
+            "{pitch}: {e}"
+        );
+    }
+}

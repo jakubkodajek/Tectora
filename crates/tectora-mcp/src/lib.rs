@@ -581,7 +581,14 @@ fn parse_points(v: &Value) -> Result<Vec<Point2>, String> {
     if pts.len() < 3 {
         return Err("a footprint needs at least 3 points".into());
     }
-    Ok(pts.into_iter().map(|[x, y]| Point2::new(x, y)).collect())
+    let mut pts: Vec<Point2> = pts.into_iter().map(|[x, y]| Point2::new(x, y)).collect();
+    // A closed polygon as most tools write it, the first corner repeated
+    // at the end: that corner is dropped, not made a wall of no length
+    // that leaves the building out (HUNT-108).
+    if pts.len() > 3 && pts[0].distance(pts[pts.len() - 1]) < tectora_core::model::MIN_WALL_LENGTH {
+        pts.pop();
+    }
+    Ok(pts)
 }
 
 /// A new wall: every edge field given in `defaults`; pitch, eave height and
@@ -619,14 +626,21 @@ fn default_edge(defaults: &Value) -> Result<EdgeDef, String> {
 
 /// Builds a part from `{name?, points, defaults?, edges?}`.
 fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
-    let points = parse_points(arg(v, "points")?)?;
+    let raw = arg(v, "points")?;
+    let points = parse_points(raw)?;
     let defaults = v.get("defaults").cloned().unwrap_or(json!({}));
     let base = default_edge(&defaults)?;
-    let specs = v
+    let mut specs = v
         .get("edges")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    // The entry of a dropped closing corner went with it.
+    if raw.as_array().is_some_and(|a| a.len() == points.len() + 1)
+        && specs.len() == points.len() + 1
+    {
+        specs.pop();
+    }
     if !specs.is_empty() && specs.len() != points.len() {
         return Err(format!(
             "`edges` has {} entries but there are {} points (one edge per point)",
@@ -1766,10 +1780,10 @@ impl Server {
                 let width = arg_f64(args, "width")?.unwrap_or(length);
                 let pitch = arg_f64(args, "pitch_deg")?.ok_or("missing `pitch_deg`")?;
                 let preset = Settings::load().roof_defaults;
-                if length <= 0.0 || width <= 0.0 || !(0.0 < pitch && pitch < 90.0) {
-                    return Err(
-                        "length and width must be positive and pitch between 0 and 90".into(),
-                    );
+                // The pitch is checked with the other wall values below, with
+                // its real lower limit (HUNT-108).
+                if length <= 0.0 || width <= 0.0 {
+                    return Err("length and width must be positive".into());
                 }
                 let eave = arg_f64(args, "eave_height")?.unwrap_or(preset.eave_height);
                 let overhang = arg_f64(args, "overhang")?.unwrap_or(preset.overhang);

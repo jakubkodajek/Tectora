@@ -279,7 +279,8 @@ result; move it onto the roof or delete it. `window_off_roof`,
 move it onto the roof or delete it. A part the calculation gave no roof
 for carries `error` (`kind`, `message`): say so instead of reporting 0 m². When some buildings
 fail on their own, `failing_parts` lists them: only those have no roof, the
-others are calculated without them. A wall shorter than 1 cm is a
+others are calculated without them. A footprint's first corner repeated at
+the end (a closed polygon) is dropped. A wall shorter than 1 cm is a
 `zero_length_wall` problem that leaves its building out, and so is
 `walls_cross` (a wall crossing another one) and `walls_overlap` (walls lying
 on each other: an outline that goes round more than once, such as a point

@@ -515,7 +515,11 @@ impl Settings {
                         if !target.contains_key(k) {
                             return Err(SettingsError::InvalidValue("key"));
                         }
-                        target.insert(k.clone(), v.clone());
+                        // `null` counts as left out, as in every MCP tool
+                        // (HUNT-108).
+                        if !v.is_null() {
+                            target.insert(k.clone(), v.clone());
+                        }
                     }
                 }
                 ("projects_dir" | "drawings_dir" | "locale", Value::String(s))
@@ -1135,6 +1139,17 @@ mod tests {
             back.roof_defaults.pitch_deg,
             Settings::default().roof_defaults.pitch_deg
         );
+    }
+
+    /// Audit 2026-11-21 HUNT-108 item 4: a roof default sent as `null` is
+    /// left as it is, not refused as the wrong type.
+    #[test]
+    fn a_null_roof_default_is_left_out() {
+        let s = Settings::default();
+        let p = serde_json::json!({ "roof_defaults": { "pitch_deg": null, "overhang": 0.8 } });
+        let next = s.patched(&p).unwrap();
+        assert_eq!(next.roof_defaults.pitch_deg, s.roof_defaults.pitch_deg);
+        assert_eq!(next.roof_defaults.overhang, 0.8);
     }
 
     fn tmp(name: &str) -> PathBuf {
