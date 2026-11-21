@@ -157,6 +157,8 @@
   let dormerDlg = $state<{ index: number | null; key: string; params: DormerParams } | null>(null);
   /** Why the dormer dialog's OK cannot store the dormer (the dialog says it), else null. */
   let dormerBlocked = $state<string | null>(null);
+  /** The open dormer dialog, for OK's last check (UI-203). */
+  let dormerDialog = $state<ReturnType<typeof DormerDialog> | undefined>();
   /** A warning of the dormer dialog OK does not wait for, repeated next to OK. */
   let dormerNotice = $state<string | null>(null);
   let placing = $state<false | "dormer" | "chimney" | "window" | "hole" | "line" | "face">(false);
@@ -1091,6 +1093,11 @@
     // A value the core refused, or a front on no roof face: the dialog stays
     // open with the reason next to OK (UI-102, UX-109).
     if (dormerBlocked) return;
+    // The core checks the dormer as it stands once more (UI-203): a refusal
+    // stays in the dialog with its reason next to OK.
+    if (dormerDialog && !(await dormerDialog.finalCheck())) return;
+    await tick();
+    if (!project || !dormerDlg || dormerBlocked) return;
     if (dormerDlg.index !== null && !stillThere(project.dormers, { index: dormerDlg.index, key: dormerDlg.key })) {
       dormerDlg = null;
       info(t("editor.dialogStale"));
@@ -2255,7 +2262,7 @@
 
 {#if dormerDlg && project}
   <Modal title={dormerDlg.index === null ? t("dormer.dialogNew") : t("dormer.n", { n: dormerDlg.index + 1 })} width={1040} onclose={() => (dormerDlg = null)}>
-    <DormerDialog {project} roofFailed={!!roofError} fresh={dormerDlg.index === null} bind:params={dormerDlg.params} bind:blocked={dormerBlocked} bind:notice={dormerNotice} track={(p) => pendingEdits.track(p)} />
+    <DormerDialog bind:this={dormerDialog} {project} roofFailed={!!roofError} fresh={dormerDlg.index === null} bind:params={dormerDlg.params} bind:blocked={dormerBlocked} bind:notice={dormerNotice} track={(p) => pendingEdits.track(p)} />
     {#snippet footer()}
       {#if dormerBlocked}<p class="dlg-why" role="alert" data-testid="dormer-ok-blocked">{dormerBlocked}</p>
       {:else if dormerNotice}<p class="dlg-why" role="status" data-testid="dormer-ok-notice">{dormerNotice}</p>{/if}

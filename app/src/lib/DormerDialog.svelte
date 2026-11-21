@@ -217,6 +217,22 @@
     return true;
   }
 
+  /**
+   * OK's last word: the core checks the dormer as it stands, so a value that
+   * got in without its own check (a kind or shape change, a width that
+   * makes a round dormer's segments too flat) never reaches the job (UI-203).
+   * Resolves to true when it can be stored; a refusal blocks OK with its reason.
+   */
+  export async function finalCheck(): Promise<boolean> {
+    const r = await checkedNow({}, () => {});
+    return r === true;
+  }
+
+  /** A field typed again after a refusal: its reason no longer blocks OK; OK checks once more (UI-207). */
+  function oninput() {
+    if (refusal !== null) refusal = null;
+  }
+
   /** Keeps the front wall height when the shape changes, as the dialog does. */
   function setShape(patch: Partial<DormerParams>) {
     const wall = sec?.wall_height;
@@ -274,7 +290,7 @@
   };
 </script>
 
-<div class="dlg">
+<div class="dlg" {oninput}>
   <div class="kinds" role="radiogroup" use:radiogroup aria-label={t("dormer.kind")}>
     {#each DORMER_KINDS as k}
       <button
@@ -315,7 +331,7 @@
         <path class="dim" d="M220 110H244" />
       </svg>
       <label class="f" style="left:50%;top:84%" title={t("dormer.width")}>
-        <input aria-label={t("dormer.width")} type="text" use:numeric={{ value: params.width, step: 0.05, min: 0.1, onchange: (v) => setShape({ width: v }) }} /><em>m</em>
+        <input aria-label={t("dormer.width")} type="text" use:numeric={{ value: params.width, step: 0.05, min: 0.1, onchange: (v) => checked({ width: v }, () => setShape({ width: v })) }} /><em>m</em>
       </label>
       <label class="f" style="left:10%;top:50%" title={t("dormer.depth")}>
         <input aria-label={t("dormer.depth")} type="text" disabled={!sec || params.kind === "pointed"} use:numeric={{ value: mm(sec?.depth), step: 0.05, min: 0.01, onchange: (v) => setBy({ depth: v }) }} /><em>m</em>
@@ -330,7 +346,7 @@
       {/if}
       {#if params.kind === "round"}
         <label class="f" style="left:50%;top:22%" title={t("round.segments")}>
-          <input aria-label={t("round.segments")} type="text" use:numeric={{ value: params.segments, step: 1, min: 0, max: MAX_ROUND_SEGMENTS, onchange: (v) => setShape({ segments: Math.round(v) }) }} />
+          <input aria-label={t("round.segments")} type="text" use:numeric={{ value: params.segments, step: 1, min: 0, max: MAX_ROUND_SEGMENTS, onchange: (v) => checked({ segments: Math.round(v) }, () => setShape({ segments: Math.round(v) })) }} />
         </label>
       {:else}
         <label class="f" style="left:50%;top:{params.kind === "trapezoid" ? 40 : 22}%" title={params.kind === "shed" ? t("dormer.frontPitch") : params.kind === "trapezoid" ? t("dormer.cheekPitch") : t("edge.pitch")}>
