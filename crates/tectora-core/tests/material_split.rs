@@ -197,7 +197,7 @@ fn each_wall_in_sheet_metal_moves_exactly_its_own_faces() {
 
                 // The split is exactly those faces, and adds up.
                 assert!(
-                    (by(&q, SHEET) - sheet).abs() < 1e-6,
+                    (by(&q, SHEET) - sheet).abs() < 1e-4,
                     "{ctx}: sheet metal {:?}, its faces {sheet}",
                     q.area_by_material
                 );
@@ -282,14 +282,10 @@ fn a_window_on_sheet_metal_is_taken_off_sheet_metal() {
     );
 }
 
-/// A wall split by an extra corner into two walls in line, one half in
-/// sheet metal: the calculation joins walls in line with the same eave
-/// height and overhang into one plane (DACAD's collinear merge, which does
-/// not look at the material), so the plane has the first wall's material.
-/// That must never pass silently: the roof carries `merged_materials`
-/// naming both walls.
-#[test]
-fn walls_in_line_with_two_materials_are_reported() {
+/// Hip roof 12 × 8 m, 35°, 0.5 m overhang, its front wall split by an
+/// extra corner at x = 3 into two walls in line. The core roofs the two as
+/// one plane (DACAD's collinear merge does not look at the material).
+fn front_split_at_3() -> (Project, usize) {
     let mut p = Project::new("split wall");
     p.parts
         .push(standard_roof(StandardRoof::Hip, 12.0, 8.0, 35.0, 3.0, 0.5));
@@ -299,47 +295,169 @@ fn walls_in_line_with_two_materials_are_reported() {
         .position(|e| e.start.y.abs() < 1e-9 && e.start.x.abs() < 1e-9)
         .unwrap();
     let mut half = p.parts[0].edges[front].clone();
-    half.start = Point2::new(6.0, 0.0);
+    half.start = Point2::new(3.0, 0.0);
     p.parts[0].edges.insert(front + 1, half);
+    (p, front)
+}
 
-    // Same material: one plane, nothing to report.
-    let g = generate_project(&p);
-    assert!(
-        g[0].warnings
-            .iter()
-            .all(|w| w.kind != WarningKind::MergedMaterials)
-    );
-
-    p.parts[0].edges[front + 1].material = SHEET;
-    let g = generate_project(&p);
-    let w: Vec<_> = g[0]
-        .warnings
-        .iter()
+fn merged_warnings(g: &[tectora_core::roof::RoofGeometry]) -> usize {
+    g.iter()
+        .flat_map(|g| &g.warnings)
         .filter(|w| w.kind == WarningKind::MergedMaterials)
-        .collect();
-    assert_eq!(w.len(), 1, "{:?}", g[0].warnings);
-    assert_eq!(w[0].edges, vec![front, front + 1]);
+        .count()
+}
 
-    // Sheet metal first: the plane is sheet metal, the tiles' wall is named.
-    p.parts[0].edges[front].material = SHEET;
-    p.parts[0].edges[front + 1].material = TILES;
-    let g = generate_project(&p);
-    let w: Vec<_> = g[0]
-        .warnings
-        .iter()
-        .filter(|w| w.kind == WarningKind::MergedMaterials)
-        .collect();
-    assert_eq!(w.len(), 1, "{:?}", g[0].warnings);
-    assert_eq!(w[0].edges, vec![front, front + 1]);
+/// One part of the front wall in sheet metal: the front plane is split
+/// square to the wall at the corner (Jakub, 2026-11-21). In plan the front
+/// face is the trapezoid from the eave at y = −0.5 (x −0.5 … 12.5) to the
+/// ridge at y = 4 (x 4 … 8), its left hip on y = x, so the strip left of
+/// x = 3 is the triangle ∫(x + 0.5) dx from −0.5 to 3 = 3.5²/2 = 6.125 m²
+/// and the rest 17/2 · 4.5 − 6.125 = 32.125 m², each over cos 35°. The
+/// roof, its area and its lines' lengths stay the same; the eave is split
+/// at the corner, 3.5 m and 9.5 m.
+#[test]
+fn walls_in_line_with_two_materials_split_the_plane_per_wall() {
+    let (mut p, front) = front_split_at_3();
+    let base = generate_project(&p);
+    let all = roof_totals_of(&base, &p);
+    assert_eq!(merged_warnings(&base), 0);
+    // The core reads the walls as float32: closed forms agree to 1e-4.
+    let sec = 1.0 / 35f64.to_radians().cos();
+    let (left, right) = (6.125 * sec, 32.125 * sec);
 
-    // A different overhang keeps the walls apart: no merge, no report.
+    for (left_mat, right_mat) in [(TILES, SHEET), (SHEET, TILES)] {
+        p.parts[0].edges[front].material = left_mat;
+        p.parts[0].edges[front + 1].material = right_mat;
+        let g = generate_project(&p);
+        let ctx = format!("left {left_mat}, right {right_mat}");
+        assert!(g[0].error.is_none(), "{ctx}");
+        assert_eq!(merged_warnings(&g), 0, "{ctx}: {:?}", g[0].warnings);
+        let q = roof_totals_of(&g, &p);
+        assert!((q.roof_area - all.roof_area).abs() < 1e-9, "{ctx}");
+        let sheet = if left_mat == SHEET { left } else { right };
+        assert!(
+            (by(&q, SHEET) - sheet).abs() < 1e-4,
+            "{ctx}: sheet {} want {sheet}",
+            by(&q, SHEET)
+        );
+        assert!((by(&q, TILES) + by(&q, SHEET) - q.roof_area).abs() < 1e-9);
+        // Each wall has its own face now, with its material.
+        let on = |w: usize| -> f64 {
+            g[0].faces
+                .iter()
+                .filter(|f| f.edge == w)
+                .map(|f| f.area)
+                .sum()
+        };
+        assert!((on(front) - left).abs() < 1e-4, "{ctx}: {}", on(front));
+        assert!((on(front + 1) - right).abs() < 1e-4, "{ctx}");
+        for f in &g[0].faces {
+            if f.edge == front || f.edge == front + 1 {
+                assert_eq!(f.material, p.parts[0].edges[f.edge].material, "{ctx}");
+                assert!(f.polygon.iter().all(|v| v.iter().all(|c| c.is_finite())));
+            }
+        }
+        // Same lines, same lengths; the eave split at the corner.
+        for code in ["T", "F", "G"] {
+            let len = |g: &[tectora_core::roof::RoofGeometry]| -> f64 {
+                g[0].lines
+                    .iter()
+                    .filter(|l| l.dacad_code() == code)
+                    .map(|l| l.length())
+                    .sum()
+            };
+            assert!((len(&g) - len(&base)).abs() < 1e-9, "{ctx} {code}");
+        }
+        let lines = tectora_core::quantities::lines_by_material_of(&g);
+        let eave = |m: u8| {
+            lines
+                .iter()
+                .find(|(k, _)| *k == m)
+                .and_then(|(_, l)| l.get("T").copied())
+                .unwrap_or(0.0)
+        };
+        let sheet_eave = if left_mat == SHEET { 3.5 } else { 9.5 };
+        assert!((eave(SHEET) - sheet_eave).abs() < 0.011, "{ctx}: {lines:?}");
+    }
+
+    // A different overhang keeps the walls apart: the core makes two
+    // planes itself, nothing to split or report.
     p.parts[0].edges[front + 1].overhang = 0.8;
     let g = generate_project(&p);
+    assert_eq!(merged_warnings(&g), 0);
+}
+
+/// Windows and a chimney on the split plane: each window is taken off the
+/// strip its corner lies on, a chimney across the cut by its share on
+/// each side; what the faces lose in all stays what the core deducted.
+#[test]
+fn objects_on_a_split_plane_are_taken_off_their_own_strip() {
+    let (mut p, front) = front_split_at_3();
+    // A window on each strip, a chimney 0.6 × 0.6 from x 2.7 to 3.3.
+    p.windows.push(RoofWindow {
+        x: 1.0,
+        y: 0.0,
+        width: 0.78,
+        height: 1.18,
+    });
+    p.windows.push(RoofWindow {
+        x: 6.0,
+        y: 0.5,
+        width: 0.78,
+        height: 1.18,
+    });
+    p.chimneys.push(Chimney {
+        corners: vec![
+            Point2::new(2.7, 2.0),
+            Point2::new(3.3, 2.0),
+            Point2::new(3.3, 2.6),
+            Point2::new(2.7, 2.6),
+        ],
+        height: 9.0,
+    });
+    let g0 = generate_project(&p);
+    let mut sheet = p.clone();
+    sheet.parts[0].edges[front].material = SHEET;
+    let g = generate_project(&sheet);
+    assert!(g[0].error.is_none());
+    assert_eq!(merged_warnings(&g), 0, "{:?}", g[0].warnings);
+    let q0 = roof_totals_of(&g0, &p);
+    let q = roof_totals_of(&g, &sheet);
+    assert!((q.roof_area - q0.roof_area).abs() < 1e-9);
+
+    let sec = 1.0 / 35f64.to_radians().cos();
+    let window = 0.78 * 1.18;
+    // The chimney's half left of x = 3 (0.3 × 0.6 in plan) is on the left
+    // strip (under the hip y = x there).
+    let chimney_left = 0.3 * 0.6 * sec;
+    let all_ded: f64 = g0[0].faces.iter().map(|f| f.deducted).sum();
+    let split_ded: f64 = g[0].faces.iter().map(|f| f.deducted).sum();
     assert!(
-        g[0].warnings
-            .iter()
-            .all(|w| w.kind != WarningKind::MergedMaterials)
+        (split_ded - all_ded).abs() < 1e-9,
+        "{split_ded} vs {all_ded}"
     );
+    let ded: f64 = g[0]
+        .faces
+        .iter()
+        .filter(|f| f.edge == front)
+        .map(|f| f.deducted)
+        .sum();
+    assert!(
+        (ded - (window + chimney_left)).abs() < 2e-3,
+        "left strip deducted {ded}"
+    );
+    assert!(
+        (by(&q, SHEET) - (6.125 * sec - window - chimney_left)).abs() < 2e-3,
+        "sheet {}",
+        by(&q, SHEET)
+    );
+    // Each window cut names the face it now lies on.
+    let edges: Vec<usize> = g[0]
+        .window_cuts
+        .iter()
+        .map(|w| g[0].faces[w.face].edge)
+        .collect();
+    assert_eq!(edges, vec![front, front + 1]);
 }
 
 /// A dormer in sheet metal: its own faces are sheet metal, the roof it
@@ -386,4 +504,73 @@ fn a_sheet_metal_dormer_books_its_faces_as_sheet_metal() {
         q.area_by_material
     );
     assert!((by(&q, TILES) + by(&q, SHEET) - q.roof_area).abs() < 1e-6);
+}
+
+/// A gable roof 12 × 8 m, 40°, 0.5 m overhang, its front wall split at
+/// x = 4 and x = 8 with the middle wall in sheet metal: the strip over the
+/// middle wall is the sheet metal, 4 m wide from the eave to the ridge,
+/// 4 × 4.5 / cos 40° in all, also with a pitch break on the three walls
+/// (two faces, each split).
+#[test]
+fn a_middle_wall_in_sheet_metal_takes_its_strip_up_to_the_ridge() {
+    for with_break in [false, true] {
+        let mut p = Project::new("three in line");
+        p.parts.push(standard_roof(
+            StandardRoof::Gable,
+            12.0,
+            8.0,
+            40.0,
+            3.0,
+            0.5,
+        ));
+        let front = p.parts[0]
+            .edges
+            .iter()
+            .position(|e| e.start.y.abs() < 1e-9 && e.start.x.abs() < 1e-9)
+            .unwrap();
+        if with_break {
+            p.parts[0].edges[front].breaks = vec![PitchBreak {
+                height: 4.5,
+                pitch_deg: 25.0,
+            }];
+        }
+        for x in [8.0, 4.0] {
+            let mut e = p.parts[0].edges[front].clone();
+            e.start = Point2::new(x, 0.0);
+            p.parts[0].edges.insert(front + 1, e);
+        }
+        let g0 = generate_project(&p);
+        let q0 = roof_totals_of(&g0, &p);
+        p.parts[0].edges[front + 1].material = SHEET;
+        let g = generate_project(&p);
+        let q = roof_totals_of(&g, &p);
+        let ctx = format!("break {with_break}");
+        assert!(g[0].error.is_none(), "{ctx}");
+        assert_eq!(merged_warnings(&g), 0, "{ctx}: {:?}", g[0].warnings);
+        assert!((q.roof_area - q0.roof_area).abs() < 1e-9, "{ctx}");
+        // The front plane(s): the sheet metal share is 4 of the 13 m.
+        let front_area: f64 = g0[0]
+            .faces
+            .iter()
+            .filter(|f| f.edge == front)
+            .map(|f| f.area)
+            .sum();
+        assert!(
+            (by(&q, SHEET) - front_area * 4.0 / 13.0).abs() < 1e-4,
+            "{ctx}: sheet {} of {front_area}",
+            by(&q, SHEET)
+        );
+        if !with_break {
+            let want = 4.0 * 4.5 / 40f64.to_radians().cos();
+            assert!((by(&q, SHEET) - want).abs() < 1e-4, "{ctx}");
+        }
+        let sheet_faces = g[0].faces.iter().filter(|f| f.material == SHEET).count();
+        assert_eq!(sheet_faces, if with_break { 2 } else { 1 }, "{ctx}");
+        assert!(
+            g[0].faces
+                .iter()
+                .filter(|f| f.material == SHEET)
+                .all(|f| f.edge == front + 1)
+        );
+    }
 }

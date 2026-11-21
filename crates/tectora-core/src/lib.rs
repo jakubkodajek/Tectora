@@ -23,6 +23,7 @@ mod gable_wall;
 pub mod geom;
 pub mod library;
 pub mod lineinfo;
+mod material_split;
 pub mod merge;
 pub mod model;
 pub mod modell;

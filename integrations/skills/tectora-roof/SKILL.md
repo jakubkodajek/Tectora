@@ -82,7 +82,10 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    `inside_another` and `no_roof_area` name an object or building entered
    twice, too large or too high (fix that object; an `inside_another`
    building that marks part of a face for another material stays and gets
-   the pitch and eave height of the roof around it); `doubled_line` means
+   the pitch and eave height of the roof around it; sheet metal over only
+   part of a wall: split the wall with a corner and set the material on
+   that part, the plane is then split per wall, and `merged_materials`
+   means that split could not be made); `doubled_line` means
    line lengths at a join of two buildings need a look; `far_from_origin`
    means the plan should be moved to the origin; never bend the input to
    make a warning go away.

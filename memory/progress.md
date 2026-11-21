@@ -388,9 +388,16 @@ sessions that use it know where things stand.
   adds up; list rows equal the results. Found: two walls in line with the
   same eave height and overhang but different materials are joined into
   one plane (DACAD's collinear merge ignores material), so the second
-  material vanished silently. Now warned (`merged_materials`); splitting
-  the plane per wall is Jakub's decision (asked 2026-11-21). Hand-drawn
-  faces always count as material 1.
+  material vanished silently. Jakub chose to split such a plane per wall:
+  `material_split.rs` cuts its faces square to the wall line where the
+  material changes (strip per wall, deductions placed per strip, lines
+  crossing a cut split); `merged_materials` is only the fallback where the
+  split cannot be exact. Closed-form tests (hip strip 6.125/cos 35°, gable
+  middle strip 4 × 4.5/cos 40°, windows + chimney across the cut). Lean-to
+  overhang at the house wall checked: not counted when the roofs join; a
+  house without overhang and a steep lean-to do not join and count it
+  (told Jakub, PR #54 thread owns overhang rules). Hand-drawn faces always
+  count as material 1.
 - Open: line details have no keyboard path in the plan (the Calculation tab
   and MCP cover the figures); a pinned card closes with Esc, × or a second
   click on the line, not with a click on empty plan.

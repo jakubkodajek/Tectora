@@ -201,7 +201,11 @@ hip".
 Faces carry their roof material: the area per material (`area_by_material`,
 the price-sheet list's material rows) counts each face under its own
 material only, so sheet metal on some walls is not in the tiles' area; the
-roof area is the sum of all materials.
+roof area is the sum of all materials. Walls in line with the same eave
+height and overhang are roofed as one plane; where their materials differ,
+the plane is split square to the wall at the corner and each strip is its
+wall's face with its material (a wall's eave split at a corner can carry
+sheet metal on one part only).
 Several parts are joined like solids: a roof is hidden inside another
 part's walls below that part's roof, and roofs that cross meet in valleys.
 The rules were checked against roofs calculated by DACAD itself: a step

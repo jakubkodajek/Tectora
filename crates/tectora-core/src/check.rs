@@ -1132,6 +1132,8 @@ pub fn wing_planes(part: &RoofPart) -> Vec<ParallelPlanes> {
 /// different materials, where the roof has faces of one of them only (the
 /// calculation joined them; DACAD's collinear merge compares eave height,
 /// overhang and the clad flag, not the material, `dcore::s1::merge`).
+/// Such a plane is normally split per wall (`material_split.rs`); this is
+/// the fallback where that split could not be made exactly.
 pub fn merged_materials(part: &RoofPart, geo: &RoofGeometry) -> Vec<RoofWarning> {
     if geo.error.is_some() || geo.faces.is_empty() {
         return Vec::new();
@@ -1145,15 +1147,8 @@ pub fn merged_materials(part: &RoofPart, geo: &RoofGeometry) -> Vec<RoofWarning>
             continue;
         }
         let (a, b) = (&part.edges[j], &part.edges[k]);
-        if a.is_gable()
-            || b.is_gable()
-            || crate::roof::counted_material(a.material)
-                == crate::roof::counted_material(b.material)
-            || (a.eave_height - b.eave_height).abs() >= IN_LINE
-            || (a.overhang - b.overhang).abs() >= IN_LINE
-            || a.clad != b.clad
-            || !collinear(part, j, k)
-            || !collinear(part, k, j)
+        if crate::roof::counted_material(a.material) == crate::roof::counted_material(b.material)
+            || !one_plane(part, j, k)
         {
             continue;
         }
@@ -1168,6 +1163,24 @@ pub fn merged_materials(part: &RoofPart, geo: &RoofGeometry) -> Vec<RoofWarning>
         });
     }
     out
+}
+
+/// Whether walls `j` and `k` of `part` (neighbours) are roofed as one
+/// plane by the core's merge of walls in line: both eaves, on one line,
+/// with the same eave height, overhang and cladding (pitch and material
+/// are not compared, dcore s1).
+pub(crate) fn one_plane(part: &RoofPart, j: usize, k: usize) -> bool {
+    let (Some(a), Some(b)) = (part.edges.get(j), part.edges.get(k)) else {
+        return false;
+    };
+    j != k
+        && !a.is_gable()
+        && !b.is_gable()
+        && (a.eave_height - b.eave_height).abs() < IN_LINE
+        && (a.overhang - b.overhang).abs() < IN_LINE
+        && a.clad == b.clad
+        && collinear(part, j, k)
+        && collinear(part, k, j)
 }
 
 /// Whether walls `i` and `j` of `part` lie on one line.
