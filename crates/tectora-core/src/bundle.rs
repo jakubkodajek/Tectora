@@ -187,6 +187,17 @@ pub fn export(store: &Store, id: &str, dest: &Path) -> Result<Manifest, FileErro
 /// case): `job.tectora` becomes `job.tectora.tectorajob`, never the job
 /// file itself. For the CLI and the app's save dialog.
 pub fn with_extension(path: &Path) -> PathBuf {
+    // Trailing spaces and dots are no part of a name on Windows, which
+    // drops them (round 2 ARCH-106): "a.tectorajob " is "a.tectorajob".
+    let trimmed = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.trim_end_matches([' ', '.']))
+        .filter(|n| !n.is_empty());
+    let path = &match trimmed {
+        Some(n) => path.with_file_name(n),
+        None => path.to_path_buf(),
+    };
     let has = path
         .extension()
         .and_then(|e| e.to_str())
@@ -995,6 +1006,25 @@ mod tests {
         export(&store, &id, &export_path(&store, "x").unwrap()).unwrap();
         assert_eq!(fs::read(&own).unwrap(), before);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_name_typed_with_trailing_spaces_or_dots_gets_one_ending() {
+        // Round 2 ARCH-106 item 2: "a b.tectorajob " became
+        // "a b.tectorajob .tectorajob"; Windows drops trailing spaces and
+        // dots from file names, so the name is taken without them.
+        let dir = Path::new("out");
+        for typed in ["a b.tectorajob ", "a b.tectorajob. ", "a b ", "a b"] {
+            assert_eq!(
+                with_extension(&dir.join(typed)),
+                dir.join("a b.tectorajob"),
+                "{typed:?}"
+            );
+        }
+        assert_eq!(
+            with_extension(&dir.join("a.TectoraJob  ")),
+            dir.join("a.TectoraJob")
+        );
     }
 
     /// Audit 2026-11-21 HUNTIO-001: a job holding a file import refuses

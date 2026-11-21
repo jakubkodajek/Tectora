@@ -344,6 +344,13 @@ pub const MAX_STANDARD_SIDE: f64 = 10_000.0;
 pub fn check_standard_size(length: f64, width: f64) -> Result<(), String> {
     for (name, v) in [("length", length), ("width", width)] {
         if !v.is_finite() || !(MIN_STANDARD_SIDE..=MAX_STANDARD_SIDE).contains(&v) {
+            // A tiny or huge value in its short form, not with hundreds
+            // of digits (round 2 ARCH-106).
+            let v = if v != 0.0 && !(1e-4..1e6).contains(&v.abs()) {
+                format!("{v:e}")
+            } else {
+                v.to_string()
+            };
             return Err(format!(
                 "{name} {v} out of range ({MIN_STANDARD_SIDE} to {MAX_STANDARD_SIDE} m): check m against cm or mm"
             ));

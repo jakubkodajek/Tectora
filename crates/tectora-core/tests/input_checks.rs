@@ -167,7 +167,10 @@ fn the_dormer_checks_hold_at_their_edges() {
         code(&at(DormerKind::Gable, roof - 0.005), Some(host)),
         Some("dormer_below_roof")
     );
-    assert_eq!(code(&at(DormerKind::Gable, roof - 0.0005), Some(host)), None);
+    assert_eq!(
+        code(&at(DormerKind::Gable, roof - 0.0005), Some(host)),
+        None
+    );
     // A pitch just under 90° is taken, 90° is not.
     let mut q = at(DormerKind::Gable, roof + 1.0);
     q.pitch_deg = 89.9;
@@ -185,4 +188,16 @@ fn the_dormer_checks_hold_at_their_edges() {
     assert_eq!(code(&q, None), Some("dormer_pitch"));
     q.front_pitch_deg = 30.0;
     assert_eq!(code(&q, None), None);
+}
+
+#[test]
+fn a_refused_tiny_or_huge_size_is_named_in_a_short_number() {
+    // Round 2 ARCH-106 item 1: 1e-300 was printed with 300 zeros.
+    for v in [1e-300, 1e300, 4e-9] {
+        let e = check_standard_size(v, 8.0).unwrap_err();
+        assert!(e.len() < 120, "{e}");
+        assert!(e.starts_with("length ") && e.contains('e'), "{e}");
+    }
+    let e = check_standard_size(0.004, 8.0).unwrap_err();
+    assert!(e.starts_with("length 0.004 out of range"), "{e}");
 }
