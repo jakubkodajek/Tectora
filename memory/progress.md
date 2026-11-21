@@ -368,3 +368,19 @@ sessions that use it know where things stand.
   MATH-002, MATHC-001, HUNTC-003/007, MATH2-005, ERR-001, ERRU-005/010,
   TEST-003/009 and the UI/UX S3 list); DormerBar still lets a half-hip
   pitch go down to 0.1°, which is now reported as a problem.
+
+## 2026-11-21 - sheet metal colour, tiles area check, roof line details (branch claude/project-thread-46ju0l)
+- Done: faces of a material other than tiles have their own colour token
+  (`--mat-sheet`, `--mat-stone`, `--mat-slate`, `--mat-solar`) in 3D, as a
+  tint in the plan and as a swatch in the Results material table. Checked
+  that sheet metal is not in the tiles' area (results `area_by_material`
+  and the price-sheet list rows): test `sheet_metal_is_not_counted_as_tiles`;
+  DACAD also keeps one area group per material. New core `lineinfo`
+  (each line's length, plan length, slope, end heights, bounded faces) in
+  the UI calc result and as MCP tool `line_details`; hover or click a roof
+  line in plan or 3D shows the `LineInfo` card and draws the line amber
+  (`--line-hl`, `--line-hl-edge`).
+- State: `make check` exit 0, i18n sweep clean, contrast pass.
+- Open: line details have no keyboard path in the plan (the Calculation tab
+  and MCP cover the figures); a pinned card closes with Esc, × or a second
+  click on the line, not with a click on empty plan.
