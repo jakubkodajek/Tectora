@@ -554,7 +554,7 @@ fn combine(
         g.openings.append(&mut wing.openings);
         g.other_cuts += wing.other_cuts;
         g.cut_lines.append(&mut wing.cut_lines);
-        g.minus_lines.append(&mut wing.minus_lines);
+        g.append_minus(&mut wing);
         g.footprints.append(&mut wing.footprints);
         for w in &mut wing.window_cuts {
             w.face += offset;

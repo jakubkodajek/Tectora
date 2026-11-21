@@ -1353,7 +1353,8 @@ pub(crate) fn build_roofs(project: &Project) -> Vec<RoofGeometry> {
             mine[hi] = higher;
         }
         let mut geo = RoofGeometry::default();
-        for (g, map) in mine.into_iter().zip(&c.edges) {
+        for (mut g, map) in mine.into_iter().zip(&c.edges) {
+            geo.append_minus(&mut g);
             geo.faces.extend(g.faces.into_iter().map(|mut f| {
                 f.edge = map[f.edge];
                 f
@@ -1368,7 +1369,6 @@ pub(crate) fn build_roofs(project: &Project) -> Vec<RoofGeometry> {
             }));
             geo.openings.extend(g.openings);
             geo.cut_lines.extend(g.cut_lines);
-            geo.minus_lines.extend(g.minus_lines);
         }
         geos.push(geo);
     }
@@ -2132,12 +2132,25 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2], walls: &[(Point2, Poi
         let t = ((p[0] - a.x) * dx + (p[1] - a.y) * dy) / l2;
         (-1e-9..=1.0 + 1e-9).contains(&t) && dist3_(p, lerp3(e.c, e.d, t)) < SAME_EDGE
     };
+    // Two shared edges run along one line: a side of the chimney whose
+    // middle comes within SAME_EDGE of the other face's hole edge along
+    // the line between the faces only crosses it (Fable R2-3: the slope
+    // sides of a chimney across a joined pitch break lost their WS).
+    let along = |e: &HoleEdge, f: &HoleEdge| {
+        let (a, b) = (Point2::new(f.c[0], f.c[1]), Point2::new(f.d[0], f.d[1]));
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let len = dx.hypot(dy);
+        len > TOL
+            && [e.c, e.d]
+                .iter()
+                .all(|p| ((p[0] - a.x) * dy - (p[1] - a.y) * dx).abs() / len < SAME_EDGE)
+    };
     let mut drop = vec![false; edges.len()];
     for i in 0..edges.len() {
         let mid = lerp3(edges[i].c, edges[i].d, 0.5);
-        if let Some(j) =
-            (0..edges.len()).find(|&j| edges[j].face != edges[i].face && on_edge(mid, &edges[j]))
-        {
+        if let Some(j) = (0..edges.len()).find(|&j| {
+            edges[j].face != edges[i].face && on_edge(mid, &edges[j]) && along(&edges[i], &edges[j])
+        }) {
             // A shorter edge lying on a longer one is DACAD's code 17
             // (FUN_00da5060; R1_0745).
             let (li, lj) = (
@@ -2205,8 +2218,10 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2], walls: &[(Point2, Poi
             continue;
         }
         if let Some(r) = on {
+            geo.align_minus();
             geo.minus_lines
                 .push((r.dacad_code().to_string(), dist3_(e.c, e.d)));
+            geo.minus_at.push(Some((e.c, e.d)));
         }
         // On an abutment off any wall DACAD's copy comes back as code 0, no
         // line (mass case R1_0745: −WS along a step, no +WS).

@@ -757,6 +757,7 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer, host: Option<&(EdgeDe
     cuts.extend(home_polys.iter().map(Vec::as_slice));
     let host_lines: Vec<RoofLine> = geos.iter().flat_map(|g| g.lines.iter().cloned()).collect();
     let mut minus: Vec<(String, f64)> = Vec::new();
+    let mut minus_at: Vec<Option<([f64; 3], [f64; 3])>> = Vec::new();
     let n = part.edges.len();
     // A front leaning outward (pitch over 90°) abuts only where its wall
     // rises above the host plane: none with its eave on the host face (DACAD
@@ -810,6 +811,7 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer, host: Option<&(EdgeDe
                 if let Some(l) = host_lines.iter().chain(&own).find(|l| on_line(p, q, l)) {
                     let code = l.dacad_code();
                     minus.push((code.to_string(), dist3(p, q)));
+                    minus_at.push(Some((p, q)));
                     if matches!(code, "T" | "OL" | "OR" | "OS" | "P") {
                         continue;
                     }
@@ -837,7 +839,9 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer, host: Option<&(EdgeDe
         });
     }
     target.lines.extend(lines);
+    target.align_minus();
     target.minus_lines.extend(minus);
+    target.minus_at.extend(minus_at);
     target.openings.push(Opening {
         kind: OpeningKind::Dormer,
         area: removed,

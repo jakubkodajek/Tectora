@@ -31,7 +31,7 @@ use geo::{BooleanOps, MultiPolygon};
 use crate::check::{RoofWarning, WarningKind, wing_planes};
 use crate::geom::Point2;
 use crate::model::{Project, RoofPart};
-use crate::roof::{RoofFace, RoofGeometry, RoofLine};
+use crate::roof::{LineKind, RoofFace, RoofGeometry, RoofLine};
 use crate::union::{from_geo, near_boundary, to_geo};
 
 /// Rise of a front plane over (or under) a parallel back plane up to which
@@ -401,9 +401,15 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
         // of a roof under it (a wall abutment under the overhang) stays.
         // Lines inside a member (a chimney's or an opening's own lines)
         // stay whole.
+        // A chimney's or opening's wall abutment never lies between two
+        // faces of one plane, even where one of its sides runs along the
+        // seam (R2-3).
         let lies_in = |l: &RoofLine| {
             let mid = Point2::new((l.a[0] + l.b[0]) / 2.0, (l.a[1] + l.b[1]) / 2.0);
-            [l.a, l.b]
+            !matches!(
+                l.kind,
+                LineKind::AbutmentFront | LineKind::AbutmentBack | LineKind::AbutmentSide
+            ) && [l.a, l.b]
                 .iter()
                 .all(|p| (plane.z(Point2::new(p[0], p[1])) - p[2]).abs() < IN_PLANE)
                 && member_plans
@@ -433,10 +439,31 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
         // A line inside the joined face is gone (a pitch break between two
         // faces of one pitch, a step of a few millimetres), and so is what
         // a chimney on it took off the line: else the line totals would
-        // show a negative length of a line the roof does not have. Which
-        // line a deduction belongs to is not known here, so a code keeps
-        // its deductions as long as its remaining lines are long enough
-        // for them (a chimney on a pitch break that stays keeps its).
+        // show a negative length of a line the roof does not have, or
+        // another line of the code would lose it (R2-2). A deduction whose
+        // place is known goes where its place lies on a removed line.
+        geo.align_minus();
+        let removed = |&(c, d): &([f64; 3], [f64; 3])| {
+            let mid = Point2::new((c[0] + d[0]) / 2.0, (c[1] + d[1]) / 2.0);
+            let z = (c[2] + d[2]) / 2.0;
+            (plane.z(mid) - z).abs() < IN_PLANE
+                && member_plans
+                    .iter()
+                    .any(|m| near_boundary(m, mid, INSIDE_TOL))
+                && crate::openings::inside(&outline, mid)
+                && !near_boundary(&outline, mid, INSIDE_TOL)
+        };
+        let keep: Vec<bool> = geo
+            .minus_at
+            .iter()
+            .map(|at| !at.as_ref().is_some_and(removed))
+            .collect();
+        let mut k = keep.iter();
+        geo.minus_lines.retain(|_| *k.next().unwrap_or(&true));
+        let mut k = keep.iter();
+        geo.minus_at.retain(|_| *k.next().unwrap_or(&true));
+        // Where the place is not known, a code keeps its deductions as long
+        // as its remaining lines are long enough for them.
         let after = lengths(&geo.lines);
         for code in before.keys() {
             let left = after.get(code).copied().unwrap_or(0.0);
@@ -447,7 +474,12 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
                 .map(|(_, m)| *m)
                 .sum();
             let mut excess = taken - left;
-            for (_, minus) in geo.minus_lines.iter_mut().filter(|(c, _)| c == code) {
+            for ((_, minus), _) in geo
+                .minus_lines
+                .iter_mut()
+                .zip(&geo.minus_at)
+                .filter(|((c, _), at)| c == code && at.is_none())
+            {
                 if excess <= 0.0 {
                     break;
                 }
@@ -456,7 +488,11 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
                 excess -= take;
             }
         }
-        geo.minus_lines.retain(|(_, len)| *len > 1e-9);
+        let keep: Vec<bool> = geo.minus_lines.iter().map(|(_, len)| *len > 1e-9).collect();
+        let mut k = keep.iter();
+        geo.minus_lines.retain(|_| *k.next().unwrap_or(&true));
+        let mut k = keep.iter();
+        geo.minus_at.retain(|_| *k.next().unwrap_or(&true));
     }
     Ok(())
 }

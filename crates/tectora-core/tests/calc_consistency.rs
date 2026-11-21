@@ -710,3 +710,79 @@ fn windows_larger_than_their_face_on_a_departed_roof_keep_the_roof_and_warn() {
         geo.warnings
     );
 }
+
+/// The hip roof of Fable round 2 (`r2_minus`, `r2_minus2`): a real pitch
+/// break 15 -> 25 deg on wall 1, a half-hip on wall 3 and, when `joined`,
+/// a pitch break on wall 0 that keeps the pitch, which the sweep joins away.
+fn break_kept_and_joined(joined: bool) -> Project {
+    let mut e0 = edge(0.0, 0.0, 15.0, 6.0, 0.5);
+    if joined {
+        e0.breaks.push(PitchBreak {
+            height: 7.31,
+            pitch_deg: 15.0,
+        });
+    }
+    let mut e1 = edge(10.18, 0.0, 15.0, 6.0, 0.5);
+    e1.breaks.push(PitchBreak {
+        height: 6.8,
+        pitch_deg: 25.0,
+    });
+    let mut e3 = edge(0.0, 10.8, 90.0, 6.0, 0.5);
+    e3.half_hip = Some(HalfHip {
+        height: 7.7,
+        pitch_deg: 60.0,
+    });
+    one_building(vec![e0, e1, edge(10.18, 10.8, 15.0, 6.0, 0.5), e3])
+}
+
+/// R2-2 and R2-3: a chimney on or beside a pitch break that keeps the
+/// pitch gives the lines of the same roof drawn without that break: the
+/// break's deduction goes with the break, not off another pitch break
+/// (`c` 5.23 instead of 5.83), and the chimney keeps its abutments where
+/// a side runs along the seam (`WS`, `WV`, `WH`).
+#[test]
+fn a_chimney_by_a_joined_pitch_break_gives_the_lines_of_the_roof_without_it() {
+    let lines = |p: &Project| -> BTreeMap<String, f64> {
+        let geos = generate_project(p);
+        assert!(geos[0].error.is_none(), "{:?}", geos[0].error);
+        let mut by: BTreeMap<String, f64> = BTreeMap::new();
+        for l in &geos[0].lines {
+            *by.entry(l.dacad_code().to_string()).or_default() += l.length();
+        }
+        for (c, m) in &geos[0].minus_lines {
+            *by.entry(c.clone()).or_default() -= m;
+        }
+        by.retain(|_, v| v.abs() > 1e-6);
+        by
+    };
+    let mut bad = Vec::new();
+    for x in [3.0, 4.0, 6.0] {
+        for y in [3.79, 3.9, 4.0, 4.05, 4.08, 4.09, 4.1, 4.12, 4.2, 4.38, 4.39] {
+            // At x 6 a chimney from y 4.38 also crosses the hip, where the
+            // core's own result jumps within a centimetre (WV 0.59 at 4.38,
+            // 1.2 at 4.39 on the roof without the break): no reference.
+            if x == 6.0 && y > 4.3 {
+                continue;
+            }
+            let mut pair = [true, false].map(break_kept_and_joined);
+            for p in &mut pair {
+                p.chimneys.push(square(x, y, x + 0.6, y + 0.6));
+            }
+            let (got, want) = (lines(&pair[0]), lines(&pair[1]));
+            let codes: std::collections::BTreeSet<&String> =
+                got.keys().chain(want.keys()).collect();
+            for code in codes {
+                let (g, w) = (
+                    got.get(code).copied().unwrap_or(0.0),
+                    want.get(code).copied().unwrap_or(0.0),
+                );
+                if (g - w).abs() > 0.02 {
+                    bad.push(format!(
+                        "chimney at ({x}, {y}): {code} {g:.3}, without the break {w:.3}"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
