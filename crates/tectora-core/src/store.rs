@@ -946,9 +946,13 @@ impl Store {
         else {
             return Ok(false);
         };
+        // While AI changes wait for review the result stays: Revert and
+        // Revert all then undo the AI's changes, not the recalculation
+        // (hunt R2 BUG-3), and the review starts after the recalculation.
         if origin.taken_ms != stored.taken_ms
             || origin.checked == crate::snapshot::ENGINE_VERSION
             || origin.input != crate::snapshot::input_digest(&before)
+            || self.pending_review(id).is_some()
         {
             return Ok(false);
         }
@@ -1557,7 +1561,7 @@ impl Store {
     fn pending_start(&self, id: &str, log: &[ActivityEntry]) -> usize {
         let accepted = self.reviewed_at(id);
         log.iter()
-            .rposition(|e| e.actor == USER_ACTOR || e.ts_ms <= accepted)
+            .rposition(|e| e.actor == USER_ACTOR || e.actor == ENGINE_ACTOR || e.ts_ms <= accepted)
             .map_or(0, |i| i + 1)
     }
 
@@ -1676,6 +1680,9 @@ impl Store {
         let _ = fs::remove_file(self.activity_path(id)?);
         let _ = fs::remove_file(self.review_path(id)?);
         let _ = fs::remove_dir_all(self.files_dir(id)?);
+        if let Ok(p) = self.result_origin_path(id) {
+            let _ = fs::remove_file(p);
+        }
         // Its lock file too (ARCH-008). Where another process still holds
         // it (Windows), it stays and the next job of that id reuses it.
         let _ = fs::remove_file(self.activity_dir().join(format!("{id}.lock")));
@@ -2270,20 +2277,45 @@ mod tests {
     }
 
     #[test]
-    fn a_recalculation_neither_ends_nor_joins_a_pending_ai_review() {
+    fn a_purged_job_leaves_no_result_origin_behind() {
+        // Hunt R2 BUG-4: a failed bundle import kept `<id>.result.json`
+        // and the next job of that name got another id.
+        let store = temp_store("refresh-purge");
+        let (id, _) = old_offer(&store);
+        assert!(store.result_origin_path(&id).unwrap().exists());
+        store.purge(&id).unwrap();
+        assert!(!store.result_origin_path(&id).unwrap().exists());
+        assert_eq!(store.new_id(&id), id);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_stored_result_waits_for_a_pending_ai_review() {
+        // Hunt R2 BUG-3: a recalculation after an AI change made Revert
+        // undo the recalculation and keep the AI's change.
         let store = temp_store("refresh-review");
         let (id, mut p) = old_offer(&store);
+        p.job.customer = "WRONG".into();
+        store
+            .save_as(Some(id.clone()), &p, "claude-ai", "Customer")
+            .unwrap();
+        assert!(!store.refresh_stored_result(&id).unwrap());
+        store.revert_last(&id, USER_ACTOR, None).unwrap();
+        let q = store.load(&id).unwrap();
+        assert_ne!(q.job.customer, "WRONG");
+        // Reviewed, the result follows the corrected calculation.
+        assert!(store.refresh_stored_result(&id).unwrap());
+        // An AI change after it starts its own review: rejecting it keeps
+        // the recalculated result.
+        let mut p = store.load(&id).unwrap();
+        let fresh = p.result_snapshot.clone();
         p.notes = "by the AI".into();
         store
             .save_as(Some(id.clone()), &p, "claude-ai", "Notes")
             .unwrap();
         let pending = store.pending_review(&id).unwrap();
-        assert!(store.refresh_stored_result(&id).unwrap());
-        let after = store.pending_review(&id).unwrap();
-        assert_eq!(
-            (after.count, &after.actors),
-            (pending.count, &pending.actors)
-        );
+        assert_eq!(pending.count, 1);
+        assert_eq!(pending.before.unwrap().result_snapshot, fresh);
         // Alone it is no review.
         let (id, _) = old_offer(&store);
         assert!(store.refresh_stored_result(&id).unwrap());

@@ -1912,7 +1912,9 @@ fn client_actor(name: &str) -> String {
         .to_string();
     if clean.is_empty() {
         "AI".into()
-    } else if clean.eq_ignore_ascii_case(tectora_core::store::USER_ACTOR) {
+    } else if clean.eq_ignore_ascii_case(tectora_core::store::USER_ACTOR)
+        || clean.eq_ignore_ascii_case(tectora_core::store::ENGINE_ACTOR)
+    {
         format!("AI ({clean})")
     } else {
         clean
@@ -1948,7 +1950,7 @@ mod tests {
     #[test]
     fn a_client_named_user_is_still_reviewed() {
         // HUNTIO-003: its saves were logged as the user's own.
-        for name in ["user", "User", "  USER ", ""] {
+        for name in ["user", "User", "  USER ", "", "tectora", "Tectora"] {
             let mut s = server();
             s.handle(&json!({
                 "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -1965,13 +1967,24 @@ mod tests {
             assert!(!log.is_empty());
             assert!(
                 log.iter()
-                    .all(|e| e.actor != tectora_core::store::USER_ACTOR && !e.actor.is_empty()),
+                    .all(|e| e.actor != tectora_core::store::USER_ACTOR
+                        && e.actor != tectora_core::store::ENGINE_ACTOR
+                        && !e.actor.is_empty()),
                 "{name:?}: {:?}",
                 log.iter().map(|e| &e.actor).collect::<Vec<_>>()
             );
             let _ = std::fs::remove_dir_all(&s.store.dir);
         }
         assert_eq!(client_actor("Claude Desktop"), "Claude Desktop");
+        // Hunt R2 BUG-1: a client named like the engine's recalculation
+        // would skip the AI review.
+        for name in ["tectora", "Tectora", " TECTORA "] {
+            assert_ne!(
+                client_actor(name).to_lowercase(),
+                tectora_core::store::ENGINE_ACTOR,
+                "{name:?}"
+            );
+        }
         assert_eq!(client_actor(&"x".repeat(500)).chars().count(), 60);
     }
 
