@@ -52,9 +52,9 @@ impl RoofDefaults {
     /// The ranges every new wall accepts (`EdgeDef::problems`): a default
     /// the walls then refuse made every new job fail with an error about
     /// `defaults` (audit 2026-11-15 HUNTIO-007).
-    const PITCH: (f64, f64) = (crate::model::MIN_PITCH_DEG, 89.0);
-    const EAVE: (f64, f64) = (0.0, 1000.0);
-    const OVERHANG: (f64, f64) = (0.0, 20.0);
+    pub const PITCH: (f64, f64) = (crate::model::MIN_PITCH_DEG, 89.0);
+    pub const EAVE: (f64, f64) = (0.0, 1000.0);
+    pub const OVERHANG: (f64, f64) = (0.0, 20.0);
 
     fn validate(&self) -> Result<(), SettingsError> {
         let ok = |v: f64, (lo, hi): (f64, f64)| v.is_finite() && (lo..=hi).contains(&v);
@@ -155,6 +155,29 @@ pub enum SettingsError {
 }
 
 impl SettingsError {
+    /// The refusal as an English sentence for AI clients (MCP
+    /// `update_settings`), with the range a value must lie in (HUNTIO-007).
+    pub fn explain(&self) -> String {
+        let range = |name: &str, (lo, hi): (f64, f64), unit: &str| {
+            format!("roof_defaults.{name} must be a number from {lo} to {hi}{unit}")
+        };
+        match self {
+            Self::NotAbsolute => "the folder must be an absolute path".into(),
+            Self::NotAFolder => "the path is not a folder".into(),
+            Self::NotWritable => "the folder cannot be written to".into(),
+            Self::InvalidValue("pitch_deg") => range("pitch_deg", RoofDefaults::PITCH, "°"),
+            Self::InvalidValue("eave_height") => range("eave_height", RoofDefaults::EAVE, " m"),
+            Self::InvalidValue("overhang") => range("overhang", RoofDefaults::OVERHANG, " m"),
+            Self::InvalidValue("locale") => "locale must be cs, sk, en, de or null".into(),
+            Self::InvalidValue("key") => "an unknown setting was given; see get_settings for the keys".into(),
+            Self::InvalidValue("type") => {
+                "a setting has the wrong type (folders and locale are strings, roof_defaults numbers, follow_ai true or false)".into()
+            }
+            Self::InvalidValue(what) => format!("invalid value ({what})"),
+            Self::Io(e) => format!("the settings file could not be written: {e}"),
+        }
+    }
+
     /// Stable code without details, for UI translation.
     pub fn code(&self) -> &'static str {
         match self {
