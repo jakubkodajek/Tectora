@@ -684,9 +684,37 @@ fn dormer_cases(c: &mut Cases) {
     }
 }
 
+/// The pitch a gable turned back into an eave gets (`edit::eave_pitch`,
+/// `walltype.ts`): every wall of every outline, with and without the
+/// pitch it had before, and a part of gables only.
+fn walltype_cases(c: &mut Cases) {
+    let mut all: Vec<(Value, Vec<EdgeDef>)> = outlines()
+        .into_iter()
+        .map(|(name, es)| (outline_ref(name), from(&es)))
+        .collect();
+    let gables = json!([
+        wall(0.0, 0.0, 90.0, 3.0, 0.5),
+        wall(6.0, 0.0, 90.0, 3.0, 0.5),
+        wall(6.0, 5.0, 90.0, 3.0, 0.5),
+    ]);
+    all.push((gables.clone(), from(&gables)));
+    for (input, edges) in &all {
+        for i in 0..edges.len() {
+            for own in [None, Some(37.5)] {
+                c.add(
+                    "eave_pitch",
+                    json!({ "edges": input, "edge": i, "own": own, "preset": 41.0 }),
+                    to(tectora_core::edit::eave_pitch(edges, i, own, 41.0)),
+                );
+            }
+        }
+    }
+}
+
 fn cases() -> Vec<Value> {
     let mut c = Cases(Vec::new());
     calc_cases(&mut c);
+    walltype_cases(&mut c);
     round_cases(&mut c);
     transform_cases(&mut c);
     dormer_cases(&mut c);
@@ -798,6 +826,7 @@ fn every_operation_has_cases() {
         "parse_dormer",
         "default_params",
         "nearest_wall_angle",
+        "eave_pitch",
     ] {
         assert!(ops.contains(op), "no case for {op}");
     }

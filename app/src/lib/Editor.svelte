@@ -59,6 +59,7 @@
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
   import type { ActivityItem, Arc, HelperRequest, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
   import { GABLE_PITCH, buildingHeight, emptyProject, isAi, isGable, isMarker } from "./types";
+  import { eavePitchFor, rememberEavePitch } from "./walltype";
 
   let {
     id: idProp,
@@ -1561,8 +1562,8 @@
         { label: t("menu.properties"), icon: "sliders", action: focusProperties },
         ...(marker ? [] : [
           gable
-            ? { label: t("menu.makeEave"), icon: "roof", action: () => patchEdge({ pitch_deg: presets.pitch_deg, half_hip: null }) }
-            : { label: t("menu.makeGable"), icon: "house", action: () => patchEdge({ pitch_deg: GABLE_PITCH }) },
+            ? { label: t("menu.makeEave"), icon: "roof", action: () => project?.parts[part] && patchEdge({ pitch_deg: eavePitchFor(part, project.parts[part].edges, edge, presets.pitch_deg), half_hip: null }) }
+            : { label: t("menu.makeGable"), icon: "house", action: () => { const w = project?.parts[part]?.edges[edge]; if (w) rememberEavePitch(part, w); patchEdge({ pitch_deg: GABLE_PITCH }); } },
           { label: t("menu.insertPoint"), icon: "plus", action: () => insertVertex(part, edge, on.x, on.y) },
           { label: t("edge.addMarker"), icon: "right", action: insertMarker },
         ]),

@@ -4,9 +4,10 @@
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
   import { notifyError } from "./notify.svelte";
-  import { EAVE_HEIGHT, OVERHANG } from "./limits";
+  import { EAVE_HEIGHT, OVERHANG, PRESET_PITCH } from "./limits";
   import { numeric, parseNumber } from "./numeric.svelte";
-  import { presets, savePresets, updateSettings } from "./settings.svelte";
+  import { presets, setPreset } from "./settings.svelte";
+  import { describeError } from "./errors";
   import { MAX_ANGLE, angledStep, type Step } from "./drawstep";
 
   let {
@@ -124,12 +125,16 @@
     }
   }
 
-  function preset(v: number, key: "pitch_deg" | "eave_height" | "overhang") {
-    presets[key] = v;
-    savePresets();
-    // The same defaults as in Settings: store them in the settings file,
-    // or the next settings change (or start) puts the old ones back.
-    updateSettings({ roof_defaults: { [key]: v } }).catch((e) => notifyError(e, "save"));
+  /** The same defaults as in Settings, stored in the settings file first;
+   *  a refusal stays on the field and is reported as a settings error. */
+  async function preset(v: number, key: "pitch_deg" | "eave_height" | "overhang"): Promise<true | string> {
+    try {
+      await setPreset(key, v);
+      return true;
+    } catch (e) {
+      notifyError(e, "settings");
+      return describeError(e, "settings").message;
+    }
   }
 </script>
 
@@ -167,7 +172,7 @@
        later building and job (Settings › New roofs), not only this one (UX-002). -->
   <div class="presets" role="group" aria-labelledby="draw-presets-lbl" aria-describedby="draw-presets-note" title={t("draw.presetsHint")}>
     <span class="lbl" id="draw-presets-lbl">{t("draw.presets")}<small id="draw-presets-note" data-testid="draw-presets-note">{t("draw.presetsNote")}</small></span>
-    <label><span>{t("edge.pitch")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.pitch_deg, step: 1, min: 1, max: 89, onchange: (v) => preset(v, "pitch_deg") }} /><em>°</em></div></label>
+    <label><span>{t("edge.pitch")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.pitch_deg, step: 1, min: PRESET_PITCH.min, max: PRESET_PITCH.max, onchange: (v) => preset(v, "pitch_deg") }} /><em>°</em></div></label>
     <label title={t("edge.eaveHeightPresetHint")}><span>{t("edge.eaveHeight")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.eave_height, step: 0.05, min: EAVE_HEIGHT.min, max: EAVE_HEIGHT.max, onchange: (v) => preset(v, "eave_height") }} /><em>m</em></div></label>
     <label><span>{t("edge.overhang")}</span><div class="unit"><input type="text" use:numeric={{ value: presets.overhang, step: 0.05, min: OVERHANG.min, max: OVERHANG.max, onchange: (v) => preset(v, "overhang") }} /><em>m</em></div></label>
   </div>

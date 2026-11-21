@@ -476,7 +476,14 @@ fn create_standard(
     overhang: f64,
 ) -> CmdResult<String> {
     guard(|| {
-        commands::check_new_roof(Some(&name), pitch_deg, eave_height, overhang)?;
+        commands::check_standard_roof(
+            Some(&name),
+            length,
+            width,
+            pitch_deg,
+            eave_height,
+            overhang,
+        )?;
         let mut project = Project::new(name);
         project.parts.push(standard_roof(
             kind,
@@ -501,7 +508,7 @@ fn standard_part(
     overhang: f64,
 ) -> CmdResult<tectora_core::RoofPart> {
     guard(|| {
-        commands::check_new_roof(None, pitch_deg, eave_height, overhang)?;
+        commands::check_standard_roof(None, length, width, pitch_deg, eave_height, overhang)?;
         Ok(standard_roof(
             kind,
             length,
@@ -592,6 +599,14 @@ fn check_windows(project: Project) -> CmdResult<Option<tectora_core::edit::Overs
 #[tauri::command(async)]
 fn dormer_host(project: Project, index: usize) -> CmdResult<Value> {
     guard(|| Ok(commands::dormer_host(&project, index)?))
+}
+
+/// Whether dormer `index` can be stored as it is
+/// (`tectora_core::commands::check_dormer`): the dormer bar and dialog ask
+/// before they store a pitch or eave height (MATH-001, MATH-003).
+#[tauri::command(async)]
+fn check_dormer(project: Project, index: usize) -> CmdResult<()> {
+    guard(|| Ok(commands::check_dormer(&project, index)?))
 }
 
 /// What the calculation dialog needs to know about wall `edge` of part `part`
@@ -1112,6 +1127,7 @@ pub fn run() {
             calc_breakdown,
             check_windows,
             dormer_host,
+            check_dormer,
             roof_helper_context,
             roof_helper_preview,
             roof_helper_apply,
@@ -1177,6 +1193,7 @@ mod tests {
             "calc_breakdown",
             "take_snapshot",
             "dormer_host",
+            "check_dormer",
         ] {
             assert!(
                 src.contains(&format!("#[tauri::command(async)]\nfn {name}(")),

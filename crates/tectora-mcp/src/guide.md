@@ -85,6 +85,10 @@ The tools cover every operation of the Tectora editor:
   front and cheek overhangs together, `front_overhang` and `side_overhang`
   apart. A trapezoid's `back_width` (its shed roof's width where it meets
   the roof, in `section`) sets the cheek pitch instead of `pitch_deg`.
+  Every dormer pitch it uses must be 2° to below 90° (`dormer_pitch`), and
+  its eave must not lie below the roof under its front (front wall height
+  0 or more, `dormer_below_roof`): such a dormer is refused, as in the
+  editor's dormer bar.
 - Windows, chimneys (also as a rectangle) and roof openings: `set_openings`.
 - Change one chimney, roof opening or window in place (position, width,
   depth, rotation, chimney top) as the object bar does: `update_opening`.
@@ -110,7 +114,10 @@ The tools cover every operation of the Tectora editor:
 - Calculation helpers of the roof definition: `roof_helper` (simple
   triangle, two parallel walls, point in space, merge faces, hip/valley,
   build-up thickness, round roof). It shows the values first; pass
-  `apply: true` to save them.
+  `apply: true` to save them. Values no wall takes (an eave wall's pitch
+  of 90° or more, an overhang over 20 m, an eave outside 0 to 1000 m) are
+  refused and nothing is saved; usually a length was typed in the wrong
+  unit.
 - History: `get_history`, `revert_to`, `revert_last_change` (a revert keeps
   the user's later edits; it is refused when the user has since changed a
   value the reverted step set, so ask the user then). `get_review`
@@ -147,8 +154,16 @@ The tools cover every operation of the Tectora editor:
   settings) needs `summary`: one sentence for the user on what and why (an
   empty or blank one is refused).
 - An argument the tool's input schema does not name is refused
-  (`unknown argument …`), and so is a `part` that is not a whole number
-  from 0: fix the call instead of assuming it was saved.
+  (`unknown argument …`), and so is a value of the wrong type or outside
+  the schema's `enum` (a job number sent as a number, `neighbour:
+  "previous"`), and a `part` that is not a whole number from 0: nothing is
+  saved, fix the call instead of assuming it was.
+- `create_standard_roof` and `add_shape_part` take sides from 0.1 to
+  10 000 m, as the editor's standard-roof form; a smaller or larger one
+  is refused (check m against cm or mm).
+- `update_edges` with `gable: false` and no `pitch_deg` gives the wall the
+  pitch of the nearest eave wall of its part (the previous one first),
+  else the user's default pitch, as the editor's Eave button.
 - Limits: a design has at most 200 parts, 500 walls per part (2000 in all)
   and 500 of each kind of object (dormers, chimneys, windows, openings,
   hand-drawn lines and faces), 64 pitch breaks per wall (2000 in all); a
@@ -176,8 +191,11 @@ The tools cover every operation of the Tectora editor:
 When a job leaves the draft status (`update_job` with `status`), its result
 is stored with the engine version: the figures the offer was made with.
 `calc` and `get_project` report `stored_result` with every difference to the
-current result; tell the user when there are differences. `store_result`
-replaces the stored result with the current one.
+current result; tell the user when there are differences. A write to a
+job past the draft whose roof figures then differ from the stored ones
+says so in its `note` and carries `stored_result.differences`: tell the
+user that the offer's figures no longer match. `store_result` replaces the
+stored result with the current one; call it only when the user wants that.
 
 ## Results (DACAD line codes)
 

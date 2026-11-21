@@ -120,3 +120,14 @@ export async function updateSettings(patch: Record<string, unknown>): Promise<Ap
   applySettings(view);
   return view;
 }
+
+/**
+ * Changes one default for new roofs (the draw bar's presets): stored in
+ * the settings file first, and in `presets` only once the file took it, so
+ * a value the core refuses (a pitch under 2°, an eave below 0) never
+ * reaches the next building (UI-003, UX-004). Rejects with the settings
+ * error.
+ */
+export async function setPreset(key: keyof Presets, value: number): Promise<void> {
+  await updateSettings({ roof_defaults: { [key]: value } });
+}

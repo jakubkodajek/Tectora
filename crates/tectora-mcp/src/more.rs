@@ -799,11 +799,16 @@ impl Server {
                 let job = match args.get("job") {
                     None | Some(Value::Null) => None,
                     Some(j) => {
-                        let field = |k: &str| j.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+                        // A number sent as a JSON number is refused, not dropped (ERR-002).
+                        let field = |k: &str| {
+                            crate::text_arg(j, k)
+                                .map(Option::unwrap_or_default)
+                                .map_err(|m| format!("job.{m}"))
+                        };
                         Some(tectora_core::JobInfo {
-                            number: field("number"),
-                            customer: field("customer"),
-                            address: field("address"),
+                            number: field("number")?,
+                            customer: field("customer")?,
+                            address: field("address")?,
                             status: tectora_core::JobStatus::Draft,
                         })
                     }
@@ -1284,6 +1289,10 @@ impl Server {
                     "a polygon needs 3 to {MAX_POLYGON_SIDES} sides of positive length"
                 ));
             }
+            // The standard-roof form's side bounds (HUNTC-007): a side of
+            // 1 cm left walls without length after the corners' rounding.
+            tectora_core::edit::check_standard_size(side, side)
+                .map_err(|m| m.replacen("length", "side", 1))?;
             let c = at.unwrap_or(Point2::new(0.0, 0.0));
             let pts = regular_polygon(
                 c,
@@ -1307,6 +1316,7 @@ impl Server {
             if !(length > 0.0 && width > 0.0) {
                 return Err("length and width must be positive".into());
             }
+            tectora_core::edit::check_standard_size(length, width)?;
             let mut part = standard_roof(kind, length, width, pitch, eave, overhang);
             let (dx, dy) = match at {
                 Some(q) => (q.x, q.y),
@@ -1338,6 +1348,8 @@ impl Server {
             Some(r) => return Err(format!("part {r} does not exist")),
             None => p.parts.push(part),
         }
+        // As every other creating tool: no new input problem (HUNTC-007).
+        refuse_new_problems(&before, &p)?;
         self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
     }
 
@@ -1451,6 +1463,11 @@ impl Server {
                 .ok_or("the dormer's front is not on the roof, so wall_height, depth, ridge_length and back_width cannot be used; give eave_height and pitch_deg")?;
             params = dormers::solve(&params, host, target, back_width)?;
         }
+        // The pitch and eave rules of the editor's dormer bar (MATH-001,
+        // MATH-003): a dormer flatter than 2° or below the roof is left out
+        // or takes the building's roof with it.
+        let host = dormers::host_slope_in(&dormers::host_roof(&p), &params);
+        dormers::check_params(&params, host).map_err(|(code, why)| format!("{code}: {why}"))?;
         let mut d = dormers::build_dormer(&params);
         if let Some(old) = p.dormers.get(index) {
             d.host_wall = old.host_wall;
@@ -1569,15 +1586,10 @@ impl Server {
                 walls: opt(args, "walls")?,
             },
             "hip" => HelperRequest::Hip {
-                neighbour: match args.get("neighbour").and_then(Value::as_str) {
-                    Some("prev") => Neighbour::Prev,
-                    _ => Neighbour::Next,
-                },
-                by: if args.get("by").and_then(Value::as_str) == Some("eaves") {
-                    HipBy::Eaves
-                } else {
-                    HipBy::Rafters
-                },
+                // Refused unless one of the schema's values (ERR-005): a
+                // misspelt neighbour gave the other wall's pitch.
+                neighbour: opt::<Neighbour>(args, "neighbour")?.unwrap_or_default(),
+                by: opt::<HipBy>(args, "by")?.unwrap_or_default(),
                 hip: arg_f64(args, "hip")?.ok_or("missing `hip`")?,
                 first: arg_f64(args, "first")?.ok_or("missing `first`")?,
                 second: arg_f64(args, "second")?.ok_or("missing `second`")?,
@@ -1600,13 +1612,20 @@ impl Server {
         // A helper that sets eave heights keeps the building's height, as
         // update_edges does (review ARCH-001).
         let applied = helper::apply_to_part(&mut p, pi, &helped.patches);
-        let mut out = if args.get("apply").and_then(Value::as_bool) == Some(true)
-            && !applied.is_empty()
-        {
+        // The wall bar's ranges, as the dialog's OK (ARCH-003).
+        let refused = helper::check_applied(&before.parts[pi].edges, &p, pi, &applied).err();
+        let apply = args.get("apply").and_then(Value::as_bool) == Some(true);
+        if apply && let Some(why) = refused.clone() {
+            return Err(format!("{why}; nothing was saved"));
+        }
+        let mut out = if apply && !applied.is_empty() {
             self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?
         } else {
             json!({ "id": id, "saved": false, "note": "Not saved; call again with apply: true to save." })
         };
+        if let Some(why) = refused {
+            out["note"] = json!(format!("Not saved: apply would be refused, {why}."));
+        }
         out["patches"] = patches_json(&applied);
         if let Some(t) = helped.triangle {
             out["triangle"] = json!(t);

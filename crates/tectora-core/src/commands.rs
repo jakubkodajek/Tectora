@@ -107,6 +107,25 @@ pub fn dormer_host(project: &Project, index: usize) -> Result<Value, CommandErro
     Ok(serde_json::to_value(host).unwrap_or(Value::Null))
 }
 
+/// Whether dormer `index` of `project` can be saved as it is
+/// (`edit::dormers::check_params` on the roof under its front): `Ok` or the
+/// code `dormer_pitch` / `dormer_below_roof` with the English reason. The
+/// editor's dormer bar and dialog ask it before they store a value, as MCP
+/// `add_dormer` / `update_dormer` do (MATH-001, MATH-003).
+pub fn check_dormer(project: &Project, index: usize) -> Result<(), CommandError> {
+    check_input(project)?;
+    let Some(d) = project.dormers.get(index) else {
+        return Err(CommandError::out_of_range(format!(
+            "dormer {index} does not exist"
+        )));
+    };
+    let params = crate::edit::dormers::parse_dormer(d);
+    let host = crate::model::guarded(|| crate::edit::dormers::host_slope(project, index))
+        .map_err(CommandError::internal)?;
+    crate::edit::dormers::check_params(&params, host)
+        .map_err(|(code, detail)| CommandError { code, detail })
+}
+
 /// A request the edit operation refused or found no solution for: the UI
 /// shows its own message, `detail` is the English reason.
 fn refused(detail: String) -> CommandError {
@@ -468,6 +487,21 @@ pub fn check_new_roof(
     }
     crate::edit::check_new_wall(pitch_deg, eave_height, overhang)
         .map_err(CommandError::out_of_range)
+}
+
+/// [`check_new_roof`] plus the standard-roof form's bounds of length and
+/// width (`edit::check_standard_size`), for the app's `create_standard` and
+/// `standard_part` as for MCP `create_standard_roof` (ARCH-001).
+pub fn check_standard_roof(
+    name: Option<&str>,
+    length: f64,
+    width: f64,
+    pitch_deg: f64,
+    eave_height: f64,
+    overhang: f64,
+) -> Result<(), CommandError> {
+    check_new_roof(name, pitch_deg, eave_height, overhang)?;
+    crate::edit::check_standard_size(length, width).map_err(CommandError::out_of_range)
 }
 
 /// [`Project::check_input`] as a command error, with its code.

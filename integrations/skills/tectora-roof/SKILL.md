@@ -63,6 +63,12 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    in `get_project`.
    Each `summary` is one sentence in the user's language
    naming the sheet, e.g. "Sklon uliční strany 42° podle řezu A-A".
+   A refused call saved nothing: a value of the wrong type or outside the
+   tool's `enum` (send a job number as text), a standard roof side under
+   0.1 m, a dormer below the roof or flatter than 2°, a `roof_helper`
+   result no wall takes. Fix the value (often m against cm or mm) and call
+   again. When a write answers with `stored_result`, the job's offer
+   figures no longer match the roof: tell the user.
 7. In the check step first look at the roof over the drawing:
    `view_drawing` with `overlay` {`id`, `scale`, `origin`} (the
    `origin_sheet_mm` from `trace_outline`) draws the calculated faces and

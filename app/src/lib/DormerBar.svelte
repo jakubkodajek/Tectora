@@ -13,6 +13,10 @@
   import { prefs, savePrefs } from "./settings.svelte";
   import PlaceFields from "./PlaceFields.svelte";
   import { placementOf } from "./items";
+  import { api } from "./api";
+  import { dormerRefusal, toAppError } from "./errors";
+  import { notify, notifyError } from "./notify.svelte";
+  import { PITCH } from "./limits";
 
   let {
     project,
@@ -54,7 +58,7 @@
   const angleDeg = $derived(params ? +(((params.angle * 180) / Math.PI + 360) % 360).toFixed(2) : 0);
 
 
-  function set(patch: Partial<DormerParams>) {
+  async function set(patch: Partial<DormerParams>): Promise<boolean | string | undefined> {
     if (!params) return;
     const next = { ...params, ...patch };
     if (next.kind === "general") return;
@@ -64,7 +68,27 @@
       next.front_pitch_deg = defaultParams(patch.kind, next.start, next.angle, next.eave_height).front_pitch_deg;
     }
     if (next.kind === "pointed" && host !== null && patch.kind) next.eave_height = +host.toFixed(3);
-    onchange(buildDormer(next));
+    const d = buildDormer(next);
+    // The core says whether the dormer can stand there (an eave below the
+    // roof, a pitch under 2°), as for MCP add_dormer (MATH-001, MATH-003).
+    const at = index;
+    if (at === null) return;
+    const probe = { ...$state.snapshot(project), dormers: project.dormers.map((x, i) => (i === at ? d : $state.snapshot(x))) } as Project;
+    try {
+      await api.checkDormer(probe, at);
+    } catch (e) {
+      const why = dormerRefusal(e);
+      if (why === null) {
+        notifyError(e, "calc");
+        return false;
+      }
+      notify({ kind: "error", code: toAppError(e).code, title: t("dormer.refusedTitle"), message: why, detail: toAppError(e).detail });
+      return why;
+    }
+    // A newer selection or an AI reload meanwhile: nothing to store.
+    if (index !== at || !project.dormers[at]) return false;
+    onchange(d);
+    return true;
   }
 
   /** Position, direction and material sit in the "More" row, opened per user (UX-008, UI-008). */
@@ -119,13 +143,13 @@
         {#if kind !== "shed" && kind !== "round"}
           <label>
             <span>{kind === "trapezoid" ? t("dormer.cheekPitch") : t("edge.pitch")}</span>
-            <div class="unit"><input type="text" use:numeric={{ value: params.pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => set({ pitch_deg: v }) }} /><em>°</em></div>
+            <div class="unit"><input type="text" use:numeric={{ value: params.pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => set({ pitch_deg: v }) }} /><em>°</em></div>
           </label>
         {/if}
         {#if kind === "shed" || kind === "trapezoid"}
           <label>
             <span>{t("dormer.frontPitch")}</span>
-            <div class="unit"><input type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => set({ front_pitch_deg: v }) }} /><em>°</em></div>
+            <div class="unit"><input type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => set({ front_pitch_deg: v }) }} /><em>°</em></div>
           </label>
         {/if}
         {#if kind === "half_hip"}
@@ -135,7 +159,7 @@
           </label>
           <label>
             <span>{t("edge.halfHipPitch")}</span>
-            <div class="unit"><input type="text" use:numeric={{ value: params.half_hip_pitch_deg, step: 1, min: 2, max: 89.9, onchange: (v) => set({ half_hip_pitch_deg: v }) }} /><em>°</em></div>
+            <div class="unit"><input type="text" use:numeric={{ value: params.half_hip_pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => set({ half_hip_pitch_deg: v }) }} /><em>°</em></div>
           </label>
         {/if}
       {/if}

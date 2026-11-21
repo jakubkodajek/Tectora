@@ -328,6 +328,92 @@ pub fn check_new_wall(pitch_deg: f64, eave_height: f64, overhang: f64) -> Result
     Ok(())
 }
 
+/// Shortest side of a standard roof or a regular polygon, m: the editor's
+/// standard-roof form takes 0.1 m and up; a centimetre-rounded corner of a
+/// smaller shape leaves walls without length (ARCH-001, HUNTC-007).
+pub const MIN_STANDARD_SIDE: f64 = 0.1;
+/// Longest side of a standard roof, m (the form's bound, far beyond any
+/// building and inside the file limits).
+pub const MAX_STANDARD_SIDE: f64 = 10_000.0;
+
+/// The length and width of a standard roof (or the side of a regular
+/// polygon, given as both) as the editor's standard-roof form bounds them,
+/// for every creating command: the app's New job and standard-roof dialog
+/// (Tauri `create_standard` / `standard_part`) and MCP
+/// `create_standard_roof` / `add_shape_part` (ARCH-001).
+pub fn check_standard_size(length: f64, width: f64) -> Result<(), String> {
+    for (name, v) in [("length", length), ("width", width)] {
+        if !v.is_finite() || !(MIN_STANDARD_SIDE..=MAX_STANDARD_SIDE).contains(&v) {
+            return Err(format!(
+                "{name} {v} out of range ({MIN_STANDARD_SIDE} to {MAX_STANDARD_SIDE} m): check m against cm or mm"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The pitch a gable wall gets when it is turned back into an eave (the
+/// wall bar's Eave button, the plan's context menu, MCP `update_edges`
+/// with `gable: false`): the pitch the wall had before, when the editor
+/// remembers it (`remembered`), else the pitch of the nearest eave wall of
+/// the same part (searching both ways, the previous wall first), else the
+/// user's default pitch `preset` (ARCH-005, UI-007). Mirrored in
+/// `app/src/lib/walltype.ts` and checked by `tests/edit_parity.rs`.
+pub fn eave_pitch(edges: &[EdgeDef], edge: usize, remembered: Option<f64>, preset: f64) -> f64 {
+    if let Some(p) = remembered.filter(|p| p.is_finite()) {
+        return p;
+    }
+    let n = edges.len() as isize;
+    for d in 1..=n / 2 {
+        for k in [edge as isize - d, edge as isize + d] {
+            let e = &edges[k.rem_euclid(n) as usize];
+            if !e.is_gable() && !is_marker(e) {
+                return e.pitch_deg;
+            }
+        }
+    }
+    preset
+}
+
+/// The ranges a wall bar field takes (eave height 0 to 1000 m, overhang 0
+/// to 20 m, an eave wall's pitch from [`crate::model::MIN_PITCH_DEG`] to
+/// below 90°), checked on the walls `changed` of `after`: a calculation
+/// helper's OK writes no value the wall bar would refuse, whether it comes
+/// from the dialog or MCP `roof_helper` (ARCH-003). A wall that was a
+/// gable in `before` keeps its gable pitch.
+pub fn check_wall_values(
+    before: &[EdgeDef],
+    after: &[EdgeDef],
+    changed: impl IntoIterator<Item = usize>,
+) -> Result<(), String> {
+    let (eave_lo, eave_hi) = crate::settings::RoofDefaults::EAVE;
+    let (over_lo, over_hi) = crate::settings::RoofDefaults::OVERHANG;
+    for i in changed {
+        let Some(e) = after.get(i) else { continue };
+        let was_gable = before.get(i).is_some_and(|b| b.is_gable());
+        if !was_gable && !is_marker(e) {
+            check_eave_pitch(e.pitch_deg, crate::model::MIN_PITCH_DEG)
+                .map_err(|m| format!("wall {i}: {m}"))?;
+        }
+        if !(e.eave_height.is_finite() && (eave_lo..=eave_hi).contains(&e.eave_height)) {
+            return Err(format!(
+                "wall {i}: eave_height {} out of range ({eave_lo} to {eave_hi} m)",
+                e.eave_height
+            ));
+        }
+        if !(e.overhang.is_finite() && (over_lo..=over_hi).contains(&e.overhang)) {
+            return Err(format!(
+                "wall {i}: overhang {} out of range ({over_lo} to {over_hi} m)",
+                e.overhang
+            ));
+        }
+        if let Some((code, why)) = e.problems().next() {
+            return Err(format!("wall {i}: {code}: {why}"));
+        }
+    }
+    Ok(())
+}
+
 /// A job name must not be empty or blank (the editor refuses it too), and
 /// must not hold control characters (NUL, line breaks, tabs) or invisible
 /// ones (bidirectional overrides, zero-width spaces) that change how the

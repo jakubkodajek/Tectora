@@ -1,14 +1,3 @@
-<script lang="ts" module>
-  /**
-   * The pitch each wall had before it became a gable, so Eave brings back
-   * that wall's own pitch (not the last one switched). Keyed by part and
-   * the wall's start corner, which survive undo and reloads; kept for the
-   * session, also while another bar is shown.
-   */
-  const eavePitch = new Map<string, number>();
-  const wallKey = (part: number, e: { start: { x: number; y: number } }) => `${part}:${e.start.x},${e.start.y}`;
-</script>
-
 <script lang="ts">
   // DACAD's "roof definition" toolbar: the selected wall's roof parameters in
   // one row, with previous/next wall buttons, docked under the views.
@@ -27,6 +16,7 @@
   import { prefs, presets, savePrefs } from "./settings.svelte";
   import { tick } from "svelte";
   import { stepWall, wallStepKey } from "./wallstep";
+  import { eavePitchFor, rememberEavePitch } from "./walltype";
 
   let {
     project,
@@ -207,27 +197,17 @@
     if (!edge || toGable === gable) return;
     if (!selection || !part) return;
     if (toGable) {
-      eavePitch.set(wallKey(selection.part, edge), edge.pitch_deg);
+      rememberEavePitch(selection.part, edge);
       onchange({ pitch_deg: GABLE_PITCH });
     } else {
       onchange({ pitch_deg: eaveFallback(), half_hip: null });
     }
   }
 
-  /** The pitch for a gable turned back into an eave: its own from before,
-   *  else the nearest eave wall's in this part, else the roof default. */
+  /** The pitch for a gable turned back into an eave (`walltype.ts`, one rule with the context menu and MCP). */
   function eaveFallback(): number {
     if (!selection || !part || !edge) return presets.pitch_deg;
-    const own = eavePitch.get(wallKey(selection.part, edge));
-    if (own !== undefined) return own;
-    const n = part.edges.length;
-    for (let d = 1; d <= n / 2; d++) {
-      for (const k of [selection.edge - d, selection.edge + d]) {
-        const e = part.edges[((k % n) + n) % n];
-        if (!isGable(e) && !isMarker(e)) return e.pitch_deg;
-      }
-    }
-    return presets.pitch_deg;
+    return eavePitchFor(selection.part, part.edges, selection.edge, presets.pitch_deg);
   }
 </script>
 

@@ -422,6 +422,23 @@ pub fn changes_of(edges: &[EdgeDef], patches: &Patches) -> Patches {
         .collect()
 }
 
+/// Refuses helper values no wall bar field takes (a hip helper's 90°
+/// pitch, a build-up of 57 km of overhang): `applied` are the patches
+/// [`apply_to_part`] made on `project`, `before` the part's walls before
+/// (ARCH-003). Used by the dialog's OK ([`apply`]) and MCP `roof_helper`.
+pub fn check_applied(
+    before: &[EdgeDef],
+    project: &Project,
+    part: usize,
+    applied: &Patches,
+) -> Result<(), String> {
+    let Some(p) = project.parts.get(part) else {
+        return Ok(());
+    };
+    super::check_wall_values(before, &p.edges, applied.keys().copied())
+        .map_err(|m| format!("the helper gives values a wall does not take ({m}); check the lengths typed (m against cm or mm)"))
+}
+
 /// Works the request out and applies it (the MCP tool with `apply`, the
 /// dialog's OK). `Err` when it has no solution or gives the same values.
 pub fn apply(
@@ -431,9 +448,16 @@ pub fn apply(
     req: &HelperRequest,
 ) -> Result<HelperOut, String> {
     let out = run(project, part, edge, req)?;
-    if apply_to_part(project, part, &out.patches).is_empty() {
+    let before = project
+        .parts
+        .get(part)
+        .map(|p| p.edges.clone())
+        .unwrap_or_default();
+    let applied = apply_to_part(project, part, &out.patches);
+    if applied.is_empty() {
         return Err("the walls already have these values".into());
     }
+    check_applied(&before, project, part, &applied)?;
     Ok(out)
 }
 
