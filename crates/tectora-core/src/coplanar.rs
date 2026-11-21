@@ -401,6 +401,14 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
                 .iter()
                 .all(|p| (plane.z(Point2::new(p[0], p[1])) - p[2]).abs() < IN_PLANE)
         };
+        let lengths = |lines: &[RoofLine]| {
+            let mut by: std::collections::BTreeMap<&'static str, f64> = Default::default();
+            for l in lines {
+                *by.entry(l.dacad_code()).or_default() += l.length();
+            }
+            by
+        };
+        let before = lengths(&geo.lines);
         geo.lines = geo
             .lines
             .iter()
@@ -413,6 +421,20 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
             })
             .filter(|l| l.length() >= MIN_LINE)
             .collect();
+        // A line inside the joined face is gone (a pitch break between two
+        // faces of one pitch, a step of a few millimetres), and so is what
+        // a chimney on it took off the line: else the line totals would
+        // show a negative length of a line the roof does not have.
+        let after = lengths(&geo.lines);
+        for (code, len) in before {
+            let mut gone = len - after.get(code).copied().unwrap_or(0.0);
+            for (_, minus) in geo.minus_lines.iter_mut().filter(|(c, _)| c == code) {
+                let take = minus.min(gone).max(0.0);
+                *minus -= take;
+                gone -= take;
+            }
+        }
+        geo.minus_lines.retain(|(_, len)| *len > 1e-9);
     }
     Ok(())
 }
