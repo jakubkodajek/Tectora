@@ -1005,3 +1005,52 @@ fn a_cross_gable_drawn_as_two_buildings_hides_no_roof() {
         );
     }
 }
+
+/// A clockwise 0.5 m strip lying across another building: whatever its
+/// faces do, the roof hidden in the other building is never more than the
+/// strip's roof counts (bug hunt 2026-11-21 BUG-5: 20.35 m² said of
+/// 12.48 m²).
+#[test]
+fn no_more_roof_is_said_hidden_than_the_building_counts() {
+    let walls = |name: &str, pts: [(f64, f64, f64, f64, f64); 4]| RoofPart {
+        height: None,
+        name: name.into(),
+        edges: pts
+            .iter()
+            .map(|&(x, y, p, h, o)| edge(x, y, p, h, o))
+            .collect(),
+    };
+    let roof = calc(&job(vec![
+        walls(
+            "P",
+            [
+                (-0.37, -0.118, 90.0, 4.2, 0.5),
+                (9.63, -0.118, 5.0, 4.2, 0.5),
+                (9.63, 4.882, 5.0, 4.2, 0.5),
+                (-0.37, 4.882, 90.0, 4.2, 0.5),
+            ],
+        ),
+        walls(
+            "Q",
+            [
+                (0.514, 1.989, 90.0, 4.2, 1.2),
+                (10.514, 1.989, 90.0, 4.2, 1.2),
+                (10.514, 1.489, 5.0, 4.21, 1.2),
+                (0.514, 1.489, 5.0, 4.2, 1.2),
+            ],
+        ),
+    ]));
+    for (part, g) in roof.geos.iter().enumerate() {
+        let counted: f64 = g
+            .faces
+            .iter()
+            .filter(|f| f.edge != usize::MAX)
+            .map(|f| f.area)
+            .sum();
+        let said = warned(&roof, part, WarningKind::HiddenUnderNeighbour);
+        assert!(
+            said <= counted + 1e-9,
+            "part {part}: {said} said hidden of {counted}"
+        );
+    }
+}

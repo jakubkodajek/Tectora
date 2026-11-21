@@ -634,29 +634,69 @@ fn uncovered_plan(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<f64> {
     if geos.iter().any(|g| g.error.is_some()) {
         return out;
     }
-    let mut roof = MultiPolygon::new(vec![]);
-    for f in geos.iter().flat_map(|g| &g.faces) {
-        if f.pitch_deg < 89.9 && f.polygon.len() >= 3 {
-            let pts = plan(f);
-            if signed_area(&pts).abs() > 1e-9 {
-                roof = roof.union(&MultiPolygon::new(vec![to_geo(&pts)]));
-            }
-        }
-    }
+    let faces: Vec<(Polygon<f64>, [f64; 4])> = geos
+        .iter()
+        .flat_map(|g| &g.faces)
+        .filter(|f| f.pitch_deg < 89.9 && f.polygon.len() >= 3)
+        .map(plan)
+        .filter(|pts| signed_area(pts).abs() > 1e-9)
+        .map(|pts| (to_geo(&pts), bbox(&pts)))
+        .collect();
     for (i, part) in parts.iter().enumerate() {
         let roofed = part.edges.iter().any(|e| !e.is_gable());
         if !roofed || geos.get(i).is_none_or(|g| g.faces.is_empty()) {
             continue;
         }
         let mut plan_of = MultiPolygon::new(vec![]);
+        let mut bb = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
         for piece in eave_outline(part) {
             if piece.len() >= 3 && signed_area(&piece).abs() > 1e-9 {
+                bb = join_bbox(bb, bbox(&piece));
                 plan_of = plan_of.union(&MultiPolygon::new(vec![to_geo(&piece)]));
+            }
+        }
+        // Only the faces over this building's plan matter.
+        let mut roof = MultiPolygon::new(vec![]);
+        for (poly, fb) in &faces {
+            if boxes_meet(bb, *fb) {
+                roof = roof.union(&MultiPolygon::new(vec![poly.clone()]));
             }
         }
         out[i] = plan_of.difference(&roof).unsigned_area();
     }
     out
+}
+
+/// `[min x, min y, max x, max y]` of plan points.
+fn bbox(pts: &[Point2]) -> [f64; 4] {
+    pts.iter().fold(
+        [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ],
+        |b, p| [b[0].min(p.x), b[1].min(p.y), b[2].max(p.x), b[3].max(p.y)],
+    )
+}
+
+fn join_bbox(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
+    [
+        a[0].min(b[0]),
+        a[1].min(b[1]),
+        a[2].max(b[2]),
+        a[3].max(b[3]),
+    ]
+}
+
+/// Whether two boxes overlap or touch (within a centimetre).
+fn boxes_meet(a: [f64; 4], b: [f64; 4]) -> bool {
+    a[0] <= b[2] + 0.01 && b[0] <= a[2] + 0.01 && a[1] <= b[3] + 0.01 && b[1] <= a[3] + 0.01
 }
 
 /// Per building, the area of its sloped roof faces that lie in plan
@@ -665,38 +705,57 @@ fn uncovered_plan(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<f64> {
 fn hidden_under_neighbour(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<f64> {
     let mut out = vec![0.0; geos.len()];
     let ok = |g: &RoofGeometry| g.error.is_none() && !g.faces.is_empty();
+    // Per building: its walls and its sloped faces with their planes.
+    type Host = (MultiPolygon<f64>, [f64; 4], Vec<(Polygon<f64>, [f64; 3])>);
+    let hosts: Vec<Option<Host>> = parts
+        .iter()
+        .zip(geos)
+        .map(|(part, h)| {
+            let pts = part.outline();
+            if !ok(h) || pts.len() < 3 || !signed_area(&pts).is_finite() {
+                return None;
+            }
+            let faces = roof_faces(h)
+                .filter_map(|f| Some((to_geo(&plan(f)), plane_of(&f.polygon)?)))
+                .collect();
+            Some((MultiPolygon::new(vec![to_geo(&pts)]), bbox(&pts), faces))
+        })
+        .collect();
     for (k, g) in geos.iter().enumerate() {
         if !ok(g) {
             continue;
         }
-        for (j, part) in parts.iter().enumerate() {
-            let Some(host) = geos.get(j).filter(|h| j != k && ok(h)) else {
+        for f in roof_faces(g) {
+            let Some(plane) = plane_of(&f.polygon) else {
                 continue;
             };
-            let pts = part.outline();
-            if pts.len() < 3 || !signed_area(&pts).is_finite() {
+            let cos = f.pitch_deg.to_radians().cos();
+            if cos.is_nan() || cos <= 1e-6 {
                 continue;
             }
-            let walls = MultiPolygon::new(vec![to_geo(&pts)]);
-            let over: Vec<(Polygon<f64>, [f64; 3])> = roof_faces(host)
-                .filter_map(|h| Some((to_geo(&plan(h)), plane_of(&h.polygon)?)))
-                .collect();
-            for f in roof_faces(g) {
-                let Some(plane) = plane_of(&f.polygon) else {
+            let pts = plan(f);
+            let face = MultiPolygon::new(vec![to_geo(&pts)]);
+            let fb = bbox(&pts);
+            // One union per face over every other building, so buildings
+            // lying on top of each other do not count a piece twice.
+            let mut hidden = MultiPolygon::new(vec![]);
+            for (j, host) in hosts.iter().enumerate() {
+                let Some((walls, wb, over)) = host.as_ref().filter(|_| j != k) else {
                     continue;
                 };
-                let cos = f.pitch_deg.to_radians().cos();
-                let inside = MultiPolygon::new(vec![to_geo(&plan(f))]).intersection(&walls);
-                if cos.is_nan() || cos <= 1e-6 || inside.unsigned_area() <= MIN_PIECE {
+                if !boxes_meet(fb, *wb) {
                     continue;
                 }
-                // Over each host face both are planes, so the height
-                // between them is linear and the hidden part is the piece
-                // cut by one straight line: exact, wherever the faces
+                let inside = face.intersection(walls);
+                if inside.unsigned_area() <= MIN_PIECE {
+                    continue;
+                }
+                // Over each face of the other roof both are planes, so the
+                // height between them is linear and the hidden part is the
+                // piece cut by one straight line: exact, wherever the faces
                 // cross (judging a piece at one point booked whole pieces
-                // the host roof covers only in part).
-                let mut hidden = MultiPolygon::new(vec![]);
-                for (poly, h) in &over {
+                // the other roof covers only in part).
+                for (poly, h) in over {
                     let d = [
                         h[0] - plane[0],
                         h[1] - plane[1],
@@ -712,9 +771,13 @@ fn hidden_under_neighbour(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<f64>
                         }
                     }
                 }
-                out[k] += hidden.unsigned_area() / cos;
             }
+            out[k] += hidden.unsigned_area() / cos;
         }
+        // A roof whose faces fold over each other covers less than its
+        // faces' outlines: never say more is hidden than it counts.
+        let counted: f64 = area_faces(g).map(|f| f.area).sum();
+        out[k] = out[k].min(counted.max(0.0));
     }
     out
 }
