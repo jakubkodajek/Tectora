@@ -386,3 +386,23 @@ sessions that use it know where things stand.
   piece; a hipped bay whose front plane lies ~2 cm under the house plane
   (Jakub's test job) counts ~0.3 m2 twice in slivers; a cut larger than
   its face on joined buildings still gives a negative face (warned).
+- Rounds 2-4 (Fable review + bug hunt each round, fixes with failing-first
+  tests): stored-result refresh (`Store::refresh_stored_result`, sidecar
+  `.activity/<id>.result.json` with up to 16 origins by `taken_ms`; origin
+  only when this engine gives the figures for the design, at most 200
+  walls+breaks+objects; no refresh while an AI review is pending; an
+  engine entry ends a pending review); new warnings
+  `hidden_under_neighbour`, `uncovered_plan`; join keeps chimney/dormer
+  lines and books line deductions by place (`RoofGeometry::minus_at`);
+  `cut_chimney` shares a hole edge only along the other edge; departed
+  roofs keep windows larger than a face. Guards in `calc_consistency.rs`,
+  `leftovers_cases.rs`, `store.rs` tests.
+- State: `make check` exit 0 at 481fe34 (648 Rust tests, 264 vitest).
+- Open: the refresh only acts after a version bump (results stored by
+  0.9.0 carry 0.9.0); results stored before the sidecar existed are never
+  refreshed; a roof opening side exactly on a ridge/seam of a swept roof
+  loses that side (same on main); chimney deduction on some core roofs
+  changes with the building's position (Fable R3-2, needs a DACAD run);
+  opening inside a dormer on swept roofs deducted from the host too (R3-5,
+  same on main); chimney front side within 1 cm above a joined break and
+  across the ridge not deducted (R3-4, same on main).
