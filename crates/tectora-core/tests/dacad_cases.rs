@@ -267,7 +267,7 @@ fn int_matches_dacad() {
 /// derived from third-party files and stay outside the repository; point
 /// `DACAD_SAMPLES` at their directory to run this.
 #[test]
-#[ignore]
+#[ignore = "needs DACAD_SAMPLES (private DACAD material outside the repository)"]
 fn samples_match_dacad() {
     let dir = std::env::var("DACAD_SAMPLES").expect("DACAD_SAMPLES");
     let cases = read_fixtures(std::path::Path::new(&dir));

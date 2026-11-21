@@ -6,7 +6,10 @@
 // drawing, a dormer dialog that warns before OK, Done refused like an offer,
 // German toolbar labels, AI wall notes at their wall, the previous-state
 // check, Enter for a hand-drawn face and an empty job without zero figures.
+import fs from "node:fs";
+import path from "node:path";
 import type { Page } from "@playwright/test";
+import { CONFIG_DIR } from "./env";
 import { clickPlan, openEditor, plan, selectWall, setField, tool } from "./editor";
 import { bridge, createExample, expect, listProjects, loadProject, scratchFile, test, waitForProject } from "./fixtures";
 import { cs, tr } from "./i18n";
@@ -88,6 +91,9 @@ test.describe("audit 2026-11-21 UI", () => {
     await more.dblclick();
     await page.waitForTimeout(500);
     await expect(page.locator(".editor")).toHaveCount(0);
+    // TEST-108: and the menu it is named for is open.
+    await expect(page.locator("article.card").first().getByRole("menu")).toBeVisible();
+    await expect(more).toHaveAttribute("aria-expanded", "true");
   });
 
   test("a status change writes no ownership warning (UI-010, ERRU-004)", async ({ app, page }) => {
@@ -200,9 +206,16 @@ test.describe("audit 2026-11-21 UI", () => {
     await createExample("gable", "Skok");
     await openEditor(app, "Skok");
     const wall = plan(page).locator("g.edge line.wall").first();
+    // TEST-108: open the More row first, the case the test is named for.
+    await selectWall(page, 1);
+    const more = page.getByTestId("def-more");
+    if ((await more.getAttribute("aria-expanded")) !== "true") await more.click();
+    await expect(more).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator("#def-more-row")).toBeVisible();
     await page.waitForTimeout(400);
     const before = (await wall.boundingBox())!;
     await selectWall(page, 0);
+    await expect(page.locator("#def-more-row")).toBeVisible();
     await page.waitForTimeout(400);
     const after = (await wall.boundingBox())!;
     expect(Math.abs(after.y - before.y)).toBeLessThanOrEqual(1);
@@ -375,5 +388,43 @@ test.describe("audit 2026-11-21 UX", () => {
     await expect(results.getByTestId("res-area")).toHaveText("—");
     await expect(results.getByTestId("res-empty")).toHaveText(cs("res.empty"));
     await expect(results).not.toContainText("0,00 m");
+  });
+
+  test("an AI settings change shows before and after; Revert puts the values back, Accept keeps them (UX-003)", async ({ app, page, mcp }) => {
+    const settingsFile = () => JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, "settings.json"), "utf8"));
+    await app.open();
+    await mcp.call("update_settings", { roof_defaults: { pitch_deg: 25 }, locale: "de", summary: "Company defaults" });
+    // Applied at once: the UI is German, and the card says what changed.
+    const card = page.getByRole("status", { name: tr("de", "aiChange.title", { by: "Claude" }) });
+    await expect(card).toBeVisible();
+    await expect(card).toContainText("Company defaults");
+    const row = (label: string) => card.locator("dt").filter({ hasText: label }).locator("+ dd");
+    await expect(row(tr("de", "edge.pitch"))).toHaveText("40° → 25°");
+    // The app wrote its Czech into the settings file when it opened.
+    await expect(row(tr("de", "lang"))).toHaveText("Čeština → Deutsch");
+    await expect(page.getByRole("button", { name: tr("de", "lib.new") }).first()).toBeVisible();
+
+    await card.getByRole("button", { name: tr("de", "ai.revert") }).click();
+    await expect(card).toHaveCount(0);
+    // Back in Czech with the old pitch.
+    await expect(page.getByRole("button", { name: cs("lib.new") }).first()).toBeVisible();
+    await expect.poll(() => settingsFile().roof_defaults?.pitch_deg ?? 40).toBe(40);
+    expect(settingsFile().locale).toBe("cs");
+    expect(settingsFile().ai_changes.map((c: any) => c.state)).toEqual(["reverted"]);
+    await page.getByRole("button", { name: cs("settings.button"), exact: true }).click();
+    const dlg = page.getByRole("dialog", { name: cs("settings.title") });
+    await expect(dlg.locator(".grid3").getByLabel(cs("edge.pitch"))).toHaveValue("40");
+    await page.keyboard.press("Escape");
+    await expect(dlg).toHaveCount(0);
+
+    await mcp.call("update_settings", { roof_defaults: { pitch_deg: 25 }, summary: "Company defaults again" });
+    const again = page.getByRole("status", { name: cs("aiChange.title", { by: "Claude" }) });
+    await expect(again).toContainText("Company defaults again");
+    await again.getByRole("button", { name: cs("review.accept") }).click();
+    await expect(again).toHaveCount(0);
+    await expect.poll(() => settingsFile().ai_changes.map((c: any) => c.state)).toEqual(["reverted", "accepted"]);
+    expect(settingsFile().roof_defaults.pitch_deg).toBe(25);
+    await page.getByRole("button", { name: cs("settings.button"), exact: true }).click();
+    await expect(dlg.locator(".grid3").getByLabel(cs("edge.pitch"))).toHaveValue("25");
   });
 });

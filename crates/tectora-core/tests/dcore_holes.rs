@@ -196,7 +196,7 @@ fn report(t: &Tallies, show: usize) -> bool {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs DCORE_HOLES (private DACAD material outside the repository)"]
 fn hole_dumps() {
     let sets = std::env::var("DCORE_HOLES").expect("DCORE_HOLES=LIST=DIR;...");
     let mut t = Tallies::new();

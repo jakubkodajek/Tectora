@@ -140,6 +140,31 @@ fn an_older_format_migrates_and_a_newer_one_is_refused() {
 }
 
 #[test]
+fn a_schema_version_that_is_not_a_whole_number_is_refused() {
+    // Round-1 TEST-008: a damaged version must not open as format 1, or a
+    // newer file whose version is no integer slips past `newer_format`.
+    let mut v = serde_json::to_value(gable()).unwrap();
+    let bad: [Value; 5] = [
+        "99".into(),
+        "1".into(),
+        99.5.into(),
+        (-1).into(),
+        serde_json::from_str("18446744073709551617").unwrap(),
+    ];
+    for version in bad {
+        v["schema_version"] = version.clone();
+        assert!(
+            Project::from_json(&v.to_string()).is_err(),
+            "schema_version {version} opened"
+        );
+    }
+    // A file without the field is a format-1 file and still opens.
+    v.as_object_mut().unwrap().remove("schema_version");
+    let p = Project::from_json(&v.to_string()).unwrap();
+    assert_eq!(p.schema_version, SCHEMA_VERSION);
+}
+
+#[test]
 fn files_saved_by_older_releases_open_resave_and_calculate() {
     // TEST-011: the committed files of format 1 and 2 as older releases
     // wrote them (no `height`, `roof_openings`, `manual_faces`) go through

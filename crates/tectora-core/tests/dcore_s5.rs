@@ -136,7 +136,7 @@ fn report(t: &Tallies, show: usize) -> bool {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs DCORE_SETS (private DACAD material outside the repository)"]
 fn s5_dumps() {
     let sets = std::env::var("DCORE_SETS").expect("DCORE_SETS=LIST=DIR;...");
     let mut t = Tallies::new();
@@ -225,7 +225,7 @@ fn fixture_vectors() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs DCORE_S5VEC (private DACAD material outside the repository)"]
 fn all_vectors() {
     let p = std::env::var("DCORE_S5VEC").expect("DCORE_S5VEC=file");
     let (n, bad) = s5_vectors(Path::new(&p));

@@ -84,7 +84,8 @@
         aria-expanded={menuOpen}
         onclick={(e) => {
           e.stopPropagation();
-          menuOpen = !menuOpen;
+          // The second click of a double click keeps the menu open.
+          menuOpen = e.detail > 1 ? true : !menuOpen;
         }}
       >
         <Icon name="more" />
