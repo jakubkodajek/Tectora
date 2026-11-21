@@ -319,15 +319,32 @@
   );
   const wallCount = $derived(project?.parts.reduce((n, p) => n + p.edges.length, 0) ?? 0);
 
+  /**
+   * A recalculation is on its way and the figures shown are of the roof
+   * before the last edit: Results, the status bar and the views say so
+   * (ERR-204). Set only after a moment, so a quick calculation does not flicker.
+   */
+  let calcPending = $state(false);
+  let pendingTimer: ReturnType<typeof setTimeout> | undefined;
+  /** How long a calculation runs before it is marked as pending, ms [no source: editor choice]. */
+  const PENDING_MS = 250;
+
   async function recalc() {
     if (!project) return;
     const seq = ++calcSeq;
+    clearTimeout(pendingTimer);
+    pendingTimer = setTimeout(() => seq === calcSeq && (calcPending = true), PENDING_MS);
     try {
       const r = await api.calc($state.snapshot(project) as Project);
       if (seq === calcSeq) (result = r), (calcFailure = null);
     } catch (e) {
       if (seq === calcSeq) (result = null), (calcFailure = describeError(e, "calc"));
       notifyError(e, "calc");
+    } finally {
+      if (seq === calcSeq) {
+        clearTimeout(pendingTimer);
+        calcPending = false;
+      }
     }
   }
 
@@ -2107,6 +2124,7 @@
           </div>
         {/if}
         <div class="views" class:split={prefs.layout === "split"}>
+          {#if calcPending}<span class="calc-mark" role="status" data-testid="calc-pending"><i class="dot"></i>{t("res.calculating")}</span>{/if}
           {#if prefs.layout !== "3d"}
             <div class="view">
               <span class="view-label">{t("editor.plan")}</span>
@@ -2205,7 +2223,7 @@
         <div class="dock" role="tabpanel" id={dockIds.panel} aria-labelledby={dockIds.tab(dock)} bind:this={dockEl}>
           <button class="icon-btn dock-close" onclick={() => (dockOpen = false)} aria-label={t("common.close")} title={t("common.close")}><Icon name="x" size={16} /></button>
           {#if dock === "results"}
-            <Results {result} {project} onstore={storeResult} blocked={blockedReason} failure={calcFailure} />
+            <Results {result} {project} onstore={storeResult} blocked={blockedReason} failure={calcFailure} pending={calcPending} />
           {:else if dock === "breakdown"}
             <Breakdown {project} {result} bind:data={breakdown} onmark={(mk) => (planMark = mk)} />
           {:else if dock === "ai"}
@@ -2221,7 +2239,7 @@
       <span class="coords">{cursor ? `X ${num(cursor.x)}   Y ${num(cursor.y)}` : "X —   Y —"}</span>
       <span class="opt">{t("status.snap")}</span>
       <span class="opt">{t("status.walls", { n: wallCount, p: project.parts.length })}</span>
-      {#if result}<span data-testid="status-area">{t("res.area")}: <b title={roofState(result) !== "ok" ? t(roofState(result) === "none" ? "res.notCalculated" : "res.calcPartial") : undefined}>{roofState(result) === "none" ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
+      {#if result}<span data-testid="status-area" class:pending={calcPending} aria-busy={calcPending}>{t("res.area")}: <b title={roofState(result) !== "ok" ? t(roofState(result) === "none" ? "res.notCalculated" : "res.calcPartial") : undefined}>{roofState(result) === "none" ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save">
         {#if saveState === "saved"}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
@@ -2671,6 +2689,7 @@
     color: var(--on-ai);
   }
   .views {
+    position: relative;
     flex: 1;
     min-height: 0;
     display: grid;
@@ -2680,6 +2699,32 @@
   }
   .views.split {
     grid-template-columns: 1fr 1fr;
+  }
+  /* A recalculation on its way: the plan and 3D still show the roof before the edit (ERR-204). */
+  .calc-mark {
+    position: absolute;
+    z-index: 3;
+    right: 10px;
+    top: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    font-size: 11.5px;
+    color: var(--text-2);
+    pointer-events: none;
+  }
+  .calc-mark .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-3);
+  }
+  .statusbar .pending b {
+    color: var(--text-3);
   }
   .view {
     position: relative;
