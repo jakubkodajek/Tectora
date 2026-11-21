@@ -188,6 +188,8 @@ export const api = {
   /** `path`: the request the dialog showed; a request replaced meanwhile is not answered. */
   answerFileRequest: (path: string, allow: boolean) =>
     invoke<AppSettingsView>("answer_file_request", { path, allow }),
+  /** The user's answer to an AI settings change: `revert` puts the values before it back. */
+  answerAiChange: (id: number, revert: boolean) => invoke<AppSettingsView>("answer_ai_change", { id, revert }),
   openFolder: (which: "projects" | "drawings" | "settings") => invoke<void>("open_folder", { which }),
   listAttachments: (id: string) => invoke<Attachment[]>("list_attachments", { id }),
   attachFiles: (id: string, paths: string[]) => invoke<string[]>("attach_files", { id, paths }),

@@ -55,7 +55,7 @@
   import { partLabel } from "./partname";
   import { exportTitle } from "./exportlist";
   import { tabIds, tablist } from "./tabs";
-  import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
+  import { actorName, entrySummary, isFresh, live, liveText, pillText } from "./live.svelte";
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
   import type { ActivityItem, Arc, HelperRequest, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
   import { GABLE_PITCH, buildingHeight, emptyProject, isAi, isGable, isMarker } from "./types";
@@ -1878,7 +1878,7 @@
         <strong>{actorName(live.status.actor)}</strong><span class="msg">{liveText(live.status)}</span>
       {:else if isFresh() && live.status}
         <!-- The agent works on another job (or the library): said, not lit up. -->
-        <strong>{actorName(live.status.actor)}</strong><span class="msg">{t("ai.elsewhere", { name: live.status.name ?? "" })}</span>
+        <strong>{actorName(live.status.actor)}</strong><span class="msg">{pillText(live.status)}</span>
       {:else}
         <Icon name="sparkle" size={14} />{t("ai.short")}
       {/if}

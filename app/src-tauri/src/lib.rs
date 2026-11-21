@@ -805,6 +805,18 @@ fn answer_file_request(path: std::path::PathBuf, allow: bool) -> Result<Value, S
     Ok(next.describe())
 }
 
+/// The user's answer to a settings change an AI client made
+/// (`Settings::ai_changes`, UX-003): `revert` puts the previous values back,
+/// otherwise it is accepted. A change answered meanwhile is left alone.
+#[tauri::command]
+fn answer_ai_change(id: u64, revert: bool) -> Result<Value, String> {
+    let next = Settings::load()
+        .answer_ai_change(id, revert)
+        .map_err(|e| e.code().to_string())?;
+    next.save().map_err(|e| e.code().to_string())?;
+    Ok(next.describe())
+}
+
 /// Opens one of the configured folders in Finder / Explorer.
 #[tauri::command]
 fn open_folder(which: String) -> Result<(), String> {
@@ -1126,6 +1138,7 @@ pub fn run() {
             update_settings,
             answer_folder_request,
             answer_file_request,
+            answer_ai_change,
             open_folder,
             updates::update_check,
             updates::update_install

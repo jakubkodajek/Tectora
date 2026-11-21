@@ -6,6 +6,8 @@
   import { relativeTime } from "./format";
   import { t } from "./i18n.svelte";
   import { actorName, entrySummary, isFresh, isRevert, live, liveText } from "./live.svelte";
+  import { app as appSettings } from "./settings.svelte";
+  import { changeRows } from "./settingschange";
   import type { ActivityItem, Change, Project } from "./types";
   import { isAi } from "./types";
 
@@ -30,6 +32,9 @@
 
   let open = $state<Record<number, boolean>>({});
   const here = $derived(isFresh() && live.status?.project_id === id);
+  // App settings AI clients changed (UX-003), newest first; an open one is
+  // answered on the card App.svelte shows.
+  const settingsChanges = $derived([...(appSettings.view?.settings.ai_changes ?? [])].reverse().slice(0, 5));
 </script>
 
 <div class="panel">
@@ -85,6 +90,27 @@
       </li>
     {/each}
   </ol>
+
+  {#if settingsChanges.length}
+    <h4>{t("aiChange.history")}</h4>
+    <ol>
+      {#each settingsChanges as c (c.id)}
+        <li class="ai">
+          <div class="head">
+            <span class="who ai"><Icon name="sparkle" size={13} />{actorName(c.by)}</span>
+            <time>{relativeTime(c.id)}</time>
+          </div>
+          <p class="summary">{c.summary}</p>
+          <ul>
+            {#each changeRows(c) as r (r.key)}
+              <li>{r.label}: {r.before} → {r.after}</li>
+            {/each}
+          </ul>
+          <span class="state">{t(`aiChange.state.${c.state}`)}</span>
+        </li>
+      {/each}
+    </ol>
+  {/if}
 </div>
 
 <style>
@@ -210,6 +236,10 @@
   }
   ul li:hover {
     color: var(--text);
+  }
+  .state {
+    font-size: 12px;
+    color: var(--text-3);
   }
   .btn.sm {
     height: 28px;

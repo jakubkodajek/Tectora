@@ -115,6 +115,15 @@ pub struct Settings {
     /// Files outside those folders the user allowed AI clients to read.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub allowed_files: Vec<PathBuf>,
+    /// Settings changes AI clients made, oldest first, at most
+    /// [`MAX_AI_CHANGES`]; the app shows an open one for the user to accept
+    /// or revert (audit 2026-11-21 UX-003).
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient_changes"
+    )]
+    pub ai_changes: Vec<AiSettingsChange>,
     /// Keys this build does not know, kept as they are.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -132,6 +141,7 @@ impl Default for Settings {
             folder_request: None,
             file_request: None,
             allowed_files: Vec::new(),
+            ai_changes: Vec::new(),
             extra: Map::new(),
         }
     }
@@ -327,6 +337,78 @@ pub struct FileRequest {
     pub purpose: String,
 }
 
+/// How the user answered an [`AiSettingsChange`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AiChangeState {
+    /// Applied, not reviewed yet.
+    #[default]
+    Open,
+    Accepted,
+    Reverted,
+}
+
+/// One settings change by an AI client (MCP `update_settings`): applied at
+/// once, recorded with who, why and the values before and after so the
+/// user can see it and put the old values back (UX-003). Folders are not
+/// in it: those wait for the user as a [`FolderRequest`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AiSettingsChange {
+    /// Unique in the history: the time in ms, bumped past the last one.
+    pub id: u64,
+    /// The AI client's name.
+    pub by: String,
+    /// Its one-sentence summary.
+    pub summary: String,
+    /// The changed values before, by key ([`AI_CHANGE_KEYS`]).
+    pub before: Map<String, Value>,
+    /// The same keys after the change.
+    pub after: Map<String, Value>,
+    #[serde(default)]
+    pub state: AiChangeState,
+}
+
+/// Most entries kept in [`Settings::ai_changes`]; the oldest go first.
+pub const MAX_AI_CHANGES: usize = 20;
+
+/// The settings an [`AiSettingsChange`] records, as `key` or
+/// `roof_defaults.<key>`, sorted.
+pub const AI_CHANGE_KEYS: [&str; 6] = [
+    "follow_ai",
+    "locale",
+    "roof_defaults.eave_height",
+    "roof_defaults.overhang",
+    "roof_defaults.pitch_deg",
+    "theme",
+];
+
+/// The value of an [`AI_CHANGE_KEYS`] key in serialized settings.
+fn key_value(doc: &Value, key: &str) -> Value {
+    key.split('.')
+        .try_fold(doc, |v, k| v.get(k))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// `ai_changes` from a file: an entry this build cannot read is dropped
+/// instead of making the whole settings file unreadable.
+fn lenient_changes<'de, D>(d: D) -> Result<Vec<AiSettingsChange>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Value::deserialize(d)?;
+    let Value::Array(items) = raw else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<AiSettingsChange> = items
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect();
+    let extra = out.len().saturating_sub(MAX_AI_CHANGES);
+    out.drain(..extra);
+    Ok(out)
+}
+
 /// Most files kept in [`Settings::allowed_files`]; the oldest go first.
 pub const MAX_ALLOWED_FILES: usize = 200;
 
@@ -468,7 +550,101 @@ impl Settings {
                 summary: summary.to_string(),
             });
         }
+        next.record_ai_change(self, by, summary)?;
         Ok((next, asks))
+    }
+
+    /// Adds what changed from `old` to `self` (outside the folders) to
+    /// [`Settings::ai_changes`] as an open change by `by`; nothing when
+    /// nothing changed.
+    fn record_ai_change(
+        &mut self,
+        old: &Settings,
+        by: &str,
+        summary: &str,
+    ) -> Result<(), SettingsError> {
+        let io = |e: serde_json::Error| SettingsError::Io(e.to_string());
+        let (was, now) = (
+            serde_json::to_value(old).map_err(io)?,
+            serde_json::to_value(&*self).map_err(io)?,
+        );
+        let (mut before, mut after) = (Map::new(), Map::new());
+        for key in AI_CHANGE_KEYS {
+            let (b, a) = (key_value(&was, key), key_value(&now, key));
+            if b != a {
+                before.insert(key.to_string(), b);
+                after.insert(key.to_string(), a);
+            }
+        }
+        if after.is_empty() {
+            return Ok(());
+        }
+        let last = self.ai_changes.iter().map(|c| c.id).max().unwrap_or(0);
+        let id = crate::store::now_ms().max(last.saturating_add(1));
+        self.ai_changes.push(AiSettingsChange {
+            id,
+            by: by.to_string(),
+            summary: summary.to_string(),
+            before,
+            after,
+            state: AiChangeState::Open,
+        });
+        let extra = self.ai_changes.len().saturating_sub(MAX_AI_CHANGES);
+        self.ai_changes.drain(..extra);
+        Ok(())
+    }
+
+    /// The newest AI settings change the user has not answered yet.
+    pub fn open_ai_change(&self) -> Option<&AiSettingsChange> {
+        self.ai_changes
+            .iter()
+            .rev()
+            .find(|c| c.state == AiChangeState::Open)
+    }
+
+    /// The user's answer to the open AI settings change `id`: `revert` puts
+    /// back the values it changed (a value changed again since, by the user
+    /// or another client, stays as it is now), otherwise it is accepted.
+    /// Either way it is closed. A change that is not open is left alone.
+    pub fn answer_ai_change(&self, id: u64, revert: bool) -> Result<Settings, SettingsError> {
+        let mut next = self.clone();
+        let Some(at) = next
+            .ai_changes
+            .iter()
+            .position(|c| c.id == id && c.state == AiChangeState::Open)
+        else {
+            return Ok(next);
+        };
+        if revert {
+            let now = serde_json::to_value(&next).map_err(|e| SettingsError::Io(e.to_string()))?;
+            let change = &next.ai_changes[at];
+            let mut patch = Map::new();
+            let mut roof = Map::new();
+            for (key, after) in &change.after {
+                if !AI_CHANGE_KEYS.contains(&key.as_str()) || &key_value(&now, key) != after {
+                    continue;
+                }
+                let old = change.before.get(key).cloned().unwrap_or(Value::Null);
+                match key.strip_prefix("roof_defaults.") {
+                    Some(k) => {
+                        roof.insert(k.to_string(), old);
+                    }
+                    None => {
+                        patch.insert(key.clone(), old);
+                    }
+                }
+            }
+            if !roof.is_empty() {
+                patch.insert("roof_defaults".into(), Value::Object(roof));
+            }
+            next = next.patched_with(&Value::Object(patch), false)?;
+        }
+        next.ai_changes[at].state = if revert {
+            AiChangeState::Reverted
+        } else {
+            AiChangeState::Accepted
+        };
+        Ok(next)
     }
 
     /// The user's answer to [`Settings::folder_request`]: `allow` applies it,
@@ -766,6 +942,102 @@ mod tests {
         // Setting the folder it already is asks nothing.
         let same = serde_json::json!({ "projects_dir": s.projects_dir() });
         assert!(!s.patched_by_ai(&same, "Claude", "x").unwrap().1);
+    }
+
+    #[test]
+    fn an_ai_settings_change_is_recorded_and_the_user_can_revert_it() {
+        // UX-003: MCP update_settings changed the roof defaults and the
+        // language with no record, no before -> after and no Revert.
+        let s = Settings::default();
+        let patch = serde_json::json!({
+            "roof_defaults": { "pitch_deg": 25, "overhang": 0.9 },
+            "locale": "de",
+        });
+        let (next, _) = s
+            .patched_by_ai(&patch, "Claude", "Company defaults")
+            .unwrap();
+        assert_eq!(next.roof_defaults.pitch_deg, 25.0, "applied at once");
+        let change = next.open_ai_change().cloned().expect("recorded");
+        assert_eq!(
+            (change.by.as_str(), change.summary.as_str()),
+            ("Claude", "Company defaults")
+        );
+        assert_eq!(change.state, AiChangeState::Open);
+        let keys: Vec<&str> = change.after.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "locale",
+                "roof_defaults.overhang",
+                "roof_defaults.pitch_deg"
+            ],
+            "only what changed"
+        );
+        assert_eq!(change.before["roof_defaults.pitch_deg"], 40.0);
+        assert_eq!(change.after["roof_defaults.pitch_deg"], 25.0);
+        assert_eq!(change.before["locale"], Value::Null);
+        assert_eq!(change.after["locale"], "de");
+        // The record survives a save.
+        let d = tmp("ai-change");
+        let path = d.join(SETTINGS_FILE);
+        next.save_to(&path).unwrap();
+        let next = Settings::load_from(&path);
+        assert_eq!(next.open_ai_change(), Some(&change));
+        // The user changes the overhang himself before reviewing: Revert
+        // puts back what the AI changed and keeps the user's own value.
+        let mut mine = next
+            .patched(&serde_json::json!({ "roof_defaults": { "overhang": 0.7 } }))
+            .unwrap();
+        mine.save_to(&path).unwrap();
+        mine = Settings::load_from(&path);
+        let reverted = mine.answer_ai_change(change.id, true).unwrap();
+        assert_eq!(reverted.roof_defaults.pitch_deg, 40.0);
+        assert_eq!(
+            reverted.roof_defaults.overhang, 0.7,
+            "the user's value stays"
+        );
+        assert_eq!(reverted.locale, None);
+        assert!(reverted.open_ai_change().is_none());
+        assert_eq!(reverted.ai_changes[0].state, AiChangeState::Reverted);
+        // Answering again, or a change that is not there, does nothing.
+        assert_eq!(
+            reverted.answer_ai_change(change.id, false).unwrap(),
+            reverted
+        );
+        assert_eq!(
+            reverted.answer_ai_change(change.id + 99, true).unwrap(),
+            reverted
+        );
+        // Accept keeps the values and closes it.
+        let accepted = next.answer_ai_change(change.id, false).unwrap();
+        assert_eq!(accepted.roof_defaults.pitch_deg, 25.0);
+        assert_eq!(accepted.ai_changes[0].state, AiChangeState::Accepted);
+        // A call that changes nothing records nothing; a folder request is
+        // asked as before and not recorded as a change.
+        let same = serde_json::json!({ "roof_defaults": { "pitch_deg": 40 } });
+        assert!(
+            s.patched_by_ai(&same, "Claude", "x")
+                .unwrap()
+                .0
+                .ai_changes
+                .is_empty()
+        );
+        let folder = serde_json::json!({ "projects_dir": d.join("shared") });
+        let (asked, yes) = s.patched_by_ai(&folder, "Claude", "x").unwrap();
+        assert!(yes && asked.ai_changes.is_empty() && asked.folder_request.is_some());
+        // The history is bounded and the ids stay unique.
+        let mut many = s.clone();
+        for i in 0..(MAX_AI_CHANGES + 5) {
+            let p = serde_json::json!({ "roof_defaults": { "pitch_deg": 20 + (i % 2) } });
+            many = many.patched_by_ai(&p, "Claude", "x").unwrap().0;
+        }
+        assert_eq!(many.ai_changes.len(), MAX_AI_CHANGES);
+        let ids: std::collections::BTreeSet<u64> = many.ai_changes.iter().map(|c| c.id).collect();
+        assert_eq!(ids.len(), MAX_AI_CHANGES);
+        // An AI client cannot write the history itself.
+        let forged = serde_json::json!({ "ai_changes": [] });
+        assert!(s.patched_by_ai(&forged, "Claude", "x").is_err());
+        let _ = fs::remove_dir_all(&d);
     }
 
     fn tmp(name: &str) -> PathBuf {

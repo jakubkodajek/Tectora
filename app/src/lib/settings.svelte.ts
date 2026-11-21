@@ -4,7 +4,7 @@
 // first paint is right; view state (layout, reviewed AI changes) stays local.
 
 import { api } from "./api";
-import { LOCALES, i18n, setLocale, type Locale } from "./i18n.svelte";
+import { LOCALES, i18n, setLocale, systemLocale, type Locale } from "./i18n.svelte";
 import { applyTheme } from "./theme.svelte";
 import type { AppSettingsView, Presets } from "./types";
 
@@ -65,9 +65,12 @@ export const app = $state<{ view: AppSettingsView | null }>({ view: null });
 
 /** Applies settings from the file to the running UI. */
 export function applySettings(view: AppSettingsView) {
+  const had = app.view?.settings.locale;
   app.view = view;
   const s = view.settings;
   if (s.locale && s.locale !== i18n.locale && LOCALES.some((l) => l.id === s.locale)) setLocale(s.locale as Locale);
+  // Back to the system language (a reverted AI change, UX-003).
+  else if (!s.locale && had && systemLocale() !== i18n.locale) setLocale(systemLocale());
   applyTheme(s.theme);
   Object.assign(presets, s.roof_defaults);
   write("tectora.presets", $state.snapshot(presets));

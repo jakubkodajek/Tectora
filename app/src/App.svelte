@@ -14,6 +14,8 @@
   import { app as appSettings, applySettings, loadSettings, prefs } from "./lib/settings.svelte";
   import FolderRequest from "./lib/FolderRequest.svelte";
   import FileRequest from "./lib/FileRequest.svelte";
+  import AiSettingsChange from "./lib/AiSettingsChange.svelte";
+  import { openAiChange } from "./lib/settingschange";
   import { hasUnsaved, isBusy, mayLeave } from "./lib/leave";
   import type { BrokenFile, ExampleInfo, LiveStatus, ProjectSummary } from "./lib/types";
 
@@ -235,6 +237,12 @@
     request={appSettings.view.settings.file_request}
     onanswered={async () => applySettings(await api.getSettings())}
   />
+{/if}
+{#if openAiChange(appSettings.view?.settings)}
+  {@const change = openAiChange(appSettings.view?.settings)!}
+  {#key change.id}
+    <AiSettingsChange {change} onanswered={applySettings} />
+  {/key}
 {/if}
 {#if settingsOpen}
   <SettingsDialog onclose={() => (settingsOpen = false)} onlibrarychanged={libraryChanged} />
