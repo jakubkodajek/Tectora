@@ -139,8 +139,8 @@ pub fn check_dormer(project: &Project, index: usize) -> Result<(), CommandError>
         )));
     };
     let params = crate::edit::dormers::parse_dormer(d);
-    let host = crate::model::guarded(|| crate::edit::dormers::host_slope(project, index))
-        .map_err(CommandError::internal)?;
+    // A whole-job calculation, bounded as in `dormer_host` (ARCH-106).
+    let host = calculating(|| crate::edit::dormers::host_slope(project, index))?;
     crate::edit::dormers::check_params(&params, host)
         .map_err(|(code, detail)| CommandError { code, detail })
 }

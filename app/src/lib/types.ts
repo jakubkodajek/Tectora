@@ -167,6 +167,8 @@ export interface ProjectSummary {
   figures_pending?: boolean;
   /** Buildings the core gave no roof for: as many as `parts`, the roof is not calculated; fewer, the area leaves them out (ERRU-005). */
   parts_failed?: number;
+  /** Too complex to calculate (core work bound): no figures, `parts_failed` equals `parts`. */
+  too_complex?: boolean;
 }
 
 /** A deleted job or removed file in the library's trash (core `store::TrashEntry`). */

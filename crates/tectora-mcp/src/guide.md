@@ -140,7 +140,9 @@ The tools cover every operation of the Tectora editor:
   their input (`calc.problems` of the part, a doubled corner, a refused
   pitch): as many as `parts`, the roof is not calculated
   (`roof_area_m2: null`); fewer, `roof_area_m2` leaves them out. Tell the
-  user, and use `calc` on the job to see why.
+  user, and use `calc` on the job to see why. `too_complex: true`: the
+  job is too complex to calculate (see Limits); read it with
+  `get_project` to repair it.
 - Deleting: `delete_project` and `remove_file` move the job (with its
   history and files) or the file to the library's trash for 30 days;
   `list_deleted` shows what is there and `restore_project` brings it back.

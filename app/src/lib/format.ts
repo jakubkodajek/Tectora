@@ -36,6 +36,8 @@ export interface CardFigures {
   figures_pending?: boolean;
   /** Buildings the core gave no roof for. */
   parts_failed?: number;
+  /** Too complex to calculate: no figures (ARCH-102). */
+  too_complex?: boolean;
 }
 
 /**
@@ -60,7 +62,7 @@ export function cardArea(p: CardFigures): string {
 export function cardAreaNote(p: CardFigures): string | undefined {
   const state = cardRoof(p);
   if (state === "pending") return t("lib.areaPending");
-  if (state === "none") return t("res.notCalculated");
+  if (state === "none") return p.too_complex ? t("err.too_complex") : t("res.notCalculated");
   if (state === "partial") return t("lib.areaPartial", { n: p.parts_failed ?? 0, of: p.parts ?? 0 });
   return undefined;
 }

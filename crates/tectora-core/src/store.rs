@@ -115,6 +115,10 @@ pub struct ProjectSummary {
     /// (`snapshot::status`); false without a stored result or while
     /// `figures_pending`.
     pub result_differs: bool,
+    /// The job is too complex to calculate (`work`, ARCH-102): no figures,
+    /// `parts_failed` equals `parts`.
+    #[serde(default)]
+    pub too_complex: bool,
 }
 
 /// An activity entry without the stored previous version.
@@ -906,9 +910,16 @@ impl Store {
         let started = std::thread::Builder::new()
             .name(format!("summary {id}"))
             .spawn(move || {
-                // A roof that panicked has no figures at all (ERRU-005).
-                let figures = crate::model::guarded(|| card_figures(&project))
-                    .unwrap_or_else(|_| (0.0, Vec::new(), project.parts.len(), false));
+                // A roof that panicked has no figures at all (ERRU-005); one
+                // over the work bound stops there instead of keeping a core
+                // busy for as long as the app runs (ARCH-102).
+                let figures = match crate::work::calculate(|| card_figures(&project)) {
+                    Ok(f) => (f, false),
+                    Err(r) => (
+                        (0.0, Vec::new(), project.parts.len(), false),
+                        r == crate::work::Refusal::TooComplex,
+                    ),
+                };
                 // Under the lock, so `summarize` either sees the answer or
                 // has left its pending card for this thread to fill in.
                 let mut c = lock_cache(&cache);
@@ -922,7 +933,8 @@ impl Store {
                         card.lines,
                         card.parts_failed,
                         card.result_differs,
-                    ) = figures.clone();
+                    ) = figures.0.clone();
+                    card.too_complex = figures.1;
                     card.figures_pending = false;
                 }
                 let _ = tx.send(figures);
@@ -936,9 +948,10 @@ impl Store {
         let figures = rx.recv_timeout(self.summary_budget).ok();
         let mut c = lock_cache(&self.cache);
         match figures.or_else(|| rx.try_recv().ok()) {
-            Some((area, lines, failed, differs)) => {
+            Some(((area, lines, failed, differs), too_complex)) => {
                 (summary.roof_area, summary.lines, summary.parts_failed) = (area, lines, failed);
                 summary.result_differs = differs;
+                summary.too_complex = too_complex;
             }
             None => summary.figures_pending = true,
         }
@@ -981,6 +994,7 @@ impl Store {
             parts_failed: 0,
             stored_area: project.result_snapshot.as_ref().map(|s| s.roof_area),
             result_differs: false,
+            too_complex: false,
         };
         Ok((summary, project))
     }

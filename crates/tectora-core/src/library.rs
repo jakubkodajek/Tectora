@@ -222,6 +222,7 @@ mod tests {
             parts_failed: 0,
             stored_area: None,
             result_differs: false,
+            too_complex: false,
         }
     }
 

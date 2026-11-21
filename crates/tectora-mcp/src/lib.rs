@@ -1583,7 +1583,7 @@ impl Server {
                             "roof_area_m2": (!p.figures_pending && (p.parts_failed == 0 || p.parts_failed < p.parts))
                                 .then(|| round(p.roof_area, 2)),
                             "figures_pending": p.figures_pending, "parts": p.parts,
-                            "parts_without_roof": p.parts_failed,
+                            "parts_without_roof": p.parts_failed, "too_complex": p.too_complex,
                             "pitch_range_deg": p.pitch_range.map(|[a, b]| [round(a, 2), round(b, 2)]),
                             "dormers": p.dormers, "files": p.files, "has_result": p.has_result,
                             "modified_ms": p.modified_ms, "last_change": p.last_activity,
