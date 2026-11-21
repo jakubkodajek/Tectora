@@ -61,6 +61,17 @@
   --scene-brick: #8e4636;
   --scene-metal: #5c5b5a;
   --scene-hole: #2a2c31;
+  /* Roof materials other than tiles (tiles are --scene-roof): 3D faces and
+     the tint of their faces in the plan. Sheet metal is a cool steel grey
+     so it never reads as clay. */
+  --mat-sheet: #9fb0c1;
+  --mat-stone: #cbc3b4;
+  --mat-slate: #6b7380;
+  --mat-solar: #2e4766;
+  /* A roof line the pointer is on or that was clicked: amber with a dark
+     edge, a colour no line kind uses, readable on both themes. */
+  --line-hl: #ffb800;
+  --line-hl-edge: #171b26;
   color-scheme: light;
 }
 
@@ -107,6 +118,12 @@
     --scene-brick: #8e4636;
     --scene-metal: #4a4948;
     --scene-hole: #0d0f14;
+    --mat-sheet: #6f8091;
+    --mat-stone: #8f877a;
+    --mat-slate: #4b525d;
+    --mat-solar: #263b57;
+    --line-hl: #ffb800;
+    --line-hl-edge: #000000;
     color-scheme: dark;
   }
 }
@@ -150,6 +167,12 @@
   --scene-brick: #8e4636;
   --scene-metal: #4a4948;
   --scene-hole: #0d0f14;
+  --mat-sheet: #6f8091;
+  --mat-stone: #8f877a;
+  --mat-slate: #4b525d;
+  --mat-solar: #263b57;
+  --line-hl: #ffb800;
+  --line-hl-edge: #000000;
   color-scheme: dark;
 }
 

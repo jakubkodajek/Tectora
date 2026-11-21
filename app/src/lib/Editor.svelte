@@ -47,6 +47,8 @@
   import { merge3 } from "./merge";
   import { anchor, stillThere } from "./anchor";
   import { roofState } from "./results";
+  import LineInfo from "./LineInfo.svelte";
+  import { detailOf, sameLine } from "./lineinfo";
   import { isTyping, releaseLeaveGuard, setLeaveGuard } from "./leave";
   import { PendingEdits, exclusive } from "./inflight";
   import { m2, num } from "./format";
@@ -57,7 +59,7 @@
   import { tabIds, tablist } from "./tabs";
   import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
-  import type { ActivityItem, Arc, HelperRequest, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
+  import type { ActivityItem, Arc, HelperRequest, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, LineRef, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
   import { GABLE_PITCH, buildingHeight, emptyProject, isAi, isGable, isMarker } from "./types";
 
   let {
@@ -74,6 +76,30 @@
   let project = $state<Project | null>(null);
   let result = $state<CalcResult | null>(null);
   let selection = $state<Selection>(null);
+  /** The roof line under the pointer and the view it is in (its details are shown). */
+  let lineHover = $state<(LineRef & { view: "plan" | "3d" }) | null>(null);
+  /** The roof line clicked last: its details stay until Escape, × or a click elsewhere. */
+  let linePin = $state<(LineRef & { view: "plan" | "3d"; a: number[]; b: number[] }) | null>(null);
+  /** The line whose details are shown: the one under the pointer, else the pinned one. */
+  const lineShown = $derived(lineHover ?? linePin);
+  const lineDetail = $derived(detailOf(result, lineShown));
+  const lineMarks = $derived([lineHover, linePin].filter((l): l is NonNullable<typeof l> => !!l));
+  function pinLine(l: LineRef, view: "plan" | "3d") {
+    const d = detailOf(result, l);
+    if (!d) return;
+    linePin = sameLine(linePin, l) ? null : { ...l, view, a: d.a, b: d.b };
+  }
+  // A new result renumbers the lines: keep the pinned one where it still is
+  // (same end points within 1 mm), else let it go.
+  $effect(() => {
+    const r = result;
+    const pin = untrack(() => linePin);
+    if (!pin) return;
+    const near = (p: number[], q: number[]) => p.every((v, k) => Math.abs(v - q[k]) < 1e-3);
+    const d = r?.line_details?.find((x) => (near(x.a, pin.a) && near(x.b, pin.b)) || (near(x.a, pin.b) && near(x.b, pin.a)));
+    linePin = d ? { ...pin, part: d.part, index: d.index } : null;
+    lineHover = null;
+  });
   let saveState = $state<"saved" | "saving" | "dirty" | "failed">("saved");
   /** Why the project could not be opened (shown instead of the editor). */
   let loadError = $state<Described | null>(null);
@@ -1840,6 +1866,8 @@
       startDraw();
     } else if (e.key === "Escape" && placing) {
       placing = false;
+    } else if (e.key === "Escape" && linePin) {
+      linePin = null;
     } else if (e.key === "Escape" && !drawing) {
       selection = null;
       dormerSel = null;
@@ -2022,7 +2050,13 @@
                 ondrag={dragObject}
                 oncontext={openMenu}
                 onitemdbl={openProperties}
+                {lineMarks}
+                onlinehover={(l) => (lineHover = l ? { ...l, view: "plan" } : null)}
+                onlinepick={(l) => pinLine(l, "plan")}
               />
+              {#if lineDetail && (lineShown?.view === "plan" || prefs.layout === "plan")}
+                <LineInfo detail={lineDetail} {project} pinned={!lineHover && !!linePin} onclose={() => (linePin = null)} />
+              {/if}
             </div>
           {/if}
           {#if prefs.layout !== "plan"}
@@ -2030,7 +2064,13 @@
               <span class="view-label">{t("editor.model")}</span>
               <Roof3D {project} {result} {selection} item={selectedItem}
                 onpick={(tg) => { if (tg.type === "item") selectItem(tg.item); else if (tg.type === "edge") { selectItem(null); selection = { part: tg.part, edge: tg.edge }; } }}
-                oncontext={openMenu} onitemdbl={openProperties} />
+                oncontext={openMenu} onitemdbl={openProperties}
+                {lineMarks}
+                onlinehover={(l) => (lineHover = l ? { ...l, view: "3d" } : null)}
+                onlinepick={(l) => pinLine(l, "3d")} />
+              {#if lineDetail && (lineShown?.view === "3d" || prefs.layout === "3d")}
+                <LineInfo detail={lineDetail} {project} pinned={!lineHover && !!linePin} onclose={() => (linePin = null)} />
+              {/if}
             </div>
           {/if}
         </div>

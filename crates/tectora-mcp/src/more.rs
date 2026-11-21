@@ -3031,6 +3031,7 @@ mod tests {
             "get_project",
             "calc",
             "calc_breakdown",
+            "line_details",
             "show_project",
             "get_history",
             "get_review",

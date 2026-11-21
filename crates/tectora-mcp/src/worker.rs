@@ -10,7 +10,7 @@
 //! it after [`timeout`] and reports a plain error; the session goes on.
 //!
 //! The tools that only calculate a stored design (`calc`, `calc_breakdown`,
-//! `get_project`) run the same way, with [`CALC_TIMEOUT`]: the count limits
+//! `line_details`, `get_project`) run the same way, with [`CALC_TIMEOUT`]: the count limits
 //! of `check_limits` keep a design to seconds, and the worker is the deadline
 //! for whatever still takes too long (ARCH-002).
 
@@ -47,7 +47,10 @@ const TIMEOUT: Duration = Duration::from_secs(90);
 
 /// The read-only tools that calculate a whole stored design.
 pub fn calculates(name: &str) -> bool {
-    matches!(name, "calc" | "calc_breakdown" | "get_project")
+    matches!(
+        name,
+        "calc" | "calc_breakdown" | "line_details" | "get_project"
+    )
 }
 
 /// The tools that open a PDF (`list_drawings` only lists file names).

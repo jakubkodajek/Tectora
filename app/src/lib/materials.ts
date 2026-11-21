@@ -24,3 +24,11 @@ export function materialName(project: Project | null, m: number): string {
   const own = project?.material_names?.[m - 1]?.trim();
   return own ? own : defaultMaterialName(m);
 }
+
+/** Theme token of material `m`'s colour (3D faces, plan tint, legend swatch). */
+export function materialToken(m: number): string {
+  return ({ 2: "--mat-sheet", 3: "--mat-stone", 4: "--mat-slate", 5: "--mat-solar" } as Record<number, string>)[m] ?? "--scene-roof";
+}
+
+/** True for faces drawn in the tiles' colour (material 1, none or an own material past 5). */
+export const tiledColour = (m: number | undefined) => materialToken(m ?? 1) === "--scene-roof";

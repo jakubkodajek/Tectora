@@ -72,7 +72,8 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    what you assumed and what they should look at in the highlighted
    changes in Tectora. When the user asks how a number came about,
    `calc_breakdown` gives every face (plan area / cos pitch − openings) and
-   every line with its 3D length. Tell the user about every part's
+   every line with its 3D length; `line_details` gives each line's end
+   heights, slope and the pitches of the faces it bounds. Tell the user about every part's
    `warnings` and `error` from `calc` (the guide's "Warnings and errors"):
    a `covered` part has no roof of its own (move or delete it), a
    `dormer_off_roof` dormer and a `window_off_roof`, `chimney_off_roof` or

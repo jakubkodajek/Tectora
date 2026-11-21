@@ -978,6 +978,15 @@ fn base_tools() -> Value {
             }), &["id"]),
         },
         {
+            "name": "line_details",
+            "description": "Details of every calculated roof line, as the editor shows them when the user points at or clicks a line in the plan or 3D: `kind` (eave, verge, ridge, hip, valley, pult, knick, gorge, abutment…), DACAD `code`, end points `a`/`b` (x, y, z in m), true `length` and `plan_length`, the line's own `slope_deg`, the heights `z_low`/`z_high` of its ends above the ground, and the roof `faces` it bounds (`part`, `face`, `wall` index, `pitch_deg`, `material`). `part` (index from 0) limits the parts, `code` the line codes (e.g. \"F\" for ridges; \"O\" matches OL, OR and OS, \"W\" all abutments). Lengths are the lines as drawn, before the deductions the totals make.",
+            "inputSchema": schema(json!({
+                "id": { "type": "string" },
+                "part": { "type": "integer", "minimum": 0, "description": "Only this part's lines." },
+                "code": { "type": "string", "description": "Only lines whose DACAD code starts with this (T, F, G, K, O, P, c, S, W, …)." }
+            }), &["id"]),
+        },
+        {
             "name": "show_project",
             "description": "Bring a design to the front in the user's Tectora app.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
@@ -1498,6 +1507,43 @@ impl Server {
                 }
                 v["id"] = json!(id);
                 Ok(v)
+            }
+            "line_details" => {
+                let (id, p) = self.load(args)?;
+                let only = match args.get("part") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => {
+                        let i = v.as_u64().ok_or("`part` must be a part index from 0")? as usize;
+                        if i >= p.parts.len() {
+                            return Err(format!(
+                                "`part` {i} out of range: the design has {} parts",
+                                p.parts.len()
+                            ));
+                        }
+                        Some(i)
+                    }
+                };
+                let code = match args.get("code") {
+                    None | Some(Value::Null) => None,
+                    Some(_) => Some(arg_str(args, "code")?.to_string()),
+                };
+                if code.as_ref().is_some_and(|c| c.is_empty() || c.len() > 4) {
+                    return Err("`code` must be a line code such as T, F, G, K, O, W".into());
+                }
+                self.live(
+                    "calculating",
+                    Some(&p.name),
+                    format!("Reading the roof lines of “{}”", p.name),
+                    Some(&id),
+                );
+                let lines =
+                    tectora_core::model::guarded(|| tectora_core::lineinfo::line_details(&p))?;
+                let lines: Vec<_> = lines
+                    .into_iter()
+                    .filter(|l| only.is_none_or(|i| l.part == i))
+                    .filter(|l| code.as_deref().is_none_or(|c| l.code.starts_with(c)))
+                    .collect();
+                Ok(json!({ "id": id, "lines": lines }))
             }
             "create_standard_roof" => {
                 let kind: StandardRoof = serde_json::from_value(arg(args, "type")?.clone())
@@ -2077,7 +2123,7 @@ mod tests {
         assert_eq!(live.project_id.as_deref(), Some(id.as_str()));
         assert!(live.follow, "a write may be followed in the app");
         // Reading or calculating a job never makes the app switch to it (UX-001).
-        for tool in ["get_project", "calc", "calc_breakdown"] {
+        for tool in ["get_project", "calc", "calc_breakdown", "line_details"] {
             s.call_tool(tool, &json!({ "id": id })).unwrap();
             let live = s.store.live().unwrap();
             assert_eq!(live.project_id.as_deref(), Some(id.as_str()), "{tool}");
@@ -2216,6 +2262,42 @@ mod tests {
         assert_eq!(one["parts"][0]["index"], 0);
         assert!(
             s.call_tool("calc_breakdown", &json!({ "id": id, "part": 9 }))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn line_details_give_each_lines_heights_and_faces() {
+        let mut s = server();
+        let p = tectora_core::examples::find("hip").unwrap().project();
+        let id = s.store.save(None, &p).unwrap();
+        let r = s.call_tool("line_details", &json!({ "id": id })).unwrap();
+        let lines = r["lines"].as_array().unwrap();
+        // 4 eaves, 4 hips, 1 ridge.
+        assert_eq!(lines.len(), 9, "{r}");
+        let ridge = s
+            .call_tool("line_details", &json!({ "id": id, "code": "F" }))
+            .unwrap();
+        let ridge = &ridge["lines"].as_array().unwrap()[..];
+        assert_eq!(ridge.len(), 1);
+        // 3 m eave at the 0.5 m overhang, 4.5 m up the 35° slope.
+        let z = 3.0 + 4.5 * 35f64.to_radians().tan();
+        assert!(
+            (ridge[0]["z_high"].as_f64().unwrap() - z).abs() < 1e-3,
+            "{ridge:?}"
+        );
+        assert_eq!(ridge[0]["faces"].as_array().unwrap().len(), 2);
+        assert_eq!(ridge[0]["kind"], "ridge");
+        let one = s
+            .call_tool("line_details", &json!({ "id": id, "part": 0, "code": "G" }))
+            .unwrap();
+        assert_eq!(one["lines"].as_array().unwrap().len(), 4);
+        assert!(
+            s.call_tool("line_details", &json!({ "id": id, "part": 3 }))
+                .is_err()
+        );
+        assert!(
+            s.call_tool("line_details", &json!({ "id": id, "code": "" }))
                 .is_err()
         );
     }

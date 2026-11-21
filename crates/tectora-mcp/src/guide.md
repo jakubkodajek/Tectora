@@ -151,7 +151,7 @@ The tools cover every operation of the Tectora editor:
   and 500 of each kind of object (dormers, chimneys, windows, openings,
   hand-drawn lines and faces), 64 pitch breaks per wall (2000 in all); a
   write over them is refused (`too many …`).
-  `calc`, `calc_breakdown` and `get_project` stop after 60 s.
+  `calc`, `calc_breakdown`, `line_details` and `get_project` stop after 60 s.
 - Hand-over: `export_job`, `import_job` (`.tectorajob` = project, files,
   history and a preview in one file). `export_job` writes into the
   library's `exports` folder and returns the path; tell the user where it is.
@@ -191,6 +191,17 @@ Calculation tab does: every face as plan area / cos(pitch) less openings,
 every line as the 3D distance of its ends, and how they sum per material and
 per line code. Use it when the user asks how an area was calculated or wants
 to check a result.
+`line_details` gives what the app shows when the user points at a roof line:
+its kind and code, end points, true and plan length, its own slope, the
+heights of its ends above the ground (`z_low`, `z_high`: e.g. the ridge
+height, the eave height) and the faces it bounds with their pitch and
+material. Filter with `part` and `code` (`"F"` ridges, `"O"` all verges).
+Use it for "how high is the ridge / this eave", "which pitches meet at this
+hip".
+Faces carry their roof material: the area per material (`area_by_material`,
+the price-sheet list's material rows) counts each face under its own
+material only, so sheet metal on some walls is not in the tiles' area; the
+roof area is the sum of all materials.
 Several parts are joined like solids: a roof is hidden inside another
 part's walls below that part's roof, and roofs that cross meet in valleys.
 The rules were checked against roofs calculated by DACAD itself: a step

@@ -50,6 +50,9 @@ pub fn calc_of(project: &Project, geos: &[crate::roof::RoofGeometry]) -> Value {
         // Each object's distances from the eave and the sides of its face
         // (editor dimension lines; `edit::position`).
         "placements": crate::edit::position::placements(project),
+        // Every roof line's heights, slope and faces, for the editor's line
+        // details on hover (display only; `lineinfo`).
+        "line_details": crate::lineinfo::line_details_of(project, geos),
     })
 }
 
