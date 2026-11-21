@@ -16,7 +16,7 @@
   import { placementOf } from "./items";
   import { api } from "./api";
   import { dormerRefusal, toAppError } from "./errors";
-  import { notify, notifyError } from "./notify.svelte";
+  import { info, notify, notifyError } from "./notify.svelte";
   import { PITCH } from "./limits";
 
   let {
@@ -46,60 +46,87 @@
 
   const dormer = $derived(index !== null ? project.dormers[index] : null);
   const params = $derived(dormer ? parseDormer(dormer) : null);
-  /** Host roof height at the middle of the front, for "on the roof" eaves. */
-  const host = $derived.by(() => {
-    if (!params) return null;
+  /** Host roof height at the middle of the front of a dormer, for "on the roof" eaves. */
+  function hostOf(p: DormerParams | null): number | null {
+    if (!p) return null;
     const m = {
-      x: params.start.x + (Math.cos(params.angle) * params.width) / 2,
-      y: params.start.y + (Math.sin(params.angle) * params.width) / 2,
+      x: p.start.x + (Math.cos(p.angle) * p.width) / 2,
+      y: p.start.y + (Math.sin(p.angle) * p.width) / 2,
     };
     // Just inside the front, where the host face is.
-    const n = { x: -Math.sin(params.angle) * 0.01, y: Math.cos(params.angle) * 0.01 };
+    const n = { x: -Math.sin(p.angle) * 0.01, y: Math.cos(p.angle) * 0.01 };
     return roofHeightAt(result, { x: m.x + n.x, y: m.y + n.y });
-  });
+  }
+  const host = $derived(hostOf(params));
   const kind = $derived<DormerKind | null>(
     params && params.kind === "gable" && host !== null && Math.abs(params.eave_height - host) < 0.01 ? "pointed" : (params?.kind ?? null),
   );
   const angleDeg = $derived(params ? +(((params.angle * 180) / Math.PI + 360) % 360).toFixed(2) : 0);
 
 
-  /** A field of the bar changed: checked by the core, then stored on the dormer it was typed for. */
-  const set = (patch: Partial<DormerParams>) => track(setNow(patch));
-  async function setNow(patch: Partial<DormerParams>): Promise<boolean | string | undefined> {
-    if (!params) return;
-    const next = { ...params, ...patch };
-    if (next.kind === "general") return;
+  /**
+   * A field of the bar changed: checked by the core, then stored on the
+   * dormer it was typed for. One check at a time, each on the dormer as the
+   * one before left it, so quick arrow steps and a second field typed while
+   * a check is out all land (UI-201).
+   */
+  let chain: Promise<unknown> = Promise.resolve();
+  const set = (patch: Partial<DormerParams>) => {
+    // The value belongs to the dormer selected now, even when ▶ or PageDown
+    // moves the selection before the core answers (UI-101).
+    const at = index;
+    const run = chain.then(() => setNow(patch, at));
+    chain = run.catch(() => {});
+    return track(run);
+  };
+  /** Dormer `at` with `patch`: the kind's own defaults follow a kind change. */
+  function patched(cur: DormerParams, patch: Partial<DormerParams>): Dormer | null {
+    const next = { ...cur, ...patch };
+    if (next.kind === "general") return null;
     // A front pitch carries over only between kinds that have one.
     const fronted = (k: DormerKind) => k === "shed" || k === "trapezoid";
-    if (patch.kind && fronted(patch.kind) && !fronted(params.kind)) {
+    if (patch.kind && fronted(patch.kind) && !fronted(cur.kind)) {
       next.front_pitch_deg = defaultParams(patch.kind, next.start, next.angle, next.eave_height).front_pitch_deg;
     }
-    if (next.kind === "pointed" && host !== null && patch.kind) next.eave_height = +host.toFixed(3);
-    const d = buildDormer(next);
-    // The core says whether the dormer can stand there (an eave below the
-    // roof, a pitch under 2°), as for MCP add_dormer (MATH-001, MATH-003).
-    const at = index;
+    const h = hostOf(cur);
+    if (next.kind === "pointed" && h !== null && patch.kind) next.eave_height = +h.toFixed(3);
+    return buildDormer(next);
+  }
+  async function setNow(patch: Partial<DormerParams>, at: number | null): Promise<boolean | string | undefined> {
     if (at === null) return;
-    const was = JSON.stringify($state.snapshot(project.dormers[at]));
-    const probe = { ...$state.snapshot(project), dormers: project.dormers.map((x, i) => (i === at ? d : $state.snapshot(x))) } as Project;
-    try {
-      await api.checkDormer(probe, at);
-    } catch (e) {
-      const why = dormerRefusal(e);
-      if (why === null) {
-        notifyError(e, "calc");
-        return false;
+    // Only the fields typed are the user's: the rest is taken from the dormer
+    // as it is when the check starts; when it changes meanwhile (an AI save,
+    // a drag), the check runs again on it.
+    for (let tries = 0; tries < 3; tries++) {
+      const cur = project.dormers[at];
+      if (!cur) return false;
+      const was = JSON.stringify($state.snapshot(cur));
+      const p = parseDormer($state.snapshot(cur) as Dormer);
+      const d = patched(p, patch);
+      if (!d) return;
+      // The core says whether the dormer can stand there (an eave below the
+      // roof, a pitch under 2°), as for MCP add_dormer (MATH-001, MATH-003).
+      const probe = { ...$state.snapshot(project), dormers: project.dormers.map((x, i) => (i === at ? d : $state.snapshot(x))) } as Project;
+      try {
+        await api.checkDormer(probe, at);
+      } catch (e) {
+        const why = dormerRefusal(e);
+        if (why === null) {
+          notifyError(e, "calc");
+          return false;
+        }
+        notify({ kind: "error", code: toAppError(e).code, title: t("dormer.refusedTitle"), message: why, detail: toAppError(e).detail });
+        return why;
       }
-      notify({ kind: "error", code: toAppError(e).code, title: t("dormer.refusedTitle"), message: why, detail: toAppError(e).detail });
-      return why;
+      const now = project.dormers[at];
+      if (!now) return false;
+      if (JSON.stringify($state.snapshot(now)) === was) {
+        onchange(d, at);
+        return true;
+      }
     }
-    // The value belongs to dormer `at` even when ▶ or PageDown moved the
-    // selection meanwhile (UI-101). Only a dormer that is gone or was
-    // changed meanwhile (an AI reload, a drag) keeps what it has.
-    const now = project.dormers[at];
-    if (!now || JSON.stringify($state.snapshot(now)) !== was) return false;
-    onchange(d, at);
-    return true;
+    info(t("editor.actionStale"));
+    return t("editor.actionStale");
   }
 
   /** Position, direction and material sit in the "More" row, opened per user (UX-008, UI-008). */
