@@ -106,7 +106,9 @@ jobs:
   # The same on macOS, the other platform the app ships for: the store's
   # path rules (`/var` is `/private/var`, case-insensitive APFS ids,
   # `.DS_Store`, folder links) have tests that matter only there.
+  # Only on demand, before the installers: macOS minutes cost the most.
   macos-tests:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
