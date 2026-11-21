@@ -811,7 +811,10 @@ pub fn apply_dormer(geos: &mut [RoofGeometry], d: &Dormer, host: Option<&(EdgeDe
                 if let Some(l) = host_lines.iter().chain(&own).find(|l| on_line(p, q, l)) {
                     let code = l.dacad_code();
                     minus.push((code.to_string(), dist3(p, q)));
-                    minus_at.push(Some((p, q)));
+                    minus_at.push(Some((
+                        crate::openings::onto(l, p),
+                        crate::openings::onto(l, q),
+                    )));
                     if matches!(code, "T" | "OL" | "OR" | "OS" | "P") {
                         continue;
                     }

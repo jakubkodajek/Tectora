@@ -757,7 +757,12 @@ fn a_chimney_by_a_joined_pitch_break_gives_the_lines_of_the_roof_without_it() {
     };
     let mut bad = Vec::new();
     for x in [3.0, 4.0, 6.0] {
-        for y in [3.79, 3.9, 4.0, 4.05, 4.08, 4.09, 4.1, 4.12, 4.2, 4.38, 4.39] {
+        // 3.76 to 3.788: the chimney's top side 3 to 8 mm below the break,
+        // inside the core's booking tolerance (Fable R3-1: c -0.6).
+        for y in [
+            3.76, 3.77, 3.78, 3.785, 3.788, 3.79, 3.9, 4.0, 4.05, 4.08, 4.09, 4.1, 4.12, 4.2, 4.38,
+            4.39,
+        ] {
             // At x 6 a chimney from y 4.38 also crosses the hip, where the
             // core's own result jumps within a centimetre (WV 0.59 at 4.38,
             // 1.2 at 4.39 on the roof without the break): no reference.
@@ -785,4 +790,39 @@ fn a_chimney_by_a_joined_pitch_break_gives_the_lines_of_the_roof_without_it() {
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// Fable R3-3 (`g2_2106`): a gable dormer whose valley crosses a joined
+/// pitch break at its middle keeps the valley (K 4.47 m, as on the same
+/// roof without the break), with its chimney and half-hip.
+#[test]
+fn a_dormer_valley_crossing_a_joined_break_stays() {
+    let joined = Project::from_json(
+        r#"{"name": "g2_2106", "parts": [{"name": "A", "edges": [{"start": {"x": 0.0, "y": 0.0}, "pitch_deg": 30.0, "eave_height": 6.0, "overhang": 0.0, "breaks": [{"height": 7.69, "pitch_deg": 30.0}]}, {"start": {"x": 12.06, "y": 0.0}, "pitch_deg": 30.0, "eave_height": 6.0, "overhang": 0.0}, {"start": {"x": 12.06, "y": 7.21}, "pitch_deg": 30.0, "eave_height": 6.0, "overhang": 0.0}, {"start": {"x": 0.0, "y": 7.21}, "pitch_deg": 90.0, "eave_height": 6.0, "overhang": 0.0, "half_hip": {"height": 8.08, "pitch_deg": 45.0}}]}], "dormers": [{"edges": [{"start": {"x": 2.33, "y": 0.95}, "pitch_deg": 45.0, "eave_height": 7.19, "overhang": 0.0, "direction_rad": 4.71238898038469}, {"start": {"x": 2.33, "y": 0.95}, "pitch_deg": 90.0, "eave_height": 7.19, "overhang": 0.0}, {"start": {"x": 4.33, "y": 0.95}, "pitch_deg": 45.0, "eave_height": 7.19, "overhang": 0.0, "direction_rad": 1.5707963267948966}], "end": {"x": 4.33, "y": 0.95}}], "chimneys": [{"corners": [{"x": 9.78, "y": 2.97}, {"x": 10.18, "y": 2.97}, {"x": 10.18, "y": 4.17}, {"x": 9.78, "y": 4.17}], "height": 11.081347720428601}]}"#,
+    )
+    .unwrap();
+    let mut plain = joined.clone();
+    plain.parts[0].edges[0].breaks.clear();
+    let k = |p: &Project| -> f64 {
+        let geos = generate_project(p);
+        assert!(geos[0].error.is_none(), "{:?}", geos[0].error);
+        let lines: f64 = geos[0]
+            .lines
+            .iter()
+            .filter(|l| l.dacad_code() == "K")
+            .map(|l| l.length())
+            .sum();
+        let minus: f64 = geos[0]
+            .minus_lines
+            .iter()
+            .filter(|(c, _)| c == "K")
+            .map(|(_, m)| m)
+            .sum();
+        lines - minus
+    };
+    let (got, want) = (k(&joined), k(&plain));
+    assert!(
+        (got - want).abs() < 0.02,
+        "K {got:.3}, without the break {want:.3}"
+    );
 }

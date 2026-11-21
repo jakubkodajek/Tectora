@@ -1864,6 +1864,19 @@ pub(crate) fn inside_spans(poly: &[Point2], a: Point2, b: Point2) -> Vec<(f64, f
         .collect()
 }
 
+/// `p` moved onto line `l` (its foot on the line through A and B): where a
+/// deduction booked on `l` lies, exactly on the line however far within
+/// the booking tolerance the hole edge ran (Fable R3-1).
+pub(crate) fn onto(l: &RoofLine, p: [f64; 3]) -> [f64; 3] {
+    let ab = [l.b[0] - l.a[0], l.b[1] - l.a[1], l.b[2] - l.a[2]];
+    let l2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    if l2.is_nan() || l2 < 1e-12 {
+        return p;
+    }
+    let t = ((p[0] - l.a[0]) * ab[0] + (p[1] - l.a[1]) * ab[1] + (p[2] - l.a[2]) * ab[2]) / l2;
+    lerp3(l.a, l.b, t)
+}
+
 pub(crate) fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     [
         a[0] + t * (b[0] - a[0]),
@@ -2221,7 +2234,7 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2], walls: &[(Point2, Poi
             geo.align_minus();
             geo.minus_lines
                 .push((r.dacad_code().to_string(), dist3_(e.c, e.d)));
-            geo.minus_at.push(Some((e.c, e.d)));
+            geo.minus_at.push(Some((onto(r, e.c), onto(r, e.d))));
         }
         // On an abutment off any wall DACAD's copy comes back as code 0, no
         // line (mass case R1_0745: −WS along a step, no +WS).

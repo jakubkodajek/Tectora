@@ -412,9 +412,17 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
             ) && [l.a, l.b]
                 .iter()
                 .all(|p| (plane.z(Point2::new(p[0], p[1])) - p[2]).abs() < IN_PLANE)
-                && member_plans
+                && member_plans.iter().any(|m| {
+                    // The whole line, not only its middle: a dormer valley
+                    // crossing the seam at its middle stays (Fable R3-3).
+                    [
+                        mid,
+                        Point2::new(l.a[0], l.a[1]),
+                        Point2::new(l.b[0], l.b[1]),
+                    ]
                     .iter()
-                    .any(|m| near_boundary(m, mid, INSIDE_TOL))
+                    .all(|&p| near_boundary(m, p, INSIDE_TOL))
+                })
         };
         let lengths = |lines: &[RoofLine]| {
             let mut by: std::collections::BTreeMap<&'static str, f64> = Default::default();
