@@ -58,4 +58,9 @@ describe("draftLeavesView: the plan follows a footprint being typed (UX-001)", (
     expect(draftLeavesView([{ x: 2, y: 2 }, { x: 26, y: 2 }], view, 800, 600)).toBe(true);
     expect(draftLeavesView([{ x: 2, y: 2 }, { x: 2, y: 16 }], view, 800, 600)).toBe(true);
   });
+  it("is true for a corner 10 px inside the edge, where its label no longer fits (TEST-108)", () => {
+    // x = 21 m lies at 790 px of the 800 px plan; the default pad is 24 px.
+    expect(draftLeavesView([{ x: 2, y: 2 }, { x: 21, y: 5 }], view, 800, 600)).toBe(true);
+    expect(draftLeavesView([{ x: 2, y: 2 }, { x: 21, y: 5 }], view, 800, 600, 0)).toBe(false);
+  });
 });

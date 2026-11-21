@@ -72,4 +72,18 @@ describe("tagSpots: a face label can move off a building inside the face (UI-005
     expect(spots.some((s) => s.y > tag.y + 0.4)).toBe(true);
     expect(spots.some((s) => s.y < tag.y - 0.4)).toBe(true);
   });
+
+  it("drops the spots that lie outside a triangular hip end (TEST-108)", async () => {
+    const { tagSpots } = await import("./facelabels");
+    // Eave along x from 0 to 8, apex at (4, 4): the corners of the label's
+    // box around the centre (4, 1.33) lie outside the triangle.
+    const hipEnd: RoofFace = { edge: 1, pitch_deg: 45, area: 22.6, polygon: [[0, 0, 3], [8, 0, 3], [4, 4, 7]] };
+    const [tag] = faceTags([hipEnd]);
+    const spots = tagSpots(tag, hipEnd.polygon);
+    // Strictly inside: above the eave and below both sloping sides.
+    const inTriangle = (p: { x: number; y: number }) => p.y > 0 && p.y < p.x && p.y < 8 - p.x;
+    expect(spots.length).toBeGreaterThan(1);
+    expect(spots.length).toBeLessThan(11);
+    for (const sp of spots) expect(inTriangle(sp), JSON.stringify(sp)).toBe(true);
+  });
 });
