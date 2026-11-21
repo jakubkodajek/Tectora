@@ -61,8 +61,8 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    from a roof edge, place it with `place_item` (`from_eave` along the
    slope, `from_left` or `from_right`) and check it against `placements`
    in `get_project`.
-   Each `summary` is one sentence in the user's language
-   naming the sheet, e.g. "Sklon uliční strany 42° podle řezu A-A".
+   Each `summary` is one sentence (at most 500 characters, plain text) in
+   the user's language naming the sheet, e.g. "Sklon uliční strany 42° podle řezu A-A".
    A refused call saved nothing: a value of the wrong type or outside the
    tool's `enum` (send a job number as text), a standard roof side under
    0.1 m, a dormer below the roof or flatter than 2°, a `roof_helper`

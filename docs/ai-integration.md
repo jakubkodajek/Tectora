@@ -89,7 +89,12 @@ set either key: `update_settings` does not take them.
 mode and the defaults for new roofs at once, and records each call that
 changed something in `ai_changes` in the settings file (who, the summary,
 the changed keys with their values before and after, `state`: `open`,
-`accepted`, `reverted`; the last 20 are kept). The app shows the newest open
+`accepted`, `reverted`; the last 20 are kept, answered ones dropped first;
+when all 20 are still open the two oldest become one change, so an
+unanswered change is never lost). A summary is at most 500 characters of
+plain text: one of only invisible characters, or with control or
+bidirectional characters, is refused, as such characters are in the job's
+number, customer and address. The app shows the newest open
 change in a card with the summary and before → after, with Revert (puts back
 the values it changed; a value changed again since stays) and Accept
 (`Settings::answer_ai_change`, Tauri command `answer_ai_change`). The AI tab

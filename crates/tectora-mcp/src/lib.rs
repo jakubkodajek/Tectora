@@ -1307,6 +1307,26 @@ impl Server {
         summary: &str,
     ) -> ToolResult {
         project.check_limits()?;
+        // A job text this write sets is one line of plain text (ARCH-104);
+        // one the job already had stays editable around it.
+        for (field, text, old) in [
+            ("number", &project.job.number, before.map(|b| &b.job.number)),
+            (
+                "customer",
+                &project.job.customer,
+                before.map(|b| &b.job.customer),
+            ),
+            (
+                "address",
+                &project.job.address,
+                before.map(|b| &b.job.address),
+            ),
+            ("notes", &project.notes, before.map(|b| &b.notes)),
+        ] {
+            if old != Some(text) {
+                tectora_core::edit::check_job_text(field, text)?;
+            }
+        }
         // Every write: no window of no size or larger than its face
         // (HUNTC-003), not only `set_openings`.
         let skipped_check = if project.windows.is_empty() {
@@ -1530,12 +1550,10 @@ impl Server {
     fn call_tool_unguarded(&mut self, name: &str, args: &Value) -> ToolResult {
         // Every write is shown to the user with its summary (AGENTS.md):
         // a blank one is refused before anything is done.
-        if args
-            .get("summary")
-            .and_then(Value::as_str)
-            .is_some_and(|s| s.trim().is_empty())
-        {
-            return Err("`summary` is empty: give one sentence for the user on what you change and why (it is shown in the app)".into());
+        // Only invisible characters count as blank too, and a summary is
+        // one short line (ARCH-104, ARCH-105).
+        if let Some(summary) = args.get("summary").and_then(Value::as_str) {
+            tectora_core::edit::check_summary(summary)?;
         }
         // A misspelled key used to be ignored and the tool still answered
         // "Saved" with nothing changed (ERR-008): refuse keys the tool's

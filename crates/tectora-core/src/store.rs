@@ -1316,8 +1316,10 @@ impl Store {
         })
     }
 
-    fn append_activity(&self, id: &str, entry: ActivityEntry) -> Result<(), StoreError> {
+    fn append_activity(&self, id: &str, mut entry: ActivityEntry) -> Result<(), StoreError> {
         self.library_present()?;
+        // A summary is one sentence for the user (ARCH-105).
+        entry.summary = crate::edit::capped(&entry.summary, crate::edit::MAX_SUMMARY_CHARS);
         let io = |e| StoreError::io(Some(id), e);
         fs::create_dir_all(self.activity_dir()).map_err(io)?;
         let path = self.activity_path(id)?;

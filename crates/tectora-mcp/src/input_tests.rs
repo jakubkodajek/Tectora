@@ -319,3 +319,58 @@ fn a_gable_made_an_eave_takes_the_neighbours_pitch() {
     let p = s.store.load(&id).unwrap();
     assert_eq!(p.parts[0].edges[1].pitch_deg, 35.0);
 }
+
+/// Audit 2026-11-21 ARCH-104, ARCH-105: a summary of invisible characters
+/// or a very long one is refused, and so are control and bidirectional
+/// characters in the job's number, customer and address.
+#[test]
+fn invisible_or_long_summaries_and_control_characters_in_job_texts_are_refused() {
+    let mut s = server();
+    let id = gable_job(&mut s);
+    for summary in [
+        "\u{200b}",
+        " \u{2060}\t",
+        &"x".repeat(501),
+        "Fix\u{202e}gnp",
+    ] {
+        let e = s
+            .call_tool(
+                "update_job",
+                &json!({ "id": id, "number": "7", "summary": summary }),
+            )
+            .unwrap_err();
+        assert!(e.contains("summary"), "{e}");
+    }
+    for (key, text) in [
+        ("customer", "A\u{0}\u{202e}B"),
+        ("address", "Main\nStreet"),
+        ("number", "\u{200f}12"),
+    ] {
+        let e = s
+            .call_tool(
+                "update_job",
+                &json!({ "id": id, key: text, "summary": "Customer from the order" }),
+            )
+            .unwrap_err();
+        assert!(e.contains(key), "{e}");
+    }
+    let e = s
+        .call_tool(
+            "create_project",
+            &json!({ "name": "N", "summary": "s", "job": { "customer": "A\u{0}B" },
+                     "parts": [{ "points": [[0, 0], [10, 0], [10, 8], [0, 8]] }] }),
+        )
+        .unwrap_err();
+    assert!(e.contains("customer"), "{e}");
+    // Notes keep their line breaks; plain text is saved.
+    s.call_tool(
+        "update_job",
+        &json!({ "id": id, "customer": "Novák", "notes": "Line one\nLine two", "summary": "Customer from the order" }),
+    )
+    .unwrap();
+    let p = s.store.load(&id).unwrap();
+    assert_eq!(
+        (p.job.customer.as_str(), p.notes.as_str()),
+        ("Novák", "Line one\nLine two")
+    );
+}
