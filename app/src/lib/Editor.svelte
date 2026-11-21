@@ -60,7 +60,7 @@
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
   import type { ActivityItem, Arc, HelperRequest, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
   import { GABLE_PITCH, buildingHeight, emptyProject, isAi, isGable, isMarker } from "./types";
-  import { eavePitchFor, rememberEavePitch } from "./walltype";
+  import { eavePitchFor, pruneEavePitches, rememberEavePitch, useEavePitchJob } from "./walltype";
 
   let {
     id: idProp,
@@ -72,6 +72,8 @@
   // `idProp` already has the new value while this instance is torn down,
   // and the save on destroy must still write to this job's file.
   const id = untrack(() => idProp);
+  // A pitch remembered for Gable then Eave belongs to this job only (UI-104).
+  useEavePitchJob(id);
 
   let project = $state<Project | null>(null);
   let result = $state<CalcResult | null>(null);
@@ -442,6 +444,7 @@
   function restore(i: number) {
     at = i;
     project = JSON.parse(history[i]);
+    pruneEavePitches(project!.parts);
     // The wall stays in the bar when the step kept it (UX-005).
     selection = keptSelection(project, selection);
     recalc();
@@ -506,6 +509,7 @@
       const merged = !initial && (saveState === "dirty" || saveState === "failed") && project && lastSaved;
       project = merged ? merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, p) : p;
       lastSaved = json;
+      pruneEavePitches(project!.parts);
       // A dialog open on a part the outside save removed or changed must not
       // act on whatever part now has its index (ERRU-010).
       if (!initial) closeStaleDialogs();

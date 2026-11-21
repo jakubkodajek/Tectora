@@ -7,10 +7,29 @@ import { isGable, isMarker } from "./types";
 /**
  * The pitch each wall had before it became a gable, so Eave brings back
  * that wall's own pitch (not the last one switched). Keyed by part and the
- * wall's start corner, which survive undo and reloads; kept for the session.
+ * wall's start corner, which survive reloads; kept for the open job only
+ * (jobs from one standard roof share their corners, UI-104).
  */
 const remembered = new Map<string, number>();
+let job: string | null = null;
 const wallKey = (part: number, e: { start: { x: number; y: number } }) => `${part}:${e.start.x},${e.start.y}`;
+
+/** The editor opened job `id`: the memory of another job is dropped. */
+export function useEavePitchJob(id: string): void {
+  if (id !== job) remembered.clear();
+  job = id;
+}
+
+/**
+ * Drops what no wall needs any more: walls that are eaves again (the gable
+ * was undone or reverted) or are gone. Called after an undo, a redo and an
+ * outside save, so a later gable from elsewhere does not bring it back.
+ */
+export function pruneEavePitches(parts: { edges: EdgeDef[] }[]): void {
+  const gables = new Set<string>();
+  parts.forEach((p, i) => p.edges.forEach((e) => isGable(e) && gables.add(wallKey(i, e))));
+  for (const k of [...remembered.keys()]) if (!gables.has(k)) remembered.delete(k);
+}
 
 /** Remembers the pitch of wall `e` of `part` before it is made a gable. */
 export function rememberEavePitch(part: number, e: EdgeDef): void {
