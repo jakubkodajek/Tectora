@@ -2704,8 +2704,9 @@
   .calc-mark {
     position: absolute;
     z-index: 3;
-    right: 10px;
+    left: 50%;
     top: 8px;
+    transform: translateX(-50%);
     display: inline-flex;
     align-items: center;
     gap: 6px;
