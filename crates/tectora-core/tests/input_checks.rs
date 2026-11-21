@@ -55,13 +55,15 @@ fn a_gable_turned_back_takes_its_own_then_the_nearest_eave_pitch() {
 #[test]
 fn a_helper_ok_refuses_values_no_wall_takes() {
     let p = hip();
-    // The hip helper with absurd lengths makes wall 0 a 90° gable.
+    // A hip barely longer than its plan diagonal gives both walls a pitch
+    // around 1.3°, flatter than any wall takes. The lengths stay well away
+    // from the helper's own limits, so every platform's libm agrees.
     let req = HelperRequest::Hip {
         neighbour: Neighbour::Next,
         by: HipBy::Eaves,
-        hip: 100_000.0,
-        first: 1.0,
-        second: 1e-9,
+        hip: 7.072,
+        first: 5.0,
+        second: 5.0,
     };
     let e = commands::roof_helper_apply(&p, 0, 0, &req).unwrap_err();
     assert_eq!(e.code, "refused");
