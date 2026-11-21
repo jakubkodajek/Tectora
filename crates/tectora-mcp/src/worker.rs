@@ -57,6 +57,13 @@ pub fn calculates(name: &str) -> bool {
     )
 }
 
+/// The calculating tools refused as a whole when the job is over the work
+/// bound. `get_project` bounds only its figures and still returns the walls
+/// of a job too complex to calculate, so it can be repaired (ARCH-103).
+pub fn bounds_whole_call(name: &str) -> bool {
+    calculates(name) && name != "get_project"
+}
+
 /// The tools that open a PDF (`list_drawings` only lists file names).
 pub fn opens_pdf(name: &str) -> bool {
     matches!(
@@ -200,8 +207,11 @@ fn worker_call(dir: PathBuf) -> ToolResult {
         server.client = client;
     }
     let args = call.get("args").cloned().unwrap_or(json!({}));
-    if calculates(name) {
+    if bounds_whole_call(name) {
         return tectora_core::work::calculate(|| server.call_tool_unguarded(name, &args))?;
+    }
+    if calculates(name) {
+        return tectora_core::model::guarded(|| server.call_tool_unguarded(name, &args))?;
     }
     tectora_core::model::guarded(|| server.call_drawing(name, &args).unwrap_or(Ok(Value::Null)))?
 }

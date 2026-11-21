@@ -173,8 +173,14 @@ The tools cover every operation of the Tectora editor:
   `calc`, `calc_breakdown`, `get_project`, `export_list` and `export_plan`
   stop after 60 s. A design inside the limits whose buildings lie on top of
   each other (copies saved onto one another, a rotate with many copies) is
-  refused with "the design is too complex to calculate": remove the stacked
-  copies (`delete_part`, `undo`) or split the job, and tell the user.
+  refused with "the design is too complex to calculate" by `calc`,
+  `calc_breakdown`, `export_list` and `export_plan`. `get_project` still
+  returns its walls and objects with `too_complex: true` and a `note`
+  (no `quantities`, `placements` or `stored_result`): find the copies
+  there (parts with the same walls), remove them with `delete_items`
+  (`kind: part`), undo your own last save with `revert_last_change` or go
+  back with `revert_to` (`get_history`), or split the job, and tell the
+  user.
 - Material names: the job's own names (`set_roof_options`), else `tiles`,
   `sheet metal`, `stone`, `slate`, `solar panels` for materials 1 to 5.
   Say them in the user's language.

@@ -323,6 +323,45 @@ fn a_job_too_complex_to_calculate_is_refused_by_every_calculating_tool_and_the_s
 }
 
 #[test]
+fn get_project_returns_the_walls_of_a_job_too_complex_to_calculate() {
+    // Round 2 ARCH-103 / HUNT-102: `get_project` was refused like `calc`,
+    // so an AI asked to remove the stacked copies could not see them.
+    let dir = scratch("complex-read");
+    std::fs::write(dir.join("lib").join("stack.tectora"), stacked(50)).unwrap();
+    std::fs::write(dir.join("lib").join("small.tectora"), stacked(2)).unwrap();
+    let mut mcp = Mcp::start(&dir, &[("TECTORA_WORK_LIMIT", "5000000")]);
+    let (err, text) = mcp.tool("get_project", json!({ "id": "stack" }));
+    assert!(!err, "{text}");
+    let v: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["parts"].as_array().map(Vec::len), Some(50), "{v}");
+    assert_eq!(v["parts"][7]["edges"].as_array().map(Vec::len), Some(10));
+    assert_eq!(v["too_complex"], true, "{v}");
+    assert!(
+        v["note"]
+            .as_str()
+            .unwrap_or("")
+            .contains("too complex to calculate"),
+        "{v}"
+    );
+    assert!(
+        v["quantities"].is_null() && v["stored_result"].is_null(),
+        "{v}"
+    );
+    // `calc` still refuses it; a job inside the bound reads as before.
+    let (err, text) = mcp.tool("calc", json!({ "id": "stack" }));
+    assert!(err && text.contains("too complex to calculate"), "{text}");
+    let (err, text) = mcp.tool("get_project", json!({ "id": "small" }));
+    assert!(!err, "{text}");
+    let v: Value = serde_json::from_str(&text).unwrap();
+    assert!(v.get("too_complex").is_none(), "{v}");
+    assert!(
+        v["quantities"]["roof_area_m2"].as_f64().unwrap() > 0.0,
+        "{v}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_cli_refuses_a_job_too_complex_to_calculate_instead_of_running_for_minutes() {
     // HUNTIO-004: `tectora calc` on 25 stacked copies took 56 s, on 200 it
     // never returned.

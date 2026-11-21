@@ -42,6 +42,7 @@ programs; Codex in the ChatGPT desktop app can.
 | --- | --- |
 | `tectora_guide` | Model conventions (DACAD terms, units) and the drawing-to-roof workflow |
 | `list_projects`, `get_project`, `calc` | Search the library (text, status, AI change, dates, area, sort), read designs, edge tables, dormers, quantities by DACAD line code, per-part warnings, calculation errors and the parts each roof is joined with, stored result |
+| | A job too complex to calculate (buildings stacked on each other, work bound of `tectora_core::work`): `calc`, `calc_breakdown`, `export_list` and `export_plan` refuse it with "too complex to calculate"; `get_project` still returns its walls and objects with `too_complex: true` and a `note` and leaves out `quantities`, `placements` and `stored_result`, so the AI can remove the copies (`delete_items`); `list_projects` marks it `too_complex` |
 | `calc_breakdown` | How every face area and line length was calculated, step by step (the app's Calculation tab) |
 | `create_standard_roof`, `create_project`, `create_from_example` | Create designs |
 | `add_part`, `add_shape_part`, `transform_part`, `delete_items`, `clear_roof` | Parts: add (standard roofs, regular polygons), move / rotate / mirror / copy, delete anything, clear the whole canvas |

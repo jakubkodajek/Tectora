@@ -69,6 +69,11 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    result no wall takes. Fix the value (often m against cm or mm) and call
    again. When a write answers with `stored_result`, the job's offer
    figures no longer match the roof: tell the user.
+   A job `calc` refuses as "too complex to calculate" (buildings stacked
+   on each other): `get_project` still lists its parts with
+   `too_complex: true`; remove the copies with `delete_items`
+   (`kind: part`) or `revert_last_change` your own last save, then `calc`
+   again.
 7. In the check step first look at the roof over the drawing:
    `view_drawing` with `overlay` {`id`, `scale`, `origin`} (the
    `origin_sheet_mm` from `trace_outline`) draws the calculated faces and

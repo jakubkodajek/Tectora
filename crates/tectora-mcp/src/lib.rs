@@ -1521,7 +1521,7 @@ impl Server {
     pub fn call_tool(&mut self, name: &str, args: &Value) -> ToolResult {
         // A tool that calculates the whole job stops at the work bound
         // with "too complex" rather than keeping the server busy (HUNTIO-004).
-        if worker::calculates(name) {
+        if worker::bounds_whole_call(name) {
             return tectora_core::work::calculate(|| self.call_tool_unguarded(name, args))?;
         }
         tectora_core::model::guarded(|| self.call_tool_unguarded(name, args))?
@@ -1606,10 +1606,28 @@ impl Server {
                     format!("Reading “{}”", p.name),
                     Some(&id),
                 );
-                let host = if p.dormers.is_empty() {
-                    Vec::new()
-                } else {
-                    tectora_core::edit::dormers::host_roof(&p)
+                // The roof figures in the work bound: a job too complex to
+                // calculate is still read, walls and objects, so the AI can
+                // repair it (ARCH-103); only its figures are left out.
+                let calculated = tectora_core::work::calculate(|| {
+                    let host = if p.dormers.is_empty() {
+                        Vec::new()
+                    } else {
+                        tectora_core::edit::dormers::host_roof(&p)
+                    };
+                    let geos = tectora_core::openings::generate_project(&p);
+                    (
+                        host,
+                        // Each object's distances from the eave and the sides
+                        // of its face, as place_item takes them.
+                        json!(tectora_core::edit::position::placements(&p)),
+                        json!(tectora_core::snapshot::status_of(&geos, &p)),
+                        quantities_of(&geos, &p),
+                    )
+                });
+                let (host, placements, stored_result, quantities, refusal) = match calculated {
+                    Ok((h, pl, st, q)) => (h, pl, st, q, None),
+                    Err(r) => (Vec::new(), Value::Null, Value::Null, Value::Null, Some(r)),
                 };
                 let dormers: Vec<Value> = p
                     .dormers
@@ -1617,8 +1635,7 @@ impl Server {
                     .enumerate()
                     .map(|(i, d)| more::describe_dormer(i, d, &host))
                     .collect();
-                let geos = tectora_core::openings::generate_project(&p);
-                Ok(json!({
+                let mut v = json!({
                     "id": id,
                     "name": p.name,
                     "notes": p.notes,
@@ -1628,17 +1645,32 @@ impl Server {
                     "windows": p.windows,
                     "roof_openings": p.roof_openings,
                     "dormers": dormers,
-                    // Each object's distances from the eave and the sides of
-                    // its face, as place_item takes them.
-                    "placements": tectora_core::edit::position::placements(&p),
+                    "placements": placements,
                     "manual_lines": p.manual_lines,
                     "manual_faces": p.manual_faces,
                     "flat_roof": p.flat_roof,
                     "materials": (1..=tectora_core::model::DACAD_MATERIALS).map(|m| json!({ "material": m, "name": p.material_label(m) })).collect::<Vec<_>>(),
                     "files": self.store.attachments(&id).iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
-                    "stored_result": tectora_core::snapshot::status_of(&geos, &p),
-                    "quantities": quantities_of(&geos, &p),
-                }))
+                    "stored_result": stored_result,
+                    "quantities": quantities,
+                });
+                match refusal {
+                    None => {}
+                    Some(tectora_core::work::Refusal::TooComplex) => {
+                        v["too_complex"] = json!(true);
+                        v["note"] = json!(format!(
+                            "{}. The walls and objects are listed; the roof, its figures, placements and the stored result's status are not calculated",
+                            tectora_core::work::TOO_COMPLEX
+                        ));
+                    }
+                    Some(tectora_core::work::Refusal::Failed(d)) => {
+                        v["calc_error"] = json!(d);
+                        v["note"] = json!(
+                            "the roof could not be calculated; the walls and objects are listed, its figures are not"
+                        );
+                    }
+                }
+                Ok(v)
             }
             "calc" => {
                 let (id, p) = self.load(args)?;
@@ -2184,6 +2216,60 @@ pub fn run_stdio(store: Store) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_tool_the_guide_and_the_skill_name_exists() {
+        // Round 2 HUNT-102: the guide sent the AI to `delete_part` and
+        // `undo`, which do not exist. A backticked name with a tool's verb
+        // must be a tool.
+        let names: Vec<String> = tools()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(String::from))
+            .collect();
+        let verbs = [
+            "get_",
+            "list_",
+            "delete_",
+            "create_",
+            "update_",
+            "add_",
+            "remove_",
+            "revert_",
+            "export_",
+            "import_",
+            "show_",
+            "place_",
+            "transform_",
+            "duplicate_",
+            "restore_",
+            "view_",
+            "measure_",
+            "trace_",
+            "set_",
+        ];
+        for (file, text) in [
+            ("guide.md", GUIDE),
+            (
+                "tectora-roof/SKILL.md",
+                include_str!("../../../integrations/skills/tectora-roof/SKILL.md"),
+            ),
+        ] {
+            for (i, quoted) in text.split('`').enumerate() {
+                let word = quoted.trim();
+                let is_name = i % 2 == 1
+                    && !word.is_empty()
+                    && word.chars().all(|c| c.is_ascii_lowercase() || c == '_');
+                if is_name && (word == "undo" || verbs.iter().any(|v| word.starts_with(v))) {
+                    assert!(
+                        names.iter().any(|n| n == word),
+                        "{file}: `{word}` is not a tool"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn a_client_named_user_is_still_reviewed() {
