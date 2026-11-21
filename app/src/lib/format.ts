@@ -53,7 +53,12 @@ export function cardRoof(p: CardFigures): "pending" | "none" | "partial" | "ok" 
 /** The area on a library card: "…" while the roof is still being calculated, "—" when the core gave none. */
 export function cardArea(p: CardFigures): string {
   const state = cardRoof(p);
-  return state === "pending" ? "…" : state === "none" ? "—" : m2(p.roof_area);
+  return state === "pending" ? "…" : state === "none" || noBuilding(p) ? "—" : m2(p.roof_area);
+}
+
+/** A job with no building and no area (no hand-drawn face either): nothing to show as 0,00 m² (UX-111). */
+function noBuilding(p: CardFigures): boolean {
+  return p.parts === 0 && Math.abs(p.roof_area) < 0.005;
 }
 
 /** Why a card's area is not the whole roof, for its tooltip and the status mark; undefined when it is. */
@@ -61,6 +66,7 @@ export function cardAreaNote(p: CardFigures): string | undefined {
   const state = cardRoof(p);
   if (state === "pending") return t("lib.areaPending");
   if (state === "none") return t("res.notCalculated");
+  if (noBuilding(p)) return t("res.empty");
   if (state === "partial") return t("lib.areaPartial", { n: p.parts_failed ?? 0, of: p.parts ?? 0 });
   return undefined;
 }
