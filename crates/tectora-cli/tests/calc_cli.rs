@@ -220,3 +220,59 @@ fn area_by_material_lists_every_material_by_number_in_english() {
         assert!(!text.contains(german), "{text}");
     }
 }
+
+/// Every wall leaning outward: valid input, but the core closes no faces
+/// (`open_faces`), as in `a_refused_roof_gives_its_code_and_an_english_message`.
+fn refused(x0: f64) -> Value {
+    let mut p = rect(x0, 12.0);
+    for e in p["parts"][0]["edges"].as_array_mut().unwrap() {
+        e["pitch_deg"] = json!(120);
+    }
+    p
+}
+
+#[test]
+fn a_building_the_core_gives_no_roof_makes_the_result_partial() {
+    // Round 2 ERR-103: a building without roof (core error) left the
+    // result `ok` with exit 0, while a building left out for its input
+    // gave `partial` and exit 2.
+    let mut p = rect(0.0, 12.0);
+    let mut bad = refused(30.0)["parts"][0].clone();
+    bad["name"] = json!("Part 2");
+    p["parts"].as_array_mut().unwrap().push(bad);
+    let alone = calc(&job("core-good", &rect(0.0, 12.0)));
+    let (code, r) = calc_status(&job("core-one-bad", &p));
+    assert_eq!(code, Some(2), "{r}");
+    assert_eq!(r["partial"], true, "{r}");
+    assert_eq!(r["parts"][1]["error"]["kind"], "open_faces", "{r}");
+    assert_eq!(
+        r["quantities"]["roof_area"], alone["quantities"]["roof_area"],
+        "{r}"
+    );
+    // No building with a roof: not calculated, exit 1.
+    let (code, r) = calc_status(&job("core-all-bad", &refused(0.0)));
+    assert_eq!(code, Some(1), "{r}");
+    assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(r["calc_error"]["kind"], "open_faces", "{r}");
+    assert!(r["error"].as_str().unwrap().contains("no building"), "{r}");
+}
+
+#[test]
+fn an_answer_that_cannot_be_written_exits_with_an_error() {
+    // Round 2 ERR-106: `tectora calc … > file` on a full disk warned on
+    // stderr and exited 0. `/dev/full` exists on Linux only; elsewhere the
+    // write cannot be made to fail this way.
+    let full = std::path::Path::new("/dev/full");
+    if !full.exists() {
+        return;
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_tectora"))
+        .args(["calc", "--summary"])
+        .arg(job("full", &rect(0.0, 12.0)))
+        .stdout(std::fs::OpenOptions::new().write(true).open(full).unwrap())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("cannot write the answer"), "{stderr}");
+}

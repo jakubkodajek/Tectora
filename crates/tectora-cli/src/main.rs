@@ -46,10 +46,12 @@ enum Command {
     },
     /// Generate the roof and print faces, lines and quantities as JSON.
     ///
-    /// Exit status: 0 calculated; 2 calculated, but some buildings or
-    /// objects have input problems and are left out (`"partial": true`, the
-    /// list in `problems`), as in the app and over MCP; 1 not calculated
-    /// (unreadable, out of range, too complex).
+    /// Exit status: 0 calculated; 2 calculated, but some buildings have no
+    /// roof (each part's `error`) or some buildings or objects have input
+    /// problems and are left out (`"partial": true`, the list in
+    /// `problems`), as in the app and over MCP; 1 not calculated
+    /// (unreadable, out of range, too complex, no building with a roof, or
+    /// the answer could not be written).
     Calc {
         input: PathBuf,
         /// Print quantities, warnings and errors only (no geometry).
@@ -116,6 +118,17 @@ fn calc(
     use tectora_core::quantities as q;
     // The calculation refused the roof: its error is the result, no quantities.
     let calc_error = geos.iter().find_map(|g| g.error.clone());
+    // Buildings without a roof: the core gave none, or their input left
+    // them out (`problems` of the part), as the library card counts them.
+    let left_out: std::collections::BTreeSet<usize> = project
+        .problems()
+        .iter()
+        .filter(|p| p.item == tectora_core::model::ProblemItem::Part)
+        .map(|p| p.index)
+        .collect();
+    let failed = (0..project.parts.len())
+        .filter(|i| left_out.contains(i) || geos.get(*i).is_some_and(|g| g.error.is_some()))
+        .count();
     let lines_by_type = q::dacad_line_totals_of(&geos, project);
     let totals = q::roof_totals_of(&geos, project);
     let area_by_pitch = q::area_by_pitch_of(&geos);
@@ -180,9 +193,21 @@ fn calc(
         out["calc_error"] = tectora_mcp::calc_error(&e);
     }
     let problems = project.problems();
-    if !problems.is_empty() {
+    if !problems.is_empty() || failed > 0 {
         out["partial"] = json!(true);
+    }
+    if !problems.is_empty() {
         out["problems"] = json!(problems);
+    }
+    // No building has a roof: nothing is calculated (round 2 ERR-103).
+    if failed > 0 && failed == project.parts.len() {
+        out["ok"] = json!(false);
+        out["partial"] = json!(false);
+        out["error"] = json!(match &out["calc_error"]["kind"] {
+            serde_json::Value::String(k) =>
+                format!("{k}: no building has a roof; see each part's `error`"),
+            _ => "no building has a roof; see each part's `error` and `problems`".to_string(),
+        });
     }
     out
 }
@@ -214,8 +239,13 @@ fn main() -> ExitCode {
     }
     match run(cli) {
         Ok(v) => {
-            print_line(&serde_json::to_string_pretty(&v).expect("serializable"));
-            if v["partial"] == json!(true) {
+            if !print_line(&serde_json::to_string_pretty(&v).expect("serializable"))
+                || v["ok"] == json!(false)
+            {
+                // Not written (disk full, round 2 ERR-106), or no building
+                // has a roof (ERR-103).
+                ExitCode::FAILURE
+            } else if v["partial"] == json!(true) {
                 // Calculated, with buildings left out (see `Command::Calc`).
                 ExitCode::from(2)
             } else {
@@ -229,15 +259,17 @@ fn main() -> ExitCode {
     }
 }
 
-/// Prints the answer. A reader that went away (`tectora calc … | head`) is
-/// not an error worth a panic (ARCH-008); other write errors go to stderr.
-fn print_line(text: &str) {
+/// Prints the answer; false when it could not be written. A reader that
+/// went away (`tectora calc … | head`) is not an error worth a panic
+/// (ARCH-008) and counts as written; other write errors go to stderr.
+fn print_line(text: &str) -> bool {
     use std::io::Write;
     let mut out = std::io::stdout().lock();
     match writeln!(out, "{text}").and_then(|()| out.flush()) {
         Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => {
             eprintln!("tectora: cannot write the answer: {e}");
+            false
         }
-        _ => {}
+        _ => true,
     }
 }
