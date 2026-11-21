@@ -981,18 +981,16 @@ fn finish_departed(
 
 /// Whether the dormers of a roof Tectora calculated where the core stops
 /// leave its own faces whole: a dormer whose roof never meets the host's
-/// (a shed dormer at the host's pitch, say) runs on above the ridge and
-/// gives tens of m² of dormer and a host face of negative area. The core
-/// refuses such a dormer on a roof it calculates ("faces do not close"),
-/// so its error stands here too: an error is better than a wrong roof. A
-/// dormer that only stands above the roof and cuts nothing keeps the
-/// warning it gets on the core's roofs.
+/// (a shed dormer at the host's pitch, a gable dormer running on along
+/// the roof) gives tens of m² of dormer and a host face of negative area.
+/// The core refuses such a dormer on a roof it calculates ("faces do not
+/// close"), so its error stands here too: an error is better than a wrong
+/// roof. A dormer that only stands above the roof and cuts nothing keeps
+/// the warning it gets on the core's roofs.
 fn dormers_stay_under_the_roof(geo: &RoofGeometry) -> bool {
-    crate::check::dormer_above_roof(geo).is_none()
-        || geo
-            .faces
-            .iter()
-            .all(|f| f.edge == usize::MAX || f.area >= 0.0)
+    geo.faces
+        .iter()
+        .all(|f| f.edge == usize::MAX || f.area >= 0.0)
 }
 
 /// A roof of [`departed_bare`], in the building's own frame: sound, and
