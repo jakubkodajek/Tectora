@@ -315,7 +315,7 @@ impl Project {
                 }
                 "walls_cross" => "crosses another wall of the same building; move a corner",
                 "walls_overlap" => {
-                    "runs over another wall of the same building (the outline goes round more than once or doubles back); delete the repeated corners"
+                    "runs over another wall of the same building, or the outline goes round more than once; delete the walls of the extra lap or the wall drawn back"
                 }
                 "end_nan" => "end point is not a number or out of range",
                 "bad_corners" => "needs 3 or more finite corners",
@@ -699,38 +699,41 @@ pub fn crossing_walls(part: &RoofPart) -> Vec<usize> {
 }
 
 /// The later wall of each pair of walls of `part` that lie on each other
-/// along more than 1 mm, and each wall that starts at a corner an earlier,
-/// non-neighbouring corner already has: an outline that runs round the
-/// building twice, or a wall drawn back over another one. The core still
-/// returned a roof for it, each face twice and no eave (audit 2026-11-21
-/// HUNT-106). Walls that only touch, or that continue one another in a
-/// line, are left alone; parts with a direction marker or imported wall
-/// records are not checked, as in [`crossing_walls`].
+/// along more than 1 mm: an outline that runs round the building twice,
+/// or a wall drawn back over another one. The core still returned a roof
+/// for it, each face twice and no eave (audit 2026-11-21 HUNT-106).
+/// Walls that only touch, at a wall or at a corner (two wings meeting
+/// corner to corner, which the core calculates, HUNT-202), that continue
+/// one another in a line, or that run side by side apart (a second lap a
+/// centimetre inside the first is two walls, not one) are left alone.
+/// Direction markers (zero-length walls with a direction) are skipped on
+/// their own, not with the whole part (HUNT-201); a part with imported
+/// wall records is not checked, as in [`crossing_walls`], because those
+/// walls need not meet.
 pub fn overlapping_walls(part: &RoofPart) -> Vec<usize> {
     let n = part.edges.len();
     if n < 4
         || part
             .edges
             .iter()
-            .any(|e| e.direction_rad.is_some() || e.source.is_some() || !finite_point(e.start))
+            .any(|e| e.source.is_some() || !finite_point(e.start))
     {
         return Vec::new();
     }
+    // The walls with a length, by their index in `part.edges`; markers
+    // and walls of no length (reported as `zero_length_wall`) are left out.
+    let walls: Vec<(usize, Point2, Point2)> = (0..n)
+        .map(|i| (i, part.edges[i].start, part.edges[(i + 1) % n].start))
+        .filter(|&(_, a, b)| a.distance(b) >= MIN_WALL_LENGTH)
+        .collect();
+    if walls.len() < 3 {
+        return Vec::new();
+    }
     const TOL: f64 = 1e-3;
-    let seg = |i: usize| (part.edges[i].start, part.edges[(i + 1) % n].start);
     let mut out = Vec::new();
-    for j in 1..n {
-        let (c, d) = seg(j);
-        let same_corner = (0..j).any(|i| {
-            let neighbour = i + 1 == j || (j + 1) % n == i;
-            !neighbour && part.edges[i].start.distance(c) <= TOL
-        });
-        let on_top = (0..j).any(|i| {
-            let (a, b) = seg(i);
+    for (k, &(j, c, d)) in walls.iter().enumerate().skip(1) {
+        let on_top = walls[..k].iter().any(|&(_, a, b)| {
             let len = a.distance(b);
-            if len <= TOL {
-                return false;
-            }
             let (ux, uy) = ((b.x - a.x) / len, (b.y - a.y) / len);
             // Distance of a point from the line a-b and its position along it.
             let off = |p: Point2| ((p.x - a.x) * uy - (p.y - a.y) * ux).abs();
@@ -744,7 +747,7 @@ pub fn overlapping_walls(part: &RoofPart) -> Vec<usize> {
             };
             lo.max(0.0) + TOL < hi.min(len)
         });
-        if same_corner || on_top {
+        if on_top {
             out.push(j);
         }
     }
@@ -1366,6 +1369,100 @@ mod tests {
         let codes: Vec<_> = p.problems().iter().map(|q| (q.code, q.edge)).collect();
         assert!(codes.contains(&("walls_overlap", Some(4))), "{codes:?}");
         assert!(p.validate().unwrap_err()[0].contains("runs over another wall"));
+    }
+
+    /// Audit 2026-11-21 HUNT-202, TEST-208: two wings meeting corner to
+    /// corner touch at one point only; the core calculates the roof, so it
+    /// is no `walls_overlap`.
+    #[test]
+    fn an_outline_touching_itself_at_one_corner_is_no_overlap() {
+        let part = |pts: &[(f64, f64)]| {
+            RoofPart::new(
+                "A",
+                pts.iter()
+                    .map(|&(x, y)| crate::edit::plain_edge(Point2::new(x, y), 35.0, 3.0, 0.5))
+                    .collect(),
+            )
+        };
+        let bow = part(&[
+            (0.0, 0.0),
+            (5.0, 0.0),
+            (5.0, 5.0),
+            (10.0, 5.0),
+            (10.0, 10.0),
+            (5.0, 10.0),
+            (5.0, 5.0),
+            (0.0, 5.0),
+        ]);
+        assert!(overlapping_walls(&bow).is_empty());
+        let corner_l = part(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 5.0),
+            (5.0, 5.0),
+            (5.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 5.0),
+            (5.0, 5.0),
+        ]);
+        assert!(overlapping_walls(&corner_l).is_empty());
+        let mut p = crate::examples::find("gable").unwrap().project();
+        p.parts = vec![bow];
+        assert!(p.validate().is_ok(), "{:?}", p.validate());
+        let area = crate::quantities::roof_totals(&p).roof_area;
+        assert!(area > 50.0, "{area}");
+    }
+
+    /// Audit 2026-11-21 HUNT-201: a direction marker does not switch the
+    /// check off for the whole part; imported wall records still do.
+    #[test]
+    fn a_direction_marker_does_not_switch_the_overlap_check_off() {
+        let edge = |x: f64, y: f64| crate::edit::plain_edge(Point2::new(x, y), 40.0, 3.0, 0.5);
+        let r = [(0.0, 0.0), (12.0, 0.0), (12.0, 8.0), (0.0, 8.0)];
+        let twice: Vec<EdgeDef> = r.iter().chain(r.iter()).map(|&(x, y)| edge(x, y)).collect();
+        let marker = || {
+            let mut m = edge(12.0, 0.0);
+            m.direction_rad = Some(0.0);
+            m
+        };
+        let mut marked = twice.clone();
+        marked.insert(1, marker());
+        assert_eq!(overlapping_walls(&RoofPart::new("A", marked)), [5, 6, 7, 8]);
+        let mut p = crate::examples::find("gable").unwrap().project();
+        let mut marked = twice.clone();
+        marked.insert(1, marker());
+        p.parts = vec![RoofPart::new("A", marked)];
+        assert!(p.problems().iter().any(|q| q.code == "walls_overlap"));
+        // A rectangle with a marker stays fine.
+        let mut one: Vec<EdgeDef> = r.iter().map(|&(x, y)| edge(x, y)).collect();
+        one.insert(1, marker());
+        assert!(overlapping_walls(&RoofPart::new("A", one)).is_empty());
+        // Imported wall records: not checked (DACAD's walls need not meet).
+        let mut sourced = twice.clone();
+        sourced[2].source = Some(WallSource {
+            id: 1,
+            roof: 1,
+            start: Point2::new(12.0, 8.0),
+            length: 12.0,
+            angle_deg: 180.0,
+        });
+        assert!(overlapping_walls(&RoofPart::new("A", sourced)).is_empty());
+        // A second lap a centimetre inside the first: walls side by side,
+        // not on each other.
+        let g = 0.01;
+        let pts = [
+            (0.0, 0.0),
+            (12.0, 0.0),
+            (12.0, 8.0),
+            (0.0, 8.0),
+            (g * 4.0 / (8.0 - g), 4.0),
+            (g, g),
+            (12.0 - g, g),
+            (12.0 - g, 8.0 - g),
+            (g, 8.0 - g),
+        ];
+        let spiral = RoofPart::new("A", pts.iter().map(|&(x, y)| edge(x, y)).collect());
+        assert!(overlapping_walls(&spiral).is_empty());
     }
 
     #[test]
