@@ -1958,7 +1958,8 @@
             <!-- Only in small windows (CSS): the banner is one line there. -->
             <button class="btn sm review-more" aria-expanded={reviewDetails} aria-label={t("review.details")} title={t("review.details")} onclick={() => (reviewDetails = !reviewDetails)}><Icon name="list" size={14} /></button>
             {#if review?.before}
-              <button class="btn sm" class:on={showBefore} aria-pressed={showBefore} onclick={() => (showBefore = !showBefore)} aria-label={t("review.before")} title={t("review.beforeHint")}><Icon name="eye" size={14} /><span class="lbl">{t("review.before")}</span></button>
+              <!-- A check, not a look-alike of the other buttons: "Show previous state" ticked while it shows (UX-008). -->
+              <button class="btn sm before" class:on={showBefore} aria-pressed={showBefore} onclick={() => (showBefore = !showBefore)} aria-label={t("review.before")} title={t("review.beforeHint")} data-testid="review-before"><span class="chk" aria-hidden="true">{#if showBefore}<Icon name="check" size={11} />{/if}</span><span class="lbl">{t("review.before")}</span></button>
             {/if}
             <button class="btn sm" disabled={reviewBusy} onclick={() => revert(true)} aria-label={pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")} title={pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}><Icon name="undo" size={14} /><span class="lbl">{pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}</span></button>
             <button class="btn sm accept" disabled={reviewBusy} onclick={accept}><Icon name="check" size={14} />{t("review.accept")}</button>
@@ -2526,6 +2527,19 @@
   .btn.sm.on {
     border-color: color-mix(in srgb, var(--ai) 60%, var(--border));
     color: var(--ai-strong);
+  }
+  .btn.before .chk {
+    display: inline-grid;
+    place-items: center;
+    width: 14px;
+    height: 14px;
+    border: 1.5px solid var(--text-3);
+    border-radius: 3px;
+  }
+  .btn.before.on .chk {
+    border-color: var(--ai-strong);
+    background: var(--ai-strong);
+    color: var(--surface);
   }
   .btn.accept {
     background: var(--ai);
