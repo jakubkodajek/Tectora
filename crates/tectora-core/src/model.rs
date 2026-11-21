@@ -159,6 +159,20 @@ impl Project {
         }
     }
 
+    /// The name of roof material `m` for MCP and the CLI: the project's own
+    /// name, else a neutral English one ([`MATERIAL_LABELS`]). The
+    /// reference program's German defaults stay in its file writers and the
+    /// price-sheet export (audit ERR-004).
+    pub fn material_label(&self, m: u8) -> String {
+        let i = usize::from(m.max(1) - 1);
+        match self.material_names.get(i).map(|s| s.trim()) {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => MATERIAL_LABELS
+                .get(i)
+                .map_or_else(|| format!("material {m}"), |s| (*s).to_string()),
+        }
+    }
+
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
@@ -876,6 +890,11 @@ fn finite_point(p: Point2) -> bool {
 /// build), material 1 first.
 pub const DACAD_MATERIAL_NAMES: [&str; DACAD_MATERIALS as usize] =
     ["Ziegel", "Blech", "Stein", "Schiefer", "Solarpanel"];
+
+/// Neutral English names of the default materials, material 1 first, as
+/// MCP and the CLI give them.
+pub const MATERIAL_LABELS: [&str; DACAD_MATERIALS as usize] =
+    ["tiles", "sheet metal", "stone", "slate", "solar panels"];
 
 /// DACAD's first material (tiles), the material of a new wall.
 pub const DEFAULT_MATERIAL: u8 = 1;
