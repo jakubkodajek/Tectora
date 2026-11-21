@@ -210,6 +210,29 @@ export interface RoofFace {
   material?: number;
 }
 
+/** A roof line by its part and its index in that part's `geometry.lines`. */
+export interface LineRef {
+  part: number;
+  index: number;
+}
+
+/** What the editor shows about one roof line (core `lineinfo::LineDetail`). */
+export interface LineDetail extends LineRef {
+  kind: LineKind;
+  /** DACAD's line code (T, F, G, K, OL, OR, OS, P, c, S, W, WV, WH, WS). */
+  code: string;
+  a: [number, number, number];
+  b: [number, number, number];
+  length: number;
+  plan_length: number;
+  /** The line's own inclination against the horizontal, degrees. */
+  slope_deg: number;
+  z_low: number;
+  z_high: number;
+  /** The faces the line bounds; `wall` is absent for a dormer's own faces. */
+  faces: { part: number; face: number; wall?: number; pitch_deg: number; material: number }[];
+}
+
 export interface RoofQuantities {
   roof_area: number;
   ridge_length: number;
@@ -347,6 +370,8 @@ export interface CalcResult {
   problems: Problem[];
   /** Each object's distances on its roof face (core `edit::position`), by index; null off the roof. */
   placements?: Placements;
+  /** Every roof line's heights, slope and faces, part by part in line order. */
+  line_details?: LineDetail[];
   stored_result?: SnapshotStatus | null;
 }
 

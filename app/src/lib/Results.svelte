@@ -4,7 +4,7 @@
   import { figureLabel, formatFigure } from "./changes";
   import { m, m2, num } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
-  import { materialName } from "./materials";
+  import { materialName, materialToken } from "./materials";
   import { areaRows, failedParts, joinedWith, roofState, warningText } from "./results";
   import { inputWarnings } from "./plausible";
   import { legend, lineName, SUB_CODES } from "./linecodes";
@@ -161,7 +161,7 @@
     <table>
       <tbody>
         {#each materials as [mat, a]}
-          <tr><td>{materialName(project, mat)}</td><td class="v">{failed ? NONE : m2(a)}</td></tr>
+          <tr><td><i class="mat-sw" style:background={`var(${materialToken(mat)})`}></i>{materialName(project, mat)}</td><td class="v">{failed ? NONE : m2(a)}</td></tr>
         {/each}
       </tbody>
     </table>
@@ -380,5 +380,15 @@
     margin: 0;
     font-size: 11.5px;
     color: var(--text-3);
+  }
+  /* The material's colour in the plan and 3D (tiles clay, sheet metal steel grey). */
+  .mat-sw {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-right: 6px;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    vertical-align: -1px;
   }
 </style>
