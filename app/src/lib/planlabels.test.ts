@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chooseLabels, insidePolygon, overlaps, placeLabels, rotatedBox, segCrossesBox, underHigherRoof, wallNumber, type Seg } from "./planlabels";
+import { chooseLabels, insidePolygon, overlaps, placeDimSpots, placeLabels, rotatedBox, segCrossesBox, underHigherRoof, wallNumber, type Seg } from "./planlabels";
 
 describe("rotatedBox", () => {
   it("is the label box itself without a turn and swaps sides at 90°", () => {
@@ -111,5 +111,18 @@ describe("labels of several buildings keep off roof lines and walls (sweep 2026-
     expect(chooseLabels([[dim], [full, pitch]], lines)).toEqual([0, 1]);
     const wide = { x0: 380, y0: 380, x1: 470, y1: 420 };
     expect(chooseLabels([[dim], [wide]], lines)).toEqual([0, -1]);
+  });
+});
+
+describe("placement dimension labels (UI-209)", () => {
+  it("offers another spot for a dimension label, and a later label avoids a kept one", () => {
+    const a = placeDimSpots({ mx: 100, my: 100, x1: 80, y1: 100, x2: 120, y2: 100 }, "2,381", false);
+    const b = placeDimSpots({ mx: 104, my: 100, x1: 104, y1: 80, x2: 104, y2: 120 }, "3,700", false);
+    expect(a.length).toBeGreaterThan(1);
+    expect(overlaps(a[0].box, b[0].box)).toBe(true);
+    const chosen = chooseLabels([a.map((s) => s.box), b.map((s) => s.box)]);
+    expect(chosen[0]).toBe(0);
+    expect(chosen[1]).toBeGreaterThan(0);
+    expect(overlaps(a[chosen[0]].box, b[chosen[1]].box)).toBe(false);
   });
 });
