@@ -239,6 +239,12 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
     v
 }
 
+/// The roof line codes `line_details` filters by (DACAD's codes as
+/// `RoofLine::dacad_code` gives them; O and W also match their kinds).
+const LINE_CODES: [&str; 15] = [
+    "T", "F", "G", "K", "O", "OL", "OR", "OS", "P", "c", "S", "W", "WV", "WH", "WS",
+];
+
 /// Why the calculation gave no roof for a part, in English and without
 /// the calculation's own (German) text: the AI passes it on to the user.
 pub fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
@@ -993,7 +999,7 @@ fn base_tools() -> Value {
             "inputSchema": schema(json!({
                 "id": { "type": "string" },
                 "part": { "type": "integer", "minimum": 0, "description": "Only this part's lines." },
-                "code": { "type": "string", "description": "Only lines whose DACAD code starts with this (T, F, G, K, O, P, c, S, W, …)." }
+                "code": { "type": "string", "enum": LINE_CODES, "description": "Only lines of this DACAD code; \"O\" also matches OL, OR and OS, \"W\" also WV, WH and WS." }
             }), &["id"]),
         },
         {
@@ -1535,11 +1541,22 @@ impl Server {
                 };
                 let code = match args.get("code") {
                     None | Some(Value::Null) => None,
-                    Some(_) => Some(arg_str(args, "code")?.to_string()),
+                    Some(_) => {
+                        let c = arg_str(args, "code")?;
+                        // Case does not matter ("t" is T); an unknown code is
+                        // refused rather than answered with no lines.
+                        let known = LINE_CODES
+                            .iter()
+                            .find(|k| k.eq_ignore_ascii_case(c))
+                            .ok_or_else(|| {
+                                format!(
+                                    "`code` {c:?} is no line code; use one of {}",
+                                    LINE_CODES.join(", ")
+                                )
+                            })?;
+                        Some(known.to_string())
+                    }
                 };
-                if code.as_ref().is_some_and(|c| c.is_empty() || c.len() > 4) {
-                    return Err("`code` must be a line code such as T, F, G, K, O, W".into());
-                }
                 self.live(
                     "calculating",
                     Some(&p.name),
@@ -1558,8 +1575,21 @@ impl Server {
                     .enumerate()
                     .filter(|(i, _)| only.is_none_or(|k| k == *i))
                     .filter_map(|(i, g)| {
+                        let input: Vec<String> = p
+                            .problems()
+                            .iter()
+                            .filter(|q| {
+                                q.item == tectora_core::model::ProblemItem::Part && q.index == i
+                            })
+                            .map(|q| p.describe(q))
+                            .collect();
                         let why = match &g.error {
                             Some(e) => calc_error(e),
+                            // Left out for its input, as `calc.problems` says.
+                            None if !input.is_empty() => json!({
+                                "kind": "input",
+                                "message": format!("the building is left out because of its input: {}", input.join("; ")),
+                            }),
                             None if g.faces.is_empty() => json!({
                                 "message": "no roof faces: every wall is a gable, or the roof is covered by another building"
                             }),
@@ -2417,6 +2447,35 @@ mod tests {
             .sum();
         assert!((front - 12.0).abs() < 1e-3, "{eaves}");
         assert!(eaves.get("not_calculated").is_none());
+
+        // A code in lower case is that code; an unknown one is refused, not
+        // answered with no lines.
+        let lower = s
+            .call_tool("line_details", &json!({ "id": id, "code": "t" }))
+            .unwrap();
+        let upper = s
+            .call_tool("line_details", &json!({ "id": id, "code": "T" }))
+            .unwrap();
+        assert!(!upper["lines"].as_array().unwrap().is_empty());
+        assert_eq!(lower["lines"], upper["lines"]);
+        for bad in ["zz", "X", "TT"] {
+            let e = s
+                .call_tool("line_details", &json!({ "id": id, "code": bad }))
+                .unwrap_err();
+            assert!(e.contains("no line code"), "{bad}: {e}");
+        }
+
+        // A building with too few walls is left out for its input, and
+        // said so (not "every wall is a gable").
+        let mut short = p.clone();
+        short.parts[1].edges.truncate(2);
+        let sid = s.store.save(None, &short).unwrap();
+        let r = s.call_tool("line_details", &json!({ "id": sid })).unwrap();
+        let missing = r["not_calculated"].as_array().unwrap();
+        assert_eq!(missing.len(), 1, "{r}");
+        assert_eq!(missing[0]["error"]["kind"], "input", "{r}");
+        let why = missing[0]["error"]["message"].as_str().unwrap();
+        assert!(why.contains("input") && !why.contains("gable"), "{why}");
 
         // A non-convex chimney: no roof at all, so the call fails and says why.
         let mut gables = p.clone();
