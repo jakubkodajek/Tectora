@@ -218,10 +218,16 @@ fn a_helper_that_gives_a_wall_no_wall_takes_saves_nothing() {
     let e = s
         .call_tool(
             "roof_helper",
-            &json!({ "id": id, "edge": 0, "tool": "hip", "hip": 100000, "first": 1, "second": 1e-9, "by": "eaves", "apply": true, "summary": "s" }),
+            &json!({ "id": id, "edge": 0, "tool": "hip", "hip": 7.072, "first": 5, "second": 5, "by": "eaves", "apply": true, "summary": "s" }),
         )
         .unwrap_err();
-    assert!(e.contains("nothing was saved"), "{e}");
+    // About 1.3° on both walls: the refusal names the pitch, not "no
+    // pitches fit" (lengths away from the helper's limits, so every
+    // platform's libm agrees).
+    assert!(
+        e.contains("nothing was saved") && e.contains("pitch_deg"),
+        "{e}"
+    );
     let e = s
         .call_tool(
             "roof_helper",
