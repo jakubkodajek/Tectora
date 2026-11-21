@@ -2146,7 +2146,7 @@
 
 {#if dormerDlg && project}
   <Modal title={dormerDlg.index === null ? t("dormer.dialogNew") : t("dormer.n", { n: dormerDlg.index + 1 })} width={1040} onclose={() => (dormerDlg = null)}>
-    <DormerDialog {project} roofFailed={!!roofError} bind:params={dormerDlg.params} track={(p) => pendingEdits.track(p)} />
+    <DormerDialog {project} roofFailed={!!roofError} fresh={dormerDlg.index === null} bind:params={dormerDlg.params} track={(p) => pendingEdits.track(p)} />
     {#snippet footer()}
       <button class="btn" onclick={() => (dormerDlg = null)}>{t("common.cancel")}</button>
       <button class="btn primary" onclick={applyDormerDialog}>{t("common.ok")}</button>
