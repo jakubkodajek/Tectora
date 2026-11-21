@@ -5,7 +5,7 @@
   import { m, m2, num } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
-  import { areaRows, failedParts, joinedWith, roofState, warningText } from "./results";
+  import { areaRows, emptyRoof, failedParts, joinedWith, roofState, warningText } from "./results";
   import { inputWarnings } from "./plausible";
   import { legend, lineName, SUB_CODES } from "./linecodes";
   import { partLabel } from "./partname";
@@ -82,6 +82,10 @@
   const failedSet = $derived(roofState(result) === "partial" ? failedParts(result) : []);
   const failedNames = $derived(failedSet.map((i) => partLabel(result!.parts[i].name, i)).join(", "));
   const NONE = "—";
+  /** No building yet (empty job, footprint being drawn): a dash and a hint, not 0,00 (UX-011). */
+  const empty = $derived(emptyRoof(result));
+  /** No figures to show at all. */
+  const none = $derived(failed || empty);
 
   /** Plausibility warnings of every part, with the part's name when there are several. */
   const warnings = $derived(
@@ -118,8 +122,9 @@
 <div class="results">
   <div class="hero">
     <span>{t("res.area")}</span>
-    <strong data-testid="res-area" title={failed ? t("res.notCalculated") : undefined}>{totals && !failed ? m2(totals.roof_area) : NONE}</strong>
-    {#if failed}<small data-testid="res-not-calculated">{t("res.notCalculated")}</small>
+    <strong data-testid="res-area" title={failed ? t("res.notCalculated") : undefined}>{totals && !none ? m2(totals.roof_area) : NONE}</strong>
+    {#if empty}<small data-testid="res-empty">{t("res.empty")}</small>
+    {:else if failed}<small data-testid="res-not-calculated">{t("res.notCalculated")}</small>
     {:else if totals}<small>{t("res.ridgeHeight", { v: num(totals.ridge_height) })}</small>{/if}
     {#if failedSet.length}<small data-testid="res-partial">{t("res.partialNote", { names: failedNames })}</small>{/if}
     {#if totals && !failed && deductedTotal >= 0.005}<small data-testid="res-deducted">{t("res.obj.netOf", { a: m2(deductedTotal) })}</small>{/if}
@@ -198,13 +203,13 @@
   <table data-testid="res-lines">
     <tbody>
       {#each rows as r}
-        <tr class:zero={failed || r.value < 0.005}>
+        <tr class:zero={none || r.value < 0.005}>
           <td class="code"><i style="background:{r.color}"></i>{r.code}</td>
           <td>{r.label}{#if r.n && !failed}<span class="n">×{r.n}</span>{/if}
             {#if r.code === "W" && !failed && subRows("W").length}
               <small class="joined" data-testid="res-abutments">{subRows("W").map((s) => `${s.code} ${s.label} ${m(s.value)}`).join(" · ")}</small>
             {/if}</td>
-          <td class="v">{failed ? NONE : m(r.value)}</td>
+          <td class="v">{none ? NONE : m(r.value)}</td>
         </tr>
       {/each}
     </tbody>
@@ -311,6 +316,9 @@
     text-align: right;
     font-variant-numeric: tabular-nums;
     font-weight: 500;
+    /* The figure and its unit stay on one line; the label column wraps instead (UI-006). */
+    white-space: nowrap;
+    padding-left: 8px;
   }
   .warn {
     padding: 10px 12px;

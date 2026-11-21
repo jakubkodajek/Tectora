@@ -179,3 +179,14 @@ describe("roofState (ERRU-003)", () => {
     expect(roofState(chimney as unknown as CalcResult)).toBe("ok");
   });
 });
+
+describe("an empty job shows no zero figures (UX-011)", () => {
+  it("is empty with no building and no hand-drawn face", async () => {
+    const { emptyRoof } = await import("./results");
+    const base = { parts: [], totals: {}, codes: {}, problems: [] } as unknown as CalcResult;
+    expect(emptyRoof(null)).toBe(true);
+    expect(emptyRoof(base)).toBe(true);
+    expect(emptyRoof({ ...base, manual_faces: [{ label: "1", pitch_deg: 30, area: 4 }] })).toBe(false);
+    expect(emptyRoof({ ...base, parts: [{}] } as unknown as CalcResult)).toBe(false);
+  });
+});

@@ -53,3 +53,15 @@ describe("library card of a roof the core refused (ERRU-005)", () => {
     expect(cardAreaNote({ roof_area: 12, parts: 1, parts_failed: 0 })).toBeUndefined();
   });
 });
+
+describe("attachment sizes follow the UI language (UI-010)", () => {
+  it("uses the locale's decimal separator", async () => {
+    const { fileSize } = await import("./format");
+    expect(fileSize(1.5 * 1048576, "cs-CZ")).toBe("1,5 MB");
+    expect(fileSize(1.5 * 1048576, "de-DE")).toBe("1,5 MB");
+    expect(fileSize(1.5 * 1048576, "en-GB")).toBe("1.5 MB");
+    expect(fileSize(152 * 1024, "sk-SK")).toBe("152 kB");
+    expect(fileSize(512, "cs-CZ")).toBe("512 B");
+    expect(fileSize(NaN, "cs-CZ")).toBe("—");
+  });
+});

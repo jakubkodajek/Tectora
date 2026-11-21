@@ -23,6 +23,7 @@
     params = $bindable(),
     track = (p: Promise<unknown>) => p,
     roofFailed = false,
+    fresh = false,
   }: {
     project: Project;
     /** The core gave no roof for a building of the job: no roof under the front is not "off the roof" (ERRU-006). */
@@ -31,6 +32,8 @@
     params: DormerParams;
     /** Registers a placement in flight, so OK waits for it (review UI-001). */
     track?: (p: Promise<unknown>) => Promise<unknown>;
+    /** A new dormer with the app's defaults: lowered once to fit below the ridge (UX-002). */
+    fresh?: boolean;
   } = $props();
   // Set once the dialog is gone: a late answer then writes nothing.
   let closed = false;
@@ -105,6 +108,38 @@
     }
   }
 
+  // How far the dormer as edited rises above the top of its roof: the core's
+  // own plausibility check (`dormer_above_roof`) on the job with only this
+  // dormer, asked while editing so the dialog says it before OK (UX-002).
+  let aboveRoof = $state<number | null>(null);
+  let aboveAsked = 0;
+  /** The user changed a value: the defaults are no longer lowered for them. */
+  let edited = false;
+  let autoFitted = false;
+  $effect(() => {
+    void placeKey;
+    const n = ++aboveAsked;
+    api.calc(probeProject()).then(
+      (r) => {
+        if (n !== aboveAsked || closed) return;
+        const w = r.parts.flatMap((p) => p.geometry.warnings ?? []).find((w) => w.kind === "dormer_above_roof");
+        aboveRoof = w && Number.isFinite(w.value) && w.value > 0 ? w.value : null;
+        fitDefault();
+      },
+      () => n === aboveAsked && (aboveRoof = null),
+    );
+  });
+  /** A new dormer whose defaults run past the ridge is lowered by as much as
+   *  it rises above it (its whole roof moves down with its eave), as long as
+   *  the front wall keeps a height; once, and only before the user edits. */
+  function fitDefault() {
+    if (!fresh || edited || autoFitted || aboveRoof === null || !host || params.kind === "pointed") return;
+    autoFitted = true;
+    const lowest = eaveFor(params, host, { wall_height: 0 });
+    const target = Math.round((params.eave_height - aboveRoof - 0.05) * 1000) / 1000;
+    if (typeof lowest === "number" && Number.isFinite(target) && target >= lowest) params = { ...params, eave_height: target };
+  }
+
   const sec = $derived(host ? dormerSection(params, host) : null);
   let problem = $state<SectionProblem | null>(null);
 
@@ -115,6 +150,7 @@
   const hasRidge = $derived(!shedTop);
 
   function set(patch: Partial<DormerParams>) {
+    edited = true;
     const next = { ...params, ...patch };
     if (patch.kind && fronted(patch.kind) && !fronted(params.kind)) {
       next.front_pitch_deg = defaultParams(patch.kind, next.start, next.angle, next.eave_height).front_pitch_deg;
@@ -171,6 +207,7 @@
     if (!host) return;
     const e = eaveFor(params, host, target);
     if (typeof e === "number") {
+      edited = true;
       problem = null;
       params = { ...params, eave_height: e };
     } else {
@@ -357,6 +394,9 @@
   {/if}
   {#if refusal}
     <p class="note" role="alert" data-testid="dormer-refusal"><i></i>{refusal}</p>
+  {/if}
+  {#if aboveRoof !== null}
+    <p class="note" role="alert" data-testid="dormer-above-roof"><i></i><code>dormer_above_roof</code> {t("dormer.aboveRoof", { v: fmt(aboveRoof, 2) })}</p>
   {/if}
 
   <div class="row place-row">

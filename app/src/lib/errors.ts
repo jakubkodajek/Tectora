@@ -29,6 +29,7 @@ export type Action =
   | "update"
   | "connect"
   | "restore"
+  | "status"
   | "settings";
 
 export interface Described {

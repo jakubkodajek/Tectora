@@ -82,22 +82,27 @@
   let dock = $state<"results" | "breakdown" | "ai" | "job">("results");
   const dockIds = tabIds("dock");
 
-  // The toolbar drops its labels (icons + tooltips) whenever the labelled
-  // buttons do not fit the window, e.g. German at 1360 or 1440 px, and takes
-  // them back once the window is wide enough for the width they needed.
+  // The toolbar gives up its labels step by step when the labelled buttons do
+  // not fit the window (German at 1360 or 1440 px, UX-006): first the labels
+  // get smaller and may take two lines, then the view and export buttons drop
+  // theirs, and only then every button shows its icon alone (with tooltips).
+  // It takes each step back once the window is as wide as that step needed.
   let toolbarEl: HTMLDivElement | undefined = $state();
-  let compactTools = $state(false);
-  let labelledWidth = 0;
+  /** 0 full labels, 1 small two-line labels, 2 view and export buttons icon only, 3 all icon only. */
+  let toolLevel = $state(0);
+  const compactTools = $derived(toolLevel >= 3);
+  /** The width the toolbar needed at each level before it took the next one. */
+  let levelWidths: number[] = [];
   function fitToolbar() {
     const el = toolbarEl;
     if (!el) return;
-    if (!compactTools) {
-      if (el.scrollWidth > el.clientWidth + 1) {
-        labelledWidth = el.scrollWidth;
-        compactTools = true;
-      }
-    } else if (el.clientWidth >= labelledWidth) {
-      compactTools = false;
+    if (el.scrollWidth > el.clientWidth + 1) {
+      if (toolLevel >= 3) return;
+      levelWidths[toolLevel] = el.scrollWidth;
+      toolLevel += 1;
+      tick().then(fitToolbar);
+    } else if (toolLevel > 0 && el.clientWidth >= (levelWidths[toolLevel - 1] ?? Infinity)) {
+      toolLevel -= 1;
       tick().then(fitToolbar);
     }
   }
@@ -112,8 +117,8 @@
     // Labels of another language need another width: measure again.
     void i18n.locale;
     untrack(() => {
-      compactTools = false;
-      labelledWidth = 0;
+      toolLevel = 0;
+      levelWidths = [];
       tick().then(fitToolbar);
     });
   });
@@ -1076,16 +1081,22 @@
     const p = snapToRoof(result, { x, y }, ROOF_SNAP);
     const first = manualDraft[0];
     if (first && manualDraft.length >= 3 && Math.hypot(p[0] - first[0], p[1] - first[1]) < ROOF_SNAP) {
-      project.manual_faces ??= [];
-      // DACAD asks for the pitch with 30° filled in.
-      project.manual_faces.push({ points: manualDraft.map((q) => ({ x: q[0], y: q[1] })), pitch_deg: 30 });
-      manualDraft = [];
-      placing = false;
-      selectManual({ kind: "face", index: project.manual_faces.length - 1 });
-      commit();
+      closeFace();
       return;
     }
     manualDraft = [...manualDraft, p];
+  }
+
+  /** Closes the face being drawn (a click on its first corner, Enter or the bar's Close, UX-010). */
+  function closeFace() {
+    if (!project || placing !== "face" || manualDraft.length < 3) return;
+    project.manual_faces ??= [];
+    // DACAD asks for the pitch with 30° filled in.
+    project.manual_faces.push({ points: manualDraft.map((q) => ({ x: q[0], y: q[1] })), pitch_deg: 30 });
+    manualDraft = [];
+    placing = false;
+    selectManual({ kind: "face", index: project.manual_faces.length - 1 });
+    commit();
   }
 
   /** DACAD: Berechnung › Flachdach; dormers are left out of such a roof. */
@@ -1839,6 +1850,10 @@
       // Insert, or Ctrl+B / ⌘B: a Mac keyboard has no Insert key (UX-011).
       e.preventDefault();
       startDraw();
+    } else if (e.key === "Enter" && !mod && placing === "face" && manualDraft.length >= 3 && !(e.target as HTMLElement).closest?.("button, a")) {
+      // Enter closes a hand-drawn face, as it closes a footprint (UX-010).
+      e.preventDefault();
+      closeFace();
     } else if (e.key === "Escape" && placing) {
       placing = false;
     } else if (e.key === "Escape" && !drawing) {
@@ -1888,7 +1903,7 @@
   </header>
 
   {#if !loadError}
-  <div class="toolbar" class:compact={compactTools && !prefs.toolLabels} class:labels={prefs.toolLabels} role="toolbar" bind:this={toolbarEl} use:hscroll>
+  <div class="toolbar" class:tight={toolLevel >= 1} class:compact-minor={toolLevel >= 2 && !prefs.toolLabels} class:compact={compactTools && !prefs.toolLabels} class:labels={prefs.toolLabels} role="toolbar" bind:this={toolbarEl} use:hscroll>
     <div class="group">
       <button class="tool" onclick={undo} disabled={at <= 0} title="{t('editor.undo')} ({keys('Ctrl+Z')})"><Icon name="undo" /><span>{t("editor.undo")}</span></button>
       <button class="tool" onclick={redo} disabled={at >= historyLen - 1} title="{t('editor.redo')} ({keys('Ctrl+Shift+Z')})"><Icon name="redo" /><span>{t("editor.redo")}</span></button>
@@ -1911,14 +1926,14 @@
       <button class="tool" disabled={!selection} onclick={deletePart} title={t("tool.deletePartHint")}><Icon name="trash" /><span>{t("tool.deletePart")}</span></button>
       <button class="tool" disabled={!hasDrawing(project)} onclick={clearRoof} title={t("tool.clearHint")}><Icon name="eraser" /><span>{t("tool.clear")}</span></button>
     </div>
-    <div class="group">
+    <div class="group minor">
       <button class="tool" class:on={prefs.layout === "plan"} aria-pressed={prefs.layout === "plan"} onclick={() => setLayout("plan")} title={t("editor.plan")}><Icon name="plan" /><span>{t("editor.plan")}</span></button>
       <button class="tool" class:on={prefs.layout === "split"} aria-pressed={prefs.layout === "split"} onclick={() => setLayout("split")} title={t("editor.both")}><Icon name="split" /><span>{t("editor.both")}</span></button>
       <button class="tool" class:on={prefs.layout === "3d"} aria-pressed={prefs.layout === "3d"} onclick={() => setLayout("3d")} title="{t('editor.modelHint')} (F3)"><Icon name="cube" /><span>{t("editor.model")}</span></button>
       <button class="tool" onclick={() => plan?.fit()} disabled={prefs.layout === "3d"} title={t("plan.fitHint")}><Icon name="fit" /><span>{t("plan.fit")}</span></button>
       <button class="tool" class:on={showDims} aria-pressed={showDims} onclick={() => (showDims = !showDims)} title={t("tool.dims")}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
     </div>
-    <div class="group">
+    <div class="group minor">
       <button class="tool" class:on={exporting} aria-pressed={exporting} disabled={!result || !!blockedReason} onclick={() => (exporting = true)} title={blockedReason ?? t("tool.exportHint")}><Icon name="download" /><span>{t("tool.export")}</span></button>
     </div>
   </div>
@@ -1949,7 +1964,8 @@
             <!-- Only in small windows (CSS): the banner is one line there. -->
             <button class="btn sm review-more" aria-expanded={reviewDetails} aria-label={t("review.details")} title={t("review.details")} onclick={() => (reviewDetails = !reviewDetails)}><Icon name="list" size={14} /></button>
             {#if review?.before}
-              <button class="btn sm" class:on={showBefore} aria-pressed={showBefore} onclick={() => (showBefore = !showBefore)} aria-label={t("review.before")} title={t("review.beforeHint")}><Icon name="eye" size={14} /><span class="lbl">{t("review.before")}</span></button>
+              <!-- A check, not a look-alike of the other buttons: "Show previous state" ticked while it shows (UX-008). -->
+              <button class="btn sm before" class:on={showBefore} aria-pressed={showBefore} onclick={() => (showBefore = !showBefore)} aria-label={t("review.before")} title={t("review.beforeHint")} data-testid="review-before"><span class="chk" aria-hidden="true">{#if showBefore}<Icon name="check" size={11} />{/if}</span><span class="lbl">{t("review.before")}</span></button>
             {/if}
             <button class="btn sm" disabled={reviewBusy} onclick={() => revert(true)} aria-label={pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")} title={pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}><Icon name="undo" size={14} /><span class="lbl">{pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}</span></button>
             <button class="btn sm accept" disabled={reviewBusy} onclick={accept}><Icon name="check" size={14} />{t("review.accept")}</button>
@@ -2047,6 +2063,7 @@
         {:else if placing}
           <PlaceBar kind={placing} points={manualDraft.length}
             onundo={() => (manualDraft = manualDraft.slice(0, -1))}
+            onclose={placing === "face" ? closeFace : undefined}
             oncancel={() => (placing = false)} />
         {:else if dormerSel !== null}
           <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} onedit={editDormer}
@@ -2147,7 +2164,7 @@
 
 {#if dormerDlg && project}
   <Modal title={dormerDlg.index === null ? t("dormer.dialogNew") : t("dormer.n", { n: dormerDlg.index + 1 })} width={1040} onclose={() => (dormerDlg = null)}>
-    <DormerDialog {project} roofFailed={!!roofError} bind:params={dormerDlg.params} track={(p) => pendingEdits.track(p)} />
+    <DormerDialog {project} roofFailed={!!roofError} fresh={dormerDlg.index === null} bind:params={dormerDlg.params} track={(p) => pendingEdits.track(p)} />
     {#snippet footer()}
       <button class="btn" onclick={() => (dormerDlg = null)}>{t("common.cancel")}</button>
       <button class="btn primary" onclick={applyDormerDialog}>{t("common.ok")}</button>
@@ -2517,6 +2534,19 @@
     border-color: color-mix(in srgb, var(--ai) 60%, var(--border));
     color: var(--ai-strong);
   }
+  .btn.before .chk {
+    display: inline-grid;
+    place-items: center;
+    width: 14px;
+    height: 14px;
+    border: 1.5px solid var(--text-3);
+    border-radius: 3px;
+  }
+  .btn.before.on .chk {
+    border-color: var(--ai-strong);
+    background: var(--ai-strong);
+    color: var(--surface);
+  }
   .btn.accept {
     background: var(--ai);
     border-color: var(--ai);
@@ -2667,7 +2697,35 @@
     overflow-y: auto;
   }
 
-  /* Labels that do not fit the window (long languages): icons only, as below. */
+  /* Labels that do not fit the window (long languages), step by step (UX-006):
+     smaller labels on up to two lines, then the view and export buttons icon
+     only, then every button icon only, as below. */
+  @media (min-width: 1221px) and (min-height: 641px) {
+    .toolbar.tight .tool {
+      min-width: 44px;
+      max-width: 80px;
+      padding: 0 4px;
+    }
+    .toolbar.tight .tool span {
+      font-size: 10.5px;
+      line-height: 1.1;
+      white-space: normal;
+      text-align: center;
+    }
+  }
+  .toolbar.compact-minor .group.minor .tool {
+    width: 36px;
+    height: 36px;
+    min-width: 0;
+    padding: 0;
+  }
+  .toolbar.compact-minor .group.minor .tool span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
   .toolbar.compact .tool {
     width: 36px;
     height: 36px;

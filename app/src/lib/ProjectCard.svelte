@@ -65,7 +65,8 @@
 
 <svelte:window onclick={() => (menuOpen = false)} />
 
-<article class="card" ondblclick={onopen}>
+<!-- A double click on the card opens the job, but not one on its menu button or menu (UI-010). -->
+<article class="card" ondblclick={(e) => !(e.target as Element | null)?.closest?.(".menu-wrap") && onopen()}>
   <button class="thumb" onclick={onopen} aria-label="{t('card.open')} {project.name}">
     <PlanThumb outlines={project.outlines} lines={project.lines} />
   </button>

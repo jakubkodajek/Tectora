@@ -12,12 +12,15 @@
     kind,
     points = 0,
     onundo,
+    onclose,
     oncancel,
   }: {
     kind: PlaceKind;
     /** Points of a roof line or face picked so far. */
     points?: number;
     onundo?: () => void;
+    /** Closes the face being drawn (Enter does the same); only for a manual face. */
+    onclose?: () => void;
     oncancel: () => void;
   } = $props();
 
@@ -33,6 +36,9 @@
   <div class="actions">
     {#if steps.counted && onundo}
       <button class="btn sm" disabled={points === 0} onclick={onundo}><Icon name="undo" size={15} />{t("draw.undo")}</button>
+    {/if}
+    {#if onclose}
+      <button class="btn sm" disabled={points < 3} onclick={onclose} title="{t('place.closeFace')} (Enter)"><Icon name="check" size={15} />{t("place.closeFace")}</button>
     {/if}
     <button class="btn sm" onclick={oncancel} title="{t('common.cancel')} (Esc)">{t("common.cancel")}</button>
   </div>
