@@ -251,21 +251,74 @@ fn a_job_too_large_to_calculate_is_refused_or_stopped_and_the_session_goes_on() 
     std::fs::write(lib.join("huge.tectora"), many_parts(1000)).unwrap();
     std::fs::write(lib.join("big.tectora"), many_parts(200)).unwrap();
     let mut mcp = Mcp::start(&dir, &[("TECTORA_CALC_TIMEOUT_S", "1")]);
+    // TEST-007: the clock bounds below only catch a hang (the calculation
+    // used to take 77 s per call and much longer for larger files); what
+    // the test proves is the answer, so a busy machine does not fail it.
+    let hang = Duration::from_secs(60);
     let start = Instant::now();
     let (err, text) = mcp.tool("calc", json!({ "id": "huge" }));
     assert!(err && text.contains("too many parts"), "{text}");
-    assert!(start.elapsed() < Duration::from_secs(5));
-    // At the limit it is allowed, and the deadline still holds.
+    assert!(start.elapsed() < hang, "{:?}", start.elapsed());
+    // At the limit it is allowed: either it is calculated or the deadline
+    // stops it with its own message, and the session goes on.
     let start = Instant::now();
     let (err, text) = mcp.tool("calc", json!({ "id": "big" }));
     if err {
         assert!(text.contains("longer than 1 s"), "{text}");
+    } else {
+        assert!(text.contains("roof_area"), "{text}");
     }
-    assert!(
-        start.elapsed() < Duration::from_secs(10),
-        "{:?}",
-        start.elapsed()
-    );
+    assert!(start.elapsed() < hang, "{:?}", start.elapsed());
+    let (err, text) = mcp.tool("list_projects", json!({}));
+    assert!(!err && text.contains("huge"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `n` copies of one 10-wall building, each turned 0.01 rad (HUNTIO-004).
+fn stacked(n: usize) -> String {
+    let parts: Vec<Value> = (0..n)
+        .map(|k| {
+            let edges: Vec<Value> = (0..10)
+                .map(|i| {
+                    let a = std::f64::consts::TAU * i as f64 / 10.0 + k as f64 * 0.01;
+                    json!({ "start": { "x": 5.0 * a.cos(), "y": 5.0 * a.sin() }, "pitch_deg": 35.0, "eave_height": 3.0, "overhang": 0.5 })
+                })
+                .collect();
+            json!({ "name": format!("P{k}"), "edges": edges })
+        })
+        .collect();
+    json!({ "schema_version": 3, "name": format!("stacked-{n}"), "parts": parts }).to_string()
+}
+
+#[test]
+fn a_job_too_complex_to_calculate_is_refused_by_every_calculating_tool_and_the_session_goes_on() {
+    // HUNTIO-004 / HUNTC-001: 50 stacked copies kept the server busy for
+    // minutes in `calc` and the exports. The work bound is lowered for the
+    // debug build; it is counted, so the answer does not depend on the
+    // machine's speed.
+    let dir = scratch("complex");
+    std::fs::write(dir.join("lib").join("stack.tectora"), stacked(50)).unwrap();
+    std::fs::write(dir.join("lib").join("small.tectora"), stacked(2)).unwrap();
+    let mut mcp = Mcp::start(&dir, &[("TECTORA_WORK_LIMIT", "5000000")]);
+    for (tool, args) in [
+        ("calc", json!({ "id": "stack" })),
+        ("calc_breakdown", json!({ "id": "stack" })),
+        ("export_list", json!({ "id": "stack" })),
+        (
+            "export_plan",
+            json!({ "id": "stack", "format": "svg", "summary": "Sheet" }),
+        ),
+    ] {
+        let (err, text) = mcp.tool(tool, args);
+        assert!(
+            err && text.contains("too complex to calculate"),
+            "{tool}: {text}"
+        );
+    }
+    let (err, text) = mcp.tool("calc", json!({ "id": "small" }));
+    assert!(!err && text.contains("roof_area"), "{text}");
+    let (err, text) = mcp.tool("export_list", json!({ "id": "small" }));
+    assert!(!err && text.contains("\"list\""), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

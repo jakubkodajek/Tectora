@@ -31,6 +31,21 @@ describe("describeError", () => {
     expect(d.detail).toBe("dum: project not found");
   });
 
+  it("too_complex says the job is too complex and what to remove, in every language (HUNTIO-004)", () => {
+    const detail = "the design is too complex to calculate: its buildings overlap too much";
+    const seen = new Set<string>();
+    for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
+      setLocale(l);
+      const d = describeError({ code: "too_complex", detail }, "calc");
+      expect(d.code).toBe("too_complex");
+      expect(d.message, l).not.toBe(DICTS[l]["err.unknown"]);
+      expect(d.message, l).toBe(DICTS[l]["err.too_complex"]);
+      expect(d.detail).toBe(detail);
+      seen.add(d.message);
+    }
+    expect(seen.size).toBe(4);
+  });
+
   it("too_many names the pitch break and dormer limits and points to the details (DR-004)", () => {
     for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
       setLocale(l);

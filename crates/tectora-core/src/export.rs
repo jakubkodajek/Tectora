@@ -337,12 +337,17 @@ fn section(out: &mut String, head: &str) {
 /// The text list for the price sheet (DACAD's "Liste", see the module docs).
 /// Lines end with `\n`; a pasted list fills one spreadsheet row per line.
 pub fn dacad_list(project: &Project, opts: &ListOptions) -> String {
+    dacad_list_of(project, &crate::openings::generate_project(project), opts)
+}
+
+/// [`dacad_list`] of roofs already calculated
+/// (`openings::generate_project(project)`).
+pub fn dacad_list_of(project: &Project, geos: &[RoofGeometry], opts: &ListOptions) -> String {
     let d = opts.decimals.min(6);
     let len = |v: f64| format!("{}m", num(v, d));
     let area = |v: f64| format!("{}{M2}", num(v, d));
     let deg = |v: f64| format!("{}°", num(v, 2));
-    let geos = crate::openings::generate_project(project);
-    let c = collect(project, &geos);
+    let c = collect(project, geos);
 
     // Head: path, padded to 60 characters, then date and time.
     let title: String = opts.title.chars().filter(|ch| !ch.is_control()).collect();
@@ -519,8 +524,16 @@ pub struct SummaryLine {
 
 /// The rows of [`dacad_list`] as numbers (see [`ListSummary`]).
 pub fn list_summary(project: &Project, opts: &ListOptions) -> ListSummary {
-    let geos = crate::openings::generate_project(project);
-    let c = collect(project, &geos);
+    list_summary_of(project, &crate::openings::generate_project(project), opts)
+}
+
+/// [`list_summary`] of roofs already calculated.
+pub fn list_summary_of(
+    project: &Project,
+    geos: &[RoofGeometry],
+    opts: &ListOptions,
+) -> ListSummary {
+    let c = collect(project, geos);
     let faces = || c.faces.iter().flatten().chain(&c.other_faces);
     let bare = |n: &str| n.strip_prefix('Z').unwrap_or(n).to_string();
     let windows = faces()
@@ -581,7 +594,44 @@ pub fn list_summary(project: &Project, opts: &ListOptions) -> ListSummary {
 /// The summary of the list, checked like [`checked`] (for the Export dialog).
 pub fn checked_summary(project: &Project, opts: &ListOptions) -> Result<ListSummary, String> {
     project.check_limits()?;
-    crate::model::guarded(|| list_summary(project, opts))
+    Ok(crate::work::calculate(|| list_summary(project, opts))?)
+}
+
+/// The text list alone, checked like [`checked`], without drawing the
+/// sheet (MCP `export_list`; audit HUNTC-001).
+pub fn checked_list(project: &Project, opts: &ListOptions) -> Result<String, String> {
+    project.check_limits()?;
+    Ok(crate::work::calculate(|| dacad_list(project, opts))?)
+}
+
+/// What the Export dialog shows: the list, the sheet (SVG) and the list's
+/// summary, from one calculation of the roofs.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Preview {
+    pub list: String,
+    pub svg: String,
+    pub summary: ListSummary,
+}
+
+/// [`Preview`] of a project whose input was checked; bounded and guarded
+/// like every calculation ([`crate::work::calculate`]).
+pub fn preview(
+    project: &Project,
+    opts: &ListOptions,
+    names: &BTreeMap<String, String>,
+) -> Result<Preview, crate::work::Refusal> {
+    crate::work::calculate(|| {
+        let geos = crate::openings::generate_project(project);
+        let info = SheetInfo {
+            stamp: opts.stamp.clone(),
+            decimals: opts.decimals,
+        };
+        Preview {
+            list: dacad_list_of(project, &geos, opts),
+            svg: sheet_svg(&plan_sheet_named_of(project, &geos, &info, names)),
+            summary: list_summary_of(project, &geos, opts),
+        }
+    })
 }
 
 /// `dd.mm.yyyy hh:mm` of a Unix time in milliseconds, in UTC (for callers
@@ -703,8 +753,22 @@ pub fn plan_sheet_named(
     info: &SheetInfo,
     names: &BTreeMap<String, String>,
 ) -> Vec<Shape> {
+    plan_sheet_named_of(
+        project,
+        &crate::openings::generate_project(project),
+        info,
+        names,
+    )
+}
+
+/// [`plan_sheet_named`] of roofs already calculated.
+pub fn plan_sheet_named_of(
+    project: &Project,
+    geos: &[RoofGeometry],
+    info: &SheetInfo,
+    names: &BTreeMap<String, String>,
+) -> Vec<Shape> {
     let d = info.decimals.min(6);
-    let geos = crate::openings::generate_project(project);
     let mut shapes = Vec::new();
 
     // Head: job name, customer and address, date on the right.
@@ -755,7 +819,7 @@ pub fn plan_sheet_named(
 
     // Fit the plan into the box between head and foot.
     let mut pts: Vec<[f64; 2]> = Vec::new();
-    for g in &geos {
+    for g in geos {
         pts.extend(
             g.faces
                 .iter()
@@ -774,7 +838,7 @@ pub fn plan_sheet_named(
         pts.extend(c.corners.iter().map(|p| [p.x, p.y]));
     }
     for w in &project.windows {
-        let o = crate::openings::window_outline(&geos, w);
+        let o = crate::openings::window_outline(geos, w);
         pts.extend(o.iter().map(|p| [p.x, p.y]));
     }
     for f in &project.manual_faces {
@@ -851,7 +915,7 @@ pub fn plan_sheet_named(
     let n_cutouts = project.chimneys.len() + project.roof_openings.len();
     let mut cutout_area = vec![0.0; n_cutouts];
     let mut face_shown: Vec<Vec<f64>> = Vec::with_capacity(geos.len());
-    for g in &geos {
+    for g in geos {
         let mut shown = Vec::with_capacity(g.faces.len());
         for (fi, f) in g.faces.iter().enumerate() {
             let in_windows: f64 = g
@@ -897,11 +961,11 @@ pub fn plan_sheet_named(
     // Roof windows: the outline the editor draws, and the area they take
     // off their face. A window on no face takes nothing off.
     for w in &project.windows {
-        let o = crate::openings::window_outline(&geos, w);
+        let o = crate::openings::window_outline(geos, w);
         let pts: Vec<[f64; 2]> = o.iter().map(|p| map(p.x, p.y)).collect();
         outline(&mut shapes, &pts, BRAND, 0.8, false);
         cut_boxes.push(bbox(&pts));
-        if crate::openings::window_face(&geos, w).is_some() {
+        if crate::openings::window_face(geos, w).is_some() {
             cut_labels.push((pts, BRAND, format!("-{}m²", num(w.width * w.height, d))));
         }
     }
@@ -939,7 +1003,7 @@ pub fn plan_sheet_named(
     let label = (7.5_f64).min((scale * 0.45).max(5.0));
     // (from, to, colour, dashed, length)
     let mut drawn: Vec<DrawnLine> = Vec::new();
-    for g in &geos {
+    for g in geos {
         for l in &g.lines {
             drawn.push((l.a, l.b, kind_color(l.kind), false, l.length()));
         }
@@ -992,9 +1056,9 @@ pub fn plan_sheet_named(
     // From here on the inside of a window, chimney or roof opening is
     // never free: a short side of a chimney gets its length outside the
     // chimney, not across its outline.
-    obstacles
-        .quads
-        .extend(cut_boxes.iter().map(|b| box_quad(*b)));
+    for b in &cut_boxes {
+        obstacles.add_quad(box_quad(*b));
+    }
 
     // Line lengths: upright along the line, just off it, at the middle or,
     // where that is taken, further along it or on its other side.
@@ -1087,7 +1151,7 @@ pub fn plan_sheet_named(
                         let lb = bbox(&quads);
                         let from = [c[0].clamp(lb[0], lb[2]), c[1].clamp(lb[1], lb[3])];
                         if (from[0] - c[0]).hypot(from[1] - c[1]) > 1.0 {
-                            obstacles.segments.push([from, c]);
+                            obstacles.add_segment([from, c]);
                             shapes.push(Shape::Line {
                                 a: from,
                                 b: c,
@@ -1329,46 +1393,173 @@ const TEXT_COST: usize = 1000;
 
 /// What a label must keep clear of: the texts already on the sheet and
 /// the boxes no label may enter (as quads), and its lines (as segments),
-/// in page points.
+/// in page points. They are kept in a grid of page cells so a label is
+/// only tested against what lies near it: a 500-wall roof has thousands of
+/// lines and labels, and testing every candidate spot of every label
+/// against all of them took minutes (audit HUNTC-001). The grid only
+/// skips obstacles whose bounding box is clear of the label's, which can
+/// never overlap it, so the sheet is the same as without it.
 struct Obstacles {
     quads: Vec<Quad>,
     segments: Vec<[[f64; 2]; 2]>,
+    /// Obstacle numbers by grid cell: `2 * i` is quad `i`, `2 * i + 1`
+    /// segment `i`.
+    cells: std::collections::HashMap<(i64, i64), Vec<usize>>,
+    /// Obstacles too large or not finite for the grid: always tested.
+    everywhere: Vec<usize>,
+    /// Bounding boxes of the quads and of the segments.
+    quad_boxes: Vec<[f64; 4]>,
+    segment_boxes: Vec<[f64; 4]>,
 }
+
+/// The side of a grid cell, page points.
+const CELL: f64 = 24.0;
+/// The most cells one obstacle is entered in (an A4 page is about 35 x 25).
+const MAX_CELLS: i64 = 4096;
 
 impl Obstacles {
     fn of(shapes: &[Shape]) -> Self {
         let mut o = Obstacles {
             quads: Vec::new(),
             segments: Vec::new(),
+            cells: Default::default(),
+            everywhere: Vec::new(),
+            quad_boxes: Vec::new(),
+            segment_boxes: Vec::new(),
         };
         for s in shapes {
             match s {
-                Shape::Line { a, b, .. } => o.segments.push([*a, *b]),
-                Shape::Text { .. } => o.quads.extend(text_quad(s)),
+                Shape::Line { a, b, .. } => o.add_segment([*a, *b]),
+                Shape::Text { .. } => {
+                    if let Some(q) = text_quad(s) {
+                        o.add_quad(q);
+                    }
+                }
             }
         }
         o
+    }
+
+    /// The cells a bounding box covers, `None` when it is too large or not
+    /// finite.
+    fn cell_range(b: [f64; 4]) -> Option<(i64, i64, i64, i64)> {
+        if !b.iter().all(|v| v.is_finite() && v.abs() < 1e9) {
+            return None;
+        }
+        // Widened a little: a box touching a cell edge is in both cells.
+        let c = |v: f64| (v / CELL).floor() as i64;
+        let (x0, y0, x1, y1) = (
+            c(b[0] - 1e-6),
+            c(b[1] - 1e-6),
+            c(b[2] + 1e-6),
+            c(b[3] + 1e-6),
+        );
+        ((x1 - x0 + 1).saturating_mul(y1 - y0 + 1) <= MAX_CELLS).then_some((x0, y0, x1, y1))
+    }
+
+    fn enter(&mut self, id: usize, b: [f64; 4]) {
+        match Self::cell_range(b) {
+            Some((x0, y0, x1, y1)) => {
+                for x in x0..=x1 {
+                    for y in y0..=y1 {
+                        self.cells.entry((x, y)).or_default().push(id);
+                    }
+                }
+            }
+            None => self.everywhere.push(id),
+        }
+    }
+
+    fn add_quad(&mut self, q: Quad) {
+        let id = 2 * self.quads.len();
+        self.quads.push(q);
+        self.quad_boxes.push(bbox(&q));
+        self.enter(id, bbox(&q));
+    }
+
+    fn add_segment(&mut self, s: [[f64; 2]; 2]) {
+        let id = 2 * self.segments.len() + 1;
+        self.segments.push(s);
+        self.segment_boxes.push(bbox(&s));
+        self.enter(id, bbox(&s));
+    }
+
+    /// Calls `f` with the obstacles whose cells meet the bounding box `b`
+    /// (some more than once) until it returns true; whether one did.
+    fn any_near(&self, b: [f64; 4], mut f: impl FnMut(usize) -> bool) -> bool {
+        if self.everywhere.iter().any(|&id| f(id)) {
+            return true;
+        }
+        match Self::cell_range(b) {
+            Some((x0, y0, x1, y1)) => (x0..=x1).any(|x| {
+                (y0..=y1).any(|y| {
+                    self.cells
+                        .get(&(x, y))
+                        .is_some_and(|v| v.iter().any(|&id| f(id)))
+                })
+            }),
+            // A label beyond the grid: test everything, as before.
+            None => (0..self.quads.len())
+                .map(|i| 2 * i)
+                .chain((0..self.segments.len()).map(|i| 2 * i + 1))
+                .any(f),
+        }
+    }
+
+    /// Whether obstacle `id` overlaps `q` (with bounding box `qb`).
+    fn overlaps(&self, id: usize, q: &Quad, qb: &[f64; 4]) -> bool {
+        let ob = if id.is_multiple_of(2) {
+            &self.quad_boxes[id / 2]
+        } else {
+            &self.segment_boxes[id / 2]
+        };
+        if ob[2] < qb[0] - 1e-6
+            || qb[2] < ob[0] - 1e-6
+            || ob[3] < qb[1] - 1e-6
+            || qb[3] < ob[1] - 1e-6
+        {
+            return false;
+        }
+        if id.is_multiple_of(2) {
+            convex_overlap(&self.quads[id / 2], q)
+        } else {
+            convex_overlap(&self.segments[id / 2], q)
+        }
     }
 
     /// How badly a text would collide: another text counts more than a
     /// line, so a crowded label at least stays readable.
     fn cost(&self, s: &Shape) -> usize {
         let Some(q) = text_quad(s) else { return 0 };
-        TEXT_COST * self.quads.iter().filter(|x| convex_overlap(*x, &q)).count()
-            + self
-                .segments
-                .iter()
-                .filter(|x| convex_overlap(*x, &q))
-                .count()
+        let qb = bbox(&q);
+        let mut hit = Vec::new();
+        self.any_near(qb, |id| {
+            if self.overlaps(id, &q, &qb) {
+                hit.push(id);
+            }
+            false
+        });
+        hit.sort_unstable();
+        hit.dedup();
+        hit.iter()
+            .map(|id| if id.is_multiple_of(2) { TEXT_COST } else { 1 })
+            .sum()
     }
 
     fn free(&self, texts: &[Shape]) -> bool {
-        texts.iter().all(|s| self.cost(s) == 0)
+        texts.iter().all(|s| {
+            text_quad(s).is_none_or(|q| {
+                let qb = bbox(&q);
+                !self.any_near(qb, |id| self.overlaps(id, &q, &qb))
+            })
+        })
     }
 
     /// Draws the text and keeps later labels off it.
     fn put(&mut self, shapes: &mut Vec<Shape>, s: Shape) {
-        self.quads.extend(text_quad(&s));
+        if let Some(q) = text_quad(&s) {
+            self.add_quad(q);
+        }
         shapes.push(s);
     }
 }
@@ -1769,16 +1960,17 @@ pub fn checked_named(
     names: &BTreeMap<String, String>,
 ) -> Result<(String, String), String> {
     project.check_limits()?;
-    crate::model::guarded(|| {
+    Ok(crate::work::calculate(|| {
+        let geos = crate::openings::generate_project(project);
         let info = SheetInfo {
             stamp: opts.stamp.clone(),
             decimals: opts.decimals,
         };
         (
-            dacad_list(project, opts),
-            sheet_svg(&plan_sheet_named(project, &info, names)),
+            dacad_list_of(project, &geos, opts),
+            sheet_svg(&plan_sheet_named_of(project, &geos, &info, names)),
         )
-    })
+    })?)
 }
 
 /// The plan sheet as a file: `pdf` or `svg` bytes, checked like [`checked`].
@@ -1799,12 +1991,12 @@ pub fn checked_sheet_file_named(
         decimals: 3,
     };
     match format {
-        "pdf" => crate::model::guarded(|| {
+        "pdf" => Ok(crate::work::calculate(|| {
             sheet_pdf(&plan_sheet_named(project, &info, names), &project.name)
-        }),
-        "svg" => crate::model::guarded(|| {
+        })?),
+        "svg" => Ok(crate::work::calculate(|| {
             sheet_svg(&plan_sheet_named(project, &info, names)).into_bytes()
-        }),
+        })?),
         other => Err(format!("unknown plan format `{other}` (pdf or svg)")),
     }
 }
@@ -1813,6 +2005,93 @@ pub fn checked_sheet_file_named(
 mod tests {
     use super::*;
     use crate::examples::{StandardRoof, standard_roof};
+
+    #[test]
+    fn the_label_grid_finds_every_collision_a_full_scan_finds() {
+        // HUNTC-001: labels are tested only against obstacles near them;
+        // that must never miss one. Lines and texts at every angle and
+        // size, some long, some beyond the page, against texts all over.
+        let mut seed = 7u64;
+        let mut rnd = |lo: f64, hi: f64| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            lo + (hi - lo) * ((seed >> 11) as f64 / (1u64 << 53) as f64)
+        };
+        let text = |at: [f64; 2], angle: f64, size: f64| Shape::Text {
+            at,
+            angle,
+            size,
+            color: INK,
+            bold: false,
+            anchor: 0.5,
+            text: "12,345m".into(),
+        };
+        let mut shapes = Vec::new();
+        for _ in 0..300 {
+            let a = [rnd(-50.0, 900.0), rnd(-50.0, 650.0)];
+            let len = if rnd(0.0, 1.0) < 0.1 { 800.0 } else { 40.0 };
+            let ang = rnd(0.0, std::f64::consts::TAU);
+            shapes.push(Shape::Line {
+                a,
+                b: [a[0] + len * ang.cos(), a[1] + len * ang.sin()],
+                color: INK,
+                width: 1.0,
+                dashed: false,
+            });
+        }
+        for _ in 0..200 {
+            shapes.push(text(
+                [rnd(0.0, 842.0), rnd(0.0, 595.0)],
+                rnd(-90.0, 90.0),
+                rnd(6.0, 10.0),
+            ));
+        }
+        shapes.push(text([5e9, 3.0], 0.0, 8.0));
+        let o = Obstacles::of(&shapes);
+        let full = |q: &Quad| {
+            TEXT_COST * o.quads.iter().filter(|x| convex_overlap(*x, q)).count()
+                + o.segments.iter().filter(|x| convex_overlap(*x, q)).count()
+        };
+        let mut hits = 0;
+        for k in 0..2000 {
+            let at = if k == 0 {
+                [5e9, 3.0]
+            } else {
+                [rnd(-20.0, 860.0), rnd(-20.0, 610.0)]
+            };
+            let s = text(at, rnd(-90.0, 90.0), rnd(6.0, 10.0));
+            let q = text_quad(&s).unwrap();
+            let want = full(&q);
+            hits += usize::from(want > 0);
+            assert_eq!(o.cost(&s), want, "{at:?}");
+            assert_eq!(o.free(&[s]), want == 0, "{at:?}");
+        }
+        assert!(hits > 500, "{hits}");
+    }
+
+    #[test]
+    fn the_list_alone_is_the_list_of_the_list_and_sheet() {
+        let p = dacad_hip();
+        let opts = ListOptions::new("hip", "08.11.2026 12:00");
+        assert_eq!(
+            checked_list(&p, &opts).unwrap(),
+            checked(&p, &opts).unwrap().0
+        );
+        let both = preview(&p, &opts, &BTreeMap::new()).unwrap();
+        assert_eq!(both.list, dacad_list(&p, &opts));
+        assert_eq!(
+            both.svg,
+            sheet_svg(&plan_sheet(
+                &p,
+                &SheetInfo {
+                    stamp: opts.stamp.clone(),
+                    decimals: 3
+                }
+            ))
+        );
+        assert_eq!(both.summary, list_summary(&p, &opts));
+    }
 
     /// The 10 × 8 m hip roof drawn in DACAD under Wine on 2026-11-08:
     /// pitch 30°, eave height 3 m, overhang 0.5 m, tiles, millimetre

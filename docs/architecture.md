@@ -166,7 +166,12 @@ it). Details: `docs/ai-integration.md`, `crates/tectora-core/src/store.rs`.
 
 All of them are untrusted input: ids, sizes and coordinate ranges are checked
 before anything is calculated or written, and calculations run inside
-`model::guarded`. PDF drawings (MCP drawing tools) are read in a child
+`model::guarded`. A calculation of a whole job (the app's commands, the
+browser preview, `tectora calc`, the MCP calculating and export tools) also
+runs in `work::calculate`: the joins of several buildings count their work
+and stop at `work::LIMIT` with `too_complex`, so buildings stacked on top of
+each other, though inside the count limits, cannot keep a core busy for
+minutes. It is counted, not timed, and the same on every machine. PDF drawings (MCP drawing tools) are read in a child
 process of the same executable with a heap cap and a time limit
 (`tectora-mcp/src/worker.rs`), because the PDF reader itself has no limit
 on inflated streams or nested forms.

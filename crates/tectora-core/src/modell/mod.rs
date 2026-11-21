@@ -166,6 +166,7 @@ fn cutter_models(st: &State) -> Vec<(i32, i32)> {
             .filter(|s| !b"TL".contains(&(s.kind as u8)))
         {
             let (a, b) = (f.rec.model, s.model);
+            crate::work::tick(models.len() + pairs.len());
             if a != b && models.contains(&b) && !pairs.contains(&(a.min(b), a.max(b))) {
                 pairs.push((a.min(b), a.max(b)));
             }

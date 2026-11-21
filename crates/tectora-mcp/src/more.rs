@@ -903,7 +903,8 @@ impl Server {
                 let opts = tectora_core::export::ListOptions::new(title, stamp);
                 p.check_limits()?;
                 crate::export_ready(&p)?;
-                let (list, _) = tectora_core::export::checked(&p, &opts)?;
+                // The list alone: the sheet is not drawn (HUNTC-001).
+                let list = tectora_core::export::checked_list(&p, &opts)?;
                 Ok(json!({ "id": id, "list": list }))
             })(),
             "export_plan" => (|| {

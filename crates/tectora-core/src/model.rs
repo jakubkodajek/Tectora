@@ -551,8 +551,18 @@ fn first_out_of_range(v: &serde_json::Value, path: &mut String) -> Option<(Strin
 /// Runs `f` and turns a panic into an error, so one bad design cannot take
 /// down the app or the MCP server. The geometry kernel is a port of DACAD's
 /// core and still has `expect`s on cases DACAD itself aborts on.
+///
+/// The stop of a bounded calculation ([`crate::work`]) is passed on to the
+/// [`crate::work::bounded`] that set the limit, so an inner guard never
+/// turns it into an empty roof; outside one it is [`crate::work::TOO_COMPLEX`].
 pub fn guarded<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|e| {
+        if crate::work::is_too_complex(&*e) {
+            if crate::work::active() {
+                std::panic::resume_unwind(e);
+            }
+            return crate::work::TOO_COMPLEX.to_string();
+        }
         let msg = e
             .downcast_ref::<String>()
             .map(String::as_str)

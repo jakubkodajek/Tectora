@@ -1306,6 +1306,11 @@ impl Server {
     /// Runs a tool; a panic in the geometry kernel becomes a tool error
     /// instead of ending the server for the rest of the session.
     pub fn call_tool(&mut self, name: &str, args: &Value) -> ToolResult {
+        // A tool that calculates the whole job stops at the work bound
+        // with "too complex" rather than keeping the server busy (HUNTIO-004).
+        if worker::calculates(name) {
+            return tectora_core::work::calculate(|| self.call_tool_unguarded(name, args))?;
+        }
         tectora_core::model::guarded(|| self.call_tool_unguarded(name, args))?
     }
 

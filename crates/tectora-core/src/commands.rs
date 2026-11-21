@@ -13,8 +13,9 @@ use crate::{Project, snapshot};
 
 /// Why a command refused: the code of [`Project::check_input`]
 /// (`too_many`: more parts, walls or objects than the limits allow;
-/// `out_of_range`: a number of the project is out of range) or `internal`
-/// (the roof kernel failed), with the English detail.
+/// `out_of_range`: a number of the project is out of range), `too_complex`
+/// (the calculation needs more work than [`crate::work::limit`]) or
+/// `internal` (the roof kernel failed), with the English detail.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CommandError {
     pub code: &'static str,
@@ -40,6 +41,28 @@ impl CommandError {
             detail,
         }
     }
+    fn refusal(r: crate::work::Refusal) -> Self {
+        match r {
+            crate::work::Refusal::TooComplex => Self {
+                code: crate::work::CODE,
+                detail: crate::work::TOO_COMPLEX.into(),
+            },
+            crate::work::Refusal::Failed(d) => Self::internal(d),
+        }
+    }
+}
+
+/// Runs a calculation of the whole job as every command does: bounded in
+/// work ([`crate::work`], `too_complex`) and with a panic as `internal`.
+fn calculating<T>(f: impl FnOnce() -> T) -> Result<T, CommandError> {
+    crate::work::calculate(f).map_err(CommandError::refusal)
+}
+
+/// The roofs of every part (`openings::generate_project`) with the guards
+/// of [`calc`], for a caller that formats them itself (the CLI).
+pub fn generate(project: &Project) -> Result<Vec<crate::roof::RoofGeometry>, CommandError> {
+    check_input(project)?;
+    calculating(|| crate::openings::generate_project(project))
 }
 
 impl std::fmt::Display for CommandError {
@@ -54,14 +77,13 @@ impl std::fmt::Display for CommandError {
 pub fn calc(project: &Project) -> Result<Value, CommandError> {
     check_input(project)?;
     // One calculation for the report and the stored result's status.
-    let (mut v, status) = crate::model::guarded(|| {
+    let (mut v, status) = calculating(|| {
         let geos = crate::openings::generate_project(project);
         (
             crate::report::calc_of(project, &geos),
             snapshot::status_of(&geos, project),
         )
-    })
-    .map_err(CommandError::internal)?;
+    })?;
     v["stored_result"] = serde_json::to_value(status).unwrap_or(Value::Null);
     Ok(v)
 }
@@ -70,15 +92,14 @@ pub fn calc(project: &Project) -> Result<Value, CommandError> {
 /// the same guards as [`calc`].
 pub fn calc_breakdown(project: &Project) -> Result<Value, CommandError> {
     check_input(project)?;
-    let b = crate::model::guarded(|| crate::breakdown::breakdown(project))
-        .map_err(CommandError::internal)?;
+    let b = calculating(|| crate::breakdown::breakdown(project))?;
     Ok(serde_json::to_value(b).unwrap_or(Value::Null))
 }
 
 /// The current result, to store as the job's result.
 pub fn take_snapshot(project: &Project) -> Result<snapshot::ResultSnapshot, CommandError> {
     check_input(project)?;
-    snapshot::take_checked(project).map_err(|e| match e {
+    calculating(|| snapshot::take_checked(project))?.map_err(|e| match e {
         snapshot::Refused::OutOfRange(d) => CommandError::out_of_range(d),
         snapshot::Refused::Internal(d) => CommandError::internal(d),
         snapshot::Refused::NotCalculated(detail) => CommandError {
@@ -92,8 +113,7 @@ pub fn take_snapshot(project: &Project) -> Result<snapshot::ResultSnapshot, Comm
 /// `null` when all fit, with the same guards as [`calc`].
 pub fn check_windows(project: &Project) -> Result<Value, CommandError> {
     check_input(project)?;
-    let bad = crate::model::guarded(|| crate::edit::check_windows(project).err())
-        .map_err(CommandError::internal)?;
+    let bad = calculating(|| crate::edit::check_windows(project).err())?;
     Ok(serde_json::to_value(bad).unwrap_or(Value::Null))
 }
 
@@ -102,8 +122,7 @@ pub fn check_windows(project: &Project) -> Result<Value, CommandError> {
 /// guards as [`calc`]. The editor's dormer dialog derives its section from it.
 pub fn dormer_host(project: &Project, index: usize) -> Result<Value, CommandError> {
     check_input(project)?;
-    let host = crate::model::guarded(|| crate::edit::dormers::host_slope(project, index))
-        .map_err(CommandError::internal)?;
+    let host = calculating(|| crate::edit::dormers::host_slope(project, index))?;
     Ok(serde_json::to_value(host).unwrap_or(Value::Null))
 }
 
@@ -137,10 +156,8 @@ pub fn roof_helper_context(
     with_points: bool,
 ) -> Result<Value, CommandError> {
     check_input(project)?;
-    let c =
-        crate::model::guarded(|| crate::edit::helper::context(project, part, edge, with_points))
-            .map_err(CommandError::internal)?
-            .map_err(refused)?;
+    let c = calculating(|| crate::edit::helper::context(project, part, edge, with_points))?
+        .map_err(refused)?;
     Ok(serde_json::to_value(c).unwrap_or(Value::Null))
 }
 
@@ -154,7 +171,7 @@ pub fn roof_helper_preview(
     req: &crate::edit::helper::HelperRequest,
 ) -> Result<Value, CommandError> {
     check_input(project)?;
-    let r = crate::model::guarded(|| {
+    let r = calculating(|| {
         let mut out = crate::edit::helper::preview(project, part, edge, req)?;
         let raw = std::mem::take(&mut out.patches);
         let patches = project
@@ -168,8 +185,7 @@ pub fn roof_helper_preview(
             unchanged,
             out,
         })
-    })
-    .map_err(CommandError::internal)?
+    })?
     .map_err(refused)?;
     Ok(serde_json::to_value(r).unwrap_or(Value::Null))
 }
@@ -468,6 +484,20 @@ pub fn check_new_roof(
     }
     crate::edit::check_new_wall(pitch_deg, eave_height, overhang)
         .map_err(CommandError::out_of_range)
+}
+
+/// The Export dialog's list, sheet and summary (`export::preview`) with the
+/// guards of [`calc`]; `line_names` label the sheet's line codes.
+pub fn export_preview(
+    project: &Project,
+    title: String,
+    stamp: String,
+    line_names: &std::collections::BTreeMap<String, String>,
+) -> Result<Value, CommandError> {
+    check_input(project)?;
+    let opts = crate::export::ListOptions::new(title, stamp);
+    let p = crate::export::preview(project, &opts, line_names).map_err(CommandError::refusal)?;
+    Ok(serde_json::to_value(p).unwrap_or(Value::Null))
 }
 
 /// [`Project::check_input`] as a command error, with its code.

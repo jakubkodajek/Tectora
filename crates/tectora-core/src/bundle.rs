@@ -205,12 +205,13 @@ fn write_bundle(
     if let Ok(history) = fs::read(store.activity_path(id)?) {
         put("history.jsonl", &history)?;
     }
-    // The preview runs the roof kernel: a job out of range or one the
-    // kernel cannot calculate is still exported, without preview (ERR-008).
+    // The preview runs the roof kernel: a job out of range, one the kernel
+    // cannot calculate or one too complex to calculate (`work`) is still
+    // exported, without preview (ERR-008).
     let svg = project
         .check_limits()
         .ok()
-        .and_then(|()| crate::model::guarded(|| preview_svg(project)).ok());
+        .and_then(|()| crate::work::calculate(|| preview_svg(project)).ok());
     if let Some(svg) = svg {
         put("preview.svg", svg.as_bytes())?;
     }

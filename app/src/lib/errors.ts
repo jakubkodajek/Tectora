@@ -92,6 +92,7 @@ const KNOWN = new Set([
   "unsupported_type",
   "invalid_name",
   "too_many",
+  "too_complex",
   "not_calculated",
   "settings_unreadable",
   "refused",

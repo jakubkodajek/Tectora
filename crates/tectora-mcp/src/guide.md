@@ -151,7 +151,11 @@ The tools cover every operation of the Tectora editor:
   and 500 of each kind of object (dormers, chimneys, windows, openings,
   hand-drawn lines and faces), 64 pitch breaks per wall (2000 in all); a
   write over them is refused (`too many …`).
-  `calc`, `calc_breakdown` and `get_project` stop after 60 s.
+  `calc`, `calc_breakdown`, `get_project`, `export_list` and `export_plan`
+  stop after 60 s. A design inside the limits whose buildings lie on top of
+  each other (copies saved onto one another, a rotate with many copies) is
+  refused with "the design is too complex to calculate": remove the stacked
+  copies (`delete_part`, `undo`) or split the job, and tell the user.
 - Material names: the job's own names (`set_roof_options`), else `tiles`,
   `sheet metal`, `stone`, `slate`, `solar panels` for materials 1 to 5.
   Say them in the user's language.

@@ -377,13 +377,8 @@ fn export_preview(
     line_names: Option<std::collections::BTreeMap<String, String>>,
 ) -> CmdResult<Value> {
     guard(|| {
-        let opts = tectora_core::export::ListOptions::new(title, stamp);
         let names = line_names.unwrap_or_default();
-        let (list, svg) = tectora_core::export::checked_named(&project, &opts, &names)
-            .map_err(|d| AppError::new("out_of_range").detail(d))?;
-        let summary = tectora_core::export::checked_summary(&project, &opts)
-            .map_err(|d| AppError::new("out_of_range").detail(d))?;
-        Ok(serde_json::json!({ "list": list, "svg": svg, "summary": summary }))
+        Ok(commands::export_preview(&project, title, stamp, &names)?)
     })
 }
 
