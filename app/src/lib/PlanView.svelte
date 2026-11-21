@@ -9,11 +9,12 @@
   import { codeKind, lineLength, type ManualSel } from "./manual";
   import type { Ghost } from "./changes";
   import { placementOf, type ItemRef, type PlanTarget } from "./items";
-  import { fitScale, gridStep as gridStepFor, gridValues } from "./grid";
-  import { faceTags } from "./facelabels";
+  import { gridStep as gridStepFor, gridValues } from "./grid";
+  import { boxOf, draftLeavesView, fitView, resizedView } from "./planfit";
+  import { faceTags, tagSpots } from "./facelabels";
   import { hostHeightAt, isDormerFace } from "./dormers";
   import { dormerWallLines, onWallLine, planeOf } from "./scene3d";
-  import { chooseLabels, insidePolygon, rotatedBox, underHigherRoof, wallNumber, type Seg } from "./planlabels";
+  import { chooseLabels, insidePolygon, rotatedBox, segCrossesBox, underHigherRoof, wallNumber, type Seg } from "./planlabels";
   import { draftWalls } from "./drawstep";
   import { coveredPieces } from "./planjoin";
   import { numberLocale } from "./i18n.svelte";
@@ -105,18 +106,22 @@
   const GRID = 0.5;
   const SNAP = 0.05;
 
-  export function fit() {
+  /** Everything the plan should show: the walls, the eaves of the calculated
+   *  roof (its labels lie outside them) and a footprint being drawn. */
+  function contentBox() {
     const pts = project.parts.flatMap((p) => p.edges.map((e) => e.start)).concat(drawing ?? []);
-    if (pts.length === 0) return;
-    const xs = pts.map((p) => p.x);
-    const ys = pts.map((p) => p.y);
-    const w = Math.max(...xs) - Math.min(...xs) || 1;
-    const h = Math.max(...ys) - Math.min(...ys) || 1;
-    const s = fitScale(width, height, w, h);
-    if (s === null) return;
+    for (const rp of result?.parts ?? []) for (const f of rp.geometry.faces) for (const q of f.polygon) pts.push({ x: q[0], y: q[1] });
+    return boxOf(pts);
+  }
+
+  export function fit() {
+    const box = contentBox();
+    if (!box) return;
+    const v = fitView(box, width, height);
+    if (v === null) return;
     userView = false;
-    scale = s;
-    center = { x: (Math.max(...xs) + Math.min(...xs)) / 2, y: (Math.max(...ys) + Math.min(...ys)) / 2 };
+    scale = v.scale;
+    center = v.center;
   }
 
   $effect(() => {
@@ -127,15 +132,35 @@
         center = { x: 8, y: 5 };
       }
       fitted = true;
+      size = { width, height };
     }
   });
 
+  /** The plan size the view was last laid out for. */
+  let size = { width: 0, height: 0 };
   // Window resized (e.g. snapped to half the screen) or a bar below the plan grew:
-  // keep the whole roof in view until the user zooms or pans.
+  // keep the whole roof in view until the user zooms or pans. A bar that only
+  // changes the height keeps the drawing still on screen (UI-011).
   $effect(() => {
-    void width;
-    void height;
-    if (untrack(() => fitted && !userView && project.parts.length > 0)) untrack(fit);
+    const to = { width, height };
+    untrack(() => {
+      const from = size;
+      size = to;
+      if (!fitted || userView || project.parts.length === 0 || (from.width === to.width && from.height === to.height)) return;
+      const next = resizedView({ scale, center }, from, to, contentBox());
+      if (next === "fit") fit();
+      else center = next.center;
+    });
+  });
+
+  // A footprint being drawn (lengths typed in the draw bar) stays in view: when
+  // its newest corner leaves the plan, the plan fits the drawing (UX-001).
+  $effect(() => {
+    const d = drawing;
+    if (!d || d.length < 2) return;
+    untrack(() => {
+      if (fitted && draftLeavesView(d, { scale, center }, width, height)) fit();
+    });
   });
 
   const snapPoint = (px: number, py: number, alt: boolean) => {
@@ -152,9 +177,11 @@
     if (!result) return [];
     const res = result;
     const many = res.parts.length > 1;
-    return res.parts.flatMap((rp) =>
+    return res.parts.flatMap((rp, part) =>
       rp.geometry.faces.flatMap((f) =>
-        faceTags([f]).filter((tag) => !many || !underHigherRoof(planeOf(f.polygon)?.({ x: tag.x, y: tag.y }) ?? null, hostHeightAt(res, { x: tag.x, y: tag.y }))),
+        faceTags([f])
+          .filter((tag) => !many || !underHigherRoof(planeOf(f.polygon)?.({ x: tag.x, y: tag.y }) ?? null, hostHeightAt(res, { x: tag.x, y: tag.y })))
+          .map((tag) => ({ ...tag, part, spots: tagSpots(tag, f.polygon) })),
       ),
     );
   });
@@ -612,25 +639,29 @@
       const [pi, i] = key.split(":").map(Number);
       if (!project.parts[pi]?.edges[i]) return [];
       const halfW = textPx(text, 12) / 2 + 3;
-      const at: [boolean, number][] = [[false, 0.5], [true, 0.5], [false, 0.3], [false, 0.7], [true, 0.3], [true, 0.7]];
-      const cands = at.map(([inside, t]) => {
-        const p = besideWall(pi, i, inside, t, halfW, DIM_H);
-        const box = rotatedBox(p.x, p.y, halfW * 2, DIM_H, 0);
+      // The wall's direction on screen, kept readable: a note may run along
+      // the wall, so beside a steep wall it fits outside the roof instead of
+      // lying across the ridge and the hips inside it (UX-007).
+      const es = project.parts[pi].edges;
+      const [a, b] = [es[i].start, es[(i + 1) % es.length].start];
+      let deg = (Math.atan2(sy(b.y) - sy(a.y), sx(b.x) - sx(a.x)) * 180) / Math.PI;
+      if (deg > 90) deg -= 180;
+      if (deg <= -90) deg += 180;
+      // [inside, where along the wall, along the wall]
+      const at: [boolean, number, boolean][] = [
+        [false, 0.5, false], [false, 0.5, true], [false, 0.3, false], [false, 0.7, false], [false, 0.3, true], [false, 0.7, true],
+        [true, 0.5, true], [true, 0.3, true], [true, 0.7, true], [true, 0.5, false], [true, 0.3, false], [true, 0.7, false],
+      ];
+      const cands = at.map(([inside, t, along]) => {
+        const p = along ? besideWall(pi, i, inside, t, 0, DIM_H / 2 + DIM_H) : besideWall(pi, i, inside, t, halfW, DIM_H);
+        const rot = along ? deg : 0;
+        const box = rotatedBox(p.x, p.y, halfW * 2, DIM_H, rot);
         // A note cut by the edge of the plan is no use: take one inside.
-        return box.x0 >= 2 && box.y0 >= 2 && box.x1 <= width - 2 && box.y1 <= height - 2 ? { x: p.x, y: p.y, text, box } : null;
+        return box.x0 >= 2 && box.y0 >= 2 && box.x1 <= width - 2 && box.y1 <= height - 2 ? { x: p.x, y: p.y, rot, text, box } : null;
       });
       return [cands];
     });
     const modes = showDims && !faceLabels.length ? tags.map(tagMode) : tags.map(() => null);
-    // A face label that does not fit with its area falls back to the pitch alone.
-    const tagBoxes = tags.map((tag, k) => {
-      const m = modes[k];
-      if (!m) return [];
-      const pitchBox = rotatedBox(sx(tag.x), sy(tag.y), textPx(pitchText(tag.pitch_deg), 16), TAG_PITCH_H, -tag.angle_deg);
-      if (m === "pitch") return [pitchBox];
-      const w = Math.max(textPx(pitchText(tag.pitch_deg), 16), textPx(areaText(tag.area), 12.5));
-      return [rotatedBox(sx(tag.x), sy(tag.y), w, TAG_FULL_H, -tag.angle_deg), pitchBox];
-    });
     const flat = dims.flat();
     // Wall lengths keep off the roof lines inside the roof (the eave and
     // verge run along the walls, every wall length sits by them); face
@@ -639,7 +670,23 @@
     const inner: Seg[] = linePieces.flatMap((ls) =>
       ls.filter((l) => l.kind !== "eave" && l.kind !== "verge").flatMap((l) => l.pieces.map((pc) => seg({ x: pc.a[0], y: pc.a[1] }, { x: pc.b[0], y: pc.b[1] }))),
     );
-    const walls: Seg[] = outlines.flatMap((o) => o.map((p, k) => seg(p, o[(k + 1) % o.length])));
+    const wallsOf = outlines.map((o) => o.map((p, k) => seg(p, o[(k + 1) % o.length])));
+    const walls: Seg[] = wallsOf.flat();
+    // A face label that does not fit with its area falls back to the pitch
+    // alone; both may move off the centre (up or down the slope), and never
+    // sit across another building's walls, e.g. one drawn inside this roof (UI-005).
+    const tagBoxes = tags.map((tag, k) => {
+      const m = modes[k];
+      if (!m) return [];
+      const others = wallsOf.flatMap((ws, pi) => (pi === tag.part ? [] : ws));
+      const clear = (b: ReturnType<typeof rotatedBox>) => (others.some((l) => segCrossesBox(l, b)) ? null : b);
+      const pw = textPx(pitchText(tag.pitch_deg), 16);
+      const fw = Math.max(pw, textPx(areaText(tag.area), 12.5));
+      return tag.spots.flatMap((p) => {
+        const pitchBox = clear(rotatedBox(sx(p.x), sy(p.y), pw, TAG_PITCH_H, -tag.angle_deg));
+        return m === "pitch" ? [null, pitchBox] : [clear(rotatedBox(sx(p.x), sy(p.y), fw, TAG_FULL_H, -tag.angle_deg)), pitchBox];
+      });
+    });
     const chosen = chooseLabels(
       [...notes.map((n) => n.map((c) => c?.box ?? null)), ...flat.map((d) => (d ?? []).map((c) => c?.box ?? null)), ...tagBoxes],
       (i) => (i < notes.length + flat.length ? inner : walls),
@@ -652,7 +699,12 @@
         return d && j >= 0 ? d[j] : null;
       }),
     );
-    const tagShown = tags.map((_, j) => (chosen[k + j] === 0 ? modes[j] : chosen[k + j] === 1 ? ("pitch" as const) : null));
+    const tagShown = tags.map((tag, j) => {
+      const c = chosen[k + j];
+      if (c < 0 || !modes[j]) return null;
+      const at = tag.spots[Math.floor(c / 2)];
+      return { mode: c % 2 === 0 ? modes[j]! : ("pitch" as const), x: at.x, y: at.y };
+    });
     return { dims: dimShown, tags: tagShown, notes: noteShown };
   });
 </script>
@@ -728,10 +780,10 @@
     {/if}
     {#if showDims && !faceLabels.length}
       {#each tags as tag, k}
-        {@const mode = labels.tags[k]}
-        {#if mode}
-          <g class="face-tag" transform="translate({sx(tag.x)} {sy(tag.y)}) rotate({-tag.angle_deg})">
-            {#if mode === "full"}
+        {@const shown = labels.tags[k]}
+        {#if shown}
+          <g class="face-tag" transform="translate({sx(shown.x)} {sy(shown.y)}) rotate({-tag.angle_deg})">
+            {#if shown.mode === "full"}
               <text class="pitch" y="-8">{pitchText(tag.pitch_deg)}</text>
               <text class="area" y="9">{areaText(tag.area)}</text>
             {:else}
@@ -950,7 +1002,7 @@
       {/if}
     {/if}
     {#each labels.notes as n}
-      <text class="wall-note" data-testid="wall-note" x={n.x} y={n.y}>{n.text}</text>
+      <text class="wall-note" data-testid="wall-note" x={n.x} y={n.y} transform={n.rot ? `rotate(${n.rot} ${n.x} ${n.y})` : undefined}>{n.text}</text>
     {/each}
   </svg>
   <!-- A placing tool says what to click in the bottom bar (PlaceBar, UX-012). -->
