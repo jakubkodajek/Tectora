@@ -911,6 +911,25 @@ impl Store {
         Ok((ok, broken))
     }
 
+    /// Recalculates the job's stored result where an older engine stored
+    /// it and the figures are now different ([`crate::snapshot::refreshed`]),
+    /// with a change-log entry that keeps the job as it was. Returns
+    /// whether it did. The app and the MCP server call it when a job is
+    /// opened.
+    pub fn refresh_stored_result(&self, id: &str) -> Result<bool, StoreError> {
+        self.path(id)?;
+        let _lock = self.lock(id);
+        let before = self.load(id)?;
+        let Some((after, summary)) = crate::model::guarded(|| crate::snapshot::refreshed(&before))
+            .ok()
+            .flatten()
+        else {
+            return Ok(false);
+        };
+        self.log_and_write(id, Some(before), &after, USER_ACTOR, &summary, None)?;
+        Ok(true)
+    }
+
     pub fn load(&self, id: &str) -> Result<Project, StoreError> {
         let text = fs::read_to_string(self.path(id)?).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -2042,6 +2061,34 @@ mod tests {
     fn temp_store(name: &str) -> Store {
         let dir = std::env::temp_dir().join(format!("tectora-test-{name}-{}", now_ms()));
         Store::new(dir).unwrap()
+    }
+
+    #[test]
+    fn opening_a_job_an_older_engine_stored_updates_its_result_with_a_log_entry() {
+        let store = temp_store("refresh");
+        let mut p = examples::find("gable").unwrap().project();
+        let mut s = crate::snapshot::take(&p);
+        s.engine_version = "0.0.1".into();
+        s.roof_area += 2.0;
+        p.result_snapshot = Some(s.clone());
+        let id = store.save(None, &p).unwrap();
+        let before = store.activity(&id).len();
+        assert!(store.refresh_stored_result(&id).unwrap());
+        let q = store.load(&id).unwrap();
+        let now = q.result_snapshot.as_ref().unwrap();
+        assert_eq!(now.engine_version, crate::snapshot::ENGINE_VERSION);
+        assert!((now.roof_area - (s.roof_area - 2.0)).abs() < 0.01);
+        let log = store.activity(&id);
+        assert_eq!(log.len(), before + 1);
+        let entry = log.last().unwrap();
+        assert_eq!(entry.actor, USER_ACTOR);
+        assert!(entry.summary.starts_with(crate::snapshot::REFRESHED_PREFIX));
+        // The old figures stay in the log.
+        assert_eq!(entry.before.as_ref().unwrap().result_snapshot, Some(s));
+        // Once only.
+        assert!(!store.refresh_stored_result(&id).unwrap());
+        assert_eq!(store.activity(&id).len(), before + 1);
+        let _ = fs::remove_dir_all(&store.dir);
     }
 
     #[test]

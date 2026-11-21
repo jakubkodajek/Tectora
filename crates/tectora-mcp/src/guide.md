@@ -175,7 +175,10 @@ When a job leaves the draft status (`update_job` with `status`), its result
 is stored with the engine version: the figures the offer was made with.
 `calc` and `get_project` report `stored_result` with every difference to the
 current result; tell the user when there are differences. `store_result`
-replaces the stored result with the current one.
+replaces the stored result with the current one. A result stored by an
+older Tectora whose figures the corrected calculation changes is
+recalculated when the job is opened (in the app or with `get_project`),
+with a change-log entry that keeps the old figures (`get_history`).
 
 ## Results (DACAD line codes)
 

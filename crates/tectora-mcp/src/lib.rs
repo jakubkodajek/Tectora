@@ -1384,6 +1384,11 @@ impl Server {
                 Ok(json!({ "projects": list, "broken": broken }))
             }
             "get_project" => {
+                // A result stored by an older engine follows the corrected
+                // calculation, as when the app opens the job.
+                if let Ok(id) = arg_str(args, "id") {
+                    let _ = self.store.refresh_stored_result(id);
+                }
                 let (id, p) = self.load(args)?;
                 self.live(
                     "reading",
