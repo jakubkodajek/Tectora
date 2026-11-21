@@ -85,6 +85,32 @@ fn a_helper_ok_refuses_values_no_wall_takes() {
     assert!(helper::apply(&mut q, 0, 0, &req).is_ok());
 }
 
+#[test]
+fn a_helper_ok_refuses_an_overhang_past_20_m() {
+    // TEST-109: a horizontal build-up finish leaves the eave height and the
+    // pitch alone and adds d / sin(35°) to the overhang, so the wall bar's
+    // 20 m overhang bound is the only check that can refuse it (the wall's
+    // own `problems` bound the overhang only at 100 km).
+    let p = hip();
+    let before = p.parts[0].edges[0].overhang;
+    let grow = |d: f64| before + d / 35f64.to_radians().sin();
+    let req = |thickness| HelperRequest::BuildUp {
+        thickness,
+        eave: BuildUpEave::Horizontal,
+    };
+    assert!(grow(14.0) > 21.0, "{}", grow(14.0));
+    let e = commands::roof_helper_apply(&p, 0, 0, &req(14.0)).unwrap_err();
+    assert_eq!(e.code, "refused");
+    assert!(e.detail.contains("overhang"), "{}", e.detail);
+    // The same finish that stays below 20 m applies and changes only the
+    // overhang.
+    assert!(grow(10.0) < 19.0, "{}", grow(10.0));
+    let q = commands::roof_helper_apply(&p, 0, 0, &req(10.0)).expect("below 20 m");
+    let (a, b) = (&p.parts[0].edges[0], &q.parts[0].edges[0]);
+    assert!((b.overhang - grow(10.0)).abs() < 1e-3, "{}", b.overhang);
+    assert_eq!((a.eave_height, a.pitch_deg), (b.eave_height, b.pitch_deg));
+}
+
 /// The gable example with a gable dormer at y = 1.6 on its 40° face.
 fn dormer_job(eave: f64, pitch: f64) -> (Project, f64) {
     let mut p = examples::find("gable").expect("example").project();
