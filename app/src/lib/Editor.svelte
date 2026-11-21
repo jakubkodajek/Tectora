@@ -27,7 +27,7 @@
   import { textfield } from "./textfield";
   import ContextMenu, { type MenuEntry, type MenuState } from "./ContextMenu.svelte";
   import { defaultDirection, moveCorner, samePoint } from "./corners";
-  import { MCP_KIND, followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, placementOf, transformItem, type ItemRef, type PlanTarget } from "./items";
+  import { MCP_KIND, followRoof, itemCentre, itemExists, itemOf, moveItem, rotateItem, deleteItem, placementOf, transformItem, type ItemRef, type PlanTarget } from "./items";
   import { snapToRoof, type ManualSel } from "./manual";
   import { keptSelection } from "./selection";
   import { fitlabels } from "./fitlabels";
@@ -681,6 +681,36 @@
     if (closed) info(t("editor.dialogStale"));
   }
 
+  /**
+   * Runs core operation `run` on the job as it is now and hands its answer to
+   * `apply` only while the job is still the one it was asked for. An AI save
+   * or another edit that arrived meanwhile does not drop the action (ERR-203):
+   * when the item the action works on (`item()`: the part, the chimney, …) is
+   * still as it was, the action runs again on the job as it is now; when the
+   * item itself changed or is gone, it is refused with a note. Resolves to
+   * true once applied. Errors of `run` reach the caller.
+   */
+  async function onCurrentJob<T>(item: () => unknown, run: () => Promise<T>, apply: (r: T) => void): Promise<boolean> {
+    const key = () => {
+      const it = item();
+      return it === undefined || it === null ? null : JSON.stringify(it);
+    };
+    const want = key();
+    for (let tries = 0; want !== null && tries < 3; tries++) {
+      if (!project) return false;
+      const job = snapshot();
+      const r = await run();
+      if (!project) return false;
+      if (snapshot() === job) {
+        apply(r);
+        return true;
+      }
+      if (key() !== want) break;
+    }
+    info(t("editor.actionStale"));
+    return false;
+  }
+
   // Calculation helpers on the selected wall.
   let calc = $state<{ part: number; key: string; edge: number; request: HelperRequest | null } | null>(null);
 
@@ -699,20 +729,24 @@
     if (!dialogPartThere(xform)) return;
     const op = xform.op;
     const pi = xform.part;
-    const before = JSON.stringify($state.snapshot(project));
-    let next: Project;
-    let parts: number[] = [];
+    let done = false;
     try {
-      if (op.kind === "wall") next = await api.offsetWall($state.snapshot(project) as Project, pi, op.edge, op.dist);
-      else ({ project: next, parts } = await api.transformPart($state.snapshot(project) as Project, pi, op.map, op.copies));
+      done = await onCurrentJob(
+        () => project?.parts[pi],
+        async () =>
+          op.kind === "wall"
+            ? { project: await api.offsetWall($state.snapshot(project) as Project, pi, op.edge, op.dist), parts: [] as number[] }
+            : await api.transformPart($state.snapshot(project) as Project, pi, op.map, op.copies),
+        ({ project: next, parts }) => {
+          adoptProject(next);
+          if (op.kind !== "wall" && parts.length) selection = { part: parts[parts.length - 1], edge: 0 };
+        },
+      );
     } catch (e) {
       if (!notifyRefusal(e, "transform")) notifyError(e, "calc");
       return;
     }
-    // An AI save or an edit in between wins.
-    if (!project || JSON.stringify($state.snapshot(project)) !== before) return;
-    adoptProject(next);
-    if (op.kind !== "wall" && parts.length) selection = { part: parts[parts.length - 1], edge: 0 };
+    if (!done) return;
     xform = null;
     commit();
     setTimeout(() => plan?.fit(), 0);
@@ -741,18 +775,16 @@
   /** Applies a helper request to wall `edge` of `part` through the core, onto the same part. */
   async function applyHelper(part: number, edge: number, request: HelperRequest) {
     if (!project) return;
-    const before = JSON.stringify($state.snapshot(project.parts[part]));
-    let next: Project;
     try {
-      next = await api.roofHelperApply($state.snapshot(project) as Project, part, edge, request);
+      const done = await onCurrentJob(
+        () => project?.parts[part],
+        () => api.roofHelperApply($state.snapshot(project) as Project, part, edge, request),
+        (next) => project && (project.parts = next.parts),
+      );
+      if (done) commit();
     } catch (e) {
       if (!notifyRefusal(e, "helper")) notifyError(e, "calc");
-      return;
     }
-    // An AI save or an edit in between wins.
-    if (!project || !project.parts[part] || JSON.stringify($state.snapshot(project.parts[part])) !== before) return;
-    project.parts = next.parts;
-    commit();
   }
 
   async function openRound() {
@@ -847,10 +879,20 @@
   async function setPartHeightNow(h: number): Promise<string | undefined> {
     if (!project || !selection) return;
     const pi = selection.part;
-    const part = JSON.stringify($state.snapshot(project.parts[pi]));
-    let next: Project;
+    let done = false;
     try {
-      next = await api.setPartHeight($state.snapshot(project) as Project, pi, h);
+      // Onto the part the height was typed for, on the job as it is now (ERR-203).
+      done = await onCurrentJob(
+        () => project?.parts[pi],
+        () => api.setPartHeight($state.snapshot(project) as Project, pi, h),
+        (next) => {
+          if (!project) return;
+          project.parts = next.parts;
+          project.dormers = next.dormers;
+          project.chimneys = next.chimneys;
+          if (project.manual_lines?.length) project.manual_lines = next.manual_lines ?? [];
+        },
+      );
     } catch (e) {
       // A height the core refuses (an eave below the ground) is a refusal
       // with its reason, and the field goes back to the stored height (ERR-003).
@@ -859,13 +901,7 @@
       notifyError(e, "calc");
       return t("num.refused");
     }
-    // The project may have changed meanwhile (an AI save): apply only to the same part.
-    // (Compared by value: a save in between may hand back equal but new objects.)
-    if (!project || !project.parts[pi] || JSON.stringify($state.snapshot(project.parts[pi])) !== part) return;
-    project.parts = next.parts;
-    project.dormers = next.dormers;
-    project.chimneys = next.chimneys;
-    if (project.manual_lines?.length) project.manual_lines = next.manual_lines ?? [];
+    if (!done) return t("editor.actionStale");
     commit();
   }
 
@@ -884,10 +920,21 @@
   };
   async function placeItemNow(it: ItemRef, fromEave: number | null, fromLeft: number | null, fromRight: number | null): Promise<string | undefined> {
     if (!project) return;
-    const before = JSON.stringify($state.snapshot(project));
-    let next: Project;
+    let done = false;
     try {
-      next = await api.placeItem($state.snapshot(project) as Project, MCP_KIND[it.kind], it.index, fromEave, fromLeft, fromRight);
+      // Onto the object the distance was typed for, on the job as it is now:
+      // an AI save of other things in between does not drop it (ERR-203).
+      done = await onCurrentJob(
+        () => itemOf(project, it),
+        () => api.placeItem($state.snapshot(project) as Project, MCP_KIND[it.kind], it.index, fromEave, fromLeft, fromRight),
+        (next) => {
+          if (!project) return;
+          project.dormers = next.dormers;
+          project.chimneys = next.chimneys;
+          project.windows = next.windows;
+          if (next.roof_openings) project.roof_openings = next.roof_openings;
+        },
+      );
     } catch (e) {
       // A distance that would take the object off its face is refused: said
       // in the user's language, and the field shows where it still is.
@@ -896,12 +943,7 @@
       recalc();
       return why ?? t("num.refused");
     }
-    // Only onto the same job state: an AI save or an edit in between wins.
-    if (!project || JSON.stringify($state.snapshot(project)) !== before) return;
-    project.dormers = next.dormers;
-    project.chimneys = next.chimneys;
-    project.windows = next.windows;
-    if (next.roof_openings) project.roof_openings = next.roof_openings;
+    if (!done) return t("editor.actionStale");
     commit();
   }
 
@@ -915,19 +957,20 @@
   async function setLengthNow(len: number): Promise<boolean | string> {
     if (!project || !selection) return false;
     const { part, edge } = selection;
-    const was = project.parts[part];
-    if (!was) return false;
-    const before = JSON.stringify($state.snapshot(was));
-    let next: RoofPart;
+    if (!project.parts[part]) return false;
+    let done = false;
     try {
-      next = await api.setWallLength($state.snapshot(was) as RoofPart, edge, len);
+      // Onto the part the length was typed for, as it is now (ERR-203).
+      done = await onCurrentJob(
+        () => project?.parts[part],
+        () => api.setWallLength($state.snapshot(project!.parts[part]) as RoofPart, edge, len),
+        (next) => project?.parts[part] && (project.parts[part].edges = next.edges),
+      );
     } catch (e) {
       notifyError(e, "calc");
       return false;
     }
-    // Only onto the part the length was typed for: an edit or an AI save in between wins.
-    if (!project?.parts[part] || JSON.stringify($state.snapshot(project.parts[part])) !== before) return false;
-    project.parts[part].edges = next.edges;
+    if (!done) return t("editor.actionStale");
     commit();
     return true;
   }
@@ -1165,17 +1208,23 @@
     if (!face || face.points.length < 3) return;
     const n = project.parts.length;
     const name = n === 0 ? t("editor.mainPart") : t("editor.partN", { n: n + 1 });
-    let next: Project;
+    let done = false;
     try {
-      next = await api.faceToPart($state.snapshot(project) as Project, index, name, presets.pitch_deg, presets.eave_height, presets.overhang);
+      // Onto the face it was asked for, on the job as it is now (ERR-203).
+      done = await onCurrentJob(
+        () => project?.manual_faces?.[index],
+        () => api.faceToPart($state.snapshot(project) as Project, index, name, presets.pitch_deg, presets.eave_height, presets.overhang),
+        (next) => {
+          if (!project) return;
+          project.manual_faces = next.manual_faces;
+          project.parts = next.parts;
+        },
+      );
     } catch (e) {
       if (!notifyRefusal(e, "face")) notifyError(e, "calc");
       return;
     }
-    // The project may have changed meanwhile (an AI save): apply only to the same face.
-    if (!project?.manual_faces || project.manual_faces[index] !== face) return;
-    project.manual_faces = next.manual_faces;
-    project.parts = next.parts;
+    if (!done) return;
     manualSel = null;
     selection = { part: n, edge: 0 };
     commit();
@@ -1249,10 +1298,16 @@
     openSel = s;
   }
 
-  function setChimney(c: Chimney) {
-    if (!project || !openSel || openSel.kind === "window") return;
-    if (openSel.kind === "chimney") project.chimneys[openSel.index] = c;
-    else if (project.roof_openings) project.roof_openings[openSel.index] = c;
+  /** Stores `c` as the chimney or roof opening `at` (the one the value was typed for, even when ▶ moved the selection since, UI-202). */
+  function setChimney(c: Chimney, at: NonNullable<OpeningSel>) {
+    if (!project || at.kind === "window") return;
+    if (at.kind === "chimney") {
+      if (!project.chimneys[at.index]) return;
+      project.chimneys[at.index] = c;
+    } else {
+      if (!project.roof_openings?.[at.index]) return;
+      project.roof_openings[at.index] = c;
+    }
     commit();
   }
 
@@ -1541,17 +1596,22 @@
   /** A copy of part `pi` `dx` m to the right, made by the core. */
   async function duplicatePart(pi: number, dx: number) {
     if (!project) return;
-    const before = JSON.stringify($state.snapshot(project));
-    let r;
+    let done = false;
     try {
-      r = await api.transformPart($state.snapshot(project) as Project, pi, { kind: "move", dx, dy: 0 }, 1);
+      // A copy of the part as the user saw it, on the job as it is now (ERR-203).
+      done = await onCurrentJob(
+        () => project?.parts[pi],
+        () => api.transformPart($state.snapshot(project) as Project, pi, { kind: "move", dx, dy: 0 }, 1),
+        (r) => {
+          adoptProject(r.project);
+          if (r.parts.length) selection = { part: r.parts[0], edge: 0 };
+        },
+      );
     } catch (e) {
       if (!notifyRefusal(e, "transform")) notifyError(e, "calc");
       return;
     }
-    if (!project || JSON.stringify($state.snapshot(project)) !== before) return;
-    adoptProject(r.project);
-    if (r.parts.length) selection = { part: r.parts[0], edge: 0 };
+    if (!done) return;
     commit();
     setTimeout(() => plan?.fit(), 0);
   }
@@ -1691,8 +1751,13 @@
     if (!hasDrawing(project)) return;
     const before = project;
     if (!(await confirm(t("editor.confirmClear")))) return;
-    // The project may have been reloaded (AI edit) while the dialog was open.
-    if (!project || project !== before) return;
+    // The project may have been reloaded (AI edit) while the dialog was open:
+    // the user did not see what is there now, so say so instead (ERR-203).
+    if (!project) return;
+    if (project !== before) {
+      info(t("editor.actionStale"));
+      return;
+    }
     project.parts = [];
     project.dormers = [];
     project.chimneys = [];

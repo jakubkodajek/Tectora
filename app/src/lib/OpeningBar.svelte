@@ -6,7 +6,7 @@
   import type { Chimney, Placement, Project, RoofWindow } from "./types";
   import { isConvex, openingBox, openingList, type OpeningBox, type OpeningSel } from "./openings";
   import { api } from "./api";
-  import { notifyError } from "./notify.svelte";
+  import { info, notifyError } from "./notify.svelte";
   import { numeric } from "./numeric.svelte";
   import PlaceFields from "./PlaceFields.svelte";
   import { pageStep, stepIndex } from "./itemstep";
@@ -23,7 +23,8 @@
   }: {
     project: Project;
     sel: OpeningSel;
-    onchimney: (c: Chimney) => void;
+    /** Stores `c` as the chimney or opening `at` (the one the value was typed for). */
+    onchimney: (c: Chimney, at: NonNullable<OpeningSel>) => void;
     onwindow: (w: RoofWindow) => void;
     ondelete: () => void;
     /** Where the object sits on its face (dimension fields). */
@@ -43,7 +44,10 @@
   /** A field of the box typed: the core reshapes the corners; a box it refuses is said at the field. */
   const setBox = (patch: Partial<OpeningBox>) => track(setBoxNow(patch));
   async function setBoxNow(patch: Partial<OpeningBox>): Promise<string | undefined> {
-    if (!chimney || !box) return;
+    if (!sel || !chimney || !box) return;
+    // The object the value was typed for: ▶ or PageDown may move the
+    // selection before the core answers (UI-202).
+    const at = { kind: sel.kind, index: sel.index } as NonNullable<OpeningSel>;
     const was = $state.snapshot(chimney);
     let corners;
     try {
@@ -53,9 +57,20 @@
       notifyError(e, "calc");
       return t("num.refused");
     }
-    // Only onto the chimney it was asked for: a drag or an AI save in between wins.
-    if (!chimney || JSON.stringify($state.snapshot(chimney).corners) !== JSON.stringify(was.corners)) return;
-    onchimney({ ...$state.snapshot(chimney), corners });
+    // Onto that object as it is now (an AI save of other things keeps it);
+    // only a drag or an outside change of its own corners refuses it, with a note (ERR-203).
+    const now = openingList(project, at.kind)[at.index] as Chimney | undefined;
+    if (!now || JSON.stringify($state.snapshot(now).corners) !== JSON.stringify(was.corners)) {
+      info(t("editor.actionStale"));
+      return t("editor.actionStale");
+    }
+    onchimney({ ...$state.snapshot(now), corners }, at);
+  }
+
+  /** The chimney's top typed: stored on the chimney it was typed for. */
+  function setTop(v: number) {
+    if (!sel || !chimney) return;
+    onchimney({ ...$state.snapshot(chimney), height: v }, { kind: sel.kind, index: sel.index } as NonNullable<OpeningSel>);
   }
 
   function step(d: number) {
@@ -98,7 +113,7 @@
         <p class="tip warn">{t("opening.nonConvex")}</p>
       {/if}
       {#if sel.kind === "chimney"}
-        {@render field(t("opening.top"), chimney.height, "m", (v) => onchimney({ ...$state.snapshot(chimney), height: v }))}
+        {@render field(t("opening.top"), chimney.height, "m", setTop)}
       {:else}
         <p class="tip">{t("opening.holeHint")}</p>
       {/if}
