@@ -190,3 +190,20 @@ describe("an empty job shows no zero figures (UX-011)", () => {
     expect(emptyRoof({ ...base, parts: [{}] } as unknown as CalcResult)).toBe(false);
   });
 });
+
+describe("no result for a job with buildings is not an empty job (UX-101)", () => {
+  it("says the calculation runs or failed, not that there is no building", async () => {
+    const { missingResult } = await import("./results");
+    const built = { parts: [{}], manual_faces: [] } as never;
+    const empty = { parts: [], manual_faces: [] } as never;
+    const fail = { code: "too_complex", title: "x", message: "too complex", detail: "" };
+    expect(missingResult(built, null, null)).toBe("calculating");
+    expect(missingResult(built, null, fail)).toBe("failed");
+    expect(missingResult(empty, null, fail)).toBe("empty");
+    expect(missingResult(empty, null, null)).toBe("empty");
+    const r = { parts: [{}], totals: {}, codes: {}, problems: [] } as unknown as CalcResult;
+    expect(missingResult(built, r, null)).toBeNull();
+    // Without the job, the result decides as before.
+    expect(missingResult(null, null, null)).toBe("empty");
+  });
+});

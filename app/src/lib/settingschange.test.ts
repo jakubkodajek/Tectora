@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { DICTS, i18n } from "./i18n.svelte";
 import { pillText } from "./live.svelte";
-import { changeRows, openAiChange } from "./settingschange";
+import { changeNote, changeRows, changeState, keptNote, openAiChange, rowLabel } from "./settingschange";
 import type { AiSettingsChange, AppSettings } from "./types";
 
 const change = (over: Partial<AiSettingsChange> = {}): AiSettingsChange => ({
@@ -60,5 +60,35 @@ describe("AI settings change (UX-003)", () => {
       expect(pillText(st("settings", null))).toBe(DICTS[l]["ai.live.settings"]);
     }
     i18n.locale = "cs";
+  });
+});
+
+describe("AI settings card against the settings now (UX-104, UX-105)", () => {
+  const now = (pitch: number) => ({ locale: "de", theme: "dark", follow_ai: false, roof_defaults: { pitch_deg: pitch, overhang: 0.9, eave_height: 3 } }) as unknown as AppSettings;
+  const pitchOnly = (over: Partial<AiSettingsChange> = {}) =>
+    change({ before: { "roof_defaults.pitch_deg": 40 }, after: { "roof_defaults.pitch_deg": 25 }, ...over });
+
+  it("shows the current value next to a recorded one that no longer applies", () => {
+    i18n.locale = "cs";
+    expect(changeRows(pitchOnly(), now(25))[0].now).toBeUndefined();
+    expect(changeRows(pitchOnly(), now(30))[0].now).toBe("30°");
+  });
+
+  it("names roof defaults as defaults for new roofs, and says only they change", () => {
+    i18n.locale = "cs";
+    const [r] = changeRows(pitchOnly());
+    expect(rowLabel(r)).toBe(`${DICTS.cs["settings.newRoofs"]}: ${DICTS.cs["edge.pitch"]}`);
+    expect(rowLabel(changeRows(change())[0])).toBe("Jazyk");
+    expect(changeNote(pitchOnly())).toBe(DICTS.cs["aiChange.noteRoofs"]);
+    expect(changeNote(change({ before: { theme: "system" }, after: { theme: "dark" } }))).toBe(DICTS.cs["aiChange.note"]);
+    expect(DICTS.cs["aiChange.note"]).not.toMatch(/střech/);
+  });
+
+  it("a Revert that kept every value says nothing was put back", () => {
+    i18n.locale = "cs";
+    expect(changeState(pitchOnly({ state: "reverted", kept: ["roof_defaults.pitch_deg"] }))).toBe(DICTS.cs["aiChange.state.nothing"]);
+    expect(changeState(pitchOnly({ state: "reverted" }))).toBe(DICTS.cs["aiChange.state.reverted"]);
+    expect(keptNote(pitchOnly({ state: "reverted", kept: ["roof_defaults.pitch_deg"] }), now(30))).toContain("30°");
+    expect(keptNote(pitchOnly({ state: "reverted" }), now(40))).toBeNull();
   });
 });

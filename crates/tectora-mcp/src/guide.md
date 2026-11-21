@@ -214,6 +214,8 @@ job past the draft whose roof figures then differ from the stored ones
 says so in its `note` and carries `stored_result.differences`: tell the
 user that the offer's figures no longer match. `store_result` replaces the
 stored result with the current one; call it only when the user wants that.
+Both refuse a job with no building and no hand-drawn face (there are no
+figures to offer): draw the building first.
 
 ## Results (DACAD line codes)
 

@@ -13,6 +13,7 @@
   import { numeric } from "./numeric.svelte";
   import { textfield } from "./textfield";
   import { pageStep, stepIndex } from "./itemstep";
+  import { pressTooSoon } from "./dblclick";
 
   let {
     project,
@@ -30,6 +31,9 @@
     ontopart?: () => void;
     ondelete: () => void;
   } = $props();
+  // The bar replaces the face tool's bar right after "Close face", with
+  // Delete where Close was: a double click on Close must not delete (UI-103).
+  const shownAt = performance.now();
 
   const list = $derived(sel ? (sel.kind === "line" ? (project.manual_lines ?? []) : (project.manual_faces ?? [])) : []);
   const line = $derived(sel?.kind === "line" ? (project.manual_lines ?? [])[sel.index] ?? null : null);
@@ -110,7 +114,7 @@
       <button class="btn sm" onclick={ontopart} title={t("manual.toPartHint")}><Icon name="house" size={15} />{t("manual.toPart")}</button>
     {/if}
     {@const del = t(sel.kind === "line" ? "manual.deleteLine" : "manual.deleteFace")}
-    <button class="btn sm ghost danger" onclick={ondelete} title={del}><Icon name="trash" size={15} />{del}</button>
+    <button class="btn sm ghost danger" onclick={(e) => !pressTooSoon(shownAt, e.detail) && ondelete()} title={del}><Icon name="trash" size={15} />{del}</button>
   {/if}
 </div>
 

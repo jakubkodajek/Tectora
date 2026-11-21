@@ -10,6 +10,8 @@ export interface ChangeRow {
   label: string;
   before: string;
   after: string;
+  /** The value now, when it is no longer the recorded `after` (changed again since, UX-104). */
+  now?: string;
 }
 
 /** The label of a recorded key (`locale`, `roof_defaults.pitch_deg`, …). */
@@ -51,14 +53,55 @@ export function changeValue(key: string, v: unknown): string {
   return v === null || v === undefined ? "–" : String(v);
 }
 
-/** One row per changed setting: label, before, after. */
-export function changeRows(c: AiSettingsChange): ChangeRow[] {
-  return Object.keys(c.after).map((key) => ({
-    key,
-    label: label(key),
-    before: changeValue(key, c.before[key]),
-    after: changeValue(key, c.after[key]),
-  }));
+/** The value of a recorded key in `s` (`roof_defaults.pitch_deg` → `s.roof_defaults.pitch_deg`). */
+function currentValue(s: AppSettings, key: string): unknown {
+  const sub = key.startsWith("roof_defaults.") ? key.slice("roof_defaults.".length) : null;
+  const v = sub !== null ? (s.roof_defaults as unknown as Record<string, unknown> | undefined)?.[sub] : (s as unknown as Record<string, unknown>)[key];
+  return v === undefined ? null : v;
+}
+
+/** One row per changed setting: label, before, after, and the value now when `current` has another. */
+export function changeRows(c: AiSettingsChange, current?: AppSettings | null): ChangeRow[] {
+  return Object.keys(c.after).map((key) => {
+    const row: ChangeRow = {
+      key,
+      label: label(key),
+      before: changeValue(key, c.before[key]),
+      after: changeValue(key, c.after[key]),
+    };
+    if (current) {
+      const now = changeValue(key, currentValue(current, key));
+      if (now !== row.after) row.now = now;
+    }
+    return row;
+  });
+}
+
+const isRoofKey = (key: string) => key.startsWith("roof_defaults.");
+
+/** A row's label on the card: roof defaults under Settings' "New roofs", not like the open roof's own fields (UX-105). */
+export function rowLabel(r: ChangeRow): string {
+  return isRoofKey(r.key) ? `${t("settings.newRoofs")}: ${r.label}` : r.label;
+}
+
+/** The card's note: that only new buildings take changed roof defaults; nothing about roofs otherwise (UX-105). */
+export function changeNote(c: AiSettingsChange): string {
+  return t(Object.keys(c.after).some(isRoofKey) ? "aiChange.noteRoofs" : "aiChange.note");
+}
+
+/** The state in the history: a Revert that kept every value put nothing back (UX-104). */
+export function changeState(c: AiSettingsChange): string {
+  const keys = Object.keys(c.after);
+  if (c.state === "reverted" && keys.length > 0 && keys.every((k) => c.kept?.includes(k))) return t("aiChange.state.nothing");
+  return t(`aiChange.state.${c.state}`);
+}
+
+/** What a Revert left as it is now ("Sklon 30°"), for a note after it; null when it put everything back. */
+export function keptNote(c: AiSettingsChange, current?: AppSettings | null): string | null {
+  const kept = c.kept ?? [];
+  if (!kept.length) return null;
+  const list = kept.map((k) => `${rowLabel({ key: k, label: label(k), before: "", after: "" })} ${current ? changeValue(k, currentValue(current, k)) : ""}`.trim());
+  return t("aiChange.kept", { list: list.join(", ") });
 }
 
 /** The newest change the user has not answered (the core's `open_ai_change`). */

@@ -459,6 +459,8 @@ export interface AiSettingsChange {
   before: Record<string, unknown>;
   after: Record<string, unknown>;
   state: "open" | "accepted" | "reverted";
+  /** Keys a Revert left as they were (changed again since); all of them: nothing was put back (UX-104). */
+  kept?: string[];
 }
 
 export interface FileRequest {

@@ -14,7 +14,8 @@ clicking in Chromium.
 
 ## 1. A typed value must reach the object it was typed for (@ui, @errors)
 
-Guards: `app/e2e/fields.e2e.ts`, `app/src/lib/numeric.test.ts`.
+Guards: `app/e2e/fields.e2e.ts`, `app/src/lib/numeric.test.ts`,
+`app/e2e/audit-r2.e2e.ts` (dormer bar and dialog).
 
 For every editable field (number, text, select, checkbox) in every bar,
 dialog and panel, type a new value and leave the field in each of these ways,
@@ -40,6 +41,11 @@ then check the saved file (`waitForProject`) and the recalculated result:
   also one without its own bounds, refuses it (±100 000, `MAX_VALUE`)
 - Escape inside a bar's field (e.g. the footprint wall length) only undoes
   the typing, never the bar's work (the footprint drawn so far)
+- a field whose value the core checks first (dormer pitch and eave, window
+  size): the bar's own ▶ / PageDown right after typing, and a dialog's OK
+  right after typing. The value lands on the object it was typed for, OK
+  waits for the check, and a refused value keeps the dialog open with the
+  reason (the check goes through `pendingEdits.track`)
 
 No native number inputs and no hand-made ones: every number field uses
 `use:numeric` (`app/src/lib/numeric.svelte.ts`); the unit test fails on a
@@ -55,7 +61,9 @@ Guards: `app/e2e/editor-ux.e2e.ts`, `app/e2e/fields.e2e.ts`.
   before removing a corner; a second press of a tool button that is
   already active (Building) asks before discarding corners drawn.
 - A double click on every library and editor action that creates or
-  deletes (Duplicate, Delete) acts once.
+  deletes (Duplicate, Delete) acts once, also when the first click swaps
+  the bar and a destructive button appears under the pointer (Close face
+  → Delete face, `audit-r2-ui.e2e.ts`).
 
 ## 2. Every edit recalculates (@errors, @test)
 
@@ -134,6 +142,11 @@ and `revert_refuses_when_the_user_changed_the_same_value`.
   save, an empty job name is refused, Back right after typing keeps the text.
 - Revert of an AI step after the user's own edits keeps those edits or
   refuses with a reason (`revert_conflict`); it never silently drops them.
+- An edit that awaits the core and then writes (status change, store result)
+  while an AI save replaces the project: it lands on the current project or
+  is refused with a note, never on the discarded one
+  (`audit-r2-status.e2e.ts`). An AI settings change revert that keeps the
+  user's later value says so.
 - A failed save stays "not saved" through an outside change; export after a
   failed save stops.
 - Follow mode opens a job only for an AI write or `show_project`, never while

@@ -24,6 +24,8 @@
     track = (p: Promise<unknown>) => p,
     roofFailed = false,
     fresh = false,
+    blocked = $bindable(null),
+    notice = $bindable(null),
   }: {
     project: Project;
     /** The core gave no roof for a building of the job: no roof under the front is not "off the roof" (ERRU-006). */
@@ -34,6 +36,10 @@
     track?: (p: Promise<unknown>) => Promise<unknown>;
     /** A new dormer with the app's defaults: lowered once to fit below the ridge (UX-002). */
     fresh?: boolean;
+    /** Why OK cannot store the dormer as it stands (a refused value, a front off the roof), else null (UI-102, UX-109). */
+    blocked?: string | null;
+    /** A warning OK does not wait for (the dormer rises above the roof), for the footer next to OK (UX-109). */
+    notice?: string | null;
   } = $props();
   // Set once the dialog is gone: a late answer then writes nothing.
   let closed = false;
@@ -51,7 +57,8 @@
     void hostKey;
     const n = ++asked;
     const probe = { ...$state.snapshot(project), dormers: [buildDormer($state.snapshot(params) as DormerParams)] } as Project;
-    api.dormerHost(probe, 0).then(
+    // Tracked, so OK right after a width or position change waits for the answer (UX-109).
+    void track(api.dormerHost(probe, 0).then(
       (h) => {
         if (n !== asked) return;
         host = h;
@@ -64,7 +71,7 @@
         hostReady = true;
         hostError = describeError(e, "calc");
       },
-    );
+    ));
   });
 
   // Where the dormer sits on its roof face (from the eave, from the sides),
@@ -141,6 +148,7 @@
   }
 
   const sec = $derived(host ? dormerSection(params, host) : null);
+
   let problem = $state<SectionProblem | null>(null);
 
   const angleDeg = $derived(+(((params.angle * 180) / Math.PI + 360) % 360).toFixed(2));
@@ -161,18 +169,34 @@
       if (typeof e === "number") next.eave_height = e;
     }
     problem = null;
+    // The fields hold storable values again: an earlier refusal no longer blocks OK.
+    refusal = null;
     params = next;
   }
 
   /** Why the core refused the last pitch or eave typed (`check_dormer`), shown under the section. */
   let refusal = $state<string | null>(null);
 
+  // What keeps OK from storing the dormer: the last typed value the core
+  // refused (it is not in `params`), or a front that stands on no roof face
+  // (the dormer would not count). A roof the core could not calculate is
+  // not "off the roof" (ERRU-006).
+  const offRoof = $derived(hostReady && !host && !hostError && !roofFailed);
+  $effect(() => {
+    blocked = refusal ?? (offRoof ? t("dormer.offRoof") : null);
+  });
+  // The section's notes scroll away at small window sizes: the footer repeats this one (UX-109).
+  $effect(() => {
+    notice = aboveRoof !== null ? t("dormer.aboveRoof", { v: fmt(aboveRoof, 2) }) : null;
+  });
+
   /**
    * Asks the core whether the dormer with `patch` can be stored (an eave
    * below the roof, a pitch under 2°: MATH-001, MATH-003) and only then
    * applies it; a refusal stays on the field with its reason.
    */
-  async function checked(patch: Partial<DormerParams>, apply: () => void): Promise<true | string | false> {
+  const checked = (patch: Partial<DormerParams>, apply: () => void) => track(checkedNow(patch, apply)) as Promise<true | string | false>;
+  async function checkedNow(patch: Partial<DormerParams>, apply: () => void): Promise<true | string | false> {
     const next = { ...$state.snapshot(params), ...patch } as DormerParams;
     const probe = { ...$state.snapshot(project), dormers: [buildDormer(next)] } as Project;
     try {

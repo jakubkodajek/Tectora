@@ -6,7 +6,8 @@
 import { num } from "./format";
 import { t } from "./i18n.svelte";
 import { partLabel } from "./partname";
-import type { CalcResult, RoofWarning } from "./types";
+import type { CalcResult, Project, RoofWarning } from "./types";
+import { hasBuilding } from "./offer";
 
 /** The translated sentence of one plausibility warning. */
 export function warningText(w: RoofWarning): string {
@@ -110,4 +111,21 @@ export function roofState(result: CalcResult | null): "none" | "partial" | "ok" 
  */
 export function emptyRoof(result: CalcResult | null): boolean {
   return !result || (result.parts.length === 0 && !(result.manual_faces?.length));
+}
+
+/**
+ * Why Results has no figures to show: "empty" for a job without a building
+ * (UX-011), "calculating" while the first result for a job with buildings
+ * is on its way, "failed" when the calculation of the whole job failed
+ * (too complex, an internal error; UX-101), else null. Without the job
+ * (`project` null) only the result decides, as `emptyRoof`.
+ */
+export function missingResult(
+  project: Pick<Project, "parts" | "manual_faces"> | null,
+  result: CalcResult | null,
+  failure: unknown,
+): "empty" | "calculating" | "failed" | null {
+  if (project ? !hasBuilding(project) : emptyRoof(result)) return "empty";
+  if (result) return null;
+  return failure ? "failed" : "calculating";
 }

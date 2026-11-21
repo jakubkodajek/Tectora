@@ -19,6 +19,7 @@
   import Breakdown from "./Breakdown.svelte";
   import RoofDefBar from "./RoofDefBar.svelte";
   import DormerBar from "./DormerBar.svelte";
+  import { roofInput } from "./offer";
   import DormerDialog from "./DormerDialog.svelte";
   import OpeningBar from "./OpeningBar.svelte";
   import ManualBar from "./ManualBar.svelte";
@@ -59,7 +60,7 @@
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
   import type { ActivityItem, Arc, HelperRequest, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
   import { GABLE_PITCH, buildingHeight, emptyProject, isAi, isGable, isMarker } from "./types";
-  import { eavePitchFor, rememberEavePitch } from "./walltype";
+  import { eavePitchFor, pruneEavePitches, rememberEavePitch, useEavePitchJob } from "./walltype";
 
   let {
     id: idProp,
@@ -71,9 +72,13 @@
   // `idProp` already has the new value while this instance is torn down,
   // and the save on destroy must still write to this job's file.
   const id = untrack(() => idProp);
+  // A pitch remembered for Gable then Eave belongs to this job only (UI-104).
+  useEavePitchJob(id);
 
   let project = $state<Project | null>(null);
   let result = $state<CalcResult | null>(null);
+  /** Why the last calculation of the whole job failed, for Results to keep saying it (UX-101). */
+  let calcFailure = $state<Described | null>(null);
   let selection = $state<Selection>(null);
   let saveState = $state<"saved" | "saving" | "dirty" | "failed">("saved");
   /** Why the project could not be opened (shown instead of the editor). */
@@ -150,6 +155,10 @@
   let dormerSel = $state<number | null>(null);
   /** The dormer dialog: a new dormer (index null) or dormer `index`. */
   let dormerDlg = $state<{ index: number | null; key: string; params: DormerParams } | null>(null);
+  /** Why the dormer dialog's OK cannot store the dormer (the dialog says it), else null. */
+  let dormerBlocked = $state<string | null>(null);
+  /** A warning of the dormer dialog OK does not wait for, repeated next to OK. */
+  let dormerNotice = $state<string | null>(null);
   let placing = $state<false | "dormer" | "chimney" | "window" | "hole" | "line" | "face">(false);
   // Hand-drawn roof lines and faces (DACAD: Dachlinieneingabe, Neue Dachfläche).
   let manualSel = $state<ManualSel>(null);
@@ -313,9 +322,9 @@
     const seq = ++calcSeq;
     try {
       const r = await api.calc($state.snapshot(project) as Project);
-      if (seq === calcSeq) result = r;
+      if (seq === calcSeq) (result = r), (calcFailure = null);
     } catch (e) {
-      if (seq === calcSeq) result = null;
+      if (seq === calcSeq) (result = null), (calcFailure = describeError(e, "calc"));
       notifyError(e, "calc");
     }
   }
@@ -439,6 +448,7 @@
   function restore(i: number) {
     at = i;
     project = JSON.parse(history[i]);
+    pruneEavePitches(project!.parts);
     // The wall stays in the bar when the step kept it (UX-005).
     selection = keptSelection(project, selection);
     recalc();
@@ -503,6 +513,7 @@
       const merged = !initial && (saveState === "dirty" || saveState === "failed") && project && lastSaved;
       project = merged ? merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, p) : p;
       lastSaved = json;
+      pruneEavePitches(project!.parts);
       // A dialog open on a part the outside save removed or changed must not
       // act on whatever part now has its index (ERRU-010).
       if (!initial) closeStaleDialogs();
@@ -784,8 +795,15 @@
     // Zero figures of a roof the core refused are no offer (DR-001).
     if (blockedReason) return;
     if (!project) return;
+    const input = roofInput(project);
     try {
-      project.result_snapshot = await api.takeSnapshot(JSON.parse(JSON.stringify(project)));
+      const snap = await api.takeSnapshot(JSON.parse(JSON.stringify(project)));
+      // Figures of the roof as it was asked for, never of one an AI save replaced meanwhile (ERR-102).
+      if (!project || roofInput(project) !== input) {
+        info(t("snap.stale"));
+        return;
+      }
+      project.result_snapshot = snap;
       commit();
     } catch (e) {
       notifyError(e, "save");
@@ -1007,12 +1025,16 @@
     const host = roofHeightAt(result, { x: x - Math.sin(angle) * 0.01, y: y + Math.cos(angle) * 0.01 });
     const eave = +((host ?? presets.eave_height) + 1).toFixed(2);
     // As DACAD's dormer dialog: the dormer is placed when its window says OK.
+    dormerBlocked = null;
+    dormerNotice = null;
     dormerDlg = { index: null, key: "", params: defaultParams("gable", { x, y }, angle, eave) };
   }
 
   function editDormer() {
     if (!project || dormerSel === null) return;
     const p = parseDormer(project.dormers[dormerSel]);
+    dormerBlocked = null;
+    dormerNotice = null;
     if (p.kind !== "general") dormerDlg = { index: dormerSel, key: anchor(project.dormers, dormerSel).key, params: p };
   }
 
@@ -1021,7 +1043,11 @@
     // the core: OK takes it once it is there (review UI-001).
     await tick();
     await pendingEdits.settled();
+    await tick();
     if (!project || !dormerDlg) return;
+    // A value the core refused, or a front on no roof face: the dialog stays
+    // open with the reason next to OK (UI-102, UX-109).
+    if (dormerBlocked) return;
     if (dormerDlg.index !== null && !stillThere(project.dormers, { index: dormerDlg.index, key: dormerDlg.key })) {
       dormerDlg = null;
       info(t("editor.dialogStale"));
@@ -1633,9 +1659,9 @@
     placing = placing === kind ? false : kind;
   }
 
-  function setDormer(d: Dormer) {
-    if (!project || dormerSel === null) return;
-    project.dormers[dormerSel] = d;
+  function setDormer(d: Dormer, at: number) {
+    if (!project || !project.dormers[at]) return;
+    project.dormers[at] = d;
     commit();
   }
 
@@ -2066,7 +2092,7 @@
             onclose={placing === "face" ? closeFace : undefined}
             oncancel={() => (placing = false)} />
         {:else if dormerSel !== null}
-          <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} onedit={editDormer}
+          <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} onedit={editDormer} track={(p) => pendingEdits.track(p)}
             onplace={(e, l, r) => (dormerSel !== null ? placeItem({ kind: "dormer", index: dormerSel }, e, l, r) : undefined)} />
         {:else if openSel}
           <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening} track={(p) => pendingEdits.track(p)}
@@ -2106,13 +2132,13 @@
         <div class="dock" role="tabpanel" id={dockIds.panel} aria-labelledby={dockIds.tab(dock)} bind:this={dockEl}>
           <button class="icon-btn dock-close" onclick={() => (dockOpen = false)} aria-label={t("common.close")} title={t("common.close")}><Icon name="x" size={16} /></button>
           {#if dock === "results"}
-            <Results {result} {project} onstore={storeResult} blocked={blockedReason} />
+            <Results {result} {project} onstore={storeResult} blocked={blockedReason} failure={calcFailure} />
           {:else if dock === "breakdown"}
             <Breakdown {project} {result} bind:data={breakdown} onmark={(mk) => (planMark = mk)} />
           {:else if dock === "ai"}
             <AiPanel {id} {project} {activity} onrevert={() => revert(false)} busy={reviewBusy} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
-            <JobPanel {id} {project} onchange={commit} onsave={save} blocked={blockedReason} track={(p) => pendingEdits.track(p)} />
+            <JobPanel {id} {project} current={() => project} onchange={commit} onsave={save} blocked={blockedReason} track={(p) => pendingEdits.track(p)} />
           {/if}
         </div>
       </aside>
@@ -2164,10 +2190,12 @@
 
 {#if dormerDlg && project}
   <Modal title={dormerDlg.index === null ? t("dormer.dialogNew") : t("dormer.n", { n: dormerDlg.index + 1 })} width={1040} onclose={() => (dormerDlg = null)}>
-    <DormerDialog {project} roofFailed={!!roofError} fresh={dormerDlg.index === null} bind:params={dormerDlg.params} track={(p) => pendingEdits.track(p)} />
+    <DormerDialog {project} roofFailed={!!roofError} fresh={dormerDlg.index === null} bind:params={dormerDlg.params} bind:blocked={dormerBlocked} bind:notice={dormerNotice} track={(p) => pendingEdits.track(p)} />
     {#snippet footer()}
+      {#if dormerBlocked}<p class="dlg-why" role="alert" data-testid="dormer-ok-blocked">{dormerBlocked}</p>
+      {:else if dormerNotice}<p class="dlg-why" role="status" data-testid="dormer-ok-notice">{dormerNotice}</p>{/if}
       <button class="btn" onclick={() => (dormerDlg = null)}>{t("common.cancel")}</button>
-      <button class="btn primary" onclick={applyDormerDialog}>{t("common.ok")}</button>
+      <button class="btn primary" disabled={!!dormerBlocked} title={dormerBlocked ?? undefined} onclick={applyDormerDialog}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -2220,6 +2248,23 @@
 {/if}
 
 <style>
+  /* Why the dormer dialog's OK is off: a small status mark and the reason, left of the buttons. */
+  .dlg-why {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 auto 0 0;
+    max-width: 60%;
+    font-size: 12.5px;
+    color: var(--text-2);
+  }
+  .dlg-why::before {
+    content: "";
+    flex: none;
+    width: 8px;
+    height: 8px;
+    background: var(--danger);
+  }
   .editor {
     height: 100%;
     display: flex;

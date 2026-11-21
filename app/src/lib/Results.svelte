@@ -5,7 +5,8 @@
   import { m, m2, num } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
-  import { areaRows, emptyRoof, failedParts, joinedWith, roofState, warningText } from "./results";
+  import { areaRows, failedParts, joinedWith, missingResult, roofState, warningText } from "./results";
+  import type { Described } from "./errors";
   import { inputWarnings } from "./plausible";
   import { legend, lineName, SUB_CODES } from "./linecodes";
   import { partLabel } from "./partname";
@@ -17,12 +18,15 @@
     project = null,
     onstore,
     blocked = null,
+    failure = null,
   }: {
     result: CalcResult | null;
     project?: Project | null;
     onstore?: () => void;
     /** Why the figures cannot become the offer's stored result now (the core gave no roof), or null. */
     blocked?: string | null;
+    /** Why the last calculation of the whole job failed (too complex, …), kept until one succeeds (UX-101). */
+    failure?: Described | null;
   } = $props();
 
   // What is on the roof (UX-005): counts and window sizes from the job,
@@ -83,9 +87,10 @@
   const failedNames = $derived(failedSet.map((i) => partLabel(result!.parts[i].name, i)).join(", "));
   const NONE = "—";
   /** No building yet (empty job, footprint being drawn): a dash and a hint, not 0,00 (UX-011). */
-  const empty = $derived(emptyRoof(result));
+  const missing = $derived(missingResult(project, result, failure));
+  const empty = $derived(missing === "empty");
   /** No figures to show at all. */
-  const none = $derived(failed || empty);
+  const none = $derived(failed || missing !== null);
 
   /** Plausibility warnings of every part, with the part's name when there are several. */
   const warnings = $derived(
@@ -124,6 +129,8 @@
     <span>{t("res.area")}</span>
     <strong data-testid="res-area" title={failed ? t("res.notCalculated") : undefined}>{totals && !none ? m2(totals.roof_area) : NONE}</strong>
     {#if empty}<small data-testid="res-empty">{t("res.empty")}</small>
+    {:else if missing === "failed" && failure}<small data-testid="res-calc-failed"><code>{failure.code}</code> {failure.message}</small>
+    {:else if missing === "calculating"}<small data-testid="res-calculating">{t("res.calculating")}</small>
     {:else if failed}<small data-testid="res-not-calculated">{t("res.notCalculated")}</small>
     {:else if totals}<small>{t("res.ridgeHeight", { v: num(totals.ridge_height) })}</small>{/if}
     {#if failedSet.length}<small data-testid="res-partial">{t("res.partialNote", { names: failedNames })}</small>{/if}
@@ -218,11 +225,13 @@
 
   {#if stored}
     <h4>{t("snap.title")}</h4>
-    <div class="snap" class:changed={stored.differences.length > 0}>
-      <div class="snap-head">
+    <!-- Figures that leave out a building the calculation cannot take are no
+         comparison: equal figures would read "unchanged" (UX-103). -->
+    <div class="snap" class:changed={stored.differences.length > 0 || !!blocked}>
+      <div class="snap-head" data-testid="snap-state">
         <i class="sq"></i>
-        <span>
-          {stored.differences.length ? t("snap.changed") : t("snap.same")}
+        <span title={blocked ?? undefined}>
+          {blocked ? t("snap.unchecked") : stored.differences.length ? t("snap.changed") : t("snap.same")}
           · {new Date(stored.stored.taken_ms).toLocaleDateString(numberLocale())}
         </span>
       </div>

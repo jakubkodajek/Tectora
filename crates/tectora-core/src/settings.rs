@@ -391,6 +391,11 @@ pub struct AiSettingsChange {
     pub after: Map<String, Value>,
     #[serde(default)]
     pub state: AiChangeState,
+    /// The keys a Revert left as they were, because they had been changed
+    /// again since (by the user or another client): with every key here,
+    /// the Revert put nothing back (UX-104).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<String>,
 }
 
 /// Most entries kept in [`Settings::ai_changes`]; the oldest go first.
@@ -617,6 +622,7 @@ impl Settings {
             before,
             after,
             state: AiChangeState::Open,
+            kept: Vec::new(),
         });
         self.bound_ai_changes();
         Ok(())
@@ -665,8 +671,9 @@ impl Settings {
 
     /// The user's answer to the open AI settings change `id`: `revert` puts
     /// back the values it changed (a value changed again since, by the user
-    /// or another client, stays as it is now), otherwise it is accepted.
-    /// Either way it is closed. A change that is not open is left alone.
+    /// or another client, stays as it is now and is listed in `kept`),
+    /// otherwise it is accepted, with older open changes of only the same
+    /// keys. Either way it is closed. A change that is not open is left alone.
     pub fn answer_ai_change(&self, id: u64, revert: bool) -> Result<Settings, SettingsError> {
         let mut next = self.clone();
         let Some(at) = next
@@ -681,8 +688,13 @@ impl Settings {
             let change = &next.ai_changes[at];
             let mut patch = Map::new();
             let mut roof = Map::new();
+            let mut kept = Vec::new();
             for (key, after) in &change.after {
-                if !AI_CHANGE_KEYS.contains(&key.as_str()) || &key_value(&now, key) != after {
+                if !AI_CHANGE_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
+                if &key_value(&now, key) != after {
+                    kept.push(key.clone());
                     continue;
                 }
                 let old = change.before.get(key).cloned().unwrap_or(Value::Null);
@@ -699,6 +711,16 @@ impl Settings {
                 patch.insert("roof_defaults".into(), Value::Object(roof));
             }
             next = next.patched_with(&Value::Object(patch), false)?;
+            next.ai_changes[at].kept = kept;
+        } else {
+            // Older open changes of only these keys no longer apply: the
+            // accepted values replaced theirs (UX-104).
+            let keys: Vec<String> = next.ai_changes[at].after.keys().cloned().collect();
+            for c in next.ai_changes[..at].iter_mut() {
+                if c.state == AiChangeState::Open && c.after.keys().all(|k| keys.contains(k)) {
+                    c.state = AiChangeState::Accepted;
+                }
+            }
         }
         next.ai_changes[at].state = if revert {
             AiChangeState::Reverted
@@ -1028,6 +1050,38 @@ mod tests {
         let ids: Vec<u64> = s.ai_changes.iter().map(|c| c.id).collect();
         assert_eq!(ids, [1, 2]);
         assert_eq!(s.ai_changes[1].state, AiChangeState::Open);
+    }
+
+    #[test]
+    fn a_revert_says_which_values_it_kept_and_accept_closes_older_changes() {
+        // UX-104: a Revert that put nothing back was recorded as reverted,
+        // and accepting the newer of two changes left the older one open
+        // with values that no longer applied.
+        let pitch = |v: f64| serde_json::json!({ "roof_defaults": { "pitch_deg": v } });
+        let (a, _) = Settings::default()
+            .patched_by_ai(&pitch(25.0), "Claude", "A")
+            .unwrap();
+        let first = a.open_ai_change().cloned().unwrap();
+        // The user sets 30° himself, then reverts the AI's change: nothing to put back.
+        let mine = a.patched(&pitch(30.0)).unwrap();
+        let r = mine.answer_ai_change(first.id, true).unwrap();
+        assert_eq!(r.roof_defaults.pitch_deg, 30.0);
+        assert_eq!(r.ai_changes[0].state, AiChangeState::Reverted);
+        assert_eq!(r.ai_changes[0].kept, ["roof_defaults.pitch_deg"]);
+        // A revert that puts the value back keeps nothing.
+        let r = a.answer_ai_change(first.id, true).unwrap();
+        assert!(r.ai_changes[0].kept.is_empty());
+        // Two changes of the same key: accepting the newer closes the older.
+        let (b, _) = a.patched_by_ai(&pitch(35.0), "Claude", "B").unwrap();
+        let second = b.open_ai_change().cloned().unwrap();
+        assert_ne!(first.id, second.id);
+        let ok = b.answer_ai_change(second.id, false).unwrap();
+        assert!(ok.open_ai_change().is_none(), "{:?}", ok.ai_changes);
+        assert_eq!(ok.ai_changes[0].state, AiChangeState::Accepted);
+        // Reverting the newer one leaves the older open: its values apply again.
+        let back = b.answer_ai_change(second.id, true).unwrap();
+        assert_eq!(back.roof_defaults.pitch_deg, 25.0);
+        assert_eq!(back.open_ai_change().map(|c| c.id), Some(first.id));
     }
 
     #[test]

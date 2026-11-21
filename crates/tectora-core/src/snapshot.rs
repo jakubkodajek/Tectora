@@ -48,6 +48,10 @@ fn r2(v: f64) -> f64 {
 /// `Err(Refused::Internal)` instead of aborting the caller.
 pub fn take_checked(project: &Project) -> Result<ResultSnapshot, Refused> {
     project.check_limits().map_err(Refused::OutOfRange)?;
+    // No building and no hand-drawn face: no figures to offer (UX-102).
+    if project.parts.is_empty() && project.manual_faces.is_empty() {
+        return Err(Refused::NoBuilding);
+    }
     // Input the calculation leaves out (a building with a wall shorter than
     // 1 cm, …) is missing from the figures (review UX-002).
     if let Some(p) = project.problems().first() {
@@ -85,6 +89,8 @@ pub enum Refused {
     Internal(String),
     /// A part of the roof cannot be calculated (the detail says which).
     NotCalculated(String),
+    /// The job has no building and no hand-drawn face: nothing to store.
+    NoBuilding,
 }
 
 impl std::fmt::Display for Refused {
@@ -93,6 +99,9 @@ impl std::fmt::Display for Refused {
             Refused::OutOfRange(d) => write!(f, "out of range: {d}"),
             Refused::Internal(d) => f.write_str(d),
             Refused::NotCalculated(d) => write!(f, "the roof cannot be calculated: {d}"),
+            Refused::NoBuilding => {
+                f.write_str("the job has no building, so there are no figures to store")
+            }
         }
     }
 }

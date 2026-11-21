@@ -77,3 +77,14 @@ describe("attachment sizes follow the UI language (UI-010)", () => {
     expect(fileSize(NaN, "cs-CZ")).toBe("—");
   });
 });
+
+describe("a library job with no building (UX-111)", () => {
+  it("shows a dash and says there is no building yet, not 0,00 m²", async () => {
+    const { cardArea, cardAreaNote, m2 } = await import("./format");
+    const { t } = await import("./i18n.svelte");
+    expect(cardArea({ roof_area: 0, parts: 0 })).toBe("—");
+    expect(cardAreaNote({ roof_area: 0, parts: 0 })).toBe(t("res.empty"));
+    // Hand-drawn faces only: no building, but an area.
+    expect(cardArea({ roof_area: 12, parts: 0 })).toBe(m2(12));
+  });
+});

@@ -26,16 +26,20 @@
     ondelete,
     onedit,
     onplace,
+    track = (p) => p,
   }: {
     project: Project;
     result: CalcResult | null;
     index: number | null;
-    onchange: (d: Dormer) => void;
+    /** Stores `d` as dormer `at` (the one the value was typed for, even when the selection moved since). */
+    onchange: (d: Dormer, at: number) => void;
     ondelete: () => void;
     /** Opens the dormer window (plan and section). */
     onedit?: () => void;
     /** A distance on the roof face typed (from eave, left, right; the others null). */
     onplace?: (fromEave: number | null, fromLeft: number | null, fromRight: number | null) => unknown;
+    /** Registers an edit that waits for the core, so leaving the editor and dialogs wait for it (ERR-004). */
+    track?: <T>(p: Promise<T>) => Promise<T>;
   } = $props();
   const placement = $derived(index !== null ? placementOf(result, { kind: "dormer", index }) : null);
 
@@ -58,7 +62,9 @@
   const angleDeg = $derived(params ? +(((params.angle * 180) / Math.PI + 360) % 360).toFixed(2) : 0);
 
 
-  async function set(patch: Partial<DormerParams>): Promise<boolean | string | undefined> {
+  /** A field of the bar changed: checked by the core, then stored on the dormer it was typed for. */
+  const set = (patch: Partial<DormerParams>) => track(setNow(patch));
+  async function setNow(patch: Partial<DormerParams>): Promise<boolean | string | undefined> {
     if (!params) return;
     const next = { ...params, ...patch };
     if (next.kind === "general") return;
@@ -73,6 +79,7 @@
     // roof, a pitch under 2°), as for MCP add_dormer (MATH-001, MATH-003).
     const at = index;
     if (at === null) return;
+    const was = JSON.stringify($state.snapshot(project.dormers[at]));
     const probe = { ...$state.snapshot(project), dormers: project.dormers.map((x, i) => (i === at ? d : $state.snapshot(x))) } as Project;
     try {
       await api.checkDormer(probe, at);
@@ -85,9 +92,12 @@
       notify({ kind: "error", code: toAppError(e).code, title: t("dormer.refusedTitle"), message: why, detail: toAppError(e).detail });
       return why;
     }
-    // A newer selection or an AI reload meanwhile: nothing to store.
-    if (index !== at || !project.dormers[at]) return false;
-    onchange(d);
+    // The value belongs to dormer `at` even when ▶ or PageDown moved the
+    // selection meanwhile (UI-101). Only a dormer that is gone or was
+    // changed meanwhile (an AI reload, a drag) keeps what it has.
+    const now = project.dormers[at];
+    if (!now || JSON.stringify($state.snapshot(now)) !== was) return false;
+    onchange(d, at);
     return true;
   }
 

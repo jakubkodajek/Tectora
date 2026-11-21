@@ -241,7 +241,7 @@
 {#if openAiChange(appSettings.view?.settings)}
   {@const change = openAiChange(appSettings.view?.settings)!}
   {#key change.id}
-    <AiSettingsChange {change} onanswered={applySettings} />
+    <AiSettingsChange {change} settings={appSettings.view?.settings ?? null} onanswered={applySettings} />
   {/key}
 {/if}
 {#if settingsOpen}

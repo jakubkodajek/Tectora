@@ -21,3 +21,16 @@ export function firstPress<T>() {
     },
   };
 }
+
+/** How long a button that replaced another under the pointer ignores presses, ms. */
+export const FRESH_BUTTON_MS = 500;
+
+/**
+ * Whether a press on a destructive button must be ignored: the button
+ * appeared under the pointer just now (the second click of a double click on
+ * the button it replaced, UI-103), or the press is itself a double click's
+ * second click (`count` = `MouseEvent.detail`).
+ */
+export function pressTooSoon(shownAt: number, count: number, at = performance.now()): boolean {
+  return count >= 2 || at - shownAt < FRESH_BUTTON_MS;
+}
