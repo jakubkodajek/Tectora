@@ -4,7 +4,9 @@
 // finds a line's details and names it in the UI language.
 
 import { t } from "./i18n.svelte";
-import type { CalcResult, LineDetail, LineRef } from "./types";
+import { materialName, materialToken } from "./materials";
+import { wallNumber } from "./planlabels";
+import type { CalcResult, LineDetail, LineRef, Project } from "./types";
 
 /** Codes named by their own key (the verge sides and the abutment kinds). */
 const OWN: Record<string, string> = {
@@ -51,3 +53,42 @@ export const LINE_TOKENS: Record<string, string> = {
   abutment_back: "--line-abutment",
   abutment_side: "--line-abutment",
 };
+
+/** A line counts as cut by a chimney, opening or dormer from this difference, m (the results round to cm). */
+const UNCOUNTED_M = 0.005;
+
+/** What the line card shows, as plain values (LineInfo.svelte renders them). */
+export interface LineFigures {
+  /** The length the results count, m. */
+  length: number;
+  /** The plan length when it differs from the true one (a sloping line), m. */
+  planLength: number | null;
+  /** The drawn length when part of the line is not counted, m. */
+  drawn: number | null;
+  level: boolean;
+  zLow: number;
+  zHigh: number;
+  slopeDeg: number;
+  faces: { token: string; label: string; pitchDeg: number; material: string }[];
+}
+
+/** The figures of `d` as the card shows them. */
+export function lineFigures(d: LineDetail, project: Project): LineFigures {
+  const counted = d.counted_length ?? d.length;
+  const parts = project.parts.length;
+  return {
+    length: counted,
+    planLength: Math.abs(d.length - d.plan_length) >= UNCOUNTED_M ? d.plan_length : null,
+    drawn: d.length - counted >= UNCOUNTED_M ? d.length : null,
+    level: d.slope_deg < LEVEL_DEG,
+    zLow: d.z_low,
+    zHigh: d.z_high,
+    slopeDeg: d.slope_deg,
+    faces: d.faces.map((f) => ({
+      token: materialToken(f.material),
+      label: f.wall === undefined ? t("lineinfo.dormer") : t("lineinfo.wall", { n: wallNumber(f.part, f.wall, parts) }),
+      pitchDeg: f.pitch_deg,
+      material: materialName(project, f.material),
+    })),
+  };
+}

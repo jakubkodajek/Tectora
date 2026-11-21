@@ -195,9 +195,12 @@ to check a result.
 its kind and code, end points, true and plan length, its own slope, the
 heights of its ends above the ground (`z_low`, `z_high`: e.g. the ridge
 height, the eave height) and the faces it bounds with their pitch and
-material. Filter with `part` and `code` (`"F"` ridges, `"O"` all verges).
-Use it for "how high is the ridge / this eave", "which pitches meet at this
-hip".
+material. `counted_length` is what the results count (a chimney or hole on
+the line takes its part off); per code it adds up to `calc`'s line totals
+without hand-drawn lines. Buildings without a roof are named in
+`not_calculated`. Filter with `part` and `code` (`"F"` ridges, `"O"` all
+verges). Use it for "how high is the ridge / this eave", "which pitches meet
+at this hip".
 Faces carry their roof material: the area per material (`area_by_material`,
 the price-sheet list's material rows) counts each face under its own
 material only, so sheet metal on some walls is not in the tiles' area; the

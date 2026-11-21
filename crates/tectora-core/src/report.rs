@@ -148,6 +148,22 @@ mod tests {
         assert!(p.problems().is_empty(), "{:?}", p.problems());
     }
 
+    /// The editor's line card reads its figures from the calculation
+    /// result: every line of the roof is there, with the length the
+    /// results count.
+    #[test]
+    fn the_calc_result_carries_every_lines_details() {
+        let p = examples::find("hip").unwrap().project();
+        let geos = crate::openings::generate_project(&p);
+        let v = calc_of(&p, &geos);
+        let d = v["line_details"].as_array().expect("line_details in calc");
+        assert_eq!(d.len(), geos[0].lines.len());
+        for l in d {
+            assert!(l["counted_length"].as_f64().is_some(), "{l}");
+            assert!(!l["faces"].as_array().unwrap().is_empty(), "{l}");
+        }
+    }
+
     #[test]
     fn a_valid_project_has_no_problems() {
         let p = examples::find("gable").unwrap().project();

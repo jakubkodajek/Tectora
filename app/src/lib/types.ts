@@ -224,6 +224,8 @@ export interface LineDetail extends LineRef {
   a: [number, number, number];
   b: [number, number, number];
   length: number;
+  /** The length the results count: `length` less the parts on or under chimneys, openings and dormers. */
+  counted_length: number;
   plan_length: number;
   /** The line's own inclination against the horizontal, degrees. */
   slope_deg: number;

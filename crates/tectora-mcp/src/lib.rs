@@ -989,7 +989,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "line_details",
-            "description": "Details of every calculated roof line, as the editor shows them when the user points at or clicks a line in the plan or 3D: `kind` (eave, verge, ridge, hip, valley, pult, knick, gorge, abutment…), DACAD `code`, end points `a`/`b` (x, y, z in m), true `length` and `plan_length`, the line's own `slope_deg`, the heights `z_low`/`z_high` of its ends above the ground, and the roof `faces` it bounds (`part`, `face`, `wall` index, `pitch_deg`, `material`). `part` (index from 0) limits the parts, `code` the line codes (e.g. \"F\" for ridges; \"O\" matches OL, OR and OS, \"W\" all abutments). Lengths are the lines as drawn, before the deductions the totals make.",
+            "description": "Details of every calculated roof line, as the editor shows them when the user points at or clicks a line in the plan or 3D: `kind` (eave, verge, ridge, hip, valley, pult, knick, gorge, abutment…), DACAD `code`, end points `a`/`b` (x, y, z in m), true `length` and `plan_length`, the line's own `slope_deg`, the heights `z_low`/`z_high` of its ends above the ground, and the roof `faces` it bounds (`part`, `face`, `wall` index, `pitch_deg`, `material`). `part` (index from 0) limits the parts, `code` the line codes (e.g. \"F\" for ridges; \"O\" matches OL, OR and OS, \"W\" all abutments). `length` is the line as drawn; `counted_length` is what the results count (less the parts on or under chimneys, openings and dormers), and summed per code it gives `calc`'s line totals without hand-drawn lines. Buildings the calculation gave no roof are listed in `not_calculated` (`part`, `name`, `error`); when no line is left the call fails with that reason.",
             "inputSchema": schema(json!({
                 "id": { "type": "string" },
                 "part": { "type": "integer", "minimum": 0, "description": "Only this part's lines." },
@@ -1546,14 +1546,56 @@ impl Server {
                     format!("Reading the roof lines of “{}”", p.name),
                     Some(&id),
                 );
-                let lines =
-                    tectora_core::model::guarded(|| tectora_core::lineinfo::line_details(&p))?;
+                let (geos, lines) = tectora_core::model::guarded(|| {
+                    let geos = tectora_core::openings::generate_project(&p);
+                    let lines = tectora_core::lineinfo::line_details_of(&p, &geos);
+                    (geos, lines)
+                })?;
+                // Buildings without a roof have no lines: say so instead of
+                // an empty list that reads as "no such lines".
+                let missing: Vec<Value> = geos
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| only.is_none_or(|k| k == *i))
+                    .filter_map(|(i, g)| {
+                        let why = match &g.error {
+                            Some(e) => calc_error(e),
+                            None if g.faces.is_empty() => json!({
+                                "message": "no roof faces: every wall is a gable, or the roof is covered by another building"
+                            }),
+                            None => return None,
+                        };
+                        Some(json!({
+                            "part": i,
+                            "name": p.parts.get(i).map(|x| x.name.clone()),
+                            "error": why,
+                        }))
+                    })
+                    .collect();
                 let lines: Vec<_> = lines
                     .into_iter()
                     .filter(|l| only.is_none_or(|i| l.part == i))
                     .filter(|l| code.as_deref().is_none_or(|c| l.code.starts_with(c)))
                     .collect();
-                Ok(json!({ "id": id, "lines": lines }))
+                if lines.is_empty() && !missing.is_empty() {
+                    return Err(format!(
+                        "the roof is not calculated, so it has no lines: {}",
+                        missing
+                            .iter()
+                            .map(|m| format!(
+                                "part {}: {}",
+                                m["part"],
+                                m["error"]["message"].as_str().unwrap_or("")
+                            ))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ));
+                }
+                let mut out = json!({ "id": id, "lines": lines });
+                if !missing.is_empty() {
+                    out["not_calculated"] = Value::Array(missing);
+                }
+                Ok(out)
             }
             "create_standard_roof" => {
                 let kind: StandardRoof = serde_json::from_value(arg(args, "type")?.clone())
@@ -2310,6 +2352,108 @@ mod tests {
             s.call_tool("line_details", &json!({ "id": id, "code": "" }))
                 .is_err()
         );
+    }
+
+    /// The `part` and `code` filters keep exactly the lines asked for, a
+    /// chimney on the eave shows in `counted_length`, and a building
+    /// without a roof is named instead of giving an empty list.
+    #[test]
+    fn line_details_filter_count_and_name_buildings_without_a_roof() {
+        use tectora_core::examples::{StandardRoof, standard_roof};
+        let mut s = server();
+        let mut p = Project::new("two");
+        p.parts
+            .push(standard_roof(StandardRoof::Hip, 12.0, 8.0, 35.0, 3.0, 0.5));
+        let mut b = standard_roof(StandardRoof::Gable, 10.0, 8.0, 38.0, 3.0, 0.3);
+        for e in b.edges.iter_mut() {
+            e.start.x += 20.0;
+        }
+        p.parts.push(b);
+        p.chimneys.push(tectora_core::Chimney {
+            corners: vec![
+                Point2::new(5.0, -0.5),
+                Point2::new(6.0, -0.5),
+                Point2::new(6.0, 0.5),
+                Point2::new(5.0, 0.5),
+            ],
+            height: 9.0,
+        });
+        let id = s.store.save(None, &p).unwrap();
+        let all = s.call_tool("line_details", &json!({ "id": id })).unwrap();
+        let all = all["lines"].as_array().unwrap().clone();
+        let on = |part: u64| all.iter().filter(|l| l["part"] == part).count();
+        assert!(on(0) > 0 && on(1) > 0);
+
+        let one = s
+            .call_tool("line_details", &json!({ "id": id, "part": 1 }))
+            .unwrap();
+        let one = one["lines"].as_array().unwrap();
+        assert_eq!(one.len(), on(1));
+        assert!(one.iter().all(|l| l["part"] == 1));
+
+        // "O": the gable roof's verges only, OL and OR, nothing else.
+        let verges = s
+            .call_tool("line_details", &json!({ "id": id, "code": "O" }))
+            .unwrap();
+        let verges = verges["lines"].as_array().unwrap();
+        assert_eq!(verges.len(), 4, "{verges:?}");
+        assert!(
+            verges
+                .iter()
+                .all(|l| l["part"] == 1 && matches!(l["code"].as_str(), Some("OL" | "OR")))
+        );
+
+        // The chimney on the hip roof's front eave (13 m): 12 m counted,
+        // whether the joined calculation cut the line or the count does.
+        let eaves = s
+            .call_tool("line_details", &json!({ "id": id, "part": 0, "code": "T" }))
+            .unwrap();
+        let front: f64 = eaves["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|l| l["a"][1].as_f64().unwrap() < 0.0 && l["b"][1].as_f64().unwrap() < 0.0)
+            .map(|l| l["counted_length"].as_f64().unwrap())
+            .sum();
+        assert!((front - 12.0).abs() < 1e-3, "{eaves}");
+        assert!(eaves.get("not_calculated").is_none());
+
+        // A non-convex chimney: no roof at all, so the call fails and says why.
+        let mut gables = p.clone();
+        for e in gables.parts[1].edges.iter_mut() {
+            e.pitch_deg = 90.0;
+        }
+        // Every wall of the second building a gable: no roof there. Its
+        // lines are not silently missing: the building is named, with the
+        // reason in English (never the calculation's own German text).
+        let id = s.store.save(None, &gables).unwrap();
+        let r = s.call_tool("line_details", &json!({ "id": id })).unwrap();
+        let missing = r["not_calculated"].as_array().unwrap();
+        assert_eq!(missing.len(), 1, "{r}");
+        assert_eq!(missing[0]["part"], 1);
+        let why = missing[0]["error"]["message"].as_str().unwrap();
+        assert!(
+            !why.is_empty() && !why.contains("Nicht") && !why.contains("E0"),
+            "{why}"
+        );
+        let e = s
+            .call_tool("line_details", &json!({ "id": id, "part": 1 }))
+            .unwrap_err();
+        assert!(e.contains("not calculated"), "{e}");
+        let mut bad = p.clone();
+        bad.parts.truncate(1);
+        bad.chimneys[0].corners = vec![
+            Point2::new(5.0, 1.0),
+            Point2::new(7.0, 1.0),
+            Point2::new(6.0, 1.5),
+            Point2::new(7.0, 2.0),
+            Point2::new(5.0, 2.0),
+        ];
+        let id = s.store.save(None, &bad).unwrap();
+        let e = s
+            .call_tool("line_details", &json!({ "id": id }))
+            .unwrap_err();
+        assert!(e.contains("not calculated"), "{e}");
     }
 
     #[test]

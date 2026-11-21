@@ -10,8 +10,11 @@
 //!
 //! [`RoofGeometry::lines`]: crate::roof::RoofGeometry::lines
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 
+use crate::geom::Point2;
 use crate::model::Project;
 use crate::roof::{LineKind, RoofGeometry};
 
@@ -45,6 +48,12 @@ pub struct LineDetail {
     pub b: [f64; 3],
     /// True length, √(Δx² + Δy² + Δz²), m.
     pub length: f64,
+    /// The length the results count, m: `length` less the parts on or
+    /// under chimneys, roof openings and dormers that the calculation takes
+    /// off this line's code (`RoofGeometry::minus_lines`). Equal to
+    /// `length` for most lines; summed per code it gives the results' line
+    /// totals (without lines drawn by hand).
+    pub counted_length: f64,
     /// Length in plan, m.
     pub plan_length: f64,
     /// The line's own inclination against the horizontal, degrees (0 for a
@@ -63,6 +72,7 @@ pub struct LineDetail {
 pub fn line_details_of(project: &Project, geos: &[RoofGeometry]) -> Vec<LineDetail> {
     let mut out = Vec::new();
     for (pi, geo) in geos.iter().enumerate() {
+        let counted = counted_lengths(project, geo);
         for (li, l) in geo.lines.iter().enumerate() {
             let (dx, dy, dz) = (l.b[0] - l.a[0], l.b[1] - l.a[1], l.b[2] - l.a[2]);
             let plan = dx.hypot(dy);
@@ -96,6 +106,7 @@ pub fn line_details_of(project: &Project, geos: &[RoofGeometry]) -> Vec<LineDeta
                 a: l.a,
                 b: l.b,
                 length: l.length(),
+                counted_length: counted[li],
                 plan_length: plan,
                 slope_deg: if plan < 1e-9 && dz.abs() < 1e-9 {
                     0.0
@@ -109,6 +120,103 @@ pub fn line_details_of(project: &Project, geos: &[RoofGeometry]) -> Vec<LineDeta
         }
     }
     out
+}
+
+/// The length each line of `geo` counts with in the results. The core
+/// takes the parts of lines on or under chimneys, openings and dormers off
+/// per code (`minus_lines`), not per line: each code's total is shared out
+/// over that code's lines by how much of each lies on or under those
+/// objects in plan, so the lines of a code add up to the results exactly.
+/// A total no line of its code lies under is left on no line.
+fn counted_lengths(project: &Project, geo: &RoofGeometry) -> Vec<f64> {
+    let mut out: Vec<f64> = geo.lines.iter().map(|l| l.length()).collect();
+    if geo.minus_lines.is_empty() {
+        return out;
+    }
+    let objects: Vec<Vec<Point2>> = project
+        .chimneys
+        .iter()
+        .chain(&project.roof_openings)
+        .map(|c| c.corners.clone())
+        .chain(geo.footprints.iter().cloned())
+        .filter(|c| c.len() >= 3)
+        .collect();
+    let mut minus: BTreeMap<&str, f64> = BTreeMap::new();
+    for (code, len) in &geo.minus_lines {
+        *minus.entry(code.as_str()).or_default() += len;
+    }
+    let under: Vec<f64> = geo
+        .lines
+        .iter()
+        .map(|l| {
+            if minus.contains_key(l.dacad_code()) {
+                covered(&objects, l.a, l.b) * l.length()
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    for (code, m) in minus {
+        let lines: Vec<usize> = (0..geo.lines.len())
+            .filter(|&i| geo.lines[i].dacad_code() == code)
+            .collect();
+        let total: f64 = lines.iter().map(|&i| under[i]).sum();
+        if total <= 1e-9 {
+            continue;
+        }
+        for i in lines {
+            out[i] = (out[i] - under[i] * m / total).max(0.0);
+        }
+    }
+    out
+}
+
+/// How much of the line from `a` to `b` lies on or inside any of `polys`
+/// in plan, as a share from 0 to 1.
+fn covered(polys: &[Vec<Point2>], a: [f64; 3], b: [f64; 3]) -> f64 {
+    const ON: f64 = 1e-4;
+    let (pa, pb) = (Point2::new(a[0], a[1]), Point2::new(b[0], b[1]));
+    let d = Point2::new(pb.x - pa.x, pb.y - pa.y);
+    let l2 = d.x * d.x + d.y * d.y;
+    if l2 < 1e-18 {
+        return 0.0;
+    }
+    let mut ts = vec![0.0, 1.0];
+    for poly in polys {
+        let n = poly.len();
+        for i in 0..n {
+            let (p, q) = (poly[i], poly[(i + 1) % n]);
+            // Where an outline side crosses the line …
+            let e = Point2::new(q.x - p.x, q.y - p.y);
+            let den = d.x * e.y - d.y * e.x;
+            if den.abs() > 1e-12 {
+                let w = Point2::new(p.x - pa.x, p.y - pa.y);
+                let t = (w.x * e.y - w.y * e.x) / den;
+                let u = (w.x * d.y - w.y * d.x) / den;
+                if (0.0..=1.0).contains(&u) && t > 0.0 && t < 1.0 {
+                    ts.push(t);
+                }
+            }
+            // … and where a corner lies on it (a side along the line).
+            let t = ((p.x - pa.x) * d.x + (p.y - pa.y) * d.y) / l2;
+            if t > 0.0 && t < 1.0 {
+                ts.push(t);
+            }
+        }
+    }
+    ts.sort_by(f64::total_cmp);
+    ts.windows(2)
+        .filter(|s| s[1] - s[0] > 1e-12)
+        .filter(|s| {
+            let m = (s[0] + s[1]) / 2.0;
+            let at = Point2::new(pa.x + m * d.x, pa.y + m * d.y);
+            polys.iter().any(|poly| {
+                crate::openings::inside(poly, at) || crate::union::near_boundary(poly, at, ON)
+            })
+        })
+        .map(|s| s[1] - s[0])
+        .sum::<f64>()
+        .min(1.0)
 }
 
 /// [`line_details_of`] of the project's roofs.
@@ -203,6 +311,197 @@ mod tests {
             assert_relative_eq!(v.slope_deg, 40.0, epsilon = 1e-3);
             assert_eq!(v.faces.len(), 1);
             assert_relative_eq!(v.faces[0].pitch_deg, 40.0, epsilon = 1e-9);
+        }
+    }
+
+    fn square(x0: f64, y0: f64, x1: f64, y1: f64) -> crate::Chimney {
+        crate::Chimney {
+            corners: vec![
+                Point2::new(x0, y0),
+                Point2::new(x1, y0),
+                Point2::new(x1, y1),
+                Point2::new(x0, y1),
+            ],
+            height: 12.0,
+        }
+    }
+
+    /// Per code, the lines' counted lengths add up to the results' line
+    /// totals (`dacad_line_totals_of`, no lines drawn by hand here).
+    fn assert_counted_add_up(name: &str, p: &Project) -> Vec<LineDetail> {
+        let geos = crate::openings::generate_project(p);
+        let totals = crate::quantities::dacad_line_totals_of(&geos, p);
+        let d = line_details_of(p, &geos);
+        let mut by: BTreeMap<String, f64> = BTreeMap::new();
+        for l in &d {
+            assert!(l.counted_length <= l.length + 1e-9, "{name}: {l:?}");
+            assert!(l.counted_length >= 0.0, "{name}: {l:?}");
+            *by.entry(l.code.to_string()).or_default() += l.counted_length;
+        }
+        for (code, t) in &totals {
+            let got = by.get(code).copied().unwrap_or(0.0);
+            assert!(
+                (got - t).abs() < 0.006,
+                "{name} {code}: lines {got}, results {t}"
+            );
+        }
+        d
+    }
+
+    /// Hip roof 12 × 8 m: a 1 m chimney standing on the eave takes 1 m off
+    /// that eave (13 → 12 m, 44 → 43 m in all), one across the ridge 1 m
+    /// off the ridge (4 → 3 m); a hole over the whole roof leaves no line
+    /// counted. The other lines count whole.
+    #[test]
+    fn lines_count_without_their_parts_under_chimneys_and_openings() {
+        let base = examples::find("hip").unwrap().project();
+
+        let mut p = base.clone();
+        p.chimneys.push(square(5.0, -0.5, 6.0, 0.5));
+        let d = assert_counted_add_up("chimney on the eave", &p);
+        let front = d
+            .iter()
+            .find(|l| l.code == "T" && l.a[1] < 0.0 && l.b[1] < 0.0)
+            .unwrap();
+        assert_relative_eq!(front.length, 13.0, epsilon = 1e-3);
+        assert_relative_eq!(front.counted_length, 12.0, epsilon = 1e-3);
+        for l in d
+            .iter()
+            .filter(|l| l.code == "T" && !std::ptr::eq(*l, front))
+        {
+            assert_relative_eq!(l.counted_length, l.length, epsilon = 1e-9);
+        }
+
+        let mut p = base.clone();
+        p.chimneys.push(square(5.5, 3.5, 6.5, 4.5));
+        let d = assert_counted_add_up("chimney on the ridge", &p);
+        let ridge = d.iter().find(|l| l.code == "F").unwrap();
+        assert_relative_eq!(ridge.length, 4.0, epsilon = 1e-3);
+        assert_relative_eq!(ridge.counted_length, 3.0, epsilon = 1e-3);
+
+        let mut p = base.clone();
+        p.roof_openings.push(square(-1.0, -1.0, 13.0, 9.0));
+        let d = assert_counted_add_up("hole over the roof", &p);
+        assert!(!d.is_empty());
+        assert!(d.iter().all(|l| l.counted_length.abs() < 1e-6), "{d:?}");
+    }
+
+    /// Every example with a chimney, a hole or a dormer of each kind on it: the lines
+    /// still add up to the results per code.
+    #[test]
+    fn counted_lengths_add_up_to_the_results_on_every_example() {
+        use crate::edit::dormers::{DORMER_KINDS, build_dormer, default_params};
+        for ex in examples::EXAMPLES {
+            let base = ex.project();
+            let pts = base.parts[0].outline();
+            let x0 = pts.iter().fold(f64::MAX, |a, p| a.min(p.x));
+            let y0 = pts.iter().fold(f64::MAX, |a, p| a.min(p.y));
+            let y1 = pts.iter().fold(f64::MIN, |a, p| a.max(p.y));
+            let mid_y = (y0 + y1) / 2.0;
+            let mut p = base.clone();
+            p.chimneys
+                .push(square(x0 + 2.0, mid_y - 0.4, x0 + 2.8, mid_y + 0.4));
+            assert_counted_add_up(&format!("{} chimney on the ridge", ex.id), &p);
+            let mut p = base.clone();
+            p.chimneys
+                .push(square(x0 + 2.0, y0 - 0.5, x0 + 2.8, y0 + 0.3));
+            assert_counted_add_up(&format!("{} chimney on the eave", ex.id), &p);
+            let mut p = base.clone();
+            p.roof_openings
+                .push(square(x0 + 1.0, y0 - 1.0, x0 + 3.0, mid_y));
+            assert_counted_add_up(&format!("{} hole", ex.id), &p);
+            for (k, kind) in DORMER_KINDS.iter().enumerate() {
+                let e0 = &base.parts[0].edges[0];
+                let host = e0.eave_height + 1.2 * e0.pitch_deg.to_radians().tan();
+                let mut p = base.clone();
+                p.dormers.push(build_dormer(&default_params(
+                    *kind,
+                    Point2::new(x0 + 2.0 + k as f64 * 0.1, y0 + 1.2),
+                    0.0,
+                    (host * 100.0).round() / 100.0 + 1.0,
+                )));
+                assert_counted_add_up(&format!("{} dormer {k}", ex.id), &p);
+            }
+        }
+    }
+
+    /// The faces a line names are the right ones: a dormer's own faces name
+    /// no wall, a valley where two buildings meet names a face of each, and
+    /// every face carries its wall's material.
+    #[test]
+    fn lines_name_their_faces_with_wall_and_material() {
+        use crate::edit::dormers::{DormerKind, build_dormer, default_params};
+        use crate::examples::{StandardRoof, standard_roof};
+
+        // Dormer faces: no wall.
+        let mut p = Project::new("dormer");
+        p.parts.push(standard_roof(
+            StandardRoof::Gable,
+            12.0,
+            8.0,
+            40.0,
+            3.0,
+            0.0,
+        ));
+        p.dormers.push(build_dormer(&default_params(
+            DormerKind::Gable,
+            Point2::new(5.0, 1.2),
+            0.0,
+            5.0,
+        )));
+        let d = line_details(&p);
+        let geos = crate::openings::generate_project(&p);
+        let dormer_faces: Vec<usize> = (0..geos[0].faces.len())
+            .filter(|&k| geos[0].faces[k].edge >= p.parts[0].edges.len())
+            .collect();
+        assert!(!dormer_faces.is_empty());
+        let on_dormer: Vec<&LineFace> = d
+            .iter()
+            .flat_map(|l| &l.faces)
+            .filter(|f| dormer_faces.contains(&f.face))
+            .collect();
+        assert!(!on_dormer.is_empty());
+        assert!(on_dormer.iter().all(|f| f.wall.is_none()), "{on_dormer:?}");
+        let on_roof = d
+            .iter()
+            .flat_map(|l| &l.faces)
+            .filter(|f| !dormer_faces.contains(&f.face));
+        for f in on_roof {
+            let w = f.wall.expect("a roof face names its wall");
+            assert_eq!(geos[0].faces[f.face].edge, w);
+        }
+
+        // Joined wing: a valley names a face of the house and one of the
+        // wing; the wing's sheet metal shows on its faces.
+        let mut p = Project::new("joined");
+        p.parts.push(standard_roof(
+            StandardRoof::Gable,
+            12.0,
+            8.0,
+            40.0,
+            3.0,
+            0.5,
+        ));
+        let mut w = standard_roof(StandardRoof::Gable, 6.0, 5.0, 40.0, 3.0, 0.5);
+        for e in w.edges.iter_mut() {
+            let (x, y) = (e.start.x, e.start.y);
+            e.start = Point2::new(3.0 + y, -4.0 + x);
+            e.material = 2;
+        }
+        w.normalize_ccw();
+        p.parts.push(w);
+        let geos = crate::openings::generate_project(&p);
+        assert!(!geos[0].joined_with.is_empty());
+        let d = line_details_of(&p, &geos);
+        let valleys: Vec<&LineDetail> = d.iter().filter(|l| l.code == "K").collect();
+        assert!(!valleys.is_empty());
+        for v in valleys {
+            let parts: std::collections::BTreeSet<usize> = v.faces.iter().map(|f| f.part).collect();
+            assert_eq!(parts.len(), 2, "{v:?}");
+            for f in &v.faces {
+                assert_eq!(f.material, geos[f.part].faces[f.face].material);
+                assert_eq!(f.material, if f.part == 1 { 2 } else { 1 }, "{v:?}");
+            }
         }
     }
 }

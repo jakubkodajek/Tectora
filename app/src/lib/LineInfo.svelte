@@ -3,9 +3,7 @@
   // a line in the plan or in 3D, and kept (pinned) after a click on it.
   import type { LineDetail, Project } from "./types";
   import { numberLocale, t } from "./i18n.svelte";
-  import { LEVEL_DEG, LINE_TOKENS, lineTitle } from "./lineinfo";
-  import { materialName, materialToken } from "./materials";
-  import { wallNumber } from "./planlabels";
+  import { LINE_TOKENS, lineFigures, lineTitle } from "./lineinfo";
   import Icon from "./Icon.svelte";
 
   let {
@@ -23,8 +21,7 @@
   const fmt = (v: number, d = 2) =>
     new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: false }).format(v);
   const deg = (v: number) => `${new Intl.NumberFormat(numberLocale(), { maximumFractionDigits: 2 }).format(v)}°`;
-  const level = $derived(detail.slope_deg < LEVEL_DEG);
-  const parts = $derived(project.parts.length);
+  const fig = $derived(lineFigures(detail, project));
 </script>
 
 <div class="line-info" class:pinned role="status" aria-label={t("lineinfo.title")} data-testid="line-info">
@@ -41,26 +38,26 @@
   <dl>
     <dt>{t("lineinfo.length")}</dt>
     <dd data-testid="line-info-length">
-      {fmt(detail.length)} m
-      {#if Math.abs(detail.length - detail.plan_length) >= 0.005}<small>{t("lineinfo.planLength", { v: fmt(detail.plan_length) })}</small>{/if}
+      {fmt(fig.length)} m
+      {#if fig.planLength !== null}<small>{t("lineinfo.planLength", { v: fmt(fig.planLength) })}</small>{/if}
+      {#if fig.drawn !== null}<small data-testid="line-info-drawn">{t("lineinfo.uncounted", { v: fmt(fig.drawn) })}</small>{/if}
     </dd>
-    {#if level}
+    {#if fig.level}
       <dt>{t("lineinfo.height")}</dt>
-      <dd data-testid="line-info-height">{fmt(detail.z_high)} m</dd>
+      <dd data-testid="line-info-height">{fmt(fig.zHigh)} m</dd>
     {:else}
       <dt>{t("lineinfo.heights")}</dt>
-      <dd data-testid="line-info-height">{fmt(detail.z_low)} – {fmt(detail.z_high)} m</dd>
+      <dd data-testid="line-info-height">{fmt(fig.zLow)} – {fmt(fig.zHigh)} m</dd>
       <dt>{t("lineinfo.slope")}</dt>
-      <dd>{deg(detail.slope_deg)}</dd>
+      <dd>{deg(fig.slopeDeg)}</dd>
     {/if}
-    {#if detail.faces.length}
+    {#if fig.faces.length}
       <dt>{t("lineinfo.faces")}</dt>
       <dd class="faces">
-        {#each detail.faces as f}
+        {#each fig.faces as f}
           <span>
-            <i class="sw mat" style:background={`var(${materialToken(f.material)})`}></i>
-            {f.wall === undefined ? t("lineinfo.dormer") : t("lineinfo.wall", { n: wallNumber(f.part, f.wall, parts) })}
-            · {deg(f.pitch_deg)} · {materialName(project, f.material)}
+            <i class="sw mat" style:background={`var(${f.token})`}></i>
+            {f.label} · {deg(f.pitchDeg)} · {f.material}
           </span>
         {/each}
       </dd>

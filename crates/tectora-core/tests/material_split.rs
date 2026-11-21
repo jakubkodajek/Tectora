@@ -574,3 +574,84 @@ fn a_middle_wall_in_sheet_metal_takes_its_strip_up_to_the_ridge() {
         );
     }
 }
+
+/// A roof with faces on the given walls only, for the warning alone.
+fn faces_on(walls: &[usize]) -> tectora_core::roof::RoofGeometry {
+    tectora_core::roof::RoofGeometry {
+        faces: walls
+            .iter()
+            .map(|&w| tectora_core::roof::RoofFace {
+                edge: w,
+                pitch_deg: 35.0,
+                polygon: vec![[0.0, 0.0, 3.0], [1.0, 0.0, 3.0], [0.0, 1.0, 4.0]],
+                area: 1.0,
+                deducted: 0.0,
+                material: 1,
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+/// The warning (the fallback where the split cannot be made) sees the
+/// pair of the last and the first wall too, and walls that differ in
+/// cladding, eave height or overhang are not one plane.
+#[test]
+fn the_merged_materials_warning_checks_every_pair_and_every_condition() {
+    use tectora_core::check::merged_materials;
+    // Hip 12 × 8 with the front wall split at x = 3, turned so the split
+    // pair is the last wall and the first.
+    let (p, front) = front_split_at_3();
+    let mut part = p.parts[0].clone();
+    let n = part.edges.len();
+    part.edges.rotate_left(front + 1);
+    let (last, first) = (n - 1, 0);
+    assert!((part.edges[first].start.x - 3.0).abs() < 1e-9);
+    part.edges[first].material = SHEET;
+
+    let w = merged_materials(&part, &faces_on(&[last, 1, 2, 3]));
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert_eq!(w[0].edges, vec![last, first]);
+    let w = merged_materials(&part, &faces_on(&[first, 1, 2, 3]));
+    assert_eq!(w[0].edges, vec![first, last]);
+    // Both walls have faces: nothing lost.
+    assert!(merged_materials(&part, &faces_on(&[last, first, 1, 2, 3])).is_empty());
+
+    for change in ["clad", "eave", "overhang", "gable"] {
+        let mut q = part.clone();
+        let e = &mut q.edges[first];
+        match change {
+            "clad" => e.clad = !e.clad,
+            "eave" => e.eave_height += 0.2,
+            "overhang" => e.overhang += 0.2,
+            _ => e.pitch_deg = 90.0,
+        }
+        assert!(
+            merged_materials(&q, &faces_on(&[last, 1, 2, 3])).is_empty(),
+            "{change}"
+        );
+    }
+}
+
+/// The split works across the place where the wall loop closes: the split
+/// pair is the last wall and the first.
+#[test]
+fn a_plane_over_the_last_and_the_first_wall_is_split_too() {
+    let (mut p, front) = front_split_at_3();
+    let n = p.parts[0].edges.len();
+    p.parts[0].edges.rotate_left(front + 1);
+    let (last, first) = (n - 1, 0);
+    p.parts[0].edges[last].material = SHEET;
+    let g = generate_project(&p);
+    assert!(g[0].error.is_none());
+    assert_eq!(merged_warnings(&g), 0, "{:?}", g[0].warnings);
+    let q = roof_totals_of(&g, &p);
+    let sec = 1.0 / 35f64.to_radians().cos();
+    // The last wall is the part from x = 0 to 3: the 6.125 m² triangle.
+    assert!(
+        (by(&q, SHEET) - 6.125 * sec).abs() < 1e-4,
+        "{:?}",
+        q.area_by_material
+    );
+    assert!(g[0].faces.iter().any(|f| f.edge == first));
+}
