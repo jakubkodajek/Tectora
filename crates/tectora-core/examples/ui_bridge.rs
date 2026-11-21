@@ -343,18 +343,16 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             Ok(Value::Null)
         }
         "export_preview" => {
-            let opts = tectora_core::export::ListOptions::new(
-                arg::<String>(a, "title")?,
-                arg::<String>(a, "stamp")?,
-            );
             let project = arg::<Project>(a, "project")?;
             let names =
                 arg::<Option<BTreeMap<String, String>>>(a, "lineNames")?.unwrap_or_default();
-            let (list, svg) = tectora_core::export::checked_named(&project, &opts, &names)
-                .map_err(|d| coded("out_of_range", d))?;
-            let summary = tectora_core::export::checked_summary(&project, &opts)
-                .map_err(|d| coded("out_of_range", d))?;
-            Ok(serde_json::json!({ "list": list, "svg": svg, "summary": summary }))
+            tectora_core::commands::export_preview(
+                &project,
+                arg::<String>(a, "title")?,
+                arg::<String>(a, "stamp")?,
+                &names,
+            )
+            .map_err(|e| coded(e.code, e.detail))
         }
         "export_plan_file" => {
             let path = PathBuf::from(arg::<String>(a, "path")?);

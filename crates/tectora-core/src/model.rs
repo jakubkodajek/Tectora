@@ -159,6 +159,20 @@ impl Project {
         }
     }
 
+    /// The name of roof material `m` for MCP and the CLI: the project's own
+    /// name, else a neutral English one ([`MATERIAL_LABELS`]). The
+    /// reference program's German defaults stay in its file writers and the
+    /// price-sheet export (audit ERR-004).
+    pub fn material_label(&self, m: u8) -> String {
+        let i = usize::from(m.max(1) - 1);
+        match self.material_names.get(i).map(|s| s.trim()) {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => MATERIAL_LABELS
+                .get(i)
+                .map_or_else(|| format!("material {m}"), |s| (*s).to_string()),
+        }
+    }
+
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
@@ -538,8 +552,18 @@ fn first_out_of_range(v: &serde_json::Value, path: &mut String) -> Option<(Strin
 /// Runs `f` and turns a panic into an error, so one bad design cannot take
 /// down the app or the MCP server. The geometry kernel is a port of DACAD's
 /// core and still has `expect`s on cases DACAD itself aborts on.
+///
+/// The stop of a bounded calculation ([`crate::work`]) is passed on to the
+/// [`crate::work::bounded`] that set the limit, so an inner guard never
+/// turns it into an empty roof; outside one it is [`crate::work::TOO_COMPLEX`].
 pub fn guarded<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|e| {
+        if crate::work::is_too_complex(&*e) {
+            if crate::work::active() {
+                std::panic::resume_unwind(e);
+            }
+            return crate::work::TOO_COMPLEX.to_string();
+        }
         let msg = e
             .downcast_ref::<String>()
             .map(String::as_str)
@@ -877,6 +901,11 @@ fn finite_point(p: Point2) -> bool {
 /// build), material 1 first.
 pub const DACAD_MATERIAL_NAMES: [&str; DACAD_MATERIALS as usize] =
     ["Ziegel", "Blech", "Stein", "Schiefer", "Solarpanel"];
+
+/// Neutral English names of the default materials, material 1 first, as
+/// MCP and the CLI give them.
+pub const MATERIAL_LABELS: [&str; DACAD_MATERIALS as usize] =
+    ["tiles", "sheet metal", "stone", "slate", "solar panels"];
 
 /// DACAD's first material (tiles), the material of a new wall.
 pub const DEFAULT_MATERIAL: u8 = 1;

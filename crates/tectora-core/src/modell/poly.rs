@@ -64,6 +64,7 @@ pub fn sides(p: &Poly, q: &Poly, tol: f64) -> u32 {
 /// an exact hit of a vertex or an edge. The vertices are the edges' p1;
 /// comparisons are exact.
 pub fn has_point(p: &Poly, pt: V3, eps: f64, on_edge: i32, m: &Mat) -> i32 {
+    crate::work::tick(p.edges.len());
     let q = transform(pt, m);
     if q.z.abs() >= eps || q.z.is_nan() {
         return 0;
@@ -260,6 +261,7 @@ pub fn intersect_vertices(a: &mut Poly, b: &mut Poly, grid: f64) {
     let r = |v: f64| round_grid(v, grid);
     let mut i = 0;
     while i < a.edges.len() {
+        crate::work::tick(b.edges.len());
         let mut j = 0;
         while j < b.edges.len() {
             let (e, f) = (a.edges[i], b.edges[j]);

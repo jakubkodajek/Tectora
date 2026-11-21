@@ -4,11 +4,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use tectora_core::Project;
-use tectora_core::quantities::{dacad_line_totals, plan_quantities};
+use tectora_core::quantities::plan_quantities;
 use tectora_core::store::Store;
 
 #[derive(Parser)]
@@ -45,6 +45,11 @@ enum Command {
         dir: Option<PathBuf>,
     },
     /// Generate the roof and print faces, lines and quantities as JSON.
+    ///
+    /// Exit status: 0 calculated; 2 calculated, but some buildings or
+    /// objects have input problems and are left out (`"partial": true`, the
+    /// list in `problems`), as in the app and over MCP; 1 not calculated
+    /// (unreadable, out of range, too complex).
     Calc {
         input: PathBuf,
         /// Print quantities, warnings and errors only (no geometry).
@@ -90,22 +95,31 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
         }
         Command::Calc { input, summary } => {
             let project = load(&input)?;
-            // The same limits and panic guard as the app and the MCP server.
-            project.check_limits().map_err(anyhow::Error::msg)?;
-            if let Err(errors) = project.validate() {
-                bail!("invalid project:\n{}", errors.join("\n"));
-            }
-            project.check_limits().map_err(anyhow::Error::msg)?;
-            tectora_core::model::guarded(|| calc(&project, summary)).map_err(anyhow::Error::msg)
+            // The same limits, work bound and panic guard as the app and
+            // the MCP server (`commands::generate`); a building with an
+            // input problem is left out and listed, not the whole job
+            // refused (HUNTC-004).
+            let geos = tectora_core::commands::generate(&project)
+                .map_err(|e| anyhow::Error::msg(format!("{}: {}", e.code, e.detail)))?;
+            tectora_core::model::guarded(|| calc(&project, geos, summary))
+                .map_err(anyhow::Error::msg)
         }
     }
 }
 
-/// `tectora calc`: the roof of a valid project.
-fn calc(project: &Project, summary: bool) -> serde_json::Value {
-    let geos = tectora_core::openings::generate_project(project);
+/// `tectora calc`: the roof of a project, from one calculation of its roofs.
+fn calc(
+    project: &Project,
+    geos: Vec<tectora_core::roof::RoofGeometry>,
+    summary: bool,
+) -> serde_json::Value {
+    use tectora_core::quantities as q;
     // The calculation refused the roof: its error is the result, no quantities.
     let calc_error = geos.iter().find_map(|g| g.error.clone());
+    let lines_by_type = q::dacad_line_totals_of(&geos, project);
+    let totals = q::roof_totals_of(&geos, project);
+    let area_by_pitch = q::area_by_pitch_of(&geos);
+    let by_line_material = q::lines_by_material_of(&geos);
     let parts: Vec<_> = project
         .parts
         .iter()
@@ -133,19 +147,20 @@ fn calc(project: &Project, summary: bool) -> serde_json::Value {
             v
         })
         .collect();
-    let lines_by_type = dacad_line_totals(project);
-    let totals = tectora_core::quantities::roof_totals(project);
-    let mut by_material = serde_json::Map::new();
-    for &(m, a) in &totals.area_by_material {
-        by_material.insert(project.material_name(m), json!(round2(a)));
-    }
+    // By material number, as MCP `calc`: two materials with one name are
+    // two rows (MATH-004), and a default name is English (ERR-004).
+    let by_material: Vec<_> = totals
+        .area_by_material
+        .iter()
+        .map(|&(m, a)| json!({ "material": m, "name": project.material_label(m), "area": round2(a) }))
+        .collect();
     let mut out = json!({
         "ok": true,
         "name": project.name,
         "parts": parts,
         "quantities": {
             "lines_by_type": lines_by_type,
-            "area_by_pitch": tectora_core::quantities::area_by_pitch(project)
+            "area_by_pitch": area_by_pitch
                 .iter()
                 .map(|&(p, a)| json!({ "pitch_deg": p, "area": a }))
                 .collect::<Vec<_>>(),
@@ -153,17 +168,21 @@ fn calc(project: &Project, summary: bool) -> serde_json::Value {
             "area_by_material": by_material,
         },
     });
-    let by_line_material = tectora_core::quantities::lines_by_material(project);
     if by_line_material.len() > 1 {
         out["quantities"]["lines_by_material"] = by_line_material
                     .into_iter()
                     .map(|(mat, lines)| {
-                        json!({ "material": mat, "name": project.material_name(mat), "lines": lines })
+                        json!({ "material": mat, "name": project.material_label(mat), "lines": lines })
                     })
                     .collect();
     }
     if let Some(e) = calc_error {
         out["calc_error"] = tectora_mcp::calc_error(&e);
+    }
+    let problems = project.problems();
+    if !problems.is_empty() {
+        out["partial"] = json!(true);
+        out["problems"] = json!(problems);
     }
     out
 }
@@ -196,7 +215,12 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(v) => {
             print_line(&serde_json::to_string_pretty(&v).expect("serializable"));
-            ExitCode::SUCCESS
+            if v["partial"] == json!(true) {
+                // Calculated, with buildings left out (see `Command::Calc`).
+                ExitCode::from(2)
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Err(e) => {
             print_line(&json!({ "ok": false, "error": format!("{e:#}") }).to_string());

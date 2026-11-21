@@ -406,7 +406,7 @@ fn quantities_of(geos: &[RoofGeometry], project: &Project) -> Value {
         "area_by_material_m2": t
             .area_by_material
             .iter()
-            .map(|&(m, a)| json!({ "material": m, "name": project.material_name(m), "area": round(a, 2) }))
+            .map(|&(m, a)| json!({ "material": m, "name": project.material_label(m), "area": round(a, 2) }))
             .collect::<Vec<_>>(),
     });
     // With more than one material: the lines each one's offer needs.
@@ -414,7 +414,7 @@ fn quantities_of(geos: &[RoofGeometry], project: &Project) -> Value {
     if by_line.len() > 1 {
         q["lines_by_material_m"] = by_line
             .into_iter()
-            .map(|(m, lines)| json!({ "material": m, "name": project.material_name(m), "lines_by_dacad_code_m": lines }))
+            .map(|(m, lines)| json!({ "material": m, "name": project.material_label(m), "lines_by_dacad_code_m": lines }))
             .collect();
     }
     q["heights_m"] = heights(geos, project);
@@ -1519,6 +1519,11 @@ impl Server {
     /// Runs a tool; a panic in the geometry kernel becomes a tool error
     /// instead of ending the server for the rest of the session.
     pub fn call_tool(&mut self, name: &str, args: &Value) -> ToolResult {
+        // A tool that calculates the whole job stops at the work bound
+        // with "too complex" rather than keeping the server busy (HUNTIO-004).
+        if worker::calculates(name) {
+            return tectora_core::work::calculate(|| self.call_tool_unguarded(name, args))?;
+        }
         tectora_core::model::guarded(|| self.call_tool_unguarded(name, args))?
     }
 
@@ -1629,7 +1634,7 @@ impl Server {
                     "manual_lines": p.manual_lines,
                     "manual_faces": p.manual_faces,
                     "flat_roof": p.flat_roof,
-                    "materials": (1..=tectora_core::model::DACAD_MATERIALS).map(|m| json!({ "material": m, "name": p.material_name(m) })).collect::<Vec<_>>(),
+                    "materials": (1..=tectora_core::model::DACAD_MATERIALS).map(|m| json!({ "material": m, "name": p.material_label(m) })).collect::<Vec<_>>(),
                     "files": self.store.attachments(&id).iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
                     "stored_result": tectora_core::snapshot::status_of(&geos, &p),
                     "quantities": quantities_of(&geos, &p),
@@ -3187,5 +3192,43 @@ mod tests {
         fn list_projects_empty(&self) -> bool {
             self.store.list().is_empty()
         }
+    }
+}
+
+#[cfg(test)]
+mod material_names {
+    use super::*;
+
+    fn server() -> Server {
+        let dir = std::env::temp_dir().join(format!(
+            "tectora-mcp-materials-{}-{}",
+            now_ms(),
+            std::process::id()
+        ));
+        Server::new(Store::new(dir).unwrap())
+    }
+
+    #[test]
+    fn default_material_names_are_english_never_the_reference_programs_german() {
+        // ERR-004: `calc`, `get_project` and every write named the default
+        // materials "Ziegel", "Blech", "Stein", "Schiefer".
+        let mut s = server();
+        let r = s
+            .call_tool(
+                "create_standard_roof",
+                &json!({ "name": "A", "type": "gable", "length": 10, "width": 8, "pitch_deg": 40, "summary": "x" }),
+            )
+            .unwrap();
+        let id = r["id"].as_str().unwrap().to_string();
+        let calc = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        let project = s.call_tool("get_project", &json!({ "id": id })).unwrap();
+        for text in [r.to_string(), calc.to_string(), project.to_string()] {
+            for german in ["Ziegel", "Blech", "Stein", "Schiefer", "Solarpanel"] {
+                assert!(!text.contains(german), "{german} in {text}");
+            }
+        }
+        assert!(calc.to_string().contains("\"tiles\""), "{calc}");
+        assert!(project.to_string().contains("\"sheet metal\""), "{project}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 }

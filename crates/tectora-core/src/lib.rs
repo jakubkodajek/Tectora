@@ -39,6 +39,7 @@ mod straighten;
 pub mod union;
 pub mod walls;
 pub mod wing_split;
+pub mod work;
 
 pub use model::{
     Chimney, Dormer, EdgeDef, HalfHip, JobInfo, JobStatus, PitchBreak, Project, RoofPart,
