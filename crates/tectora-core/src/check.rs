@@ -13,7 +13,7 @@
 //! [`WarningKind::MergedWalls`], comes from the calculation itself
 //! (`engine`): walls whose pitch the calculation does not use.
 
-use geo::{Area, BooleanOps, Coord, InteriorPoint, LineString, MultiPolygon, Polygon};
+use geo::{Area, BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use serde::Serialize;
 
 use crate::geom::{Point2, signed_area};
@@ -661,7 +661,7 @@ fn uncovered_plan(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<f64> {
 
 /// Per building, the area of its sloped roof faces that lie in plan
 /// inside another building's walls and more than [`HIDDEN_BELOW`] under
-/// that building's roof (judged at the centre of each such piece), m².
+/// that building's roof, m².
 fn hidden_under_neighbour(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<f64> {
     let mut out = vec![0.0; geos.len()];
     let ok = |g: &RoofGeometry| g.error.is_none() && !g.faces.is_empty();
@@ -685,34 +685,75 @@ fn hidden_under_neighbour(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<f64>
                 let Some(plane) = plane_of(&f.polygon) else {
                     continue;
                 };
-                let face = MultiPolygon::new(vec![to_geo(&plan(f))]);
-                for piece in &face.intersection(&walls).0 {
-                    let a = piece.unsigned_area();
-                    if a.is_nan() || a <= MIN_PIECE {
-                        continue;
-                    }
-                    // A point inside the piece: the mean of its corners
-                    // can lie outside a concave piece (the clipper leaves
-                    // spikes), and the whole piece was then booked.
-                    let Some(at) = piece.interior_point() else {
-                        continue;
-                    };
-                    let (x, y) = (at.x(), at.y());
-                    let z = plane[0] * x + plane[1] * y + plane[2];
-                    let top = over
-                        .iter()
-                        .filter(|(poly, _)| {
-                            use geo::Contains;
-                            poly.contains(&geo::Point::new(x, y))
-                        })
-                        .map(|(_, h)| h[0] * x + h[1] * y + h[2])
-                        .fold(f64::NEG_INFINITY, f64::max);
-                    let cos = f.pitch_deg.to_radians().cos();
-                    if top.is_finite() && top > z + HIDDEN_BELOW && cos > 1e-6 {
-                        out[k] += a / cos;
+                let cos = f.pitch_deg.to_radians().cos();
+                let inside = MultiPolygon::new(vec![to_geo(&plan(f))]).intersection(&walls);
+                if cos.is_nan() || cos <= 1e-6 || inside.unsigned_area() <= MIN_PIECE {
+                    continue;
+                }
+                // Over each host face both are planes, so the height
+                // between them is linear and the hidden part is the piece
+                // cut by one straight line: exact, wherever the faces
+                // cross (judging a piece at one point booked whole pieces
+                // the host roof covers only in part).
+                let mut hidden = MultiPolygon::new(vec![]);
+                for (poly, h) in &over {
+                    let d = [
+                        h[0] - plane[0],
+                        h[1] - plane[1],
+                        h[2] - plane[2] - HIDDEN_BELOW,
+                    ];
+                    for piece in &inside
+                        .intersection(&MultiPolygon::new(vec![poly.clone()]))
+                        .0
+                    {
+                        let cut = above_line(piece, d);
+                        if cut.unsigned_area() > 1e-9 {
+                            hidden = hidden.union(&cut);
+                        }
                     }
                 }
+                out[k] += hidden.unsigned_area() / cos;
             }
+        }
+    }
+    out
+}
+
+/// The part of `piece` where `d[0] x + d[1] y + d[2] > 0`, holes included.
+fn above_line(piece: &Polygon<f64>, d: [f64; 3]) -> MultiPolygon<f64> {
+    let clip = |ring: &LineString<f64>| -> Vec<Coord<f64>> {
+        let v = |c: &Coord<f64>| d[0] * c.x + d[1] * c.y + d[2];
+        let pts: Vec<Coord<f64>> = ring.0.to_vec();
+        let n = pts.len().saturating_sub(1);
+        let mut out = Vec::new();
+        for i in 0..n {
+            let (a, b) = (pts[i], pts[i + 1]);
+            let (va, vb) = (v(&a), v(&b));
+            if va > 0.0 {
+                out.push(a);
+            }
+            if (va > 0.0) != (vb > 0.0) {
+                let t = va / (va - vb);
+                out.push(Coord {
+                    x: a.x + (b.x - a.x) * t,
+                    y: a.y + (b.y - a.y) * t,
+                });
+            }
+        }
+        out
+    };
+    let outer = clip(piece.exterior());
+    if outer.len() < 3 {
+        return MultiPolygon::new(vec![]);
+    }
+    let mut out = MultiPolygon::new(vec![Polygon::new(LineString::new(outer), vec![])]);
+    for hole in piece.interiors() {
+        let h = clip(hole);
+        if h.len() >= 3 {
+            out = out.difference(&MultiPolygon::new(vec![Polygon::new(
+                LineString::new(h),
+                vec![],
+            )]));
         }
     }
     out
