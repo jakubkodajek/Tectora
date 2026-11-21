@@ -706,10 +706,16 @@ fn migrate(v: &mut serde_json::Value) -> serde_json::Result<()> {
             "a project file holds a JSON object",
         ));
     };
-    let version = obj
-        .get("schema_version")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(1);
+    // A file without the field is format 1; a field that is no whole
+    // number is a damaged file, not format 1 (it could be a newer one).
+    let version = match obj.get("schema_version") {
+        None => 1,
+        Some(v) => v.as_u64().ok_or_else(|| {
+            serde_json::Error::custom(
+                "the file's format version `schema_version` is not a whole number",
+            )
+        })?,
+    };
     if version > u64::from(SCHEMA_VERSION) {
         return Err(serde_json::Error::custom(format!(
             "the file was saved by a newer Tectora (format {version}, this version reads up to {SCHEMA_VERSION})"
