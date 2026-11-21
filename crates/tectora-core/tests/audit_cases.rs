@@ -977,3 +977,31 @@ fn an_annex_of_the_same_eave_says_the_roof_hidden_in_the_house() {
         assert!(g.warnings.is_empty(), "{:?}", g.warnings);
     }
 }
+
+/// A cross gable drawn as two overlapping buildings, the wing's roof
+/// running into the house's: nothing is hidden, so nothing is said
+/// (review 2026-11-21 MATH-001, the mean of a concave piece's corners lay
+/// outside it).
+#[test]
+fn a_cross_gable_drawn_as_two_buildings_hides_no_roof() {
+    let mut house = block("House", 0.0, 0.0, 12.0, 8.0, [(40.0, 4.0, 0.5); 4]);
+    let mut wing = block("Wing", 4.0, -4.0, 4.0, 8.0, [(40.0, 4.0, 0.5); 4]);
+    for i in [1, 3] {
+        house.edges[i].pitch_deg = 90.0;
+        house.edges[i].overhang = 0.3;
+    }
+    for i in [0, 2] {
+        wing.edges[i].pitch_deg = 90.0;
+        wing.edges[i].overhang = 0.3;
+    }
+    let roof = calc(&job(vec![house, wing]));
+    assert!(roof.geos.iter().all(|g| g.error.is_none()));
+    for part in [0, 1] {
+        assert_eq!(
+            warned(&roof, part, WarningKind::HiddenUnderNeighbour),
+            0.0,
+            "{:?}",
+            roof.geos[part].warnings
+        );
+    }
+}

@@ -521,3 +521,124 @@ fn a_chimney_on_a_joined_pitch_break_leaves_no_negative_line() {
     let bad = [deductions_add_up("break", &p), surfaces_agree("break", &p)].concat();
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
+
+/// The house of `a_chimney_on_a_joined_pitch_break_leaves_no_negative_line`,
+/// with or without the pitch break at the wall's own pitch that makes the
+/// standard calculation stop and the sweep join two faces of one plane.
+fn half_hip_house(joined_break: bool) -> Project {
+    let mut e0 = edge(0.0, 0.0, 15.0, 3.5, 0.3);
+    if joined_break {
+        e0.breaks.push(PitchBreak {
+            height: 4.14,
+            pitch_deg: 15.0,
+        });
+    }
+    let mut gable = edge(12.62, 0.0, 90.0, 3.5, 0.3);
+    if joined_break {
+        gable.half_hip = Some(HalfHip {
+            height: 5.44,
+            pitch_deg: 45.0,
+        });
+    }
+    one_building(vec![
+        e0,
+        gable,
+        edge(12.62, 4.72, 25.0, 3.5, 0.3),
+        edge(0.0, 4.72, 15.0, 3.5, 0.3),
+    ])
+}
+
+/// A chimney on a face the sweep joined keeps its flashing lines: the
+/// same chimney on the same plane of a roof the standard calculation
+/// calculates (review 2026-11-21 MATH-004).
+#[test]
+fn a_chimney_on_a_joined_face_keeps_its_flashing_lines() {
+    let line = |p: &Project, code: &str| {
+        tectora_core::quantities::dacad_line_totals(p)
+            .get(code)
+            .copied()
+            .unwrap_or(0.0)
+    };
+    let mut joined = half_hip_house(true);
+    let mut core = half_hip_house(false);
+    for p in [&mut joined, &mut core] {
+        p.chimneys.push(square(8.77, 0.6, 9.5, 1.32));
+    }
+    for code in ["WS", "WV", "WH"] {
+        let (a, b) = (line(&joined, code), line(&core, code));
+        assert!(b > 0.5, "{code}: {b} on the core's roof");
+        assert!((a - b).abs() < 0.01, "{code}: {a} joined, {b} core");
+    }
+}
+
+/// A chimney on a pitch break that stays keeps its deduction when another
+/// pitch break of the roof is joined away (review 2026-11-21 MATH-002).
+#[test]
+fn a_chimney_on_a_pitch_break_that_stays_keeps_its_deduction() {
+    let house = |joined: bool| {
+        let mut e0 = edge(0.0, 0.0, 15.0, 6.0, 0.5);
+        if joined {
+            e0.breaks.push(PitchBreak {
+                height: 7.31,
+                pitch_deg: 15.0,
+            });
+        }
+        let mut e1 = edge(10.18, 0.0, 15.0, 6.0, 0.5);
+        e1.breaks.push(PitchBreak {
+            height: 6.8,
+            pitch_deg: 25.0,
+        });
+        let mut e3 = edge(0.0, 10.8, 90.0, 6.0, 0.5);
+        e3.half_hip = Some(HalfHip {
+            height: 7.7,
+            pitch_deg: 60.0,
+        });
+        let mut p = one_building(vec![e0, e1, edge(10.18, 10.8, 15.0, 6.0, 0.5), e3]);
+        p.chimneys.push(square(7.4, 5.0, 8.0, 5.6));
+        p
+    };
+    let c = |p: &Project| {
+        tectora_core::quantities::dacad_line_totals(p)
+            .get("c")
+            .copied()
+            .unwrap_or(0.0)
+    };
+    let (a, b) = (c(&house(true)), c(&house(false)));
+    assert!(
+        (a - b).abs() < 0.01,
+        "pitch break {a} with the joined one, {b} without"
+    );
+}
+
+/// A gable dormer on the joined face of a swept roof that runs on along
+/// the roof and leaves the host face with a negative area is refused, as
+/// the standard calculation refuses it (review 2026-11-21 MATH-003).
+#[test]
+fn a_dormer_that_leaves_a_negative_face_is_refused_where_the_core_stops() {
+    let mut p = swept_with_window();
+    p.windows.clear();
+    let wall = |x: f64, pitch: f64, dir: Option<f64>| {
+        let mut e = edge(x, 2.5, pitch, 6.3, 0.0);
+        e.direction_rad = dir;
+        e
+    };
+    p.dormers.push(tectora_core::Dormer {
+        edges: vec![
+            wall(7.0, 45.0, Some(3.0 * std::f64::consts::FRAC_PI_2)),
+            wall(7.0, 90.0, None),
+            wall(9.4, 45.0, Some(std::f64::consts::FRAC_PI_2)),
+        ],
+        end: Point2::new(9.4, 2.5),
+        host_wall: None,
+    });
+    let geos = generate_project(&p);
+    assert!(
+        geos[0].error.is_some(),
+        "faces {:?}",
+        geos[0]
+            .faces
+            .iter()
+            .map(|f| (f.edge, f.area))
+            .collect::<Vec<_>>()
+    );
+}
