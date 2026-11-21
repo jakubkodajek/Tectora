@@ -642,3 +642,25 @@ fn a_dormer_that_leaves_a_negative_face_is_refused_where_the_core_stops() {
             .collect::<Vec<_>>()
     );
 }
+
+/// TEST-001: a window anywhere on a roof the sweep calculates, where the
+/// sweep joins faces of one plane, is deducted from the face it lies on.
+#[test]
+fn windows_anywhere_on_a_swept_roof_stay_on_their_face() {
+    let (mut tried, mut bad) = (0, Vec::new());
+    for (name, base) in [
+        ("swept half-hip", swept_with_window()),
+        ("swept T", swept_with_chimneys()),
+    ] {
+        let (t, b) = support::windows_stay_on_their_face(name, &base);
+        tried += t;
+        bad.extend(b);
+    }
+    assert!(tried > 100, "only {tried} windows placed");
+    assert!(
+        bad.is_empty(),
+        "{} of {tried}:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+}
