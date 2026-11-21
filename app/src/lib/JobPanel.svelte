@@ -6,11 +6,12 @@
   import { api } from "./api";
   import { safeFileName } from "./filename";
   import { t } from "./i18n.svelte";
-  import type { Attachment, JobStatus, Project } from "./types";
+  import type { Attachment, JobStatus, Project, ResultSnapshot } from "./types";
   import { JOB_STATUSES } from "./types";
   import { DACAD_MATERIALS, defaultMaterialName } from "./materials";
   import { textfield } from "./textfield";
   import { fileSize } from "./format";
+  import { hasBuilding, roofInput } from "./offer";
 
   /** Opens an attached file; files that are not drawings or documents are only shown in their folder. */
   async function openFile(name: string) {
@@ -28,6 +29,7 @@
     onsave,
     track = (p) => p,
     blocked = null,
+    current,
   }: {
     id: string;
     project: Project;
@@ -38,6 +40,9 @@
     track?: (p: Promise<unknown>) => Promise<unknown>;
     /** Why the roof cannot be offered or ordered now (the core gave no roof), or null. */
     blocked?: string | null;
+    /** The project the editor holds now. The panel may be gone (the AI tab took the dock)
+     *  when an awaited answer comes back, so its own prop can be the replaced project (ERR-102). */
+    current?: () => Project | null;
   } = $props();
 
   /** Statuses that make an offer from the figures: not from a roof the core refused (ERR-003). */
@@ -45,11 +50,14 @@
   /** Whether status `s` cannot be chosen now: an offer status, or Done when it would have to
    *  store a result first, while the core gives no roof (ERR-003, UX-005). */
   const refused = (s: JobStatus) =>
-    !!blocked && s !== status && (OFFER_STATUSES.has(s) || (s !== "draft" && status === "draft" && !project.result_snapshot));
+    !!why && s !== status && (OFFER_STATUSES.has(s) || (s !== "draft" && status === "draft" && !project.result_snapshot));
+  /** Why offer statuses are off: the core gave no roof, or there is no building at all (UX-102). */
+  const why = $derived(blocked ?? (hasBuilding(project) ? null : t("res.empty")));
 
   /** The job as the editor holds it now: a status change writes through it, never through the
    *  unbound prop (UI-010, ERRU-004), as `setText` does for the texts. */
   const job = (p: Project) => p;
+  const latest = (): Project | null => (current ? current() : project);
 
   // Leaving the draft status stores the result the offer is made with.
   let status = $state<JobStatus>(untrack(() => project.job.status));
@@ -69,18 +77,34 @@
       sel.value = was;
       return;
     }
+    let snap: ResultSnapshot | null = null;
     if (was === "draft" && next !== "draft" && !p.result_snapshot) {
+      const input = roofInput(p);
       try {
-        p.result_snapshot = await api.takeSnapshot(JSON.parse(JSON.stringify(p)));
+        snap = await api.takeSnapshot(JSON.parse(JSON.stringify(p)));
       } catch (e) {
         // No figures to make the offer with: the job stays a draft (DR-002).
         // Not a failed save: the job on disk is fine, the status was refused (UX-005).
-        sel.value = was;
+        sel.value = latest()?.job.status ?? was;
         notifyError(e, "status");
         return;
       }
+      // An AI save while the core calculated replaced the project: the
+      // status goes onto the job as it is now, with the figures only when
+      // its roof is still the one they were taken from (ERR-102).
+      const cur = latest();
+      if (!cur) return;
+      if (cur !== p && roofInput(cur) !== input) {
+        sel.value = cur.job.status;
+        status = cur.job.status;
+        info(t("job.statusStale"));
+        return;
+      }
     }
-    p.job.status = next;
+    const now = latest();
+    if (!now) return;
+    if (snap && !now.result_snapshot) now.result_snapshot = snap;
+    now.job.status = next;
     status = next;
     onchange();
   }
@@ -178,7 +202,7 @@
     <label><span>{t("job.number")}</span><input type="text" use:textfield={{ value: project.job.number, onchange: setText((p, v) => (p.job.number = v)) }} /></label>
     <label>
       <span>{t("job.status")}</span>
-      <select value={status} onchange={statusChanged} title={blocked ?? undefined}>
+      <select value={status} onchange={statusChanged} title={why ?? undefined}>
         {#each JOB_STATUSES as s}<option value={s} disabled={refused(s)}>{t(`status.${s}`)}</option>{/each}
       </select>
     </label>

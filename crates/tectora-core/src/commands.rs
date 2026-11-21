@@ -106,6 +106,10 @@ pub fn take_snapshot(project: &Project) -> Result<snapshot::ResultSnapshot, Comm
             code: "not_calculated",
             detail,
         },
+        snapshot::Refused::NoBuilding => CommandError {
+            code: "no_building",
+            detail: snapshot::Refused::NoBuilding.to_string(),
+        },
     })
 }
 
@@ -618,6 +622,18 @@ mod tests {
         }
         assert_eq!(check_windows(&far_off()).unwrap_err().code, "out_of_range");
         assert!(check_windows(&hip()).unwrap().is_null());
+    }
+
+    #[test]
+    fn snapshot_of_a_job_without_a_building_is_refused() {
+        // An empty job has no figures to make an offer with (UX-102).
+        let mut p = hip();
+        p.parts.clear();
+        assert_eq!(take_snapshot(&p).unwrap_err().code, "no_building");
+        assert_eq!(
+            crate::snapshot::take_checked(&p),
+            Err(crate::snapshot::Refused::NoBuilding)
+        );
     }
 
     #[test]

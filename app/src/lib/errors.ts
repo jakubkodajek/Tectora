@@ -96,6 +96,7 @@ const KNOWN = new Set([
   "too_many",
   "too_complex",
   "not_calculated",
+  "no_building",
   "settings_unreadable",
   "refused",
 ]);

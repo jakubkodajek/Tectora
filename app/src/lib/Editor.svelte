@@ -19,6 +19,7 @@
   import Breakdown from "./Breakdown.svelte";
   import RoofDefBar from "./RoofDefBar.svelte";
   import DormerBar from "./DormerBar.svelte";
+  import { roofInput } from "./offer";
   import DormerDialog from "./DormerDialog.svelte";
   import OpeningBar from "./OpeningBar.svelte";
   import ManualBar from "./ManualBar.svelte";
@@ -786,8 +787,15 @@
     // Zero figures of a roof the core refused are no offer (DR-001).
     if (blockedReason) return;
     if (!project) return;
+    const input = roofInput(project);
     try {
-      project.result_snapshot = await api.takeSnapshot(JSON.parse(JSON.stringify(project)));
+      const snap = await api.takeSnapshot(JSON.parse(JSON.stringify(project)));
+      // Figures of the roof as it was asked for, never of one an AI save replaced meanwhile (ERR-102).
+      if (!project || roofInput(project) !== input) {
+        info(t("snap.stale"));
+        return;
+      }
+      project.result_snapshot = snap;
       commit();
     } catch (e) {
       notifyError(e, "save");
@@ -2120,7 +2128,7 @@
           {:else if dock === "ai"}
             <AiPanel {id} {project} {activity} onrevert={() => revert(false)} busy={reviewBusy} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
-            <JobPanel {id} {project} onchange={commit} onsave={save} blocked={blockedReason} track={(p) => pendingEdits.track(p)} />
+            <JobPanel {id} {project} current={() => project} onchange={commit} onsave={save} blocked={blockedReason} track={(p) => pendingEdits.track(p)} />
           {/if}
         </div>
       </aside>
