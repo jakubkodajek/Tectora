@@ -368,3 +368,21 @@ sessions that use it know where things stand.
   MATH-002, MATHC-001, HUNTC-003/007, MATH2-005, ERR-001, ERRU-005/010,
   TEST-003/009 and the UI/UX S3 list); DormerBar still lets a half-hip
   pitch go down to 0.1°, which is now reported as a problem.
+
+## 2026-11-21 - verification of every roof calculation (branch claude/project-thread-5ugj01)
+- Done: DACAD parity rerun (dcore byte-exact on 1 967 DACAD SO2/INT
+  captures from the project files; samples 29/34 as before), and an
+  independent check of 3 619 roofs with the new `verify_calcs` example
+  (face area vs polygon, pitch vs plane, chimney deduction vs plan cut,
+  plan coverage, results = breakdown = price-sheet list = stored result).
+  Fixed: joined faces on swept roofs dropped their window/chimney
+  deductions (list took a window off twice); wing windows' face index.
+  Guard: `tests/calc_consistency.rs`.
+- State: `make check` exit 0 (618 Rust tests, 263 vitest, UI build).
+- Open (DACAD behaviour, reported to Jakub, not changed): face areas of
+  skewed hip faces up to ~0.7 % under their polygon; chimney deduction
+  across a hip up to ~0.05 m2 off the plan cut; joined-roof pieces
+  (Modellverschnitt) book areas by DACAD's rules, up to several % per
+  piece; a hipped bay whose front plane lies ~2 cm under the house plane
+  (Jakub's test job) counts ~0.3 m2 twice in slivers; a cut larger than
+  its face on joined buildings still gives a negative face (warned).
