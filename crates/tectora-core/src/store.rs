@@ -1112,11 +1112,20 @@ impl Store {
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
             .and_then(|v| v.get("result_snapshot")?.get("taken_ms")?.as_u64());
         write_atomic(&path, &json).map_err(|e| StoreError::io(Some(id), e))?;
+        // Only a result this engine gives for this very design is known to
+        // be taken from it: an imported or restored job may carry figures
+        // of a design edited since (R2-1), which must never be recalculated.
         if let Some(s) = &project.result_snapshot
             && old_taken != Some(s.taken_ms)
             && self
                 .result_origin(id)
                 .is_none_or(|o| s.taken_ms > o.taken_ms)
+            && s.engine_version == crate::snapshot::ENGINE_VERSION
+            && crate::model::guarded(|| {
+                crate::snapshot::take_checked(project)
+                    .is_ok_and(|now| crate::snapshot::compare(s, &now).is_empty())
+            })
+            .unwrap_or(false)
         {
             // Best effort: without it the result is only not recalculated.
             let _ = self.write_result_origin(
@@ -2151,14 +2160,47 @@ mod tests {
 
     /// A gable offer whose result an older engine stored with a roof area
     /// 2 m² off (a calculation fixed since), saved to a new library.
+    /// An offer whose result an older engine took from this design: saved
+    /// by this engine, then file and origin set back as engine 0.0.1 with
+    /// figures `extra` m2 off would have left them.
+    fn old_offer_off_by(store: &Store, extra: f64) -> (String, Project) {
+        let mut p = examples::find("gable").unwrap().project();
+        p.result_snapshot = Some(crate::snapshot::take(&p));
+        let id = store.save(None, &p).unwrap();
+        let mut origin = store.result_origin(&id).expect("origin recorded");
+        let s = p.result_snapshot.as_mut().unwrap();
+        s.engine_version = "0.0.1".into();
+        s.roof_area += extra;
+        fs::write(store.path(&id).unwrap(), p.to_json().unwrap()).unwrap();
+        origin.checked = "0.0.1".into();
+        store.write_result_origin(&id, &origin).unwrap();
+        (id, p)
+    }
+
     fn old_offer(store: &Store) -> (String, Project) {
+        old_offer_off_by(store, 2.0)
+    }
+
+    #[test]
+    fn an_imported_offer_whose_design_was_edited_is_never_recalculated() {
+        // R2-1: a bundle import saves the job with its stored result under
+        // a new id; the design was edited after the result was taken.
+        let store = temp_store("refresh-import");
         let mut p = examples::find("gable").unwrap().project();
         let mut s = crate::snapshot::take(&p);
+        p.parts[0].edges[0].pitch_deg = 25.0;
         s.engine_version = "0.0.1".into();
-        s.roof_area += 2.0;
+        p.result_snapshot = Some(s.clone());
+        let id = store.save(None, &p).unwrap();
+        assert!(store.result_origin(&id).is_none());
+        assert!(!store.refresh_stored_result(&id).unwrap());
+        assert_eq!(store.load(&id).unwrap().result_snapshot, Some(s.clone()));
+        // Nor with this engine's version on figures of the old design.
+        s.engine_version = crate::snapshot::ENGINE_VERSION.into();
         p.result_snapshot = Some(s);
         let id = store.save(None, &p).unwrap();
-        (id, p)
+        assert!(store.result_origin(&id).is_none());
+        let _ = fs::remove_dir_all(&store.dir);
     }
 
     #[test]
@@ -2252,11 +2294,7 @@ mod tests {
     #[test]
     fn a_result_with_the_same_figures_is_checked_once() {
         let store = temp_store("refresh-same");
-        let mut p = examples::find("gable").unwrap().project();
-        let mut s = crate::snapshot::take(&p);
-        s.engine_version = "0.0.1".into();
-        p.result_snapshot = Some(s);
-        let id = store.save(None, &p).unwrap();
+        let (id, _) = old_offer_off_by(&store, 0.0);
         assert!(!store.refresh_stored_result(&id).unwrap());
         assert_eq!(
             store.result_origin(&id).unwrap().checked,

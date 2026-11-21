@@ -986,11 +986,19 @@ fn finish_departed(
 /// The core refuses such a dormer on a roof it calculates ("faces do not
 /// close"), so its error stands here too: an error is better than a wrong
 /// roof. A dormer that only stands above the roof and cuts nothing keeps
-/// the warning it gets on the core's roofs.
+/// the warning it gets on the core's roofs. Windows larger than their
+/// face are not the dormers' doing: they keep the result and the
+/// `cut_exceeds_face` warning the core's roofs give them (R2-4).
 fn dormers_stay_under_the_roof(geo: &RoofGeometry) -> bool {
-    geo.faces
-        .iter()
-        .all(|f| f.edge == usize::MAX || f.area >= 0.0)
+    geo.faces.iter().enumerate().all(|(k, f)| {
+        let windows: f64 = geo
+            .window_cuts
+            .iter()
+            .filter(|c| c.face == k)
+            .map(|c| c.width * c.height)
+            .sum();
+        f.edge == usize::MAX || f.area + windows >= -1e-9
+    })
 }
 
 /// A roof of [`departed_bare`], in the building's own frame: sound, and

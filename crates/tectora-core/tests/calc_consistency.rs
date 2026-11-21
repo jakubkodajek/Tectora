@@ -664,3 +664,49 @@ fn windows_anywhere_on_a_swept_roof_stay_on_their_face() {
         bad.join("\n")
     );
 }
+
+/// The house of `r2_winneg2` (Fable round 2): a pitch break that keeps
+/// its pitch and a half-hip, which the standard calculation stops on.
+fn joined_break_half_hip() -> Project {
+    let mut e0 = edge(0.0, 0.0, 15.0, 3.5, 0.3);
+    e0.breaks.push(PitchBreak {
+        height: 4.14,
+        pitch_deg: 15.0,
+    });
+    let mut e1 = edge(12.62, 0.0, 90.0, 3.5, 0.3);
+    e1.half_hip = Some(HalfHip {
+        height: 5.44,
+        pitch_deg: 45.0,
+    });
+    one_building(vec![
+        e0,
+        e1,
+        edge(12.62, 4.72, 25.0, 3.5, 0.3),
+        edge(0.0, 4.72, 15.0, 3.5, 0.3),
+    ])
+}
+
+/// R2-4: windows larger than their face on a roof Tectora calculates are
+/// not a dormer that never meets the roof: the roof stays, with the
+/// warning the core's roofs give (`cut_exceeds_face`), not an error.
+#[test]
+fn windows_larger_than_their_face_on_a_departed_roof_keep_the_roof_and_warn() {
+    let mut p = joined_break_half_hip();
+    for (x, y) in [(0.5, 1.2), (0.9, 3.0)] {
+        p.windows.push(RoofWindow {
+            x,
+            y,
+            width: 2.0,
+            height: 2.5,
+        });
+    }
+    let geo = &generate_project(&p)[0];
+    assert!(geo.error.is_none(), "{:?}", geo.error);
+    assert!(
+        geo.warnings
+            .iter()
+            .any(|w| w.kind == tectora_core::check::WarningKind::CutExceedsFace),
+        "{:?}",
+        geo.warnings
+    );
+}
