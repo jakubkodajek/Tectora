@@ -150,6 +150,8 @@
   let dormerSel = $state<number | null>(null);
   /** The dormer dialog: a new dormer (index null) or dormer `index`. */
   let dormerDlg = $state<{ index: number | null; key: string; params: DormerParams } | null>(null);
+  /** Why the dormer dialog's OK cannot store the dormer (the dialog says it), else null. */
+  let dormerBlocked = $state<string | null>(null);
   let placing = $state<false | "dormer" | "chimney" | "window" | "hole" | "line" | "face">(false);
   // Hand-drawn roof lines and faces (DACAD: Dachlinieneingabe, Neue Dachfläche).
   let manualSel = $state<ManualSel>(null);
@@ -1007,12 +1009,14 @@
     const host = roofHeightAt(result, { x: x - Math.sin(angle) * 0.01, y: y + Math.cos(angle) * 0.01 });
     const eave = +((host ?? presets.eave_height) + 1).toFixed(2);
     // As DACAD's dormer dialog: the dormer is placed when its window says OK.
+    dormerBlocked = null;
     dormerDlg = { index: null, key: "", params: defaultParams("gable", { x, y }, angle, eave) };
   }
 
   function editDormer() {
     if (!project || dormerSel === null) return;
     const p = parseDormer(project.dormers[dormerSel]);
+    dormerBlocked = null;
     if (p.kind !== "general") dormerDlg = { index: dormerSel, key: anchor(project.dormers, dormerSel).key, params: p };
   }
 
@@ -1021,7 +1025,11 @@
     // the core: OK takes it once it is there (review UI-001).
     await tick();
     await pendingEdits.settled();
+    await tick();
     if (!project || !dormerDlg) return;
+    // A value the core refused, or a front on no roof face: the dialog stays
+    // open with the reason next to OK (UI-102, UX-109).
+    if (dormerBlocked) return;
     if (dormerDlg.index !== null && !stillThere(project.dormers, { index: dormerDlg.index, key: dormerDlg.key })) {
       dormerDlg = null;
       info(t("editor.dialogStale"));
@@ -1633,9 +1641,9 @@
     placing = placing === kind ? false : kind;
   }
 
-  function setDormer(d: Dormer) {
-    if (!project || dormerSel === null) return;
-    project.dormers[dormerSel] = d;
+  function setDormer(d: Dormer, at: number) {
+    if (!project || !project.dormers[at]) return;
+    project.dormers[at] = d;
     commit();
   }
 
@@ -2066,7 +2074,7 @@
             onclose={placing === "face" ? closeFace : undefined}
             oncancel={() => (placing = false)} />
         {:else if dormerSel !== null}
-          <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} onedit={editDormer}
+          <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} onedit={editDormer} track={(p) => pendingEdits.track(p)}
             onplace={(e, l, r) => (dormerSel !== null ? placeItem({ kind: "dormer", index: dormerSel }, e, l, r) : undefined)} />
         {:else if openSel}
           <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening} track={(p) => pendingEdits.track(p)}
@@ -2164,10 +2172,11 @@
 
 {#if dormerDlg && project}
   <Modal title={dormerDlg.index === null ? t("dormer.dialogNew") : t("dormer.n", { n: dormerDlg.index + 1 })} width={1040} onclose={() => (dormerDlg = null)}>
-    <DormerDialog {project} roofFailed={!!roofError} fresh={dormerDlg.index === null} bind:params={dormerDlg.params} track={(p) => pendingEdits.track(p)} />
+    <DormerDialog {project} roofFailed={!!roofError} fresh={dormerDlg.index === null} bind:params={dormerDlg.params} bind:blocked={dormerBlocked} track={(p) => pendingEdits.track(p)} />
     {#snippet footer()}
+      {#if dormerBlocked}<p class="dlg-why" role="alert" data-testid="dormer-ok-blocked">{dormerBlocked}</p>{/if}
       <button class="btn" onclick={() => (dormerDlg = null)}>{t("common.cancel")}</button>
-      <button class="btn primary" onclick={applyDormerDialog}>{t("common.ok")}</button>
+      <button class="btn primary" disabled={!!dormerBlocked} title={dormerBlocked ?? undefined} onclick={applyDormerDialog}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -2220,6 +2229,23 @@
 {/if}
 
 <style>
+  /* Why the dormer dialog's OK is off: a small status mark and the reason, left of the buttons. */
+  .dlg-why {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 auto 0 0;
+    max-width: 60%;
+    font-size: 12.5px;
+    color: var(--text-2);
+  }
+  .dlg-why::before {
+    content: "";
+    flex: none;
+    width: 8px;
+    height: 8px;
+    background: var(--danger);
+  }
   .editor {
     height: 100%;
     display: flex;
