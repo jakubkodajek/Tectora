@@ -30,6 +30,13 @@ describe("dormerRefusal", () => {
     expect(dormerRefusal({ code: "dormer_pitch", detail: "x" })).toMatch(/2°/);
     expect(dormerRefusal({ code: "internal", detail: "x" })).toBeNull();
   });
+
+  it("names too many segments of a round dormer (HUNT-103)", () => {
+    for (const [locale, word] of [["cs", "segment"], ["sk", "segment"], ["en", "segments"], ["de", "Segmente"]] as const) {
+      i18n.locale = locale;
+      expect(dormerRefusal({ code: "dormer_segments", detail: "x" })).toMatch(word);
+    }
+  });
 });
 
 describe("a helper's refused OK (ARCH-003)", () => {

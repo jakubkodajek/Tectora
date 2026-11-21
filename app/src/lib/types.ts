@@ -253,6 +253,7 @@ export interface Problem {
     | "too_few_edges"
     | "zero_length_wall"
     | "walls_cross"
+    | "walls_overlap"
     | "start_nan"
     | "pitch_range"
     | "eave_nan"

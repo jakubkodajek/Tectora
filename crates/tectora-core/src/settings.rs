@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::edit::{MAX_SUMMARY_CHARS, capped};
+
 pub const SETTINGS_FILE: &str = "settings.json";
 /// Name of the drawings inbox inside the projects folder when none is set.
 pub const DEFAULT_DRAWINGS_SUBDIR: &str = "drawings";
@@ -513,7 +515,11 @@ impl Settings {
                         if !target.contains_key(k) {
                             return Err(SettingsError::InvalidValue("key"));
                         }
-                        target.insert(k.clone(), v.clone());
+                        // `null` counts as left out, as in every MCP tool
+                        // (HUNT-108).
+                        if !v.is_null() {
+                            target.insert(k.clone(), v.clone());
+                        }
                     }
                 }
                 ("projects_dir" | "drawings_dir" | "locale", Value::String(s))
@@ -607,14 +613,46 @@ impl Settings {
         self.ai_changes.push(AiSettingsChange {
             id,
             by: by.to_string(),
-            summary: summary.to_string(),
+            summary: capped(summary, MAX_SUMMARY_CHARS),
             before,
             after,
             state: AiChangeState::Open,
         });
-        let extra = self.ai_changes.len().saturating_sub(MAX_AI_CHANGES);
-        self.ai_changes.drain(..extra);
+        self.bound_ai_changes();
         Ok(())
+    }
+
+    /// Keeps [`Settings::ai_changes`] at [`MAX_AI_CHANGES`] without losing
+    /// a change the user has not answered (ARCH-104): answered ones go
+    /// first, oldest first; when all are open, the two oldest become one
+    /// change (the first one's values before, the later one's after), so
+    /// Revert still puts back what the AI found.
+    fn bound_ai_changes(&mut self) {
+        while self.ai_changes.len() > MAX_AI_CHANGES {
+            if let Some(at) = self
+                .ai_changes
+                .iter()
+                .position(|c| c.state != AiChangeState::Open)
+            {
+                self.ai_changes.remove(at);
+                continue;
+            }
+            let older = self.ai_changes.remove(0);
+            let newer = &mut self.ai_changes[0];
+            for (key, value) in older.before {
+                newer.before.insert(key, value);
+            }
+            for (key, value) in older.after {
+                newer.after.entry(key).or_insert(value);
+            }
+            if older.by != newer.by {
+                newer.by = capped(&format!("{}, {}", older.by, newer.by), MAX_SUMMARY_CHARS);
+            }
+            newer.summary = capped(
+                &format!("{} / {}", older.summary, newer.summary),
+                MAX_SUMMARY_CHARS,
+            );
+        }
     }
 
     /// The newest AI settings change the user has not answered yet.
@@ -1061,6 +1099,57 @@ mod tests {
         let forged = serde_json::json!({ "ai_changes": [] });
         assert!(s.patched_by_ai(&forged, "Claude", "x").is_err());
         let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Audit 2026-11-21 ARCH-104, ARCH-105: 20 later changes cannot push
+    /// an unanswered AI change out of the history, and a summary is stored
+    /// at most [`MAX_SUMMARY_CHARS`] long.
+    #[test]
+    fn an_open_ai_change_is_never_dropped_and_its_summary_is_capped() {
+        let s = Settings::default();
+        let pitch = serde_json::json!({ "roof_defaults": { "pitch_deg": 22 } });
+        let mut s = s
+            .patched_by_ai(&pitch, "Claude", "Set the default pitch")
+            .unwrap()
+            .0;
+        for i in 0..MAX_AI_CHANGES {
+            let theme = if i % 2 == 0 { "dark" } else { "light" };
+            let p = serde_json::json!({ "theme": theme });
+            s = s.patched_by_ai(&p, "Claude", &"x".repeat(5000)).unwrap().0;
+        }
+        assert!(s.ai_changes.len() <= MAX_AI_CHANGES);
+        let open: Vec<&AiSettingsChange> = s
+            .ai_changes
+            .iter()
+            .filter(|c| c.state == AiChangeState::Open)
+            .collect();
+        let pitch_change = open
+            .iter()
+            .find(|c| c.after.contains_key("roof_defaults.pitch_deg"))
+            .expect("the pitch change is still there to review");
+        assert!(pitch_change.summary.contains("Set the default pitch"));
+        assert!(
+            s.ai_changes
+                .iter()
+                .all(|c| c.summary.chars().count() <= MAX_SUMMARY_CHARS)
+        );
+        // Reverting it puts the pitch back.
+        let back = s.answer_ai_change(pitch_change.id, true).unwrap();
+        assert_eq!(
+            back.roof_defaults.pitch_deg,
+            Settings::default().roof_defaults.pitch_deg
+        );
+    }
+
+    /// Audit 2026-11-21 HUNT-108 item 4: a roof default sent as `null` is
+    /// left as it is, not refused as the wrong type.
+    #[test]
+    fn a_null_roof_default_is_left_out() {
+        let s = Settings::default();
+        let p = serde_json::json!({ "roof_defaults": { "pitch_deg": null, "overhang": 0.8 } });
+        let next = s.patched(&p).unwrap();
+        assert_eq!(next.roof_defaults.pitch_deg, s.roof_defaults.pitch_deg);
+        assert_eq!(next.roof_defaults.overhang, 0.8);
     }
 
     fn tmp(name: &str) -> PathBuf {

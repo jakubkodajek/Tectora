@@ -201,3 +201,36 @@ fn a_refused_tiny_or_huge_size_is_named_in_a_short_number() {
     let e = check_standard_size(0.004, 8.0).unwrap_err();
     assert!(e.starts_with("length 0.004 out of range"), "{e}");
 }
+
+/// Audit 2026-11-21 HUNT-103: a round dormer with so many segments that its
+/// flattest one is under 2° (or two of its breaks fall on one height) is
+/// refused, as the calculation would leave its walls out.
+#[test]
+fn a_round_dormer_with_too_many_segments_is_refused() {
+    let round = |segments: u32| {
+        let mut q = dormers::default_params(DormerKind::Round, Point2::new(4.0, 1.0), 0.0, 5.0);
+        q.segments = segments;
+        q
+    };
+    for segments in [0, 1, 2] {
+        assert!(
+            dormers::check_params(&round(segments), None).is_ok(),
+            "{segments}"
+        );
+    }
+    for segments in [15, 20, 30] {
+        let (code, why) = dormers::check_params(&round(segments), None).unwrap_err();
+        assert_eq!(code, "dormer_segments", "{segments}");
+        assert!(why.contains("segments"), "{why}");
+    }
+    // What is refused is exactly what the calculation would leave out.
+    for segments in 0..=30 {
+        let d = dormers::build_dormer(&round(segments));
+        let left_out = d.edges.iter().any(|e| e.problems().next().is_some());
+        assert_eq!(
+            dormers::check_params(&round(segments), None).is_err(),
+            left_out,
+            "{segments}"
+        );
+    }
+}

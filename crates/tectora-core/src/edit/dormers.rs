@@ -504,6 +504,24 @@ pub fn check_params(
             ),
         ));
     }
+    // A round dormer's cheeks get their pitches and breaks from its arc:
+    // with many segments on a small width the flattest is under 2° or two
+    // breaks fall on one height, and the calculation leaves the cheek out
+    // (HUNT-103).
+    if p.kind == DormerKind::Round
+        && let Some((code, _)) = build_dormer(p)
+            .edges
+            .iter()
+            .find_map(|e| e.problems().next())
+    {
+        return Err((
+            "dormer_segments",
+            format!(
+                "segments {}: too many for a round dormer {} m wide, its cheeks would be left out ({code}); give fewer segments (0 takes the usual count)",
+                p.segments, p.width
+            ),
+        ));
+    }
     if let Some(host) = host {
         let wall = section(p, host).wall_height;
         if wall.is_finite() && wall < -WALL_HEIGHT_EPS {

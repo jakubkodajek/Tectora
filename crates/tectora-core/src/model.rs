@@ -245,6 +245,14 @@ impl Project {
                     code: "walls_cross",
                 });
             }
+            for ei in overlapping_walls(part) {
+                out.push(Problem {
+                    item: ProblemItem::Part,
+                    index: pi,
+                    edge: Some(ei),
+                    code: "walls_overlap",
+                });
+            }
         }
         for (di, d) in self.dormers.iter().enumerate() {
             if !finite_point(d.end) {
@@ -306,6 +314,9 @@ impl Project {
                     "has no length (two corners on one point); delete one of the corners"
                 }
                 "walls_cross" => "crosses another wall of the same building; move a corner",
+                "walls_overlap" => {
+                    "runs over another wall of the same building (the outline goes round more than once or doubles back); delete the repeated corners"
+                }
                 "end_nan" => "end point is not a number or out of range",
                 "bad_corners" => "needs 3 or more finite corners",
                 "bad_size" => "needs a finite position and a positive size",
@@ -597,7 +608,8 @@ pub struct Problem {
     /// `eave_nan`, `eave_negative`, `overhang_negative`, `direction_nan`,
     /// `stacked_nan`, `break_below_eave`, `break_duplicate`,
     /// `half_hip_below_eave`, `end_nan`,
-    /// `bad_corners`, `bad_size`, `zero_length_wall` or `walls_cross`.
+    /// `bad_corners`, `bad_size`, `zero_length_wall`, `walls_cross` or
+    /// `walls_overlap`.
     pub code: &'static str,
 }
 
@@ -681,6 +693,59 @@ pub fn crossing_walls(part: &RoofPart) -> Vec<usize> {
         });
         if crosses {
             out.push(i);
+        }
+    }
+    out
+}
+
+/// The later wall of each pair of walls of `part` that lie on each other
+/// along more than 1 mm, and each wall that starts at a corner an earlier,
+/// non-neighbouring corner already has: an outline that runs round the
+/// building twice, or a wall drawn back over another one. The core still
+/// returned a roof for it, each face twice and no eave (audit 2026-11-21
+/// HUNT-106). Walls that only touch, or that continue one another in a
+/// line, are left alone; parts with a direction marker or imported wall
+/// records are not checked, as in [`crossing_walls`].
+pub fn overlapping_walls(part: &RoofPart) -> Vec<usize> {
+    let n = part.edges.len();
+    if n < 4
+        || part
+            .edges
+            .iter()
+            .any(|e| e.direction_rad.is_some() || e.source.is_some() || !finite_point(e.start))
+    {
+        return Vec::new();
+    }
+    const TOL: f64 = 1e-3;
+    let seg = |i: usize| (part.edges[i].start, part.edges[(i + 1) % n].start);
+    let mut out = Vec::new();
+    for j in 1..n {
+        let (c, d) = seg(j);
+        let same_corner = (0..j).any(|i| {
+            let neighbour = i + 1 == j || (j + 1) % n == i;
+            !neighbour && part.edges[i].start.distance(c) <= TOL
+        });
+        let on_top = (0..j).any(|i| {
+            let (a, b) = seg(i);
+            let len = a.distance(b);
+            if len <= TOL {
+                return false;
+            }
+            let (ux, uy) = ((b.x - a.x) / len, (b.y - a.y) / len);
+            // Distance of a point from the line a-b and its position along it.
+            let off = |p: Point2| ((p.x - a.x) * uy - (p.y - a.y) * ux).abs();
+            let along = |p: Point2| (p.x - a.x) * ux + (p.y - a.y) * uy;
+            if off(c) > TOL || off(d) > TOL {
+                return false;
+            }
+            let (lo, hi) = {
+                let (s, t) = (along(c), along(d));
+                (s.min(t), s.max(t))
+            };
+            lo.max(0.0) + TOL < hi.min(len)
+        });
+        if same_corner || on_top {
+            out.push(j);
         }
     }
     out
@@ -1233,6 +1298,68 @@ mod tests {
                 .iter()
                 .any(|q| q.code == "walls_cross" && q.edge == Some(1))
         );
+    }
+
+    /// Audit 2026-11-21 HUNT-106: an outline that runs round twice, or
+    /// whose walls lie on each other, is not one building: the roof had
+    /// twice the area and no eave, with no problem reported.
+    #[test]
+    fn walls_that_retrace_the_outline_are_a_problem() {
+        let part = |pts: &[(f64, f64)]| {
+            RoofPart::new(
+                "A",
+                pts.iter()
+                    .map(|&(x, y)| crate::edit::plain_edge(Point2::new(x, y), 40.0, 3.0, 0.5))
+                    .collect(),
+            )
+        };
+        let r = [(0.0, 0.0), (12.0, 0.0), (12.0, 8.0), (0.0, 8.0)];
+        let twice: Vec<(f64, f64)> = r.iter().chain(r.iter()).copied().collect();
+        assert_eq!(overlapping_walls(&part(&twice)), [4, 5, 6, 7]);
+        // A wall run back over part of another one.
+        let back = part(&[
+            (0.0, 0.0),
+            (12.0, 0.0),
+            (12.0, 8.0),
+            (6.0, 8.0),
+            (6.0, 0.0),
+            (3.0, 0.0),
+            (3.0, -0.0001),
+            (0.0, 8.0),
+        ]);
+        assert!(!overlapping_walls(&back).is_empty());
+        // Ordinary outlines: rectangle, L, a notch touching a wall, two
+        // walls in line one after the other.
+        assert!(overlapping_walls(&part(&r)).is_empty());
+        let l = part(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 4.0),
+            (5.0, 4.0),
+            (5.0, 8.0),
+            (0.0, 8.0),
+        ]);
+        assert!(overlapping_walls(&l).is_empty());
+        let touch = part(&[(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (5.0, 0.0), (0.0, 8.0)]);
+        assert!(overlapping_walls(&touch).is_empty());
+        let inline = part(&[(0.0, 0.0), (5.0, 0.0), (12.0, 0.0), (12.0, 8.0), (0.0, 8.0)]);
+        assert!(overlapping_walls(&inline).is_empty());
+        let u = part(&[
+            (0.0, 0.0),
+            (12.0, 0.0),
+            (12.0, 8.0),
+            (8.0, 8.0),
+            (8.0, 3.0),
+            (4.0, 3.0),
+            (4.0, 8.0),
+            (0.0, 8.0),
+        ]);
+        assert!(overlapping_walls(&u).is_empty());
+        let mut p = crate::examples::find("gable").unwrap().project();
+        p.parts = vec![part(&twice)];
+        let codes: Vec<_> = p.problems().iter().map(|q| (q.code, q.edge)).collect();
+        assert!(codes.contains(&("walls_overlap", Some(4))), "{codes:?}");
+        assert!(p.validate().unwrap_err()[0].contains("runs over another wall"));
     }
 
     #[test]

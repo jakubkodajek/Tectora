@@ -20,7 +20,7 @@ use std::cell::Cell;
 
 /// Steps one bounded calculation may take: about 5 s of a release build on
 /// an ordinary laptop (25 stacked copies of a 10-wall building need more;
-/// 10 copies need 6 million, every reference case under 1 million).
+/// 10 copies need about 74 million, every reference case under 1 million).
 pub const LIMIT: u64 = 250_000_000;
 /// Overrides [`LIMIT`] (tests of the CLI and the MCP server, which run a
 /// debug build in a child process).

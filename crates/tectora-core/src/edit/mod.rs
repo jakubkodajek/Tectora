@@ -441,6 +441,81 @@ pub fn check_job_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Longest summary of a write kept, in characters (ARCH-105): one
+/// sentence for the user, not a document.
+pub const MAX_SUMMARY_CHARS: usize = 500;
+
+/// Longest job number, customer or address, in characters.
+pub const MAX_JOB_TEXT_CHARS: usize = 500;
+
+/// Longest job notes, in characters: well inside what a job bundle carries.
+pub const MAX_NOTES_CHARS: usize = 1_000_000;
+
+/// `text` cut to at most `max` characters, with `…` when it was cut.
+pub fn capped(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// The summary of a write (every MCP write needs one, `AGENTS.md`) must
+/// have a visible character, at most [`MAX_SUMMARY_CHARS`] characters and
+/// no control or invisible characters (ARCH-104, ARCH-105): it is shown to
+/// the user as the reason for the change.
+pub fn check_summary(summary: &str) -> Result<(), String> {
+    if !summary
+        .chars()
+        .any(|c| !c.is_whitespace() && !c.is_control() && !crate::store::is_invisible(c))
+    {
+        return Err("`summary` is empty: give one sentence for the user on what you change and why (it is shown in the app)".into());
+    }
+    if summary.chars().count() > MAX_SUMMARY_CHARS {
+        return Err(format!(
+            "`summary` is too long: one sentence of at most {MAX_SUMMARY_CHARS} characters"
+        ));
+    }
+    if let Some(c) = summary
+        .chars()
+        .find(|&c| c.is_control() || crate::store::is_invisible(c))
+    {
+        return Err(format!(
+            "`summary` must not contain control or invisible characters (U+{:04X}); use one line of plain text",
+            c as u32
+        ));
+    }
+    Ok(())
+}
+
+/// A job's number, customer or address (`field`): one line of plain text,
+/// at most [`MAX_JOB_TEXT_CHARS`] characters, the character rule of
+/// [`check_job_name`] (NUL or a bidirectional override reorders what the
+/// library card shows, ARCH-104). Notes may have line breaks and tabs and
+/// are capped at [`MAX_NOTES_CHARS`].
+pub fn check_job_text(field: &str, text: &str) -> Result<(), String> {
+    let notes = field == "notes";
+    let max = if notes {
+        MAX_NOTES_CHARS
+    } else {
+        MAX_JOB_TEXT_CHARS
+    };
+    if text.chars().count() > max {
+        return Err(format!("{field} is too long (at most {max} characters)"));
+    }
+    if let Some(c) = text.chars().find(|&c| {
+        (c.is_control() && !(notes && matches!(c, '\n' | '\r' | '\t')))
+            || crate::store::is_invisible(c)
+    }) {
+        return Err(format!(
+            "{field} must not contain control or invisible characters (U+{:04X})",
+            c as u32
+        ));
+    }
+    Ok(())
+}
+
 /// [`check_windows`] for a save that changes `before` into `after`, used by
 /// every write path (MCP `commit`): refuses when a window no longer fits
 /// its face because of the edit (a window moved onto a smaller face, the

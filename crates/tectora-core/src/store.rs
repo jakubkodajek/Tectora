@@ -1330,8 +1330,10 @@ impl Store {
         })
     }
 
-    fn append_activity(&self, id: &str, entry: ActivityEntry) -> Result<(), StoreError> {
+    fn append_activity(&self, id: &str, mut entry: ActivityEntry) -> Result<(), StoreError> {
         self.library_present()?;
+        // A summary is one sentence for the user (ARCH-105).
+        entry.summary = crate::edit::capped(&entry.summary, crate::edit::MAX_SUMMARY_CHARS);
         let io = |e| StoreError::io(Some(id), e);
         fs::create_dir_all(self.activity_dir()).map_err(io)?;
         let path = self.activity_path(id)?;
@@ -1887,7 +1889,15 @@ impl Store {
                 format!("invalid file name: {name}"),
             ));
         }
-        Ok(self.files_dir(id)?.join(name))
+        let path = self.files_dir(id)?.join(name);
+        // Files are attached under their composed name: a decomposed
+        // spelling (copied from macOS Finder) names the same file
+        // (HUNT-108).
+        let composed = crate::nfc::nfc(name);
+        if composed != name && !path.exists() {
+            return Ok(self.files_dir(id)?.join(composed.as_ref()));
+        }
+        Ok(path)
     }
 
     /// The files attached to job `id`, by name.
@@ -3508,6 +3518,26 @@ mod tests {
                 "invalid_name"
             );
         }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-21 HUNT-108 item 1: a file attached under its composed
+    /// name is found (removed, read) by its decomposed spelling too, as a
+    /// client on macOS copies it.
+    #[test]
+    fn an_attached_file_is_removed_by_its_decomposed_name() {
+        let store = temp_store("names-nfd-remove");
+        let id = store
+            .save(None, &examples::find("gable").unwrap().project())
+            .unwrap();
+        let nfc = "Půdorys přízemí.pdf";
+        let nfd = "P\u{75}\u{30a}dorys pr\u{30c}i\u{301}zemi\u{301}.pdf";
+        assert_eq!(store.add_attachment(&id, nfd, b"a").unwrap(), nfc);
+        assert!(store.attachment_path(&id, nfd).unwrap().is_file());
+        store
+            .remove_attachment(&id, nfd, "Claude", "Old plan")
+            .unwrap();
+        assert!(store.attachments(&id).is_empty());
         let _ = fs::remove_dir_all(&store.dir);
     }
 
