@@ -176,6 +176,8 @@ test.describe("round-6 audit: keys during a drag (ERR-502)", () => {
     await threeDormers(mcp, id);
     await openAfterAi(app, "Klávesy při tahu");
     await selectDormer(page, 3);
+    // Past the double-press time: a second press within it opens the dormer window.
+    await page.waitForTimeout(600);
     await dragDown(page, await dormerAt(page, 2), 30);
     await page.keyboard.press("Delete");
     await page.keyboard.press("ControlOrMeta+z");
@@ -203,6 +205,7 @@ test.describe("round-6 audit: keys during a drag (ERR-502)", () => {
     await openAfterAi(app, "Esc při tahu");
     const before = await loadProject(id);
     await selectDormer(page, 3);
+    await page.waitForTimeout(600);
     const at = await dormerAt(page, 2);
     await dragDown(page, at, 30);
     await page.keyboard.press("Escape");
