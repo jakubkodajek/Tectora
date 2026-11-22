@@ -637,6 +637,16 @@ fn received_history(bytes: &[u8]) -> Option<(String, u64)> {
     for e in &mut entries {
         e.summary = crate::edit::clean_line(&e.summary, crate::edit::MAX_SUMMARY_CHARS);
         e.actor = crate::edit::clean_line(&e.actor, crate::edit::MAX_ACTOR_CHARS);
+        // An entry that says Tectora itself wrote it was written by the
+        // sender: it is kept as history under another name and never
+        // shown or trusted as this engine's recalculation (audit
+        // 2026-11-22 ARCH-802).
+        if e.actor
+            .trim()
+            .eq_ignore_ascii_case(crate::store::ENGINE_ACTOR)
+        {
+            e.actor = crate::store::RECEIVED_ENGINE_ACTOR.to_string();
+        }
         for p in [&mut e.before, &mut e.after].into_iter().flatten() {
             let name = p.name.clone();
             crate::edit::clean_received(p, &name);
@@ -914,6 +924,7 @@ mod tests {
                 changes: Vec::new(),
                 after: Some(big.clone()),
                 undid_from: None,
+                restores: None,
             })
             .unwrap()
                 + "\n"
@@ -1019,6 +1030,7 @@ mod tests {
                 changes: Vec::new(),
                 after: Some(p.clone()),
                 undid_from: None,
+                restores: None,
             })
             .unwrap()
         };
@@ -1096,6 +1108,7 @@ mod tests {
             changes: Vec::new(),
             after: Some(p.clone()),
             undid_from: None,
+            restores: None,
         })
         .unwrap();
         let path = dir.join("evil.tectorajob");
@@ -1219,6 +1232,7 @@ mod tests {
             changes: Vec::new(),
             after: Some(renamed.clone()),
             undid_from: None,
+            restores: None,
         })
         .unwrap();
         entry["changes"] = serde_json::json!([
@@ -1361,6 +1375,7 @@ mod tests {
             changes: Vec::new(),
             after: Some(after),
             undid_from: None,
+            restores: None,
         })
         .unwrap();
         let path = dir.join("bomb.tectorajob");
@@ -1408,6 +1423,7 @@ mod tests {
                     changes: Vec::new(),
                     after: Some(after),
                     undid_from: None,
+                    restores: None,
                 })
                 .unwrap()
                     + "\n"
@@ -1449,6 +1465,7 @@ mod tests {
             changes: Vec::new(),
             after: Some(p.clone()),
             undid_from: None,
+            restores: None,
         })
         .unwrap();
         let path = bundle_with_log(
@@ -1469,6 +1486,78 @@ mod tests {
             "the history was written outside the library"
         );
         assert_eq!(store.activity(&id).len(), 1);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Audit 2026-11-22 ARCH-802: a change-log entry that came with a
+    /// bundle under the engine's name (a real one of the sender's Tectora,
+    /// or a forged one) is history under another name: never shown as this
+    /// engine's recalculation, and with nothing to put back.
+    #[test]
+    fn a_received_engine_entry_is_never_this_engines_recalculation() {
+        use crate::store::{ENGINE_ACTOR, RECEIVED_ENGINE_ACTOR, USER_ACTOR};
+        let dir = std::env::temp_dir().join(format!("tectora-bundle-engine-{}", now_ms()));
+        let store = Store::new(dir.join("lib")).unwrap();
+        // An offer an older engine stored, recalculated on open.
+        let mut p = crate::examples::find("gable").unwrap().project();
+        p.job.status = crate::model::JobStatus::Offer;
+        p.result_snapshot = Some(crate::snapshot::take(&p));
+        let id = store.save(None, &p).unwrap();
+        let s = p.result_snapshot.as_mut().unwrap();
+        s.engine_version = "0.0.1".into();
+        s.roof_area += 2.0;
+        fs::write(
+            store.dir.join(format!("{id}.tectora")),
+            p.to_json().unwrap(),
+        )
+        .unwrap();
+        let origins = store.activity_dir().join(format!("{id}.result.json"));
+        let text = fs::read_to_string(&origins)
+            .unwrap()
+            .replace(crate::snapshot::ENGINE_VERSION, "0.0.1");
+        fs::write(&origins, text).unwrap();
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        assert!(store.recalculation(&id).is_some());
+
+        let bundle = dir.join("offer.tectorajob");
+        export(&store, &id, &bundle).unwrap();
+        let other = Store::new(dir.join("other")).unwrap();
+        let got = import(&other, &bundle).unwrap();
+        let log = other.activity(&got);
+        assert!(!log.is_empty());
+        assert!(log.iter().all(|e| e.actor != ENGINE_ACTOR), "{log:?}");
+        let entry = log.iter().find(|e| e.ts_ms == done.entry_ts_ms).unwrap();
+        assert_eq!(entry.actor, RECEIVED_ENGINE_ACTOR);
+        assert!(
+            other
+                .activity_items(&got)
+                .iter()
+                .all(|a| a.refreshed.is_none())
+        );
+        assert_eq!(other.recalculation(&got), None);
+        let e = other
+            .restore_offer_result(&got, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap_err();
+        assert_eq!(e.code(), "revert_stale");
+        // In any spelling of the name.
+        let line = |actor: &str| {
+            serde_json::to_string(&crate::store::ActivityEntry {
+                ts_ms: 5,
+                actor: actor.into(),
+                summary: "x".into(),
+                changes: Vec::new(),
+                before: None,
+                after: None,
+                undid_from: None,
+                restores: None,
+            })
+            .unwrap()
+        };
+        for actor in ["tectora", "Tectora", " TECTORA "] {
+            let (text, _) = received_history(line(actor).as_bytes()).unwrap();
+            let e: crate::store::ActivityEntry = serde_json::from_str(text.trim()).unwrap();
+            assert_eq!(e.actor, RECEIVED_ENGINE_ACTOR, "{actor:?}");
+        }
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -33,6 +33,15 @@ pub const USER_ACTOR: &str = "user";
 /// recalculated by a corrected calculation): neither the user nor an AI,
 /// so such an entry neither ends nor joins a pending AI review.
 pub const ENGINE_ACTOR: &str = "tectora";
+/// What an entry by [`ENGINE_ACTOR`] in a received bundle's change log is
+/// renamed to: the sender wrote it, not this Tectora, so it is never shown
+/// or trusted as the engine's own (audit 2026-11-22 ARCH-802). The app
+/// knows the name (`types.ts`).
+pub const RECEIVED_ENGINE_ACTOR: &str = "tectora (received)";
+/// How long the recalculation on open waits for the job's lock before the
+/// job opens as it is (audit 2026-11-22 ERR-803) [no source: a save holds
+/// the lock for well under a second].
+const REFRESH_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 /// Activity entries kept per project (each holds a full previous version).
 pub(crate) const ACTIVITY_KEEP: usize = 50;
 /// Deleted jobs and removed attachments, one folder per deletion
@@ -96,6 +105,11 @@ pub struct ProjectSummary {
     pub lines: Vec<[[f64; 2]; 2]>,
     /// Latest recorded change, if any.
     pub last_activity: Option<ActivityInfo>,
+    /// The job was last changed by an AI client ([`changed_by_ai`]): that
+    /// change. The library's "changed by AI" filter, count and badge and
+    /// `library::search`'s `by_ai` all read this (audit 2026-11-22 UX-806).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_by_ai: Option<ActivityInfo>,
     /// Lowest and highest roof pitch, degrees (gables left out).
     pub pitch_range: Option<[f64; 2]>,
     pub dormers: usize,
@@ -165,6 +179,118 @@ struct ResultOrigin {
     taken_ms: u64,
     input: String,
     checked: String,
+    /// The result is the engine's recalculation of an offer's result:
+    /// which change-log entry wrote it. Only a result with this record is
+    /// shown as recalculated and offers the way back, so an entry that
+    /// came with a bundle never is (audit 2026-11-22 ARCH-802): the file
+    /// is local and not part of a bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refreshed: Option<RefreshedFrom>,
+    /// The offer's own result, put back by the user or an AI after a
+    /// recalculation: no later engine recalculates it again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pinned: bool,
+}
+
+/// Where a recalculated stored result came from (see [`ResultOrigin`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct RefreshedFrom {
+    /// The engine's change-log entry of the recalculation.
+    entry_ts_ms: u64,
+    /// `taken_ms` of the offer's result it replaced.
+    offer_taken_ms: u64,
+    /// The engine version of the offer's result.
+    from: String,
+}
+
+/// What [`Store::refresh_entry`] did: the engine's change-log entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefreshedEntry {
+    pub entry_ts_ms: u64,
+    pub summary: String,
+}
+
+/// What the engine's recalculation of a stored result changed: the
+/// offer's date and engine and each figure old -> new.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefreshFigures {
+    /// When the offer's result was stored.
+    pub offer_ms: u64,
+    pub from: String,
+    pub to: String,
+    pub differences: Vec<crate::snapshot::Difference>,
+}
+
+/// [`RefreshFigures`] of the change-log entry `e` from its two versions
+/// ([`crate::snapshot::compare`]); `None` for every entry that is not the
+/// engine's recalculation. History only: whether the job's stored result
+/// still is that recalculation is [`Store::recalculation`].
+pub fn refresh_figures(e: &ActivityEntry) -> Option<RefreshFigures> {
+    if e.actor != ENGINE_ACTOR {
+        return None;
+    }
+    let old = e.before.as_ref()?.result_snapshot.as_ref()?;
+    let new = e.after.as_ref()?.result_snapshot.as_ref()?;
+    Some(RefreshFigures {
+        offer_ms: old.taken_ms,
+        from: old.engine_version.clone(),
+        to: new.engine_version.clone(),
+        differences: crate::snapshot::compare(old, new),
+    })
+}
+
+/// The job's stored result is the engine's recalculation of the offer's
+/// ([`Store::recalculation`]): the result card's "recalculated" line and
+/// the history's "put the offer's figures back" come from this alone.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Recalculation {
+    /// The engine's change-log entry; [`Store::restore_offer_result`]
+    /// takes it.
+    pub entry_ts_ms: u64,
+    /// When it was recalculated.
+    pub at: u64,
+    /// `taken_ms` of the recalculated result, the one in the job file.
+    pub taken_ms: u64,
+    /// When the offer's result was stored.
+    pub offer_ms: u64,
+    pub from: String,
+    pub to: String,
+    pub differences: Vec<crate::snapshot::Difference>,
+}
+
+/// A change-log entry as the app's history shows it
+/// ([`Store::activity_items`]).
+#[derive(Debug, Clone, Serialize)]
+pub struct ActivityItem {
+    pub ts_ms: u64,
+    pub actor: String,
+    pub summary: String,
+    pub changes: Vec<Change>,
+    /// For the engine's recalculation of the stored result: the offer's
+    /// figures against the new ones (audit UX-702a/b).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refreshed: Option<RefreshFigures>,
+    /// For a revert: the time of the oldest entry it undid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub undid_from: Option<u64>,
+    /// For "offer result restored": the engine's entry it put back.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restores: Option<u64>,
+}
+
+/// The newest change of `log` (oldest first) when an AI client made it,
+/// one rule for "changed by AI" everywhere (audit 2026-11-22 UX-806).
+/// Tectora's own entries (a recalculated stored result, also one received
+/// with a bundle) and "offer result restored" entries say nothing about
+/// who changed the design and are stepped over: merely opening an offer
+/// must not take it out of the AI list.
+pub fn changed_by_ai(log: &[ActivityEntry]) -> Option<&ActivityEntry> {
+    log.iter()
+        .rev()
+        .find(|e| {
+            e.actor != ENGINE_ACTOR && e.actor != RECEIVED_ENGINE_ACTOR && e.restores.is_none()
+        })
+        .filter(|e| e.actor != USER_ACTOR)
 }
 
 /// How many stored results of a job keep their origin: a result put back
@@ -221,9 +347,21 @@ pub struct ActivityEntry {
     /// what a revert already undid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undid_from: Option<u64>,
+    /// For "offer result restored" ([`Store::restore_offer_result`]): the
+    /// time of the engine's recalculation entry whose old result it put
+    /// back. Such an entry changes the stored result only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restores: Option<u64>,
 }
 
 impl ActivityEntry {
+    /// The user's own "offer result restored": it touches the stored
+    /// result only, so it neither ends an AI review nor counts in one, and
+    /// a revert of other entries leaves it alone.
+    fn user_restore(&self) -> bool {
+        self.restores.is_some() && self.actor == USER_ACTOR
+    }
+
     pub fn info(&self) -> ActivityInfo {
         ActivityInfo {
             ts_ms: self.ts_ms,
@@ -312,6 +450,12 @@ pub const LIVE_KINDS: [&str; 18] = [
     "exported_sheet",
     "imported",
 ];
+
+/// How the change-log entry of [`Store::restore_offer_result`] begins; the
+/// app reads it (`live.svelte.ts`). The entry reads
+/// `Offer result restored (Tectora <to> -> <from>): roof area <a> -> <b> m2`
+/// (without the areas when they are the same).
+pub const RESTORED_PREFIX: &str = "Offer result restored";
 
 /// Summary prefixes of the change-log entries a revert writes; the app
 /// reads them to show the sentence in the user's language.
@@ -606,6 +750,13 @@ pub enum StoreError {
     /// also set: reverting would overwrite those edits, so nothing is done.
     #[error("{id}: edited since that change in the same values ({detail})")]
     RevertConflict { id: String, detail: String },
+    /// The change the caller meant to undo is no longer the one that would
+    /// be undone (another change was saved meanwhile), or the stored result
+    /// is no longer the recalculation to put back: nothing is done, so a
+    /// press never acts on another entry than the one it was drawn on
+    /// (audit 2026-11-22 ERR-801).
+    #[error("{id}: the job changed meanwhile ({detail})")]
+    RevertStale { id: String, detail: String },
 }
 
 /// The kinds of file system failure the app explains differently.
@@ -645,6 +796,7 @@ impl StoreError {
             StoreError::RevertCreated(_) => "revert_created",
             StoreError::NoSuchChange { .. } => "no_such_change",
             StoreError::RevertConflict { .. } => "revert_conflict",
+            StoreError::RevertStale { .. } => "revert_stale",
         }
     }
 
@@ -658,7 +810,8 @@ impl StoreError {
             StoreError::Unreadable { id, .. }
             | StoreError::NewerFormat { id, .. }
             | StoreError::NoSuchChange { id, .. }
-            | StoreError::RevertConflict { id, .. } => Some(id),
+            | StoreError::RevertConflict { id, .. }
+            | StoreError::RevertStale { id, .. } => Some(id),
             StoreError::Io { id, .. } => id.as_deref(),
         }
     }
@@ -668,7 +821,8 @@ impl StoreError {
         match self {
             StoreError::Unreadable { detail, .. }
             | StoreError::Io { detail, .. }
-            | StoreError::RevertConflict { detail, .. } => Some(detail),
+            | StoreError::RevertConflict { detail, .. }
+            | StoreError::RevertStale { detail, .. } => Some(detail),
             _ => None,
         }
     }
@@ -1310,6 +1464,39 @@ const LOCK_TRIES: usize = 8;
 /// still name the locked file, else it starts again: a lock on a file
 /// another process has just replaced locks nobody out (HUNT-502).
 pub(crate) fn take_lock_file(path: &Path) -> std::io::Result<Option<fs::File>> {
+    take_lock_file_within(path, None)
+}
+
+/// [`take_lock_file`] that waits for a lock another process holds for at
+/// most `wait` (forever with `None`), then fails with
+/// [`std::io::ErrorKind::WouldBlock`]: opening a job must not hang on a
+/// writer that never lets go (audit 2026-11-22 ERR-803).
+pub(crate) fn take_lock_file_within(
+    path: &Path,
+    wait: Option<std::time::Duration>,
+) -> std::io::Result<Option<fs::File>> {
+    let deadline = wait.map(|w| std::time::Instant::now() + w);
+    // `Ok(false)`: this file system has no locks.
+    let lock = |file: &fs::File| -> std::io::Result<bool> {
+        let Some(deadline) = deadline else {
+            return Ok(file.lock().is_ok());
+        };
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(true),
+                Err(fs::TryLockError::WouldBlock) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WouldBlock,
+                            "the job's lock is held by another process",
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(fs::TryLockError::Error(_)) => return Ok(false),
+            }
+        }
+    };
     let open = || {
         open_regular_for_write(
             path,
@@ -1323,7 +1510,7 @@ pub(crate) fn take_lock_file(path: &Path) -> std::io::Result<Option<fs::File>> {
     for _ in 0..LOCK_TRIES {
         match open() {
             Ok(file) => {
-                if file.lock().is_err() {
+                if !lock(&file)? {
                     return Ok(None);
                 }
                 if names_file(path, &file) {
@@ -1705,6 +1892,7 @@ impl Store {
     /// The card of job `id` without its roof figures, and the job.
     fn summarize_uncached(&self, id: &str) -> Result<(ProjectSummary, Project), StoreError> {
         let project = self.load(id)?;
+        let log = self.activity(id);
         let summary = ProjectSummary {
             id: id.to_string(),
             name: project.name.clone(),
@@ -1715,7 +1903,8 @@ impl Store {
             parts: project.parts.len(),
             outlines: card_outlines(&project),
             lines: Vec::new(),
-            last_activity: self.activity(id).last().map(ActivityEntry::info),
+            last_activity: log.last().map(ActivityEntry::info),
+            changed_by_ai: changed_by_ai(&log).map(ActivityEntry::info),
             pitch_range: crate::library::pitch_range(&project),
             dormers: project.dormers.len(),
             files: self.attachments(id).len(),
@@ -1878,9 +2067,17 @@ impl Store {
     }
 
     /// [`Store::refresh_stored_result`] with the change log's summary of
-    /// the recalculation, `None` when nothing was recalculated. A result
+    /// the recalculation, `None` when nothing was recalculated
+    /// ([`Store::refresh_entry`]).
+    pub fn refresh_result(&self, id: &str) -> Result<Option<String>, StoreError> {
+        Ok(self.refresh_entry(id)?.map(|r| r.summary))
+    }
+
+    /// [`Store::refresh_stored_result`] with the change-log entry of the
+    /// recalculation, `None` when nothing was recalculated. A result
     /// stored before Tectora kept its origin, one whose design changed
-    /// since, one put back by a revert and one this engine already checked
+    /// since, one put back after a recalculation (for good, whatever the
+    /// engine: its origin is pinned) and one this engine already checked
     /// stay as they are, and so does the result of a job that is not an
     /// offer (draft, ordered, done). So does the result of a job whose lock cannot be
     /// taken (a folder with files where the lock file belongs): every other
@@ -1890,40 +2087,37 @@ impl Store {
     /// the new origin (HUNT-703). Only the app calls it, when the user
     /// opens a job, off the window's thread; an AI reading the job over MCP
     /// never changes it (Jakub's decision 2026-11-22, audit UX-702h).
-    pub fn refresh_result(&self, id: &str) -> Result<Option<String>, StoreError> {
+    ///
+    /// Whether a recalculation is due is looked at without the job's lock
+    /// first, so opening a draft, or an offer with nothing to recalculate,
+    /// never waits for another writer. Only a due recalculation takes the
+    /// lock, waits for it a few seconds at most (then the job opens as it
+    /// is and the next open tries again) and looks again under it (audit
+    /// 2026-11-22 ERR-803).
+    pub fn refresh_entry(&self, id: &str) -> Result<Option<RefreshedEntry>, StoreError> {
+        self.refresh_entry_within(id, REFRESH_LOCK_WAIT)
+    }
+
+    fn refresh_entry_within(
+        &self,
+        id: &str,
+        wait: std::time::Duration,
+    ) -> Result<Option<RefreshedEntry>, StoreError> {
         // No lock file is made for a job that is not there.
         if fs::symlink_metadata(self.path(id)?).is_err() {
             return Ok(None);
         }
-        let Ok(_lock) = self.lock(id) else {
-            return Ok(None);
-        };
-        let before = self.load(id)?;
-        // Only an offer follows the corrected calculation: a draft, an
-        // ordered and a done job keep the figures they have (Jakub's
-        // decision 2026-11-22, audit UX-702g).
-        if before.job.status != crate::model::JobStatus::Offer {
+        if self.refresh_due(id)?.is_none() {
             return Ok(None);
         }
-        let Some(stored) = &before.result_snapshot else {
+        let Ok(_lock) = self.lock_file_within(Some(id), &format!("{id}.lock"), Some(wait)) else {
             return Ok(None);
         };
-        let Some(mut origin) = self.result_origin(id, stored.taken_ms) else {
+        // Again under the lock: another open may have recalculated it, or
+        // a save changed the job, while this one waited.
+        let Some((before, mut origin)) = self.refresh_due(id)? else {
             return Ok(None);
         };
-        // While AI changes wait for review the result stays: Revert and
-        // Revert all then undo the AI's changes, not the recalculation
-        // (hunt R2 BUG-3), and the review starts after the recalculation.
-        if origin.taken_ms != stored.taken_ms
-            || origin.checked == crate::snapshot::ENGINE_VERSION
-            || origin.input != crate::snapshot::input_digest(&before)
-            || self.pending_review(id).is_some()
-            // Only a design small enough to have got its origin (audit
-            // ERR-101).
-            || design_items(&before) > ORIGIN_MAX_ITEMS
-        {
-            return Ok(None);
-        }
         match crate::work::calculate(|| crate::snapshot::refreshed(&before))
             .ok()
             .flatten()
@@ -1931,17 +2125,26 @@ impl Store {
             Some((after, summary)) => {
                 // The fresh result is this engine's own for this design: its
                 // origin, without calculating the roof again on the write.
+                // It names the entry that wrote it (filled in by
+                // `log_and_write`), which is what makes it "recalculated".
                 let fresh = after.result_snapshot.as_ref().map(|s| ResultOrigin {
                     taken_ms: s.taken_ms,
                     input: origin.input.clone(),
                     checked: crate::snapshot::ENGINE_VERSION.to_string(),
+                    refreshed: before.result_snapshot.as_ref().map(|old| RefreshedFrom {
+                        entry_ts_ms: 0,
+                        offer_taken_ms: old.taken_ms,
+                        from: old.engine_version.clone(),
+                    }),
+                    pinned: false,
                 });
-                self.log_and_write(
+                let entry_ts_ms = self.log_and_write(
                     id,
                     Some(before),
                     &after,
                     ENGINE_ACTOR,
                     &summary,
+                    None,
                     None,
                     fresh,
                 )?;
@@ -1950,7 +2153,10 @@ impl Store {
                 // leaves it to be recalculated on the next open.
                 origin.checked = crate::snapshot::ENGINE_VERSION.to_string();
                 let _ = self.write_result_origin(id, &origin);
-                Ok(Some(summary))
+                Ok(Some(RefreshedEntry {
+                    entry_ts_ms,
+                    summary,
+                }))
             }
             None => {
                 // Checked: the next open need not calculate it again (also
@@ -1961,6 +2167,173 @@ impl Store {
                 Ok(None)
             }
         }
+    }
+
+    /// The job and the origin of its stored result when that result is to
+    /// be recalculated ([`Store::refresh_entry`]); reads only.
+    fn refresh_due(&self, id: &str) -> Result<Option<(Project, ResultOrigin)>, StoreError> {
+        let before = self.load(id)?;
+        // Only an offer follows the corrected calculation: a draft, an
+        // ordered and a done job keep the figures they have (Jakub's
+        // decision 2026-11-22, audit UX-702g).
+        if before.job.status != crate::model::JobStatus::Offer {
+            return Ok(None);
+        }
+        let Some(stored) = &before.result_snapshot else {
+            return Ok(None);
+        };
+        let Some(origin) = self.result_origin(id, stored.taken_ms) else {
+            return Ok(None);
+        };
+        // While AI changes wait for review the result stays: Revert and
+        // Revert all then undo the AI's changes, not the recalculation
+        // (hunt R2 BUG-3), and the review starts after the recalculation.
+        if origin.taken_ms != stored.taken_ms
+            || origin.checked == crate::snapshot::ENGINE_VERSION
+            // The offer's own figures, put back after a recalculation,
+            // stay for good.
+            || origin.pinned
+            || origin.input != crate::snapshot::input_digest(&before)
+            || self.pending_review(id).is_some()
+            // Only a design small enough to have got its origin (audit
+            // ERR-101).
+            || design_items(&before) > ORIGIN_MAX_ITEMS
+        {
+            return Ok(None);
+        }
+        Ok(Some((before, origin)))
+    }
+
+    /// The engine's recalculation the job's stored result is, `None` when
+    /// it is any other result: one the user or an AI stored since, the
+    /// offer's own put back, or one whose recalculation entry this library
+    /// did not write itself (it came with a bundle, audit 2026-11-22
+    /// ARCH-802). The result card's "recalculated" line and the history's
+    /// "put the offer's figures back" show for this alone, at whatever
+    /// position the entry has in the change log by now, in a job of any
+    /// status.
+    pub fn recalculation(&self, id: &str) -> Option<Recalculation> {
+        let project = self.load(id).ok()?;
+        self.recalculation_of(id, &project, &self.activity(id))
+    }
+
+    /// [`Store::recalculation`] of the job as read, with its change log.
+    fn recalculation_of(
+        &self,
+        id: &str,
+        project: &Project,
+        log: &[ActivityEntry],
+    ) -> Option<Recalculation> {
+        let stored = project.result_snapshot.as_ref()?;
+        let from = self.result_origin(id, stored.taken_ms)?.refreshed?;
+        let entry = log.iter().rfind(|e| e.ts_ms == from.entry_ts_ms)?;
+        let figures = refresh_figures(entry)?;
+        let fresh = entry.after.as_ref()?.result_snapshot.as_ref()?;
+        if figures.offer_ms != from.offer_taken_ms
+            || fresh.taken_ms != stored.taken_ms
+            || fresh.engine_version != stored.engine_version
+            || !crate::snapshot::compare(fresh, stored).is_empty()
+        {
+            return None;
+        }
+        Some(Recalculation {
+            entry_ts_ms: entry.ts_ms,
+            at: entry.ts_ms,
+            taken_ms: stored.taken_ms,
+            offer_ms: figures.offer_ms,
+            from: figures.from,
+            to: figures.to,
+            differences: figures.differences,
+        })
+    }
+
+    /// Puts the offer's own stored result back in place of the engine's
+    /// recalculation logged at `entry_ts_ms`, and nothing else: the design
+    /// and every change made before or after the recalculation stay (audit
+    /// 2026-11-22 ERR-801, UX-802). Under the job's lock the file is read
+    /// again; unless its stored result still is that recalculation
+    /// ([`Store::recalculation`]) nothing is written and the error is
+    /// [`StoreError::RevertStale`]. The entry it logs names the engine's
+    /// entry (`restores`); the result put back is never recalculated again
+    /// (its origin is pinned). `reason`: an AI client's summary.
+    pub fn restore_offer_result(
+        &self,
+        id: &str,
+        entry_ts_ms: u64,
+        actor: &str,
+        reason: Option<&str>,
+    ) -> Result<Project, StoreError> {
+        self.path(id)?;
+        let _lock = self.lock(id)?;
+        let current = self.load(id)?;
+        let log = self.activity(id);
+        let stale = || StoreError::RevertStale {
+            id: id.to_string(),
+            detail: "the stored result is not that recalculation".into(),
+        };
+        let rec = self
+            .recalculation_of(id, &current, &log)
+            .filter(|r| r.entry_ts_ms == entry_ts_ms)
+            .ok_or_else(stale)?;
+        let old = log
+            .iter()
+            .rfind(|e| e.ts_ms == entry_ts_ms)
+            .and_then(|e| e.before.as_ref()?.result_snapshot.clone())
+            .ok_or_else(stale)?;
+        let fresh_area = current
+            .result_snapshot
+            .as_ref()
+            .map_or(0.0, |s| s.roof_area);
+        // The areas only where they differ (UX-807).
+        let mut what = format!("{RESTORED_PREFIX} (Tectora {} -> {})", rec.to, rec.from);
+        if rec.differences.iter().any(|d| d.key == "roof_area") {
+            what += &format!(": roof area {fresh_area:.2} -> {:.2} m2", old.roof_area);
+        }
+        let summary = with_reason(reason, what);
+        let pinned = self.result_origin(id, old.taken_ms).map(|mut o| {
+            o.pinned = true;
+            o
+        });
+        let mut next = current.clone();
+        next.result_snapshot = Some(old);
+        // The log is a file like the job: a version outside the limits is
+        // not written back into the job (HUNTIO-004).
+        next.check_limits()
+            .map_err(|detail| StoreError::Unreadable {
+                id: id.to_string(),
+                detail,
+            })?;
+        self.log_and_write(
+            id,
+            Some(current),
+            &next,
+            actor,
+            &summary,
+            None,
+            Some(entry_ts_ms),
+            pinned,
+        )?;
+        Ok(next)
+    }
+
+    /// The change log of `id` as the app's history shows it, newest first
+    /// ([`Store::history`] with [`refresh_figures`]).
+    pub fn activity_items(&self, id: &str) -> Vec<ActivityItem> {
+        let mut out: Vec<ActivityItem> = self
+            .history(id)
+            .into_iter()
+            .map(|e| ActivityItem {
+                refreshed: refresh_figures(&e),
+                ts_ms: e.ts_ms,
+                actor: e.actor,
+                summary: e.summary,
+                changes: e.changes,
+                undid_from: e.undid_from,
+                restores: e.restores,
+            })
+            .collect();
+        out.reverse();
+        out
     }
 
     pub fn load(&self, id: &str) -> Result<Project, StoreError> {
@@ -2105,6 +2478,17 @@ impl Store {
     /// `.activity` or a lock path that cannot be made a lock file
     /// ([`take_lock_file`]).
     fn lock_file(&self, id: Option<&str>, name: &str) -> Result<Option<fs::File>, StoreError> {
+        self.lock_file_within(id, name, None)
+    }
+
+    /// [`Store::lock_file`] waiting at most `wait` for a lock that is held
+    /// ([`take_lock_file_within`]).
+    fn lock_file_within(
+        &self,
+        id: Option<&str>,
+        name: &str,
+        wait: Option<std::time::Duration>,
+    ) -> Result<Option<fs::File>, StoreError> {
         if self.library_present().is_err() {
             return Ok(None);
         }
@@ -2114,7 +2498,7 @@ impl Store {
             Err(e) if is_foreign(&e) => return Err(StoreError::io(id, e)),
             Err(_) => return Ok(None),
         }
-        take_lock_file(&dir.join(name)).map_err(|e| StoreError::io(id, e))
+        take_lock_file_within(&dir.join(name), wait).map_err(|e| StoreError::io(id, e))
     }
 
     /// Saves without recording activity (app autosave of its own edits).
@@ -2237,6 +2621,8 @@ impl Store {
                     taken_ms: s.taken_ms,
                     input: crate::snapshot::input_digest(project),
                     checked: s.engine_version.clone(),
+                    refreshed: None,
+                    pinned: false,
                 },
             );
         }
@@ -2303,7 +2689,7 @@ impl Store {
                 let _creating = self.creation_lock()?;
                 let id = self.free_id(&project.name)?;
                 let _lock = self.lock(&id)?;
-                self.log_and_write(&id, None, project, actor, summary, None, None)?;
+                self.log_and_write(&id, None, project, actor, summary, None, None, None)?;
                 return Ok(id);
             }
         };
@@ -2355,14 +2741,15 @@ impl Store {
             });
         }
         if before.as_ref() != Some(project) {
-            self.log_and_write(id, before, project, actor, summary, undid_from, None)?;
+            self.log_and_write(id, before, project, actor, summary, undid_from, None, None)?;
         }
         Ok(CheckedSave::Saved { id: id.to_string() })
     }
 
     /// Logs the change and writes the file; the caller holds the job's lock.
     /// `known`: the origin of the result it writes, as for
-    /// [`Store::write_known`].
+    /// [`Store::write_known`]; one of a recalculation gets the entry's time.
+    /// Returns the time of the entry.
     #[allow(clippy::too_many_arguments)]
     fn log_and_write(
         &self,
@@ -2372,8 +2759,9 @@ impl Store {
         actor: &str,
         summary: &str,
         undid_from: Option<u64>,
-        known: Option<ResultOrigin>,
-    ) -> Result<(), StoreError> {
+        restores: Option<u64>,
+        mut known: Option<ResultOrigin>,
+    ) -> Result<u64, StoreError> {
         // A newer file was refused before: by `load` under this lock for an
         // existing job, and a new id has no file, so `write` does not read
         // the file again (ARCH-403 item 3, ARCH-504 item 1: the job file was
@@ -2405,9 +2793,13 @@ impl Store {
                 before,
                 after: Some(project.clone()),
                 undid_from,
+                restores,
             },
             log,
         )?;
+        if let Some(r) = known.as_mut().and_then(|o| o.refreshed.as_mut()) {
+            r.entry_ts_ms = ts_ms;
+        }
         self.write_known(id, project, true, known)
             .inspect_err(|_| {
                 let _ = undo.apply();
@@ -2418,7 +2810,7 @@ impl Store {
         if let Some(entries) = trim {
             let _ = write_atomic(&self.activity_path(id)?, &self.trimmed_log(id, &entries));
         }
-        Ok(())
+        Ok(ts_ms)
     }
 
     /// The change log of `id` as [`Store::activity`] reads it, with what
@@ -2541,8 +2933,29 @@ impl Store {
         actor: &str,
         reason: Option<&str>,
     ) -> Result<Project, StoreError> {
+        self.revert_last_expecting(id, actor, reason, None)
+    }
+
+    /// [`Store::revert_last`] of the change the caller saw as the latest,
+    /// the one logged at `expect_ts_ms`: when another change is the latest
+    /// by now (an AI saved meanwhile) nothing is undone and the error is
+    /// [`StoreError::RevertStale`], so a Revert button never undoes another
+    /// entry than the one it was drawn on (audit 2026-11-22 ERR-801).
+    pub fn revert_last_expecting(
+        &self,
+        id: &str,
+        actor: &str,
+        reason: Option<&str>,
+        expect_ts_ms: Option<u64>,
+    ) -> Result<Project, StoreError> {
         let log = self.activity(id);
         let pos = latest_undone(&log).ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
+        if expect_ts_ms.is_some_and(|ts| ts != log[pos].ts_ms) {
+            return Err(StoreError::RevertStale {
+                id: id.to_string(),
+                detail: "another change is the latest one by now".into(),
+            });
+        }
         // Reverting from `pos` also undoes the reverts logged after it, so
         // the job ends as it was before that change.
         self.revert_from(
@@ -2634,7 +3047,12 @@ impl Store {
         };
         let base = current.clone();
         let mut target = None;
-        for entry in log[pos..].iter().rev() {
+        for (k, entry) in log[pos..].iter().enumerate().rev() {
+            // The user's "offer result restored" stays when other changes
+            // are undone: it is undone only when asked for by itself.
+            if k > 0 && entry.user_restore() {
+                continue;
+            }
             let before = entry
                 .before
                 .clone()
@@ -2670,8 +3088,34 @@ impl Store {
             })?;
         let undid_from = Some(log[pos].ts_ms);
         match self.save_checked_undoing(id, &target, actor, summary, base.as_ref(), undid_from)? {
-            CheckedSave::Saved { .. } => Ok(Some(target)),
+            CheckedSave::Saved { .. } => {
+                self.pin_restored(id, &log[pos..], &target);
+                Ok(Some(target))
+            }
             CheckedSave::Conflict { .. } => Ok(None),
+        }
+    }
+
+    /// After a revert of `undone` gave `target`: when that put an offer's
+    /// own result back in place of the engine's recalculation, the result
+    /// stays for good, as after [`Store::restore_offer_result`] (best
+    /// effort, like every origin).
+    fn pin_restored(&self, id: &str, undone: &[ActivityEntry], target: &Project) {
+        let Some(stored) = &target.result_snapshot else {
+            return;
+        };
+        let was_offer = undone
+            .iter()
+            .filter_map(refresh_figures)
+            .any(|f| f.offer_ms == stored.taken_ms);
+        if !was_offer {
+            return;
+        }
+        if let Some(mut origin) = self.result_origin(id, stored.taken_ms)
+            && !origin.pinned
+        {
+            origin.pinned = true;
+            let _ = self.write_result_origin(id, &origin);
         }
     }
 
@@ -2708,7 +3152,13 @@ impl Store {
     fn pending_start(&self, id: &str, log: &[ActivityEntry]) -> usize {
         let accepted = self.reviewed_at(id);
         log.iter()
-            .rposition(|e| e.actor == USER_ACTOR || e.actor == ENGINE_ACTOR || e.ts_ms <= accepted)
+            .rposition(|e| {
+                // The user's "offer result restored" is no look at the AI's
+                // changes: the review goes on past it.
+                (e.actor == USER_ACTOR && !e.user_restore())
+                    || e.actor == ENGINE_ACTOR
+                    || e.ts_ms <= accepted
+            })
             .map_or(0, |i| i + 1)
     }
 
@@ -2718,9 +3168,12 @@ impl Store {
         // Tectora's own entries are no AI change to review: a review of
         // them alone is none, and they are not counted in one.
         let pending = &log[start..];
-        let ai = || pending.iter().filter(|e| e.actor != ENGINE_ACTOR);
-        ai().next()?;
-        let first = pending.first()?;
+        let ai = || {
+            pending
+                .iter()
+                .filter(|e| e.actor != ENGINE_ACTOR && !e.user_restore())
+        };
+        let first = ai().next()?;
         let mut actors: Vec<String> = Vec::new();
         for e in ai() {
             if !actors.contains(&e.actor) {
@@ -3341,6 +3794,11 @@ fn latest_undone(log: &[ActivityEntry]) -> Option<usize> {
     while i > 0 {
         i -= 1;
         let e = &log[i];
+        // The user's "offer result restored" is no change to step back
+        // over: the latest change is the one under it.
+        if e.user_restore() {
+            continue;
+        }
         if let Some(from) = e.undid_from {
             // Everything from that entry on is undone; go on before it.
             i = log[..i].iter().rposition(|x| x.ts_ms == from)?;
@@ -3554,6 +4012,7 @@ mod tests {
                 before: Some(before),
                 after: Some(after),
                 undid_from: None,
+                restores: None,
             }
         };
         let write = |entries: &[ActivityEntry]| {
@@ -5084,6 +5543,548 @@ mod tests {
         );
     }
 
+    /// An offer an older engine stored whose roof area is the same now
+    /// and whose first line length was 2 m longer (UX-807).
+    fn old_offer_lines_off(store: &Store) -> (String, Project, String) {
+        let (id, mut p) = old_offer_off_by(store, 0.0);
+        let s = p.result_snapshot.as_mut().unwrap();
+        let code = s.lines_by_code.keys().next().expect("a line").clone();
+        *s.lines_by_code.get_mut(&code).unwrap() += 2.0;
+        fs::write(store.path(&id).unwrap(), p.to_json().unwrap()).unwrap();
+        (id, p, code)
+    }
+
+    /// Audit 2026-11-22, Design A item 1 (ERR-802, UI-802, ARCH-802): the
+    /// job's stored result is "the engine's recalculation" only while it
+    /// is the very result the engine's entry wrote, as this library
+    /// recorded it.
+    #[test]
+    fn the_recalculation_is_known_only_while_the_stored_result_is_the_engines() {
+        let store = temp_store("recalc-known");
+        let (id, p) = old_offer(&store);
+        assert_eq!(store.recalculation(&id), None);
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        let engines = store.load(&id).unwrap();
+        let fresh = engines.result_snapshot.clone().unwrap();
+        let offer = p.result_snapshot.clone().unwrap();
+        let rec = store.recalculation(&id).expect("the engine's result");
+        assert_eq!(rec.entry_ts_ms, done.entry_ts_ms);
+        assert_eq!(rec.at, store.activity(&id).last().unwrap().ts_ms);
+        assert_eq!(rec.taken_ms, fresh.taken_ms);
+        assert_eq!(rec.offer_ms, offer.taken_ms);
+        assert_eq!(
+            (rec.from.as_str(), rec.to.as_str()),
+            ("0.0.1", crate::snapshot::ENGINE_VERSION)
+        );
+        assert_eq!(rec.differences, crate::snapshot::compare(&offer, &fresh));
+        // An edit of the design (the app's unlogged save): still the
+        // engine's result, at whatever place its entry has in the log.
+        let mut edited = engines.clone();
+        edited.parts[0].edges[0].pitch_deg = 45.0;
+        store.save(Some(id.clone()), &edited).unwrap();
+        store
+            .save_as(
+                Some(id.clone()),
+                &{
+                    let mut q = edited.clone();
+                    q.notes = "AI".into();
+                    q
+                },
+                "claude",
+                "Notes",
+            )
+            .unwrap();
+        assert_eq!(
+            store.recalculation(&id).map(|r| r.entry_ts_ms),
+            Some(done.entry_ts_ms)
+        );
+        // ERR-802: the user stores a new result (no log entry): no longer.
+        let mut stored = store.load(&id).unwrap();
+        let mut own = crate::snapshot::take(&stored);
+        own.taken_ms = fresh.taken_ms + 5;
+        stored.result_snapshot = Some(own);
+        store.save(Some(id.clone()), &stored).unwrap();
+        assert_eq!(store.recalculation(&id), None);
+        // UI-802: an Undo that writes the engine's result back is visible.
+        let mut undone = stored.clone();
+        undone.result_snapshot = Some(fresh.clone());
+        store.save(Some(id.clone()), &undone).unwrap();
+        assert_eq!(
+            store.recalculation(&id).map(|r| r.entry_ts_ms),
+            Some(done.entry_ts_ms)
+        );
+        // The result card's history rows of the entry stay either way.
+        let items = store.activity_items(&id);
+        let engine = items.iter().find(|a| a.actor == ENGINE_ACTOR).unwrap();
+        assert_eq!(engine.ts_ms, done.entry_ts_ms);
+        assert!(engine.refreshed.is_some());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ARCH-802: an entry that only says it is the engine's (written into
+    /// the log by someone else) has no origin record: no recalculation,
+    /// and nothing to put back.
+    #[test]
+    fn an_engine_entry_this_library_did_not_write_is_no_recalculation() {
+        let store = temp_store("recalc-forged");
+        let mut p = examples::find("gable").unwrap().project();
+        p.job.status = crate::model::JobStatus::Offer;
+        p.result_snapshot = Some(crate::snapshot::take(&p));
+        let id = store.save(None, &p).unwrap();
+        let mut before = p.clone();
+        let old = before.result_snapshot.as_mut().unwrap();
+        old.engine_version = "0.0.1".into();
+        old.roof_area = 300.0;
+        old.taken_ms -= 1000;
+        let entry = ActivityEntry {
+            ts_ms: now_ms(),
+            actor: ENGINE_ACTOR.into(),
+            summary:
+                "Stored result recalculated (Tectora 0.0.1 -> 0.9.0): roof area 300.00 -> 129.24 m2"
+                    .into(),
+            changes: Vec::new(),
+            before: Some(before),
+            after: Some(p.clone()),
+            undid_from: None,
+            restores: None,
+        };
+        fs::create_dir_all(store.activity_dir()).unwrap();
+        fs::write(
+            store.activity_path(&id).unwrap(),
+            serde_json::to_string(&entry).unwrap() + "\n",
+        )
+        .unwrap();
+        assert_eq!(store.recalculation(&id), None);
+        let e = store
+            .restore_offer_result(&id, entry.ts_ms, USER_ACTOR, None)
+            .unwrap_err();
+        assert_eq!(e.code(), "revert_stale");
+        assert_eq!(store.load(&id).unwrap(), p);
+        assert_eq!(store.activity(&id).len(), 1);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Design A item 3 (ERR-801, UX-802): the offer's result is put back
+    /// by the engine's entry, and nothing else changes: an AI save and a
+    /// user edit after the recalculation stay, and the AI's review goes on.
+    #[test]
+    fn restoring_the_offer_result_changes_the_stored_result_only() {
+        let store = temp_store("restore-offer");
+        let (id, p) = old_offer(&store);
+        let offer = p.result_snapshot.clone().unwrap();
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        // An AI save after it, then the user's own edit (unlogged).
+        let mut q = store.load(&id).unwrap();
+        q.notes = "from the AI".into();
+        store
+            .save_as(Some(id.clone()), &q, "claude", "Notes")
+            .unwrap();
+        let ai_ts = store.activity(&id).last().unwrap().ts_ms;
+        q.parts[0].edges[0].overhang += 0.1;
+        store.save(Some(id.clone()), &q).unwrap();
+        assert_eq!(store.pending_review(&id).unwrap().count, 1);
+
+        // Another entry's time, or an AI's: refused, nothing written.
+        let stale = store
+            .restore_offer_result(&id, ai_ts, USER_ACTOR, None)
+            .unwrap_err();
+        assert_eq!(stale.code(), "revert_stale");
+        assert_eq!(store.load(&id).unwrap(), q);
+
+        let back = store
+            .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        let mut want = q.clone();
+        want.result_snapshot = Some(offer.clone());
+        assert_eq!(back, want);
+        assert_eq!(store.load(&id).unwrap(), want);
+        let log = store.activity(&id);
+        let entry = log.last().unwrap();
+        assert_eq!(entry.actor, USER_ACTOR);
+        assert_eq!(entry.restores, Some(done.entry_ts_ms));
+        assert_eq!(entry.undid_from, None);
+        assert!(
+            entry.summary.starts_with(RESTORED_PREFIX),
+            "{}",
+            entry.summary
+        );
+        assert!(!entry.summary.starts_with(REVERTED_PREFIX));
+        assert_eq!(
+            entry
+                .changes
+                .iter()
+                .map(|c| c.field.as_str())
+                .collect::<Vec<_>>(),
+            ["result_snapshot"]
+        );
+        assert_eq!(store.recalculation(&id), None);
+        // A second press finds nothing to put back.
+        let again = store
+            .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap_err();
+        assert_eq!(again.code(), "revert_stale");
+        assert_eq!(store.activity(&id).len(), log.len());
+
+        // The AI's change still waits for review, and "revert the latest
+        // change" undoes it, not the restore (`pending_start`,
+        // `latest_undone`).
+        let pending = store.pending_review(&id).expect("still pending");
+        assert_eq!((pending.count, pending.since_ts_ms), (1, ai_ts));
+        let e = store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(entry.ts_ms))
+            .unwrap_err();
+        assert_eq!(e.code(), "revert_stale");
+        let reverted = store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(ai_ts))
+            .unwrap();
+        assert_eq!(reverted.notes, p.notes);
+        assert_eq!(reverted.result_snapshot, Some(offer.clone()));
+        assert_eq!(reverted.parts, q.parts);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Pending owner decision, as recommended: the offer's figures put
+    /// back stay for good, whatever engine opens the job later; an AI may
+    /// put them back (with its reason); and the way back stays open after
+    /// the job moved on to ordered.
+    #[test]
+    fn restored_offer_figures_stay_for_good_also_after_the_job_is_ordered() {
+        let store = temp_store("restore-pinned");
+        let (id, p) = old_offer(&store);
+        let offer = p.result_snapshot.clone().unwrap();
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        let mut q = store.load(&id).unwrap();
+        q.job.status = crate::model::JobStatus::Ordered;
+        store.save(Some(id.clone()), &q).unwrap();
+        assert!(store.recalculation(&id).is_some(), "still offered");
+        store
+            .restore_offer_result(
+                &id,
+                done.entry_ts_ms,
+                "claude",
+                Some("The customer signed these"),
+            )
+            .unwrap();
+        let entry = store.activity(&id).last().unwrap().clone();
+        assert_eq!(entry.actor, "claude");
+        assert!(
+            entry
+                .summary
+                .ends_with("(reason: The customer signed these)"),
+            "{}",
+            entry.summary
+        );
+        // As if a later engine opened the offer: the origin says an older
+        // engine checked it, and still nothing is recalculated.
+        q = store.load(&id).unwrap();
+        q.job.status = crate::model::JobStatus::Offer;
+        store.save(Some(id.clone()), &q).unwrap();
+        let mut origin = store.result_origin(&id, offer.taken_ms).unwrap();
+        assert!(origin.pinned);
+        origin.checked = "0.0.1".into();
+        store.write_result_origin(&id, &origin).unwrap();
+        assert_eq!(store.refresh_entry(&id).unwrap(), None);
+        assert_eq!(
+            store.load(&id).unwrap().result_snapshot,
+            Some(offer.clone())
+        );
+
+        // The same after the generic revert of the engine's entry.
+        let (id, p) = old_offer(&store);
+        let offer = p.result_snapshot.clone().unwrap();
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        store
+            .revert_to(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        let mut origin = store.result_origin(&id, offer.taken_ms).unwrap();
+        assert!(origin.pinned);
+        origin.checked = "0.0.1".into();
+        store.write_result_origin(&id, &origin).unwrap();
+        assert_eq!(store.refresh_entry(&id).unwrap(), None);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Design A item 4 (ERR-801): "revert the latest change" names the
+    /// entry the button was drawn on; when an AI saved meanwhile nothing is
+    /// undone.
+    #[test]
+    fn revert_last_refuses_when_another_change_is_the_latest_by_now() {
+        let store = temp_store("revert-expect");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let mut a = p.clone();
+        a.notes = "first".into();
+        store
+            .save_as(Some(id.clone()), &a, "claude", "First")
+            .unwrap();
+        let first = store.activity(&id).last().unwrap().ts_ms;
+        let mut b = a.clone();
+        b.name = "Second".into();
+        store
+            .save_as(Some(id.clone()), &b, "claude", "Second")
+            .unwrap();
+        let e = store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(first))
+            .unwrap_err();
+        assert_eq!(e.code(), "revert_stale");
+        assert_eq!(e.id(), Some(id.as_str()));
+        assert_eq!(store.load(&id).unwrap(), b);
+        assert_eq!(store.activity(&id).len(), 2);
+        let second = store.activity(&id).last().unwrap().ts_ms;
+        let back = store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(second))
+            .unwrap();
+        assert_eq!(back, a);
+        // The next one to undo is the first by now.
+        assert_eq!(
+            store
+                .revert_last_expecting(&id, USER_ACTOR, None, Some(first))
+                .unwrap(),
+            p
+        );
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Design A item 6 (UX-806): one rule for "changed by AI". Opening an
+    /// offer (the engine's entry) and putting its figures back do not take
+    /// the job out of the AI list; the user's own logged change does.
+    #[test]
+    fn changed_by_ai_steps_over_the_engines_entry_and_a_restore() {
+        let store = temp_store("by-ai");
+        let (id, _) = old_offer(&store);
+        assert!(store.summarize(&id).unwrap().changed_by_ai.is_none());
+        let mut q = store.load(&id).unwrap();
+        q.notes = "AI".into();
+        store
+            .save_as(Some(id.clone()), &q, "claude", "Notes")
+            .unwrap();
+        store.mark_reviewed(&id, u64::MAX / 2).unwrap();
+        let by = |s: &Store| s.summarize(&id).unwrap().changed_by_ai.map(|a| a.actor);
+        assert_eq!(by(&store).as_deref(), Some("claude"));
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        let card = store.summarize(&id).unwrap();
+        assert_eq!(card.last_activity.as_ref().unwrap().actor, ENGINE_ACTOR);
+        assert_eq!(card.changed_by_ai.as_ref().unwrap().summary, "Notes");
+        let listed = |s: &Store| {
+            let (all, _) = s.scan().unwrap();
+            let q = crate::library::Query {
+                by_ai: true,
+                ..Default::default()
+            };
+            crate::library::search(all, &q).unwrap().len()
+        };
+        assert_eq!(listed(&store), 1);
+        store
+            .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(by(&store).as_deref(), Some("claude"));
+        // An entry received as "the engine's" is stepped over as well.
+        let log = store.activity(&id);
+        let mut received = log.clone();
+        received.last_mut().unwrap().actor = RECEIVED_ENGINE_ACTOR.into();
+        assert_eq!(
+            changed_by_ai(&received).map(|e| e.actor.as_str()),
+            Some("claude")
+        );
+        // The user's own change is the newest: not changed by AI.
+        q = store.load(&id).unwrap();
+        q.notes = "mine".into();
+        store
+            .save_as(Some(id.clone()), &q, USER_ACTOR, "Notes")
+            .unwrap();
+        assert_eq!(by(&store), None);
+        assert_eq!(listed(&store), 0);
+        assert!(changed_by_ai(&[]).is_none());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// `refresh_figures` (moved here from the app shell and the preview
+    /// bridge): the offer's date and engine and each figure old -> new for
+    /// the engine's entry, nothing for any other entry.
+    #[test]
+    fn refresh_figures_are_given_for_the_engines_entry_only() {
+        let store = temp_store("refresh-figures");
+        let (id, p) = old_offer(&store);
+        let offer = p.result_snapshot.clone().unwrap();
+        store.refresh_entry(&id).unwrap().expect("recalculated");
+        let entry = store.activity(&id).last().unwrap().clone();
+        let f = refresh_figures(&entry).expect("the engine's entry");
+        assert_eq!(f.offer_ms, offer.taken_ms);
+        assert_eq!(
+            (f.from.as_str(), f.to.as_str()),
+            ("0.0.1", crate::snapshot::ENGINE_VERSION)
+        );
+        assert_eq!(f.differences.len(), 1);
+        assert_eq!(f.differences[0].key, "roof_area");
+        assert_eq!(f.differences[0].stored, offer.roof_area);
+        for actor in [USER_ACTOR, "claude", RECEIVED_ENGINE_ACTOR, "Tectora"] {
+            let mut other = entry.clone();
+            other.actor = actor.into();
+            assert_eq!(refresh_figures(&other), None, "{actor}");
+        }
+        let mut created = entry.clone();
+        created.before = None;
+        assert_eq!(refresh_figures(&created), None);
+        let json = serde_json::to_value(&f).unwrap();
+        assert_eq!(json["offer_ms"], offer.taken_ms);
+        assert_eq!(json["differences"][0]["key"], "roof_area");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 ERR-803: opening a job that has nothing to
+    /// recalculate (a draft, an offer already checked) never takes the
+    /// job's lock, so it does not wait for another writer.
+    #[test]
+    fn a_job_with_nothing_to_recalculate_opens_without_the_lock() {
+        let store = temp_store("refresh-nolock");
+        let draft = store
+            .save(None, &examples::find("gable").unwrap().project())
+            .unwrap();
+        let (offer, _) = old_offer(&store);
+        assert!(store.refresh_entry(&offer).unwrap().is_some());
+        for id in [draft, offer] {
+            let held = store.lock(&id).unwrap().expect("a lock");
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (dir, job) = (store.dir.clone(), id.clone());
+            std::thread::spawn(move || {
+                let s = Store::new(dir).unwrap();
+                // Would wait an hour if it took the lock.
+                let r = s.refresh_entry_within(&job, std::time::Duration::from_secs(3600));
+                let _ = tx.send(r);
+            });
+            let r = rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .unwrap_or_else(|_| panic!("{id}: waited for the lock"));
+            assert_eq!(r.unwrap(), None);
+            drop(held);
+        }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ERR-803: a due recalculation waits for a held lock only so long,
+    /// then the job opens as it is; the next open recalculates it.
+    #[test]
+    fn a_due_recalculation_gives_up_on_a_held_lock_and_the_next_open_does_it() {
+        let store = temp_store("refresh-heldlock");
+        let (id, p) = old_offer(&store);
+        let log = store.activity(&id).len();
+        let held = store.lock(&id).unwrap().expect("a lock");
+        let started = std::time::Instant::now();
+        let r = store
+            .refresh_entry_within(&id, std::time::Duration::from_millis(150))
+            .unwrap();
+        assert_eq!(r, None);
+        assert!(started.elapsed() >= std::time::Duration::from_millis(150));
+        assert_eq!(store.load(&id).unwrap().result_snapshot, p.result_snapshot);
+        assert_eq!(store.activity(&id).len(), log);
+        drop(held);
+        assert!(store.refresh_entry(&id).unwrap().is_some());
+        // The wait the app opens with is a few seconds, not for ever.
+        assert!(REFRESH_LOCK_WAIT <= std::time::Duration::from_secs(5));
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 TEST-801: the recalculation on open runs in the
+    /// work bound (HUNT-703): a roof over it keeps the offer's figures and
+    /// is not tried again.
+    #[test]
+    fn a_recalculation_over_the_work_bound_keeps_the_offer_figures() {
+        let store = temp_store("refresh-bound");
+        let mut p = examples::find("gable").unwrap().project();
+        let mut second = p.parts[0].clone();
+        for e in &mut second.edges {
+            e.start.x += 3.0;
+            e.start.y += 2.0;
+        }
+        p.parts.push(second);
+        let (id, p) = old_offer_of(&store, p, 2.0);
+        let taken = p.result_snapshot.as_ref().unwrap().taken_ms;
+        let (_, once) = crate::work::bounded_by(u64::MAX, || crate::snapshot::take_checked(&p));
+        assert!(once > 1);
+        // The entry point's own bound, held to half of what the roof needs.
+        let r = crate::work::with_limit(once / 2, || store.refresh_result(&id));
+        assert_eq!(r.unwrap(), None);
+        assert_eq!(store.load(&id).unwrap().result_snapshot, p.result_snapshot);
+        assert!(store.activity(&id).iter().all(|e| e.actor != ENGINE_ACTOR));
+        assert_eq!(
+            store.result_origin(&id, taken).unwrap().checked,
+            crate::snapshot::ENGINE_VERSION
+        );
+        assert_eq!(store.refresh_result(&id).unwrap(), None);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 TEST-802: a refresh of a job that is not there
+    /// writes nothing, no lock file either.
+    #[test]
+    fn refreshing_a_job_that_is_not_there_writes_nothing() {
+        let store = temp_store("refresh-missing");
+        assert_eq!(store.refresh_result("no-such-job").unwrap(), None);
+        assert_eq!(store.refresh_entry("no-such-job").unwrap(), None);
+        assert!(!store.activity_dir().join("no-such-job.lock").exists());
+        assert_eq!(store.recalculation("no-such-job"), None);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 UX-807: a recalculation that leaves the roof area
+    /// and changes line lengths names the line codes, not "roof area a ->
+    /// a". Its summary and the one of a restore are kept in
+    /// `tests/fixtures/parity/refreshed_more_entries.json` for
+    /// `app/src/lib/live.test.ts` (write with `TECTORA_WRITE_REFRESHED=1`).
+    #[test]
+    fn a_recalculation_of_line_lengths_only_names_the_line_codes() {
+        let store = temp_store("refresh-lines");
+        let (id, _, code) = old_offer_lines_off(&store);
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        assert_eq!(
+            done.summary,
+            format!(
+                "Stored result recalculated (Tectora 0.0.1 -> {}): line lengths {code}",
+                crate::snapshot::ENGINE_VERSION
+            )
+        );
+        assert!(!done.summary.contains("roof area"));
+        store
+            .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        let restored = store.activity(&id).last().unwrap().summary.clone();
+        let _ = fs::remove_dir_all(&store.dir);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/parity/refreshed_more_entries.json");
+        if std::env::var_os("TECTORA_WRITE_REFRESHED").is_some() {
+            let file = serde_json::json!({
+                "_comment": "Generated by the core test store::tests::a_recalculation_of_line_lengths_only_names_the_line_codes (TECTORA_WRITE_REFRESHED=1): the change-log summaries of a real recalculation that changed line lengths only, and of putting the offer's result back; app/src/lib/live.test.ts translates them. `to` is the engine version they were written with.",
+                "from": "0.0.1",
+                "to": crate::snapshot::ENGINE_VERSION,
+                "codes": code,
+                "lines_summary": done.summary,
+                "restored_summary": restored,
+            });
+            fs::write(&path, serde_json::to_string_pretty(&file).unwrap() + "\n").unwrap();
+            return;
+        }
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        // The engine's version moves on with every release: compared with
+        // the fixture's own `to` in its place.
+        let ours = |s: &str| {
+            s.replace(
+                crate::snapshot::ENGINE_VERSION,
+                file["to"].as_str().unwrap(),
+            )
+        };
+        assert_eq!(
+            ours(&done.summary),
+            file["lines_summary"],
+            "rewrite with TECTORA_WRITE_REFRESHED=1"
+        );
+        assert_eq!(
+            ours(&restored),
+            file["restored_summary"],
+            "rewrite with TECTORA_WRITE_REFRESHED=1"
+        );
+    }
+
     #[test]
     fn errors_have_stable_codes() {
         let store = temp_store("errors");
@@ -6078,6 +7079,7 @@ mod tests {
             changes: Vec::new(),
             after: Some(old.clone()),
             undid_from: None,
+            restores: None,
         };
         fs::write(
             store.activity_dir().join("novak-2.jsonl"),

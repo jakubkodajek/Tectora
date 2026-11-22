@@ -8,7 +8,7 @@
 use serde::Deserialize;
 
 use crate::model::{JobInfo, JobStatus, Project};
-use crate::store::{ProjectSummary, USER_ACTOR};
+use crate::store::ProjectSummary;
 
 /// What to sort the library by.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -62,10 +62,9 @@ pub fn search(list: Vec<ProjectSummary>, q: &Query) -> Result<Vec<ProjectSummary
         .into_iter()
         .filter(|p| {
             q.status.is_none_or(|s| p.job.status == s)
-                && (!q.by_ai
-                    || p.last_activity
-                        .as_ref()
-                        .is_some_and(|a| a.actor != USER_ACTOR))
+                // One rule with the app's filter, count and badge
+                // (`store::changed_by_ai`, audit 2026-11-22 UX-806).
+                && (!q.by_ai || p.changed_by_ai.is_some())
                 && from.is_none_or(|f| p.modified_ms >= f)
                 && to.is_none_or(|t| p.modified_ms < t)
                 // An area not known yet (ARCH-001) hides no job.
@@ -286,6 +285,7 @@ mod tests {
             outlines: vec![],
             lines: vec![],
             last_activity: None,
+            changed_by_ai: None,
             pitch_range: None,
             dormers: 0,
             files: 0,
@@ -573,6 +573,9 @@ mod tests {
             actor: "claude".into(),
             summary: String::new(),
         });
+        // As the store fills it for a job an AI changed last
+        // (`store::changed_by_ai`), which is what `by_ai` reads (UX-806).
+        list[1].changed_by_ai = list[1].last_activity.clone();
         let run = |q: Query| ids(&search(list.clone(), &q).unwrap()).join(",");
         assert_eq!(run(Query::default()), "c,b,a");
         assert_eq!(
