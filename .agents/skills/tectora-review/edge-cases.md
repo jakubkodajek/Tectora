@@ -375,3 +375,43 @@ show their lengths while drawing", "a wall by length and typed angle").
   angle field and the PlaceBar do not clip).
 - A mistyped long wall (99 m) removed with the draw bar's undo: the plan
   fits the drawing that is left again (`audit-r3-ui.e2e.ts` UX-203).
+
+## 15. Edits waiting for the core while the user keeps working (@ui, @errors, @ux)
+
+Reviewers: ui, errors, ux. Guards: `app/src/lib/jobedits.test.ts`,
+`app/src/lib/numeric.field.test.ts`, `app/e2e/audit-r4-ed.e2e.ts`,
+`app/e2e/audit-r5-ed.e2e.ts`. Hold the core's answer back (Playwright
+`page.route` on the bridge, 0.3 to 3 s) for every case.
+
+- A value typed on one item, then PageDown and the same value (or one arrow
+  step) on the next item of the same size, lands once on each item; the
+  field never shows a value the file does not have (UI-403).
+- A width or height typed just before a drag of another object or of the
+  building survives the drag; nothing is written back at the drop (ERR-401).
+- A confirmed delete (corner, dormer, building) still happens after an AI
+  save or the user's own edit landed while the question was open (UI-401).
+- The user's own delete of an item whose edit is with the core ends quietly;
+  only a change from outside gives the refusal, and the refusal names the
+  object and stays marked on the field (UX-401, UX-402).
+- Holding an arrow key shows the newest step, never an earlier one coming
+  back (UX-403).
+- A refused helper or round-roof dialog stays open with its values.
+
+## 16. Huge but valid jobs reach every view (@arch, @ui)
+
+Reviewers: arch, ui. Guards: `store::tests::the_card_of_a_job_at_the_face_and_corner_limits_is_bounded`,
+`thumbbox.test.ts`, `extent.test.ts` (scans app/src for spreads into
+Math.min / Math.max).
+
+- A job at the limits (500 hand-drawn faces of 500 corners, 200 buildings)
+  received as a bundle or saved by the AI: the library lists every job, the
+  editor and the 3D view open it (ARCH-402).
+- A change log of large entries (notes near 1M characters, 50+ saves) stays
+  at 50 entries and Revert all still returns to the version before the AI
+  (ARCH-401).
+- A small received bundle with a long history imports in under a second
+  (HUNT-401).
+- A pipe, link or device in place of a lock file, the change log or
+  `settings.json` never hangs a save and never writes outside the folder
+  (HUNT-402, HUNT-403); a `settings.json` with a byte order mark loads
+  (HUNT-404).
