@@ -335,16 +335,17 @@ test.describe("round-5 audit: fields and focus", () => {
     const height = def.getByTestId("building-height");
     await height.click();
     const seen: number[] = [];
-    for (let i = 0; i < 6; i++) {
-      await height.press("ArrowUp");
-      await page.waitForTimeout(60);
-      seen.push(+(await height.inputValue()).replace(",", "."));
-    }
-    for (let i = 0; i < 8; i++) {
-      await page.waitForTimeout(250);
-      seen.push(+(await height.inputValue()).replace(",", "."));
-    }
-    const end = +(h0 + 0.3).toFixed(3);
+    // The field's text sampled every 20 ms from the page itself while 8 presses go out.
+    await page.evaluate(() => {
+      const w = window as any;
+      const f = document.querySelector<HTMLInputElement>('[data-testid="building-height"]')!;
+      w.__seen = [];
+      w.__sample = setInterval(() => w.__seen.push(f.value), 20);
+    });
+    for (let i = 0; i < 8; i++) await height.press("ArrowUp");
+    await page.waitForTimeout(3000);
+    seen.push(...(await page.evaluate(() => (clearInterval((window as any).__sample), (window as any).__seen as string[]))).map((v) => +v.replace(",", ".")));
+    const end = +(h0 + 0.4).toFixed(3);
     await waitForProject(id, (p) => p.parts[0].edges[0].eave_height === end, 12_000);
     for (let i = 1; i < seen.length; i++) expect(seen[i], seen.join(" ")).toBeGreaterThanOrEqual(seen[i - 1]);
     await expect(height).toHaveValue(String(end).replace(".", ","));
