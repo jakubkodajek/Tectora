@@ -107,6 +107,17 @@ async function selectChimney(page: Page, n = 1) {
   return ob;
 }
 
+// With TECTORA_SHOTS=<folder>/ and TECTORA_SHOTS_TAG=before|after every test
+// leaves a screenshot `r4-<finding>-<n>-<tag>.png` there (the audit's
+// before / after pictures); without it nothing is written.
+let shotNo = 0;
+test.afterEach(async ({ page }, info) => {
+  const dir = process.env.TECTORA_SHOTS;
+  if (!dir) return;
+  const id = info.title.match(/\(([A-Z]+-\d+)/)?.[1] ?? "misc";
+  await page.screenshot({ path: `${dir}r4-${id}-${++shotNo}-${process.env.TECTORA_SHOTS_TAG ?? "after"}.png` }).catch(() => {});
+});
+
 test.describe("round-4 audit: an edit belongs to its item", () => {
   test("a dormer width typed while the AI deletes an earlier dormer lands on its own dormer, and the bar follows it (ERR-302)", async ({ app, page, mcp }) => {
     const id = await createExample("gable", "Vikýře a AI");
