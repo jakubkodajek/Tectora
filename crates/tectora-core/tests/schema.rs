@@ -137,6 +137,22 @@ fn an_older_format_migrates_and_a_newer_one_is_refused() {
     let store = Store::new(dir.clone()).unwrap();
     std::fs::write(dir.join("later.tectora"), v.to_string()).unwrap();
     assert_eq!(store.load("later").unwrap_err().code(), "newer_format");
+    // TEST-306 R7: the newer version written as a float is refused by the
+    // store as well, and a save leaves the file as it is.
+    let text = v.to_string().replace(
+        &format!("\"schema_version\":{}", SCHEMA_VERSION + 1),
+        &format!("\"schema_version\":{}.0", SCHEMA_VERSION + 1),
+    );
+    assert!(text.contains(".0"), "{text}");
+    std::fs::write(dir.join("float.tectora"), &text).unwrap();
+    assert_eq!(store.load("float").unwrap_err().code(), "newer_format");
+    let e = store.save(Some("float".into()), &gable()).unwrap_err();
+    assert_eq!(e.code(), "newer_format");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("float.tectora")).unwrap(),
+        text
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
