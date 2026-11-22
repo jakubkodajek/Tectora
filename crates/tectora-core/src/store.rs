@@ -784,13 +784,30 @@ pub const MAX_JOB_FILE: u64 = 64 * 1024 * 1024;
 /// instead of hanging or reading for ever, a larger file `too_large`
 /// (ARCH-204). For the library, the CLI and files opened from elsewhere.
 pub fn read_job_text(path: &Path) -> Result<String, FileError> {
-    let mut text = String::new();
-    std::io::Read::read_to_string(
-        &mut std::io::Read::take(open_regular(path, MAX_JOB_FILE)?, MAX_JOB_FILE),
-        &mut text,
+    job_text(
+        read_regular(path, MAX_JOB_FILE)?,
+        &path.display().to_string(),
     )
-    .map_err(|e| FileError::io(path, e))?;
-    Ok(text)
+}
+
+/// The bytes of a job file (`what` names it) as its text: a leading UTF-8
+/// byte order mark, which Windows tools write (PowerShell 5, Notepad), is
+/// dropped, and a file in another encoding (a Windows code page) is
+/// `unreadable` as "not UTF-8 text" instead of an operating system error
+/// (audit 2026-11-22 ERR-306).
+pub fn job_text(mut bytes: Vec<u8>, what: &str) -> Result<String, FileError> {
+    if bytes.starts_with(b"\xef\xbb\xbf") {
+        bytes.drain(..3);
+    }
+    String::from_utf8(bytes).map_err(|e| {
+        FileError::new(
+            "unreadable",
+            format!(
+                "{what}: not UTF-8 text (saved in another encoding?), at byte {}",
+                e.utf8_error().valid_up_to()
+            ),
+        )
+    })
 }
 
 /// Largest change log (`.activity/<id>.jsonl`) read, bytes: of a longer
@@ -1157,7 +1174,7 @@ impl Store {
         // job (ARCH-204).
         let text = match read_job_text(&path) {
             Ok(t) => t,
-            Err(e) if e.code == "not_a_file" || e.code == "too_large" => {
+            Err(e) if matches!(e.code, "not_a_file" | "too_large" | "unreadable") => {
                 return Err(StoreError::Unreadable {
                     id: id.to_string(),
                     detail: e.detail,
@@ -2398,6 +2415,47 @@ mod tests {
         });
         let done = rx.recv_timeout(std::time::Duration::from_secs(20));
         assert!(done.is_ok(), "a read of a pipe hung");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 ERR-306: a job saved with a UTF-8 byte order mark
+    /// (PowerShell 5, Notepad) opens; one in another encoding (cp1250) is
+    /// unreadable as "not UTF-8 text", not an operating system error.
+    #[test]
+    fn a_job_with_a_byte_order_mark_opens_and_one_not_in_utf8_says_so() {
+        let store = temp_store("bom");
+        let p = examples::find("hip").unwrap().project();
+        let mut bytes = b"\xef\xbb\xbf".to_vec();
+        bytes.extend(p.to_json().unwrap().as_bytes());
+        fs::write(store.dir.join("bom.tectora"), &bytes).unwrap();
+        assert_eq!(store.load("bom").unwrap(), p);
+        let mut q = p.clone();
+        q.notes = "Pozn\u{e1}mka".into();
+        // Each letter outside ASCII as one byte, as a Windows code page.
+        let cp1250: Vec<u8> = q
+            .to_json()
+            .unwrap()
+            .chars()
+            .map(|c| if c.is_ascii() { c as u8 } else { 0xe1 })
+            .collect();
+        fs::write(store.dir.join("cp.tectora"), cp1250).unwrap();
+        let e = store.load("cp").unwrap_err();
+        assert_eq!(e.code(), "unreadable", "{e}");
+        assert!(e.to_string().contains("not UTF-8 text"), "{e}");
+        let (_, broken) = store.scan().unwrap();
+        assert!(
+            broken
+                .iter()
+                .any(|b| b.id == "cp" && b.code == "unreadable"),
+            "{broken:?}"
+        );
+        assert!(!broken.iter().any(|b| b.id == "bom"), "{broken:?}");
+        // The same for a file opened from elsewhere.
+        let outside = std::env::temp_dir().join(format!("tectora-bom-{}.tectora", now_ms()));
+        fs::write(&outside, &bytes).unwrap();
+        let id = crate::bundle::open_path(&store, &outside).unwrap();
+        assert_eq!(store.load(&id).unwrap().parts, p.parts);
+        let _ = fs::remove_file(&outside);
         let _ = fs::remove_dir_all(&store.dir);
     }
 

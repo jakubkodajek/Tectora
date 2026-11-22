@@ -443,7 +443,7 @@ pub fn import(store: &Store, src: &Path) -> Result<String, FileError> {
     // The texts keep the rules of a write: no control or invisible
     // characters, nothing too long (ARCH-201).
     let project = parse_project(
-        &String::from_utf8(text).map_err(zip_err)?,
+        &crate::store::job_text(text, "job bundle: project.tectora")?,
         "job bundle: project.tectora",
         &file_stem(src),
     )?;
@@ -598,11 +598,10 @@ pub fn open_path(store: &Store, path: &Path) -> Result<String, FileError> {
     {
         return Ok(stem.to_string());
     }
-    let mut text = String::new();
-    crate::store::open_regular(path, MAX_TEXT_ENTRY)?
-        .take(MAX_TEXT_ENTRY)
-        .read_to_string(&mut text)
-        .map_err(|e| FileError::io(path, e))?;
+    let text = crate::store::job_text(
+        crate::store::read_regular(path, MAX_TEXT_ENTRY)?,
+        &path.display().to_string(),
+    )?;
     let project = parse_project(&text, &path.display().to_string(), &file_stem(path))?;
     Ok(store.save(None, &project)?)
 }
