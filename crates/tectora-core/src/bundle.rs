@@ -664,13 +664,37 @@ pub struct Opened {
 pub fn open_paths(store: &Store, paths: impl IntoIterator<Item = PathBuf>) -> Opened {
     let mut out = Opened::default();
     for p in paths {
-        match open_path(store, &p) {
+        // A panic is this file's failure, told to the user like any other:
+        // the app opens files on a thread of its own, which a panic ended
+        // without a word.
+        let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            #[cfg(test)]
+            if file_stem(&p) == OPEN_PANICS {
+                panic!("a test file whose import panics");
+            }
+            open_path(store, &p)
+        }))
+        .unwrap_or_else(|e| {
+            Err(FileError::new(
+                "internal",
+                format!(
+                    "{}: opening the file failed: {}",
+                    p.display(),
+                    crate::store::panic_message(&*e)
+                ),
+            ))
+        });
+        match opened {
             Ok(id) => out.last = Some(id),
             Err(e) => out.failed.push((p, e)),
         }
     }
     out
 }
+
+/// The name of a test file whose import panics.
+#[cfg(test)]
+const OPEN_PANICS: &str = "test-open-panics";
 
 /// Plan preview: wall outlines and roof lines, y up, 1 unit = 1 m.
 pub fn preview_svg(project: &Project) -> String {
@@ -722,6 +746,38 @@ pub fn preview_svg(project: &Project) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round-6 audit (arch "To check" 40): a file whose import panics is
+    /// reported like any file that does not open, and the others still
+    /// open; the app's open thread used to end without a word.
+    #[test]
+    fn a_file_whose_import_panics_is_reported_and_the_others_open() {
+        let dir = std::env::temp_dir().join(format!("tectora-open-panic-{}", now_ms()));
+        let store = Store::new(dir.join("lib")).unwrap();
+        let good = dir.join("good.tectora");
+        fs::write(
+            &good,
+            crate::examples::find("hip")
+                .unwrap()
+                .project()
+                .to_json()
+                .unwrap(),
+        )
+        .unwrap();
+        let bad = dir.join(format!("{OPEN_PANICS}.tectora"));
+        fs::write(&bad, "{}").unwrap();
+        let r = open_paths(&store, [bad.clone(), good]);
+        assert!(r.last.is_some());
+        assert_eq!(r.failed.len(), 1);
+        assert_eq!(r.failed[0].0, bad);
+        assert_eq!(r.failed[0].1.code, "internal");
+        assert!(
+            r.failed[0].1.detail.contains("failed"),
+            "{}",
+            r.failed[0].1.detail
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn files_that_do_not_open_are_reported_and_the_others_open() {

@@ -7,6 +7,7 @@
   import SettingsDialog from "./lib/SettingsDialog.svelte";
   import Toasts from "./lib/Toasts.svelte";
   import { api, onLiveStatus, onOpenFailed, onOpenProject, onProjectsChanged, onSettingsChanged } from "./lib/api";
+  import { afterListening } from "./lib/startup";
   import { t } from "./lib/i18n.svelte";
   import { actorName, live } from "./lib/live.svelte";
   import { info, notify, notifyError } from "./lib/notify.svelte";
@@ -166,7 +167,6 @@
     // Closing the window: the open job is saved first, and edits that cannot
     // be saved are only dropped when the user says so.
     const unClose = closeGuard();
-    api.takePendingOpen().then((id) => id && openFile(id));
     const unOpen = onOpenProject(openFile);
     // A file opened from the system that did not open (damaged, newer, not
     // a job): told like a failed import, at start-up and later (ERR-006).
@@ -176,7 +176,12 @@
         () => {},
       );
     const unOpenFailed = onOpenFailed(showOpenErrors);
-    showOpenErrors();
+    // Taken once both listeners exist, so a file whose import ends at
+    // start-up is either heard or still waiting here.
+    afterListening([unOpen, unOpenFailed], () => {
+      api.takePendingOpen().then((id) => id && openFile(id));
+      showOpenErrors();
+    });
     const tick = setInterval(() => (live.now = Date.now()), 5000);
     return () => {
       un.then((f) => f());
