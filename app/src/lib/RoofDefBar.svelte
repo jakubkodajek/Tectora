@@ -274,9 +274,11 @@
     {:else}
       {#if project.parts.length === 0}
         <!-- An empty job: no wall to pick, so say how to start (UX-004). -->
-        <p class="tip" data-testid="empty-tip">{t("editor.empty")}</p>
+        <!-- The two ways to start come first, so both stay in the bar at 600 px;
+             the tip after them wraps instead of running out of the bar (UI-303). -->
         {#if ondraw}<button class="btn sm" onclick={ondraw}><Icon name="draw" size={15} />{t("tool.draw")}</button>{/if}
         {#if onstandard}<button class="btn sm" onclick={onstandard}><Icon name="house" size={15} />{t("tool.standard")}</button>{/if}
+        <p class="tip empty" data-testid="empty-tip">{t("editor.empty")}</p>
       {:else}
         <p class="tip">{t("editor.tip")}</p>
       {/if}
@@ -623,5 +625,11 @@
     margin: 0;
     font-size: 13px;
     color: var(--text-2);
+  }
+  /* The empty job's tip takes the room that is left and wraps in it. */
+  .row > .tip.empty {
+    flex: 1 1 0;
+    min-width: 120px;
+    line-height: 1.25;
   }
 </style>

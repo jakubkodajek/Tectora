@@ -5,6 +5,7 @@
   import { onMount, tick, type Snippet } from "svelte";
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
+  import { shownNow } from "./dblclick";
 
   let {
     title,
@@ -15,6 +16,9 @@
   }: { title: string; width?: number; onclose: () => void; children: Snippet; footer?: Snippet } = $props();
 
   let dialog: HTMLDivElement | undefined = $state();
+  // A double click on the button that opened the dialog: its second press
+  // lands on the backdrop and must not close the dialog again (UI-304).
+  const secondPress = shownNow();
 
   const FOCUSABLE =
     'a[href], button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
@@ -73,7 +77,7 @@
 
 <svelte:window {onkeydown} />
 
-<div class="backdrop" role="presentation" onpointerdown={(e) => e.target === e.currentTarget && onclose()}>
+<div class="backdrop" role="presentation" onpointerdown={(e) => e.target === e.currentTarget && !secondPress(e) && onclose()}>
   <div class="modal" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" bind:this={dialog} style="width:min({width}px, calc(100vw - 32px))">
     <header>
       <h2>{title}</h2>

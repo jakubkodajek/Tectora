@@ -50,8 +50,30 @@ then check the saved file (`waitForProject`) and the recalculated result:
   of that kind (dormer, chimney, roof opening, window), not only one.
 - the same field with four quick ArrowUp presses and with a second field
   typed while the first check is still out (hold the check back with
-  `page.route`): every step and both fields land. Compare only what the
-  user typed, never the whole object before and after the check.
+  `page.route`): every step and both fields land, with no note. Do it for
+  every field whose value the core works out: dormer bar, chimney / opening
+  box (X, Y, width, depth, rotation), roof window, building height, wall
+  length, the distances on the face (`audit-r4-ed.e2e.ts`).
+- ArrowUp then ArrowDown, and a value typed and the old one typed back,
+  while the first answer is out: the field and the file keep the last value
+  the user set (`numeric.svelte.ts` `toSend`).
+- an AI save that deletes an *earlier* item of the same list while the
+  value is with the core (dormer 1 deleted, dormer 2 edited): the value
+  lands on its own item and the bar follows it; the AI deleting or changing
+  the *edited* item itself refuses the value with `editor.actionStale` and
+  deselects it. Never the neighbour at the same index.
+
+**One rule for all of these (`app/src/lib/jobedits.ts`, do not add a
+per-bar variant):** an edit that waits for the core takes a *hold* on its
+item at input time (`hold`, `holdRoof`), runs through `JobEdits.run` (one
+after another, each on the job as the one before left it, only the typed
+field taken from the user) and is refused only when an outside save changed
+its own item. What an outside save changed is decided where the job is
+replaced (`swapOutside` → `JobEdits.outside`) from the file before and after
+the save, both in the core's form. Never compare an editor copy of an item
+or of the job with a later one by `JSON.stringify` across an await: key
+order and defaults differ from the file's (`half_hip: null`), and the
+user's own earlier step changes it too.
 - a dialog whose fields ask the core: OK asks once more for the object as
   it stands (a kind or shape change has no check of its own), and a
   refusal clears once the user types the field again
@@ -76,6 +98,14 @@ Guards: `app/e2e/editor-ux.e2e.ts`, `app/e2e/fields.e2e.ts`.
   600×420 too: another button lands under the pointer there ("In Gebäude
   umwandeln", `audit-r3-ed.e2e.ts`); bars that replace another use
   `freshBar` (`dblclick.ts`).
+- A double click on every action that waits for the core: OK of the
+  building dialog (move with a copy), of the calculation helper, of the
+  round roof and of the dormer window, Make it a building, Store result,
+  the status select. It acts once and shows no note; the action is wrapped
+  in `exclusive` (`inflight.ts`) and its button is off while it runs
+  (`audit-r4-ed.e2e.ts`).
+- A double click on a button that opens a dialog leaves the dialog open
+  (the second press lands on the backdrop; `Modal.svelte` uses `shownNow`).
 
 ## 2. Every edit recalculates (@errors, @test)
 
@@ -162,7 +192,21 @@ and `revert_refuses_when_the_user_changed_the_same_value`.
   the core (typed distance, wall length, building height, Duplicate,
   Move / Rotate / Mirror, helpers, face to building): an AI save of other
   things lets it land, a change of its own object refuses it with
-  `editor.actionStale` (`onCurrentJob`, `audit-r3-ed.e2e.ts`).
+  `editor.actionStale` (`JobEdits.run`, `audit-r3-ed.e2e.ts`). Try each
+  **after an ordinary edit** (Gable then Eave, Flat roof on and off), not
+  only on a freshly opened job: the editor's copy then differs in form from
+  the file, which once made every such action refuse falsely
+  (`audit-r4-ed.e2e.ts`). What the action derives from the job (the new
+  building's number, which part to select) must come from the job as it is
+  when the core answers, not from before the await.
+- Re-offer of a job that keeps an earlier stored result: a roof the core
+  refuses keeps the job a draft and shows the refusal; the "keeps the
+  earlier result" note names the figure that differs (a material, a line),
+  never two equal areas. `offer.ts` `snapshotDifferences` and the core's
+  `snapshot::compare` share `tests/fixtures/parity/snapshot_compare_cases.json`.
+- Two programs changing `settings.json` at once (the app's first-start
+  write and an AI client's `update_settings`): neither change is lost
+  (`Settings::update`, one lock); a lost AI change is never shown for review.
 - While a recalculation runs, Results, the status bar and the views mark
   the figures as pending (`calc-pending`), never show the old roof as current.
 - Undo / Redo keep editor memory that a redo needs (the pitch Eave gives

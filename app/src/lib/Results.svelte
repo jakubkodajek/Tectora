@@ -6,7 +6,7 @@
   import { m, m2, num } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
-  import { areaRows, failedParts, joinedWith, missingResult, roofState, warningText } from "./results";
+  import { areaRows, failedParts, isFacesOnly, joinedWith, lineRowsShown, missingResult, roofState, warningText } from "./results";
   import type { Described } from "./errors";
   import { inputWarnings } from "./plausible";
   import { legend, lineName, SUB_CODES } from "./linecodes";
@@ -18,6 +18,7 @@
     result,
     project = null,
     onstore,
+    storing = false,
     blocked = null,
     failure = null,
     pending = false,
@@ -25,6 +26,8 @@
     result: CalcResult | null;
     project?: Project | null;
     onstore?: () => void;
+    /** The result is being stored: the button is off. */
+    storing?: boolean;
     /** Why the figures cannot become the offer's stored result now (the core gave no roof), or null. */
     blocked?: string | null;
     /** Why the last calculation of the whole job failed (too complex, …), kept until one succeeds (UX-101). */
@@ -72,6 +75,8 @@
   /** The stored result (figures of the offer) against the current one. */
   const stored = $derived(result?.stored_result ?? null);
   const diffLabel = (key: string) => figureName(key, project);
+  /** A roof of hand-drawn faces only: no "ridge 0,00 m" and no rows of zeros (UX-302). */
+  const facesOnly = $derived(isFacesOnly(project));
   /** Why the current figures cannot be stored: the core gave no roof, or there is no building at all (UI-206). */
   const storeBlocked = $derived(blocked ?? (project && !hasBuilding(project) ? t("res.empty") : null));
   const fmtDiff = formatFigure;
@@ -123,6 +128,7 @@
         ].filter((r) => r.value >= 0.005 || !["P", "c", "S", "W"].includes(r.code))
       : [],
   );
+  const shownRows = $derived(lineRowsShown(rows, facesOnly && !none));
   /** The core's lengths by code (OL, OR, WV, …), for the parts of the O and W rows and the legend. */
   const codes = $derived(result?.codes ?? {});
   /** "Napojení čelní 2,60 m · boční …": the W row split by kind, which matter for the flashing (UX-013). */
@@ -138,7 +144,7 @@
     {:else if missing === "failed" && failure}<small data-testid="res-calc-failed"><code>{failure.code}</code> {failure.message}</small>
     {:else if missing === "calculating"}<small data-testid="res-calculating">{t("res.calculating")}</small>
     {:else if failed}<small data-testid="res-not-calculated">{t("res.notCalculated")}</small>
-    {:else if totals}<small>{t("res.ridgeHeight", { v: num(totals.ridge_height) })}</small>{/if}
+    {:else if totals && !facesOnly}<small data-testid="res-ridge">{t("res.ridgeHeight", { v: num(totals.ridge_height) })}</small>{/if}
     {#if pending && result}<small class="stale" role="status" data-testid="res-stale">{t("res.calculating")}</small>{/if}
     {#if failedSet.length}<small data-testid="res-partial">{t("res.partialNote", { names: failedNames })}</small>{/if}
     {#if totals && !failed && deductedTotal >= 0.005}<small data-testid="res-deducted">{t("res.obj.netOf", { a: m2(deductedTotal) })}</small>{/if}
@@ -216,7 +222,7 @@
   <h4>{t("res.lines")}</h4>
   <table data-testid="res-lines">
     <tbody>
-      {#each rows as r}
+      {#each shownRows as r}
         <tr class:zero={none || r.value < 0.005}>
           <td class="code"><i style="background:{r.color}"></i>{r.code}</td>
           <td>{r.label}{#if r.n && !failed}<span class="n">×{r.n}</span>{/if}
@@ -228,7 +234,7 @@
       {/each}
     </tbody>
   </table>
-  <p class="note" data-testid="res-legend">{legend(rows.map((r) => r.code), codes)}</p>
+  <p class="note" data-testid="res-legend">{legend(shownRows.map((r) => r.code), codes)}</p>
 
   {#if stored}
     <h4>{t("snap.title")}</h4>
@@ -257,7 +263,7 @@
         <p class="mono">{t("snap.engine", { v: stored.stored.engine_version })}</p>
       {/if}
       {#if stored.differences.length && onstore}
-        <button class="btn sm" disabled={!!storeBlocked} title={storeBlocked ?? undefined} onclick={onstore}>{t("snap.store")}</button>
+        <button class="btn sm" disabled={!!storeBlocked || storing} title={storeBlocked ?? undefined} onclick={onstore}>{t("snap.store")}</button>
       {/if}
     </div>
   {/if}
@@ -265,8 +271,9 @@
 
 <style>
   /* Figures of the roof before the last edit while its recalculation runs (ERR-204). */
+  /* --text-2: --text-3 on the hero's --accent-soft is 2.67:1 (UI-305; the pair is in contrast.py). */
   .results.pending .hero strong {
-    color: var(--text-3);
+    color: var(--text-2);
   }
   .results.pending .hero ~ * {
     opacity: 0.6;

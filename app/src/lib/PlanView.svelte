@@ -10,7 +10,7 @@
   import type { Ghost } from "./changes";
   import { placementOf, type ItemRef, type PlanTarget } from "./items";
   import { gridStep as gridStepFor, gridValues } from "./grid";
-  import { boxOf, draftLeavesView, fitView, resizedView } from "./planfit";
+  import { boxOf, contentPoints, draftLeavesView, fitView, resizedView } from "./planfit";
   import { faceTags, tagSpots } from "./facelabels";
   import { hostHeightAt, isDormerFace } from "./dormers";
   import { dormerWallLines, onWallLine, planeOf } from "./scene3d";
@@ -106,12 +106,12 @@
   const GRID = 0.5;
   const SNAP = 0.05;
 
-  /** Everything the plan should show: the walls, the eaves of the calculated
-   *  roof (its labels lie outside them) and a footprint being drawn. */
+  /** Everything the plan should show: the walls, hand-drawn faces and lines, the
+   *  eaves of the calculated roof (its labels lie outside them) and a footprint
+   *  being drawn (planfit.ts `contentPoints`). */
   function contentBox() {
-    const pts = project.parts.flatMap((p) => p.edges.map((e) => e.start)).concat(drawing ?? []);
-    for (const rp of result?.parts ?? []) for (const f of rp.geometry.faces) for (const q of f.polygon) pts.push({ x: q[0], y: q[1] });
-    return boxOf(pts);
+    const faces = (result?.parts ?? []).flatMap((rp) => rp.geometry.faces.map((f) => f.polygon));
+    return boxOf(contentPoints(project, faces, drawing));
   }
 
   export function fit() {
@@ -126,7 +126,8 @@
 
   $effect(() => {
     if (!fitted && width > 10) {
-      if (project.parts.length) fit();
+      // A job of hand-drawn faces only is fitted too (UX-301).
+      if (contentBox()) fit();
       else {
         scale = 30;
         center = { x: 8, y: 5 };
@@ -146,7 +147,7 @@
     untrack(() => {
       const from = size;
       size = to;
-      if (!fitted || userView || project.parts.length === 0 || (from.width === to.width && from.height === to.height)) return;
+      if (!fitted || userView || !contentBox() || (from.width === to.width && from.height === to.height)) return;
       const next = resizedView({ scale, center }, from, to, contentBox());
       if (next === "fit") fit();
       else center = next.center;

@@ -511,10 +511,9 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         "get_settings" => Ok(Settings::load().describe()),
         "update_settings" => {
             let patch = a.get("patch").cloned().unwrap_or(Value::Null);
-            let next = Settings::load()
-                .patched(&patch)
-                .map_err(|e| e.code().to_string())?;
-            next.save().map_err(|e| e.code().to_string())?;
+            // Read, changed and written under the settings lock (TEST-307).
+            let (_, next) =
+                Settings::update(|s| s.patched(&patch)).map_err(|e| e.code().to_string())?;
             Ok(next.describe())
         }
         "answer_folder_request" => {
@@ -524,26 +523,23 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();
-            let next = Settings::load()
-                .answer_folder_request(&shown, allow)
+            let (_, next) = Settings::update(|s| s.answer_folder_request(&shown, allow))
                 .map_err(|e| e.code().to_string())?;
-            next.save().map_err(|e| e.code().to_string())?;
             Ok(next.describe())
         }
         "answer_file_request" => {
             let allow = a.get("allow").and_then(Value::as_bool).unwrap_or(false);
             let shown = a.get("path").and_then(Value::as_str).unwrap_or_default();
-            let next = Settings::load().answer_file_request(std::path::Path::new(shown), allow);
-            next.save().map_err(|e| e.code().to_string())?;
+            let (_, next) =
+                Settings::update(|s| Ok(s.answer_file_request(std::path::Path::new(shown), allow)))
+                    .map_err(|e| e.code().to_string())?;
             Ok(next.describe())
         }
         "answer_ai_change" => {
             let id = a.get("id").and_then(Value::as_u64).ok_or("invalid_value")?;
             let revert = a.get("revert").and_then(Value::as_bool).unwrap_or(false);
-            let next = Settings::load()
-                .answer_ai_change(id, revert)
+            let (_, next) = Settings::update(|s| s.answer_ai_change(id, revert))
                 .map_err(|e| e.code().to_string())?;
-            next.save().map_err(|e| e.code().to_string())?;
             Ok(next.describe())
         }
         "open_folder" => Err("open_folder is not available in the browser preview".into()),

@@ -155,6 +155,23 @@ The library folder is `$TECTORA_PROJECTS_DIR` or `Documents/Tectora`;
 settings are in the per-user config folder (`TECTORA_CONFIG_DIR` overrides
 it). Details: `docs/ai-integration.md`, `crates/tectora-core/src/store.rs`.
 
+**Editor edits while the job reloads.** An edit that waits for the core (a
+typed building height, a dormer width the core checks, Duplicate, a status
+change that stores the result) may still be out when an AI save reloads the
+job. One rule covers all of them (`app/src/lib/jobedits.ts`): the edit
+holds the item it was made for from the moment of input; edits run one
+after another, each on the job as the one before left it; when the job is
+replaced from outside (reload, merge on a save conflict, Revert) the editor
+compares the file before and after that save (both in the core's form) and
+moves every hold with its item, or lets it go when the save changed or
+removed the item. An edit whose item was let go is refused with a note; an
+AI save of other things never refuses it, nor does the user's own earlier
+step. The bars' selection follows its item the same way.
+
+The settings file is changed only through `Settings::update` (read, change
+and write under one lock file), so the app and an MCP server writing at the
+same moment do not drop each other's change.
+
 ## Files
 
 | file | format | written by |

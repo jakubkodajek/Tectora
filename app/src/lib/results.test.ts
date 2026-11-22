@@ -207,3 +207,37 @@ describe("no result for a job with buildings is not an empty job (UX-101)", () =
     expect(missingResult(null, null, null)).toBe("empty");
   });
 });
+
+describe("a roof of hand-drawn faces only (UX-302)", () => {
+  it("is a job with a face and no building", async () => {
+    const { isFacesOnly } = await import("./results");
+    expect(isFacesOnly({ parts: [], manual_faces: [{ points: [], pitch_deg: 30 }] })).toBe(true);
+    expect(isFacesOnly({ parts: [{ name: "A", edges: [] }], manual_faces: [{ points: [], pitch_deg: 30 }] })).toBe(false);
+    expect(isFacesOnly({ parts: [] })).toBe(false);
+    expect(isFacesOnly(null)).toBe(false);
+  });
+
+  it("lists no line rows of zero, and every row for a building", async () => {
+    const { lineRowsShown } = await import("./results");
+    const rows = [{ code: "T", value: 0 }, { code: "F", value: 0.004 }, { code: "O", value: 6 }];
+    expect(lineRowsShown(rows, true).map((r) => r.code)).toEqual(["O"]);
+    expect(lineRowsShown(rows, false)).toHaveLength(3);
+  });
+});
+
+describe("texts fixed in the round-4 wording group (UX-302)", () => {
+  const sources = import.meta.glob(["./Results.svelte", "./AiPanel.svelte"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+  it("the calculation steps' intro names the dormers the face rows deduct", () => {
+    for (const [lang, word] of [["cs", "vikýře"], ["sk", "vikiere"], ["en", "dormers"], ["de", "Gauben"]] as const) expect(DICTS[lang]["bd.intro"]).toContain(word);
+  });
+  it("the doubled-lines hint names no cause the job may not have", () => {
+    for (const [lang, word] of [["cs", "různou výškou"], ["sk", "rôznou výškou"], ["en", "different eave heights"], ["de", "unterschiedlicher Traufhöhe"]] as const)
+      expect(DICTS[lang]["res.warn.doubled_line"]).not.toContain(word);
+  });
+  it("the AI tab's settings history has one colon, as the card", () => {
+    expect(sources["./AiPanel.svelte"]).not.toContain("{rowLabel(r)}:");
+  });
+  it("the figure of a recalculation on its way is --text-2 on the hero (UI-305)", () => {
+    expect(sources["./Results.svelte"]).toMatch(/\.results\.pending \.hero strong \{\s*color: var\(--text-2\);/);
+  });
+});

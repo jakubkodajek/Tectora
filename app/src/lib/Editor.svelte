@@ -19,7 +19,7 @@
   import Breakdown from "./Breakdown.svelte";
   import RoofDefBar from "./RoofDefBar.svelte";
   import DormerBar from "./DormerBar.svelte";
-  import { roofInput } from "./offer";
+  import { hasBuilding } from "./offer";
   import DormerDialog from "./DormerDialog.svelte";
   import OpeningBar from "./OpeningBar.svelte";
   import ManualBar from "./ManualBar.svelte";
@@ -46,7 +46,7 @@
   import { changedEdges, changedItems, describeChange, describeFigure, ghostOf } from "./changes";
   import { wallNotes } from "./wallnotes";
   import { merge3 } from "./merge";
-  import { anchor, stillThere } from "./anchor";
+  import { JobEdits, notMade, type Hold, type ListName } from "./jobedits";
   import { roofState } from "./results";
   import { isTyping, releaseLeaveGuard, setLeaveGuard } from "./leave";
   import { PendingEdits, exclusive } from "./inflight";
@@ -154,7 +154,7 @@
   let drawing = $state<Point2[] | null>(null);
   let dormerSel = $state<number | null>(null);
   /** The dormer dialog: a new dormer (index null) or dormer `index`. */
-  let dormerDlg = $state<{ index: number | null; key: string; params: DormerParams } | null>(null);
+  let dormerDlg = $state<{ index: number | null; params: DormerParams } | null>(null);
   /** Why the dormer dialog's OK cannot store the dormer (the dialog says it), else null. */
   let dormerBlocked = $state<string | null>(null);
   /** The open dormer dialog, for OK's last check (UI-203). */
@@ -197,7 +197,7 @@
   let std = $state<{ part: RoofPart | null; mode: "add" | "replace" } | null>(null);
   let plan: PlanView | undefined = $state();
   // Round-roof helper on the selected wall and the one facing it.
-  let round = $state<{ part: number; key: string; a: number; b: number; span: number; eave: number; overhang: number; arc: Arc | null; request: HelperRequest | null } | null>(null);
+  let round = $state<{ part: number; a: number; b: number; span: number; eave: number; overhang: number; arc: Arc | null; request: HelperRequest | null } | null>(null);
   // The wall facing the selected one, from the core (`roof_helper_context`):
   // the round-roof button shows only where there is one. Asked again, after a
   // pause, whenever the selected part's walls change.
@@ -252,6 +252,59 @@
   const pendingEdits = new PendingEdits();
 
   const snapshot = () => JSON.stringify(project);
+
+  /**
+   * The one rule for edits that wait for the core (jobedits.ts): each holds
+   * the item it was made for, they run one after another, an outside save
+   * refuses only the edit whose own item it changed (said once, here), and
+   * the user's own steps never refuse each other.
+   */
+  const jobEdits = new JobEdits(
+    () => project,
+    snapshot,
+    (o) => info(t(o === "gone" ? "editor.actionStale" : "editor.actionBusy")),
+  );
+  const plain = (p: Project) => $state.snapshot(p) as Project;
+  /** One-shot actions under way: their buttons are off and a second press does nothing (UI-302, UI-308). */
+  let acting = $state({ transform: false, calc: false, round: false, face: false, store: false, dormer: false, copy: false });
+  /** What the open dialogs are for (kept out of the reactive state: the holds are moved by `edits`). */
+  const dialogHolds: { calc?: Hold; xform?: Hold; round?: Hold; dormer?: Hold } = {};
+  const SEL_LIST: Record<NonNullable<OpeningSel>["kind"], ListName> = { chimney: "chimneys", window: "windows", hole: "roof_openings" };
+  const ITEM_LIST: Record<ItemRef["kind"], ListName> = { dormer: "dormers", chimney: "chimneys", window: "windows", hole: "roof_openings", line: "manual_lines", face: "manual_faces" };
+
+  /**
+   * For the bars: a core-backed edit of item `index` of `list`, held now and
+   * queued behind the edits before it. Resolves to the reason when it was
+   * not made (the field shows the stored value again); a refusal `ask`
+   * throws reaches the bar. Leaving the job waits for it (ERR-004).
+   */
+  function barEdit<T>(list: ListName, index: number, ask: (job: Project, at: number) => Promise<T>, apply: (answer: T, at: number) => void): Promise<string | undefined> {
+    return pendingEdits.track(jobEdits.run(jobEdits.hold(list, index), ask, apply).then(notMade));
+  }
+
+  /**
+   * Swaps in `next`, the job after an outside save (an AI save, a merge on
+   * a save conflict, Revert): `base` is the file as last read or written,
+   * `remote` the file now. Edits under way, open dialogs and the bars'
+   * selection follow their items; what the save changed or removed is let go.
+   */
+  function swapOutside(base: Project | null, remote: Project, next: Project) {
+    const before = project;
+    if (!before || !base) {
+      project = next;
+      return;
+    }
+    const wall = selection ? jobEdits.hold("parts", selection.part, true) : null;
+    const dormer = dormerSel !== null ? jobEdits.hold("dormers", dormerSel, true) : null;
+    const opening = openSel ? jobEdits.hold(SEL_LIST[openSel.kind], openSel.index, true) : null;
+    const manual = manualSel ? jobEdits.hold(manualSel.kind === "line" ? "manual_lines" : "manual_faces", manualSel.index, true) : null;
+    project = next;
+    jobEdits.outside(base, remote, plain(before), next);
+    if (wall && selection) selection = wall.gone ? null : keptSelection(next, { part: wall.index, edge: selection.edge });
+    if (dormer) dormerSel = dormer.gone ? null : dormer.index;
+    if (opening && openSel) openSel = opening.gone ? null : { kind: openSel.kind, index: opening.index };
+    if (manual && manualSel) manualSel = manual.gone ? null : { kind: manualSel.kind, index: manual.index };
+  }
 
   /** AI changes since the user's last own action or accept, newest first. */
   const pendingList = $derived(review ? activity.filter((a) => isAi(a.actor) && a.ts_ms >= review!.since_ts_ms) : []);
@@ -420,8 +473,10 @@
           const r = await api.saveProjectChecked(id, written, JSON.parse(lastSaved));
           if (r.status === "conflict") {
             if (tries + 1 >= SAVE_TRIES) throw { code: "save_conflict", id };
-            project = merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, r.current);
+            const base = JSON.parse(lastSaved) as Project;
+            swapOutside(base, r.current, merge3(base, $state.snapshot(project) as Project, r.current));
             lastSaved = JSON.stringify(r.current);
+            closeStaleDialogs();
             pushHistory();
             recalc();
             refreshActivity();
@@ -459,14 +514,19 @@
 
   /** Records the current state as an undo step, recalculates and saves. */
   function commit() {
+    const prev = history[at];
     if (!pushHistory()) return;
+    // Edits under way follow their items past a delete or a copy (jobedits.ts).
+    if (project && prev) jobEdits.own(() => JSON.parse(prev) as Project, project);
     recalc();
     scheduleSave();
   }
 
   function restore(i: number) {
+    const prev = history[at];
     at = i;
     project = JSON.parse(history[i]);
+    if (project && prev) jobEdits.own(() => JSON.parse(prev) as Project, project);
     // The remembered pitches stay: a redo brings the gable back, and Eave
     // then gives the wall its own pitch again (UX-202).
     // The wall stays in the bar when the step kept it (UX-005).
@@ -531,7 +591,10 @@
       // where both changed the same value). The state stays "dirty" or
       // "failed", so the merged edits are still to be saved (ERR-002).
       const merged = !initial && (saveState === "dirty" || saveState === "failed") && project && lastSaved;
-      project = merged ? merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, p) : p;
+      const next = merged ? merge3(JSON.parse(lastSaved), $state.snapshot(project) as Project, p) : p;
+      // Edits under way, dialogs and the selection follow their items (jobedits.ts).
+      if (initial) project = next;
+      else swapOutside(lastSaved ? (JSON.parse(lastSaved) as Project) : null, p, next);
       lastSaved = json;
       pruneEavePitches(project!.parts);
       // A dialog open on a part the outside save removed or changed must not
@@ -542,7 +605,9 @@
         history = [snapshot()];
         at = 0;
         historyLen = 1;
-        if (p.parts.length === 0) drawing = [];
+        // Only a job with nothing to calculate starts in the drawing tool: one of
+        // hand-drawn faces only is a roof to look at (UX-301).
+        if (!hasBuilding(p)) drawing = [];
         if (pending) dock = "ai";
       } else {
         // External change (AI agent, CLI): keep it undoable and show it.
@@ -663,10 +728,11 @@
       clearTimeout(saveTimer);
       const oldest = pendingList[pendingList.length - 1];
       const p = all && oldest ? await api.revertChanges(id, oldest.ts_ms) : await api.revertLastChange(id);
+      swapOutside(lastSaved ? (JSON.parse(lastSaved) as Project) : null, p, p);
       lastSaved = JSON.stringify(p);
-      project = p;
       saveState = "saved";
       pushHistory();
+      closeStaleDialogs();
       selection = null;
       recalc();
       focusChange = null;
@@ -679,96 +745,84 @@
   }
 
   /**
-   * A dialog's part is still at its index as it was when the dialog opened.
-   * An outside save (AI, CLI) that removed or changed it closes the dialog
+   * The dialog's part (or dormer) is still the one it was opened for. An
+   * outside save (AI, CLI) that removed or changed it closes the dialog
    * with a note instead of acting on another part (ERRU-010).
    */
-  function dialogPartThere(d: { part: number; key: string }): boolean {
-    if (stillThere(project?.parts, { index: d.part, key: d.key })) return true;
+  function dialogPartThere(which: "calc" | "xform" | "round"): boolean {
+    if (dialogHolds[which] && !dialogHolds[which]!.gone) return true;
     closeStaleDialogs();
     return false;
   }
 
-  /** Closes the dialogs whose part or dormer an outside save removed or changed (ERRU-010). */
+  /**
+   * Closes the dialogs whose part or dormer an outside save removed or
+   * changed (ERRU-010), and moves the others with their part when an earlier
+   * one was removed. A dialog whose OK is under way is closed without a
+   * second note: its edit says that it was not made.
+   */
   function closeStaleDialogs() {
-    const parts = project?.parts;
     let closed = false;
-    if (calc && !stillThere(parts, { index: calc.part, key: calc.key })) (calc = null), (closed = true);
-    if (xform && !stillThere(parts, { index: xform.part, key: xform.key })) (xform = null), (closed = true);
-    if (round && !stillThere(parts, { index: round.part, key: round.key })) (round = null), (closed = true);
-    if (dormerDlg && dormerDlg.index !== null && !stillThere(project?.dormers, { index: dormerDlg.index, key: dormerDlg.key }))
-      (dormerDlg = null), (closed = true);
+    const gone = (h: Hold | undefined, quiet: boolean) => {
+      if (h && !h.gone) return false;
+      if (!quiet) closed = true;
+      return true;
+    };
+    if (calc) gone(dialogHolds.calc, acting.calc) ? (calc = null) : (calc.part = dialogHolds.calc!.index);
+    if (xform) gone(dialogHolds.xform, acting.transform) ? (xform = null) : (xform.part = dialogHolds.xform!.index);
+    if (round) gone(dialogHolds.round, acting.round) ? (round = null) : (round.part = dialogHolds.round!.index);
+    if (dormerDlg && dormerDlg.index !== null) gone(dialogHolds.dormer, acting.dormer) ? (dormerDlg = null) : (dormerDlg.index = dialogHolds.dormer!.index);
     if (closed) info(t("editor.dialogStale"));
   }
 
-  /**
-   * Runs core operation `run` on the job as it is now and hands its answer to
-   * `apply` only while the job is still the one it was asked for. An AI save
-   * or another edit that arrived meanwhile does not drop the action (ERR-203):
-   * when the item the action works on (`item()`: the part, the chimney, …) is
-   * still as it was, the action runs again on the job as it is now; when the
-   * item itself changed or is gone, it is refused with a note. Resolves to
-   * true once applied. Errors of `run` reach the caller.
-   */
-  async function onCurrentJob<T>(item: () => unknown, run: () => Promise<T>, apply: (r: T) => void): Promise<boolean> {
-    const key = () => {
-      const it = item();
-      return it === undefined || it === null ? null : JSON.stringify(it);
-    };
-    const want = key();
-    for (let tries = 0; want !== null && tries < 3; tries++) {
-      if (!project) return false;
-      const job = snapshot();
-      const r = await run();
-      if (!project) return false;
-      if (snapshot() === job) {
-        apply(r);
-        return true;
-      }
-      if (key() !== want) break;
-    }
-    info(t("editor.actionStale"));
-    return false;
+  /** Opens the calculation helper for wall `edge` of part `part`. */
+  function openCalc(part: number, edge: number) {
+    dialogHolds.calc = jobEdits.hold("parts", part);
+    calc = { part, edge, request: null };
   }
 
   // Calculation helpers on the selected wall.
-  let calc = $state<{ part: number; key: string; edge: number; request: HelperRequest | null } | null>(null);
+  let calc = $state<{ part: number; edge: number; request: HelperRequest | null } | null>(null);
 
   /** The move / rotate / mirror / copy dialog for the selected part (DACAD: Bearbeiten). */
-  let xform = $state<{ part: number; key: string; edge: number | null; mode: TransformMode; op: TransformOp | null } | null>(null);
+  let xform = $state<{ part: number; edge: number | null; mode: TransformMode; op: TransformOp | null } | null>(null);
 
   function openTransform() {
     if (!project || !selection) return;
-    xform = { part: selection.part, key: anchor(project.parts, selection.part).key, edge: selection.edge, mode: "move", op: null };
+    dialogHolds.xform = jobEdits.hold("parts", selection.part);
+    xform = { part: selection.part, edge: selection.edge, mode: "move", op: null };
   }
 
   /** The dialog's OK: the core moves, copies or shifts (the MCP tool transform_part / the wall shift). */
-  const applyTransform = () => pendingEdits.track(applyTransformNow());
+  const applyTransform = exclusive(
+    () => pendingEdits.track(applyTransformNow()),
+    (b) => (acting.transform = b),
+  );
   async function applyTransformNow() {
     if (!project || !xform?.op) return;
-    if (!dialogPartThere(xform)) return;
+    if (!dialogPartThere("xform")) return;
     const op = xform.op;
-    const pi = xform.part;
-    let done = false;
     try {
-      done = await onCurrentJob(
-        () => project?.parts[pi],
-        async () =>
+      // Onto the part the dialog was opened for, on the job as it is then (ERR-203).
+      const o = await jobEdits.run(
+        dialogHolds.xform!,
+        async (job, pi) =>
           op.kind === "wall"
-            ? { project: await api.offsetWall($state.snapshot(project) as Project, pi, op.edge, op.dist), parts: [] as number[] }
-            : await api.transformPart($state.snapshot(project) as Project, pi, op.map, op.copies),
+            ? { project: await api.offsetWall(plain(job), pi, op.edge, op.dist), parts: [] as number[] }
+            : await api.transformPart(plain(job), pi, op.map, op.copies),
         ({ project: next, parts }) => {
           adoptProject(next);
           if (op.kind !== "wall" && parts.length) selection = { part: parts[parts.length - 1], edge: 0 };
+          xform = null;
+          commit();
         },
       );
+      if (o === "gone") xform = null;
+      if (o !== "done") return;
     } catch (e) {
       if (!notifyRefusal(e, "transform")) notifyError(e, "calc");
       return;
     }
-    if (!done) return;
-    xform = null;
-    commit();
     setTimeout(() => plan?.fit(), 0);
   }
 
@@ -785,23 +839,29 @@
   }
 
   /** The dialog's OK: the core applies the helper's values (the MCP tool roof_helper with apply). */
-  async function applyCalc() {
-    if (!project || !calc?.request) return;
-    if (!dialogPartThere(calc)) return;
-    await applyHelper(calc.part, calc.edge, calc.request);
-    calc = null;
-  }
+  const applyCalc = exclusive(
+    async () => {
+      if (!project || !calc?.request) return;
+      if (!dialogPartThere("calc")) return;
+      await pendingEdits.track(applyHelper(dialogHolds.calc!, calc.edge, calc.request));
+      calc = null;
+    },
+    (b) => (acting.calc = b),
+  );
 
-  /** Applies a helper request to wall `edge` of `part` through the core, onto the same part. */
-  async function applyHelper(part: number, edge: number, request: HelperRequest) {
+  /** Applies a helper request to wall `edge` of the held part through the core, onto the same part. */
+  async function applyHelper(hold: Hold, edge: number, request: HelperRequest) {
     if (!project) return;
     try {
-      const done = await onCurrentJob(
-        () => project?.parts[part],
-        () => api.roofHelperApply($state.snapshot(project) as Project, part, edge, request),
-        (next) => project && (project.parts = next.parts),
+      await jobEdits.run(
+        hold,
+        (job, part) => api.roofHelperApply(plain(job), part, edge, request),
+        (next) => {
+          if (!project) return;
+          project.parts = next.parts;
+          commit();
+        },
       );
-      if (done) commit();
     } catch (e) {
       if (!notifyRefusal(e, "helper")) notifyError(e, "calc");
     }
@@ -819,9 +879,9 @@
     }
     if (!project || c.opposite === null) return;
     const e = project.parts[part].edges[edge];
+    dialogHolds.round = jobEdits.hold("parts", part);
     round = {
       part,
-      key: anchor(project.parts, part).key,
       a: edge,
       b: c.opposite,
       span: c.span,
@@ -833,25 +893,34 @@
   }
 
   /** Sets both walls to the arc's pitch and breaks (DACAD: Runddach), as the core works them out. */
-  async function applyRound() {
-    if (!project || !round?.arc || !round.request) return;
-    if (!dialogPartThere(round)) return;
-    const r = round;
-    round = null;
-    await applyHelper(r.part, r.a, r.request!);
-  }
+  const applyRound = exclusive(
+    async () => {
+      if (!project || !round?.arc || !round.request) return;
+      if (!dialogPartThere("round")) return;
+      const r = round;
+      round = null;
+      await pendingEdits.track(applyHelper(dialogHolds.round!, r.a, r.request!));
+    },
+    (b) => (acting.round = b),
+  );
 
   /** Makes the current result the job's stored result (the offer's figures). */
-  const storeResult = () => pendingEdits.track(storeResultNow());
+  const storeResult = exclusive(
+    () => pendingEdits.track(storeResultNow()),
+    (b) => (acting.store = b),
+  );
   async function storeResultNow() {
     // Zero figures of a roof the core refused are no offer (DR-001).
     if (blockedReason) return;
+    // A value typed just before is part of the roof: wait for it.
+    await jobEdits.idle();
     if (!project) return;
-    const input = roofInput(project);
+    const roof = jobEdits.holdRoof();
     try {
       const snap = await api.takeSnapshot(JSON.parse(JSON.stringify(project)));
-      // Figures of the roof as it was asked for, never of one an AI save replaced meanwhile (ERR-102).
-      if (!project || roofInput(project) !== input) {
+      // Figures of the roof as it was asked for, never of one an AI save or
+      // an edit changed meanwhile (ERR-102); an AI save of the notes keeps it (ERR-301).
+      if (!project || !jobEdits.roofSame(roof)) {
         info(t("snap.stale"));
         return;
       }
@@ -895,24 +964,27 @@
    * change, so a lower eave stays lower. The core's operation, the same as
    * MCP set_part_height.
    */
-  const setPartHeight = (h: number) => pendingEdits.track(setPartHeightNow(h));
-  /** Resolves to the reason when the core refused the height, so the field shows the stored one again. */
-  async function setPartHeightNow(h: number): Promise<string | undefined> {
+  const setPartHeight = (h: number) => {
     if (!project || !selection) return;
-    const pi = selection.part;
-    let done = false;
+    // The part the height is typed for, held now (jobedits.ts).
+    return pendingEdits.track(setPartHeightNow(jobEdits.hold("parts", selection.part), h));
+  };
+  /** Resolves to the reason when the height was not set, so the field shows the stored one again. */
+  async function setPartHeightNow(hold: Hold, h: number): Promise<string | undefined> {
     try {
-      // Onto the part the height was typed for, on the job as it is now (ERR-203).
-      done = await onCurrentJob(
-        () => project?.parts[pi],
-        () => api.setPartHeight($state.snapshot(project) as Project, pi, h),
-        (next) => {
-          if (!project) return;
-          project.parts = next.parts;
-          project.dormers = next.dormers;
-          project.chimneys = next.chimneys;
-          if (project.manual_lines?.length) project.manual_lines = next.manual_lines ?? [];
-        },
+      return notMade(
+        await jobEdits.run(
+          hold,
+          (job, pi) => api.setPartHeight(plain(job), pi, h),
+          (next) => {
+            if (!project) return;
+            project.parts = next.parts;
+            project.dormers = next.dormers;
+            project.chimneys = next.chimneys;
+            if (project.manual_lines?.length) project.manual_lines = next.manual_lines ?? [];
+            commit();
+          },
+        ),
       );
     } catch (e) {
       // A height the core refuses (an eave below the ground) is a refusal
@@ -922,8 +994,6 @@
       notifyError(e, "calc");
       return t("num.refused");
     }
-    if (!done) return t("editor.actionStale");
-    commit();
   }
 
   /**
@@ -931,30 +1001,25 @@
    * to the typed distance from the eave or a side of its roof face (the
    * core's operation, the same as MCP place_item).
    */
-  // One placement at a time, each on the job as the one before left it: a
-  // second distance typed (or an arrow step) while the first was in flight
-  // was dropped (review UI-002).
-  let placeChain: Promise<unknown> = Promise.resolve();
   const placeItem = (it: ItemRef, fromEave: number | null, fromLeft: number | null, fromRight: number | null) => {
-    placeChain = placeChain.then(() => placeItemNow(it, fromEave, fromLeft, fromRight)).catch(() => {});
-    return pendingEdits.track(placeChain);
+    // The object the distance is typed for, held now (jobedits.ts).
+    return pendingEdits.track(placeItemNow(it.kind, jobEdits.hold(ITEM_LIST[it.kind], it.index), fromEave, fromLeft, fromRight));
   };
-  async function placeItemNow(it: ItemRef, fromEave: number | null, fromLeft: number | null, fromRight: number | null): Promise<string | undefined> {
-    if (!project) return;
-    let done = false;
+  async function placeItemNow(kind: ItemRef["kind"], hold: Hold, fromEave: number | null, fromLeft: number | null, fromRight: number | null): Promise<string | undefined> {
     try {
-      // Onto the object the distance was typed for, on the job as it is now:
-      // an AI save of other things in between does not drop it (ERR-203).
-      done = await onCurrentJob(
-        () => itemOf(project, it),
-        () => api.placeItem($state.snapshot(project) as Project, MCP_KIND[it.kind], it.index, fromEave, fromLeft, fromRight),
-        (next) => {
-          if (!project) return;
-          project.dormers = next.dormers;
-          project.chimneys = next.chimneys;
-          project.windows = next.windows;
-          if (next.roof_openings) project.roof_openings = next.roof_openings;
-        },
+      return notMade(
+        await jobEdits.run(
+          hold,
+          (job, index) => api.placeItem(plain(job), MCP_KIND[kind], index, fromEave, fromLeft, fromRight),
+          (next) => {
+            if (!project) return;
+            project.dormers = next.dormers;
+            project.chimneys = next.chimneys;
+            project.windows = next.windows;
+            if (next.roof_openings) project.roof_openings = next.roof_openings;
+            commit();
+          },
+        ),
       );
     } catch (e) {
       // A distance that would take the object off its face is refused: said
@@ -964,8 +1029,6 @@
       recalc();
       return why ?? t("num.refused");
     }
-    if (!done) return t("editor.actionStale");
-    commit();
   }
 
   /** Changes an edge length by moving its end vertex along the edge. */
@@ -974,26 +1037,27 @@
    * it along the wall, so the angles stay and a rectangle stays a rectangle
    * (UX-005, the MCP tool's `set_length`). Resolves to false when refused.
    */
-  const setLength = (len: number) => pendingEdits.track(setLengthNow(len));
-  async function setLengthNow(len: number): Promise<boolean | string> {
-    if (!project || !selection) return false;
-    const { part, edge } = selection;
-    if (!project.parts[part]) return false;
-    let done = false;
+  const setLength = (len: number) => {
+    if (!project || !selection || !project.parts[selection.part]) return false;
+    // The part the length is typed for, held now (jobedits.ts).
+    return pendingEdits.track(setLengthNow(jobEdits.hold("parts", selection.part), selection.edge, len));
+  };
+  async function setLengthNow(hold: Hold, edge: number, len: number): Promise<boolean | string> {
     try {
-      // Onto the part the length was typed for, as it is now (ERR-203).
-      done = await onCurrentJob(
-        () => project?.parts[part],
-        () => api.setWallLength($state.snapshot(project!.parts[part]) as RoofPart, edge, len),
-        (next) => project?.parts[part] && (project.parts[part].edges = next.edges),
+      const o = await jobEdits.run(
+        hold,
+        (job, part) => api.setWallLength($state.snapshot(job.parts[part]) as RoofPart, edge, len),
+        (next, part) => {
+          if (!project?.parts[part]) return;
+          project.parts[part].edges = next.edges;
+          commit();
+        },
       );
+      return notMade(o) ?? true;
     } catch (e) {
       notifyError(e, "calc");
       return false;
     }
-    if (!done) return t("editor.actionStale");
-    commit();
-    return true;
   }
 
   function deleteVertex() {
@@ -1091,7 +1155,7 @@
     // As DACAD's dormer dialog: the dormer is placed when its window says OK.
     dormerBlocked = null;
     dormerNotice = null;
-    dormerDlg = { index: null, key: "", params: defaultParams("gable", { x, y }, angle, eave) };
+    dormerDlg = { index: null, params: defaultParams("gable", { x, y }, angle, eave) };
   }
 
   function editDormer() {
@@ -1099,10 +1163,13 @@
     const p = parseDormer(project.dormers[dormerSel]);
     dormerBlocked = null;
     dormerNotice = null;
-    if (p.kind !== "general") dormerDlg = { index: dormerSel, key: anchor(project.dormers, dormerSel).key, params: p };
+    if (p.kind === "general") return;
+    dialogHolds.dormer = jobEdits.hold("dormers", dormerSel);
+    dormerDlg = { index: dormerSel, params: p };
   }
 
-  async function applyDormerDialog() {
+  const applyDormerDialog = exclusive(applyDormerDialogNow, (b) => (acting.dormer = b));
+  async function applyDormerDialogNow() {
     // A distance typed into the dialog commits on blur and comes back from
     // the core: OK takes it once it is there (review UI-001).
     await tick();
@@ -1117,13 +1184,13 @@
     if (dormerDialog && !(await dormerDialog.finalCheck())) return;
     await tick();
     if (!project || !dormerDlg || dormerBlocked) return;
-    if (dormerDlg.index !== null && !stillThere(project.dormers, { index: dormerDlg.index, key: dormerDlg.key })) {
+    if (dormerDlg.index !== null && dialogHolds.dormer?.gone !== false) {
       dormerDlg = null;
       info(t("editor.dialogStale"));
       return;
     }
     const d = buildDormer($state.snapshot(dormerDlg.params) as DormerParams);
-    const i = dormerDlg.index;
+    const i = dormerDlg.index === null ? null : dialogHolds.dormer!.index;
     if (i === null || i >= project.dormers.length) {
       project.dormers.push(d);
       dormerSel = project.dormers.length - 1;
@@ -1226,34 +1293,38 @@
    * overhang) so its roof is calculated. The core's operation, the same as
    * MCP face_to_part.
    */
-  const faceToPart = () => pendingEdits.track(faceToPartNow());
+  const faceToPart = exclusive(
+    () => pendingEdits.track(faceToPartNow()),
+    (b) => (acting.face = b),
+  );
   async function faceToPartNow() {
     if (!project || manualSel?.kind !== "face" || !project.manual_faces) return;
-    const index = manualSel.index;
-    const face = project.manual_faces[index];
+    const face = project.manual_faces[manualSel.index];
     if (!face || face.points.length < 3) return;
-    const n = project.parts.length;
-    const name = n === 0 ? t("editor.mainPart") : t("editor.partN", { n: n + 1 });
-    let done = false;
     try {
-      // Onto the face it was asked for, on the job as it is now (ERR-203).
-      done = await onCurrentJob(
-        () => project?.manual_faces?.[index],
-        () => api.faceToPart($state.snapshot(project) as Project, index, name, presets.pitch_deg, presets.eave_height, presets.overhang),
+      // Onto the face it was asked for, on the job as it is then (ERR-203):
+      // the new building's number and place come from that job and the
+      // core's answer, never from the job before the await (ERR-307).
+      await jobEdits.run(
+        jobEdits.hold("manual_faces", manualSel.index),
+        (job, index) => {
+          const n = job.parts.length;
+          const name = n === 0 ? t("editor.mainPart") : t("editor.partN", { n: n + 1 });
+          return api.faceToPart(plain(job), index, name, presets.pitch_deg, presets.eave_height, presets.overhang);
+        },
         (next) => {
           if (!project) return;
           project.manual_faces = next.manual_faces;
           project.parts = next.parts;
+          manualSel = null;
+          // The core adds the new building after the others.
+          selection = { part: next.parts.length - 1, edge: 0 };
+          commit();
         },
       );
     } catch (e) {
       if (!notifyRefusal(e, "face")) notifyError(e, "calc");
-      return;
     }
-    if (!done) return;
-    manualSel = null;
-    selection = { part: n, edge: 0 };
-    commit();
   }
 
   function deleteManual() {
@@ -1337,34 +1408,44 @@
     commit();
   }
 
-  const setWindow = (w: RoofWindow) => pendingEdits.track(setWindowNow(w));
-  async function setWindowNow(w: RoofWindow) {
-    if (!project || openSel?.kind !== "window" || !project.windows) return;
-    const index = openSel.index;
-    // A window larger than its face would make the face area negative
-    // (MATH-001): refused with the reason, as MCP set_openings refuses it.
-    const windows = project.windows.map((x, i) => (i === index ? w : x));
+  /** A field of roof window `at` typed (`patch`); resolves to the reason when it was not stored. */
+  const setWindow = (patch: Partial<RoofWindow>, at: number) => pendingEdits.track(setWindowNow(patch, jobEdits.hold("windows", at)));
+  async function setWindowNow(patch: Partial<RoofWindow>, hold: Hold): Promise<string | undefined> {
     try {
-      const big = await api.checkWindows({ ...$state.snapshot(project), windows } as Project);
-      if (big) {
-        notify({
-          kind: "error",
-          code: "window_too_large",
-          title: t("opening.tooLarge.title"),
-          message: t("opening.tooLarge", { n: big.index + 1, a: num(big.area), f: num(big.face_area) }),
-        });
-        // Same values, new object: the fields show the stored size again.
-        const kept = project?.windows?.[index];
-        if (kept && project?.windows) project.windows[index] = { ...kept };
-        return;
-      }
+      return notMade(
+        await jobEdits.run(
+          hold,
+          async (job, index) => {
+            // Only the field typed is the user's; the rest is the window as it is then.
+            const w = { ...($state.snapshot(job.windows![index]) as RoofWindow), ...patch };
+            // A window larger than its face would make the face area negative
+            // (MATH-001): refused with the reason, as MCP set_openings refuses it.
+            const big = await api.checkWindows({ ...plain(job), windows: job.windows!.map((x, i) => (i === index ? w : $state.snapshot(x))) } as Project);
+            if (big) throw { tooLarge: big };
+            return w;
+          },
+          (w, index) => {
+            if (!project?.windows?.[index]) return;
+            project.windows[index] = w;
+            commit();
+          },
+        ),
+      );
     } catch (e) {
-      notifyError(e, "calc");
-      return;
+      const big = (e as { tooLarge?: { index: number; area: number; face_area: number } } | null)?.tooLarge;
+      if (!big) {
+        notifyError(e, "calc");
+        return t("num.refused");
+      }
+      notify({
+        kind: "error",
+        code: "window_too_large",
+        title: t("opening.tooLarge.title"),
+        message: t("opening.tooLarge", { n: big.index + 1, a: num(big.area), f: num(big.face_area) }),
+      });
+      // The field shows the stored size again.
+      return t("opening.tooLarge.title");
     }
-    if (!project?.windows || project.windows.length !== windows.length) return;
-    project.windows[index] = w;
-    commit();
   }
 
   function deleteOpening() {
@@ -1602,8 +1683,6 @@
 
   function partEntries(pi: number): MenuEntry[] {
     if (!project?.parts[pi]) return [];
-    const ps = project.parts[pi].edges.map((e) => e.start);
-    const w = Math.max(...ps.map((p) => p.x)) - Math.min(...ps.map((p) => p.x));
     return [
       { label: t("tool.transform") + "…", icon: "move", action: () => { selection = { part: pi, edge: selection?.part === pi ? selection.edge : 0 }; openTransform(); } },
       { label: t("menu.duplicatePart"), icon: "copy", action: () => {
@@ -1611,34 +1690,44 @@
         // 2 m to the right of everything drawn (as a new standard roof is
         // placed), so the copy never lands on, and joins, another building
         // or a manual face (UX-010).
-        const xs = [...project.parts.flatMap((p) => p.edges.map((e) => e.start.x)), ...(project.manual_faces ?? []).flatMap((f) => f.points.map((p) => p.x))];
-        const dx = Math.max(w, Math.max(...xs) - Math.min(...ps.map((p) => p.x))) + 2;
-        void pendingEdits.track(duplicatePart(pi, +dx.toFixed(3)));
+        void duplicatePart(jobEdits.hold("parts", pi));
       } },
       { label: t("tool.deletePart"), icon: "trash", danger: true, action: () => { selection = { part: pi, edge: 0 }; deletePart(); } },
     ];
   }
 
-  /** A copy of part `pi` `dx` m to the right, made by the core. */
-  async function duplicatePart(pi: number, dx: number) {
+  /** A copy of the held part to the right of everything drawn, made by the core. Once per press (UI-302). */
+  const duplicatePart = exclusive(
+    (hold: Hold) => pendingEdits.track(duplicatePartNow(hold)),
+    (b) => (acting.copy = b),
+  );
+  async function duplicatePartNow(hold: Hold) {
     if (!project) return;
-    let done = false;
     try {
-      // A copy of the part as the user saw it, on the job as it is now (ERR-203).
-      done = await onCurrentJob(
-        () => project?.parts[pi],
-        () => api.transformPart($state.snapshot(project) as Project, pi, { kind: "move", dx, dy: 0 }, 1),
+      // A copy of the part the user picked, on the job as it is then (ERR-203).
+      const o = await jobEdits.run(
+        hold,
+        (job, pi) => {
+          // 2 m to the right of everything drawn (as a new standard roof is
+          // placed), so the copy never lands on, and joins, another building
+          // or a manual face (UX-010).
+          const ps = job.parts[pi].edges.map((e) => e.start);
+          const w = Math.max(...ps.map((p) => p.x)) - Math.min(...ps.map((p) => p.x));
+          const xs = [...job.parts.flatMap((p) => p.edges.map((e) => e.start.x)), ...(job.manual_faces ?? []).flatMap((f) => f.points.map((p) => p.x))];
+          const dx = Math.max(w, Math.max(...xs) - Math.min(...ps.map((p) => p.x))) + 2;
+          return api.transformPart(plain(job), pi, { kind: "move", dx: +dx.toFixed(3), dy: 0 }, 1);
+        },
         (r) => {
           adoptProject(r.project);
           if (r.parts.length) selection = { part: r.parts[0], edge: 0 };
+          commit();
         },
       );
+      if (o !== "done") return;
     } catch (e) {
       if (!notifyRefusal(e, "transform")) notifyError(e, "calc");
       return;
     }
-    if (!done) return;
-    commit();
     setTimeout(() => plan?.fit(), 0);
   }
 
@@ -1690,7 +1779,7 @@
           { label: t("menu.insertPoint"), icon: "plus", action: () => insertVertex(part, edge, on.x, on.y) },
           { label: t("edge.addMarker"), icon: "right", action: insertMarker },
         ]),
-        ...(!marker && !gable ? [{ label: t("calc.button"), icon: "chart", action: () => (calc = { part, key: anchor(project?.parts, part).key, edge, request: null }) }] : []),
+        ...(!marker && !gable ? [{ label: t("calc.button"), icon: "chart", action: () => openCalc(part, edge) }] : []),
         { sep: true },
         ...partEntries(part),
       ];
@@ -1754,14 +1843,20 @@
   /** Asks first (UI-006): one press would remove the dormer with its faces. */
   async function deleteDormer() {
     if (!project || dormerSel === null) return;
-    const index = dormerSel;
-    const dormer = project.dormers[index];
+    const hold = jobEdits.hold("dormers", dormerSel);
     // Tauri's dialog plugin makes confirm asynchronous: always await it.
-    if (!(await confirm(t("dormer.confirmDelete", { n: index + 1 })))) return;
-    // The project may have been reloaded (AI edit) while the dialog was open.
-    if (!project || project.dormers[index] !== dormer) return;
+    if (!(await confirm(t("dormer.confirmDelete", { n: dormerSel + 1 })))) return;
+    if (!project) return;
+    // An AI save while the question was open: the dormer asked about is
+    // removed where it is now; one the save changed or removed is not (jobedits.ts).
+    if (hold.gone) {
+      info(t("editor.actionStale"));
+      return;
+    }
+    const index = hold.index;
     project.dormers.splice(index, 1);
     if (dormerSel === index) dormerSel = null;
+    else if (dormerSel !== null && dormerSel > index) dormerSel--;
     commit();
   }
 
@@ -1775,12 +1870,13 @@
   // job data and roof options stay, and Undo brings the roof back.
   async function clearRoof() {
     if (!hasDrawing(project)) return;
-    const before = project;
+    const roof = jobEdits.holdRoof();
     if (!(await confirm(t("editor.confirmClear")))) return;
-    // The project may have been reloaded (AI edit) while the dialog was open:
-    // the user did not see what is there now, so say so instead (ERR-203).
+    // An AI save changed the roof while the dialog was open: the user did
+    // not see what is there now, so say so instead (ERR-203). A save of the
+    // notes or the job data clears as asked (ERR-301).
     if (!project) return;
-    if (project !== before) {
+    if (!jobEdits.roofSame(roof)) {
       info(t("editor.actionStale"));
       return;
     }
@@ -1803,14 +1899,18 @@
     if (!project || !selection) return;
     // The last part takes the whole roof with it: that is Clear.
     if (project.parts.length === 1) return clearRoof();
-    const index = selection.part;
-    const part = project.parts[index];
+    const hold = jobEdits.hold("parts", selection.part);
     // Tauri's dialog plugin replaces window.confirm with an async version
     // (a Promise is always truthy), so the answer must be awaited.
-    if (!(await confirm(t("editor.confirmDeletePart", { name: partLabel(part.name, index) })))) return;
-    // The project may have been reloaded (AI edit) while the dialog was open.
-    if (!project || project.parts[index] !== part) return;
-    project.parts.splice(index, 1);
+    if (!(await confirm(t("editor.confirmDeletePart", { name: partLabel(project.parts[selection.part].name, selection.part) })))) return;
+    if (!project) return;
+    // An AI save while the question was open: the building asked about is
+    // removed where it is now; one the save changed or removed is not (jobedits.ts).
+    if (hold.gone) {
+      info(t("editor.actionStale"));
+      return;
+    }
+    project.parts.splice(hold.index, 1);
     selection = null;
     commit();
   }
@@ -2126,10 +2226,14 @@
           </div>
         {/if}
         <div class="views" class:split={prefs.layout === "split"}>
-          {#if calcPending}<span class="calc-mark" role="status" data-testid="calc-pending"><i class="dot"></i>{t("res.calculating")}</span>{/if}
+          <!-- Under the first view's own label, so it covers neither view's label nor the 3D buttons (UI-309). -->
+          {#snippet calcMark()}
+            {#if calcPending}<span class="calc-mark" role="status" data-testid="calc-pending"><i class="dot"></i>{t("res.calculating")}</span>{/if}
+          {/snippet}
           {#if prefs.layout !== "3d"}
             <div class="view">
               <span class="view-label">{t("editor.plan")}</span>
+              {@render calcMark()}
               <PlanView
                 bind:this={plan}
                 {project}
@@ -2164,6 +2268,7 @@
           {#if prefs.layout !== "plan"}
             <div class="view">
               <span class="view-label">{t("editor.model")}</span>
+              {#if prefs.layout === "3d"}{@render calcMark()}{/if}
               <Roof3D {project} {result} {selection} item={selectedItem}
                 onpick={(tg) => { if (tg.type === "item") selectItem(tg.item); else if (tg.type === "edge") { selectItem(null); selection = { part: tg.part, edge: tg.edge }; } }}
                 oncontext={openMenu} onitemdbl={openProperties} />
@@ -2185,14 +2290,14 @@
             onclose={placing === "face" ? closeFace : undefined}
             oncancel={() => (placing = false)} />
         {:else if dormerSel !== null}
-          <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} onedit={editDormer} track={(p) => pendingEdits.track(p)}
+          <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} onedit={editDormer} edit={barEdit}
             onplace={(e, l, r) => (dormerSel !== null ? placeItem({ kind: "dormer", index: dormerSel }, e, l, r) : undefined)} />
         {:else if openSel}
-          <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening} track={(p) => pendingEdits.track(p)}
+          <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening} edit={barEdit}
             placement={openSel ? placementOf(result, openSel) : null}
             onplace={(e, l, r) => (openSel ? placeItem({ kind: openSel.kind, index: openSel.index }, e, l, r) : undefined)} />
         {:else if manualSel}
-          <ManualBar {project} bind:sel={manualSel} online={setManualLine} onface={setManualFace} ontopart={faceToPart} ondelete={deleteManual} />
+          <ManualBar {project} bind:sel={manualSel} online={setManualLine} onface={setManualFace} ontopart={faceToPart} busy={acting.face} ondelete={deleteManual} />
         {:else}
           <RoofDefBar
             {project}
@@ -2208,7 +2313,7 @@
             ondelete={deleteVertex}
             onmarker={insertMarker}
             onround={opposite !== null ? openRound : undefined}
-            oncalc={() => selection && (calc = { part: selection.part, key: anchor(project?.parts, selection.part).key, edge: selection.edge, request: null })}
+            oncalc={() => selection && openCalc(selection.part, selection.edge)}
           />
         {/if}
       </div>
@@ -2225,13 +2330,13 @@
         <div class="dock" role="tabpanel" id={dockIds.panel} aria-labelledby={dockIds.tab(dock)} bind:this={dockEl}>
           <button class="icon-btn dock-close" onclick={() => (dockOpen = false)} aria-label={t("common.close")} title={t("common.close")}><Icon name="x" size={16} /></button>
           {#if dock === "results"}
-            <Results {result} {project} onstore={storeResult} blocked={blockedReason} failure={calcFailure} pending={calcPending} />
+            <Results {result} {project} onstore={storeResult} storing={acting.store} blocked={blockedReason} failure={calcFailure} pending={calcPending} />
           {:else if dock === "breakdown"}
             <Breakdown {project} {result} bind:data={breakdown} onmark={(mk) => (planMark = mk)} />
           {:else if dock === "ai"}
             <AiPanel {id} {project} {activity} onrevert={() => revert(false)} busy={reviewBusy} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
-            <JobPanel {id} {project} current={() => project} onchange={commit} onsave={save} blocked={blockedReason} track={(p) => pendingEdits.track(p)} />
+            <JobPanel {id} {project} current={() => project} onchange={commit} onsave={save} blocked={blockedReason} edits={jobEdits} track={(p) => pendingEdits.track(p)} />
           {/if}
         </div>
       </aside>
@@ -2270,7 +2375,7 @@
 {#if objDlg && openSel && project}
   <Modal title={itemTitle(openSel)} width={760} onclose={() => closeObjDlg(false)}>
     <div class="obj-dlg" data-testid="object-dialog">
-      <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={() => { objDlg = false; deleteOpening(); }} track={(p) => pendingEdits.track(p)}
+      <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={() => { objDlg = false; deleteOpening(); }} edit={barEdit}
         placement={placementOf(result, openSel)}
         onplace={(e, l, r) => (openSel ? placeItem({ kind: openSel.kind, index: openSel.index }, e, l, r) : undefined)} />
     </div>
@@ -2288,7 +2393,7 @@
       {#if dormerBlocked}<p class="dlg-why" role="alert" data-testid="dormer-ok-blocked">{dormerBlocked}</p>
       {:else if dormerNotice}<p class="dlg-why" role="status" data-testid="dormer-ok-notice">{dormerNotice}</p>{/if}
       <button class="btn" onclick={() => (dormerDlg = null)}>{t("common.cancel")}</button>
-      <button class="btn primary" disabled={!!dormerBlocked} title={dormerBlocked ?? undefined} onclick={applyDormerDialog}>{t("common.ok")}</button>
+      <button class="btn primary" disabled={!!dormerBlocked || acting.dormer} title={dormerBlocked ?? undefined} onclick={applyDormerDialog}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -2298,7 +2403,7 @@
     <RoofCalcForm {project} partIndex={calc.part} edge={calc.edge} bind:request={calc.request} />
     {#snippet footer()}
       <button class="btn" onclick={() => (calc = null)}>{t("common.cancel")}</button>
-      <button class="btn primary" disabled={!calc?.request} onclick={applyCalc}>{t("common.ok")}</button>
+      <button class="btn primary" disabled={!calc?.request || acting.calc} onclick={applyCalc}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -2308,7 +2413,7 @@
     <RoundRoofForm span={round.span} bind:eave={round.eave} bind:overhang={round.overhang} bind:arc={round.arc} bind:request={round.request} />
     {#snippet footer()}
       <button class="btn" onclick={() => (round = null)}>{t("common.cancel")}</button>
-      <button class="btn primary" disabled={!round?.arc} onclick={applyRound}>{t("common.ok")}</button>
+      <button class="btn primary" disabled={!round?.arc || acting.round} onclick={applyRound}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -2318,7 +2423,7 @@
     <TransformForm part={project.parts[xform.part]} edge={xform.edge} bind:mode={xform.mode} bind:op={xform.op} />
     {#snippet footer()}
       <button class="btn" onclick={() => (xform = null)}>{t("common.cancel")}</button>
-      <button class="btn primary" disabled={!xform?.op} onclick={applyTransform}>{t("common.ok")}</button>
+      <button class="btn primary" disabled={!xform?.op || acting.transform} onclick={applyTransform}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -2706,9 +2811,10 @@
   .calc-mark {
     position: absolute;
     z-index: 3;
-    left: 50%;
-    top: 8px;
-    transform: translateX(-50%);
+    left: 10px;
+    top: 34px;
+    max-width: calc(100% - 20px);
+    white-space: nowrap;
     display: inline-flex;
     align-items: center;
     gap: 6px;

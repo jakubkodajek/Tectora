@@ -777,10 +777,9 @@ fn get_settings() -> Value {
 /// Errors are codes the UI translates (`settings.err.<code>`).
 #[tauri::command]
 fn update_settings(app: tauri::AppHandle, patch: Value) -> Result<Value, String> {
-    let next = Settings::load()
-        .patched(&patch)
-        .map_err(|e| e.code().to_string())?;
-    next.save().map_err(|e| e.code().to_string())?;
+    // Read, changed and written under the settings lock: an AI client's
+    // change saved at the same moment is not lost (TEST-307).
+    let (_, next) = Settings::update(|s| s.patched(&patch)).map_err(|e| e.code().to_string())?;
     switch_library(&app, &next).map_err(|_| "not_writable".to_string())?;
     Ok(next.describe())
 }
@@ -795,10 +794,8 @@ fn answer_folder_request(
 ) -> Result<Value, String> {
     // `changes` is what the dialog showed; a request replaced meanwhile is
     // not answered (ARCH-005).
-    let next = Settings::load()
-        .answer_folder_request(&changes, allow)
+    let (_, next) = Settings::update(|s| s.answer_folder_request(&changes, allow))
         .map_err(|e| e.code().to_string())?;
-    next.save().map_err(|e| e.code().to_string())?;
     switch_library(&app, &next).map_err(|_| "not_writable".to_string())?;
     Ok(next.describe())
 }
@@ -810,8 +807,8 @@ fn answer_folder_request(
 fn answer_file_request(path: std::path::PathBuf, allow: bool) -> Result<Value, String> {
     // `path` is what the dialog showed; a request replaced meanwhile is not
     // answered (ARCH-005).
-    let next = Settings::load().answer_file_request(&path, allow);
-    next.save().map_err(|e| e.code().to_string())?;
+    let (_, next) = Settings::update(|s| Ok(s.answer_file_request(&path, allow)))
+        .map_err(|e| e.code().to_string())?;
     Ok(next.describe())
 }
 
@@ -820,10 +817,8 @@ fn answer_file_request(path: std::path::PathBuf, allow: bool) -> Result<Value, S
 /// otherwise it is accepted. A change answered meanwhile is left alone.
 #[tauri::command]
 fn answer_ai_change(id: u64, revert: bool) -> Result<Value, String> {
-    let next = Settings::load()
-        .answer_ai_change(id, revert)
-        .map_err(|e| e.code().to_string())?;
-    next.save().map_err(|e| e.code().to_string())?;
+    let (_, next) =
+        Settings::update(|s| s.answer_ai_change(id, revert)).map_err(|e| e.code().to_string())?;
     Ok(next.describe())
 }
 

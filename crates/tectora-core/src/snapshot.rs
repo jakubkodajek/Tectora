@@ -376,6 +376,38 @@ mod tests {
         assert!(s.differences.iter().any(|d| d.key == "roof_area"));
     }
 
+    /// The cases the UI's copy of this rule (`app/src/lib/offer.ts`
+    /// `snapshotDifferences`) is tested with too, so the two cannot drift
+    /// (TEST-302): the keys `compare` reports, in its order.
+    #[test]
+    fn compare_matches_the_shared_cases() {
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/parity/snapshot_compare_cases.json"),
+        )
+        .unwrap();
+        let file: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let snap = |over: &serde_json::Value| -> ResultSnapshot {
+            let mut v = file["base"].clone();
+            v["engine_version"] = "test".into();
+            v["taken_ms"] = 0.into();
+            for (k, x) in over.as_object().unwrap() {
+                v[k] = x.clone();
+            }
+            serde_json::from_value(v).unwrap()
+        };
+        let cases = file["cases"].as_array().unwrap();
+        assert!(cases.len() >= 10);
+        for c in cases {
+            let keys: Vec<String> = compare(&snap(&c["stored"]), &snap(&c["current"]))
+                .into_iter()
+                .map(|d| d.key)
+                .collect();
+            let want: Vec<String> = serde_json::from_value(c["differs"].clone()).unwrap();
+            assert_eq!(keys, want, "{}", c["name"]);
+        }
+    }
+
     #[test]
     fn older_files_migrate_and_newer_ones_are_refused() {
         let p = examples::find("gable").unwrap().project();

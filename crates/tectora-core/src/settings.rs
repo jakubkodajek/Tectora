@@ -237,6 +237,24 @@ pub fn env_projects_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Takes the lock of the settings file at `path` (`<file>.lock` beside it),
+/// held until the returned file is dropped. Best effort, like the job
+/// library's locks: where the folder cannot hold a lock file the change
+/// goes on without it.
+fn settings_lock(path: &Path) -> Option<fs::File> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok()?;
+    }
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("json.lock"))
+        .ok()?;
+    file.lock().ok()?;
+    Some(file)
+}
+
 impl Settings {
     /// Reads the settings file; a missing or unreadable file gives defaults
     /// (a broken file must never stop the app from starting).
@@ -274,6 +292,31 @@ impl Settings {
 
     pub fn save(&self) -> Result<(), SettingsError> {
         self.save_to(&settings_path())
+    }
+
+    /// Changes the settings file in one step: reads it, applies `change`
+    /// and writes the result, all under the settings lock. The app and
+    /// every MCP server change the file this way; a plain `load` … `save`
+    /// in two processes at once lets the later save drop the other's
+    /// change without a word (TEST-307: the app's first-start write of its
+    /// language took an AI client's settings change with it, so the change
+    /// was never shown for review). Returns the settings before and after.
+    pub fn update(
+        change: impl FnOnce(&Settings) -> Result<Settings, SettingsError>,
+    ) -> Result<(Settings, Settings), SettingsError> {
+        Self::update_at(&settings_path(), change)
+    }
+
+    /// [`Settings::update`] of the file at `path`.
+    pub fn update_at(
+        path: &Path,
+        change: impl FnOnce(&Settings) -> Result<Settings, SettingsError>,
+    ) -> Result<(Settings, Settings), SettingsError> {
+        let _lock = settings_lock(path);
+        let old = Self::load_from(path);
+        let next = change(&old)?;
+        next.save_to(path)?;
+        Ok((old, next))
     }
 
     pub fn save_to(&self, path: &Path) -> Result<(), SettingsError> {
@@ -1294,6 +1337,51 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// TEST-307: the app and an AI client's MCP server change the settings
+    /// at the same moment; neither change may be lost.
+    #[test]
+    fn two_writers_at_once_lose_no_change() {
+        let d = tmp("two-writers");
+        let path = d.join(SETTINGS_FILE);
+        Settings::default().save_to(&path).unwrap();
+        const N: usize = 12;
+        let ai = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for i in 0..N {
+                    Settings::update_at(&path, |s| {
+                        let patch = serde_json::json!({ "roof_defaults": { "pitch_deg": 20 + i } });
+                        Ok(s.patched_by_ai(&patch, "Claude", &format!("change {i}"))?.0)
+                    })
+                    .unwrap();
+                }
+            })
+        };
+        let user = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for i in 0..200 {
+                    let overhang = 0.3 + (i % 5) as f64 / 10.0;
+                    Settings::update_at(&path, |s| {
+                        s.patched(&serde_json::json!({ "roof_defaults": { "overhang": overhang } }))
+                    })
+                    .unwrap();
+                }
+            })
+        };
+        ai.join().unwrap();
+        user.join().unwrap();
+        let s = Settings::load_from(&path);
+        let summaries: Vec<&str> = s.ai_changes.iter().map(|c| c.summary.as_str()).collect();
+        for i in 0..N {
+            assert!(
+                summaries.contains(&format!("change {i}").as_str()),
+                "AI change {i} was lost: {summaries:?}"
+            );
+        }
+        assert_eq!(s.roof_defaults.overhang, 0.7, "the user's last value");
     }
 
     #[test]
