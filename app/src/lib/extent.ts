@@ -26,3 +26,9 @@ export function maxOf<T>(xs: readonly T[], f: (x: T) => number = (x) => x as unk
   }
   return m;
 }
+
+/** Appends every item of `items` to `list` (a spread into `push` throws for long lists, as for Math.max); returns `list`. */
+export function pushAll<T>(list: T[], items: readonly T[]): T[] {
+  for (const x of items) list.push(x);
+  return list;
+}

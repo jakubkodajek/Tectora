@@ -7,6 +7,7 @@
 
 import type { Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanMapSpec, Point2, Project, RoofPart, RoofWindow } from "./types";
 import { roundTo } from "./rounding";
+import { pushAll } from "./extent";
 
 export type TransformMode = "move" | "rotate" | "mirror" | "wall";
 /** What the transform dialog asks for: a map of the part (with copies) or a wall shift. */
@@ -195,12 +196,12 @@ export function transformPart(project: Project, pi: number, m: PlanMap, copies =
     const mk = power(m, k);
     project.parts.push(mapPart(part, mk, uniqueName(project, part.name)));
     added.push(project.parts.length - 1);
-    project.dormers.push(...dormers.map((d) => mapDormer(d, mk)));
-    project.chimneys.push(...chimneys.map((c) => mapChimney(c, mk)));
-    if (holes.length) (project.roof_openings ??= []).push(...holes.map((c) => mapChimney(c, mk)));
-    if (windows.length) (project.windows ??= []).push(...windows.map((w) => mapWindow(w, mk)));
-    if (lines.length) (project.manual_lines ??= []).push(...lines.map((l) => mapManualLine(l, mk)));
-    if (faces.length) (project.manual_faces ??= []).push(...faces.map((f) => mapManualFace(f, mk)));
+    pushAll(project.dormers, dormers.map((d) => mapDormer(d, mk)));
+    pushAll(project.chimneys, chimneys.map((c) => mapChimney(c, mk)));
+    if (holes.length) pushAll((project.roof_openings ??= []), holes.map((c) => mapChimney(c, mk)));
+    if (windows.length) pushAll((project.windows ??= []), windows.map((w) => mapWindow(w, mk)));
+    if (lines.length) pushAll((project.manual_lines ??= []), lines.map((l) => mapManualLine(l, mk)));
+    if (faces.length) pushAll((project.manual_faces ??= []), faces.map((f) => mapManualFace(f, mk)));
   }
   return added;
 }

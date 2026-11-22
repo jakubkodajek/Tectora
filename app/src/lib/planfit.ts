@@ -2,6 +2,7 @@
 // bar below the plan changes height, and following a footprint being drawn.
 // Pure (no Svelte), so the rules are unit-tested.
 
+import { pushAll } from "./extent";
 import { fitScale } from "./grid";
 
 export interface Pt {
@@ -59,10 +60,10 @@ export interface PlanContent {
  */
 export function contentPoints(project: PlanContent, faces: readonly (readonly number[])[][] = [], drawing: readonly Pt[] | null = null): Pt[] {
   const pts: Pt[] = project.parts.flatMap((p) => p.edges.map((e) => e.start));
-  for (const f of project.manual_faces ?? []) pts.push(...f.points);
+  for (const f of project.manual_faces ?? []) pushAll(pts, f.points);
   for (const l of project.manual_lines ?? []) pts.push({ x: l.a[0], y: l.a[1] }, { x: l.b[0], y: l.b[1] });
   for (const polygon of faces) for (const q of polygon) pts.push({ x: q[0], y: q[1] });
-  if (drawing) pts.push(...drawing);
+  if (drawing) pushAll(pts, drawing);
   return pts;
 }
 
