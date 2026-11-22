@@ -418,7 +418,8 @@ mod tests {
     /// The inputs of `tests/fixtures/parity/fold_all.json`, made the same
     /// way by `app/src/lib/fold.test.ts`: every code point from U+0020 to
     /// U+2FFFF (no surrogates), letters with each mark U+0300 to U+036F,
-    /// letters with two marks, and letters with marks of other ranges.
+    /// letters with two marks, letters with marks of other ranges, the
+    /// decomposed sequences of `nfc_inputs.json` and Hangul jamo.
     fn parity_inputs() -> Vec<String> {
         let mut out: Vec<String> = (0x20..0x30000)
             .filter_map(char::from_u32)
@@ -442,6 +443,36 @@ mod tests {
             ] {
                 out.push(format!("{l}{}", char::from_u32(m).unwrap()));
             }
+        }
+        // Audit 2026-11-22 TEST-710: decomposed sequences with marks outside
+        // U+0300-036F (tests/fixtures/parity/nfc_inputs.json) and Hangul
+        // jamo: every leading consonant + vowel, with four trailing
+        // consonants, and a syllable + every trailing consonant.
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/parity/nfc_inputs.json"),
+        )
+        .unwrap();
+        let file: serde_json::Value = serde_json::from_str(&text).unwrap();
+        out.extend(
+            file["inputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string()),
+        );
+        let ch = |c: u32| char::from_u32(c).unwrap();
+        for l in 0x1100..=0x1112 {
+            for v in 0x1161..=0x1175 {
+                out.push(format!("{}{}", ch(l), ch(v)));
+                for t in [0x11a8, 0x11ab, 0x11af, 0x11c2] {
+                    out.push(format!("{}{}{}", ch(l), ch(v), ch(t)));
+                }
+            }
+        }
+        for t in 0x11a7..=0x11c3 {
+            out.push(format!("\u{ac00}{}", ch(t)));
+            out.push(format!("\u{ac01}{}", ch(t)));
         }
         out
     }

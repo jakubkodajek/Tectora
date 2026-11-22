@@ -27,6 +27,7 @@ pub mod model;
 pub mod modell;
 pub mod multiroof;
 pub mod nfc;
+mod nfc_pairs;
 mod nfc_singletons;
 pub mod openings;
 pub mod quantities;

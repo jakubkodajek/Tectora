@@ -44,6 +44,8 @@ describe("fold follows the core's fold (shared cases)", () => {
 describe("fold equals the core's fold over every code point", () => {
   const files = import.meta.glob("../../../tests/fixtures/parity/fold_all.json", { eager: true, import: "default" }) as Record<string, unknown>;
   const file = Object.values(files)[0] as { changed: Record<string, string>; words: [string, string[]][] };
+  const nfcFiles = import.meta.glob("../../../tests/fixtures/parity/nfc_inputs.json", { eager: true, import: "default" }) as Record<string, unknown>;
+  const nfcInputs = Object.values(nfcFiles)[0] as { inputs: string[] };
   const inputs = (): string[] => {
     const out: string[] = [];
     for (let c = 0x20; c < 0x30000; c++) if (c < 0xd800 || c >= 0xe000) out.push(String.fromCodePoint(c));
@@ -53,6 +55,16 @@ describe("fold equals the core's fold over every code point", () => {
       for (const m of marks) for (const m2 of [0x301, 0x302, 0x303, 0x308, 0x313, 0x323, 0x328, 0x342]) out.push(l + m + String.fromCodePoint(m2));
     for (const l of "aAo")
       for (const m of [0x1ab0, 0x1dc0, 0x20d0, 0xfe20, 0x0483, 0x0591, 0x064b, 0x093c, 0x302a, 0x3099]) out.push(l + String.fromCodePoint(m));
+    // TEST-710: decomposed sequences with marks outside U+0300-036F and
+    // Hangul jamo, as the core's `parity_inputs`.
+    out.push(...nfcInputs.inputs);
+    const ch = String.fromCodePoint;
+    for (let l = 0x1100; l <= 0x1112; l++)
+      for (let v = 0x1161; v <= 0x1175; v++) {
+        out.push(ch(l) + ch(v));
+        for (const t of [0x11a8, 0x11ab, 0x11af, 0x11c2]) out.push(ch(l) + ch(v) + ch(t));
+      }
+    for (let t = 0x11a7; t <= 0x11c3; t++) out.push("\uac00" + ch(t), "\uac01" + ch(t));
     return out;
   };
   it("has the file", () => expect(Object.keys(file.changed).length).toBeGreaterThan(1000));

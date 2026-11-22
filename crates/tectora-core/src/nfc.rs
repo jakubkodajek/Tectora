@@ -9,7 +9,10 @@
 //! Latin Extended-A and -B, Latin Extended Additional, Cyrillic, Greek and
 //! Greek Extended (every European language), generated from Python's `unicodedata`
 //! (`decomposition` of two code points whose NFC is the letter itself).
-//! Marks after other letters are kept as they are.
+//! The other canonical pairs of NFC (Arabic hamza and madda, kana voicing
+//! marks, Indic vowel signs, ...) are in the generated `nfc_pairs` table,
+//! and Hangul jamo compose by Unicode's algorithm (§3.12), so the core
+//! composes as the app's `normalize("NFC")` (audit 2026-11-22 HUNT-701).
 
 use std::borrow::Cow;
 
@@ -21,7 +24,7 @@ use std::borrow::Cow;
 /// `normalize("NFC")` does, so the core and the app fold one text alike
 /// (audit 2026-11-22 HUNT-602, TEST-608).
 pub fn nfc(s: &str) -> Cow<'_, str> {
-    if !s.chars().any(|c| is_mark(c) || singleton(c).is_some()) {
+    if !s.chars().any(|c| is_second(c) || singleton(c).is_some()) {
         return Cow::Borrowed(s);
     }
     let mut out = String::with_capacity(s.len());
@@ -35,11 +38,11 @@ pub fn nfc(s: &str) -> Cow<'_, str> {
 }
 
 /// Pushes `c` onto `out`, composed with the letter before it when `c` is
-/// a mark the table composes with that letter.
+/// a mark (or jamo, vowel sign) that composes with that letter.
 fn push_composed(out: &mut String, c: char) {
-    if is_mark(c)
+    if is_second(c)
         && let Some(last) = out.chars().next_back()
-        && let Some(composed) = compose(last, c)
+        && let Some(composed) = compose_any(last, c)
     {
         out.pop();
         out.push(composed);
@@ -74,6 +77,61 @@ pub fn base_letter(c: char) -> Option<char> {
 /// A combining mark the table composes (U+0300 to U+036F).
 fn is_mark(c: char) -> bool {
     ('\u{300}'..='\u{36f}').contains(&c)
+}
+
+/// Whether `c` can be the second of a canonical pair: a mark of
+/// [`COMPOSE`], one of [`PAIRS`](crate::nfc_pairs::PAIRS), or a Hangul
+/// vowel or trailing consonant jamo.
+fn is_second(c: char) -> bool {
+    is_mark(c)
+        || hangul_v(c).is_some()
+        || hangul_t(c).is_some()
+        || (c >= '\u{338}' && crate::nfc_pairs::SECONDS.binary_search(&c).is_ok())
+}
+
+const HANGUL_S: u32 = 0xac00;
+const HANGUL_L: u32 = 0x1100;
+const HANGUL_V: u32 = 0x1161;
+const HANGUL_T: u32 = 0x11a7;
+const HANGUL_V_COUNT: u32 = 21;
+const HANGUL_T_COUNT: u32 = 28;
+const HANGUL_S_COUNT: u32 = 19 * HANGUL_V_COUNT * HANGUL_T_COUNT;
+
+/// The index of a Hangul vowel jamo.
+fn hangul_v(c: char) -> Option<u32> {
+    (c as u32).checked_sub(HANGUL_V).filter(|&i| i < HANGUL_V_COUNT)
+}
+
+/// The index of a Hangul trailing consonant jamo (from 1).
+fn hangul_t(c: char) -> Option<u32> {
+    (c as u32).checked_sub(HANGUL_T).filter(|&i| (1..HANGUL_T_COUNT).contains(&i))
+}
+
+/// Hangul composition (Unicode §3.12): a leading consonant and a vowel
+/// make an LV syllable, an LV syllable and a trailing consonant an LVT
+/// one.
+fn compose_hangul(first: char, second: char) -> Option<char> {
+    let f = first as u32;
+    if let Some(v) = hangul_v(second) {
+        let l = f.checked_sub(HANGUL_L).filter(|&l| l < 19)?;
+        return char::from_u32(HANGUL_S + (l * HANGUL_V_COUNT + v) * HANGUL_T_COUNT);
+    }
+    let t = hangul_t(second)?;
+    let s = f.checked_sub(HANGUL_S).filter(|&s| s < HANGUL_S_COUNT)?;
+    (s % HANGUL_T_COUNT == 0).then(|| char::from_u32(f + t)).flatten()
+}
+
+/// The canonical composite of `first` and `second`, from every table.
+fn compose_any(first: char, second: char) -> Option<char> {
+    compose(first, second)
+        .or_else(|| compose_hangul(first, second))
+        .or_else(|| {
+            use crate::nfc_pairs::PAIRS;
+            PAIRS
+                .binary_search_by(|&(a, b, _)| (a, b).cmp(&(first, second)))
+                .ok()
+                .map(|i| PAIRS[i].2)
+        })
 }
 
 fn compose(base: char, mark: char) -> Option<char> {
@@ -881,6 +939,15 @@ mod tests {
         assert_eq!(nfc("s\u{326}t\u{326}"), "șț");
         assert_eq!(nfc("u\u{308}\u{301}"), "ǘ");
         assert_eq!(nfc("\u{301}x"), "\u{301}x");
+        // Audit 2026-11-22 HUNT-701: Hangul jamo, Arabic madda, kana
+        // voicing compose as `normalize("NFC")` does.
+        assert_eq!(nfc("Dum \u{1100}\u{1161}\u{11a8} x"), "Dum 각 x");
+        assert_eq!(nfc("\u{ac00}\u{11a8}"), "각");
+        assert_eq!(nfc("\u{1100}\u{1161}"), "가");
+        assert_eq!(nfc("\u{ac01}\u{11a8}"), "\u{ac01}\u{11a8}");
+        assert_eq!(nfc("\u{627}\u{653}"), "\u{622}");
+        assert_eq!(nfc("\u{304b}\u{3099}"), "\u{304c}");
+        assert_eq!(nfc("\u{1161}"), "\u{1161}");
         assert_eq!(base_letter('ǘ'), Some('u'));
         assert_eq!(base_letter('ș'), Some('s'));
         assert_eq!(base_letter('x'), None);
