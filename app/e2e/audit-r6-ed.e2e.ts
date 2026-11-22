@@ -126,6 +126,16 @@ async function dragDown(page: Page, at: { x: number; y: number }, dy: number, n 
   }
 }
 
+// With TECTORA_SHOTS=<folder>/ and TECTORA_SHOTS_TAG=before|after every test
+// leaves a screenshot `r6-<finding>-<tag>.png` there; without it nothing is written.
+test.afterEach(async ({ page }, info) => {
+  const dir = process.env.TECTORA_SHOTS;
+  if (!dir) return;
+  const id = info.titlePath.join(" ").match(/\(([A-Z]+-\d+)/)?.[1] ?? "misc";
+  const n = info.title.replace(/[^a-z0-9]+/gi, "-").slice(0, 24);
+  await page.screenshot({ path: `${dir}r6-${id}-${n}-${process.env.TECTORA_SHOTS_TAG ?? "after"}.png`, timeout: 10_000 }).catch(() => {});
+});
+
 test.describe("round-6 audit: a second finger during a touch drag (ERR-501)", () => {
   test.use({ hasTouch: true });
 
