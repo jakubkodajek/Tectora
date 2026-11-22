@@ -41,6 +41,8 @@
   const chimney = $derived(sel && sel.kind !== "window" ? (list[sel.index] as Chimney | undefined) ?? null : null);
   const box = $derived(chimney ? openingBox(chimney.corners) : null);
   const win = $derived(sel?.kind === "window" ? (project.windows ?? [])[sel.index] : null);
+  /** The item the fields edit now: a field reused for the next one forgets the one before (UI-403). */
+  const itemKey = $derived(sel ? `${sel.kind}:${sel.index}` : "");
 
 
   /**
@@ -84,7 +86,7 @@
 {#snippet field(label: string, value: number, unit: string, set: (v: number) => unknown, min: number | null = null)}
   <label>
     <span>{label}</span>
-    <div class="unit"><input type="text" use:numeric={{ value, step: 0.05, min: min ?? undefined, onchange: set }} /><em>{unit}</em></div>
+    <div class="unit"><input type="text" use:numeric={{ key: itemKey, value, step: 0.05, min: min ?? undefined, onchange: set }} /><em>{unit}</em></div>
   </label>
 {/snippet}
 
@@ -126,7 +128,7 @@
       {@render field(t("opening.height"), win.height, "m", (v) => sel && onwindow({ height: v }, sel.index), 0.05)}
       <p class="tip">{t("opening.windowHint")}</p>
     {/if}
-    {#if onplace}<PlaceFields {placement} {onplace} />{/if}
+    {#if onplace}<PlaceFields {placement} {onplace} item={itemKey} />{/if}
     <div class="spacer"></div>
     {@const del = t(sel.kind === "chimney" ? "opening.deleteChimney" : sel.kind === "window" ? "opening.deleteWindow" : "opening.deleteHole")}
     <button class="btn sm ghost danger" onclick={ondelete} title={del}><Icon name="trash" size={15} />{del}</button>
