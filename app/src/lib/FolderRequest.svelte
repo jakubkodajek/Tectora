@@ -21,6 +21,8 @@
   );
 
   async function answer(allow: boolean) {
+    // The pressed button stays enabled and focused while this waits
+    // (aria-disabled): a disabled one drops the keyboard focus to the page (UI-604).
     if (busy) return;
     busy = true;
     try {
@@ -45,8 +47,8 @@
   {#if request.summary}<p class="why">{request.summary}</p>{/if}
   <p class="muted">{t("folderReq.note")}</p>
   {#snippet footer()}
-    <button class="btn" disabled={busy} onclick={() => answer(false)}>{t("folderReq.keep")}</button>
-    <button class="btn primary" disabled={busy} onclick={() => answer(true)}>{t("folderReq.allow")}</button>
+    <button class="btn" aria-disabled={busy} aria-busy={busy} onclick={() => answer(false)}>{t("folderReq.keep")}</button>
+    <button class="btn primary" aria-disabled={busy} aria-busy={busy} onclick={() => answer(true)}>{t("folderReq.allow")}</button>
   {/snippet}
 </Modal>
 

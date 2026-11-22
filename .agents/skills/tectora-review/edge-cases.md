@@ -380,7 +380,9 @@ show their lengths while drawing", "a wall by length and typed angle").
 
 Reviewers: ui, errors, ux. Guards: `app/src/lib/jobedits.test.ts`,
 `app/src/lib/numeric.field.test.ts`, `app/e2e/audit-r4-ed.e2e.ts`,
-`app/e2e/audit-r5-ed.e2e.ts`, `app/e2e/audit-r6-ed.e2e.ts`. Hold the core's
+`app/e2e/audit-r5-ed.e2e.ts`, `app/e2e/audit-r6-ed.e2e.ts`,
+`app/e2e/audit-r7-drag.e2e.ts`, `app/src/lib/dragsession.test.ts`,
+`app/src/lib/planpress.test.ts`. Hold the core's
 answer back (Playwright `page.route` on the bridge, 0.3 to 3 s) for every
 case, and assert that it really came while the pointer was down.
 
@@ -397,11 +399,31 @@ case, and assert that it really came while the pointer was down.
 - Holding an arrow key shows the newest step, never an earlier one coming
   back (UX-403).
 - A refused helper or round-roof dialog stays open with its values.
-- A second finger or the pen on another object during a touch drag (CDP
-  `Input.dispatchTouchEvent`): the drag is saved, a value typed after it
-  lands, Back leaves (ERR-501). A corner drag holds the edits like an
-  object drag (UI-502); keys pressed mid-drag wait for the drop, Escape
-  cancels it (ERR-502); no autosave writes a half-dragged job.
+- A drag is one transaction (`app/src/lib/dragsession.ts`, rule 7 of
+  `jobedits.ts`): from the press until its result is in the history the drag
+  is the only writer of the job. Run the matrix of
+  `app/e2e/audit-r7-drag.e2e.ts`: drag kind (object, building, corner) x
+  phase (pressed and not moved, moving, drop held with the core) x intruder.
+  - User input is refused, not replayed (owner decision, ERR-602): Delete,
+    Ctrl+Z, an arrow, Tab + Enter on a bar button, a mouse click on a bar
+    button during a touch drag, a typed value do nothing and nothing of them
+    happens after the drop; the pressed object is the one that moves, never
+    its neighbour (UI-603, UI-605, ERR-604). Escape cancels (the job goes
+    back to the press, nothing is saved, the plan hint says so: UX-604), F3
+    switches the view.
+  - A second finger, the pen or a mouse button on an item, a roof line, a
+    wall, a corner or the background during a touch drag (CDP
+    `Input.dispatchTouchEvent`) is ignored: every `onpointerdown` of the plan
+    goes through `press` (`planpress.test.ts`; ERR-501, UI-601).
+  - What is not the user's waits for the end: an answer of the core (a
+    corner drag holds the edits like an object drag, UI-502), an AI save of
+    this job (reloaded once after the drop, both kept), follow mode (the
+    editor stays on the job, also during a corner drag: ERR-601).
+  - Undo right after a building's drop, its core move still out, undoes
+    exactly the drop and Redo brings it back (ERR-603).
+  - After every cell: the file holds exactly the drop, a value typed
+    afterwards lands within 3 s, the status says saved, Back leaves; no
+    autosave writes a half-dragged job; leaving mid-drag ends it where it is.
 - Undo right after Enter undoes the value just typed, Redo brings it back
   (UX-501); the status bar says saving while an edit is with the core
   (UX-502); a dialog's OK keeps the focus while it waits (UI-503); a
@@ -417,6 +439,12 @@ test in `app/e2e/audit-r6-ed.e2e.ts` (the plan stays interactive, UI-501).
 - A job at the limits (500 hand-drawn faces of 500 corners, 200 buildings)
   received as a bundle or saved by the AI: the library lists every job, the
   editor and the 3D view open it (ARCH-402).
+- In such a job a click on a wall or an object only recolours the 3D view
+  (`data-builds` on the 3D host stays the same; UI-602), and a zoom or pan
+  step places only the labels in the window (`data-label-work` on the plan
+  stays in the thousands; UX-602). Count work, not time: `planscale.test.ts`,
+  `planlabels.test.ts`, and the 200-building and 500-face tests in
+  `app/e2e/audit-r6-ed.e2e.ts`.
 - A change log of large entries (notes near 1M characters, 50+ saves) stays
   at 50 entries and Revert all still returns to the version before the AI
   (ARCH-401).

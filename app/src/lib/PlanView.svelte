@@ -13,7 +13,7 @@
   import { boxOf, contentPoints, draftLeavesView, fitView, resizedView } from "./planfit";
   import { hostIndex, isDormerFace } from "./dormers";
   import { dormerWallLines, onWallLine } from "./scene3d";
-  import { chooseLabels, insidePolygon, placeDimSpots, rotatedBox, segCrossesBox, wallNumber, type DimSpot, type Seg } from "./planlabels";
+  import { chooseLabels, insidePolygon, placeDimSpots, rotatedBox, segCrossesBox, segIndex, wallNumber, type Box, type DimSpot, type Seg } from "./planlabels";
   import { draftWalls } from "./drawstep";
   import { coveredPieces, visibleFaceTags } from "./planjoin";
   import { numberLocale } from "./i18n.svelte";
@@ -23,7 +23,6 @@
     result,
     selection = $bindable(),
     onmove,
-    onmoveend,
     oninsert,
     highlight = new Set<string>(),
     highlightItems = new Set<string>(),
@@ -43,15 +42,18 @@
     manualSel = $bindable(null),
     manualDraft = [],
     ondrag,
+    ondragarm,
+    ondragend,
+    moving = false,
+    locked = false,
     oncontext,
     onitemdbl,
   }: {
     project: Project;
     result: CalcResult | null;
     selection: Selection;
+    /** A step of a corner drag (armed by `ondragarm`, ended by `ondragend`). */
     onmove: (part: number, vertex: number, x: number, y: number) => void;
-    /** A corner drag ended (the corner moved is given). */
-    onmoveend: (part: number, vertex: number) => void;
     oninsert: (part: number, edge: number, x: number, y: number) => void;
     /** "part:edge" keys of edges changed by the latest AI edit. */
     highlight?: Set<string>;
@@ -82,8 +84,22 @@
     manualSel?: ManualSel;
     /** Points picked so far for a line or face being added. */
     manualDraft?: [number, number, number][];
-    /** An item or the selected part is dragged by (dx, dy); `end` on release. */
-    ondrag?: (target: PlanTarget, dx: number, dy: number, end: boolean) => void;
+    /** A step of the drag of an item or the selected part, by (dx, dy) from the press. */
+    ondrag?: (target: PlanTarget, dx: number, dy: number) => void;
+    /**
+     * A press that may become a drag (an item, the selected part, a corner),
+     * with its pointer. False: the editor opens no drag, the press does nothing more.
+     */
+    ondragarm?: (target: PlanTarget, pointerId: number) => boolean;
+    /**
+     * The end of every press that was armed: release, cancelled or lost
+     * pointer, the plan going away; `moved` when it went past the slop.
+     */
+    ondragend?: (target: PlanTarget, moved: boolean) => void;
+    /** A drag is under way: the hint says how to cancel it (UX-604). */
+    moving?: boolean;
+    /** The editor is closed for input (the last drop is with the core): presses do nothing. */
+    locked?: boolean;
     /** Right click (or Ctrl+click) without dragging: open the context menu. */
     oncontext?: (target: PlanTarget, client: { x: number; y: number }, world: Point2) => void;
     /** A double-click on a dormer, chimney, window, opening or hand-drawn shape: open its properties. */
@@ -193,13 +209,41 @@
   // A face under another building's higher roof gets no label: it would be
   // written over the roof that covers it (UX-012).
   const tags = $derived(result ? visibleFaceTags(result, topAt) : []);
-  const pitchText = (v: number) =>
-    `${new Intl.NumberFormat(numberLocale(), { maximumFractionDigits: 2 }).format(v)}°`;
-  const areaText = (v: number) =>
-    `${new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v)} m²`;
+  // One formatter per language, not one per label: a plan of 200 buildings
+  // made thousands of them at every zoom step (UX-602).
+  const pitchFmt = $derived(new Intl.NumberFormat(numberLocale(), { maximumFractionDigits: 2 }));
+  const areaFmt = $derived(new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  const lenFmt = $derived(new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }));
+  const pitchText = (v: number) => `${pitchFmt.format(v)}°`;
+  const areaText = (v: number) => `${areaFmt.format(v)} m²`;
   /** A length in the plan, 2 decimals in the UI language (decimal comma in cs, sk, de). */
-  const lenText = (v: number) =>
-    new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }).format(v);
+  const lenText = (v: number) => lenFmt.format(v);
+  /**
+   * The outlines of the buildings as plain numbers with their plan box and
+   * turning sense, once per change of the job: the label pass below reads
+   * them at every zoom and pan step (UX-602).
+   */
+  const outlinesOf = $derived(
+    project.parts.map((part) => {
+      const pts = part.edges.map((e) => ({ x: e.start.x, y: e.start.y }));
+      // Shoelace sign: > 0 means counter-clockwise (y up), outside is right of travel.
+      let area2 = 0;
+      let [x0, x1, y0, y1] = [Infinity, -Infinity, Infinity, -Infinity];
+      pts.forEach((p, k) => {
+        const q = pts[(k + 1) % pts.length];
+        area2 += p.x * q.y - q.x * p.y;
+        if (p.x < x0) x0 = p.x;
+        if (p.x > x1) x1 = p.x;
+        if (p.y < y0) y0 = p.y;
+        if (p.y > y1) y1 = p.y;
+      });
+      return { pts, ccw: area2 >= 0, x0, x1, y0, y1 };
+    }),
+  );
+  /** The roof lines inside the roofs (not eaves and verges) in plan metres, once per result. */
+  const innerLines = $derived(
+    linePieces.flatMap((ls) => ls.filter((l) => l.kind !== "eave" && l.kind !== "verge").flatMap((l) => l.pieces.map((pc): Seg => [pc.a[0], pc.a[1], pc.b[0], pc.b[1]]))),
+  );
   /** A placement distance, 3 decimals like DACAD's dialogs (mm). */
   const mmText = (v: number) =>
     new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 3, maximumFractionDigits: 3, useGrouping: false }).format(v);
@@ -312,11 +356,15 @@
     return out;
   });
 
-  // Dragging.
+  // Dragging. One press at a time, and every `onpointerdown` of the plan
+  // goes through `press` (planpress.test.ts): a handler of its own forgot
+  // the other-pointer check in round after round (ERR-501, UI-601).
   let drag: { part: number; vertex: number; sx: number; sy: number; moved: boolean } | null = null;
   let pan: { x: number; y: number; cx: number; cy: number } | null = null;
   /** An item or a whole part being dragged: where the press started. */
   let objDrag: { target: PlanTarget; sx: number; sy: number; wx: number; wy: number; moved: boolean; dx: number; dy: number } | null = null;
+  /** The press the editor armed a drag for (`ondragarm`): its end is always told (`ondragend`). */
+  let armed: PlanTarget | null = null;
   // A plan taken away mid-drag (another view) ends the drag where it is:
   // the editor holds core-backed edits back until a drag ends (ERR-401).
   // A corner drag ends the same way (UI-502).
@@ -347,15 +395,30 @@
     return false;
   }
 
-  /** Ends the press under way as its release would (a moved drag is dropped where it is). */
-  function endGesture() {
-    if (objDrag?.moved) ondrag?.(objDrag.target, objDrag.dx, objDrag.dy, true);
-    if (drag?.moved) onmoveend(drag.part, drag.vertex);
+  /**
+   * Ends the press under way: its release, a cancelled or lost pointer, a
+   * mouse that reports no button any more, the plan going away. A moved
+   * drag is dropped where it is. The press is cleared first, so a handler
+   * that throws cannot leave the plan dragging (errors To check 40), and
+   * the editor always hears the end of a press it armed, moved or not.
+   */
+  function endGesture(e?: PointerEvent) {
+    const [r, a, moved] = [rc, armed, !!(objDrag?.moved || drag?.moved)];
     gesture = null;
     drag = null;
     objDrag = null;
     pan = null;
     rc = null;
+    armed = null;
+    if (!drawing && !placing) guides = { x: null, y: null };
+    try {
+      if (r && e) {
+        const p = localPoint(e);
+        if (Math.hypot(p.x - r.x, p.y - r.y) <= DRAG_SLOP) oncontext?.(r.target, { x: r.cx, y: r.cy }, snapPoint(r.x, r.y, false));
+      }
+    } finally {
+      if (a) ondragend?.(a, moved);
+    }
   }
   /** What a right press hit, set by the shape's own handler before the plan's. */
   let rcTarget: PlanTarget | null = null;
@@ -374,28 +437,83 @@
     manualSel = item.kind === "line" || item.kind === "face" ? { kind: item.kind, index: item.index } : null;
   }
 
-  /** Captures the pointer for a drag. A synthetic or already released pointer
-   * (no active pointer with that id) cannot be captured; the drag then just
-   * ends at the next pointerup the plan sees. */
-  function capture(e: PointerEvent) {
+  /** Captures the pointer for a press that goes on (a drag, a pan); false
+   * when it cannot be captured: a synthetic or already released pointer (no
+   * active pointer with that id). A pan or right press then just ends at
+   * the next pointerup the plan sees. Only `press` and what it starts call
+   * this. */
+  function capture(e: PointerEvent): boolean {
     gesture = e.pointerId;
     try {
       svg!.setPointerCapture(e.pointerId);
+      return true;
     } catch {
-      // Not capturable: nothing to do.
+      return false;
     }
   }
 
+  /**
+   * The editor opens a drag for `target` (jobedits.ts rule 7) and the plan
+   * holds its pointer: false when a drag is live already (it is never
+   * replaced), when the editor opens none (a drop still settles, nothing to
+   * hold), or when the pointer cannot be captured (the plan could not
+   * promise to see its release, and an open drag closes the editor). The
+   * press then starts no drag.
+   */
+  function arm(e: PointerEvent, target: PlanTarget): boolean {
+    if (objDrag || drag || armed) return false;
+    if (!capture(e)) {
+      gesture = null;
+      return false;
+    }
+    if (ondragarm && !ondragarm(target, e.pointerId)) {
+      gesture = null;
+      try {
+        svg!.releasePointerCapture(e.pointerId);
+      } catch {
+        // Already gone.
+      }
+      return false;
+    }
+    armed = target;
+    return true;
+  }
+
   function startObjDrag(e: PointerEvent, target: PlanTarget) {
+    if (!arm(e, target)) return;
     const p = localPoint(e);
     const w = snapPoint(p.x, p.y, e.altKey);
     objDrag = { target, sx: p.x, sy: p.y, wx: w.x, wy: w.y, moved: false, dx: 0, dy: 0 };
-    capture(e);
+  }
+
+  /** What a press landed on: the plan itself, or one of its shapes. */
+  type PressOn =
+    | { on: "plan" }
+    | { on: "part"; part: number }
+    | { on: "edge"; part: number; edge: number }
+    | { on: "vertex"; part: number; vertex: number }
+    | { on: "item"; item: ItemRef };
+
+  /**
+   * Every press in the plan. Its first check is the other pointer: a second
+   * finger, the pen or a mouse button beside the press under way does
+   * nothing, wherever it lands. While the editor is closed (the last drop
+   * is with the core) a new press does nothing either.
+   */
+  function press(e: PointerEvent, at: PressOn) {
+    if (otherPointer(e) || locked) {
+      if (at.on !== "plan") e.stopPropagation();
+      return;
+    }
+    if (at.on === "plan") pressPlan(e);
+    else if (at.on === "item") pressItem(e, at.item);
+    else if (at.on === "part") pressPart(e, at.part);
+    else if (at.on === "vertex") pressVertex(e, at.part, at.vertex);
+    else pressEdge(e, at.part, at.edge);
   }
 
   /** A press on a dormer, chimney, window, opening or hand-drawn shape. */
   function pressItem(e: PointerEvent, item: ItemRef) {
-    if (otherPointer(e)) return e.stopPropagation();
     if (placing || drawing) return;
     const b = button(e);
     if (b === 2) {
@@ -424,7 +542,6 @@
 
   /** A press inside a part's outline: drags the selected part, else selects it. */
   function pressPart(e: PointerEvent, part: number) {
-    if (otherPointer(e)) return e.stopPropagation();
     if (placing || drawing) return;
     const b = button(e);
     if (b === 2) {
@@ -444,13 +561,24 @@
     startObjDrag(e, { type: "part", part });
   }
 
+  /** A press on a wall: selects it. */
+  function pressEdge(e: PointerEvent, part: number, edge: number) {
+    if (placing || drawing) return;
+    selection = { part, edge };
+    dormerSel = null;
+    openSel = null;
+    manualSel = null;
+    if (button(e) === 2) rcTarget = { type: "edge", part, edge };
+    else e.stopPropagation();
+  }
+
   function localPoint(e: PointerEvent | WheelEvent) {
     const r = svg!.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   }
 
-  function onpointerdown(e: PointerEvent) {
-    if (otherPointer(e)) return;
+  /** A press on the plan itself (also what a shape's press let through). */
+  function pressPlan(e: PointerEvent) {
     const b = button(e);
     if (b === 2 && !placing && !drawing) {
       const p = localPoint(e);
@@ -501,6 +629,11 @@
 
   function onpointermove(e: PointerEvent) {
     if (otherPointer(e)) return;
+    // The button went up where the plan could not see it (the system took
+    // the pointer: another window, a native dialog) and no release, cancel
+    // or lost capture came: the press is over, or the object would follow
+    // the bare cursor until the next click (errors To check 60).
+    if (gesture !== null && e.pointerType === "mouse" && e.buttons === 0) endGesture(e);
     const p = localPoint(e);
     cursorWorld = drag
       ? magnetPoint(p.x, p.y, e.altKey, drag)
@@ -521,7 +654,7 @@
         if (dx !== objDrag.dx || dy !== objDrag.dy) {
           objDrag.dx = dx;
           objDrag.dy = dy;
-          ondrag?.(objDrag.target, dx, dy, false);
+          ondrag?.(objDrag.target, dx, dy);
         }
       }
     } else if (pan) {
@@ -532,20 +665,7 @@
 
   function onpointerup(e: PointerEvent) {
     if (otherPointer(e)) return;
-    gesture = null;
-    if (drag?.moved) onmoveend(drag.part, drag.vertex);
-    if (!drawing && !placing) guides = { x: null, y: null };
-    if (objDrag?.moved) ondrag?.(objDrag.target, objDrag.dx, objDrag.dy, true);
-    if (rc) {
-      const p = localPoint(e);
-      if (Math.hypot(p.x - rc.x, p.y - rc.y) <= DRAG_SLOP) {
-        oncontext?.(rc.target, { x: rc.cx, y: rc.cy }, snapPoint(rc.x, rc.y, false));
-      }
-    }
-    drag = null;
-    objDrag = null;
-    pan = null;
-    rc = null;
+    endGesture(e);
   }
 
   function onwheel(e: WheelEvent) {
@@ -557,8 +677,8 @@
     center = { x: center.x + before.x - wx(p.x), y: center.y + before.y - wy(p.y) };
   }
 
-  function startVertexDrag(e: PointerEvent, part: number, vertex: number) {
-    if (otherPointer(e)) return e.stopPropagation();
+  /** A press on a corner: drags it. */
+  function pressVertex(e: PointerEvent, part: number, vertex: number) {
     // While drawing or placing, a click on a corner is a click on the plan.
     if (placing || drawing) return;
     if (button(e) === 2) {
@@ -570,9 +690,9 @@
       return;
     }
     e.stopPropagation();
+    if (!arm(e, { type: "vertex", part, vertex })) return;
     const p = localPoint(e);
     drag = { part, vertex, sx: p.x, sy: p.y, moved: false };
-    capture(e);
   }
 
   // When the last press of a drawing was, ms: the double-click that ends a
@@ -616,9 +736,9 @@
   };
 
   function edgeLength(part: number, i: number) {
-    const es = project.parts[part].edges;
-    const a = es[i].start;
-    const b = es[(i + 1) % es.length].start;
+    const es = outlinesOf[part].pts;
+    const a = es[i];
+    const b = es[(i + 1) % es.length];
     return Math.hypot(b.x - a.x, b.y - a.y);
   }
 
@@ -639,24 +759,19 @@
 
   /** A label `halfW` px half wide beside wall `i`, `extra` px further off the wall than a wall length. */
   function besideWall(part: number, i: number, inside: boolean, t: number, halfW: number, extra = 0) {
-    const es = project.parts[part].edges;
-    const a = es[i].start;
-    const b = es[(i + 1) % es.length].start;
-    // Shoelace sign: > 0 means counter-clockwise (y up), outside is right of travel.
-    let area2 = 0;
-    for (let k = 0; k < es.length; k++) {
-      const p = es[k].start;
-      const q = es[(k + 1) % es.length].start;
-      area2 += p.x * q.y - q.x * p.y;
-    }
+    const o = outlinesOf[part];
+    const a = o.pts[i];
+    const b = o.pts[(i + 1) % o.pts.length];
     const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-    const side = (area2 >= 0 ? 1 : -1) * (inside ? -1 : 1);
+    const side = (o.ccw ? 1 : -1) * (inside ? -1 : 1);
     // Outward normal in world space, then flipped to screen space (y down).
     const nx = (side * (b.y - a.y)) / len;
     const ny = (-side * -(b.x - a.x)) / len;
     const off = 9 + Math.abs(nx) * halfW + Math.abs(ny) * 4 + extra;
     return { x: sx(a.x) + (sx(b.x) - sx(a.x)) * t + nx * off, y: sy(a.y) + (sy(b.y) - sy(a.y)) * t + ny * off, w: halfW * 2 + 4 };
   }
+
+  const NO_LINES: Seg[] = [];
 
   /** How a face label is written: pitch and area, pitch only, or not at all (too small). */
   function tagMode(tag: (typeof tags)[number]): "full" | "pitch" | null {
@@ -684,17 +799,29 @@
           return { ...d, g, text: mmText(d.v), spots: placeDimSpots(g, mmText(d.v), d.key === "eave") };
         })
       : [];
+    // Only what the window shows is placed (with a margin, so a label half
+    // in view is still there): a job of 200 buildings placed every label of
+    // every building at each zoom and pan step (UX-602).
+    const MARGIN = 160;
+    const view: Box = { x0: -MARGIN, y0: -MARGIN, x1: width + MARGIN, y1: height + MARGIN };
+    const inView = (x0: number, y0: number, x1: number, y1: number) => x1 >= view.x0 && x0 <= view.x1 && y1 >= view.y0 && y0 <= view.y1;
     // Each wall length outside its building first, else inside; a side
     // whose label would sit on another building is not used, so two
     // buildings side by side keep their lengths apart (UX-018).
-    const outlines = project.parts.map((part) => part.edges.map((e) => e.start));
+    const outlines = outlinesOf;
+    // Tests run by this pass (outline, wall, line and label comparisons),
+    // shown as `data-label-work` for the guard of UX-602.
+    const work = { overlaps: 0, lines: 0 };
     const onOther = (pi: number, x: number, y: number) => {
       const w = { x: wx(x), y: wy(y) };
-      return outlines.some((o, k) => k !== pi && o.length >= 3 && insidePolygon(w, o));
+      return outlines.some((o, k) => k !== pi && o.pts.length >= 3 && w.x >= o.x0 && w.x <= o.x1 && w.y >= o.y0 && w.y <= o.y1 && (work.lines += o.pts.length) > 0 && insidePolygon(w, o.pts));
     };
-    const dims = project.parts.map((part, pi) =>
-      part.edges.map((_, i) => {
+    const dims = outlines.map((o, pi) =>
+      o.pts.map((a, i) => {
         if (!showDims || !(scale * edgeLength(pi, i) > 46)) return null;
+        const b = o.pts[(i + 1) % o.pts.length];
+        const [ax, ay, bx, by] = [sx(a.x), sy(a.y), sx(b.x), sy(b.y)];
+        if (!inView(Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by))) return null;
         // Outside, inside, then off the middle where a roof line runs
         // through the middle (a ridge meeting the wall), outside first.
         const at: [boolean, number][] = [[false, 0.5], [true, 0.5], [false, 0.35], [false, 0.65], [true, 0.35], [true, 0.65]];
@@ -705,13 +832,13 @@
     // length (UX-017); placed before the lengths, it is what the review is for.
     const notes = [...wallNotes].flatMap(([key, text]) => {
       const [pi, i] = key.split(":").map(Number);
-      if (!project.parts[pi]?.edges[i]) return [];
+      if (!outlines[pi]?.pts[i]) return [];
       const halfW = textPx(text, 12) / 2 + 3;
       // The wall's direction on screen, kept readable: a note may run along
       // the wall, so beside a steep wall it fits outside the roof instead of
       // lying across the ridge and the hips inside it (UX-007).
-      const es = project.parts[pi].edges;
-      const [a, b] = [es[i].start, es[(i + 1) % es.length].start];
+      const es = outlines[pi].pts;
+      const [a, b] = [es[i], es[(i + 1) % es.length]];
       let deg = (Math.atan2(sy(b.y) - sy(a.y), sx(b.x) - sx(a.x)) * 180) / Math.PI;
       if (deg > 90) deg -= 180;
       if (deg <= -90) deg += 180;
@@ -729,25 +856,32 @@
       });
       return [cands];
     });
-    const modes = showDims && !faceLabels.length ? tags.map(tagMode) : tags.map(() => null);
+    // A face none of whose label spots is in view gets no label this step.
+    const tagInView = (tag: (typeof tags)[number]) => tag.spots.some((p) => inView(sx(p.x), sy(p.y), sx(p.x), sy(p.y)));
+    const modes = showDims && !faceLabels.length ? tags.map((tag) => (tagInView(tag) ? tagMode(tag) : null)) : tags.map(() => null);
     const flat = dims.flat();
     // Wall lengths keep off the roof lines inside the roof (the eave and
     // verge run along the walls, every wall length sits by them); face
-    // labels keep off the walls, where the wall lengths are.
-    const seg = (a: { x: number; y: number }, b: { x: number; y: number }): Seg => [sx(a.x), sy(a.y), sx(b.x), sy(b.y)];
-    const inner: Seg[] = linePieces.flatMap((ls) =>
-      ls.filter((l) => l.kind !== "eave" && l.kind !== "verge").flatMap((l) => l.pieces.map((pc) => seg({ x: pc.a[0], y: pc.a[1] }, { x: pc.b[0], y: pc.b[1] }))),
+    // labels keep off the walls, where the wall lengths are. Both are
+    // looked up by screen box (planlabels.ts `segIndex`), in view only.
+    const inner = segIndex(innerLines.map((l): Seg => [sx(l[0]), sy(l[1]), sx(l[2]), sy(l[3])]), view);
+    const wallSegs: Seg[] = [];
+    const wallPart: number[] = [];
+    outlines.forEach((o, pi) =>
+      o.pts.forEach((p, k) => {
+        const q = o.pts[(k + 1) % o.pts.length];
+        wallSegs.push([sx(p.x), sy(p.y), sx(q.x), sy(q.y)]);
+        wallPart.push(pi);
+      }),
     );
-    const wallsOf = outlines.map((o) => o.map((p, k) => seg(p, o[(k + 1) % o.length])));
-    const walls: Seg[] = wallsOf.flat();
+    const walls = segIndex(wallSegs, view);
     // A face label that does not fit with its area falls back to the pitch
     // alone; both may move off the centre (up or down the slope), and never
     // sit across another building's walls, e.g. one drawn inside this roof (UI-005).
     const tagBoxes = tags.map((tag, k) => {
       const m = modes[k];
       if (!m) return [];
-      const others = wallsOf.flatMap((ws, pi) => (pi === tag.part ? [] : ws));
-      const clear = (b: ReturnType<typeof rotatedBox>) => (others.some((l) => segCrossesBox(l, b)) ? null : b);
+      const clear = (b: ReturnType<typeof rotatedBox>) => (walls.nearAt(b).some((i) => (work.lines++, wallPart[i] !== tag.part && segCrossesBox(wallSegs[i], b))) ? null : b);
       const pw = textPx(pitchText(tag.pitch_deg), 16);
       const fw = Math.max(pw, textPx(areaText(tag.area), 12.5));
       return tag.spots.flatMap((p) => {
@@ -758,7 +892,8 @@
     const P = placeDims.length;
     const chosen = chooseLabels(
       [...placeDims.map((d) => d.spots.map((sp) => sp.box)), ...notes.map((n) => n.map((c) => c?.box ?? null)), ...flat.map((d) => (d ?? []).map((c) => c?.box ?? null)), ...tagBoxes],
-      (i) => (i < P ? [] : i < P + notes.length + flat.length ? inner : walls),
+      (i) => (i < P ? NO_LINES : i < P + notes.length + flat.length ? inner : walls),
+      work,
     );
     const placeShown = placeDims.map((d, j) => ({ ...d, at: (chosen[j] >= 0 ? d.spots[chosen[j]] : null) as DimSpot | null }));
     const noteShown = notes.flatMap((n, j) => (chosen[P + j] >= 0 && n[chosen[P + j]] ? [n[chosen[P + j]]!] : []));
@@ -775,7 +910,7 @@
       const at = tag.spots[Math.floor(c / 2)];
       return { mode: c % 2 === 0 ? modes[j]! : ("pitch" as const), x: at.x, y: at.y };
     });
-    return { dims: dimShown, tags: tagShown, notes: noteShown, place: placeShown };
+    return { dims: dimShown, tags: tagShown, notes: noteShown, place: placeShown, work: work.lines + work.overlaps };
   });
 </script>
 
@@ -786,11 +921,12 @@
     {height}
     role="application"
     aria-label={t("editor.plan")}
-    {onpointerdown}
+    data-label-work={labels.work}
+    onpointerdown={(ev) => press(ev, { on: "plan" })}
     {onpointermove}
     {onpointerup}
     onpointercancel={onpointerup}
-    onlostpointercapture={(e) => e.pointerId === gesture && onpointerup(e)}
+    onlostpointercapture={(e) => e.pointerId === gesture && endGesture(e)}
     {onwheel}
     onpointerleave={() => {
       cursorWorld = null;
@@ -811,7 +947,7 @@
         role="button"
         tabindex="-1"
         aria-label={partLabel(part.name, pi)}
-        onpointerdown={(ev) => pressPart(ev, pi)}
+        onpointerdown={(ev) => press(ev, { on: "part", part: pi })}
       />
     {/each}
 
@@ -882,12 +1018,7 @@
           {/if}
           <line class="hit" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)}
             role="button" tabindex="-1" aria-label={t("plan.edge", { n: i + 1 })}
-            onpointerdown={(ev) => {
-              if (placing || drawing) return;
-              selection = { part: pi, edge: i }; dormerSel = null; openSel = null; manualSel = null;
-              if (button(ev) === 2) rcTarget = { type: "edge", part: pi, edge: i };
-              else ev.stopPropagation();
-            }}
+            onpointerdown={(ev) => press(ev, { on: "edge", part: pi, edge: i })}
             ondblclick={(ev) => edgeDblClick(ev, pi, i)} />
           <line class="wall" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)} />
           {#if labels.dims[pi]?.[i]}
@@ -906,7 +1037,7 @@
           role="button"
           tabindex="-1"
           aria-label={t("plan.vertex", { n: i + 1 })}
-          onpointerdown={(ev) => startVertexDrag(ev, pi, i)}
+          onpointerdown={(ev) => press(ev, { on: "vertex", part: pi, vertex: i })}
         />
       {/each}
     {/each}
@@ -936,7 +1067,7 @@
           {#each dormerFaces[di] ?? [] as poly}
             <path class="dormer-area" d={"M" + poly.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
               role="button" tabindex="-1" aria-label={t("plan.dormer", { n: di + 1 })}
-              onpointerdown={(ev) => pressItem(ev, { kind: "dormer", index: di })} />
+              onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "dormer", index: di } })} />
           {/each}
           {#each d.edges as x, k}
             {#if x.direction_rad != null}
@@ -947,7 +1078,7 @@
           {/each}
           <line class="hit" x1={sx(fs.x)} y1={sy(fs.y)} x2={sx(d.end.x)} y2={sy(d.end.y)}
             role="button" tabindex="-1" aria-label={t("plan.dormer", { n: di + 1 })}
-            onpointerdown={(ev) => pressItem(ev, { kind: "dormer", index: di })} />
+            onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "dormer", index: di } })} />
           <line class="front" x1={sx(fs.x)} y1={sy(fs.y)} x2={sx(d.end.x)} y2={sy(d.end.y)} />
         </g>
       {/if}
@@ -956,25 +1087,25 @@
       <path class="opening chimney" class:sel={openSel?.kind === "chimney" && openSel.index === ci} class:changed={highlightItems.has(`chimney:${ci}`)}
         d={"M" + c.corners.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("opening.chimneyN", { n: ci + 1 })}
-        onpointerdown={(ev) => pressItem(ev, { kind: "chimney", index: ci })} />
+        onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "chimney", index: ci } })} />
     {/each}
     {#each project.roof_openings ?? [] as c, hi}
       <path class="opening hole" class:sel={openSel?.kind === "hole" && openSel.index === hi} class:changed={highlightItems.has(`roof_opening:${hi}`)}
         d={"M" + c.corners.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("opening.holeN", { n: hi + 1 })}
-        onpointerdown={(ev) => pressItem(ev, { kind: "hole", index: hi })} />
+        onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "hole", index: hi } })} />
     {/each}
     {#each project.windows ?? [] as w, wi}
       <path class="opening window" class:sel={openSel?.kind === "window" && openSel.index === wi} class:changed={highlightItems.has(`window:${wi}`)}
         d={"M" + windowOutline(result, w).map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("opening.windowN", { n: wi + 1 })}
-        onpointerdown={(ev) => pressItem(ev, { kind: "window", index: wi })} />
+        onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "window", index: wi } })} />
     {/each}
     {#each project.manual_faces ?? [] as f, fi}
       <path class="manual-face" class:sel={manualSel?.kind === "face" && manualSel.index === fi} class:changed={highlightItems.has(`manual_face:${fi}`)}
         d={"M" + f.points.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("manual.faceN", { n: fi + 1 })}
-        onpointerdown={(ev) => pressItem(ev, { kind: "face", index: fi })} />
+        onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "face", index: fi } })} />
       {#if showDims && f.points.length >= 3}
         <!-- Says what the outline is, so it is not taken for a building without a roof. -->
         <text class="manual-tag" x={sx(f.points.reduce((a, p) => a + p.x, 0) / f.points.length)} y={sy(f.points.reduce((a, p) => a + p.y, 0) / f.points.length)}>{t("manual.faceN", { n: fi + 1 })} · {pitchText(f.pitch_deg)}</text>
@@ -985,7 +1116,7 @@
       <g class="manual-line" class:sel class:changed={highlightItems.has(`manual_line:${li}`)}>
         <line class="hit" x1={sx(l.a[0])} y1={sy(l.a[1])} x2={sx(l.b[0])} y2={sy(l.b[1])}
           role="button" tabindex="-1" aria-label={t("manual.lineN", { n: li + 1 })}
-          onpointerdown={(ev) => pressItem(ev, { kind: "line", index: li })} />
+          onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "line", index: li } })} />
         <line class="stroke" class:measure={!codeKind[l.code]} x1={sx(l.a[0])} y1={sy(l.a[1])} x2={sx(l.b[0])} y2={sy(l.b[1])}
           stroke={codeKind[l.code] ? lineColor[codeKind[l.code]] : undefined} />
         {#if showDims}
@@ -1075,7 +1206,7 @@
     {/each}
   </svg>
   <!-- A placing tool says what to click in the bottom bar (PlaceBar, UX-012). -->
-  {#if !placing && !drawing}<div class="hint">{t("plan.hint")}</div>{/if}
+  {#if !placing && !drawing}<div class="hint" data-testid="plan-hint">{moving ? t("plan.hintDrag") : t("plan.hint")}</div>{/if}
 </div>
 
 <style>

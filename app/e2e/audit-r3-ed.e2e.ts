@@ -43,6 +43,20 @@ async function slow(page: Page, cmd: string, ms: number, on: () => boolean) {
   });
 }
 
+/**
+ * Holds the bridge's answers to `cmd` for as long as `on()` is true (20 s
+ * at most): the test lets them go once what must come first has happened.
+ * A fixed delay raced the AI save it was meant to outlast on a busy
+ * machine (TEST-602).
+ */
+async function holdWhile(page: Page, cmd: string, on: () => boolean) {
+  await page.route(new RegExp(`/${cmd}$`), async (r: Route) => {
+    const end = Date.now() + 20_000;
+    while (on() && Date.now() < end) await new Promise((res) => setTimeout(res, 20));
+    await r.continue();
+  });
+}
+
 const CORS = { "access-control-allow-origin": "*" };
 
 test.describe("round-3 audit: bars and dialogs", () => {
@@ -94,12 +108,14 @@ test.describe("round-3 audit: bars and dialogs", () => {
     await page.mouse.click(bb.x + bb.width / 2, bb.y + bb.height / 2);
     const ob = bar(page, "opening.chimney");
     let delay = true;
-    await slow(page, "place_item", 2500, () => delay);
+    await holdWhile(page, "place_item", () => delay);
     await ob.getByTestId("place-eave").fill("2");
     await ob.getByTestId("place-eave").press("Enter");
     await page.waitForTimeout(500);
     await mcp.call("update_job", { id, notes: "AI note", summary: "AI adds a note." });
     await waitForProject(id, (p) => p.notes === "AI note");
+    // The editor has read the AI's save (its review banner is up): only then the held answer comes.
+    await expect(page.locator(".review")).toBeVisible({ timeout: 15_000 });
     delay = false;
     await expect
       .poll(async () => +(await bridge<any>("item_placement", { project: await loadProject(id), kind: "chimney", index: 0 })).from_eave.toFixed(3), { timeout: 10_000 })
@@ -111,13 +127,15 @@ test.describe("round-3 audit: bars and dialogs", () => {
     const id = await createExample("gable", "Kopie a AI");
     await openEditor(app, "Kopie a AI");
     let delay = true;
-    await slow(page, "transform_part", 2500, () => delay);
+    await holdWhile(page, "transform_part", () => delay);
     const at = await planXY(page, 3, 3);
     await page.mouse.click(at.x, at.y, { button: "right" });
     await page.getByRole("menuitem", { name: cs("menu.duplicatePart") }).click();
     await page.waitForTimeout(500);
     await mcp.call("update_job", { id, notes: "AI note", summary: "AI adds a note." });
     await waitForProject(id, (p) => p.notes === "AI note");
+    // The editor has read the AI's save (its review banner is up): only then the held answer comes.
+    await expect(page.locator(".review")).toBeVisible({ timeout: 15_000 });
     delay = false;
     const p = await waitForProject(id, (p) => p.parts.length === 2, 10_000);
     expect(p.notes).toBe("AI note");
@@ -127,13 +145,15 @@ test.describe("round-3 audit: bars and dialogs", () => {
     const id = await createExample("gable", "Kopie a změna");
     await openEditor(app, "Kopie a změna");
     let delay = true;
-    await slow(page, "transform_part", 2500, () => delay);
+    await holdWhile(page, "transform_part", () => delay);
     const at = await planXY(page, 3, 3);
     await page.mouse.click(at.x, at.y, { button: "right" });
     await page.getByRole("menuitem", { name: cs("menu.duplicatePart") }).click();
     await page.waitForTimeout(500);
     await mcp.call("update_edges", { id, changes: [{ index: 0, pitch_deg: 30 }], summary: "AI sets the pitch." });
     await waitForProject(id, (p) => p.parts[0].edges[0].pitch_deg === 30);
+    // The editor has read the AI's save (its review banner is up): only then the held answer comes.
+    await expect(page.locator(".review")).toBeVisible({ timeout: 15_000 });
     delay = false;
     await expect(app.toasts().filter({ hasText: cs("editor.actionStale") })).toBeVisible({ timeout: 10_000 });
     expect((await loadProject(id)).parts).toHaveLength(1);

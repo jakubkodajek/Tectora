@@ -27,8 +27,7 @@ export function overlaps(a: Box, b: Box, gap = 1): boolean {
 
 /**
  * Greedy placement in the given order (most important first): a label is
- * kept when it overlaps none of the labels kept before it. O(n²), n is the
- * number of labels on screen (walls plus faces, a few hundred at most).
+ * kept when it overlaps none of the labels kept before it.
  */
 export function placeLabels(boxes: (Box | null)[]): boolean[] {
   return chooseLabels(boxes.map((b) => [b])).map((j) => j === 0);
@@ -67,22 +66,112 @@ export function segCrossesBox(s: Seg, b: Box, inset = 3): boolean {
   return true;
 }
 
+/** Cell size of the screen grids below, px: about a label's width. */
+const CELL = 128;
+
+/** The grid cells a box covers, as "column,row" numbers. */
+function cells(b: Box, visit: (key: number) => void) {
+  const [c0, c1, r0, r1] = [Math.floor(b.x0 / CELL), Math.floor(b.x1 / CELL), Math.floor(b.y0 / CELL), Math.floor(b.y1 / CELL)];
+  for (let c = c0; c <= c1; c++) for (let r = r0; r <= r1; r++) visit(c * 65536 + r);
+}
+
+/**
+ * Screen segments looked up by box: `near(b)` gives every segment whose own
+ * box meets `b` (each once, in the order given), `nearAt(b)` their indices.
+ * A segment that crosses a box has a box that meets it, so testing only
+ * these is the same as testing all. A plan of 200 buildings tested every
+ * label against every wall and roof line at each zoom or pan step and
+ * froze for seconds (UX-602).
+ *
+ * `within`: only segments that meet this box are kept (the visible part of
+ * the plan, with a margin); a wall far outside the window is never asked for.
+ */
+export interface SegIndex {
+  near(b: Box): Seg[];
+  nearAt(b: Box): number[];
+  /** Segments kept (inside `within`). */
+  readonly size: number;
+}
+
+export function segIndex(segs: readonly Seg[], within?: Box): SegIndex {
+  const grid = new Map<number, number[]>();
+  const boxes: (Box | null)[] = [];
+  let size = 0;
+  segs.forEach((s, i) => {
+    let b: Box = { x0: Math.min(s[0], s[2]), y0: Math.min(s[1], s[3]), x1: Math.max(s[0], s[2]), y1: Math.max(s[1], s[3]) };
+    if (within) {
+      if (b.x1 < within.x0 || b.x0 > within.x1 || b.y1 < within.y0 || b.y0 > within.y1) {
+        boxes.push(null);
+        return;
+      }
+      // Only the cells inside the window: a wall many screens long covers few of them.
+      b = { x0: Math.max(b.x0, within.x0), y0: Math.max(b.y0, within.y0), x1: Math.min(b.x1, within.x1), y1: Math.min(b.y1, within.y1) };
+    }
+    boxes.push(b);
+    size++;
+    cells(b, (key) => {
+      const cell = grid.get(key);
+      if (cell) cell.push(i);
+      else grid.set(key, [i]);
+    });
+  });
+  const seen = new Uint32Array(segs.length);
+  let query = 0;
+  const nearAt = (b: Box): number[] => {
+    query++;
+    const out: number[] = [];
+    cells(b, (key) => {
+      for (const i of grid.get(key) ?? []) {
+        if (seen[i] === query) continue;
+        seen[i] = query;
+        const o = boxes[i]!;
+        if (o.x1 >= b.x0 && o.x0 <= b.x1 && o.y1 >= b.y0 && o.y0 <= b.y1) out.push(i);
+      }
+    });
+    return out.sort((x, y) => x - y);
+  };
+  return { near: (b) => nearAt(b).map((i) => segs[i]), nearAt, size };
+}
+
+/** Work counted by `chooseLabels` for its guard test (UX-602). */
+export interface LabelStats {
+  /** Label boxes compared with a kept label. */
+  overlaps: number;
+  /** Lines tested against a label box. */
+  lines: number;
+}
+
 /**
  * Greedy placement with fallbacks: each label has candidate boxes in order
  * of preference (a wall length outside its building, then inside), null for
  * a candidate that may not be used; the first candidate that overlaps no
  * label kept before is taken. Returns the chosen candidate per label, or -1
- * when none fits (the label is not drawn). O(n² · candidates).
+ * when none fits (the label is not drawn). Kept labels are looked up by a
+ * screen grid, so a label is compared only with the labels near it.
  *
  * `linesOf(i)`: the lines label `i` should not sit on (roof lines inside
- * the roof, walls): the first candidate clear of both the kept labels and
- * these lines wins; when every candidate is on a line, the one on the
- * fewest lines (the first of those) is taken (sweep 2026-11-15: a shared
- * wall's length on the ridge).
+ * the roof, walls), as a list or a `segIndex`: the first candidate clear of
+ * both the kept labels and these lines wins; when every candidate is on a
+ * line, the one on the fewest lines (the first of those) is taken (sweep
+ * 2026-11-15: a shared wall's length on the ridge).
  */
-export function chooseLabels(candidates: (Box | null)[][], linesOf: (i: number) => Seg[] = () => []): number[] {
-  const kept: Box[] = [];
-  const free = (b: Box | null): b is Box => !!b && !kept.some((k) => overlaps(k, b));
+export function chooseLabels(candidates: (Box | null)[][], linesOf: (i: number) => readonly Seg[] | SegIndex = () => [], stats?: LabelStats): number[] {
+  const kept = new Map<number, Box[]>();
+  const free = (b: Box | null): b is Box => {
+    if (!b) return false;
+    let hit = false;
+    cells(b, (key) => {
+      if (hit) return;
+      for (const k of kept.get(key) ?? []) {
+        if (stats) stats.overlaps++;
+        if (overlaps(k, b)) {
+          hit = true;
+          return;
+        }
+      }
+    });
+    return !hit;
+  };
   return candidates.map((cands, i) => {
     const lines = linesOf(i);
     let j = -1;
@@ -90,10 +179,19 @@ export function chooseLabels(candidates: (Box | null)[][], linesOf: (i: number) 
     for (let c = 0; c < cands.length && least > 0; c++) {
       const b = cands[c];
       if (!free(b)) continue;
-      const n = lines.reduce((m, l) => m + (segCrossesBox(l, b) ? 1 : 0), 0);
+      const near = "near" in lines ? lines.near(b) : lines;
+      if (stats) stats.lines += near.length;
+      const n = near.reduce((m, l) => m + (segCrossesBox(l, b) ? 1 : 0), 0);
       if (n < least) [j, least] = [c, n];
     }
-    if (j >= 0) kept.push(cands[j]!);
+    if (j >= 0) {
+      const b = cands[j]!;
+      cells(b, (key) => {
+        const cell = kept.get(key);
+        if (cell) cell.push(b);
+        else kept.set(key, [b]);
+      });
+    }
     return j;
   });
 }

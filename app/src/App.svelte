@@ -7,7 +7,7 @@
   import SettingsDialog from "./lib/SettingsDialog.svelte";
   import Toasts from "./lib/Toasts.svelte";
   import { api, onLiveStatus, onOpenFailed, onOpenProject, onProjectsChanged, onSettingsChanged } from "./lib/api";
-  import { afterListening } from "./lib/startup";
+  import { startOpening } from "./lib/startup";
   import { t } from "./lib/i18n.svelte";
   import { actorName, live } from "./lib/live.svelte";
   import { info, notify, notifyError } from "./lib/notify.svelte";
@@ -169,28 +169,23 @@
     // Closing the window: the open job is saved first, and edits that cannot
     // be saved are only dropped when the user says so.
     const unClose = closeGuard();
-    const unOpen = onOpenProject(openFile);
-    // A file opened from the system that did not open (damaged, newer, not
-    // a job): told like a failed import, at start-up and later (ERR-006).
-    const showOpenErrors = () =>
-      api.takeOpenErrors().then(
-        (es) => es.forEach((e) => notifyError(e, "import")),
-        () => {},
-      );
-    const unOpenFailed = onOpenFailed(showOpenErrors);
-    // Taken once both listeners exist, so a file whose import ends at
-    // start-up is either heard or still waiting here.
-    afterListening([unOpen, unOpenFailed], () => {
-      api.takePendingOpen().then((id) => id && openFile(id));
-      showOpenErrors();
+    // Listens for files opened from the system and takes the ones that came
+    // in before the window listened, in that order (startup.ts; a failure is
+    // told like a failed import, ERR-006).
+    const opening = startOpening({
+      onOpenProject,
+      onOpenFailed,
+      takePendingOpen: () => api.takePendingOpen(),
+      takeOpenErrors: () => api.takeOpenErrors(),
+      open: openFile,
+      failed: (e) => notifyError(e, "import"),
     });
     const tick = setInterval(() => (live.now = Date.now()), 5000);
     return () => {
       un.then((f) => f());
       unLive.then((f) => f());
       unSettings.then((f) => f());
-      unOpen.then((f) => f());
-      unOpenFailed.then((f) => f());
+      opening.stop();
       unClose.then((f) => f());
       clearInterval(tick);
       window.removeEventListener("error", onError);

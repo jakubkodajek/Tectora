@@ -170,10 +170,25 @@ AI save of other things never refuses it, nor does the user's own earlier
 step, and an edit whose item the user deleted himself ends quietly. While
 the user drags an object, a building or a corner no answer is applied (a
 drag rebuilds the job from its start, or changes it, at every step); the
-edit is asked again on the dragged job once the drag ends. The plan follows
-one pointer per drag (a second finger is ignored), every release and
-leaving the job end the drag, editing keys wait for the drop and Escape
-cancels it. Undo and Redo wait for edits still with the core. A number field reused for the next
+edit is asked again on the dragged job once the drag ends.
+
+**A drag is one transaction** (`app/src/lib/dragsession.ts`, rule 7 of
+`jobedits.ts`): from the press on an object, the selected building or a
+corner until its result is in the history, the drag is the only writer of
+the job. The session has one state (idle, armed, moving, settling) and one
+way out, which ends the pause of the core's answers. While it is open the
+user's input is refused, not replayed: keys do nothing, the toolbar, bars,
+dock and header are `inert`, another pointer is ignored by the plan (every
+`onpointerdown` of the plan goes through one `press`); only Escape (cancel,
+the job goes back to the press) and F3 pass. What is not the user's waits
+for the end of the drag: answers of the core, an outside save of this job
+(the reload runs once, after the drop), follow mode (the editor counts as
+busy). While the drop is with the core (a building's move, a corner's merge)
+the editor stays closed and the status bar says saving; Undo and Redo
+pressed then run right after it, so one Undo undoes exactly the drop.
+Leaving the job ends the drag where it is. A write that slips past these
+guards throws in the dev build and ends the drag where the job is in a
+release. Undo and Redo also wait for edits still with the core. A number field reused for the next
 item (PageDown in a bar) forgets what it sent for the one before (its
 `key`). The bars' selection follows its item the same way.
 

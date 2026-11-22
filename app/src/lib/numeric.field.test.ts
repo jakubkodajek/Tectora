@@ -324,4 +324,21 @@ describe("round 6: the numeric branches without a case (TEST-502)", () => {
     expect(input.value).toBe(f(3.4));
     a.destroy();
   });
+
+  it("a typed value the core stores differently shows the stored value once its answer settles (TEST-606 N14b)", async () => {
+    const c = core();
+    const input = new FakeInput();
+    const o = c.opts("part:0", 3.4);
+    const a = numeric(input as unknown as HTMLInputElement, o);
+    // Typed 5; the core stores 4.95 (rounded, clamped): the editor applies
+    // that before the call settles, then the answer comes.
+    input.type_(f(5));
+    expect(c.sent).toEqual(["part:0=5"]);
+    expect(input.value).toBe(f(5));
+    a.update({ ...o, value: 4.95 });
+    c.answer();
+    await flush();
+    expect(input.value).toBe(f(4.95));
+    a.destroy();
+  });
 });
