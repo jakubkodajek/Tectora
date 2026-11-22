@@ -513,6 +513,9 @@ pub enum StoreError {
 pub enum IoKind {
     PermissionDenied,
     DiskFull,
+    /// A link, or a folder with files, in the library's own folders
+    /// ([`ForeignEntry`]).
+    Foreign,
     Other,
 }
 
@@ -532,6 +535,10 @@ impl StoreError {
                 kind: IoKind::DiskFull,
                 ..
             } => "disk_full",
+            StoreError::Io {
+                kind: IoKind::Foreign,
+                ..
+            } => "foreign_entry",
             StoreError::Io { .. } => "io",
             StoreError::NothingToRevert(_) => "nothing_to_revert",
             StoreError::RevertCreated(_) => "revert_created",
@@ -567,6 +574,7 @@ impl StoreError {
 
     fn io(id: Option<&str>, e: std::io::Error) -> StoreError {
         let kind = match e.kind() {
+            _ if is_foreign(&e) => IoKind::Foreign,
             std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
                 IoKind::PermissionDenied
             }
@@ -625,6 +633,10 @@ impl FileError {
 
     /// An operating system error on `path`, with the code the app explains.
     pub fn io(path: &Path, e: std::io::Error) -> Self {
+        // Its text names the path already.
+        if is_foreign(&e) {
+            return Self::new("foreign_entry", e.to_string());
+        }
         let code = match e.kind() {
             std::io::ErrorKind::NotFound => "file_not_found",
             _ => StoreError::io(None, std::io::Error::new(e.kind(), "")).code(),
@@ -965,12 +977,74 @@ pub fn read_newest_lines(path: &Path, max: u64) -> Result<Vec<u8>, FileError> {
 /// HUNT-402, HUNT-403). The link itself is looked at, not its target.
 pub(crate) fn missing_or_regular(path: &Path) -> std::io::Result<()> {
     match fs::symlink_metadata(path) {
-        Ok(m) if !m.file_type().is_file() => Err(std::io::Error::other(format!(
-            "{}: not a regular file (a link, folder, device or pipe)",
-            path.display()
-        ))),
+        Ok(m) if !m.file_type().is_file() => Err(foreign(
+            path,
+            "not a regular file (a link, folder, device or pipe)",
+        )),
         _ => Ok(()),
     }
+}
+
+/// Something in the library's own folders that Tectora did not put there
+/// and does not write through: a link, a pipe, a folder where a file
+/// belongs (audit 2026-11-22 HUNT-402, HUNT-403, HUNT-501, HUNT-503).
+/// Its errors have the code `foreign_entry`.
+#[derive(Debug)]
+struct ForeignEntry(String);
+
+impl std::fmt::Display for ForeignEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ForeignEntry {}
+
+/// The error for `path`, a [`ForeignEntry`]: `what` it is.
+pub(crate) fn foreign(path: &Path, what: &str) -> std::io::Error {
+    std::io::Error::other(ForeignEntry(format!("{}: {what}", path.display())))
+}
+
+/// Whether `e` is about a [`ForeignEntry`].
+fn is_foreign(e: &std::io::Error) -> bool {
+    e.get_ref().is_some_and(|r| r.is::<ForeignEntry>())
+}
+
+/// Makes sure `dir`, one of the library's own folders (`.activity`,
+/// `.files`, `.files/<id>`, `.trash`), is a real folder, creating it when
+/// missing. Tectora manages these folders itself: a link in place of one
+/// (a shared or synced library) is refused, never written through, so no
+/// job, history, drawing or deleted job lands outside the library (audit
+/// 2026-11-22 HUNT-503). Its parent must exist.
+pub(crate) fn own_folder(dir: &Path) -> std::io::Result<()> {
+    for _ in 0..3 {
+        match fs::symlink_metadata(dir) {
+            Ok(m) if m.is_dir() => return Ok(()),
+            Ok(_) => {
+                return Err(foreign(
+                    dir,
+                    "a link or a file stands where Tectora keeps its own folder; Tectora does not write through it (remove it, Tectora then makes the folder again)",
+                ));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => match fs::create_dir(dir) {
+                Ok(()) => return Ok(()),
+                // Made by another process meanwhile: looked at again.
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            },
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other(format!(
+        "{}: the folder keeps changing",
+        dir.display()
+    )))
+}
+
+/// Whether `dir` is a real folder itself, not a link (for reading the
+/// library's own folders without creating them).
+fn is_own_folder(dir: &Path) -> bool {
+    fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir())
 }
 
 /// Opens `path` for writing with `options` (a lock file, the change log)
@@ -1005,10 +1079,10 @@ pub(crate) fn open_regular_for_write(
     #[cfg(not(unix))]
     let same = true;
     if !(opened.is_file() && here.file_type().is_file() && same) {
-        return Err(std::io::Error::other(format!(
-            "{}: not a regular file (a link, folder, device or pipe)",
-            path.display()
-        )));
+        return Err(foreign(
+            path,
+            "not a regular file (a link, folder, device or pipe)",
+        ));
     }
     Ok(file)
 }
@@ -1054,13 +1128,21 @@ impl LogUndo {
     }
 }
 
+/// How often [`take_lock_file`] starts again when its lock path changed.
+const LOCK_TRIES: usize = 8;
+
 /// Takes the lock file at `path` (created when missing), held until the
-/// returned file is dropped; `None` when it cannot be had (best effort,
-/// see [`Store::lock`]). A link, pipe or device found in its place is
-/// never opened (it would hang the open or create a file outside the
-/// library, HUNT-402, HUNT-403): such an entry, which only stands for a
-/// lock, is removed and a plain lock file made instead.
-pub(crate) fn take_lock_file(path: &Path) -> Option<fs::File> {
+/// returned file is dropped. `Ok(None)` when no lock can be had where the
+/// folder or file system holds none (read-only, no locks; best effort, see
+/// [`Store::lock`]). A link, pipe, device or empty folder found in its
+/// place is never opened (it would hang the open or create a file outside
+/// the library, HUNT-402, HUNT-403) but replaced by a plain lock file
+/// ([`replace_odd_lock`]); a folder with files in it is refused, a
+/// [`ForeignEntry`]: saving on unlocked lost changes of two writers
+/// without a word (audit 2026-11-22 HUNT-501). Once locked, the path must
+/// still name the locked file, else it starts again: a lock on a file
+/// another process has just replaced locks nobody out (HUNT-502).
+pub(crate) fn take_lock_file(path: &Path) -> std::io::Result<Option<fs::File>> {
     let open = || {
         open_regular_for_write(
             path,
@@ -1070,19 +1152,95 @@ pub(crate) fn take_lock_file(path: &Path) -> Option<fs::File> {
                 .write(true),
         )
     };
-    let file = match open() {
-        Ok(f) => f,
-        Err(_) => {
-            let odd = fs::symlink_metadata(path).ok()?;
-            if odd.is_dir() || odd.file_type().is_file() {
-                return None;
+    let mut moved = false;
+    for _ in 0..LOCK_TRIES {
+        match open() {
+            Ok(file) => {
+                if file.lock().is_err() {
+                    return Ok(None);
+                }
+                if names_file(path, &file) {
+                    return Ok(Some(file));
+                }
+                moved = true;
             }
-            fs::remove_file(path).ok()?;
-            open().ok()?
+            // Gone again or a regular file by now (replaced by another
+            // process): opened again. A regular file that never opens
+            // (read-only) leaves the save unlocked, as before.
+            Err(_) => match fs::symlink_metadata(path) {
+                Ok(m) if !m.file_type().is_file() => replace_odd_lock(path)?,
+                _ => {}
+            },
         }
-    };
-    file.lock().ok()?;
-    Some(file)
+    }
+    if moved {
+        return Err(foreign(
+            path,
+            "the lock file keeps being replaced while it is taken; the change was not saved",
+        ));
+    }
+    Ok(None)
+}
+
+/// Whether `path` itself still names `file` (on Windows, which has no
+/// stable file ids in std, it is taken as such).
+fn names_file(path: &Path, file: &fs::File) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (fs::symlink_metadata(path), file.metadata()) {
+            (Ok(here), Ok(locked)) => {
+                here.file_type().is_file()
+                    && here.dev() == locked.dev()
+                    && here.ino() == locked.ino()
+            }
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+        fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
+    }
+}
+
+/// Removes the link, pipe, device or empty folder at the lock path `path`,
+/// so a plain lock file can be made. One process at a time, under the
+/// lock of `<path>.fix`, and only while the entry is still odd: a process
+/// that saw it odd before another one replaced it must never remove that
+/// one's live lock file (HUNT-502: both then held "the lock" on two files
+/// and a change was lost). A folder with files in it is refused.
+fn replace_odd_lock(path: &Path) -> std::io::Result<()> {
+    let mut fix = path.as_os_str().to_owned();
+    fix.push(".fix");
+    let fix = PathBuf::from(fix);
+    let guard = open_regular_for_write(
+        &fix,
+        fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true),
+    )?;
+    let _ = guard.lock();
+    match fs::symlink_metadata(path) {
+        Ok(m) if m.is_dir() => {
+            if fs::remove_dir(path).is_err() && is_own_folder(path) {
+                return Err(foreign(
+                    path,
+                    "a folder with files in it stands where the lock file belongs, so saves could not be locked; remove it (the change was not saved)",
+                ));
+            }
+        }
+        Ok(m) if !m.file_type().is_file() => {
+            // A link to a folder is removed as a folder on Windows.
+            if fs::remove_file(path).is_err() {
+                let _ = fs::remove_dir(path);
+            }
+        }
+        // Missing, or a regular file another process made meanwhile.
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Opens `path` for reading when it is a regular file of at most `max`
@@ -1536,18 +1694,39 @@ impl Store {
             activity.join(format!("{id}.review.json")),
         ]
         .iter()
-        // A path that cannot be checked counts as taken.
-        .any(|p| p.try_exists().unwrap_or(true))
+        // Anything there counts, also a link to nowhere: a job of that id
+        // would write its log through it (ARCH-501). A path that cannot be
+        // checked counts as taken.
+        .any(|p| match fs::symlink_metadata(p) {
+            Ok(_) => true,
+            Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+        })
     }
 
     /// Takes the library's creation lock (`.activity/.new.lock`, a name no job id can have), held until
     /// the returned file is dropped: picking a new id and writing its file is
     /// one step for every process, so two jobs created with one name at the
     /// same moment get two ids (TEST-001). Best effort, like [`Store::lock`].
-    fn creation_lock(&self) -> Option<fs::File> {
-        self.library_present().ok()?;
-        fs::create_dir_all(self.activity_dir()).ok()?;
-        take_lock_file(&self.activity_dir().join(".new.lock"))
+    fn creation_lock(&self) -> Result<Option<fs::File>, StoreError> {
+        self.lock_file(None, ".new.lock")
+    }
+
+    /// Takes the lock file `name` in `.activity` for [`Store::lock`] and
+    /// [`Store::creation_lock`]: `Ok(None)` where no lock can be had (no
+    /// library, a read-only folder), an error for a link in place of
+    /// `.activity` or a lock path that cannot be made a lock file
+    /// ([`take_lock_file`]).
+    fn lock_file(&self, id: Option<&str>, name: &str) -> Result<Option<fs::File>, StoreError> {
+        if self.library_present().is_err() {
+            return Ok(None);
+        }
+        let dir = self.activity_dir();
+        match own_folder(&dir) {
+            Ok(()) => {}
+            Err(e) if is_foreign(&e) => return Err(StoreError::io(id, e)),
+            Err(_) => return Ok(None),
+        }
+        take_lock_file(&dir.join(name)).map_err(|e| StoreError::io(id, e))
     }
 
     /// Saves without recording activity (app autosave of its own edits).
@@ -1556,9 +1735,12 @@ impl Store {
     /// library folder an older app would otherwise write its stale copy over
     /// a colleague's newer one.
     pub fn save(&self, id: Option<String>, project: &Project) -> Result<String, StoreError> {
-        let _creating = id.is_none().then(|| self.creation_lock());
+        let _creating = match id {
+            None => self.creation_lock()?,
+            Some(_) => None,
+        };
         let id = id.unwrap_or_else(|| self.new_id(&project.name));
-        let _lock = self.lock(&id);
+        let _lock = self.lock(&id)?;
         self.write(&id, project)?;
         Ok(id)
     }
@@ -1579,7 +1761,7 @@ impl Store {
         base: &Project,
     ) -> Result<CheckedSave, StoreError> {
         self.path(id)?;
-        let _lock = self.lock(id);
+        let _lock = self.lock(id)?;
         match self.load(id) {
             Ok(current) if current != *base => {
                 return Ok(CheckedSave::Conflict {
@@ -1617,11 +1799,9 @@ impl Store {
     /// Best effort: where the folder cannot hold a lock file (read-only,
     /// a file system without locks), saving goes on without it and the
     /// write reports its own error.
-    fn lock(&self, id: &str) -> Option<fs::File> {
-        self.path(id).ok()?;
-        self.library_present().ok()?;
-        fs::create_dir_all(self.activity_dir()).ok()?;
-        take_lock_file(&self.activity_dir().join(format!("{id}.lock")))
+    fn lock(&self, id: &str) -> Result<Option<fs::File>, StoreError> {
+        self.path(id)?;
+        self.lock_file(Some(id), &format!("{id}.lock"))
     }
 
     /// Saves and records who made the change and why, keeping the previous
@@ -1636,9 +1816,9 @@ impl Store {
         let id = match id {
             Some(id) => id,
             None => {
-                let _creating = self.creation_lock();
+                let _creating = self.creation_lock()?;
                 let id = self.new_id(&project.name);
-                let _lock = self.lock(&id);
+                let _lock = self.lock(&id)?;
                 self.log_and_write(&id, None, project, actor, summary, None)?;
                 return Ok(id);
             }
@@ -1677,7 +1857,7 @@ impl Store {
         undid_from: Option<u64>,
     ) -> Result<CheckedSave, StoreError> {
         self.path(id)?;
-        let _lock = self.lock(id);
+        let _lock = self.lock(id)?;
         let before = match self.load(id) {
             // Refused before anything is logged (see `save`).
             Err(e @ StoreError::NewerFormat { .. }) => return Err(e),
@@ -1782,7 +1962,7 @@ impl Store {
         // A summary is one sentence for the user (ARCH-105).
         entry.summary = crate::edit::capped(&entry.summary, crate::edit::MAX_SUMMARY_CHARS);
         let io = |e| StoreError::io(Some(id), e);
-        fs::create_dir_all(self.activity_dir()).map_err(io)?;
+        own_folder(&self.activity_dir()).map_err(io)?;
         let path = log.path.clone();
         let line = serde_json::to_string(&entry).map_err(|e| io(e.into()))?;
         let mut f = open_regular_for_write(
@@ -2027,7 +2207,7 @@ impl Store {
         let path = self.review_path(id)?;
         let accepted_ms = self.reviewed_at(id).max(ts_ms);
         let io = |e| StoreError::io(Some(id), e);
-        fs::create_dir_all(self.activity_dir()).map_err(io)?;
+        own_folder(&self.activity_dir()).map_err(io)?;
         let text = serde_json::to_string(&ReviewMark { accepted_ms }).map_err(|e| io(e.into()))?;
         write_atomic(&path, &text).map_err(io)?;
         Ok(accepted_ms)
@@ -2089,7 +2269,7 @@ impl Store {
         let name = self.load(id).map(|p| p.name).unwrap_or_default();
         let io = |e| StoreError::io(Some(id), e);
         // No save of this job lands while it is moved.
-        let _lock = self.lock(id);
+        let _lock = self.lock(id)?;
         let (entry, folder) = self.new_trash_folder(id).map_err(io)?;
         // Everything or nothing: the attached files first (on Windows a
         // drawing open in a viewer keeps its folder from moving), the
@@ -2173,7 +2353,7 @@ impl Store {
                 format!("{base}-{n}")
             };
             let folder = self.trash_dir().join(&entry);
-            fs::create_dir_all(self.trash_dir())?;
+            own_folder(&self.trash_dir())?;
             match fs::create_dir(&folder) {
                 Ok(()) => return Ok((entry, folder)),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -2194,6 +2374,11 @@ impl Store {
             return None;
         }
         let folder = self.trash_dir().join(entry);
+        // Only real folders in a real trash: a link there would bring files
+        // from outside into a job, or let pruning delete them (HUNT-503).
+        if !(is_own_folder(&self.trash_dir()) && is_own_folder(&folder)) {
+            return None;
+        }
         let text = read_regular(&folder.join(TRASH_INFO), MAX_SMALL_FILE).ok()?;
         let mut info: TrashEntry = serde_json::from_slice(&text).ok()?;
         // The folder name is what restores it, whatever the file says.
@@ -2203,6 +2388,9 @@ impl Store {
 
     /// Deleted jobs and removed files in the trash, newest first.
     pub fn trash(&self) -> Vec<TrashEntry> {
+        if !is_own_folder(&self.trash_dir()) {
+            return Vec::new();
+        }
         let mut out: Vec<TrashEntry> = fs::read_dir(self.trash_dir())
             .into_iter()
             .flatten()
@@ -2245,7 +2433,11 @@ impl Store {
                 self.reserve_attachment_name(&info.id, name)
                     .map_err(|e| StoreError::Io {
                         id: Some(info.id.clone()),
-                        kind: IoKind::Other,
+                        kind: if e.code == "foreign_entry" {
+                            IoKind::Foreign
+                        } else {
+                            IoKind::Other
+                        },
                         detail: e.detail,
                     })?;
             drop(reserved);
@@ -2261,7 +2453,7 @@ impl Store {
             return Err(StoreError::NotFound(entry.to_string()));
         }
         // A new id is picked and taken in one step (see `save`).
-        let _creating = self.creation_lock();
+        let _creating = self.creation_lock()?;
         let id = if self.id_used(&info.id) {
             self.new_id(if info.name.is_empty() {
                 &info.id
@@ -2271,9 +2463,10 @@ impl Store {
         } else {
             info.id.clone()
         };
-        let _lock = self.lock(&id);
-        fs::create_dir_all(self.activity_dir()).map_err(io)?;
-        fs::create_dir_all(self.dir.join(FILES_DIR)).map_err(io)?;
+        let _lock = self.lock(&id)?;
+        // Into the library's own folders, never through a link (HUNT-503).
+        own_folder(&self.activity_dir()).map_err(io)?;
+        own_folder(&self.dir.join(FILES_DIR)).map_err(io)?;
         // Everything or nothing, the project file last: the app's watcher
         // sees the job when it is whole.
         let moves = [
@@ -2297,6 +2490,17 @@ impl Store {
             },
         );
         Ok(id)
+    }
+
+    /// [`Store::files_dir`], created when missing; refused when it or
+    /// `.files` is a link, so attached drawings never land outside the
+    /// library (HUNT-503).
+    fn own_files_dir(&self, id: &str) -> Result<PathBuf, FileError> {
+        let dir = self.files_dir(id)?;
+        let files = self.dir.join(FILES_DIR);
+        own_folder(&files).map_err(|e| FileError::io(&files, e))?;
+        own_folder(&dir).map_err(|e| FileError::io(&dir, e))?;
+        Ok(dir)
     }
 
     /// Folder of the files attached to job `id`.
@@ -2411,8 +2615,7 @@ impl Store {
         let name = crate::nfc::nfc(name.trim()).into_owned();
         let name = name.as_str();
         self.attachment_path(id, name)?;
-        let dir = self.files_dir(id)?;
-        fs::create_dir_all(&dir).map_err(|e| FileError::io(&dir, e))?;
+        self.own_files_dir(id)?;
         let (stem, ext) = match name.rfind('.') {
             Some(i) if i > 0 => (&name[..i], &name[i..]),
             _ => (name, ""),
@@ -2529,7 +2732,7 @@ impl Store {
 
     pub fn set_live(&self, status: &LiveStatus) {
         if self.dir.is_dir()
-            && fs::create_dir_all(self.activity_dir()).is_ok()
+            && own_folder(&self.activity_dir()).is_ok()
             && let Ok(text) = serde_json::to_string(status)
         {
             let _ = write_atomic(&self.activity_dir().join(LIVE_FILE), &text);
@@ -2956,6 +3159,243 @@ mod tests {
         assert_eq!(fs::read_to_string(&victim).unwrap(), "# victim\n");
         let _ = fs::remove_dir_all(&store.dir);
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// Audit 2026-11-22 HUNT-503: a link in place of one of the library's
+    /// own folders (`.activity`, `.files`, `.files/<id>`, `.trash`) is
+    /// refused with `foreign_entry`; nothing is written outside the
+    /// library through it.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_place_of_a_library_folder_is_refused_and_nothing_lands_outside() {
+        let project = examples::find("hip").unwrap().project();
+        let outside = std::env::temp_dir().join(format!("tectora-dirlink-{}", now_ms()));
+        let empty = |what: &str| {
+            let left: Vec<_> = fs::read_dir(&outside).unwrap().flatten().collect();
+            assert!(left.is_empty(), "{what}: written outside: {left:?}");
+        };
+        let link = |store: &Store, rel: &str| {
+            let at = store.dir.join(rel);
+            let _ = fs::remove_dir_all(&at);
+            std::os::unix::fs::symlink(&outside, &at).unwrap();
+        };
+        fs::create_dir_all(&outside).unwrap();
+        // `.activity`: logged saves, plain saves and new jobs.
+        let store = temp_store("dirlink-activity");
+        let id = store.save(None, &project).unwrap();
+        link(&store, ACTIVITY_DIR);
+        let mut p = project.clone();
+        p.notes = "changed".into();
+        let e = store
+            .save_as(Some(id.clone()), &p, "claude", "Changed.")
+            .unwrap_err();
+        assert_eq!(e.code(), "foreign_entry", "{e}");
+        assert!(e.to_string().contains(ACTIVITY_DIR), "{e}");
+        assert_eq!(
+            store.save(Some(id.clone()), &p).unwrap_err().code(),
+            "foreign_entry"
+        );
+        assert_eq!(store.save(None, &p).unwrap_err().code(), "foreign_entry");
+        assert_eq!(
+            store.mark_reviewed(&id, 1).unwrap_err().code(),
+            "foreign_entry"
+        );
+        let live: LiveStatus = serde_json::from_value(serde_json::json!({
+            "ts_ms": 1, "actor": "claude", "message": "m", "project_id": null
+        }))
+        .unwrap();
+        store.set_live(&live);
+        assert_eq!(store.load(&id).unwrap(), project, "the job is unchanged");
+        empty(".activity");
+        let _ = fs::remove_dir_all(&store.dir);
+        // `.files` and `.files/<id>`: attachments.
+        for rel in [FILES_DIR.to_string(), format!("{FILES_DIR}/a")] {
+            let store = temp_store("dirlink-files");
+            let id = store.save(Some("a".into()), &project).unwrap();
+            fs::create_dir_all(store.dir.join(FILES_DIR)).unwrap();
+            link(&store, &rel);
+            let e = store.add_attachment(&id, "plan.pdf", b"%PDF").unwrap_err();
+            assert_eq!(e.code, "foreign_entry", "{rel}: {e}");
+            empty(&rel);
+            let _ = fs::remove_dir_all(&store.dir);
+        }
+        // `.trash`: a delete leaves the job where it is.
+        let store = temp_store("dirlink-trash");
+        let id = store.save_as(None, &project, USER_ACTOR, "Made.").unwrap();
+        link(&store, TRASH_DIR);
+        let e = store.delete(&id, USER_ACTOR, "Gone.").unwrap_err();
+        assert_eq!(e.code(), "foreign_entry", "{e}");
+        assert!(store.exists(&id));
+        empty(".trash");
+        // A trash folder outside is neither listed, restored nor pruned.
+        let old = outside.join("1-old");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(
+            old.join(TRASH_INFO),
+            r#"{"entry":"1-old","id":"old","name":"","ts_ms":1,"actor":"user","summary":""}"#,
+        )
+        .unwrap();
+        fs::write(old.join("old.tectora"), project.to_json().unwrap()).unwrap();
+        assert!(store.trash().is_empty());
+        assert!(store.restore("1-old").is_err());
+        store.add_attachment(&id, "x.pdf", b"%PDF").unwrap();
+        assert!(
+            store
+                .remove_attachment(&id, "x.pdf", USER_ACTOR, "x")
+                .is_err()
+        );
+        assert!(
+            old.join("old.tectora").exists(),
+            "pruned outside the library"
+        );
+        let _ = fs::remove_dir_all(&store.dir);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// Audit 2026-11-22 HUNT-501: a folder in place of a job's lock file
+    /// turned locking off for good (two writers then overwrote each other).
+    /// An empty folder is replaced by a lock file; a folder with files in
+    /// it refuses the save, `foreign_entry`, and the job stays as it was.
+    #[test]
+    fn a_folder_in_place_of_a_lock_file_is_replaced_or_refuses_the_save() {
+        let store = temp_store("lock-dir");
+        let project = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &project, USER_ACTOR, "Made.").unwrap();
+        let lock = store.activity_dir().join(format!("{id}.lock"));
+        let _ = fs::remove_file(&lock);
+        fs::create_dir(&lock).unwrap();
+        let mut p = project.clone();
+        p.notes = "one".into();
+        store
+            .save_as(Some(id.clone()), &p, "claude", "One.")
+            .unwrap();
+        assert!(
+            fs::symlink_metadata(&lock).unwrap().is_file(),
+            "a lock file again"
+        );
+        // A folder with something in it is not Tectora's to remove.
+        fs::remove_file(&lock).unwrap();
+        fs::create_dir(&lock).unwrap();
+        fs::write(lock.join("keep.txt"), "x").unwrap();
+        p.notes = "two".into();
+        let e = store
+            .save_as(Some(id.clone()), &p, "claude", "Two.")
+            .unwrap_err();
+        assert_eq!(e.code(), "foreign_entry", "{e}");
+        assert!(e.to_string().contains("lock"), "{e}");
+        assert_eq!(
+            store.save(Some(id.clone()), &p).unwrap_err().code(),
+            "foreign_entry"
+        );
+        assert_eq!(store.load(&id).unwrap().notes, "one");
+        assert_eq!(fs::read_to_string(lock.join("keep.txt")).unwrap(), "x");
+        // The same for the creation lock of new jobs.
+        let new = store.activity_dir().join(".new.lock");
+        let _ = fs::remove_file(&new);
+        fs::create_dir(&new).unwrap();
+        fs::write(new.join("keep.txt"), "x").unwrap();
+        assert_eq!(store.save(None, &p).unwrap_err().code(), "foreign_entry");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 HUNT-502: a writer that saw a pipe at the lock path
+    /// before another one replaced it never removes the other's live lock
+    /// file; a second writer then waits for that lock.
+    #[cfg(unix)]
+    #[test]
+    fn a_stale_look_at_an_odd_lock_never_removes_a_live_lock_file() {
+        use std::os::unix::fs::MetadataExt;
+        let store = temp_store("lock-stale");
+        fs::create_dir_all(store.activity_dir()).unwrap();
+        let path = store.activity_dir().join("x.lock");
+        let held = take_lock_file(&path).unwrap().unwrap();
+        let ino = fs::metadata(&path).unwrap().ino();
+        // What the other writer does after it saw the pipe that was there.
+        replace_odd_lock(&path).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().ino(),
+            ino,
+            "the live lock was removed"
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        let p = path.clone();
+        std::thread::spawn(move || {
+            let second = take_lock_file(&p).unwrap().unwrap();
+            let _ = tx.send(());
+            drop(second);
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "a second writer took the lock while it was held"
+        );
+        drop(held);
+        assert!(rx.recv_timeout(std::time::Duration::from_secs(10)).is_ok());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 HUNT-501, HUNT-502: two writers that find an odd
+    /// entry (a folder, a pipe, a link) at a job's lock path at the same
+    /// moment both end up holding one lock: no change is lost.
+    #[cfg(unix)]
+    #[test]
+    fn two_writers_finding_an_odd_lock_at_once_lose_no_change() {
+        let store = temp_store("lock-race");
+        let project = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &project, USER_ACTOR, "Made.").unwrap();
+        let lock = store.activity_dir().join(format!("{id}.lock"));
+        let outside = std::env::temp_dir().join(format!("tectora-race-link-{}", now_ms()));
+        let mut lost = Vec::new();
+        for trial in 0..60 {
+            let _ = fs::remove_file(&lock);
+            let _ = fs::remove_dir(&lock);
+            match trial % 3 {
+                0 => fs::create_dir(&lock).unwrap(),
+                1 => {
+                    let made = std::process::Command::new("mkfifo")
+                        .arg(&lock)
+                        .status()
+                        .is_ok_and(|s| s.success());
+                    if !made {
+                        fs::create_dir(&lock).unwrap();
+                    }
+                }
+                _ => std::os::unix::fs::symlink(&outside, &lock).unwrap(),
+            }
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let writers: Vec<_> = ["a", "b"]
+                .into_iter()
+                .map(|who| {
+                    let (dir, id, barrier) = (store.dir.clone(), id.clone(), Arc::clone(&barrier));
+                    std::thread::spawn(move || {
+                        let store = Store::at(dir);
+                        barrier.wait();
+                        loop {
+                            let base = store.load(&id).unwrap();
+                            let mut p = base.clone();
+                            p.notes.push_str(&format!("{who}{trial};"));
+                            match store.save_as_checked(&id, &p, "claude", "Note.", Some(&base)) {
+                                Ok(CheckedSave::Saved { .. }) => return,
+                                Ok(CheckedSave::Conflict { .. }) => continue,
+                                Err(e) => panic!("{who}{trial}: {e}"),
+                            }
+                        }
+                    })
+                })
+                .collect();
+            for w in writers {
+                w.join().unwrap();
+            }
+            let notes = store.load(&id).unwrap().notes;
+            for who in ["a", "b"] {
+                if !notes.contains(&format!("{who}{trial};")) {
+                    lost.push(format!("{who}{trial}"));
+                }
+            }
+            assert!(!outside.exists(), "a lock was made outside");
+        }
+        assert!(lost.is_empty(), "changes lost: {lost:?}");
+        let _ = fs::remove_dir_all(&store.dir);
     }
 
     /// Audit 2026-11-22 ARCH-402: a job at the face and corner limits (500

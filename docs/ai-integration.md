@@ -147,6 +147,14 @@ stay a `folder_request` the user allows or keeps.
   (`Store::save_as_checked`) and merge onto a user edit saved meanwhile, or
   refuse when both changed the same value. The check and the write run under
   the job's lock file `.activity/<id>.lock`, shared by all processes.
+- Tectora manages the library's own folders (`.activity`, `.files`,
+  `.files/<id>`, `.trash`) and lock files itself. A link in place of one of
+  them, or a folder with files where a lock file belongs, is refused, never
+  written through: the app and every MCP write then answer `foreign_entry`
+  with the path in the detail, and nothing is saved until it is removed. An
+  empty folder, a pipe or a link at a lock file's path is replaced by a plain
+  lock file. A received job's history keeps the newest 50 changes, as every
+  change log does; `get_history` hands out at most those.
 
 A skill for Claude that describes the drawing workflow is in
 `integrations/skills/tectora-roof/SKILL.md`.

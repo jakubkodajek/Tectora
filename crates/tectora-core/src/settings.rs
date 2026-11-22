@@ -241,12 +241,17 @@ pub fn env_projects_dir() -> Option<PathBuf> {
 /// held until the returned file is dropped. Best effort, like the job
 /// library's locks: where the folder cannot hold a lock file the change
 /// goes on without it.
-fn settings_lock(path: &Path) -> Option<fs::File> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok()?;
+fn settings_lock(path: &Path) -> Result<Option<fs::File>, SettingsError> {
+    if let Some(parent) = path.parent()
+        && fs::create_dir_all(parent).is_err()
+    {
+        return Ok(None);
     }
-    // Never through a link or a pipe put in its place (HUNT-402).
+    // Never through a link or a pipe put in its place (HUNT-402), and a
+    // folder with files there refuses the change instead of going on
+    // unlocked (HUNT-501).
     crate::store::take_lock_file(&path.with_extension("json.lock"))
+        .map_err(|e| SettingsError::Io(e.to_string()))
 }
 
 impl Settings {
@@ -313,7 +318,7 @@ impl Settings {
         path: &Path,
         change: impl FnOnce(&Settings) -> Result<Settings, SettingsError>,
     ) -> Result<(Settings, Settings), SettingsError> {
-        let _lock = settings_lock(path);
+        let _lock = settings_lock(path)?;
         let old = Self::load_from(path);
         let next = change(&old)?;
         next.save_to(path)?;
@@ -1451,6 +1456,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Audit 2026-11-22 HUNT-501: a folder in place of the settings lock
+    /// turned the lock off; an empty one is replaced by a lock file, one
+    /// with files in it refuses the change instead of going on unlocked.
+    #[test]
+    fn a_folder_in_place_of_the_settings_lock_is_replaced_or_refuses() {
+        let d = tmp("lock-dir");
+        let path = d.join("settings.json");
+        let lock = path.with_extension("json.lock");
+        fs::create_dir(&lock).unwrap();
+        Settings::update_at(&path, |s| s.patched(&serde_json::json!({ "locale": "de" }))).unwrap();
+        assert!(fs::symlink_metadata(&lock).unwrap().is_file());
+        fs::remove_file(&lock).unwrap();
+        fs::create_dir(&lock).unwrap();
+        fs::write(lock.join("keep.txt"), "x").unwrap();
+        let e = Settings::update_at(&path, |s| s.patched(&serde_json::json!({ "locale": "en" })))
+            .unwrap_err();
+        assert!(matches!(e, SettingsError::Io(_)), "{e:?}");
+        assert_eq!(Settings::load_from(&path).locale.as_deref(), Some("de"));
+        let _ = fs::remove_dir_all(&d);
     }
 
     /// HUNT-404: a settings file saved with a UTF-8 byte order mark

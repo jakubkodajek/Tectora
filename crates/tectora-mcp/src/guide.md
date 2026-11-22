@@ -118,8 +118,13 @@ The tools cover every operation of the Tectora editor:
   of 90° or more, an overhang over 20 m, an eave outside 0 to 1000 m) are
   refused and nothing is saved; usually a length was typed in the wrong
   unit.
-- History: `get_history`, `revert_to`, `revert_last_change` (a revert keeps
-  the user's later edits; it is refused when the user has since changed a
+- A write refused with `foreign_entry` found a link, or a folder with files,
+  where Tectora keeps its own folders or lock files in the jobs folder
+  (`.activity`, `.files`, `.trash`): nothing was saved. Tell the user the
+  path from the error; do not retry until they removed it.
+- History: `get_history` (the newest 50 changes), `revert_to`,
+  `revert_last_change` (a revert keeps the user's later edits; it is
+  refused when the user has since changed a
   value the reverted step set, so ask the user then). `get_review`
   tells whether the user has accepted your changes yet and how they changed
   the figures; only the user accepts, in the app. Do not treat a design as

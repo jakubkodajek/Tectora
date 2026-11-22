@@ -519,8 +519,17 @@ pub fn import(store: &Store, src: &Path) -> Result<String, FileError> {
         if let Some((history, last)) = history.as_deref().and_then(received_history) {
             let path = store.activity_path(&id)?;
             let dir = store.activity_dir();
-            fs::create_dir_all(&dir).map_err(|e| FileError::io(&dir, e))?;
-            fs::write(&path, history).map_err(|e| FileError::io(&path, e))?;
+            crate::store::own_folder(&dir).map_err(|e| FileError::io(&dir, e))?;
+            // A new file, never through a link left at its path, which
+            // would put the sender's history outside the library (ARCH-501).
+            let mut f = crate::store::open_regular_for_write(
+                &path,
+                fs::OpenOptions::new().write(true).create_new(true),
+            )
+            .map_err(|e| FileError::io(&path, e))?;
+            f.write_all(history.as_bytes())
+                .and_then(|()| crate::store::sync_file(&f))
+                .map_err(|e| FileError::io(&path, e))?;
             // The sender's changes are history, not an AI change waiting
             // for this user's review.
             store.mark_reviewed(&id, last)?;
@@ -1289,6 +1298,48 @@ mod tests {
         assert_eq!(log[0].summary, "change 951");
         assert_eq!(log.last().unwrap().summary, "change 1000");
         assert!(store.pending_review(&id).is_none(), "received, not pending");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Audit 2026-11-22 ARCH-501: a link left at the log path of the id a
+    /// received job would get (pointing outside the library) is neither
+    /// written through nor taken over: the job gets another id, and the
+    /// link's target is never created.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_at_a_new_jobs_log_path_is_not_written_through_by_an_import() {
+        let dir = std::env::temp_dir().join(format!("tectora-importlink-{}", now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut p = crate::examples::find("gable").unwrap().project();
+        p.name = "Odd".into();
+        let entry = serde_json::to_string(&crate::store::ActivityEntry {
+            ts_ms: 1,
+            actor: "x".into(),
+            summary: "House".into(),
+            before: None,
+            changes: Vec::new(),
+            after: Some(p.clone()),
+            undid_from: None,
+        })
+        .unwrap();
+        let path = bundle_with_log(
+            &dir,
+            "odd.tectorajob",
+            &p.to_json().unwrap(),
+            &(entry + "\n"),
+        );
+        let store = Store::new(dir.join("lib")).unwrap();
+        fs::create_dir_all(store.activity_dir()).unwrap();
+        let target = dir.join("outside").join("created-by-import.jsonl");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, store.activity_dir().join("odd.jsonl")).unwrap();
+        let id = import(&store, &path).unwrap();
+        assert_ne!(id, "odd", "the id with a leftover link is taken");
+        assert!(
+            !target.exists(),
+            "the history was written outside the library"
+        );
+        assert_eq!(store.activity(&id).len(), 1);
         let _ = fs::remove_dir_all(dir);
     }
 

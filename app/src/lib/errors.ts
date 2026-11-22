@@ -69,6 +69,7 @@ const KNOWN = new Set([
   "library_changed",
   "permission_denied",
   "disk_full",
+  "foreign_entry",
   "io",
   "nothing_to_revert",
   "revert_created",
