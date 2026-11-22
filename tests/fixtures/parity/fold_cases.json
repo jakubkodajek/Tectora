@@ -1,0 +1,73 @@
+{
+  "_comment": "Search folding shared by the core (library::fold, MCP list_projects) and the app (fold.ts, library search): each input folds to its output on both sides (audit 2026-11-22 UX-503). Compatibility characters (superscripts, Roman numerals, circled digits) are kept, as the core keeps them; only full-width letters and ligatures are spelled out.",
+  "cases": [
+    [
+      "Řezníček Žluťoučký",
+      "reznicek zlutoucky"
+    ],
+    [
+      "ÄÖÜ äöü",
+      "aou aou"
+    ],
+    [
+      "ＴＥＲＲＡＮ １２",
+      "terran 12"
+    ],
+    [
+      "Ｎｏｖáｋ",
+      "novak"
+    ],
+    [
+      "Straße",
+      "strasse"
+    ],
+    [
+      "ﬁnal ﬂat ﬀ ﬃ ﬄ ﬅ ﬆ",
+      "final flat ff ffi ffl st st"
+    ],
+    [
+      "Łódź Øresund Æble",
+      "lodz oresund aeble"
+    ],
+    [
+      "Άρης",
+      "αρησ"
+    ],
+    [
+      "İstanbul",
+      "istanbul"
+    ],
+    [
+      "ȧb ǖ ặ",
+      "ab u a"
+    ],
+    [
+      "Ὀδυσσεύς",
+      "οδυσσευσ"
+    ],
+    [
+      "Nový Dům",
+      "novy dum"
+    ],
+    [
+      "ŀ ħ ŧ ð þ œ đ ı",
+      "l h t d th oe d i"
+    ],
+    [
+      "Plocha 120 m²",
+      "plocha 120 m²"
+    ],
+    [
+      "Ⅻ etapa",
+      "ⅻ etapa"
+    ],
+    [
+      "① ½ ㎡",
+      "① ½ ㎡"
+    ],
+    [
+      "한국 日本",
+      "한국 日本"
+    ]
+  ]
+}

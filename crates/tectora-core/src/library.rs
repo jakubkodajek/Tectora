@@ -373,6 +373,25 @@ mod tests {
         assert_eq!(crate::store::slug_of("ＡＢＣ dům"), "abc-dum");
     }
 
+    /// Audit 2026-11-22 UX-503: the core folds as the app's library search
+    /// does (`app/src/lib/fold.ts`, tested with the same cases): "m2" found
+    /// "120 m²" in the app but not over MCP.
+    #[test]
+    fn fold_matches_the_shared_cases() {
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/parity/fold_cases.json"),
+        )
+        .unwrap();
+        let file: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let cases = file["cases"].as_array().unwrap();
+        assert!(cases.len() > 10);
+        for c in cases {
+            let (input, folded) = (c[0].as_str().unwrap(), c[1].as_str().unwrap());
+            assert_eq!(fold(input), folded, "{input}");
+        }
+    }
+
     #[test]
     fn a_decomposed_name_from_macos_is_found_by_its_precomposed_spelling() {
         // HUNTIO-007: "Nový Dům" typed on macOS (NFD) was not found by

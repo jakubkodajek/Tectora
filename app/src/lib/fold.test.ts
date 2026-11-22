@@ -19,3 +19,19 @@ describe("fold (the core's library::fold)", () => {
     expect(fold("Άρης")).toBe(fold("αρησ"));
   });
 });
+
+// The same cases the core's `library::fold` is tested with
+// (crates/tectora-core/src/library.rs `fold_matches_the_shared_cases`), so
+// the library search and MCP `list_projects` find the same jobs (UX-503).
+describe("fold follows the core's fold (shared cases)", () => {
+  const files = import.meta.glob("../../../tests/fixtures/parity/fold_cases.json", { eager: true, import: "default" }) as Record<string, unknown>;
+  const file = Object.values(files)[0] as { cases: [string, string][] };
+  it("has the cases", () => expect(file.cases.length).toBeGreaterThan(10));
+  for (const [input, folded] of file.cases) {
+    it(`folds ${JSON.stringify(input)}`, () => expect(fold(input)).toBe(folded));
+  }
+  it("keeps compatibility characters as the core does", () => {
+    expect(fold("Plocha 120 m²")).not.toContain("m2");
+    expect(fold("Ⅻ etapa")).not.toContain("xii");
+  });
+});
