@@ -217,6 +217,12 @@ and `revert_refuses_when_the_user_changed_the_same_value`.
   the user draws, places, drags, types or has a dialog open.
 - Undo, redo, AI save, merge on save, standard roof, face → building and move
   all recalculate (class 2).
+- A stored offer result an older engine made, opened from the library or by
+  follow mode / `show_project`: one neutral notice leads to the history
+  entry, which lists each figure old -> new; the result card says
+  "recalculated <date> (Tectora a -> b)" with the offer's own date; the
+  entry's button puts the offer's figures back for good
+  (`app/e2e/audit-r8-ed.e2e.ts`, UX-702a-d).
 
 ## 7. Window size and language (@ui)
 
@@ -420,13 +426,22 @@ case, and assert that it really came while the pointer was down.
     this job (reloaded once after the drop, both kept), follow mode (the
     editor stays on the job, also during a corner drag: ERR-601).
   - Undo right after a building's drop, its core move still out, undoes
-    exactly the drop and Redo brings it back (ERR-603).
+    exactly the drop and Redo brings it back (ERR-603). A drop the core
+    refuses is put back, its toast names the move, and an Undo pressed
+    while it settled undoes nothing (ERR-701, TEST-701).
+  - Ctrl/Cmd+, (App's settings shortcut, outside the editor) opens nothing
+    during a drag (HUNT-702); an AI save during a drag that ends with
+    Escape or a press that never moved is read then (TEST-702).
+  - A press on a ridge, hip or valley line selects and drags the building
+    under it (UI-701); a finger or pen held still on the plan opens its
+    menu, + / − beside Fit zoom without a wheel (UX-703).
   - After every cell: the file holds exactly the drop, a value typed
     afterwards lands within 3 s, the status says saved, Back leaves; no
     autosave writes a half-dragged job; leaving mid-drag ends it where it is.
 - Undo right after Enter undoes the value just typed, Redo brings it back
   (UX-501); the status bar says saving while an edit is with the core
-  (UX-502); a dialog's OK keeps the focus while it waits (UI-503); a
+  (UX-502; hold the answer until the sampling ends, never for a fixed
+  time, TEST-706); a dialog's OK keeps the focus while it waits (UI-503); a
   dialog's own core checks run one after another (the dormer dialog).
 
 ## 16. Huge but valid jobs reach every view (@arch, @ui)
