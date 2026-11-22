@@ -63,6 +63,17 @@ export function isRevert(summary: string): boolean {
 /** The entry the core writes when it recalculates a stored result (snapshot.rs `REFRESHED_PREFIX`). */
 const REFRESHED = /^Stored result recalculated \(Tectora (\S+) -> (\S+)\): roof area (-?[\d.]+) -> (-?[\d.]+) m2$/;
 
+/**
+ * The notice the editor shows when opening a job recalculated its stored
+ * result (audit UX-702c): the engine's summary in the user's language.
+ */
+export function refreshedNotice(summary: string): string {
+  const refreshed = REFRESHED.exec(summary);
+  if (!refreshed) return entrySummary(summary);
+  const [, from, to, a, b] = refreshed;
+  return t("snap.refreshedNotice", { from, to, a: num(Number(a)), b: num(Number(b)) });
+}
+
 /** A change-log summary with the core's English revert sentences translated. */
 export function entrySummary(summary: string): string {
   const refreshed = REFRESHED.exec(summary);

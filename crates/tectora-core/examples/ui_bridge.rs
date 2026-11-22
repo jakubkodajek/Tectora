@@ -174,12 +174,27 @@ fn calc_command(cmd: &str, a: &Value) -> Option<Result<Value, Value>> {
     })
 }
 
+/// What the engine's recalculation of a stored result changed, as the
+/// app's `project_activity` gives it (`refresh_figures` in lib.rs).
+fn refresh_figures(e: &tectora_core::store::ActivityEntry) -> Option<Value> {
+    if e.actor != tectora_core::store::ENGINE_ACTOR {
+        return None;
+    }
+    let old = e.before.as_ref()?.result_snapshot.as_ref()?;
+    let new = e.after.as_ref()?.result_snapshot.as_ref()?;
+    Some(json!({
+        "offer_ms": old.taken_ms,
+        "from": old.engine_version,
+        "to": new.engine_version,
+        "differences": tectora_core::snapshot::compare(old, new),
+    }))
+}
+
 /// Loading and saving a job, with the library's own error (see `serve`).
 fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fail>> {
     let id = arg::<String>(a, "id").ok()?;
     match cmd {
         "load_project" => Some({
-            let _ = store.refresh_stored_result(&id);
             store
                 .load(&id)
                 .map(|p| to_json(p).unwrap_or(Value::Null))
@@ -260,7 +275,11 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
                 .history(&id()?)
                 .into_iter()
                 .map(|e| {
-                    json!({ "ts_ms": e.ts_ms, "actor": e.actor, "summary": e.summary, "changes": e.changes })
+                    let mut item = json!({ "ts_ms": e.ts_ms, "actor": e.actor, "summary": e.summary, "changes": e.changes });
+                    if let Some(r) = refresh_figures(&e) {
+                        item["refreshed"] = r;
+                    }
+                    item
                 })
                 .collect();
             items.reverse();
@@ -293,10 +312,13 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             }
             to_json(change)
         }
-        "load_project" => {
+        "load_project" => to_json(store.load(&id()?)?),
+        "refresh_stored_result" => {
             let id = id()?;
-            let _ = store.refresh_stored_result(&id);
-            to_json(store.load(&id)?)
+            if !store.refresh_stored_result(&id)? {
+                return Ok(Value::Null);
+            }
+            to_json(store.history(&id).last().map(|e| e.summary.clone()))
         }
         "save_project" => {
             let project: Project = arg(a, "project")?;

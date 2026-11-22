@@ -58,10 +58,10 @@
   import { partLabel } from "./partname";
   import { exportTitle } from "./exportlist";
   import { tabIds, tablist } from "./tabs";
-  import { actorName, entrySummary, isFresh, live, liveText, pillText } from "./live.svelte";
+  import { actorName, entrySummary, isFresh, live, liveText, pillText, refreshedNotice } from "./live.svelte";
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
   import type { ActivityItem, Arc, HelperRequest, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
-  import { GABLE_PITCH, buildingHeight, emptyProject, isAi, isGable, isMarker } from "./types";
+  import { ENGINE_ACTOR, GABLE_PITCH, buildingHeight, emptyProject, isAi, isGable, isMarker } from "./types";
   import { eavePitchFor, pruneEavePitches, rememberEavePitch, useEavePitchJob } from "./walltype";
 
   let {
@@ -627,6 +627,15 @@
     }
     const gen = saveGen;
     try {
+      // A result an older engine stored follows the corrected calculation
+      // before the job opens (owner decision 2026-11-21); the editor says
+      // so (audit UX-702c). A failed check opens the job as it is.
+      const recalculated = initial
+        ? await api.refreshStoredResult(id).catch((e) => {
+            console.warn("[tectora] refresh_stored_result:", e);
+            return null;
+          })
+        : null;
       const p = await api.loadProject(id);
       const json = JSON.stringify(p);
       await refreshActivity();
@@ -674,6 +683,7 @@
         // hand-drawn faces only is a roof to look at (UX-301).
         if (!hasBuilding(p)) drawing = [];
         if (pending) dock = "ai";
+        if (recalculated) noticeRecalculated(recalculated);
       } else {
         // External change (AI agent, CLI): keep it undoable and show it.
         // Merged local edits are still to be saved (the timer is running).
@@ -696,6 +706,37 @@
       }
     }
   }
+
+  /** The history entry the AI tab opens (the recalculation notice's button). */
+  let shownEntry = $state<number | null>(null);
+
+  /** One neutral notice that opening the job recalculated its stored result, with the way to the old figures. */
+  function noticeRecalculated(summary: string) {
+    const entry = activity.find((a) => a.actor === ENGINE_ACTOR && a.summary === summary);
+    notify({
+      kind: "info",
+      title: refreshedNotice(summary),
+      action: entry
+        ? {
+            label: t("snap.refreshedShow"),
+            run: () => {
+              dock = "ai";
+              shownEntry = entry.ts_ms;
+            },
+          }
+        : undefined,
+    });
+  }
+
+  /**
+   * The stored result as the engine recalculated it, while that is the
+   * newest change of the stored result (audit UX-702b): the card then says
+   * so and keeps the offer's date.
+   */
+  const recalculatedResult = $derived.by(() => {
+    const last = activity.find((a) => a.changes.some((c) => c.field === "result_snapshot"));
+    return last?.actor === ENGINE_ACTOR && last.refreshed ? { at: last.ts_ms, ...last.refreshed } : null;
+  });
 
   let dockEl: HTMLElement | undefined = $state();
   /** A text field in the side panel has the focus. */
@@ -2550,11 +2591,11 @@
         <div class="dock" role="tabpanel" id={dockIds.panel} aria-labelledby={dockIds.tab(dock)} bind:this={dockEl}>
           <button class="icon-btn dock-close" onclick={() => (dockOpen = false)} aria-label={t("common.close")} title={t("common.close")}><Icon name="x" size={16} /></button>
           {#if dock === "results"}
-            <Results {result} {project} onstore={storeResult} storing={acting.store} blocked={blockedReason} failure={calcFailure} pending={calcPending} />
+            <Results {result} {project} recalculated={recalculatedResult} onstore={storeResult} storing={acting.store} blocked={blockedReason} failure={calcFailure} pending={calcPending} />
           {:else if dock === "breakdown"}
             <Breakdown {project} {result} bind:data={breakdown} onmark={(mk) => (planMark = mk)} />
           {:else if dock === "ai"}
-            <AiPanel {id} {project} {activity} onrevert={() => revert(false)} busy={reviewBusy} {onconnect} onfocus={(c) => (focusChange = c)} />
+            <AiPanel {id} {project} {activity} bind:shown={shownEntry} onrevert={() => revert(false)} busy={reviewBusy} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
             <JobPanel {id} {project} current={() => project} onchange={commit} onsave={save} blocked={blockedReason} edits={jobEdits} track={(p) => pendingEdits.track(p)} />
           {/if}
