@@ -481,6 +481,26 @@ fn a_job_text_it_already_had_does_not_block_other_writes() {
     assert!(e.contains("customer"), "{e}");
 }
 
+/// Audit 2026-11-22 TEST-404 (R9): a copy of a job with an old text that
+/// the rules now refuse (a tab in its customer) is made; the copy keeps
+/// what the original had.
+#[test]
+fn a_copy_of_a_job_with_an_old_refused_text_is_made() {
+    let mut s = server();
+    let id = hip_job(&mut s);
+    let mut p = s.store.load(&id).unwrap();
+    p.job.customer = "A\tB".into();
+    s.store.save(Some(id.clone()), &p).unwrap();
+    let r = s
+        .call_tool(
+            "duplicate_project",
+            &json!({ "id": id, "name": "Copy", "summary": "Copy of the job" }),
+        )
+        .unwrap();
+    let copy = s.store.load(r["id"].as_str().unwrap()).unwrap();
+    assert_eq!(copy.job.customer, "A\tB");
+}
+
 /// Audit 2026-11-21 TEST-207: notes up to 1 000 000 characters are kept,
 /// one more is refused naming notes.
 #[test]

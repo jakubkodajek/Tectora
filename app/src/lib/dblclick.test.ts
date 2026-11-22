@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FRESH_BUTTON_MS, firstPress, pressTooSoon, secondPressOnFresh } from "./dblclick";
+import { FRESH_BUTTON_MS, SAME_SPOT_PX, firstPress, pressTooSoon, secondPressOnFresh } from "./dblclick";
 
 describe("firstPress (UI-008)", () => {
   it("opens the row of the first press when the rows moved under the second", () => {
@@ -53,5 +53,11 @@ describe("secondPressOnFresh (UI-208)", () => {
   it("does not count a press long before the bar appeared as its cause", () => {
     expect(secondPressOnFresh(origin, 1000 + FRESH_BUTTON_MS + 1, { x: 500, y: 700, at: 1600 })).toBe(false);
     expect(secondPressOnFresh(null, 1010, { x: 500, y: 700, at: 1090 })).toBe(false);
+  });
+  // Audit 2026-11-22 TEST-404 (V9): the same spot is at most 8 px away.
+  it("counts a press 8 px away as the same spot and 9 px away as another", () => {
+    expect(SAME_SPOT_PX).toBe(8);
+    expect(secondPressOnFresh(origin, 1010, { x: 508, y: 700, at: 1090 })).toBe(true);
+    expect(secondPressOnFresh(origin, 1010, { x: 500, y: 709, at: 1090 })).toBe(false);
   });
 });

@@ -393,6 +393,16 @@ fn bounded_outlines(outlines: Vec<Vec<[f64; 2]>>, max: usize) -> Vec<Vec<[f64; 2
     out
 }
 
+/// A card's figures when its calculation was refused: no roof for any
+/// building, and `too_complex` only when it was over the work bound, not
+/// when it failed (TEST-404 N13).
+fn refused_card(project: &Project, r: &crate::work::Refusal) -> (CardFigures, bool) {
+    (
+        (0.0, Vec::new(), project.parts.len(), false),
+        *r == crate::work::Refusal::TooComplex,
+    )
+}
+
 pub fn roof_area(project: &Project) -> f64 {
     crate::quantities::roof_totals(project).roof_area
 }
@@ -1233,10 +1243,7 @@ impl Store {
                 // busy for as long as the app runs (ARCH-102).
                 let figures = match crate::work::calculate(|| card_figures(&project)) {
                     Ok(f) => (f, false),
-                    Err(r) => (
-                        (0.0, Vec::new(), project.parts.len(), false),
-                        r == crate::work::Refusal::TooComplex,
-                    ),
+                    Err(r) => refused_card(&project, &r),
                 };
                 // Under the lock, so `summarize` either sees the answer or
                 // has left its pending card for this thread to fill in.
@@ -2667,6 +2674,21 @@ mod tests {
         let s = store.summarize(&id).unwrap();
         assert_eq!(s.outlines, vec![vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0]]]);
         let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 TEST-404 (N13): a card whose calculation failed is
+    /// without a roof but not "too complex"; only the work bound says that.
+    #[test]
+    fn a_card_refused_for_a_failure_is_not_too_complex() {
+        let p = examples::find("hip").unwrap().project();
+        let ((area, lines, failed, differs), too_complex) =
+            refused_card(&p, &crate::work::Refusal::Failed("boom".into()));
+        assert!(!too_complex);
+        assert_eq!(
+            (area, lines.len(), failed, differs),
+            (0.0, 0, p.parts.len(), false)
+        );
+        assert!(refused_card(&p, &crate::work::Refusal::TooComplex).1);
     }
 
     /// Audit 2026-11-22 ARCH-401: entries so large that the log's entries

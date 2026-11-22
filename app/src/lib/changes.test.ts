@@ -149,4 +149,24 @@ describe("malformed changes from a received change log (HUNT-301)", () => {
     const long = describeChange({ kind: "modified", field: "job.customer", before: "", after: "x".repeat(100_000) }, p());
     expect(long.length).toBeLessThan(300);
   });
+
+  // Audit 2026-11-22 TEST-405 (C2, C3, C7): what the guards stand for, not only "no throw".
+  it("shows an unknown status or job field as another change", () => {
+    const other = describeChange(null as unknown as Change, null);
+    expect(describeChange({ kind: "modified", field: "job.status", before: "draft", after: "evil" } as Change, p())).toBe(other);
+    expect(describeChange({ kind: "modified", field: "job.status", before: "evil", after: "offer" } as Change, p())).toBe(other);
+    expect(describeChange({ kind: "modified", field: "job.foo", before: "", after: "x" } as Change, p())).toBe(other);
+    expect(describeChange({ kind: "modified", field: "job.customer", before: "", after: "Novák" } as Change, p())).not.toBe(other);
+  });
+
+  it("puts no building prefix on a part index that is not a whole number", () => {
+    const two = { ...emptyProject("x"), parts: [rect(12), rect(8)] };
+    const named = (part: unknown) => describeChange({ kind: "modified", field: "part_name", part, before: "", after: "A" } as Change, two);
+    expect(named(1)).toMatch(/2/);
+    for (const part of ["x", 1.5, -1, null]) {
+      const shown = named(part);
+      expect(shown).not.toMatch(/x1|NaN|undefined|1\.5|-1/);
+      expect(shown).toBe(describeChange({ kind: "modified", field: "part_name", before: "", after: "A" } as Change, two));
+    }
+  });
 });
