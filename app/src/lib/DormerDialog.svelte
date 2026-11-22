@@ -195,7 +195,20 @@
    * below the roof, a pitch under 2°: MATH-001, MATH-003) and only then
    * applies it; a refusal stays on the field with its reason.
    */
-  const checked = (patch: Partial<DormerParams>, apply: () => void) => track(checkedNow(patch, apply)) as Promise<true | string | false>;
+  const checked = (patch: Partial<DormerParams>, apply: () => void) => track(inTurn(() => checkedNow(patch, apply))) as Promise<true | string | false>;
+
+  /**
+   * The checks run one after another: each probes the dormer as the one
+   * before left it. Run side by side, a width check sent while the segment
+   * count's check was out probed the old count and let a combination the
+   * core refuses through as accepted (TEST-506 item 8).
+   */
+  let checks: Promise<unknown> = Promise.resolve();
+  function inTurn<T>(run: () => Promise<T>): Promise<T> {
+    const p = checks.then(run);
+    checks = p.catch(() => {});
+    return p;
+  }
   async function checkedNow(patch: Partial<DormerParams>, apply: () => void): Promise<true | string | false> {
     const next = { ...$state.snapshot(params), ...patch } as DormerParams;
     const probe = { ...$state.snapshot(project), dormers: [buildDormer(next)] } as Project;
@@ -224,7 +237,7 @@
    * Resolves to true when it can be stored; a refusal blocks OK with its reason.
    */
   export async function finalCheck(): Promise<boolean> {
-    const r = await checkedNow({}, () => {});
+    const r = await inTurn(() => checkedNow({}, () => {}));
     return r === true;
   }
 
