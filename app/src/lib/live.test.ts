@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DICTS, i18n } from "./i18n.svelte";
-import { actorLabel, entrySummary, isRevert, liveText } from "./live.svelte";
+import { actorLabel, entrySummary, isRevert, liveText, refreshedNotice } from "./live.svelte";
 
 // The codes the MCP server sends (crates/tectora-core/src/store.rs LIVE_KINDS).
 const KINDS = [
@@ -39,6 +39,22 @@ describe("liveText (UX-002)", () => {
     // An older server without a code, or a code this app does not know.
     expect(liveText(status(undefined, "Reading “Sedlo”"))).toBe("Reading “Sedlo”");
     expect(liveText(status("dancing", "Dancing"))).toBe("Dancing");
+  });
+});
+
+describe("refreshedNotice", () => {
+  // Audit UX-702c: the notice on open says what changed in every language.
+  it("names the engines and the old and new roof area in every language", () => {
+    const entry = "Stored result recalculated (Tectora 0.8.0 -> 0.9.0): roof area 150 -> 129.24 m2";
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const text = refreshedNotice(entry);
+      expect(text, locale).not.toContain("{");
+      expect(text, locale).toContain("0.8.0 → 0.9.0");
+    }
+    i18n.locale = "cs";
+    expect(refreshedNotice(entry)).toContain("150,00 → 129,24 m²");
+    expect(refreshedNotice("Something else")).toBe("Something else");
   });
 });
 

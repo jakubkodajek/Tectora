@@ -2,7 +2,8 @@
   // Everything AI agents did to this design: what they are doing right now,
   // and each saved change with its summary and the exact edits it made.
   import Icon from "./Icon.svelte";
-  import { describeChange } from "./changes";
+  import { tick } from "svelte";
+  import { describeChange, describeFigure } from "./changes";
   import { relativeTime } from "./format";
   import { t } from "./i18n.svelte";
   import { actorName, entrySummary, isFresh, isRevert, live, liveText } from "./live.svelte";
@@ -19,6 +20,7 @@
     onconnect,
     onfocus,
     busy = false,
+    shown = $bindable(null),
   }: {
     id: string;
     project: Project;
@@ -28,9 +30,22 @@
     onfocus: (c: Change | null) => void;
     /** A revert or accept is running: the button waits for it. */
     busy?: boolean;
+    /** An entry to open and scroll to (its `ts_ms`); taken once. */
+    shown?: number | null;
   } = $props();
 
   let open = $state<Record<number, boolean>>({});
+  let list: HTMLOListElement | undefined = $state();
+  $effect(() => {
+    if (shown == null) return;
+    const i = activity.findIndex((a) => a.ts_ms === shown);
+    shown = null;
+    if (i < 0) return;
+    open[i] = true;
+    tick().then(() => list?.children[i]?.scrollIntoView({ block: "nearest" }));
+  });
+  /** What the "show changes" list holds: for the engine's recalculation each figure old -> new (UX-702a). */
+  const rows = (a: ActivityItem) => (a.refreshed?.differences.length ? a.refreshed.differences : null);
   const here = $derived(isFresh() && live.status?.project_id === id);
   // App settings AI clients changed (UX-003), newest first; an open one is
   // answered on the card App.svelte shows.
@@ -59,18 +74,30 @@
   {#if activity.length === 0}
     <p class="empty">{t("ai.noHistory")}</p>
   {/if}
-  <ol>
+  <ol bind:this={list}>
     <!-- Two entries can share a millisecond (two writers, a clock step): the
          index keeps the key unique (ERRU-009). -->
     {#each activity as a, i (`${a.ts_ms}:${i}`)}
       {@const ai = isAi(a.actor)}
+      {@const figures = rows(a)}
       <li class:ai>
         <div class="head">
           <span class="who" class:ai><Icon name={ai ? "sparkle" : "cursor"} size={13} />{ai ? actorName(a.actor) : a.actor === ENGINE_ACTOR ? "Tectora" : t("ai.you")}</span>
           <time>{relativeTime(a.ts_ms)}</time>
         </div>
         <p class="summary">{!ai && isRevert(a.summary) ? t("ai.revertedEntry") : entrySummary(a.summary)}</p>
-        {#if a.changes.length}
+        {#if figures}
+          <button class="link" aria-expanded={!!open[i]} onclick={() => (open[i] = !open[i])}>
+            {open[i] ? t("ai.hideChanges") : t("ai.showChanges", { n: figures.length })}
+          </button>
+          {#if open[i]}
+            <ul data-testid="refreshed-figures">
+              {#each figures as d (d.key)}
+                <li>{describeFigure(d, project)}</li>
+              {/each}
+            </ul>
+          {/if}
+        {:else if a.changes.length}
           <button class="link" onclick={() => (open[i] = !open[i])}>
             {open[i] ? t("ai.hideChanges") : t("ai.showChanges", { n: a.changes.length })}
           </button>
@@ -86,6 +113,9 @@
         {/if}
         {#if i === 0 && ai}
           <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && onrevert()}><Icon name="undo" size={14} />{t("ai.revert")}</button>
+        {:else if i === 0 && a.actor === ENGINE_ACTOR && a.refreshed}
+          <!-- The offer's own figures back (owner decision 2026-11-22, UX-702d): the same revert of the newest entry. -->
+          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && onrevert()}><Icon name="undo" size={14} />{t("snap.revertRefresh")}</button>
         {/if}
       </li>
     {/each}

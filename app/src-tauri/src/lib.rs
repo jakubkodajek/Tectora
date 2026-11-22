@@ -113,6 +113,28 @@ struct ActivityItem {
     actor: String,
     summary: String,
     changes: Vec<Change>,
+    /// For the engine's recalculation of the stored result: the offer's
+    /// figures against the new ones (audit UX-702a/b).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refreshed: Option<Value>,
+}
+
+/// What the engine's recalculation of a stored result changed: the offer's
+/// date and engine and each figure old -> new, from the entry's two
+/// versions (`snapshot::compare`). `None` for every other entry. Same in
+/// the preview's bridge.
+fn refresh_figures(e: &store::ActivityEntry) -> Option<Value> {
+    if e.actor != store::ENGINE_ACTOR {
+        return None;
+    }
+    let old = e.before.as_ref()?.result_snapshot.as_ref()?;
+    let new = e.after.as_ref()?.result_snapshot.as_ref()?;
+    Some(json!({
+        "offer_ms": old.taken_ms,
+        "from": old.engine_version,
+        "to": new.engine_version,
+        "differences": snapshot::compare(old, new),
+    }))
 }
 
 /// Recorded changes of a project, newest first.
@@ -125,6 +147,7 @@ fn project_activity(state: State<AppState>, id: String) -> Vec<ActivityItem> {
         .map(|e| ActivityItem {
             ts_ms: e.ts_ms,
             actor: e.actor,
+            refreshed: refresh_figures(&e),
             summary: e.summary,
             changes: e.changes,
         })

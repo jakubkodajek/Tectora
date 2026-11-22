@@ -12,7 +12,7 @@
   import { legend, lineName, SUB_CODES } from "./linecodes";
   import { partLabel } from "./partname";
   import { api } from "./api";
-  import type { CalcBreakdown, CalcResult, Project } from "./types";
+  import type { CalcBreakdown, CalcResult, Project, ResultRefresh } from "./types";
 
   let {
     result,
@@ -22,6 +22,7 @@
     blocked = null,
     failure = null,
     pending = false,
+    recalculated = null,
   }: {
     result: CalcResult | null;
     project?: Project | null;
@@ -34,7 +35,10 @@
     failure?: Described | null;
     /** A recalculation is on its way: the figures are of the roof before the last edit (ERR-204). */
     pending?: boolean;
+    /** The engine recalculated the stored result (when: `at`) and nothing stored one since (UX-702b). */
+    recalculated?: (ResultRefresh & { at: number }) | null;
   } = $props();
+  const day = (ms: number) => new Date(ms).toLocaleDateString(numberLocale());
 
   // What is on the roof (UX-005): counts and window sizes from the job,
   // the area each kind took off the roof from the core's breakdown.
@@ -244,10 +248,21 @@
       <div class="snap-head" data-testid="snap-state">
         <i class="sq"></i>
         <span title={blocked ?? undefined}>
-          {blocked ? t("snap.unchecked") : stored.differences.length ? t("snap.changed") : t("snap.same")}
-          · {new Date(stored.stored.taken_ms).toLocaleDateString(numberLocale())}
+          {#if recalculated && !blocked && !stored.differences.length}
+            <!-- Not "unchanged since stored" with the date of the open: the engine stored these figures (UX-702b). -->
+            {t("snap.recalculated", { date: day(recalculated.at), from: recalculated.from, to: recalculated.to })}
+          {:else}
+            {blocked ? t("snap.unchecked") : stored.differences.length ? t("snap.changed") : t("snap.same")}
+            · {day(stored.stored.taken_ms)}
+          {/if}
         </span>
       </div>
+      {#if recalculated}
+        {#if blocked || stored.differences.length}
+          <p class="mono" data-testid="snap-recalculated">{t("snap.recalculated", { date: day(recalculated.at), from: recalculated.from, to: recalculated.to })}</p>
+        {/if}
+        <p class="mono" data-testid="snap-offer">{t("snap.offerStored", { date: day(recalculated.offer_ms) })}</p>
+      {/if}
       {#if stored.differences.length}
         <table class="diff">
           <!-- Which column is the offer and which the roof now (UX-205). -->

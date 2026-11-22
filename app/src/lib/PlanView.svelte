@@ -129,6 +129,13 @@
     return boxOf(contentPoints(project, faces, drawing));
   }
 
+  /** Zooms by `factor` about the middle of the plan (the + / − buttons, UX-703). */
+  export function zoomBy(factor: number) {
+    if (!(factor > 0) || !Number.isFinite(factor)) return;
+    scale = Math.min(400, Math.max(4, scale * factor));
+    userView = true;
+  }
+
   export function fit() {
     const box = contentBox();
     if (!box) return;
@@ -403,6 +410,7 @@
    * the editor always hears the end of a press it armed, moved or not.
    */
   function endGesture(e?: PointerEvent) {
+    noLongPress();
     const [r, a, moved] = [rc, armed, !!(objDrag?.moved || drag?.moved)];
     gesture = null;
     drag = null;
@@ -505,11 +513,59 @@
       if (at.on !== "plan") e.stopPropagation();
       return;
     }
+    longPress(e, at);
     if (at.on === "plan") pressPlan(e);
     else if (at.on === "item") pressItem(e, at.item);
     else if (at.on === "part") pressPart(e, at.part);
     else if (at.on === "vertex") pressVertex(e, at.part, at.vertex);
     else pressEdge(e, at.part, at.edge);
+  }
+
+  /**
+   * A finger or pen held still on the plan opens its menu, as the right
+   * button does (UX-703): touch and pen have no right button. A press that
+   * moves past LONG_SLOP, starts dragging or ends first opens nothing.
+   */
+  let longHeld: { id: number; t: number; x: number; y: number; timer: ReturnType<typeof setTimeout> } | null = null;
+  const LONG_MS = 550;
+  const LONG_SLOP = 8;
+  function longPress(e: PointerEvent, at: PressOn) {
+    // A shape's press that bubbles on to the plan's is the same press.
+    if (longHeld && longHeld.id === e.pointerId && longHeld.t === e.timeStamp) return;
+    noLongPress();
+    if ((e.pointerType !== "touch" && e.pointerType !== "pen") || e.button !== 0 || placing || drawing) return;
+    const target: PlanTarget =
+      at.on === "plan" ? { type: "canvas" }
+      : at.on === "item" ? { type: "item", item: at.item }
+      : at.on === "part" ? { type: "part", part: at.part }
+      : at.on === "edge" ? { type: "edge", part: at.part, edge: at.edge }
+      : { type: "vertex", part: at.part, vertex: at.vertex };
+    const client = { x: e.clientX, y: e.clientY };
+    const local = localPoint(e);
+    longHeld = {
+      id: e.pointerId,
+      t: e.timeStamp,
+      ...client,
+      timer: setTimeout(() => {
+        longHeld = null;
+        if (objDrag?.moved || drag?.moved || placing || drawing || locked) return;
+        // The press ends here: an armed drag that never moved does nothing,
+        // a pan stops; the release later finds no press.
+        endGesture();
+        if (target.type === "item") selectItem(target.item);
+        else if (target.type === "vertex") {
+          selection = { part: target.part, edge: target.vertex };
+          dormerSel = null;
+          openSel = null;
+          manualSel = null;
+        }
+        oncontext?.(target, client, snapPoint(local.x, local.y, false));
+      }, LONG_MS),
+    };
+  }
+  function noLongPress() {
+    if (longHeld) clearTimeout(longHeld.timer);
+    longHeld = null;
   }
 
   /** A press on a dormer, chimney, window, opening or hand-drawn shape. */
@@ -628,6 +684,7 @@
   }
 
   function onpointermove(e: PointerEvent) {
+    if (longHeld && e.pointerId === longHeld.id && Math.hypot(e.clientX - longHeld.x, e.clientY - longHeld.y) > LONG_SLOP) noLongPress();
     if (otherPointer(e)) return;
     // The button went up where the plan could not see it (the system took
     // the pointer: another window, a native dialog) and no release, cancel
@@ -1369,11 +1426,11 @@
     stroke: var(--focus);
     stroke-width: 3.5;
   }
+  /* A press on a ridge, hip or valley is a press on the building under it:
+     the lines have no target of their own yet (UI-701). */
   .roofline {
     stroke-width: 1.8;
     stroke-linecap: round;
-  }
-  .roofline.eave {
     pointer-events: none;
   }
   /* Under a higher roof (joined buildings): still there, but not on top. */

@@ -174,13 +174,17 @@
     const keys = new Set<string>();
     if (selection) keys.add(edgeKey(selection.part, selection.edge));
     if (item) keys.add(itemKey(item));
+    const shown = new Set<string>();
     content.traverse((o) => {
       const m = o as THREE.Mesh;
       const key = m.userData?.selKey as string | undefined;
       if (key === undefined) return;
       const want = keys.has(key) ? m.userData.sel : m.userData.base;
       if (m.material !== want) m.material = want;
+      if (want === m.userData.sel) shown.add(key);
     });
+    // What the view shows selected, for the tests (TEST-704).
+    if (host) host.dataset.selected = [...shown].sort().join(" ");
   }
 
   function build() {

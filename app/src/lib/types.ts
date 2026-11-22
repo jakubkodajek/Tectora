@@ -416,6 +416,17 @@ export interface ReviewStatus {
 
 export interface ActivityItem extends ActivityInfo {
   changes: Change[];
+  /** Only on the engine's recalculation of the stored result: the offer's date and engine, and each figure old -> new. */
+  refreshed?: ResultRefresh;
+}
+
+/** What the engine's recalculation of a stored result changed (the app's `refresh_figures`). */
+export interface ResultRefresh {
+  /** When the offer's result was stored. */
+  offer_ms: number;
+  from: string;
+  to: string;
+  differences: FigureDifference[];
 }
 
 /** An AI app Tectora can add its MCP server to (`tectora_core::assistants`). */

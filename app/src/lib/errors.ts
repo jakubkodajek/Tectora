@@ -31,7 +31,8 @@ export type Action =
   | "restore"
   | "status"
   | "storeResult"
-  | "settings";
+  | "settings"
+  | "move";
 
 export interface Described {
   /** One sentence: what failed. */

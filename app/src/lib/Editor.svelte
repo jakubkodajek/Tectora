@@ -58,10 +58,10 @@
   import { partLabel } from "./partname";
   import { exportTitle } from "./exportlist";
   import { tabIds, tablist } from "./tabs";
-  import { actorName, entrySummary, isFresh, live, liveText, pillText } from "./live.svelte";
+  import { actorName, entrySummary, isFresh, live, liveText, pillText, refreshedNotice } from "./live.svelte";
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
   import type { ActivityItem, Arc, HelperRequest, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
-  import { GABLE_PITCH, buildingHeight, emptyProject, isAi, isGable, isMarker } from "./types";
+  import { ENGINE_ACTOR, GABLE_PITCH, buildingHeight, emptyProject, isAi, isGable, isMarker } from "./types";
   import { eavePitchFor, pruneEavePitches, rememberEavePitch, useEavePitchJob } from "./walltype";
 
   let {
@@ -529,9 +529,12 @@
     }
   }
 
+  /** Steps ever added to the history: tells whether a drop became one (ERR-701). */
+  let steps = 0;
   function pushHistory() {
     const s = snapshot();
     if (history[at] === s) return false;
+    steps++;
     history = history.slice(0, at + 1);
     history.push(s);
     at = history.length - 1;
@@ -585,8 +588,17 @@
     if (dragState === "armed" || dragState === "moving") return;
     if (!drag.active && !jobEdits.size) return step();
     // A drop still with the core is the newest step too: one Undo right
-    // after a building's drop undoes exactly that drop (ERR-603).
-    void pendingEdits.track(calm().then(step));
+    // after a building's drop undoes exactly that drop (ERR-603). A drop
+    // the core refuses adds no step: the press is then dropped, else it
+    // undid the step before the drag (ERR-701).
+    const dropping = drag.active;
+    const before = steps;
+    void pendingEdits.track(
+      calm().then(() => {
+        if (dropping && steps === before) return;
+        step();
+      }),
+    );
   }
   /** Resolves once no drag is open and no edit is with the core. */
   async function calm() {
@@ -618,15 +630,34 @@
     restore(at + 1);
   }
 
+  /**
+   * The reload an outside save asked for during a drag, run by the drag
+   * session when the drag is over (DragSession.defer, TEST-702): at once,
+   * or after the drop's own save.
+   */
+  function reloadAfterDrag() {
+    if (inFlight) reloadWanted = true;
+    else load(false);
+  }
+
   async function load(initial: boolean) {
     if (!initial && drag.active) {
       // An outside save of this job during a drag is read once the drag is
       // over (jobedits.ts rule 7); its review banner comes with it.
-      reloadWanted = true;
+      drag.defer("reload", reloadAfterDrag);
       return;
     }
     const gen = saveGen;
     try {
+      // A result an older engine stored follows the corrected calculation
+      // before the job opens (owner decision 2026-11-21); the editor says
+      // so (audit UX-702c). A failed check opens the job as it is.
+      const recalculated = initial
+        ? await api.refreshStoredResult(id).catch((e) => {
+            console.warn("[tectora] refresh_stored_result:", e);
+            return null;
+          })
+        : null;
       const p = await api.loadProject(id);
       const json = JSON.stringify(p);
       await refreshActivity();
@@ -646,7 +677,7 @@
       if (!initial && drag.active) {
         // An outside save of this job during a drag waits for its end: the
         // drag is the only writer of the job meanwhile (jobedits.ts rule 7).
-        reloadWanted = true;
+        drag.defer("reload", reloadAfterDrag);
         return;
       }
       // Indices in an open menu refer to the old project.
@@ -674,6 +705,7 @@
         // hand-drawn faces only is a roof to look at (UX-301).
         if (!hasBuilding(p)) drawing = [];
         if (pending) dock = "ai";
+        if (recalculated) noticeRecalculated(recalculated);
       } else {
         // External change (AI agent, CLI): keep it undoable and show it.
         // Merged local edits are still to be saved (the timer is running).
@@ -696,6 +728,37 @@
       }
     }
   }
+
+  /** The history entry the AI tab opens (the recalculation notice's button). */
+  let shownEntry = $state<number | null>(null);
+
+  /** One neutral notice that opening the job recalculated its stored result, with the way to the old figures. */
+  function noticeRecalculated(summary: string) {
+    const entry = activity.find((a) => a.actor === ENGINE_ACTOR && a.summary === summary);
+    notify({
+      kind: "info",
+      title: refreshedNotice(summary),
+      action: entry
+        ? {
+            label: t("snap.refreshedShow"),
+            run: () => {
+              dock = "ai";
+              shownEntry = entry.ts_ms;
+            },
+          }
+        : undefined,
+    });
+  }
+
+  /**
+   * The stored result as the engine recalculated it, while that is the
+   * newest change of the stored result (audit UX-702b): the card then says
+   * so and keeps the offer's date.
+   */
+  const recalculatedResult = $derived.by(() => {
+    const last = activity.find((a) => a.changes.some((c) => c.field === "result_snapshot"));
+    return last?.actor === ENGINE_ACTOR && last.refreshed ? { at: last.ts_ms, ...last.refreshed } : null;
+  });
 
   let dockEl: HTMLElement | undefined = $state();
   /** A text field in the side panel has the focus. */
@@ -1640,7 +1703,8 @@
       changed: (state) => {
         if (state === "armed") dragStart = { result, from: null };
         dragState = state;
-        // What waited for the end of the drag: an outside save of this job.
+        // A read that met a save of ours while the drag was open (the
+        // outside save itself waits in `drag.defer`).
         if (state === "idle" && reloadWanted && !inFlight) {
           reloadWanted = false;
           load(false);
@@ -1778,7 +1842,8 @@
         selection = sel;
         recalc();
       }
-      if (!notifyRefusal(e, "transform")) notifyError(e, "calc");
+      // A refused move is named as one, not as a failed calculation (ERR-701).
+      if (!notifyRefusal(e, "transform")) notifyError(e, "move");
     }
   }
 
@@ -2365,6 +2430,9 @@
       <button class="tool" class:on={prefs.layout === "split"} aria-pressed={prefs.layout === "split"} onclick={() => setLayout("split")} title={t("editor.both")}><Icon name="split" /><span>{t("editor.both")}</span></button>
       <button class="tool" class:on={prefs.layout === "3d"} aria-pressed={prefs.layout === "3d"} onclick={() => setLayout("3d")} title="{t('editor.modelHint')} (F3)"><Icon name="cube" /><span>{t("editor.model")}</span></button>
       <button class="tool" onclick={() => plan?.fit()} disabled={prefs.layout === "3d"} title={t("plan.fitHint")}><Icon name="fit" /><span>{t("plan.fit")}</span></button>
+      <!-- Zoom without a wheel (touch, pen, keyboard; UX-703). -->
+      <button class="tool zoom" onclick={() => plan?.zoomBy(1.25)} disabled={prefs.layout === "3d"} aria-label={t("plan.zoomIn")} title={t("plan.zoomIn")}><Icon name="plus" /></button>
+      <button class="tool zoom" onclick={() => plan?.zoomBy(0.8)} disabled={prefs.layout === "3d"} aria-label={t("plan.zoomOut")} title={t("plan.zoomOut")}><Icon name="minus" /></button>
       <button class="tool" class:on={showDims} aria-pressed={showDims} onclick={() => (showDims = !showDims)} title={t("tool.dims")}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
     </div>
     <div class="group minor">
@@ -2550,11 +2618,11 @@
         <div class="dock" role="tabpanel" id={dockIds.panel} aria-labelledby={dockIds.tab(dock)} bind:this={dockEl}>
           <button class="icon-btn dock-close" onclick={() => (dockOpen = false)} aria-label={t("common.close")} title={t("common.close")}><Icon name="x" size={16} /></button>
           {#if dock === "results"}
-            <Results {result} {project} onstore={storeResult} storing={acting.store} blocked={blockedReason} failure={calcFailure} pending={calcPending} />
+            <Results {result} {project} recalculated={recalculatedResult} onstore={storeResult} storing={acting.store} blocked={blockedReason} failure={calcFailure} pending={calcPending} />
           {:else if dock === "breakdown"}
             <Breakdown {project} {result} bind:data={breakdown} onmark={(mk) => (planMark = mk)} />
           {:else if dock === "ai"}
-            <AiPanel {id} {project} {activity} onrevert={() => revert(false)} busy={reviewBusy} {onconnect} onfocus={(c) => (focusChange = c)} />
+            <AiPanel {id} {project} {activity} bind:shown={shownEntry} onrevert={() => revert(false)} busy={reviewBusy} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
             <JobPanel {id} {project} current={() => project} onchange={commit} onsave={save} blocked={blockedReason} edits={jobEdits} track={(p) => pendingEdits.track(p)} />
           {/if}
@@ -2791,6 +2859,9 @@
   }
   .group:last-child {
     border-right: none;
+  }
+  .tool.zoom {
+    min-width: 36px;
   }
   .tool {
     position: relative;

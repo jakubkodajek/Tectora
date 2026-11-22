@@ -1,6 +1,7 @@
 <script lang="ts">
   const paths: Record<string, string> = {
     plus: "M12 5v14M5 12h14",
+    minus: "M5 12h14",
     chimney: "M3 19l9-8 2 1.78M17 15.44L21 19M14 12.78V6h3v9.44M13 6h5",
     window: "M5 5h14v14H5zM12 5v14M5 12h14",
     hole: "M3 18l9-12 9 12zM9.5 13.5h5v3h-5z",
