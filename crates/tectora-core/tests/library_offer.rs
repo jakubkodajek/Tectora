@@ -9,7 +9,11 @@ use tectora_core::{examples, snapshot};
 fn temp_store(name: &str) -> Store {
     let dir = std::env::temp_dir().join(format!("tectora-offer-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    Store::new(dir).unwrap()
+    // Figures are checked: waited for as long as a loaded runner needs,
+    // not the app's half second (audit 2026-11-22 TEST-603).
+    Store::new(dir)
+        .unwrap()
+        .with_summary_budget(std::time::Duration::from_secs(60))
 }
 
 #[test]

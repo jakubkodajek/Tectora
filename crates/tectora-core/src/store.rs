@@ -2962,9 +2962,24 @@ mod tests {
     use super::*;
     use crate::examples;
 
+    /// A store of its own for one test. Its cards wait for their figures
+    /// up to [`TEST_BUDGET`], not the app's half second: on a busy runner a
+    /// card read after the budget made tests that check the figures fail at
+    /// random (audit 2026-11-22 TEST-603). Tests of the budget itself set
+    /// their own ([`Store::with_summary_budget`]).
     fn temp_store(name: &str) -> Store {
         let dir = std::env::temp_dir().join(format!("tectora-test-{name}-{}", now_ms()));
-        Store::new(dir).unwrap()
+        Store::new(dir).unwrap().with_summary_budget(TEST_BUDGET)
+    }
+
+    /// How long a test's card waits for its figures.
+    const TEST_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// Audit 2026-11-22 TEST-603: the test store waits long enough for a
+    /// card's figures on a loaded machine.
+    #[test]
+    fn the_test_store_waits_for_figures_under_load() {
+        assert!(temp_store("budget").summary_budget >= std::time::Duration::from_secs(30));
     }
 
     /// Audit 2026-11-21 ARCH-204: a named pipe or a link to a device named
@@ -3775,7 +3790,8 @@ mod tests {
     fn the_card_of_a_job_at_the_face_and_corner_limits_is_bounded() {
         use crate::geom::Point2;
         use crate::model::{MAX_OBJECTS, MAX_PART_WALLS, MAX_PARTS, ManualFace};
-        let store = temp_store("card-bound");
+        // The outlines only: the figures are not waited for.
+        let store = temp_store("card-bound").with_summary_budget(SUMMARY_BUDGET);
         let ring = |cx: f64, cy: f64, r: f64, n: usize| -> Vec<Point2> {
             (0..n)
                 .map(|i| {
