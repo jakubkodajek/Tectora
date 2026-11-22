@@ -160,16 +160,30 @@ export function hostHeightAt(result: CalcResult | null, p: Point2): number | nul
   return best;
 }
 
+/** Work counted by `hostIndex` for its guard test: point-in-face tests run (TEST-607). */
+export interface HostIndexStats {
+  inside: number;
+}
+
 /**
  * `hostHeightAt` for many points of one result (the plan's covered lines and
- * face labels): the faces are copied once into plain arrays with their plan
- * boxes, and a point is tested only against the buildings and faces whose
- * box holds it. The same heights as `hostHeightAt` (a point outside a
- * face's box is never inside it); without the copy a job of 200 buildings
- * tested every sample against every face through the reactive result and
- * froze the plan (UI-501). Display only.
+ * face labels, the 3D view's walls): the faces are copied once into plain
+ * arrays with their plan boxes, and a point is tested only against the
+ * buildings and faces whose box holds it. The same heights as
+ * `hostHeightAt` (a point outside a face's box is never inside it); without
+ * the copy a job of 200 buildings tested every sample against every face
+ * through the reactive result and froze the plan (UI-501). Display only.
  */
-export function hostIndex(result: CalcResult | null): (p: Point2) => number | null {
+export function hostIndex(result: CalcResult | null, stats?: HostIndexStats): (p: Point2) => number | null {
+  return hostParts(result, stats).top;
+}
+
+/**
+ * `hostIndex` with the roof of one building on its own too: `top` is the
+ * highest roof face over a plan point, `of(part, p)` the highest face of
+ * building `part` there (`hostHeightAt` of a result with that part only).
+ */
+export function hostParts(result: CalcResult | null, stats?: HostIndexStats): { top: (p: Point2) => number | null; of: (part: number, p: Point2) => number | null } {
   type Face = { poly: [number, number, number][]; x0: number; x1: number; y0: number; y1: number };
   type Part = { faces: Face[]; x0: number; x1: number; y0: number; y1: number };
   const parts: Part[] = [];
@@ -192,20 +206,28 @@ export function hostIndex(result: CalcResult | null): (p: Point2) => number | nu
       if (y0 < py0) py0 = y0;
       if (y1 > py1) py1 = y1;
     }
-    if (faces.length) parts.push({ faces, x0: px0, x1: px1, y0: py0, y1: py1 });
+    // A building without faces keeps its place: `of` is asked by index.
+    parts.push({ faces, x0: px0, x1: px1, y0: py0, y1: py1 });
   }
   const out = (b: { x0: number; x1: number; y0: number; y1: number }, p: Point2) => p.x < b.x0 || p.x > b.x1 || p.y < b.y0 || p.y > b.y1;
-  return (p) => {
-    let best: number | null = null;
-    for (const part of parts) {
-      if (out(part, p)) continue;
-      for (const f of part.faces) {
-        if (out(f, p) || !inside(f.poly, p)) continue;
-        const z = planeZ(f.poly, p);
-        if (z !== null && (best === null || z > best)) best = z;
-      }
+  const over = (part: Part, p: Point2, best: number | null): number | null => {
+    if (out(part, p)) return best;
+    for (const f of part.faces) {
+      if (out(f, p)) continue;
+      if (stats) stats.inside++;
+      if (!inside(f.poly, p)) continue;
+      const z = planeZ(f.poly, p);
+      if (z !== null && (best === null || z > best)) best = z;
     }
     return best;
+  };
+  return {
+    top: (p) => {
+      let best: number | null = null;
+      for (const part of parts) best = over(part, p, best);
+      return best;
+    },
+    of: (i, p) => (parts[i] ? over(parts[i], p, null) : null),
   };
 }
 

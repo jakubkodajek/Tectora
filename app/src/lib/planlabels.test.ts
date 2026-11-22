@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chooseLabels, insidePolygon, overlaps, placeDimSpots, placeLabels, rotatedBox, segCrossesBox, underHigherRoof, wallNumber, type Seg } from "./planlabels";
+import { chooseLabels, insidePolygon, overlaps, placeDimSpots, placeLabels, rotatedBox, segCrossesBox, segIndex, underHigherRoof, wallNumber, type Box, type Seg } from "./planlabels";
 
 describe("rotatedBox", () => {
   it("is the label box itself without a turn and swaps sides at 90°", () => {
@@ -124,5 +124,98 @@ describe("placement dimension labels (UI-209)", () => {
     expect(chosen[0]).toBe(0);
     expect(chosen[1]).toBeGreaterThan(0);
     expect(overlaps(a[chosen[0]].box, b[chosen[1]].box)).toBe(false);
+  });
+});
+
+// UX-602: a plan of 200 buildings tested every label against every wall,
+// every roof line and every label kept before, at each zoom and pan step.
+describe("segIndex and the label pass at scale", () => {
+  /** A fixed pseudo-random sequence in 0..1. */
+  const seq = (seed: number) => () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+
+  it("finds exactly the segments whose box meets the asked box, each once, in order", () => {
+    const r = seq(7);
+    const segs: Seg[] = Array.from({ length: 600 }, () => {
+      const [x, y] = [r() * 3000 - 500, r() * 2000 - 500];
+      // Short and very long ones, also vertical and horizontal.
+      const len = r() < 0.2 ? 2500 : 120;
+      return [x, y, x + (r() - 0.5) * len * (r() < 0.1 ? 0 : 1), y + (r() - 0.5) * len * (r() < 0.1 ? 0 : 1)];
+    });
+    const index = segIndex(segs);
+    expect(index.size).toBe(600);
+    for (let k = 0; k < 300; k++) {
+      const [x, y] = [r() * 2600 - 300, r() * 1800 - 300];
+      const b: Box = { x0: x, y0: y, x1: x + 20 + r() * 200, y1: y + 10 + r() * 60 };
+      const want = segs.flatMap((s, i) => (Math.max(s[0], s[2]) >= b.x0 && Math.min(s[0], s[2]) <= b.x1 && Math.max(s[1], s[3]) >= b.y0 && Math.min(s[1], s[3]) <= b.y1 ? [i] : []));
+      expect(index.nearAt(b)).toEqual(want);
+      expect(index.near(b)).toEqual(want.map((i) => segs[i]));
+      // Every segment that crosses the box is among them.
+      segs.forEach((s, i) => {
+        if (segCrossesBox(s, b)) expect(want).toContain(i);
+      });
+    }
+  });
+
+  it("keeps only the segments that meet the window, and still finds every crossing inside it", () => {
+    const r = seq(11);
+    const segs: Seg[] = Array.from({ length: 400 }, () => {
+      const [x, y] = [r() * 6000 - 2500, r() * 4000 - 1500];
+      return [x, y, x + (r() - 0.5) * 3000, y + (r() - 0.5) * 3000];
+    });
+    const view: Box = { x0: -160, y0: -160, x1: 1160, y1: 860 };
+    const index = segIndex(segs, view);
+    expect(index.size).toBeLessThan(400);
+    for (let k = 0; k < 200; k++) {
+      const [x, y] = [r() * 900, r() * 700];
+      const b: Box = { x0: x, y0: y, x1: x + 90, y1: y + 30 };
+      const near = index.nearAt(b);
+      segs.forEach((s, i) => {
+        if (segCrossesBox(s, b)) expect(near).toContain(i);
+      });
+    }
+  });
+
+  it("chooses the same candidates with indexed lines as with the plain list", () => {
+    const r = seq(3);
+    const lines: Seg[] = Array.from({ length: 300 }, () => {
+      const [x, y] = [r() * 1400, r() * 900];
+      return [x, y, x + (r() - 0.5) * 300, y + (r() - 0.5) * 300];
+    });
+    const cands = Array.from({ length: 250 }, () => {
+      const [x, y] = [r() * 1300, r() * 850];
+      return Array.from({ length: 4 }, (_, c) => (r() < 0.15 ? null : rotatedBox(x + c * 14, y + c * 9, 50 + r() * 40, 16, r() * 90)));
+    });
+    const index = segIndex(lines);
+    expect(chooseLabels(cands, () => index)).toEqual(chooseLabels(cands, () => lines));
+    // And as the unindexed rule says: no two kept labels overlap.
+    const chosen = chooseLabels(cands, () => index);
+    const kept = chosen.flatMap((j, i) => (j >= 0 ? [cands[i][j]!] : []));
+    for (let i = 0; i < kept.length; i++) for (let j = i + 1; j < kept.length; j++) expect(overlaps(kept[i], kept[j])).toBe(false);
+  });
+
+  it("compares a label only with what is near it: 200 buildings cost a few tests per label, not every wall and label", () => {
+    // 200 buildings of 4 walls in a grid, 140 px apart; a wall length on each wall.
+    const walls: Seg[] = [];
+    const cands: (Box | null)[][] = [];
+    for (let i = 0; i < 200; i++) {
+      const [ox, oy] = [(i % 20) * 140, Math.floor(i / 20) * 120];
+      const c = [[ox, oy], [ox + 100, oy], [ox + 100, oy + 80], [ox, oy + 80]];
+      c.forEach((p, k) => {
+        const q = c[(k + 1) % 4];
+        walls.push([p[0], p[1], q[0], q[1]]);
+        const [mx, my] = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+        cands.push([rotatedBox(mx, my - 14, 44, 16, 0), rotatedBox(mx, my + 14, 44, 16, 0)]);
+      });
+    }
+    const stats = { overlaps: 0, lines: 0 };
+    const index = segIndex(walls);
+    const chosen = chooseLabels(cands, () => index, stats);
+    expect(chosen.filter((j) => j >= 0).length).toBeGreaterThan(700);
+    // 800 labels x 2 candidates: against every wall that would be 1.28 million line tests.
+    expect(stats.lines).toBeLessThan(800 * 2 * 8);
+    expect(stats.overlaps).toBeLessThan(800 * 2 * 12);
   });
 });

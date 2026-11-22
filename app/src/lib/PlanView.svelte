@@ -13,7 +13,7 @@
   import { boxOf, contentPoints, draftLeavesView, fitView, resizedView } from "./planfit";
   import { hostIndex, isDormerFace } from "./dormers";
   import { dormerWallLines, onWallLine } from "./scene3d";
-  import { chooseLabels, insidePolygon, placeDimSpots, rotatedBox, segCrossesBox, wallNumber, type DimSpot, type Seg } from "./planlabels";
+  import { chooseLabels, insidePolygon, placeDimSpots, rotatedBox, segCrossesBox, segIndex, wallNumber, type Box, type DimSpot, type Seg } from "./planlabels";
   import { draftWalls } from "./drawstep";
   import { coveredPieces, visibleFaceTags } from "./planjoin";
   import { numberLocale } from "./i18n.svelte";
@@ -209,13 +209,41 @@
   // A face under another building's higher roof gets no label: it would be
   // written over the roof that covers it (UX-012).
   const tags = $derived(result ? visibleFaceTags(result, topAt) : []);
-  const pitchText = (v: number) =>
-    `${new Intl.NumberFormat(numberLocale(), { maximumFractionDigits: 2 }).format(v)}°`;
-  const areaText = (v: number) =>
-    `${new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v)} m²`;
+  // One formatter per language, not one per label: a plan of 200 buildings
+  // made thousands of them at every zoom step (UX-602).
+  const pitchFmt = $derived(new Intl.NumberFormat(numberLocale(), { maximumFractionDigits: 2 }));
+  const areaFmt = $derived(new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  const lenFmt = $derived(new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }));
+  const pitchText = (v: number) => `${pitchFmt.format(v)}°`;
+  const areaText = (v: number) => `${areaFmt.format(v)} m²`;
   /** A length in the plan, 2 decimals in the UI language (decimal comma in cs, sk, de). */
-  const lenText = (v: number) =>
-    new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }).format(v);
+  const lenText = (v: number) => lenFmt.format(v);
+  /**
+   * The outlines of the buildings as plain numbers with their plan box and
+   * turning sense, once per change of the job: the label pass below reads
+   * them at every zoom and pan step (UX-602).
+   */
+  const outlinesOf = $derived(
+    project.parts.map((part) => {
+      const pts = part.edges.map((e) => ({ x: e.start.x, y: e.start.y }));
+      // Shoelace sign: > 0 means counter-clockwise (y up), outside is right of travel.
+      let area2 = 0;
+      let [x0, x1, y0, y1] = [Infinity, -Infinity, Infinity, -Infinity];
+      pts.forEach((p, k) => {
+        const q = pts[(k + 1) % pts.length];
+        area2 += p.x * q.y - q.x * p.y;
+        if (p.x < x0) x0 = p.x;
+        if (p.x > x1) x1 = p.x;
+        if (p.y < y0) y0 = p.y;
+        if (p.y > y1) y1 = p.y;
+      });
+      return { pts, ccw: area2 >= 0, x0, x1, y0, y1 };
+    }),
+  );
+  /** The roof lines inside the roofs (not eaves and verges) in plan metres, once per result. */
+  const innerLines = $derived(
+    linePieces.flatMap((ls) => ls.filter((l) => l.kind !== "eave" && l.kind !== "verge").flatMap((l) => l.pieces.map((pc): Seg => [pc.a[0], pc.a[1], pc.b[0], pc.b[1]]))),
+  );
   /** A placement distance, 3 decimals like DACAD's dialogs (mm). */
   const mmText = (v: number) =>
     new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 3, maximumFractionDigits: 3, useGrouping: false }).format(v);
@@ -708,9 +736,9 @@
   };
 
   function edgeLength(part: number, i: number) {
-    const es = project.parts[part].edges;
-    const a = es[i].start;
-    const b = es[(i + 1) % es.length].start;
+    const es = outlinesOf[part].pts;
+    const a = es[i];
+    const b = es[(i + 1) % es.length];
     return Math.hypot(b.x - a.x, b.y - a.y);
   }
 
@@ -731,24 +759,19 @@
 
   /** A label `halfW` px half wide beside wall `i`, `extra` px further off the wall than a wall length. */
   function besideWall(part: number, i: number, inside: boolean, t: number, halfW: number, extra = 0) {
-    const es = project.parts[part].edges;
-    const a = es[i].start;
-    const b = es[(i + 1) % es.length].start;
-    // Shoelace sign: > 0 means counter-clockwise (y up), outside is right of travel.
-    let area2 = 0;
-    for (let k = 0; k < es.length; k++) {
-      const p = es[k].start;
-      const q = es[(k + 1) % es.length].start;
-      area2 += p.x * q.y - q.x * p.y;
-    }
+    const o = outlinesOf[part];
+    const a = o.pts[i];
+    const b = o.pts[(i + 1) % o.pts.length];
     const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-    const side = (area2 >= 0 ? 1 : -1) * (inside ? -1 : 1);
+    const side = (o.ccw ? 1 : -1) * (inside ? -1 : 1);
     // Outward normal in world space, then flipped to screen space (y down).
     const nx = (side * (b.y - a.y)) / len;
     const ny = (-side * -(b.x - a.x)) / len;
     const off = 9 + Math.abs(nx) * halfW + Math.abs(ny) * 4 + extra;
     return { x: sx(a.x) + (sx(b.x) - sx(a.x)) * t + nx * off, y: sy(a.y) + (sy(b.y) - sy(a.y)) * t + ny * off, w: halfW * 2 + 4 };
   }
+
+  const NO_LINES: Seg[] = [];
 
   /** How a face label is written: pitch and area, pitch only, or not at all (too small). */
   function tagMode(tag: (typeof tags)[number]): "full" | "pitch" | null {
@@ -776,17 +799,29 @@
           return { ...d, g, text: mmText(d.v), spots: placeDimSpots(g, mmText(d.v), d.key === "eave") };
         })
       : [];
+    // Only what the window shows is placed (with a margin, so a label half
+    // in view is still there): a job of 200 buildings placed every label of
+    // every building at each zoom and pan step (UX-602).
+    const MARGIN = 160;
+    const view: Box = { x0: -MARGIN, y0: -MARGIN, x1: width + MARGIN, y1: height + MARGIN };
+    const inView = (x0: number, y0: number, x1: number, y1: number) => x1 >= view.x0 && x0 <= view.x1 && y1 >= view.y0 && y0 <= view.y1;
     // Each wall length outside its building first, else inside; a side
     // whose label would sit on another building is not used, so two
     // buildings side by side keep their lengths apart (UX-018).
-    const outlines = project.parts.map((part) => part.edges.map((e) => e.start));
+    const outlines = outlinesOf;
+    // Tests run by this pass (outline, wall, line and label comparisons),
+    // shown as `data-label-work` for the guard of UX-602.
+    const work = { overlaps: 0, lines: 0 };
     const onOther = (pi: number, x: number, y: number) => {
       const w = { x: wx(x), y: wy(y) };
-      return outlines.some((o, k) => k !== pi && o.length >= 3 && insidePolygon(w, o));
+      return outlines.some((o, k) => k !== pi && o.pts.length >= 3 && w.x >= o.x0 && w.x <= o.x1 && w.y >= o.y0 && w.y <= o.y1 && (work.lines += o.pts.length) > 0 && insidePolygon(w, o.pts));
     };
-    const dims = project.parts.map((part, pi) =>
-      part.edges.map((_, i) => {
+    const dims = outlines.map((o, pi) =>
+      o.pts.map((a, i) => {
         if (!showDims || !(scale * edgeLength(pi, i) > 46)) return null;
+        const b = o.pts[(i + 1) % o.pts.length];
+        const [ax, ay, bx, by] = [sx(a.x), sy(a.y), sx(b.x), sy(b.y)];
+        if (!inView(Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by))) return null;
         // Outside, inside, then off the middle where a roof line runs
         // through the middle (a ridge meeting the wall), outside first.
         const at: [boolean, number][] = [[false, 0.5], [true, 0.5], [false, 0.35], [false, 0.65], [true, 0.35], [true, 0.65]];
@@ -797,13 +832,13 @@
     // length (UX-017); placed before the lengths, it is what the review is for.
     const notes = [...wallNotes].flatMap(([key, text]) => {
       const [pi, i] = key.split(":").map(Number);
-      if (!project.parts[pi]?.edges[i]) return [];
+      if (!outlines[pi]?.pts[i]) return [];
       const halfW = textPx(text, 12) / 2 + 3;
       // The wall's direction on screen, kept readable: a note may run along
       // the wall, so beside a steep wall it fits outside the roof instead of
       // lying across the ridge and the hips inside it (UX-007).
-      const es = project.parts[pi].edges;
-      const [a, b] = [es[i].start, es[(i + 1) % es.length].start];
+      const es = outlines[pi].pts;
+      const [a, b] = [es[i], es[(i + 1) % es.length]];
       let deg = (Math.atan2(sy(b.y) - sy(a.y), sx(b.x) - sx(a.x)) * 180) / Math.PI;
       if (deg > 90) deg -= 180;
       if (deg <= -90) deg += 180;
@@ -821,25 +856,32 @@
       });
       return [cands];
     });
-    const modes = showDims && !faceLabels.length ? tags.map(tagMode) : tags.map(() => null);
+    // A face none of whose label spots is in view gets no label this step.
+    const tagInView = (tag: (typeof tags)[number]) => tag.spots.some((p) => inView(sx(p.x), sy(p.y), sx(p.x), sy(p.y)));
+    const modes = showDims && !faceLabels.length ? tags.map((tag) => (tagInView(tag) ? tagMode(tag) : null)) : tags.map(() => null);
     const flat = dims.flat();
     // Wall lengths keep off the roof lines inside the roof (the eave and
     // verge run along the walls, every wall length sits by them); face
-    // labels keep off the walls, where the wall lengths are.
-    const seg = (a: { x: number; y: number }, b: { x: number; y: number }): Seg => [sx(a.x), sy(a.y), sx(b.x), sy(b.y)];
-    const inner: Seg[] = linePieces.flatMap((ls) =>
-      ls.filter((l) => l.kind !== "eave" && l.kind !== "verge").flatMap((l) => l.pieces.map((pc) => seg({ x: pc.a[0], y: pc.a[1] }, { x: pc.b[0], y: pc.b[1] }))),
+    // labels keep off the walls, where the wall lengths are. Both are
+    // looked up by screen box (planlabels.ts `segIndex`), in view only.
+    const inner = segIndex(innerLines.map((l): Seg => [sx(l[0]), sy(l[1]), sx(l[2]), sy(l[3])]), view);
+    const wallSegs: Seg[] = [];
+    const wallPart: number[] = [];
+    outlines.forEach((o, pi) =>
+      o.pts.forEach((p, k) => {
+        const q = o.pts[(k + 1) % o.pts.length];
+        wallSegs.push([sx(p.x), sy(p.y), sx(q.x), sy(q.y)]);
+        wallPart.push(pi);
+      }),
     );
-    const wallsOf = outlines.map((o) => o.map((p, k) => seg(p, o[(k + 1) % o.length])));
-    const walls: Seg[] = wallsOf.flat();
+    const walls = segIndex(wallSegs, view);
     // A face label that does not fit with its area falls back to the pitch
     // alone; both may move off the centre (up or down the slope), and never
     // sit across another building's walls, e.g. one drawn inside this roof (UI-005).
     const tagBoxes = tags.map((tag, k) => {
       const m = modes[k];
       if (!m) return [];
-      const others = wallsOf.flatMap((ws, pi) => (pi === tag.part ? [] : ws));
-      const clear = (b: ReturnType<typeof rotatedBox>) => (others.some((l) => segCrossesBox(l, b)) ? null : b);
+      const clear = (b: ReturnType<typeof rotatedBox>) => (walls.nearAt(b).some((i) => (work.lines++, wallPart[i] !== tag.part && segCrossesBox(wallSegs[i], b))) ? null : b);
       const pw = textPx(pitchText(tag.pitch_deg), 16);
       const fw = Math.max(pw, textPx(areaText(tag.area), 12.5));
       return tag.spots.flatMap((p) => {
@@ -850,7 +892,8 @@
     const P = placeDims.length;
     const chosen = chooseLabels(
       [...placeDims.map((d) => d.spots.map((sp) => sp.box)), ...notes.map((n) => n.map((c) => c?.box ?? null)), ...flat.map((d) => (d ?? []).map((c) => c?.box ?? null)), ...tagBoxes],
-      (i) => (i < P ? [] : i < P + notes.length + flat.length ? inner : walls),
+      (i) => (i < P ? NO_LINES : i < P + notes.length + flat.length ? inner : walls),
+      work,
     );
     const placeShown = placeDims.map((d, j) => ({ ...d, at: (chosen[j] >= 0 ? d.spots[chosen[j]] : null) as DimSpot | null }));
     const noteShown = notes.flatMap((n, j) => (chosen[P + j] >= 0 && n[chosen[P + j]] ? [n[chosen[P + j]]!] : []));
@@ -867,7 +910,7 @@
       const at = tag.spots[Math.floor(c / 2)];
       return { mode: c % 2 === 0 ? modes[j]! : ("pitch" as const), x: at.x, y: at.y };
     });
-    return { dims: dimShown, tags: tagShown, notes: noteShown, place: placeShown };
+    return { dims: dimShown, tags: tagShown, notes: noteShown, place: placeShown, work: work.lines + work.overlaps };
   });
 </script>
 
@@ -878,6 +921,7 @@
     {height}
     role="application"
     aria-label={t("editor.plan")}
+    data-label-work={labels.work}
     onpointerdown={(ev) => press(ev, { on: "plan" })}
     {onpointermove}
     {onpointerup}

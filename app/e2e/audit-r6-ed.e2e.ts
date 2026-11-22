@@ -109,6 +109,28 @@ async function watchToasts(page: Page): Promise<() => Promise<string[]>> {
   return () => page.evaluate(() => (window as any).__toasts as string[]);
 }
 
+/** The longest time the page's main thread did not run a timer while `act` ran, ms. */
+async function gapDuring(page: Page, act: () => Promise<void>): Promise<number> {
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__gap = { worst: 0, last: performance.now(), on: true };
+    const tickOnce = () => {
+      const g = w.__gap;
+      const now = performance.now();
+      g.worst = Math.max(g.worst, now - g.last);
+      g.last = now;
+      if (g.on) setTimeout(tickOnce, 20);
+    };
+    setTimeout(tickOnce, 20);
+  });
+  await act();
+  return page.evaluate(() => {
+    const g = (window as any).__gap;
+    g.on = false;
+    return Math.round(Math.max(g.worst, performance.now() - g.last));
+  });
+}
+
 /** Types like a person: click, select all, type. */
 async function typeInto(page: Page, field: ReturnType<Page["locator"]>, text: string) {
   await field.click();
@@ -168,13 +190,41 @@ test.describe("round-6 audit: a second finger during a touch drag (ERR-501)", ()
     await page.locator("header .icon-btn").first().click();
     await expect(page.locator(".editor")).toBeHidden({ timeout: 5000 });
   });
+
+  test("leaving the job while the finger still holds a dormer ends the drag where it is: the editor closes and the drag is saved (TEST-601)", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "Odchod s prstem");
+    await threeDormers(mcp, id);
+    await openAfterAi(app, "Odchod s prstem");
+    const cdp = await page.context().newCDPSession(page);
+    const touch = (type: string, pts: { x: number; y: number; id: number }[]) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: pts });
+    const p3 = await dormerAt(page, 2);
+    await touch("touchStart", [{ ...p3, id: 1 }]);
+    for (let i = 1; i <= 10; i++) {
+      await touch("touchMove", [{ x: p3.x, y: p3.y + i * 3, id: 1 }]);
+      await page.waitForTimeout(30);
+    }
+    // The finger is still down. Back is closed for a pointer during a drag
+    // (jobedits.ts rule 7); a leave from elsewhere (a file opened from the
+    // system, the follow offer) runs the same guard as this click.
+    await page.locator("header .icon-btn").first().dispatchEvent("click");
+    await expect(page.locator(".editor")).toBeHidden({ timeout: 5000 });
+    const moved = await waitForProject(id, (p) => p.dormers[2].edges[0].start.y !== 1.6, 3000);
+    expect(moved.dormers.length).toBe(3);
+    await touch("touchEnd", []);
+  });
 });
 
 test.describe("round-6 audit: keys during a drag (ERR-502)", () => {
-  test("Delete and Ctrl+Z pressed while a dormer is dragged wait for the drop; after it they work on the dropped job", async ({ app, page, mcp }) => {
+  test("Delete and Ctrl+Z pressed while a dormer is dragged do nothing (also not after the drop); after it the keys work on the dropped job", async ({ app, page, mcp }) => {
     const id = await createExample("gable", "Klávesy při tahu");
     await threeDormers(mcp, id);
     await openAfterAi(app, "Klávesy při tahu");
+    // A step for Ctrl+Z to undo: on a job opened fresh the press proved nothing (TEST-601 G3b).
+    const d1 = await selectDormer(page, 1);
+    await typeInto(page, d1.getByLabel(cs("dormer.width")), "2");
+    await page.keyboard.press("Enter");
+    await waitForProject(id, (p) => dormerWidth(p.dormers[0]) === 2);
+    await app.saved();
     await selectDormer(page, 3);
     // Past the double-press time: a second press within it opens the dormer window.
     await page.waitForTimeout(600);
@@ -188,6 +238,11 @@ test.describe("round-6 audit: keys during a drag (ERR-502)", () => {
     await page.mouse.move((await dormerAt(page, 2)).x, (await dormerAt(page, 2)).y + 10);
     await page.mouse.up();
     const dropped = await waitForProject(id, (p) => p.dormers.length === 3 && p.dormers[2].edges[0].start.y !== 1.6, 6000);
+    // The Ctrl+Z pressed mid-drag undid nothing, then or after the drop (refused, not replayed).
+    await page.waitForTimeout(800);
+    await app.saved();
+    expect(dormerWidth((await loadProject(id)).dormers[0])).toBe(2);
+    expect(await app.dialogs()).toEqual([]);
     // After the drop the keys work: Delete (Yes) removes the dragged dormer for good.
     await app.answerConfirm(true);
     await page.keyboard.press("Delete");
@@ -220,6 +275,45 @@ test.describe("round-6 audit: keys during a drag (ERR-502)", () => {
   });
 });
 
+test.describe("round-6 audit: no autosave during a drag (TEST-601 G11)", () => {
+  test("a save still due when the next drag begins waits for its drop: nothing is written while the dormer is held", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "Uložení při tahu");
+    await threeDormers(mcp, id);
+    await openAfterAi(app, "Uložení při tahu");
+    const saves: number[] = [];
+    page.on("request", (r) => {
+      if (/\/save_project(_checked)?$/.test(r.url())) saves.push(Date.now());
+    });
+    await selectDormer(page, 3);
+    await page.waitForTimeout(600);
+    const p3 = await dormerAt(page, 2);
+    const p1 = await dormerAt(page, 0);
+    // Drag 1 drops dormer 3: its save is due 500 ms later.
+    await dragDown(page, p3, 30);
+    // Drag 2 starts at once on dormer 1 (the three inputs sent in one go).
+    await Promise.all([page.mouse.up(), page.mouse.move(p1.x, p1.y), page.mouse.down()]);
+    const down = Date.now();
+    await page.waitForTimeout(150);
+    // The first drop is not saved yet: its save is the one that must wait.
+    expect(((await page.locator(".statusbar .save").textContent()) ?? "").trim(), "the save of drag 1 is still due when drag 2 begins").not.toBe(cs("editor.saved"));
+    for (let i = 1; i <= 10; i++) {
+      await page.mouse.move(p1.x, p1.y + i * 3);
+      await page.waitForTimeout(30);
+    }
+    // Held for 3 s, six times the autosave delay.
+    await page.waitForTimeout(3000);
+    const mid = await loadProject(id);
+    const up = Date.now();
+    expect(saves.filter((t) => t > down + 100 && t < up), "saves while dormer 1 was held").toEqual([]);
+    // The file has neither the half-dragged dormer 1 nor, yet, drag 1.
+    expect(mid.dormers[0].edges[0].start).toEqual({ x: 1.5, y: 1.6 });
+    await page.mouse.up();
+    const end = await waitForProject(id, (p) => p.dormers[0].edges[0].start.y !== 1.6 && p.dormers[2].edges[0].start.y !== 1.6, 6000);
+    expect(end.dormers.length).toBe(3);
+    await app.saved();
+  });
+});
+
 test.describe("round-6 audit: a corner drag holds the edits too (UI-502)", () => {
   test("a building height answered while a corner is dragged is kept, with the corner moved and no refusal", async ({ app, page }) => {
     const id = await createExample("gable", "Tah rohu");
@@ -231,7 +325,15 @@ test.describe("round-6 audit: a corner drag holds the edits too (UI-502)", () =>
     const times: { answered?: number; down?: number; up?: number } = {};
     // The first answer comes once the corner is held, every later one 400 ms
     // after it is asked: slower than the corner's steps, as on a big job.
-    await holdUntil(page, "set_part_height", () => times.down !== undefined, 1200, times, 400);
+    // Without the pause the edit is asked four times and refused; all four
+    // answers must land while the corner is still held, every run (TEST-601
+    // G5): the first 600 ms after the press, the later ones 150 ms each,
+    // and the drag lasts well over 4 s.
+    const asked: number[] = [];
+    page.on("request", (r) => {
+      if (/\/set_part_height$/.test(r.url())) asked.push(Date.now());
+    });
+    await holdUntil(page, "set_part_height", () => times.down !== undefined, 600, times, 150);
     await typeInto(page, bar(page, "def.title").getByTestId("building-height"), "4");
     await page.keyboard.press("Enter");
     await page.waitForTimeout(200);
@@ -241,14 +343,18 @@ test.describe("round-6 audit: a corner drag holds the edits too (UI-502)", () =>
     times.down = Date.now();
     // Steps for about 4 s, each far enough to move the corner (past the 5 cm
     // snap and the alignment magnet): every step changes the job.
-    for (let i = 1; i <= 40; i++) {
-      await page.mouse.move(at.x + 20 + i * 4, at.y + 20 + i * 3);
+    for (let i = 1; i <= 60; i++) {
+      await page.mouse.move(at.x + 20 + i * 3, at.y + 20 + i * 2);
       await page.waitForTimeout(70);
     }
     await page.mouse.up();
     times.up = Date.now();
     expect(times.answered, "the core answered while the corner was held").toBeGreaterThan(times.down);
-    expect(times.answered!).toBeLessThan(times.up);
+    // With 2.5 s to spare: four asks of 150 ms each would all have come back before the release.
+    expect(times.answered!).toBeLessThan(times.up - 2500);
+    // The answer that came during the drag was not applied and not asked
+    // again at every step: one ask before the release, one after it.
+    expect(asked.filter((t) => t < times.up!).length, "asks while the corner was held").toBe(1);
     const p = await waitForProject(id, (p) => p.parts[0].edges[1].start.x !== c1.x && (p.parts[0].height ?? p.parts[0].edges[0].eave_height) === 4, 10_000);
     expect(p.parts[0].edges[1].start.x).toBeGreaterThan(c1.x);
     expect(p.parts[0].edges[1].start.y).not.toBe(c1.y);
@@ -289,8 +395,16 @@ test.describe("round-6 audit: Undo and the saving state with an edit at the core
     await slow(page, "set_part_height", 2500);
     await typeInto(page, bar(page, "def.title").getByTestId("building-height"), "4,2");
     await page.keyboard.press("Enter");
+    // Read as it is, no retry: a retrying check waited for the real save
+    // that follows the answer and passed with "saved" shown all along
+    // (TEST-601 G7). Sampled while the edit is with the core (held 2.5 s).
     await page.waitForTimeout(500);
-    await expect(page.locator(".statusbar .save")).toHaveText(cs("editor.saving"));
+    const seen: string[] = [];
+    for (let i = 0; i < 15; i++) {
+      seen.push(((await page.locator(".statusbar .save").textContent()) ?? "").trim());
+      await page.waitForTimeout(100);
+    }
+    expect(seen.filter((s) => s !== cs("editor.saving")), "status while the edit is with the core").toEqual([]);
     expect((await loadProject(id)).parts[0].edges[0].eave_height).not.toBe(4.2);
     await waitForProject(id, (p) => (p.parts[0].height ?? p.parts[0].edges[0].eave_height) === 4.2, 8000);
     await app.saved();
@@ -313,7 +427,12 @@ test.describe("round-6 audit: dialogs keep the focus (UI-503)", () => {
     await thick.fill("0,3");
     await thick.press("Tab");
     const ok = dlg.getByRole("button", { name: cs("common.ok"), exact: true });
+    // OK is enabled only once the helper's request is worked out: focused
+    // before that, the focus stayed on the select the Tab went to and Enter
+    // opened it (TEST-602).
+    await expect(ok).toBeEnabled();
     await ok.focus();
+    await expect(ok).toBeFocused();
     await page.keyboard.press("Enter");
     await page.waitForTimeout(300);
     await expect(ok).toHaveAttribute("aria-busy", "true");
@@ -329,7 +448,7 @@ test.describe("round-6 audit: dialogs keep the focus (UI-503)", () => {
 
 test.describe("round-6 audit: a job at the limits in the plan (UI-501, TEST-501)", () => {
   test("a job of 200 buildings opens in the editor and stays interactive", async ({ app, page }) => {
-    test.setTimeout(180_000);
+    test.setTimeout(300_000);
     const id = await createExample("gable", "Sídliště");
     await withItems(id, (p) => {
       const one = p.parts[0];
@@ -367,17 +486,61 @@ test.describe("round-6 audit: a job at the limits in the plan (UI-501, TEST-501)
     );
     expect(opened, "opened in ms").toBeLessThan(60_000);
     expect(longest, "longest main-thread gap in ms after opening").toBeLessThan(2000);
-    // An edit is drawn again within a few seconds.
-    await selectWall(page, 0);
-    const t1 = Date.now();
+    // Selecting a wall recolours the 3D view, it does not build it again
+    // (UI-602: 4 to 5 s frozen per click in the split layout).
+    const view3d = page.locator(".view .host").first();
+    await expect(view3d).toHaveAttribute("data-builds", /\d+/, { timeout: 30_000 });
+    const builds = await view3d.getAttribute("data-builds");
+    const clickGap = await gapDuring(page, async () => {
+      await selectWall(page, 0);
+      await selectWall(page, 5, 2);
+      await selectWall(page, 0);
+    });
+    expect(await view3d.getAttribute("data-builds"), "3D scene builds after three wall clicks").toBe(builds);
+    expect(clickGap, "longest main-thread gap in ms while walls are selected").toBeLessThan(2000);
+    // Zooming in to where labels show, and panning there, stays fluid
+    // (UX-602: 1.5 to 2.3 s per step in the label placement).
+    const box = (await plan(page).boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    // Counted, not only timed: the tests the label pass runs per step
+    // (`data-label-work`), which no load on the machine changes. Placing
+    // every label against every wall, line and label was millions.
+    const work: number[] = [];
+    const zoomGap = await gapDuring(page, async () => {
+      for (let i = 0; i < 6; i++) {
+        await page.mouse.wheel(0, -260);
+        await page.waitForTimeout(150);
+        work.push(+((await plan(page).getAttribute("data-label-work")) ?? "NaN"));
+      }
+    });
+    await expect(page.locator("g.face-tag").first()).toBeVisible();
+    expect(await page.locator("text.edge-dim").count(), "wall lengths shown when zoomed in").toBeGreaterThan(0);
+    const panGap = await gapDuring(page, async () => {
+      await page.mouse.down({ button: "middle" });
+      for (let i = 1; i <= 6; i++) {
+        await page.mouse.move(box.x + box.width / 2 - i * 25, box.y + box.height / 2 - i * 15);
+        await page.waitForTimeout(100);
+      }
+      await page.mouse.up({ button: "middle" });
+    });
+    work.push(+((await plan(page).getAttribute("data-label-work")) ?? "NaN"));
+    expect(work.some((w) => w > 0), `label work per step ${work}`).toBe(true);
+    for (const w of work) expect(w, `label work per step ${work}`).toBeLessThan(100_000);
+    expect(Math.max(zoomGap, panGap), `longest main-thread gap in ms per zoom / pan step (zoom ${zoomGap}, pan ${panGap})`).toBeLessThan(2000);
+    if (process.env.TECTORA_E2E_TIMES) console.log(`UI-602 / UX-602: click gap ${clickGap} ms, zoom gap ${zoomGap} ms, pan gap ${panGap} ms, label work ${work}`);
+    // An edit is drawn again without freezing the page. The time to the file
+    // is the debug core's calculation of 200 buildings, not the editor's:
+    // what is checked is that the page keeps answering meanwhile (TEST-602).
     const pitch = bar(page, "def.title").getByLabel(cs("edge.pitch"));
-    await typeInto(page, pitch, "38");
-    await page.keyboard.press("Enter");
-    await waitForProject(id, (p) => p.parts[0].edges[0].pitch_deg === 38, 30_000);
+    const editGap = await gapDuring(page, async () => {
+      await typeInto(page, pitch, "38");
+      await page.keyboard.press("Enter");
+      await waitForProject(id, (p) => p.parts[0].edges[0].pitch_deg === 38, 90_000);
+    });
+    expect(editGap, "longest main-thread gap in ms while the edit is calculated and saved").toBeLessThan(2000);
     const ping = Date.now();
     await page.evaluate(() => 1);
     expect(Date.now() - ping, "the page answers right after the edit").toBeLessThan(2000);
-    expect(Date.now() - t1).toBeLessThan(30_000);
     // The 3D view opens it too.
     await page.keyboard.press("F3");
     await expect(page.locator(".view canvas").first()).toBeVisible({ timeout: 30_000 });
