@@ -525,3 +525,52 @@ test.describe("round-7 audit: another pointer during a touch drag does nothing, 
     expect(JSON.stringify(end.parts[0].edges.map((e: any) => e.start))).toBe(JSON.stringify(dropped.parts[0].edges.map((e: any) => e.start)));
   });
 });
+
+test.describe("round-8 audit: a building drop the core refuses is put back (TEST-701, ERR-701)", () => {
+  for (const undo of [false, true]) {
+    test(`a refused building drop puts the building back, names the move${undo ? ", and a Ctrl+Z pressed while it settles undoes nothing" : ""}, and is not saved with the next edit`, async ({ app, page, mcp }) => {
+      const { id, pre } = await stage(app, page, mcp, `Odmítnuto ${undo ? "undo" : "plain"}`);
+      const a = await aim(page, "building");
+      const fill = page.locator("path.fill").first();
+      const box0 = (await fill.boundingBox())!;
+      let refuse = false;
+      // The core refuses the move as a job over the input limits does (commands::transform_part).
+      await page.route(/\/transform_part$/, async (r: Route) => {
+        if (!refuse) return r.continue();
+        await new Promise((res) => setTimeout(res, 1200));
+        await r.fulfill({ contentType: "application/json", body: JSON.stringify({ err: { code: "out_of_range", detail: "a value is out of range (allowed ±100000 m)" } }) });
+      });
+      await pressAt(page, a.at);
+      await moveSteps(page, a, 1, 9);
+      refuse = true;
+      await page.mouse.up();
+      if (undo) {
+        await page.waitForTimeout(250);
+        await page.keyboard.press("ControlOrMeta+z");
+      }
+      // The refusal names the move, not a failed calculation.
+      const toast = app.toasts().filter({ hasText: cs("err.action.move") });
+      await expect(toast).toHaveCount(1, { timeout: 6000 });
+      await expect(app.toasts().filter({ hasText: cs("err.action.calc") })).toHaveCount(0);
+      // The building is back where it was pressed.
+      await expect.poll(async () => Math.abs((await fill.boundingBox())!.x - box0.x)).toBeLessThan(3);
+      await page.waitForTimeout(800);
+      await app.saved();
+      // Nothing saved, and the queued Undo did not take the step before the drag (dormer 1's width).
+      expect(shape(await loadProject(id))).toBe(shape(pre));
+      await expect(tool(page, "editor.redo")).toBeDisabled();
+      // The next edit saves the job as it was before the drag, with the pitch.
+      refuse = false;
+      const pitch = bar(page, "def.title").getByLabel(cs("edge.pitch"));
+      await typeInto(page, pitch, "33");
+      await page.keyboard.press("Enter");
+      const end = await waitForProject(id, (p) => p.parts[0].edges.some((e: any) => e.pitch_deg === 33), 3000);
+      expect(JSON.stringify(end.parts[0].edges.map((e: any) => e.start))).toBe(JSON.stringify(pre.parts[0].edges.map((e: any) => e.start)));
+      expect(JSON.stringify(end.dormers)).toBe(JSON.stringify(pre.dormers));
+      // The refusal is logged for the developer console; not a page failure.
+      const logged = app.errors.filter((e) => e.includes("[tectora] move"));
+      expect(logged.length).toBe(1);
+      app.errors.splice(0, app.errors.length, ...app.errors.filter((e) => !e.includes("[tectora] move")));
+    });
+  }
+});

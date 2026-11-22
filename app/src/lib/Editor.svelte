@@ -529,9 +529,12 @@
     }
   }
 
+  /** Steps ever added to the history: tells whether a drop became one (ERR-701). */
+  let steps = 0;
   function pushHistory() {
     const s = snapshot();
     if (history[at] === s) return false;
+    steps++;
     history = history.slice(0, at + 1);
     history.push(s);
     at = history.length - 1;
@@ -585,8 +588,17 @@
     if (dragState === "armed" || dragState === "moving") return;
     if (!drag.active && !jobEdits.size) return step();
     // A drop still with the core is the newest step too: one Undo right
-    // after a building's drop undoes exactly that drop (ERR-603).
-    void pendingEdits.track(calm().then(step));
+    // after a building's drop undoes exactly that drop (ERR-603). A drop
+    // the core refuses adds no step: the press is then dropped, else it
+    // undid the step before the drag (ERR-701).
+    const dropping = drag.active;
+    const before = steps;
+    void pendingEdits.track(
+      calm().then(() => {
+        if (dropping && steps === before) return;
+        step();
+      }),
+    );
   }
   /** Resolves once no drag is open and no edit is with the core. */
   async function calm() {
@@ -1819,7 +1831,8 @@
         selection = sel;
         recalc();
       }
-      if (!notifyRefusal(e, "transform")) notifyError(e, "calc");
+      // A refused move is named as one, not as a failed calculation (ERR-701).
+      if (!notifyRefusal(e, "transform")) notifyError(e, "move");
     }
   }
 
