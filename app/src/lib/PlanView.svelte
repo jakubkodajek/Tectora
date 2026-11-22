@@ -11,12 +11,11 @@
   import { placementOf, type ItemRef, type PlanTarget } from "./items";
   import { gridStep as gridStepFor, gridValues } from "./grid";
   import { boxOf, contentPoints, draftLeavesView, fitView, resizedView } from "./planfit";
-  import { faceTags, tagSpots } from "./facelabels";
-  import { hostHeightAt, isDormerFace } from "./dormers";
-  import { dormerWallLines, onWallLine, planeOf } from "./scene3d";
-  import { chooseLabels, insidePolygon, placeDimSpots, rotatedBox, segCrossesBox, underHigherRoof, wallNumber, type DimSpot, type Seg } from "./planlabels";
+  import { hostIndex, isDormerFace } from "./dormers";
+  import { dormerWallLines, onWallLine } from "./scene3d";
+  import { chooseLabels, insidePolygon, placeDimSpots, rotatedBox, segCrossesBox, wallNumber, type DimSpot, type Seg } from "./planlabels";
   import { draftWalls } from "./drawstep";
-  import { coveredPieces } from "./planjoin";
+  import { coveredPieces, visibleFaceTags } from "./planjoin";
   import { numberLocale } from "./i18n.svelte";
 
   let {
@@ -186,21 +185,14 @@
 
   // Pitch and area of every calculated face, written at its centre.
   // Joined roofs: stretches of a line under a higher roof are drawn dashed.
-  const linePieces = $derived(result ? coveredPieces(result) : []);
+  // The highest roof over a plan point, built once per result from a plain
+  // copy (a job of 200 buildings froze the plan when every sample read every
+  // face through the reactive result, UI-501).
+  const topAt = $derived(hostIndex(result));
+  const linePieces = $derived(result ? coveredPieces(result, topAt) : []);
   // A face under another building's higher roof gets no label: it would be
   // written over the roof that covers it (UX-012).
-  const tags = $derived.by(() => {
-    if (!result) return [];
-    const res = result;
-    const many = res.parts.length > 1;
-    return res.parts.flatMap((rp, part) =>
-      rp.geometry.faces.flatMap((f) =>
-        faceTags([f])
-          .filter((tag) => !many || !underHigherRoof(planeOf(f.polygon)?.({ x: tag.x, y: tag.y }) ?? null, hostHeightAt(res, { x: tag.x, y: tag.y })))
-          .map((tag) => ({ ...tag, part, spots: tagSpots(tag, f.polygon) })),
-      ),
-    );
-  });
+  const tags = $derived(result ? visibleFaceTags(result, topAt) : []);
   const pitchText = (v: number) =>
     `${new Intl.NumberFormat(numberLocale(), { maximumFractionDigits: 2 }).format(v)}°`;
   const areaText = (v: number) =>

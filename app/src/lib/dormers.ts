@@ -160,6 +160,55 @@ export function hostHeightAt(result: CalcResult | null, p: Point2): number | nul
   return best;
 }
 
+/**
+ * `hostHeightAt` for many points of one result (the plan's covered lines and
+ * face labels): the faces are copied once into plain arrays with their plan
+ * boxes, and a point is tested only against the buildings and faces whose
+ * box holds it. The same heights as `hostHeightAt` (a point outside a
+ * face's box is never inside it); without the copy a job of 200 buildings
+ * tested every sample against every face through the reactive result and
+ * froze the plan (UI-501). Display only.
+ */
+export function hostIndex(result: CalcResult | null): (p: Point2) => number | null {
+  type Face = { poly: [number, number, number][]; x0: number; x1: number; y0: number; y1: number };
+  type Part = { faces: Face[]; x0: number; x1: number; y0: number; y1: number };
+  const parts: Part[] = [];
+  for (const part of result?.parts ?? []) {
+    const faces: Face[] = [];
+    let [px0, px1, py0, py1] = [Infinity, -Infinity, Infinity, -Infinity];
+    for (const f of part.geometry.faces) {
+      if (isDormerFace(f.edge) || f.polygon.length < 3) continue;
+      const poly: [number, number, number][] = f.polygon.map((q) => [q[0], q[1], q[2]]);
+      let [x0, x1, y0, y1] = [Infinity, -Infinity, Infinity, -Infinity];
+      for (const q of poly) {
+        if (q[0] < x0) x0 = q[0];
+        if (q[0] > x1) x1 = q[0];
+        if (q[1] < y0) y0 = q[1];
+        if (q[1] > y1) y1 = q[1];
+      }
+      faces.push({ poly, x0, x1, y0, y1 });
+      if (x0 < px0) px0 = x0;
+      if (x1 > px1) px1 = x1;
+      if (y0 < py0) py0 = y0;
+      if (y1 > py1) py1 = y1;
+    }
+    if (faces.length) parts.push({ faces, x0: px0, x1: px1, y0: py0, y1: py1 });
+  }
+  const out = (b: { x0: number; x1: number; y0: number; y1: number }, p: Point2) => p.x < b.x0 || p.x > b.x1 || p.y < b.y0 || p.y > b.y1;
+  return (p) => {
+    let best: number | null = null;
+    for (const part of parts) {
+      if (out(part, p)) continue;
+      for (const f of part.faces) {
+        if (out(f, p) || !inside(f.poly, p)) continue;
+        const z = planeZ(f.poly, p);
+        if (z !== null && (best === null || z > best)) best = z;
+      }
+    }
+    return best;
+  };
+}
+
 function inside(poly: [number, number, number][], p: Point2) {
   let c = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
