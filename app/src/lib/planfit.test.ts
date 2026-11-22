@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LABEL_PAD, boxInView, boxOf, draftLeavesView, fitView, resizedView } from "./planfit";
+import { LABEL_PAD, boxInView, boxOf, contentPoints, draftLeavesView, fitView, resizedView } from "./planfit";
 
 describe("fitView keeps room for the wall labels (UI-010)", () => {
   it("leaves at least LABEL_PAD px on every side of the eaves", () => {
@@ -62,5 +62,29 @@ describe("draftLeavesView: the plan follows a footprint being typed (UX-001)", (
     // x = 21 m lies at 790 px of the 800 px plan; the default pad is 24 px.
     expect(draftLeavesView([{ x: 2, y: 2 }, { x: 21, y: 5 }], view, 800, 600)).toBe(true);
     expect(draftLeavesView([{ x: 2, y: 2 }, { x: 21, y: 5 }], view, 800, 600, 0)).toBe(false);
+  });
+});
+
+describe("contentPoints: what Fit and the first view show (UX-301, TEST-305)", () => {
+  const sq = (x0: number, x1: number) => [{ x: x0, y: 0 }, { x: x1, y: 0 }, { x: x1, y: 4 }, { x: x0, y: 4 }];
+  const house = { edges: sq(0, 12).map((start) => ({ start })) };
+
+  it("takes a hand-drawn face beside the house into the box", () => {
+    const box = boxOf(contentPoints({ parts: [house], manual_faces: [{ points: sq(16, 22) }] }));
+    expect(box).toEqual({ minX: 0, minY: 0, maxX: 22, maxY: 4 });
+  });
+
+  it("gives the face's box for a job of faces only", () => {
+    const box = boxOf(contentPoints({ parts: [], manual_faces: [{ points: sq(20, 26) }] }));
+    expect(box).toEqual({ minX: 20, minY: 0, maxX: 26, maxY: 4 });
+  });
+
+  it("takes hand-drawn lines, the calculated eaves and a footprint being drawn", () => {
+    const pts = contentPoints({ parts: [house], manual_lines: [{ a: [-3, 1, 0], b: [2, 9, 0] }] }, [[[-0.5, -0.5, 3], [12.5, -0.5, 3]]], [{ x: 30, y: 2 }]);
+    expect(boxOf(pts)).toEqual({ minX: -3, minY: -0.5, maxX: 30, maxY: 9 });
+  });
+
+  it("has nothing for an empty job", () => {
+    expect(boxOf(contentPoints({ parts: [], manual_faces: null }))).toBeNull();
   });
 });

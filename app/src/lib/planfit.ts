@@ -43,6 +43,29 @@ export function boxOf(pts: Pt[]): Box | null {
   return { minX, minY, maxX, maxY };
 }
 
+/** What of a job and its calculated roof lies in the plan (structural: only the coordinates). */
+export interface PlanContent {
+  parts: { edges: { start: Pt }[] }[];
+  manual_faces?: { points: Pt[] }[] | null;
+  manual_lines?: { a: number[]; b: number[] }[] | null;
+}
+
+/**
+ * Every point the plan should show: the walls, the hand-drawn faces and
+ * lines (a face beside the house, or a job of faces only, is part of the
+ * roof: UX-301, TEST-305), the eaves of the calculated roof (`faces`,
+ * polygons of [x, y, …]; their labels lie outside the walls) and a
+ * footprint being drawn.
+ */
+export function contentPoints(project: PlanContent, faces: readonly (readonly number[])[][] = [], drawing: readonly Pt[] | null = null): Pt[] {
+  const pts: Pt[] = project.parts.flatMap((p) => p.edges.map((e) => e.start));
+  for (const f of project.manual_faces ?? []) pts.push(...f.points);
+  for (const l of project.manual_lines ?? []) pts.push({ x: l.a[0], y: l.a[1] }, { x: l.b[0], y: l.b[1] });
+  for (const polygon of faces) for (const q of polygon) pts.push({ x: q[0], y: q[1] });
+  if (drawing) pts.push(...drawing);
+  return pts;
+}
+
 /**
  * The view that shows all of `box` with the usual quarter margin and at least
  * `LABEL_PAD` px on every side for the wall labels; null when the view has no room.
