@@ -433,6 +433,25 @@ test.describe("round-7 audit: what is not the user's waits for the end of the dr
     });
   }
 
+  test("leaving the job while a dormer is dragged and a typed width is still with the core closes it and keeps both (TEST-705 E5, ERR-501)", async ({ app, page, mcp }) => {
+    const { id, pre } = await stage(app, page, mcp, "Odchod s šířkou");
+    let hold = true;
+    await slow(page, "check_dormer", 3000, () => hold);
+    const db = await selectDormer(page, 1);
+    await typeInto(page, db.getByLabel(cs("dormer.width")), "2,5");
+    await page.keyboard.press("Enter");
+    // At once a drag of another dormer: its pause holds the width's answer.
+    const a = await aim(page, "object");
+    await pressAt(page, a.at);
+    await moveSteps(page, a, 1, 6);
+    await page.locator("header .icon-btn").first().dispatchEvent("click");
+    await expect(page.locator(".editor")).toBeHidden({ timeout: 5000 });
+    hold = false;
+    await page.mouse.up();
+    const p = await waitForProject(id, (q) => dormerWidth(q.dormers[0]) === 2.5 && moved("object", pre)(q), 6000);
+    expect(dormerWidth(p.dormers[1])).toBe(1.5);
+  });
+
   test("leaving the job while a corner is dragged ends the drag where it is and saves it (TEST-601 G2)", async ({ app, page, mcp }) => {
     const { id, pre } = await stage(app, page, mcp, "Odchod při tahu");
     const a = await aim(page, "corner");
@@ -511,6 +530,57 @@ test.describe("round-7 audit: another pointer during a touch drag does nothing, 
       await probe(app, page, id);
     });
   }
+
+  test("a second finger on the bare plan background while the first drags the building neither pans nor takes the drag (TEST-705 E8)", async ({ app, page, mcp }) => {
+    const { id, pre } = await stage(app, page, mcp, "Prst na pozadí");
+    const a = await aim(page, "building");
+    const cdp = await page.context().newCDPSession(page);
+    const touch = (type: string, pts: (XY & { id: number })[]) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: pts });
+    // A point of the plan with nothing drawn on it: a press there pans.
+    const pb = (await plan(page).boundingBox())!;
+    const bg = await page.evaluate(
+      ([x0, y0, w, h]) => {
+        const svg = document.querySelector(".view .wrap > svg");
+        for (let y = y0 + h - 40; y > y0 + 20; y -= 10) for (let x = x0 + 20; x < x0 + w - 20; x += 10) if (document.elementFromPoint(x, y) === svg) return { x, y };
+        return null;
+      },
+      [pb.x, pb.y, pb.width, pb.height],
+    );
+    expect(bg, "a bare point of the plan").not.toBeNull();
+    if (!bg) return;
+    await touch("touchStart", [{ ...a.at, id: 1 }]);
+    for (let i = 1; i <= 8; i++) {
+      await touch("touchMove", [{ x: a.at.x + a.step.x * i, y: a.at.y, id: 1 }]);
+      await page.waitForTimeout(30);
+    }
+    const f1 = { x: a.at.x + a.step.x * 8, y: a.at.y, id: 1 };
+    await page.waitForTimeout(100);
+    const fill = page.locator("path.fill").first();
+    const box = (await fill.boundingBox())!;
+    await touch("touchStart", [f1, { ...bg, id: 2 }]);
+    await page.waitForTimeout(100);
+    // Finger 2 moves as a pan would while finger 1 holds still.
+    for (let i = 1; i <= 4; i++) {
+      await touch("touchMove", [f1, { x: bg.x + 15 * i, y: bg.y - 10 * i, id: 2 }]);
+      await page.waitForTimeout(30);
+    }
+    const during = (await fill.boundingBox())!;
+    expect(Math.abs(during.x - box.x) + Math.abs(during.y - box.y), "the plan neither panned nor dropped the drag").toBeLessThan(2);
+    // Finger 1 goes on: the drag is still its own.
+    const f2 = { x: bg.x + 60, y: bg.y - 40, id: 2 };
+    for (let i = 9; i <= 12; i++) {
+      await touch("touchMove", [{ x: a.at.x + a.step.x * i, y: a.at.y, id: 1 }, f2]);
+      await page.waitForTimeout(30);
+    }
+    await touch("touchEnd", []);
+    const dropped = await waitForProject(id, moved("building", pre), 6000);
+    onlyTheDrop("building", pre, dropped);
+    await app.saved();
+    await page.waitForTimeout(300);
+    const after = (await fill.boundingBox())!;
+    expect(Math.abs(after.x - (box.x + a.step.x * 4)), "the drop is where finger 1 let go").toBeLessThan(3);
+    expect(shape(await loadProject(id))).toBe(shape(dropped));
+  });
 
   test("a second finger that rests on the plan when the first lifts leaves no drag behind: a typed pitch is saved and Escape only deselects", async ({ app, page, mcp }) => {
     // ui t601 `line0` + ESC=1: the stuck drag held the autosave, and Escape

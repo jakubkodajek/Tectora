@@ -526,12 +526,12 @@
    * button does (UX-703): touch and pen have no right button. A press that
    * moves past LONG_SLOP, starts dragging or ends first opens nothing.
    */
-  let held: { id: number; t: number; x: number; y: number; timer: ReturnType<typeof setTimeout> } | null = null;
+  let longHeld: { id: number; t: number; x: number; y: number; timer: ReturnType<typeof setTimeout> } | null = null;
   const LONG_MS = 550;
   const LONG_SLOP = 8;
   function longPress(e: PointerEvent, at: PressOn) {
     // A shape's press that bubbles on to the plan's is the same press.
-    if (held && held.id === e.pointerId && held.t === e.timeStamp) return;
+    if (longHeld && longHeld.id === e.pointerId && longHeld.t === e.timeStamp) return;
     noLongPress();
     if (e.pointerType === "mouse" || e.button !== 0 || placing || drawing) return;
     const target: PlanTarget =
@@ -542,12 +542,12 @@
       : { type: "vertex", part: at.part, vertex: at.vertex };
     const client = { x: e.clientX, y: e.clientY };
     const local = localPoint(e);
-    held = {
+    longHeld = {
       id: e.pointerId,
       t: e.timeStamp,
       ...client,
       timer: setTimeout(() => {
-        held = null;
+        longHeld = null;
         if (objDrag?.moved || drag?.moved || placing || drawing || locked) return;
         // The press ends here: an armed drag that never moved does nothing,
         // a pan stops; the release later finds no press.
@@ -564,8 +564,8 @@
     };
   }
   function noLongPress() {
-    if (held) clearTimeout(held.timer);
-    held = null;
+    if (longHeld) clearTimeout(longHeld.timer);
+    longHeld = null;
   }
 
   /** A press on a dormer, chimney, window, opening or hand-drawn shape. */
@@ -684,7 +684,7 @@
   }
 
   function onpointermove(e: PointerEvent) {
-    if (held && e.pointerId === held.id && Math.hypot(e.clientX - held.x, e.clientY - held.y) > LONG_SLOP) noLongPress();
+    if (longHeld && e.pointerId === longHeld.id && Math.hypot(e.clientX - longHeld.x, e.clientY - longHeld.y) > LONG_SLOP) noLongPress();
     if (otherPointer(e)) return;
     // The button went up where the plan could not see it (the system took
     // the pointer: another window, a native dialog) and no release, cancel
