@@ -1260,10 +1260,8 @@ impl Server {
         if settings.ai_may_read(path, &self.store.dir) {
             return Ok(());
         }
-        let asked = settings
-            .asking_for_file(path, &self.client, purpose)
-            .save()
-            .is_ok();
+        let asked =
+            Settings::update(|s| Ok(s.asking_for_file(path, &self.client, purpose))).is_ok();
         // A settings change: the app reads the settings again and asks.
         self.live(
             "settings",
@@ -1519,12 +1517,15 @@ impl Server {
         if let Some(o) = patch.as_object_mut() {
             o.remove("summary");
         }
-        let old = Settings::load();
-        let (next, asked) = old
-            .patched_by_ai(&patch, &self.client, &summary)
-            .map_err(|e| format!("settings not saved: {}", e.explain()))?;
-        next.save()
-            .map_err(|e| format!("settings not saved: {}", e.explain()))?;
+        // Read, changed and written under the settings lock: a change the
+        // user makes in the app at the same moment is not lost, nor this one (TEST-307).
+        let mut asked = false;
+        let (old, next) = Settings::update(|s| {
+            let (next, a) = s.patched_by_ai(&patch, &self.client, &summary)?;
+            asked = a;
+            Ok(next)
+        })
+        .map_err(|e| format!("settings not saved: {}", e.explain()))?;
         self.live(
             "settings",
             None,
