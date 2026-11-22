@@ -376,7 +376,7 @@ export interface Library {
 }
 
 /** What a [`ForeignItem`] blocks (store.rs `ForeignItem::kind`). */
-export type ForeignKind = "activity" | "files" | "trash" | "exports" | "job_files" | "lock" | "new_lock";
+export type ForeignKind = "activity" | "files" | "trash" | "exports" | "job_files" | "lock" | "lock_fix" | "new_lock";
 
 /** A link, file or folder in the library's own folders that blocks work (store.rs `foreign_entries`). */
 export interface ForeignItem extends BrokenFile {

@@ -5,7 +5,7 @@
 import { t } from "./i18n.svelte";
 import type { BrokenFile, ForeignItem, ForeignKind } from "./types";
 
-const KINDS: ForeignKind[] = ["activity", "files", "trash", "exports", "job_files", "lock", "new_lock"];
+const KINDS: ForeignKind[] = ["activity", "files", "trash", "exports", "job_files", "lock", "lock_fix", "new_lock"];
 
 /** An entry as the app lists it; an older core sends no `kind`. */
 export type Foreign = BrokenFile & Partial<Pick<ForeignItem, "kind" | "job">>;

@@ -8,6 +8,25 @@ const entry = (id: string, kind?: Foreign["kind"], job?: string): Foreign => ({ 
 // "cannot be saved, deleted or copied", also where only one action fails,
 // and gave no advice for a file.
 describe("foreignSentences", () => {
+  // Audit 2026-11-22 ARCH-803: each kind names every operation it blocks
+  // (deleting too), and a lock's helper file is not the lock.
+  it("says where deleting is refused too, and names a lock's helper file apart from the lock", () => {
+    const del: Record<string, RegExp> = { cs: /smazat|mazat/, sk: /vymazať|mazať/, en: /deleted/, de: /löschen/ };
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      for (const kind of ["activity", "files", "job_files", "lock"] as const) {
+        const [line] = foreignSentences([entry(`.x/${kind}`, kind, "dum")]);
+        expect(line, `${locale} ${kind}`).toMatch(del[locale]);
+      }
+      const [fix] = foreignSentences([entry(".activity/dum.lock.fix", "lock_fix", "dum")], () => "Dům Novák");
+      const [lock] = foreignSentences([entry(".activity/dum.lock", "lock", "dum")], () => "Dům Novák");
+      expect(fix, locale).toContain("Dům Novák");
+      expect(fix, locale).not.toBe(lock);
+      expect(fix, locale).not.toMatch(/^lib\./);
+    }
+    i18n.locale = "cs";
+  });
+
   it("says per kind what is blocked and what to do, in every language", () => {
     const all = [
       entry(".activity", "activity"),

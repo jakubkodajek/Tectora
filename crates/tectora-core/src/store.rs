@@ -721,10 +721,12 @@ pub struct ForeignItem {
     /// or restore), `exports` (no roof sheet or list export by the AI),
     /// `job_files` (in place of one job's files folder: no file can be
     /// attached to that job and it cannot be copied), `lock` (in place of one
-    /// job's lock file: that job cannot be saved), `new_lock` (in place of
-    /// the lock for new jobs: no new job).
+    /// job's lock file: that job cannot be saved), `lock_fix` (in place of
+    /// the helper file of one job's lock: saves of that job may be
+    /// refused), `new_lock` (in place of the lock for new jobs: no new
+    /// job).
     pub kind: &'static str,
-    /// The job it is about, for `job_files` and `lock`.
+    /// The job it is about, for `job_files`, `lock` and `lock_fix`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job: Option<String>,
 }
@@ -1835,21 +1837,25 @@ impl Store {
         if is_own_folder(&activity) {
             let odd_locks = listed(&activity).into_iter().filter_map(|(name, t)| {
                 let path = activity.join(&name);
-                let what = if name.ends_with(".lock") && t.is_dir() {
+                let (what, fix) = if name.ends_with(".lock") && t.is_dir() {
                     // An empty one is replaced by the next save.
                     fs::read_dir(&path).ok()?.next()?.ok()?;
-                    "a folder with files in it stands where the lock file belongs, so every save of this job is refused; it is not Tectora's: move it out of the jobs folder"
+                    ("a folder with files in it stands where the lock file belongs, so every save of this job is refused; it is not Tectora's: move it out of the jobs folder", false)
                 } else if name.ends_with(".lock.fix") && !t.is_file() {
-                    "a link, folder or pipe stands where Tectora keeps a lock's helper file, so saves of this job can be refused; it is not Tectora's: move it out of the jobs folder"
+                    ("a link, folder or pipe stands where Tectora keeps a lock's helper file, so saves of this job can be refused; it is not Tectora's: move it out of the jobs folder", true)
                 } else {
                     return None;
                 };
-                let base = name.trim_end_matches(".fix").trim_end_matches(".lock");
+                // Each suffix once: an id may end in `.lock` (ARCH-804).
+                let base = name.strip_suffix(".fix").unwrap_or(&name);
+                let base = base.strip_suffix(".lock").unwrap_or(base);
                 let (kind, job) = if base == ".new" {
                     ("new_lock", None)
                 } else {
                     self.path(base).ok()?;
-                    ("lock", Some(base.to_string()))
+                    // The helper file only may block a save, not every
+                    // one as the lock does (ARCH-803).
+                    (if fix { "lock_fix" } else { "lock" }, Some(base.to_string()))
                 };
                 Some(ForeignItem {
                     id: format!("{ACTIVITY_DIR}/{name}"),
@@ -4184,7 +4190,8 @@ mod tests {
             (in_files.as_str(), "job_files", Some(other.as_str())),
             (".activity/.new.lock", "new_lock", None),
             (lock.as_str(), "lock", Some(id.as_str())),
-            (fix.as_str(), "lock", Some(other.as_str())),
+            // Its own kind: it does not stop every save (ARCH-803).
+            (fix.as_str(), "lock_fix", Some(other.as_str())),
         ];
         want[2..].sort();
         assert_eq!(got, want);
