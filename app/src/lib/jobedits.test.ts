@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { t } from "./i18n.svelte";
 import { JobEdits, TRIES, follow } from "./jobedits";
 import type { Project } from "./types";
 
@@ -358,5 +359,198 @@ describe("run", () => {
     core.release();
     expect(await done).toBe("closed");
     expect(refused).toEqual([]);
+  });
+});
+
+// Round-5 audit (TEST-401, UX-402, ERR-401).
+describe("round 5: the rule's other branches", () => {
+  it("a strict hold on an item the AI changed in place is gone, a loose one stays (TEST-401, anchor case 4)", () => {
+    const file = job();
+    const { state, edits } = editor(clone(file));
+    const strict = edits.hold("dormers", 1);
+    const loose = edits.hold("dormers", 1, true);
+    const remote = job({ dormers: [dormer(1.5), dormer(5, 2), dormer(8.5)] });
+    const before = state.job!;
+    state.job = clone(remote);
+    edits.outside(file, remote, before, state.job);
+    expect(strict.gone).toBe(true);
+    expect(loose).toMatchObject({ index: 1, gone: false });
+  });
+
+  it("a hold stays when the user added an item unsaved and the AI saved only the notes (TEST-401, the merge on save)", () => {
+    const file = job();
+    const mine = clone(file);
+    mine.dormers.push(dormer(11) as any);
+    const { state, edits } = editor(mine);
+    const h = edits.hold("dormers", 1);
+    const remote = job({ notes: "AI" });
+    state.job = { ...clone(mine), notes: "AI" };
+    edits.outside(file, remote, mine, state.job);
+    expect(h).toMatchObject({ index: 1, gone: false });
+  });
+
+  it("idle waits for edits queued while it waits (TEST-401)", async () => {
+    const { state, edits } = editor(job());
+    const core = slowCore();
+    const applied: number[] = [];
+    const h = edits.hold("parts", 0);
+    const edit = (n: number) =>
+      edits.run(
+        h,
+        async () => {
+          await core.wait();
+          return n;
+        },
+        (v) => {
+          applied.push(v);
+          state.job!.notes = `n${v}`;
+        },
+      );
+    void edit(1);
+    let idle = false;
+    const waited = edits.idle().then(() => (idle = true));
+    void edit(2);
+    await tick();
+    core.release();
+    await tick();
+    await tick();
+    expect(applied).toEqual([1]);
+    expect(idle).toBe(false);
+    core.release();
+    await waited;
+    expect(applied).toEqual([1, 2]);
+    expect(edits.size).toBe(0);
+  });
+
+  it("ends quietly when the user's own step deleted the held item meanwhile (UX-402)", async () => {
+    const { state, edits, refused } = editor(job());
+    const core = slowCore();
+    const h = edits.hold("dormers", 1);
+    const done = edits.run(
+      h,
+      async () => {
+        await core.wait();
+        return 2;
+      },
+      () => {
+        throw new Error("must not be applied");
+      },
+    );
+    await tick();
+    const before = clone(state.job!);
+    state.job!.dormers.splice(1, 1);
+    edits.own(() => before, state.job!);
+    core.release();
+    expect(await done).toBe("removed");
+    expect(refused).toEqual([]);
+    expect(h).toMatchObject({ gone: true, removed: true });
+  });
+
+  it("an equal twin left behind is no removal: the edit is refused with a note", () => {
+    const { state, edits } = editor(job({ dormers: [dormer(1.5), dormer(1.5), dormer(8.5)] }));
+    const h = edits.hold("dormers", 1);
+    const before = clone(state.job!);
+    // One of two equal dormers deleted: which of them was held cannot be told.
+    state.job!.dormers.splice(0, 1);
+    edits.own(() => before, state.job!);
+    expect(h.gone).toBe(true);
+    expect(h.removed).toBe(false);
+  });
+
+  it("hears a refusal with the hold it was for, to name the object", async () => {
+    const file = job();
+    const heard: [string, unknown][] = [];
+    const state = { job: clone(file) as Project | null };
+    const edits = new JobEdits(
+      () => state.job,
+      () => JSON.stringify(state.job),
+      (o, h) => heard.push([o, h && { list: h.list, index: h.index }]),
+    );
+    const core = slowCore();
+    const done = edits.run(edits.hold("dormers", 0), async () => core.wait(), () => {});
+    await tick();
+    const remote = job({ dormers: [dormer(5), dormer(8.5)] });
+    const before = state.job!;
+    state.job = clone(remote);
+    edits.outside(file, remote, before, state.job);
+    core.release();
+    expect(await done).toBe("gone");
+    expect(heard).toEqual([["gone", { list: "dormers", index: 0 }]]);
+  });
+
+  it("applies no answer while a drag is under way, and asks again on the dragged job (ERR-401)", async () => {
+    const { state, edits, refused } = editor(job());
+    const core = slowCore();
+    const seen: number[] = [];
+    const done = edits.run(
+      edits.hold("dormers", 1),
+      async (p, i) => {
+        const x = (p.dormers[2] as any).edges[0].start.x;
+        seen.push(x);
+        await core.wait();
+        return { i, x };
+      },
+      ({ i }) => ((state.job!.dormers[i] as any).end.x = 7),
+    );
+    await tick();
+    const end = edits.pause();
+    expect(edits.pausing).toBe(true);
+    // The answer comes while the pointer is held still: not applied.
+    core.release();
+    await tick();
+    await tick();
+    expect((state.job!.dormers[1] as any).end.x).toBe(6.5);
+    // Every drag step rebuilds the job from its start, then the drag ends.
+    const start = JSON.stringify(state.job);
+    for (const dy of [1, 2, 3]) {
+      state.job = JSON.parse(start);
+      (state.job!.dormers[2] as any).edges[0].start.x = 8.5 + dy;
+    }
+    end();
+    end();
+    expect(edits.pausing).toBe(false);
+    await tick();
+    expect(core.asked).toBe(1);
+    core.release();
+    expect(await done).toBe("done");
+    expect(seen).toEqual([8.5, 11.5]);
+    expect((state.job!.dormers[1] as any).end.x).toBe(7);
+    expect((state.job!.dormers[2] as any).edges[0].start.x).toBe(11.5);
+    expect(refused).toEqual([]);
+  });
+
+  it("an edit queued during a drag waits for its end before it asks (ERR-401)", async () => {
+    const { state, edits } = editor(job());
+    let asked = 0;
+    const end = edits.pause();
+    const done = edits.run(
+      edits.hold("parts", 0),
+      async () => {
+        asked++;
+        return "Named";
+      },
+      (n, i) => (state.job!.parts[i].name = n),
+    );
+    await tick();
+    await tick();
+    expect(asked).toBe(0);
+    end();
+    expect(await done).toBe("done");
+    expect(asked).toBe(1);
+    expect(state.job!.parts[0].name).toBe("Named");
+  });
+});
+
+describe("heldName (UX-401, UX-404)", () => {
+  it("names the object a refused edit was for", async () => {
+    const { heldName } = await import("./jobedits");
+    const p = job({ parts: [part("Main"), part("Garáž")], chimneys: [{}, {}] });
+    const { edits } = editor(p);
+    expect(heldName(edits.hold("chimneys", 1), p)).toBe(t("opening.chimneyN", { n: 2 }));
+    expect(heldName(edits.hold("dormers", 2), p)).toBe(t("dormer.n", { n: 3 }));
+    expect(heldName(edits.hold("parts", 1), p)).toBe("Garáž");
+    const gone = edits.hold("parts", 1);
+    gone.gone = true;
+    expect(heldName(gone, p)).toBe(t("prob.item.part", { n: 2 }));
   });
 });
