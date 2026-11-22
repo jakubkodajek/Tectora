@@ -35,6 +35,8 @@
   });
 
   async function answer(revert: boolean) {
+    // The pressed button stays enabled and focused while this waits
+    // (aria-disabled): a disabled one drops the keyboard focus to the page (UI-604).
     if (busy) return;
     busy = true;
     // The card goes once the answer is in: `change` is gone with it.
@@ -70,8 +72,8 @@
     <p class="muted">{changeNote(change)}</p>
   </div>
   <div class="foot">
-    <button class="btn sm" disabled={busy} onclick={() => answer(true)}>{t("ai.revert")}</button>
-    <button class="btn sm accept" disabled={busy} onclick={() => answer(false)}>{t("review.accept")}</button>
+    <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => answer(true)}>{t("ai.revert")}</button>
+    <button class="btn sm accept" aria-disabled={busy} aria-busy={busy} onclick={() => answer(false)}>{t("review.accept")}</button>
   </div>
 </section>
 

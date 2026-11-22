@@ -547,6 +547,45 @@ test.describe("round-6 audit: a job at the limits in the plan (UI-501, TEST-501)
   });
 });
 
+test.describe("round-7 audit: 500 hand-drawn faces of 500 corners reach the editor (TEST-607, class 16)", () => {
+  test("the job opens in the plan and the 3D view and the page keeps answering", async ({ app, page }) => {
+    test.setTimeout(300_000);
+    const id = await createExample("gable", "Plochy na mezi");
+    await withItems(id, (p) => {
+      p.dormers = [];
+      p.chimneys = [];
+      p.windows = [];
+      // 500 faces of 500 corners each, 8 m apart (the limits of check_limits).
+      p.manual_faces = Array.from({ length: 500 }, (_, i) => ({
+        pitch_deg: 30,
+        points: Array.from({ length: 500 }, (_, k) => ({
+          x: +(20 + (i % 25) * 8 + 3 * Math.cos((2 * Math.PI * k) / 500)).toFixed(3),
+          y: +(Math.floor(i / 25) * 8 + 3 * Math.sin((2 * Math.PI * k) / 500)).toFixed(3),
+        })),
+      }));
+    });
+    expect((await loadProject(id)).manual_faces.length).toBe(500);
+    await app.open();
+    const t0 = Date.now();
+    await page.getByRole("row").filter({ hasText: "Plochy na mezi" }).first().dblclick();
+    await expect(page.locator(".editor .statusbar")).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator("path.manual-face")).toHaveCount(500, { timeout: 60_000 });
+    expect(Date.now() - t0, "opened in ms").toBeLessThan(120_000);
+    await expect(page.locator(".view .host canvas").first()).toBeVisible({ timeout: 60_000 });
+    // Idle after opening, the page answers: nothing keeps recomputing the faces.
+    await page.waitForTimeout(1000);
+    const idle = await gapDuring(page, () => page.waitForTimeout(3000));
+    expect(idle, "longest main-thread gap in ms after opening").toBeLessThan(2000);
+    // Selecting a face recolours; it does not build the 3D scene again (UI-602).
+    const view3d = page.locator(".view .host").first();
+    const builds = await view3d.getAttribute("data-builds");
+    const bb = (await page.locator("path.manual-face").first().boundingBox())!;
+    await page.mouse.click(bb.x + bb.width / 2, bb.y + bb.height / 2);
+    await expect(bar(page, "manual.face")).toBeVisible({ timeout: 30_000 });
+    expect(await view3d.getAttribute("data-builds")).toBe(builds);
+  });
+});
+
 test.describe("round-6 audit: the dormer dialog's checks run in turn (TEST-506 item 8)", () => {
   test("a width typed while the segment count is still checked is checked with the new count and refused", async ({ app, page }) => {
     const id = await createExample("gable", "Kulatý v pořadí");

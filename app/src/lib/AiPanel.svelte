@@ -85,7 +85,7 @@
           {/if}
         {/if}
         {#if i === 0 && ai}
-          <button class="btn sm" disabled={busy} onclick={onrevert}><Icon name="undo" size={14} />{t("ai.revert")}</button>
+          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && onrevert()}><Icon name="undo" size={14} />{t("ai.revert")}</button>
         {/if}
       </li>
     {/each}

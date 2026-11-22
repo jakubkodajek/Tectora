@@ -54,6 +54,20 @@ async function slow(page: Page, cmd: string, ms: number, on: () => boolean = () 
   });
 }
 
+/**
+ * Holds the bridge's answers to `cmd` for as long as `on()` is true (20 s
+ * at most): the test lets them go once what must come first has happened.
+ * A fixed delay raced the AI save it was meant to outlast on a busy
+ * machine (TEST-602).
+ */
+async function holdWhile(page: Page, cmd: string, on: () => boolean) {
+  await page.route(new RegExp(`/${cmd}$`), async (r: Route) => {
+    const end = Date.now() + 20_000;
+    while (on() && Date.now() < end) await new Promise((res) => setTimeout(res, 20));
+    await r.continue();
+  });
+}
+
 /** Every toast text seen from now on (toasts close themselves). */
 async function watchToasts(page: Page): Promise<() => Promise<string[]>> {
   await page.evaluate(() => {
@@ -126,12 +140,14 @@ test.describe("round-4 audit: an edit belongs to its item", () => {
     const db = await selectDormer(page, 2);
     const toasts = await watchToasts(page);
     let delay = true;
-    await slow(page, "check_dormer", 2500, () => delay);
+    await holdWhile(page, "check_dormer", () => delay);
     await db.getByLabel(cs("dormer.width")).fill("2");
     await db.getByLabel(cs("dormer.width")).press("Enter");
     await page.waitForTimeout(500);
     await mcp.call("delete_items", { id, items: [{ kind: "dormer", index: 0 }], summary: "AI removes dormer 1." });
     await waitForProject(id, (p) => p.dormers.length === 2);
+    // The editor has read the AI's save (its review banner is up): only then the held answer comes.
+    await expect(page.locator(".review")).toBeVisible({ timeout: 15_000 });
     delay = false;
     const p = await waitForProject(id, (p) => p.dormers.length === 2 && p.dormers.some((d: any) => dormerWidth(d) === 2), 12_000);
     expect(dormerSpans(p)).toEqual(["5:2", "8.5:1.5"]);
@@ -147,12 +163,14 @@ test.describe("round-4 audit: an edit belongs to its item", () => {
     await openAfterAi(app, "Vikýř pryč");
     const db = await selectDormer(page, 2);
     let delay = true;
-    await slow(page, "check_dormer", 2500, () => delay);
+    await holdWhile(page, "check_dormer", () => delay);
     await db.getByLabel(cs("dormer.width")).fill("2,9");
     await db.getByLabel(cs("dormer.width")).press("Tab");
     await page.waitForTimeout(500);
     await mcp.call("delete_items", { id, items: [{ kind: "dormer", index: 1 }], summary: "AI removes dormer 2." });
     await waitForProject(id, (p) => p.dormers.length === 2);
+    // The editor has read the AI's save (its review banner is up): only then the held answer comes.
+    await expect(page.locator(".review")).toBeVisible({ timeout: 15_000 });
     delay = false;
     await expect(app.toasts().filter({ hasText: cs("editor.actionStale") })).toBeVisible({ timeout: 12_000 });
     await page.waitForTimeout(1500);
@@ -172,13 +190,15 @@ test.describe("round-4 audit: an edit belongs to its item", () => {
     await app.saved();
     const toasts = await watchToasts(page);
     let delay = true;
-    await slow(page, "transform_part", 2500, () => delay);
+    await holdWhile(page, "transform_part", () => delay);
     const at = await planXY(page, 3, 3);
     await page.mouse.click(at.x, at.y, { button: "right" });
     await page.getByRole("menuitem", { name: cs("menu.duplicatePart") }).click();
     await page.waitForTimeout(500);
     await mcp.call("update_job", { id, notes: "AI note", summary: "AI adds a note." });
     await waitForProject(id, (p) => p.notes === "AI note");
+    // The editor has read the AI's save (its review banner is up): only then the held answer comes.
+    await expect(page.locator(".review")).toBeVisible({ timeout: 15_000 });
     delay = false;
     const p = await waitForProject(id, (p) => p.parts.length === 2, 12_000);
     expect(p.notes).toBe("AI note");
@@ -209,11 +229,13 @@ test.describe("round-4 audit: an edit belongs to its item", () => {
     await page.mouse.click(bb.x + bb.width / 2, bb.y + bb.height / 2);
     const mb = bar(page, "manual.face");
     let delay = true;
-    await slow(page, "face_to_part", 2500, () => delay);
+    await holdWhile(page, "face_to_part", () => delay);
     await mb.getByRole("button", { name: cs("manual.toPart") }).click();
     await page.waitForTimeout(500);
     await mcp.call("add_part", { id, part: { name: "Garage", points: [[0, 12], [6, 12], [6, 17], [0, 17]] }, summary: "AI adds a garage." });
     await waitForProject(id, (p) => p.parts.length === 2);
+    // The editor has read the AI's save (its review banner is up): only then the held answer comes.
+    await expect(page.locator(".review")).toBeVisible({ timeout: 15_000 });
     delay = false;
     const p = await waitForProject(id, (p) => p.parts.length === 3 && !p.manual_faces?.length, 12_000);
     expect(p.parts.map((x: any) => x.name)).toEqual([p.parts[0].name, "Garage", cs("editor.partN", { n: 3 })]);

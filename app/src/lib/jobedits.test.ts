@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { t } from "./i18n.svelte";
-import { JobEdits, TRIES, follow } from "./jobedits";
+import { JobEdits, TRIES, follow, notMade } from "./jobedits";
 import type { Project } from "./types";
 
 const dormer = (x: number, w = 1.5) => ({ edges: [{ start: { x, y: 1.6 } }], end: { x: x + w, y: 1.6 } });
@@ -59,6 +59,24 @@ describe("follow", () => {
     expect(follow(["w", "x", "w"], ["x", "w", "w"], 2)).toBe(2);
     expect(follow(["w", "x", "w"], ["x", "w", "w"], 0)).toBe(1);
     expect(follow(["w", "x", "w"], ["x", "w"], 2)).toBeNull();
+  });
+  it("does not guess among equal items when their number changed: one twin gone and an item added before the other (TEST-606 J6)", () => {
+    // The list kept its length, the held twin's place holds something else,
+    // and one twin is left: it may be the other one, so the item is let go.
+    expect(follow(["w", "w"], ["n", "w"], 0)).toBeNull();
+    expect(follow(["w", "x", "w"], ["n", "x", "w"], 0)).toBeNull();
+  });
+});
+
+describe("notMade", () => {
+  it("says why per outcome, and that an item the user removed himself was removed (TEST-606 K10)", () => {
+    expect(notMade("done")).toBeUndefined();
+    expect(notMade("gone")).toBe(t("editor.actionStale"));
+    expect(notMade("restless")).toBe(t("editor.actionBusy"));
+    expect(notMade("removed")).toBe(t("editor.actionRemoved"));
+    expect(notMade("closed")).toBe(t("num.refused"));
+    // Four different texts: "removed" is not the generic refusal.
+    expect(new Set([notMade("gone"), notMade("restless"), notMade("removed"), notMade("closed")]).size).toBe(4);
   });
 });
 
