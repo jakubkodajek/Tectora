@@ -630,11 +630,21 @@
     restore(at + 1);
   }
 
+  /**
+   * The reload an outside save asked for during a drag, run by the drag
+   * session when the drag is over (DragSession.defer, TEST-702): at once,
+   * or after the drop's own save.
+   */
+  function reloadAfterDrag() {
+    if (inFlight) reloadWanted = true;
+    else load(false);
+  }
+
   async function load(initial: boolean) {
     if (!initial && drag.active) {
       // An outside save of this job during a drag is read once the drag is
       // over (jobedits.ts rule 7); its review banner comes with it.
-      reloadWanted = true;
+      drag.defer("reload", reloadAfterDrag);
       return;
     }
     const gen = saveGen;
@@ -667,7 +677,7 @@
       if (!initial && drag.active) {
         // An outside save of this job during a drag waits for its end: the
         // drag is the only writer of the job meanwhile (jobedits.ts rule 7).
-        reloadWanted = true;
+        drag.defer("reload", reloadAfterDrag);
         return;
       }
       // Indices in an open menu refer to the old project.
@@ -1693,7 +1703,8 @@
       changed: (state) => {
         if (state === "armed") dragStart = { result, from: null };
         dragState = state;
-        // What waited for the end of the drag: an outside save of this job.
+        // A read that met a save of ours while the drag was open (the
+        // outside save itself waits in `drag.defer`).
         if (state === "idle" && reloadWanted && !inFlight) {
           reloadWanted = false;
           load(false);

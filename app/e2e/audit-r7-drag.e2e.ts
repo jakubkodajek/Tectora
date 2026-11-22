@@ -381,6 +381,28 @@ test.describe("round-7 audit: what is not the user's waits for the end of the dr
       await probe(app, page, id);
     });
 
+    // TEST-702: the drag ends without a drop (Escape, a press that never
+    // moved): the AI's save waits in DragSession.defer and is read then.
+    for (const end of ["Escape", "a press that never moved"] as const) {
+      test(`an AI save of this job while ${NAME[kind]} is dragged and the drag ends with ${end} is read then`, async ({ app, page, mcp }) => {
+        const { id, pre } = await stage(app, page, mcp, `AI ${end === "Escape" ? "Esc" : "stisk"} ${kind}`);
+        const a = await aim(page, kind);
+        await pressAt(page, a.at);
+        if (end === "Escape") await moveSteps(page, a, 1, 6);
+        await mcp.call("update_job", { id, notes: "AI during the drag", summary: "AI note." });
+        await page.waitForTimeout(900);
+        await expect(page.locator(".review")).toHaveCount(0);
+        if (end === "Escape") await page.keyboard.press("Escape");
+        await page.mouse.up();
+        await expect(page.locator(".review")).toBeVisible({ timeout: 6000 });
+        await app.saved();
+        const p = await loadProject(id);
+        expect(p.notes).toBe("AI during the drag");
+        expect(shape(p)).toBe(shape(pre));
+        await probe(app, page, id);
+      });
+    }
+
     test(`show_project of another job while ${NAME[kind]} is dragged only offers it: the editor stays and the drop lands where it was let go`, async ({ app, page, mcp }) => {
       const { id, pre } = await stage(app, page, mcp, `Sledování ${kind}`);
       const other = await createExample("hip", "Jiná zakázka");
