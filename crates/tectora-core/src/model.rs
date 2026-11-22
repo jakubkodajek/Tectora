@@ -717,17 +717,12 @@ pub(crate) const MARKER_SNAP: f64 = 0.005;
 /// one another in a line, or that run side by side apart (a second lap a
 /// centimetre inside the first is two walls, not one) are left alone.
 /// Direction markers (zero-length walls with a direction) are skipped on
-/// their own, not with the whole part (HUNT-201); a part with imported
-/// wall records is not checked, as in [`crossing_walls`], because those
-/// walls need not meet.
+/// their own, not with the whole part (HUNT-201). Parts with imported
+/// wall records are checked too (HUNT-302): of 3102 parts in 2670 DACAD
+/// files, none has walls on each other.
 pub fn overlapping_walls(part: &RoofPart) -> Vec<usize> {
     let n = part.edges.len();
-    if n < 4
-        || part
-            .edges
-            .iter()
-            .any(|e| e.source.is_some() || !finite_point(e.start))
-    {
+    if n < 4 || part.edges.iter().any(|e| !finite_point(e.start)) {
         return Vec::new();
     }
     // A marker a few millimetres long is a point to the core, which moves
@@ -1474,7 +1469,7 @@ mod tests {
         let mut one: Vec<EdgeDef> = r.iter().map(|&(x, y)| edge(x, y)).collect();
         one.insert(1, marker());
         assert!(overlapping_walls(&RoofPart::new("A", one)).is_empty());
-        // Imported wall records: not checked (DACAD's walls need not meet).
+        // Imported wall records do not switch the check off (HUNT-302).
         let mut sourced = twice.clone();
         sourced[2].source = Some(WallSource {
             id: 1,
@@ -1483,7 +1478,7 @@ mod tests {
             length: 12.0,
             angle_deg: 180.0,
         });
-        assert!(overlapping_walls(&RoofPart::new("A", sourced)).is_empty());
+        assert!(!overlapping_walls(&RoofPart::new("A", sourced)).is_empty());
         // A second lap a centimetre inside the first: walls side by side,
         // not on each other.
         let g = 0.01;
