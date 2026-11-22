@@ -6,7 +6,7 @@
   import { describeChange, describeFigure } from "./changes";
   import { relativeTime } from "./format";
   import { t } from "./i18n.svelte";
-  import { actorLabel, actorName, historyText, isFresh, live, liveText } from "./live.svelte";
+  import { actorLabel, actorName, historyText, isFresh, isRevert, live, liveText } from "./live.svelte";
   import { app as appSettings } from "./settings.svelte";
   import { changeRows, changeState, rowLabel } from "./settingschange";
   import type { ActivityItem, Change, Project, Recalculation } from "./types";
@@ -29,8 +29,12 @@
     activity: ActivityItem[];
     /** The engine's recalculation the job's stored result still is (core `Store::recalculation`), if any. */
     recalculation?: Recalculation | null;
-    /** Reverts the latest change, the entry at `ts` (the one the button is drawn on). */
-    onrevert: (ts: number) => void;
+    /**
+     * Reverts the latest change, the entry at `ts` (the one the button is
+     * drawn on). Without `ts` for an AI's own revert entry: the core steps
+     * over reverts to the change before them, as it always did.
+     */
+    onrevert: (ts?: number) => void;
     /** Puts the offer's own figures back in place of the recalculation logged at `ts`. */
     onrestore: (ts: number) => void;
     onconnect: () => void;
@@ -135,7 +139,7 @@
           {/if}
         {/if}
         {#if i === latest && ai}
-          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && onrevert(a.ts_ms)}><Icon name="undo" size={14} />{t("ai.revert")}</button>
+          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && onrevert(isRevert(a.summary) ? undefined : a.ts_ms)}><Icon name="undo" size={14} />{t("ai.revert")}</button>
         {:else if a.actor === ENGINE_ACTOR && recalculation?.entry_ts_ms === a.ts_ms}
           <!-- The offer's own figures back (owner decision 2026-11-22, UX-702d), on the recalculation the
                stored result still is, wherever it is in the history by now (UX-802): by this entry, and
