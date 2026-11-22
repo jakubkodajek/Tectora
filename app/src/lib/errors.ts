@@ -107,12 +107,12 @@ const KNOWN = new Set([
 /** Codes of the settings commands, with their messages under `settings.err.<code>`. */
 const SETTINGS_CODES = new Set(["not_absolute", "not_a_folder", "not_writable", "invalid_value", "io"]);
 
-/** A translated description of an error from `action`. */
 /** The core's detail says a file is not UTF-8 text (store.rs `read_text`), not that it is damaged. */
 export function notUtf8(detail: string | null | undefined): boolean {
   return /not UTF-8 text/.test(detail ?? "");
 }
 
+/** A translated description of an error from `action`. */
 export function describeError(e: unknown, action?: Action): Described {
   const err = toAppError(e);
   const code = KNOWN.has(err.code) ? err.code : "unknown";

@@ -896,10 +896,19 @@ pub const MAX_JOB_FILE: u64 = 64 * 1024 * 1024;
 /// instead of hanging or reading for ever, a larger file `too_large`
 /// (ARCH-204). For the library, the CLI and files opened from elsewhere.
 pub fn read_job_text(path: &Path) -> Result<String, FileError> {
+    #[cfg(test)]
+    JOB_READS.with(|n| n.set(n.get() + 1));
     job_text(
         read_regular(path, MAX_JOB_FILE)?,
         &path.display().to_string(),
     )
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Job files read by this thread ([`read_job_text`]), for tests of how
+    /// often a save reads the file (ARCH-504).
+    static JOB_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The bytes of a job file (`what` names it) as its text: a leading UTF-8
@@ -1741,7 +1750,7 @@ impl Store {
         };
         let id = id.unwrap_or_else(|| self.new_id(&project.name));
         let _lock = self.lock(&id)?;
-        self.write(&id, project)?;
+        self.write(&id, project, false)?;
         Ok(id)
     }
 
@@ -1771,15 +1780,23 @@ impl Store {
             Ok(_) | Err(StoreError::NotFound(_) | StoreError::Unreadable { .. }) => {}
             Err(e) => return Err(e),
         }
-        self.write(id, project)?;
+        // `load` above refused a newer file.
+        self.write(id, project, true)?;
         Ok(CheckedSave::Saved { id: id.to_string() })
     }
 
-    /// Writes the file; the caller holds the job's lock.
-    fn write(&self, id: &str, project: &Project) -> Result<(), StoreError> {
+    /// Writes the file; the caller holds the job's lock. A file saved by a
+    /// newer Tectora is refused: looked at here unless `checked`, when the
+    /// caller read the file under this lock already (`load` refuses it), so
+    /// a save reads the file once (audit 2026-11-22 ARCH-504 item 1).
+    fn write(&self, id: &str, project: &Project, checked: bool) -> Result<(), StoreError> {
         let path = self.path(id)?;
         self.library_present()?;
-        if let Some(version) = read_job_text(&path).ok().and_then(|t| newer_format(&t)) {
+        if let Some(version) = (!checked)
+            .then(|| read_job_text(&path).ok())
+            .flatten()
+            .and_then(|t| newer_format(&t))
+        {
             return Err(StoreError::NewerFormat {
                 id: id.to_string(),
                 version,
@@ -1887,9 +1904,9 @@ impl Store {
         undid_from: Option<u64>,
     ) -> Result<(), StoreError> {
         // A newer file was refused before: by `load` under this lock for an
-        // existing job, and a new id has no file. `write` checks again and
-        // the entry is then taken out (ARCH-403 item 3: the job file was
-        // read three times per save).
+        // existing job, and a new id has no file, so `write` does not read
+        // the file again (ARCH-403 item 3, ARCH-504 item 1: the job file was
+        // read three, then two times per save).
         // Log first: the app reacts to the project file and then reads the
         // log. When the file then cannot be written, the entry is taken out
         // again: it stood for a change that never happened, shown as pending
@@ -1920,7 +1937,7 @@ impl Store {
             },
             log,
         )?;
-        self.write(id, project).inspect_err(|_| {
+        self.write(id, project, true).inspect_err(|_| {
             let _ = undo.apply();
         })?;
         // Trimmed only once the change is saved, so a failed write takes
@@ -3161,6 +3178,52 @@ mod tests {
         let _ = fs::remove_dir_all(&outside);
     }
 
+    /// Audit 2026-11-22 ARCH-504 item 1 (ARCH-403 item 3): a checked save
+    /// reads the job file once, under its lock, not once more to write it.
+    #[test]
+    fn a_checked_save_reads_the_job_file_once() {
+        let store = temp_store("reads");
+        let project = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &project, USER_ACTOR, "Made.").unwrap();
+        let reads = |f: &dyn Fn()| {
+            JOB_READS.with(|n| n.set(0));
+            f();
+            JOB_READS.with(|n| n.get())
+        };
+        let mut p = project.clone();
+        p.notes = "one".into();
+        let n = reads(&|| {
+            store
+                .save_as_checked(&id, &p, "claude", "One.", Some(&project))
+                .unwrap();
+        });
+        assert_eq!(n, 1, "a logged save");
+        let mut q = p.clone();
+        q.notes = "two".into();
+        let n = reads(&|| {
+            store.save_checked(&id, &q, &p).unwrap();
+        });
+        assert_eq!(n, 1, "the app's save");
+        // A newer file is still refused, also by a save that does not load.
+        let newer = q.to_json().unwrap().replacen(
+            &format!("\"schema_version\": {}", crate::model::SCHEMA_VERSION),
+            "\"schema_version\": 999",
+            1,
+        );
+        assert!(newer.contains("999"));
+        fs::write(store.path(&id).unwrap(), &newer).unwrap();
+        assert_eq!(
+            store.save(Some(id.clone()), &q).unwrap_err().code(),
+            "newer_format"
+        );
+        assert_eq!(
+            store.save_checked(&id, &q, &q).unwrap_err().code(),
+            "newer_format"
+        );
+        assert_eq!(fs::read_to_string(store.path(&id).unwrap()).unwrap(), newer);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
     /// Audit 2026-11-22 HUNT-503: a link in place of one of the library's
     /// own folders (`.activity`, `.files`, `.files/<id>`, `.trash`) is
     /// refused with `foreign_entry`; nothing is written outside the
@@ -3811,7 +3874,7 @@ mod tests {
         // Meanwhile the holder writes: the waiting save must see it.
         let mut ai = base.clone();
         ai.parts[0].edges[2].pitch_deg = 41.0;
-        store.write(&id, &ai).unwrap();
+        store.write(&id, &ai, false).unwrap();
         drop(held);
         assert!(matches!(t.join().unwrap(), CheckedSave::Conflict { .. }));
         assert_eq!(store.load(&id).unwrap(), ai);
