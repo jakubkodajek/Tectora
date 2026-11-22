@@ -15,6 +15,7 @@
   import { actorLabel, actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import { notUtf8, type Action } from "./errors";
   import { fold, searchWords } from "./fold";
+  import { foreignSentences, type Foreign } from "./foreign";
   import { dismiss, notify, notifyError } from "./notify.svelte";
   import UpdateBanner from "./UpdateBanner.svelte";
   import { prefs, savePrefs } from "./settings.svelte";
@@ -42,8 +43,8 @@
     onchanged: () => void;
     /** Project files in the folder that could not be read. */
     broken?: BrokenFile[];
-    /** Links or files in place of the library's own folders (UX-601). */
-    foreign?: BrokenFile[];
+    /** What in the library's own folders blocks work (UX-601, ARCH-701). */
+    foreign?: Foreign[];
     onconnect: () => void;
     onsettings: () => void;
   } = $props();
@@ -138,6 +139,19 @@
 
   let showBroken = $state(false);
   let showForeign = $state(false);
+  /** A job's name for its id, for the note about one job's entry. */
+  const jobName = (id: string) => projects.find((p) => p.id === id)?.name || id;
+  /**
+   * The list again when the window gets the focus back: the user may have
+   * moved a blocking entry away in the file manager, and the folder watcher
+   * only sees job files (audit 2026-11-22 UX-701).
+   */
+  let focusedAt = 0;
+  function onwindowfocus() {
+    if (Date.now() - focusedAt < 1000) return;
+    focusedAt = Date.now();
+    onchanged();
+  }
 
   async function run<T>(action: Action, fn: () => Promise<T>): Promise<T | undefined> {
     try {
@@ -255,6 +269,8 @@
   ];
 </script>
 
+<svelte:window onfocus={onwindowfocus} />
+
 <div class="page">
   <header>
     <div class="brand"><Logo size={30} /><span>Tectora</span></div>
@@ -362,7 +378,7 @@
             <i class="dot"></i>
             <div class="broken-text">
               <strong>{t("lib.foreign", { n: foreign.length })}</strong>
-              <span>{t("lib.foreignHint")}</span>
+              {#each foreignSentences(foreign, jobName) as line (line)}<span data-testid="library-foreign-line">{line}</span>{/each}
               {#if showForeign}
                 <ul>
                   {#each foreign as f (f.id)}

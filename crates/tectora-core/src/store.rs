@@ -705,6 +705,30 @@ pub struct BrokenFile {
     pub detail: String,
 }
 
+/// Something in the library's own folders that blocks work
+/// ([`Store::foreign_entries`]).
+#[derive(Debug, Clone, Serialize)]
+pub struct ForeignItem {
+    /// Its path in the library, e.g. `.trash` or `.activity/dum.lock`.
+    pub id: String,
+    /// `foreign_entry`.
+    pub code: &'static str,
+    /// English, with the full path, for the details view.
+    pub detail: String,
+    /// What it blocks: `activity` (a link or file in place of the job
+    /// histories: no job can be saved), `files` (in place of the attached
+    /// files: no new job, attachment, copy or restore), `trash` (no delete
+    /// or restore), `exports` (no roof sheet or list export by the AI),
+    /// `job_files` (in place of one job's files folder: no file can be
+    /// attached to that job and it cannot be copied), `lock` (in place of one
+    /// job's lock file: that job cannot be saved), `new_lock` (in place of
+    /// the lock for new jobs: no new job).
+    pub kind: &'static str,
+    /// The job it is about, for `job_files` and `lock`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+}
+
 /// Why work with a file other than the project file failed: an attachment,
 /// a job bundle, an imported file. Like [`StoreError`] it has a stable
 /// `code` the app translates; `detail` is English for the CLI, the MCP
@@ -1370,7 +1394,7 @@ fn replace_odd_lock(path: &Path) -> std::io::Result<()> {
             if fs::remove_dir(path).is_err() && is_own_folder(path) {
                 return Err(foreign(
                     path,
-                    "a folder with files in it stands where the lock file belongs, so saves could not be locked; remove it (the change was not saved)",
+                    "a folder with files in it stands where the lock file belongs, so saves could not be locked; it is not Tectora's: move it out of the jobs folder (the change was not saved)",
                 ));
             }
         }
@@ -1711,48 +1735,95 @@ impl Store {
         self.scan().map(|(ok, _)| ok).unwrap_or_default()
     }
 
-    /// The library's own folders (`.activity`, `.files`, `.trash`,
-    /// `exports`, and each job's folder in `.files`) that a link or a file
-    /// stands in place of, for the library screen to name before the user
-    /// edits a job that then cannot be saved (audit 2026-11-22 UX-601).
-    /// Each with `id` the folder's path in the library, `code`
-    /// `foreign_entry` and the detail of the refusal. A few `lstat` calls
-    /// and one listing of `.files`.
-    pub fn foreign_entries(&self) -> Vec<BrokenFile> {
+    /// What in the library's own folders really blocks work, for the
+    /// library screen to name before the user edits a job that then cannot
+    /// be saved (audit 2026-11-22 UX-601, ARCH-701): a link or a file in
+    /// place of `.activity`, `.files`, `.trash` or `exports`; a link in
+    /// `.files`, or a file in place of an existing job's folder there; and
+    /// in `.activity` a folder with files in place of a lock file (every
+    /// save of that job is refused) or anything but a file in place of a
+    /// lock's `.fix` file. A plain file in `.files` that is no job's folder
+    /// (`Thumbs.db`, `desktop.ini`, a drawing dropped there) blocks nothing
+    /// and is not named. Each with `id` its path in the library, `code`
+    /// `foreign_entry`, the detail, and `kind` (see [`ForeignItem`]); at
+    /// most 20 of `.files` and 20 of `.activity`, sorted. A few `lstat`
+    /// calls and one listing of `.files` and of `.activity`.
+    pub fn foreign_entries(&self) -> Vec<ForeignItem> {
         let mut found = Vec::new();
-        let mut check = |rel: String| {
+        let mut check = |rel: String, kind: &'static str, job: Option<String>| {
             if let Err(e) = not_foreign(&self.dir.join(&rel))
                 && is_foreign(&e)
             {
-                found.push(BrokenFile {
+                found.push(ForeignItem {
                     id: rel,
                     code: "foreign_entry",
                     detail: e.to_string(),
+                    kind,
+                    job,
                 });
             }
         };
-        for dir in [
-            ACTIVITY_DIR,
-            FILES_DIR,
-            TRASH_DIR,
-            crate::bundle::EXPORTS_DIR,
+        for (dir, kind) in [
+            (ACTIVITY_DIR, "activity"),
+            (FILES_DIR, "files"),
+            (TRASH_DIR, "trash"),
+            (crate::bundle::EXPORTS_DIR, "exports"),
         ] {
-            check(dir.to_string());
+            check(dir.to_string(), kind, None);
         }
-        let files = self.dir.join(FILES_DIR);
-        if is_own_folder(&files) {
-            let mut linked: Vec<String> = fs::read_dir(&files)
+        let listed = |dir: &Path| -> Vec<(String, fs::FileType)> {
+            let mut v: Vec<(String, fs::FileType)> = fs::read_dir(dir)
                 .into_iter()
                 .flatten()
                 .flatten()
-                .filter(|e| e.file_type().is_ok_and(|t| !t.is_dir()))
-                .filter_map(|e| e.file_name().into_string().ok())
-                .filter(|n| !n.starts_with('.'))
+                .filter_map(|e| Some((e.file_name().into_string().ok()?, e.file_type().ok()?)))
                 .collect();
-            linked.sort();
-            for name in linked.into_iter().take(20) {
-                check(format!("{FILES_DIR}/{name}"));
+            v.sort_by(|a, b| a.0.cmp(&b.0));
+            v
+        };
+        let files = self.dir.join(FILES_DIR);
+        if is_own_folder(&files) {
+            let blocking = listed(&files).into_iter().filter(|(name, t)| {
+                !name.starts_with('.')
+                    && (t.is_symlink()
+                        || (!t.is_dir()
+                            && self.path(name).is_ok_and(|p| {
+                                fs::symlink_metadata(p).is_ok_and(|m| m.is_file())
+                            })))
+            });
+            for (name, _) in blocking.take(20) {
+                check(format!("{FILES_DIR}/{name}"), "job_files", Some(name));
             }
+        }
+        let activity = self.activity_dir();
+        if is_own_folder(&activity) {
+            let odd_locks = listed(&activity).into_iter().filter_map(|(name, t)| {
+                let path = activity.join(&name);
+                let what = if name.ends_with(".lock") && t.is_dir() {
+                    // An empty one is replaced by the next save.
+                    fs::read_dir(&path).ok()?.next()?.ok()?;
+                    "a folder with files in it stands where the lock file belongs, so every save of this job is refused; it is not Tectora's: move it out of the jobs folder"
+                } else if name.ends_with(".lock.fix") && !t.is_file() {
+                    "a link, folder or pipe stands where Tectora keeps a lock's helper file, so saves of this job can be refused; it is not Tectora's: move it out of the jobs folder"
+                } else {
+                    return None;
+                };
+                let base = name.trim_end_matches(".fix").trim_end_matches(".lock");
+                let (kind, job) = if base == ".new" {
+                    ("new_lock", None)
+                } else {
+                    self.path(base).ok()?;
+                    ("lock", Some(base.to_string()))
+                };
+                Some(ForeignItem {
+                    id: format!("{ACTIVITY_DIR}/{name}"),
+                    code: "foreign_entry",
+                    detail: format!("{}: {what}", path.display()),
+                    kind,
+                    job,
+                })
+            });
+            found.extend(odd_locks.take(20));
         }
         found
     }
@@ -3976,6 +4047,106 @@ mod tests {
             found[0].detail
         );
         let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 ARCH-701 / TEST-709: only what blocks work is
+    /// named, each with what it blocks; a stray file in `.files` is not,
+    /// a lock folder with files is.
+    #[test]
+    fn the_library_names_what_blocks_work_and_no_stray_file() {
+        let store = temp_store("foreign-kinds");
+        let project = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &project, USER_ACTOR, "Made.").unwrap();
+        let other = store.save_as(None, &project, USER_ACTOR, "Made.").unwrap();
+        store.add_attachment(&id, "plan.pdf", b"%PDF").unwrap();
+        let files = store.dir.join(FILES_DIR);
+        for stray in ["Thumbs.db", "desktop.ini", "stray-plan.pdf", "no-such-job"] {
+            fs::write(files.join(stray), "x").unwrap();
+        }
+        assert!(store.foreign_entries().is_empty(), "{:?}", store.foreign_entries());
+        // A file in place of an existing job's folder blocks its files.
+        fs::write(files.join(&other), "x").unwrap();
+        // An empty lock folder is replaced by the next save: not named.
+        let activity = store.activity_dir();
+        for name in [format!("{other}.lock"), format!("{id}.lock"), ".new.lock".into()] {
+            let _ = fs::remove_file(activity.join(name));
+        }
+        fs::create_dir_all(activity.join(format!("{other}.lock"))).unwrap();
+        fs::create_dir_all(activity.join(format!("{id}.lock"))).unwrap();
+        fs::write(activity.join(format!("{id}.lock")).join("x"), "x").unwrap();
+        fs::create_dir_all(activity.join(".new.lock").join("y")).unwrap();
+        fs::create_dir_all(activity.join(format!("{other}.lock.fix"))).unwrap();
+        fs::write(store.dir.join(TRASH_DIR), "x").unwrap();
+        let found = store.foreign_entries();
+        let got: Vec<(&str, &str, Option<&str>)> = found
+            .iter()
+            .map(|f| (f.id.as_str(), f.kind, f.job.as_deref()))
+            .collect();
+        let (lock, fix) = (
+            format!("{ACTIVITY_DIR}/{id}.lock"),
+            format!("{ACTIVITY_DIR}/{other}.lock.fix"),
+        );
+        let in_files = format!("{FILES_DIR}/{other}");
+        let mut want = vec![
+            (TRASH_DIR, "trash", None),
+            (in_files.as_str(), "job_files", Some(other.as_str())),
+            (".activity/.new.lock", "new_lock", None),
+            (lock.as_str(), "lock", Some(id.as_str())),
+            (fix.as_str(), "lock", Some(other.as_str())),
+        ];
+        want[2..].sort();
+        assert_eq!(got, want);
+        assert!(found.iter().all(|f| f.code == "foreign_entry"));
+        let lock_detail = &found.iter().find(|f| f.id == lock).unwrap().detail;
+        assert!(
+            lock_detail.contains("every save of this job is refused")
+                && lock_detail.contains("move it out"),
+            "{lock_detail}"
+        );
+        // It is what the save refuses, with the same advice.
+        let e = store.save_as(Some(id.clone()), &project, USER_ACTOR, "Again.");
+        let detail = e.unwrap_err().detail().unwrap_or_default().to_string();
+        assert!(detail.contains("move it out"), "{detail}");
+        let _ = fs::remove_dir_all(&store.dir);
+
+        // A file in place of `.files` itself.
+        let store = temp_store("foreign-files");
+        store.save_as(None, &project, USER_ACTOR, "Made.").unwrap();
+        let _ = fs::remove_dir_all(store.dir.join(FILES_DIR));
+        fs::write(store.dir.join(FILES_DIR), "x").unwrap();
+        let found = store.foreign_entries();
+        let got: Vec<(&str, &str)> = found.iter().map(|f| (f.id.as_str(), f.kind)).collect();
+        assert_eq!(got, vec![(FILES_DIR, "files")]);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// TEST-709: a link at `.trash` and at most 20 links in `.files`, sorted.
+    #[cfg(unix)]
+    #[test]
+    fn the_library_names_links_at_the_trash_and_twenty_in_files() {
+        let store = temp_store("foreign-links");
+        let project = examples::find("hip").unwrap().project();
+        store.save_as(None, &project, USER_ACTOR, "Made.").unwrap();
+        let out = std::env::temp_dir().join(format!("tectora-foreign-links-{}", now_ms()));
+        fs::create_dir_all(&out).unwrap();
+        let _ = fs::remove_dir_all(store.trash_dir());
+        std::os::unix::fs::symlink(&out, store.trash_dir()).unwrap();
+        let files = store.dir.join(FILES_DIR);
+        fs::create_dir_all(&files).unwrap();
+        for n in 0..25 {
+            std::os::unix::fs::symlink(&out, files.join(format!("link-{n:02}"))).unwrap();
+        }
+        // Hidden names are left to the system.
+        std::os::unix::fs::symlink(&out, files.join(".hidden")).unwrap();
+        let found = store.foreign_entries();
+        assert_eq!(found[0].id, TRASH_DIR);
+        assert_eq!(found[0].kind, "trash");
+        let linked: Vec<String> = found[1..].iter().map(|f| f.id.clone()).collect();
+        let want: Vec<String> = (0..20).map(|n| format!("{FILES_DIR}/link-{n:02}")).collect();
+        assert_eq!(linked, want);
+        assert!(found[1..].iter().all(|f| f.kind == "job_files"));
+        let _ = fs::remove_dir_all(&store.dir);
+        let _ = fs::remove_dir_all(&out);
     }
 
     /// Audit 2026-11-22 ARCH-602: a copy whose files cannot all be copied

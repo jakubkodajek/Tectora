@@ -371,8 +371,18 @@ export interface BrokenFile {
 export interface Library {
   projects: ProjectSummary[];
   broken: BrokenFile[];
-  /** Links or files in place of the library's own folders (`id` is the folder). */
-  foreign?: BrokenFile[];
+  /** What in the library's own folders blocks work (`id` is its path in the library). */
+  foreign?: ForeignItem[];
+}
+
+/** What a [`ForeignItem`] blocks (store.rs `ForeignItem::kind`). */
+export type ForeignKind = "activity" | "files" | "trash" | "exports" | "job_files" | "lock" | "new_lock";
+
+/** A link, file or folder in the library's own folders that blocks work (store.rs `foreign_entries`). */
+export interface ForeignItem extends BrokenFile {
+  kind: ForeignKind;
+  /** The job it is about (`job_files`, `lock`). */
+  job?: string;
 }
 
 export interface Change {

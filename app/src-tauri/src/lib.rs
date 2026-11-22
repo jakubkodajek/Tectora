@@ -66,8 +66,9 @@ struct Library {
     projects: Vec<store::ProjectSummary>,
     /// Project files in the folder that could not be read.
     broken: Vec<BrokenFile>,
-    /// Links or files in place of the library's own folders (UX-601).
-    foreign: Vec<BrokenFile>,
+    /// What in the library's own folders blocks work, with its `kind`
+    /// (UX-601, ARCH-701).
+    foreign: Vec<store::ForeignItem>,
 }
 
 /// Runs off the main thread: summarising computes every roof, and the
