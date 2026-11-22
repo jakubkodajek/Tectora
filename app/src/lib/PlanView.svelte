@@ -533,7 +533,7 @@
     // A shape's press that bubbles on to the plan's is the same press.
     if (longHeld && longHeld.id === e.pointerId && longHeld.t === e.timeStamp) return;
     noLongPress();
-    if (e.pointerType === "mouse" || e.button !== 0 || placing || drawing) return;
+    if ((e.pointerType !== "touch" && e.pointerType !== "pen") || e.button !== 0 || placing || drawing) return;
     const target: PlanTarget =
       at.on === "plan" ? { type: "canvas" }
       : at.on === "item" ? { type: "item", item: at.item }
