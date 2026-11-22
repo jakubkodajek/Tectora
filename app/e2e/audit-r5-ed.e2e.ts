@@ -55,6 +55,25 @@ async function slow(page: Page, cmd: string, ms: number, on: () => boolean = () 
   });
 }
 
+/**
+ * Holds the bridge's answers to `cmd` until `gate()` is true (the pointer
+ * is down), then `ms` more; `times.answered` is when the held answer went
+ * back (TEST-505: the answer must really land during the drag).
+ */
+async function holdUntil(page: Page, cmd: string, gate: () => boolean, ms: number, times: { answered?: number }) {
+  let first = true;
+  await page.route(new RegExp(`/${cmd}$`), async (r: Route) => {
+    if (first) {
+      first = false;
+      while (!gate()) await new Promise((res) => setTimeout(res, 20));
+      await new Promise((res) => setTimeout(res, ms));
+      const resp = await r.fetch();
+      times.answered = Date.now();
+      await r.fulfill({ response: resp });
+    } else await r.continue();
+  });
+}
+
 /** Every toast seen from now on, as `kind: text` (toasts close themselves). */
 async function watchToasts(page: Page): Promise<() => Promise<string[]>> {
   await page.evaluate(() => {
@@ -111,10 +130,15 @@ async function selectChimney(page: Page, n = 1) {
   return ob;
 }
 
-/** Presses on `el`, moves a little, holds the pointer still for `stillMs`, then drags on by `dx`, `dy` and lets go. */
-async function dragHoldingStill(page: Page, at: { x: number; y: number }, dx: number, dy: number, stillMs: number, during: () => void = () => {}) {
+/**
+ * Presses on `el`, moves a little, holds the pointer still for `stillMs`,
+ * then drags on by `dx`, `dy` and lets go. `times.down` / `times.up` are
+ * when the pointer went down and up.
+ */
+async function dragHoldingStill(page: Page, at: { x: number; y: number }, dx: number, dy: number, stillMs: number, during: () => void = () => {}, times: { down?: number; up?: number } = {}) {
   await page.mouse.move(at.x, at.y);
   await page.mouse.down();
+  times.down = Date.now();
   await page.mouse.move(at.x + dx * 0.1, at.y + dy * 0.1, { steps: 2 });
   await page.mouse.move(at.x + dx * 0.2, at.y + dy * 0.2, { steps: 2 });
   await page.waitForTimeout(stillMs);
@@ -124,6 +148,7 @@ async function dragHoldingStill(page: Page, at: { x: number; y: number }, dx: nu
     await page.waitForTimeout(40);
   }
   await page.mouse.up();
+  times.up = Date.now();
 }
 
 // With TECTORA_SHOTS=<folder>/ and TECTORA_SHOTS_TAG=before|after every test
@@ -143,21 +168,26 @@ test.describe("round-5 audit: an edit answered during a drag", () => {
     await openAfterAi(app, "Tah vikýře");
     const db = await selectDormer(page, 2);
     const toasts = await watchToasts(page);
-    let delay = true;
-    await slow(page, "check_dormer", 1500, () => delay);
+    // The width's check is answered only once the pointer is down and held
+    // still: the answer lands during the drag, every run (TEST-505).
+    const times: { answered?: number; down?: number; up?: number } = {};
+    await holdUntil(page, "check_dormer", () => times.down !== undefined, 1000, times);
     await typeInto(page, db.getByLabel(cs("dormer.width")), "2");
     await page.keyboard.press("Enter");
     await page.waitForTimeout(200);
     // Dormer 3 (front 8.5 to 10 m at y = 1.6, into the roof): the answer
     // comes while the pointer is held still, and more drag steps follow.
-    await dragHoldingStill(page, await planXY(page, 9.25, 2.1), 0, 60, 4000, () => (delay = false));
-    const p = await waitForProject(id, (p) => dormerWidth(p.dormers[1]) === 2 && p.dormers[2].edges[0].start.y !== 1.6, 12_000);
+    await dragHoldingStill(page, await planXY(page, 9.25, 2.1), 0, 60, 4000, () => {}, times);
+    expect(times.answered, "the core answered while the pointer was down").toBeGreaterThan(times.down!);
+    expect(times.answered!).toBeLessThan(times.up!);
+    // The end of the drag (60 px down is past y = 1 m), not a file saved
+    // half way: no autosave runs during a drag any more.
+    const p = await waitForProject(id, (p) => dormerWidth(p.dormers[1]) === 2 && p.dormers[2].edges[0].start.y < 1, 12_000);
     await page.waitForTimeout(1500);
     await app.saved();
     const q = await loadProject(id);
     expect(q.dormers.map(dormerWidth)).toEqual([1.5, 2, 1.5]);
     expect(q.dormers[2].edges[0].start.y).toBe(p.dormers[2].edges[0].start.y);
-    expect(q.dormers[2].edges[0].start.y).not.toBe(1.6);
     expect((await toasts()).filter((t) => !t.startsWith("info"))).toEqual([]);
   });
 
@@ -169,13 +199,17 @@ test.describe("round-5 audit: an edit answered during a drag", () => {
     const def = bar(page, "def.title");
     await selectWall(page, 0);
     const toasts = await watchToasts(page);
-    let delay = true;
-    await slow(page, "set_part_height", 1500, () => delay);
+    // Answered only once the pointer is down: without the drag pause the
+    // drop would write the old height back (TEST-505, mutant E5).
+    const times: { answered?: number; down?: number; up?: number } = {};
+    await holdUntil(page, "set_part_height", () => times.down !== undefined, 1000, times);
     await typeInto(page, def.getByTestId("building-height"), "4");
     await page.keyboard.press("Enter");
     await page.waitForTimeout(200);
     // On the front face, off the ridge line.
-    await dragHoldingStill(page, await planXY(page, 3, 2), 80, 0, 4000, () => (delay = false));
+    await dragHoldingStill(page, await planXY(page, 3, 2), 80, 0, 4000, () => {}, times);
+    expect(times.answered, "the core answered while the pointer was down").toBeGreaterThan(times.down!);
+    expect(times.answered!).toBeLessThan(times.up!);
     await waitForProject(id, (p) => p.parts[0].edges[0].start.x !== x0 && p.parts[0].edges[0].eave_height !== before.parts[0].edges[0].eave_height, 12_000);
     await page.waitForTimeout(1500);
     await app.saved();
@@ -262,6 +296,8 @@ test.describe("round-5 audit: refusals are visible, own deletes are not refusals
   test("Delete corner answered after an AI save of the job data deletes the corner (UI-401)", async ({ app, page, mcp }) => {
     const id = await createExample("gable", "Roh a AI");
     await openEditor(app, "Roh a AI");
+    const corners = (p: any) => p.parts[0].edges.map((e: any) => [e.start.x, e.start.y]);
+    const before = corners(await loadProject(id));
     await selectWall(page, 1);
     const toasts = await watchToasts(page);
     // Tauri's confirm is async, and the user takes a moment to answer.
@@ -274,6 +310,8 @@ test.describe("round-5 audit: refusals are visible, own deletes are not refusals
     await mcp.call("update_job", { id, number: "R5-del", summary: "AI sets the order number." });
     const p = await waitForProject(id, (p) => p.parts[0].edges.length === 3, 12_000);
     expect(p.job.number).toBe("R5-del");
+    // The corner asked about (the start of wall 2) is the one gone, not another (TEST-505, E3).
+    expect(corners(p)).toEqual(before.filter((_: unknown, i: number) => i !== 1));
     expect((await toasts()).filter((t) => t.includes(cs("editor.actionStale")))).toEqual([]);
   });
 
@@ -358,13 +396,26 @@ test.describe("round-5 audit: fields and focus", () => {
     await page.locator("aside .tabs").getByRole("tab", { name: cs("dock.job") }).click();
     const select = page.locator("aside .job select");
     await select.focus();
+    // Every status the select chose, also one it took back at once.
+    await select.evaluate((el) => {
+      (window as any).__chosen = [];
+      el.addEventListener("input", () => (window as any).__chosen.push((el as HTMLSelectElement).value), true);
+    });
     await page.keyboard.press("ArrowDown");
     await page.waitForTimeout(300);
     expect(await page.evaluate(() => document.activeElement?.tagName)).toBe("SELECT");
+    // While the first status is stored, a second key chooses nothing (TEST-505, E8).
+    await expect(select).toHaveAttribute("aria-disabled", "true");
+    await page.keyboard.press("ArrowDown");
+    // The second key chose nothing, not even for a moment.
+    expect(await select.inputValue()).toBe("offer");
+    expect(await page.evaluate(() => (window as any).__chosen)).toEqual(["offer"]);
     await waitForProject(id, (p) => p.job.status === "offer" && !!p.result_snapshot, 10_000);
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(1200);
     expect(await page.evaluate(() => document.activeElement?.tagName)).toBe("SELECT");
     await expect(select).not.toHaveAttribute("aria-disabled", "true");
+    await expect(select).toHaveValue("offer");
+    expect((await loadProject(id)).job.status).toBe("offer");
   });
 
   test("the calculation helper stays open with its values when the core refuses it (ERR-055)", async ({ app, page }) => {
