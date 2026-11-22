@@ -200,6 +200,12 @@ fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fa
                 .map(|p| to_json(p).unwrap_or(Value::Null))
                 .map_err(Fail::from),
         ),
+        // As the app: what reading the job left out of it; empty when it
+        // cannot be read (load_project says why).
+        "load_warnings" => Some(Ok(store
+            .load_warnings(&id)
+            .map(|ws| to_json(ws).unwrap_or(Value::Null))
+            .unwrap_or_else(|_| json!([])))),
         // As the app: the change log's summary when the stored result was
         // recalculated, else null; an error is logged, the job still opens.
         "refresh_stored_result" => Some(Ok(match store.refresh_result(&id) {

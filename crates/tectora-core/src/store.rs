@@ -896,6 +896,42 @@ fn write_atomic_bytes(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Something reading a job left out of it ([`Store::load_warnings`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LoadWarning {
+    /// `result_dropped`: a stored result with an impossible time.
+    pub code: &'static str,
+    pub detail: String,
+}
+
+/// Whether `a` and `b` are the same job for a JavaScript client: equal as
+/// JSON, where two numbers are equal when their f64 values are (`1.0` and
+/// `1`, `-0.0` and `0`, `1e3` and `1000`, 2^53 + 1 and 2^53). Only for
+/// [`Store::save_checked`], whose base came through the app (HUNT-804);
+/// MCP's checked save compares exactly.
+fn same_for_js(a: &Project, b: &Project) -> bool {
+    fn same(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+        use serde_json::Value as V;
+        match (a, b) {
+            (V::Number(x), V::Number(y)) => x == y || x.as_f64() == y.as_f64(),
+            (V::Array(x), V::Array(y)) => {
+                x.len() == y.len() && x.iter().zip(y).all(|(x, y)| same(x, y))
+            }
+            (V::Object(x), V::Object(y)) => {
+                x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same(v, w)))
+            }
+            _ => a == b,
+        }
+    }
+    if a == b {
+        return true;
+    }
+    match (serde_json::to_value(a), serde_json::to_value(b)) {
+        (Ok(x), Ok(y)) => same(&x, &y),
+        _ => false,
+    }
+}
+
 /// What [`Store::save_checked`] and [`Store::save_as_checked`] did: saved,
 /// or found the file changed since the caller's base and left it alone.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1964,6 +2000,26 @@ impl Store {
     }
 
     pub fn load(&self, id: &str) -> Result<Project, StoreError> {
+        self.load_noted(id).map(|(p, _)| p)
+    }
+
+    /// What reading job `id` left out of it, for the app to say when it
+    /// opens the job: a stored result with an impossible time
+    /// (`result_dropped`, HUNT-802). Empty when nothing was left out; an
+    /// error when the job cannot be read at all, as [`Store::load`].
+    pub fn load_warnings(&self, id: &str) -> Result<Vec<LoadWarning>, StoreError> {
+        let (_, dropped) = self.load_noted(id)?;
+        Ok(dropped
+            .map(|detail| LoadWarning {
+                code: "result_dropped",
+                detail,
+            })
+            .into_iter()
+            .collect())
+    }
+
+    /// [`Store::load`] that also says why a stored result was dropped.
+    fn load_noted(&self, id: &str) -> Result<(Project, Option<String>), StoreError> {
         let path = self.path(id)?;
         // Bounded, and never blocked by a pipe or a device named like a
         // job (ARCH-204).
@@ -1997,10 +2053,13 @@ impl Store {
                 max: crate::model::SCHEMA_VERSION,
             });
         }
-        let project = Project::from_json(&text).map_err(|e| StoreError::Unreadable {
+        let mut project = Project::from_json(&text).map_err(|e| StoreError::Unreadable {
             id: id.to_string(),
             detail: e.to_string(),
         })?;
+        // A stored result with an impossible time is left out, the job
+        // opens (HUNT-802); the file keeps it until the next save.
+        let dropped = crate::snapshot::drop_impossible(&mut project);
         // A stored result over its bound is not handed on: 200 000 line
         // codes froze the editor and made every MCP read 23 MB (ARCH-303).
         if let Some(why) = project
@@ -2013,7 +2072,7 @@ impl Store {
                 detail: why,
             });
         }
-        Ok(project)
+        Ok((project, dropped))
     }
 
     /// Picks an unused id based on the project name: no job file, attached
@@ -2145,6 +2204,11 @@ impl Store {
     /// file, which every save of every process (app, MCP server, CLI) takes.
     /// A missing or damaged file is written (repaired with the editor's
     /// copy, ERR-018); one saved by a newer Tectora is refused.
+    ///
+    /// The base went through the app's `JSON.parse` / `JSON.stringify`,
+    /// which keeps every number as an f64: numbers are compared that way
+    /// ([`same_for_js`]), or a file with `"x": 1.0` in an unknown key could
+    /// never be saved from the app (HUNT-804).
     pub fn save_checked(
         &self,
         id: &str,
@@ -2154,7 +2218,7 @@ impl Store {
         self.path(id)?;
         let _lock = self.lock(id)?;
         match self.load(id) {
-            Ok(current) if current != *base => {
+            Ok(current) if !same_for_js(&current, base) => {
                 return Ok(CheckedSave::Conflict {
                     current: Box::new(current),
                 });

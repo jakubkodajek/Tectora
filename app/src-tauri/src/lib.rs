@@ -229,6 +229,22 @@ fn load_project(state: State<AppState>, id: String) -> CmdResult<Project> {
     guard(|| Ok(state.store().load(&id)?))
 }
 
+/// What reading the job left out of it, for the editor to say when it
+/// opens the job: a stored result with an impossible time (HUNT-802).
+/// Empty when the job cannot be read; `load_project` says why.
+#[tauri::command(async)]
+fn load_warnings(state: State<AppState>, id: String) -> Vec<AppError> {
+    state
+        .store()
+        .load_warnings(&id)
+        .map(|ws| {
+            ws.into_iter()
+                .map(|w| AppError::new(w.code).detail(w.detail))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Recalculates the job's stored result where an older engine stored it
 /// (Jakub's decision 2026-11-21; the change log keeps the old figures),
 /// before the editor loads the job. Returns the change log's summary when
@@ -1160,6 +1176,7 @@ pub fn run() {
             startup_warnings,
             take_open_errors,
             load_project,
+            load_warnings,
             refresh_stored_result,
             save_project,
             save_project_checked,

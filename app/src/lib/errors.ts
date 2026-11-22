@@ -102,6 +102,7 @@ const KNOWN = new Set([
   "no_building",
   "figures_too_large",
   "settings_unreadable",
+  "result_dropped",
   "refused",
 ]);
 

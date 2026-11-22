@@ -33,7 +33,7 @@
   import { keptSelection } from "./selection";
   import { fitlabels } from "./fitlabels";
   import { describeCalcError, describeError, describeProblem, toAppError, type Described } from "./errors";
-  import { info, notify, notifyError, notifyRefusal } from "./notify.svelte";
+  import { info, notify, notifyError, notifyRefusal, notifyWarning } from "./notify.svelte";
   import { nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, parseDormer, roofHeightAt, type DormerParams } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
@@ -779,6 +779,12 @@
   onMount(() => {
     api.projectsDir().then((d) => (libraryDir = d), () => {});
     load(true);
+    // What reading the job left out of it (a stored result with an
+    // impossible time, HUNT-802): said once, as a warning.
+    api.loadWarnings(id).then(
+      (ws) => ws.forEach((w) => notifyWarning(w, t("snap.title"))),
+      () => {},
+    );
     onProjectsChanged((ids) => {
       if (!ids.includes(id)) return;
       // While our own save runs, `lastSaved` is not yet up to date, so the

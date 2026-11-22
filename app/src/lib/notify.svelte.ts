@@ -84,6 +84,16 @@ export function notifyError(e: unknown, action?: Action): number {
 }
 
 /**
+ * Shows a warning the core gave with its code (e.g. `result_dropped`):
+ * the translated message under `title`, the original under "Details".
+ * Not logged as an error: nothing failed.
+ */
+export function notifyWarning(e: unknown, title: string): number {
+  const d = describeError(e);
+  return notify({ kind: "warning", code: d.code, title, message: d.message, detail: d.detail });
+}
+
+/**
  * Shows a value the core refused as a refusal with the core's reason in the
  * user's language (not as a failed calculation, review ERR-003) and returns
  * that reason for the field; null when `e` is not a refusal.

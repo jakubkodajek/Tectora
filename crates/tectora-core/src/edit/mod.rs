@@ -704,6 +704,9 @@ pub fn clean_received(project: &mut Project, fallback: &str) {
     if let Some(s) = &mut project.result_snapshot {
         s.clean();
     }
+    // One with an impossible time is left out, as when a job is read
+    // (HUNT-802).
+    crate::snapshot::drop_impossible(project);
 }
 
 /// [`check_windows`] for a save that changes `before` into `after`, used by

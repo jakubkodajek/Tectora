@@ -73,6 +73,9 @@ export const api = {
   listProjects: () => invoke<Library>("list_projects"),
   startupWarnings: () => invoke<AppError[]>("startup_warnings"),
   loadProject: (id: string) => invoke<Project>("load_project", { id }),
+  /** What reading the job left out of it (a stored result with an impossible
+      time, `result_dropped`), to tell when the job opens; empty when nothing was. */
+  loadWarnings: (id: string) => invoke<AppError[]>("load_warnings", { id }),
   /** Recalculates the job's stored result where an older engine stored it,
       before the job is loaded (`load_project` no longer does): the change
       log's summary when it did, else null. Never fails; an error is logged

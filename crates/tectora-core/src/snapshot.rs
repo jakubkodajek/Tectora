@@ -49,6 +49,11 @@ pub const MAX_ENGINE_VERSION_CHARS: usize = 40;
 pub const MAX_STORED_MATERIALS: usize = 256;
 /// Largest absolute figure of a stored result (m², m).
 const MAX_FIGURE: f64 = 1.0e9;
+/// Latest time a stored result may carry, ms since the Unix epoch: the
+/// last date JavaScript (the app) can show, 13 September 275760. It is
+/// below 2^53, so the app reads and sends back every allowed time exactly
+/// (audit 2026-11-22 HUNT-802).
+pub const MAX_TAKEN_MS: u64 = 8_640_000_000_000_000;
 /// Most differences [`compare`] gives: a second bound after the stored
 /// result's own (ARCH-303).
 pub const MAX_DIFFERENCES: usize = 100;
@@ -108,12 +113,36 @@ impl ResultSnapshot {
         Some(why)
     }
 
+    /// Why the time of this stored result cannot be a real one (after
+    /// [`MAX_TAKEN_MS`]), or `None`. Not a reason to refuse the job: the
+    /// time is metadata (lessons-learned 2026-11-03), so such a result is
+    /// dropped instead ([`drop_impossible`]).
+    pub fn impossible_time(&self) -> Option<String> {
+        (self.taken_ms > MAX_TAKEN_MS).then(|| {
+            format!(
+                "the stored result is dated {} ms after 1970, later than any calendar date (at most {MAX_TAKEN_MS}); it was left out",
+                self.taken_ms
+            )
+        })
+    }
+
     /// The engine version of a stored result from outside as one line of
     /// at most [`MAX_ENGINE_VERSION_CHARS`] characters (ARCH-303).
     pub fn clean(&mut self) {
         self.engine_version =
             crate::edit::clean_line(&self.engine_version, MAX_ENGINE_VERSION_CHARS);
     }
+}
+
+/// Drops the stored result of `project` when its time cannot be a real
+/// one ([`ResultSnapshot::impossible_time`]) and says why; the job opens
+/// without it. The app could neither show nor send back such a time, so
+/// the job could never be saved from the app (audit 2026-11-22 HUNT-802;
+/// owner decision: open the job, drop the result, warn).
+pub fn drop_impossible(project: &mut Project) -> Option<String> {
+    let why = project.result_snapshot.as_ref()?.impossible_time()?;
+    project.result_snapshot = None;
+    Some(why)
 }
 
 fn r2(v: f64) -> f64 {
