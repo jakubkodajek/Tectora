@@ -2,7 +2,7 @@
 
 import { num } from "./format";
 import { DICTS, t } from "./i18n.svelte";
-import type { LiveStatus } from "./types";
+import { ENGINE_ACTOR, isAi, type LiveStatus } from "./types";
 
 /** A status older than this is shown as idle. */
 export const LIVE_FRESH_MS = 90_000;
@@ -21,6 +21,17 @@ export function actorName(actor: string): string {
   if (a.includes("chatgpt") || a.includes("openai") || a.includes("codex")) return "ChatGPT";
   if (a === "ai" || a === "") return "AI";
   return actor;
+}
+
+/**
+ * Who made a change-log entry, for the history and the library's job
+ * panel: the AI client's name, "Tectora" for an entry the engine wrote
+ * itself (a recalculated stored result), else the user (audit 2026-11-22
+ * UX-704: the library credited the engine's entry to the user).
+ */
+export function actorLabel(actor: string): string {
+  if (isAi(actor)) return actorName(actor);
+  return actor === ENGINE_ACTOR ? "Tectora" : t("ai.you");
 }
 
 /**

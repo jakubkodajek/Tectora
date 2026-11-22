@@ -12,7 +12,7 @@
   import { cardArea, cardAreaNote, cardRoof, m2, relativeTime } from "./format";
   import { listedArea, offerDiffers, storedArea, storedAreaHint } from "./offer";
   import { numberLocale, t } from "./i18n.svelte";
-  import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
+  import { actorLabel, actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import { notUtf8, type Action } from "./errors";
   import { fold, searchWords } from "./fold";
   import { dismiss, notify, notifyError } from "./notify.svelte";
@@ -472,8 +472,8 @@
         </dl>
         {#if selected.notes}<p class="notes">{selected.notes}</p>{/if}
         {#if selected.last_activity}
-          <div class="last" class:ai={isAi(selected.last_activity.actor)}>
-            <span>{isAi(selected.last_activity.actor) ? actorName(selected.last_activity.actor) : t("ai.you")} · {relativeTime(selected.last_activity.ts_ms)}</span>
+          <div class="last" class:ai={isAi(selected.last_activity.actor)} data-testid="detail-last">
+            <span>{actorLabel(selected.last_activity.actor)} · {relativeTime(selected.last_activity.ts_ms)}</span>
             {entrySummary(selected.last_activity.summary)}
           </div>
         {/if}

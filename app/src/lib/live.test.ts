@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DICTS, i18n } from "./i18n.svelte";
-import { entrySummary, isRevert, liveText } from "./live.svelte";
+import { actorLabel, entrySummary, isRevert, liveText } from "./live.svelte";
 
 // The codes the MCP server sends (crates/tectora-core/src/store.rs LIVE_KINDS).
 const KINDS = [
@@ -56,6 +56,28 @@ describe("entrySummary", () => {
     expect(entrySummary(entry)).toContain("184,72 → 180,80 m²");
   });
 
+  // The summary of a real recalculation, written by the core test
+  // store::tests::the_recalculation_summary_is_the_one_the_app_translates
+  // (TEST-711): a change of the core's wording fails here.
+  it("translates the entry of a real recalculation the core wrote, in every language", () => {
+    const files = import.meta.glob("../../../tests/fixtures/parity/refreshed_entry.json", { eager: true, import: "default" }) as Record<string, unknown>;
+    const file = Object.values(files)[0] as { from: string; to: string; summary: string };
+    expect(file.summary).toMatch(/^Stored result recalculated/);
+    // The two areas: the last two numbers of the summary.
+    const [a, b] = (file.summary.match(/\d+\.\d+/g) ?? []).slice(-2).map(Number);
+    expect(Number.isFinite(a) && Number.isFinite(b)).toBe(true);
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const text = entrySummary(file.summary);
+      expect(text, locale).not.toBe(file.summary);
+      expect(text, locale).not.toContain("{");
+      expect(text, locale).toContain(`${file.from} → ${file.to}`);
+      const n = (x: number) => x.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      expect(text, locale).toContain(`${n(a)} → ${n(b)} m²`);
+    }
+    i18n.locale = "cs";
+  });
+
   it("translates the revert entries the core writes, nested too", () => {
     i18n.locale = "cs";
     expect(entrySummary("Reverted: Sklon 45°")).toBe("Vráceno: Sklon 45°");
@@ -87,5 +109,22 @@ describe("entrySummary", () => {
     expect(isRevert("undo (Reverted: to part)")).toBe(true);
     // An AI summary that only mentions a reason is left as it is.
     expect(entrySummary("Pitch 45 (reason: drawing)")).toBe("Pitch 45 (reason: drawing)");
+  });
+});
+
+// Audit 2026-11-22 UX-704: the library's job panel showed the engine's
+// recalculation of a stored result as the user's own change.
+describe("actorLabel", () => {
+  it("names the AI, the engine and the user apart, in every language", () => {
+    const you: Record<string, string> = {};
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      you[locale] = actorLabel("user");
+      expect(actorLabel("tectora"), locale).toBe("Tectora");
+      expect(actorLabel("claude-ai"), locale).toBe("Claude");
+      expect(actorLabel("tectora"), locale).not.toBe(you[locale]);
+    }
+    expect(you.cs).toBe("Vy");
+    i18n.locale = "cs";
   });
 });
