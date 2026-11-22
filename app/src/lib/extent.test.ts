@@ -48,4 +48,47 @@ describe("no spread of a list into Math.min / Math.max in the UI (ARCH-402)", ()
     }
     expect(bad).toEqual([]);
   });
+  it("finds a spread anywhere in the call, over lines, and through apply or push (TEST-506 item 1)", () => {
+    expect(spreads("const m = Math.max(0, ...xs);")).toEqual([1]);
+    expect(spreads("const m = Math.min(\n  ...xs,\n);")).toEqual([1]);
+    expect(spreads("Math.max(a, f(b, c), ...ys.map((y) => y.x))")).toEqual([1]);
+    expect(spreads("x\nMath.min.apply(null, xs)")).toEqual([2]);
+    expect(spreads("pts.push(...f.points)")).toEqual([1]);
+    expect(spreads("pts.push(a, ...rest)")).toEqual([1]);
+    expect(spreads("Math.max(a, b); f(...xs); pts.push(a, b); Math.hypot(...v)")).toEqual([]);
+  });
+
+  it("app/src spreads no list into Math.min / Math.max or push, nor through apply", () => {
+    const bad: string[] = [];
+    for (const [file, text] of Object.entries(sources)) for (const n of spreads(text)) bad.push(`${file}:${n}`);
+    expect(bad).toEqual([]);
+  });
 });
+
+/**
+ * The lines (1-based) of `text` where a call of Math.min / Math.max or
+ * `.push` has a spread argument (anywhere in its arguments, also over
+ * lines), or Math.min / Math.max / push is called through `.apply`: each
+ * passes every value of the list as an argument and throws a RangeError
+ * for long lists.
+ */
+function spreads(text: string): number[] {
+  const out = new Set<number>();
+  const line = (at: number) => text.slice(0, at).split("\n").length;
+  for (const m of text.matchAll(/(?:Math\.(?:min|max)|\.push)\s*\(/g)) {
+    let depth = 0;
+    let i = m.index! + m[0].length - 1;
+    for (; i < text.length; i++) {
+      const c = text[i];
+      if (c === "(" || c === "[" || c === "{") depth++;
+      else if (c === ")" || c === "]" || c === "}") {
+        if (--depth === 0) break;
+      } else if (depth === 1 && text.startsWith("...", i)) {
+        out.add(line(m.index!));
+        break;
+      }
+    }
+  }
+  for (const m of text.matchAll(/(?:Math\.(?:min|max)|\.push)\.apply\s*\(/g)) out.add(line(m.index!));
+  return [...out].sort((a, b) => a - b);
+}

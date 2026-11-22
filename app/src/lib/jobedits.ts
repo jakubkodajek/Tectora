@@ -23,8 +23,12 @@
 //    while the core answered; else the answer is dropped and asked again.
 // 5. While the user drags (`pause`), no answer is applied: a drag rebuilds
 //    the job from where it started at every step, so an answer applied
-//    meanwhile would be written back to the old value on release (ERR-401).
-//    The edit is asked again once the drag has ended, on the dragged job.
+//    meanwhile would be written back to the old value on release (ERR-401),
+//    and a corner drag changes the job at every step, so the answer would
+//    be asked again until it gives up (UI-502). The edit is asked again once
+//    the drag has ended, on the dragged job. Pauses are counted: the edits
+//    wait for the last one. The editor must end every pause it takes (on
+//    every release, when the plan goes, when the job is left: ERR-501).
 // 6. A refusal is always heard (`refused`, with the hold: the editor names
 //    the object in its note); a quiet end is only `removed` and `closed`.
 //

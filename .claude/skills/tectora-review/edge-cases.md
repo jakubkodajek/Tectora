@@ -380,8 +380,9 @@ show their lengths while drawing", "a wall by length and typed angle").
 
 Reviewers: ui, errors, ux. Guards: `app/src/lib/jobedits.test.ts`,
 `app/src/lib/numeric.field.test.ts`, `app/e2e/audit-r4-ed.e2e.ts`,
-`app/e2e/audit-r5-ed.e2e.ts`. Hold the core's answer back (Playwright
-`page.route` on the bridge, 0.3 to 3 s) for every case.
+`app/e2e/audit-r5-ed.e2e.ts`, `app/e2e/audit-r6-ed.e2e.ts`. Hold the core's
+answer back (Playwright `page.route` on the bridge, 0.3 to 3 s) for every
+case, and assert that it really came while the pointer was down.
 
 - A value typed on one item, then PageDown and the same value (or one arrow
   step) on the next item of the same size, lands once on each item; the
@@ -396,12 +397,22 @@ Reviewers: ui, errors, ux. Guards: `app/src/lib/jobedits.test.ts`,
 - Holding an arrow key shows the newest step, never an earlier one coming
   back (UX-403).
 - A refused helper or round-roof dialog stays open with its values.
+- A second finger or the pen on another object during a touch drag (CDP
+  `Input.dispatchTouchEvent`): the drag is saved, a value typed after it
+  lands, Back leaves (ERR-501). A corner drag holds the edits like an
+  object drag (UI-502); keys pressed mid-drag wait for the drop, Escape
+  cancels it (ERR-502); no autosave writes a half-dragged job.
+- Undo right after Enter undoes the value just typed, Redo brings it back
+  (UX-501); the status bar says saving while an edit is with the core
+  (UX-502); a dialog's OK keeps the focus while it waits (UI-503); a
+  dialog's own core checks run one after another (the dormer dialog).
 
 ## 16. Huge but valid jobs reach every view (@arch, @ui)
 
 Reviewers: arch, ui. Guards: `store::tests::the_card_of_a_job_at_the_face_and_corner_limits_is_bounded`,
 `thumbbox.test.ts`, `extent.test.ts` (scans app/src for spreads into
-Math.min / Math.max).
+Math.min / Math.max and push), `planscale.test.ts` and the 200-building
+test in `app/e2e/audit-r6-ed.e2e.ts` (the plan stays interactive, UI-501).
 
 - A job at the limits (500 hand-drawn faces of 500 corners, 200 buildings)
   received as a bundle or saved by the AI: the library lists every job, the

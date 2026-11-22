@@ -250,7 +250,9 @@
   const SAVE_TRIES = 5;
   let calcSeq = 0;
   /** Field handlers that ask the core before they change the job: leaving waits for them (ERR-004). */
-  const pendingEdits = new PendingEdits();
+  /** Edits with the core (`pendingEdits`): the status bar says "saving" meanwhile, the file does not have them yet (UX-502). */
+  let editsWaiting = $state(0);
+  const pendingEdits = new PendingEdits((n) => (editsWaiting = n));
 
   const snapshot = () => JSON.stringify(project);
 
@@ -438,7 +440,17 @@
     saveState = "dirty";
     edits++;
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(save, 500);
+    saveTimer = setTimeout(autosave, 500);
+  }
+
+  /**
+   * The timer's save: not while a drag runs, which would write the half
+   * dragged job (without the roof follow of the drop) for the AI and the
+   * change detection to read; the drop saves anyway (TEST-505).
+   */
+  function autosave() {
+    if (dragging()) saveTimer = setTimeout(autosave, 500);
+    else void save();
   }
 
   /** Writes the job; resolves to whether the edits are on disk (errors are shown, never thrown). */
@@ -554,7 +566,20 @@
   /** The corners the last undo reopened, to close the draw bar again on redo. */
   let reopened: string | null = null;
 
-  function undo() {
+  /**
+   * Undo and Redo take back the user's newest step: an edit still with the
+   * core (a value typed just before) is that step, so they wait for it
+   * first; else the press undid the step before it, the typed value landed
+   * after it and Redo was lost (UX-501). Leaving waits for them too.
+   */
+  function afterEdits(step: () => void) {
+    if (!jobEdits.size) return step();
+    void pendingEdits.track(jobEdits.idle().then(step));
+  }
+  const undo = () => afterEdits(undoNow);
+  const redo = () => afterEdits(redoNow);
+
+  function undoNow() {
     if (at <= 0) return;
     const reopen = !drawing && finished && history[at] === finished.step ? finished.corners : null;
     restore(at - 1);
@@ -566,7 +591,7 @@
     }
   }
 
-  function redo() {
+  function redoNow() {
     if (at >= history.length - 1) return;
     // Redo of the closed outline: the building comes back, the draw bar goes.
     if (drawing && reopened === JSON.stringify($state.snapshot(drawing))) drawing = null;
@@ -679,6 +704,9 @@
       // Tauri's dialog plugin makes confirm asynchronous: always await it.
       if (!(await confirm(t("draw.confirmCancel", { n: pts })))) return false;
     }
+    // A drag under way ends where it is: its pause would hold every edit
+    // below until a release that may never come (ERR-501).
+    if (dragging() || dragPause) cutDrag();
     // A value still being typed is part of the job: store it first.
     commitFocused();
     await tick();
@@ -1117,17 +1145,30 @@
   }
 
   function moveVertex(part: number, v: number, x: number, y: number) {
-    if (!project) return;
+    if (!project || dragCut) return;
     const es = project.parts[part]?.edges;
     if (!es?.[v] || !Number.isFinite(x) || !Number.isFinite(y)) return;
     const p = es[v].start;
     if (p.x === x && p.y === y) return;
+    // Every step changes the job: an answer of the core would be asked again
+    // at each one until it gives up, so answers wait for the drop (UI-502).
+    vertexDrag = true;
+    dragPause ??= jobEdits.pause();
     moveCorner(es, v, x, y);
     recalc();
   }
 
-  /** End of a corner drag: a corner dropped onto its neighbour merges into it. */
-  const endVertexDrag = (part: number, v: number) => pendingEdits.track(endVertexDragNow(part, v));
+  /** End of a corner drag: a corner dropped onto its neighbour merges into it; then the drag pause ends. */
+  function endVertexDrag(part: number, v: number) {
+    const pause = takeDragPause();
+    if (dragCut) {
+      dragCut = false;
+      pause();
+      return Promise.resolve();
+    }
+    vertexDrag = false;
+    return pendingEdits.track(endVertexDragNow(part, v).finally(pause));
+  }
   async function endVertexDragNow(part: number, v: number) {
     const was = project?.parts[part];
     if (!project || !was) return;
@@ -1548,7 +1589,16 @@
   }
 
   /** The project and roof when a drag started; each step maps from these. */
-  let dragBase: { key: string; project: string; result: CalcResult | null; from: Point2 | null } | null = null;
+  let dragBase: { key: string; project: string; result: CalcResult | null; from: Point2 | null; last?: { target: PlanTarget; dx: number; dy: number } } | null = null;
+  /** A corner is being dragged (`moveVertex`): it holds the drag pause too (UI-502). */
+  let vertexDrag = false;
+  /**
+   * The editor ended the drag under way itself (the job is being left): the
+   * plan's further steps of that drag are ignored until it lets go.
+   */
+  let dragCut = false;
+  /** A drag of an object, a building or a corner is under way. */
+  const dragging = () => !!dragBase || vertexDrag;
 
   /**
    * The pause of core-backed edits the drag under way holds (jobedits.ts,
@@ -1571,8 +1621,15 @@
   }
 
   function dragObject(target: PlanTarget, dx: number, dy: number, end: boolean) {
+    if (dragCut) {
+      if (end) dragCut = false;
+      return;
+    }
     if (!project || (target.type !== "item" && target.type !== "part")) {
-      if (end) endDrag();
+      if (end) {
+        dragBase = null;
+        endDrag();
+      }
       return;
     }
     const key = JSON.stringify(target);
@@ -1580,12 +1637,51 @@
       dragPause ??= jobEdits.pause();
       dragBase = { key, project: snapshot(), result, from: target.type === "item" ? itemCentre(project, target.item) : null };
     }
+    dragBase.last = { target, dx, dy };
     let later = false;
     try {
       later = dragStep(target, dx, dy, end);
     } finally {
-      if (end && !later) endDrag();
+      // Every release ends the drag and its pause, also one whose object is gone.
+      if (end) {
+        dragBase = null;
+        if (!later) endDrag();
+      }
     }
+  }
+
+  /** Escape during a drag: the job goes back to where the drag started, nothing is saved. */
+  function cancelDrag() {
+    const from = dragBase ? dragBase.project : vertexDrag ? history[at] : null;
+    if (from) {
+      const sel = selection;
+      project = JSON.parse(from) as Project;
+      selection = keptSelection(project, sel);
+      recalc();
+    }
+    dragBase = null;
+    vertexDrag = false;
+    dragCut = true;
+    endDrag();
+  }
+
+  /**
+   * Ends the drag under way where it is now, as its release would (leaving
+   * the job must not wait for a drag pause that only the release ends,
+   * ERR-501); the plan's further steps of it are ignored.
+   */
+  function cutDrag() {
+    const last = dragBase?.last;
+    if (last) {
+      dragObject(last.target, last.dx, last.dy, true);
+      dragCut = true;
+    } else if (vertexDrag) {
+      vertexDrag = false;
+      dragCut = true;
+      commit();
+    }
+    dragBase = null;
+    endDrag();
   }
 
   /** One drag step; true when the release goes on with the core (a part drag), which then ends the pause. */
@@ -2109,6 +2205,21 @@
     if ((tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") && !editorTakesUndo(e.target as HTMLElement, e)) return;
     // A dialog is open: its keys (Escape closes it) must not edit the roof behind it.
     if (document.querySelector('[role="dialog"]')) return;
+    // A drag rebuilds the job from where it started at every step: an edit
+    // made by a key meanwhile (Delete, an undo, a copy, a nudge) would be
+    // undone by the drop. Escape cancels the drag, F3 switches the view;
+    // every other key waits for the drop (ERR-502).
+    if (dragging()) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        cancelDrag();
+        return;
+      }
+      if (e.key !== "F3") {
+        if (mod || del || e.key.startsWith("Arrow") || e.key.startsWith("Page")) e.preventDefault();
+        return;
+      }
+    }
     if (undoKey(e)) {
       e.preventDefault();
       undoKey(e) === "redo" ? redo() : undo();
@@ -2413,7 +2524,7 @@
       {#if result}<span data-testid="status-area" class:pending={calcPending} aria-busy={calcPending}>{t("res.area")}: <b title={roofState(result) !== "ok" ? t(roofState(result) === "none" ? "res.notCalculated" : "res.calcPartial") : undefined}>{roofState(result) === "none" ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save">
-        {#if saveState === "saved"}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
+        {#if saveState === "saved" && !editsWaiting}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving" || saveState === "saved"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
       </span>
     </footer>
   {:else if loadError}
@@ -2457,7 +2568,7 @@
       {#if dormerBlocked}<p class="dlg-why" role="alert" data-testid="dormer-ok-blocked">{dormerBlocked}</p>
       {:else if dormerNotice}<p class="dlg-why" role="status" data-testid="dormer-ok-notice">{dormerNotice}</p>{/if}
       <button class="btn" onclick={() => (dormerDlg = null)}>{t("common.cancel")}</button>
-      <button class="btn primary" disabled={!!dormerBlocked || acting.dormer} title={dormerBlocked ?? undefined} onclick={applyDormerDialog}>{t("common.ok")}</button>
+      <button class="btn primary" disabled={!!dormerBlocked} aria-disabled={acting.dormer} aria-busy={acting.dormer} title={dormerBlocked ?? undefined} onclick={() => !acting.dormer && applyDormerDialog()}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -2467,7 +2578,7 @@
     <RoofCalcForm {project} partIndex={calc.part} edge={calc.edge} bind:request={calc.request} />
     {#snippet footer()}
       <button class="btn" onclick={() => (calc = null)}>{t("common.cancel")}</button>
-      <button class="btn primary" disabled={!calc?.request || acting.calc} onclick={applyCalc}>{t("common.ok")}</button>
+      <button class="btn primary" disabled={!calc?.request} aria-disabled={acting.calc} aria-busy={acting.calc} onclick={() => !acting.calc && applyCalc()}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -2477,7 +2588,7 @@
     <RoundRoofForm span={round.span} bind:eave={round.eave} bind:overhang={round.overhang} bind:arc={round.arc} bind:request={round.request} />
     {#snippet footer()}
       <button class="btn" onclick={() => (round = null)}>{t("common.cancel")}</button>
-      <button class="btn primary" disabled={!round?.arc || acting.round} onclick={applyRound}>{t("common.ok")}</button>
+      <button class="btn primary" disabled={!round?.arc} aria-disabled={acting.round} aria-busy={acting.round} onclick={() => !acting.round && applyRound()}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -2487,7 +2598,7 @@
     <TransformForm part={project.parts[xform.part]} edge={xform.edge} bind:mode={xform.mode} bind:op={xform.op} />
     {#snippet footer()}
       <button class="btn" onclick={() => (xform = null)}>{t("common.cancel")}</button>
-      <button class="btn primary" disabled={!xform?.op || acting.transform} onclick={applyTransform}>{t("common.ok")}</button>
+      <button class="btn primary" disabled={!xform?.op} aria-disabled={acting.transform} aria-busy={acting.transform} onclick={() => !acting.transform && applyTransform()}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}

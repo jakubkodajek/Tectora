@@ -215,7 +215,10 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
     // the newest step itself is still out, also past STEP_WAIT_MS.
     const lastOut = stepped !== null && out?.v === stepped.to;
     const waiting = waitingStep(stepped, opts.value, lastOut ? stepped!.at : performance.now());
-    const text = fmt(waiting ?? opts.value);
+    // A typed value still with the core is the field's last word: an
+    // earlier step coming back meanwhile is not shown (TEST-502, N12).
+    const typed = stepped === null && out !== null ? out.v : null;
+    const text = fmt(waiting ?? typed ?? opts.value);
     if (input.value !== text) input.value = text;
   }
 
@@ -244,7 +247,7 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
       const settle = () => {
         if (out !== mine) return;
         out = null;
-        if (stepped) render();
+        render();
       };
       r.then(settle, settle);
     }

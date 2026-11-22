@@ -541,6 +541,58 @@ describe("round 5: the rule's other branches", () => {
   });
 });
 
+describe("round 6: overlapping drag pauses (ERR-501, TEST-506 item 4)", () => {
+  const queued = (state: { job: Project | null }, edits: JobEdits) => {
+    const seen = { asked: 0 };
+    const done = edits.run(
+      edits.hold("parts", 0),
+      async () => {
+        seen.asked++;
+        return "Named";
+      },
+      (n, i) => (state.job!.parts[i].name = n),
+    );
+    return { seen, done };
+  };
+
+  it("holds an edit until the last of two overlapping pauses ends, whichever ends first", async () => {
+    for (const order of [[0, 1], [1, 0]]) {
+      const { state, edits } = editor(job());
+      const ends = [edits.pause(), edits.pause()];
+      const { seen, done } = queued(state, edits);
+      ends[order[0]]();
+      await tick();
+      await tick();
+      expect(seen.asked).toBe(0);
+      expect(edits.pausing).toBe(true);
+      ends[order[1]]();
+      expect(await done).toBe("done");
+      expect(seen.asked).toBe(1);
+      expect(edits.pausing).toBe(false);
+    }
+  });
+
+  it("an end called twice counts once: the other pause still holds", async () => {
+    const { state, edits } = editor(job());
+    const first = edits.pause();
+    const second = edits.pause();
+    const { seen, done } = queued(state, edits);
+    second();
+    second();
+    await tick();
+    await tick();
+    expect(seen.asked).toBe(0);
+    expect(edits.pausing).toBe(true);
+    first();
+    expect(await done).toBe("done");
+    // A late extra call after the end changes nothing.
+    first();
+    expect(edits.pausing).toBe(false);
+    const again = queued(state, edits);
+    expect(await again.done).toBe("done");
+  });
+});
+
 describe("heldName (UX-401, UX-404)", () => {
   it("names the object a refused edit was for", async () => {
     const { heldName } = await import("./jobedits");

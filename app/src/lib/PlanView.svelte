@@ -11,12 +11,11 @@
   import { placementOf, type ItemRef, type PlanTarget } from "./items";
   import { gridStep as gridStepFor, gridValues } from "./grid";
   import { boxOf, contentPoints, draftLeavesView, fitView, resizedView } from "./planfit";
-  import { faceTags, tagSpots } from "./facelabels";
-  import { hostHeightAt, isDormerFace } from "./dormers";
-  import { dormerWallLines, onWallLine, planeOf } from "./scene3d";
-  import { chooseLabels, insidePolygon, placeDimSpots, rotatedBox, segCrossesBox, underHigherRoof, wallNumber, type DimSpot, type Seg } from "./planlabels";
+  import { hostIndex, isDormerFace } from "./dormers";
+  import { dormerWallLines, onWallLine } from "./scene3d";
+  import { chooseLabels, insidePolygon, placeDimSpots, rotatedBox, segCrossesBox, wallNumber, type DimSpot, type Seg } from "./planlabels";
   import { draftWalls } from "./drawstep";
-  import { coveredPieces } from "./planjoin";
+  import { coveredPieces, visibleFaceTags } from "./planjoin";
   import { numberLocale } from "./i18n.svelte";
 
   let {
@@ -186,21 +185,14 @@
 
   // Pitch and area of every calculated face, written at its centre.
   // Joined roofs: stretches of a line under a higher roof are drawn dashed.
-  const linePieces = $derived(result ? coveredPieces(result) : []);
+  // The highest roof over a plan point, built once per result from a plain
+  // copy (a job of 200 buildings froze the plan when every sample read every
+  // face through the reactive result, UI-501).
+  const topAt = $derived(hostIndex(result));
+  const linePieces = $derived(result ? coveredPieces(result, topAt) : []);
   // A face under another building's higher roof gets no label: it would be
   // written over the roof that covers it (UX-012).
-  const tags = $derived.by(() => {
-    if (!result) return [];
-    const res = result;
-    const many = res.parts.length > 1;
-    return res.parts.flatMap((rp, part) =>
-      rp.geometry.faces.flatMap((f) =>
-        faceTags([f])
-          .filter((tag) => !many || !underHigherRoof(planeOf(f.polygon)?.({ x: tag.x, y: tag.y }) ?? null, hostHeightAt(res, { x: tag.x, y: tag.y })))
-          .map((tag) => ({ ...tag, part, spots: tagSpots(tag, f.polygon) })),
-      ),
-    );
-  });
+  const tags = $derived(result ? visibleFaceTags(result, topAt) : []);
   const pitchText = (v: number) =>
     `${new Intl.NumberFormat(numberLocale(), { maximumFractionDigits: 2 }).format(v)}°`;
   const areaText = (v: number) =>
@@ -327,10 +319,44 @@
   let objDrag: { target: PlanTarget; sx: number; sy: number; wx: number; wy: number; moved: boolean; dx: number; dy: number } | null = null;
   // A plan taken away mid-drag (another view) ends the drag where it is:
   // the editor holds core-backed edits back until a drag ends (ERR-401).
-  onDestroy(() => {
+  // A corner drag ends the same way (UI-502).
+  onDestroy(() => endGesture());
+  /**
+   * The pointer of the press under way (a drag, a pan, a right press). Any
+   * other pointer (a second finger, the pen beside the finger) is ignored
+   * until it lets go: a second press used to replace the running drag, whose
+   * release then never came and the editor's drag pause stayed on (ERR-501).
+   */
+  let gesture: number | null = null;
+  /**
+   * `e` is a pointer other than the one of the press under way. A press
+   * whose pointer the plan no longer holds (its release went elsewhere, or
+   * a synthetic press that could not be captured) is over: it ends here,
+   * so it cannot block the plan.
+   */
+  function otherPointer(e: PointerEvent): boolean {
+    if (gesture === null || e.pointerId === gesture) return false;
+    let held = false;
+    try {
+      held = !!svg?.hasPointerCapture(gesture);
+    } catch {
+      held = false;
+    }
+    if (held) return true;
+    endGesture();
+    return false;
+  }
+
+  /** Ends the press under way as its release would (a moved drag is dropped where it is). */
+  function endGesture() {
     if (objDrag?.moved) ondrag?.(objDrag.target, objDrag.dx, objDrag.dy, true);
+    if (drag?.moved) onmoveend(drag.part, drag.vertex);
+    gesture = null;
+    drag = null;
     objDrag = null;
-  });
+    pan = null;
+    rc = null;
+  }
   /** What a right press hit, set by the shape's own handler before the plan's. */
   let rcTarget: PlanTarget | null = null;
   /** A right press that opens the menu on release unless it pans. */
@@ -352,6 +378,7 @@
    * (no active pointer with that id) cannot be captured; the drag then just
    * ends at the next pointerup the plan sees. */
   function capture(e: PointerEvent) {
+    gesture = e.pointerId;
     try {
       svg!.setPointerCapture(e.pointerId);
     } catch {
@@ -368,6 +395,7 @@
 
   /** A press on a dormer, chimney, window, opening or hand-drawn shape. */
   function pressItem(e: PointerEvent, item: ItemRef) {
+    if (otherPointer(e)) return e.stopPropagation();
     if (placing || drawing) return;
     const b = button(e);
     if (b === 2) {
@@ -396,6 +424,7 @@
 
   /** A press inside a part's outline: drags the selected part, else selects it. */
   function pressPart(e: PointerEvent, part: number) {
+    if (otherPointer(e)) return e.stopPropagation();
     if (placing || drawing) return;
     const b = button(e);
     if (b === 2) {
@@ -421,6 +450,7 @@
   }
 
   function onpointerdown(e: PointerEvent) {
+    if (otherPointer(e)) return;
     const b = button(e);
     if (b === 2 && !placing && !drawing) {
       const p = localPoint(e);
@@ -470,6 +500,7 @@
   }
 
   function onpointermove(e: PointerEvent) {
+    if (otherPointer(e)) return;
     const p = localPoint(e);
     cursorWorld = drag
       ? magnetPoint(p.x, p.y, e.altKey, drag)
@@ -500,6 +531,8 @@
   }
 
   function onpointerup(e: PointerEvent) {
+    if (otherPointer(e)) return;
+    gesture = null;
     if (drag?.moved) onmoveend(drag.part, drag.vertex);
     if (!drawing && !placing) guides = { x: null, y: null };
     if (objDrag?.moved) ondrag?.(objDrag.target, objDrag.dx, objDrag.dy, true);
@@ -525,6 +558,7 @@
   }
 
   function startVertexDrag(e: PointerEvent, part: number, vertex: number) {
+    if (otherPointer(e)) return e.stopPropagation();
     // While drawing or placing, a click on a corner is a click on the plan.
     if (placing || drawing) return;
     if (button(e) === 2) {
@@ -756,6 +790,7 @@
     {onpointermove}
     {onpointerup}
     onpointercancel={onpointerup}
+    onlostpointercapture={(e) => e.pointerId === gesture && onpointerup(e)}
     {onwheel}
     onpointerleave={() => {
       cursorWorld = null;

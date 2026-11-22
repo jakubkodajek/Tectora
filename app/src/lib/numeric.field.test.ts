@@ -4,7 +4,7 @@
 // The tests run without a DOM, so the input is a small stand-in.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { numberLocale } from "./i18n.svelte";
-import { formatNumber, numeric, type NumericOptions } from "./numeric.svelte";
+import { STEP_WAIT_MS, formatNumber, numeric, type NumericOptions } from "./numeric.svelte";
 
 /** A value as the field shows it in the UI language. */
 const f = (v: number) => formatNumber(v, numberLocale());
@@ -226,6 +226,101 @@ describe("a burst of steps shows the newest step (UX-403)", () => {
     c.answer("refused");
     await flush();
     a.update(o);
+    expect(input.value).toBe(f(3.4));
+    a.destroy();
+  });
+});
+
+describe("round 6: the numeric branches without a case (TEST-502)", () => {
+  const timers = () => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"] });
+
+  it("a refusal still marked on item A is cleared when the field switches to item B (N5)", async () => {
+    const c = core();
+    const input = new FakeInput();
+    input.title = "Building height";
+    const a = numeric(input as unknown as HTMLInputElement, c.opts("part:0", 3));
+    input.type_(f(4.2));
+    c.answer("stale");
+    await flush();
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(input.title).toBe("stale");
+    a.update(c.opts("part:1", 3));
+    expect(input.getAttribute("aria-invalid")).toBeNull();
+    expect(input.title).toBe("Building height");
+    a.destroy();
+  });
+
+  it("a burst whose last answer takes longer than STEP_WAIT_MS keeps showing the newest step (N9)", async () => {
+    timers();
+    const c = core();
+    const input = new FakeInput();
+    const o = c.opts("part:0", 3.4);
+    const a = numeric(input as unknown as HTMLInputElement, o);
+    for (let i = 0; i < 3; i++) input.press("ArrowUp");
+    expect(c.sent).toEqual(["part:0=3.45", "part:0=3.5", "part:0=3.55"]);
+    c.answer();
+    await vi.advanceTimersByTimeAsync(0);
+    a.update({ ...o, value: 3.45 });
+    expect(input.value).toBe(f(3.55));
+    await vi.advanceTimersByTimeAsync(2000);
+    a.update({ ...o, value: 3.45 });
+    expect(input.value).toBe(f(3.55));
+    a.destroy();
+  });
+
+  it("a value typed after two quick steps is what the field shows when a step answer comes back (N12)", async () => {
+    timers();
+    const c = core();
+    const input = new FakeInput();
+    const o = c.opts("part:0", 3.4);
+    const a = numeric(input as unknown as HTMLInputElement, o);
+    input.press("ArrowUp");
+    input.press("ArrowUp");
+    input.type_(f(5));
+    expect(c.sent).toEqual(["part:0=3.45", "part:0=3.5", "part:0=5"]);
+    // The steps come back one by one, the editor re-renders the field with each.
+    for (const v of [3.45, 3.5]) {
+      c.answer();
+      await vi.advanceTimersByTimeAsync(0);
+      a.update({ ...o, value: v });
+      expect(input.value).toBe(f(5));
+    }
+    c.answer();
+    await vi.advanceTimersByTimeAsync(0);
+    a.update({ ...o, value: 5 });
+    expect(input.value).toBe(f(5));
+    a.destroy();
+  });
+
+  it("once the burst is over the field shows what is stored, also when no answer changes it (N11)", async () => {
+    timers();
+    const c = core();
+    const input = new FakeInput();
+    const o = c.opts("part:0", 3.4);
+    const a = numeric(input as unknown as HTMLInputElement, o);
+    input.press("ArrowUp");
+    // The core took the step but stored the value it had (its own rounding).
+    c.answer();
+    await vi.advanceTimersByTimeAsync(0);
+    a.update({ ...o });
+    expect(input.value).toBe(f(3.45));
+    await vi.advanceTimersByTimeAsync(STEP_WAIT_MS + 100);
+    expect(input.value).toBe(f(3.4));
+    a.destroy();
+  });
+
+  it("the last answer of a slow burst shows the stored value when it settles (N14)", async () => {
+    timers();
+    const c = core();
+    const input = new FakeInput();
+    const o = c.opts("part:0", 3.4);
+    const a = numeric(input as unknown as HTMLInputElement, o);
+    input.press("ArrowUp");
+    await vi.advanceTimersByTimeAsync(STEP_WAIT_MS + 500);
+    // Still out: the newest step is shown.
+    expect(input.value).toBe(f(3.45));
+    c.answer();
+    await vi.advanceTimersByTimeAsync(0);
     expect(input.value).toBe(f(3.4));
     a.destroy();
   });

@@ -168,9 +168,12 @@ removed the item. An edit whose item was let go is refused with a warning
 that names the object (the field stays marked until the next input); an
 AI save of other things never refuses it, nor does the user's own earlier
 step, and an edit whose item the user deleted himself ends quietly. While
-the user drags an object or a building no answer is applied (a drag
-rebuilds the job from its start at every step); the edit is asked again on
-the dragged job once the drag ends. A number field reused for the next
+the user drags an object, a building or a corner no answer is applied (a
+drag rebuilds the job from its start, or changes it, at every step); the
+edit is asked again on the dragged job once the drag ends. The plan follows
+one pointer per drag (a second finger is ignored), every release and
+leaving the job end the drag, editing keys wait for the drop and Escape
+cancels it. Undo and Redo wait for edits still with the core. A number field reused for the next
 item (PageDown in a bar) forgets what it sent for the one before (its
 `key`). The bars' selection follows its item the same way.
 

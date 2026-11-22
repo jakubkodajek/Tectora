@@ -3,7 +3,10 @@
 // which (named in the results). Display only: the roof itself, its lines
 // and quantities come from the core.
 
-import { hostHeightAt } from "./dormers";
+import { hostIndex } from "./dormers";
+import { faceTags, tagSpots, type FaceTag } from "./facelabels";
+import { underHigherRoof } from "./planlabels";
+import { planeOf } from "./scene3d";
 import type { CalcResult, Point2, RoofPart } from "./types";
 
 type P3 = [number, number, number];
@@ -47,16 +50,35 @@ export function splitByCover(a: P3, b: P3, topAt: (p: Point2) => number | null):
   return out;
 }
 
-/** The roof lines of a result split into seen and covered stretches, per part. */
-export function coveredPieces(result: CalcResult): { kind: string; pieces: LinePiece[] }[][] {
+/**
+ * The roof lines of a result split into seen and covered stretches, per
+ * part. `topAt` is the highest roof face over a plan point (`hostIndex` of
+ * the same result; built here when not given).
+ */
+export function coveredPieces(result: CalcResult, topAt: (p: Point2) => number | null = hostIndex(result)): { kind: string; pieces: LinePiece[] }[][] {
   const many = result.parts.length > 1;
-  const topAt = (p: Point2) => hostHeightAt(result, p);
   return result.parts.map((rp) =>
     rp.geometry.lines.map((l) => ({
       kind: l.kind,
       // One roof covers nothing of itself: skip the sampling.
       pieces: many ? splitByCover(l.a, l.b, topAt) : [{ a: l.a, b: l.b, hidden: false }],
     })),
+  );
+}
+
+/**
+ * The face labels of a result with the spots each may take, per face; a
+ * face under another building's higher roof gets none: its label would be
+ * written over the roof that covers it (UX-012). `topAt` as for `coveredPieces`.
+ */
+export function visibleFaceTags(result: CalcResult, topAt: (p: Point2) => number | null = hostIndex(result)): (FaceTag & { part: number; spots: { x: number; y: number }[] })[] {
+  const many = result.parts.length > 1;
+  return result.parts.flatMap((rp, part) =>
+    rp.geometry.faces.flatMap((f) =>
+      faceTags([f])
+        .filter((tag) => !many || !underHigherRoof(planeOf(f.polygon)?.({ x: tag.x, y: tag.y }) ?? null, topAt({ x: tag.x, y: tag.y })))
+        .map((tag) => ({ ...tag, part, spots: tagSpots(tag, f.polygon) })),
+    ),
   );
 }
 
