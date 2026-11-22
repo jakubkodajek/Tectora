@@ -178,12 +178,13 @@ fn calc_command(cmd: &str, a: &Value) -> Option<Result<Value, Value>> {
 fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fail>> {
     let id = arg::<String>(a, "id").ok()?;
     match cmd {
-        "load_project" => Some(
+        "load_project" => Some({
+            let _ = store.refresh_stored_result(&id);
             store
                 .load(&id)
                 .map(|p| to_json(p).unwrap_or(Value::Null))
-                .map_err(Fail::from),
-        ),
+                .map_err(Fail::from)
+        }),
         "save_project" => {
             let project = arg::<Project>(a, "project").ok()?;
             let before = store.load(&id).ok();
@@ -292,7 +293,11 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             }
             to_json(change)
         }
-        "load_project" => to_json(store.load(&id()?)?),
+        "load_project" => {
+            let id = id()?;
+            let _ = store.refresh_stored_result(&id);
+            to_json(store.load(&id)?)
+        }
         "save_project" => {
             let project: Project = arg(a, "project")?;
             to_json(store.save(arg(a, "id")?, &project)?)

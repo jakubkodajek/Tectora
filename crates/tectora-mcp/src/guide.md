@@ -226,20 +226,24 @@ The tools cover every operation of the Tectora editor:
 When a job leaves the draft status (`update_job` with `status`), its result
 is stored with the engine version: the figures the offer was made with.
 `calc` and `get_project` report `stored_result` with every difference to the
-current result; tell the user when there are differences. A write to a
-job past the draft whose roof figures then differ from the stored ones
-says so in its `note` and carries `stored_result.differences`: tell the
-user that the offer's figures no longer match. `store_result` replaces the
-stored result with the current one; call it only when the user wants that.
-Both refuse a job with no building and no hand-drawn face (there are no
-figures to offer): draw the building first. They also refuse a roof whose
-figures are too large to keep (an area over 1 000 000 000 m² or a length
-over 1 000 000 000 m, "the figures are too large to keep"): check the
-sizes, usually a face or a wall drawn in millimetres instead of metres.
-Leaving the draft checks the roof as it is now also when the job keeps
-the result of an earlier offer (it went back to draft since): a roof the
-app would refuse stays a draft, and the kept result stays the offer's
-when the roof calculates.
+current result; tell the user when there are differences. A write to a job
+past the draft whose roof figures then differ from the stored ones says so
+in its `note` and carries `stored_result.differences`: tell the user that
+the offer's figures no longer match. `store_result` replaces the stored
+result with the current one; call it only when the user wants that. Both
+refuse a job with no building and no hand-drawn face (there are no figures
+to offer): draw the building first. They also refuse a roof whose figures
+are too large to keep (an area over 1 000 000 000 m² or a length over 1
+000 000 000 m, "the figures are too large to keep"): check the sizes,
+usually a face or a wall drawn in millimetres instead of metres. Leaving
+the draft checks the roof as it is now also when the job keeps the result
+of an earlier offer (it went back to draft since): a roof the app would
+refuse stays a draft, and the kept result stays the offer's when the roof
+calculates. A result stored by an older Tectora whose figures the
+corrected calculation changes is recalculated when the job is opened (in
+the app or with `get_project`), with a change-log entry that keeps the old
+figures (`get_history`). This happens only while the design is the one the
+result was taken from and no AI change waits for review.
 
 ## Results (DACAD line codes)
 
@@ -274,7 +278,12 @@ overhangs. `doubled_line` (joined roofs: a line lies on another one, `value` m
 counted twice), `no_roof_area` (a chimney or opening took the whole roof, or
 eaves at 100 m), `objects_overlap` (`value` pairs of windows, chimneys,
 openings or dormers on top of each other, each still deducted),
-`dormer_above_roof` (a dormer `value` m higher than the roof it sits on)
+`dormer_above_roof` (a dormer `value` m higher than the roof it sits on),
+`hidden_under_neighbour` (joined buildings: `value` m² of this roof lies
+inside another building's walls under its roof, hidden yet counted; the
+overhang of the shared wall set to 0 removes it, ask the user first),
+`uncovered_plan` (joined buildings: `value` m² of plan within this
+building's walls and overhangs has no roof over it, the join lost faces)
 and `inside_another` (a building wholly within another one's walls whose
 roof leaves the other roof's planes still adds area): the figures are too
 large or too small; fix the object or building named. Never delete an

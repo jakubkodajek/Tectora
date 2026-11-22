@@ -29,6 +29,10 @@ pub const LIVE_FILE: &str = "live.json";
 pub const FILES_DIR: &str = ".files";
 /// The actor name used for edits made in the desktop app.
 pub const USER_ACTOR: &str = "user";
+/// Actor of the change-log entries Tectora writes itself (a stored result
+/// recalculated by a corrected calculation): neither the user nor an AI,
+/// so such an entry neither ends nor joins a pending AI review.
+pub const ENGINE_ACTOR: &str = "tectora";
 /// Activity entries kept per project (each holds a full previous version).
 pub(crate) const ACTIVITY_KEEP: usize = 50;
 /// Deleted jobs and removed attachments, one folder per deletion
@@ -147,6 +151,43 @@ impl ProjectSummary {
             }
         })
     }
+}
+
+/// What a job's stored result was taken from
+/// (`.activity/<id>.result.json`), written when a save brings a newer
+/// stored result: its time, the design's fingerprint then
+/// ([`crate::snapshot::input_digest`]) and the last engine version that
+/// checked it. A stored result is recalculated only while the design is
+/// the one it was taken from, so an offer whose design was edited later
+/// keeps its figures and shows the difference.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct ResultOrigin {
+    taken_ms: u64,
+    input: String,
+    checked: String,
+}
+
+/// How many stored results of a job keep their origin: a result put back
+/// by a revert finds its own again (hunt R3 BUG-2).
+const ORIGINS_KEPT: usize = 16;
+
+/// Designs with more walls, pitch breaks and objects than this get no
+/// origin: checking a result on save calculates the roof under the job's
+/// lock, which a hostile file must not hold for a minute (hunt R3 BUG-1).
+/// Their results are only not recalculated.
+const ORIGIN_MAX_ITEMS: usize = 200;
+
+fn design_items(p: &Project) -> usize {
+    p.parts
+        .iter()
+        .flat_map(|part| &part.edges)
+        .map(|e| 1 + e.breaks.len())
+        .sum::<usize>()
+        + p.dormers.len()
+        + p.chimneys.len()
+        + p.windows.len()
+        + p.roof_openings.len()
+        + p.manual_faces.len()
 }
 
 /// An activity entry without the stored previous version.
@@ -1755,6 +1796,60 @@ impl Store {
         Ok((ok, broken))
     }
 
+    /// Recalculates the job's stored result where an older engine stored
+    /// it, the design is still the one it was taken from (its
+    /// [`ResultOrigin`]) and the figures are now different
+    /// ([`crate::snapshot::refreshed`]), with a change-log entry by
+    /// [`ENGINE_ACTOR`] that keeps the job as it was. Returns whether it
+    /// did. A result stored before Tectora kept its origin, one whose
+    /// design changed since, one put back by a revert and one this engine
+    /// already checked stay as they are. The app and the MCP server call
+    /// it when a job is opened.
+    pub fn refresh_stored_result(&self, id: &str) -> Result<bool, StoreError> {
+        self.path(id)?;
+        let _lock = self.lock(id);
+        let before = self.load(id)?;
+        let Some(stored) = &before.result_snapshot else {
+            return Ok(false);
+        };
+        let Some(mut origin) = self.result_origin(id, stored.taken_ms) else {
+            return Ok(false);
+        };
+        // While AI changes wait for review the result stays: Revert and
+        // Revert all then undo the AI's changes, not the recalculation
+        // (hunt R2 BUG-3), and the review starts after the recalculation.
+        if origin.taken_ms != stored.taken_ms
+            || origin.checked == crate::snapshot::ENGINE_VERSION
+            || origin.input != crate::snapshot::input_digest(&before)
+            || self.pending_review(id).is_some()
+            // Opening a job recalculates on the caller's thread: only a
+            // design small enough to have got its origin (audit ERR-101).
+            || design_items(&before) > ORIGIN_MAX_ITEMS
+        {
+            return Ok(false);
+        }
+        match crate::model::guarded(|| crate::snapshot::refreshed(&before))
+            .ok()
+            .flatten()
+        {
+            Some((after, summary)) => {
+                self.log_and_write(id, Some(before), &after, ENGINE_ACTOR, &summary, None)?;
+                // Only once saved (audit ARCH-502): the old result, put
+                // back by a revert, then stays reverted; a failed save
+                // leaves it to be recalculated on the next open.
+                origin.checked = crate::snapshot::ENGINE_VERSION.to_string();
+                let _ = self.write_result_origin(id, &origin);
+                Ok(true)
+            }
+            None => {
+                // Checked: the next open need not calculate it again.
+                origin.checked = crate::snapshot::ENGINE_VERSION.to_string();
+                let _ = self.write_result_origin(id, &origin);
+                Ok(false)
+            }
+        }
+    }
+
     pub fn load(&self, id: &str) -> Result<Project, StoreError> {
         let path = self.path(id)?;
         // Bounded, and never blocked by a pipe or a device named like a
@@ -1865,6 +1960,7 @@ impl Store {
             self.dir.join(FILES_DIR).join(id),
             activity.join(format!("{id}.jsonl")),
             activity.join(format!("{id}.review.json")),
+            activity.join(format!("{id}.result.json")),
         ] {
             // Anything there counts, also a link to nowhere: a job of that
             // id would write its log through it (ARCH-501).
@@ -1980,7 +2076,72 @@ impl Store {
             id: id.to_string(),
             detail: e.to_string(),
         })?;
-        write_atomic(&path, &json).map_err(|e| StoreError::io(Some(id), e))
+        // The stored result the file had: a save that brings a newer one
+        // records what it was taken from.
+        let old_taken = read_regular(&path, MAX_JOB_FILE)
+            .ok()
+            .and_then(|t| serde_json::from_slice::<serde_json::Value>(&t).ok())
+            .and_then(|v| v.get("result_snapshot")?.get("taken_ms")?.as_u64());
+        write_atomic(&path, &json).map_err(|e| StoreError::io(Some(id), e))?;
+        // Only a result this engine gives for this very design is known to
+        // be taken from it: an imported or restored job may carry figures
+        // of a design edited since (R2-1), which must never be recalculated.
+        if let Some(s) = &project.result_snapshot
+            && old_taken != Some(s.taken_ms)
+            && self.result_origin(id, s.taken_ms).is_none()
+            && s.engine_version == crate::snapshot::ENGINE_VERSION
+            && design_items(project) <= ORIGIN_MAX_ITEMS
+            && crate::model::guarded(|| {
+                crate::snapshot::take_checked(project)
+                    .is_ok_and(|now| crate::snapshot::compare(s, &now).is_empty())
+            })
+            .unwrap_or(false)
+        {
+            // Best effort: without it the result is only not recalculated.
+            let _ = self.write_result_origin(
+                id,
+                &ResultOrigin {
+                    taken_ms: s.taken_ms,
+                    input: crate::snapshot::input_digest(project),
+                    checked: s.engine_version.clone(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn result_origin_path(&self, id: &str) -> Result<PathBuf, StoreError> {
+        self.path(id)?;
+        Ok(self.activity_dir().join(format!("{id}.result.json")))
+    }
+
+    fn result_origins(&self, id: &str) -> Vec<ResultOrigin> {
+        self.result_origin_path(id)
+            .ok()
+            .and_then(|p| read_regular(&p, MAX_SMALL_FILE).ok())
+            .and_then(|t| serde_json::from_slice(&t).ok())
+            .unwrap_or_default()
+    }
+
+    /// The origin of the stored result taken at `taken_ms`.
+    fn result_origin(&self, id: &str, taken_ms: u64) -> Option<ResultOrigin> {
+        self.result_origins(id)
+            .into_iter()
+            .find(|o| o.taken_ms == taken_ms)
+    }
+
+    /// Records `origin`, replacing the one of the same result; the oldest
+    /// recorded go beyond [`ORIGINS_KEPT`].
+    fn write_result_origin(&self, id: &str, origin: &ResultOrigin) -> Result<(), StoreError> {
+        let io = |e| StoreError::io(Some(id), e);
+        let mut all = self.result_origins(id);
+        all.retain(|o| o.taken_ms != origin.taken_ms);
+        all.push(origin.clone());
+        let over = all.len().saturating_sub(ORIGINS_KEPT);
+        all.drain(..over);
+        own_folder(&self.activity_dir()).map_err(io)?;
+        let text = serde_json::to_string(&all).map_err(|e| io(e.into()))?;
+        write_atomic(&self.result_origin_path(id)?, &text).map_err(io)
     }
 
     /// Takes the job's lock file (`.activity/<id>.lock`), held until the
@@ -2409,24 +2570,28 @@ impl Store {
     fn pending_start(&self, id: &str, log: &[ActivityEntry]) -> usize {
         let accepted = self.reviewed_at(id);
         log.iter()
-            .rposition(|e| e.actor == USER_ACTOR || e.ts_ms <= accepted)
+            .rposition(|e| e.actor == USER_ACTOR || e.actor == ENGINE_ACTOR || e.ts_ms <= accepted)
             .map_or(0, |i| i + 1)
     }
 
     pub fn pending_review(&self, id: &str) -> Option<PendingReview> {
         let log = self.activity(id);
         let start = self.pending_start(id, &log);
+        // Tectora's own entries are no AI change to review: a review of
+        // them alone is none, and they are not counted in one.
         let pending = &log[start..];
+        let ai = || pending.iter().filter(|e| e.actor != ENGINE_ACTOR);
+        ai().next()?;
         let first = pending.first()?;
         let mut actors: Vec<String> = Vec::new();
-        for e in pending {
+        for e in ai() {
             if !actors.contains(&e.actor) {
                 actors.push(e.actor.clone());
             }
         }
         Some(PendingReview {
             since_ts_ms: first.ts_ms,
-            count: pending.len(),
+            count: ai().count(),
             actors,
             before: first.before.clone(),
         })
@@ -2472,6 +2637,7 @@ impl Store {
             (self.files_dir(id)?, folder.join("files")),
             (self.activity_path(id)?, folder.join("activity.jsonl")),
             (self.review_path(id)?, folder.join("review.json")),
+            (self.result_origin_path(id)?, folder.join("result.json")),
             (path, folder.join(format!("{id}.{EXTENSION}"))),
         ];
         let info = TrashEntry {
@@ -2526,6 +2692,9 @@ impl Store {
         let _ = fs::remove_file(self.review_path(id)?);
         if self.own_files_folders(id).is_ok() {
             let _ = fs::remove_dir_all(self.files_dir(id)?);
+        }
+        if let Ok(p) = self.result_origin_path(id) {
+            let _ = fs::remove_file(p);
         }
         // Its lock file too (ARCH-008). Where another process still holds
         // it (Windows), it stays and the next job of that id reuses it.
@@ -2668,6 +2837,7 @@ impl Store {
             (folder.join("files"), self.files_dir(&id)?),
             (folder.join("activity.jsonl"), self.activity_path(&id)?),
             (folder.join("review.json"), self.review_path(&id)?),
+            (folder.join("result.json"), self.result_origin_path(&id)?),
             (
                 folder.join(format!("{}.{EXTENSION}", info.id)),
                 self.path(&id)?,
@@ -4209,6 +4379,256 @@ mod tests {
             "{summary}"
         );
         assert!(summary.ends_with('…'));
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// A gable offer whose result an older engine stored with a roof area
+    /// 2 m² off (a calculation fixed since), saved to a new library.
+    /// An offer whose result an older engine took from this design: saved
+    /// by this engine, then file and origin set back as engine 0.0.1 with
+    /// figures `extra` m2 off would have left them.
+    fn old_offer_off_by(store: &Store, extra: f64) -> (String, Project) {
+        let mut p = examples::find("gable").unwrap().project();
+        p.result_snapshot = Some(crate::snapshot::take(&p));
+        let id = store.save(None, &p).unwrap();
+        let taken = p.result_snapshot.as_ref().unwrap().taken_ms;
+        let mut origin = store.result_origin(&id, taken).expect("origin recorded");
+        let s = p.result_snapshot.as_mut().unwrap();
+        s.engine_version = "0.0.1".into();
+        s.roof_area += extra;
+        fs::write(store.path(&id).unwrap(), p.to_json().unwrap()).unwrap();
+        origin.checked = "0.0.1".into();
+        store.write_result_origin(&id, &origin).unwrap();
+        (id, p)
+    }
+
+    fn old_offer(store: &Store) -> (String, Project) {
+        old_offer_off_by(store, 2.0)
+    }
+
+    #[test]
+    fn an_imported_offer_whose_design_was_edited_is_never_recalculated() {
+        // R2-1: a bundle import saves the job with its stored result under
+        // a new id; the design was edited after the result was taken.
+        let store = temp_store("refresh-import");
+        let mut p = examples::find("gable").unwrap().project();
+        let mut s = crate::snapshot::take(&p);
+        p.parts[0].edges[0].pitch_deg = 25.0;
+        s.engine_version = "0.0.1".into();
+        p.result_snapshot = Some(s.clone());
+        let id = store.save(None, &p).unwrap();
+        assert!(store.result_origins(&id).is_empty());
+        assert!(!store.refresh_stored_result(&id).unwrap());
+        assert_eq!(store.load(&id).unwrap().result_snapshot, Some(s.clone()));
+        // Nor with this engine's version on figures of the old design.
+        s.engine_version = crate::snapshot::ENGINE_VERSION.into();
+        p.result_snapshot = Some(s);
+        let id = store.save(None, &p).unwrap();
+        assert!(store.result_origins(&id).is_empty());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn opening_a_job_an_older_engine_stored_updates_its_result_with_a_log_entry() {
+        let store = temp_store("refresh");
+        let (id, p) = old_offer(&store);
+        let s = p.result_snapshot.clone().unwrap();
+        let before = store.activity(&id).len();
+        assert!(store.refresh_stored_result(&id).unwrap());
+        let q = store.load(&id).unwrap();
+        let now = q.result_snapshot.as_ref().unwrap();
+        assert_eq!(now.engine_version, crate::snapshot::ENGINE_VERSION);
+        assert!((now.roof_area - (s.roof_area - 2.0)).abs() < 0.01);
+        let log = store.activity(&id);
+        assert_eq!(log.len(), before + 1);
+        let entry = log.last().unwrap();
+        assert_eq!(entry.actor, ENGINE_ACTOR);
+        assert!(entry.summary.starts_with(crate::snapshot::REFRESHED_PREFIX));
+        // The old figures stay in the log.
+        assert_eq!(entry.before.as_ref().unwrap().result_snapshot, Some(s));
+        // Once only.
+        assert!(!store.refresh_stored_result(&id).unwrap());
+        assert_eq!(store.activity(&id).len(), before + 1);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn an_offer_whose_design_was_edited_keeps_its_stored_figures() {
+        let store = temp_store("refresh-edited");
+        let (id, mut p) = old_offer(&store);
+        p.parts[0].edges[0].pitch_deg = 25.0;
+        store.save(Some(id.clone()), &p).unwrap();
+        assert!(!store.refresh_stored_result(&id).unwrap());
+        assert_eq!(store.load(&id).unwrap().result_snapshot, p.result_snapshot);
+        // A change of the name, notes or job data is no design change.
+        let (id, mut p) = old_offer(&store);
+        p.name = "renamed".into();
+        p.notes = "called back".into();
+        store.save(Some(id.clone()), &p).unwrap();
+        assert!(store.refresh_stored_result(&id).unwrap());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_result_stored_before_its_origin_was_kept_stays() {
+        let store = temp_store("refresh-legacy");
+        let (id, _) = old_offer(&store);
+        fs::remove_file(store.result_origin_path(&id).unwrap()).unwrap();
+        assert!(!store.refresh_stored_result(&id).unwrap());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_reverted_recalculation_stays_reverted() {
+        let store = temp_store("refresh-revert");
+        let (id, p) = old_offer(&store);
+        assert!(store.refresh_stored_result(&id).unwrap());
+        store.revert_last(&id, USER_ACTOR, None).unwrap();
+        assert_eq!(store.load(&id).unwrap().result_snapshot, p.result_snapshot);
+        assert!(!store.refresh_stored_result(&id).unwrap());
+        // So does a copy loaded before the recalculation and saved later.
+        let (id, p) = old_offer(&store);
+        assert!(store.refresh_stored_result(&id).unwrap());
+        store.save(Some(id.clone()), &p).unwrap();
+        assert!(!store.refresh_stored_result(&id).unwrap());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn an_offer_put_back_by_rejecting_a_new_result_still_follows_the_engine() {
+        // Hunt R3 BUG-2: the origin then described the rejected result.
+        let store = temp_store("refresh-back");
+        let (id, offer) = old_offer(&store);
+        let mut p = offer.clone();
+        let mut s = crate::snapshot::take(&p);
+        s.taken_ms = offer.result_snapshot.as_ref().unwrap().taken_ms + 1000;
+        p.result_snapshot = Some(s);
+        store
+            .save_as(Some(id.clone()), &p, "claude-ai", "Store result")
+            .unwrap();
+        store.revert_last(&id, USER_ACTOR, None).unwrap();
+        assert_eq!(
+            store.load(&id).unwrap().result_snapshot,
+            offer.result_snapshot
+        );
+        assert!(store.refresh_stored_result(&id).unwrap());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_result_stored_after_one_dated_ahead_gets_its_origin() {
+        // Hunt R3 BUG-5: a colleague's clock an hour ahead blocked every
+        // later result.
+        let store = temp_store("refresh-ahead");
+        let mut p = examples::find("gable").unwrap().project();
+        let mut s = crate::snapshot::take(&p);
+        let now = s.taken_ms;
+        s.taken_ms = u64::MAX;
+        p.result_snapshot = Some(s);
+        let id = store.save(None, &p).unwrap();
+        let mut s = crate::snapshot::take(&p);
+        s.taken_ms = now;
+        p.result_snapshot = Some(s);
+        store.save(Some(id.clone()), &p).unwrap();
+        assert!(store.result_origin(&id, now).is_some());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_design_too_large_to_check_on_save_gets_no_origin() {
+        // Hunt R3 BUG-1: checking the result held the job's lock for a
+        // minute on a hostile file.
+        let store = temp_store("refresh-large");
+        let mut p = examples::find("gable").unwrap().project();
+        let e = p.parts[0].edges[0].clone();
+        for _ in 0..ORIGIN_MAX_ITEMS {
+            p.parts[0].edges[0].breaks.push(crate::model::PitchBreak {
+                height: e.eave_height + 1.0,
+                pitch_deg: e.pitch_deg,
+            });
+        }
+        let mut s = crate::snapshot::take(&examples::find("gable").unwrap().project());
+        s.engine_version = crate::snapshot::ENGINE_VERSION.into();
+        p.result_snapshot = Some(s);
+        let t = std::time::Instant::now();
+        let id = store.save(None, &p).unwrap();
+        assert!(store.result_origins(&id).is_empty());
+        assert!(t.elapsed().as_secs() < 5);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_recalculation_that_cannot_be_saved_is_tried_again() {
+        // Audit ARCH-502: the origin was marked checked before the save,
+        // so a failed save left the old figures for good.
+        let store = temp_store("refresh-fail");
+        let (id, p) = old_offer(&store);
+        let log = store.activity_path(&id).unwrap();
+        let _ = fs::remove_file(&log);
+        fs::create_dir_all(&log).unwrap();
+        assert!(store.refresh_stored_result(&id).is_err());
+        assert_eq!(store.load(&id).unwrap().result_snapshot, p.result_snapshot);
+        fs::remove_dir_all(&log).unwrap();
+        assert!(store.refresh_stored_result(&id).unwrap());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_purged_job_leaves_no_result_origin_behind() {
+        // Hunt R2 BUG-4: a failed bundle import kept `<id>.result.json`
+        // and the next job of that name got another id.
+        let store = temp_store("refresh-purge");
+        let (id, _) = old_offer(&store);
+        assert!(store.result_origin_path(&id).unwrap().exists());
+        store.purge(&id).unwrap();
+        assert!(!store.result_origin_path(&id).unwrap().exists());
+        assert_eq!(store.new_id(&id), id);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_stored_result_waits_for_a_pending_ai_review() {
+        // Hunt R2 BUG-3: a recalculation after an AI change made Revert
+        // undo the recalculation and keep the AI's change.
+        let store = temp_store("refresh-review");
+        let (id, mut p) = old_offer(&store);
+        p.job.customer = "WRONG".into();
+        store
+            .save_as(Some(id.clone()), &p, "claude-ai", "Customer")
+            .unwrap();
+        assert!(!store.refresh_stored_result(&id).unwrap());
+        store.revert_last(&id, USER_ACTOR, None).unwrap();
+        let q = store.load(&id).unwrap();
+        assert_ne!(q.job.customer, "WRONG");
+        // Reviewed, the result follows the corrected calculation.
+        assert!(store.refresh_stored_result(&id).unwrap());
+        // An AI change after it starts its own review: rejecting it keeps
+        // the recalculated result.
+        let mut p = store.load(&id).unwrap();
+        let fresh = p.result_snapshot.clone();
+        p.notes = "by the AI".into();
+        store
+            .save_as(Some(id.clone()), &p, "claude-ai", "Notes")
+            .unwrap();
+        let pending = store.pending_review(&id).unwrap();
+        assert_eq!(pending.count, 1);
+        assert_eq!(pending.before.unwrap().result_snapshot, fresh);
+        // Alone it is no review.
+        let (id, _) = old_offer(&store);
+        assert!(store.refresh_stored_result(&id).unwrap());
+        assert!(store.pending_review(&id).is_none());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_result_with_the_same_figures_is_checked_once() {
+        let store = temp_store("refresh-same");
+        let (id, _) = old_offer_off_by(&store, 0.0);
+        assert!(!store.refresh_stored_result(&id).unwrap());
+        assert_eq!(
+            store.result_origins(&id)[0].checked,
+            crate::snapshot::ENGINE_VERSION
+        );
         let _ = fs::remove_dir_all(&store.dir);
     }
 

@@ -746,9 +746,16 @@ fn joined_buildings_are_sound() {
         no_error(&mut c, &roof);
         for (i, g) in roof.geos.iter().enumerate() {
             c.ok(&format!("building {i} has no roof"), !g.faces.is_empty());
+            // Where two roofs with the same eave height meet, each one's
+            // overhang on the shared wall lies inside the other building
+            // under its roof (the standard join keeps it): that is said,
+            // and nothing else (2026-11-21, HiddenUnderNeighbour).
+            let same_eave = name != "garage beside house, lower";
             c.ok(
                 &format!("building {i} warnings {:?}", g.warnings),
-                g.warnings.is_empty(),
+                g.warnings.iter().all(|w| {
+                    same_eave && w.kind == WarningKind::HiddenUnderNeighbour && w.value > 0.5
+                }),
             );
             for f in &g.faces {
                 c.ok(

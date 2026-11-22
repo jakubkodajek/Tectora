@@ -1072,6 +1072,25 @@ mod tests {
     }
 
     #[test]
+    fn turning_off_the_flat_roof_under_a_window_too_large_for_a_slope_is_refused() {
+        // TEST-002: only `flat_roof` changes; a 70 m2 window fits the 96 m2
+        // flat face but not a 62.7 m2 slope (48 m2 plan / cos 40 deg).
+        let mut flat = gable_12x8();
+        flat.flat_roof = true;
+        flat.windows.push(crate::model::RoofWindow {
+            x: 1.0,
+            y: 0.5,
+            width: 10.0,
+            height: 7.0,
+        });
+        assert!(check_windows_write(None, &flat).is_ok());
+        let mut pitched = flat.clone();
+        pitched.flat_roof = false;
+        let e = check_windows_write(Some(&flat), &pitched).unwrap_err();
+        assert!(e.contains("roof window 0"), "{e}");
+    }
+
+    #[test]
     fn a_new_wall_takes_only_what_the_editor_takes() {
         assert!(check_new_wall(40.0, 3.0, 0.5).is_ok());
         for (p, e, o) in [
