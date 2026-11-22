@@ -107,6 +107,11 @@ const KNOWN = new Set([
 const SETTINGS_CODES = new Set(["not_absolute", "not_a_folder", "not_writable", "invalid_value", "io"]);
 
 /** A translated description of an error from `action`. */
+/** The core's detail says a file is not UTF-8 text (store.rs `read_text`), not that it is damaged. */
+export function notUtf8(detail: string | null | undefined): boolean {
+  return /not UTF-8 text/.test(detail ?? "");
+}
+
 export function describeError(e: unknown, action?: Action): Described {
   const err = toAppError(e);
   const code = KNOWN.has(err.code) ? err.code : "unknown";
@@ -114,10 +119,12 @@ export function describeError(e: unknown, action?: Action): Described {
   const settings = SETTINGS_CODES.has(err.code) && (action === "settings" || !KNOWN.has(err.code));
   // An export refused for the job's own size, not for its files (bundle.rs, ARCH-205).
   const jobTooLarge = code === "too_large" && /the job is too large to hand over/.test(err.detail ?? "");
+  // A job file in another encoding is intact text, not a damaged file (store.rs `read_text`).
+  const notText = code === "unreadable" && notUtf8(err.detail);
   return {
     code: err.code,
     title: t(action ? `err.action.${action}` : "err.title"),
-    message: settings ? t(`settings.err.${err.code}`) : jobTooLarge ? t("err.job_too_large") : t(`err.${code}`, { id: err.id ?? "" }),
+    message: settings ? t(`settings.err.${err.code}`) : jobTooLarge ? t("err.job_too_large") : notText ? t("err.unreadable_text") : t(`err.${code}`, { id: err.id ?? "" }),
     detail: err.detail,
   };
 }

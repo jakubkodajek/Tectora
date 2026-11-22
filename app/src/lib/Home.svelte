@@ -13,7 +13,8 @@
   import { listedArea, offerDiffers, storedArea, storedAreaHint } from "./offer";
   import { numberLocale, t } from "./i18n.svelte";
   import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
-  import type { Action } from "./errors";
+  import { notUtf8, type Action } from "./errors";
+  import { fold } from "./fold";
   import { dismiss, notify, notifyError } from "./notify.svelte";
   import UpdateBanner from "./UpdateBanner.svelte";
   import { prefs, savePrefs } from "./settings.svelte";
@@ -56,7 +57,8 @@
   const yearOf = (ms: number) => new Date(ms).getFullYear();
   const years = $derived([...new Set(projects.map((p) => yearOf(p.modified_ms)))].sort((a, b) => b - a));
 
-  const norm = (s: string) => s.toLocaleLowerCase("cs").normalize("NFD").replace(/\p{M}/gu, "");
+  // The core's folding (library::fold), so the MCP search and this one find the same jobs.
+  const norm = fold;
   const counts = $derived.by(() => {
     const c: Record<string, number> = { all: projects.length, ai: 0 };
     for (const s of JOB_STATUSES) c[s] = 0;
@@ -342,7 +344,7 @@
               {#if showBroken}
                 <ul>
                   {#each broken as b (b.id)}
-                    <li><code>{b.id}.tectora</code> {t(`err.${b.code === "unreadable" || b.code === "newer_format" || b.code === "permission_denied" || b.code === "internal" ? b.code : "io"}`, { id: b.id })}{#if b.detail}<small>{b.detail}</small>{/if}</li>
+                    <li><code>{b.id}.tectora</code> {t(`err.${b.code === "unreadable" && notUtf8(b.detail) ? "unreadable_text" : b.code === "unreadable" || b.code === "newer_format" || b.code === "permission_denied" || b.code === "internal" ? b.code : "io"}`, { id: b.id })}{#if b.detail}<small>{b.detail}</small>{/if}</li>
                   {/each}
                 </ul>
               {/if}

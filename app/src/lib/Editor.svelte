@@ -3,6 +3,7 @@
   // definition bar, status bar) with a side dock for results, AI activity
   // and job data.
   import { onDestroy, onMount, tick, untrack } from "svelte";
+  import { maxOf, minOf } from "./extent";
   import AiPanel from "./AiPanel.svelte";
   import DrawBar from "./DrawBar.svelte";
   import PlaceBar from "./PlaceBar.svelte";
@@ -46,7 +47,7 @@
   import { changedEdges, changedItems, describeChange, describeFigure, ghostOf } from "./changes";
   import { wallNotes } from "./wallnotes";
   import { merge3 } from "./merge";
-  import { JobEdits, notMade, type Hold, type ListName } from "./jobedits";
+  import { JobEdits, heldName, notMade, type Hold, type ListName, type Outcome } from "./jobedits";
   import { roofState } from "./results";
   import { isTyping, releaseLeaveGuard, setLeaveGuard } from "./leave";
   import { PendingEdits, exclusive } from "./inflight";
@@ -259,11 +260,20 @@
    * refuses only the edit whose own item it changed (said once, here), and
    * the user's own steps never refuse each other.
    */
-  const jobEdits = new JobEdits(
-    () => project,
-    snapshot,
-    (o) => info(t(o === "gone" ? "editor.actionStale" : "editor.actionBusy")),
-  );
+  const jobEdits = new JobEdits(() => project, snapshot, (o, hold) => notMadeNote(o, hold));
+
+  /**
+   * Says that an edit was not made, naming the object it was for, as a
+   * warning that stays long enough to be read (UX-401, UX-404): the typed
+   * value is gone, the user must know which object to look at.
+   */
+  function notMadeNote(o: "gone" | "restless", hold: Hold | null) {
+    notify({
+      kind: "warning",
+      title: hold ? t("editor.notMadeOf", { name: heldName(hold, project) }) : t("editor.notMade"),
+      message: t(o === "gone" ? "editor.actionStale" : "editor.actionBusy"),
+    });
+  }
   const plain = (p: Project) => $state.snapshot(p) as Project;
   /** One-shot actions under way: their buttons are off and a second press does nothing (UI-302, UI-308). */
   let acting = $state({ transform: false, calc: false, round: false, face: false, store: false, dormer: false, copy: false });
@@ -684,6 +694,7 @@
 
   onDestroy(() => {
     unlisten?.();
+    endDrag();
     releaseLeaveGuard(leaveGuard);
     if (saveState === "dirty" || saveState === "failed") save();
   });
@@ -843,17 +854,21 @@
     async () => {
       if (!project || !calc?.request) return;
       if (!dialogPartThere("calc")) return;
-      await pendingEdits.track(applyHelper(dialogHolds.calc!, calc.edge, calc.request));
-      calc = null;
+      // Open with its values until the edit is made: a refused one is typed again otherwise.
+      if ((await pendingEdits.track(applyHelper(dialogHolds.calc!, calc.edge, calc.request))) === "done") calc = null;
     },
     (b) => (acting.calc = b),
   );
 
-  /** Applies a helper request to wall `edge` of the held part through the core, onto the same part. */
-  async function applyHelper(hold: Hold, edge: number, request: HelperRequest) {
-    if (!project) return;
+  /**
+   * Applies a helper request to wall `edge` of the held part through the
+   * core, onto the same part; resolves to how the edit ended ("refused":
+   * the core refused it or it failed, said in a toast).
+   */
+  async function applyHelper(hold: Hold, edge: number, request: HelperRequest): Promise<Outcome | "refused"> {
+    if (!project) return "closed";
     try {
-      await jobEdits.run(
+      return await jobEdits.run(
         hold,
         (job, part) => api.roofHelperApply(plain(job), part, edge, request),
         (next) => {
@@ -864,6 +879,7 @@
       );
     } catch (e) {
       if (!notifyRefusal(e, "helper")) notifyError(e, "calc");
+      return "refused";
     }
   }
 
@@ -898,8 +914,8 @@
       if (!project || !round?.arc || !round.request) return;
       if (!dialogPartThere("round")) return;
       const r = round;
-      round = null;
-      await pendingEdits.track(applyHelper(dialogHolds.round!, r.a, r.request!));
+      // Open with its values until the edit is made (ERR To check 55).
+      if ((await pendingEdits.track(applyHelper(dialogHolds.round!, r.a, r.request!))) === "done" && round === r) round = null;
     },
     (b) => (acting.round = b),
   );
@@ -1062,9 +1078,14 @@
 
   function deleteVertex() {
     if (!project || !selection) return;
-    const es = project.parts[selection.part].edges;
-    if (!isMarker(es[selection.edge]) && es.filter((e) => !isMarker(e)).length <= 3) return;
-    es.splice(selection.edge, 1);
+    deleteVertexAt(selection.part, selection.edge);
+  }
+
+  /** Deletes corner `edge` of part `part` (a marker, or a corner of a building with more than three). */
+  function deleteVertexAt(part: number, edge: number) {
+    const es = project?.parts[part]?.edges;
+    if (!es?.[edge] || (!isMarker(es[edge]) && es.filter((e) => !isMarker(e)).length <= 3)) return;
+    es.splice(edge, 1);
     selection = null;
     commit();
   }
@@ -1081,11 +1102,18 @@
     const es = part?.edges;
     if (!es?.[sel.edge] || (!isMarker(es[sel.edge]) && es.filter((e) => !isMarker(e)).length <= 3)) return;
     const msg = isMarker(es[sel.edge]) ? t("edge.confirmDeleteMarker") : t("edge.confirmDeleteVertex", { n: sel.edge + 1, name: partLabel(part.name, sel.part) });
+    // The building asked about is held (jobedits.ts): an AI save or the
+    // user's own edit landing while the question is open moves it or, when
+    // the save changed or removed it, refuses with a note (UI-401).
+    const hold = jobEdits.hold("parts", sel.part);
     // Tauri's dialog plugin makes confirm asynchronous: always await it.
     if (!(await confirm(msg))) return;
-    // The project or the selection may have changed while the dialog was open.
-    if (project?.parts[sel.part] !== part || selection?.part !== sel.part || selection?.edge !== sel.edge) return;
-    deleteVertex();
+    if (!project) return;
+    if (hold.gone) {
+      if (!hold.removed) notMadeNote("gone", hold);
+      return;
+    }
+    deleteVertexAt(hold.index, sel.edge);
   }
 
   function moveVertex(part: number, v: number, x: number, y: number) {
@@ -1522,16 +1550,51 @@
   /** The project and roof when a drag started; each step maps from these. */
   let dragBase: { key: string; project: string; result: CalcResult | null; from: Point2 | null } | null = null;
 
+  /**
+   * The pause of core-backed edits the drag under way holds (jobedits.ts,
+   * rule 5): every drag step rebuilds the job from `dragBase`, so an answer
+   * applied during the drag would be written back on release (ERR-401).
+   * Edits whose answer came meanwhile are asked again on the dragged job.
+   */
+  let dragPause: (() => void) | null = null;
+
+  /** The drag let go: its pause, to end now or once the core's move is in. */
+  function takeDragPause(): () => void {
+    const p = dragPause ?? (() => {});
+    dragPause = null;
+    return p;
+  }
+
+  /** Ends the pause of the drag under way, if any (also when the editor closes). */
+  function endDrag() {
+    takeDragPause()();
+  }
+
   function dragObject(target: PlanTarget, dx: number, dy: number, end: boolean) {
-    if (!project || (target.type !== "item" && target.type !== "part")) return;
+    if (!project || (target.type !== "item" && target.type !== "part")) {
+      if (end) endDrag();
+      return;
+    }
     const key = JSON.stringify(target);
     if (!dragBase || dragBase.key !== key) {
+      dragPause ??= jobEdits.pause();
       dragBase = { key, project: snapshot(), result, from: target.type === "item" ? itemCentre(project, target.item) : null };
     }
+    let later = false;
+    try {
+      later = dragStep(target, dx, dy, end);
+    } finally {
+      if (end && !later) endDrag();
+    }
+  }
+
+  /** One drag step; true when the release goes on with the core (a part drag), which then ends the pause. */
+  function dragStep(target: PlanTarget, dx: number, dy: number, end: boolean): boolean {
+    if (!project || !dragBase || (target.type !== "item" && target.type !== "part")) return false;
     const base: Project = JSON.parse(dragBase.project);
     if (target.type === "item") {
       const it = target.item;
-      if (!itemExists(base, it)) return;
+      if (!itemExists(base, it)) return false;
       moveItem(base, it, dx, dy);
       if (end && dragBase.from) {
         followRoof(base, it, dragBase.from, { x: dragBase.from.x + dx, y: dragBase.from.y + dy }, dragBase.result);
@@ -1539,7 +1602,7 @@
       project = base;
       selectItem(it);
     } else {
-      if (!base.parts[target.part]) return;
+      if (!base.parts[target.part]) return false;
       // The plan draws the moved part at once (TypeScript, presentation);
       // what is saved on release is the core's `transform_part`.
       transformPart(base, target.part, translation(dx, dy));
@@ -1549,8 +1612,8 @@
       if (end) {
         const from = dragBase.project;
         dragBase = null;
-        void pendingEdits.track(finishPartDrag(from, target.part, dx, dy));
-        return;
+        void pendingEdits.track(finishPartDrag(from, target.part, dx, dy).finally(takeDragPause()));
+        return true;
       }
     }
     if (end) {
@@ -1559,6 +1622,7 @@
     } else {
       recalc();
     }
+    return false;
   }
 
   /** A part drag ended: the core's move replaces the drawn one, then it is saved; on a refusal the part goes back. */
@@ -1602,7 +1666,7 @@
       : it.kind === "face" ? (project.manual_faces ?? [])[it.index]?.points ?? []
       : it.kind === "line" ? (() => { const l = project.manual_lines![it.index]; return [{ x: l.a[0], y: l.a[1] }, { x: l.b[0], y: l.b[1] }]; })()
       : [];
-    const w = it.kind === "window" ? project.windows![it.index].width : pts.length ? Math.max(...pts.map((p) => p.x)) - Math.min(...pts.map((p) => p.x)) : 0.5;
+    const w = it.kind === "window" ? project.windows![it.index].width : pts.length ? maxOf(pts, (p) => p.x) - minOf(pts, (p) => p.x) : 0.5;
     return { x: +(Math.max(w, 0.2) + 0.3).toFixed(3), y: 0 };
   }
 
@@ -1712,9 +1776,9 @@
           // placed), so the copy never lands on, and joins, another building
           // or a manual face (UX-010).
           const ps = job.parts[pi].edges.map((e) => e.start);
-          const w = Math.max(...ps.map((p) => p.x)) - Math.min(...ps.map((p) => p.x));
+          const w = maxOf(ps, (p) => p.x) - minOf(ps, (p) => p.x);
           const xs = [...job.parts.flatMap((p) => p.edges.map((e) => e.start.x)), ...(job.manual_faces ?? []).flatMap((f) => f.points.map((p) => p.x))];
-          const dx = Math.max(w, Math.max(...xs) - Math.min(...ps.map((p) => p.x))) + 2;
+          const dx = Math.max(w, maxOf(xs) - minOf(ps, (p) => p.x)) + 2;
           return api.transformPart(plain(job), pi, { kind: "move", dx: +dx.toFixed(3), dy: 0 }, 1);
         },
         (r) => {
@@ -1850,7 +1914,7 @@
     // An AI save while the question was open: the dormer asked about is
     // removed where it is now; one the save changed or removed is not (jobedits.ts).
     if (hold.gone) {
-      info(t("editor.actionStale"));
+      if (!hold.removed) notMadeNote("gone", hold);
       return;
     }
     const index = hold.index;
@@ -1877,7 +1941,7 @@
     // notes or the job data clears as asked (ERR-301).
     if (!project) return;
     if (!jobEdits.roofSame(roof)) {
-      info(t("editor.actionStale"));
+      notMadeNote("gone", null);
       return;
     }
     project.parts = [];
@@ -1907,7 +1971,7 @@
     // An AI save while the question was open: the building asked about is
     // removed where it is now; one the save changed or removed is not (jobedits.ts).
     if (hold.gone) {
-      info(t("editor.actionStale"));
+      if (!hold.removed) notMadeNote("gone", hold);
       return;
     }
     project.parts.splice(hold.index, 1);
@@ -2008,7 +2072,7 @@
     } else {
       // Place a new part to the right of the existing ones.
       const xs = project.parts.flatMap((p) => p.edges.map((e) => e.start.x));
-      const dx = xs.length ? Math.max(...xs) + 2 : 0;
+      const dx = xs.length ? maxOf(xs) + 2 : 0;
       for (const e of part.edges) e.start.x = +(e.start.x + dx).toFixed(3);
       part.name = project.parts.length === 0 ? t("editor.mainPart") : t("editor.partN", { n: project.parts.length + 1 });
       project.parts.push(part);

@@ -15,14 +15,24 @@
 //    with a file copy. A held item that the save left alone stays held and
 //    follows its item to a new index; one it changed or removed is `gone`.
 // 3. The user's own edits never kill a hold, they only move it (`own`).
+//    Only when the user's own step removed the item itself (a delete, the
+//    undo of its add) the hold ends, and it ends quietly (`removed`): the
+//    user knows, there is nothing to report (UX-402).
 // 4. Edits are serialized (`run`): each asks the core for the job as the
 //    one before left it, and is applied only if nothing touched the job
 //    while the core answered; else the answer is dropped and asked again.
+// 5. While the user drags (`pause`), no answer is applied: a drag rebuilds
+//    the job from where it started at every step, so an answer applied
+//    meanwhile would be written back to the old value on release (ERR-401).
+//    The edit is asked again once the drag has ended, on the dragged job.
+// 6. A refusal is always heard (`refused`, with the hold: the editor names
+//    the object in its note); a quiet end is only `removed` and `closed`.
 //
 // No roof logic here: only which object an edit belongs to.
 
 import { t } from "./i18n.svelte";
 import { roofInput } from "./offer";
+import { partLabel } from "./partname";
 import type { Project } from "./types";
 
 /** The lists of a job whose items an edit can be for. */
@@ -50,11 +60,17 @@ export function follow(from: readonly unknown[] | null | undefined, to: readonly
   return b[a.indexOf(index)] ?? null;
 }
 
-/** A held item: `index` is where it is now; `gone` once an outside save changed or removed it. */
+/**
+ * A held item: `index` is where it is now; `gone` once an outside save
+ * changed or removed it, or the user's own step removed it (then also
+ * `removed`).
+ */
 export interface Hold {
   readonly list: ListName;
   index: number;
   gone: boolean;
+  /** The user's own step removed the item (a delete, an undo): an edit for it ends quietly. */
+  removed?: boolean;
   /** A selection, not an edit: it stays on an item an outside save changed in place. */
   readonly loose: boolean;
 }
@@ -73,12 +89,33 @@ export type Outcome =
   | "gone"
   /** The job kept changing while the core answered: refused. */
   | "restless"
+  /** The user's own step removed the item meanwhile: not made, nothing to report (UX-402). */
+  | "removed"
   /** No job any more (the editor closed). */
   | "closed";
 
 /** Why an edit that ended as `o` was not made, for its field's tooltip; undefined when it was made. */
 export function notMade(o: Outcome): string | undefined {
-  return o === "done" ? undefined : o === "gone" ? t("editor.actionStale") : o === "restless" ? t("editor.actionBusy") : t("num.refused");
+  return o === "done" ? undefined : o === "gone" ? t("editor.actionStale") : o === "restless" ? t("editor.actionBusy") : o === "removed" ? t("editor.actionRemoved") : t("num.refused");
+}
+
+const ITEM_NAME: Record<Exclude<ListName, "parts">, string> = {
+  dormers: "dormer.n",
+  chimneys: "opening.chimneyN",
+  windows: "opening.windowN",
+  roof_openings: "opening.holeN",
+  manual_lines: "manual.lineN",
+  manual_faces: "manual.faceN",
+};
+
+/**
+ * The held item's name for a note ("Komín 2", "Budova „Garáž“"): a
+ * building still held by its own name in `job`, anything else (and a
+ * building an outside save took away) by its number (UX-401, UX-404).
+ */
+export function heldName(h: Hold, job: Project | null): string {
+  if (h.list === "parts") return h.gone ? t("prob.item.part", { n: h.index + 1 }) : partLabel(job?.parts[h.index]?.name, h.index);
+  return t(ITEM_NAME[h.list], { n: h.index + 1 });
 }
 
 /**
@@ -97,16 +134,46 @@ export class JobEdits {
   private roofs = new Set<WeakRef<RoofHold>>();
   private tail: Promise<unknown> = Promise.resolve();
   private waiting = 0;
+  /** Gestures under way (`pause`) and the promise that resolves when the last ended. */
+  private paused = 0;
+  private resumed: Promise<void> | null = null;
+  private wake: (() => void) | null = null;
 
   /**
    * `job` is the job the editor holds now; `stamp` its text (any change of
-   * the job changes it); `refused` hears every edit that was not applied.
+   * the job changes it); `refused` hears every edit that was refused, with
+   * the hold it was for (null: an edit for no single item).
    */
   constructor(
     private job: () => Project | null,
     private stamp: () => string = () => JSON.stringify(this.job()),
-    private refused: (o: "gone" | "restless") => void = () => {},
+    private refused: (o: "gone" | "restless", hold: Hold | null) => void = () => {},
   ) {}
+
+  /**
+   * A gesture that rebuilds the job from its start at every step (a drag)
+   * begins: no answer is applied until the returned function is called
+   * (once is enough; more calls do nothing). Answers that came meanwhile
+   * are asked again on the job the gesture left (ERR-401).
+   */
+  pause(): () => void {
+    if (this.paused++ === 0) this.resumed = new Promise((r) => (this.wake = r));
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      if (--this.paused === 0) {
+        const wake = this.wake;
+        this.resumed = this.wake = null;
+        wake?.();
+      }
+    };
+  }
+
+  /** A gesture is under way (`pause`). */
+  get pausing(): boolean {
+    return this.paused > 0;
+  }
 
   /** Holds item `index` of `list` as what an edit made now is for. */
   hold(list: ListName, index: number, loose = false): Hold {
@@ -171,7 +238,8 @@ export class JobEdits {
   /**
    * An edit of the user's own changed the job from `before()` to `after`
    * (an undo step, a delete, a copy): holds follow their items when a
-   * list's length changed. `before` is only read while something is held.
+   * list's length changed; a hold whose item the step removed ends as
+   * `removed` (quietly). `before` is only read while something is held.
    */
   own(before: () => Project, after: Project) {
     let b: Project | null = null;
@@ -183,7 +251,12 @@ export class JobEdits {
       if (from.length === to.length) return;
       const at = follow(from, to, h.index);
       if (at !== null) h.index = at;
-      else h.gone = true;
+      else {
+        h.gone = true;
+        // Removed by the step, not only lost among equal items: quiet.
+        const k = key(from[h.index]);
+        h.removed = !to.some((v) => key(v) === k);
+      }
     });
   }
 
@@ -218,7 +291,9 @@ export class JobEdits {
   }
 
   private async turn<T>(hold: Hold | null, ask: (job: Project, at: number) => Promise<T>, apply: (answer: T, at: number) => void): Promise<Outcome> {
-    for (let tries = 0; tries < TRIES; tries++) {
+    for (let tries = 0; tries < TRIES; ) {
+      // Not while the user drags: asked once the drag has ended (ERR-401).
+      while (this.resumed) await this.resumed;
       const job = this.job();
       if (!job) return "closed";
       if (hold?.gone) break;
@@ -226,13 +301,19 @@ export class JobEdits {
       const answer = await ask(job, hold?.index ?? -1);
       if (!this.job()) return "closed";
       if (hold?.gone) break;
+      // A drag began while the core answered: ask again after it, on the
+      // job it leaves; that is no try of the job holding still.
+      if (this.resumed) continue;
       if (this.stamp() === asked) {
         apply(answer, hold?.index ?? -1);
         return "done";
       }
+      tries++;
     }
+    // The user's own step removed the item: he knows, nothing to say (UX-402).
+    if (hold?.removed) return "removed";
     const o = hold?.gone ? "gone" : "restless";
-    this.refused(o);
+    this.refused(o, hold);
     return o;
   }
 }

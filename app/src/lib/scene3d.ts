@@ -3,6 +3,7 @@
 // Display only; quantities come from the core.
 
 import { ShapeUtils, Vector2 } from "three";
+import { maxOf, minOf } from "./extent";
 import type { Chimney, Dormer, Point2 } from "./types";
 
 export type Poly3 = [number, number, number][];
@@ -143,10 +144,10 @@ export function planBox(polys: Poly3[]): PlanBox | null {
   const pts = polys.flat();
   if (!pts.length) return null;
   return {
-    minX: Math.min(...pts.map((p) => p[0])),
-    minY: Math.min(...pts.map((p) => p[1])),
-    maxX: Math.max(...pts.map((p) => p[0])),
-    maxY: Math.max(...pts.map((p) => p[1])),
+    minX: minOf(pts, (p) => p[0]),
+    minY: minOf(pts, (p) => p[1]),
+    maxX: maxOf(pts, (p) => p[0]),
+    maxY: maxOf(pts, (p) => p[1]),
   };
 }
 
@@ -175,7 +176,7 @@ export function coveredByDormer(poly: Poly3, dormers: { lines: WallLine[]; box: 
 export function chimneyTop(c: Chimney, host: (p: Point2) => number | null): { bottom: number; top: number } {
   const zs = c.corners.map(host).filter((z): z is number => z !== null);
   if (!zs.length) return { bottom: 0, top: Math.max(c.height, 1) };
-  const [lo, hi] = [Math.min(...zs), Math.max(...zs)];
+  const [lo, hi] = [minOf(zs), maxOf(zs)];
   return { bottom: Math.max(0, lo - 0.3), top: c.height > hi + 0.05 ? c.height : hi + 1 };
 }
 
@@ -321,7 +322,7 @@ export function gableShownByWall(gable: Poly3, wall: Poly3, inward: Point2, over
   const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
   if (len < 1e-6) return false;
   const out = gable.map((p) => -((p[0] - a[0]) * inward.x + (p[1] - a[1]) * inward.y));
-  const [lo, hi] = [Math.min(...out), Math.max(...out)];
+  const [lo, hi] = [minOf(out), maxOf(out)];
   if (hi - lo > ON_LINE || lo < -ON_LINE || hi > Math.max(0, overhang) + ON_LINE) return false;
   return gable.every((p) => {
     const t = ((p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1])) / (len * len);

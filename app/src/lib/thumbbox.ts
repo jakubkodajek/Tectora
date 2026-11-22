@@ -1,5 +1,5 @@
 /** The view box of a plan thumbnail: the extent of every outline point plus
- * `padding` of its larger side. A loop, not `Math.min(...points)`: a spread
+ * `padding` of its larger side. A loop, not a spread of the points into Math.min: a spread
  * over a job's points throws "Maximum call stack size exceeded" once a card
  * carries a few hundred thousand of them, which emptied the whole library
  * screen (audit 2026-11-22 ARCH-402). */

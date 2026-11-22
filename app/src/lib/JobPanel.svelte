@@ -73,9 +73,23 @@
   /** A status change is storing its result: the select is off and a second choice waits (jobedits.ts, one-shot). */
   let changing = $state(false);
   const changeStatus = exclusive(statusChangedNow, (b) => (changing = b));
+  /** The status chosen last; while it is stored, the select shows it and takes no other. */
+  let chosen: JobStatus = untrack(() => status);
   const statusChanged = (e: Event) => {
     const sel = e.currentTarget as HTMLSelectElement;
+    // Busy, not disabled: a disabled select drops the keyboard focus (UI-402).
+    if (changing) {
+      sel.value = chosen;
+      return;
+    }
+    chosen = sel.value as JobStatus;
     return track(changeStatus(sel.value as JobStatus, sel));
+  };
+  /** While a status is stored, keys and presses that would choose another do nothing (UI-402). */
+  const holdWhileChanging = (e: Event) => {
+    if (!changing) return;
+    if (e instanceof KeyboardEvent && (e.key === "Tab" || e.key === "Escape")) return;
+    e.preventDefault();
   };
   async function statusChangedNow(next: JobStatus, sel: HTMLSelectElement) {
     const was = status;
@@ -259,7 +273,7 @@
     <label><span>{t("job.number")}</span><input type="text" use:textfield={{ value: project.job.number, onchange: setText((p, v) => (p.job.number = v)) }} /></label>
     <label>
       <span>{t("job.status")}</span>
-      <select value={status} onchange={statusChanged} title={why ?? undefined} disabled={changing} aria-busy={changing}>
+      <select value={status} onchange={statusChanged} onkeydown={holdWhileChanging} onmousedown={holdWhileChanging} title={why ?? undefined} aria-disabled={changing} aria-busy={changing}>
         {#each JOB_STATUSES as s}<option value={s} disabled={refused(s)}>{t(`status.${s}`)}</option>{/each}
       </select>
     </label>

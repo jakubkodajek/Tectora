@@ -11,12 +11,15 @@
     placement,
     onplace,
     width = 108,
+    item = "",
   }: {
     placement: Placement | null;
     /** One distance typed: the others are null (kept). */
     onplace: (fromEave: number | null, fromLeft: number | null, fromRight: number | null) => unknown;
     /** Field width, px. */
     width?: number;
+    /** The object the distances are of: a field reused for the next one forgets the one before (UI-403). */
+    item?: string;
   } = $props();
 </script>
 
@@ -24,15 +27,15 @@
   <div class="place" role="group" aria-label={t("place.title")} data-testid="place-fields" style="--fw: {width}px">
     <label title={t("place.fromEaveHint")}>
       <span>{t("place.fromEave")}</span>
-      <div class="unit"><input type="text" data-testid="place-eave" use:numeric={{ value: placement.from_eave, digits: 3, step: 0.05, min: 0, max: 500, onchange: (v) => onplace(v, null, null) }} /><em>m</em></div>
+      <div class="unit"><input type="text" data-testid="place-eave" use:numeric={{ key: item, value: placement.from_eave, digits: 3, step: 0.05, min: 0, max: 500, onchange: (v) => onplace(v, null, null) }} /><em>m</em></div>
     </label>
     <label title={t("place.fromLeftHint")}>
       <span>{t("place.fromLeft")}</span>
-      <div class="unit"><input type="text" data-testid="place-left" use:numeric={{ value: placement.from_left, digits: 3, step: 0.05, min: 0, max: 500, onchange: (v) => onplace(null, v, null) }} /><em>m</em></div>
+      <div class="unit"><input type="text" data-testid="place-left" use:numeric={{ key: item, value: placement.from_left, digits: 3, step: 0.05, min: 0, max: 500, onchange: (v) => onplace(null, v, null) }} /><em>m</em></div>
     </label>
     <label title={t("place.fromRightHint")}>
       <span>{t("place.fromRight")}</span>
-      <div class="unit"><input type="text" data-testid="place-right" use:numeric={{ value: placement.from_right, digits: 3, step: 0.05, min: 0, max: 500, onchange: (v) => onplace(null, null, v) }} /><em>m</em></div>
+      <div class="unit"><input type="text" data-testid="place-right" use:numeric={{ key: item, value: placement.from_right, digits: 3, step: 0.05, min: 0, max: 500, onchange: (v) => onplace(null, null, v) }} /><em>m</em></div>
     </label>
   </div>
 {/if}

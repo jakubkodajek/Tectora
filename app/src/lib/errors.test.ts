@@ -249,3 +249,24 @@ describe("round-5 audit: a result too large to keep (HUNT-405)", () => {
     }
   });
 });
+
+describe("a job file in another encoding (round 5)", () => {
+  it("is called not readable text, not damaged, in every language", () => {
+    const was = i18n.locale;
+    try {
+      for (const loc of ["cs", "sk", "en", "de"] as Locale[]) {
+        i18n.locale = loc;
+        const d = describeError({ code: "unreadable", detail: "cp1250.tectora: not UTF-8 text (saved in another encoding?), at byte 58" }, "load");
+        expect(d.message).toBe(t("err.unreadable_text"));
+        expect(d.message).not.toBe(t("err.unreadable"));
+        expect(describeError({ code: "unreadable", detail: "expected value at line 1 column 1" }, "load").message).toBe(t("err.unreadable"));
+      }
+    } finally {
+      i18n.locale = was;
+    }
+    expect(DICTS.en["err.unreadable_text"]).not.toMatch(/damaged/i);
+    expect(DICTS.cs["err.unreadable_text"]).not.toMatch(/poškozen/i);
+    expect(DICTS.sk["err.unreadable_text"]).not.toMatch(/poškoden/i);
+    expect(DICTS.de["err.unreadable_text"]).not.toMatch(/beschädigt/i);
+  });
+});

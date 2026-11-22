@@ -46,6 +46,8 @@
   const placement = $derived(index !== null ? placementOf(result, { kind: "dormer", index }) : null);
 
   const dormer = $derived(index !== null ? project.dormers[index] : null);
+  /** The dormer the fields edit now: a field reused for the next one forgets the one before (UI-403). */
+  const itemKey = $derived(`dormer:${index}`);
   const params = $derived(dormer ? parseDormer(dormer) : null);
   /** Host roof height at the middle of the front of a dormer, for "on the roof" eaves. */
   function hostOf(p: DormerParams | null): number | null {
@@ -156,34 +158,34 @@
         </label>
         <label>
           <span>{t("dormer.width")}</span>
-          <div class="unit"><input type="text" use:numeric={{ value: params.width, step: 0.05, min: 0.1, onchange: (v) => set({ width: v }) }} /><em>m</em></div>
+          <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.width, step: 0.05, min: 0.1, onchange: (v) => set({ width: v }) }} /><em>m</em></div>
         </label>
         {#if kind === "round"}
           <label>
             <span>{t("round.segments")}</span>
-            <input type="text" use:numeric={{ value: params.segments, step: 1, min: 0, max: MAX_ROUND_SEGMENTS, onchange: (v) => set({ segments: Math.round(v) }) }} />
+            <input type="text" use:numeric={{ key: itemKey, value: params.segments, step: 1, min: 0, max: MAX_ROUND_SEGMENTS, onchange: (v) => set({ segments: Math.round(v) }) }} />
           </label>
         {/if}
         {#if kind !== "shed" && kind !== "round"}
           <label>
             <span>{kind === "trapezoid" ? t("dormer.cheekPitch") : t("edge.pitch")}</span>
-            <div class="unit"><input type="text" use:numeric={{ value: params.pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => set({ pitch_deg: v }) }} /><em>°</em></div>
+            <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => set({ pitch_deg: v }) }} /><em>°</em></div>
           </label>
         {/if}
         {#if kind === "shed" || kind === "trapezoid"}
           <label>
             <span>{t("dormer.frontPitch")}</span>
-            <div class="unit"><input type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => set({ front_pitch_deg: v }) }} /><em>°</em></div>
+            <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.front_pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => set({ front_pitch_deg: v }) }} /><em>°</em></div>
           </label>
         {/if}
         {#if kind === "half_hip"}
           <label>
             <span>{t("dormer.halfHipHeight")}</span>
-            <div class="unit"><input type="text" use:numeric={{ value: params.half_hip_height, step: 0.05, min: 0.05, onchange: (v) => set({ half_hip_height: v }) }} /><em>m</em></div>
+            <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.half_hip_height, step: 0.05, min: 0.05, onchange: (v) => set({ half_hip_height: v }) }} /><em>m</em></div>
           </label>
           <label>
             <span>{t("edge.halfHipPitch")}</span>
-            <div class="unit"><input type="text" use:numeric={{ value: params.half_hip_pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => set({ half_hip_pitch_deg: v }) }} /><em>°</em></div>
+            <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.half_hip_pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => set({ half_hip_pitch_deg: v }) }} /><em>°</em></div>
           </label>
         {/if}
       {/if}
@@ -206,30 +208,30 @@
 
   {#if params && kind && kind !== "general" && moreOpen}
     <div class="row more" id="dormer-more-row" use:hscroll>
-      {#if onplace}<PlaceFields {placement} {onplace} />{/if}
+      {#if onplace}<PlaceFields {placement} {onplace} item={itemKey} />{/if}
       <label title={host !== null ? t("dormer.hostHint", { h: formatNumber(host, numberLocale(), 2) }) : undefined}>
         <span>{t("edge.eaveHeight")}</span>
-        <div class="unit"><input type="text" disabled={kind === "pointed"} use:numeric={{ value: params.eave_height, step: 0.05, onchange: (v) => set({ eave_height: v }) }} /><em>m</em></div>
+        <div class="unit"><input type="text" disabled={kind === "pointed"} use:numeric={{ key: itemKey, value: params.eave_height, step: 0.05, onchange: (v) => set({ eave_height: v }) }} /><em>m</em></div>
       </label>
       <label>
         <span>{t("dormer.frontOverhang")}</span>
-        <div class="unit"><input type="text" use:numeric={{ value: params.overhang, step: 0.05, min: 0, onchange: (v) => set({ overhang: v }) }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.overhang, step: 0.05, min: 0, onchange: (v) => set({ overhang: v }) }} /><em>m</em></div>
       </label>
       <label>
         <span>{t("dormer.sideOverhang")}</span>
-        <div class="unit"><input type="text" use:numeric={{ value: params.side_overhang, step: 0.05, min: 0, onchange: (v) => set({ side_overhang: v }) }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.side_overhang, step: 0.05, min: 0, onchange: (v) => set({ side_overhang: v }) }} /><em>m</em></div>
       </label>
       <label>
         <span>X</span>
-        <div class="unit"><input type="text" use:numeric={{ value: params.start.x, step: 0.05, onchange: (v) => set({ start: { ...params.start, x: v } }) }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.start.x, step: 0.05, onchange: (v) => set({ start: { ...params.start, x: v } }) }} /><em>m</em></div>
       </label>
       <label>
         <span>Y</span>
-        <div class="unit"><input type="text" use:numeric={{ value: params.start.y, step: 0.05, onchange: (v) => set({ start: { ...params.start, y: v } }) }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.start.y, step: 0.05, onchange: (v) => set({ start: { ...params.start, y: v } }) }} /><em>m</em></div>
       </label>
       <label>
         <span>{t("edge.direction")}</span>
-        <div class="unit"><input type="text" use:numeric={{ value: angleDeg, step: 1, onchange: (v) => set({ angle: (v * Math.PI) / 180 }) }} /><em>°</em></div>
+        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: angleDeg, step: 1, onchange: (v) => set({ angle: (v * Math.PI) / 180 }) }} /><em>°</em></div>
       </label>
       <label title={t("edge.materialHint")}>
         <span>{t("edge.material")}</span>

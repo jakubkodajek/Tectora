@@ -2,6 +2,7 @@
 // Dachfenster, Öffnung) as the editor places and edits them.
 
 import type { CalcResult, Chimney, Point2, Project, RoofWindow } from "./types";
+import { maxOf, minOf } from "./extent";
 import { slopeAt } from "./dormers";
 
 export type OpeningKind = "chimney" | "window" | "hole";
@@ -53,8 +54,8 @@ function frame(k: Point2[]): Frame | null {
     const x = c.x - o.x, y = c.y - o.y;
     return [x * u.x + y * u.y, x * v.x + y * v.y] as [number, number];
   });
-  const s0 = Math.min(...st.map((p) => p[0])), s1 = Math.max(...st.map((p) => p[0]));
-  const t0 = Math.min(...st.map((p) => p[1])), t1 = Math.max(...st.map((p) => p[1]));
+  const s0 = minOf(st, (p) => p[0]), s1 = maxOf(st, (p) => p[0]);
+  const t0 = minOf(st, (p) => p[1]), t1 = maxOf(st, (p) => p[1]);
   const width = s1 - s0, depth = t1 - t0;
   if (width <= 1e-6 || depth <= 1e-6) return null;
   return {

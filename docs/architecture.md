@@ -164,9 +164,15 @@ after another, each on the job as the one before left it; when the job is
 replaced from outside (reload, merge on a save conflict, Revert) the editor
 compares the file before and after that save (both in the core's form) and
 moves every hold with its item, or lets it go when the save changed or
-removed the item. An edit whose item was let go is refused with a note; an
+removed the item. An edit whose item was let go is refused with a warning
+that names the object (the field stays marked until the next input); an
 AI save of other things never refuses it, nor does the user's own earlier
-step. The bars' selection follows its item the same way.
+step, and an edit whose item the user deleted himself ends quietly. While
+the user drags an object or a building no answer is applied (a drag
+rebuilds the job from its start at every step); the edit is asked again on
+the dragged job once the drag ends. A number field reused for the next
+item (PageDown in a bar) forgets what it sent for the one before (its
+`key`). The bars' selection follows its item the same way.
 
 The settings file is changed only through `Settings::update` (read, change
 and write under one lock file), so the app and an MCP server writing at the

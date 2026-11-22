@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import type { CalcResult, PlanLabel, PlanMark, Point2, Project, Selection } from "./types";
   import { isGable } from "./types";
   import { onWall } from "./corners";
@@ -325,6 +325,12 @@
   let pan: { x: number; y: number; cx: number; cy: number } | null = null;
   /** An item or a whole part being dragged: where the press started. */
   let objDrag: { target: PlanTarget; sx: number; sy: number; wx: number; wy: number; moved: boolean; dx: number; dy: number } | null = null;
+  // A plan taken away mid-drag (another view) ends the drag where it is:
+  // the editor holds core-backed edits back until a drag ends (ERR-401).
+  onDestroy(() => {
+    if (objDrag?.moved) ondrag?.(objDrag.target, objDrag.dx, objDrag.dy, true);
+    objDrag = null;
+  });
   /** What a right press hit, set by the shape's own handler before the plan's. */
   let rcTarget: PlanTarget | null = null;
   /** A right press that opens the menu on release unless it pans. */

@@ -263,7 +263,7 @@
         <p class="mono">{t("snap.engine", { v: stored.stored.engine_version })}</p>
       {/if}
       {#if stored.differences.length && onstore}
-        <button class="btn sm" disabled={!!storeBlocked || storing} title={storeBlocked ?? undefined} onclick={onstore}>{t("snap.store")}</button>
+        <button class="btn sm" disabled={!!storeBlocked} aria-disabled={storing} aria-busy={storing} title={storeBlocked ?? undefined} onclick={() => !storing && onstore?.()}>{t("snap.store")}</button>
       {/if}
     </div>
   {/if}

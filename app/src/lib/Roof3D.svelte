@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ui } from "./theme.svelte";
+  import { minOf } from "./extent";
   import { releaseRenderer } from "./webgl";
   import Icon from "./Icon.svelte";
   import { onMount } from "svelte";
@@ -232,7 +233,7 @@
     // Manual faces: counted in the roof area, so shown in 3D too (UX-009),
     // as neutral planes of their pitch from the lowest eave.
     const eaves = project.parts.flatMap((p) => p.edges.map((e) => e.eave_height));
-    const faceBase = eaves.length ? Math.min(...eaves) : presets.eave_height;
+    const faceBase = eaves.length ? minOf(eaves) : presets.eave_height;
     const manualMat = new THREE.MeshStandardMaterial({ color: token("--scene-wall"), roughness: 0.9, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 });
     (project.manual_faces ?? []).forEach((f, index) => {
       const poly = manualFacePoly(f.points, f.pitch_deg, faceBase);

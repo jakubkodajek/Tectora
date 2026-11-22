@@ -59,6 +59,8 @@
 
   const part = $derived(selection ? project.parts[selection.part] : null);
   const edge = $derived(part && selection ? part.edges[selection.edge] : null);
+  /** The wall the fields edit now: a field reused for the next one forgets the one before (UI-403). */
+  const wallKey = $derived(selection ? `${selection.part}:${selection.edge}` : "");
   const partName = $derived(part && selection ? partLabel(part.name, selection.part) : "");
   const length = $derived.by(() => {
     if (!part || !selection || !edge) return 0;
@@ -233,7 +235,7 @@
         <div class="kind" title={t("edge.markerHint")}>{t("edge.marker")}</div>
         <label>
           <span>{t("edge.direction")}</span>
-          <div class="unit"><input type="text" use:numeric={{ value: directionDeg, step: 1, onchange: setDirection }} /><em>°</em></div>
+          <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: directionDeg, step: 1, onchange: setDirection }} /><em>°</em></div>
         </label>
         <button class="icon-btn" onclick={() => setDirection(directionDeg + 180)} title={t("edge.flip")} aria-label={t("edge.flip")}><Icon name="refresh" /></button>
       {:else}
@@ -244,7 +246,7 @@
         <label class:off={gable || flat} title={flat ? t("edge.flatOff") : leaning ? t("edge.leaningHint") : undefined}>
           <span>{t("edge.pitch")}{#if leaning && !flat}<b class="mark" data-testid="pitch-leaning"><i></i>{t("edge.leaning")}</b>{/if}</span>
           <div class="unit"><input type="text" disabled={gable || flat} aria-describedby={flat ? "def-flat-note" : undefined}
-            use:numeric={{ value: gable ? null : edge.pitch_deg, step: 1, min: 2, max: 90, onchange: setPitch }} /><em>°</em></div>
+            use:numeric={{ key: wallKey, value: gable ? null : edge.pitch_deg, step: 1, min: 2, max: 90, onchange: setPitch }} /><em>°</em></div>
         </label>
         {#if flat}<p class="flat-note" id="def-flat-note" data-testid="flat-note"><i></i>{t("edge.flatOff")}</p>{/if}
       {/if}
@@ -252,18 +254,18 @@
         <label class="wrap" title={unusualHeight ? t("edge.unusualHint", { v: num(buildingHeight ?? 0) }) : t("edge.buildingHeightHint", { name: partName })}>
           <span>{t("edge.buildingHeight")}{#if unusualHeight}<b class="mark" data-testid="unusual-height"><i></i>{t("edge.unusual")}</b>{/if}</span>
           <div class="unit"><input type="text" data-testid="building-height"
-            use:numeric={{ value: buildingHeight, step: 0.05, min: WALL_HEIGHT.min, max: WALL_HEIGHT.max, onchange: onheight }} /><em>m</em></div>
+            use:numeric={{ key: wallKey, value: buildingHeight, step: 0.05, min: WALL_HEIGHT.min, max: WALL_HEIGHT.max, onchange: onheight }} /><em>m</em></div>
         </label>
       {/if}
       {#if !onheight}
         <label title={unusualEave ? t("edge.unusualHint", { v: num(edge.eave_height) }) : undefined}>
           <span>{t("edge.eaveHeight")}{#if unusualEave}<b class="mark" data-testid="unusual-eave"><i></i>{t("edge.unusual")}</b>{/if}</span>
-          <div class="unit"><input type="text" data-testid="eave-height" use:numeric={{ value: edge.eave_height, step: 0.05, min: 0, onchange: bounded(WALL_HEIGHT, (v) => ({ eave_height: v })) }} /><em>m</em></div>
+          <div class="unit"><input type="text" data-testid="eave-height" use:numeric={{ key: wallKey, value: edge.eave_height, step: 0.05, min: 0, onchange: bounded(WALL_HEIGHT, (v) => ({ eave_height: v })) }} /><em>m</em></div>
         </label>
       {/if}
       <label title={unusualOverhang ? t("edge.unusualHint", { v: num(edge.overhang) }) : undefined}>
         <span>{t("edge.overhang")}{#if unusualOverhang}<b class="mark" data-testid="unusual-overhang"><i></i>{t("edge.unusual")}</b>{/if}</span>
-        <div class="unit"><input type="text" use:numeric={{ value: edge.overhang, step: 0.05, min: 0, onchange: bounded(OVERHANG, (v) => ({ overhang: v })) }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: edge.overhang, step: 0.05, min: 0, onchange: bounded(OVERHANG, (v) => ({ overhang: v })) }} /><em>m</em></div>
       </label>
       <button class="btn sm more-btn" class:on={moreOpen} data-testid="def-more" aria-expanded={moreOpen} aria-controls="def-more-row"
         aria-describedby={moreSet.length ? "def-more-set" : undefined}
@@ -293,7 +295,7 @@
              960x540 (review UI-003). -->
         <label title={unusualEave ? t("edge.unusualHint", { v: num(edge.eave_height) }) : undefined}>
           <span title={t("edge.eaveHeightHint")}>{t("edge.eaveHeight")}{#if unusualEave}<b class="mark" data-testid="unusual-eave"><i></i>{t("edge.unusual")}</b>{/if}</span>
-          <div class="unit"><input type="text" data-testid="eave-height" aria-describedby="def-eave-note" use:numeric={{ value: edge.eave_height, step: 0.05, min: 0, onchange: bounded(WALL_HEIGHT, (v) => ({ eave_height: v })) }} /><em>m</em></div>
+          <div class="unit"><input type="text" data-testid="eave-height" aria-describedby="def-eave-note" use:numeric={{ key: wallKey, value: edge.eave_height, step: 0.05, min: 0, onchange: bounded(WALL_HEIGHT, (v) => ({ eave_height: v })) }} /><em>m</em></div>
         </label>
         <!-- Said on screen, not only in the tooltip: this is the eave the roof
              is calculated from, the value the defaults set (UX-008). -->
@@ -302,17 +304,17 @@
       {#if !marker}
         <label title={unusualLength ? t("edge.unusualHint", { v: num(length) }) : t("edge.lengthHint")}>
           <span>{t("edge.length")}{#if unusualLength}<b class="mark" data-testid="unusual-length"><i></i>{t("edge.unusual")}</b>{/if}</span>
-          <div class="unit"><input type="text" use:numeric={{ value: length, digits: 2, step: 0.05, min: 0.01, onchange: onlength }} /><em>m</em></div>
+          <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: length, digits: 2, step: 0.05, min: 0.01, onchange: onlength }} /><em>m</em></div>
         </label>
       {/if}
       {#if onpoint}
         <label class="xy" title={t("edge.startHint")}>
           <span>{t("edge.startX")}</span>
-          <div class="unit"><input type="text" use:numeric={{ value: edge.start.x, step: 0.05, onchange: (v) => onpoint(v, edge.start.y) }} /><em>m</em></div>
+          <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: edge.start.x, step: 0.05, onchange: (v) => onpoint(v, edge.start.y) }} /><em>m</em></div>
         </label>
         <label class="xy" title={t("edge.startHint")}>
           <span>{t("edge.startY")}</span>
-          <div class="unit"><input type="text" use:numeric={{ value: edge.start.y, step: 0.05, onchange: (v) => onpoint(edge.start.x, v) }} /><em>m</em></div>
+          <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: edge.start.y, step: 0.05, onchange: (v) => onpoint(edge.start.x, v) }} /><em>m</em></div>
         </label>
       {/if}
       {#if !marker}
@@ -341,11 +343,11 @@
           {#if edge.half_hip}
             <label title={halfHipHigh ? t("edge.halfHipAboveRidgeHint", { v: num(ridge ?? 0) }) : undefined}>
               <span>{t("edge.halfHipHeight")}{#if halfHipHigh}<b class="mark" data-testid="halfhip-above-ridge"><i></i>{t("edge.aboveRidge")}</b>{/if}</span>
-              <div class="unit"><input type="text" use:numeric={{ value: edge.half_hip.height, step: 0.05, min: WALL_HEIGHT.min, max: WALL_HEIGHT.max, onchange: (v) => { if (edge.half_hip) onchange({ half_hip: { ...edge.half_hip, height: v } }); } }} /><em>m</em></div>
+              <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: edge.half_hip.height, step: 0.05, min: WALL_HEIGHT.min, max: WALL_HEIGHT.max, onchange: (v) => { if (edge.half_hip) onchange({ half_hip: { ...edge.half_hip, height: v } }); } }} /><em>m</em></div>
             </label>
             <label>
               <span>{t("edge.halfHipPitch")}</span>
-              <div class="unit"><input type="text" use:numeric={{ value: edge.half_hip.pitch_deg, step: 1, min: 2, max: 89.9, onchange: (v) => { if (edge.half_hip) onchange({ half_hip: { ...edge.half_hip, pitch_deg: v } }); } }} /><em>°</em></div>
+              <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: edge.half_hip.pitch_deg, step: 1, min: 2, max: 89.9, onchange: (v) => { if (edge.half_hip) onchange({ half_hip: { ...edge.half_hip, pitch_deg: v } }); } }} /><em>°</em></div>
             </label>
           {/if}
         {/if}
@@ -361,11 +363,11 @@
             <div class="break">
               <label title={aboveRidge(b.height, ridge) ? t("edge.breakAboveRidgeHint", { v: num(ridge ?? 0) }) : undefined}>
                 <span>{t("edge.breakHeight", { n: i + 1 })}{#if aboveRidge(b.height, ridge)}<b class="mark" data-testid="break-above-ridge"><i></i>{t("edge.aboveRidge")}</b>{/if}</span>
-                <div class="unit"><input type="text" use:numeric={{ value: b.height, step: 0.05, min: edge.eave_height, max: WALL_HEIGHT.max, onchange: (v) => setBreak(i, { height: v }) }} /><em>m</em></div>
+                <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: b.height, step: 0.05, min: edge.eave_height, max: WALL_HEIGHT.max, onchange: (v) => setBreak(i, { height: v }) }} /><em>m</em></div>
               </label>
               <label>
                 <span>{t("edge.breakPitch")}</span>
-                <div class="unit"><input type="text" use:numeric={{ value: b.pitch_deg, step: 1, min: 2, max: 90, onchange: (v) => setBreak(i, { pitch_deg: v }) }} /><em>°</em></div>
+                <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: b.pitch_deg, step: 1, min: 2, max: 90, onchange: (v) => setBreak(i, { pitch_deg: v }) }} /><em>°</em></div>
               </label>
               <button class="icon-btn" onclick={() => onchange({ breaks: breaks.filter((_, j) => j !== i).map((x) => ({ ...x })) })}
                 title={t("edge.removeBreak")} aria-label={t("edge.removeBreak")}><Icon name="x" /></button>

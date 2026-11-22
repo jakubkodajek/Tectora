@@ -1,3 +1,5 @@
+import { minOf } from "./extent";
+
 export interface Point2 {
   x: number;
   y: number;
@@ -38,7 +40,7 @@ export interface RoofPart {
 /** The building's height: its own, else its lowest eave (core `RoofPart::building_height`). */
 export function buildingHeight(part: RoofPart): number | null {
   if (part.height != null) return part.height;
-  return part.edges.length ? Math.min(...part.edges.map((e) => e.eave_height)) : null;
+  return part.edges.length ? minOf(part.edges, (e) => e.eave_height) : null;
 }
 
 export type JobStatus = "draft" | "offer" | "ordered" | "done";
