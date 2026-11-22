@@ -14,7 +14,7 @@
   import { numberLocale, t } from "./i18n.svelte";
   import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
   import { notUtf8, type Action } from "./errors";
-  import { fold } from "./fold";
+  import { fold, searchWords } from "./fold";
   import { dismiss, notify, notifyError } from "./notify.svelte";
   import UpdateBanner from "./UpdateBanner.svelte";
   import { prefs, savePrefs } from "./settings.svelte";
@@ -71,7 +71,7 @@
 
   const rows = $derived.by(() => {
     // Every word must appear somewhere (same rule as the MCP search).
-    const words = norm(query).split(/\s+/).filter(Boolean);
+    const words = searchWords(norm(query));
     const list = projects.filter((p) => {
       if (year !== null && yearOf(p.modified_ms) !== year) return false;
       if (filter === "ai" && !(p.last_activity && isAi(p.last_activity.actor))) return false;

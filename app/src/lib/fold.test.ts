@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fold } from "./fold";
+import { fold, searchWords } from "./fold";
 
 describe("fold (the core's library::fold)", () => {
   it("drops accents and case", () => {
@@ -33,5 +33,44 @@ describe("fold follows the core's fold (shared cases)", () => {
   it("keeps compatibility characters as the core does", () => {
     expect(fold("Plocha 120 m²")).not.toContain("m2");
     expect(fold("Ⅻ etapa")).not.toContain("xii");
+  });
+});
+
+// Audit 2026-11-22 HUNT-602 / TEST-608: the core's fold over every code
+// point U+0020 to U+2FFFF and many letter + mark sequences, written by the
+// core test `library::tests::fold_matches_the_generated_parity_file`
+// (`changed`: the inputs it changes; every other input folds to itself).
+// The inputs are made here as the core makes them.
+describe("fold equals the core's fold over every code point", () => {
+  const files = import.meta.glob("../../../tests/fixtures/parity/fold_all.json", { eager: true, import: "default" }) as Record<string, unknown>;
+  const file = Object.values(files)[0] as { changed: Record<string, string>; words: [string, string[]][] };
+  const inputs = (): string[] => {
+    const out: string[] = [];
+    for (let c = 0x20; c < 0x30000; c++) if (c < 0xd800 || c >= 0xe000) out.push(String.fromCodePoint(c));
+    const marks = Array.from({ length: 0x70 }, (_, i) => String.fromCodePoint(0x300 + i));
+    for (const l of "aeiouyAEIOUYcnszrdtlgkhwjCNSZRDTLGKHWJαεηιουωΑΕΗΙΟΥΩæøÆØ") for (const m of marks) out.push(l + m);
+    for (const l of "aeoAEOuUαω")
+      for (const m of marks) for (const m2 of [0x301, 0x302, 0x303, 0x308, 0x313, 0x323, 0x328, 0x342]) out.push(l + m + String.fromCodePoint(m2));
+    for (const l of "aAo")
+      for (const m of [0x1ab0, 0x1dc0, 0x20d0, 0xfe20, 0x0483, 0x0591, 0x064b, 0x093c, 0x302a, 0x3099]) out.push(l + String.fromCodePoint(m));
+    return out;
+  };
+  it("has the file", () => expect(Object.keys(file.changed).length).toBeGreaterThan(1000));
+  it("folds every input as the core", () => {
+    const hex = (s: string) => [...s].map((c) => "U+" + c.codePointAt(0)!.toString(16).toUpperCase()).join(" ");
+    const differ: string[] = [];
+    for (const i of inputs()) {
+      const want = file.changed[i] ?? i;
+      const got = fold(i);
+      if (got !== want && differ.length < 20) differ.push(`${hex(i)}: app ${hex(got)}, core ${hex(want)}`);
+    }
+    expect(differ).toEqual([]);
+  });
+  it("folds the oxia vowels and the accented ligatures", () => {
+    expect(fold("Vila \u1f71lfa")).toBe(fold("vila αlfa"));
+    expect(fold("\u01fd \u01e3 \u01ff")).toBe("ae ae o");
+  });
+  it("splits search words as the core", () => {
+    for (const [text, words] of file.words) expect(searchWords(fold(text))).toEqual(words);
   });
 });

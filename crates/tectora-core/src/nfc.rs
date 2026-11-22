@@ -15,23 +15,49 @@ use std::borrow::Cow;
 
 /// `s` with each base letter and combining mark the table knows composed
 /// into one character, applied repeatedly (`u` + diaeresis + acute is `ǘ`).
+/// A code point NFC changes on its own (a canonical singleton such as the
+/// Greek oxia vowel U+1F71, which is `ά` U+03AC, or a composition
+/// exclusion) is replaced by its NFC form first, as JavaScript's
+/// `normalize("NFC")` does, so the core and the app fold one text alike
+/// (audit 2026-11-22 HUNT-602, TEST-608).
 pub fn nfc(s: &str) -> Cow<'_, str> {
-    if !s.chars().any(is_mark) {
+    if !s.chars().any(|c| is_mark(c) || singleton(c).is_some()) {
         return Cow::Borrowed(s);
     }
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if is_mark(c)
-            && let Some(last) = out.chars().next_back()
-            && let Some(composed) = compose(last, c)
-        {
-            out.pop();
-            out.push(composed);
-        } else {
-            out.push(c);
+        match singleton(c) {
+            Some(to) => to.chars().for_each(|t| push_composed(&mut out, t)),
+            None => push_composed(&mut out, c),
         }
     }
     Cow::Owned(out)
+}
+
+/// Pushes `c` onto `out`, composed with the letter before it when `c` is
+/// a mark the table composes with that letter.
+fn push_composed(out: &mut String, c: char) {
+    if is_mark(c)
+        && let Some(last) = out.chars().next_back()
+        && let Some(composed) = compose(last, c)
+    {
+        out.pop();
+        out.push(composed);
+    } else {
+        out.push(c);
+    }
+}
+
+/// The NFC form of `c` when NFC changes `c` on its own.
+fn singleton(c: char) -> Option<&'static str> {
+    use crate::nfc_singletons::SINGLETONS;
+    if c < SINGLETONS[0].0 {
+        return None;
+    }
+    SINGLETONS
+        .binary_search_by(|e| e.0.cmp(&c))
+        .ok()
+        .map(|i| SINGLETONS[i].1)
 }
 
 /// The letter `c` is made of without its marks (`ő` -> `o`, `ǘ` -> `u`,
