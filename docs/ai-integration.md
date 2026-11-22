@@ -73,7 +73,11 @@ PDF renderer).
 a value outside an `enum` are refused and nothing is saved (number ranges
 are checked by each tool, with its own reason). A write to a job past the
 draft whose figures then differ from its stored result says so in its
-`note` and returns `stored_result.differences`. A request line that is
+`note` and returns `stored_result.differences`. A stored result an older
+Tectora took is recalculated only when the user opens an offer job in the
+app (`refresh_stored_result`, before `load_project`), with a change-log
+entry by `tectora` the user can revert; `get_project` and the other MCP
+tools only read it. A request line that is
 not a JSON object, or has no `method`, is answered with JSON-RPC
 `-32600` (invalid request).
 

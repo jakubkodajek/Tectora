@@ -1881,19 +1881,30 @@ impl Store {
     /// the recalculation, `None` when nothing was recalculated. A result
     /// stored before Tectora kept its origin, one whose design changed
     /// since, one put back by a revert and one this engine already checked
-    /// stay as they are. So does the result of a job whose lock cannot be
+    /// stay as they are, and so does the result of a job that is not an
+    /// offer (draft, ordered, done). So does the result of a job whose lock cannot be
     /// taken (a folder with files where the lock file belongs): every other
     /// save of it is refused as well (audit 2026-11-22 ARCH-702), and two
     /// opens at once must not log it twice. The roof is calculated once,
     /// in the work bound ([`crate::work::calculate`]), and its result is
-    /// the new origin (HUNT-703). The app calls it when it opens a job, off
-    /// the window's thread, and the MCP server in `get_project`.
+    /// the new origin (HUNT-703). Only the app calls it, when the user
+    /// opens a job, off the window's thread; an AI reading the job over MCP
+    /// never changes it (Jakub's decision 2026-11-22, audit UX-702h).
     pub fn refresh_result(&self, id: &str) -> Result<Option<String>, StoreError> {
-        self.path(id)?;
+        // No lock file is made for a job that is not there.
+        if fs::symlink_metadata(self.path(id)?).is_err() {
+            return Ok(None);
+        }
         let Ok(_lock) = self.lock(id) else {
             return Ok(None);
         };
         let before = self.load(id)?;
+        // Only an offer follows the corrected calculation: a draft, an
+        // ordered and a done job keep the figures they have (Jakub's
+        // decision 2026-11-22, audit UX-702g).
+        if before.job.status != crate::model::JobStatus::Offer {
+            return Ok(None);
+        }
         let Some(stored) = &before.result_snapshot else {
             return Ok(None);
         };
@@ -4609,8 +4620,10 @@ mod tests {
         old_offer_of(store, examples::find("gable").unwrap().project(), extra)
     }
 
-    /// [`old_offer_off_by`] of the design `p`.
+    /// [`old_offer_off_by`] of the design `p`, a job in status offer (only
+    /// offers are recalculated, UX-702g).
     fn old_offer_of(store: &Store, mut p: Project, extra: f64) -> (String, Project) {
+        p.job.status = crate::model::JobStatus::Offer;
         p.result_snapshot = Some(crate::snapshot::take(&p));
         let id = store.save(None, &p).unwrap();
         let taken = p.result_snapshot.as_ref().unwrap().taken_ms;
@@ -4851,6 +4864,55 @@ mod tests {
             store.result_origins(&id)[0].checked,
             crate::snapshot::ENGINE_VERSION
         );
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn only_an_offer_follows_the_corrected_calculation() {
+        // Jakub's decision 2026-11-22 (audit UX-702g): a draft, an ordered
+        // and a done job keep their stored figures.
+        use crate::model::JobStatus;
+        let store = temp_store("refresh-status");
+        for (status, refreshed) in [
+            (JobStatus::Draft, false),
+            (JobStatus::Offer, true),
+            (JobStatus::Ordered, false),
+            (JobStatus::Done, false),
+        ] {
+            let (id, mut p) = old_offer(&store);
+            p.job.status = status;
+            fs::write(store.path(&id).unwrap(), p.to_json().unwrap()).unwrap();
+            assert_eq!(store.refresh_stored_result(&id).unwrap(), refreshed, "{status:?}");
+            if !refreshed {
+                assert_eq!(store.load(&id).unwrap().result_snapshot, p.result_snapshot);
+                assert!(store.activity(&id).iter().all(|e| e.actor != ENGINE_ACTOR));
+            }
+        }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn reverting_the_recalculation_puts_the_offer_figures_back_for_good() {
+        // Jakub's decision 2026-11-22 (audit UX-702d): the user may put the
+        // old offer figures back, by Revert of the engine's entry.
+        let store = temp_store("refresh-revert-to");
+        let (id, p) = old_offer(&store);
+        let summary = store.refresh_result(&id).unwrap().expect("recalculated");
+        let entry = store.activity(&id).last().unwrap().clone();
+        assert_eq!((entry.actor.as_str(), entry.summary.as_str()), (ENGINE_ACTOR, summary.as_str()));
+        let back = store.revert_to(&id, entry.ts_ms, USER_ACTOR, None).unwrap();
+        assert_eq!(back.result_snapshot, p.result_snapshot);
+        assert_eq!(store.load(&id).unwrap().result_snapshot, p.result_snapshot);
+        // Not recalculated again on the next opens.
+        assert_eq!(store.refresh_result(&id).unwrap(), None);
+        assert_eq!(store.refresh_result(&id).unwrap(), None);
+        assert_eq!(store.load(&id).unwrap().result_snapshot, p.result_snapshot);
+        let engine = store
+            .activity(&id)
+            .iter()
+            .filter(|e| e.actor == ENGINE_ACTOR)
+            .count();
+        assert_eq!(engine, 1);
         let _ = fs::remove_dir_all(&store.dir);
     }
 

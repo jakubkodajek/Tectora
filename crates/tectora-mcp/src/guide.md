@@ -240,11 +240,15 @@ the draft checks the roof as it is now also when the job keeps the result
 of an earlier offer (it went back to draft since): a roof the app would
 refuse stays a draft, and the kept result stays the offer's when the roof
 calculates. A result stored by an older Tectora whose figures the
-corrected calculation changes is recalculated when the job is opened (in
-the app or with `get_project`), with a change-log entry that keeps the old
-figures (`get_history`). This happens only while the design is the one the
-result was taken from, no AI change waits for review and the job can be
-saved (a job whose saves are refused keeps its stored result).
+corrected calculation changes is recalculated when the user opens an offer
+job in the app, with a change-log entry by `tectora` that keeps the old
+figures (`get_history`); the user can revert that entry. Only offers are
+recalculated (draft, ordered and done jobs keep their figures), only while
+the design is the one the result was taken from, no AI change waits for
+review and the job can be saved. `get_project` and every other tool only
+read the stored result: they never recalculate it. `stored_result.engine_changed`
+says when it came from another Tectora version; tell the user, the app
+updates it when they open the job.
 
 ## Results (DACAD line codes)
 

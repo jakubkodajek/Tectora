@@ -928,12 +928,11 @@ fn export_plan_never_writes_through_a_link_in_the_exports_folder() {
     let _ = std::fs::remove_dir_all(&outside);
 }
 
-/// Audit 2026-11-22 TEST-703: `get_project` recalculates a stored result an
-/// older engine took from this very design, once, with the engine's log
-/// entry, as the app does when it opens the job.
+/// Audit 2026-11-22 TEST-703 with Jakub's decision 2026-11-22 (UX-702h):
+/// `get_project` is a read and leaves a stored result an older engine took
+/// from this very design as it is; only the app's open recalculates it.
 #[test]
-fn get_project_refreshes_a_result_an_older_engine_stored() {
-    use tectora_core::snapshot::{ENGINE_VERSION, REFRESHED_PREFIX};
+fn get_project_leaves_a_result_an_older_engine_stored() {
     use tectora_core::store::ENGINE_ACTOR;
     let mut s = server();
     let id = gable_job(&mut s);
@@ -959,30 +958,15 @@ fn get_project_refreshes_a_result_an_older_engine_stored() {
         o["checked"] = "0.0.1".into();
     }
     std::fs::write(&origin, origins.to_string()).unwrap();
+    let file = std::fs::read_to_string(&path).unwrap();
 
-    let engine = |s: &Server| {
-        s.store
-            .activity(&id)
-            .iter()
-            .filter(|e| e.actor == ENGINE_ACTOR)
-            .count()
-    };
     let r = s.call_tool("get_project", &json!({ "id": id })).unwrap();
-    let job: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    assert_eq!(job["result_snapshot"]["engine_version"], ENGINE_VERSION);
-    assert!((job["result_snapshot"]["roof_area"].as_f64().unwrap() - area).abs() < 0.01);
-    let entry = s.store.activity(&id).last().unwrap().clone();
-    assert_eq!(entry.actor, ENGINE_ACTOR);
-    assert!(entry.summary.starts_with(REFRESHED_PREFIX), "{}", entry.summary);
-    assert_eq!(engine(&s), 1);
-    // The answer is the recalculated job.
-    assert_eq!(
-        r["stored_result"]["stored"]["engine_version"],
-        ENGINE_VERSION,
-        "{r}"
-    );
-    assert_eq!(r["stored_result"]["engine_changed"], false, "{r}");
-    // Once only.
-    s.call_tool("get_project", &json!({ "id": id })).unwrap();
-    assert_eq!(engine(&s), 1);
+    // The answer and the file keep the offer's figures; the AI sees that
+    // they came from another engine.
+    assert_eq!(r["stored_result"]["stored"]["engine_version"], "0.0.1", "{r}");
+    assert_eq!(r["stored_result"]["engine_changed"], true, "{r}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), file);
+    assert!(s.store.activity(&id).iter().all(|e| e.actor != ENGINE_ACTOR));
+    // The app's open still recalculates it.
+    assert!(s.store.refresh_stored_result(&id).unwrap());
 }
