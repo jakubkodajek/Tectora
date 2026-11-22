@@ -510,7 +510,8 @@
     const ro = new ResizeObserver(resize);
     ro.observe(host);
     resize();
-    build();
+    // The first build comes from the rebuild effect below, which runs after
+    // this one; building here as well drew a large job twice on opening.
 
     // Click (no orbit or pan in between) picks what is under the pointer:
     // left selects it, right (or Ctrl+click) opens its menu.

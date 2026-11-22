@@ -490,7 +490,24 @@ test.describe("round-6 audit: a job at the limits in the plan (UI-501, TEST-501)
     // (UI-602: 4 to 5 s frozen per click in the split layout).
     const view3d = page.locator(".view .host").first();
     await expect(view3d).toHaveAttribute("data-builds", /\d+/, { timeout: 30_000 });
-    const builds = await view3d.getAttribute("data-builds");
+    // The scene is built once for the job and once more when its result
+    // arrives, which on 200 buildings can land after the results panel; take
+    // the count once it has stood still, then the clicks must not move it.
+    let builds = await view3d.getAttribute("data-builds");
+    await expect
+      .poll(
+        async () => {
+          await page.waitForTimeout(1500);
+          const now = await view3d.getAttribute("data-builds");
+          const still = now === builds;
+          builds = now;
+          return still;
+        },
+        { timeout: 60_000, intervals: [0] },
+      )
+      .toBe(true);
+    // Opening builds the scene at most twice: the job, then its result.
+    expect(Number(builds), "3D scene builds on opening").toBeLessThanOrEqual(2);
     const clickGap = await gapDuring(page, async () => {
       await selectWall(page, 0);
       await selectWall(page, 5, 2);
