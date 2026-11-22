@@ -806,7 +806,8 @@
       project.result_snapshot = snap;
       commit();
     } catch (e) {
-      notifyError(e, "save");
+      // A refusal (no building, no roof), not a failed save of the job (UI-206).
+      notifyError(e, "storeResult");
     }
   }
 
@@ -2018,7 +2019,8 @@
             <i class="dot"></i>
             <div class="warn-text">
               <strong>{t("prob.title", { n: result.problems.length })}</strong>
-              <span>{describeProblem(first, project)}{#if result.problems.length > 1} · {t("review.more", { n: result.problems.length - 1 })}{/if}</span>
+              <!-- Clamped to two lines in small windows (CSS, UI-205); the whole text stays in the title. -->
+              <span title={describeProblem(first, project)}>{describeProblem(first, project)}{#if result.problems.length > 1} · {t("review.more", { n: result.problems.length - 1 })}{/if}</span>
             </div>
             <code>{first.code}</code>
             {#if first.item === "part" && first.edge !== undefined}
@@ -2959,6 +2961,25 @@
     .review,
     .warn-bar {
       padding: 6px 12px;
+    }
+  }
+  /* Small windows: a problem banner keeps the plan usable, its title on one
+     line and the text cut after two lines (UI-205). */
+  @media (max-height: 640px), (max-width: 760px) {
+    .warn-text strong {
+      max-width: 100%;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .warn-text span {
+      flex-basis: 100%;
+      min-width: 0;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+      overflow: hidden;
     }
   }
   .review-more {

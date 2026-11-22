@@ -103,4 +103,14 @@ describe("AI settings card against the settings now (UX-104, UX-105)", () => {
     expect(changeState(two)).not.toBe(DICTS.cs["aiChange.state.nothing"]);
     expect(changeState(two)).toBe(DICTS.cs["aiChange.state.reverted"]);
   });
+
+  it("the kept note reads with one colon (UX-204) in every language", () => {
+    for (const l of ["cs", "sk", "en", "de"] as const) {
+      i18n.locale = l;
+      const note = keptNote(pitchOnly({ state: "reverted", kept: ["roof_defaults.pitch_deg"] }), now(30))!;
+      expect(note, l).toContain("30°");
+      expect(note.split(":").length - 1, `${l}: ${note}`).toBe(1);
+    }
+    i18n.locale = "cs";
+  });
 });

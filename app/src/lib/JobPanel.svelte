@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { info, notifyError } from "./notify.svelte";
+  import { info, notify, notifyError } from "./notify.svelte";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { untrack } from "svelte";
   import Icon from "./Icon.svelte";
@@ -10,8 +10,8 @@
   import { JOB_STATUSES } from "./types";
   import { DACAD_MATERIALS, defaultMaterialName } from "./materials";
   import { textfield } from "./textfield";
-  import { fileSize } from "./format";
-  import { hasBuilding, roofInput } from "./offer";
+  import { fileSize, m2 } from "./format";
+  import { hasBuilding, roofInput, snapshotDiffers } from "./offer";
 
   /** Opens an attached file; files that are not drawings or documents are only shown in their folder. */
   async function openFile(name: string) {
@@ -76,28 +76,39 @@
       return;
     }
     let snap: ResultSnapshot | null = null;
-    if (was === "draft" && next !== "draft" && !p.result_snapshot) {
-      const input = roofInput(p);
+    // A result stored before (the job went back to draft since) stays the
+    // offer's; the user is told when the roof now gives other figures (UX-206).
+    const kept = was === "draft" && next !== "draft" ? (p.result_snapshot ?? null) : null;
+    let input: string | null = null;
+    let fresh: ResultSnapshot | null = null;
+    if (was === "draft" && next !== "draft") {
+      input = roofInput(p);
       try {
-        snap = await api.takeSnapshot(JSON.parse(JSON.stringify(p)));
+        fresh = await api.takeSnapshot(JSON.parse(JSON.stringify(p)));
       } catch (e) {
-        // No figures to make the offer with: the job stays a draft (DR-002).
-        // Not a failed save: the job on disk is fine, the status was refused (UX-005).
-        sel.value = latest()?.job.status ?? was;
-        notifyError(e, "status");
-        return;
+        if (!kept) {
+          // No figures to make the offer with: the job stays a draft (DR-002).
+          // Not a failed save: the job on disk is fine, the status was refused (UX-005).
+          sel.value = latest()?.job.status ?? was;
+          notifyError(e, "status");
+          return;
+        }
       }
-      // An AI save while the core calculated replaced the project: the
-      // status goes onto the job as it is now, with the figures only when
-      // its roof is still the one they were taken from (ERR-102).
+      // The roof changed while the core calculated, by an AI save (a new
+      // project, ERR-102) or by the user's own edit in place (ERR-201): the
+      // figures are of a roof the job no longer has. Without a stored result
+      // the status is refused; with one, only the note about it is skipped.
       const cur = latest();
       if (!cur) return;
-      if (cur !== p && roofInput(cur) !== input) {
+      const stale = roofInput(cur) !== input;
+      if (stale) fresh = null;
+      if (stale && !kept) {
         sel.value = cur.job.status;
         status = cur.job.status;
         info(t("job.statusStale"));
         return;
       }
+      if (!kept) snap = fresh;
     }
     const now = latest();
     if (!now) return;
@@ -105,6 +116,30 @@
     now.job.status = next;
     status = next;
     onchange();
+    if (kept && fresh && input !== null && snapshotDiffers(kept, fresh)) offerKept(kept, fresh, input);
+  }
+
+  /** Says that the job keeps its earlier result, with both areas and the action that stores the new one (UX-206). */
+  function offerKept(kept: ResultSnapshot, fresh: ResultSnapshot, input: string) {
+    notify({
+      kind: "warning",
+      title: t("job.offerKeptTitle"),
+      message: t("job.offerKept", { a: m2(kept.roof_area), b: m2(fresh.roof_area) }),
+      action: {
+        label: t("snap.store"),
+        run: () => {
+          const now = latest();
+          if (!now) return;
+          // Only figures of the roof the job still has (as the Editor's store, ERR-102).
+          if (roofInput(now) !== input) {
+            info(t("snap.stale"));
+            return;
+          }
+          now.result_snapshot = fresh;
+          onchange();
+        },
+      },
+    });
   }
 
   // Files attached to the job (drawings, photos).

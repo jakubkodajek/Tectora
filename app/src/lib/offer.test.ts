@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { hasBuilding, listedArea, offerDiffers, roofInput, storedArea } from "./offer";
-import type { Project } from "./types";
+import { hasBuilding, listedArea, offerDiffers, roofInput, snapshotDiffers, storedArea } from "./offer";
+import type { Project, ResultSnapshot } from "./types";
 
 describe("offer figures in the library (UX-008)", () => {
   it("lists the stored area of an offer, not the current one", () => {
@@ -60,5 +60,30 @@ describe("what a stored result is calculated from (ERR-102, UX-102)", () => {
     expect(hasBuilding(base())).toBe(true);
     expect(hasBuilding({ ...base(), parts: [] })).toBe(false);
     expect(hasBuilding({ ...base(), parts: [], manual_faces: [{} as never] })).toBe(true);
+  });
+});
+
+describe("a stored offer against new figures (UX-206)", () => {
+  const snap = (over: Partial<ResultSnapshot> = {}): ResultSnapshot => ({
+    engine_version: "1",
+    taken_ms: 0,
+    roof_area: 129.24,
+    ridge_height: 6.78,
+    lines_by_code: { T: 20, OL: 11.75 },
+    area_by_material: [{ material: 1, area: 129.24 }],
+    ...over,
+  });
+  it("differs when any figure the core compares moves by 5 mm or more", () => {
+    expect(snapshotDiffers(snap(), snap())).toBe(false);
+    expect(snapshotDiffers(snap(), snap({ roof_area: 129.243 }))).toBe(false);
+    expect(snapshotDiffers(snap(), snap({ roof_area: 120.4 }))).toBe(true);
+    expect(snapshotDiffers(snap(), snap({ ridge_height: 6.08 }))).toBe(true);
+    expect(snapshotDiffers(snap(), snap({ lines_by_code: { T: 20, OL: 11.75, K: 2 } }))).toBe(true);
+    expect(snapshotDiffers(snap(), snap({ lines_by_code: { T: 20 } }))).toBe(true);
+  });
+  it("compares areas by material only when the roof has more than the default one", () => {
+    expect(snapshotDiffers(snap(), snap({ area_by_material: [] }))).toBe(false);
+    const split = [{ material: 1, area: 100 }, { material: 2, area: 29.24 }];
+    expect(snapshotDiffers(snap({ area_by_material: split }), snap({ area_by_material: [{ material: 1, area: 90 }, { material: 2, area: 39.24 }] }))).toBe(true);
   });
 });

@@ -293,6 +293,9 @@ first, touching it and drawn into it, at 1360x860 and 600x420.
   on a narrow face falls back to the pitch alone.
 - In an AI review the change beside a wall ("40° → 35°") stays inside the
   plan and clear of the other labels.
+- A selected dormer, chimney, window or opening at 600x420: its distances
+  (from the eave, left, right) overlap neither each other nor a face label
+  (`audit-r3-ui.e2e.ts` UI-209, vitest "placement dimension labels").
 
 ## 14. Lengths while drawing (@ux, @ui)
 
@@ -306,3 +309,5 @@ show their lengths while drawing", "a wall by length and typed angle").
   shows it.
 - The labels stay readable in German and Slovak at 600x420 (the draw bar's
   angle field and the PlaceBar do not clip).
+- A mistyped long wall (99 m) removed with the draw bar's undo: the plan
+  fits the drawing that is left again (`audit-r3-ui.e2e.ts` UX-203).

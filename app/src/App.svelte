@@ -238,7 +238,8 @@
     onanswered={async () => applySettings(await api.getSettings())}
   />
 {/if}
-{#if openAiChange(appSettings.view?.settings)}
+<!-- The card waits while a folder or file request holds the screen: one AI decision at a time (UI-210). -->
+{#if openAiChange(appSettings.view?.settings) && !appSettings.view?.settings.folder_request && !appSettings.view?.settings.file_request}
   {@const change = openAiChange(appSettings.view?.settings)!}
   {#key change.id}
     <AiSettingsChange {change} settings={appSettings.view?.settings ?? null} onanswered={applySettings} />

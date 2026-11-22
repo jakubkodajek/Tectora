@@ -129,3 +129,42 @@ const COVER_TOL = 0.05;
 export function underHigherRoof(z: number | null, topAt: number | null): boolean {
   return z !== null && topAt !== null && topAt > z + COVER_TOL;
 }
+
+/** A place for a dimension's figure: its anchor point, how the text is anchored there, and its box. */
+export interface DimSpot {
+  x: number;
+  y: number;
+  anchor: "start" | "middle" | "end";
+  box: Box;
+}
+
+/** Height of an 11 px dimension figure with its halo, px. */
+const PLACE_DIM_H = 16;
+
+/**
+ * Where a placed object's dimension figure ("2,381") may be written, best
+ * first: beside the middle of its dimension line (`g`, screen px), then on
+ * the other side and off the middle. The plan's label pass takes the first
+ * spot clear of the labels kept before, so the eave, left and right figures
+ * and the face labels never pile up in a small plan (UI-209). `eave`: the
+ * distance from the eave, written to the right of its line.
+ */
+export function placeDimSpots(
+  g: { mx: number; my: number; x1: number; y1: number; x2: number; y2: number },
+  text: string,
+  eave: boolean,
+): DimSpot[] {
+  const w = text.length * 11 * 0.62 + 8;
+  const h = PLACE_DIM_H;
+  const at = (x: number, y: number, anchor: DimSpot["anchor"]): DimSpot => {
+    const x0 = anchor === "start" ? x : anchor === "end" ? x - w : x - w / 2;
+    return { x, y, anchor, box: { x0, y0: y - h / 2, x1: x0 + w, y1: y + h / 2 } };
+  };
+  const q = (t: number) => ({ x: g.x1 + (g.x2 - g.x1) * t, y: g.y1 + (g.y2 - g.y1) * t });
+  if (eave) {
+    const [a, b] = [q(0.25), q(0.75)];
+    return [at(g.mx + 6, g.my, "start"), at(g.mx - 6, g.my, "end"), at(a.x + 6, a.y, "start"), at(b.x + 6, b.y, "start"), at(a.x - 6, a.y, "end"), at(b.x - 6, b.y, "end")];
+  }
+  const [a, b] = [q(0.25), q(0.75)];
+  return [at(g.mx, g.my - 6, "middle"), at(g.mx, g.my + 10, "middle"), at(a.x, a.y - 6, "middle"), at(b.x, b.y - 6, "middle"), at(a.x, a.y + 10, "middle"), at(b.x, b.y + 10, "middle")];
+}

@@ -14,7 +14,7 @@
   import { faceTags, tagSpots } from "./facelabels";
   import { hostHeightAt, isDormerFace } from "./dormers";
   import { dormerWallLines, onWallLine, planeOf } from "./scene3d";
-  import { chooseLabels, insidePolygon, rotatedBox, segCrossesBox, underHigherRoof, wallNumber, type Seg } from "./planlabels";
+  import { chooseLabels, insidePolygon, placeDimSpots, rotatedBox, segCrossesBox, underHigherRoof, wallNumber, type DimSpot, type Seg } from "./planlabels";
   import { draftWalls } from "./drawstep";
   import { coveredPieces } from "./planjoin";
   import { numberLocale } from "./i18n.svelte";
@@ -155,11 +155,26 @@
 
   // A footprint being drawn (lengths typed in the draw bar) stays in view: when
   // its newest corner leaves the plan, the plan fits the drawing (UX-001).
+  // When a removed corner was what zoomed the plan out (a mistyped 99 m wall),
+  // the plan fits the drawing that is left (UX-203).
+  let draftLength = 0;
+  let draftFollowed = false;
   $effect(() => {
     const d = drawing;
-    if (!d || d.length < 2) return;
+    const n = d?.length ?? 0;
     untrack(() => {
-      if (fitted && draftLeavesView(d, { scale, center }, width, height)) fit();
+      const before = draftLength;
+      draftLength = n;
+      if (n === 0) draftFollowed = false;
+      if (!d || n < 2 || !fitted) return;
+      if (n < before && draftFollowed && !userView) {
+        fit();
+        return;
+      }
+      if (draftLeavesView(d, { scale, center }, width, height)) {
+        fit();
+        draftFollowed = true;
+      }
     });
   });
 
@@ -616,6 +631,18 @@
    * buildings drawn into each other keep a readable plan (UX-012).
    */
   const labels = $derived.by(() => {
+    // The selected object's distances come first: they are what the user
+    // is placing by; the other labels keep clear of them (UI-209).
+    const placeDims = placed
+      ? [
+          { l: placed.eave_line, v: placed.from_eave, key: "eave", tip: t("place.fromEaveHint") },
+          { l: placed.left_line, v: placed.from_left, key: "left", tip: t("place.fromLeftHint") },
+          { l: placed.right_line, v: placed.from_right, key: "right", tip: t("place.fromRightHint") },
+        ].map((d) => {
+          const g = dimLine(d.l[0], d.l[1]);
+          return { ...d, g, text: mmText(d.v), spots: placeDimSpots(g, mmText(d.v), d.key === "eave") };
+        })
+      : [];
     // Each wall length outside its building first, else inside; a side
     // whose label would sit on another building is not used, so two
     // buildings side by side keep their lengths apart (UX-018).
@@ -687,12 +714,14 @@
         return m === "pitch" ? [null, pitchBox] : [clear(rotatedBox(sx(p.x), sy(p.y), fw, TAG_FULL_H, -tag.angle_deg)), pitchBox];
       });
     });
+    const P = placeDims.length;
     const chosen = chooseLabels(
-      [...notes.map((n) => n.map((c) => c?.box ?? null)), ...flat.map((d) => (d ?? []).map((c) => c?.box ?? null)), ...tagBoxes],
-      (i) => (i < notes.length + flat.length ? inner : walls),
+      [...placeDims.map((d) => d.spots.map((sp) => sp.box)), ...notes.map((n) => n.map((c) => c?.box ?? null)), ...flat.map((d) => (d ?? []).map((c) => c?.box ?? null)), ...tagBoxes],
+      (i) => (i < P ? [] : i < P + notes.length + flat.length ? inner : walls),
     );
-    const noteShown = notes.flatMap((n, j) => (chosen[j] >= 0 && n[chosen[j]] ? [n[chosen[j]]!] : []));
-    let k = notes.length;
+    const placeShown = placeDims.map((d, j) => ({ ...d, at: (chosen[j] >= 0 ? d.spots[chosen[j]] : null) as DimSpot | null }));
+    const noteShown = notes.flatMap((n, j) => (chosen[P + j] >= 0 && n[chosen[P + j]] ? [n[chosen[P + j]]!] : []));
+    let k = P + notes.length;
     const dimShown = dims.map((row) =>
       row.map((d) => {
         const j = chosen[k++];
@@ -705,7 +734,7 @@
       const at = tag.spots[Math.floor(c / 2)];
       return { mode: c % 2 === 0 ? modes[j]! : ("pitch" as const), x: at.x, y: at.y };
     });
-    return { dims: dimShown, tags: tagShown, notes: noteShown };
+    return { dims: dimShown, tags: tagShown, notes: noteShown, place: placeShown };
   });
 </script>
 
@@ -939,17 +968,15 @@
       <!-- From the eave (along the slope) and from both sides of the face:
            the selected object's dimension lines (core edit::position). -->
       <g class="place-dims" data-testid="place-dims">
-        {#each [
-          { l: placed.eave_line, v: placed.from_eave, key: "eave", tip: t("place.fromEaveHint") },
-          { l: placed.left_line, v: placed.from_left, key: "left", tip: t("place.fromLeftHint") },
-          { l: placed.right_line, v: placed.from_right, key: "right", tip: t("place.fromRightHint") },
-        ] as d (d.key)}
-          {@const g = dimLine(d.l[0], d.l[1])}
+        {#each labels.place as d (d.key)}
+          {@const g = d.g}
           <g data-dim={d.key}>
             <title>{d.tip}</title>
             <line x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} />
             <path d={g.ticks} />
-            <text class="dim place-dim" x={g.mx} y={g.my} dy={d.key === "eave" ? 0 : -6} dx={d.key === "eave" ? 6 : 0} text-anchor={d.key === "eave" ? "start" : "middle"}>{mmText(d.v)}</text>
+            <!-- Written where no other label is; left out when there is no room (the bar has the figure, UI-209).
+                 The anchor is a style: the .dim rule's text-anchor would override the attribute. -->
+            {#if d.at}<text class="dim place-dim" x={d.at.x} y={d.at.y} style:text-anchor={d.at.anchor}>{d.text}</text>{/if}
           </g>
         {/each}
       </g>

@@ -1,7 +1,8 @@
 <script lang="ts">
   // Results in DACAD's terms: roof areas per part and line lengths by
   // DACAD line code (T eave, F ridge, G hip, K valley, O verge, P shed top edge, c pitch break).
-  import { figureLabel, formatFigure } from "./changes";
+  import { figureName, formatFigure } from "./changes";
+  import { hasBuilding } from "./offer";
   import { m, m2, num } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
@@ -67,7 +68,9 @@
 
   /** The stored result (figures of the offer) against the current one. */
   const stored = $derived(result?.stored_result ?? null);
-  const diffLabel = (key: string) => figureLabel(key, project);
+  const diffLabel = (key: string) => figureName(key, project);
+  /** Why the current figures cannot be stored: the core gave no roof, or there is no building at all (UI-206). */
+  const storeBlocked = $derived(blocked ?? (project && !hasBuilding(project) ? t("res.empty") : null));
   const fmtDiff = formatFigure;
   /** Per part, the parts the calculation joined its roof with (named under the part's area). */
   const joins = $derived(joinedWith(result));
@@ -237,6 +240,8 @@
       </div>
       {#if stored.differences.length}
         <table class="diff">
+          <!-- Which column is the offer and which the roof now (UX-205). -->
+          <thead><tr><th></th><th class="v">{t("snap.colStored")}</th><th class="v">{t("snap.colNow")}</th></tr></thead>
           <tbody>
             {#each stored.differences as d}
               <tr><td>{diffLabel(d.key)}</td><td class="v">{fmtDiff(d.key, d.stored)}</td><td class="v">{fmtDiff(d.key, d.current)}</td></tr>
@@ -248,7 +253,7 @@
         <p class="mono">{t("snap.engine", { v: stored.stored.engine_version })}</p>
       {/if}
       {#if stored.differences.length && onstore}
-        <button class="btn sm" disabled={!!blocked} title={blocked ?? undefined} onclick={onstore}>{t("snap.store")}</button>
+        <button class="btn sm" disabled={!!storeBlocked} title={storeBlocked ?? undefined} onclick={onstore}>{t("snap.store")}</button>
       {/if}
     </div>
   {/if}
@@ -379,10 +384,25 @@
   .snap.changed .sq {
     background: var(--danger);
   }
+  .diff th {
+    padding: 0 0 2px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-3);
+    text-align: left;
+  }
+  .diff th.v {
+    text-align: right;
+  }
   .diff td {
     padding: 4px 0;
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     font-size: 12px;
+  }
+  /* The two figure columns keep apart ("152,73 m²  142,29 m²", UX-205). */
+  .diff td.v,
+  .diff th.v {
+    padding-left: 12px;
   }
   .mono {
     margin: 0;

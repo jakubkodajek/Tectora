@@ -317,6 +317,8 @@ fn write_bundle(
     // A bundle import refuses is not written (HUNT-101): a job file over
     // what import reads stops the export, a change log over it goes in
     // with its newest entries only.
+    // The app names the job's own size by this detail's wording (errors.ts,
+    // ARCH-205): keep "the job is too large to hand over" when editing it.
     let text = project.to_json().map_err(json_err)?;
     if text.len() as u64 > MAX_TEXT_ENTRY {
         return Err(too_large(format!(

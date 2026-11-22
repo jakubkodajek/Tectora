@@ -68,6 +68,13 @@
     z-index: 100;
     pointer-events: none;
   }
+  /* Too narrow for the AI settings card (bottom left) and the toasts side by
+     side: the toasts stack above the card while it is shown (UX-201). */
+  @media (max-width: 807px) {
+    .stack {
+      bottom: calc(40px + var(--ai-card-space, 0px));
+    }
+  }
   .toast {
     pointer-events: auto;
     width: min(380px, calc(100vw - 32px));
