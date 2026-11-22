@@ -10,10 +10,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { plan } from "./editor";
+import { plan, planXY } from "./editor";
 import { LIBRARY_DIR } from "./env";
 import { bridge, createExample, expect, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
+
+// TECTORA_SHOTS=<folder>/ saves a screenshot after each test (fix evidence).
+test.afterEach(async ({ page }, info) => {
+  const dir = process.env.TECTORA_SHOTS;
+  if (!dir) return;
+  const n = info.title.replace(/[^a-z0-9]+/gi, "-").slice(0, 40);
+  await page.screenshot({ path: `${dir}r8-ed-${n}-${process.env.TECTORA_SHOTS_TAG ?? "after"}.png`, timeout: 10_000 }).catch(() => {});
+});
 
 const dockTab = (page: Page, key: string) => page.locator("aside .tabs").getByRole("tab", { name: cs(key) });
 
@@ -154,5 +162,59 @@ test.describe("round 8: a press on a roof line (UI-701)", () => {
     await page.mouse.up();
     const after = await waitForProject(id, (p) => p.parts[0].edges[0].start.x !== before.x);
     expect(after.parts[0].edges[0].start.x).toBeGreaterThan(before.x);
+  });
+});
+
+test.describe("round 8: the plan without a wheel or a right button (UX-703)", () => {
+  test("+ and − zoom the plan, also from the keyboard, and the hint names them", async ({ app, page }) => {
+    await createExample("gable", "Zoom");
+    await app.open({ prefs: { followAi: false } });
+    await app.openJob("Zoom");
+    const fill = plan(page).locator("path.fill").first();
+    const w0 = (await fill.boundingBox())!.width;
+    const zin = page.getByRole("button", { name: cs("plan.zoomIn") });
+    const zout = page.getByRole("button", { name: cs("plan.zoomOut") });
+    await zin.click();
+    await expect.poll(async () => (await fill.boundingBox())!.width).toBeGreaterThan(w0 * 1.2);
+    await zout.focus();
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => (await fill.boundingBox())!.width).toBeLessThan(w0);
+    await expect(page.locator(".editor")).toContainText(cs("plan.hint"));
+  });
+
+  test.describe("touch", () => {
+    test.use({ hasTouch: true });
+
+    test("a finger held still on a wall opens its menu; one that moves, or lifts early, opens none", async ({ app, page }) => {
+      await createExample("gable", "Dlouhý stisk");
+      await app.open({ prefs: { followAi: false } });
+      await app.openJob("Dlouhý stisk");
+      const cdp = await page.context().newCDPSession(page);
+      const touch = (type: string, pts: { x: number; y: number; id: number }[]) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: pts });
+      const menu = page.getByRole("menu");
+      const wall = await planXY(page, 6, 0);
+      // Lifted after 200 ms: a tap, no menu.
+      await touch("touchStart", [{ ...wall, id: 1 }]);
+      await page.waitForTimeout(200);
+      await touch("touchEnd", []);
+      await page.waitForTimeout(700);
+      await expect(menu).toHaveCount(0);
+      // Held but moved 20 px: no menu.
+      await touch("touchStart", [{ ...wall, id: 1 }]);
+      await touch("touchMove", [{ x: wall.x + 20, y: wall.y, id: 1 }]);
+      await page.waitForTimeout(800);
+      await touch("touchEnd", []);
+      await expect(menu).toHaveCount(0);
+      // Held still: the wall's menu, as the right button opens it.
+      await page.waitForTimeout(500);
+      await touch("touchStart", [{ ...wall, id: 1 }]);
+      await touch("touchMove", [{ x: wall.x + 2, y: wall.y + 1, id: 1 }]);
+      await page.waitForTimeout(800);
+      await expect(menu).toHaveCount(1);
+      await expect(menu.getByRole("menuitem", { name: cs("menu.insertPoint") })).toBeVisible();
+      await touch("touchEnd", []);
+      await expect(menu).toHaveCount(1);
+    });
   });
 });

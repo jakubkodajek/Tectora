@@ -2419,6 +2419,9 @@
       <button class="tool" class:on={prefs.layout === "split"} aria-pressed={prefs.layout === "split"} onclick={() => setLayout("split")} title={t("editor.both")}><Icon name="split" /><span>{t("editor.both")}</span></button>
       <button class="tool" class:on={prefs.layout === "3d"} aria-pressed={prefs.layout === "3d"} onclick={() => setLayout("3d")} title="{t('editor.modelHint')} (F3)"><Icon name="cube" /><span>{t("editor.model")}</span></button>
       <button class="tool" onclick={() => plan?.fit()} disabled={prefs.layout === "3d"} title={t("plan.fitHint")}><Icon name="fit" /><span>{t("plan.fit")}</span></button>
+      <!-- Zoom without a wheel (touch, pen, keyboard; UX-703). -->
+      <button class="tool zoom" onclick={() => plan?.zoomBy(1.25)} disabled={prefs.layout === "3d"} aria-label={t("plan.zoomIn")} title={t("plan.zoomIn")}><Icon name="plus" /></button>
+      <button class="tool zoom" onclick={() => plan?.zoomBy(0.8)} disabled={prefs.layout === "3d"} aria-label={t("plan.zoomOut")} title={t("plan.zoomOut")}><Icon name="minus" /></button>
       <button class="tool" class:on={showDims} aria-pressed={showDims} onclick={() => (showDims = !showDims)} title={t("tool.dims")}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
     </div>
     <div class="group minor">
@@ -2845,6 +2848,9 @@
   }
   .group:last-child {
     border-right: none;
+  }
+  .tool.zoom {
+    min-width: 36px;
   }
   .tool {
     position: relative;
