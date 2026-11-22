@@ -293,6 +293,11 @@ pub fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
 /// its figures would be missing from the sheet, as the editor's Export is
 /// blocked then too.
 pub(crate) fn export_ready(project: &Project) -> Result<(), String> {
+    // No building and no hand-drawn face: no figures, as `store_result`
+    // and the CLI say (HUNT-305 item 4).
+    if project.parts.is_empty() && project.manual_faces.is_empty() {
+        return Err("not exported: the job has no building, so there are no figures to export; nothing was written".into());
+    }
     let Some(t) = roof_trouble(project) else {
         return Ok(());
     };
@@ -2220,14 +2225,13 @@ pub fn run_worker_if_requested() -> bool {
 /// different name; an empty name is "AI", and the length is capped
 /// (HUNTIO-003).
 fn client_actor(name: &str) -> String {
-    let clean: String = name
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(60)
-        .collect::<String>()
+    // The text rules of a received change log's actor (ARCH-306 item 1):
+    // no control, invisible or line-breaking characters, and a name of
+    // blank-looking characters only is no name.
+    let clean = tectora_core::edit::clean_line(name, tectora_core::edit::MAX_ACTOR_CHARS)
         .trim()
         .to_string();
-    if clean.is_empty() {
+    if !tectora_core::edit::has_visible(&clean) {
         "AI".into()
     } else if clean.eq_ignore_ascii_case(tectora_core::store::USER_ACTOR) {
         format!("AI ({clean})")

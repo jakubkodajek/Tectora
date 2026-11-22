@@ -424,10 +424,17 @@ pub fn check_wall_values(
 /// A job name must not be empty or blank (the editor refuses it too), and
 /// must not hold control characters (NUL, line breaks, tabs) or invisible
 /// ones (bidirectional overrides, zero-width spaces) that change how the
-/// name reads in the library, the file name and the sheets (HUNTIO-007).
+/// name reads in the library, the file name and the sheets (HUNTIO-007),
+/// and has at most [`MAX_JOB_TEXT_CHARS`] characters, what a received
+/// job's name is cut to (ARCH-302).
 pub fn check_job_name(name: &str) -> Result<(), String> {
     if !has_visible(name) {
         return Err("the job name must not be empty".into());
+    }
+    if name.chars().count() > MAX_JOB_TEXT_CHARS {
+        return Err(format!(
+            "the job name is too long (at most {MAX_JOB_TEXT_CHARS} characters)"
+        ));
     }
     if let Some(c) = name.chars().find(|&c| not_in_a_line(c)) {
         return Err(format!(
@@ -522,12 +529,17 @@ pub const MAX_ACTOR_CHARS: usize = 60;
 /// Characters that show as blank although they are neither whitespace nor
 /// format characters (ARCH-203): the Hangul fillers, the combining
 /// grapheme joiner, the Khmer inherent vowels, the variation selectors and
-/// the blank Braille pattern. Allowed in a text, but they do not make it
-/// visible.
+/// the blank Braille pattern, and the combining marks, which show only on
+/// a letter before them (HUNT-305 item 3). Allowed in a text, but they do
+/// not make it visible.
 fn looks_blank(c: char) -> bool {
     matches!(
         c,
-        '\u{34f}'
+        '\u{300}'..='\u{36f}'
+            | '\u{1ab0}'..='\u{1aff}'
+            | '\u{1dc0}'..='\u{1dff}'
+            | '\u{20d0}'..='\u{20ff}'
+            | '\u{fe20}'..='\u{fe2f}'
             | '\u{115f}'
             | '\u{1160}'
             | '\u{17b4}'
@@ -541,7 +553,7 @@ fn looks_blank(c: char) -> bool {
 }
 
 /// Whether `text` has a character one can see (ARCH-104, ARCH-203).
-fn has_visible(text: &str) -> bool {
+pub fn has_visible(text: &str) -> bool {
     text.chars().any(|c| {
         !c.is_whitespace() && !c.is_control() && !crate::store::is_invisible(c) && !looks_blank(c)
     })

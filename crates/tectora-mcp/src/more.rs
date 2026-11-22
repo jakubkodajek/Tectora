@@ -57,7 +57,30 @@ fn line_names_arg(args: &Value) -> Result<std::collections::BTreeMap<String, Str
                 .into(),
         );
     }
+    // One line of plain text each, as every label (HUNT-303).
+    for (k, v) in &names {
+        tectora_core::edit::check_label("`line_names`", k)?;
+        tectora_core::edit::check_label("`line_names`", v)?;
+    }
     Ok(names)
+}
+
+/// `stamp` of `export_list` and `export_plan`: one line of plain text of
+/// at most 40 characters (a control character made the SVG sheet invalid
+/// XML, HUNT-303); default now (UTC).
+fn stamp_arg(args: &Value) -> Result<String, String> {
+    match args.get("stamp").and_then(Value::as_str) {
+        Some(s) if s.chars().count() > 40 => {
+            Err("`stamp` is too long (at most 40 characters)".into())
+        }
+        Some(s) => {
+            tectora_core::edit::check_label("`stamp`", s)?;
+            Ok(s.to_string())
+        }
+        None => Ok(tectora_core::export::utc_stamp(
+            tectora_core::store::now_ms(),
+        )),
+    }
 }
 
 fn req<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> Result<T, String> {
@@ -897,11 +920,7 @@ impl Server {
             })(),
             "export_list" => (|| {
                 let (id, p) = self.load(args)?;
-                let stamp = match args.get("stamp").and_then(Value::as_str) {
-                    Some(s) if s.chars().count() <= 40 => s.to_string(),
-                    Some(_) => return Err("`stamp` is too long".into()),
-                    None => tectora_core::export::utc_stamp(tectora_core::store::now_ms()),
-                };
+                let stamp = stamp_arg(args)?;
                 let title = if p.name.is_empty() { id.clone() } else { p.name.clone() };
                 let opts = tectora_core::export::ListOptions::new(title, stamp);
                 p.check_limits()?;
@@ -927,11 +946,7 @@ impl Server {
                 if format != "pdf" && format != "svg" {
                     return Err(format!("`format` must be pdf or svg, not `{format}`"));
                 }
-                let stamp = match args.get("stamp").and_then(Value::as_str) {
-                    Some(s) if s.chars().count() <= 40 => s.to_string(),
-                    Some(_) => return Err("`stamp` is too long".into()),
-                    None => tectora_core::export::utc_stamp(tectora_core::store::now_ms()),
-                };
+                let stamp = stamp_arg(args)?;
                 let name = match args.get("name").and_then(Value::as_str) {
                     Some(n) => n.trim().trim_end_matches(&format!(".{format}")).to_string(),
                     None => id.clone(),

@@ -609,3 +609,182 @@ fn a_job_of_hand_drawn_faces_only_stores_its_offer_figures() {
     let snap = s.store.load(&id).unwrap().result_snapshot.expect("stored");
     assert!(snap.roof_area > 18.0, "{}", snap.roof_area);
 }
+
+/// Audit 2026-11-22 ARCH-302: a job name is held to the 500 characters a
+/// received job's name is cut to, on every write that names a job.
+#[test]
+fn a_job_name_over_500_characters_is_refused() {
+    let mut s = server();
+    let e = s
+        .call_tool(
+            "create_project",
+            &json!({ "name": "N".repeat(501), "summary": "Footprint",
+                     "parts": [{ "points": [[0, 0], [12, 0], [12, 8], [0, 8]] }] }),
+        )
+        .unwrap_err();
+    assert!(e.contains("too long"), "{e}");
+    let e = s
+        .call_tool(
+            "create_standard_roof",
+            &json!({ "name": "S".repeat(5000), "type": "hip", "length": 12, "width": 8, "pitch_deg": 35, "summary": "start" }),
+        )
+        .unwrap_err();
+    assert!(e.contains("too long"), "{e}");
+    let id = hip_job(&mut s);
+    let e = s
+        .call_tool(
+            "update_job",
+            &json!({ "id": id, "name": "x".repeat(600), "summary": "Rename" }),
+        )
+        .unwrap_err();
+    assert!(e.contains("too long"), "{e}");
+    s.call_tool(
+        "update_job",
+        &json!({ "id": id, "name": "x".repeat(500), "summary": "Rename" }),
+    )
+    .unwrap();
+}
+
+/// Audit 2026-11-22 TEST-304: the labels of hand-drawn lines and faces
+/// keep the text rules (ARCH-202).
+#[test]
+fn hand_drawn_line_and_face_labels_keep_the_text_rules() {
+    let mut s = server();
+    let id = hip_job(&mut s);
+    let line = |label: &str| json!({ "id": id, "summary": "Line", "lines": [{ "a": [0, 0], "b": [4, 0], "code": "T", "label": label }] });
+    let face = |label: &str| json!({ "id": id, "summary": "Face", "faces": [{ "points": [[20, 0], [24, 0], [24, 4], [20, 4]], "label": label }] });
+    for bad in ["L\u{202e}\u{0}".to_string(), "x".repeat(201)] {
+        let e = s.call_tool("set_manual", &line(&bad)).unwrap_err();
+        assert!(e.contains("line label"), "{e}");
+        let e = s.call_tool("set_manual", &face(&bad)).unwrap_err();
+        assert!(e.contains("face label"), "{e}");
+    }
+    s.call_tool("set_manual", &line(&"x".repeat(200))).unwrap();
+    s.call_tool("set_manual", &face(&"x".repeat(200))).unwrap();
+}
+
+/// Audit 2026-11-22 HUNT-303, ARCH-306 item 2: the export stamp and the
+/// sheet's line names are one line of plain text: a control character made
+/// the SVG sheet invalid XML.
+#[test]
+fn export_stamps_and_line_names_keep_the_text_rules() {
+    let mut s = server();
+    let id = hip_job(&mut s);
+    for stamp in ["\u{202e}evil\u{7}", "12:00\n"] {
+        let e = s
+            .call_tool(
+                "export_plan",
+                &json!({ "id": id, "stamp": stamp, "format": "svg", "summary": "Sheet" }),
+            )
+            .unwrap_err();
+        assert!(e.contains("stamp"), "{e}");
+        let e = s
+            .call_tool("export_list", &json!({ "id": id, "stamp": stamp }))
+            .unwrap_err();
+        assert!(e.contains("stamp"), "{e}");
+    }
+    let e = s
+        .call_tool(
+            "export_plan",
+            &json!({ "id": id, "format": "svg", "summary": "Sheet", "line_names": { "T": "Ok\u{0}apy" } }),
+        )
+        .unwrap_err();
+    assert!(e.contains("line_names"), "{e}");
+    s.call_tool(
+        "export_plan",
+        &json!({ "id": id, "stamp": "08.11.2026 <&>", "format": "svg", "summary": "Sheet", "line_names": { "T": "Okapy" } }),
+    )
+    .unwrap();
+}
+
+/// Audit 2026-11-22 ARCH-306 item 1: the AI client's name keeps the text
+/// rules: no invisible characters, and one that looks empty or like the
+/// app's own `user` is not taken as it is.
+#[test]
+fn the_client_name_keeps_the_text_rules() {
+    assert_eq!(super::client_actor("user\u{200b}"), "AI (user)");
+    assert_eq!(super::client_actor("\u{202e}edualC"), "edualC");
+    assert_eq!(super::client_actor("\u{3164}"), "AI");
+    assert_eq!(super::client_actor("Claude\u{0} Desktop"), "Claude Desktop");
+}
+
+/// Audit 2026-11-22 HUNT-305 item 3: a summary of combining marks only is
+/// empty.
+#[test]
+fn a_summary_of_combining_marks_only_is_refused() {
+    let mut s = server();
+    let id = hip_job(&mut s);
+    for summary in ["\u{301}\u{301}", "\u{20d0}", "\u{1dc0}"] {
+        let e = s
+            .call_tool(
+                "update_job",
+                &json!({ "id": id, "notes": "x", "summary": summary }),
+            )
+            .unwrap_err();
+        assert!(e.contains("summary"), "{summary:?}: {e}");
+    }
+    s.call_tool(
+        "update_job",
+        &json!({ "id": id, "notes": "y", "summary": "e\u{301}" }),
+    )
+    .unwrap();
+}
+
+/// Audit 2026-11-22 HUNT-305 item 4: a job without a building or face has
+/// no figures: `export_list` and `export_plan` refuse it, as `store_result`
+/// and the CLI do.
+#[test]
+fn an_empty_job_is_not_exported_as_a_list_or_sheet() {
+    let mut s = server();
+    let p = tectora_core::Project::from_json(&json!({ "name": "Empty", "parts": [] }).to_string())
+        .unwrap();
+    let id = s.store.save(None, &p).unwrap();
+    let e = s
+        .call_tool("export_list", &json!({ "id": id }))
+        .unwrap_err();
+    assert!(e.contains("no building"), "{e}");
+    let e = s
+        .call_tool(
+            "export_plan",
+            &json!({ "id": id, "format": "svg", "summary": "Sheet" }),
+        )
+        .unwrap_err();
+    assert!(e.contains("no building"), "{e}");
+    assert!(
+        !s.store
+            .dir
+            .join("exports")
+            .join(format!("{id}.svg"))
+            .exists()
+    );
+}
+
+/// Audit 2026-11-22 HUNT-305 item 2: an export name of spaces and dots
+/// only says so, and an ideographic space at its end is trimmed as the
+/// CLI trims it.
+#[test]
+fn export_names_are_trimmed_alike_and_an_empty_one_says_so() {
+    let mut s = server();
+    let id = hip_job(&mut s);
+    for name in ["....", "..", " . "] {
+        let e = s
+            .call_tool(
+                "export_job",
+                &json!({ "id": id, "name": name, "summary": "Send" }),
+            )
+            .unwrap_err();
+        assert!(e.contains("empty"), "{name:?}: {e}");
+    }
+    let r = s
+        .call_tool(
+            "export_job",
+            &json!({ "id": id, "name": "name\u{3000}", "summary": "Send" }),
+        )
+        .unwrap();
+    assert!(
+        r["path"].as_str().unwrap().ends_with("name.tectorajob"),
+        "{r}"
+    );
+    let cli = tectora_core::bundle::with_extension(std::path::Path::new("out/name\u{3000}"));
+    assert_eq!(cli, std::path::Path::new("out/name.tectorajob"));
+}

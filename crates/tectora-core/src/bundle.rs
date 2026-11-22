@@ -98,17 +98,21 @@ pub fn export_path_with(
     // part of the name, as `with_extension` takes them for the CLI:
     // Windows drops them, so "a." would name another file there than on
     // macOS (HUNT-204 item 1).
-    let mut name = name.trim().trim_end_matches([' ', '.']);
+    let mut name = name.trim().trim_end_matches(blank_or_dot);
     let tail = format!(".{ext}");
     if name.len() >= tail.len()
         && name.is_char_boundary(name.len() - tail.len())
         && name[name.len() - tail.len()..].eq_ignore_ascii_case(&tail)
     {
-        name = name[..name.len() - tail.len()].trim_end_matches([' ', '.']);
+        name = name[..name.len() - tail.len()].trim_end_matches(blank_or_dot);
     }
-    let bad = name.is_empty()
-        || name.len() > 100
-        || !crate::store::valid_file_name(&format!("{name}.{ext}"));
+    if name.is_empty() {
+        return Err(FileError::new(
+            "invalid_name",
+            "the file name is empty (only spaces and dots)",
+        ));
+    }
+    let bad = name.len() > 100 || !crate::store::valid_file_name(&format!("{name}.{ext}"));
     if bad {
         return Err(FileError::new(
             "invalid_name",
@@ -197,6 +201,13 @@ pub fn export(store: &Store, id: &str, dest: &Path) -> Result<Manifest, FileErro
     done
 }
 
+/// Characters a file name does not end in: Windows drops trailing spaces
+/// and dots, and a trailing blank of another kind (U+3000) is trimmed as
+/// MCP trims it, so the CLI and MCP name one file alike (HUNT-305 item 2).
+fn blank_or_dot(c: char) -> bool {
+    c.is_whitespace() || c == '.'
+}
+
 /// `path` with `.tectorajob` added when it does not end in it (in any
 /// case): `job.tectora` becomes `job.tectora.tectorajob`, never the job
 /// file itself. For the CLI and the app's save dialog.
@@ -206,7 +217,7 @@ pub fn with_extension(path: &Path) -> PathBuf {
     let trimmed = path
         .file_name()
         .and_then(|n| n.to_str())
-        .map(|n| n.trim_end_matches([' ', '.']))
+        .map(|n| n.trim_end_matches(blank_or_dot))
         .filter(|n| !n.is_empty());
     let path = &match trimmed {
         Some(n) => path.with_file_name(n),
