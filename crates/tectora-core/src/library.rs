@@ -117,10 +117,21 @@ fn matches_words(p: &ProjectSummary, words: &[String]) -> bool {
 /// search, sorting and job ids ("Říčany" matches "ricany", "ΣΠΊΤΙ" matches
 /// "σπίτι"), ligatures and `ß` spelled out ("ﬁle" is "file", "Straße"
 /// "strasse"), composed first so a name typed or stored decomposed (macOS)
-/// matches as well (HUNTIO-007, audit 2026-11-21 HUNT-204 item 3).
+/// matches as well (HUNTIO-007, audit 2026-11-21 HUNT-204 item 3). Every
+/// other letter with marks the composition table knows loses them too
+/// (`ȧ`, polytonic Greek `ὀ`), a mark left over is dropped (`İ` lower-cases
+/// to `i` and a dot above), and full-width letters and digits are the
+/// plain ones (`ＡＢＣ` is `abc`; audit 2026-11-22 HUNT-305 item 1).
 pub fn fold(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in crate::nfc::nfc(s).to_lowercase().chars() {
+        if ('\u{300}'..='\u{36f}').contains(&c) {
+            continue;
+        }
+        let c = match c {
+            '\u{ff01}'..='\u{ff5e}' => char::from_u32(c as u32 - 0xfee0).unwrap_or(c),
+            c => c,
+        };
         fold_into(c, &mut out);
     }
     out
@@ -178,7 +189,7 @@ fn fold_char(c: char) -> char {
         'ύ' | 'ϋ' | 'ΰ' => 'υ',
         'ώ' => 'ω',
         'ς' => 'σ',
-        c => c,
+        c => crate::nfc::base_letter(c).unwrap_or(c),
     }
 }
 
@@ -319,6 +330,47 @@ mod tests {
             ["c"]
         );
         assert_eq!(ids(&search(list, &q("STRAẞE")).unwrap()), ["c"]);
+    }
+
+    /// Audit 2026-11-22 TEST-306 R8: a capital sigma at a word's end is
+    /// lower-cased as the final sigma, which is found by the plain one.
+    #[test]
+    fn a_final_sigma_is_found_by_the_plain_sigma() {
+        let list = vec![summary("a", "ΣΠΊΤΙ ΝΊΚΟΣ", "", 1, 1.0)];
+        let q = |text: &str| Query {
+            text: text.into(),
+            ..Default::default()
+        };
+        assert_eq!(ids(&search(list.clone(), &q("νικοσ")).unwrap()), ["a"]);
+        assert_eq!(ids(&search(list, &q("νίκος")).unwrap()), ["a"]);
+        assert_eq!(
+            crate::store::slug_of("ΣΠΊΤΙ ΝΊΚΟΣ"),
+            crate::store::slug_of("σπιτι νικοσ")
+        );
+    }
+
+    /// Audit 2026-11-22 HUNT-305 item 1: a dotted capital I, a letter with
+    /// a dot above, full-width letters and polytonic Greek are folded too.
+    #[test]
+    fn dotted_full_width_and_polytonic_letters_are_folded() {
+        let list = vec![
+            summary("a", "İstanbul", "", 1, 1.0),
+            summary("b", "ȧb", "", 2, 1.0),
+            summary("c", "ＡＢＣ dům", "", 3, 1.0),
+            summary("d", "Ὀδυσσεύς", "", 4, 1.0),
+        ];
+        let q = |text: &str| Query {
+            text: text.into(),
+            ..Default::default()
+        };
+        assert_eq!(ids(&search(list.clone(), &q("istanbul")).unwrap()), ["a"]);
+        assert_eq!(ids(&search(list.clone(), &q("ab")).unwrap()), ["c", "b"]);
+        assert_eq!(ids(&search(list.clone(), &q("abc dum")).unwrap()), ["c"]);
+        assert_eq!(ids(&search(list, &q("οδυσσευς")).unwrap()), ["d"]);
+        assert_eq!(fold("İstanbul"), "istanbul");
+        assert_eq!(crate::store::slug_of("İstanbul"), "istanbul");
+        assert_eq!(crate::store::slug_of("ȧb"), "ab");
+        assert_eq!(crate::store::slug_of("ＡＢＣ dům"), "abc-dum");
     }
 
     #[test]

@@ -917,6 +917,12 @@ pub fn open_regular(path: &Path, max: u64) -> Result<fs::File, FileError> {
     }
 }
 
+/// [`slug`] for the tests of other modules.
+#[cfg(test)]
+pub(crate) fn slug_of(name: &str) -> String {
+    slug(name)
+}
+
 /// File-name friendly id derived from a project name.
 fn slug(name: &str) -> String {
     // Composed first: a name from macOS may come decomposed (HUNTIO-007).
