@@ -1983,14 +1983,15 @@ impl Server {
                     let s = s.as_str();
                     let status = parse_status(s)?;
                     // Leaving the draft stores the result as the offer's
-                    // figures: refused for a roof that cannot be calculated.
-                    if p.job.status == JobStatus::Draft
-                        && status != JobStatus::Draft
-                        && p.result_snapshot.is_none()
-                    {
-                        p.result_snapshot = Some(
-                            tectora_core::snapshot::take_checked(&p).map_err(|e| e.to_string())?,
-                        );
+                    // figures: refused for a roof that cannot be calculated,
+                    // with the app's check (JobPanel `takeSnapshot`), also
+                    // when the job keeps a result stored for an earlier
+                    // offer, which is not of this roof (HUNT-504, ERR-303).
+                    // The kept result stays the offer's.
+                    if p.job.status == JobStatus::Draft && status != JobStatus::Draft {
+                        let fresh =
+                            tectora_core::snapshot::take_checked(&p).map_err(|e| e.to_string())?;
+                        p.result_snapshot.get_or_insert(fresh);
                     }
                     p.set_status(status);
                 }

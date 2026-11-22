@@ -808,3 +808,73 @@ fn export_names_are_trimmed_alike_and_an_empty_one_says_so() {
     let cli = tectora_core::bundle::with_extension(std::path::Path::new("out/name\u{3000}"));
     assert_eq!(cli, std::path::Path::new("out/name.tectorajob"));
 }
+
+/// Audit 2026-11-22 HUNT-504: leaving the draft checks the roof as the app
+/// does (JobPanel `takeSnapshot` on every draft -> non-draft change), also
+/// when the job keeps a result stored for an earlier offer: a roof with no
+/// building, or one too large to store figures for, stays a draft with the
+/// app's refusal. A roof that does calculate keeps its earlier result.
+#[test]
+fn leaving_the_draft_with_a_kept_result_checks_the_roof_like_the_app() {
+    let mut s = server();
+    let status = |s: &mut Server, id: &str, to: &str| {
+        s.call_tool(
+            "update_job",
+            &json!({ "id": id, "status": to, "summary": "Status" }),
+        )
+    };
+    let stored = |s: &Server, id: &str| s.store.load(id).unwrap().result_snapshot;
+    for case in ["no_building", "figures_too_large", "fine"] {
+        let id = hip_job(&mut s);
+        status(&mut s, &id, "offer").unwrap();
+        let kept = stored(&s, &id).expect("the offer's figures");
+        status(&mut s, &id, "draft").unwrap();
+        match case {
+            "no_building" => {
+                s.call_tool(
+                    "delete_items",
+                    &json!({ "id": id, "items": [{ "kind": "part", "index": 0 }], "summary": "Gone" }),
+                )
+                .unwrap();
+            }
+            "figures_too_large" => {
+                s.call_tool(
+                    "set_manual",
+                    &json!({ "id": id, "summary": "Face", "faces": [{
+                        "points": [[0, 0], [40000, 0], [40000, 40000], [0, 40000]],
+                        "pitch_deg": 89 }] }),
+                )
+                .unwrap();
+            }
+            _ => {}
+        }
+        let p = s.store.load(&id).unwrap();
+        // What the app runs before it changes the status.
+        let app = tectora_core::commands::take_snapshot(&p);
+        let mcp = status(&mut s, &id, "ordered");
+        assert_eq!(mcp.is_ok(), app.is_ok(), "{case}: app {app:?}, MCP {mcp:?}");
+        let now = s.store.load(&id).unwrap();
+        if let Err(e) = app {
+            assert_eq!(e.code, case);
+            let e = mcp.unwrap_err();
+            let says = if case == "no_building" {
+                "no building"
+            } else {
+                "too large"
+            };
+            assert!(e.contains(says), "{case}: {e}");
+            assert_eq!(
+                now.job.status,
+                tectora_core::model::JobStatus::Draft,
+                "{case}"
+            );
+        } else {
+            assert_eq!(now.job.status, tectora_core::model::JobStatus::Ordered);
+            assert_eq!(
+                now.result_snapshot,
+                Some(kept),
+                "the earlier offer's figures stay"
+            );
+        }
+    }
+}

@@ -230,9 +230,13 @@ user that the offer's figures no longer match. `store_result` replaces the
 stored result with the current one; call it only when the user wants that.
 Both refuse a job with no building and no hand-drawn face (there are no
 figures to offer): draw the building first. They also refuse a roof whose
-figures are too large to keep (an area or a length over 1 000 000 000,
-"the figures are too large to keep"): check the sizes, usually a face or
-a wall drawn in millimetres instead of metres.
+figures are too large to keep (an area over 1 000 000 000 m² or a length
+over 1 000 000 000 m, "the figures are too large to keep"): check the
+sizes, usually a face or a wall drawn in millimetres instead of metres.
+Leaving the draft checks the roof as it is now also when the job keeps
+the result of an earlier offer (it went back to draft since): a roof the
+app would refuse stays a draft, and the kept result stays the offer's
+when the roof calculates.
 
 ## Results (DACAD line codes)
 
