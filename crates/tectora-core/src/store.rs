@@ -989,10 +989,12 @@ impl Store {
             .flatten()
         {
             Some((after, summary)) => {
-                // The old result, put back by a revert, stays reverted.
+                self.log_and_write(id, Some(before), &after, ENGINE_ACTOR, &summary, None)?;
+                // Only once saved (audit ARCH-502): the old result, put
+                // back by a revert, then stays reverted; a failed save
+                // leaves it to be recalculated on the next open.
                 origin.checked = crate::snapshot::ENGINE_VERSION.to_string();
                 let _ = self.write_result_origin(id, &origin);
-                self.log_and_write(id, Some(before), &after, ENGINE_ACTOR, &summary, None)?;
                 Ok(true)
             }
             None => {
@@ -2384,6 +2386,22 @@ mod tests {
         let id = store.save(None, &p).unwrap();
         assert!(store.result_origins(&id).is_empty());
         assert!(t.elapsed().as_secs() < 5);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_recalculation_that_cannot_be_saved_is_tried_again() {
+        // Audit ARCH-502: the origin was marked checked before the save,
+        // so a failed save left the old figures for good.
+        let store = temp_store("refresh-fail");
+        let (id, p) = old_offer(&store);
+        let log = store.activity_path(&id).unwrap();
+        let _ = fs::remove_file(&log);
+        fs::create_dir_all(&log).unwrap();
+        assert!(store.refresh_stored_result(&id).is_err());
+        assert_eq!(store.load(&id).unwrap().result_snapshot, p.result_snapshot);
+        fs::remove_dir_all(&log).unwrap();
+        assert!(store.refresh_stored_result(&id).unwrap());
         let _ = fs::remove_dir_all(&store.dir);
     }
 
