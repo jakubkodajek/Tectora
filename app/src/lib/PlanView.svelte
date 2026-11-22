@@ -508,11 +508,15 @@
    * nothing, wherever it lands. While the editor is closed (the last drop
    * is with the core) a new press does nothing either.
    */
+  /** The last press on the plan was a finger or a pen: the hint names long press first (UX-805). */
+  let touchHint = $state(false);
+
   function press(e: PointerEvent, at: PressOn) {
     if (otherPointer(e) || locked) {
       if (at.on !== "plan") e.stopPropagation();
       return;
     }
+    touchHint = e.pointerType === "touch" || e.pointerType === "pen";
     longPress(e, at);
     if (at.on === "plan") pressPlan(e);
     else if (at.on === "item") pressItem(e, at.item);
@@ -1263,7 +1267,7 @@
     {/each}
   </svg>
   <!-- A placing tool says what to click in the bottom bar (PlaceBar, UX-012). -->
-  {#if !placing && !drawing}<div class="hint" data-testid="plan-hint">{moving ? t("plan.hintDrag") : t("plan.hint")}</div>{/if}
+  {#if !placing && !drawing}<div class="hint" data-testid="plan-hint">{moving ? t("plan.hintDrag") : touchHint ? t("plan.hintTouch") : t("plan.hint")}</div>{/if}
 </div>
 
 <style>

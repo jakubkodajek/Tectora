@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deleteKeyHint, drawKeyHint, editorTakesUndo, isDrawKey, isMacPlatform, shortcut, undoKey } from "./keys";
+import { deleteKeyHint, drawKeyHint, editorTakesUndo, isDrawKey, isMacPlatform, shortcut, undoKey, zoomKey } from "./keys";
 import { i18n } from "./i18n.svelte";
 
 const key = (key: string, mods: Partial<{ ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; altKey: boolean }> = {}) => ({
@@ -68,5 +68,21 @@ describe("undo keys in a field (UX-001)", () => {
   it("takes only undo and redo keys, and every key outside a field", () => {
     expect(editorTakesUndo(field("INPUT", ["data-field"]), key("a", { ctrlKey: true }))).toBe(false);
     expect(editorTakesUndo(field("DIV"), key("z", { ctrlKey: true }))).toBe(true);
+  });
+});
+
+describe("zoom keys (UX-805)", () => {
+  it("+ and = zoom in, - zooms out, as the plan hint says", () => {
+    expect(zoomKey(key("+"))).toBe(1.25);
+    expect(zoomKey(key("+", { shiftKey: true }))).toBe(1.25);
+    expect(zoomKey(key("="))).toBe(1.25);
+    expect(zoomKey(key("-"))).toBe(0.8);
+  });
+  it("takes no key with Ctrl, Cmd or Alt (the browser's own zoom) and no other key", () => {
+    expect(zoomKey(key("+", { ctrlKey: true }))).toBeNull();
+    expect(zoomKey(key("-", { metaKey: true }))).toBeNull();
+    expect(zoomKey(key("-", { altKey: true }))).toBeNull();
+    expect(zoomKey(key("a"))).toBeNull();
+    expect(zoomKey(key("_"))).toBeNull();
   });
 });

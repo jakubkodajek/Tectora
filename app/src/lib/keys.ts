@@ -66,3 +66,16 @@ export function editorTakesUndo(target: FieldLike | null, e: KeyLike): boolean {
   if (tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") return true;
   return tag === "INPUT" && target.hasAttribute("data-field") && !target.hasAttribute("data-typing");
 }
+
+/**
+ * The plan's zoom factor for a key, as the toolbar's + / − buttons zoom:
+ * `+` (also `=`, the same key without Shift on many layouts) zooms in, `-`
+ * out; the number pad's keys give the same `key`. Null with Ctrl, ⌘ or
+ * Alt (the browser's own zoom) and for any other key (UX-805).
+ */
+export function zoomKey(e: KeyLike): 1.25 | 0.8 | null {
+  if (e.ctrlKey || e.metaKey || e.altKey) return null;
+  if (e.key === "+" || e.key === "=") return 1.25;
+  if (e.key === "-") return 0.8;
+  return null;
+}

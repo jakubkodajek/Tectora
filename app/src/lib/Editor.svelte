@@ -9,7 +9,7 @@
   import PlaceBar from "./PlaceBar.svelte";
   import { lastStep } from "./drawstep";
   import { stepWall, wallStepKey } from "./wallstep";
-  import { deleteKeyHint, drawKeyHint, editorTakesUndo, isDrawKey, isMacPlatform, shortcut, undoKey } from "./keys";
+  import { deleteKeyHint, drawKeyHint, editorTakesUndo, isDrawKey, isMacPlatform, shortcut, undoKey, zoomKey } from "./keys";
   import Icon from "./Icon.svelte";
   import JobPanel from "./JobPanel.svelte";
   import LanguagePicker from "./LanguagePicker.svelte";
@@ -2348,6 +2348,10 @@
       selection = stepWall(project, selection, wallStepKey(e, false));
     } else if (!mod && !drawing && !placing && e.key.startsWith("Arrow") && nudge(e)) {
       // handled
+    } else if (prefs.layout !== "3d" && zoomKey(e)) {
+      // + / − zoom the plan as the toolbar's buttons do (UX-805).
+      e.preventDefault();
+      plan?.zoomBy(zoomKey(e)!);
     } else if (e.key === "F3") {
       e.preventDefault();
       setLayout(prefs.layout === "3d" ? "split" : "3d");
