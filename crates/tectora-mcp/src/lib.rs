@@ -15,7 +15,7 @@ use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::geom::Point2;
 use tectora_core::model::{GABLE_PITCH_DEG, MIN_PITCH_DEG};
 use tectora_core::quantities::{
-    RoofCoverage, area_by_pitch_of, dacad_line_totals_of, roof_totals_of,
+    RoofCoverage, area_by_pitch_in, dacad_line_totals_of, roof_totals_of,
 };
 use tectora_core::roof::LineKind;
 use tectora_core::roof::RoofGeometry;
@@ -401,7 +401,7 @@ fn quantities_of(geos: &[RoofGeometry], project: &Project) -> Value {
         "hip_count": t.hip_count,
         "valley_count": t.valley_count,
         "lines_by_dacad_code_m": dacad_line_totals_of(geos, project),
-        "area_by_pitch_m2": area_by_pitch_of(geos, project)
+        "area_by_pitch_m2": area_by_pitch_in(geos, project)
             .iter()
             .map(|&(p, a)| json!({ "pitch_deg": p, "area": a }))
             .collect::<Vec<_>>(),

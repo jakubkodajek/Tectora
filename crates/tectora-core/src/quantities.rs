@@ -86,11 +86,26 @@ pub fn roof_totals_of(
 /// material) under 90°, so the figures add up to the roof area (audit
 /// 2026-11-21 HUNT-203).
 pub fn area_by_pitch(project: &Project) -> Vec<(f64, f64)> {
-    area_by_pitch_of(&crate::openings::generate_project(project), project)
+    area_by_pitch_in(&crate::openings::generate_project(project), project)
+}
+
+/// The calculated roof faces alone per pitch, m² (no clad gables, no
+/// hand-drawn faces): the core's own figures, as the calculation checks
+/// compare them.
+pub fn area_by_pitch_of(geos: &[crate::roof::RoofGeometry]) -> Vec<(f64, f64)> {
+    let mut by: std::collections::BTreeMap<i64, f64> = Default::default();
+    for geo in geos {
+        for f in &geo.faces {
+            *by.entry((f.pitch_deg * 100.0).round() as i64).or_default() += f.area;
+        }
+    }
+    by.into_iter()
+        .map(|(p, a)| (p as f64 / 100.0, (a * 100.0).round() / 100.0))
+        .collect()
 }
 
 /// [`area_by_pitch`] of roofs already calculated.
-pub fn area_by_pitch_of(geos: &[crate::roof::RoofGeometry], project: &Project) -> Vec<(f64, f64)> {
+pub fn area_by_pitch_in(geos: &[crate::roof::RoofGeometry], project: &Project) -> Vec<(f64, f64)> {
     let mut by: std::collections::BTreeMap<i64, f64> = Default::default();
     let key = |pitch: f64| (pitch * 100.0).round() as i64;
     for geo in geos {
@@ -717,7 +732,7 @@ mod audit_tests {
             ..Default::default()
         }];
         assert_eq!(
-            area_by_pitch_of(&geos, &Project::new("x")),
+            area_by_pitch_in(&geos, &Project::new("x")),
             [(33.69, 15.0), (33.7, 20.0)]
         );
     }
