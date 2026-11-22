@@ -1369,11 +1369,11 @@
     stroke: var(--focus);
     stroke-width: 3.5;
   }
+  /* A press on a ridge, hip or valley is a press on the building under it:
+     the lines have no target of their own yet (UI-701). */
   .roofline {
     stroke-width: 1.8;
     stroke-linecap: round;
-  }
-  .roofline.eave {
     pointer-events: none;
   }
   /* Under a higher roof (joined buildings): still there, but not on top. */

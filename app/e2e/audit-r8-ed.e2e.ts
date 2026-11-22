@@ -10,6 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
+import { plan } from "./editor";
 import { LIBRARY_DIR } from "./env";
 import { bridge, createExample, expect, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
@@ -121,5 +122,37 @@ test.describe("round 8: a stored result recalculated on open (UX-702)", () => {
     await app.saved();
     await expect(app.toasts().filter({ hasText: "Tectora 0.8.0" })).toHaveCount(0);
     expect((await loadProject(id)).result_snapshot.roof_area).toBe(150);
+  });
+});
+
+test.describe("round 8: a press on a roof line (UI-701)", () => {
+  test("a press on the ridge selects the building, and a drag from it moves the building", async ({ app, page }) => {
+    const id = await createExample("gable", "Hřeben");
+    await app.open({ prefs: { followAi: false } });
+    await app.openJob("Hřeben");
+    // The middle of the longest roof line in the plan (the ridge of the gable roof).
+    const lines = plan(page).locator("line.roofline:not(.eave)");
+    await expect(lines.first()).toBeAttached();
+    let box = { x: 0, y: 0, width: 0, height: 0 };
+    for (const l of await lines.all()) {
+      const b = await l.boundingBox();
+      if (b && b.width > box.width) box = b;
+    }
+    expect(box.width).toBeGreaterThan(50);
+    const at = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    expect(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.classList.contains("roofline") ?? false, [at.x, at.y])).toBe(false);
+    await page.mouse.click(at.x, at.y);
+    await expect(page.locator("path.fill.movable")).toHaveCount(1);
+    await page.waitForTimeout(600);
+    const before = (await loadProject(id)).parts[0].edges[0].start;
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.down();
+    for (let i = 1; i <= 8; i++) {
+      await page.mouse.move(at.x + 5 * i, at.y);
+      await page.waitForTimeout(30);
+    }
+    await page.mouse.up();
+    const after = await waitForProject(id, (p) => p.parts[0].edges[0].start.x !== before.x);
+    expect(after.parts[0].edges[0].start.x).toBeGreaterThan(before.x);
   });
 });
