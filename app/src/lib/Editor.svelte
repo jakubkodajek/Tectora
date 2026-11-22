@@ -876,7 +876,11 @@
     if (saveState !== "saved" && !(await save())) return;
     try {
       clearTimeout(saveTimer);
-      const p = await api.restoreOfferResult(id, entryTs);
+      // A read of the file that runs across this write may be older than it:
+      // it is read again instead of passing for an outside change that puts
+      // the recalculated result back (as for the editor's own saves).
+      saveGen++;
+      const p = await api.restoreOfferResult(id, entryTs).finally(() => saveGen++);
       await drag.settled();
       swapOutside(lastSaved ? (JSON.parse(lastSaved) as Project) : null, p, p);
       lastSaved = JSON.stringify(p);
@@ -927,7 +931,9 @@
       clearTimeout(saveTimer);
       const oldest = pendingList[pendingList.length - 1];
       // The latest change is undone only if it still is the entry the button was drawn on (ERR-801).
-      const p = all && oldest ? await api.revertChanges(id, oldest.ts_ms) : await api.revertLastChange(id, expectTs);
+      // As above: a read across this write is read again.
+      saveGen++;
+      const p = await (all && oldest ? api.revertChanges(id, oldest.ts_ms) : api.revertLastChange(id, expectTs)).finally(() => saveGen++);
       await drag.settled();
       swapOutside(lastSaved ? (JSON.parse(lastSaved) as Project) : null, p, p);
       lastSaved = JSON.stringify(p);
