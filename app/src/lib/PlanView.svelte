@@ -23,7 +23,6 @@
     result,
     selection = $bindable(),
     onmove,
-    onmoveend,
     oninsert,
     highlight = new Set<string>(),
     highlightItems = new Set<string>(),
@@ -43,15 +42,18 @@
     manualSel = $bindable(null),
     manualDraft = [],
     ondrag,
+    ondragarm,
+    ondragend,
+    moving = false,
+    locked = false,
     oncontext,
     onitemdbl,
   }: {
     project: Project;
     result: CalcResult | null;
     selection: Selection;
+    /** A step of a corner drag (armed by `ondragarm`, ended by `ondragend`). */
     onmove: (part: number, vertex: number, x: number, y: number) => void;
-    /** A corner drag ended (the corner moved is given). */
-    onmoveend: (part: number, vertex: number) => void;
     oninsert: (part: number, edge: number, x: number, y: number) => void;
     /** "part:edge" keys of edges changed by the latest AI edit. */
     highlight?: Set<string>;
@@ -82,8 +84,22 @@
     manualSel?: ManualSel;
     /** Points picked so far for a line or face being added. */
     manualDraft?: [number, number, number][];
-    /** An item or the selected part is dragged by (dx, dy); `end` on release. */
-    ondrag?: (target: PlanTarget, dx: number, dy: number, end: boolean) => void;
+    /** A step of the drag of an item or the selected part, by (dx, dy) from the press. */
+    ondrag?: (target: PlanTarget, dx: number, dy: number) => void;
+    /**
+     * A press that may become a drag (an item, the selected part, a corner),
+     * with its pointer. False: the editor opens no drag, the press does nothing more.
+     */
+    ondragarm?: (target: PlanTarget, pointerId: number) => boolean;
+    /**
+     * The end of every press that was armed: release, cancelled or lost
+     * pointer, the plan going away; `moved` when it went past the slop.
+     */
+    ondragend?: (target: PlanTarget, moved: boolean) => void;
+    /** A drag is under way: the hint says how to cancel it (UX-604). */
+    moving?: boolean;
+    /** The editor is closed for input (the last drop is with the core): presses do nothing. */
+    locked?: boolean;
     /** Right click (or Ctrl+click) without dragging: open the context menu. */
     oncontext?: (target: PlanTarget, client: { x: number; y: number }, world: Point2) => void;
     /** A double-click on a dormer, chimney, window, opening or hand-drawn shape: open its properties. */
@@ -312,11 +328,15 @@
     return out;
   });
 
-  // Dragging.
+  // Dragging. One press at a time, and every `onpointerdown` of the plan
+  // goes through `press` (planpress.test.ts): a handler of its own forgot
+  // the other-pointer check in round after round (ERR-501, UI-601).
   let drag: { part: number; vertex: number; sx: number; sy: number; moved: boolean } | null = null;
   let pan: { x: number; y: number; cx: number; cy: number } | null = null;
   /** An item or a whole part being dragged: where the press started. */
   let objDrag: { target: PlanTarget; sx: number; sy: number; wx: number; wy: number; moved: boolean; dx: number; dy: number } | null = null;
+  /** The press the editor armed a drag for (`ondragarm`): its end is always told (`ondragend`). */
+  let armed: PlanTarget | null = null;
   // A plan taken away mid-drag (another view) ends the drag where it is:
   // the editor holds core-backed edits back until a drag ends (ERR-401).
   // A corner drag ends the same way (UI-502).
@@ -347,15 +367,30 @@
     return false;
   }
 
-  /** Ends the press under way as its release would (a moved drag is dropped where it is). */
-  function endGesture() {
-    if (objDrag?.moved) ondrag?.(objDrag.target, objDrag.dx, objDrag.dy, true);
-    if (drag?.moved) onmoveend(drag.part, drag.vertex);
+  /**
+   * Ends the press under way: its release, a cancelled or lost pointer, a
+   * mouse that reports no button any more, the plan going away. A moved
+   * drag is dropped where it is. The press is cleared first, so a handler
+   * that throws cannot leave the plan dragging (errors To check 40), and
+   * the editor always hears the end of a press it armed, moved or not.
+   */
+  function endGesture(e?: PointerEvent) {
+    const [r, a, moved] = [rc, armed, !!(objDrag?.moved || drag?.moved)];
     gesture = null;
     drag = null;
     objDrag = null;
     pan = null;
     rc = null;
+    armed = null;
+    if (!drawing && !placing) guides = { x: null, y: null };
+    try {
+      if (r && e) {
+        const p = localPoint(e);
+        if (Math.hypot(p.x - r.x, p.y - r.y) <= DRAG_SLOP) oncontext?.(r.target, { x: r.cx, y: r.cy }, snapPoint(r.x, r.y, false));
+      }
+    } finally {
+      if (a) ondragend?.(a, moved);
+    }
   }
   /** What a right press hit, set by the shape's own handler before the plan's. */
   let rcTarget: PlanTarget | null = null;
@@ -374,28 +409,83 @@
     manualSel = item.kind === "line" || item.kind === "face" ? { kind: item.kind, index: item.index } : null;
   }
 
-  /** Captures the pointer for a drag. A synthetic or already released pointer
-   * (no active pointer with that id) cannot be captured; the drag then just
-   * ends at the next pointerup the plan sees. */
-  function capture(e: PointerEvent) {
+  /** Captures the pointer for a press that goes on (a drag, a pan); false
+   * when it cannot be captured: a synthetic or already released pointer (no
+   * active pointer with that id). A pan or right press then just ends at
+   * the next pointerup the plan sees. Only `press` and what it starts call
+   * this. */
+  function capture(e: PointerEvent): boolean {
     gesture = e.pointerId;
     try {
       svg!.setPointerCapture(e.pointerId);
+      return true;
     } catch {
-      // Not capturable: nothing to do.
+      return false;
     }
   }
 
+  /**
+   * The editor opens a drag for `target` (jobedits.ts rule 7) and the plan
+   * holds its pointer: false when a drag is live already (it is never
+   * replaced), when the editor opens none (a drop still settles, nothing to
+   * hold), or when the pointer cannot be captured (the plan could not
+   * promise to see its release, and an open drag closes the editor). The
+   * press then starts no drag.
+   */
+  function arm(e: PointerEvent, target: PlanTarget): boolean {
+    if (objDrag || drag || armed) return false;
+    if (!capture(e)) {
+      gesture = null;
+      return false;
+    }
+    if (ondragarm && !ondragarm(target, e.pointerId)) {
+      gesture = null;
+      try {
+        svg!.releasePointerCapture(e.pointerId);
+      } catch {
+        // Already gone.
+      }
+      return false;
+    }
+    armed = target;
+    return true;
+  }
+
   function startObjDrag(e: PointerEvent, target: PlanTarget) {
+    if (!arm(e, target)) return;
     const p = localPoint(e);
     const w = snapPoint(p.x, p.y, e.altKey);
     objDrag = { target, sx: p.x, sy: p.y, wx: w.x, wy: w.y, moved: false, dx: 0, dy: 0 };
-    capture(e);
+  }
+
+  /** What a press landed on: the plan itself, or one of its shapes. */
+  type PressOn =
+    | { on: "plan" }
+    | { on: "part"; part: number }
+    | { on: "edge"; part: number; edge: number }
+    | { on: "vertex"; part: number; vertex: number }
+    | { on: "item"; item: ItemRef };
+
+  /**
+   * Every press in the plan. Its first check is the other pointer: a second
+   * finger, the pen or a mouse button beside the press under way does
+   * nothing, wherever it lands. While the editor is closed (the last drop
+   * is with the core) a new press does nothing either.
+   */
+  function press(e: PointerEvent, at: PressOn) {
+    if (otherPointer(e) || locked) {
+      if (at.on !== "plan") e.stopPropagation();
+      return;
+    }
+    if (at.on === "plan") pressPlan(e);
+    else if (at.on === "item") pressItem(e, at.item);
+    else if (at.on === "part") pressPart(e, at.part);
+    else if (at.on === "vertex") pressVertex(e, at.part, at.vertex);
+    else pressEdge(e, at.part, at.edge);
   }
 
   /** A press on a dormer, chimney, window, opening or hand-drawn shape. */
   function pressItem(e: PointerEvent, item: ItemRef) {
-    if (otherPointer(e)) return e.stopPropagation();
     if (placing || drawing) return;
     const b = button(e);
     if (b === 2) {
@@ -424,7 +514,6 @@
 
   /** A press inside a part's outline: drags the selected part, else selects it. */
   function pressPart(e: PointerEvent, part: number) {
-    if (otherPointer(e)) return e.stopPropagation();
     if (placing || drawing) return;
     const b = button(e);
     if (b === 2) {
@@ -444,13 +533,24 @@
     startObjDrag(e, { type: "part", part });
   }
 
+  /** A press on a wall: selects it. */
+  function pressEdge(e: PointerEvent, part: number, edge: number) {
+    if (placing || drawing) return;
+    selection = { part, edge };
+    dormerSel = null;
+    openSel = null;
+    manualSel = null;
+    if (button(e) === 2) rcTarget = { type: "edge", part, edge };
+    else e.stopPropagation();
+  }
+
   function localPoint(e: PointerEvent | WheelEvent) {
     const r = svg!.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   }
 
-  function onpointerdown(e: PointerEvent) {
-    if (otherPointer(e)) return;
+  /** A press on the plan itself (also what a shape's press let through). */
+  function pressPlan(e: PointerEvent) {
     const b = button(e);
     if (b === 2 && !placing && !drawing) {
       const p = localPoint(e);
@@ -501,6 +601,11 @@
 
   function onpointermove(e: PointerEvent) {
     if (otherPointer(e)) return;
+    // The button went up where the plan could not see it (the system took
+    // the pointer: another window, a native dialog) and no release, cancel
+    // or lost capture came: the press is over, or the object would follow
+    // the bare cursor until the next click (errors To check 60).
+    if (gesture !== null && e.pointerType === "mouse" && e.buttons === 0) endGesture(e);
     const p = localPoint(e);
     cursorWorld = drag
       ? magnetPoint(p.x, p.y, e.altKey, drag)
@@ -521,7 +626,7 @@
         if (dx !== objDrag.dx || dy !== objDrag.dy) {
           objDrag.dx = dx;
           objDrag.dy = dy;
-          ondrag?.(objDrag.target, dx, dy, false);
+          ondrag?.(objDrag.target, dx, dy);
         }
       }
     } else if (pan) {
@@ -532,20 +637,7 @@
 
   function onpointerup(e: PointerEvent) {
     if (otherPointer(e)) return;
-    gesture = null;
-    if (drag?.moved) onmoveend(drag.part, drag.vertex);
-    if (!drawing && !placing) guides = { x: null, y: null };
-    if (objDrag?.moved) ondrag?.(objDrag.target, objDrag.dx, objDrag.dy, true);
-    if (rc) {
-      const p = localPoint(e);
-      if (Math.hypot(p.x - rc.x, p.y - rc.y) <= DRAG_SLOP) {
-        oncontext?.(rc.target, { x: rc.cx, y: rc.cy }, snapPoint(rc.x, rc.y, false));
-      }
-    }
-    drag = null;
-    objDrag = null;
-    pan = null;
-    rc = null;
+    endGesture(e);
   }
 
   function onwheel(e: WheelEvent) {
@@ -557,8 +649,8 @@
     center = { x: center.x + before.x - wx(p.x), y: center.y + before.y - wy(p.y) };
   }
 
-  function startVertexDrag(e: PointerEvent, part: number, vertex: number) {
-    if (otherPointer(e)) return e.stopPropagation();
+  /** A press on a corner: drags it. */
+  function pressVertex(e: PointerEvent, part: number, vertex: number) {
     // While drawing or placing, a click on a corner is a click on the plan.
     if (placing || drawing) return;
     if (button(e) === 2) {
@@ -570,9 +662,9 @@
       return;
     }
     e.stopPropagation();
+    if (!arm(e, { type: "vertex", part, vertex })) return;
     const p = localPoint(e);
     drag = { part, vertex, sx: p.x, sy: p.y, moved: false };
-    capture(e);
   }
 
   // When the last press of a drawing was, ms: the double-click that ends a
@@ -786,11 +878,11 @@
     {height}
     role="application"
     aria-label={t("editor.plan")}
-    {onpointerdown}
+    onpointerdown={(ev) => press(ev, { on: "plan" })}
     {onpointermove}
     {onpointerup}
     onpointercancel={onpointerup}
-    onlostpointercapture={(e) => e.pointerId === gesture && onpointerup(e)}
+    onlostpointercapture={(e) => e.pointerId === gesture && endGesture(e)}
     {onwheel}
     onpointerleave={() => {
       cursorWorld = null;
@@ -811,7 +903,7 @@
         role="button"
         tabindex="-1"
         aria-label={partLabel(part.name, pi)}
-        onpointerdown={(ev) => pressPart(ev, pi)}
+        onpointerdown={(ev) => press(ev, { on: "part", part: pi })}
       />
     {/each}
 
@@ -882,12 +974,7 @@
           {/if}
           <line class="hit" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)}
             role="button" tabindex="-1" aria-label={t("plan.edge", { n: i + 1 })}
-            onpointerdown={(ev) => {
-              if (placing || drawing) return;
-              selection = { part: pi, edge: i }; dormerSel = null; openSel = null; manualSel = null;
-              if (button(ev) === 2) rcTarget = { type: "edge", part: pi, edge: i };
-              else ev.stopPropagation();
-            }}
+            onpointerdown={(ev) => press(ev, { on: "edge", part: pi, edge: i })}
             ondblclick={(ev) => edgeDblClick(ev, pi, i)} />
           <line class="wall" x1={sx(e.start.x)} y1={sy(e.start.y)} x2={sx(b.x)} y2={sy(b.y)} />
           {#if labels.dims[pi]?.[i]}
@@ -906,7 +993,7 @@
           role="button"
           tabindex="-1"
           aria-label={t("plan.vertex", { n: i + 1 })}
-          onpointerdown={(ev) => startVertexDrag(ev, pi, i)}
+          onpointerdown={(ev) => press(ev, { on: "vertex", part: pi, vertex: i })}
         />
       {/each}
     {/each}
@@ -936,7 +1023,7 @@
           {#each dormerFaces[di] ?? [] as poly}
             <path class="dormer-area" d={"M" + poly.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
               role="button" tabindex="-1" aria-label={t("plan.dormer", { n: di + 1 })}
-              onpointerdown={(ev) => pressItem(ev, { kind: "dormer", index: di })} />
+              onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "dormer", index: di } })} />
           {/each}
           {#each d.edges as x, k}
             {#if x.direction_rad != null}
@@ -947,7 +1034,7 @@
           {/each}
           <line class="hit" x1={sx(fs.x)} y1={sy(fs.y)} x2={sx(d.end.x)} y2={sy(d.end.y)}
             role="button" tabindex="-1" aria-label={t("plan.dormer", { n: di + 1 })}
-            onpointerdown={(ev) => pressItem(ev, { kind: "dormer", index: di })} />
+            onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "dormer", index: di } })} />
           <line class="front" x1={sx(fs.x)} y1={sy(fs.y)} x2={sx(d.end.x)} y2={sy(d.end.y)} />
         </g>
       {/if}
@@ -956,25 +1043,25 @@
       <path class="opening chimney" class:sel={openSel?.kind === "chimney" && openSel.index === ci} class:changed={highlightItems.has(`chimney:${ci}`)}
         d={"M" + c.corners.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("opening.chimneyN", { n: ci + 1 })}
-        onpointerdown={(ev) => pressItem(ev, { kind: "chimney", index: ci })} />
+        onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "chimney", index: ci } })} />
     {/each}
     {#each project.roof_openings ?? [] as c, hi}
       <path class="opening hole" class:sel={openSel?.kind === "hole" && openSel.index === hi} class:changed={highlightItems.has(`roof_opening:${hi}`)}
         d={"M" + c.corners.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("opening.holeN", { n: hi + 1 })}
-        onpointerdown={(ev) => pressItem(ev, { kind: "hole", index: hi })} />
+        onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "hole", index: hi } })} />
     {/each}
     {#each project.windows ?? [] as w, wi}
       <path class="opening window" class:sel={openSel?.kind === "window" && openSel.index === wi} class:changed={highlightItems.has(`window:${wi}`)}
         d={"M" + windowOutline(result, w).map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("opening.windowN", { n: wi + 1 })}
-        onpointerdown={(ev) => pressItem(ev, { kind: "window", index: wi })} />
+        onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "window", index: wi } })} />
     {/each}
     {#each project.manual_faces ?? [] as f, fi}
       <path class="manual-face" class:sel={manualSel?.kind === "face" && manualSel.index === fi} class:changed={highlightItems.has(`manual_face:${fi}`)}
         d={"M" + f.points.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
         role="button" tabindex="-1" aria-label={t("manual.faceN", { n: fi + 1 })}
-        onpointerdown={(ev) => pressItem(ev, { kind: "face", index: fi })} />
+        onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "face", index: fi } })} />
       {#if showDims && f.points.length >= 3}
         <!-- Says what the outline is, so it is not taken for a building without a roof. -->
         <text class="manual-tag" x={sx(f.points.reduce((a, p) => a + p.x, 0) / f.points.length)} y={sy(f.points.reduce((a, p) => a + p.y, 0) / f.points.length)}>{t("manual.faceN", { n: fi + 1 })} · {pitchText(f.pitch_deg)}</text>
@@ -985,7 +1072,7 @@
       <g class="manual-line" class:sel class:changed={highlightItems.has(`manual_line:${li}`)}>
         <line class="hit" x1={sx(l.a[0])} y1={sy(l.a[1])} x2={sx(l.b[0])} y2={sy(l.b[1])}
           role="button" tabindex="-1" aria-label={t("manual.lineN", { n: li + 1 })}
-          onpointerdown={(ev) => pressItem(ev, { kind: "line", index: li })} />
+          onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "line", index: li } })} />
         <line class="stroke" class:measure={!codeKind[l.code]} x1={sx(l.a[0])} y1={sy(l.a[1])} x2={sx(l.b[0])} y2={sy(l.b[1])}
           stroke={codeKind[l.code] ? lineColor[codeKind[l.code]] : undefined} />
         {#if showDims}
@@ -1075,7 +1162,7 @@
     {/each}
   </svg>
   <!-- A placing tool says what to click in the bottom bar (PlaceBar, UX-012). -->
-  {#if !placing && !drawing}<div class="hint">{t("plan.hint")}</div>{/if}
+  {#if !placing && !drawing}<div class="hint" data-testid="plan-hint">{moving ? t("plan.hintDrag") : t("plan.hint")}</div>{/if}
 </div>
 
 <style>

@@ -27,10 +27,21 @@
 //    and a corner drag changes the job at every step, so the answer would
 //    be asked again until it gives up (UI-502). The edit is asked again once
 //    the drag has ended, on the dragged job. Pauses are counted: the edits
-//    wait for the last one. The editor must end every pause it takes (on
-//    every release, when the plan goes, when the job is left: ERR-501).
+//    wait for the last one. The pause of a drag belongs to its session
+//    (rule 7), which ends it on every way out (ERR-501).
 // 6. A refusal is always heard (`refused`, with the hold: the editor names
 //    the object in its note); a quiet end is only `removed` and `closed`.
+// 7. A drag is one transaction with one owner, from pointerdown until its
+//    result is in the history (dragsession.ts). While it is open, the drag
+//    is the only writer of the job:
+//    - the user's input (keys, buttons, fields, other pointers) is refused,
+//      visibly; only Escape (cancel) and F3 pass. Nothing is replayed;
+//    - what is not the user's (answers of the core = rule 5, outside saves
+//      of this job, follow mode) waits for the end of the transaction;
+//    - Undo / Redo pressed while the drop is with the core run right after
+//      it: one Undo undoes exactly the drop.
+//    The session takes the pause of rule 5 and a hold on what was pressed
+//    (rule 1) at the press, and every way out of it ends that pause.
 //
 // No roof logic here: only which object an edit belongs to.
 

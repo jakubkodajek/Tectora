@@ -51,6 +51,7 @@
   import { roofState } from "./results";
   import { isTyping, releaseLeaveGuard, setLeaveGuard } from "./leave";
   import { PendingEdits, exclusive } from "./inflight";
+  import { DragSession, inertBut, type Drag, type DragState } from "./dragsession";
   import { m2, num } from "./format";
   import { i18n, t } from "./i18n.svelte";
   import { hscroll } from "./hscroll";
@@ -301,6 +302,7 @@
    * selection follow their items; what the save changed or removed is let go.
    */
   function swapOutside(base: Project | null, remote: Project, next: Project) {
+    drag.foreign("outside save");
     const before = project;
     if (!before || !base) {
       project = next;
@@ -462,7 +464,7 @@
     saveGen++;
     const run = saveQueue.then(saveNow).finally(() => {
       inFlight--;
-      if (!inFlight && reloadWanted) {
+      if (!inFlight && reloadWanted && !drag.active) {
         reloadWanted = false;
         load(false);
       }
@@ -495,6 +497,9 @@
           const r = await api.saveProjectChecked(id, written, JSON.parse(lastSaved));
           if (r.status === "conflict") {
             if (tries + 1 >= SAVE_TRIES) throw { code: "save_conflict", id };
+            // Not into a drag: it is merged once the drag is over.
+            await drag.settled();
+            if (!project) return false;
             const base = JSON.parse(lastSaved) as Project;
             swapOutside(base, r.current, merge3(base, $state.snapshot(project) as Project, r.current));
             lastSaved = JSON.stringify(r.current);
@@ -536,6 +541,8 @@
 
   /** Records the current state as an undo step, recalculates and saves. */
   function commit() {
+    // Not while a drag is open, unless it is the drag's own (jobedits.ts rule 7).
+    drag.foreign("commit");
     const prev = history[at];
     if (!pushHistory()) return;
     // Edits under way follow their items past a delete or a copy (jobedits.ts).
@@ -545,6 +552,7 @@
   }
 
   function restore(i: number) {
+    drag.foreign("undo step");
     const prev = history[at];
     at = i;
     project = JSON.parse(history[i]);
@@ -573,8 +581,19 @@
    * after it and Redo was lost (UX-501). Leaving waits for them too.
    */
   function afterEdits(step: () => void) {
-    if (!jobEdits.size) return step();
-    void pendingEdits.track(jobEdits.idle().then(step));
+    // A drag still held is the only writer of the job: the press is refused.
+    if (dragState === "armed" || dragState === "moving") return;
+    if (!drag.active && !jobEdits.size) return step();
+    // A drop still with the core is the newest step too: one Undo right
+    // after a building's drop undoes exactly that drop (ERR-603).
+    void pendingEdits.track(calm().then(step));
+  }
+  /** Resolves once no drag is open and no edit is with the core. */
+  async function calm() {
+    while (drag.active || jobEdits.size) {
+      await drag.settled();
+      await jobEdits.idle();
+    }
   }
   const undo = () => afterEdits(undoNow);
   const redo = () => afterEdits(redoNow);
@@ -600,6 +619,12 @@
   }
 
   async function load(initial: boolean) {
+    if (!initial && drag.active) {
+      // An outside save of this job during a drag is read once the drag is
+      // over (jobedits.ts rule 7); its review banner comes with it.
+      reloadWanted = true;
+      return;
+    }
     const gen = saveGen;
     try {
       const p = await api.loadProject(id);
@@ -618,9 +643,14 @@
         return;
       }
       if (!initial && json === lastSaved) return;
-      // Indices in an open menu or a drag in progress refer to the old project.
+      if (!initial && drag.active) {
+        // An outside save of this job during a drag waits for its end: the
+        // drag is the only writer of the job meanwhile (jobedits.ts rule 7).
+        reloadWanted = true;
+        return;
+      }
+      // Indices in an open menu refer to the old project.
       menu = null;
-      dragBase = null;
       // An external edit while local edits are not saved yet (waiting for
       // the timer, or a save that failed): keep both (the external one wins
       // where both changed the same value). The state stays "dirty" or
@@ -677,7 +707,8 @@
   /** Follow mode must not take the user out of unfinished work (UX-001). */
   function busy(): boolean {
     if ((drawing?.length ?? 0) > 0 || placing !== false || manualDraft.length > 0) return true;
-    if (dragBase || menu) return true;
+    // A drag from its press on, also a corner's (ERR-601).
+    if (drag.active || menu) return true;
     return isTyping(document.activeElement);
   }
 
@@ -706,7 +737,7 @@
     }
     // A drag under way ends where it is: its pause would hold every edit
     // below until a release that may never come (ERR-501).
-    if (dragging() || dragPause) cutDrag();
+    if (dragging()) cutDrag();
     // A value still being typed is part of the job: store it first.
     commitFocused();
     await tick();
@@ -722,7 +753,7 @@
 
   onDestroy(() => {
     unlisten?.();
-    endDrag();
+    cutDrag();
     releaseLeaveGuard(leaveGuard);
     if (saveState === "dirty" || saveState === "failed") save();
   });
@@ -767,6 +798,7 @@
       clearTimeout(saveTimer);
       const oldest = pendingList[pendingList.length - 1];
       const p = all && oldest ? await api.revertChanges(id, oldest.ts_ms) : await api.revertLastChange(id);
+      await drag.settled();
       swapOutside(lastSaved ? (JSON.parse(lastSaved) as Project) : null, p, p);
       lastSaved = JSON.stringify(p);
       saveState = "saved";
@@ -962,6 +994,7 @@
     const roof = jobEdits.holdRoof();
     try {
       const snap = await api.takeSnapshot(JSON.parse(JSON.stringify(project)));
+      await drag.settled();
       // Figures of the roof as it was asked for, never of one an AI save or
       // an edit changed meanwhile (ERR-102); an AI save of the notes keeps it (ERR-301).
       if (!project || !jobEdits.roofSame(roof)) {
@@ -1144,31 +1177,21 @@
     deleteVertexAt(hold.index, sel.edge);
   }
 
-  function moveVertex(part: number, v: number, x: number, y: number) {
-    if (!project || dragCut) return;
+  /** A corner's coordinates typed in the wall bar: the corner moves there, as a drop would put it. */
+  function setCorner(part: number, v: number, x: number, y: number) {
+    if (!project || dragging()) return;
     const es = project.parts[part]?.edges;
     if (!es?.[v] || !Number.isFinite(x) || !Number.isFinite(y)) return;
     const p = es[v].start;
     if (p.x === x && p.y === y) return;
-    // Every step changes the job: an answer of the core would be asked again
-    // at each one until it gives up, so answers wait for the drop (UI-502).
-    vertexDrag = true;
-    dragPause ??= jobEdits.pause();
+    // No answer of the core lands between the move and its merge (UI-502).
+    const resume = jobEdits.pause();
     moveCorner(es, v, x, y);
     recalc();
+    return pendingEdits.track(endVertexDragNow(part, v).finally(resume));
   }
 
-  /** End of a corner drag: a corner dropped onto its neighbour merges into it; then the drag pause ends. */
-  function endVertexDrag(part: number, v: number) {
-    const pause = takeDragPause();
-    if (dragCut) {
-      dragCut = false;
-      pause();
-      return Promise.resolve();
-    }
-    vertexDrag = false;
-    return pendingEdits.track(endVertexDragNow(part, v).finally(pause));
-  }
+  /** End of a corner move: a corner dropped onto its neighbour merges into it, then the step is recorded. */
   async function endVertexDragNow(part: number, v: number) {
     const was = project?.parts[part];
     if (!project || !was) return;
@@ -1183,11 +1206,11 @@
     } catch (e) {
       notifyError(e, "calc");
     }
-    commit();
+    drag.write(commit);
   }
 
   function insertVertex(part: number, edge: number, x: number, y: number) {
-    if (!project) return;
+    if (!project || dragging()) return;
     const es = project.parts[part].edges;
     const copy: EdgeDef = { ...$state.snapshot(es[edge]), start: { x, y }, half_hip: null, direction_rad: null };
     es.splice(edge + 1, 0, copy);
@@ -1418,6 +1441,7 @@
       notifyError(e, "calc");
       return;
     }
+    await drag.settled();
     if (!project) return;
     project.roof_openings ??= [];
     project.roof_openings.push(hole);
@@ -1440,6 +1464,7 @@
       notifyError(e, "calc");
       return;
     }
+    await drag.settled();
     if (!project) return;
     project.chimneys.push(chimney);
     selectOpening({ kind: "chimney", index: project.chimneys.length - 1 });
@@ -1578,7 +1603,7 @@
    * opening, the bar's first field for a hand-drawn line or face.
    */
   function openProperties(it: ItemRef) {
-    if (!project || !itemExists(project, it)) return;
+    if (!project || dragging() || !itemExists(project, it)) return;
     selectItem(it);
     if (it.kind === "dormer") editDormer();
     else if (it.kind === "chimney" || it.kind === "window" || it.kind === "hole") {
@@ -1588,137 +1613,150 @@
     else focusProperties();
   }
 
-  /** The project and roof when a drag started; each step maps from these. */
-  let dragBase: { key: string; project: string; result: CalcResult | null; from: Point2 | null; last?: { target: PlanTarget; dx: number; dy: number } } | null = null;
-  /** A corner is being dragged (`moveVertex`): it holds the drag pause too (UI-502). */
-  let vertexDrag = false;
   /**
-   * The editor ended the drag under way itself (the job is being left): the
-   * plan's further steps of that drag are ignored until it lets go.
+   * The drag under way in the plan (dragsession.ts; jobedits.ts rule 7): one
+   * transaction from the press until its result is in the history, and the
+   * only writer of the job meanwhile. An object or a building is rebuilt
+   * from the job of the press at every step; a corner is moved in place.
+   * A step's `to` is (dx, dy) from the press, for a corner its new place.
    */
-  let dragCut = false;
-  /** A drag of an object, a building or a corner is under way. */
-  const dragging = () => !!dragBase || vertexDrag;
-
+  const drag = new DragSession<PlanTarget, Point2>(
+    {
+      pause: () => jobEdits.pause(),
+      hold: (target) =>
+        !project ? null
+        : target.type === "item" ? jobEdits.hold(ITEM_LIST[target.item.kind], target.item.index)
+        : target.type === "part" || target.type === "vertex" ? jobEdits.hold("parts", target.part)
+        : null,
+      snapshot,
+      step: dragStep,
+      drop: dragDrop,
+      restore: (base) => {
+        const sel = selection;
+        project = JSON.parse(base) as Project;
+        selection = keptSelection(project, sel);
+        recalc();
+      },
+      changed: (state) => {
+        if (state === "armed") dragStart = { result, from: null };
+        dragState = state;
+        // What waited for the end of the drag: an outside save of this job.
+        if (state === "idle" && reloadWanted && !inFlight) {
+          reloadWanted = false;
+          load(false);
+        }
+      },
+    },
+    // The dev build (and the E2E run on it) fails loudly on a write that
+    // slipped past the guards; a release ends the drag where the job is.
+    import.meta.env.DEV,
+  );
+  /** The session's state, for what the editor shows and closes. */
+  let dragState = $state<DragState>("idle");
+  /** The roof and the object's centre when the drag was pressed (the drop's roof follow maps from them). */
+  let dragStart: { result: CalcResult | null; from: Point2 | null } = { result: null, from: null };
+  /** A drag is open: pressed, moving, or its drop still with the core. */
+  const dragging = () => drag.active;
   /**
-   * The pause of core-backed edits the drag under way holds (jobedits.ts,
-   * rule 5): every drag step rebuilds the job from `dragBase`, so an answer
-   * applied during the drag would be written back on release (ERR-401).
-   * Edits whose answer came meanwhile are asked again on the dragged job.
+   * The editor is closed for the user's input: a drag is the only writer
+   * of the job until its result is in the history. Bars, toolbar, dock and
+   * header are `inert`, keys are refused (Escape cancels, F3 passes; Undo
+   * and Redo wait for a drop that settles), the plan takes no new press.
    */
-  let dragPause: (() => void) | null = null;
+  const closed = $derived(dragState !== "idle");
 
-  /** The drag let go: its pause, to end now or once the core's move is in. */
-  function takeDragPause(): () => void {
-    const p = dragPause ?? (() => {});
-    dragPause = null;
-    return p;
+  /** A press in the plan that may become a drag: false when a drag is open already. */
+  function armDrag(target: PlanTarget, pointerId: number): boolean {
+    if (!project) return false;
+    const ok = drag.arm(pointerId, target);
+    if (ok && target.type === "item") dragStart.from = itemCentre(project, target.item);
+    return ok;
   }
 
-  /** Ends the pause of the drag under way, if any (also when the editor closes). */
-  function endDrag() {
-    takeDragPause()();
+  /** A step of an object's or a building's drag. */
+  function dragObject(target: PlanTarget, dx: number, dy: number) {
+    if (target.type !== "item" && target.type !== "part") return;
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+    drag.step({ x: dx, y: dy });
   }
 
-  function dragObject(target: PlanTarget, dx: number, dy: number, end: boolean) {
-    if (dragCut) {
-      if (end) dragCut = false;
-      return;
-    }
-    if (!project || (target.type !== "item" && target.type !== "part")) {
-      if (end) {
-        dragBase = null;
-        endDrag();
-      }
-      return;
-    }
-    const key = JSON.stringify(target);
-    if (!dragBase || dragBase.key !== key) {
-      dragPause ??= jobEdits.pause();
-      dragBase = { key, project: snapshot(), result, from: target.type === "item" ? itemCentre(project, target.item) : null };
-    }
-    dragBase.last = { target, dx, dy };
-    let later = false;
-    try {
-      later = dragStep(target, dx, dy, end);
-    } finally {
-      // Every release ends the drag and its pause, also one whose object is gone.
-      if (end) {
-        dragBase = null;
-        if (!later) endDrag();
-      }
-    }
+  /** A step of a corner's drag. */
+  function moveVertex(_part: number, _v: number, x: number, y: number) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    drag.step({ x, y });
+  }
+
+  /** The press ended (release, lost pointer, the plan went away): the drop, or nothing when it never moved. */
+  function endDragPress() {
+    const done = pendingEdits.track(drag.drop());
+    // A refusal of the drop was shown where it was caught.
+    done.catch(() => {});
   }
 
   /** Escape during a drag: the job goes back to where the drag started, nothing is saved. */
   function cancelDrag() {
-    const from = dragBase ? dragBase.project : vertexDrag ? history[at] : null;
-    if (from) {
-      const sel = selection;
-      project = JSON.parse(from) as Project;
-      selection = keptSelection(project, sel);
-      recalc();
-    }
-    dragBase = null;
-    vertexDrag = false;
-    dragCut = true;
-    endDrag();
+    drag.cancel();
   }
 
   /**
    * Ends the drag under way where it is now, as its release would (leaving
-   * the job must not wait for a drag pause that only the release ends,
-   * ERR-501); the plan's further steps of it are ignored.
+   * the job must not wait for a drag that only the release ends, ERR-501);
+   * the plan's further steps of it find no drag and do nothing.
    */
   function cutDrag() {
-    const last = dragBase?.last;
-    if (last) {
-      dragObject(last.target, last.dx, last.dy, true);
-      dragCut = true;
-    } else if (vertexDrag) {
-      vertexDrag = false;
-      dragCut = true;
-      commit();
-    }
-    dragBase = null;
-    endDrag();
+    const done = pendingEdits.track(drag.cut());
+    done.catch(() => {});
   }
 
-  /** One drag step; true when the release goes on with the core (a part drag), which then ends the pause. */
-  function dragStep(target: PlanTarget, dx: number, dy: number, end: boolean): boolean {
-    if (!project || !dragBase || (target.type !== "item" && target.type !== "part")) return false;
-    const base: Project = JSON.parse(dragBase.project);
+  /** One drag step; false when it changed nothing. */
+  function dragStep(d: Drag<PlanTarget, Point2>, to: Point2): boolean {
+    const target = d.target;
+    if (!project) return false;
+    if (target.type === "vertex") {
+      const es = project.parts[target.part]?.edges;
+      const p = es?.[target.vertex]?.start;
+      if (!es || !p || (p.x === to.x && p.y === to.y)) return false;
+      moveCorner(es, target.vertex, to.x, to.y);
+      recalc();
+      return true;
+    }
+    const base: Project = JSON.parse(d.base);
     if (target.type === "item") {
       const it = target.item;
       if (!itemExists(base, it)) return false;
-      moveItem(base, it, dx, dy);
-      if (end && dragBase.from) {
-        followRoof(base, it, dragBase.from, { x: dragBase.from.x + dx, y: dragBase.from.y + dy }, dragBase.result);
-      }
+      moveItem(base, it, to.x, to.y);
       project = base;
       selectItem(it);
-    } else {
+    } else if (target.type === "part") {
       if (!base.parts[target.part]) return false;
       // The plan draws the moved part at once (TypeScript, presentation);
       // what is saved on release is the core's `transform_part`.
-      transformPart(base, target.part, translation(dx, dy));
+      transformPart(base, target.part, translation(to.x, to.y));
       const sel = selection;
       project = base;
       selection = sel;
-      if (end) {
-        const from = dragBase.project;
-        dragBase = null;
-        void pendingEdits.track(finishPartDrag(from, target.part, dx, dy).finally(takeDragPause()));
-        return true;
-      }
-    }
-    if (end) {
-      dragBase = null;
-      commit();
-    } else {
-      recalc();
-    }
-    return false;
+    } else return false;
+    recalc();
+    return true;
+  }
+
+  /** The drop: an object lands and follows its roof; a building's move and a corner's merge go on with the core. */
+  function dragDrop(d: Drag<PlanTarget, Point2>): void | Promise<void> {
+    const target = d.target;
+    const to = d.last;
+    if (!project || !to) return;
+    if (target.type === "vertex") return endVertexDragNow(target.part, target.vertex);
+    if (target.type === "part") return finishPartDrag(d.base, target.part, to.x, to.y);
+    if (target.type !== "item") return;
+    const base: Project = JSON.parse(d.base);
+    const it = target.item;
+    if (!itemExists(base, it)) return;
+    moveItem(base, it, to.x, to.y);
+    const from = dragStart.from;
+    if (from) followRoof(base, it, from, { x: from.x + to.x, y: from.y + to.y }, dragStart.result);
+    project = base;
+    selectItem(it);
+    commit();
   }
 
   /** A part drag ended: the core's move replaces the drawn one, then it is saved; on a refusal the part goes back. */
@@ -1727,9 +1765,12 @@
     try {
       const r = await api.transformPart(JSON.parse(from) as Project, part, { kind: "move", dx, dy }, 0);
       if (!project || JSON.stringify($state.snapshot(project)) !== drawn) return;
-      const sel = selection;
-      adoptProject(r.project);
-      selection = sel;
+      drag.write(() => {
+        const sel = selection;
+        adoptProject(r.project);
+        selection = sel;
+        commit();
+      });
     } catch (e) {
       if (project && JSON.stringify($state.snapshot(project)) === drawn) {
         const sel = selection;
@@ -1738,9 +1779,7 @@
         recalc();
       }
       if (!notifyRefusal(e, "transform")) notifyError(e, "calc");
-      return;
     }
-    commit();
   }
 
   /** Where a copy goes: beside the original, its own size plus 30 cm away
@@ -1892,7 +1931,7 @@
   }
 
   function openMenu(target: PlanTarget, client: { x: number; y: number }, world: Point2) {
-    if (!project) return;
+    if (!project || dragging()) return;
     let title: string | undefined;
     let entries: MenuEntry[] = [];
     if (target.type === "item") {
@@ -2137,6 +2176,7 @@
       notifyError(e, "calc");
       return;
     }
+    await drag.settled();
     // Drawing went on or was left while the core answered: this finish is stale.
     if (!project || !drawing || JSON.stringify($state.snapshot(drawing)) !== drawn) return;
     if (pts.length < 3) return;
@@ -2199,27 +2239,29 @@
   function onkeydown(e: KeyboardEvent) {
     const mod = e.metaKey || e.ctrlKey;
     const del = e.key === "Delete" || (e.key === "Backspace" && !mod);
+    // A drag is the only writer of the job from its press until its result
+    // is in the history (jobedits.ts rule 7): a key that edits (Delete, an
+    // undo, a copy, a nudge, Enter on a button, a typed value) would be
+    // erased by the next step of the drag, or would hit another object once
+    // the pressed one is gone (ERR-502, UI-603, UI-605). So every key is
+    // refused, and nothing is replayed after the drop. Escape cancels the
+    // drag, F3 switches the view, and Undo / Redo pressed while the drop is
+    // with the core run right after it (ERR-603). Function keys stay the
+    // browser's.
+    if (drag.active && e.key !== "F3") {
+      if (/^F\d+$/.test(e.key)) return;
+      e.preventDefault();
+      if (dragState === "settling") {
+        if (undoKey(e)) undoKey(e) === "redo" ? redo() : undo();
+      } else if (e.key === "Escape") cancelDrag();
+      return;
+    }
     const tag = (e.target as HTMLElement).tagName;
     // A number field with its value stored (nothing typed since Enter):
     // Ctrl+Z undoes that change, not only the field's text (UX-001).
     if ((tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") && !editorTakesUndo(e.target as HTMLElement, e)) return;
     // A dialog is open: its keys (Escape closes it) must not edit the roof behind it.
     if (document.querySelector('[role="dialog"]')) return;
-    // A drag rebuilds the job from where it started at every step: an edit
-    // made by a key meanwhile (Delete, an undo, a copy, a nudge) would be
-    // undone by the drop. Escape cancels the drag, F3 switches the view;
-    // every other key waits for the drop (ERR-502).
-    if (dragging()) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        cancelDrag();
-        return;
-      }
-      if (e.key !== "F3") {
-        if (mod || del || e.key.startsWith("Arrow") || e.key.startsWith("Page")) e.preventDefault();
-        return;
-      }
-    }
     if (undoKey(e)) {
       e.preventDefault();
       undoKey(e) === "redo" ? redo() : undo();
@@ -2269,7 +2311,7 @@
 <ContextMenu bind:menu />
 
 <div class="editor">
-  <header>
+  <header inert={closed}>
     <button class="icon-btn" onclick={onback} title={t("editor.back")} aria-label={t("editor.back")}><Icon name="back" /></button>
     <div class="crumbs">
       <button class="crumb" onclick={onback}>{t("lib.title")}</button>
@@ -2295,7 +2337,7 @@
   </header>
 
   {#if !loadError}
-  <div class="toolbar" class:tight={toolLevel >= 1} class:compact-minor={toolLevel >= 2 && !prefs.toolLabels} class:compact={compactTools && !prefs.toolLabels} class:labels={prefs.toolLabels} role="toolbar" bind:this={toolbarEl} use:hscroll>
+  <div class="toolbar" class:tight={toolLevel >= 1} class:compact-minor={toolLevel >= 2 && !prefs.toolLabels} class:compact={compactTools && !prefs.toolLabels} class:labels={prefs.toolLabels} role="toolbar" bind:this={toolbarEl} use:hscroll inert={closed}>
     <div class="group">
       <button class="tool" onclick={undo} disabled={at <= 0} title="{t('editor.undo')} ({keys('Ctrl+Z')})"><Icon name="undo" /><span>{t("editor.undo")}</span></button>
       <button class="tool" onclick={redo} disabled={at >= historyLen - 1} title="{t('editor.redo')} ({keys('Ctrl+Shift+Z')})"><Icon name="redo" /><span>{t("editor.redo")}</span></button>
@@ -2333,7 +2375,7 @@
 
   {#if project}
     <div class="body">
-      <div class="main">
+      <div class="main" use:inertBut={{ on: closed, keep: "views" }}>
         {#if pending}
           <div class="review" class:open={reviewDetails} role="status">
             <Icon name="sparkle" size={18} />
@@ -2429,12 +2471,15 @@
                 {placing}
                 onplace={place}
                 onmove={moveVertex}
-                onmoveend={endVertexDrag}
                 oninsert={insertVertex}
                 ondrawpoint={addDrawPoint}
                 ondrawclose={finishDraw}
                 oncursor={(p) => (cursor = p)}
                 ondrag={dragObject}
+                ondragarm={armDrag}
+                ondragend={endDragPress}
+                moving={dragState === "moving"}
+                locked={dragState === "settling"}
                 oncontext={openMenu}
                 onitemdbl={openProperties}
               />
@@ -2445,7 +2490,7 @@
               <span class="view-label">{t("editor.model")}</span>
               {#if prefs.layout === "3d"}{@render calcMark()}{/if}
               <Roof3D {project} {result} {selection} item={selectedItem}
-                onpick={(tg) => { if (tg.type === "item") selectItem(tg.item); else if (tg.type === "edge") { selectItem(null); selection = { part: tg.part, edge: tg.edge }; } }}
+                onpick={(tg) => { if (dragging()) return; if (tg.type === "item") selectItem(tg.item); else if (tg.type === "edge") { selectItem(null); selection = { part: tg.part, edge: tg.edge }; } }}
                 oncontext={openMenu} onitemdbl={openProperties} />
             </div>
           {/if}
@@ -2484,7 +2529,7 @@
             onapplyall={applyAll}
             onheight={setPartHeight}
             onlength={setLength}
-            onpoint={(x, y) => { if (selection) { moveVertex(selection.part, selection.edge, x, y); endVertexDrag(selection.part, selection.edge); } }}
+            onpoint={(x, y) => { if (selection) void setCorner(selection.part, selection.edge, x, y); }}
             ondelete={deleteVertex}
             onmarker={insertMarker}
             onround={opposite !== null ? openRound : undefined}
@@ -2493,7 +2538,7 @@
         {/if}
       </div>
 
-      <aside class:open={dockOpen}>
+      <aside class:open={dockOpen} inert={closed}>
         <div class="tabs" role="tablist" use:tablist use:fitlabels>
           <button role="tab" id={dockIds.tab("results")} aria-controls={dockIds.panel} aria-selected={dock === "results"} class:on={dock === "results"} onclick={() => showDock("results")} title={t("dock.results")}><Icon name="chart" size={15} /><span class="tab-label">{t("dock.results")}</span></button>
           <button role="tab" id={dockIds.tab("breakdown")} aria-controls={dockIds.panel} aria-selected={dock === "breakdown"} class:on={dock === "breakdown"} onclick={() => showDock("breakdown")} title={t("bd.title")}><Icon name="sigma" size={15} /><span class="tab-label">{t("dock.breakdown")}</span></button>
@@ -2517,7 +2562,7 @@
       </aside>
     </div>
 
-    <footer class="statusbar">
+    <footer class="statusbar" inert={closed}>
       <span class="coords">{cursor ? `X ${num(cursor.x)}   Y ${num(cursor.y)}` : "X —   Y —"}</span>
       <span class="opt">{t("status.snap")}</span>
       <span class="opt">{t("status.walls", { n: wallCount, p: project.parts.length })}</span>
