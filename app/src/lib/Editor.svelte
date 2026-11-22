@@ -2568,7 +2568,7 @@
       {#if dormerBlocked}<p class="dlg-why" role="alert" data-testid="dormer-ok-blocked">{dormerBlocked}</p>
       {:else if dormerNotice}<p class="dlg-why" role="status" data-testid="dormer-ok-notice">{dormerNotice}</p>{/if}
       <button class="btn" onclick={() => (dormerDlg = null)}>{t("common.cancel")}</button>
-      <button class="btn primary" disabled={!!dormerBlocked || acting.dormer} title={dormerBlocked ?? undefined} onclick={applyDormerDialog}>{t("common.ok")}</button>
+      <button class="btn primary" disabled={!!dormerBlocked} aria-disabled={acting.dormer} aria-busy={acting.dormer} title={dormerBlocked ?? undefined} onclick={() => !acting.dormer && applyDormerDialog()}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -2578,7 +2578,7 @@
     <RoofCalcForm {project} partIndex={calc.part} edge={calc.edge} bind:request={calc.request} />
     {#snippet footer()}
       <button class="btn" onclick={() => (calc = null)}>{t("common.cancel")}</button>
-      <button class="btn primary" disabled={!calc?.request || acting.calc} onclick={applyCalc}>{t("common.ok")}</button>
+      <button class="btn primary" disabled={!calc?.request} aria-disabled={acting.calc} aria-busy={acting.calc} onclick={() => !acting.calc && applyCalc()}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -2588,7 +2588,7 @@
     <RoundRoofForm span={round.span} bind:eave={round.eave} bind:overhang={round.overhang} bind:arc={round.arc} bind:request={round.request} />
     {#snippet footer()}
       <button class="btn" onclick={() => (round = null)}>{t("common.cancel")}</button>
-      <button class="btn primary" disabled={!round?.arc || acting.round} onclick={applyRound}>{t("common.ok")}</button>
+      <button class="btn primary" disabled={!round?.arc} aria-disabled={acting.round} aria-busy={acting.round} onclick={() => !acting.round && applyRound()}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -2598,7 +2598,7 @@
     <TransformForm part={project.parts[xform.part]} edge={xform.edge} bind:mode={xform.mode} bind:op={xform.op} />
     {#snippet footer()}
       <button class="btn" onclick={() => (xform = null)}>{t("common.cancel")}</button>
-      <button class="btn primary" disabled={!xform?.op || acting.transform} onclick={applyTransform}>{t("common.ok")}</button>
+      <button class="btn primary" disabled={!xform?.op} aria-disabled={acting.transform} aria-busy={acting.transform} onclick={() => !acting.transform && applyTransform()}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
