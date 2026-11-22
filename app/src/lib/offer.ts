@@ -48,12 +48,14 @@ export function hasBuilding(p: Pick<Project, "parts" | "manual_faces">): boolean
 const TOLERANCE = 0.005;
 /** The material every face has unless the user picks another (core `model::DEFAULT_MATERIAL`). */
 const DEFAULT_MATERIAL = 1;
+/** Most differences listed (core `snapshot::MAX_DIFFERENCES`), so both list the same ones. */
+const MAX_DIFFERENCES = 100;
 
 /**
  * What differs between two results the core took, by the rule of the
  * core's `snapshot::compare` and in its order (area, ridge height, every
  * line code, and the areas by material once the roof has more than the
- * default one): a job offered again keeps its stored result, and the user
+ * default one; at most 100, as the core lists): a job offered again keeps its stored result, and the user
  * is told which figure the roof now gives differently (UX-206, ERR-304).
  * Comparison only, no roof math; held to the core by the shared cases in
  * `tests/fixtures/parity/snapshot_compare_cases.json` (TEST-302).
@@ -70,10 +72,10 @@ export function snapshotDifferences(stored: ResultSnapshot, current: ResultSnaps
   for (const c of codes) check(`line:${c}`, stored.lines_by_code[c] ?? 0, current.lines_by_code[c] ?? 0);
   const mats = [...new Set([...stored.area_by_material, ...current.area_by_material].map((m) => m.material))].sort((a, b) => a - b);
   // One default material is the roof area again; only a split says more.
-  if (mats.every((m) => m === DEFAULT_MATERIAL)) return out;
+  if (mats.every((m) => m === DEFAULT_MATERIAL)) return out.slice(0, MAX_DIFFERENCES);
   const area = (s: ResultSnapshot, m: number) => s.area_by_material.find((x) => x.material === m)?.area ?? 0;
   for (const m of mats) check(`material:${m}`, area(stored, m), area(current, m));
-  return out;
+  return out.slice(0, MAX_DIFFERENCES);
 }
 
 /** Whether the figures of two results the core took differ (`snapshotDifferences`). */
