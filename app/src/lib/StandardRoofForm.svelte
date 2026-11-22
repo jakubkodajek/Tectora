@@ -2,6 +2,7 @@
   // DACAD's "Standard-Dach": pick a basic roof type for a rectangle and
   // enter its dimensions; shows a live plan preview with roof lines.
   import { api } from "./api";
+  import { minOf } from "./extent";
   import { describeCalcError, describeError, describeProblem, toAppError } from "./errors";
   import { notifyError } from "./notify.svelte";
   import PlanThumb from "./PlanThumb.svelte";
@@ -47,7 +48,7 @@
   /** A regular polygon of eaves with the first wall along the x axis, corners at x, y >= 0. */
   async function polygonPart(): Promise<RoofPart> {
     const pts = await api.regularPolygon({ x: 0, y: 0 }, sides, length);
-    const [mx, my] = [Math.min(...pts.map((p) => p.x)), Math.min(...pts.map((p) => p.y))];
+    const [mx, my] = [minOf(pts, (p) => p.x), minOf(pts, (p) => p.y)];
     return {
       name: "",
       edges: pts.map((p) => ({
