@@ -58,6 +58,18 @@ export interface DragHost<T, S> {
   changed?(state: DragState): void;
 }
 
+/** Sessions with a drag open, across components. */
+const open = new Set<object>();
+
+/**
+ * A drag is open in some plan. App-wide shortcuts outside the editor
+ * (Ctrl/Cmd+, opens the settings) check it: their listener runs before the
+ * editor's refusal (HUNT-702).
+ */
+export function anyDragOpen(): boolean {
+  return open.size > 0;
+}
+
 export class DragSession<T, S> {
   private current: DragState = "idle";
   private pointerId: number | null = null;
@@ -93,6 +105,8 @@ export class DragSession<T, S> {
   private set(state: DragState) {
     if (this.current === state) return;
     this.current = state;
+    if (state === "idle") open.delete(this);
+    else open.add(this);
     this.host.changed?.(state);
   }
 

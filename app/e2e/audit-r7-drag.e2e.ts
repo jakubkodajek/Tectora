@@ -171,6 +171,10 @@ async function intrude(app: App, page: Page, kind: Kind) {
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ControlOrMeta+d");
   await nothing("arrow, Ctrl+D");
+  // The settings shortcut is App's, outside the editor's guard (HUNT-702).
+  await page.keyboard.press("ControlOrMeta+,");
+  await nothing("Ctrl+,");
+  await expect(page.getByRole("dialog", { name: cs("settings.title") }), "Ctrl+,: no settings").toHaveCount(0);
   // Tab to a button and Enter (ui t612 `kbd`).
   for (let i = 0; i < 3; i++) await page.keyboard.press("Tab");
   await page.keyboard.press("Enter");

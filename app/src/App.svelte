@@ -8,6 +8,7 @@
   import Toasts from "./lib/Toasts.svelte";
   import { api, onLiveStatus, onOpenFailed, onOpenProject, onProjectsChanged, onSettingsChanged } from "./lib/api";
   import { startOpening } from "./lib/startup";
+  import { anyDragOpen } from "./lib/dragsession";
   import { t } from "./lib/i18n.svelte";
   import { actorName, live } from "./lib/live.svelte";
   import { info, notify, notifyError } from "./lib/notify.svelte";
@@ -199,6 +200,9 @@
     // Cmd+, / Ctrl+, opens the settings, as in most desktop apps.
     if ((e.metaKey || e.ctrlKey) && e.key === ",") {
       e.preventDefault();
+      // Not in the middle of a drag: every key is refused then, this one
+      // too (HUNT-702; this listener runs before the editor's).
+      if (anyDragOpen()) return;
       settingsOpen = true;
     }
   }}
