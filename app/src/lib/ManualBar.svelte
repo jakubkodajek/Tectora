@@ -116,7 +116,7 @@
     {/if}
     <div class="spacer"></div>
     {#if face && ontopart}
-      <button class="btn sm" disabled={busy} onclick={ontopart} title={t("manual.toPartHint")}><Icon name="house" size={15} />{t("manual.toPart")}</button>
+      <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && ontopart?.()} title={t("manual.toPartHint")}><Icon name="house" size={15} />{t("manual.toPart")}</button>
     {/if}
     {@const del = t(sel.kind === "line" ? "manual.deleteLine" : "manual.deleteFace")}
     <button class="btn sm ghost danger" onclick={(e) => !pressTooSoon(shownAt, e.detail) && ondelete()} title={del}><Icon name="trash" size={15} />{del}</button>
