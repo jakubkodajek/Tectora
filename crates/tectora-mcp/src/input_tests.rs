@@ -963,10 +963,18 @@ fn get_project_leaves_a_result_an_older_engine_stored() {
     let r = s.call_tool("get_project", &json!({ "id": id })).unwrap();
     // The answer and the file keep the offer's figures; the AI sees that
     // they came from another engine.
-    assert_eq!(r["stored_result"]["stored"]["engine_version"], "0.0.1", "{r}");
+    assert_eq!(
+        r["stored_result"]["stored"]["engine_version"], "0.0.1",
+        "{r}"
+    );
     assert_eq!(r["stored_result"]["engine_changed"], true, "{r}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), file);
-    assert!(s.store.activity(&id).iter().all(|e| e.actor != ENGINE_ACTOR));
+    assert!(
+        s.store
+            .activity(&id)
+            .iter()
+            .all(|e| e.actor != ENGINE_ACTOR)
+    );
     // The app's open still recalculates it.
     assert!(s.store.refresh_stored_result(&id).unwrap());
 }

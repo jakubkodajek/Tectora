@@ -1787,9 +1787,9 @@ impl Store {
                 !name.starts_with('.')
                     && (t.is_symlink()
                         || (!t.is_dir()
-                            && self.path(name).is_ok_and(|p| {
-                                fs::symlink_metadata(p).is_ok_and(|m| m.is_file())
-                            })))
+                            && self
+                                .path(name)
+                                .is_ok_and(|p| fs::symlink_metadata(p).is_ok_and(|m| m.is_file()))))
             });
             for (name, _) in blocking.take(20) {
                 check(format!("{FILES_DIR}/{name}"), "job_files", Some(name));
@@ -1936,7 +1936,15 @@ impl Store {
                     input: origin.input.clone(),
                     checked: crate::snapshot::ENGINE_VERSION.to_string(),
                 });
-                self.log_and_write(id, Some(before), &after, ENGINE_ACTOR, &summary, None, fresh)?;
+                self.log_and_write(
+                    id,
+                    Some(before),
+                    &after,
+                    ENGINE_ACTOR,
+                    &summary,
+                    None,
+                    fresh,
+                )?;
                 // Only once saved (audit ARCH-502): the old result, put
                 // back by a revert, then stays reverted; a failed save
                 // leaves it to be recalculated on the next open.
@@ -2400,9 +2408,10 @@ impl Store {
             },
             log,
         )?;
-        self.write_known(id, project, true, known).inspect_err(|_| {
-            let _ = undo.apply();
-        })?;
+        self.write_known(id, project, true, known)
+            .inspect_err(|_| {
+                let _ = undo.apply();
+            })?;
         // Trimmed only once the change is saved, so a failed write takes
         // the entry out by cutting the file back and never loses an older
         // entry (ARCH-401). A trim that fails is tried again next save.
@@ -4074,12 +4083,20 @@ mod tests {
         for stray in ["Thumbs.db", "desktop.ini", "stray-plan.pdf", "no-such-job"] {
             fs::write(files.join(stray), "x").unwrap();
         }
-        assert!(store.foreign_entries().is_empty(), "{:?}", store.foreign_entries());
+        assert!(
+            store.foreign_entries().is_empty(),
+            "{:?}",
+            store.foreign_entries()
+        );
         // A file in place of an existing job's folder blocks its files.
         fs::write(files.join(&other), "x").unwrap();
         // An empty lock folder is replaced by the next save: not named.
         let activity = store.activity_dir();
-        for name in [format!("{other}.lock"), format!("{id}.lock"), ".new.lock".into()] {
+        for name in [
+            format!("{other}.lock"),
+            format!("{id}.lock"),
+            ".new.lock".into(),
+        ] {
             let _ = fs::remove_file(activity.join(name));
         }
         fs::create_dir_all(activity.join(format!("{other}.lock"))).unwrap();
@@ -4153,7 +4170,9 @@ mod tests {
         assert_eq!(found[0].id, TRASH_DIR);
         assert_eq!(found[0].kind, "trash");
         let linked: Vec<String> = found[1..].iter().map(|f| f.id.clone()).collect();
-        let want: Vec<String> = (0..20).map(|n| format!("{FILES_DIR}/link-{n:02}")).collect();
+        let want: Vec<String> = (0..20)
+            .map(|n| format!("{FILES_DIR}/link-{n:02}"))
+            .collect();
         assert_eq!(linked, want);
         assert!(found[1..].iter().all(|f| f.kind == "job_files"));
         let _ = fs::remove_dir_all(&store.dir);
@@ -4882,7 +4901,11 @@ mod tests {
             let (id, mut p) = old_offer(&store);
             p.job.status = status;
             fs::write(store.path(&id).unwrap(), p.to_json().unwrap()).unwrap();
-            assert_eq!(store.refresh_stored_result(&id).unwrap(), refreshed, "{status:?}");
+            assert_eq!(
+                store.refresh_stored_result(&id).unwrap(),
+                refreshed,
+                "{status:?}"
+            );
             if !refreshed {
                 assert_eq!(store.load(&id).unwrap().result_snapshot, p.result_snapshot);
                 assert!(store.activity(&id).iter().all(|e| e.actor != ENGINE_ACTOR));
@@ -4899,7 +4922,10 @@ mod tests {
         let (id, p) = old_offer(&store);
         let summary = store.refresh_result(&id).unwrap().expect("recalculated");
         let entry = store.activity(&id).last().unwrap().clone();
-        assert_eq!((entry.actor.as_str(), entry.summary.as_str()), (ENGINE_ACTOR, summary.as_str()));
+        assert_eq!(
+            (entry.actor.as_str(), entry.summary.as_str()),
+            (ENGINE_ACTOR, summary.as_str())
+        );
         let back = store.revert_to(&id, entry.ts_ms, USER_ACTOR, None).unwrap();
         assert_eq!(back.result_snapshot, p.result_snapshot);
         assert_eq!(store.load(&id).unwrap().result_snapshot, p.result_snapshot);
@@ -4955,10 +4981,7 @@ mod tests {
                     })
                 })
                 .collect();
-            let refreshed = done
-                .into_iter()
-                .filter_map(|t| t.join().unwrap())
-                .count();
+            let refreshed = done.into_iter().filter_map(|t| t.join().unwrap()).count();
             assert_eq!(refreshed, 1);
             let engine = store
                 .activity(&id)
@@ -4988,7 +5011,10 @@ mod tests {
         assert!(once > 0);
         let (r, used) = crate::work::bounded_by(u64::MAX, || store.refresh_result(&id));
         assert!(r.unwrap().unwrap().is_some());
-        assert!(used < once * 3 / 2, "{used} steps for {once} per calculation");
+        assert!(
+            used < once * 3 / 2,
+            "{used} steps for {once} per calculation"
+        );
         // The fresh result has its origin, checked by this engine.
         let q = store.load(&id).unwrap();
         let fresh = store

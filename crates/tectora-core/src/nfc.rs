@@ -99,12 +99,16 @@ const HANGUL_S_COUNT: u32 = 19 * HANGUL_V_COUNT * HANGUL_T_COUNT;
 
 /// The index of a Hangul vowel jamo.
 fn hangul_v(c: char) -> Option<u32> {
-    (c as u32).checked_sub(HANGUL_V).filter(|&i| i < HANGUL_V_COUNT)
+    (c as u32)
+        .checked_sub(HANGUL_V)
+        .filter(|&i| i < HANGUL_V_COUNT)
 }
 
 /// The index of a Hangul trailing consonant jamo (from 1).
 fn hangul_t(c: char) -> Option<u32> {
-    (c as u32).checked_sub(HANGUL_T).filter(|&i| (1..HANGUL_T_COUNT).contains(&i))
+    (c as u32)
+        .checked_sub(HANGUL_T)
+        .filter(|&i| (1..HANGUL_T_COUNT).contains(&i))
 }
 
 /// Hangul composition (Unicode §3.12): a leading consonant and a vowel
@@ -118,7 +122,9 @@ fn compose_hangul(first: char, second: char) -> Option<char> {
     }
     let t = hangul_t(second)?;
     let s = f.checked_sub(HANGUL_S).filter(|&s| s < HANGUL_S_COUNT)?;
-    (s % HANGUL_T_COUNT == 0).then(|| char::from_u32(f + t)).flatten()
+    (s % HANGUL_T_COUNT == 0)
+        .then(|| char::from_u32(f + t))
+        .flatten()
 }
 
 /// The canonical composite of `first` and `second`, from every table.
