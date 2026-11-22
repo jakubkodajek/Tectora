@@ -38,6 +38,75 @@ pub struct ResultSnapshot {
     pub area_by_material: Vec<MaterialArea>,
 }
 
+/// Most line codes a stored result may hold: the core gives about 15.
+pub const MAX_STORED_CODES: usize = 64;
+/// Longest line code of a stored result, in characters (the core's are
+/// one or two letters).
+pub const MAX_CODE_CHARS: usize = 4;
+/// Longest engine version of a stored result, in characters.
+pub const MAX_ENGINE_VERSION_CHARS: usize = 40;
+/// Most material figures of a stored result (materials are 0 to 255).
+pub const MAX_STORED_MATERIALS: usize = 256;
+/// Largest absolute figure of a stored result (m², m).
+const MAX_FIGURE: f64 = 1.0e9;
+/// Most differences [`compare`] gives: a second bound after the stored
+/// result's own (ARCH-303).
+pub const MAX_DIFFERENCES: usize = 100;
+
+/// Whether `code` reads as a line code: 1 to [`MAX_CODE_CHARS`] ASCII
+/// letters and digits (`T`, `OL`, `c`, `WV`, …).
+pub fn is_line_code(code: &str) -> bool {
+    (1..=MAX_CODE_CHARS).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+impl ResultSnapshot {
+    /// Why this stored result is not one Tectora wrote, or `None`: too many
+    /// line codes or materials, a code that is no line code, an engine
+    /// version that is not one short line, a figure that is not a finite
+    /// number of a real roof. A job from outside (a received bundle, a file
+    /// copied into the library) is held to it: 200 000 codes froze the
+    /// editor and made every MCP read of the job 23 MB (ARCH-303).
+    pub fn problem(&self) -> Option<String> {
+        let why = if self.lines_by_code.len() > MAX_STORED_CODES {
+            format!(
+                "too many line codes: {} (at most {MAX_STORED_CODES})",
+                self.lines_by_code.len()
+            )
+        } else if let Some(k) = self.lines_by_code.keys().find(|k| !is_line_code(k)) {
+            let shown: String = k.chars().take(8).collect();
+            format!("{shown:?} is not a line code")
+        } else if self.area_by_material.len() > MAX_STORED_MATERIALS {
+            format!(
+                "too many materials: {} (at most {MAX_STORED_MATERIALS})",
+                self.area_by_material.len()
+            )
+        } else if self.engine_version.chars().count() > MAX_ENGINE_VERSION_CHARS
+            || crate::edit::check_label("engine version", &self.engine_version).is_err()
+        {
+            format!(
+                "the engine version is not one line of at most {MAX_ENGINE_VERSION_CHARS} characters"
+            )
+        } else if [self.roof_area, self.ridge_height]
+            .into_iter()
+            .chain(self.lines_by_code.values().copied())
+            .chain(self.area_by_material.iter().map(|m| m.area))
+            .any(|v| !(v.is_finite() && v.abs() <= MAX_FIGURE))
+        {
+            format!("a figure is not a number of a real roof (at most {MAX_FIGURE})")
+        } else {
+            return None;
+        };
+        Some(format!("the stored result is damaged: {why}"))
+    }
+
+    /// The engine version of a stored result from outside as one line of
+    /// at most [`MAX_ENGINE_VERSION_CHARS`] characters (ARCH-303).
+    pub fn clean(&mut self) {
+        self.engine_version =
+            crate::edit::clean_line(&self.engine_version, MAX_ENGINE_VERSION_CHARS);
+    }
+}
+
 fn r2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
@@ -178,6 +247,7 @@ pub fn compare(stored: &ResultSnapshot, current: &ResultSnapshot) -> Vec<Differe
         .collect();
     // One default material is the roof area again; only a split says more.
     if mats.iter().all(|&m| m == crate::model::DEFAULT_MATERIAL) {
+        out.truncate(MAX_DIFFERENCES);
         return out;
     }
     for m in mats {
@@ -189,6 +259,7 @@ pub fn compare(stored: &ResultSnapshot, current: &ResultSnapshot) -> Vec<Differe
         };
         check(format!("material:{m}"), get(stored), get(current));
     }
+    out.truncate(MAX_DIFFERENCES);
     out
 }
 

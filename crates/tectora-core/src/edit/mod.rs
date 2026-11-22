@@ -667,7 +667,8 @@ pub fn clean_line(text: &str, max: usize) -> String {
 /// a write is held to, by removing what they forbid and cutting what is
 /// too long, so the job opens and stays editable (ARCH-201): job name
 /// (`fallback` when nothing visible is left), number, customer, address,
-/// notes and the names of parts, materials and hand-drawn lines and faces.
+/// notes, the names of parts, materials and hand-drawn lines and faces,
+/// the hand-drawn lines' codes and the stored result's engine version.
 pub fn clean_received(project: &mut Project, fallback: &str) {
     project.name = clean_line(&project.name, MAX_JOB_TEXT_CHARS);
     if !has_visible(&project.name) {
@@ -687,9 +688,19 @@ pub fn clean_received(project: &mut Project, fallback: &str) {
     }
     for l in &mut project.manual_lines {
         l.label = clean_line(&l.label, MAX_LABEL_CHARS);
+        // A code that is no line code (control, bidi or 20 000 characters)
+        // is a dimension line: drawn, not counted, as before (HUNT-301).
+        if !crate::snapshot::is_line_code(&l.code) {
+            l.code = "M".into();
+        }
     }
     for f in &mut project.manual_faces {
         f.label = clean_line(&f.label, MAX_LABEL_CHARS);
+    }
+    // The stored result's text; its size is checked with the job's limits
+    // (ARCH-303).
+    if let Some(s) = &mut project.result_snapshot {
+        s.clean();
     }
 }
 

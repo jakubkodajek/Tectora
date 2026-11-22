@@ -1169,10 +1169,23 @@ impl Store {
                 max: crate::model::SCHEMA_VERSION,
             });
         }
-        Project::from_json(&text).map_err(|e| StoreError::Unreadable {
+        let project = Project::from_json(&text).map_err(|e| StoreError::Unreadable {
             id: id.to_string(),
             detail: e.to_string(),
-        })
+        })?;
+        // A stored result over its bound is not handed on: 200 000 line
+        // codes froze the editor and made every MCP read 23 MB (ARCH-303).
+        if let Some(why) = project
+            .result_snapshot
+            .as_ref()
+            .and_then(crate::snapshot::ResultSnapshot::problem)
+        {
+            return Err(StoreError::Unreadable {
+                id: id.to_string(),
+                detail: why,
+            });
+        }
+        Ok(project)
     }
 
     /// Picks an unused id based on the project name: no job file, attached

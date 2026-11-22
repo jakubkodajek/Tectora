@@ -58,8 +58,10 @@ fn too_large(what: impl std::fmt::Display) -> FileError {
 
 /// A project file's text as a project: `newer_format` when a newer Tectora
 /// wrote it, `unreadable` when it is not a project, `out_of_range` or
-/// `too_many` when it holds what no real roof has (ARCH-002).
-fn parse_project(text: &str, what: &str) -> Result<Project, FileError> {
+/// `too_many` when it holds what no real roof has (ARCH-002). Its texts are
+/// cleaned first (`fallback` names a job without a visible name), so a
+/// text that can be cleaned does not refuse the job (ARCH-201, ARCH-303).
+fn parse_project(text: &str, what: &str, fallback: &str) -> Result<Project, FileError> {
     if let Some(version) = crate::store::newer_format(text) {
         return Err(FileError::new(
             "newer_format",
@@ -69,8 +71,9 @@ fn parse_project(text: &str, what: &str) -> Result<Project, FileError> {
             ),
         ));
     }
-    let project = Project::from_json(text)
+    let mut project = Project::from_json(text)
         .map_err(|e| FileError::new("unreadable", format!("{what}: {e}")))?;
+    crate::edit::clean_received(&mut project, fallback);
     project
         .check_input()
         .map_err(|e| FileError::new(e.code, format!("{what}: {e}")))?;
@@ -437,13 +440,13 @@ pub fn import(store: &Store, src: &Path) -> Result<String, FileError> {
         .ok_or_else(|| zip_err("no project in the file"))?;
     // A project from a newer Tectora is `newer_format` whatever the
     // manifest says.
-    let mut project = parse_project(
-        &String::from_utf8(text).map_err(zip_err)?,
-        "job bundle: project.tectora",
-    )?;
     // The texts keep the rules of a write: no control or invisible
     // characters, nothing too long (ARCH-201).
-    crate::edit::clean_received(&mut project, &file_stem(src));
+    let project = parse_project(
+        &String::from_utf8(text).map_err(zip_err)?,
+        "job bundle: project.tectora",
+        &file_stem(src),
+    )?;
     if let Some(m) = &manifest {
         serde_json::from_slice::<Manifest>(m).map_err(zip_err)?;
     }
@@ -532,10 +535,12 @@ fn received_history(bytes: &[u8]) -> Option<(String, u64)> {
     let mut entries: Vec<crate::store::ActivityEntry> = bytes
         .split(|&b| b == b'\n')
         .filter_map(|l| serde_json::from_slice(l).ok())
-        .filter(|e: &crate::store::ActivityEntry| ok(&e.before) && ok(&e.after))
         .collect();
     // Who and why as a write keeps them, and the versions a revert puts
-    // back with the texts of a received job (ARCH-201).
+    // back with the texts of a received job (ARCH-201). What changed is
+    // worked out again from the cleaned versions, as a save does: the
+    // sender's list could hold any value (a null crashed the app's change
+    // list) or a change that never happened (HUNT-301).
     for e in &mut entries {
         e.summary = crate::edit::clean_line(&e.summary, crate::edit::MAX_SUMMARY_CHARS);
         e.actor = crate::edit::clean_line(&e.actor, crate::edit::MAX_ACTOR_CHARS);
@@ -543,7 +548,12 @@ fn received_history(bytes: &[u8]) -> Option<(String, u64)> {
             let name = p.name.clone();
             crate::edit::clean_received(p, &name);
         }
+        e.changes = match (&e.before, &e.after) {
+            (Some(b), Some(a)) => crate::diff::diff(b, a),
+            _ => Vec::new(),
+        };
     }
+    entries.retain(|e| ok(&e.before) && ok(&e.after));
     let last = entries.iter().map(|e| e.ts_ms).max()?;
     let now = now_ms();
     if last > now {
@@ -593,8 +603,7 @@ pub fn open_path(store: &Store, path: &Path) -> Result<String, FileError> {
         .take(MAX_TEXT_ENTRY)
         .read_to_string(&mut text)
         .map_err(|e| FileError::io(path, e))?;
-    let mut project = parse_project(&text, &path.display().to_string())?;
-    crate::edit::clean_received(&mut project, &file_stem(path));
+    let project = parse_project(&text, &path.display().to_string(), &file_stem(path))?;
     Ok(store.save(None, &project)?)
 }
 
@@ -905,11 +914,31 @@ mod tests {
         p.notes = "line 1\nline\t2\u{202e}".into();
         p.parts[0].name = "Wing\u{202e}\u{0}".into();
         p.material_names = vec!["m".repeat(5000)];
+        // TEST-306 R4 / R5, HUNT-301: hand-drawn line and face texts.
+        p.manual_lines.push(crate::model::ManualLine {
+            a: [0.0, 0.0, 0.0],
+            b: [1.0, 0.0, 0.0],
+            code: "\u{202e}T\u{7}".to_string() + &"X".repeat(20_000),
+            length: None,
+            label: "F\u{202e}\u{0}".into(),
+        });
+        p.manual_faces.push(crate::model::ManualFace {
+            points: vec![
+                crate::geom::Point2::new(20.0, 0.0),
+                crate::geom::Point2::new(24.0, 0.0),
+                crate::geom::Point2::new(24.0, 4.0),
+            ],
+            pitch_deg: 30.0,
+            label: "F\u{202e}\u{0}".into(),
+        });
+        // TEST-303: the version before the change is cleaned too.
+        let mut older = p.clone();
+        older.notes = "older".into();
         let entry = serde_json::to_string(&crate::store::ActivityEntry {
             ts_ms: 1,
             actor: "x".repeat(10_000),
             summary: "S".repeat(100_000) + "\u{202e}",
-            before: None,
+            before: Some(older),
             changes: Vec::new(),
             after: Some(p.clone()),
             undid_from: None,
@@ -935,6 +964,9 @@ mod tests {
                 got.material_names[0].chars().count(),
                 crate::edit::MAX_LABEL_CHARS
             );
+            assert_eq!(got.manual_lines[0].label, "F");
+            assert_eq!(got.manual_faces[0].label, "F");
+            assert_eq!(got.manual_lines[0].code, "M");
             assert!(crate::edit::check_texts_change(None, got).is_ok());
         };
         let id = import(&store, &path).unwrap();
@@ -948,6 +980,15 @@ mod tests {
         assert!(!log[0].summary.contains('\u{202e}'));
         assert_eq!(log[0].actor.chars().count(), crate::edit::MAX_ACTOR_CHARS);
         check(log[0].after.as_ref().unwrap());
+        let as_after = |p: &Project| {
+            assert_eq!(p.notes, "older");
+            let mut b = p.clone();
+            b.notes = "line 1\nline\t2".into();
+            b
+        };
+        check(&as_after(log[0].before.as_ref().unwrap()));
+        // A revert of the received change writes the cleaned version back.
+        check(&as_after(&store.revert_last(&id, "user", None).unwrap()));
         // A `.tectora` opened from elsewhere; a name of nothing visible
         // takes the file's.
         let outside = dir.join("Garage.tectora");
@@ -958,6 +999,119 @@ mod tests {
         let got = store.load(&id).unwrap();
         assert_eq!(got.name, "Garage");
         assert_eq!(got.job.customer, "AB");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A bundle of `project` with `history` as its change log.
+    fn bundle_with_log(dir: &Path, name: &str, project: &str, history: &str) -> PathBuf {
+        let path = dir.join(name);
+        let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        let opts =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("project.tectora", opts).unwrap();
+        zip.write_all(project.as_bytes()).unwrap();
+        if !history.is_empty() {
+            zip.start_file("history.jsonl", opts).unwrap();
+            zip.write_all(history.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    /// Audit 2026-11-22 ARCH-303, HUNT-301: a received job's stored result
+    /// is bounded (200 000 line codes froze the editor and made every MCP
+    /// read 23 MB) and its texts are cleaned; the change log's `changes`
+    /// are what its cleaned versions differ in, not what the sender wrote
+    /// (a null value crashed the app's change list, bidi text spoofed it).
+    #[test]
+    fn a_received_stored_result_and_change_list_are_bounded_and_cleaned() {
+        let dir = std::env::temp_dir().join(format!("tectora-bundle-snap-{}", now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        let store = Store::new(dir.join("lib")).unwrap();
+        let mut p = crate::examples::find("gable").unwrap().project();
+        p.set_status(crate::model::JobStatus::Offer);
+        let good = p.result_snapshot.clone().unwrap();
+        // Too many line codes: refused with a message saying so.
+        let mut big = p.clone();
+        let snap = big.result_snapshot.as_mut().unwrap();
+        for i in 0..200_000 {
+            snap.lines_by_code.insert(format!("C{i:06}"), 1.0);
+        }
+        let path = bundle_with_log(&dir, "big.tectorajob", &big.to_json().unwrap(), "");
+        let e = import(&store, &path).unwrap_err();
+        assert!(e.to_string().contains("stored result"), "{e}");
+        // A code that is no line code: refused as well.
+        let mut odd = p.clone();
+        odd.result_snapshot
+            .as_mut()
+            .unwrap()
+            .lines_by_code
+            .insert("\u{202e}EVIL\u{0}".to_string() + &"k".repeat(5000), 1.0);
+        let path = bundle_with_log(&dir, "odd.tectorajob", &odd.to_json().unwrap(), "");
+        let e = import(&store, &path).unwrap_err();
+        assert!(e.to_string().contains("stored result"), "{e}");
+        // The engine version is a text: cleaned and cut.
+        let mut ver = p.clone();
+        ver.result_snapshot.as_mut().unwrap().engine_version =
+            "\u{202e}9.9.9\u{7}".to_string() + &"v".repeat(20_000);
+        // The log's changes as a hostile sender wrote them.
+        let mut renamed = ver.clone();
+        renamed.name = "Renamed".into();
+        let mut entry = serde_json::to_value(crate::store::ActivityEntry {
+            ts_ms: 1,
+            actor: "AI".into(),
+            summary: "Renamed".into(),
+            before: Some(ver.clone()),
+            changes: Vec::new(),
+            after: Some(renamed.clone()),
+            undid_from: None,
+        })
+        .unwrap();
+        entry["changes"] = serde_json::json!([
+            { "kind": "modified", "field": "vertex", "part": 0, "edge": 1, "before": null, "after": null },
+            { "kind": "modified", "field": "name", "before": "a", "after": "Faktura \u{202e}fdp.exe" },
+            { "kind": "modified", "field": "job.customer", "before": "", "after": "x".repeat(100_000) },
+        ]);
+        let path = bundle_with_log(
+            &dir,
+            "ver.tectorajob",
+            &renamed.to_json().unwrap(),
+            &(entry.to_string() + "\n"),
+        );
+        let id = import(&store, &path).unwrap();
+        let got = store.load(&id).unwrap();
+        let v = &got.result_snapshot.as_ref().unwrap().engine_version;
+        assert!(v.starts_with("9.9.9v"), "{v:?}");
+        assert!(v.chars().count() <= crate::snapshot::MAX_ENGINE_VERSION_CHARS);
+        assert_eq!(
+            got.result_snapshot.as_ref().unwrap().roof_area,
+            good.roof_area
+        );
+        let log = store.activity(&id);
+        assert_eq!(log.len(), 1);
+        let fields: Vec<&str> = log[0].changes.iter().map(|c| c.field.as_str()).collect();
+        assert_eq!(fields, ["name"], "{:?}", log[0].changes);
+        assert_eq!(log[0].changes[0].after, serde_json::json!("Renamed"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// ARCH-303: a job in the library whose stored result is over the bound
+    /// does not open (MCP read it as 23 MB) and says why.
+    #[test]
+    fn a_library_job_with_an_oversized_stored_result_says_why_it_does_not_open() {
+        let dir = std::env::temp_dir().join(format!("tectora-bundle-snaplib-{}", now_ms()));
+        let store = Store::new(dir.clone()).unwrap();
+        let mut p = crate::examples::find("gable").unwrap().project();
+        p.set_status(crate::model::JobStatus::Offer);
+        let snap = p.result_snapshot.as_mut().unwrap();
+        for i in 0..1000 {
+            snap.lines_by_code.insert(format!("C{i:03}"), 1.0);
+        }
+        fs::write(dir.join("big.tectora"), p.to_json().unwrap()).unwrap();
+        let e = store.load("big").unwrap_err();
+        assert_eq!(e.code(), "unreadable");
+        assert!(e.to_string().contains("stored result"), "{e}");
+        assert!(p.check_limits().unwrap_err().contains("stored result"));
         let _ = fs::remove_dir_all(dir);
     }
 

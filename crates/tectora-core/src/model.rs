@@ -440,6 +440,12 @@ impl Project {
             .max()
             .unwrap_or(0);
         checks.push(over("corners of one object", corners, MAX_PART_WALLS));
+        // The stored result comes with the file as well (ARCH-303).
+        checks.push(
+            self.result_snapshot
+                .as_ref()
+                .and_then(crate::snapshot::ResultSnapshot::problem),
+        );
         // Unknown top-level keys are kept, not used: bound what they cost.
         let extra_bytes = self
             .extra
