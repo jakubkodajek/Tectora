@@ -561,7 +561,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "get_history",
-            "description": "The change log of a design: who changed what and when (ts_ms), newest first, at most the 50 changes a log keeps.",
+            "description": "The change log of a design: who changed what and when (ts_ms), newest first, at most the 50 changes a log keeps. `stored_result_recalculation: true` marks Tectora's own recalculation of an offer's stored result while the job's stored result still is that one (restore_offer_result puts the offer's figures back); `restores` on an entry is the ts_ms of the recalculation it put back.",
             "inputSchema": schema(json!({ "id": id }), &["id"]),
         }),
         json!({
@@ -671,6 +671,11 @@ pub(crate) fn tools() -> Vec<Value> {
             "inputSchema": schema(json!({ "id": id, "summary": summary_prop() }), &["id", "summary"]),
         }),
         json!({
+            "name": "restore_offer_result",
+            "description": "Put the offer's own stored figures back in place of Tectora's recalculation of them (the entry by `tectora` that get_history marks `stored_result_recalculation`). Only the stored result changes: the design and every other change stay. The figures put back are never recalculated again. Refused with `revert_stale` when the stored result is not that recalculation (any more). Do it only when the user asks for the figures the customer was offered.",
+            "inputSchema": schema(json!({ "id": id, "ts_ms": { "type": "integer", "description": "The recalculation's entry (get_history); left out: the one the stored result is." }, "summary": summary_prop() }), &["id", "summary"]),
+        }),
+        json!({
             "name": "get_schema",
             "description": "JSON Schema of the .tectora project file.",
             "inputSchema": schema(json!({}), &[]),
@@ -768,6 +773,7 @@ impl Server {
             "roof_helper" => self.roof_helper(args),
             "get_history" => self.load(args).map(|(id, _)| {
                 let since = self.store.pending_review(&id).map_or(u64::MAX, |r| r.since_ts_ms);
+                let recalculation = self.store.recalculation(&id).map(|r| r.entry_ts_ms);
                 json!(self
                     .store
                     .history(&id)
@@ -776,6 +782,12 @@ impl Server {
                     .map(|e| {
                         let mut v = json!(e.info());
                         v["pending_review"] = json!(e.ts_ms >= since);
+                        if recalculation == Some(e.ts_ms) {
+                            v["stored_result_recalculation"] = json!(true);
+                        }
+                        if let Some(ts) = e.restores {
+                            v["restores"] = json!(ts);
+                        }
                         v
                     })
                     .collect::<Vec<_>>())
@@ -972,6 +984,28 @@ impl Server {
                 let mut p = before.clone();
                 p.result_snapshot = Some(snapshot::take_checked(&p).map_err(|e| e.to_string())?);
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+            })(),
+            "restore_offer_result" => (|| {
+                let (id, _) = self.load(args)?;
+                let summary = arg_str(args, "summary")?;
+                let ts: u64 = match opt(args, "ts_ms")? {
+                    Some(ts) => ts,
+                    None => self
+                        .store
+                        .recalculation(&id)
+                        .map(|r| r.entry_ts_ms)
+                        .ok_or("the job's stored result is not a recalculation by Tectora: there are no offer figures to put back (see get_history)")?,
+                };
+                let p = self
+                    .store
+                    .restore_offer_result(&id, ts, &self.client, Some(summary))
+                    .map_err(|e| format!("{}: {e}", e.code()))?;
+                self.live_follow("changed", Some(&p.name), summary.to_string(), &id);
+                Ok(json!({
+                    "id": id,
+                    "restored": true,
+                    "stored_result": p.result_snapshot,
+                }))
             })(),
             "get_schema" => Ok(tectora_core::model::json_schema()),
             _ => return None,
@@ -3312,6 +3346,127 @@ mod tool_coverage {
     fn applied(edges: &[tectora_core::EdgeDef], patches: &Patches) -> Patches {
         let mut es = edges.to_vec();
         apply_patches(&mut es, patches)
+    }
+
+    /// MCP parity for "put the offer's figures back" (audit 2026-11-22
+    /// Design A item 3): get_history marks the recalculation the stored
+    /// result is, restore_offer_result puts the offer's figures back with
+    /// the AI's summary and nothing else, and revert_last_change can name
+    /// the change it expects (item 4, ERR-801).
+    #[test]
+    fn restore_offer_result_puts_only_the_offer_figures_back() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "status": "offer", "summary": "Offer sent" }),
+        );
+        // No recalculation yet: nothing to put back.
+        let e = s
+            .call_tool("restore_offer_result", &json!({ "id": id, "summary": "x" }))
+            .unwrap_err();
+        assert!(e.contains("not a recalculation"), "{e}");
+        // As if engine 0.0.1 had stored figures 2 m2 off; the user accepted
+        // the AI's changes and opens the offer in the app.
+        let file = s.store.dir.join(format!("{id}.tectora"));
+        let mut p = s.store.load(&id).unwrap();
+        let offer = {
+            let r = p
+                .result_snapshot
+                .as_mut()
+                .expect("the offer stored a result");
+            r.engine_version = "0.0.1".into();
+            r.roof_area += 2.0;
+            r.clone()
+        };
+        std::fs::write(&file, p.to_json().unwrap()).unwrap();
+        let origins = s.store.activity_dir().join(format!("{id}.result.json"));
+        let text = std::fs::read_to_string(&origins)
+            .unwrap()
+            .replace(tectora_core::snapshot::ENGINE_VERSION, "0.0.1");
+        std::fs::write(&origins, text).unwrap();
+        s.store.mark_reviewed(&id, now_ms() + 1000).unwrap();
+        let done = s.store.refresh_entry(&id).unwrap().expect("recalculated");
+
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let marked: Vec<&Value> = history
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["stored_result_recalculation"] == true)
+            .collect();
+        assert_eq!(marked.len(), 1, "{history}");
+        assert_eq!(marked[0]["ts_ms"], done.entry_ts_ms);
+        assert_eq!(marked[0]["actor"], "tectora");
+
+        // An AI save after it stays; a stale revert_last_change is refused.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "Call the customer", "summary": "Note" }),
+        );
+        let e = s
+            .call_tool(
+                "revert_last_change",
+                &json!({ "id": id, "ts_ms": done.entry_ts_ms, "summary": "x" }),
+            )
+            .unwrap_err();
+        assert!(e.starts_with("revert_stale"), "{e}");
+        let e = s
+            .call_tool(
+                "revert_last_change",
+                &json!({ "id": id, "ts_ms": "now", "summary": "x" }),
+            )
+            .unwrap_err();
+        assert!(e.contains("ts_ms"), "{e}");
+        assert_eq!(s.store.load(&id).unwrap().notes, "Call the customer");
+
+        // The summary is required, as for every write.
+        assert!(
+            s.call_tool("restore_offer_result", &json!({ "id": id }))
+                .is_err()
+        );
+        let r = call(
+            &mut s,
+            "restore_offer_result",
+            json!({ "id": id, "summary": "The customer signed these figures" }),
+        );
+        assert_eq!(r["restored"], true);
+        assert_eq!(r["stored_result"]["roof_area"], offer.roof_area);
+        let now = s.store.load(&id).unwrap();
+        assert_eq!(now.result_snapshot, Some(offer));
+        assert_eq!(now.notes, "Call the customer");
+        let entry = s.store.activity(&id).last().unwrap().clone();
+        assert_eq!(entry.restores, Some(done.entry_ts_ms));
+        assert_ne!(entry.actor, tectora_core::store::USER_ACTOR);
+        assert!(
+            entry
+                .summary
+                .ends_with("(reason: The customer signed these figures)"),
+            "{}",
+            entry.summary
+        );
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        assert_eq!(history[0]["restores"], done.entry_ts_ms, "{history}");
+        assert!(
+            history
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|e| e.get("stored_result_recalculation").is_none()),
+            "{history}"
+        );
+        // Again, by the entry: no longer that recalculation.
+        let e = s
+            .call_tool(
+                "restore_offer_result",
+                &json!({ "id": id, "ts_ms": done.entry_ts_ms, "summary": "x" }),
+            )
+            .unwrap_err();
+        assert!(e.starts_with("revert_stale"), "{e}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
     #[test]

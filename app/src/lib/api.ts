@@ -30,6 +30,8 @@ import type {
   Placement,
   Project,
   ProjectSummary,
+  Recalculation,
+  RefreshedEntry,
   ResultSnapshot,
   ReviewStatus,
   RoofPart,
@@ -77,7 +79,7 @@ export const api = {
       before the job is loaded (`load_project` no longer does): the change
       log's summary when it did, else null. Never fails; an error is logged
       and the stored result stays. */
-  refreshStoredResult: (id: string) => invoke<string | null>("refresh_stored_result", { id }),
+  refreshStoredResult: (id: string) => invoke<RefreshedEntry | null>("refresh_stored_result", { id }),
   saveProject: (id: string | null, project: Project) => invoke<string>("save_project", { id, project }),
   /** Saves only if the file still holds `base` (the version last read or
       written); otherwise nothing is written and the current file comes back. */
@@ -97,7 +99,12 @@ export const api = {
   duplicateProject: (id: string, name: string, job?: Pick<JobInfo, "number" | "customer" | "address">, withFiles = true) =>
     invoke<string>("duplicate_project", { id, name, job: job ? { ...job, status: "draft" } : null, withFiles }),
   projectActivity: (id: string) => invoke<ActivityItem[]>("project_activity", { id }),
-  revertLastChange: (id: string) => invoke<Project>("revert_last_change", { id }),
+  /** The engine's recalculation the job's stored result is, if it still is one. */
+  resultRecalculation: (id: string) => invoke<Recalculation | null>("result_recalculation", { id }),
+  /** Puts the offer's own stored result back in place of the recalculation logged at `entryTsMs`, and nothing else. */
+  restoreOfferResult: (id: string, entryTsMs: number) => invoke<Project>("restore_offer_result", { id, entryTsMs }),
+  /** Undoes the latest change; with `expectTs` only if it is still that entry (`revert_stale` otherwise). */
+  revertLastChange: (id: string, expectTs?: number) => invoke<Project>("revert_last_change", { id, expectTs: expectTs ?? null }),
   revertChanges: (id: string, tsMs: number) => invoke<Project>("revert_changes", { id, tsMs }),
   reviewStatus: (id: string) => invoke<ReviewStatus | null>("review_status", { id }),
   acceptChanges: (id: string, tsMs: number) => invoke<number>("accept_changes", { id, tsMs }),

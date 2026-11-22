@@ -68,7 +68,8 @@
     for (const s of JOB_STATUSES) c[s] = 0;
     for (const p of projects) {
       c[p.job.status] = (c[p.job.status] ?? 0) + 1;
-      if (p.last_activity && isAi(p.last_activity.actor)) c.ai++;
+      // One rule for "changed by AI", the core's (UX-806).
+      if (p.changed_by_ai) c.ai++;
     }
     return c;
   });
@@ -78,7 +79,7 @@
     const words = searchWords(norm(query));
     const list = projects.filter((p) => {
       if (year !== null && yearOf(p.modified_ms) !== year) return false;
-      if (filter === "ai" && !(p.last_activity && isAi(p.last_activity.actor))) return false;
+      if (filter === "ai" && !p.changed_by_ai) return false;
       if (filter !== "all" && filter !== "ai" && filter !== "examples" && filter !== "trash" && p.job.status !== filter) return false;
       if (!words.length) return true;
       const hay = norm([p.name, p.job.number, p.job.customer, p.job.address, p.notes].join("\n"));
@@ -447,8 +448,8 @@
                   {/if}
                   <td class="mod c-mod">
                     {relativeTime(p.modified_ms)}
-                    {#if p.last_activity && isAi(p.last_activity.actor)}
-                      <span class="ai-tag" title={entrySummary(p.last_activity.summary)}><Icon name="sparkle" size={11} />{actorName(p.last_activity.actor)}</span>
+                    {#if p.changed_by_ai}
+                      <span class="ai-tag" data-testid="ai-tag" title={entrySummary(p.changed_by_ai.summary)}><Icon name="sparkle" size={11} />{actorName(p.changed_by_ai.actor)}</span>
                     {/if}
                   </td>
                 </tr>

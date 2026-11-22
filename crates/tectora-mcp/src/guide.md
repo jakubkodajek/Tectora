@@ -128,7 +128,11 @@ The tools cover every operation of the Tectora editor:
 - History: `get_history` (the newest 50 changes), `revert_to`,
   `revert_last_change` (a revert keeps the user's later edits; it is
   refused when the user has since changed a
-  value the reverted step set, so ask the user then). `get_review`
+  value the reverted step set, so ask the user then; pass `ts_ms` of the
+  change you mean and it is refused with "revert_stale" when another change
+  was saved meanwhile, so you never undo somebody else's step).
+  `restore_offer_result` puts an offer's own stored figures back in place
+  of Tectora's recalculation of them (see "Stored result" below). `get_review`
   tells whether the user has accepted your changes yet and how they changed
   the figures; only the user accepts, in the app. Do not treat a design as
   approved while `pending` is set.
@@ -242,11 +246,24 @@ refuse stays a draft, and the kept result stays the offer's when the roof
 calculates. A result stored by an older Tectora whose figures the
 corrected calculation changes is recalculated when the user opens an offer
 job in the app, with a change-log entry by `tectora` that keeps the old
-figures (`get_history`); the user can revert that entry. Only offers are
+figures (`get_history` marks it `stored_result_recalculation` while the
+job's stored result still is that recalculation). The user can put the
+offer's own figures back in the app, and so can you with
+`restore_offer_result` (id, a one-sentence `summary`, optionally the
+entry's `ts_ms`): only when the user asks for the figures the customer was
+offered. It changes the stored result alone (the design and every other
+change stay, also ones saved after the recalculation), works in a job of
+any status, and the figures put back are never recalculated again. It is
+refused with "revert_stale" once the stored result is another one (the
+user or you stored a new result, or the figures are back already). Only
+offers are
 recalculated (draft, ordered and done jobs keep their figures), only while
 the design is the one the result was taken from, no AI change waits for
 review and the job can be saved. `get_project` and every other tool only
-read the stored result: they never recalculate it. `stored_result.engine_changed`
+read the stored result: they never recalculate it. `list_projects` with
+`by_ai` lists the jobs whose newest change is an AI client's; Tectora's
+own recalculation and a restore of the offer's figures do not count as
+that change, the same rule as the app's "changed by AI" list. `stored_result.engine_changed`
 says when it came from another Tectora version; tell the user, the app
 updates it when they open the job.
 

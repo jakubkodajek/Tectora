@@ -64,13 +64,15 @@ test.describe("round-8 library and open", () => {
 
     // Loading reads the job as it is.
     expect((await loadProject(id)).result_snapshot.engine_version).toBe("0.0.1");
-    const summary = await bridge<string | null>("refresh_stored_result", { id });
+    // The engine's change-log entry: its time and its summary (round 9, Design A item 7).
+    const done = await bridge<{ entry_ts_ms: number; summary: string } | null>("refresh_stored_result", { id });
+    const summary = done?.summary;
     expect(summary).toMatch(new RegExp(`^Stored result recalculated \\(Tectora 0\\.0\\.1 -> ${engine.replace(/\./g, "\\.")}\\)`));
     const now = await loadProject(id);
     expect(now.result_snapshot.engine_version).toBe(engine);
     expect(Math.abs(now.result_snapshot.roof_area - area)).toBeLessThan(0.01);
-    const log = await bridge<{ actor: string; summary: string }[]>("project_activity", { id });
-    expect(log[0]).toMatchObject({ actor: "tectora", summary });
+    const log = await bridge<{ ts_ms: number; actor: string; summary: string }[]>("project_activity", { id });
+    expect(log[0]).toMatchObject({ actor: "tectora", summary, ts_ms: done?.entry_ts_ms });
     // Once only; an unknown job is no error.
     expect(await bridge("refresh_stored_result", { id })).toBeNull();
     expect(await bridge("refresh_stored_result", { id: "no-such-job" })).toBeNull();

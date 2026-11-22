@@ -2,7 +2,7 @@
 
 import { num } from "./format";
 import { DICTS, t } from "./i18n.svelte";
-import { ENGINE_ACTOR, isAi, type LiveStatus } from "./types";
+import { ENGINE_ACTOR, RECEIVED_ENGINE_ACTOR, isAi, type ActivityItem, type LiveStatus } from "./types";
 
 /** A status older than this is shown as idle. */
 export const LIVE_FRESH_MS = 90_000;
@@ -31,6 +31,8 @@ export function actorName(actor: string): string {
  */
 export function actorLabel(actor: string): string {
   if (isAi(actor)) return actorName(actor);
+  // An engine's entry that came with a bundle: the sender's Tectora, said so (ARCH-802).
+  if (actor === RECEIVED_ENGINE_ACTOR) return t("ai.receivedEngine");
   return actor === ENGINE_ACTOR ? "Tectora" : t("ai.you");
 }
 
@@ -71,26 +73,74 @@ export function isRevert(summary: string): boolean {
   return revertSentence(summary) || LEGACY_REASON.test(summary);
 }
 
-/** The entry the core writes when it recalculates a stored result (snapshot.rs `REFRESHED_PREFIX`). */
-const REFRESHED = /^Stored result recalculated \(Tectora (\S+) -> (\S+)\): roof area (-?[\d.]+) -> (-?[\d.]+) m2$/;
+/**
+ * The entry the core writes when it recalculates a stored result
+ * (snapshot.rs `REFRESHED_PREFIX`, `refreshed_what`). It names what
+ * changed: the roof area when that differs, else the codes of the lines
+ * whose lengths differ, else "other figures" (audit 2026-11-22 UX-807).
+ */
+const REFRESHED_HEAD = "Stored result recalculated \\(Tectora (\\S+) -> (\\S+)\\): ";
+const REFRESHED = new RegExp(`^${REFRESHED_HEAD}roof area (-?[\\d.]+) -> (-?[\\d.]+) m2$`);
+const REFRESHED_LINES = new RegExp(`^${REFRESHED_HEAD}line lengths ([A-Za-z0-9]+(?:, [A-Za-z0-9]+)*)$`);
+const REFRESHED_OTHER = new RegExp(`^${REFRESHED_HEAD}other figures$`);
+/** Whether the summary is the engine's recalculation of a stored result. */
+const REFRESHED_ANY = /^Stored result recalculated /;
+
+/** The entry the core writes when the offer's result is put back (store.rs `RESTORED_PREFIX`). */
+const RESTORED = /^Offer result restored \(Tectora (\S+) -> (\S+)\)(?:: roof area -?[\d.]+ -> -?[\d.]+ m2)?$/;
+
+/** A recalculation's sentence under the i18n keys `<key>`, `<key>Lines` and `<key>Other`; null for any other summary. */
+function refreshedText(key: "snap.refreshedNotice" | "chg.resultRefreshed", summary: string): string | null {
+  const area = REFRESHED.exec(summary);
+  if (area) {
+    const [, from, to, a, b] = area;
+    return t(key, { from, to, a: num(Number(a)), b: num(Number(b)) });
+  }
+  const lines = REFRESHED_LINES.exec(summary);
+  if (lines) return t(`${key}Lines`, { from: lines[1], to: lines[2], codes: lines[3] });
+  const other = REFRESHED_OTHER.exec(summary);
+  if (other) return t(`${key}Other`, { from: other[1], to: other[2] });
+  return null;
+}
 
 /**
  * The notice the editor shows when opening a job recalculated its stored
  * result (audit UX-702c): the engine's summary in the user's language.
  */
 export function refreshedNotice(summary: string): string {
-  const refreshed = REFRESHED.exec(summary);
-  if (!refreshed) return entrySummary(summary);
-  const [, from, to, a, b] = refreshed;
-  return t("snap.refreshedNotice", { from, to, a: num(Number(a)), b: num(Number(b)) });
+  return refreshedText("snap.refreshedNotice", summary) ?? entrySummary(summary);
+}
+
+/**
+ * What the history shows for an entry: `entrySummary`, and for the user's
+ * revert of AI changes the short "AI changes reverted". A revert of
+ * Tectora's own recalculation, or of the user's own change, is no AI
+ * change and keeps its sentence (audit 2026-11-22 UI-803); the undone
+ * entry is looked up in `log` by the revert's `undid_from`.
+ */
+export function historyText(a: Pick<ActivityItem, "actor" | "summary" | "undid_from" | "restores">, log: Pick<ActivityItem, "ts_ms" | "actor">[]): string {
+  if (!isAi(a.actor) && a.restores == null && isRevert(a.summary)) {
+    const undone = a.undid_from == null ? undefined : log.find((e) => e.ts_ms === a.undid_from);
+    // Not in the list any more (or an entry of an older Tectora): told by the sentence.
+    const ofAi = undone ? isAi(undone.actor) : !/Stored result recalculated \(Tectora /.test(a.summary);
+    if (ofAi) return t("ai.revertedEntry");
+  }
+  return entrySummary(a.summary);
 }
 
 /** A change-log summary with the core's English revert sentences translated. */
 export function entrySummary(summary: string): string {
-  const refreshed = REFRESHED.exec(summary);
-  if (refreshed) {
-    const [, from, to, a, b] = refreshed;
-    return t("chg.resultRefreshed", { from, to, a: num(Number(a)), b: num(Number(b)) });
+  const refreshed = REFRESHED_ANY.test(summary) ? refreshedText("chg.resultRefreshed", summary) : null;
+  if (refreshed) return refreshed;
+  if (summary.startsWith("Offer result restored ")) {
+    // An AI's reason is the entry's last ` (reason: …)`.
+    const at = summary.lastIndexOf(REASON_OPEN);
+    const reason = at >= 0 && summary.endsWith(")") ? summary.slice(at + REASON_OPEN.length, -1) : null;
+    const restored = RESTORED.exec(reason === null ? summary : summary.slice(0, at));
+    if (restored) {
+      const s = t("chg.resultRestored", { to: restored[1], from: restored[2] });
+      return reason === null ? s : t("chg.revertReason", { s, r: reason });
+    }
   }
   if (revertSentence(summary)) {
     // The AI's reason is the entry's last ` (reason: …)`.
