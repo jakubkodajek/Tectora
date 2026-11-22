@@ -2516,11 +2516,7 @@ mod tests {
         assert!(r["note"].as_str().unwrap().contains("waits for the user"));
         assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
         let shown = Settings::load().folder_request.unwrap().changes;
-        Settings::load()
-            .answer_folder_request(&shown, true)
-            .unwrap()
-            .save()
-            .unwrap();
+        Settings::update(|s| s.answer_folder_request(&shown, true)).unwrap();
         let r = s.call_tool("get_settings", &json!({})).unwrap();
         assert_eq!(r["effective"]["drawings_dir"], json!(inbox));
         assert!(r["settings"].get("folder_request").is_none());
@@ -2572,11 +2568,7 @@ mod tests {
             "the AI sees the record too"
         );
         // The user reverts it in the app.
-        saved
-            .answer_ai_change(change.id, true)
-            .unwrap()
-            .save()
-            .unwrap();
+        Settings::update(|s| s.answer_ai_change(change.id, true)).unwrap();
         let r = s.call_tool("get_settings", &json!({})).unwrap();
         assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 40.0);
         assert_eq!(r["settings"]["roof_defaults"]["overhang"], 0.5);
@@ -3339,7 +3331,7 @@ mod tests {
         let req = asked.file_request.clone().unwrap();
         assert_eq!(req.purpose, "import");
         assert!(req.path.ends_with("other/contract.pdf"), "{:?}", req.path);
-        asked.answer_file_request(&req.path, true).save().unwrap();
+        Settings::update(|s| Ok(s.answer_file_request(&req.path, true))).unwrap();
         s.call_tool(
             "attach_file",
             &json!({ "id": id, "path": outside, "summary": "Drawing" }),

@@ -296,10 +296,6 @@ impl Settings {
         }
     }
 
-    pub fn save(&self) -> Result<(), SettingsError> {
-        self.save_to(&settings_path())
-    }
-
     /// Changes the settings file in one step: reads it, applies `change`
     /// and writes the result, all under the settings lock. The app and
     /// every MCP server change the file this way; a plain `load` … `save`
@@ -325,7 +321,11 @@ impl Settings {
         Ok((old, next))
     }
 
-    pub fn save_to(&self, path: &Path) -> Result<(), SettingsError> {
+    /// Writes the settings file at `path`. Crate-only, so every writer
+    /// outside goes through [`Settings::update`] and the compiler keeps it
+    /// so (audit 2026-11-22 TEST-503: a text scan let `Settings::save(&s)`
+    /// through).
+    pub(crate) fn save_to(&self, path: &Path) -> Result<(), SettingsError> {
         self.validate()?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| SettingsError::Io(e.to_string()))?;
