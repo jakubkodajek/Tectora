@@ -401,3 +401,41 @@ sessions that use it know where things stand.
 - Open: line details have no keyboard path in the plan (the Calculation tab
   and MCP cover the figures); a pinned card closes with Esc, × or a second
   click on the line, not with a click on empty plan.
+
+## 2026-11-21 - verification of every roof calculation (branch claude/project-thread-5ugj01)
+- Done: DACAD parity rerun (dcore byte-exact on 1 967 DACAD SO2/INT
+  captures from the project files; samples 29/34 as before), and an
+  independent check of 3 619 roofs with the new `verify_calcs` example
+  (face area vs polygon, pitch vs plane, chimney deduction vs plan cut,
+  plan coverage, results = breakdown = price-sheet list = stored result).
+  Fixed: joined faces on swept roofs dropped their window/chimney
+  deductions (list took a window off twice); wing windows' face index.
+  Guard: `tests/calc_consistency.rs`.
+- State: `make check` exit 0 (618 Rust tests, 263 vitest, UI build).
+- Open (DACAD behaviour, reported to Jakub, not changed): face areas of
+  skewed hip faces up to ~0.7 % under their polygon; chimney deduction
+  across a hip up to ~0.05 m2 off the plan cut; joined-roof pieces
+  (Modellverschnitt) book areas by DACAD's rules, up to several % per
+  piece; a hipped bay whose front plane lies ~2 cm under the house plane
+  (Jakub's test job) counts ~0.3 m2 twice in slivers; a cut larger than
+  its face on joined buildings still gives a negative face (warned).
+- Rounds 2-4 (Fable review + bug hunt each round, fixes with failing-first
+  tests): stored-result refresh (`Store::refresh_stored_result`, sidecar
+  `.activity/<id>.result.json` with up to 16 origins by `taken_ms`; origin
+  only when this engine gives the figures for the design, at most 200
+  walls+breaks+objects; no refresh while an AI review is pending; an
+  engine entry ends a pending review); new warnings
+  `hidden_under_neighbour`, `uncovered_plan`; join keeps chimney/dormer
+  lines and books line deductions by place (`RoofGeometry::minus_at`);
+  `cut_chimney` shares a hole edge only along the other edge; departed
+  roofs keep windows larger than a face. Guards in `calc_consistency.rs`,
+  `leftovers_cases.rs`, `store.rs` tests.
+- State: `make check` exit 0 at 481fe34 (648 Rust tests, 264 vitest).
+- Open: the refresh only acts after a version bump (results stored by
+  0.9.0 carry 0.9.0); results stored before the sidecar existed are never
+  refreshed; a roof opening side exactly on a ridge/seam of a swept roof
+  loses that side (same on main); chimney deduction on some core roofs
+  changes with the building's position (Fable R3-2, needs a DACAD run);
+  opening inside a dormer on swept roofs deducted from the host too (R3-5,
+  same on main); chimney front side within 1 cm above a joined break and
+  across the ridge not deducted (R3-4, same on main).

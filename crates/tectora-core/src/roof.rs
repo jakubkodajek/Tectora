@@ -168,6 +168,11 @@ pub struct RoofGeometry {
     /// line, by DACAD code; the line itself stays whole.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub minus_lines: Vec<(String, f64)>,
+    /// Where each `minus_lines` entry lies (the hole edge on the line),
+    /// where known, in step with `minus_lines` ([`RoofGeometry::align_minus`]).
+    /// `coplanar::join` drops only the deductions of the lines it removes.
+    #[serde(skip)]
+    pub minus_at: Vec<Option<([f64; 3], [f64; 3])>>,
     /// Plan outlines of the dormers cut into this roof.
     #[serde(skip)]
     pub footprints: Vec<Vec<Point2>>,
@@ -189,6 +194,22 @@ pub struct RoofGeometry {
     /// calculation did not join roofs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub joined_with: Vec<usize>,
+}
+
+impl RoofGeometry {
+    /// Pads [`RoofGeometry::minus_at`] to one entry per `minus_lines`
+    /// entry: entries pushed without a place get none.
+    pub(crate) fn align_minus(&mut self) {
+        self.minus_at.resize(self.minus_lines.len(), None);
+    }
+
+    /// Takes `other`'s line deductions with their places.
+    pub(crate) fn append_minus(&mut self, other: &mut RoofGeometry) {
+        self.align_minus();
+        other.align_minus();
+        self.minus_lines.append(&mut other.minus_lines);
+        self.minus_at.append(&mut other.minus_at);
+    }
 }
 
 /// A clad gable counted as roof area ([`EdgeDef::clad`]).

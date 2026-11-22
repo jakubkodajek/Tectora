@@ -130,9 +130,11 @@ describe("warningText for every kind", () => {
     dormer_above_roof: { kind: "dormer_above_roof", value: 9.65 },
     inside_another: { kind: "inside_another", value: 0 },
     merged_materials: { kind: "merged_materials", value: 0, edges: [0, 1] },
+    hidden_under_neighbour: { kind: "hidden_under_neighbour", value: 2.4 },
+    uncovered_plan: { kind: "uncovered_plan", value: 15.3 },
   };
-  it("gives a filled-in sentence for all 21 kinds in all four languages (TEST-003)", () => {
-    expect(Object.keys(every)).toHaveLength(21);
+  it("gives a filled-in sentence for all 23 kinds in all four languages (TEST-003)", () => {
+    expect(Object.keys(every)).toHaveLength(23);
     for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
       i18n.locale = locale;
       for (const w of Object.values(every)) {

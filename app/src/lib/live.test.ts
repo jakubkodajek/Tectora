@@ -43,6 +43,19 @@ describe("liveText (UX-002)", () => {
 });
 
 describe("entrySummary", () => {
+  it("translates the entry of a stored result the corrected calculation recalculated", () => {
+    const entry = "Stored result recalculated (Tectora 0.9.0 -> 0.9.1): roof area 184.72 -> 180.8 m2";
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const text = entrySummary(entry);
+      expect(text, locale).not.toContain("{");
+      expect(text, locale).not.toContain(" -> ");
+      expect(text, locale).toContain("0.9.0 → 0.9.1");
+    }
+    i18n.locale = "cs";
+    expect(entrySummary(entry)).toContain("184,72 → 180,80 m²");
+  });
+
   it("translates the revert entries the core writes, nested too", () => {
     i18n.locale = "cs";
     expect(entrySummary("Reverted: Sklon 45°")).toBe("Vráceno: Sklon 45°");

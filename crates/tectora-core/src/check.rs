@@ -153,6 +153,21 @@ pub enum WarningKind {
     /// material the plane has, then the wall whose material is not used.
     /// `value`: 0.
     MergedMaterials,
+    /// Joined buildings: roof faces of this building lie in plan inside
+    /// another building's walls and below that building's roof, so they
+    /// are hidden in its attic yet counted (an overhang on a shared wall
+    /// where the join does not end the roof at the wall; two buildings of
+    /// the same eave height in a row). The standard calculation gives that
+    /// result and it is kept; setting the overhang of the shared wall to 0
+    /// removes it. `value`: the hidden roof area, m².
+    HiddenUnderNeighbour,
+    /// Joined buildings: part of the plan within this building's eave
+    /// outline (walls pushed out by their overhangs) has no roof face of
+    /// any building over it, so the roof area is too small (two
+    /// pyramid roofs in a row lose a fifth of their area in the join).
+    /// The standard calculation gives that result and it is kept.
+    /// `value`: the plan area without roof, m².
+    UncoveredPlan,
 }
 
 /// Distance from the plan's origin (along x or y) from which
@@ -164,6 +179,14 @@ pub const FAR_ORIGIN: f64 = 2500.0;
 pub const DOUBLED_TOL: f64 = 0.05;
 /// How far a dormer may rise above the roof it sits on, m.
 pub const DORMER_ABOVE_TOL: f64 = 0.05;
+/// Roof area hidden under a neighbour from which
+/// [`WarningKind::HiddenUnderNeighbour`] is reported, m².
+pub const HIDDEN_TOL: f64 = 0.5;
+/// Plan area without roof from which [`WarningKind::UncoveredPlan`] is
+/// reported, m².
+pub const UNCOVERED_TOL: f64 = 0.5;
+/// How far below the neighbour's roof a face must lie to be hidden, m.
+const HIDDEN_BELOW: f64 = 0.05;
 /// Roof area below which a roof has none, m² (it shows as 0.00).
 pub const NO_AREA: f64 = 0.005;
 
@@ -599,6 +622,214 @@ pub fn check(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<Vec<RoofWarning>>
     for i in inside_another(parts, geos) {
         out[i].push(RoofWarning::new(WarningKind::InsideAnother, 0.0));
     }
+    if joined {
+        for (i, area) in uncovered_plan(parts, geos).into_iter().enumerate() {
+            if area > UNCOVERED_TOL {
+                out[i].push(RoofWarning::new(WarningKind::UncoveredPlan, area));
+            }
+        }
+        for (i, area) in hidden_under_neighbour(parts, geos).into_iter().enumerate() {
+            if area > HIDDEN_TOL && !out[i].iter().any(|w| w.kind == WarningKind::InsideAnother) {
+                out[i].push(RoofWarning::new(WarningKind::HiddenUnderNeighbour, area));
+            }
+        }
+    }
+    out
+}
+
+/// Per building, the plan area within its eave outline that no sloped
+/// roof face of the job covers (dormer faces count), m². Buildings with an
+/// error or without faces, and flat-roofed ones, are left out.
+fn uncovered_plan(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<f64> {
+    let mut out = vec![0.0; geos.len()];
+    if geos.iter().any(|g| g.error.is_some()) {
+        return out;
+    }
+    let faces: Vec<(Polygon<f64>, [f64; 4])> = geos
+        .iter()
+        .flat_map(|g| &g.faces)
+        .filter(|f| f.pitch_deg < 89.9 && f.polygon.len() >= 3)
+        .map(plan)
+        .filter(|pts| signed_area(pts).abs() > 1e-9)
+        .map(|pts| (to_geo(&pts), bbox(&pts)))
+        .collect();
+    for (i, part) in parts.iter().enumerate() {
+        let roofed = part.edges.iter().any(|e| !e.is_gable());
+        if !roofed || geos.get(i).is_none_or(|g| g.faces.is_empty()) {
+            continue;
+        }
+        let mut plan_of = MultiPolygon::new(vec![]);
+        let mut bb = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        for piece in eave_outline(part) {
+            if piece.len() >= 3 && signed_area(&piece).abs() > 1e-9 {
+                bb = join_bbox(bb, bbox(&piece));
+                plan_of = plan_of.union(&MultiPolygon::new(vec![to_geo(&piece)]));
+            }
+        }
+        // Only the faces over this building's plan matter.
+        let mut roof = MultiPolygon::new(vec![]);
+        for (poly, fb) in &faces {
+            if boxes_meet(bb, *fb) {
+                roof = roof.union(&MultiPolygon::new(vec![poly.clone()]));
+            }
+        }
+        out[i] = plan_of.difference(&roof).unsigned_area();
+    }
+    out
+}
+
+/// `[min x, min y, max x, max y]` of plan points.
+fn bbox(pts: &[Point2]) -> [f64; 4] {
+    pts.iter().fold(
+        [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ],
+        |b, p| [b[0].min(p.x), b[1].min(p.y), b[2].max(p.x), b[3].max(p.y)],
+    )
+}
+
+fn join_bbox(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
+    [
+        a[0].min(b[0]),
+        a[1].min(b[1]),
+        a[2].max(b[2]),
+        a[3].max(b[3]),
+    ]
+}
+
+/// Whether two boxes overlap or touch (within a centimetre).
+fn boxes_meet(a: [f64; 4], b: [f64; 4]) -> bool {
+    a[0] <= b[2] + 0.01 && b[0] <= a[2] + 0.01 && a[1] <= b[3] + 0.01 && b[1] <= a[3] + 0.01
+}
+
+/// Per building, the area of its sloped roof faces that lie in plan
+/// inside another building's walls and more than [`HIDDEN_BELOW`] under
+/// that building's roof, m².
+fn hidden_under_neighbour(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<f64> {
+    let mut out = vec![0.0; geos.len()];
+    let ok = |g: &RoofGeometry| g.error.is_none() && !g.faces.is_empty();
+    // Per building: its walls and its sloped faces with their planes.
+    type Host = (MultiPolygon<f64>, [f64; 4], Vec<(Polygon<f64>, [f64; 3])>);
+    let hosts: Vec<Option<Host>> = parts
+        .iter()
+        .zip(geos)
+        .map(|(part, h)| {
+            let pts = part.outline();
+            if !ok(h) || pts.len() < 3 || !signed_area(&pts).is_finite() {
+                return None;
+            }
+            let faces = roof_faces(h)
+                .filter_map(|f| Some((to_geo(&plan(f)), plane_of(&f.polygon)?)))
+                .collect();
+            Some((MultiPolygon::new(vec![to_geo(&pts)]), bbox(&pts), faces))
+        })
+        .collect();
+    for (k, g) in geos.iter().enumerate() {
+        if !ok(g) {
+            continue;
+        }
+        for f in roof_faces(g) {
+            let Some(plane) = plane_of(&f.polygon) else {
+                continue;
+            };
+            let cos = f.pitch_deg.to_radians().cos();
+            if cos.is_nan() || cos <= 1e-6 {
+                continue;
+            }
+            let pts = plan(f);
+            let face = MultiPolygon::new(vec![to_geo(&pts)]);
+            let fb = bbox(&pts);
+            // One union per face over every other building, so buildings
+            // lying on top of each other do not count a piece twice.
+            let mut hidden = MultiPolygon::new(vec![]);
+            for (j, host) in hosts.iter().enumerate() {
+                let Some((walls, wb, over)) = host.as_ref().filter(|_| j != k) else {
+                    continue;
+                };
+                if !boxes_meet(fb, *wb) {
+                    continue;
+                }
+                let inside = face.intersection(walls);
+                if inside.unsigned_area() <= MIN_PIECE {
+                    continue;
+                }
+                // Over each face of the other roof both are planes, so the
+                // height between them is linear and the hidden part is the
+                // piece cut by one straight line: exact, wherever the faces
+                // cross (judging a piece at one point booked whole pieces
+                // the other roof covers only in part).
+                for (poly, h) in over {
+                    let d = [
+                        h[0] - plane[0],
+                        h[1] - plane[1],
+                        h[2] - plane[2] - HIDDEN_BELOW,
+                    ];
+                    for piece in &inside
+                        .intersection(&MultiPolygon::new(vec![poly.clone()]))
+                        .0
+                    {
+                        let cut = above_line(piece, d);
+                        if cut.unsigned_area() > 1e-9 {
+                            hidden = hidden.union(&cut);
+                        }
+                    }
+                }
+            }
+            out[k] += hidden.unsigned_area() / cos;
+        }
+        // A roof whose faces fold over each other covers less than its
+        // faces' outlines: never say more is hidden than it counts.
+        let counted: f64 = area_faces(g).map(|f| f.area).sum();
+        out[k] = out[k].min(counted.max(0.0));
+    }
+    out
+}
+
+/// The part of `piece` where `d[0] x + d[1] y + d[2] > 0`, holes included.
+fn above_line(piece: &Polygon<f64>, d: [f64; 3]) -> MultiPolygon<f64> {
+    let clip = |ring: &LineString<f64>| -> Vec<Coord<f64>> {
+        let v = |c: &Coord<f64>| d[0] * c.x + d[1] * c.y + d[2];
+        let pts: Vec<Coord<f64>> = ring.0.to_vec();
+        let n = pts.len().saturating_sub(1);
+        let mut out = Vec::new();
+        for i in 0..n {
+            let (a, b) = (pts[i], pts[i + 1]);
+            let (va, vb) = (v(&a), v(&b));
+            if va > 0.0 {
+                out.push(a);
+            }
+            if (va > 0.0) != (vb > 0.0) {
+                let t = va / (va - vb);
+                out.push(Coord {
+                    x: a.x + (b.x - a.x) * t,
+                    y: a.y + (b.y - a.y) * t,
+                });
+            }
+        }
+        out
+    };
+    let outer = clip(piece.exterior());
+    if outer.len() < 3 {
+        return MultiPolygon::new(vec![]);
+    }
+    let mut out = MultiPolygon::new(vec![Polygon::new(LineString::new(outer), vec![])]);
+    for hole in piece.interiors() {
+        let h = clip(hole);
+        if h.len() >= 3 {
+            out = out.difference(&MultiPolygon::new(vec![Polygon::new(
+                LineString::new(h),
+                vec![],
+            )]));
+        }
+    }
     out
 }
 
@@ -622,7 +853,7 @@ fn no_area(geo: &RoofGeometry) -> bool {
 
 /// [`WarningKind::DormerAboveRoof`] where a dormer face (no wall of the
 /// building) reaches above every face of the building's own roof.
-fn dormer_above_roof(geo: &RoofGeometry) -> Option<RoofWarning> {
+pub(crate) fn dormer_above_roof(geo: &RoofGeometry) -> Option<RoofWarning> {
     if geo.error.is_some() {
         return None;
     }

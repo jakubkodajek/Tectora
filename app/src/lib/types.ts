@@ -314,8 +314,10 @@ export interface RoofWarning {
     | "objects_overlap"
     | "dormer_above_roof"
     | "inside_another"
-    | "merged_materials";
-  /** m outside, m² overlapping, the relative area difference, m² below zero (cut_exceeds_face), m higher (plane_over_wall), m apart (merged_planes), m counted twice (doubled_line), m from the origin (far_from_origin), pairs (objects_overlap), m above the roof (dormer_above_roof), else 0. */
+    | "merged_materials"
+    | "hidden_under_neighbour"
+    | "uncovered_plan";
+  /** m outside, m² overlapping, the relative area difference, m² below zero (cut_exceeds_face), m higher (plane_over_wall), m apart (merged_planes), m counted twice (doubled_line), m from the origin (far_from_origin), pairs (objects_overlap), m above the roof (dormer_above_roof), m² hidden (hidden_under_neighbour), m² without roof (uncovered_plan), else 0. */
   value: number;
   /** merged_materials: the edge whose material the plane has, then the edge whose material is not used; merged_walls: the edge whose pitch is used, then the edge whose pitch and breaks are ignored; plane_over_wall, merged_planes: the outer wall, then the inner wall; wing_joined: the wing's walls; cut_exceeds_face: the walls of the faces. */
   edges?: number[];
@@ -498,7 +500,9 @@ export interface AppSettingsView {
 }
 
 export const USER_ACTOR = "user";
-export const isAi = (actor: string) => actor !== USER_ACTOR;
+/** Actor of the entries Tectora writes itself (store.rs `ENGINE_ACTOR`): neither the user nor an AI. */
+export const ENGINE_ACTOR = "tectora";
+export const isAi = (actor: string) => actor !== USER_ACTOR && actor !== ENGINE_ACTOR;
 
 export function emptyProject(name: string): Project {
   return {

@@ -966,7 +966,7 @@ fn finish_departed(
     Departed { roof, raw }: Departed,
 ) -> Option<RoofGeometry> {
     let Some(raw) = raw else {
-        return with_objects(alone, from_local(roof, origin));
+        return with_objects(alone, from_local(roof, origin)).filter(dormers_stay_under_the_roof);
     };
     let plain = from_local(roof, origin);
     let mut geo = if has_objects(alone) {
@@ -982,9 +982,34 @@ fn finish_departed(
     } else {
         plain
     };
+    if !dormers_stay_under_the_roof(&geo) {
+        return None;
+    }
     geo.warnings
         .push(RoofWarning::new(WarningKind::NotCalculatedByCore, 0.0));
     Some(geo)
+}
+
+/// Whether the dormers of a roof Tectora calculated where the core stops
+/// leave its own faces whole: a dormer whose roof never meets the host's
+/// (a shed dormer at the host's pitch, a gable dormer running on along
+/// the roof) gives tens of m² of dormer and a host face of negative area.
+/// The core refuses such a dormer on a roof it calculates ("faces do not
+/// close"), so its error stands here too: an error is better than a wrong
+/// roof. A dormer that only stands above the roof and cuts nothing keeps
+/// the warning it gets on the core's roofs. Windows larger than their
+/// face are not the dormers' doing: they keep the result and the
+/// `cut_exceeds_face` warning the core's roofs give them (R2-4).
+fn dormers_stay_under_the_roof(geo: &RoofGeometry) -> bool {
+    geo.faces.iter().enumerate().all(|(k, f)| {
+        let windows: f64 = geo
+            .window_cuts
+            .iter()
+            .filter(|c| c.face == k)
+            .map(|c| c.width * c.height)
+            .sum();
+        f.edge == usize::MAX || f.area + windows >= -1e-9
+    })
 }
 
 /// A roof of [`departed_bare`], in the building's own frame: sound, and
@@ -1339,7 +1364,8 @@ pub(crate) fn build_roofs(project: &Project) -> Vec<RoofGeometry> {
             mine[hi] = higher;
         }
         let mut geo = RoofGeometry::default();
-        for (g, map) in mine.into_iter().zip(&c.edges) {
+        for (mut g, map) in mine.into_iter().zip(&c.edges) {
+            geo.append_minus(&mut g);
             geo.faces.extend(g.faces.into_iter().map(|mut f| {
                 f.edge = map[f.edge];
                 f
@@ -1354,7 +1380,6 @@ pub(crate) fn build_roofs(project: &Project) -> Vec<RoofGeometry> {
             }));
             geo.openings.extend(g.openings);
             geo.cut_lines.extend(g.cut_lines);
-            geo.minus_lines.extend(g.minus_lines);
         }
         geos.push(geo);
     }
@@ -1850,6 +1875,19 @@ pub(crate) fn inside_spans(poly: &[Point2], a: Point2, b: Point2) -> Vec<(f64, f
         .collect()
 }
 
+/// `p` moved onto line `l` (its foot on the line through A and B): where a
+/// deduction booked on `l` lies, exactly on the line however far within
+/// the booking tolerance the hole edge ran (Fable R3-1).
+pub(crate) fn onto(l: &RoofLine, p: [f64; 3]) -> [f64; 3] {
+    let ab = [l.b[0] - l.a[0], l.b[1] - l.a[1], l.b[2] - l.a[2]];
+    let l2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    if l2.is_nan() || l2 < 1e-12 {
+        return p;
+    }
+    let t = ((p[0] - l.a[0]) * ab[0] + (p[1] - l.a[1]) * ab[1] + (p[2] - l.a[2]) * ab[2]) / l2;
+    lerp3(l.a, l.b, t)
+}
+
 pub(crate) fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     [
         a[0] + t * (b[0] - a[0]),
@@ -2118,12 +2156,25 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2], walls: &[(Point2, Poi
         let t = ((p[0] - a.x) * dx + (p[1] - a.y) * dy) / l2;
         (-1e-9..=1.0 + 1e-9).contains(&t) && dist3_(p, lerp3(e.c, e.d, t)) < SAME_EDGE
     };
+    // Two shared edges run along one line: a side of the chimney whose
+    // middle comes within SAME_EDGE of the other face's hole edge along
+    // the line between the faces only crosses it (Fable R2-3: the slope
+    // sides of a chimney across a joined pitch break lost their WS).
+    let along = |e: &HoleEdge, f: &HoleEdge| {
+        let (a, b) = (Point2::new(f.c[0], f.c[1]), Point2::new(f.d[0], f.d[1]));
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let len = dx.hypot(dy);
+        len > TOL
+            && [e.c, e.d]
+                .iter()
+                .all(|p| ((p[0] - a.x) * dy - (p[1] - a.y) * dx).abs() / len < SAME_EDGE)
+    };
     let mut drop = vec![false; edges.len()];
     for i in 0..edges.len() {
         let mid = lerp3(edges[i].c, edges[i].d, 0.5);
-        if let Some(j) =
-            (0..edges.len()).find(|&j| edges[j].face != edges[i].face && on_edge(mid, &edges[j]))
-        {
+        if let Some(j) = (0..edges.len()).find(|&j| {
+            edges[j].face != edges[i].face && on_edge(mid, &edges[j]) && along(&edges[i], &edges[j])
+        }) {
             // A shorter edge lying on a longer one is DACAD's code 17
             // (FUN_00da5060; R1_0745).
             let (li, lj) = (
@@ -2191,8 +2242,10 @@ fn cut_chimney(geo: &mut RoofGeometry, corners: &[Point2], walls: &[(Point2, Poi
             continue;
         }
         if let Some(r) = on {
+            geo.align_minus();
             geo.minus_lines
                 .push((r.dacad_code().to_string(), dist3_(e.c, e.d)));
+            geo.minus_at.push(Some((onto(r, e.c), onto(r, e.d))));
         }
         // On an abutment off any wall DACAD's copy comes back as code 0, no
         // line (mass case R1_0745: −WS along a step, no +WS).

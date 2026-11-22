@@ -187,6 +187,14 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             "the roof of this building did not close in one calculation (a wing with eaves too low to reach the house's roof), so the wing with edges {:?} (0-based) was calculated as a building of its own against the house and the two roofs joined; the standard calculation stops with an error on this building. Tell the user",
             w.edges
         ),
+        WarningKind::HiddenUnderNeighbour => format!(
+            "{:.2} m2 of this building's roof lies inside another building's walls, under that building's roof: hidden in its attic, yet counted in the area (usually the overhang of a wall standing on the other building's wall, where the join does not end the roof at that wall). The result is the standard calculation's and is kept. Tell the user; setting that wall's overhang to 0 removes the hidden piece",
+            w.value
+        ),
+        WarningKind::UncoveredPlan => format!(
+            "{:.2} m2 of plan within this building's walls and overhangs has no roof face of any building over it, so the roof area is too small (the join of the roofs lost faces, e.g. two pyramid roofs in a row). The result is the standard calculation's and is kept. Tell the user to check the roof at the join",
+            w.value
+        ),
         WarningKind::DoubledLine => format!(
             "roof lines of the joined roofs lie on top of each other, so {:.2} m is counted twice and one of the two lines usually has a code the roof does not have (a hip reported once more as an oblique verge where two hip roofs with different eave heights touch); the result is kept as calculated. Tell the user to check the line lengths at the join",
             w.value
@@ -982,7 +990,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer` or `item` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `merged_materials` (two walls in line of different materials joined into one plane that could not be split per wall, e.g. cut by another building: the area per material is off; normally such a plane is split square to the wall at the corner and each strip has its wall's material), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out), `plane_over_wall` (a wing's plane runs on over the house's eave: no ridge of its own), `doubled_line` (joined roofs: a line lies on another one, `value` m counted twice), `no_roof_area` (roofed walls, 0 m² of roof: a chimney or opening took all of it, or eaves at 100 m), `objects_overlap` (`value` pairs of windows, chimneys, openings or dormers on top of each other, each still deducted), `dormer_above_roof` (a dormer `value` m above the roof it sits on: area and lines too large), `inside_another` (a building wholly within another one's walls whose roof leaves the other roof's planes still adds area; keep a building that marks part of a face and give it the roof's pitch and eave height), the notice `far_from_origin` (the building is `value` m, 2.5 km or more, from the origin, where the area loses precision; move the plan to the origin) and three notices of a roof that is not the standard result because the standard calculation stops on it: `merged_planes` (two parallel planes within 10 cm calculated as one face), `wing_joined` (a low wing calculated as a lean-to against the house) and `not_calculated_by_core` (Tectora's own engine, result self-checked). Tell the user about every warning. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with.",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer` or `item` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `merged_materials` (two walls in line of different materials joined into one plane that could not be split per wall, e.g. cut by another building: the area per material is off; normally such a plane is split square to the wall at the corner and each strip has its wall's material), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out), `plane_over_wall` (a wing's plane runs on over the house's eave: no ridge of its own), `doubled_line` (joined roofs: a line lies on another one, `value` m counted twice), `no_roof_area` (roofed walls, 0 m² of roof: a chimney or opening took all of it, or eaves at 100 m), `objects_overlap` (`value` pairs of windows, chimneys, openings or dormers on top of each other, each still deducted), `dormer_above_roof` (a dormer `value` m above the roof it sits on: area and lines too large), `uncovered_plan` (joined buildings: `value` m2 of plan within this building's eave outline has no roof over it, the area is too small), `hidden_under_neighbour` (joined buildings: `value` m2 of this roof lies inside another building's walls under its roof, hidden yet counted; usually the overhang on a shared wall, which the user can set to 0), `inside_another` (a building wholly within another one's walls whose roof leaves the other roof's planes still adds area; keep a building that marks part of a face and give it the roof's pitch and eave height), the notice `far_from_origin` (the building is `value` m, 2.5 km or more, from the origin, where the area loses precision; move the plan to the origin) and three notices of a roof that is not the standard result because the standard calculation stops on it: `merged_planes` (two parallel planes within 10 cm calculated as one face), `wing_joined` (a low wing calculated as a lean-to against the house) and `not_calculated_by_core` (Tectora's own engine, result self-checked). Tell the user about every warning. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -1401,6 +1409,11 @@ impl Server {
                 Ok(json!({ "projects": list, "broken": broken }))
             }
             "get_project" => {
+                // A result stored by an older engine follows the corrected
+                // calculation, as when the app opens the job.
+                if let Ok(id) = arg_str(args, "id") {
+                    let _ = self.store.refresh_stored_result(id);
+                }
                 let (id, p) = self.load(args)?;
                 self.live(
                     "reading",
@@ -2027,7 +2040,9 @@ fn client_actor(name: &str) -> String {
         .to_string();
     if clean.is_empty() {
         "AI".into()
-    } else if clean.eq_ignore_ascii_case(tectora_core::store::USER_ACTOR) {
+    } else if clean.eq_ignore_ascii_case(tectora_core::store::USER_ACTOR)
+        || clean.eq_ignore_ascii_case(tectora_core::store::ENGINE_ACTOR)
+    {
         format!("AI ({clean})")
     } else {
         clean
@@ -2063,7 +2078,7 @@ mod tests {
     #[test]
     fn a_client_named_user_is_still_reviewed() {
         // HUNTIO-003: its saves were logged as the user's own.
-        for name in ["user", "User", "  USER ", ""] {
+        for name in ["user", "User", "  USER ", "", "tectora", "Tectora"] {
             let mut s = server();
             s.handle(&json!({
                 "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -2080,13 +2095,24 @@ mod tests {
             assert!(!log.is_empty());
             assert!(
                 log.iter()
-                    .all(|e| e.actor != tectora_core::store::USER_ACTOR && !e.actor.is_empty()),
+                    .all(|e| e.actor != tectora_core::store::USER_ACTOR
+                        && e.actor != tectora_core::store::ENGINE_ACTOR
+                        && !e.actor.is_empty()),
                 "{name:?}: {:?}",
                 log.iter().map(|e| &e.actor).collect::<Vec<_>>()
             );
             let _ = std::fs::remove_dir_all(&s.store.dir);
         }
         assert_eq!(client_actor("Claude Desktop"), "Claude Desktop");
+        // Hunt R2 BUG-1: a client named like the engine's recalculation
+        // would skip the AI review.
+        for name in ["tectora", "Tectora", " TECTORA "] {
+            assert_ne!(
+                client_actor(name).to_lowercase(),
+                tectora_core::store::ENGINE_ACTOR,
+                "{name:?}"
+            );
+        }
         assert_eq!(client_actor(&"x".repeat(500)).chars().count(), 60);
     }
 
