@@ -8,6 +8,8 @@
 // finger or pen press the hint names long press first.
 // TEST-805: a pen held still on a wall opens its menu; a mouse held still
 // opens none.
+// ARCH-803: the library note names a folder at a lock's helper file apart
+// from the lock, and says deleting the job is refused where it is.
 import fs from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
@@ -15,6 +17,16 @@ import { planXY } from "./editor";
 import { LIBRARY_DIR } from "./env";
 import { createExample, expect, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
+
+// TECTORA_SHOTS=<folder>/ saves a screenshot after each test (fix evidence),
+// named by the finding the test guards.
+test.afterEach(async ({ page }, info) => {
+  const dir = process.env.TECTORA_SHOTS;
+  if (!dir) return;
+  const id = info.titlePath.join(" ").match(/(HUNT|UX|TEST|ARCH)-\d+/)?.[0] ?? "r9";
+  const n = info.title.replace(/[^a-z0-9]+/gi, "-").slice(0, 40);
+  await page.screenshot({ path: `${dir}r9-${id}-${n}-${process.env.TECTORA_SHOTS_TAG ?? "after"}.png`, timeout: 10_000 }).catch(() => {});
+});
 
 const jobTab = (page: Page) => page.locator("aside .tabs").getByRole("tab", { name: cs("dock.job") });
 
@@ -117,5 +129,30 @@ test.describe("round 9: a pen and a mouse held still (TEST-805)", () => {
     await page.mouse.up();
     await expect(page.getByRole("menu")).toHaveCount(0);
     await expect(page.getByTestId("plan-hint")).toHaveText(cs("plan.hint"));
+  });
+});
+
+test.describe("round 9: the library note (ARCH-803)", () => {
+  test("a folder at a lock's helper file is named apart from the lock, and the lock's sentence says deleting fails", async ({ app, page }) => {
+    const a = await createExample("gable", "Pomocný");
+    const b = await createExample("hip", "Zámek");
+    await app.open();
+    await expect(page.getByText("Pomocný").first()).toBeVisible();
+    const fix = path.join(LIBRARY_DIR, ".activity", `${a}.lock.fix`);
+    fs.rmSync(fix, { recursive: true, force: true });
+    fs.mkdirSync(path.join(fix, "inside"), { recursive: true });
+    const lock = path.join(LIBRARY_DIR, ".activity", `${b}.lock`);
+    fs.rmSync(lock, { force: true });
+    fs.mkdirSync(path.join(lock, "inside"), { recursive: true });
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    const note = page.getByTestId("library-foreign");
+    await expect(note).toBeVisible();
+    await expect(note.getByTestId("library-foreign-line")).toHaveText([
+      cs("lib.foreign.lock", { job: "Zámek" }),
+      cs("lib.foreign.lock_fix", { job: "Pomocný" }),
+    ]);
+    expect(cs("lib.foreign.lock", { job: "Zámek" })).toContain("smazat");
+    fs.rmSync(fix, { recursive: true });
+    fs.rmSync(lock, { recursive: true });
   });
 });
