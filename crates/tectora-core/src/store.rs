@@ -307,6 +307,10 @@ fn lines_of(geos: &[roof::RoofGeometry]) -> Vec<[[f64; 2]; 2]> {
         .collect()
 }
 
+/// The name of a test job whose card calculation fails (TEST-504).
+#[cfg(test)]
+const CARD_FAILS: &str = "test: the card calculation fails";
+
 /// A library card's roof figures, from one calculation (ARCH-006).
 type CardFigures = (f64, Vec<[[f64; 2]; 2]>, usize, bool);
 
@@ -317,6 +321,10 @@ type CardFigures = (f64, Vec<[[f64; 2]; 2]>, usize, bool);
 /// pitch: `Project::problems` of the part), so the area of the others is
 /// never shown as the job's whole roof (audit 2026-11-21 ERR-001).
 fn card_figures(project: &Project) -> CardFigures {
+    #[cfg(test)]
+    if project.name == CARD_FAILS {
+        panic!("the card calculation of this test job fails");
+    }
     let geos = crate::openings::generate_project(project);
     let failed = crate::quantities::parts_without_roof(&geos, project);
     (
@@ -2706,6 +2714,23 @@ mod tests {
             (0.0, 0, p.parts.len(), false)
         );
         assert!(refused_card(&p, &crate::work::Refusal::TooComplex).1);
+    }
+
+    /// Audit 2026-11-22 TEST-504: the card `summarize` hands out for a job
+    /// whose calculation failed is without a roof but not "too complex"
+    /// (testing `refused_card` alone let `summarize` mark it so again).
+    #[test]
+    fn a_listed_job_whose_calculation_fails_is_not_too_complex() {
+        let store = temp_store("card-failed");
+        let mut p = examples::find("hip").unwrap().project();
+        p.name = CARD_FAILS.into();
+        let id = store.save(None, &p).unwrap();
+        let card = store.summarize(&id).unwrap();
+        assert!(!card.figures_pending);
+        assert!(!card.too_complex, "a failure is not the work bound");
+        assert_eq!(card.parts_failed, p.parts.len());
+        assert_eq!(card.roof_area, 0.0);
+        let _ = fs::remove_dir_all(&store.dir);
     }
 
     /// Audit 2026-11-22 ARCH-401: entries so large that the log's entries
