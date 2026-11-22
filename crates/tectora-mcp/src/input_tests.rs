@@ -927,3 +927,62 @@ fn export_plan_never_writes_through_a_link_in_the_exports_folder() {
     assert!(left.is_empty(), "written outside: {left:?}");
     let _ = std::fs::remove_dir_all(&outside);
 }
+
+/// Audit 2026-11-22 TEST-703: `get_project` recalculates a stored result an
+/// older engine took from this very design, once, with the engine's log
+/// entry, as the app does when it opens the job.
+#[test]
+fn get_project_refreshes_a_result_an_older_engine_stored() {
+    use tectora_core::snapshot::{ENGINE_VERSION, REFRESHED_PREFIX};
+    use tectora_core::store::ENGINE_ACTOR;
+    let mut s = server();
+    let id = gable_job(&mut s);
+    s.call_tool(
+        "update_job",
+        &json!({ "id": id, "status": "offer", "summary": "offer" }),
+    )
+    .unwrap();
+    // The user accepted the AI's work: no review pending.
+    let last = s.store.activity(&id).last().unwrap().ts_ms;
+    s.store.mark_reviewed(&id, last).unwrap();
+    // As if engine 0.0.1 had stored figures 2 m2 off.
+    let path = s.store.dir.join(format!("{id}.tectora"));
+    let mut job: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let area = job["result_snapshot"]["roof_area"].as_f64().unwrap();
+    job["result_snapshot"]["engine_version"] = "0.0.1".into();
+    job["result_snapshot"]["roof_area"] = (area + 2.0).into();
+    std::fs::write(&path, job.to_string()).unwrap();
+    let origin = s.store.activity_dir().join(format!("{id}.result.json"));
+    let mut origins: Value =
+        serde_json::from_str(&std::fs::read_to_string(&origin).expect("origin recorded")).unwrap();
+    for o in origins.as_array_mut().unwrap() {
+        o["checked"] = "0.0.1".into();
+    }
+    std::fs::write(&origin, origins.to_string()).unwrap();
+
+    let engine = |s: &Server| {
+        s.store
+            .activity(&id)
+            .iter()
+            .filter(|e| e.actor == ENGINE_ACTOR)
+            .count()
+    };
+    let r = s.call_tool("get_project", &json!({ "id": id })).unwrap();
+    let job: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(job["result_snapshot"]["engine_version"], ENGINE_VERSION);
+    assert!((job["result_snapshot"]["roof_area"].as_f64().unwrap() - area).abs() < 0.01);
+    let entry = s.store.activity(&id).last().unwrap().clone();
+    assert_eq!(entry.actor, ENGINE_ACTOR);
+    assert!(entry.summary.starts_with(REFRESHED_PREFIX), "{}", entry.summary);
+    assert_eq!(engine(&s), 1);
+    // The answer is the recalculated job.
+    assert_eq!(
+        r["stored_result"]["stored"]["engine_version"],
+        ENGINE_VERSION,
+        "{r}"
+    );
+    assert_eq!(r["stored_result"]["engine_changed"], false, "{r}");
+    // Once only.
+    s.call_tool("get_project", &json!({ "id": id })).unwrap();
+    assert_eq!(engine(&s), 1);
+}

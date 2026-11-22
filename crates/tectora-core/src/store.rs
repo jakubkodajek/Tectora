@@ -1801,19 +1801,33 @@ impl Store {
     /// [`ResultOrigin`]) and the figures are now different
     /// ([`crate::snapshot::refreshed`]), with a change-log entry by
     /// [`ENGINE_ACTOR`] that keeps the job as it was. Returns whether it
-    /// did. A result stored before Tectora kept its origin, one whose
-    /// design changed since, one put back by a revert and one this engine
-    /// already checked stay as they are. The app and the MCP server call
-    /// it when a job is opened.
+    /// did ([`Store::refresh_result`] gives the entry's summary).
     pub fn refresh_stored_result(&self, id: &str) -> Result<bool, StoreError> {
+        Ok(self.refresh_result(id)?.is_some())
+    }
+
+    /// [`Store::refresh_stored_result`] with the change log's summary of
+    /// the recalculation, `None` when nothing was recalculated. A result
+    /// stored before Tectora kept its origin, one whose design changed
+    /// since, one put back by a revert and one this engine already checked
+    /// stay as they are. So does the result of a job whose lock cannot be
+    /// taken (a folder with files where the lock file belongs): every other
+    /// save of it is refused as well (audit 2026-11-22 ARCH-702), and two
+    /// opens at once must not log it twice. The roof is calculated once,
+    /// in the work bound ([`crate::work::calculate`]), and its result is
+    /// the new origin (HUNT-703). The app calls it when it opens a job, off
+    /// the window's thread, and the MCP server in `get_project`.
+    pub fn refresh_result(&self, id: &str) -> Result<Option<String>, StoreError> {
         self.path(id)?;
-        let _lock = self.lock(id);
+        let Ok(_lock) = self.lock(id) else {
+            return Ok(None);
+        };
         let before = self.load(id)?;
         let Some(stored) = &before.result_snapshot else {
-            return Ok(false);
+            return Ok(None);
         };
         let Some(mut origin) = self.result_origin(id, stored.taken_ms) else {
-            return Ok(false);
+            return Ok(None);
         };
         // While AI changes wait for review the result stays: Revert and
         // Revert all then undo the AI's changes, not the recalculation
@@ -1822,30 +1836,39 @@ impl Store {
             || origin.checked == crate::snapshot::ENGINE_VERSION
             || origin.input != crate::snapshot::input_digest(&before)
             || self.pending_review(id).is_some()
-            // Opening a job recalculates on the caller's thread: only a
-            // design small enough to have got its origin (audit ERR-101).
+            // Only a design small enough to have got its origin (audit
+            // ERR-101).
             || design_items(&before) > ORIGIN_MAX_ITEMS
         {
-            return Ok(false);
+            return Ok(None);
         }
-        match crate::model::guarded(|| crate::snapshot::refreshed(&before))
+        match crate::work::calculate(|| crate::snapshot::refreshed(&before))
             .ok()
             .flatten()
         {
             Some((after, summary)) => {
-                self.log_and_write(id, Some(before), &after, ENGINE_ACTOR, &summary, None)?;
+                // The fresh result is this engine's own for this design: its
+                // origin, without calculating the roof again on the write.
+                let fresh = after.result_snapshot.as_ref().map(|s| ResultOrigin {
+                    taken_ms: s.taken_ms,
+                    input: origin.input.clone(),
+                    checked: crate::snapshot::ENGINE_VERSION.to_string(),
+                });
+                self.log_and_write(id, Some(before), &after, ENGINE_ACTOR, &summary, None, fresh)?;
                 // Only once saved (audit ARCH-502): the old result, put
                 // back by a revert, then stays reverted; a failed save
                 // leaves it to be recalculated on the next open.
                 origin.checked = crate::snapshot::ENGINE_VERSION.to_string();
                 let _ = self.write_result_origin(id, &origin);
-                Ok(true)
+                Ok(Some(summary))
             }
             None => {
-                // Checked: the next open need not calculate it again.
+                // Checked: the next open need not calculate it again (also
+                // when the roof is over the work bound or cannot be
+                // calculated: the stored result stays as the offer had it).
                 origin.checked = crate::snapshot::ENGINE_VERSION.to_string();
                 let _ = self.write_result_origin(id, &origin);
-                Ok(false)
+                Ok(None)
             }
         }
     }
@@ -2059,6 +2082,19 @@ impl Store {
     /// caller read the file under this lock already (`load` refuses it), so
     /// a save reads the file once (audit 2026-11-22 ARCH-504 item 1).
     fn write(&self, id: &str, project: &Project, checked: bool) -> Result<(), StoreError> {
+        self.write_known(id, project, checked, None)
+    }
+
+    /// [`Store::write`] where the caller knows the origin of the result it
+    /// writes, `known`: recorded as such instead of calculating the roof
+    /// to check it (a recalculated stored result, HUNT-703).
+    fn write_known(
+        &self,
+        id: &str,
+        project: &Project,
+        checked: bool,
+        known: Option<ResultOrigin>,
+    ) -> Result<(), StoreError> {
         let path = self.path(id)?;
         self.library_present()?;
         if let Some(version) = (!checked)
@@ -2078,11 +2114,18 @@ impl Store {
         })?;
         // The stored result the file had: a save that brings a newer one
         // records what it was taken from.
-        let old_taken = read_regular(&path, MAX_JOB_FILE)
-            .ok()
+        let old_taken = known
+            .is_none()
+            .then(|| read_regular(&path, MAX_JOB_FILE).ok())
+            .flatten()
             .and_then(|t| serde_json::from_slice::<serde_json::Value>(&t).ok())
             .and_then(|v| v.get("result_snapshot")?.get("taken_ms")?.as_u64());
         write_atomic(&path, &json).map_err(|e| StoreError::io(Some(id), e))?;
+        if let Some(origin) = known {
+            // Best effort, as below.
+            let _ = self.write_result_origin(id, &origin);
+            return Ok(());
+        }
         // Only a result this engine gives for this very design is known to
         // be taken from it: an imported or restored job may carry figures
         // of a design edited since (R2-1), which must never be recalculated.
@@ -2170,7 +2213,7 @@ impl Store {
                 let _creating = self.creation_lock()?;
                 let id = self.free_id(&project.name)?;
                 let _lock = self.lock(&id)?;
-                self.log_and_write(&id, None, project, actor, summary, None)?;
+                self.log_and_write(&id, None, project, actor, summary, None, None)?;
                 return Ok(id);
             }
         };
@@ -2222,12 +2265,15 @@ impl Store {
             });
         }
         if before.as_ref() != Some(project) {
-            self.log_and_write(id, before, project, actor, summary, undid_from)?;
+            self.log_and_write(id, before, project, actor, summary, undid_from, None)?;
         }
         Ok(CheckedSave::Saved { id: id.to_string() })
     }
 
     /// Logs the change and writes the file; the caller holds the job's lock.
+    /// `known`: the origin of the result it writes, as for
+    /// [`Store::write_known`].
+    #[allow(clippy::too_many_arguments)]
     fn log_and_write(
         &self,
         id: &str,
@@ -2236,6 +2282,7 @@ impl Store {
         actor: &str,
         summary: &str,
         undid_from: Option<u64>,
+        known: Option<ResultOrigin>,
     ) -> Result<(), StoreError> {
         // A newer file was refused before: by `load` under this lock for an
         // existing job, and a new id has no file, so `write` does not read
@@ -2271,7 +2318,7 @@ impl Store {
             },
             log,
         )?;
-        self.write(id, project, true).inspect_err(|_| {
+        self.write_known(id, project, true, known).inspect_err(|_| {
             let _ = undo.apply();
         })?;
         // Trimmed only once the change is saved, so a failed write takes
@@ -4388,7 +4435,11 @@ mod tests {
     /// by this engine, then file and origin set back as engine 0.0.1 with
     /// figures `extra` m2 off would have left them.
     fn old_offer_off_by(store: &Store, extra: f64) -> (String, Project) {
-        let mut p = examples::find("gable").unwrap().project();
+        old_offer_of(store, examples::find("gable").unwrap().project(), extra)
+    }
+
+    /// [`old_offer_off_by`] of the design `p`.
+    fn old_offer_of(store: &Store, mut p: Project, extra: f64) -> (String, Project) {
         p.result_snapshot = Some(crate::snapshot::take(&p));
         let id = store.save(None, &p).unwrap();
         let taken = p.result_snapshot.as_ref().unwrap().taken_ms;
@@ -4630,6 +4681,148 @@ mod tests {
             crate::snapshot::ENGINE_VERSION
         );
         let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_job_whose_lock_cannot_be_taken_is_not_recalculated() {
+        // Audit 2026-11-22 ARCH-702: the refresh went on without the lock
+        // that every other save of the job was refused for.
+        let store = temp_store("refresh-lockdir");
+        let (id, p) = old_offer(&store);
+        let lock = store.activity_dir().join(format!("{id}.lock"));
+        let _ = fs::remove_file(&lock);
+        fs::create_dir_all(&lock).unwrap();
+        fs::write(lock.join("x"), "x").unwrap();
+        let log = store.activity(&id).len();
+        assert!(!store.refresh_stored_result(&id).unwrap());
+        assert_eq!(store.refresh_result(&id).unwrap(), None);
+        assert_eq!(store.load(&id).unwrap().result_snapshot, p.result_snapshot);
+        assert_eq!(store.activity(&id).len(), log);
+        // Once the folder is gone, the next open recalculates it.
+        fs::remove_dir_all(&lock).unwrap();
+        assert!(store.refresh_stored_result(&id).unwrap());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn two_opens_at_once_recalculate_a_stored_result_once() {
+        // ARCH-702: three servers opening the job at once logged the
+        // recalculation twice.
+        let store = temp_store("refresh-race");
+        for _ in 0..3 {
+            let (id, _) = old_offer(&store);
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+            let done: Vec<_> = (0..4)
+                .map(|_| {
+                    let (dir, id, barrier) = (store.dir.clone(), id.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        let s = Store::new(dir).unwrap();
+                        barrier.wait();
+                        s.refresh_result(&id).unwrap()
+                    })
+                })
+                .collect();
+            let refreshed = done
+                .into_iter()
+                .filter_map(|t| t.join().unwrap())
+                .count();
+            assert_eq!(refreshed, 1);
+            let engine = store
+                .activity(&id)
+                .iter()
+                .filter(|e| e.actor == ENGINE_ACTOR)
+                .count();
+            assert_eq!(engine, 1);
+        }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_recalculation_calculates_the_roof_once() {
+        // Audit 2026-11-22 HUNT-703 / ARCH-703: the save of the fresh
+        // result calculated the roof a second time for its origin.
+        let store = temp_store("refresh-once");
+        // Two buildings that overlap: their join is what the work counts.
+        let mut p = examples::find("gable").unwrap().project();
+        let mut second = p.parts[0].clone();
+        for e in &mut second.edges {
+            e.start.x += 3.0;
+            e.start.y += 2.0;
+        }
+        p.parts.push(second);
+        let (id, p) = old_offer_of(&store, p, 2.0);
+        let (_, once) = crate::work::bounded_by(u64::MAX, || crate::snapshot::take_checked(&p));
+        assert!(once > 0);
+        let (r, used) = crate::work::bounded_by(u64::MAX, || store.refresh_result(&id));
+        assert!(r.unwrap().unwrap().is_some());
+        assert!(used < once * 3 / 2, "{used} steps for {once} per calculation");
+        // The fresh result has its origin, checked by this engine.
+        let q = store.load(&id).unwrap();
+        let fresh = store
+            .result_origin(&id, q.result_snapshot.unwrap().taken_ms)
+            .expect("origin of the fresh result");
+        assert_eq!(fresh.checked, crate::snapshot::ENGINE_VERSION);
+        assert_eq!(fresh.input, crate::snapshot::input_digest(&p));
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn a_deleted_and_restored_offer_keeps_its_result_origin() {
+        // Audit 2026-11-22 TEST-703: losing the origin on delete or restore
+        // passed every test.
+        let store = temp_store("refresh-trash");
+        let (id, p) = old_offer(&store);
+        let taken = p.result_snapshot.as_ref().unwrap().taken_ms;
+        let entry = store.delete(&id, USER_ACTOR, "Deleted").unwrap();
+        assert!(!store.result_origin_path(&id).unwrap().exists());
+        assert!(
+            store
+                .trash_dir()
+                .join(&entry.entry)
+                .join("result.json")
+                .exists()
+        );
+        let back = store.restore(&entry.entry).unwrap();
+        assert!(store.result_origin(&back, taken).is_some());
+        assert!(store.refresh_stored_result(&back).unwrap());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 TEST-711: the summary of a real recalculation, in
+    /// `tests/fixtures/parity/refreshed_entry.json`, which
+    /// `app/src/lib/live.test.ts` translates; the engine's own version
+    /// stands as `to` in it. Write it again with
+    /// `TECTORA_WRITE_REFRESHED=1` after changing the summary's wording.
+    #[test]
+    fn the_recalculation_summary_is_the_one_the_app_translates() {
+        let store = temp_store("refresh-fixture");
+        let (id, _) = old_offer_off_by(&store, 2.345);
+        let summary = store.refresh_result(&id).unwrap().expect("recalculated");
+        assert_eq!(store.activity(&id).last().unwrap().summary, summary);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/parity/refreshed_entry.json");
+        let _ = fs::remove_dir_all(&store.dir);
+        if std::env::var_os("TECTORA_WRITE_REFRESHED").is_some() {
+            let file = serde_json::json!({
+                "_comment": "Generated by the core test store::tests::the_recalculation_summary_is_the_one_the_app_translates (TECTORA_WRITE_REFRESHED=1): the change-log summary of a real recalculation of a stored result; app/src/lib/live.test.ts translates it. `to` is the engine version it was written with.",
+                "from": "0.0.1",
+                "to": crate::snapshot::ENGINE_VERSION,
+                "summary": summary,
+            });
+            fs::write(&path, serde_json::to_string_pretty(&file).unwrap() + "\n").unwrap();
+            return;
+        }
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let to = file["to"].as_str().unwrap();
+        let ours = summary.replace(
+            &format!("-> {})", crate::snapshot::ENGINE_VERSION),
+            &format!("-> {to})"),
+        );
+        assert_eq!(
+            ours, file["summary"],
+            "rewrite with TECTORA_WRITE_REFRESHED=1"
+        );
     }
 
     #[test]

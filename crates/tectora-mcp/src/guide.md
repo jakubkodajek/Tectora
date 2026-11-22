@@ -243,7 +243,8 @@ calculates. A result stored by an older Tectora whose figures the
 corrected calculation changes is recalculated when the job is opened (in
 the app or with `get_project`), with a change-log entry that keeps the old
 figures (`get_history`). This happens only while the design is the one the
-result was taken from and no AI change waits for review.
+result was taken from, no AI change waits for review and the job can be
+saved (a job whose saves are refused keeps its stored result).
 
 ## Results (DACAD line codes)
 

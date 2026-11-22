@@ -73,6 +73,11 @@ export const api = {
   listProjects: () => invoke<Library>("list_projects"),
   startupWarnings: () => invoke<AppError[]>("startup_warnings"),
   loadProject: (id: string) => invoke<Project>("load_project", { id }),
+  /** Recalculates the job's stored result where an older engine stored it,
+      before the job is loaded (`load_project` no longer does): the change
+      log's summary when it did, else null. Never fails; an error is logged
+      and the stored result stays. */
+  refreshStoredResult: (id: string) => invoke<string | null>("refresh_stored_result", { id }),
   saveProject: (id: string | null, project: Project) => invoke<string>("save_project", { id, project }),
   /** Saves only if the file still holds `base` (the version last read or
       written); otherwise nothing is written and the current file comes back. */

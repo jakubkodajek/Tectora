@@ -194,13 +194,30 @@ fn connect_ai_assistant(id: assistants::Assistant) -> CmdResult<assistants::Conn
     })
 }
 
-#[tauri::command]
+/// Off the main thread: a job file can be large and its lock can be held
+/// by another process's save (audit 2026-11-22 HUNT-703). The stored
+/// result is recalculated before, by `refresh_stored_result`.
+#[tauri::command(async)]
 fn load_project(state: State<AppState>, id: String) -> CmdResult<Project> {
-    guard(|| {
-        // A result stored by an older engine follows the corrected
-        // calculation; the change log keeps the old figures.
-        let _ = state.store().refresh_stored_result(&id);
-        Ok(state.store().load(&id)?)
+    guard(|| Ok(state.store().load(&id)?))
+}
+
+/// Recalculates the job's stored result where an older engine stored it
+/// (Jakub's decision 2026-11-21; the change log keeps the old figures),
+/// before the editor loads the job. Returns the change log's summary when
+/// it did. Off the main thread: it calculates the roof under the job's
+/// lock (HUNT-703). An error leaves the stored result as it was and is
+/// only logged: the job still opens.
+#[tauri::command(async)]
+fn refresh_stored_result(state: State<AppState>, id: String) -> Option<String> {
+    let r = guard(|| Ok(state.store().refresh_result(&id)?));
+    r.unwrap_or_else(|e| {
+        eprintln!(
+            "tectora: stored result of {id} not recalculated: {} {}",
+            e.code,
+            e.detail.as_deref().unwrap_or_default()
+        );
+        None
     })
 }
 
@@ -1116,6 +1133,7 @@ pub fn run() {
             startup_warnings,
             take_open_errors,
             load_project,
+            refresh_stored_result,
             save_project,
             save_project_checked,
             normalize_project,
@@ -1194,6 +1212,8 @@ mod tests {
         let src = include_str!("lib.rs");
         for name in [
             "list_projects",
+            "load_project",
+            "refresh_stored_result",
             "review_status",
             "revert_last_change",
             "revert_changes",

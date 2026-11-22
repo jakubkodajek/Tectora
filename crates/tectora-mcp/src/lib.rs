@@ -1656,8 +1656,13 @@ impl Server {
             "get_project" => {
                 // A result stored by an older engine follows the corrected
                 // calculation, as when the app opens the job.
-                if let Ok(id) = arg_str(args, "id") {
-                    let _ = self.store.refresh_stored_result(id);
+                // An error leaves the stored result as it was and the job
+                // is still read; it is logged, not dropped (audit
+                // 2026-11-22 ERR to-check 1).
+                if let Ok(id) = arg_str(args, "id")
+                    && let Err(e) = self.store.refresh_result(id)
+                {
+                    eprintln!("tectora mcp: stored result of {id} not recalculated: {e}");
                 }
                 let (id, p) = self.load(args)?;
                 self.live(
