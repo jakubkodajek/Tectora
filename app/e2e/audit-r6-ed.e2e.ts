@@ -392,20 +392,28 @@ test.describe("round-6 audit: Undo and the saving state with an edit at the core
     await openEditor(app, "Ukládám");
     await selectWall(page, 0);
     await app.saved();
-    await slow(page, "set_part_height", 2500);
+    // The core's answer is held until the sampling is over, not for a
+    // fixed time a busy machine outran (TEST-706).
+    let held = true;
+    await page.route(/\/set_part_height$/, async (r) => {
+      const end = Date.now() + 20_000;
+      while (held && Date.now() < end) await new Promise((res) => setTimeout(res, 20));
+      await r.continue();
+    });
     await typeInto(page, bar(page, "def.title").getByTestId("building-height"), "4,2");
     await page.keyboard.press("Enter");
     // Read as it is, no retry: a retrying check waited for the real save
     // that follows the answer and passed with "saved" shown all along
-    // (TEST-601 G7). Sampled while the edit is with the core (held 2.5 s).
+    // (TEST-601 G7). Sampled while the edit is with the core.
     await page.waitForTimeout(500);
     const seen: string[] = [];
     for (let i = 0; i < 15; i++) {
       seen.push(((await page.locator(".statusbar .save").textContent()) ?? "").trim());
       await page.waitForTimeout(100);
     }
-    expect(seen.filter((s) => s !== cs("editor.saving")), "status while the edit is with the core").toEqual([]);
     expect((await loadProject(id)).parts[0].edges[0].eave_height).not.toBe(4.2);
+    held = false;
+    expect(seen.filter((s) => s !== cs("editor.saving")), "status while the edit is with the core").toEqual([]);
     await waitForProject(id, (p) => (p.parts[0].height ?? p.parts[0].edges[0].eave_height) === 4.2, 8000);
     await app.saved();
   });

@@ -35,12 +35,25 @@ const estate = () => result(Array.from({ length: 200 }, (_, i) => hipped((i % 20
 describe("a plan of 200 buildings", () => {
   it("splits every roof line by cover and keeps every face label within the time budget", () => {
     const r = estate();
+    // Work is counted, not timed: a 500 ms budget failed on a busy machine
+    // (TEST-706). Each roof point meets the face boxes of one building.
+    const stats = { inside: 0, boxes: 0 };
+    const index = hostIndex(r, stats);
+    let calls = 0;
+    const top = (p: { x: number; y: number }) => {
+      calls++;
+      return index(p);
+    };
     const t0 = performance.now();
-    const top = hostIndex(r);
     const pieces = coveredPieces(r, top);
     const tags = visibleFaceTags(r, top);
     const ms = performance.now() - t0;
-    expect(ms).toBeLessThan(500);
+    // 44 000 roof points today (220 per building); twice that is a regression.
+    expect(calls).toBeLessThanOrEqual(88_000);
+    expect(stats.boxes).toBeLessThanOrEqual(calls * 8);
+    expect(stats.inside).toBeLessThanOrEqual(calls * 4);
+    // Only a hang guard: the counts above catch a slower index.
+    expect(ms).toBeLessThan(10_000);
     // Buildings 4 m apart cover nothing of each other.
     expect(pieces.flat().every((l) => l.pieces.length === 1 && !l.pieces[0].hidden)).toBe(true);
     expect(tags.length).toBe(200 * 4);
@@ -81,7 +94,7 @@ describe("hostIndex", () => {
 describe("hostIndex: work per point", () => {
   it("tests a point only against faces whose box holds it: at most the faces of one building in the estate", () => {
     const r = estate();
-    const stats = { inside: 0 };
+    const stats = { inside: 0, boxes: 0 };
     const top = hostIndex(r, stats);
     let points = 0;
     let worst = 0;
@@ -98,6 +111,9 @@ describe("hostIndex: work per point", () => {
     expect(stats.inside).toBeLessThanOrEqual(points * 4);
     // And far less than every face for every point (800 faces).
     expect(stats.inside).toBeLessThan(points * 8);
+    // The building's box comes first: a point meets the face boxes of the
+    // buildings whose box holds it, not all 800 (TEST-707; about 4 per point).
+    expect(stats.boxes).toBeLessThanOrEqual(points * 8);
   });
 
   it("hostParts.of gives one building's own roof, as hostHeightAt of that building alone", () => {

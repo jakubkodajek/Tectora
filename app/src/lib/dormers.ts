@@ -162,7 +162,10 @@ export function hostHeightAt(result: CalcResult | null, p: Point2): number | nul
 
 /** Work counted by `hostIndex` for its guard test: point-in-face tests run (TEST-607). */
 export interface HostIndexStats {
+  /** Point-in-polygon tests (behind a face's box). */
   inside: number;
+  /** Face boxes a point was checked against (behind the building's box, TEST-707). */
+  boxes?: number;
 }
 
 /**
@@ -213,6 +216,7 @@ export function hostParts(result: CalcResult | null, stats?: HostIndexStats): { 
   const over = (part: Part, p: Point2, best: number | null): number | null => {
     if (out(part, p)) return best;
     for (const f of part.faces) {
+      if (stats) stats.boxes = (stats.boxes ?? 0) + 1;
       if (out(f, p)) continue;
       if (stats) stats.inside++;
       if (!inside(f.poly, p)) continue;
