@@ -144,12 +144,15 @@ fn project_activity(state: State<AppState>, id: String) -> Vec<ActivityItem> {
         .store()
         .history(&id)
         .into_iter()
-        .map(|e| ActivityItem {
-            ts_ms: e.ts_ms,
-            actor: e.actor,
-            refreshed: refresh_figures(&e),
-            summary: e.summary,
-            changes: e.changes,
+        .map(|e| {
+            let refreshed = refresh_figures(&e);
+            ActivityItem {
+                ts_ms: e.ts_ms,
+                actor: e.actor,
+                refreshed,
+                summary: e.summary,
+                changes: e.changes,
+            }
         })
         .collect();
     out.reverse();
