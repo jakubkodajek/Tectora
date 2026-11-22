@@ -16,7 +16,7 @@ use tauri_plugin_opener::OpenerExt;
 use tectora_core::diff::Change;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::settings::{self, Settings};
-use tectora_core::store::{self, BrokenFile, LiveStatus, Store, USER_ACTOR, outlines};
+use tectora_core::store::{self, BrokenFile, LiveStatus, Store, USER_ACTOR, card_outlines};
 use tectora_core::{Project, assistants, bundle, commands, examples, snapshot};
 
 use error::{AppError, guard};
@@ -523,7 +523,7 @@ fn list_examples() -> Vec<ExampleInfo> {
             id: e.id,
             name: e.name,
             description: e.description,
-            outlines: outlines(&e.project()),
+            outlines: card_outlines(&e.project()),
             lines: store::roof_lines(&e.project()),
         })
         .collect()

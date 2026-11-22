@@ -28,7 +28,7 @@ use std::time::SystemTime;
 use serde_json::{Value, json};
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::settings::Settings;
-use tectora_core::store::{self, Store, USER_ACTOR, outlines};
+use tectora_core::store::{self, Store, USER_ACTOR, card_outlines};
 use tectora_core::{Project, assistants, bundle, examples};
 
 /// AI apps "connected" in the preview besides Claude Desktop, which always
@@ -421,7 +421,7 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
                         "id": e.id,
                         "name": e.name,
                         "description": e.description,
-                        "outlines": outlines(&e.project()),
+                        "outlines": card_outlines(&e.project()),
                         "lines": store::roof_lines(&e.project()),
                     })
                 })

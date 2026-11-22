@@ -335,10 +335,16 @@ pub fn outlines(project: &Project) -> Vec<Vec<[f64; 2]>> {
         .collect()
 }
 
+/// Most outline points a library card carries in all. A job within the
+/// limits can hold 500 hand-drawn faces of 500 corners each: carried
+/// whole, such a card was megabytes of the library listing and its
+/// thumbnail emptied the library screen (audit 2026-11-22 ARCH-402).
+pub const MAX_CARD_POINTS: usize = 2000;
+
 /// The outlines of a library card's thumbnail: the walls of each part and
 /// the hand-drawn faces, so a job of faces only has a thumbnail too
-/// (audit 2026-11-22 HUNT-305 item 5).
-fn card_outlines(project: &Project) -> Vec<Vec<[f64; 2]>> {
+/// (audit 2026-11-22 HUNT-305 item 5), at most [`MAX_CARD_POINTS`] points.
+pub fn card_outlines(project: &Project) -> Vec<Vec<[f64; 2]>> {
     let mut out = outlines(project);
     out.extend(
         project
@@ -347,6 +353,43 @@ fn card_outlines(project: &Project) -> Vec<Vec<[f64; 2]>> {
             .filter(|f| f.points.len() >= 3)
             .map(|f| f.points.iter().map(|p| [p.x, p.y]).collect()),
     );
+    bounded_outlines(out, MAX_CARD_POINTS)
+}
+
+/// `outlines` with at most `max` points in all: each keeps evenly spread
+/// points, its share of `max` (at least a triangle); outlines past the
+/// budget are replaced by one box around all of them, so the thumbnail
+/// keeps the job's extent.
+fn bounded_outlines(outlines: Vec<Vec<[f64; 2]>>, max: usize) -> Vec<Vec<[f64; 2]>> {
+    let total: usize = outlines.iter().map(Vec::len).sum();
+    if total <= max {
+        return outlines;
+    }
+    let budget = max.saturating_sub(4);
+    let mut used = 0;
+    let mut out = Vec::new();
+    let mut rest: Option<[f64; 4]> = None;
+    for o in outlines {
+        let share = (o.len() * budget / total).max(3).min(o.len());
+        let thin: Vec<[f64; 2]> = (0..share).map(|i| o[i * o.len() / share]).collect();
+        if used + thin.len() <= budget {
+            used += thin.len();
+            out.push(thin);
+        } else {
+            for p in &o {
+                let b = rest.get_or_insert([p[0], p[1], p[0], p[1]]);
+                *b = [
+                    b[0].min(p[0]),
+                    b[1].min(p[1]),
+                    b[2].max(p[0]),
+                    b[3].max(p[1]),
+                ];
+            }
+        }
+    }
+    if let Some([x0, y0, x1, y1]) = rest {
+        out.push(vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
+    }
     out
 }
 
@@ -366,6 +409,9 @@ pub struct Store {
     cache: Arc<Mutex<SummaryCache>>,
     /// How long listing waits for one job's roof figures.
     summary_budget: std::time::Duration,
+    /// How many bytes of a change log are read, [`MAX_ACTIVITY_FILE`]
+    /// (smaller in tests).
+    activity_window: u64,
 }
 
 #[derive(Default)]
@@ -873,17 +919,131 @@ pub fn read_newest_lines(path: &Path, max: u64) -> Result<Vec<u8>, FileError> {
     Ok(out)
 }
 
-/// Whether `path` is missing or a regular file: a pipe or a device in its
-/// place must not be opened for writing, which waits for a reader
-/// (ARCH-301).
-fn missing_or_regular(path: &Path) -> std::io::Result<()> {
-    match fs::metadata(path) {
-        Ok(m) if !m.is_file() => Err(std::io::Error::other(format!(
-            "{}: not a regular file (a folder, device or pipe)",
+/// Whether `path` is missing or a regular file itself: a pipe or a device
+/// in its place must not be opened for writing, which waits for a reader
+/// (ARCH-301), and a symbolic link must not be written through, which
+/// would append to or create a file outside the library (audit 2026-11-22
+/// HUNT-402, HUNT-403). The link itself is looked at, not its target.
+pub(crate) fn missing_or_regular(path: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(m) if !m.file_type().is_file() => Err(std::io::Error::other(format!(
+            "{}: not a regular file (a link, folder, device or pipe)",
             path.display()
         ))),
         _ => Ok(()),
     }
+}
+
+/// Opens `path` for writing with `options` (a lock file, the change log)
+/// only when it is missing or a regular file itself ([`missing_or_regular`]):
+/// never through a link, and never waiting on a pipe. The open does not
+/// wait for a pipe put in its place between the check and the open
+/// (`O_NONBLOCK`), and on macOS and Linux the opened file must be the one
+/// at `path` itself, not one a link swapped in meanwhile points to.
+pub(crate) fn open_regular_for_write(
+    path: &Path,
+    options: &mut fs::OpenOptions,
+) -> std::io::Result<fs::File> {
+    missing_or_regular(path)?;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(options, 0o4000);
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(options, 0x0004);
+    let file = options.open(path)?;
+    let opened = file.metadata()?;
+    let here = fs::symlink_metadata(path)?;
+    #[cfg(unix)]
+    let same = {
+        use std::os::unix::fs::MetadataExt;
+        here.dev() == opened.dev() && here.ino() == opened.ino()
+    };
+    #[cfg(not(unix))]
+    let same = true;
+    if !(opened.is_file() && here.file_type().is_file() && same) {
+        return Err(std::io::Error::other(format!(
+            "{}: not a regular file (a link, folder, device or pipe)",
+            path.display()
+        )));
+    }
+    Ok(file)
+}
+
+/// Entries of a change log's bytes: one torn or invalid line (an
+/// interrupted write) costs that line only, not the whole history (ERR-005).
+fn parse_log(bytes: &[u8]) -> Vec<ActivityEntry> {
+    bytes
+        .split(|&b| b == b'\n')
+        .filter_map(|l| serde_json::from_slice(l).ok())
+        .collect()
+}
+
+/// A change log as read before a save adds an entry.
+struct LogRead {
+    path: PathBuf,
+    /// Whether anything is at the path (also a pipe or a link).
+    there: bool,
+    /// Its entries in the read window (all of a log within the bounds).
+    entries: Vec<ActivityEntry>,
+}
+
+/// How to take an appended entry out of the change log again when the job
+/// file then could not be written (ERR-008).
+#[must_use]
+enum LogUndo {
+    /// Cut the file back to its old length, so no entry before it is lost
+    /// (ARCH-401: the log was written back from what was read, which
+    /// dropped every entry outside the read window).
+    Truncate(PathBuf, u64),
+    /// There was no log.
+    Remove(PathBuf),
+}
+
+impl LogUndo {
+    fn apply(self) -> std::io::Result<()> {
+        match self {
+            LogUndo::Truncate(path, len) => {
+                open_regular_for_write(&path, fs::OpenOptions::new().write(true))?.set_len(len)
+            }
+            LogUndo::Remove(path) => fs::remove_file(path),
+        }
+    }
+}
+
+/// Takes the lock file at `path` (created when missing), held until the
+/// returned file is dropped; `None` when it cannot be had (best effort,
+/// see [`Store::lock`]). A link, pipe or device found in its place is
+/// never opened (it would hang the open or create a file outside the
+/// library, HUNT-402, HUNT-403): such an entry, which only stands for a
+/// lock, is removed and a plain lock file made instead.
+pub(crate) fn take_lock_file(path: &Path) -> Option<fs::File> {
+    let open = || {
+        open_regular_for_write(
+            path,
+            fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true),
+        )
+    };
+    let file = match open() {
+        Ok(f) => f,
+        Err(_) => {
+            let odd = fs::symlink_metadata(path).ok()?;
+            if odd.is_dir() || odd.file_type().is_file() {
+                return None;
+            }
+            fs::remove_file(path).ok()?;
+            open().ok()?
+        }
+    };
+    file.lock().ok()?;
+    Some(file)
 }
 
 /// Opens `path` for reading when it is a regular file of at most `max`
@@ -987,6 +1147,7 @@ impl Store {
             dir,
             cache: Arc::default(),
             summary_budget: SUMMARY_BUDGET,
+            activity_window: MAX_ACTIVITY_FILE,
         }
     }
 
@@ -994,6 +1155,14 @@ impl Store {
     /// when it lists the library.
     pub fn with_summary_budget(mut self, budget: std::time::Duration) -> Self {
         self.summary_budget = budget;
+        self
+    }
+
+    /// The same store reading at most `bytes` of a change log, for tests
+    /// of logs longer than [`MAX_ACTIVITY_FILE`].
+    #[cfg(test)]
+    fn with_activity_window(mut self, bytes: u64) -> Self {
+        self.activity_window = bytes;
         self
     }
 
@@ -1285,14 +1454,7 @@ impl Store {
     fn creation_lock(&self) -> Option<fs::File> {
         self.library_present().ok()?;
         fs::create_dir_all(self.activity_dir()).ok()?;
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(self.activity_dir().join(".new.lock"))
-            .ok()?;
-        file.lock().ok()?;
-        Some(file)
+        take_lock_file(&self.activity_dir().join(".new.lock"))
     }
 
     /// Saves without recording activity (app autosave of its own edits).
@@ -1366,14 +1528,7 @@ impl Store {
         self.path(id).ok()?;
         self.library_present().ok()?;
         fs::create_dir_all(self.activity_dir()).ok()?;
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(self.activity_dir().join(format!("{id}.lock")))
-            .ok()?;
-        file.lock().ok()?;
-        Some(file)
+        take_lock_file(&self.activity_dir().join(format!("{id}.lock")))
     }
 
     /// Saves and records who made the change and why, keeping the previous
@@ -1458,35 +1613,25 @@ impl Store {
         summary: &str,
         undid_from: Option<u64>,
     ) -> Result<(), StoreError> {
-        // A newer file is refused before anything is logged.
-        if let Some(version) = read_job_text(&self.path(id)?)
-            .ok()
-            .and_then(|t| newer_format(&t))
-        {
-            return Err(StoreError::NewerFormat {
-                id: id.to_string(),
-                version,
-                max: crate::model::SCHEMA_VERSION,
-            });
-        }
+        // A newer file was refused before: by `load` under this lock for an
+        // existing job, and a new id has no file. `write` checks again and
+        // the entry is then taken out (ARCH-403 item 3: the job file was
+        // read three times per save).
         // Log first: the app reacts to the project file and then reads the
         // log. When the file then cannot be written, the entry is taken out
         // again: it stood for a change that never happened, shown as pending
         // in the history and the review (audit 2026-11-15 ERR-008).
-        let log_path = self.activity_path(id)?;
-        let log_before = read_newest_lines(&log_path, MAX_ACTIVITY_FILE).ok();
-        // A log that is there but could not be read is left alone when the
-        // write fails (only a missing one is removed again).
-        let log_was_there = log_path.exists();
+        // The log is read once per save (ARCH-401).
+        let log = self.read_log(id)?;
         // Entries are found and accepted by their time, so each one is later
         // than the one before, even when two saves fall in one millisecond
         // (the review's list then had two equal keys, ERRU-009) or the log
         // came with a clock that is ahead (a received bundle): a change
         // after an accepted future-dated entry used to count as accepted
         // too (HUNTIO-005).
-        let last_ts = self.activity(id).last().map_or(0, |e| e.ts_ms);
+        let last_ts = log.entries.last().map_or(0, |e| e.ts_ms);
         let ts_ms = now_ms().max(last_ts.saturating_add(1));
-        self.append_activity(
+        let (undo, trim) = self.append_activity(
             id,
             ActivityEntry {
                 ts_ms,
@@ -1500,38 +1645,112 @@ impl Store {
                 after: Some(project.clone()),
                 undid_from,
             },
+            log,
         )?;
         self.write(id, project).inspect_err(|_| {
-            let _ = match &log_before {
-                Some(bytes) => write_atomic_bytes(&log_path, bytes),
-                None if !log_was_there => fs::remove_file(&log_path),
-                None => Ok(()),
-            };
+            let _ = undo.apply();
+        })?;
+        // Trimmed only once the change is saved, so a failed write takes
+        // the entry out by cutting the file back and never loses an older
+        // entry (ARCH-401). A trim that fails is tried again next save.
+        if let Some(entries) = trim {
+            let _ = write_atomic(&self.activity_path(id)?, &self.trimmed_log(id, &entries));
+        }
+        Ok(())
+    }
+
+    /// The change log of `id` as [`Store::activity`] reads it, with what
+    /// is needed to add an entry and to take it out again.
+    fn read_log(&self, id: &str) -> Result<LogRead, StoreError> {
+        let path = self.activity_path(id)?;
+        let entries = read_newest_lines(&path, self.activity_window)
+            .map(|b| parse_log(&b))
+            .unwrap_or_default();
+        Ok(LogRead {
+            there: fs::symlink_metadata(&path).is_ok(),
+            path,
+            entries,
         })
     }
 
-    fn append_activity(&self, id: &str, mut entry: ActivityEntry) -> Result<(), StoreError> {
+    /// Appends `entry` to the change log read as `log`. Returns how to take
+    /// it out again, and the entries to trim the log to once the change is
+    /// saved: the log is kept to [`ACTIVITY_KEEP`] entries and to the read
+    /// window in bytes, whatever the size of one entry, so every entry kept
+    /// is read again and the log never grows without bound (audit
+    /// 2026-11-22 ARCH-401: past the window it was never trimmed).
+    fn append_activity(
+        &self,
+        id: &str,
+        mut entry: ActivityEntry,
+        log: LogRead,
+    ) -> Result<(LogUndo, Option<Vec<ActivityEntry>>), StoreError> {
         self.library_present()?;
         // A summary is one sentence for the user (ARCH-105).
         entry.summary = crate::edit::capped(&entry.summary, crate::edit::MAX_SUMMARY_CHARS);
         let io = |e| StoreError::io(Some(id), e);
         fs::create_dir_all(self.activity_dir()).map_err(io)?;
-        let path = self.activity_path(id)?;
-        let mut entries = self.activity(id);
+        let path = log.path.clone();
         let line = serde_json::to_string(&entry).map_err(|e| io(e.into()))?;
-        if entries.len() >= ACTIVITY_KEEP {
+        let mut f = open_regular_for_write(
+            &path,
+            fs::OpenOptions::new().create(true).append(true).read(true),
+        )
+        .map_err(io)?;
+        let old_len = f.metadata().map_err(io)?.len();
+        // A torn last line (no newline) would swallow this entry too.
+        let torn = {
+            use std::io::{Read, Seek};
+            let mut last = [0u8; 1];
+            old_len > 0
+                && f.seek(std::io::SeekFrom::End(-1)).is_ok()
+                && f.read_exact(&mut last).is_ok()
+                && last[0] != b'\n'
+        };
+        let undo = if old_len == 0 && !log.there {
+            LogUndo::Remove(path)
+        } else {
+            LogUndo::Truncate(path, old_len)
+        };
+        let written = (|| {
+            if torn {
+                writeln!(f)?;
+            }
+            writeln!(f, "{line}")?;
+            sync_file(&f)
+        })();
+        if let Err(e) = written {
+            let _ = undo.apply();
+            return Err(io(e));
+        }
+        let len = f.metadata().map_or(u64::MAX, |m| m.len());
+        // Trimmed when there are too many entries, or when the file is
+        // longer than what is read of it.
+        let trim = (log.entries.len() >= ACTIVITY_KEEP || len > self.activity_window).then(|| {
+            let mut entries = log.entries;
             entries.push(entry);
-            let mut keep: Vec<&ActivityEntry> =
-                entries[entries.len() - ACTIVITY_KEEP..].iter().collect();
-            // The first change still waiting for review holds the version
-            // the user had before it ("Revert all" goes back to it). When
-            // more changes than the log keeps are pending, keep that one in
-            // place of the oldest kept one, so the pre-AI version is never
-            // dropped while the review is open.
-            let start = self.pending_start(id, &entries);
-            let cut = entries.len() - ACTIVITY_KEEP;
-            let merged;
-            if start < cut {
+            entries
+        });
+        Ok((undo, trim))
+    }
+
+    /// The text of the change log `entries` (oldest first, the new one
+    /// last) trimmed to [`ACTIVITY_KEEP`] entries and the read window.
+    fn trimmed_log(&self, id: &str, entries: &[ActivityEntry]) -> String {
+        let n = entries.len();
+        let lines: Vec<String> = entries
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap_or_default())
+            .collect();
+        // The first change still waiting for review holds the version the
+        // user had before it ("Revert all" goes back to it). When more
+        // changes than the log keeps are pending, keep that one in place of
+        // the oldest kept one, so the pre-AI version is never dropped while
+        // the review is open.
+        let start = self.pending_start(id, entries);
+        let mut cut = n.saturating_sub(ACTIVITY_KEEP);
+        loop {
+            let first = if start < cut {
                 // That entry then stands for the changes dropped after it
                 // too: it saved what the last dropped one saved, so "Revert
                 // all" undoes them with it and keeps the user's unlogged
@@ -1545,36 +1764,25 @@ impl Store {
                         .unwrap_or_default();
                     first.after = Some(after);
                 }
-                merged = first;
-                keep[0] = &merged;
+                serde_json::to_string(&first).unwrap_or_default()
+            } else {
+                lines[cut].clone()
+            };
+            let rest = &lines[cut + 1..];
+            let bytes = first.len() + 1 + rest.iter().map(|l| l.len() + 1).sum::<usize>();
+            // The newest entry is always kept, even alone over the window.
+            if bytes as u64 <= self.activity_window || cut + 1 >= n {
+                let mut text = String::with_capacity(bytes);
+                for l in std::iter::once(&first).chain(rest) {
+                    if !l.is_empty() {
+                        text.push_str(l);
+                        text.push('\n');
+                    }
+                }
+                return text;
             }
-            let text: Vec<String> = keep
-                .iter()
-                .filter_map(|e| serde_json::to_string(e).ok())
-                .collect();
-            return write_atomic(&path, &(text.join("\n") + "\n")).map_err(io);
+            cut += 1;
         }
-        missing_or_regular(&path).map_err(io)?;
-        let mut f = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .read(true)
-            .open(&path)
-            .map_err(io)?;
-        // A torn last line (no newline) would swallow this entry too.
-        let torn = {
-            use std::io::{Read, Seek};
-            let mut last = [0u8; 1];
-            f.metadata().is_ok_and(|m| m.len() > 0)
-                && f.seek(std::io::SeekFrom::End(-1)).is_ok()
-                && f.read_exact(&mut last).is_ok()
-                && last[0] != b'\n'
-        };
-        if torn {
-            writeln!(f).map_err(io)?;
-        }
-        writeln!(f, "{line}").map_err(io)?;
-        sync_file(&f).map_err(io)
     }
 
     /// Recorded changes of a project, oldest first.
@@ -1585,13 +1793,10 @@ impl Store {
         // Read bytes, not a string: one torn or invalid line (an interrupted
         // write) must cost that line only, not the whole history (ERR-005).
         // Bounded, and never blocked by a pipe in its place (ARCH-301).
-        let Ok(bytes) = read_newest_lines(&path, MAX_ACTIVITY_FILE) else {
+        let Ok(bytes) = read_newest_lines(&path, self.activity_window) else {
             return Vec::new();
         };
-        bytes
-            .split(|&b| b == b'\n')
-            .filter_map(|l| serde_json::from_slice(l).ok())
-            .collect()
+        parse_log(&bytes)
     }
 
     /// Undoes the latest recorded change, keeping later unlogged edits.
@@ -2457,6 +2662,206 @@ mod tests {
         let id = store.save(None, &p).unwrap();
         let s = store.summarize(&id).unwrap();
         assert_eq!(s.outlines, vec![vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0]]]);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 ARCH-401: entries so large that the log's entries
+    /// do not fit in the read window still keep the log bounded (in
+    /// entries and in bytes), and the entry with the user's version from
+    /// before the AI started is kept, so "Revert all" returns to it.
+    #[test]
+    fn a_log_of_large_entries_stays_bounded_and_keeps_the_pre_ai_version() {
+        const WINDOW: u64 = 600_000;
+        let store = temp_store("big-log").with_activity_window(WINDOW);
+        let mut p = examples::find("gable").unwrap().project();
+        let id = store.save_as(None, &p, USER_ACTOR, "create").unwrap();
+        let mine = p.clone();
+        let log = store.activity_path(&id).unwrap();
+        for i in 1..=ACTIVITY_KEEP + 10 {
+            // About 4 x 30 kB per entry: some ten entries fill the window.
+            p.notes = format!("{i} {}", "x".repeat(30_000));
+            store
+                .save_as(Some(id.clone()), &p, "claude", &format!("notes {i}"))
+                .unwrap();
+            let len = fs::metadata(&log).unwrap().len();
+            assert!(len <= WINDOW, "after save {i} the log is {len} bytes");
+        }
+        let text = fs::read_to_string(&log).unwrap();
+        assert!(text.lines().count() <= ACTIVITY_KEEP);
+        let pending = store.pending_review(&id).unwrap();
+        assert_eq!(pending.before.as_ref(), Some(&mine), "the pre-AI version");
+        assert_eq!(store.activity(&id).len(), text.lines().count());
+        assert_eq!(
+            store
+                .revert_to(&id, pending.since_ts_ms, USER_ACTOR, None)
+                .unwrap(),
+            mine
+        );
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 ARCH-401: a log already longer than the read window
+    /// (written by an earlier build) is trimmed by the next save, and a
+    /// save whose job file cannot be written leaves the log as it was,
+    /// entries outside the window included.
+    #[test]
+    fn a_log_longer_than_the_window_is_trimmed_and_a_failed_save_keeps_it_whole() {
+        const WINDOW: u64 = 200_000;
+        let store = temp_store("long-log").with_activity_window(WINDOW);
+        let mut p = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &p, USER_ACTOR, "create").unwrap();
+        let log = store.activity_path(&id).unwrap();
+        let line = fs::read_to_string(&log).unwrap();
+        // 60 entries over the window, as an earlier build left them.
+        let mut old = String::new();
+        while (old.len() as u64) < 3 * WINDOW {
+            old.push_str(&line);
+        }
+        fs::write(&log, &old).unwrap();
+        // The job file cannot be replaced: a folder stands in its place.
+        let path = store.path(&id).unwrap();
+        let saved = fs::read(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::create_dir_all(path.join("blocker")).unwrap();
+        p.notes = "AI".into();
+        assert!(
+            store
+                .save_as(Some(id.clone()), &p, "claude", "notes")
+                .is_err()
+        );
+        assert_eq!(fs::read_to_string(&log).unwrap(), old, "the log as it was");
+        fs::remove_dir_all(&path).unwrap();
+        fs::write(&path, saved).unwrap();
+        store
+            .save_as(Some(id.clone()), &p, "claude", "notes")
+            .unwrap();
+        let text = fs::read_to_string(&log).unwrap();
+        assert!(text.len() as u64 <= WINDOW, "{} bytes", text.len());
+        assert!(text.lines().count() <= ACTIVITY_KEEP);
+        assert_eq!(store.activity(&id).last().unwrap().summary, "notes");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 HUNT-402, HUNT-403: a named pipe or a link in place
+    /// of a job's lock, the creation lock or the change log never hangs a
+    /// save and never writes outside the library.
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_or_link_in_place_of_a_lock_or_the_log_never_hangs_or_writes_outside() {
+        let store = temp_store("lock-odd");
+        let project = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &project, USER_ACTOR, "Made.").unwrap();
+        let act = store.activity_dir();
+        let outside = std::env::temp_dir().join(format!("tectora-outside-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        let victim = outside.join("victim.txt");
+        fs::write(&victim, "# victim\n").unwrap();
+        let mkfifo = |p: &Path| {
+            let _ = fs::remove_file(p);
+            std::process::Command::new("mkfifo")
+                .arg(p)
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        let fifos = mkfifo(&act.join(format!("{id}.lock"))) && mkfifo(&act.join(".new.lock"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir = store.dir.clone();
+        let id2 = id.clone();
+        std::thread::spawn(move || {
+            let store = Store::new(dir).unwrap();
+            let mut p = examples::find("hip").unwrap().project();
+            p.notes = "through a pipe".into();
+            let saved = store.save_as(Some(id2.clone()), &p, "claude", "Changed.");
+            let created = store.save_as(None, &p, "claude", "New.");
+            let _ = tx.send((saved.is_ok(), created.is_ok()));
+        });
+        let done = rx.recv_timeout(std::time::Duration::from_secs(10));
+        assert!(done.is_ok(), "a pipe as a lock file hung the save");
+        if fifos {
+            assert_eq!(done.unwrap(), (true, true));
+            assert!(
+                fs::symlink_metadata(act.join(format!("{id}.lock")))
+                    .unwrap()
+                    .is_file()
+            );
+        }
+        // A link as the lock: its target is never created.
+        let lock = act.join(format!("{id}.lock"));
+        fs::remove_file(&lock).unwrap();
+        std::os::unix::fs::symlink(outside.join("created-by-lock"), &lock).unwrap();
+        let mut p = project.clone();
+        p.notes = "lock link".into();
+        store
+            .save_as(Some(id.clone()), &p, "claude", "Lock.")
+            .unwrap();
+        assert!(!outside.join("created-by-lock").exists());
+        // A link as the change log: nothing is appended to its target.
+        let log = store.activity_path(&id).unwrap();
+        fs::remove_file(&log).unwrap();
+        std::os::unix::fs::symlink(&victim, &log).unwrap();
+        p.notes = "log link".into();
+        let saved = store.save_as(Some(id.clone()), &p, "claude", "Log.");
+        assert!(saved.is_err(), "{saved:?}");
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "# victim\n");
+        let _ = fs::remove_dir_all(&store.dir);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// Audit 2026-11-22 ARCH-402: a job at the face and corner limits (500
+    /// hand-drawn faces of 500 corners, 200 buildings) gives a card of at
+    /// most `MAX_CARD_POINTS` points that still spans the whole job.
+    #[test]
+    fn the_card_of_a_job_at_the_face_and_corner_limits_is_bounded() {
+        use crate::geom::Point2;
+        use crate::model::{MAX_OBJECTS, MAX_PART_WALLS, MAX_PARTS, ManualFace};
+        let store = temp_store("card-bound");
+        let ring = |cx: f64, cy: f64, r: f64, n: usize| -> Vec<Point2> {
+            (0..n)
+                .map(|i| {
+                    let a = i as f64 / n as f64 * std::f64::consts::TAU;
+                    Point2::new(cx + r * a.cos(), cy + r * a.sin())
+                })
+                .collect()
+        };
+        for (name, faces, corners) in [
+            ("round", MAX_OBJECTS, MAX_PART_WALLS),
+            ("small", MAX_OBJECTS, 3),
+        ] {
+            let mut p = examples::find("hip").unwrap().project();
+            let part = p.parts[0].clone();
+            while p.parts.len() < MAX_PARTS {
+                p.parts.push(part.clone());
+            }
+            for i in 0..faces {
+                p.manual_faces.push(ManualFace {
+                    points: ring(i as f64 * 30.0, 0.0, 10.0, corners),
+                    pitch_deg: 30.0,
+                    label: String::new(),
+                });
+            }
+            let id = store.save(Some(name.into()), &p).unwrap();
+            let card = store.summarize(&id).unwrap();
+            let points: usize = card.outlines.iter().map(Vec::len).sum();
+            assert!(points <= MAX_CARD_POINTS, "{name}: {points} points");
+            assert!(card.outlines.iter().all(|o| o.len() >= 3), "{name}");
+            let max_x = card
+                .outlines
+                .iter()
+                .flatten()
+                .map(|p| p[0])
+                .fold(f64::MIN, f64::max);
+            let far = (faces - 1) as f64 * 30.0 + 10.0;
+            assert!(
+                (max_x - far).abs() < 1.0,
+                "{name}: the card spans to {max_x}, not {far}"
+            );
+            let text = serde_json::to_string(&card.outlines).unwrap();
+            assert!(text.len() < 200_000, "{name}: {} bytes", text.len());
+        }
+        // A small job keeps every point.
+        let p = examples::find("hip").unwrap().project();
+        assert_eq!(card_outlines(&p), outlines(&p));
         let _ = fs::remove_dir_all(&store.dir);
     }
 
