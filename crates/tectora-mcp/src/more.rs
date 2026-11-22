@@ -319,9 +319,7 @@ fn manual_line(v: &Value, geos: &[tectora_core::roof::RoofGeometry]) -> Result<M
         .and_then(Value::as_str)
         .unwrap_or("M")
         .to_string();
-    const CODES: [&str; 15] = [
-        "M", "T", "F", "G", "K", "P", "OL", "OR", "OS", "c", "S", "WV", "WH", "WS", "X",
-    ];
+    const CODES: [&str; 15] = tectora_core::model::MANUAL_LINE_CODES;
     if !CODES.contains(&code.as_str()) {
         return Err(format!("code `{code}` is not one of {}", CODES.join(", ")));
     }

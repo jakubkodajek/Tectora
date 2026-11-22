@@ -91,6 +91,14 @@ pub const COUNTED_LINE_CODES: [&str; 13] = [
     "T", "F", "G", "K", "OL", "OR", "OS", "P", "c", "S", "WV", "WH", "WS",
 ];
 
+/// Every code a hand-drawn line can have: the counted ones, M (dimension
+/// line) and X (division). The editor and `set_manual` offer only these,
+/// and a received job's other codes become M (audit 2026-11-22 ARCH-403
+/// item 2).
+pub const MANUAL_LINE_CODES: [&str; 15] = [
+    "M", "T", "F", "G", "K", "P", "OL", "OR", "OS", "c", "S", "WV", "WH", "WS", "X",
+];
+
 impl ManualLine {
     /// The line's length: the one typed in, else the 3D distance of its ends.
     pub fn length(&self) -> f64 {

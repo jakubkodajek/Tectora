@@ -690,7 +690,9 @@ pub fn clean_received(project: &mut Project, fallback: &str) {
         l.label = clean_line(&l.label, MAX_LABEL_CHARS);
         // A code that is no line code (control, bidi or 20 000 characters)
         // is a dimension line: drawn, not counted, as before (HUNT-301).
-        if !crate::snapshot::is_line_code(&l.code) {
+        // So is one no tool can set (`Z9`, `t`): it was shown as a code the
+        // user could not choose again (ARCH-403 item 2).
+        if !crate::model::MANUAL_LINE_CODES.contains(&l.code.as_str()) {
             l.code = "M".into();
         }
     }
@@ -779,6 +781,30 @@ pub fn plain_edge(start: Point2, pitch_deg: f64, eave_height: f64, overhang: f64
 mod tests {
     use super::*;
     use crate::model::{Chimney, ManualLine};
+
+    /// Audit 2026-11-22 ARCH-403 item 2: a received hand-drawn line keeps
+    /// only a code the editor and `set_manual` can set; any other is a
+    /// dimension line (M), drawn and not counted.
+    #[test]
+    fn a_received_line_code_no_tool_can_set_becomes_a_dimension_line() {
+        let mut p = crate::examples::find("gable").unwrap().project();
+        let line = |code: &str| ManualLine {
+            a: [0.0, 0.0, 0.0],
+            b: [1.0, 0.0, 0.0],
+            code: code.into(),
+            length: None,
+            label: String::new(),
+        };
+        let sent = ["Z9", "t", "o", "O", "W", "WV", "c", "X", "M", "T"];
+        p.manual_lines = sent.iter().map(|c| line(c)).collect();
+        clean_received(&mut p, "x");
+        let got: Vec<&str> = p.manual_lines.iter().map(|l| l.code.as_str()).collect();
+        assert_eq!(got, ["M", "M", "M", "M", "M", "WV", "c", "X", "M", "T"]);
+        assert!(
+            got.iter()
+                .all(|c| crate::model::MANUAL_LINE_CODES.contains(c))
+        );
+    }
 
     #[test]
     fn a_typed_eave_pitch_over_90_is_refused_but_files_keep_dacads_range() {
