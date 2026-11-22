@@ -878,3 +878,52 @@ fn leaving_the_draft_with_a_kept_result_checks_the_roof_like_the_app() {
         }
     }
 }
+
+/// Audit 2026-11-22 ARCH-603: a link left at the sheet's file name in
+/// `exports/` (also one pointing nowhere) is not written through: the sheet
+/// gets a free name inside, and the outside path stays missing. A link in
+/// place of the `exports` folder refuses the sheet and the bundle with
+/// `foreign_entry`.
+#[cfg(unix)]
+#[test]
+fn export_plan_never_writes_through_a_link_in_the_exports_folder() {
+    let mut s = server();
+    let id = hip_job(&mut s);
+    let outside = std::env::temp_dir().join(format!("tectora-exp-out-{}", now_ms()));
+    std::fs::create_dir_all(&outside).unwrap();
+    let exports = s.store.dir.join("exports");
+    std::fs::create_dir_all(&exports).unwrap();
+    let planted = outside.join("planted.svg");
+    std::os::unix::fs::symlink(&planted, exports.join("sheet.svg")).unwrap();
+    let r = s
+        .call_tool(
+            "export_plan",
+            &json!({ "id": id, "format": "svg", "name": "sheet", "summary": "s" }),
+        )
+        .unwrap();
+    let path = std::path::PathBuf::from(r["path"].as_str().unwrap());
+    assert!(!planted.exists(), "written through the link");
+    assert_eq!(path.parent(), Some(exports.as_path()));
+    assert_ne!(path, exports.join("sheet.svg"));
+    assert!(std::fs::symlink_metadata(&path).unwrap().is_file());
+    // The folder itself a link.
+    std::fs::remove_dir_all(&exports).unwrap();
+    std::os::unix::fs::symlink(&outside, &exports).unwrap();
+    let e = s
+        .call_tool(
+            "export_plan",
+            &json!({ "id": id, "format": "pdf", "name": "p", "summary": "s" }),
+        )
+        .unwrap_err();
+    assert!(e.contains("Tectora keeps its own folder"), "{e}");
+    let e = s
+        .call_tool(
+            "export_job",
+            &json!({ "id": id, "name": "b", "summary": "s" }),
+        )
+        .unwrap_err();
+    assert!(e.contains("Tectora keeps its own folder"), "{e}");
+    let left: Vec<_> = std::fs::read_dir(&outside).unwrap().flatten().collect();
+    assert!(left.is_empty(), "written outside: {left:?}");
+    let _ = std::fs::remove_dir_all(&outside);
+}

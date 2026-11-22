@@ -311,11 +311,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             let name: String = arg(a, "name")?;
             tectora_core::edit::check_job_name(&name).map_err(|d| coded("out_of_range", d))?;
             tectora_core::library::prepare_copy(&mut project, &name, arg(a, "job")?);
-            let new_id = store.save(None, &project)?;
-            if arg::<Option<bool>>(a, "withFiles")?.unwrap_or(true) {
-                store.copy_attachments(&source, &new_id)?;
-            }
-            to_json(new_id)
+            let with_files = arg::<Option<bool>>(a, "withFiles")?.unwrap_or(true);
+            to_json(store.copy_job(&source, &project, with_files, None)?)
         }
         "list_attachments" => to_json(store.attachments(&id()?)),
         "attach_files" => {

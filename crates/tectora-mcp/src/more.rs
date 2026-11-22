@@ -841,10 +841,9 @@ impl Server {
                 // (ARCH-202); what the original had is copied as it is.
                 tectora_core::edit::check_texts_change(Some(&original), &p)?;
                 let summary = arg_str(args, "summary")?;
-                let new_id = self.store.save_as(None, &p, &self.client, summary)?;
-                if args.get("with_files").and_then(Value::as_bool).unwrap_or(true) {
-                    self.store.copy_attachments(&id, &new_id)?;
-                }
+                let with_files = args.get("with_files").and_then(Value::as_bool).unwrap_or(true);
+                // A refused copy leaves no new job (ARCH-602).
+                let new_id = self.store.copy_job(&id, &p, with_files, Some((&self.client, summary)))?;
                 self.live_follow("copied", Some(&p.name), format!("Copied “{}”", p.name), &new_id);
                 Ok(json!({ "id": new_id }))
             })(),
@@ -868,16 +867,17 @@ impl Server {
                 self.live_follow("restored", Some(&name), format!("Restored “{name}”: {summary}"), &id);
                 Ok(json!({ "id": id, "restored": true }))
             })(),
-            "list_files" => self.load(args).map(|(id, _)| {
-                json!(self
+            "list_files" => self.load(args).and_then(|(id, _)| {
+                // Never the files where a link in the library points (ARCH-602).
+                Ok(json!(self
                     .store
-                    .attachments(&id)
+                    .try_attachments(&id)?
                     .iter()
                     .map(|a| json!({
                         "name": a.name, "size": a.size, "modified_ms": a.modified_ms,
                         "path": self.store.attachment_path(&id, &a.name).map(|p| p.display().to_string()).unwrap_or_default(),
                     }))
-                    .collect::<Vec<_>>())
+                    .collect::<Vec<_>>()))
             }),
             "attach_file" => (|| {
                 let (id, _) = self.load(args)?;
@@ -949,11 +949,13 @@ impl Server {
                     Some(n) => n.trim().trim_end_matches(&format!(".{format}")).to_string(),
                     None => id.clone(),
                 };
-                let path = bundle::export_path_with(&self.store, &name, format)?;
+                // Checked before the sheet is drawn (a bad name, a linked folder).
+                bundle::export_path_with(&self.store, &name, format)?;
                 let line_names = line_names_arg(args)?;
                 let bytes =
                     tectora_core::export::checked_sheet_file_named(&p, &stamp, format, &line_names)?;
-                std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+                // Never through a link at the name (ARCH-603).
+                let path = bundle::write_export(&self.store, &name, format, &bytes)?;
                 self.live("exported_sheet", Some(&path.display().to_string()), format!("Exported sheet to {}: {summary}", path.display()), Some(&id));
                 Ok(json!({ "id": id, "path": path.display().to_string() }))
             })(),

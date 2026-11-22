@@ -118,10 +118,13 @@ The tools cover every operation of the Tectora editor:
   of 90° or more, an overhang over 20 m, an eave outside 0 to 1000 m) are
   refused and nothing is saved; usually a length was typed in the wrong
   unit.
-- A write refused with `foreign_entry` found a link, or a folder with files,
-  where Tectora keeps its own folders or lock files in the jobs folder
-  (`.activity`, `.files`, `.trash`): nothing was saved. Tell the user the
-  path from the error; do not retry until they removed it.
+- A call refused with `foreign_entry` found a link or a plain file where
+  Tectora keeps its own folders in the jobs folder (`.activity`, `.files`,
+  `.files/<id>`, `.trash`, `exports`), or a folder with files at a lock
+  file: nothing was saved, moved or exported. Tell the user the path from
+  the error. Do not tell them to delete it: a linked folder holds the job
+  histories or files; it has to be moved into the library in place of the
+  link. Do not retry until they did.
 - History: `get_history` (the newest 50 changes), `revert_to`,
   `revert_last_change` (a revert keeps the user's later edits; it is
   refused when the user has since changed a

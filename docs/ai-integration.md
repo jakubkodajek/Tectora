@@ -148,10 +148,14 @@ stay a `folder_request` the user allows or keeps.
   refuse when both changed the same value. The check and the write run under
   the job's lock file `.activity/<id>.lock`, shared by all processes.
 - Tectora manages the library's own folders (`.activity`, `.files`,
-  `.files/<id>`, `.trash`) and lock files itself. A link in place of one of
-  them, or a folder with files where a lock file belongs, is refused, never
-  written through: the app and every MCP write then answer `foreign_entry`
-  with the path in the detail, and nothing is saved until it is removed. An
+  `.files/<id>`, `.trash`, `exports`) and lock files itself. A link or a
+  plain file in place of one of them, or a folder with files where a lock
+  file belongs, is refused, never written through, read or moved: new jobs,
+  saves, deletes, file removals, copies, `list_files` and exports then
+  answer `foreign_entry` with the path in the detail. What a link points to
+  is kept; the way back is to move that folder into the library in the
+  link's place (deleting the link would hide every job's history or files).
+  The library screen names such an entry before anything is edited. An
   empty folder, a pipe or a link at a lock file's path is replaced by a plain
   lock file. A received job's history keeps the newest 50 changes, as every
   change log does; `get_history` hands out at most those.

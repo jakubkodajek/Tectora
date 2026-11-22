@@ -123,7 +123,10 @@ pub fn export_path_with(
         ));
     }
     let dir = store.dir.join(EXPORTS_DIR);
-    fs::create_dir_all(&dir).map_err(|e| FileError::io(&dir, e))?;
+    fs::create_dir_all(&store.dir).map_err(|e| FileError::io(&store.dir, e))?;
+    // A link in place of the folder is refused: nothing is exported to
+    // where it points (audit 2026-11-22 ARCH-603).
+    crate::store::own_folder(&dir).map_err(|e| FileError::io(&dir, e))?;
     for n in 1..1000 {
         let file = if n == 1 {
             format!("{name}.{ext}")
@@ -131,13 +134,52 @@ pub fn export_path_with(
             format!("{name} ({n}).{ext}")
         };
         let path = dir.join(file);
-        if !path.exists() {
+        // Anything there takes the name, also a link to nowhere, which
+        // `exists` calls free (ARCH-603).
+        if fs::symlink_metadata(&path).is_err() {
             return Ok(path);
         }
     }
     Err(FileError::new(
         "invalid_name",
         format!("too many exports named `{name}`"),
+    ))
+}
+
+/// Writes `bytes` as a new file `<name>.<ext>` in the library's exports
+/// folder ([`export_path_with`]) and returns its path. The file is created
+/// only where nothing is (`create_new`), so a link put at the name between
+/// the pick and the write is never written through (ARCH-603).
+pub fn write_export(
+    store: &Store,
+    name: &str,
+    ext: &str,
+    bytes: &[u8],
+) -> Result<std::path::PathBuf, FileError> {
+    for _ in 0..8 {
+        let path = export_path_with(store, name, ext)?;
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                let written = f.write_all(bytes).and_then(|()| f.sync_all());
+                if let Err(e) = written {
+                    drop(f);
+                    let _ = fs::remove_file(&path);
+                    return Err(FileError::io(&path, e));
+                }
+                return Ok(path);
+            }
+            // Taken meanwhile: the next free name.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(FileError::io(&path, e)),
+        }
+    }
+    Err(FileError::new(
+        "invalid_name",
+        format!("`{name}.{ext}`: the exports folder keeps changing"),
     ))
 }
 
@@ -156,7 +198,8 @@ pub fn export_path_with(
 pub fn export(store: &Store, id: &str, dest: &Path) -> Result<Manifest, FileError> {
     check_dest(store, dest)?;
     let project = store.load(id)?;
-    let attachments = store.attachments(id);
+    // Never files from where a link in the library points (ARCH-602).
+    let attachments = store.try_attachments(id)?;
     if let Some(bad) = attachments.iter().find(|a| !Store::can_attach(&a.name)) {
         return Err(FileError::new(
             "not_attachable",
@@ -309,7 +352,16 @@ fn write_bundle(
         exported_ms: now_ms(),
         files: attachments.iter().map(|a| a.name.clone()).collect(),
     };
-    let file = fs::File::create(part).map_err(|e| FileError::io(dest, e))?;
+    // A file left by an earlier export of this process goes; a link put
+    // at the name is removed itself, never written through (ARCH-603).
+    if fs::symlink_metadata(part).is_ok_and(|m| !m.is_dir()) {
+        let _ = fs::remove_file(part);
+    }
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(part)
+        .map_err(|e| FileError::io(dest, e))?;
     let mut zip = zip::ZipWriter::new(file);
     let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     // Writing fails for file system reasons (disk full, folder read-only).

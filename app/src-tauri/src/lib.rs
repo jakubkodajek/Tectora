@@ -284,11 +284,10 @@ fn duplicate_project(
             .map_err(|d| AppError::new("out_of_range").detail(d))?;
         let mut project = state.store().load(&id)?;
         tectora_core::library::prepare_copy(&mut project, &name, job);
-        let new_id = state.store().save(None, &project)?;
-        if with_files.unwrap_or(true) {
-            state.store().copy_attachments(&id, &new_id)?;
-        }
-        Ok(new_id)
+        // A refused copy leaves no new job (ARCH-602).
+        Ok(state
+            .store()
+            .copy_job(&id, &project, with_files.unwrap_or(true), None)?)
     })
 }
 

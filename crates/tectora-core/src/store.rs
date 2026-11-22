@@ -790,6 +790,21 @@ pub enum CheckedSave {
 /// limit of common file systems).
 const MAX_ID_LEN: usize = 120;
 
+/// How many ids based on one name a new job tries before it gives up
+/// (ARCH-601: the search had no end).
+const MAX_ID_TRIES: usize = 10_000;
+
+/// The id a new job of this name starts from: its slug, with room left
+/// for the "-N" suffix and clear of device names.
+fn id_base(name: &str) -> String {
+    let mut base = slug(name);
+    base.truncate(MAX_ID_LEN - 8);
+    if !valid_id(&base) {
+        base.push_str("-navrh");
+    }
+    base
+}
+
 /// Whether Windows takes `name` for a device in every folder, after
 /// Microsoft's "Naming Files, Paths, and Namespaces": `CON`, `PRN`, `AUX`,
 /// `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9` (also with the superscript digits
@@ -1009,6 +1024,13 @@ impl std::fmt::Display for ForeignEntry {
 
 impl std::error::Error for ForeignEntry {}
 
+/// What [`own_folder`] and [`not_foreign`] say about a link or a file in
+/// place of one of the library's own folders. The data where a link points
+/// is not lost: the way back is to move that folder into the library in
+/// the link's place, never to delete it, which would hide every job's
+/// history or files (audit 2026-11-22 UX-601).
+const FOREIGN_FOLDER: &str = "a link or a file stands where Tectora keeps its own folder; Tectora does not write through a link, and whatever it points to is kept as it is (to use that data again, replace the link with the folder it points to, moved into the library; a stray file of this name can be moved away)";
+
 /// The error for `path`, a [`ForeignEntry`]: `what` it is.
 pub(crate) fn foreign(path: &Path, what: &str) -> std::io::Error {
     std::io::Error::other(ForeignEntry(format!("{}: {what}", path.display())))
@@ -1030,10 +1052,7 @@ pub(crate) fn own_folder(dir: &Path) -> std::io::Result<()> {
         match fs::symlink_metadata(dir) {
             Ok(m) if m.is_dir() => return Ok(()),
             Ok(_) => {
-                return Err(foreign(
-                    dir,
-                    "a link or a file stands where Tectora keeps its own folder; Tectora does not write through it (remove it, Tectora then makes the folder again)",
-                ));
+                return Err(foreign(dir, FOREIGN_FOLDER));
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => match fs::create_dir(dir) {
                 Ok(()) => return Ok(()),
@@ -1054,6 +1073,20 @@ pub(crate) fn own_folder(dir: &Path) -> std::io::Result<()> {
 /// library's own folders without creating them).
 fn is_own_folder(dir: &Path) -> bool {
     fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir())
+}
+
+/// `Ok` when `dir`, one of the library's own folders, is missing or a real
+/// folder; a [`ForeignEntry`] when a link or a file stands there. For
+/// reading, moving and deleting in them without creating them: a delete,
+/// a copy or an export never takes files from where a link points
+/// (audit 2026-11-22 ARCH-602).
+fn not_foreign(dir: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(dir) {
+        Ok(m) if m.is_dir() => Ok(()),
+        Ok(_) => Err(foreign(dir, FOREIGN_FOLDER)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /// Opens `path` for writing with `options` (a lock file, the change log)
@@ -1676,38 +1709,71 @@ impl Store {
     /// through [`Store::save`] or [`Store::save_as`] with `None`, which pick
     /// and write it under the library's creation lock.
     pub fn new_id(&self, name: &str) -> String {
-        let mut base = slug(name);
-        // Leave room for the "-N" suffix and keep clear of device names.
-        base.truncate(MAX_ID_LEN - 8);
-        if !valid_id(&base) {
-            base.push_str("-navrh");
-        }
-        let mut id = base.clone();
-        let mut n = 2;
-        while self.id_used(&id) {
-            id = format!("{base}-{n}");
-            n += 1;
-        }
-        id
+        // A library whose folders cannot be checked has no free id: the
+        // plain one is only a suggestion then, which `save` refuses.
+        self.free_id(name).unwrap_or_else(|_| id_base(name))
     }
 
-    /// Whether anything in the library belongs to job `id`.
-    fn id_used(&self, id: &str) -> bool {
+    /// [`Store::new_id`] for creating a job: an error, never an endless
+    /// search, when the library's folders cannot be checked (a file or a
+    /// link to itself named `.files` made every candidate look taken, so
+    /// new jobs spun for ever under the creation lock; audit 2026-11-22
+    /// ARCH-601).
+    fn free_id(&self, name: &str) -> Result<String, StoreError> {
+        // `.files/<id>` of every candidate is looked at below: a file or a
+        // link in place of `.files` is refused once, up front.
+        not_foreign(&self.dir.join(FILES_DIR)).map_err(|e| StoreError::io(None, e))?;
+        self.free_id_with(name, |id| self.id_used(id))
+    }
+
+    /// The first id based on `name` that `used` calls free, after at most
+    /// [`MAX_ID_TRIES`] candidates.
+    fn free_id_with(
+        &self,
+        name: &str,
+        used: impl Fn(&str) -> std::io::Result<bool>,
+    ) -> Result<String, StoreError> {
+        let base = id_base(name);
+        let mut id = base.clone();
+        for n in 2..MAX_ID_TRIES + 2 {
+            if !used(&id).map_err(|e| StoreError::io(None, e))? {
+                return Ok(id);
+            }
+            id = format!("{base}-{n}");
+        }
+        Err(StoreError::Io {
+            id: None,
+            kind: IoKind::Other,
+            detail: format!(
+                "no free job id for `{base}` after {MAX_ID_TRIES} tries; rename the job"
+            ),
+        })
+    }
+
+    /// Whether anything in the library belongs to job `id`; an error for a
+    /// path that cannot be checked.
+    fn id_used(&self, id: &str) -> std::io::Result<bool> {
         let activity = self.activity_dir();
-        [
+        for p in [
             self.dir.join(format!("{id}.{EXTENSION}")),
             self.dir.join(FILES_DIR).join(id),
             activity.join(format!("{id}.jsonl")),
             activity.join(format!("{id}.review.json")),
-        ]
-        .iter()
-        // Anything there counts, also a link to nowhere: a job of that id
-        // would write its log through it (ARCH-501). A path that cannot be
-        // checked counts as taken.
-        .any(|p| match fs::symlink_metadata(p) {
-            Ok(_) => true,
-            Err(e) => e.kind() != std::io::ErrorKind::NotFound,
-        })
+        ] {
+            // Anything there counts, also a link to nowhere: a job of that
+            // id would write its log through it (ARCH-501).
+            match fs::symlink_metadata(&p) {
+                Ok(_) => return Ok(true),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        e.kind(),
+                        format!("{}: {e}", p.display()),
+                    ));
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// Takes the library's creation lock (`.activity/.new.lock`, a name no job id can have), held until
@@ -1746,7 +1812,10 @@ impl Store {
             None => self.creation_lock()?,
             Some(_) => None,
         };
-        let id = id.unwrap_or_else(|| self.new_id(&project.name));
+        let id = match id {
+            Some(id) => id,
+            None => self.free_id(&project.name)?,
+        };
         let _lock = self.lock(&id)?;
         self.write(&id, project, false)?;
         Ok(id)
@@ -1832,7 +1901,7 @@ impl Store {
             Some(id) => id,
             None => {
                 let _creating = self.creation_lock()?;
-                let id = self.new_id(&project.name);
+                let id = self.free_id(&project.name)?;
                 let _lock = self.lock(&id)?;
                 self.log_and_write(&id, None, project, actor, summary, None)?;
                 return Ok(id);
@@ -2285,6 +2354,8 @@ impl Store {
         let io = |e| StoreError::io(Some(id), e);
         // No save of this job lands while it is moved.
         let _lock = self.lock(id)?;
+        // Its files are moved only from the library's own folder (ARCH-602).
+        self.own_files_folders(id).map_err(io)?;
         let (entry, folder) = self.new_trash_folder(id).map_err(io)?;
         // Everything or nothing: the attached files first (on Windows a
         // drawing open in a viewer keeps its folder from moving), the
@@ -2347,7 +2418,9 @@ impl Store {
         fs::remove_file(self.path(id)?).map_err(|e| StoreError::io(Some(id), e))?;
         let _ = fs::remove_file(self.activity_path(id)?);
         let _ = fs::remove_file(self.review_path(id)?);
-        let _ = fs::remove_dir_all(self.files_dir(id)?);
+        if self.own_files_folders(id).is_ok() {
+            let _ = fs::remove_dir_all(self.files_dir(id)?);
+        }
         // Its lock file too (ARCH-008). Where another process still holds
         // it (Windows), it stays and the next job of that id reuses it.
         let _ = fs::remove_file(self.activity_dir().join(format!("{id}.lock")));
@@ -2469,12 +2542,13 @@ impl Store {
         }
         // A new id is picked and taken in one step (see `save`).
         let _creating = self.creation_lock()?;
-        let id = if self.id_used(&info.id) {
-            self.new_id(if info.name.is_empty() {
+        not_foreign(&self.dir.join(FILES_DIR)).map_err(io)?;
+        let id = if self.id_used(&info.id).map_err(io)? {
+            self.free_id(if info.name.is_empty() {
                 &info.id
             } else {
                 &info.name
-            })
+            })?
         } else {
             info.id.clone()
         };
@@ -2516,6 +2590,14 @@ impl Store {
         own_folder(&files).map_err(|e| FileError::io(&files, e))?;
         own_folder(&dir).map_err(|e| FileError::io(&dir, e))?;
         Ok(dir)
+    }
+
+    /// Checks that `.files` and `.files/<id>` are each missing or a real
+    /// folder ([`not_foreign`]).
+    fn own_files_folders(&self, id: &str) -> std::io::Result<()> {
+        let files = self.dir.join(FILES_DIR);
+        not_foreign(&files)?;
+        not_foreign(&files.join(id))
     }
 
     /// Folder of the files attached to job `id`.
@@ -2565,7 +2647,11 @@ impl Store {
                 format!("invalid file name: {name}"),
             ));
         }
-        let path = self.files_dir(id)?.join(name);
+        let dir = self.files_dir(id)?;
+        // Never a file from where a link points (ARCH-602).
+        self.own_files_folders(id)
+            .map_err(|e| FileError::io(&dir, e))?;
+        let path = dir.join(name);
         // Files are attached under their composed name: a decomposed
         // spelling (copied from macOS Finder) names the same file
         // (HUNT-108).
@@ -2576,11 +2662,20 @@ impl Store {
         Ok(path)
     }
 
-    /// The files attached to job `id`, by name.
+    /// The files attached to job `id`, by name; none when `.files` or
+    /// its folder of the job is a link or a file (see
+    /// [`Store::try_attachments`]).
     pub fn attachments(&self, id: &str) -> Vec<Attachment> {
-        let Ok(dir) = self.files_dir(id) else {
-            return Vec::new();
-        };
+        self.try_attachments(id).unwrap_or_default()
+    }
+
+    /// [`Store::attachments`], refused with `foreign_entry` when `.files`
+    /// or `.files/<id>` is a link or a file: files outside the library are
+    /// neither listed, packed into a bundle nor copied (ARCH-602).
+    pub fn try_attachments(&self, id: &str) -> Result<Vec<Attachment>, FileError> {
+        let dir = self.files_dir(id)?;
+        self.own_files_folders(id)
+            .map_err(|e| FileError::io(&dir, e))?;
         let mut out: Vec<Attachment> = fs::read_dir(dir)
             .into_iter()
             .flatten()
@@ -2596,7 +2691,7 @@ impl Store {
             })
             .collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));
-        out
+        Ok(out)
     }
 
     /// Stores `bytes` as an attachment of job `id` under `name`, or under
@@ -2737,12 +2832,40 @@ impl Store {
 
     /// Copies all attachments of job `from` to job `to`.
     pub fn copy_attachments(&self, from: &str, to: &str) -> Result<(), FileError> {
-        for a in self.attachments(from) {
+        for a in self.try_attachments(from)? {
             let path = self.attachment_path(from, &a.name)?;
             let bytes = read_regular(&path, MAX_ATTACHMENT)?;
             self.add_attachment(to, &a.name, &bytes)?;
         }
         Ok(())
+    }
+
+    /// Saves `project`, a copy of job `from` (prepared with
+    /// [`crate::library::prepare_copy`]), as a new job with the files of
+    /// `from` when `with_files`, logged as `actor`'s change `summary` when
+    /// `logged` is given. A refused copy leaves nothing behind: the files
+    /// are checked before the save, and a new job whose files could not
+    /// all be copied is removed again (ARCH-602: each refused try left a
+    /// new job). The app and the MCP server copy through it.
+    pub fn copy_job(
+        &self,
+        from: &str,
+        project: &Project,
+        with_files: bool,
+        logged: Option<(&str, &str)>,
+    ) -> Result<String, FileError> {
+        if with_files {
+            self.try_attachments(from)?;
+        }
+        let id = match logged {
+            Some((actor, summary)) => self.save_as(None, project, actor, summary)?,
+            None => self.save(None, project)?,
+        };
+        if with_files && let Err(e) = self.copy_attachments(from, &id) {
+            let _ = self.purge(&id);
+            return Err(e);
+        }
+        Ok(id)
     }
 
     pub fn set_live(&self, status: &LiveStatus) {
@@ -3311,6 +3434,192 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&store.dir);
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// Runs `f` on its own thread and fails the test when it does not
+    /// answer within `secs` (a spinning loop must not hang the test run).
+    fn within<T: Send + 'static>(
+        secs: u64,
+        what: &str,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(secs))
+            .unwrap_or_else(|_| panic!("{what}: no answer within {secs} s"))
+    }
+
+    /// Audit 2026-11-22 ARCH-601: a plain file (or a link to itself) named
+    /// `.files` made every new job spin for ever looking for a free id,
+    /// holding the creation lock. A new job, a logged new job, a second
+    /// store on the same library and a restore are now refused with
+    /// `foreign_entry` at once.
+    #[test]
+    fn a_file_named_files_refuses_new_jobs_instead_of_spinning() {
+        let project = examples::find("hip").unwrap().project();
+        let store = temp_store("files-file");
+        let deleted = store.save_as(None, &project, USER_ACTOR, "Made.").unwrap();
+        let entry = store.delete(&deleted, USER_ACTOR, "Gone.").unwrap().entry;
+        let _ = fs::remove_dir_all(store.dir.join(FILES_DIR));
+        fs::write(store.dir.join(FILES_DIR), "x").unwrap();
+        let mut kinds: Vec<(&str, Box<dyn Fn(&Path)>)> = vec![("a file", Box::new(|_: &Path| {}))];
+        #[cfg(unix)]
+        kinds.push((
+            "a link to itself",
+            Box::new(|dir: &Path| {
+                fs::remove_file(dir.join(FILES_DIR)).unwrap();
+                std::os::unix::fs::symlink(FILES_DIR, dir.join(FILES_DIR)).unwrap();
+            }),
+        ));
+        for (what, make) in kinds {
+            make(&store.dir);
+            let dir = store.dir.clone();
+            let p = project.clone();
+            let entry = entry.clone();
+            let codes = within(10, what, move || {
+                let one = Store::new(dir.clone()).unwrap();
+                let other = Store::new(dir).unwrap();
+                [
+                    one.save(None, &p).unwrap_err().code(),
+                    one.save_as(None, &p, "claude", "Made.").unwrap_err().code(),
+                    other.save(None, &p).unwrap_err().code(),
+                    one.restore(&entry).unwrap_err().code(),
+                ]
+            });
+            assert_eq!(codes, ["foreign_entry"; 4], "{what}");
+        }
+        let left = fs::read_dir(&store.dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == EXTENSION))
+            .count();
+        assert_eq!(left, 0, "no job was made");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 ARCH-601: a library whose ids are all taken gives
+    /// an error, not an endless search.
+    #[test]
+    fn picking_a_new_id_gives_up_with_an_error() {
+        let store = temp_store("ids-bound");
+        let project = examples::find("hip").unwrap().project();
+        // Every candidate is taken: a stand-in that says so.
+        let picked = store.free_id_with(&project.name, |_| Ok(true));
+        assert!(picked.is_err(), "{picked:?}");
+        // A path that cannot be checked is an error, not "taken".
+        let picked = store.free_id_with(&project.name, |_| {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        });
+        assert_eq!(picked.unwrap_err().code(), "permission_denied");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 ARCH-602: with `.files` or `.files/<id>` a link to
+    /// a folder outside the library, deleting the job, removing a file,
+    /// copying the job, listing its files for MCP and exporting it are all
+    /// refused with `foreign_entry`: nothing outside is moved, packed or
+    /// pruned, and a refused copy leaves no new job behind.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_files_folder_is_neither_moved_read_nor_copied() {
+        let project = examples::find("hip").unwrap().project();
+        for rel in [FILES_DIR.to_string(), format!("{FILES_DIR}/ref")] {
+            let store = temp_store("files-link-read");
+            let outside = std::env::temp_dir().join(format!("tectora-files-out-{}", now_ms()));
+            let id = store
+                .save_as(Some("ref".into()), &project, USER_ACTOR, "Made.")
+                .unwrap();
+            store
+                .add_attachment(&id, "plan.pdf", b"%PDF precious")
+                .unwrap();
+            // The real folder moves outside and a link takes its place.
+            let at = store.dir.join(&rel);
+            fs::create_dir_all(&outside).unwrap();
+            let target = outside.join("t");
+            fs::rename(&at, &target).unwrap();
+            std::os::unix::fs::symlink(&target, &at).unwrap();
+            let precious = if rel == FILES_DIR {
+                target.join("ref").join("plan.pdf")
+            } else {
+                target.join("plan.pdf")
+            };
+            let jobs = store.list().len();
+            let foreign = |code: &str, what: &str| {
+                assert_eq!(code, "foreign_entry", "{rel}: {what}");
+                assert_eq!(
+                    fs::read(&precious).unwrap(),
+                    b"%PDF precious",
+                    "{rel}: {what} changed the file outside"
+                );
+            };
+            foreign(
+                store.delete(&id, USER_ACTOR, "Gone.").unwrap_err().code(),
+                "delete",
+            );
+            assert!(store.exists(&id), "{rel}: the job stays");
+            foreign(
+                &store
+                    .remove_attachment(&id, "plan.pdf", USER_ACTOR, "x")
+                    .unwrap_err()
+                    .code,
+                "remove_attachment",
+            );
+            foreign(
+                &store.try_attachments(&id).unwrap_err().code,
+                "try_attachments",
+            );
+            assert!(
+                store.attachments(&id).is_empty(),
+                "{rel}: listed from outside"
+            );
+            foreign(
+                &store.attachment_path(&id, "plan.pdf").unwrap_err().code,
+                "attachment_path",
+            );
+            let mut copy = project.clone();
+            copy.name = "Copy".into();
+            for logged in [None, Some(("claude", "Copied."))] {
+                foreign(
+                    &store.copy_job(&id, &copy, true, logged).unwrap_err().code,
+                    "copy_job",
+                );
+            }
+            assert_eq!(store.list().len(), jobs, "{rel}: a refused copy left a job");
+            let dest = store.dir.join("x.tectorajob");
+            foreign(
+                &crate::bundle::export(&store, &id, &dest).unwrap_err().code,
+                "export",
+            );
+            assert!(!dest.exists());
+            let _ = fs::remove_dir_all(&store.dir);
+            let _ = fs::remove_dir_all(&outside);
+        }
+    }
+
+    /// Audit 2026-11-22 ARCH-602: a copy whose files cannot all be copied
+    /// leaves no new job behind.
+    #[test]
+    fn a_copy_that_cannot_take_its_files_leaves_no_job() {
+        let store = temp_store("copy-fails");
+        let project = examples::find("hip").unwrap().project();
+        let id = store.save(None, &project).unwrap();
+        store.add_attachment(&id, "plan.pdf", b"%PDF").unwrap();
+        // Over the size bound: read_regular refuses it.
+        let big = store.files_dir(&id).unwrap().join("big.pdf");
+        fs::File::create(&big)
+            .unwrap()
+            .set_len(MAX_ATTACHMENT + 1)
+            .unwrap();
+        let mut copy = project.clone();
+        copy.name = "Copy".into();
+        let jobs = store.list().len();
+        assert!(store.copy_job(&id, &copy, true, None).is_err());
+        assert_eq!(store.list().len(), jobs);
+        let made = store.copy_job(&id, &copy, false, None).unwrap();
+        assert!(store.exists(&made));
+        let _ = fs::remove_dir_all(&store.dir);
     }
 
     /// Audit 2026-11-22 HUNT-501: a folder in place of a job's lock file
