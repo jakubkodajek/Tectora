@@ -439,6 +439,12 @@ test in `app/e2e/audit-r6-ed.e2e.ts` (the plan stays interactive, UI-501).
 - A job at the limits (500 hand-drawn faces of 500 corners, 200 buildings)
   received as a bundle or saved by the AI: the library lists every job, the
   editor and the 3D view open it (ARCH-402).
+- In such a job a click on a wall or an object only recolours the 3D view
+  (`data-builds` on the 3D host stays the same; UI-602), and a zoom or pan
+  step places only the labels in the window (`data-label-work` on the plan
+  stays in the thousands; UX-602). Count work, not time: `planscale.test.ts`,
+  `planlabels.test.ts`, and the 200-building and 500-face tests in
+  `app/e2e/audit-r6-ed.e2e.ts`.
 - A change log of large entries (notes near 1M characters, 50+ saves) stays
   at 50 entries and Revert all still returns to the version before the AI
   (ARCH-401).
