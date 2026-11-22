@@ -163,8 +163,10 @@ The tools cover every operation of the Tectora editor:
   settings) needs `summary`: one sentence for the user on what and why, at
   most 500 characters of plain text (an empty one, one of only invisible
   characters, or one with control or bidirectional characters is refused).
-  The job's `number`, `customer` and `address` are one line of plain text
-  (at most 500 characters); `notes` may have line breaks.
+  The job's `name`, `number`, `customer` and `address` are one line of
+  plain text (at most 500 characters); `notes` may have line breaks. Part,
+  material and hand-drawn line and face names, an export's `stamp` and
+  the sheet's `line_names` are one line of plain text too.
 - An argument the tool's input schema does not name is refused
   (`unknown argument …`), and so is a value of the wrong type or outside
   the schema's `enum` (a job number sent as a number, `neighbour:
