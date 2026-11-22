@@ -564,7 +564,20 @@
   /** The corners the last undo reopened, to close the draw bar again on redo. */
   let reopened: string | null = null;
 
-  function undo() {
+  /**
+   * Undo and Redo take back the user's newest step: an edit still with the
+   * core (a value typed just before) is that step, so they wait for it
+   * first; else the press undid the step before it, the typed value landed
+   * after it and Redo was lost (UX-501). Leaving waits for them too.
+   */
+  function afterEdits(step: () => void) {
+    if (!jobEdits.size) return step();
+    void pendingEdits.track(jobEdits.idle().then(step));
+  }
+  const undo = () => afterEdits(undoNow);
+  const redo = () => afterEdits(redoNow);
+
+  function undoNow() {
     if (at <= 0) return;
     const reopen = !drawing && finished && history[at] === finished.step ? finished.corners : null;
     restore(at - 1);
@@ -576,7 +589,7 @@
     }
   }
 
-  function redo() {
+  function redoNow() {
     if (at >= history.length - 1) return;
     // Redo of the closed outline: the building comes back, the draw bar goes.
     if (drawing && reopened === JSON.stringify($state.snapshot(drawing))) drawing = null;
