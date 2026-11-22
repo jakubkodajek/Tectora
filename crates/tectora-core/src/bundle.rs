@@ -553,6 +553,13 @@ pub fn import(store: &Store, src: &Path) -> Result<String, FileError> {
     Ok(id)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Received history entries diffed by this thread, so a test checks
+    /// the work done, not the time it took (TEST-506 item 2).
+    static HISTORY_DIFFS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The change log of a received bundle as it is written into the library,
 /// with the time of its last entry. Entries that do not read as a change,
 /// or whose versions are outside the limits a job file is held to, are
@@ -588,7 +595,11 @@ fn received_history(bytes: &[u8]) -> Option<(String, u64)> {
     entries.retain(|e| ok(&e.before) && ok(&e.after));
     for e in &mut entries {
         e.changes = match (&e.before, &e.after) {
-            (Some(b), Some(a)) => crate::diff::diff(b, a),
+            (Some(b), Some(a)) => {
+                #[cfg(test)]
+                HISTORY_DIFFS.with(|n| n.set(n.get() + 1));
+                crate::diff::diff(b, a)
+            }
             _ => Vec::new(),
         };
     }
@@ -1310,7 +1321,11 @@ mod tests {
         zip.finish().unwrap();
         let store = Store::new(dir.join("lib")).unwrap();
         let started = std::time::Instant::now();
+        HISTORY_DIFFS.with(|n| n.set(0));
         let id = import(&store, &path).unwrap();
+        // Dropped before its changes were worked out, whatever the speed of
+        // the machine (TEST-506 item 2).
+        assert_eq!(HISTORY_DIFFS.with(|n| n.get()), 0, "the version was diffed");
         assert!(
             started.elapsed() < std::time::Duration::from_secs(5),
             "the import took {:?}",
@@ -1348,7 +1363,13 @@ mod tests {
             .collect();
         let path = bundle_with_log(&dir, "many.tectorajob", &p.to_json().unwrap(), &history);
         let store = Store::new(dir.join("lib")).unwrap();
+        HISTORY_DIFFS.with(|n| n.set(0));
         let id = import(&store, &path).unwrap();
+        assert_eq!(
+            HISTORY_DIFFS.with(|n| n.get()),
+            crate::store::ACTIVITY_KEEP,
+            "only the kept entries are diffed"
+        );
         let log = store.activity(&id);
         assert_eq!(log.len(), crate::store::ACTIVITY_KEEP);
         assert_eq!(log[0].summary, "change 951");
