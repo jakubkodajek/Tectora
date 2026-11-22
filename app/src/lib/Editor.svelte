@@ -250,7 +250,9 @@
   const SAVE_TRIES = 5;
   let calcSeq = 0;
   /** Field handlers that ask the core before they change the job: leaving waits for them (ERR-004). */
-  const pendingEdits = new PendingEdits();
+  /** Edits with the core (`pendingEdits`): the status bar says "saving" meanwhile, the file does not have them yet (UX-502). */
+  let editsWaiting = $state(0);
+  const pendingEdits = new PendingEdits((n) => (editsWaiting = n));
 
   const snapshot = () => JSON.stringify(project);
 
@@ -2522,7 +2524,7 @@
       {#if result}<span data-testid="status-area" class:pending={calcPending} aria-busy={calcPending}>{t("res.area")}: <b title={roofState(result) !== "ok" ? t(roofState(result) === "none" ? "res.notCalculated" : "res.calcPartial") : undefined}>{roofState(result) === "none" ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save">
-        {#if saveState === "saved"}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
+        {#if saveState === "saved" && !editsWaiting}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving" || saveState === "saved"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
       </span>
     </footer>
   {:else if loadError}
