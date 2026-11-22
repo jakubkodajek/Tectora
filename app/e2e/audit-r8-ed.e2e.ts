@@ -218,3 +218,24 @@ test.describe("round 8: the plan without a wheel or a right button (UX-703)", ()
     });
   });
 });
+
+test.describe("round 8: the 3D view shows the selection (TEST-704)", () => {
+  test("selecting a wall marks its roof face in 3D without building the scene again", async ({ app, page }) => {
+    await createExample("gable", "Výběr 3D");
+    await app.open({ prefs: { followAi: false } });
+    await app.openJob("Výběr 3D");
+    const view3d = page.locator(".view .host").first();
+    await expect(view3d).toHaveAttribute("data-builds", /\d+/);
+    await app.saved();
+    await page.waitForTimeout(800);
+    const builds = await view3d.getAttribute("data-builds");
+    const wall1 = await planXY(page, 6, 0);
+    await page.mouse.click(wall1.x, wall1.y);
+    await expect(view3d).toHaveAttribute("data-selected", "edge:0:0");
+    const wall3 = await planXY(page, 6, 8);
+    await page.mouse.click(wall3.x, wall3.y);
+    await expect(view3d).toHaveAttribute("data-selected", "edge:0:2");
+    await page.keyboard.press("Escape");
+    expect(await view3d.getAttribute("data-builds")).toBe(builds);
+  });
+});
