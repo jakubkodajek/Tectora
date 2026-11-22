@@ -366,15 +366,50 @@ pub fn card_outlines(project: &Project) -> Vec<Vec<[f64; 2]>> {
 
 /// Outlines of at most this many points are kept whole on a card: they
 /// cost little, and a rectangle thinned to a triangle looks wrong (audit
-/// 2026-11-22 HUNT-505).
-const WHOLE_OUTLINE: usize = 4;
+/// 2026-11-22 HUNT-505; HUNT-601: rectangles with a point on one side and
+/// L shapes of 5 to 8 points lost a corner too).
+const WHOLE_OUTLINE: usize = 8;
 
-/// `outlines` with at most `max` points in all: outlines of up to
-/// [`WHOLE_OUTLINE`] points are kept whole, the larger ones keep evenly
-/// spread points, their share of what the small ones leave (at least
-/// [`WHOLE_OUTLINE`]); outlines past the budget are replaced by one box
-/// around all of them, so the thumbnail keeps the job's extent.
+/// `o` without its corners that lie on a straight line between their
+/// neighbours (a wall split for a door or a pitch change): the same shape
+/// in fewer points. Kept as it is when fewer than 3 points would be left.
+fn without_straight_points(o: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let n = o.len();
+    if n <= 3 {
+        return o.to_vec();
+    }
+    let kept: Vec<[f64; 2]> = (0..n)
+        .filter(|&i| {
+            let (a, b, c) = (o[(i + n - 1) % n], o[i], o[(i + 1) % n]);
+            let (u, v) = ([b[0] - a[0], b[1] - a[1]], [c[0] - b[0], c[1] - b[1]]);
+            let cross = u[0] * v[1] - u[1] * v[0];
+            let dot = u[0] * v[0] + u[1] * v[1];
+            let lens = u[0].hypot(u[1]) * v[0].hypot(v[1]);
+            // Straight on: no turn and no reversal (a spike stays).
+            let straight = lens > 0.0 && cross.abs() <= 1e-9 * lens && dot > 0.0;
+            !straight
+        })
+        .map(|i| o[i])
+        .collect();
+    if kept.len() >= 3 { kept } else { o.to_vec() }
+}
+
+/// `outlines` with at most `max` points in all: corners on a straight
+/// line go first, outlines of up to [`WHOLE_OUTLINE`] points are kept
+/// whole, the larger ones keep evenly spread points, their share of what
+/// the small ones leave (at least [`WHOLE_OUTLINE`], and what rounding
+/// down leaves over is handed out again); outlines past the budget are
+/// replaced by one box around all of them, so the thumbnail keeps the
+/// job's extent.
 fn bounded_outlines(outlines: Vec<Vec<[f64; 2]>>, max: usize) -> Vec<Vec<[f64; 2]>> {
+    let total: usize = outlines.iter().map(Vec::len).sum();
+    if total <= max {
+        return outlines;
+    }
+    let outlines: Vec<Vec<[f64; 2]>> = outlines
+        .iter()
+        .map(|o| without_straight_points(o))
+        .collect();
     let total: usize = outlines.iter().map(Vec::len).sum();
     if total <= max {
         return outlines;
@@ -387,15 +422,40 @@ fn bounded_outlines(outlines: Vec<Vec<[f64; 2]>>, max: usize) -> Vec<Vec<[f64; 2
         .sum();
     let large = (total - small).max(1);
     let large_budget = budget.saturating_sub(small);
+    // Each large outline's share, rounded down, then the points that
+    // leaves over one by one to the largest remainders.
+    let mut shares: Vec<usize> = outlines
+        .iter()
+        .map(|o| {
+            if o.len() <= WHOLE_OUTLINE {
+                o.len()
+            } else {
+                (o.len() * large_budget / large).clamp(WHOLE_OUTLINE, o.len())
+            }
+        })
+        .collect();
+    let given: usize = shares
+        .iter()
+        .zip(&outlines)
+        .filter(|(_, o)| o.len() > WHOLE_OUTLINE)
+        .map(|(s, _)| *s)
+        .sum();
+    let mut left = large_budget.saturating_sub(given);
+    let mut by_remainder: Vec<usize> = (0..outlines.len())
+        .filter(|&i| outlines[i].len() > WHOLE_OUTLINE && shares[i] < outlines[i].len())
+        .collect();
+    by_remainder.sort_by_key(|&i| std::cmp::Reverse((outlines[i].len() * large_budget) % large));
+    for i in by_remainder {
+        if left == 0 {
+            break;
+        }
+        shares[i] += 1;
+        left -= 1;
+    }
     let mut used = 0;
     let mut out = Vec::new();
     let mut rest: Option<[f64; 4]> = None;
-    for o in outlines {
-        let share = if o.len() <= WHOLE_OUTLINE {
-            o.len()
-        } else {
-            (o.len() * large_budget / large).clamp(WHOLE_OUTLINE, o.len())
-        };
+    for (o, share) in outlines.into_iter().zip(shares) {
         let thin: Vec<[f64; 2]> = (0..share).map(|i| o[i * o.len() / share]).collect();
         if used + thin.len() <= budget {
             used += thin.len();
@@ -3873,6 +3933,109 @@ mod tests {
         let points: usize = card.iter().map(Vec::len).sum();
         assert!((1900..=MAX_CARD_POINTS).contains(&points), "{points}");
         assert_eq!(card.len(), 6);
+    }
+
+    /// Audit 2026-11-22 HUNT-601: outlines of 5 to 8 points over the
+    /// card's budget lost a corner (a rectangle with a point on one side
+    /// became a triangle, an L shape a skewed quadrilateral) while a fifth
+    /// of the budget stayed unused. 400 of them now keep their shape.
+    #[test]
+    fn a_card_over_its_point_budget_keeps_small_outlines_whole() {
+        let rect5 = |x: f64| {
+            vec![
+                [x, 0.0],
+                [x + 5.0, 0.0],
+                [x + 10.0, 0.0],
+                [x + 10.0, 8.0],
+                [x, 8.0],
+            ]
+        };
+        let ell = |x: f64| {
+            vec![
+                [x, 0.0],
+                [x + 10.0, 0.0],
+                [x + 10.0, 4.0],
+                [x + 4.0, 4.0],
+                [x + 4.0, 8.0],
+                [x, 8.0],
+            ]
+        };
+        let ell7 = |x: f64| {
+            let mut o = ell(x);
+            o.insert(1, [x + 5.0, 0.0]);
+            o
+        };
+        let bbox = |o: &[[f64; 2]]| {
+            o.iter()
+                .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
+                    [
+                        b[0].min(p[0]),
+                        b[1].min(p[1]),
+                        b[2].max(p[0]),
+                        b[3].max(p[1]),
+                    ]
+                })
+        };
+        let area = |o: &[[f64; 2]]| {
+            (0..o.len())
+                .map(|i| {
+                    let (a, b) = (o[i], o[(i + 1) % o.len()]);
+                    a[0] * b[1] - b[0] * a[1]
+                })
+                .sum::<f64>()
+                .abs()
+                / 2.0
+        };
+        let kinds: [(&str, &dyn Fn(f64) -> Vec<[f64; 2]>); 4] = [
+            ("rect5", &rect5),
+            ("L", &ell),
+            ("L7", &ell7),
+            ("mixed", &|x: f64| {
+                if (x as usize / 20) % 2 == 0 {
+                    rect5(x)
+                } else {
+                    ell7(x)
+                }
+            }),
+        ];
+        for (name, make) in kinds {
+            for n in [399, 400, 401, 500] {
+                let input: Vec<Vec<[f64; 2]>> = (0..n).map(|i| make(i as f64 * 20.0)).collect();
+                let card = bounded_outlines(input.clone(), MAX_CARD_POINTS);
+                let points: usize = card.iter().map(Vec::len).sum();
+                assert!(points <= MAX_CARD_POINTS, "{name} {n}: {points}");
+                // Each drawn outline has the shape it was given: its box
+                // and its area (a lost corner changes the area).
+                // Only the box around the ones left out, last, is none of
+                // the input outlines.
+                for (k, o) in card.iter().enumerate() {
+                    match input.iter().find(|i| bbox(i) == bbox(o)) {
+                        Some(i) => assert!(
+                            (area(o) - area(i)).abs() < 1e-9,
+                            "{name} {n}: {o:?} of {i:?}"
+                        ),
+                        None => assert!(k + 1 == card.len() && o.len() == 4, "{name} {n}: {o:?}"),
+                    }
+                }
+                // All drawn when their corners fit the budget (a
+                // rectangle's side point is no corner).
+                let corners = match name {
+                    "rect5" => 4,
+                    "L" | "L7" => 6,
+                    _ => 5,
+                };
+                if n * corners <= MAX_CARD_POINTS - 4 {
+                    assert_eq!(card.len(), n, "{name} {n}: all drawn");
+                } else {
+                    assert!(
+                        points >= MAX_CARD_POINTS - 4 - 8,
+                        "{name} {n}: {points} used"
+                    );
+                }
+                let max_x = card.iter().flatten().map(|p| p[0]).fold(f64::MIN, f64::max);
+                assert_eq!(max_x, (n - 1) as f64 * 20.0 + 10.0, "{name} {n}: extent");
+            }
+        }
     }
 
     /// Audit 2026-11-22 ERR-306: a job saved with a UTF-8 byte order mark
