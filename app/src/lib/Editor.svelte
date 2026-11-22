@@ -438,7 +438,17 @@
     saveState = "dirty";
     edits++;
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(save, 500);
+    saveTimer = setTimeout(autosave, 500);
+  }
+
+  /**
+   * The timer's save: not while a drag runs, which would write the half
+   * dragged job (without the roof follow of the drop) for the AI and the
+   * change detection to read; the drop saves anyway (TEST-505).
+   */
+  function autosave() {
+    if (dragging()) saveTimer = setTimeout(autosave, 500);
+    else void save();
   }
 
   /** Writes the job; resolves to whether the edits are on disk (errors are shown, never thrown). */
@@ -679,6 +689,9 @@
       // Tauri's dialog plugin makes confirm asynchronous: always await it.
       if (!(await confirm(t("draw.confirmCancel", { n: pts })))) return false;
     }
+    // A drag under way ends where it is: its pause would hold every edit
+    // below until a release that may never come (ERR-501).
+    if (dragging() || dragPause) cutDrag();
     // A value still being typed is part of the job: store it first.
     commitFocused();
     await tick();
@@ -1117,17 +1130,30 @@
   }
 
   function moveVertex(part: number, v: number, x: number, y: number) {
-    if (!project) return;
+    if (!project || dragCut) return;
     const es = project.parts[part]?.edges;
     if (!es?.[v] || !Number.isFinite(x) || !Number.isFinite(y)) return;
     const p = es[v].start;
     if (p.x === x && p.y === y) return;
+    // Every step changes the job: an answer of the core would be asked again
+    // at each one until it gives up, so answers wait for the drop (UI-502).
+    vertexDrag = true;
+    dragPause ??= jobEdits.pause();
     moveCorner(es, v, x, y);
     recalc();
   }
 
-  /** End of a corner drag: a corner dropped onto its neighbour merges into it. */
-  const endVertexDrag = (part: number, v: number) => pendingEdits.track(endVertexDragNow(part, v));
+  /** End of a corner drag: a corner dropped onto its neighbour merges into it; then the drag pause ends. */
+  function endVertexDrag(part: number, v: number) {
+    const pause = takeDragPause();
+    if (dragCut) {
+      dragCut = false;
+      pause();
+      return Promise.resolve();
+    }
+    vertexDrag = false;
+    return pendingEdits.track(endVertexDragNow(part, v).finally(pause));
+  }
   async function endVertexDragNow(part: number, v: number) {
     const was = project?.parts[part];
     if (!project || !was) return;
@@ -1548,7 +1574,16 @@
   }
 
   /** The project and roof when a drag started; each step maps from these. */
-  let dragBase: { key: string; project: string; result: CalcResult | null; from: Point2 | null } | null = null;
+  let dragBase: { key: string; project: string; result: CalcResult | null; from: Point2 | null; last?: { target: PlanTarget; dx: number; dy: number } } | null = null;
+  /** A corner is being dragged (`moveVertex`): it holds the drag pause too (UI-502). */
+  let vertexDrag = false;
+  /**
+   * The editor ended the drag under way itself (the job is being left): the
+   * plan's further steps of that drag are ignored until it lets go.
+   */
+  let dragCut = false;
+  /** A drag of an object, a building or a corner is under way. */
+  const dragging = () => !!dragBase || vertexDrag;
 
   /**
    * The pause of core-backed edits the drag under way holds (jobedits.ts,
@@ -1571,8 +1606,15 @@
   }
 
   function dragObject(target: PlanTarget, dx: number, dy: number, end: boolean) {
+    if (dragCut) {
+      if (end) dragCut = false;
+      return;
+    }
     if (!project || (target.type !== "item" && target.type !== "part")) {
-      if (end) endDrag();
+      if (end) {
+        dragBase = null;
+        endDrag();
+      }
       return;
     }
     const key = JSON.stringify(target);
@@ -1580,12 +1622,51 @@
       dragPause ??= jobEdits.pause();
       dragBase = { key, project: snapshot(), result, from: target.type === "item" ? itemCentre(project, target.item) : null };
     }
+    dragBase.last = { target, dx, dy };
     let later = false;
     try {
       later = dragStep(target, dx, dy, end);
     } finally {
-      if (end && !later) endDrag();
+      // Every release ends the drag and its pause, also one whose object is gone.
+      if (end) {
+        dragBase = null;
+        if (!later) endDrag();
+      }
     }
+  }
+
+  /** Escape during a drag: the job goes back to where the drag started, nothing is saved. */
+  function cancelDrag() {
+    const from = dragBase ? dragBase.project : vertexDrag ? history[at] : null;
+    if (from) {
+      const sel = selection;
+      project = JSON.parse(from) as Project;
+      selection = keptSelection(project, sel);
+      recalc();
+    }
+    dragBase = null;
+    vertexDrag = false;
+    dragCut = true;
+    endDrag();
+  }
+
+  /**
+   * Ends the drag under way where it is now, as its release would (leaving
+   * the job must not wait for a drag pause that only the release ends,
+   * ERR-501); the plan's further steps of it are ignored.
+   */
+  function cutDrag() {
+    const last = dragBase?.last;
+    if (last) {
+      dragObject(last.target, last.dx, last.dy, true);
+      dragCut = true;
+    } else if (vertexDrag) {
+      vertexDrag = false;
+      dragCut = true;
+      commit();
+    }
+    dragBase = null;
+    endDrag();
   }
 
   /** One drag step; true when the release goes on with the core (a part drag), which then ends the pause. */
@@ -2109,6 +2190,21 @@
     if ((tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") && !editorTakesUndo(e.target as HTMLElement, e)) return;
     // A dialog is open: its keys (Escape closes it) must not edit the roof behind it.
     if (document.querySelector('[role="dialog"]')) return;
+    // A drag rebuilds the job from where it started at every step: an edit
+    // made by a key meanwhile (Delete, an undo, a copy, a nudge) would be
+    // undone by the drop. Escape cancels the drag, F3 switches the view;
+    // every other key waits for the drop (ERR-502).
+    if (dragging()) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        cancelDrag();
+        return;
+      }
+      if (e.key !== "F3") {
+        if (mod || del || e.key.startsWith("Arrow") || e.key.startsWith("Page")) e.preventDefault();
+        return;
+      }
+    }
     if (undoKey(e)) {
       e.preventDefault();
       undoKey(e) === "redo" ? redo() : undo();
