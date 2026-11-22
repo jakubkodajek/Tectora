@@ -335,6 +335,21 @@ pub fn outlines(project: &Project) -> Vec<Vec<[f64; 2]>> {
         .collect()
 }
 
+/// The outlines of a library card's thumbnail: the walls of each part and
+/// the hand-drawn faces, so a job of faces only has a thumbnail too
+/// (audit 2026-11-22 HUNT-305 item 5).
+fn card_outlines(project: &Project) -> Vec<Vec<[f64; 2]>> {
+    let mut out = outlines(project);
+    out.extend(
+        project
+            .manual_faces
+            .iter()
+            .filter(|f| f.points.len() >= 3)
+            .map(|f| f.points.iter().map(|p| [p.x, p.y]).collect()),
+    );
+    out
+}
+
 pub fn roof_area(project: &Project) -> f64 {
     crate::quantities::roof_totals(project).roof_area
 }
@@ -1113,7 +1128,7 @@ impl Store {
             modified_ms: modified_ms(&self.path(id)?),
             roof_area: 0.0,
             parts: project.parts.len(),
-            outlines: outlines(&project),
+            outlines: card_outlines(&project),
             lines: Vec::new(),
             last_activity: self.activity(id).last().map(ActivityEntry::info),
             pitch_range: crate::library::pitch_range(&project),
@@ -2421,6 +2436,27 @@ mod tests {
         });
         let done = rx.recv_timeout(std::time::Duration::from_secs(20));
         assert!(done.is_ok(), "a read of a pipe hung");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 HUNT-305 item 5: a job of hand-drawn faces only has
+    /// a thumbnail on its card.
+    #[test]
+    fn the_card_of_a_job_of_faces_only_has_a_thumbnail() {
+        let store = temp_store("card-faces");
+        let mut p = Project::new("Faces");
+        p.manual_faces.push(crate::model::ManualFace {
+            points: vec![
+                crate::geom::Point2::new(0.0, 0.0),
+                crate::geom::Point2::new(4.0, 0.0),
+                crate::geom::Point2::new(4.0, 4.0),
+            ],
+            pitch_deg: 30.0,
+            label: String::new(),
+        });
+        let id = store.save(None, &p).unwrap();
+        let s = store.summarize(&id).unwrap();
+        assert_eq!(s.outlines, vec![vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0]]]);
         let _ = fs::remove_dir_all(&store.dir);
     }
 
