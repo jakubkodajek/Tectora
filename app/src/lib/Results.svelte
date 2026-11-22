@@ -399,6 +399,11 @@
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     font-size: 12px;
   }
+  /* The two figure columns keep apart ("152,73 m²  142,29 m²", UX-205). */
+  .diff td.v,
+  .diff th.v {
+    padding-left: 12px;
+  }
   .mono {
     margin: 0;
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
