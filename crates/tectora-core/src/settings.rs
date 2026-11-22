@@ -245,14 +245,8 @@ fn settings_lock(path: &Path) -> Option<fs::File> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).ok()?;
     }
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path.with_extension("json.lock"))
-        .ok()?;
-    file.lock().ok()?;
-    Some(file)
+    // Never through a link or a pipe put in its place (HUNT-402).
+    crate::store::take_lock_file(&path.with_extension("json.lock"))
 }
 
 impl Settings {
@@ -274,14 +268,21 @@ impl Settings {
     }
 
     pub fn load_checked_from(path: &Path) -> (Self, Option<String>) {
-        let text = match fs::read_to_string(path) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        // A regular file of a sane size only: a pipe in its place would
+        // hang the app and every MCP server at start (HUNT-402).
+        let mut bytes = match crate::store::read_regular(path, crate::store::MAX_JOB_FILE) {
+            Ok(b) => b,
+            Err(e) if e.code == "file_not_found" => {
                 return (Self::default(), None);
             }
-            Err(e) => return (Self::default(), Some(format!("{}: {e}", path.display()))),
+            Err(e) => return (Self::default(), Some(e.detail)),
         };
-        match serde_json::from_str::<Self>(&text) {
+        // A byte order mark, which Notepad and PowerShell 5 write, is not
+        // part of the settings (HUNT-404).
+        if bytes.starts_with(b"\xef\xbb\xbf") {
+            bytes.drain(..3);
+        }
+        match serde_json::from_slice::<Self>(&bytes) {
             Ok(mut s) => {
                 s.roof_defaults = s.roof_defaults.repaired();
                 (s, None)
@@ -337,7 +338,11 @@ impl Settings {
         }
         // Unique per process: the app and an MCP server saving at the same
         // time must not rename each other's half-written file.
-        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+        // Unique per write too, so two threads of one process do not share
+        // one either (TEST-403).
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = path.with_extension(format!("{}-{n}.tmp", std::process::id()));
         crate::store::write_synced(&tmp, json.as_bytes())
             .map_err(|e| SettingsError::Io(e.to_string()))?;
         fs::rename(&tmp, path).map_err(|e| SettingsError::Io(e.to_string()))?;
@@ -1382,6 +1387,121 @@ mod tests {
             );
         }
         assert_eq!(s.roof_defaults.overhang, 0.7, "the user's last value");
+    }
+
+    /// TEST-403: the lock itself, without chance: the AI's change is paused
+    /// inside `update_at` (after it read the file) while the user's change
+    /// is made; without the lock the user's change is lost every time.
+    #[test]
+    fn a_change_made_while_another_waits_inside_update_is_kept() {
+        let d = tmp("barrier");
+        let path = d.join(SETTINGS_FILE);
+        Settings::default().save_to(&path).unwrap();
+        let (read_tx, read_rx) = std::sync::mpsc::channel::<()>();
+        let ai = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                Settings::update_at(&path, |s| {
+                    read_tx.send(()).unwrap();
+                    // The user's change starts while this one holds the
+                    // file it read.
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    let patch = serde_json::json!({ "roof_defaults": { "pitch_deg": 33 } });
+                    Ok(s.patched_by_ai(&patch, "Claude", "AI change")?.0)
+                })
+                .unwrap();
+            })
+        };
+        read_rx.recv().unwrap();
+        Settings::update_at(&path, |s| {
+            s.patched(&serde_json::json!({ "roof_defaults": { "overhang": 0.7 } }))
+        })
+        .unwrap();
+        ai.join().unwrap();
+        let s = Settings::load_from(&path);
+        assert_eq!(s.roof_defaults.pitch_deg, 33.0, "the AI's change");
+        assert_eq!(s.roof_defaults.overhang, 0.7, "the user's change");
+        assert!(s.ai_changes.iter().any(|c| c.summary == "AI change"));
+    }
+
+    /// TEST-403: every settings writer of the app, the preview bridge and
+    /// the MCP server changes the file through `Settings::update`, never by
+    /// a `load` and a `save` of its own (which drops the other's change).
+    #[test]
+    fn every_settings_writer_goes_through_update() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for file in [
+            "app/src-tauri/src/lib.rs",
+            "crates/tectora-core/examples/ui_bridge.rs",
+            "crates/tectora-mcp/src/lib.rs",
+            "crates/tectora-mcp/src/more.rs",
+            "crates/tectora-mcp/src/drawings.rs",
+            "crates/tectora-mcp/src/worker.rs",
+            "crates/tectora-cli/src/main.rs",
+        ] {
+            let text = fs::read_to_string(root.join(file)).expect(file);
+            // The tests below may write as a user does.
+            let code = text.split("\nmod tests {").next().unwrap_or("");
+            for (n, line) in code.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                assert!(
+                    !code.contains(".save()") && !code.contains(".save_to("),
+                    "{file}:{}: settings written outside Settings::update: {line}",
+                    n + 1
+                );
+            }
+        }
+    }
+
+    /// HUNT-404: a settings file saved with a UTF-8 byte order mark
+    /// (Notepad, PowerShell 5) keeps its jobs folder and language.
+    #[test]
+    fn a_settings_file_with_a_byte_order_mark_loads() {
+        let d = tmp("bom");
+        let path = d.join(SETTINGS_FILE);
+        let mut bytes = b"\xef\xbb\xbf".to_vec();
+        bytes.extend_from_slice(br#"{ "projects_dir": "/srv/zakazky", "locale": "de" }"#);
+        fs::write(&path, bytes).unwrap();
+        let (s, problem) = Settings::load_checked_from(&path);
+        assert_eq!(problem, None);
+        assert_eq!(s.locale.as_deref(), Some("de"));
+        assert_eq!(s.projects_dir, Some(PathBuf::from("/srv/zakazky")));
+    }
+
+    /// HUNT-402: a named pipe as the settings file or its lock never hangs
+    /// loading or changing the settings.
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_as_the_settings_file_or_its_lock_never_hangs() {
+        let d = tmp("fifo");
+        let path = d.join(SETTINGS_FILE);
+        let lock = path.with_extension("json.lock");
+        let made = [&path, &lock].iter().all(|p| {
+            std::process::Command::new("mkfifo")
+                .arg(p)
+                .status()
+                .is_ok_and(|s| s.success())
+        });
+        if !made {
+            eprintln!("mkfifo not available, skipped");
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let p = path.clone();
+        std::thread::spawn(move || {
+            let (_, problem) = Settings::load_checked_from(&p);
+            let changed = Settings::update_at(&p, |s| {
+                s.patched(&serde_json::json!({ "roof_defaults": { "overhang": 0.7 } }))
+            });
+            let _ = tx.send((problem, changed.is_ok()));
+        });
+        let (problem, changed) = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("a pipe hung the settings");
+        assert!(problem.is_some_and(|p| p.contains("not a regular file")));
+        assert!(changed);
+        assert_eq!(Settings::load_from(&path).roof_defaults.overhang, 0.7);
+        assert!(fs::symlink_metadata(&lock).unwrap().is_file());
     }
 
     #[test]
