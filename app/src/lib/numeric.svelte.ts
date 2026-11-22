@@ -137,6 +137,18 @@ export function waitingStep(stepped: Stepped | null, value: number | null | unde
   return value >= lo && value <= hi ? stepped.to : null;
 }
 
+/**
+ * Whether a committed value `v` goes to `onchange`: when it differs from
+ * the stored value, or, while an earlier value is still with the core
+ * (`out`), when it differs from that one. So ArrowUp then ArrowDown, or the
+ * old value typed back, while the first answer is out sends the old value
+ * after it and the field keeps the last value the user set (UI-307); the
+ * same value committed twice is sent once.
+ */
+export function toSend(v: number, stored: number | null | undefined, out: number | null): boolean {
+  return out !== null ? out !== v : stored !== v;
+}
+
 export function numeric(input: HTMLInputElement, initial: NumericOptions) {
   let opts = initial;
   let dirty = false;
@@ -200,11 +212,21 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
   /** Why the last stored value was refused, when `onchange` said so. */
   let refusal: string | null = null;
 
+  /** The last value sent whose answer is still out (a value the core checks). */
+  let out: { v: number } | null = null;
+
   function store(v: number): boolean {
     refusal = null;
-    if (opts.value === v) return true;
+    if (!toSend(v, opts.value, out?.v ?? null)) return true;
     const r = opts.onchange(v);
-    if (isThenable(r)) later(r, v);
+    if (isThenable(r)) {
+      const mine = (out = { v });
+      const settle = () => {
+        if (out === mine) out = null;
+      };
+      r.then(settle, settle);
+      later(r, v);
+    }
     if (typeof r === "string") refusal = r;
     return r !== false && typeof r !== "string";
   }

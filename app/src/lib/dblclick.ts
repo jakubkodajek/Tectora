@@ -62,6 +62,18 @@ if (typeof window !== "undefined") {
 }
 
 /**
+ * For anything that appears under the pointer (a bar in place of another, a
+ * dialog's backdrop over the button that opened it): call it when the thing
+ * is shown; the function it returns tells whether a press is the second
+ * press of the double click that made it appear (UI-208, UI-304).
+ */
+export function shownNow(): (e: { clientX: number; clientY: number }) => boolean {
+  const origin = lastPress;
+  const shownAt = performance.now();
+  return (e) => secondPressOnFresh(origin, shownAt, { x: e.clientX, y: e.clientY, at: performance.now() });
+}
+
+/**
  * For a bar that appears in place of another one: a click on any of its
  * buttons, radios or selects that is the second press of the double click
  * that made it appear is ignored (the first click closed a face and the new
@@ -69,13 +81,12 @@ if (typeof window !== "undefined") {
  * presses (`detail` 0) and presses elsewhere go through.
  */
 export function freshBar(node: HTMLElement) {
-  const origin = lastPress;
-  const shownAt = performance.now();
+  const second = shownNow();
   const onclick = (e: MouseEvent) => {
     if (e.detail === 0) return;
     const hit = (e.target as Element | null)?.closest?.("button, select, [role=radio], [role=checkbox], input[type=checkbox], input[type=radio]");
     if (!hit || !node.contains(hit)) return;
-    if (secondPressOnFresh(origin, shownAt, { x: e.clientX, y: e.clientY, at: performance.now() })) {
+    if (second(e)) {
       e.preventDefault();
       e.stopImmediatePropagation();
     }

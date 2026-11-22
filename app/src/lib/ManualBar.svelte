@@ -21,6 +21,7 @@
     online,
     onface,
     ontopart,
+    busy = false,
     ondelete,
   }: {
     project: Project;
@@ -29,6 +30,8 @@
     onface: (f: ManualFace) => void;
     /** Replaces the selected face with a building part of the same outline. */
     ontopart?: () => void;
+    /** "Make it a building" is under way: its button is off (UI-308). */
+    busy?: boolean;
     ondelete: () => void;
   } = $props();
   // The bar replaces the face tool's bar right after "Close face", with
@@ -111,7 +114,7 @@
     {/if}
     <div class="spacer"></div>
     {#if face && ontopart}
-      <button class="btn sm" onclick={ontopart} title={t("manual.toPartHint")}><Icon name="house" size={15} />{t("manual.toPart")}</button>
+      <button class="btn sm" disabled={busy} onclick={ontopart} title={t("manual.toPartHint")}><Icon name="house" size={15} />{t("manual.toPart")}</button>
     {/if}
     {@const del = t(sel.kind === "line" ? "manual.deleteLine" : "manual.deleteFace")}
     <button class="btn sm ghost danger" onclick={(e) => !pressTooSoon(shownAt, e.detail) && ondelete()} title={del}><Icon name="trash" size={15} />{del}</button>

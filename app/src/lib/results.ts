@@ -129,3 +129,17 @@ export function missingResult(
   if (result) return null;
   return failure ? "failed" : "calculating";
 }
+
+/** A roof of hand-drawn faces only, no building: it has no ridge and no lines of its own (UX-302). */
+export function isFacesOnly(project: Pick<Project, "parts" | "manual_faces"> | null | undefined): boolean {
+  return !!project && project.parts.length === 0 && (project.manual_faces?.length ?? 0) > 0;
+}
+
+/**
+ * The line rows the results list: all of them for a building (a zero says
+ * "no hips"), only the ones with a length for a roof of hand-drawn faces
+ * only, where rows of 0,00 m would read as calculated lines (UX-302).
+ */
+export function lineRowsShown<T extends { value: number }>(rows: T[], facesOnly: boolean): T[] {
+  return facesOnly ? rows.filter((r) => r.value >= 0.005) : rows;
+}

@@ -16,7 +16,8 @@
   import { placementOf } from "./items";
   import { api } from "./api";
   import { dormerRefusal, toAppError } from "./errors";
-  import { info, notify, notifyError } from "./notify.svelte";
+  import { notify, notifyError } from "./notify.svelte";
+  import type { BarEdit } from "./jobedits";
   import { PITCH } from "./limits";
 
   let {
@@ -27,7 +28,7 @@
     ondelete,
     onedit,
     onplace,
-    track = (p) => p,
+    edit,
   }: {
     project: Project;
     result: CalcResult | null;
@@ -39,8 +40,8 @@
     onedit?: () => void;
     /** A distance on the roof face typed (from eave, left, right; the others null). */
     onplace?: (fromEave: number | null, fromLeft: number | null, fromRight: number | null) => unknown;
-    /** Registers an edit that waits for the core, so leaving the editor and dialogs wait for it (ERR-004). */
-    track?: <T>(p: Promise<T>) => Promise<T>;
+    /** Queues a core-backed edit of item `index` of `list`, held now (the editor's `barEdit`, jobedits.ts). */
+    edit: BarEdit;
   } = $props();
   const placement = $derived(index !== null ? placementOf(result, { kind: "dormer", index }) : null);
 
@@ -66,20 +67,41 @@
 
   /**
    * A field of the bar changed: checked by the core, then stored on the
-   * dormer it was typed for. One check at a time, each on the dormer as the
-   * one before left it, so quick arrow steps and a second field typed while
-   * a check is out all land (UI-201).
+   * dormer it was typed for (held at this moment, so ▶, PageDown or an AI
+   * save that moves it in the list does not send the value elsewhere:
+   * UI-101, ERR-302). Edits run one after another, each on the dormer as
+   * the one before left it, so quick arrow steps and a second field typed
+   * while a check is out all land (UI-201). Only the field typed is the
+   * user's: the rest is the dormer as it is when the check starts.
    */
-  let chain: Promise<unknown> = Promise.resolve();
   const set = (patch: Partial<DormerParams>) => {
-    // The value belongs to the dormer selected now, even when ▶ or PageDown
-    // moves the selection before the core answers (UI-101).
-    const at = index;
-    const run = chain.then(() => setNow(patch, at));
-    chain = run.catch(() => {});
-    return track(run);
+    if (index === null) return;
+    return edit(
+      "dormers",
+      index,
+      async (job, at) => {
+        const d = patched(parseDormer($state.snapshot(job.dormers[at]) as Dormer), patch);
+        if (!d) return null;
+        // The core says whether the dormer can stand there (an eave below the
+        // roof, a pitch under 2°), as for MCP add_dormer (MATH-001, MATH-003).
+        const probe = { ...$state.snapshot(job), dormers: job.dormers.map((x, i) => (i === at ? d : $state.snapshot(x))) } as Project;
+        await api.checkDormer(probe, at);
+        return d;
+      },
+      (d, at) => {
+        if (d) onchange(d, at);
+      },
+    ).catch((e) => {
+      const why = dormerRefusal(e);
+      if (why === null) {
+        notifyError(e, "calc");
+        return false;
+      }
+      notify({ kind: "error", code: toAppError(e).code, title: t("dormer.refusedTitle"), message: why, detail: toAppError(e).detail });
+      return why;
+    });
   };
-  /** Dormer `at` with `patch`: the kind's own defaults follow a kind change. */
+  /** Dormer `cur` with `patch`: the kind's own defaults follow a kind change. */
   function patched(cur: DormerParams, patch: Partial<DormerParams>): Dormer | null {
     const next = { ...cur, ...patch };
     if (next.kind === "general") return null;
@@ -91,42 +113,6 @@
     const h = hostOf(cur);
     if (next.kind === "pointed" && h !== null && patch.kind) next.eave_height = +h.toFixed(3);
     return buildDormer(next);
-  }
-  async function setNow(patch: Partial<DormerParams>, at: number | null): Promise<boolean | string | undefined> {
-    if (at === null) return;
-    // Only the fields typed are the user's: the rest is taken from the dormer
-    // as it is when the check starts; when it changes meanwhile (an AI save,
-    // a drag), the check runs again on it.
-    for (let tries = 0; tries < 3; tries++) {
-      const cur = project.dormers[at];
-      if (!cur) return false;
-      const was = JSON.stringify($state.snapshot(cur));
-      const p = parseDormer($state.snapshot(cur) as Dormer);
-      const d = patched(p, patch);
-      if (!d) return;
-      // The core says whether the dormer can stand there (an eave below the
-      // roof, a pitch under 2°), as for MCP add_dormer (MATH-001, MATH-003).
-      const probe = { ...$state.snapshot(project), dormers: project.dormers.map((x, i) => (i === at ? d : $state.snapshot(x))) } as Project;
-      try {
-        await api.checkDormer(probe, at);
-      } catch (e) {
-        const why = dormerRefusal(e);
-        if (why === null) {
-          notifyError(e, "calc");
-          return false;
-        }
-        notify({ kind: "error", code: toAppError(e).code, title: t("dormer.refusedTitle"), message: why, detail: toAppError(e).detail });
-        return why;
-      }
-      const now = project.dormers[at];
-      if (!now) return false;
-      if (JSON.stringify($state.snapshot(now)) === was) {
-        onchange(d, at);
-        return true;
-      }
-    }
-    info(t("editor.actionStale"));
-    return t("editor.actionStale");
   }
 
   /** Position, direction and material sit in the "More" row, opened per user (UX-008, UI-008). */

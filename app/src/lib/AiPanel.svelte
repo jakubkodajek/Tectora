@@ -103,7 +103,8 @@
           <p class="summary">{c.summary}</p>
           <ul>
             {#each changeRows(c) as r (r.key)}
-              <li>{rowLabel(r)}: {r.before} → {r.after}</li>
+              <!-- As the card names it, one colon only: "New roofs: Overhang 0.50 m → 0.70 m" (UX-302). -->
+              <li data-testid="aichange-row">{rowLabel(r)} {r.before} → {r.after}</li>
             {/each}
           </ul>
           <span class="state">{changeState(c)}</span>

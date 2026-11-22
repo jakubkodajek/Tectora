@@ -6,7 +6,8 @@
   import type { Chimney, Placement, Project, RoofWindow } from "./types";
   import { isConvex, openingBox, openingList, type OpeningBox, type OpeningSel } from "./openings";
   import { api } from "./api";
-  import { info, notifyError } from "./notify.svelte";
+  import { notifyError } from "./notify.svelte";
+  import type { BarEdit } from "./jobedits";
   import { numeric } from "./numeric.svelte";
   import PlaceFields from "./PlaceFields.svelte";
   import { pageStep, stepIndex } from "./itemstep";
@@ -19,19 +20,20 @@
     ondelete,
     placement = null,
     onplace,
-    track = (p) => p,
+    edit,
   }: {
     project: Project;
     sel: OpeningSel;
     /** Stores `c` as the chimney or opening `at` (the one the value was typed for). */
     onchimney: (c: Chimney, at: NonNullable<OpeningSel>) => void;
-    onwindow: (w: RoofWindow) => void;
+    /** A field of roof window `at` typed; resolves to the reason when it was not stored. */
+    onwindow: (patch: Partial<RoofWindow>, at: number) => unknown;
     ondelete: () => void;
     /** Where the object sits on its face (dimension fields). */
     placement?: Placement | null;
     onplace?: (fromEave: number | null, fromLeft: number | null, fromRight: number | null) => unknown;
-    /** Registers an edit that waits for the core, so leaving the editor waits for it (ERR-004). */
-    track?: <T>(p: Promise<T>) => Promise<T>;
+    /** Queues a core-backed edit of item `index` of `list`, held now (the editor's `barEdit`, jobedits.ts). */
+    edit: BarEdit;
   } = $props();
 
   const list = $derived(sel ? openingList(project, sel.kind) : []);
@@ -41,31 +43,31 @@
   const win = $derived(sel?.kind === "window" ? (project.windows ?? [])[sel.index] : null);
 
 
-  /** A field of the box typed: the core reshapes the corners; a box it refuses is said at the field. */
-  const setBox = (patch: Partial<OpeningBox>) => track(setBoxNow(patch));
-  async function setBoxNow(patch: Partial<OpeningBox>): Promise<string | undefined> {
-    if (!sel || !chimney || !box) return;
-    // The object the value was typed for: ▶ or PageDown may move the
-    // selection before the core answers (UI-202).
-    const at = { kind: sel.kind, index: sel.index } as NonNullable<OpeningSel>;
-    const was = $state.snapshot(chimney);
-    let corners;
-    try {
-      corners = await api.reshapeOpening(was.corners, { ...box, ...patch });
-    } catch (e) {
-      if ((e as { code?: string } | null)?.code === "refused") return t("num.refused");
-      notifyError(e, "calc");
+  /**
+   * A field of the box typed: the core reshapes the corners; a box it
+   * refuses is said at the field. The value belongs to the object selected
+   * now (held, so ▶ or PageDown does not move it: UI-202), edits run one
+   * after another on the object as the one before left it, and only the
+   * field typed is the user's (UI-301).
+   */
+  const setBox = (patch: Partial<OpeningBox>) => {
+    if (!sel || sel.kind === "window" || !chimney || !box) return;
+    const kind = sel.kind;
+    return edit(
+      kind === "chimney" ? "chimneys" : "roof_openings",
+      sel.index,
+      async (job, at) => {
+        const cur = $state.snapshot(openingList(job, kind)[at]) as Chimney;
+        const now = openingBox(cur.corners);
+        if (!now) throw { code: "refused" };
+        return { ...cur, corners: await api.reshapeOpening(cur.corners, { ...now, ...patch }) };
+      },
+      (c, at) => onchimney(c, { kind, index: at }),
+    ).catch((e) => {
+      if ((e as { code?: string } | null)?.code !== "refused") notifyError(e, "calc");
       return t("num.refused");
-    }
-    // Onto that object as it is now (an AI save of other things keeps it);
-    // only a drag or an outside change of its own corners refuses it, with a note (ERR-203).
-    const now = openingList(project, at.kind)[at.index] as Chimney | undefined;
-    if (!now || JSON.stringify($state.snapshot(now).corners) !== JSON.stringify(was.corners)) {
-      info(t("editor.actionStale"));
-      return t("editor.actionStale");
-    }
-    onchimney({ ...$state.snapshot(now), corners }, at);
-  }
+    });
+  };
 
   /** The chimney's top typed: stored on the chimney it was typed for. */
   function setTop(v: number) {
@@ -79,7 +81,7 @@
   }
 </script>
 
-{#snippet field(label: string, value: number, unit: string, set: (v: number) => void, min: number | null = null)}
+{#snippet field(label: string, value: number, unit: string, set: (v: number) => unknown, min: number | null = null)}
   <label>
     <span>{label}</span>
     <div class="unit"><input type="text" use:numeric={{ value, step: 0.05, min: min ?? undefined, onchange: set }} /><em>{unit}</em></div>
@@ -118,10 +120,10 @@
         <p class="tip">{t("opening.holeHint")}</p>
       {/if}
     {:else if win}
-      {@render field("X", win.x, "m", (v) => onwindow({ ...win, x: v }))}
-      {@render field("Y", win.y, "m", (v) => onwindow({ ...win, y: v }))}
-      {@render field(t("opening.width"), win.width, "m", (v) => onwindow({ ...win, width: v }), 0.05)}
-      {@render field(t("opening.height"), win.height, "m", (v) => onwindow({ ...win, height: v }), 0.05)}
+      {@render field("X", win.x, "m", (v) => sel && onwindow({ x: v }, sel.index))}
+      {@render field("Y", win.y, "m", (v) => sel && onwindow({ y: v }, sel.index))}
+      {@render field(t("opening.width"), win.width, "m", (v) => sel && onwindow({ width: v }, sel.index), 0.05)}
+      {@render field(t("opening.height"), win.height, "m", (v) => sel && onwindow({ height: v }, sel.index), 0.05)}
       <p class="tip">{t("opening.windowHint")}</p>
     {/if}
     {#if onplace}<PlaceFields {placement} {onplace} />{/if}

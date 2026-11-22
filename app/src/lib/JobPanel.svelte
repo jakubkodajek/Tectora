@@ -11,7 +11,11 @@
   import { DACAD_MATERIALS, defaultMaterialName } from "./materials";
   import { textfield } from "./textfield";
   import { fileSize, m2 } from "./format";
-  import { hasBuilding, roofInput, snapshotDiffers } from "./offer";
+  import { hasBuilding, snapshotDifferences } from "./offer";
+  import { figureName, formatFigure } from "./changes";
+  import { exclusive } from "./inflight";
+  import type { JobEdits, RoofHold } from "./jobedits";
+  import type { FigureDifference } from "./types";
 
   /** Opens an attached file; files that are not drawings or documents are only shown in their folder. */
   async function openFile(name: string) {
@@ -30,6 +34,7 @@
     track = (p) => p,
     blocked = null,
     current,
+    edits,
   }: {
     id: string;
     project: Project;
@@ -43,6 +48,8 @@
     /** The project the editor holds now. The panel may be gone (the AI tab took the dock)
      *  when an awaited answer comes back, so its own prop can be the replaced project (ERR-102). */
     current?: () => Project | null;
+    /** The editor's edit rule (jobedits.ts): a status change holds the roof it stores the result of. */
+    edits: JobEdits;
   } = $props();
 
   /** Whether status `s` cannot be chosen now: any status past the draft while the core gives
@@ -54,7 +61,6 @@
 
   /** The job as the editor holds it now: a status change writes through it, never through the
    *  unbound prop (UI-010, ERRU-004), as `setText` does for the texts. */
-  const job = (p: Project) => p;
   const latest = (): Project | null => (current ? current() : project);
 
   // Leaving the draft status stores the result the offer is made with.
@@ -64,47 +70,55 @@
     const now = project.job.status;
     untrack(() => (status = now));
   });
+  /** A status change is storing its result: the select is off and a second choice waits (jobedits.ts, one-shot). */
+  let changing = $state(false);
+  const changeStatus = exclusive(statusChangedNow, (b) => (changing = b));
   const statusChanged = (e: Event) => {
     const sel = e.currentTarget as HTMLSelectElement;
-    return track(statusChangedNow(sel.value as JobStatus, sel));
+    return track(changeStatus(sel.value as JobStatus, sel));
   };
   async function statusChangedNow(next: JobStatus, sel: HTMLSelectElement) {
     const was = status;
-    const p = job(project);
+    /** The status stays as it is: the select shows it again. */
+    const back = () => {
+      const s = latest()?.job.status ?? was;
+      sel.value = s;
+      status = s;
+    };
     if (refused(next)) {
       sel.value = was;
       return;
     }
     let snap: ResultSnapshot | null = null;
-    // A result stored before (the job went back to draft since) stays the
-    // offer's; the user is told when the roof now gives other figures (UX-206).
-    const kept = was === "draft" && next !== "draft" ? (p.result_snapshot ?? null) : null;
-    let input: string | null = null;
+    let kept: ResultSnapshot | null = null;
     let fresh: ResultSnapshot | null = null;
+    let roof: RoofHold | null = null;
     if (was === "draft" && next !== "draft") {
-      input = roofInput(p);
+      // A value typed just before is part of the roof: wait for it.
+      await edits.idle();
+      const p = latest();
+      if (!p) return;
+      // A result stored before (the job went back to draft since) stays the
+      // offer's; the user is told when the roof now gives other figures (UX-206).
+      kept = p.result_snapshot ?? null;
+      roof = edits.holdRoof();
       try {
         fresh = await api.takeSnapshot(JSON.parse(JSON.stringify(p)));
       } catch (e) {
-        if (!kept) {
-          // No figures to make the offer with: the job stays a draft (DR-002).
-          // Not a failed save: the job on disk is fine, the status was refused (UX-005).
-          sel.value = latest()?.job.status ?? was;
-          notifyError(e, "status");
-          return;
-        }
+        // No figures of the roof as it is now: the job stays a draft (DR-002),
+        // also when it keeps an earlier result, which is not of this roof
+        // (ERR-303). Not a failed save: the status was refused (UX-005).
+        back();
+        notifyError(e, "status");
+        return;
       }
-      // The roof changed while the core calculated, by an AI save (a new
-      // project, ERR-102) or by the user's own edit in place (ERR-201): the
-      // figures are of a roof the job no longer has. Without a stored result
-      // the status is refused; with one, only the note about it is skipped.
-      const cur = latest();
-      if (!cur) return;
-      const stale = roofInput(cur) !== input;
-      if (stale) fresh = null;
-      if (stale && !kept) {
-        sel.value = cur.job.status;
-        status = cur.job.status;
+      // The roof changed while the core calculated, by an AI save (ERR-102)
+      // or by the user's own edit (ERR-201): the figures are of a roof the
+      // job no longer has, so the status is refused with a note. An AI save
+      // of the notes or the job data leaves the roof as it was (ERR-301).
+      if (!latest()) return;
+      if (!edits.roofSame(roof)) {
+        back();
         info(t("job.statusStale"));
         return;
       }
@@ -116,22 +130,32 @@
     now.job.status = next;
     status = next;
     onchange();
-    if (kept && fresh && input !== null && snapshotDiffers(kept, fresh)) offerKept(kept, fresh, input);
+    if (kept && fresh && roof) {
+      const differences = snapshotDifferences(kept, fresh);
+      if (differences.length) offerKept(differences, fresh, roof);
+    }
   }
 
-  /** Says that the job keeps its earlier result, with both areas and the action that stores the new one (UX-206). */
-  function offerKept(kept: ResultSnapshot, fresh: ResultSnapshot, input: string) {
+  /** What differs, in words: the two areas, or the first other figure with its name (ERR-304). */
+  function keptText(differences: FigureDifference[]): string {
+    const d = differences[0];
+    if (d.key === "roof_area") return t("job.offerKept", { a: m2(d.stored), b: m2(d.current) });
+    return t("job.offerKeptOther", { what: figureName(d.key, latest()), a: formatFigure(d.key, d.stored), b: formatFigure(d.key, d.current) });
+  }
+
+  /** Says that the job keeps its earlier result, with the figure that differs and the action that stores the new one (UX-206). */
+  function offerKept(differences: FigureDifference[], fresh: ResultSnapshot, roof: RoofHold) {
     notify({
       kind: "warning",
       title: t("job.offerKeptTitle"),
-      message: t("job.offerKept", { a: m2(kept.roof_area), b: m2(fresh.roof_area) }),
+      message: keptText(differences),
       action: {
         label: t("snap.store"),
         run: () => {
           const now = latest();
           if (!now) return;
           // Only figures of the roof the job still has (as the Editor's store, ERR-102).
-          if (roofInput(now) !== input) {
+          if (!edits.roofSame(roof)) {
             info(t("snap.stale"));
             return;
           }
@@ -235,7 +259,7 @@
     <label><span>{t("job.number")}</span><input type="text" use:textfield={{ value: project.job.number, onchange: setText((p, v) => (p.job.number = v)) }} /></label>
     <label>
       <span>{t("job.status")}</span>
-      <select value={status} onchange={statusChanged} title={why ?? undefined}>
+      <select value={status} onchange={statusChanged} title={why ?? undefined} disabled={changing} aria-busy={changing}>
         {#each JOB_STATUSES as s}<option value={s} disabled={refused(s)}>{t(`status.${s}`)}</option>{/each}
       </select>
     </label>
