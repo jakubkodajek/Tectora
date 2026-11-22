@@ -1,0 +1,22 @@
+{
+  "about": "Cases for the comparison of a stored result with the current one. Read by crates/tectora-core/src/snapshot.rs (compare) and app/src/lib/offer.test.ts (snapshotDifferences), so the UI's copy of the rule cannot drift from the core's (TEST-302). `differs` lists the keys compare reports, in its order.",
+  "base": { "roof_area": 129.24, "ridge_height": 6.5, "lines_by_code": { "T": 28.0, "F": 9.0 }, "area_by_material": [{ "material": 1, "area": 129.24 }] },
+  "cases": [
+    { "name": "the same figures", "stored": {}, "current": {}, "differs": [] },
+    { "name": "another area", "stored": {}, "current": { "roof_area": 120.4, "area_by_material": [{ "material": 1, "area": 120.4 }] }, "differs": ["roof_area"] },
+    { "name": "an area just under the tolerance", "stored": { "roof_area": 100.0 }, "current": { "roof_area": 100.004 }, "differs": [] },
+    { "name": "an area over the tolerance", "stored": { "roof_area": 100.0 }, "current": { "roof_area": 100.006 }, "differs": ["roof_area"] },
+    { "name": "exactly half a unit apart counts", "stored": { "roof_area": 0.0 }, "current": { "roof_area": 0.005 }, "differs": ["roof_area"] },
+    { "name": "another ridge height", "stored": {}, "current": { "ridge_height": 7.0 }, "differs": ["ridge_height"] },
+    { "name": "a line longer", "stored": {}, "current": { "lines_by_code": { "T": 30.0, "F": 9.0 } }, "differs": ["line:T"] },
+    { "name": "a line code only in the stored result", "stored": {}, "current": { "lines_by_code": { "T": 28.0 } }, "differs": ["line:F"] },
+    { "name": "a line code only in the current result", "stored": {}, "current": { "lines_by_code": { "T": 28.0, "F": 9.0, "K": 4.2 } }, "differs": ["line:K"] },
+    { "name": "one default material is the area again: its own difference is not listed twice", "stored": {}, "current": { "roof_area": 120.0, "area_by_material": [{ "material": 1, "area": 120.0 }] }, "differs": ["roof_area"] },
+    { "name": "a single-material roof now split in two (same area)", "stored": {}, "current": { "area_by_material": [{ "material": 1, "area": 100.0 }, { "material": 2, "area": 29.24 }] }, "differs": ["material:1", "material:2"] },
+    { "name": "a split roof now of one material (same area)", "stored": { "area_by_material": [{ "material": 1, "area": 100.0 }, { "material": 2, "area": 29.24 }] }, "current": {}, "differs": ["material:1", "material:2"] },
+    { "name": "the whole roof in another material", "stored": {}, "current": { "area_by_material": [{ "material": 3, "area": 129.24 }] }, "differs": ["material:1", "material:3"] },
+    { "name": "the same split", "stored": { "area_by_material": [{ "material": 1, "area": 100.0 }, { "material": 2, "area": 29.24 }] }, "current": { "area_by_material": [{ "material": 2, "area": 29.24 }, { "material": 1, "area": 100.0 }] }, "differs": [] },
+    { "name": "no material list on either side", "stored": { "area_by_material": [] }, "current": { "area_by_material": [] }, "differs": [] },
+    { "name": "area, a line and a material at once", "stored": {}, "current": { "roof_area": 140.0, "lines_by_code": { "T": 28.0, "F": 12.0 }, "area_by_material": [{ "material": 1, "area": 70.0 }, { "material": 2, "area": 70.0 }] }, "differs": ["roof_area", "line:F", "material:1", "material:2"] }
+  ]
+}

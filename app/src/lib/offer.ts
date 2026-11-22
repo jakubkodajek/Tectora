@@ -4,7 +4,7 @@
 // and the "differs" flag come from the core's library summary.
 
 import { t } from "./i18n.svelte";
-import type { Project, ProjectSummary, ResultSnapshot } from "./types";
+import type { FigureDifference, Project, ProjectSummary, ResultSnapshot } from "./types";
 
 type OfferFigures = Pick<ProjectSummary, "has_result" | "stored_area" | "result_differs">;
 
@@ -50,20 +50,33 @@ const TOLERANCE = 0.005;
 const DEFAULT_MATERIAL = 1;
 
 /**
- * Whether the figures of two results the core took differ, by the rule of
- * the core's `snapshot::compare` (area, ridge height, every line code, and
- * the areas by material once the roof has more than the default one): a
- * job offered again keeps its stored result, and the user is told when the
- * roof now gives other figures (UX-206). Comparison only, no roof math.
+ * What differs between two results the core took, by the rule of the
+ * core's `snapshot::compare` and in its order (area, ridge height, every
+ * line code, and the areas by material once the roof has more than the
+ * default one): a job offered again keeps its stored result, and the user
+ * is told which figure the roof now gives differently (UX-206, ERR-304).
+ * Comparison only, no roof math; held to the core by the shared cases in
+ * `tests/fixtures/parity/snapshot_compare_cases.json` (TEST-302).
  */
-export function snapshotDiffers(stored: ResultSnapshot, current: ResultSnapshot): boolean {
-  const off = (a: number, b: number) => Math.abs(a - b) >= TOLERANCE;
-  if (off(stored.roof_area, current.roof_area) || off(stored.ridge_height, current.ridge_height)) return true;
-  const codes = new Set([...Object.keys(stored.lines_by_code), ...Object.keys(current.lines_by_code)]);
-  for (const c of codes) if (off(stored.lines_by_code[c] ?? 0, current.lines_by_code[c] ?? 0)) return true;
-  const mats = new Set([...stored.area_by_material, ...current.area_by_material].map((m) => m.material));
-  if ([...mats].every((m) => m === DEFAULT_MATERIAL)) return false;
+export function snapshotDifferences(stored: ResultSnapshot, current: ResultSnapshot): FigureDifference[] {
+  const out: FigureDifference[] = [];
+  const check = (key: string, a: number, b: number) => {
+    if (Math.abs(a - b) >= TOLERANCE) out.push({ key, stored: a, current: b });
+  };
+  check("roof_area", stored.roof_area, current.roof_area);
+  check("ridge_height", stored.ridge_height, current.ridge_height);
+  // The core's order: codes as its BTreeSet<String> sorts them (by code unit), materials by number.
+  const codes = [...new Set([...Object.keys(stored.lines_by_code), ...Object.keys(current.lines_by_code)])].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  for (const c of codes) check(`line:${c}`, stored.lines_by_code[c] ?? 0, current.lines_by_code[c] ?? 0);
+  const mats = [...new Set([...stored.area_by_material, ...current.area_by_material].map((m) => m.material))].sort((a, b) => a - b);
+  // One default material is the roof area again; only a split says more.
+  if (mats.every((m) => m === DEFAULT_MATERIAL)) return out;
   const area = (s: ResultSnapshot, m: number) => s.area_by_material.find((x) => x.material === m)?.area ?? 0;
-  for (const m of mats) if (off(area(stored, m), area(current, m))) return true;
-  return false;
+  for (const m of mats) check(`material:${m}`, area(stored, m), area(current, m));
+  return out;
+}
+
+/** Whether the figures of two results the core took differ (`snapshotDifferences`). */
+export function snapshotDiffers(stored: ResultSnapshot, current: ResultSnapshot): boolean {
+  return snapshotDifferences(stored, current).length > 0;
 }

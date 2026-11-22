@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasBuilding, listedArea, offerDiffers, roofInput, snapshotDiffers, storedArea } from "./offer";
+import { hasBuilding, listedArea, offerDiffers, roofInput, snapshotDifferences, snapshotDiffers, storedArea } from "./offer";
 import type { Project, ResultSnapshot } from "./types";
 
 describe("offer figures in the library (UX-008)", () => {
@@ -85,5 +85,32 @@ describe("a stored offer against new figures (UX-206)", () => {
     expect(snapshotDiffers(snap(), snap({ area_by_material: [] }))).toBe(false);
     const split = [{ material: 1, area: 100 }, { material: 2, area: 29.24 }];
     expect(snapshotDiffers(snap({ area_by_material: split }), snap({ area_by_material: [{ material: 1, area: 90 }, { material: 2, area: 39.24 }] }))).toBe(true);
+  });
+});
+
+// The same cases the core's `snapshot::compare` is tested with
+// (crates/tectora-core/src/snapshot.rs `compare_matches_the_shared_cases`),
+// so this copy of the rule cannot drift from it (TEST-302).
+describe("snapshotDifferences follows the core's compare (shared cases)", () => {
+  const files = import.meta.glob("../../../tests/fixtures/parity/snapshot_compare_cases.json", { eager: true, import: "default" }) as Record<string, unknown>;
+  const file = Object.values(files)[0] as {
+    base: Partial<ResultSnapshot>;
+    cases: { name: string; stored: Partial<ResultSnapshot>; current: Partial<ResultSnapshot>; differs: string[] }[];
+  };
+  const snap = (over: Partial<ResultSnapshot>) => ({ engine_version: "test", taken_ms: 0, ...file.base, ...over }) as ResultSnapshot;
+  it("has the cases", () => expect(file.cases.length).toBeGreaterThanOrEqual(10));
+  for (const c of file.cases) {
+    it(c.name, () => {
+      const d = snapshotDifferences(snap(c.stored), snap(c.current));
+      expect(d.map((x) => x.key)).toEqual(c.differs);
+      expect(snapshotDiffers(snap(c.stored), snap(c.current))).toBe(c.differs.length > 0);
+    });
+  }
+  it("gives both figures of a difference", () => {
+    const d = snapshotDifferences(snap({}), snap({ area_by_material: [{ material: 1, area: 100 }, { material: 2, area: 29.24 }] }));
+    expect(d).toEqual([
+      { key: "material:1", stored: 129.24, current: 100 },
+      { key: "material:2", stored: 0, current: 29.24 },
+    ]);
   });
 });
