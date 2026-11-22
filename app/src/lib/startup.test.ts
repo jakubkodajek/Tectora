@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
 import { afterListening } from "./startup";
 
 // Round-6 audit (errors.md To check 75): a file opened at cold start whose
@@ -25,7 +24,8 @@ describe("afterListening", () => {
     expect(taken).toBe(1);
   });
   it("is how App.svelte takes the opened files", () => {
-    const app = readFileSync(new URL("../App.svelte", import.meta.url), "utf8");
+    const files = import.meta.glob("../App.svelte", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+    const app = Object.values(files)[0];
     const at = app.indexOf("afterListening([unOpen, unOpenFailed]");
     expect(at).toBeGreaterThan(0);
     // No take before the listeners exist.
