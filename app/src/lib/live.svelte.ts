@@ -1,5 +1,6 @@
 // What the connected AI agent is doing right now (from `.activity/live.json`).
 
+import { num } from "./format";
 import { DICTS, t } from "./i18n.svelte";
 import type { LiveStatus } from "./types";
 
@@ -49,8 +50,16 @@ export function isRevert(summary: string): boolean {
   return revertSentence(summary) || LEGACY_REASON.test(summary);
 }
 
+/** The entry the core writes when it recalculates a stored result (snapshot.rs `REFRESHED_PREFIX`). */
+const REFRESHED = /^Stored result recalculated \(Tectora (\S+) -> (\S+)\): roof area (-?[\d.]+) -> (-?[\d.]+) m2$/;
+
 /** A change-log summary with the core's English revert sentences translated. */
 export function entrySummary(summary: string): string {
+  const refreshed = REFRESHED.exec(summary);
+  if (refreshed) {
+    const [, from, to, a, b] = refreshed;
+    return t("chg.resultRefreshed", { from, to, a: num(Number(a)), b: num(Number(b)) });
+  }
   if (revertSentence(summary)) {
     // The AI's reason is the entry's last ` (reason: …)`.
     const at = summary.lastIndexOf(REASON_OPEN);

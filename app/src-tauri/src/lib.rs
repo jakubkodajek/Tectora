@@ -189,7 +189,12 @@ fn connect_ai_assistant(id: assistants::Assistant) -> CmdResult<assistants::Conn
 
 #[tauri::command]
 fn load_project(state: State<AppState>, id: String) -> CmdResult<Project> {
-    guard(|| Ok(state.store().load(&id)?))
+    guard(|| {
+        // A result stored by an older engine follows the corrected
+        // calculation; the change log keeps the old figures.
+        let _ = state.store().refresh_stored_result(&id);
+        Ok(state.store().load(&id)?)
+    })
 }
 
 #[tauri::command]

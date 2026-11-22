@@ -489,3 +489,113 @@ pub fn offset(pts: &[(f64, f64)], d: f64) -> Vec<Point2> {
         })
         .collect()
 }
+
+/// Distance from `p` to the closed plan outline `poly`.
+fn to_outline(poly: &[Point2], p: Point2) -> f64 {
+    let n = poly.len();
+    (0..n)
+        .map(|i| {
+            let (a, b) = (poly[i], poly[(i + 1) % n]);
+            let (dx, dy) = (b.x - a.x, b.y - a.y);
+            let l2 = dx * dx + dy * dy;
+            let t = if l2 > 0.0 {
+                (((p.x - a.x) * dx + (p.y - a.y) * dy) / l2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (p.x - a.x - t * dx).hypot(p.y - a.y - t * dy)
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+fn in_plan(poly: &[Point2], p: Point2) -> bool {
+    let mut c = false;
+    let n = poly.len();
+    for i in 0..n {
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y) {
+            c = !c;
+        }
+    }
+    c
+}
+
+/// Puts a 10 cm window on a 0.7 m grid over the first building of `base`
+/// (its own windows removed), wherever it lies 15 cm inside one sloped
+/// face, and checks that exactly that face loses the window's area and
+/// that the window's cut names it. The faces' order changes when the
+/// calculation joins faces of one plane or splits off wings; a window
+/// deducted by a stale index lands on another face. Returns how many
+/// windows were placed and what went wrong.
+#[allow(dead_code)]
+pub fn windows_stay_on_their_face(name: &str, base: &Project) -> (usize, Vec<String>) {
+    let mut base = base.clone();
+    base.windows.clear();
+    let bare = calc(&base);
+    assert!(
+        bare.geos[0].error.is_none(),
+        "{name}: {:?}",
+        bare.geos[0].error
+    );
+    let faces = &bare.geos[0].faces;
+    let plans: Vec<Vec<Point2>> = faces
+        .iter()
+        .map(|f| f.polygon.iter().map(|v| Point2::new(v[0], v[1])).collect())
+        .collect();
+    let (x0, x1, y0, y1) = plans.iter().flatten().fold(
+        (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ),
+        |(a, b, c, d), q| (a.min(q.x), b.max(q.x), c.min(q.y), d.max(q.y)),
+    );
+    let (side, step) = (0.1, 0.7);
+    let (mut tried, mut bad) = (0, Vec::new());
+    let mut y = y0 + 0.35;
+    while y < y1 {
+        let mut x = x0 + 0.35;
+        while x < x1 {
+            let corners = [(0.0, 0.0), (side, 0.0), (side, side), (0.0, side)]
+                .map(|(dx, dy)| Point2::new(x + dx, y + dy));
+            let host: Vec<usize> = (0..plans.len())
+                .filter(|&k| {
+                    faces[k].edge != usize::MAX
+                        && faces[k].pitch_deg > 0.0
+                        && corners
+                            .iter()
+                            .all(|&c| in_plan(&plans[k], c) && to_outline(&plans[k], c) > 0.15)
+                })
+                .collect();
+            if let [k] = host[..] {
+                tried += 1;
+                let mut p = base.clone();
+                p.windows.push(tectora_core::model::RoofWindow {
+                    x,
+                    y,
+                    width: side,
+                    height: side,
+                });
+                let roof = calc(&p);
+                let g = &roof.geos[0];
+                let moved: Vec<usize> = (0..g.faces.len())
+                    .filter(|&j| {
+                        faces
+                            .get(j)
+                            .is_none_or(|f| (f.area - g.faces[j].area).abs() > 1e-9)
+                    })
+                    .collect();
+                let cut: Vec<usize> = g.window_cuts.iter().map(|c| c.face).collect();
+                if g.faces.len() != faces.len() || moved != [k] || cut != [k] {
+                    bad.push(format!(
+                        "{name}: window at ({x:.2}, {y:.2}) on face {k}: area changed on {moved:?}, cut on {cut:?}"
+                    ));
+                }
+            }
+            x += step;
+        }
+        y += step;
+    }
+    (tried, bad)
+}

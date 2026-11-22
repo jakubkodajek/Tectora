@@ -1390,3 +1390,31 @@ fn the_ways_tried_for_one_building_share_one_budget_of_core_runs() {
         "{runs} runs, {at_limit} at the limit"
     );
 }
+
+// ------------------------------------------------- windows on departed roofs
+
+/// TEST-001: a small window put anywhere on a roof Tectora calculated
+/// where the standard calculation stops (merged planes, joined wings, the
+/// sweep) is deducted from the face it lies on, and from that face only.
+#[test]
+fn windows_anywhere_on_a_departed_roof_stay_on_their_face() {
+    let mut roofs: Vec<(&str, Project)> = departed_roofs()
+        .into_iter()
+        .map(|(n, p, _, _)| (n, p))
+        .collect();
+    roofs.push(("two lean-to wings", two_wings(2.0, Side::Gable)));
+    roofs.push(("L wing", l_wing()));
+    let (mut tried, mut bad) = (0, Vec::new());
+    for (name, base) in &roofs {
+        let (t, b) = windows_stay_on_their_face(name, base);
+        tried += t;
+        bad.extend(b);
+    }
+    assert!(tried > 200, "only {tried} windows placed");
+    assert!(
+        bad.is_empty(),
+        "{} of {tried}:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+}

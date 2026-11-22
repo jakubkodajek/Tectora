@@ -7,7 +7,7 @@
 
 use crate::geom::{Point2, signed_area};
 use crate::model::{Project, RoofPart};
-use crate::roof::{LineKind, Opening, OpeningKind, RoofFace, RoofGeometry, RoofLine};
+use crate::roof::{LineKind, Opening, OpeningKind, RoofFace, RoofGeometry, RoofLine, WindowCut};
 
 /// The flat roof of every part (same order as `project.parts`).
 pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
@@ -114,6 +114,13 @@ fn part(project: &Project, part: &RoofPart) -> RoofGeometry {
             geo.openings.push(Opening {
                 kind: OpeningKind::Window,
                 area,
+            });
+            // The part's one face: the list and the plan sheet show the
+            // window with it, as on a pitched roof.
+            geo.window_cuts.push(WindowCut {
+                face: 0,
+                width: w.width,
+                height: w.height,
             });
         }
     }

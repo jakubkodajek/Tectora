@@ -31,7 +31,7 @@ use geo::{BooleanOps, MultiPolygon};
 use crate::check::{RoofWarning, WarningKind, wing_planes};
 use crate::geom::Point2;
 use crate::model::{Project, RoofPart};
-use crate::roof::{RoofFace, RoofGeometry, RoofLine};
+use crate::roof::{LineKind, RoofFace, RoofGeometry, RoofLine};
 use crate::union::{from_geo, near_boundary, to_geo};
 
 /// Rise of a front plane over (or under) a parallel back plane up to which
@@ -352,32 +352,101 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
         if outline.len() < 3 || pinched {
             return Err("the faces in the back plane touch in a point".into());
         }
+        // The joined face keeps what its pieces deducted: on the sweep's
+        // roof the windows, chimneys and openings are already cut out of
+        // them (`finish_departed`), and the list and the breakdown show the
+        // face's gross area as area + deducted.
         let area: f64 = members.iter().map(|&k| geo.faces[k].area).sum();
+        let deducted: f64 = members.iter().map(|&k| geo.faces[k].deducted).sum();
         let face = RoofFace {
             edge: pair.inner,
             pitch_deg: geo.faces[back].pitch_deg,
             polygon: outline.iter().map(|&p| [p.x, p.y, plane.z(p)]).collect(),
             area,
-            deducted: 0.0,
+            deducted,
             material,
         };
-        let at = members.first().copied().unwrap_or(0);
-        let mut faces: Vec<RoofFace> = geo
+        // The members' own outlines: a line on one of them inside the
+        // joined face lay between two members and goes with the join.
+        let member_plans: Vec<Vec<Point2>> = members.iter().map(|&k| plan(&geo.faces[k])).collect();
+        // The plan outlines of the dormers' faces: a line with an end on
+        // one is the dormer's (its valley, its abutment).
+        let dormer_plans: Vec<Vec<Point2>> = geo
             .faces
             .iter()
-            .enumerate()
-            .filter(|(k, _)| !members.contains(k))
-            .map(|(_, f)| f.clone())
+            .filter(|f| f.edge == usize::MAX && f.polygon.len() >= 3)
+            .map(plan)
             .collect();
-        faces.insert(at.min(faces.len()), face);
+        let dormer_line = |l: &RoofLine| {
+            [l.a, l.b].iter().any(|p| {
+                let p = Point2::new(p[0], p[1]);
+                dormer_plans.iter().any(|d| near_boundary(d, p, INSIDE_TOL))
+            })
+        };
+        let at = members.first().copied().unwrap_or(0);
+        let mut faces: Vec<RoofFace> = Vec::with_capacity(geo.faces.len());
+        // Where each old face is now: a member is the joined face, the
+        // others keep their order around it (windows name their face).
+        let mut moved: Vec<usize> = Vec::with_capacity(geo.faces.len());
+        for (k, f) in geo.faces.iter().enumerate() {
+            if members.contains(&k) {
+                moved.push(usize::MAX);
+            } else {
+                moved.push(faces.len());
+                faces.push(f.clone());
+            }
+        }
+        let at = at.min(faces.len());
+        faces.insert(at, face);
+        for m in &mut moved {
+            *m = match *m {
+                usize::MAX => at,
+                i if i >= at => i + 1,
+                i => i,
+            };
+        }
+        for w in &mut geo.window_cuts {
+            if let Some(&to) = moved.get(w.face) {
+                w.face = to;
+            }
+        }
         geo.faces = faces;
         // Only lines in the joined plane can lie between its faces: a line
         // of a roof under it (a wall abutment under the overhang) stays.
+        // Lines inside a member (a chimney's or an opening's own lines)
+        // stay whole.
+        // A chimney's or opening's wall abutment never lies between two
+        // faces of one plane, even where one of its sides runs along the
+        // seam (R2-3).
         let lies_in = |l: &RoofLine| {
-            [l.a, l.b]
+            let mid = Point2::new((l.a[0] + l.b[0]) / 2.0, (l.a[1] + l.b[1]) / 2.0);
+            !matches!(
+                l.kind,
+                LineKind::AbutmentFront | LineKind::AbutmentBack | LineKind::AbutmentSide
+            ) && [l.a, l.b]
                 .iter()
                 .all(|p| (plane.z(Point2::new(p[0], p[1])) - p[2]).abs() < IN_PLANE)
+                && member_plans.iter().any(|m| {
+                    // A dormer's line must lie on the outline as a whole: a
+                    // dormer valley crossing the seam at its middle stays
+                    // (Fable R3-3). Other lines go by their middle as
+                    // before, so a valley or hip across a centimetre step
+                    // is still clipped and `sound` judges the roof as
+                    // before (Fable R4 S3-a).
+                    let ends = [Point2::new(l.a[0], l.a[1]), Point2::new(l.b[0], l.b[1])];
+                    near_boundary(m, mid, INSIDE_TOL)
+                        && (!dormer_line(l)
+                            || ends.iter().all(|&p| near_boundary(m, p, INSIDE_TOL)))
+                })
         };
+        let lengths = |lines: &[RoofLine]| {
+            let mut by: std::collections::BTreeMap<&'static str, f64> = Default::default();
+            for l in lines {
+                *by.entry(l.dacad_code()).or_default() += l.length();
+            }
+            by
+        };
+        let before = lengths(&geo.lines);
         geo.lines = geo
             .lines
             .iter()
@@ -390,6 +459,63 @@ fn join(pairs: &[Pair], geo: &mut RoofGeometry) -> Result<(), String> {
             })
             .filter(|l| l.length() >= MIN_LINE)
             .collect();
+        // A line inside the joined face is gone (a pitch break between two
+        // faces of one pitch, a step of a few millimetres), and so is what
+        // a chimney on it took off the line: else the line totals would
+        // show a negative length of a line the roof does not have, or
+        // another line of the code would lose it (R2-2). A deduction whose
+        // place is known goes where its place lies on a removed line.
+        geo.align_minus();
+        let removed = |&(c, d): &([f64; 3], [f64; 3])| {
+            let mid = Point2::new((c[0] + d[0]) / 2.0, (c[1] + d[1]) / 2.0);
+            let z = (c[2] + d[2]) / 2.0;
+            (plane.z(mid) - z).abs() < IN_PLANE
+                && member_plans
+                    .iter()
+                    .any(|m| near_boundary(m, mid, INSIDE_TOL))
+                && crate::openings::inside(&outline, mid)
+                && !near_boundary(&outline, mid, INSIDE_TOL)
+        };
+        let keep: Vec<bool> = geo
+            .minus_at
+            .iter()
+            .map(|at| !at.as_ref().is_some_and(removed))
+            .collect();
+        let mut k = keep.iter();
+        geo.minus_lines.retain(|_| *k.next().unwrap_or(&true));
+        let mut k = keep.iter();
+        geo.minus_at.retain(|_| *k.next().unwrap_or(&true));
+        // Where the place is not known, a code keeps its deductions as long
+        // as its remaining lines are long enough for them.
+        let after = lengths(&geo.lines);
+        for code in before.keys() {
+            let left = after.get(code).copied().unwrap_or(0.0);
+            let taken: f64 = geo
+                .minus_lines
+                .iter()
+                .filter(|(c, _)| c == code)
+                .map(|(_, m)| *m)
+                .sum();
+            let mut excess = taken - left;
+            for ((_, minus), _) in geo
+                .minus_lines
+                .iter_mut()
+                .zip(&geo.minus_at)
+                .filter(|((c, _), at)| c == code && at.is_none())
+            {
+                if excess <= 0.0 {
+                    break;
+                }
+                let take = minus.min(excess).max(0.0);
+                *minus -= take;
+                excess -= take;
+            }
+        }
+        let keep: Vec<bool> = geo.minus_lines.iter().map(|(_, len)| *len > 1e-9).collect();
+        let mut k = keep.iter();
+        geo.minus_lines.retain(|_| *k.next().unwrap_or(&true));
+        let mut k = keep.iter();
+        geo.minus_at.retain(|_| *k.next().unwrap_or(&true));
     }
     Ok(())
 }

@@ -207,6 +207,72 @@ pub fn change_in_figures(before: Option<&Project>, after: &Project) -> Option<Ve
     Some(compare(&a, &figures(after)?))
 }
 
+/// How the change-log entry of [`refreshed`] begins; the app reads it to
+/// show the sentence in the user's language. The entry reads
+/// `Stored result recalculated (Tectora <from> -> <to>): roof area <a> -> <b> m2`.
+pub const REFRESHED_PREFIX: &str = "Stored result recalculated";
+
+/// `a.b.c` as numbers, for comparing engine versions.
+fn version(v: &str) -> Option<(u64, u64, u64)> {
+    // A clean `a.b.c[-pre][+build]` only: the string comes from the file
+    // and goes into the change log.
+    if v.len() > 32
+        || !v
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+    {
+        return None;
+    }
+    let mut it = v.split(['.', '-', '+']).map(|n| n.parse::<u64>().ok());
+    Some((it.next()??, it.next()??, it.next()??))
+}
+
+/// A fingerprint of what the roof is calculated from: the project without
+/// its name, notes, job data and stored result (FNV-1a over its JSON).
+/// Equal fingerprints mean the design is unchanged.
+pub fn input_digest(project: &Project) -> String {
+    let mut p = project.clone();
+    p.result_snapshot = None;
+    p.name.clear();
+    p.notes.clear();
+    p.job = Default::default();
+    p.extra.clear();
+    let text = serde_json::to_string(&p).unwrap_or_default();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// The job with its stored result recalculated, where an older engine
+/// stored it and this one, with its corrections, gives other figures
+/// (Jakub's decision 2026-11-21: stored results follow a fixed
+/// calculation, the old figures stay in the change log). `None` when the
+/// result was stored by this engine or a newer one, the figures are the
+/// same, or the roof cannot be calculated now (then the stored result
+/// stays as the offer had it), with the change log's summary otherwise.
+/// Whether the design changed since the result was stored is not known
+/// here: [`crate::store::Store::refresh_stored_result`] checks that.
+pub fn refreshed(project: &Project) -> Option<(Project, String)> {
+    let stored = project.result_snapshot.as_ref()?;
+    if version(&stored.engine_version)? >= version(ENGINE_VERSION)? {
+        return None;
+    }
+    let current = take_checked(project).ok()?;
+    if compare(stored, &current).is_empty() {
+        return None;
+    }
+    let summary = format!(
+        "{REFRESHED_PREFIX} (Tectora {} -> {}): roof area {:.2} -> {:.2} m2",
+        stored.engine_version, ENGINE_VERSION, stored.roof_area, current.roof_area
+    );
+    let mut p = project.clone();
+    p.result_snapshot = Some(current);
+    Some((p, summary))
+}
+
 /// The stored result against the current one, for the app and the agents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SnapshotStatus {
@@ -237,6 +303,60 @@ mod tests {
     use super::*;
     use crate::examples;
     use crate::model::JobStatus;
+
+    /// A gable job whose stored result an older engine took with a roof
+    /// area 2 m² off (a calculation fixed since).
+    fn stored_by(version: &str, off: f64) -> Project {
+        let mut p = examples::find("gable").unwrap().project();
+        let mut s = take(&p);
+        s.engine_version = version.into();
+        s.roof_area += off;
+        p.result_snapshot = Some(s);
+        p
+    }
+
+    #[test]
+    fn a_result_an_older_engine_stored_follows_the_corrected_calculation() {
+        let p = stored_by("0.0.1", 2.0);
+        let (q, summary) = refreshed(&p).expect("refreshed");
+        let s = q.result_snapshot.as_ref().unwrap();
+        assert_eq!(s.engine_version, ENGINE_VERSION);
+        assert!(compare(s, &take(&p)).is_empty());
+        let old = p.result_snapshot.as_ref().unwrap().roof_area;
+        assert_eq!(
+            summary,
+            format!(
+                "{REFRESHED_PREFIX} (Tectora 0.0.1 -> {ENGINE_VERSION}): roof area {old:.2} -> {:.2} m2",
+                s.roof_area
+            )
+        );
+        // Nothing else of the job changes.
+        let mut back = q.clone();
+        back.result_snapshot = p.result_snapshot.clone();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn a_result_stored_by_this_or_a_newer_engine_or_with_the_same_figures_stays() {
+        assert!(refreshed(&stored_by(ENGINE_VERSION, 2.0)).is_none());
+        assert!(refreshed(&stored_by("999.0.0", 2.0)).is_none());
+        assert!(refreshed(&stored_by("0.0.1", 0.0)).is_none());
+        assert!(refreshed(&stored_by("not a version", 2.0)).is_none());
+        assert!(refreshed(&stored_by("0.0.1-a b", 2.0)).is_none());
+        assert!(refreshed(&stored_by("0.0.1+x\ny", 2.0)).is_none());
+        assert!(refreshed(&stored_by(&format!("0.0.1-{}", "x".repeat(40)), 2.0)).is_none());
+        assert!(refreshed(&stored_by("0.0.1-rc.1+build.5", 2.0)).is_some());
+        let mut none = stored_by("0.0.1", 2.0);
+        none.result_snapshot = None;
+        assert!(refreshed(&none).is_none());
+    }
+
+    #[test]
+    fn a_stored_result_stays_when_the_roof_cannot_be_calculated_now() {
+        let mut p = stored_by("0.0.1", 2.0);
+        p.parts[0].edges[0].start.x = 1e300;
+        assert!(refreshed(&p).is_none());
+    }
 
     #[test]
     fn storing_the_result_of_a_roof_out_of_range_is_refused_not_run() {
