@@ -66,6 +66,8 @@ struct Library {
     projects: Vec<store::ProjectSummary>,
     /// Project files in the folder that could not be read.
     broken: Vec<BrokenFile>,
+    /// Links or files in place of the library's own folders (UX-601).
+    foreign: Vec<BrokenFile>,
 }
 
 /// Runs off the main thread: summarising computes every roof, and the
@@ -74,7 +76,12 @@ struct Library {
 fn list_projects(state: State<AppState>) -> CmdResult<Library> {
     guard(|| {
         let (projects, broken) = state.store().scan()?;
-        Ok(Library { projects, broken })
+        let foreign = state.store().foreign_entries();
+        Ok(Library {
+            projects,
+            broken,
+            foreign,
+        })
     })
 }
 

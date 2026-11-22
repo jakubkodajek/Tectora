@@ -1670,6 +1670,52 @@ impl Store {
         self.scan().map(|(ok, _)| ok).unwrap_or_default()
     }
 
+    /// The library's own folders (`.activity`, `.files`, `.trash`,
+    /// `exports`, and each job's folder in `.files`) that a link or a file
+    /// stands in place of, for the library screen to name before the user
+    /// edits a job that then cannot be saved (audit 2026-11-22 UX-601).
+    /// Each with `id` the folder's path in the library, `code`
+    /// `foreign_entry` and the detail of the refusal. A few `lstat` calls
+    /// and one listing of `.files`.
+    pub fn foreign_entries(&self) -> Vec<BrokenFile> {
+        let mut found = Vec::new();
+        let mut check = |rel: String| {
+            if let Err(e) = not_foreign(&self.dir.join(&rel))
+                && is_foreign(&e)
+            {
+                found.push(BrokenFile {
+                    id: rel,
+                    code: "foreign_entry",
+                    detail: e.to_string(),
+                });
+            }
+        };
+        for dir in [
+            ACTIVITY_DIR,
+            FILES_DIR,
+            TRASH_DIR,
+            crate::bundle::EXPORTS_DIR,
+        ] {
+            check(dir.to_string());
+        }
+        let files = self.dir.join(FILES_DIR);
+        if is_own_folder(&files) {
+            let mut linked: Vec<String> = fs::read_dir(&files)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| !t.is_dir()))
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| !n.starts_with('.'))
+                .collect();
+            linked.sort();
+            for name in linked.into_iter().take(20) {
+                check(format!("{FILES_DIR}/{name}"));
+            }
+        }
+        found
+    }
+
     /// Every project in the library, newest first, and the project files
     /// that could not be read (so the app can say so instead of hiding
     /// them). Fails only when the folder itself cannot be read.
@@ -3672,6 +3718,47 @@ mod tests {
             let _ = fs::remove_dir_all(&store.dir);
             let _ = fs::remove_dir_all(&outside);
         }
+    }
+
+    /// Audit 2026-11-22 UX-601: the library names a link or a file in
+    /// place of one of its own folders before anything is edited.
+    #[test]
+    fn the_library_names_a_link_or_file_in_place_of_its_folders() {
+        let store = temp_store("foreign-list");
+        let project = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &project, USER_ACTOR, "Made.").unwrap();
+        store.add_attachment(&id, "plan.pdf", b"%PDF").unwrap();
+        assert!(store.foreign_entries().is_empty());
+        fs::create_dir_all(store.dir.join(crate::bundle::EXPORTS_DIR)).unwrap();
+        fs::remove_dir_all(store.dir.join(crate::bundle::EXPORTS_DIR)).unwrap();
+        fs::write(store.dir.join(crate::bundle::EXPORTS_DIR), "x").unwrap();
+        fs::remove_dir_all(store.files_dir(&id).unwrap()).unwrap();
+        fs::write(store.files_dir(&id).unwrap(), "x").unwrap();
+        #[cfg(unix)]
+        {
+            let out = std::env::temp_dir().join(format!("tectora-foreign-out-{}", now_ms()));
+            let activity = store.activity_dir();
+            fs::rename(&activity, &out).unwrap();
+            std::os::unix::fs::symlink(&out, &activity).unwrap();
+        }
+        let found = store.foreign_entries();
+        let ids: Vec<&str> = found.iter().map(|f| f.id.as_str()).collect();
+        let mut want = vec![
+            crate::bundle::EXPORTS_DIR.to_string(),
+            format!("{FILES_DIR}/{id}"),
+        ];
+        if cfg!(unix) {
+            want.insert(0, ACTIVITY_DIR.to_string());
+        }
+        assert_eq!(ids, want);
+        assert!(found.iter().all(|f| f.code == "foreign_entry"));
+        // The detail says the data is kept and how to get it back.
+        assert!(
+            found[0].detail.contains("kept") && found[0].detail.contains("moved into the library"),
+            "{}",
+            found[0].detail
+        );
+        let _ = fs::remove_dir_all(&store.dir);
     }
 
     /// Audit 2026-11-22 ARCH-602: a copy whose files cannot all be copied

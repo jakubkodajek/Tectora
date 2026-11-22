@@ -237,7 +237,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         "projects_dir" => to_json(store.dir.display().to_string()),
         "list_projects" => {
             let (projects, broken) = store.scan()?;
-            Ok(json!({ "projects": projects, "broken": broken }))
+            let foreign = store.foreign_entries();
+            Ok(json!({ "projects": projects, "broken": broken, "foreign": foreign }))
         }
         // As the app: a damaged settings file is reported (ERR-005).
         "startup_warnings" => Ok(json!(

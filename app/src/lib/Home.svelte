@@ -31,6 +31,7 @@
     onopen,
     onchanged,
     broken = [],
+    foreign = [],
     onconnect,
     onsettings,
   }: {
@@ -41,6 +42,8 @@
     onchanged: () => void;
     /** Project files in the folder that could not be read. */
     broken?: BrokenFile[];
+    /** Links or files in place of the library's own folders (UX-601). */
+    foreign?: BrokenFile[];
     onconnect: () => void;
     onsettings: () => void;
   } = $props();
@@ -134,6 +137,7 @@
   }
 
   let showBroken = $state(false);
+  let showForeign = $state(false);
 
   async function run<T>(action: Action, fn: () => Promise<T>): Promise<T | undefined> {
     try {
@@ -350,6 +354,24 @@
               {/if}
             </div>
             <button class="btn sm" onclick={() => (showBroken = !showBroken)}>{showBroken ? t("err.hideDetails") : t("lib.brokenShow")}</button>
+          </div>
+        {/if}
+
+        {#if foreign.length}
+          <div class="broken" role="alert" data-testid="library-foreign">
+            <i class="dot"></i>
+            <div class="broken-text">
+              <strong>{t("lib.foreign", { n: foreign.length })}</strong>
+              <span>{t("lib.foreignHint")}</span>
+              {#if showForeign}
+                <ul>
+                  {#each foreign as f (f.id)}
+                    <li><code>{f.id}</code>{#if f.detail}<small>{f.detail}</small>{/if}</li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+            <button class="btn sm" onclick={() => (showForeign = !showForeign)}>{showForeign ? t("err.hideDetails") : t("lib.brokenShow")}</button>
           </div>
         {/if}
 

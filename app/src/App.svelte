@@ -23,6 +23,7 @@
   let openId = $state<string | null>(null);
   let projects = $state<ProjectSummary[]>([]);
   let broken = $state<BrokenFile[]>([]);
+  let foreign = $state<BrokenFile[]>([]);
   let examples = $state<ExampleInfo[]>([]);
   let dir = $state("");
   let connect = $state(false);
@@ -36,6 +37,7 @@
       const lib = await api.listProjects();
       projects = lib.projects;
       broken = lib.broken;
+      foreign = lib.foreign ?? [];
       // A roof over the listing's time budget comes without figures: ask
       // again until they are there (ARCH-001).
       clearTimeout(pendingTimer);
@@ -223,6 +225,7 @@
     onopen={(id) => (openId = id)}
     onchanged={refresh}
     {broken}
+    {foreign}
     onconnect={() => (connect = true)}
     onsettings={() => (settingsOpen = true)}
   />

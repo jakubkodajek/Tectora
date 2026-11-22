@@ -369,6 +369,8 @@ export interface BrokenFile {
 export interface Library {
   projects: ProjectSummary[];
   broken: BrokenFile[];
+  /** Links or files in place of the library's own folders (`id` is the folder). */
+  foreign?: BrokenFile[];
 }
 
 export interface Change {
