@@ -356,21 +356,38 @@ pub fn card_outlines(project: &Project) -> Vec<Vec<[f64; 2]>> {
     bounded_outlines(out, MAX_CARD_POINTS)
 }
 
-/// `outlines` with at most `max` points in all: each keeps evenly spread
-/// points, its share of `max` (at least a triangle); outlines past the
-/// budget are replaced by one box around all of them, so the thumbnail
-/// keeps the job's extent.
+/// Outlines of at most this many points are kept whole on a card: they
+/// cost little, and a rectangle thinned to a triangle looks wrong (audit
+/// 2026-11-22 HUNT-505).
+const WHOLE_OUTLINE: usize = 4;
+
+/// `outlines` with at most `max` points in all: outlines of up to
+/// [`WHOLE_OUTLINE`] points are kept whole, the larger ones keep evenly
+/// spread points, their share of what the small ones leave (at least
+/// [`WHOLE_OUTLINE`]); outlines past the budget are replaced by one box
+/// around all of them, so the thumbnail keeps the job's extent.
 fn bounded_outlines(outlines: Vec<Vec<[f64; 2]>>, max: usize) -> Vec<Vec<[f64; 2]>> {
     let total: usize = outlines.iter().map(Vec::len).sum();
     if total <= max {
         return outlines;
     }
     let budget = max.saturating_sub(4);
+    let small: usize = outlines
+        .iter()
+        .map(Vec::len)
+        .filter(|&n| n <= WHOLE_OUTLINE)
+        .sum();
+    let large = (total - small).max(1);
+    let large_budget = budget.saturating_sub(small);
     let mut used = 0;
     let mut out = Vec::new();
     let mut rest: Option<[f64; 4]> = None;
     for o in outlines {
-        let share = (o.len() * budget / total).max(3).min(o.len());
+        let share = if o.len() <= WHOLE_OUTLINE {
+            o.len()
+        } else {
+            (o.len() * large_budget / large).clamp(WHOLE_OUTLINE, o.len())
+        };
         let thin: Vec<[f64; 2]> = (0..share).map(|i| o[i * o.len() / share]).collect();
         if used + thin.len() <= budget {
             used += thin.len();
@@ -2871,6 +2888,8 @@ mod tests {
             let points: usize = card.outlines.iter().map(Vec::len).sum();
             assert!(points <= MAX_CARD_POINTS, "{name}: {points} points");
             assert!(card.outlines.iter().all(|o| o.len() >= 3), "{name}");
+            // HUNT-505: the rectangular buildings keep their 4 corners.
+            assert_eq!(card.outlines[0].len(), 4, "{name}: {:?}", card.outlines[0]);
             let max_x = card
                 .outlines
                 .iter()
@@ -2889,6 +2908,38 @@ mod tests {
         let p = examples::find("hip").unwrap().project();
         assert_eq!(card_outlines(&p), outlines(&p));
         let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 HUNT-505: one face over the point budget turned
+    /// every rectangle of a card (and the building) into a triangle while
+    /// most of the budget stayed unused; small outlines are kept whole and
+    /// only the large ones are thinned.
+    #[test]
+    fn a_card_over_its_point_budget_keeps_rectangles_whole() {
+        let square = |x: f64| vec![[x, 0.0], [x + 1.0, 0.0], [x + 1.0, 1.0], [x, 1.0]];
+        let building = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 8.0], [0.0, 8.0]];
+        let mut squares = vec![building.clone()];
+        squares.extend((0..500).map(|i| square(i as f64 * 2.0)));
+        let card = bounded_outlines(squares, MAX_CARD_POINTS);
+        assert_eq!(card[0], building);
+        assert!(
+            card.iter().all(|o| o.len() == 4),
+            "a rectangle lost a corner"
+        );
+        let points: usize = card.iter().map(Vec::len).sum();
+        assert!(points <= MAX_CARD_POINTS, "{points}");
+        // The box of the ones left out still reaches the last square.
+        let max_x = card.iter().flatten().map(|p| p[0]).fold(f64::MIN, f64::max);
+        assert_eq!(max_x, 999.0);
+        // Large outlines share what the small ones leave.
+        let ring = |n: usize| -> Vec<[f64; 2]> { (0..n).map(|i| [i as f64, 1.0]).collect() };
+        let mut mixed = vec![building.clone()];
+        mixed.extend((0..5).map(|_| ring(400)));
+        let card = bounded_outlines(mixed, MAX_CARD_POINTS);
+        assert_eq!(card[0], building);
+        let points: usize = card.iter().map(Vec::len).sum();
+        assert!((1900..=MAX_CARD_POINTS).contains(&points), "{points}");
+        assert_eq!(card.len(), 6);
     }
 
     /// Audit 2026-11-22 ERR-306: a job saved with a UTF-8 byte order mark
