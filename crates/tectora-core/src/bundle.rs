@@ -328,7 +328,9 @@ fn write_bundle(
         )));
     }
     put("project.tectora", text.as_bytes())?;
-    if let Ok(history) = fs::read(store.activity_path(id)?) {
+    // Bounded, and never blocked by a pipe in its place (ARCH-301).
+    if let Ok(history) = crate::store::read_newest_lines(&store.activity_path(id)?, MAX_TEXT_ENTRY)
+    {
         let newest = newest_lines(&history, MAX_TEXT_ENTRY as usize);
         if !newest.is_empty() {
             put("history.jsonl", newest)?;
@@ -346,7 +348,7 @@ fn write_bundle(
     }
     for a in attachments {
         let path = store.attachment_path(id, &a.name)?;
-        let bytes = fs::read(&path).map_err(|e| FileError::io(&path, e))?;
+        let bytes = crate::store::read_regular(&path, MAX_ENTRY)?;
         put(&format!("files/{}", a.name), &bytes)?;
     }
     zip.finish().map_err(write_err)?;

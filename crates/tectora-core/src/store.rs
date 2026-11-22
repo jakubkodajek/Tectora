@@ -779,6 +779,67 @@ pub fn read_job_text(path: &Path) -> Result<String, FileError> {
     Ok(text)
 }
 
+/// Largest change log (`.activity/<id>.jsonl`) read, bytes: of a longer
+/// one only the newest entries in this many bytes are read (ARCH-301).
+pub const MAX_ACTIVITY_FILE: u64 = 4 * MAX_JOB_FILE;
+
+/// Largest small file of the library read (review mark, live file, trash
+/// note), bytes (ARCH-301).
+pub const MAX_SMALL_FILE: u64 = 1024 * 1024;
+
+/// The bytes of the regular file at `path`, at most `max` of them
+/// ([`open_regular`]): a pipe or a device in its place is refused instead
+/// of hanging the reader (ARCH-301).
+pub fn read_regular(path: &Path, max: u64) -> Result<Vec<u8>, FileError> {
+    let mut out = Vec::new();
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(open_regular(path, max)?, max),
+        &mut out,
+    )
+    .map_err(|e| FileError::io(path, e))?;
+    Ok(out)
+}
+
+/// The newest whole lines of the regular file at `path` that fit in `max`
+/// bytes (the whole file when it fits); a pipe or a device is refused
+/// (ARCH-301).
+pub fn read_newest_lines(path: &Path, max: u64) -> Result<Vec<u8>, FileError> {
+    use std::io::{Read, Seek};
+    let mut f = open_regular(path, u64::MAX)?;
+    let len = f.metadata().map_err(|e| FileError::io(path, e))?.len();
+    let from = len.saturating_sub(max);
+    if from > 0 {
+        // One byte before, to tell whether `from` starts a line.
+        f.seek(std::io::SeekFrom::Start(from - 1))
+            .map_err(|e| FileError::io(path, e))?;
+    }
+    let mut out = Vec::new();
+    f.take(max + u64::from(from > 0))
+        .read_to_end(&mut out)
+        .map_err(|e| FileError::io(path, e))?;
+    if from > 0 {
+        let at = out
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(out.len(), |i| i + 1);
+        out.drain(..at);
+    }
+    Ok(out)
+}
+
+/// Whether `path` is missing or a regular file: a pipe or a device in its
+/// place must not be opened for writing, which waits for a reader
+/// (ARCH-301).
+fn missing_or_regular(path: &Path) -> std::io::Result<()> {
+    match fs::metadata(path) {
+        Ok(m) if !m.is_file() => Err(std::io::Error::other(format!(
+            "{}: not a regular file (a folder, device or pipe)",
+            path.display()
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// Opens `path` for reading when it is a regular file of at most `max`
 /// bytes: a folder, a device (`/dev/zero`, which never ends) or a named
 /// pipe (which blocks the open until a writer comes, and with it the MCP
@@ -1346,7 +1407,10 @@ impl Store {
         // again: it stood for a change that never happened, shown as pending
         // in the history and the review (audit 2026-11-15 ERR-008).
         let log_path = self.activity_path(id)?;
-        let log_before = fs::read(&log_path).ok();
+        let log_before = read_newest_lines(&log_path, MAX_ACTIVITY_FILE).ok();
+        // A log that is there but could not be read is left alone when the
+        // write fails (only a missing one is removed again).
+        let log_was_there = log_path.exists();
         // Entries are found and accepted by their time, so each one is later
         // than the one before, even when two saves fall in one millisecond
         // (the review's list then had two equal keys, ERRU-009) or the log
@@ -1373,7 +1437,8 @@ impl Store {
         self.write(id, project).inspect_err(|_| {
             let _ = match &log_before {
                 Some(bytes) => write_atomic_bytes(&log_path, bytes),
-                None => fs::remove_file(&log_path),
+                None if !log_was_there => fs::remove_file(&log_path),
+                None => Ok(()),
             };
         })
     }
@@ -1422,15 +1487,22 @@ impl Store {
                 .collect();
             return write_atomic(&path, &(text.join("\n") + "\n")).map_err(io);
         }
+        missing_or_regular(&path).map_err(io)?;
         let mut f = fs::OpenOptions::new()
             .create(true)
             .append(true)
+            .read(true)
             .open(&path)
             .map_err(io)?;
         // A torn last line (no newline) would swallow this entry too.
-        let torn = fs::read(&path)
-            .ok()
-            .is_some_and(|b| b.last().is_some_and(|&c| c != b'\n'));
+        let torn = {
+            use std::io::{Read, Seek};
+            let mut last = [0u8; 1];
+            f.metadata().is_ok_and(|m| m.len() > 0)
+                && f.seek(std::io::SeekFrom::End(-1)).is_ok()
+                && f.read_exact(&mut last).is_ok()
+                && last[0] != b'\n'
+        };
         if torn {
             writeln!(f).map_err(io)?;
         }
@@ -1445,7 +1517,8 @@ impl Store {
         };
         // Read bytes, not a string: one torn or invalid line (an interrupted
         // write) must cost that line only, not the whole history (ERR-005).
-        let Ok(bytes) = fs::read(path) else {
+        // Bounded, and never blocked by a pipe in its place (ARCH-301).
+        let Ok(bytes) = read_newest_lines(&path, MAX_ACTIVITY_FILE) else {
             return Vec::new();
         };
         bytes
@@ -1607,8 +1680,8 @@ impl Store {
     pub fn reviewed_at(&self, id: &str) -> u64 {
         self.review_path(id)
             .ok()
-            .and_then(|p| fs::read_to_string(p).ok())
-            .and_then(|t| serde_json::from_str::<ReviewMark>(&t).ok())
+            .and_then(|p| read_regular(&p, MAX_SMALL_FILE).ok())
+            .and_then(|t| serde_json::from_slice::<ReviewMark>(&t).ok())
             .map_or(0, |m| m.accepted_ms)
     }
 
@@ -1785,8 +1858,8 @@ impl Store {
             return None;
         }
         let folder = self.trash_dir().join(entry);
-        let text = fs::read_to_string(folder.join(TRASH_INFO)).ok()?;
-        let mut info: TrashEntry = serde_json::from_str(&text).ok()?;
+        let text = read_regular(&folder.join(TRASH_INFO), MAX_SMALL_FILE).ok()?;
+        let mut info: TrashEntry = serde_json::from_slice(&text).ok()?;
         // The folder name is what restores it, whatever the file says.
         info.entry = entry.to_string();
         valid_id(&info.id).then_some((folder, info))
@@ -2112,7 +2185,7 @@ impl Store {
     pub fn copy_attachments(&self, from: &str, to: &str) -> Result<(), FileError> {
         for a in self.attachments(from) {
             let path = self.attachment_path(from, &a.name)?;
-            let bytes = fs::read(&path).map_err(|e| FileError::io(&path, e))?;
+            let bytes = read_regular(&path, MAX_ATTACHMENT)?;
             self.add_attachment(to, &a.name, &bytes)?;
         }
         Ok(())
@@ -2128,8 +2201,8 @@ impl Store {
     }
 
     pub fn live(&self) -> Option<LiveStatus> {
-        let text = fs::read_to_string(self.activity_dir().join(LIVE_FILE)).ok()?;
-        serde_json::from_str(&text).ok()
+        let text = read_regular(&self.activity_dir().join(LIVE_FILE), MAX_SMALL_FILE).ok()?;
+        serde_json::from_slice(&text).ok()
     }
 }
 
@@ -2242,6 +2315,73 @@ mod tests {
             assert!(codes.contains(&("f", "unreadable")), "{codes:?}");
         }
         assert_eq!(store.load("z").unwrap_err().code(), "unreadable");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 ARCH-301: a named pipe in place of a job's change
+    /// log, review mark, the live file, a trash note or the job file itself
+    /// never hangs a save, the library list, the trash or a bundle export.
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_in_place_of_the_log_or_a_mark_never_hangs_a_save() {
+        let store = temp_store("fifo-log");
+        let project = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &project, "user", "Made.").unwrap();
+        let mkfifo = |p: &Path| {
+            let _ = fs::remove_file(p);
+            std::process::Command::new("mkfifo")
+                .arg(p)
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        let act = store.activity_dir();
+        let trash = store.trash_dir().join("x-1");
+        fs::create_dir_all(&trash).unwrap();
+        if ![
+            act.join(format!("{id}.jsonl")),
+            act.join(format!("{id}.review.json")),
+            act.join(LIVE_FILE),
+            trash.join(TRASH_INFO),
+            store.dir.join("f.tectora"),
+        ]
+        .iter()
+        .all(|p| mkfifo(p))
+        {
+            eprintln!("mkfifo not available, skipped");
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir = store.dir.clone();
+        std::thread::spawn(move || {
+            let store = Store::new(dir).unwrap();
+            let mut p = examples::find("hip").unwrap().project();
+            let _ = store.activity(&id);
+            let _ = store.reviewed_at(&id);
+            let _ = store.live();
+            let _ = store.trash();
+            let _ = store.scan();
+            p.notes = "changed".into();
+            let saved = store.save_as(Some(id.clone()), &p, "user", "Changed.");
+            let _ = store.save_checked("f", &p, &p);
+            let out = store.dir.join("out.tectorajob");
+            let exported = crate::bundle::export(&store, &id, &out);
+            let _ = tx.send((saved.is_ok(), exported.is_ok()));
+        });
+        let done = rx.recv_timeout(std::time::Duration::from_secs(20));
+        assert!(done.is_ok(), "a read of a pipe hung");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ARCH-301: of a log over the bound only its newest whole lines are read.
+    #[test]
+    fn of_a_long_log_only_the_newest_whole_lines_are_read() {
+        let store = temp_store("tail");
+        let p = store.dir.join("log.jsonl");
+        fs::write(&p, b"aaaa\nbbbb\ncccc\n").unwrap();
+        assert_eq!(read_newest_lines(&p, 100).unwrap(), b"aaaa\nbbbb\ncccc\n");
+        assert_eq!(read_newest_lines(&p, 10).unwrap(), b"bbbb\ncccc\n");
+        assert_eq!(read_newest_lines(&p, 9).unwrap(), b"cccc\n");
+        assert_eq!(read_newest_lines(&p, 3).unwrap(), b"");
         let _ = fs::remove_dir_all(&store.dir);
     }
 
