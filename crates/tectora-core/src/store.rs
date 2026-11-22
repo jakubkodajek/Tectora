@@ -1240,11 +1240,9 @@ fn replace_odd_lock(path: &Path) -> std::io::Result<()> {
                 ));
             }
         }
-        Ok(m) if !m.file_type().is_file() => {
-            // A link to a folder is removed as a folder on Windows.
-            if fs::remove_file(path).is_err() {
-                let _ = fs::remove_dir(path);
-            }
+        // A link to a folder is removed as a folder on Windows.
+        Ok(m) if !m.file_type().is_file() && fs::remove_file(path).is_err() => {
+            let _ = fs::remove_dir(path);
         }
         // Missing, or a regular file another process made meanwhile.
         _ => {}
