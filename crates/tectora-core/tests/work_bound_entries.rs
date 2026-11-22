@@ -101,6 +101,45 @@ fn the_card_of_a_job_too_complex_to_calculate_says_so_and_frees_its_core() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn the_card_of_a_too_complex_job_with_a_face_has_no_area() {
+    // Audit 2026-11-22 TEST-301: with one hand-drawn face the card of a job
+    // nothing was calculated for read "0.00 m², partly calculated".
+    low_bound();
+    let dir = temp_dir("card-face");
+    let store = tectora_core::store::Store::new(dir.clone()).unwrap();
+    let mut p = stacked(50);
+    p.manual_faces.push(tectora_core::model::ManualFace {
+        points: vec![
+            Point2::new(20.0, 0.0),
+            Point2::new(26.0, 0.0),
+            Point2::new(26.0, 4.0),
+            Point2::new(20.0, 4.0),
+        ],
+        pitch_deg: 30.0,
+        label: String::new(),
+    });
+    let id = store.save(None, &p).unwrap();
+    let s = within(120, move || {
+        let start = std::time::Instant::now();
+        loop {
+            let s = store.summarize(&id).unwrap();
+            if !s.figures_pending {
+                return s;
+            }
+            assert!(start.elapsed() < Duration::from_secs(110), "never resolved");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+    assert!(s.too_complex, "{s:?}");
+    assert_eq!(
+        s.coverage(),
+        Some(tectora_core::quantities::RoofCoverage::None),
+        "{s:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A stacked job with a gable dormer on the south face of its buildings.
 fn stacked_with_dormer(n: usize) -> Project {
     use tectora_core::edit::dormers::{self, DormerKind};

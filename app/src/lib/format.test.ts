@@ -72,6 +72,18 @@ describe("library card of a job too complex to calculate (ARCH-102)", () => {
     expect(cardAreaNote(p)).toBe(t("err.too_complex"));
     expect(cardAreaNote({ roof_area: 0, parts: 1, parts_failed: 1 })).not.toBe(t("err.too_complex"));
   });
+
+  it("shows no area for a too-complex or refused job with a hand-drawn face (TEST-301)", async () => {
+    const { cardArea, cardAreaNote, cardRoof } = await import("./format");
+    const { t } = await import("./i18n.svelte");
+    const p = { roof_area: 0, parts: 50, parts_failed: 50, faces: 1, too_complex: true };
+    expect(cardRoof(p)).toBe("none");
+    expect(cardArea(p)).toBe("—");
+    expect(cardAreaNote(p)).toBe(t("err.too_complex"));
+    const r = { roof_area: 0, parts: 0, parts_failed: 0, faces: 1, refused: true };
+    expect(cardRoof(r)).toBe("none");
+    expect(cardArea(r)).toBe("—");
+  });
 });
 
 describe("attachment sizes follow the UI language (UI-010)", () => {

@@ -261,6 +261,7 @@ mod tests {
             stored_area: None,
             result_differs: false,
             too_complex: false,
+            refused: false,
             faces: 0,
         }
     }

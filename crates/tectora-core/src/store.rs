@@ -123,14 +123,28 @@ pub struct ProjectSummary {
     /// every building is without a roof (audit 2026-11-21 ERR-202).
     #[serde(default)]
     pub faces: usize,
+    /// The design is outside the limits (`Project::check_limits`): nothing
+    /// is calculated, hand-drawn faces neither.
+    #[serde(default)]
+    pub refused: bool,
 }
 
 impl ProjectSummary {
     /// How much of the roof the card's figures cover; `None` while
-    /// `figures_pending` (see [`crate::quantities::RoofCoverage`]).
+    /// `figures_pending` (see [`crate::quantities::RoofCoverage`]). A job
+    /// too complex to calculate or outside the limits has no roof, its
+    /// hand-drawn faces notwithstanding: nothing was calculated (TEST-301).
     pub fn coverage(&self) -> Option<crate::quantities::RoofCoverage> {
         (!self.figures_pending).then(|| {
-            crate::quantities::RoofCoverage::from_counts(self.parts, self.parts_failed, self.faces)
+            if self.too_complex || self.refused {
+                crate::quantities::RoofCoverage::None
+            } else {
+                crate::quantities::RoofCoverage::from_counts(
+                    self.parts,
+                    self.parts_failed,
+                    self.faces,
+                )
+            }
         })
     }
 }
@@ -986,6 +1000,7 @@ impl Store {
         // and fixed or deleted), just without its roof preview.
         if project.check_limits().is_err() {
             summary.parts_failed = summary.parts;
+            summary.refused = true;
             lock_cache(&self.cache)
                 .entries
                 .insert(id.to_string(), (stamp, summary.clone()));
@@ -1087,6 +1102,7 @@ impl Store {
             stored_area: project.result_snapshot.as_ref().map(|s| s.roof_area),
             result_differs: false,
             too_complex: false,
+            refused: false,
             faces: project.manual_faces.len(),
         };
         Ok((summary, project))
@@ -3617,6 +3633,42 @@ mod tests {
             "start": { "x": x, "y": y }, "pitch_deg": pitch,
             "eave_height": eave, "overhang": overhang,
         })
+    }
+
+    /// Audit 2026-11-22 TEST-301: a job out of the limits is calculated
+    /// not at all, hand-drawn faces or not: its card has no roof.
+    #[test]
+    fn the_card_of_a_job_out_of_the_limits_with_a_face_has_no_roof() {
+        let store = temp_store("card-limits-face");
+        let mut p = examples::find("hip").unwrap().project();
+        p.parts[0].edges[0].start.x = 1.0e7;
+        p.manual_faces.push(crate::model::ManualFace {
+            points: vec![
+                crate::geom::Point2::new(20.0, 0.0),
+                crate::geom::Point2::new(26.0, 0.0),
+                crate::geom::Point2::new(26.0, 4.0),
+            ],
+            pitch_deg: 30.0,
+            label: String::new(),
+        });
+        let id = store.save(None, &p).unwrap();
+        let s = store.summarize(&id).unwrap();
+        assert_eq!(
+            s.coverage(),
+            Some(crate::quantities::RoofCoverage::None),
+            "{s:?}"
+        );
+        let mut faces_only = p.clone();
+        faces_only.parts.clear();
+        faces_only.manual_faces[0].points[0].x = 1.0e7;
+        let id = store.save(None, &faces_only).unwrap();
+        let s = store.summarize(&id).unwrap();
+        assert_eq!(
+            s.coverage(),
+            Some(crate::quantities::RoofCoverage::None),
+            "{s:?}"
+        );
+        let _ = fs::remove_dir_all(&store.dir);
     }
 
     #[test]

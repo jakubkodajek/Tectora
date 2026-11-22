@@ -316,6 +316,25 @@ fn hand_drawn_faces_are_a_roof_and_an_empty_job_is_no_building() {
 }
 
 #[test]
+fn a_left_out_chimney_makes_the_roof_state_partial() {
+    // Audit 2026-11-22 ERR-305: `partial: true` and exit 2 for a chimney
+    // left out, but `roof_state: complete`.
+    let mut p = rect(0.0, 12.0);
+    p["chimneys"] = json!([{
+        "corners": [{"x": 3, "y": 3}, {"x": 3, "y": 3}, {"x": 3, "y": 3}],
+        "height": 9
+    }]);
+    let (code, r) = calc_status(&job("chim-bad", &p));
+    assert_eq!(code, Some(2), "{r}");
+    assert_eq!(r["partial"], true, "{r}");
+    assert_eq!(r["roof_state"], "partial", "{r}");
+    assert!(
+        r["problems"].as_array().is_some_and(|a| !a.is_empty()),
+        "{r}"
+    );
+}
+
+#[test]
 fn a_bundle_a_pipe_or_a_device_is_refused_with_a_reason() {
     // HUNT-204 item 4: a bundle was "not UTF-8"; ARCH-204: a pipe hung
     // and `/dev/zero` read until the memory was gone.

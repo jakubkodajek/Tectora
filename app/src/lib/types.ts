@@ -171,6 +171,8 @@ export interface ProjectSummary {
   too_complex?: boolean;
   /** Hand-drawn faces: with any, the roof is (partly) calculated even when every building is without a roof (ERR-202). */
   faces?: number;
+  /** The design is outside the limits: nothing is calculated, hand-drawn faces neither. */
+  refused?: boolean;
 }
 
 /** A deleted job or removed file in the library's trash (core `store::TrashEntry`). */

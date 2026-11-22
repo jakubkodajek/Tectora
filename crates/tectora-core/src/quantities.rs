@@ -140,19 +140,24 @@ pub enum RoofCoverage {
     /// Some buildings are without a roof (their figures are missing), the
     /// rest or the hand-drawn faces are calculated.
     Partial,
-    /// Every building has its roof.
+    /// Every building has its roof and nothing is left out.
     Complete,
 }
 
 impl RoofCoverage {
     /// The coverage of a job whose `parts_without_roof` of its buildings
-    /// have no roof.
+    /// have no roof. A chimney, window, opening or dormer the calculation
+    /// leaves out (`Project::problems`) makes a roof `Partial` too: its
+    /// figures miss it, as `partial` says (audit 2026-11-22 ERR-305).
     pub fn of(project: &Project, parts_without_roof: usize) -> RoofCoverage {
-        RoofCoverage::from_counts(
+        match RoofCoverage::from_counts(
             project.parts.len(),
             parts_without_roof,
             project.manual_faces.len(),
-        )
+        ) {
+            RoofCoverage::Complete if !project.problems().is_empty() => RoofCoverage::Partial,
+            c => c,
+        }
     }
 
     /// The coverage of `parts` buildings, `failed` of them without a roof,

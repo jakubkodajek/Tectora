@@ -142,8 +142,11 @@ The tools cover every operation of the Tectora editor:
   calculated (`roof_area_m2: null`); fewer, or with hand-drawn faces,
   `roof_area_m2` leaves them out. `roof_state` says it in one word, as
   `calc` and `tectora calc` do: `complete`, `partial` (some buildings
-  without a roof), `none` (no roof at all) or `no_building` (no building
-  and no hand-drawn face; `roof_area_m2: null`). Tell the
+  without a roof; in `calc` also a chimney, window, opening or dormer left
+  out, listed in `problems`), `none` (no roof at all, also a job too
+  complex to calculate or out of range, hand-drawn faces notwithstanding)
+  or `no_building` (no building and no hand-drawn face;
+  `roof_area_m2: null`). Tell the
   user, and use `calc` on the job to see why. `too_complex: true`: the
   job is too complex to calculate (see Limits); read it with
   `get_project` to repair it.

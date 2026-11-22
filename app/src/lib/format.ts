@@ -40,6 +40,8 @@ export interface CardFigures {
   too_complex?: boolean;
   /** Hand-drawn faces: a roof even when every building is without one (ERR-202). */
   faces?: number;
+  /** Outside the limits: nothing calculated, faces neither (TEST-301). */
+  refused?: boolean;
 }
 
 /**
@@ -49,6 +51,8 @@ export interface CardFigures {
  */
 export function cardRoof(p: CardFigures): "pending" | "none" | "partial" | "ok" {
   if (p.figures_pending) return "pending";
+  // Nothing was calculated, hand-drawn faces neither (TEST-301).
+  if (p.too_complex || p.refused) return "none";
   const failed = p.parts_failed ?? 0;
   if (failed <= 0) return "ok";
   return failed >= (p.parts ?? failed) && !(p.faces ?? 0) ? "none" : "partial";
