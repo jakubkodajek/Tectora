@@ -561,7 +561,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "get_history",
-            "description": "The change log of a design: who changed what and when (ts_ms), newest first.",
+            "description": "The change log of a design: who changed what and when (ts_ms), newest first, at most the 50 changes a log keeps.",
             "inputSchema": schema(json!({ "id": id }), &["id"]),
         }),
         json!({
@@ -770,7 +770,7 @@ impl Server {
                 let since = self.store.pending_review(&id).map_or(u64::MAX, |r| r.since_ts_ms);
                 json!(self
                     .store
-                    .activity(&id)
+                    .history(&id)
                     .iter()
                     .rev()
                     .map(|e| {

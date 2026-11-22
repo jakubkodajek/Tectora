@@ -30,7 +30,7 @@ pub const FILES_DIR: &str = ".files";
 /// The actor name used for edits made in the desktop app.
 pub const USER_ACTOR: &str = "user";
 /// Activity entries kept per project (each holds a full previous version).
-const ACTIVITY_KEEP: usize = 50;
+pub(crate) const ACTIVITY_KEEP: usize = 50;
 /// Deleted jobs and removed attachments, one folder per deletion
 /// (`.trash/<entry>/`), so a delete by mistake or by an AI client can be
 /// undone ([`Store::restore`]).
@@ -1157,6 +1157,63 @@ fn slug(name: &str) -> String {
     if s.is_empty() { "navrh".into() } else { s }
 }
 
+/// The text of the change log `entries` (oldest first) trimmed to
+/// [`ACTIVITY_KEEP`] entries and `window` bytes, the entry at `start`
+/// (the first change waiting for review) kept in place of the oldest kept
+/// one ([`Store::trimmed_log`]).
+pub(crate) fn trim_log(entries: &[ActivityEntry], start: usize, window: u64) -> String {
+    let n = entries.len();
+    if n == 0 {
+        return String::new();
+    }
+    // Only the entries that can be kept are written out.
+    let from = n.saturating_sub(ACTIVITY_KEEP);
+    let lines: Vec<String> = entries[from..]
+        .iter()
+        .map(|e| serde_json::to_string(e).unwrap_or_default())
+        .collect();
+    // The first change still waiting for review holds the version the
+    // user had before it ("Revert all" goes back to it). When more
+    // changes than the log keeps are pending, keep that one in place of
+    // the oldest kept one, so the pre-AI version is never dropped while
+    // the review is open.
+    let mut cut = from;
+    loop {
+        let first = if start < cut {
+            // That entry then stands for the changes dropped after it
+            // too: it saved what the last dropped one saved, so "Revert
+            // all" undoes them with it and keeps the user's unlogged
+            // edits in between (ERR-001).
+            let mut first = entries[start].clone();
+            if let Some(after) = entries[cut].after.clone() {
+                first.changes = first
+                    .before
+                    .as_ref()
+                    .map(|b| diff(b, &after))
+                    .unwrap_or_default();
+                first.after = Some(after);
+            }
+            serde_json::to_string(&first).unwrap_or_default()
+        } else {
+            lines[cut - from].clone()
+        };
+        let rest = &lines[cut + 1 - from..];
+        let bytes = first.len() + 1 + rest.iter().map(|l| l.len() + 1).sum::<usize>();
+        // The newest entry is always kept, even alone over the window.
+        if bytes as u64 <= window || cut + 1 >= n {
+            let mut text = String::with_capacity(bytes);
+            for l in std::iter::once(&first).chain(rest) {
+                if !l.is_empty() {
+                    text.push_str(l);
+                    text.push('\n');
+                }
+            }
+            return text;
+        }
+        cut += 1;
+    }
+}
+
 impl Store {
     /// Refuses to write when the jobs folder itself is gone (deleted, a
     /// network drive or USB disk disconnected): it used to be created
@@ -1773,52 +1830,11 @@ impl Store {
     /// The text of the change log `entries` (oldest first, the new one
     /// last) trimmed to [`ACTIVITY_KEEP`] entries and the read window.
     fn trimmed_log(&self, id: &str, entries: &[ActivityEntry]) -> String {
-        let n = entries.len();
-        let lines: Vec<String> = entries
-            .iter()
-            .map(|e| serde_json::to_string(e).unwrap_or_default())
-            .collect();
-        // The first change still waiting for review holds the version the
-        // user had before it ("Revert all" goes back to it). When more
-        // changes than the log keeps are pending, keep that one in place of
-        // the oldest kept one, so the pre-AI version is never dropped while
-        // the review is open.
-        let start = self.pending_start(id, entries);
-        let mut cut = n.saturating_sub(ACTIVITY_KEEP);
-        loop {
-            let first = if start < cut {
-                // That entry then stands for the changes dropped after it
-                // too: it saved what the last dropped one saved, so "Revert
-                // all" undoes them with it and keeps the user's unlogged
-                // edits in between (ERR-001).
-                let mut first = entries[start].clone();
-                if let Some(after) = entries[cut].after.clone() {
-                    first.changes = first
-                        .before
-                        .as_ref()
-                        .map(|b| diff(b, &after))
-                        .unwrap_or_default();
-                    first.after = Some(after);
-                }
-                serde_json::to_string(&first).unwrap_or_default()
-            } else {
-                lines[cut].clone()
-            };
-            let rest = &lines[cut + 1..];
-            let bytes = first.len() + 1 + rest.iter().map(|l| l.len() + 1).sum::<usize>();
-            // The newest entry is always kept, even alone over the window.
-            if bytes as u64 <= self.activity_window || cut + 1 >= n {
-                let mut text = String::with_capacity(bytes);
-                for l in std::iter::once(&first).chain(rest) {
-                    if !l.is_empty() {
-                        text.push_str(l);
-                        text.push('\n');
-                    }
-                }
-                return text;
-            }
-            cut += 1;
-        }
+        trim_log(
+            entries,
+            self.pending_start(id, entries),
+            self.activity_window,
+        )
     }
 
     /// Recorded changes of a project, oldest first.
@@ -1833,6 +1849,18 @@ impl Store {
             return Vec::new();
         };
         parse_log(&bytes)
+    }
+
+    /// The change log of `id` as the app's history and MCP `get_history`
+    /// show it: [`Store::activity`] as the next save keeps it, at most
+    /// [`ACTIVITY_KEEP`] entries. A longer log (another program wrote it)
+    /// froze the job's AI panel and flooded an AI client (ARCH-503).
+    pub fn history(&self, id: &str) -> Vec<ActivityEntry> {
+        let log = self.activity(id);
+        if log.len() <= ACTIVITY_KEEP {
+            return log;
+        }
+        parse_log(self.trimmed_log(id, &log).as_bytes())
     }
 
     /// Undoes the latest recorded change, keeping later unlogged edits.
@@ -2730,6 +2758,60 @@ mod tests {
         assert!(!card.too_complex, "a failure is not the work bound");
         assert_eq!(card.parts_failed, p.parts.len());
         assert_eq!(card.roof_area, 0.0);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-22 ARCH-503: a change log longer than a log keeps
+    /// (written by another program, or by an older Tectora's import) is
+    /// handed to the app and MCP as the next save keeps it: the newest
+    /// entries, and the first change waiting for review in place of the
+    /// oldest kept one.
+    #[test]
+    fn the_history_handed_out_is_what_the_next_save_keeps() {
+        let store = temp_store("history-cap");
+        let p = examples::find("hip").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let entry = |i: u64, actor: &str| {
+            let mut after = p.clone();
+            after.notes = format!("{i}");
+            let mut before = p.clone();
+            before.notes = format!("{}", i - 1);
+            ActivityEntry {
+                ts_ms: i,
+                actor: actor.into(),
+                summary: format!("change {i}"),
+                changes: Vec::new(),
+                before: Some(before),
+                after: Some(after),
+                undid_from: None,
+            }
+        };
+        let write = |entries: &[ActivityEntry]| {
+            fs::create_dir_all(store.activity_dir()).unwrap();
+            let text: String = entries
+                .iter()
+                .map(|e| serde_json::to_string(e).unwrap() + "\n")
+                .collect();
+            fs::write(store.activity_path(&id).unwrap(), text).unwrap();
+        };
+        let n = ACTIVITY_KEEP as u64 + 30;
+        write(&(1..=n).map(|i| entry(i, USER_ACTOR)).collect::<Vec<_>>());
+        let h = store.history(&id);
+        assert_eq!(h.len(), ACTIVITY_KEEP);
+        assert_eq!(h[0].summary, "change 31");
+        assert_eq!(h.last().unwrap().summary, format!("change {n}"));
+        // Every change by an AI waits for review: the first one is kept.
+        write(&(1..=n).map(|i| entry(i, "claude")).collect::<Vec<_>>());
+        let h = store.history(&id);
+        assert_eq!(h.len(), ACTIVITY_KEEP);
+        assert_eq!(h[0].ts_ms, 1);
+        assert_eq!(h[0].before.as_ref().unwrap().notes, "0");
+        // A log within the bound is handed out as it is.
+        write(&(1..=3).map(|i| entry(i, "claude")).collect::<Vec<_>>());
+        assert_eq!(
+            serde_json::to_value(store.history(&id)).unwrap(),
+            serde_json::to_value(store.activity(&id)).unwrap()
+        );
         let _ = fs::remove_dir_all(&store.dir);
     }
 

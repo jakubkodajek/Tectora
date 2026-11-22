@@ -255,7 +255,7 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         "update_install" => Err("updates are not installed in the preview".into()),
         "project_activity" => {
             let mut items: Vec<Value> = store
-                .activity(&id()?)
+                .history(&id()?)
                 .into_iter()
                 .map(|e| {
                     json!({ "ts_ms": e.ts_ms, "actor": e.actor, "summary": e.summary, "changes": e.changes })

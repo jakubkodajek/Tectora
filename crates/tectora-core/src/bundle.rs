@@ -552,10 +552,15 @@ pub fn import(store: &Store, src: &Path) -> Result<String, FileError> {
 /// order kept, so the next change is later than all of them (HUNTIO-005).
 fn received_history(bytes: &[u8]) -> Option<(String, u64)> {
     let ok = |p: &Option<Project>| p.as_ref().is_none_or(|p| p.check_limits().is_ok());
+    // Only the newest entries a change log keeps, read from the end before
+    // anything is cleaned or diffed: a bundle of 20 000 entries put them
+    // all into the library, which froze the job's AI panel (ARCH-503).
     let mut entries: Vec<crate::store::ActivityEntry> = bytes
-        .split(|&b| b == b'\n')
+        .rsplit(|&b| b == b'\n')
         .filter_map(|l| serde_json::from_slice(l).ok())
+        .take(crate::store::ACTIVITY_KEEP)
         .collect();
+    entries.reverse();
     // Who and why as a write keeps them, and the versions a revert puts
     // back with the texts of a received job (ARCH-201). What changed is
     // worked out again from the cleaned versions, as a save does: the
@@ -586,11 +591,9 @@ fn received_history(bytes: &[u8]) -> Option<(String, u64)> {
             e.ts_ms = e.ts_ms.saturating_sub(shift);
         }
     }
-    let text: String = entries
-        .iter()
-        .filter_map(|e| serde_json::to_string(e).ok())
-        .map(|l| l + "\n")
-        .collect();
+    // Within the bytes a log is read to, as a save trims it; every entry
+    // is the sender's, none waits for this user's review.
+    let text = crate::store::trim_log(&entries, entries.len(), crate::store::MAX_ACTIVITY_FILE);
     Some((text, last.min(now)))
 }
 
@@ -1249,6 +1252,43 @@ mod tests {
             started.elapsed()
         );
         assert!(store.activity(&id).is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Audit 2026-11-22 ARCH-503: a received history of more entries than
+    /// a change log keeps is cut to the newest ones before it is cleaned
+    /// and diffed: 20 000 entries froze the job's AI panel and made every
+    /// MCP `get_history` megabytes.
+    #[test]
+    fn a_received_history_keeps_only_the_newest_entries_a_log_keeps() {
+        let dir = std::env::temp_dir().join(format!("tectora-manyhist-{}", now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        let p = crate::examples::find("gable").unwrap().project();
+        let history: String = (1..=1000u64)
+            .map(|i| {
+                let mut after = p.clone();
+                after.notes = format!("note {i}");
+                serde_json::to_string(&crate::store::ActivityEntry {
+                    ts_ms: i,
+                    actor: "x".into(),
+                    summary: format!("change {i}"),
+                    before: Some(p.clone()),
+                    changes: Vec::new(),
+                    after: Some(after),
+                    undid_from: None,
+                })
+                .unwrap()
+                    + "\n"
+            })
+            .collect();
+        let path = bundle_with_log(&dir, "many.tectorajob", &p.to_json().unwrap(), &history);
+        let store = Store::new(dir.join("lib")).unwrap();
+        let id = import(&store, &path).unwrap();
+        let log = store.activity(&id);
+        assert_eq!(log.len(), crate::store::ACTIVITY_KEEP);
+        assert_eq!(log[0].summary, "change 951");
+        assert_eq!(log.last().unwrap().summary, "change 1000");
+        assert!(store.pending_review(&id).is_none(), "received, not pending");
         let _ = fs::remove_dir_all(dir);
     }
 
