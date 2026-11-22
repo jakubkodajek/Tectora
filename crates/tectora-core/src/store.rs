@@ -3539,7 +3539,8 @@ mod tests {
         let entry = store.delete(&deleted, USER_ACTOR, "Gone.").unwrap().entry;
         let _ = fs::remove_dir_all(store.dir.join(FILES_DIR));
         fs::write(store.dir.join(FILES_DIR), "x").unwrap();
-        let mut kinds: Vec<(&str, Box<dyn Fn(&Path)>)> = vec![("a file", Box::new(|_: &Path| {}))];
+        type Make = Box<dyn Fn(&Path)>;
+        let mut kinds: Vec<(&str, Make)> = vec![("a file", Box::new(|_: &Path| {}))];
         #[cfg(unix)]
         kinds.push((
             "a link to itself",
@@ -3635,14 +3636,14 @@ mod tests {
             );
             assert!(store.exists(&id), "{rel}: the job stays");
             foreign(
-                &store
+                store
                     .remove_attachment(&id, "plan.pdf", USER_ACTOR, "x")
                     .unwrap_err()
                     .code,
                 "remove_attachment",
             );
             foreign(
-                &store.try_attachments(&id).unwrap_err().code,
+                store.try_attachments(&id).unwrap_err().code,
                 "try_attachments",
             );
             assert!(
@@ -3650,21 +3651,21 @@ mod tests {
                 "{rel}: listed from outside"
             );
             foreign(
-                &store.attachment_path(&id, "plan.pdf").unwrap_err().code,
+                store.attachment_path(&id, "plan.pdf").unwrap_err().code,
                 "attachment_path",
             );
             let mut copy = project.clone();
             copy.name = "Copy".into();
             for logged in [None, Some(("claude", "Copied."))] {
                 foreign(
-                    &store.copy_job(&id, &copy, true, logged).unwrap_err().code,
+                    store.copy_job(&id, &copy, true, logged).unwrap_err().code,
                     "copy_job",
                 );
             }
             assert_eq!(store.list().len(), jobs, "{rel}: a refused copy left a job");
             let dest = store.dir.join("x.tectorajob");
             foreign(
-                &crate::bundle::export(&store, &id, &dest).unwrap_err().code,
+                crate::bundle::export(&store, &id, &dest).unwrap_err().code,
                 "export",
             );
             assert!(!dest.exists());
@@ -3986,12 +3987,13 @@ mod tests {
                 .abs()
                 / 2.0
         };
-        let kinds: [(&str, &dyn Fn(f64) -> Vec<[f64; 2]>); 4] = [
+        type Make<'a> = &'a dyn Fn(f64) -> Vec<[f64; 2]>;
+        let kinds: [(&str, Make); 4] = [
             ("rect5", &rect5),
             ("L", &ell),
             ("L7", &ell7),
             ("mixed", &|x: f64| {
-                if (x as usize / 20) % 2 == 0 {
+                if (x as usize / 20).is_multiple_of(2) {
                     rect5(x)
                 } else {
                     ell7(x)
