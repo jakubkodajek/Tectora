@@ -67,6 +67,13 @@ impl ResultSnapshot {
     /// copied into the library) is held to it: 200 000 codes froze the
     /// editor and made every MCP read of the job 23 MB (ARCH-303).
     pub fn problem(&self) -> Option<String> {
+        self.out_of_bounds()
+            .map(|why| format!("the stored result is damaged: {why}"))
+    }
+
+    /// What of this result is outside the bounds [`ResultSnapshot::problem`]
+    /// holds a stored result to, or `None`.
+    fn out_of_bounds(&self) -> Option<String> {
         let why = if self.lines_by_code.len() > MAX_STORED_CODES {
             format!(
                 "too many line codes: {} (at most {MAX_STORED_CODES})",
@@ -96,7 +103,7 @@ impl ResultSnapshot {
         } else {
             return None;
         };
-        Some(format!("the stored result is damaged: {why}"))
+        Some(why)
     }
 
     /// The engine version of a stored result from outside as one line of
@@ -143,7 +150,16 @@ pub fn take_checked(project: &Project) -> Result<ResultSnapshot, Refused> {
             Some(i) => Err(Refused::NotCalculated(format!(
                 "part index {i} has no roof"
             ))),
-            None => Ok(take_of(&geos, project)),
+            None => {
+                let taken = take_of(&geos, project);
+                // A result the store would refuse to keep is refused here,
+                // for what it is: the roof is too large, not a damaged
+                // file (audit 2026-11-22 HUNT-405, ARCH-403 item 1).
+                match taken.out_of_bounds() {
+                    Some(why) => Err(Refused::TooLarge(why)),
+                    None => Ok(taken),
+                }
+            }
         }
     })
     .map_err(Refused::Internal)?
@@ -160,6 +176,9 @@ pub enum Refused {
     NotCalculated(String),
     /// The job has no building and no hand-drawn face: nothing to store.
     NoBuilding,
+    /// The figures are larger than a stored result may hold (a roof of
+    /// over 10⁹ m² or m): the detail says which bound.
+    TooLarge(String),
 }
 
 impl std::fmt::Display for Refused {
@@ -171,6 +190,7 @@ impl std::fmt::Display for Refused {
             Refused::NoBuilding => {
                 f.write_str("the job has no building, so there are no figures to store")
             }
+            Refused::TooLarge(d) => write!(f, "the figures are too large to keep: {d}"),
         }
     }
 }
@@ -317,6 +337,37 @@ mod tests {
     use super::*;
     use crate::examples;
     use crate::model::JobStatus;
+
+    /// Audit 2026-11-22 HUNT-405, ARCH-403 item 1: the result of a roof
+    /// the core calculates but a stored result may not hold (a face of
+    /// 40 km x 40 km, 1.85e9 m²) is refused as too large, not as a damaged
+    /// file, and is never handed out to be stored.
+    #[test]
+    fn a_result_too_large_to_keep_is_refused_as_too_large_not_damaged() {
+        use crate::geom::Point2;
+        let mut p = examples::find("gable").unwrap().project();
+        let s = 40_000.0;
+        p.manual_faces.push(crate::model::ManualFace {
+            points: vec![
+                Point2::new(20.0, 0.0),
+                Point2::new(20.0 + s, 0.0),
+                Point2::new(20.0 + s, s),
+                Point2::new(20.0, s),
+            ],
+            pitch_deg: 30.0,
+            label: String::new(),
+        });
+        assert!(p.check_limits().is_ok());
+        assert!(take(&p).roof_area > MAX_FIGURE, "the core calculates it");
+        let e = take_checked(&p).unwrap_err();
+        assert!(matches!(e, Refused::TooLarge(_)), "{e:?}");
+        let text = e.to_string();
+        assert!(text.contains("too large"), "{text}");
+        assert!(!text.contains("damaged"), "{text}");
+        let e = crate::commands::take_snapshot(&p).unwrap_err();
+        assert_eq!(e.code, "figures_too_large", "{e:?}");
+        assert!(!e.detail.contains("damaged"), "{e:?}");
+    }
 
     #[test]
     fn storing_the_result_of_a_roof_out_of_range_is_refused_not_run() {

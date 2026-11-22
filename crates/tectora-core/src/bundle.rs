@@ -416,25 +416,39 @@ pub fn import(store: &Store, src: &Path) -> Result<String, FileError> {
     let file = crate::store::open_regular(src, MAX_BUNDLE)?;
     let mut zip = zip::ZipArchive::new(file).map_err(zip_err)?;
     let manifest = read_entry(&mut zip, "manifest.json", MAX_TEXT_ENTRY)?;
+    let mut manifest_value = None;
     if let Some(m) = &manifest {
         // The format and its version first: a newer Tectora may have
         // changed the rest of the manifest (ERR-007).
-        let v: serde_json::Value = serde_json::from_slice(m).map_err(zip_err)?;
+        let v: serde_json::Value =
+            serde_json::from_slice(m).map_err(|_| zip_err("the manifest is not JSON"))?;
         if v.get("format").and_then(serde_json::Value::as_str) != Some(FORMAT) {
             return Err(zip_err("not a Tectora job"));
         }
-        if let Some(version) = v
+        // Read as a project's `schema_version` is: `2.0` and `1e30` are
+        // newer versions, anything else not a number is a plain refusal,
+        // never a raw parser text (HUNT-406).
+        let version = v
             .get("format_version")
-            .and_then(serde_json::Value::as_u64)
-            .filter(|&n| n > u64::from(FORMAT_VERSION))
-        {
+            .map(|n| {
+                crate::store::whole_version(n)
+                    .ok_or_else(|| zip_err("the bundle format version is not a whole number"))
+            })
+            .transpose()?;
+        if let Some(version) = version.filter(|&n| n > u64::from(FORMAT_VERSION)) {
+            let shown = if version <= u64::from(u32::MAX) {
+                format!("bundle format {version}")
+            } else {
+                "a later bundle format".to_string()
+            };
             return Err(FileError::new(
                 "newer_format",
                 format!(
-                    "job bundle: made by a newer Tectora (bundle format {version}, this version reads up to {FORMAT_VERSION})"
+                    "job bundle: made by a newer Tectora ({shown}, this version reads up to {FORMAT_VERSION})"
                 ),
             ));
         }
+        manifest_value = Some((v, version));
     }
     let text = read_entry(&mut zip, "project.tectora", MAX_TEXT_ENTRY)?
         .ok_or_else(|| zip_err("no project in the file"))?;
@@ -447,8 +461,14 @@ pub fn import(store: &Store, src: &Path) -> Result<String, FileError> {
         "job bundle: project.tectora",
         &file_stem(src),
     )?;
-    if let Some(m) = &manifest {
-        serde_json::from_slice::<Manifest>(m).map_err(zip_err)?;
+    if let Some((mut v, version)) = manifest_value {
+        // `1.0` is version 1.
+        if let Some(n) = version {
+            v["format_version"] = n.into();
+        }
+        serde_json::from_value::<Manifest>(v).map_err(|_| {
+            zip_err("the manifest is damaged (a field is missing or of another type)")
+        })?;
     }
     // A change log over the limit (bundles exported before HUNT-101) is
     // left out: the job and its files matter more than its history.
@@ -548,12 +568,16 @@ fn received_history(bytes: &[u8]) -> Option<(String, u64)> {
             let name = p.name.clone();
             crate::edit::clean_received(p, &name);
         }
+    }
+    // Versions out of the limits are dropped before their changes are
+    // worked out: diffing an unbounded version took minutes (HUNT-401).
+    entries.retain(|e| ok(&e.before) && ok(&e.after));
+    for e in &mut entries {
         e.changes = match (&e.before, &e.after) {
             (Some(b), Some(a)) => crate::diff::diff(b, a),
             _ => Vec::new(),
         };
     }
-    entries.retain(|e| ok(&e.before) && ok(&e.after));
     let last = entries.iter().map(|e| e.ts_ms).max()?;
     let now = now_ms();
     if last > now {
@@ -1175,6 +1199,97 @@ mod tests {
         zip.write_all(project.as_bytes()).unwrap();
         zip.finish().unwrap();
         path
+    }
+
+    /// Audit 2026-11-22 HUNT-401: a received history version far out of
+    /// the limits is dropped before its changes are worked out: a bundle of
+    /// under a megabyte kept the import busy for minutes.
+    #[test]
+    fn a_history_version_out_of_the_limits_is_dropped_before_it_is_diffed() {
+        let dir = std::env::temp_dir().join(format!("tectora-diffbomb-{}", now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        let p = crate::examples::find("gable").unwrap().project();
+        let windows = |n: usize, k: f64| -> Vec<crate::model::RoofWindow> {
+            (0..n)
+                .map(|i| crate::model::RoofWindow {
+                    x: i as f64 * 0.001 + k,
+                    y: 1.0,
+                    width: 0.7,
+                    height: 1.1,
+                })
+                .collect()
+        };
+        let (mut before, mut after) = (p.clone(), p.clone());
+        before.windows = windows(20_000, 0.0);
+        after.windows = windows(25_000, 0.5);
+        let entry = serde_json::to_string(&crate::store::ActivityEntry {
+            ts_ms: 1,
+            actor: "x".into(),
+            summary: "s".into(),
+            before: Some(before),
+            changes: Vec::new(),
+            after: Some(after),
+            undid_from: None,
+        })
+        .unwrap();
+        let path = dir.join("bomb.tectorajob");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        let opts = SimpleFileOptions::default();
+        zip.start_file("project.tectora", opts).unwrap();
+        zip.write_all(p.to_json().unwrap().as_bytes()).unwrap();
+        zip.start_file("history.jsonl", opts).unwrap();
+        zip.write_all(entry.as_bytes()).unwrap();
+        zip.finish().unwrap();
+        let store = Store::new(dir.join("lib")).unwrap();
+        let started = std::time::Instant::now();
+        let id = import(&store, &path).unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the import took {:?}",
+            started.elapsed()
+        );
+        assert!(store.activity(&id).is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Audit 2026-11-22 HUNT-406: the bundle format version is read as a
+    /// project's schema version is: `2.0` and `1e30` are a newer Tectora,
+    /// `1.0` is this one, and a string is a plain refusal, never a raw
+    /// parser text.
+    #[test]
+    fn a_bundle_format_version_written_as_a_float_or_a_string_is_understood() {
+        let dir = std::env::temp_dir().join(format!("tectora-bundle-version-{}", now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        let store = Store::new(dir.join("lib")).unwrap();
+        let project = crate::examples::find("gable")
+            .unwrap()
+            .project()
+            .to_json()
+            .unwrap();
+        let manifest = |v: &str| {
+            format!(
+                r#"{{"format": "tectora-job", "format_version": {v}, "name": "x", "engine_version": "1", "exported_ms": 1, "files": []}}"#
+            )
+        };
+        for (i, (v, code)) in [
+            ("2.0", "newer_format"),
+            ("1e30", "newer_format"),
+            ("\"2\"", "unreadable"),
+            ("1.5", "unreadable"),
+            ("-1", "unreadable"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let b = bundle_of(&dir, &format!("v{i}.tectorajob"), &manifest(v), &project);
+            let e = import(&store, &b).unwrap_err();
+            assert_eq!(e.code, code, "{v}: {e}");
+            assert!(!e.detail.contains("invalid type"), "{v}: {}", e.detail);
+            assert!(!e.detail.contains("expected"), "{v}: {}", e.detail);
+        }
+        let b = bundle_of(&dir, "v1.tectorajob", &manifest("1.0"), &project);
+        assert!(import(&store, &b).is_ok());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

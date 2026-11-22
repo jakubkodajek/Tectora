@@ -98,6 +98,7 @@ const KNOWN = new Set([
   "too_complex",
   "not_calculated",
   "no_building",
+  "figures_too_large",
   "settings_unreadable",
   "refused",
 ]);

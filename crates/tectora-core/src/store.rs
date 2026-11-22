@@ -630,15 +630,19 @@ fn modified_ms(path: &Path) -> u64 {
 /// app reads, else `None` (also for text that is not JSON).
 pub(crate) fn newer_format(text: &str) -> Option<u64> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
-    let n = v.get("schema_version")?;
-    // `4.0` and `1e30` are whole numbers too (ARCH-205 item 1): such a file
-    // is not overwritten either.
-    let version = n.as_u64().or_else(|| {
+    let version = whole_version(v.get("schema_version")?)?;
+    (version > u64::from(crate::model::SCHEMA_VERSION)).then_some(version)
+}
+
+/// A format version in a file as a whole number: `4.0` and `1e30` are
+/// whole numbers too (ARCH-205 item 1), a huge one is held at `u64::MAX`;
+/// `None` for a fraction, a negative number or not a number.
+pub(crate) fn whole_version(n: &serde_json::Value) -> Option<u64> {
+    n.as_u64().or_else(|| {
         n.as_f64()
             .filter(|f| f.is_finite() && f.fract() == 0.0 && *f >= 0.0)
             .map(|f| f.min(u64::MAX as f64) as u64)
-    })?;
-    (version > u64::from(crate::model::SCHEMA_VERSION)).then_some(version)
+    })
 }
 
 #[cfg(test)]

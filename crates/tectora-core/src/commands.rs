@@ -110,6 +110,10 @@ pub fn take_snapshot(project: &Project) -> Result<snapshot::ResultSnapshot, Comm
             code: "no_building",
             detail: snapshot::Refused::NoBuilding.to_string(),
         },
+        e @ snapshot::Refused::TooLarge(_) => CommandError {
+            code: "figures_too_large",
+            detail: e.to_string(),
+        },
     })
 }
 

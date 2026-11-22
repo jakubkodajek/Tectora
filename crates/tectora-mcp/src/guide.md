@@ -224,7 +224,10 @@ says so in its `note` and carries `stored_result.differences`: tell the
 user that the offer's figures no longer match. `store_result` replaces the
 stored result with the current one; call it only when the user wants that.
 Both refuse a job with no building and no hand-drawn face (there are no
-figures to offer): draw the building first.
+figures to offer): draw the building first. They also refuse a roof whose
+figures are too large to keep (an area or a length over 1 000 000 000,
+"the figures are too large to keep"): check the sizes, usually a face or
+a wall drawn in millimetres instead of metres.
 
 ## Results (DACAD line codes)
 

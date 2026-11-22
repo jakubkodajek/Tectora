@@ -235,3 +235,17 @@ describe("round-3 audit: a job too large to export (ARCH-205)", () => {
     expect(d.title).not.toBe(t("err.action.save"));
   });
 });
+
+describe("round-5 audit: a result too large to keep (HUNT-405)", () => {
+  it("says the roof is too large, not that the stored result is damaged", () => {
+    for (const locale of ["cs", "sk", "en", "de"] as const) {
+      setLocale(locale);
+      const d = describeError(
+        { code: "figures_too_large", detail: "the figures are too large to keep: a figure is not a number of a real roof (at most 1000000000)" },
+        "storeResult",
+      );
+      expect(d.message).toBe(DICTS[locale]["err.figures_too_large"]);
+      expect(d.message).not.toBe(t("err.unknown"));
+    }
+  });
+});

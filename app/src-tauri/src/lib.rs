@@ -932,7 +932,21 @@ fn start_watcher(
 /// Opens files given on the command line or by the OS (double-click on a
 /// `.tectora` or `.tectorajob` file): each becomes a library job, the last
 /// one is shown.
+///
+/// On its own thread: importing a received bundle can take a while, and
+/// this runs from the event loop (macOS file open, a second launch), which
+/// must never wait for it (audit 2026-11-22 HUNT-401).
 fn open_files(app: &tauri::AppHandle, paths: impl IntoIterator<Item = PathBuf>) {
+    let paths: Vec<PathBuf> = paths.into_iter().collect();
+    if paths.is_empty() {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || open_files_now(&app, paths));
+}
+
+/// [`open_files`] on the calling thread.
+fn open_files_now(app: &tauri::AppHandle, paths: Vec<PathBuf>) {
     let state = app.state::<AppState>();
     let opened = bundle::open_paths(&state.store(), paths);
     // A file that does not open is told to the user like a failed import
