@@ -113,6 +113,9 @@
         {/if}
         {#if i === 0 && ai}
           <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && onrevert()}><Icon name="undo" size={14} />{t("ai.revert")}</button>
+        {:else if i === 0 && a.actor === ENGINE_ACTOR && a.refreshed}
+          <!-- The offer's own figures back (owner decision 2026-11-22, UX-702d): the same revert of the newest entry. -->
+          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && onrevert()}><Icon name="undo" size={14} />{t("snap.revertRefresh")}</button>
         {/if}
       </li>
     {/each}

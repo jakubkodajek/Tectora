@@ -5,12 +5,13 @@
 // one neutral notice that leads to the history entry, the entry lists each
 // figure old -> new, and the result card says "recalculated" with the
 // offer's own date instead of "unchanged since stored" with the date of the
-// open.
+// open. UX-702d (owner decision 2026-11-22): the engine's entry has a
+// Revert that puts the offer's figures back for good.
 import fs from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { LIBRARY_DIR } from "./env";
-import { bridge, createExample, expect, loadProject, test } from "./fixtures";
+import { bridge, createExample, expect, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 
 const dockTab = (page: Page, key: string) => page.locator("aside .tabs").getByRole("tab", { name: cs(key) });
@@ -101,5 +102,24 @@ test.describe("round 8: a stored result recalculated on open (UX-702)", () => {
     await expect(app.toasts().filter({ hasText: "Tectora 0.8.0" })).toHaveCount(1);
     expect((await loadProject(id)).result_snapshot.engine_version).not.toBe("0.8.0");
     void other;
+  });
+
+  test("the engine's entry puts the offer's own figures back, and the next open leaves them (UX-702d)", async ({ app, page, mcp }) => {
+    const { id } = await olderOffer(mcp, "Zpět");
+    await app.open({ prefs: { followAi: false } });
+    await app.openJob("Zpět");
+    await expect(app.toasts().filter({ hasText: "Tectora 0.8.0" })).toHaveCount(1);
+    await app.saved();
+    await dockTab(page, "dock.ai").click();
+    await page.getByRole("button", { name: cs("snap.revertRefresh") }).click();
+    const back = await waitForProject(id, (p) => p.result_snapshot?.engine_version === "0.8.0");
+    expect(back.result_snapshot.roof_area).toBe(150);
+    expect(back.result_snapshot.taken_ms).toBe(OFFER_MS);
+    await app.saved();
+    await page.getByRole("button", { name: cs("editor.back") }).click();
+    await app.openJob("Zpět");
+    await app.saved();
+    await expect(app.toasts().filter({ hasText: "Tectora 0.8.0" })).toHaveCount(0);
+    expect((await loadProject(id)).result_snapshot.roof_area).toBe(150);
   });
 });
