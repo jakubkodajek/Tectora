@@ -240,7 +240,7 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
       const mine = (out = { v });
       // A refusal first (it shows the stored value and says why), then the
       // field lets go of the value; a burst of steps shows what it now may.
-      later(r, v);
+      later(r, v, mine);
       const settle = () => {
         if (out !== mine) return;
         out = null;
@@ -273,10 +273,13 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
    * refusal puts the stored value back and says why, so a refused value
    * never stays in the field as if stored.
    */
-  function later(p: PromiseLike<unknown>, v: number) {
-    const shown = fmt(v);
+  function later(p: PromiseLike<unknown>, v: number, sent: { v: number }) {
     const mine = item;
-    const still = () => mine === item && !dirty && input.value === shown;
+    // Still the field's last word for this item: nothing typed or sent
+    // since. Not whether the field still shows `v`: a re-render (an AI
+    // save meanwhile) shows the stored value again, and the refusal must
+    // still be marked (UX-401).
+    const still = () => mine === item && !dirty && out === sent;
     const refused = (why: string) => {
       if (!still()) return;
       // A refused step is no base of the next one, nor what the field shows.

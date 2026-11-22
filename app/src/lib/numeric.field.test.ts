@@ -160,6 +160,8 @@ describe("a refused edit stays visible (UX-401)", () => {
     const input = new FakeInput();
     const a = numeric(input as unknown as HTMLInputElement, c.opts("part:0", 3));
     input.type_(f(4.2));
+    // An outside save re-renders the field before the answer comes.
+    a.update(c.opts("part:0", 3));
     c.answer("The item changed meanwhile.");
     await vi.advanceTimersByTimeAsync(0);
     expect(input.value).toBe(f(3));
