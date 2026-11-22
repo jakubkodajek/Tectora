@@ -704,6 +704,10 @@ pub fn crossing_walls(part: &RoofPart) -> Vec<usize> {
     out
 }
 
+/// A direction marker shorter than this is a point to the core
+/// (`roof::snap_markers`), m.
+pub(crate) const MARKER_SNAP: f64 = 0.005;
+
 /// The later wall of each pair of walls of `part` that lie on each other
 /// along more than 1 mm: an outline that runs round the building twice,
 /// or a wall drawn back over another one. The core still returned a roof
@@ -726,10 +730,22 @@ pub fn overlapping_walls(part: &RoofPart) -> Vec<usize> {
     {
         return Vec::new();
     }
+    // A marker a few millimetres long is a point to the core, which moves
+    // the next corner onto it (`roof::snap_markers`): so here too, or the
+    // wall after it runs those millimetres back over the wall before it
+    // (sample HPS01 without its wall records, HUNT-304).
+    let mut pts: Vec<Point2> = part.edges.iter().map(|e| e.start).collect();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let d = pts[i].distance(pts[j]);
+        if part.edges[i].direction_rad.is_some() && d > 0.0 && d < MARKER_SNAP {
+            pts[j] = pts[i];
+        }
+    }
     // The walls with a length, by their index in `part.edges`; markers
     // and walls of no length (reported as `zero_length_wall`) are left out.
     let walls: Vec<(usize, Point2, Point2)> = (0..n)
-        .map(|i| (i, part.edges[i].start, part.edges[(i + 1) % n].start))
+        .map(|i| (i, pts[i], pts[(i + 1) % n]))
         .filter(|&(_, a, b)| a.distance(b) >= MIN_WALL_LENGTH)
         .collect();
     if walls.len() < 3 {
@@ -1484,6 +1500,63 @@ mod tests {
         ];
         let spiral = RoofPart::new("A", pts.iter().map(|&(x, y)| edge(x, y)).collect());
         assert!(overlapping_walls(&spiral).is_empty());
+    }
+
+    /// Audit 2026-11-22 HUNT-304: a direction marker a few millimetres
+    /// long, which the core snaps back to a point, is no wall drawn back:
+    /// the wall after it continues the one before it (sample HPS01 without
+    /// its wall records).
+    #[test]
+    fn a_millimetre_marker_is_no_wall_drawn_back() {
+        let edge = |x: f64, y: f64, dir: Option<f64>| {
+            let mut e = crate::edit::plain_edge(Point2::new(x, y), 35.0, 3.0, 0.5);
+            e.direction_rad = dir;
+            e
+        };
+        let pi = std::f64::consts::PI;
+        // A wing up along x = 11 with a 2.4 mm marker pointing back down.
+        let hps = RoofPart::new(
+            "A",
+            vec![
+                edge(0.0, 0.0, None),
+                edge(15.8, 0.0, None),
+                edge(15.8, 12.0, None),
+                edge(11.0, 12.0, None),
+                edge(11.0, 14.7624, Some(pi)),
+                edge(11.0, 14.76, None),
+                edge(11.0, 20.0, None),
+                edge(5.6, 20.0, None),
+                edge(5.6, 12.0, None),
+                edge(0.0, 12.0, None),
+            ],
+        );
+        assert!(overlapping_walls(&hps).is_empty());
+        // A rectangle with a 3 mm marker pointing back along its eave.
+        let mm = RoofPart::new(
+            "A",
+            vec![
+                edge(0.0, 0.0, None),
+                edge(6.0, 0.0, Some(pi)),
+                edge(5.997, 0.0, None),
+                edge(12.0, 0.0, None),
+                edge(12.0, 8.0, None),
+                edge(0.0, 8.0, None),
+            ],
+        );
+        assert!(overlapping_walls(&mm).is_empty());
+        // A wall drawn back 2 cm after a marker is still one.
+        let back = RoofPart::new(
+            "A",
+            vec![
+                edge(0.0, 0.0, None),
+                edge(6.0, 0.0, Some(pi)),
+                edge(5.98, 0.0, None),
+                edge(12.0, 0.0, None),
+                edge(12.0, 8.0, None),
+                edge(0.0, 8.0, None),
+            ],
+        );
+        assert!(!overlapping_walls(&back).is_empty());
     }
 
     /// Audit 2026-11-21 ARCH-205 item 1: `2.0` is version 2, `1e30` a
