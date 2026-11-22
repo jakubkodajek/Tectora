@@ -22,33 +22,102 @@ use std::borrow::Cow;
 /// Greek oxia vowel U+1F71, which is `ά` U+03AC, or a composition
 /// exclusion) is replaced by its NFC form first, as JavaScript's
 /// `normalize("NFC")` does, so the core and the app fold one text alike
-/// (audit 2026-11-22 HUNT-602, TEST-608).
+/// (audit 2026-11-22 HUNT-602, TEST-608). The marks after a letter are put
+/// in canonical order (by combining class) before they compose, with the
+/// letter decomposed when marks follow it, so a mark of a lower class
+/// between a letter and its mark does not block it (`ا` + fathatan +
+/// madda is `آ` + fathatan, audit 2026-11-22 HUNT-803).
 pub fn nfc(s: &str) -> Cow<'_, str> {
-    if !s.chars().any(|c| is_second(c) || singleton(c).is_some()) {
+    if !s
+        .chars()
+        .any(|c| is_second(c) || ccc(c) != 0 || singleton(c).is_some())
+    {
         return Cow::Borrowed(s);
     }
-    let mut out = String::with_capacity(s.len());
+    let mut chars: Vec<char> = Vec::with_capacity(s.len());
     for c in s.chars() {
         match singleton(c) {
-            Some(to) => to.chars().for_each(|t| push_composed(&mut out, t)),
-            None => push_composed(&mut out, c),
+            Some(to) => chars.extend(to.chars()),
+            None => chars.push(c),
         }
     }
-    Cow::Owned(out)
+    // A letter with marks after it: its own marks are ordered with them.
+    let mut split = Vec::with_capacity(chars.len());
+    for (i, &c) in chars.iter().enumerate() {
+        if chars.get(i + 1).is_some_and(|&n| ccc(n) != 0) {
+            decompose(c, &mut split);
+        } else {
+            split.push(c);
+        }
+    }
+    // Canonical reordering: each run of marks sorted by class, stable.
+    let mut i = 0;
+    while i < split.len() {
+        if ccc(split[i]) == 0 {
+            i += 1;
+            continue;
+        }
+        let from = i;
+        while i < split.len() && ccc(split[i]) != 0 {
+            i += 1;
+        }
+        split[from..i].sort_by_key(|&c| ccc(c));
+    }
+    Cow::Owned(compose_all(&split))
 }
 
-/// Pushes `c` onto `out`, composed with the letter before it when `c` is
-/// a mark (or jamo, vowel sign) that composes with that letter.
-fn push_composed(out: &mut String, c: char) {
-    if is_second(c)
-        && let Some(last) = out.chars().next_back()
-        && let Some(composed) = compose_any(last, c)
-    {
-        out.pop();
-        out.push(composed);
-    } else {
+/// Canonical composition (Unicode §3.11): each character composes with the
+/// last starter before it unless a character between them has a class of
+/// 0 or one at least as high as its own.
+fn compose_all(chars: &[char]) -> String {
+    let mut out: Vec<char> = Vec::with_capacity(chars.len());
+    let mut starter: Option<usize> = None;
+    // The class of the last character after the starter, if any.
+    let mut last: Option<u8> = None;
+    for &c in chars {
+        let class = ccc(c);
+        if let Some(at) = starter
+            && last.is_none_or(|l| l != 0 && l < class)
+            && let Some(composed) = compose_any(out[at], c)
+        {
+            out[at] = composed;
+            continue;
+        }
+        if class == 0 {
+            starter = Some(out.len());
+            last = None;
+        } else {
+            last = Some(class);
+        }
         out.push(c);
     }
+    out.into_iter().collect()
+}
+
+/// Pushes the canonical decomposition of `c` onto `out` (from the pair
+/// tables; `c` itself when it is no primary composite).
+fn decompose(c: char, out: &mut Vec<char>) {
+    let pair = COMPOSE
+        .iter()
+        .chain(crate::nfc_pairs::PAIRS)
+        .find(|e| e.2 == c);
+    match pair {
+        Some(&(first, second, _)) => {
+            decompose(first, out);
+            out.push(second);
+        }
+        None => out.push(c),
+    }
+}
+
+/// The canonical combining class of `c` (0 for a starter).
+fn ccc(c: char) -> u8 {
+    use crate::nfc_pairs::CCC;
+    if c < CCC[0].0 {
+        return 0;
+    }
+    CCC.binary_search_by(|e| e.0.cmp(&c))
+        .map_or(0, |i| CCC[i].1)
 }
 
 /// The NFC form of `c` when NFC changes `c` on its own.

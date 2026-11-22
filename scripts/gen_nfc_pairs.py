@@ -49,6 +49,17 @@ text = (
     "#[rustfmt::skip]\n"
     "pub(crate) const SECONDS: &[char] = &[\n"
     + "".join(f"    '\\u{{{b:x}}}',\n" for b in sorted({r[1] for r in rows}))
+    + "];\n\n"
+    "/// The canonical combining class of every character whose class is not\n"
+    "/// 0, sorted: marks are put in this order before they compose\n"
+    "/// (canonical reordering, audit 2026-11-22 HUNT-803).\n"
+    "#[rustfmt::skip]\n"
+    "pub(crate) const CCC: &[(char, u8)] = &[\n"
+    + "".join(
+        f"    ('\\u{{{cp:x}}}', {unicodedata.combining(chr(cp))}),\n"
+        for cp in range(0x20, 0x110000)
+        if not (0xD800 <= cp < 0xE000) and unicodedata.combining(chr(cp))
+    )
     + "];\n"
 )
 (root / "crates/tectora-core/src/nfc_pairs.rs").write_text(text)
@@ -63,6 +74,16 @@ for cp in range(0x20, 0x30000):
     d = unicodedata.normalize("NFD", chr(cp))
     if d != chr(cp) and any(not (0x300 <= ord(x) <= 0x36F) for x in d[1:]):
         seqs.append(d)
+# A mark between a letter and the mark it composes with, in an order NFC
+# changes: canonical reordering comes before composition (HUNT-803).
+seqs += [
+    "\u0627\u064b\u0653",  # alef + fathatan + madda: alef with madda, fathatan
+    "\u304b\u0301\u3099",  # ka + acute + voicing mark: ga, acute
+    "\u0928\u0951\u093c",  # na + udatta + nukta: nnna, udatta
+    "e\u0302\u0323",  # e + circumflex + dot below: e with both
+    "o\u0301\u031b",  # o + acute + horn: o with horn and acute
+    "\u00e9\u0323",  # e with acute + dot below
+]
 import json
 (root / "tests/fixtures/parity/nfc_inputs.json").write_text(
     json.dumps(

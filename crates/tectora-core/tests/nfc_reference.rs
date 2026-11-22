@@ -86,3 +86,24 @@ fn every_decomposed_greek_letter_composes() {
         ("\u{3c9}\u{313}\u{342}\u{345}", "ᾦ"),
     ]);
 }
+
+/// Audit 2026-11-22 HUNT-803 (ARCH and TEST to-check 40): a mark between a
+/// letter and the mark it composes with does not block it when its
+/// combining class is lower; NFC puts marks in canonical order first, as
+/// the app's `normalize("NFC")` does (expected values from Python's
+/// `unicodedata.normalize`).
+#[test]
+fn marks_are_put_in_canonical_order_before_they_compose() {
+    for (input, want) in [
+        ("Dum \u{627}\u{64b}\u{653} x", "Dum \u{622}\u{64b} x"),
+        ("Dum \u{304b}\u{301}\u{3099} x", "Dum \u{304c}\u{301} x"),
+        ("Dum \u{928}\u{951}\u{93c} x", "Dum \u{929}\u{951} x"),
+        ("e\u{302}\u{323}", "\u{1ec7}"),
+        ("o\u{301}\u{31b}", "\u{1edb}"),
+        ("\u{e9}\u{323}", "\u{1eb9}\u{301}"),
+        ("x\u{302}\u{323}", "x\u{323}\u{302}"),
+    ] {
+        assert_eq!(nfc(input), want, "{}", input.escape_unicode());
+        assert_eq!(nfc(want), want, "{} stays", want.escape_unicode());
+    }
+}
