@@ -23,12 +23,47 @@ const ITEM_LABEL: Record<string, string> = {
 };
 
 /** True for a change of one dormer, chimney, window, opening or hand-drawn line or face. */
-export const isItemChange = (c: Change) => c.item !== undefined && c.field in ITEM_LABEL;
+export const isItemChange = (c: Change) =>
+  isChange(c) && Number.isInteger(c.item) && Object.prototype.hasOwnProperty.call(ITEM_LABEL, c.field);
+
+/** Whether `c` has the shape of a change at all: a received change log can hold anything (HUNT-301). */
+const isChange = (c: unknown): c is Change =>
+  typeof c === "object" && c !== null && typeof (c as Change).field === "string";
+
+const index = (v: unknown): number | undefined => (Number.isInteger(v) && (v as number) >= 0 ? (v as number) : undefined);
+const isPt = (v: unknown): v is Point2 =>
+  typeof v === "object" && v !== null && Number.isFinite((v as Point2).x) && Number.isFinite((v as Point2).y);
+const isPts = (v: unknown): v is Point2[] => Array.isArray(v) && v.every(isPt);
+const isXy = (v: unknown): v is number[] => Array.isArray(v) && v.length >= 2 && Number.isFinite(v[0]) && Number.isFinite(v[1]);
+const count = (v: unknown) => (Array.isArray(v) ? v.length : 0);
+
+/** Most characters of a text shown in a change row. */
+const MAX_SHOWN = 120;
+
+/** A text value of a change as one line of plain text: control, bidi and
+    other invisible characters removed, cut to {@link MAX_SHOWN} (HUNT-301). */
+export function shownText(v: unknown): string {
+  const s = typeof v === "string" ? v : v == null ? "" : typeof v === "number" || typeof v === "boolean" ? String(v) : "";
+  const kept = s.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, "");
+  const chars = Array.from(kept);
+  return chars.length > MAX_SHOWN ? chars.slice(0, MAX_SHOWN - 1).join("") + "…" : kept;
+}
 
 export function describeChange(c: Change, project: Project | null): string {
+  if (!isChange(c)) return t("chg.other");
+  try {
+    return describeValid(c, project);
+  } catch {
+    // A value of the wrong type from a received log: never break the list.
+    return t("chg.other");
+  }
+}
+
+function describeValid(c: Change, project: Project | null): string {
   const multiPart = (project?.parts.length ?? 0) > 1;
-  const n = (c.edge ?? 0) + 1;
-  const prefix = multiPart && c.part !== undefined ? t("chg.part", { p: c.part + 1 }) + " · " : "";
+  const n = (index(c.edge) ?? 0) + 1;
+  const part = index(c.part);
+  const prefix = multiPart && part !== undefined ? t("chg.part", { p: part + 1 }) + " · " : "";
   const text = (() => {
     if (isItemChange(c)) {
       const name = t(ITEM_LABEL[c.field], { n: c.item! + 1 });
@@ -48,15 +83,15 @@ export function describeChange(c: Change, project: Project | null): string {
         return t("chg.overhang", { n, a: len(c.before), b: len(c.after) });
       case "half_hip": {
         const b = c.after as HalfHip | null;
-        if (!b) return t("chg.halfHipOff", { n });
+        if (!b || typeof b !== "object") return t("chg.halfHipOff", { n });
         return t("chg.halfHip", { n, h: len(b.height), p: deg(b.pitch_deg) });
       }
       case "priority":
         return t(Number(c.after) > 0 ? "chg.priorityOn" : "chg.priorityOff", { n });
       case "windows":
-        return t("chg.windows", { k: (c.after as unknown[]).length });
+        return t("chg.windows", { k: count(c.after) });
       case "chimneys":
-        return t("chg.chimneys", { k: (c.after as unknown[]).length });
+        return t("chg.chimneys", { k: count(c.after) });
       case "breaks":
         return t("chg.breaks", { n });
       case "clad":
@@ -64,9 +99,9 @@ export function describeChange(c: Change, project: Project | null): string {
       case "direction":
         return c.after == null ? t("chg.directionOff", { n }) : t("chg.direction", { n, b: deg(((Number(c.after) * 180) / Math.PI + 360) % 360) });
       case "dormers":
-        return t("chg.dormers", { k: (c.after as unknown[]).length });
+        return t("chg.dormers", { k: count(c.after) });
       case "roof_openings":
-        return t("chg.holes", { k: (c.after as unknown[]).length });
+        return t("chg.holes", { k: count(c.after) });
       case "material":
         return t("chg.material", { n, b: materialName(project, Number(c.after)) });
       case "material_names":
@@ -76,51 +111,59 @@ export function describeChange(c: Change, project: Project | null): string {
       case "result_snapshot":
         return t(c.kind === "removed" ? "chg.snapshotDropped" : "chg.snapshotStored");
       case "vertex": {
-        const [x, y] = c.after as [number, number];
+        if (!isXy(c.after)) return t("chg.other");
+        const [x, y] = c.after;
         return t("chg.vertex", { n, x: num(x), y: num(y) });
       }
       case "edge":
         return c.kind === "added" ? t("chg.vertexAdded", { n }) : t("chg.vertexRemoved", { n });
       case "part":
         return c.kind === "added"
-          ? t("chg.partAdded", { name: partLabel(String(c.after), c.part ?? 0) })
-          : t("chg.partRemoved", { name: partLabel(String(c.before), c.part ?? 0) });
+          ? t("chg.partAdded", { name: partLabel(shownText(c.after), part ?? 0) })
+          : t("chg.partRemoved", { name: partLabel(shownText(c.before), part ?? 0) });
       case "building_height":
         return t("chg.buildingHeight", { a: len(c.before), b: len(c.after) });
       case "part_name":
-        return t("chg.partName", { b: partLabel(String(c.after), c.part ?? 0) });
+        return t("chg.partName", { b: partLabel(shownText(c.after), part ?? 0) });
       case "name":
-        return t("chg.name", { b: String(c.after) });
+        return t("chg.name", { b: shownText(c.after) });
       case "notes":
         return t("chg.notes");
       case "job.status":
         // Before and after, as every other row (UX-207); an added status has no before.
+        if (!STATUSES.has(String(c.after)) || (c.before && !STATUSES.has(String(c.before)))) return t("chg.other");
         return c.before
           ? t("chg.jobStatus", { field: t("job.status"), a: t(`status.${c.before}`), b: t(`status.${c.after}`) })
           : t("chg.job", { field: t("job.status"), b: t(`status.${c.after}`) });
       default:
         if (c.field.startsWith("job.")) {
-          return t("chg.job", { field: t(c.field), b: String(c.after) || "—" });
+          return JOB_FIELDS.has(c.field) ? t("chg.job", { field: t(c.field), b: shownText(c.after) || "—" }) : t("chg.other");
         }
-        return c.field;
+        return t("chg.other");
     }
   })();
   return prefix + text;
 }
 
+const STATUSES = new Set(["draft", "offer", "ordered", "done"]);
+const JOB_FIELDS = new Set(["job.number", "job.customer", "job.address"]);
+
 /** Edges touched by a set of changes, as "part:edge" keys for highlighting. */
 export function changedEdges(changes: Change[], project: Project): Set<string> {
   const out = new Set<string>();
   for (const c of changes) {
-    if (c.kind === "removed" || c.part === undefined) continue;
-    const n = project.parts[c.part]?.edges.length ?? 0;
-    if (c.edge === undefined || n === 0) {
-      if (c.field === "part") for (let i = 0; i < n; i++) out.add(`${c.part}:${i}`);
+    if (!isChange(c)) continue;
+    const part = index(c.part);
+    const edge = index(c.edge);
+    if (c.kind === "removed" || part === undefined) continue;
+    const n = project.parts[part]?.edges.length ?? 0;
+    if (edge === undefined || n === 0) {
+      if (c.field === "part") for (let i = 0; i < n; i++) out.add(`${part}:${i}`);
       continue;
     }
-    out.add(`${c.part}:${c.edge}`);
+    out.add(`${part}:${edge}`);
     // A moved or inserted vertex also changes the edge that ends there.
-    if (c.field === "vertex" || c.field === "edge") out.add(`${c.part}:${(c.edge + n - 1) % n}`);
+    if (c.field === "vertex" || c.field === "edge") out.add(`${part}:${(edge + n - 1) % n}`);
   }
   return out;
 }
@@ -128,6 +171,7 @@ export function changedEdges(changes: Change[], project: Project): Set<string> {
 /** Dormers, chimneys, … touched by a set of changes, as "field:item" keys
     into the current project (removed items are not there any more). */
 export function changedItems(changes: Change[]): Set<string> {
+  changes = changes.filter(isChange);
   const out = new Set<string>();
   for (const c of changes) if (isItemChange(c) && c.kind !== "removed") out.add(`${c.field}:${c.item}`);
   return out;
@@ -183,6 +227,7 @@ export function ghostOf(
 ): Ghost {
   const ghost: Ghost = { shapes: [], lines: [] };
   if (!before) return ghost;
+  changes = changes.filter(isChange);
   if (beforeResult && changes.some((c) => ROOF_FIELDS.has(c.field))) {
     const nowLines = planLines(result);
     for (const l of planLines(beforeResult)) {
@@ -200,29 +245,41 @@ export function ghostOf(
     if (o.length >= 2 && !nowOutlines.some((n) => samePts(n, o))) ghost.shapes.push(o);
   }
   for (const c of changes) {
-    if (!isItemChange(c) || c.kind === "added" || !c.before) continue;
-    switch (c.field) {
-      case "chimney":
-      case "roof_opening":
-        ghost.shapes.push((c.before as Chimney).corners);
-        break;
-      case "window":
-        ghost.shapes.push(windowOutline(result, c.before as RoofWindow));
-        break;
-      case "manual_face":
-        ghost.shapes.push((c.before as ManualFace).points);
-        break;
-      case "manual_line": {
-        const l = c.before as ManualLine;
-        ghost.lines.push([{ x: l.a[0], y: l.a[1] }, { x: l.b[0], y: l.b[1] }]);
-        break;
+    if (!isItemChange(c) || c.kind === "added" || !c.before || typeof c.before !== "object") continue;
+    // A received log's item may have any shape: only well-formed ones are drawn (HUNT-301).
+    try {
+      switch (c.field) {
+        case "chimney":
+        case "roof_opening": {
+          const corners = (c.before as Chimney).corners;
+          if (isPts(corners)) ghost.shapes.push(corners);
+          break;
+        }
+        case "window": {
+          const o = windowOutline(result, c.before as RoofWindow);
+          if (isPts(o)) ghost.shapes.push(o);
+          break;
+        }
+        case "manual_face": {
+          const pts = (c.before as ManualFace).points;
+          if (isPts(pts)) ghost.shapes.push(pts);
+          break;
+        }
+        case "manual_line": {
+          const l = c.before as ManualLine;
+          if (isXy(l.a) && isXy(l.b)) ghost.lines.push([{ x: l.a[0], y: l.a[1] }, { x: l.b[0], y: l.b[1] }]);
+          break;
+        }
+        case "dormer": {
+          const d = c.before as Dormer;
+          if (!Array.isArray(d.edges)) break;
+          const fs = d.edges.find((x) => x?.direction_rad == null)?.start ?? d.edges[0]?.start;
+          if (isPt(fs) && isPt(d.end)) ghost.lines.push([fs, d.end]);
+          break;
+        }
       }
-      case "dormer": {
-        const d = c.before as Dormer;
-        const fs = d.edges.find((x) => x.direction_rad == null)?.start ?? d.edges[0]?.start;
-        if (fs) ghost.lines.push([fs, d.end]);
-        break;
-      }
+    } catch {
+      // Not drawn.
     }
   }
   return ghost;

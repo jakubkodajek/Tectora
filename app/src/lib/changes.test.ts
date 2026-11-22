@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { changedItems, describeChange, describeFigure, figureName, ghostOf } from "./changes";
+import { changedEdges, changedItems, describeChange, describeFigure, figureName, ghostOf } from "./changes";
 import { i18n } from "./i18n.svelte";
 import type { CalcResult, Change, EdgeDef, Project } from "./types";
 import { emptyProject } from "./types";
@@ -107,5 +107,46 @@ describe("round-3 audit", () => {
     const p = emptyProject("x");
     expect(figureName("line:OL", p)).toBe("OL Verge left");
     expect(figureName("roof_area", p)).toBe("Roof area");
+  });
+});
+
+describe("malformed changes from a received change log (HUNT-301)", () => {
+  const p = () => ({ ...emptyProject("x"), parts: [rect(12)] });
+  const bad: unknown[] = [
+    { kind: "modified", field: "vertex", part: 0, edge: 1, before: null, after: null },
+    { kind: "modified", field: "vertex", part: 0, edge: 1, before: null, after: "x" },
+    { kind: "modified", field: "windows", before: null, after: null },
+    { kind: "modified", field: "dormers", before: null, after: 7 },
+    { kind: "modified", field: "half_hip", part: 0, edge: 0, before: null, after: 3 },
+    { kind: "added", field: "chimney", item: "x", before: null, after: null },
+    { kind: "modified", field: 7, before: null, after: null },
+    { kind: "removed", field: "chimney", item: 0, before: { corners: null }, after: null },
+    { kind: "removed", field: "manual_line", item: 0, before: { a: null }, after: null },
+    { kind: "removed", field: "dormer", item: 0, before: { edges: null }, after: null },
+    { kind: "removed", field: "manual_face", item: 0, before: "x", after: null },
+    null,
+    "text",
+  ];
+
+  it("describes every one without throwing", () => {
+    for (const c of bad) {
+      expect(() => describeChange(c as Change, p())).not.toThrow();
+      expect(typeof describeChange(c as Change, p())).toBe("string");
+    }
+  });
+
+  it("highlights and ghosts them without throwing", () => {
+    expect(() => changedEdges(bad as Change[], p())).not.toThrow();
+    expect(() => changedItems(bad as Change[])).not.toThrow();
+    const g = ghostOf(bad as Change[], p(), p(), null);
+    for (const s of g.shapes) expect(Array.isArray(s)).toBe(true);
+    for (const l of g.lines) expect(l.every((pt) => typeof pt?.x === "number")).toBe(true);
+  });
+
+  it("shows texts without control or bidi characters and cut to a line", () => {
+    const name = describeChange({ kind: "modified", field: "name", before: "a", after: "Faktura ‮fdp.exe\u0007" }, p());
+    expect(name).toBe("Name: Faktura fdp.exe");
+    const long = describeChange({ kind: "modified", field: "job.customer", before: "", after: "x".repeat(100_000) }, p());
+    expect(long.length).toBeLessThan(300);
   });
 });
