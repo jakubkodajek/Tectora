@@ -93,3 +93,13 @@ describe("round-3 wording (UX-204)", () => {
     for (const [loc, d] of Object.entries(DICTS)) expect(d["folderReq.title"], loc).not.toMatch(/Přesun|Presun|Move|verschieben/i);
   });
 });
+
+// Round-6 audit UX-504: the limit of a roof's stored figures has its units.
+describe("round-6 wording (UX-504)", () => {
+  it("names m² for the area and m for the length in err.figures_too_large", () => {
+    for (const [loc, d] of Object.entries(DICTS)) {
+      expect(d["err.figures_too_large"], loc).toMatch(/1[ .,]000[ .,]000[ .,]000 m²/);
+      expect(d["err.figures_too_large"], loc).toMatch(/1[ .,]000[ .,]000[ .,]000 m(?!²)/);
+    }
+  });
+});

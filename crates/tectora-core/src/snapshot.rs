@@ -99,7 +99,9 @@ impl ResultSnapshot {
             .chain(self.area_by_material.iter().map(|m| m.area))
             .any(|v| !(v.is_finite() && v.abs() <= MAX_FIGURE))
         {
-            format!("a figure is not a number of a real roof (at most {MAX_FIGURE})")
+            format!(
+                "a figure is not a number of a real roof (an area of at most {MAX_FIGURE} m², a length or height of at most {MAX_FIGURE} m)"
+            )
         } else {
             return None;
         };
@@ -363,6 +365,8 @@ mod tests {
         assert!(matches!(e, Refused::TooLarge(_)), "{e:?}");
         let text = e.to_string();
         assert!(text.contains("too large"), "{text}");
+        // With its units, for the AI as for the app (UX-504).
+        assert!(text.contains(" m²") && text.contains(" m)"), "{text}");
         assert!(!text.contains("damaged"), "{text}");
         let e = crate::commands::take_snapshot(&p).unwrap_err();
         assert_eq!(e.code, "figures_too_large", "{e:?}");
