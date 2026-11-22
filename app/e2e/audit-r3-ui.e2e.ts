@@ -158,7 +158,7 @@ test.describe("round-3 audit: editor banners and plan", () => {
     // 128 px before (German, the text in full on four lines).
     expect((await banner.boundingBox())!.height).toBeLessThanOrEqual(72);
     // The whole text is still there for the pointer.
-    await expect(banner.locator(".warn-text span")).toHaveAttribute("title", /doppelten Ecken/);
+    await expect(banner.locator(".warn-text span")).toHaveAttribute("title", /zusätzlichen Runde/);
   });
 
   test("the AI review banner names the status before and after (UX-207)", async ({ app, mcp }) => {
