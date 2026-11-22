@@ -64,6 +64,13 @@ export function itemExists(project: Project, it: ItemRef): boolean {
   return it.index >= 0 && it.index < n;
 }
 
+/** The object `it` refers to in `project`, or undefined when there is none. */
+export function itemOf(project: Project | null | undefined, it: ItemRef): unknown {
+  if (!project) return undefined;
+  const list = { dormer: project.dormers, chimney: project.chimneys, window: project.windows, hole: project.roof_openings, line: project.manual_lines, face: project.manual_faces }[it.kind];
+  return list?.[it.index];
+}
+
 /** Pivot of an item: centre of a chimney, opening or face, middle of a
  *  line or of a dormer's front, a window's anchor corner. */
 export function itemCentre(project: Project, it: ItemRef): Point2 | null {

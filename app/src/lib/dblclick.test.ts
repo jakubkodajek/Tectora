@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FRESH_BUTTON_MS, firstPress, pressTooSoon } from "./dblclick";
+import { FRESH_BUTTON_MS, firstPress, pressTooSoon, secondPressOnFresh } from "./dblclick";
 
 describe("firstPress (UI-008)", () => {
   it("opens the row of the first press when the rows moved under the second", () => {
@@ -38,5 +38,20 @@ describe("pressTooSoon (UI-103)", () => {
 
   it("ignores a double click's second click whenever it comes", () => {
     expect(pressTooSoon(1000, 2, 5000)).toBe(true);
+  });
+});
+
+describe("secondPressOnFresh (UI-208)", () => {
+  const origin = { x: 500, y: 700, at: 1000 };
+  it("ignores the double click's second press where the swapped bar now has another button", () => {
+    expect(secondPressOnFresh(origin, 1010, { x: 501, y: 700, at: 1090 })).toBe(true);
+  });
+  it("lets a press elsewhere on the new bar or a later one through", () => {
+    expect(secondPressOnFresh(origin, 1010, { x: 640, y: 700, at: 1090 })).toBe(false);
+    expect(secondPressOnFresh(origin, 1010, { x: 500, y: 700, at: 1010 + FRESH_BUTTON_MS })).toBe(false);
+  });
+  it("does not count a press long before the bar appeared as its cause", () => {
+    expect(secondPressOnFresh(origin, 1000 + FRESH_BUTTON_MS + 1, { x: 500, y: 700, at: 1600 })).toBe(false);
+    expect(secondPressOnFresh(null, 1010, { x: 500, y: 700, at: 1090 })).toBe(false);
   });
 });

@@ -2,6 +2,7 @@
   // DACAD's "roof definition" toolbar: the selected wall's roof parameters in
   // one row, with previous/next wall buttons, docked under the views.
   import Icon from "./Icon.svelte";
+  import { freshBar } from "./dblclick";
   import { t } from "./i18n.svelte";
   import { radiogroup } from "./tabs";
   import type { CalcResult, EdgeDef, PitchBreak, Project, Selection } from "./types";
@@ -211,7 +212,7 @@
   }
 </script>
 
-<div class="bar" role="toolbar" aria-label={t("def.title")} bind:this={barEl}>
+<div class="bar" role="toolbar" aria-label={t("def.title")} bind:this={barEl} use:freshBar>
   <div class="row" use:hscroll>
     <div class="nav">
       <button class="icon-btn" onclick={() => step(-1)} title="{t('def.prev')} (PageUp, {alt}←)" aria-label={t("def.prev")}><Icon name="left" /></button>

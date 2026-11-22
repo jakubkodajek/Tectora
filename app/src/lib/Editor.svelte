@@ -27,7 +27,7 @@
   import { textfield } from "./textfield";
   import ContextMenu, { type MenuEntry, type MenuState } from "./ContextMenu.svelte";
   import { defaultDirection, moveCorner, samePoint } from "./corners";
-  import { MCP_KIND, followRoof, itemCentre, itemExists, moveItem, rotateItem, deleteItem, placementOf, transformItem, type ItemRef, type PlanTarget } from "./items";
+  import { MCP_KIND, followRoof, itemCentre, itemExists, itemOf, moveItem, rotateItem, deleteItem, placementOf, transformItem, type ItemRef, type PlanTarget } from "./items";
   import { snapToRoof, type ManualSel } from "./manual";
   import { keptSelection } from "./selection";
   import { fitlabels } from "./fitlabels";
@@ -157,6 +157,8 @@
   let dormerDlg = $state<{ index: number | null; key: string; params: DormerParams } | null>(null);
   /** Why the dormer dialog's OK cannot store the dormer (the dialog says it), else null. */
   let dormerBlocked = $state<string | null>(null);
+  /** The open dormer dialog, for OK's last check (UI-203). */
+  let dormerDialog = $state<ReturnType<typeof DormerDialog> | undefined>();
   /** A warning of the dormer dialog OK does not wait for, repeated next to OK. */
   let dormerNotice = $state<string | null>(null);
   let placing = $state<false | "dormer" | "chimney" | "window" | "hole" | "line" | "face">(false);
@@ -317,15 +319,32 @@
   );
   const wallCount = $derived(project?.parts.reduce((n, p) => n + p.edges.length, 0) ?? 0);
 
+  /**
+   * A recalculation is on its way and the figures shown are of the roof
+   * before the last edit: Results, the status bar and the views say so
+   * (ERR-204). Set only after a moment, so a quick calculation does not flicker.
+   */
+  let calcPending = $state(false);
+  let pendingTimer: ReturnType<typeof setTimeout> | undefined;
+  /** How long a calculation runs before it is marked as pending, ms [no source: editor choice]. */
+  const PENDING_MS = 250;
+
   async function recalc() {
     if (!project) return;
     const seq = ++calcSeq;
+    clearTimeout(pendingTimer);
+    pendingTimer = setTimeout(() => seq === calcSeq && (calcPending = true), PENDING_MS);
     try {
       const r = await api.calc($state.snapshot(project) as Project);
       if (seq === calcSeq) (result = r), (calcFailure = null);
     } catch (e) {
       if (seq === calcSeq) (result = null), (calcFailure = describeError(e, "calc"));
       notifyError(e, "calc");
+    } finally {
+      if (seq === calcSeq) {
+        clearTimeout(pendingTimer);
+        calcPending = false;
+      }
     }
   }
 
@@ -448,7 +467,8 @@
   function restore(i: number) {
     at = i;
     project = JSON.parse(history[i]);
-    pruneEavePitches(project!.parts);
+    // The remembered pitches stay: a redo brings the gable back, and Eave
+    // then gives the wall its own pitch again (UX-202).
     // The wall stays in the bar when the step kept it (UX-005).
     selection = keptSelection(project, selection);
     recalc();
@@ -681,6 +701,36 @@
     if (closed) info(t("editor.dialogStale"));
   }
 
+  /**
+   * Runs core operation `run` on the job as it is now and hands its answer to
+   * `apply` only while the job is still the one it was asked for. An AI save
+   * or another edit that arrived meanwhile does not drop the action (ERR-203):
+   * when the item the action works on (`item()`: the part, the chimney, …) is
+   * still as it was, the action runs again on the job as it is now; when the
+   * item itself changed or is gone, it is refused with a note. Resolves to
+   * true once applied. Errors of `run` reach the caller.
+   */
+  async function onCurrentJob<T>(item: () => unknown, run: () => Promise<T>, apply: (r: T) => void): Promise<boolean> {
+    const key = () => {
+      const it = item();
+      return it === undefined || it === null ? null : JSON.stringify(it);
+    };
+    const want = key();
+    for (let tries = 0; want !== null && tries < 3; tries++) {
+      if (!project) return false;
+      const job = snapshot();
+      const r = await run();
+      if (!project) return false;
+      if (snapshot() === job) {
+        apply(r);
+        return true;
+      }
+      if (key() !== want) break;
+    }
+    info(t("editor.actionStale"));
+    return false;
+  }
+
   // Calculation helpers on the selected wall.
   let calc = $state<{ part: number; key: string; edge: number; request: HelperRequest | null } | null>(null);
 
@@ -699,20 +749,24 @@
     if (!dialogPartThere(xform)) return;
     const op = xform.op;
     const pi = xform.part;
-    const before = JSON.stringify($state.snapshot(project));
-    let next: Project;
-    let parts: number[] = [];
+    let done = false;
     try {
-      if (op.kind === "wall") next = await api.offsetWall($state.snapshot(project) as Project, pi, op.edge, op.dist);
-      else ({ project: next, parts } = await api.transformPart($state.snapshot(project) as Project, pi, op.map, op.copies));
+      done = await onCurrentJob(
+        () => project?.parts[pi],
+        async () =>
+          op.kind === "wall"
+            ? { project: await api.offsetWall($state.snapshot(project) as Project, pi, op.edge, op.dist), parts: [] as number[] }
+            : await api.transformPart($state.snapshot(project) as Project, pi, op.map, op.copies),
+        ({ project: next, parts }) => {
+          adoptProject(next);
+          if (op.kind !== "wall" && parts.length) selection = { part: parts[parts.length - 1], edge: 0 };
+        },
+      );
     } catch (e) {
       if (!notifyRefusal(e, "transform")) notifyError(e, "calc");
       return;
     }
-    // An AI save or an edit in between wins.
-    if (!project || JSON.stringify($state.snapshot(project)) !== before) return;
-    adoptProject(next);
-    if (op.kind !== "wall" && parts.length) selection = { part: parts[parts.length - 1], edge: 0 };
+    if (!done) return;
     xform = null;
     commit();
     setTimeout(() => plan?.fit(), 0);
@@ -741,18 +795,16 @@
   /** Applies a helper request to wall `edge` of `part` through the core, onto the same part. */
   async function applyHelper(part: number, edge: number, request: HelperRequest) {
     if (!project) return;
-    const before = JSON.stringify($state.snapshot(project.parts[part]));
-    let next: Project;
     try {
-      next = await api.roofHelperApply($state.snapshot(project) as Project, part, edge, request);
+      const done = await onCurrentJob(
+        () => project?.parts[part],
+        () => api.roofHelperApply($state.snapshot(project) as Project, part, edge, request),
+        (next) => project && (project.parts = next.parts),
+      );
+      if (done) commit();
     } catch (e) {
       if (!notifyRefusal(e, "helper")) notifyError(e, "calc");
-      return;
     }
-    // An AI save or an edit in between wins.
-    if (!project || !project.parts[part] || JSON.stringify($state.snapshot(project.parts[part])) !== before) return;
-    project.parts = next.parts;
-    commit();
   }
 
   async function openRound() {
@@ -848,10 +900,20 @@
   async function setPartHeightNow(h: number): Promise<string | undefined> {
     if (!project || !selection) return;
     const pi = selection.part;
-    const part = JSON.stringify($state.snapshot(project.parts[pi]));
-    let next: Project;
+    let done = false;
     try {
-      next = await api.setPartHeight($state.snapshot(project) as Project, pi, h);
+      // Onto the part the height was typed for, on the job as it is now (ERR-203).
+      done = await onCurrentJob(
+        () => project?.parts[pi],
+        () => api.setPartHeight($state.snapshot(project) as Project, pi, h),
+        (next) => {
+          if (!project) return;
+          project.parts = next.parts;
+          project.dormers = next.dormers;
+          project.chimneys = next.chimneys;
+          if (project.manual_lines?.length) project.manual_lines = next.manual_lines ?? [];
+        },
+      );
     } catch (e) {
       // A height the core refuses (an eave below the ground) is a refusal
       // with its reason, and the field goes back to the stored height (ERR-003).
@@ -860,13 +922,7 @@
       notifyError(e, "calc");
       return t("num.refused");
     }
-    // The project may have changed meanwhile (an AI save): apply only to the same part.
-    // (Compared by value: a save in between may hand back equal but new objects.)
-    if (!project || !project.parts[pi] || JSON.stringify($state.snapshot(project.parts[pi])) !== part) return;
-    project.parts = next.parts;
-    project.dormers = next.dormers;
-    project.chimneys = next.chimneys;
-    if (project.manual_lines?.length) project.manual_lines = next.manual_lines ?? [];
+    if (!done) return t("editor.actionStale");
     commit();
   }
 
@@ -885,10 +941,21 @@
   };
   async function placeItemNow(it: ItemRef, fromEave: number | null, fromLeft: number | null, fromRight: number | null): Promise<string | undefined> {
     if (!project) return;
-    const before = JSON.stringify($state.snapshot(project));
-    let next: Project;
+    let done = false;
     try {
-      next = await api.placeItem($state.snapshot(project) as Project, MCP_KIND[it.kind], it.index, fromEave, fromLeft, fromRight);
+      // Onto the object the distance was typed for, on the job as it is now:
+      // an AI save of other things in between does not drop it (ERR-203).
+      done = await onCurrentJob(
+        () => itemOf(project, it),
+        () => api.placeItem($state.snapshot(project) as Project, MCP_KIND[it.kind], it.index, fromEave, fromLeft, fromRight),
+        (next) => {
+          if (!project) return;
+          project.dormers = next.dormers;
+          project.chimneys = next.chimneys;
+          project.windows = next.windows;
+          if (next.roof_openings) project.roof_openings = next.roof_openings;
+        },
+      );
     } catch (e) {
       // A distance that would take the object off its face is refused: said
       // in the user's language, and the field shows where it still is.
@@ -897,12 +964,7 @@
       recalc();
       return why ?? t("num.refused");
     }
-    // Only onto the same job state: an AI save or an edit in between wins.
-    if (!project || JSON.stringify($state.snapshot(project)) !== before) return;
-    project.dormers = next.dormers;
-    project.chimneys = next.chimneys;
-    project.windows = next.windows;
-    if (next.roof_openings) project.roof_openings = next.roof_openings;
+    if (!done) return t("editor.actionStale");
     commit();
   }
 
@@ -916,19 +978,20 @@
   async function setLengthNow(len: number): Promise<boolean | string> {
     if (!project || !selection) return false;
     const { part, edge } = selection;
-    const was = project.parts[part];
-    if (!was) return false;
-    const before = JSON.stringify($state.snapshot(was));
-    let next: RoofPart;
+    if (!project.parts[part]) return false;
+    let done = false;
     try {
-      next = await api.setWallLength($state.snapshot(was) as RoofPart, edge, len);
+      // Onto the part the length was typed for, as it is now (ERR-203).
+      done = await onCurrentJob(
+        () => project?.parts[part],
+        () => api.setWallLength($state.snapshot(project!.parts[part]) as RoofPart, edge, len),
+        (next) => project?.parts[part] && (project.parts[part].edges = next.edges),
+      );
     } catch (e) {
       notifyError(e, "calc");
       return false;
     }
-    // Only onto the part the length was typed for: an edit or an AI save in between wins.
-    if (!project?.parts[part] || JSON.stringify($state.snapshot(project.parts[part])) !== before) return false;
-    project.parts[part].edges = next.edges;
+    if (!done) return t("editor.actionStale");
     commit();
     return true;
   }
@@ -1049,6 +1112,11 @@
     // A value the core refused, or a front on no roof face: the dialog stays
     // open with the reason next to OK (UI-102, UX-109).
     if (dormerBlocked) return;
+    // The core checks the dormer as it stands once more (UI-203): a refusal
+    // stays in the dialog with its reason next to OK.
+    if (dormerDialog && !(await dormerDialog.finalCheck())) return;
+    await tick();
+    if (!project || !dormerDlg || dormerBlocked) return;
     if (dormerDlg.index !== null && !stillThere(project.dormers, { index: dormerDlg.index, key: dormerDlg.key })) {
       dormerDlg = null;
       info(t("editor.dialogStale"));
@@ -1166,17 +1234,23 @@
     if (!face || face.points.length < 3) return;
     const n = project.parts.length;
     const name = n === 0 ? t("editor.mainPart") : t("editor.partN", { n: n + 1 });
-    let next: Project;
+    let done = false;
     try {
-      next = await api.faceToPart($state.snapshot(project) as Project, index, name, presets.pitch_deg, presets.eave_height, presets.overhang);
+      // Onto the face it was asked for, on the job as it is now (ERR-203).
+      done = await onCurrentJob(
+        () => project?.manual_faces?.[index],
+        () => api.faceToPart($state.snapshot(project) as Project, index, name, presets.pitch_deg, presets.eave_height, presets.overhang),
+        (next) => {
+          if (!project) return;
+          project.manual_faces = next.manual_faces;
+          project.parts = next.parts;
+        },
+      );
     } catch (e) {
       if (!notifyRefusal(e, "face")) notifyError(e, "calc");
       return;
     }
-    // The project may have changed meanwhile (an AI save): apply only to the same face.
-    if (!project?.manual_faces || project.manual_faces[index] !== face) return;
-    project.manual_faces = next.manual_faces;
-    project.parts = next.parts;
+    if (!done) return;
     manualSel = null;
     selection = { part: n, edge: 0 };
     commit();
@@ -1250,10 +1324,16 @@
     openSel = s;
   }
 
-  function setChimney(c: Chimney) {
-    if (!project || !openSel || openSel.kind === "window") return;
-    if (openSel.kind === "chimney") project.chimneys[openSel.index] = c;
-    else if (project.roof_openings) project.roof_openings[openSel.index] = c;
+  /** Stores `c` as the chimney or roof opening `at` (the one the value was typed for, even when ▶ moved the selection since, UI-202). */
+  function setChimney(c: Chimney, at: NonNullable<OpeningSel>) {
+    if (!project || at.kind === "window") return;
+    if (at.kind === "chimney") {
+      if (!project.chimneys[at.index]) return;
+      project.chimneys[at.index] = c;
+    } else {
+      if (!project.roof_openings?.[at.index]) return;
+      project.roof_openings[at.index] = c;
+    }
     commit();
   }
 
@@ -1542,17 +1622,22 @@
   /** A copy of part `pi` `dx` m to the right, made by the core. */
   async function duplicatePart(pi: number, dx: number) {
     if (!project) return;
-    const before = JSON.stringify($state.snapshot(project));
-    let r;
+    let done = false;
     try {
-      r = await api.transformPart($state.snapshot(project) as Project, pi, { kind: "move", dx, dy: 0 }, 1);
+      // A copy of the part as the user saw it, on the job as it is now (ERR-203).
+      done = await onCurrentJob(
+        () => project?.parts[pi],
+        () => api.transformPart($state.snapshot(project) as Project, pi, { kind: "move", dx, dy: 0 }, 1),
+        (r) => {
+          adoptProject(r.project);
+          if (r.parts.length) selection = { part: r.parts[0], edge: 0 };
+        },
+      );
     } catch (e) {
       if (!notifyRefusal(e, "transform")) notifyError(e, "calc");
       return;
     }
-    if (!project || JSON.stringify($state.snapshot(project)) !== before) return;
-    adoptProject(r.project);
-    if (r.parts.length) selection = { part: r.parts[0], edge: 0 };
+    if (!done) return;
     commit();
     setTimeout(() => plan?.fit(), 0);
   }
@@ -1692,8 +1777,13 @@
     if (!hasDrawing(project)) return;
     const before = project;
     if (!(await confirm(t("editor.confirmClear")))) return;
-    // The project may have been reloaded (AI edit) while the dialog was open.
-    if (!project || project !== before) return;
+    // The project may have been reloaded (AI edit) while the dialog was open:
+    // the user did not see what is there now, so say so instead (ERR-203).
+    if (!project) return;
+    if (project !== before) {
+      info(t("editor.actionStale"));
+      return;
+    }
     project.parts = [];
     project.dormers = [];
     project.chimneys = [];
@@ -2036,6 +2126,7 @@
           </div>
         {/if}
         <div class="views" class:split={prefs.layout === "split"}>
+          {#if calcPending}<span class="calc-mark" role="status" data-testid="calc-pending"><i class="dot"></i>{t("res.calculating")}</span>{/if}
           {#if prefs.layout !== "3d"}
             <div class="view">
               <span class="view-label">{t("editor.plan")}</span>
@@ -2134,7 +2225,7 @@
         <div class="dock" role="tabpanel" id={dockIds.panel} aria-labelledby={dockIds.tab(dock)} bind:this={dockEl}>
           <button class="icon-btn dock-close" onclick={() => (dockOpen = false)} aria-label={t("common.close")} title={t("common.close")}><Icon name="x" size={16} /></button>
           {#if dock === "results"}
-            <Results {result} {project} onstore={storeResult} blocked={blockedReason} failure={calcFailure} />
+            <Results {result} {project} onstore={storeResult} blocked={blockedReason} failure={calcFailure} pending={calcPending} />
           {:else if dock === "breakdown"}
             <Breakdown {project} {result} bind:data={breakdown} onmark={(mk) => (planMark = mk)} />
           {:else if dock === "ai"}
@@ -2150,7 +2241,7 @@
       <span class="coords">{cursor ? `X ${num(cursor.x)}   Y ${num(cursor.y)}` : "X —   Y —"}</span>
       <span class="opt">{t("status.snap")}</span>
       <span class="opt">{t("status.walls", { n: wallCount, p: project.parts.length })}</span>
-      {#if result}<span data-testid="status-area">{t("res.area")}: <b title={roofState(result) !== "ok" ? t(roofState(result) === "none" ? "res.notCalculated" : "res.calcPartial") : undefined}>{roofState(result) === "none" ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
+      {#if result}<span data-testid="status-area" class:pending={calcPending} aria-busy={calcPending}>{t("res.area")}: <b title={roofState(result) !== "ok" ? t(roofState(result) === "none" ? "res.notCalculated" : "res.calcPartial") : undefined}>{roofState(result) === "none" ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save">
         {#if saveState === "saved"}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
@@ -2192,7 +2283,7 @@
 
 {#if dormerDlg && project}
   <Modal title={dormerDlg.index === null ? t("dormer.dialogNew") : t("dormer.n", { n: dormerDlg.index + 1 })} width={1040} onclose={() => (dormerDlg = null)}>
-    <DormerDialog {project} roofFailed={!!roofError} fresh={dormerDlg.index === null} bind:params={dormerDlg.params} bind:blocked={dormerBlocked} bind:notice={dormerNotice} track={(p) => pendingEdits.track(p)} />
+    <DormerDialog bind:this={dormerDialog} {project} roofFailed={!!roofError} fresh={dormerDlg.index === null} bind:params={dormerDlg.params} bind:blocked={dormerBlocked} bind:notice={dormerNotice} track={(p) => pendingEdits.track(p)} />
     {#snippet footer()}
       {#if dormerBlocked}<p class="dlg-why" role="alert" data-testid="dormer-ok-blocked">{dormerBlocked}</p>
       {:else if dormerNotice}<p class="dlg-why" role="status" data-testid="dormer-ok-notice">{dormerNotice}</p>{/if}
@@ -2600,6 +2691,7 @@
     color: var(--on-ai);
   }
   .views {
+    position: relative;
     flex: 1;
     min-height: 0;
     display: grid;
@@ -2609,6 +2701,33 @@
   }
   .views.split {
     grid-template-columns: 1fr 1fr;
+  }
+  /* A recalculation on its way: the plan and 3D still show the roof before the edit (ERR-204). */
+  .calc-mark {
+    position: absolute;
+    z-index: 3;
+    left: 50%;
+    top: 8px;
+    transform: translateX(-50%);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    font-size: 11.5px;
+    color: var(--text-2);
+    pointer-events: none;
+  }
+  .calc-mark .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-3);
+  }
+  .statusbar .pending b {
+    color: var(--text-3);
   }
   .view {
     position: relative;

@@ -20,6 +20,7 @@
     onstore,
     blocked = null,
     failure = null,
+    pending = false,
   }: {
     result: CalcResult | null;
     project?: Project | null;
@@ -28,6 +29,8 @@
     blocked?: string | null;
     /** Why the last calculation of the whole job failed (too complex, …), kept until one succeeds (UX-101). */
     failure?: Described | null;
+    /** A recalculation is on its way: the figures are of the roof before the last edit (ERR-204). */
+    pending?: boolean;
   } = $props();
 
   // What is on the roof (UX-005): counts and window sizes from the job,
@@ -127,7 +130,7 @@
     (SUB_CODES[code] ?? []).filter((c) => (codes[c] ?? 0) >= 0.005).map((c) => ({ code: c, label: lineName(c), value: codes[c] }));
 </script>
 
-<div class="results">
+<div class="results" class:pending={pending && !!result} aria-busy={pending}>
   <div class="hero">
     <span>{t("res.area")}</span>
     <strong data-testid="res-area" title={failed ? t("res.notCalculated") : undefined}>{totals && !none ? m2(totals.roof_area) : NONE}</strong>
@@ -136,6 +139,7 @@
     {:else if missing === "calculating"}<small data-testid="res-calculating">{t("res.calculating")}</small>
     {:else if failed}<small data-testid="res-not-calculated">{t("res.notCalculated")}</small>
     {:else if totals}<small>{t("res.ridgeHeight", { v: num(totals.ridge_height) })}</small>{/if}
+    {#if pending && result}<small class="stale" role="status" data-testid="res-stale">{t("res.calculating")}</small>{/if}
     {#if failedSet.length}<small data-testid="res-partial">{t("res.partialNote", { names: failedNames })}</small>{/if}
     {#if totals && !failed && deductedTotal >= 0.005}<small data-testid="res-deducted">{t("res.obj.netOf", { a: m2(deductedTotal) })}</small>{/if}
   </div>
@@ -260,6 +264,13 @@
 </div>
 
 <style>
+  /* Figures of the roof before the last edit while its recalculation runs (ERR-204). */
+  .results.pending .hero strong {
+    color: var(--text-3);
+  }
+  .results.pending .hero ~ * {
+    opacity: 0.6;
+  }
   .joined {
     display: block;
     font-size: 11.5px;

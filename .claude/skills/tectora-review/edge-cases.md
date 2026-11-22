@@ -15,7 +15,8 @@ clicking in Chromium.
 ## 1. A typed value must reach the object it was typed for (@ui, @errors)
 
 Guards: `app/e2e/fields.e2e.ts`, `app/src/lib/numeric.test.ts`,
-`app/e2e/audit-r2.e2e.ts` (dormer bar and dialog).
+`app/e2e/audit-r2.e2e.ts` (dormer bar and dialog), `app/e2e/audit-r3-ed.e2e.ts`
+(chimney / opening bar, quick steps, round-dormer segments).
 
 For every editable field (number, text, select, checkbox) in every bar,
 dialog and panel, type a new value and leave the field in each of these ways,
@@ -45,7 +46,15 @@ then check the saved file (`waitForProject`) and the recalculated result:
   size): the bar's own ▶ / PageDown right after typing, and a dialog's OK
   right after typing. The value lands on the object it was typed for, OK
   waits for the check, and a refused value keeps the dialog open with the
-  reason (the check goes through `pendingEdits.track`)
+  reason (the check goes through `pendingEdits.track`). Do it for every bar
+  of that kind (dormer, chimney, roof opening, window), not only one.
+- the same field with four quick ArrowUp presses and with a second field
+  typed while the first check is still out (hold the check back with
+  `page.route`): every step and both fields land. Compare only what the
+  user typed, never the whole object before and after the check.
+- a dialog whose fields ask the core: OK asks once more for the object as
+  it stands (a kind or shape change has no check of its own), and a
+  refusal clears once the user types the field again
 
 No native number inputs and no hand-made ones: every number field uses
 `use:numeric` (`app/src/lib/numeric.svelte.ts`); the unit test fails on a
@@ -63,7 +72,10 @@ Guards: `app/e2e/editor-ux.e2e.ts`, `app/e2e/fields.e2e.ts`.
 - A double click on every library and editor action that creates or
   deletes (Duplicate, Delete) acts once, also when the first click swaps
   the bar and a destructive button appears under the pointer (Close face
-  → Delete face, `audit-r2-ui.e2e.ts`).
+  → Delete face, `audit-r2-ui.e2e.ts`). Check it in German and at
+  600×420 too: another button lands under the pointer there ("In Gebäude
+  umwandeln", `audit-r3-ed.e2e.ts`); bars that replace another use
+  `freshBar` (`dblclick.ts`).
 
 ## 2. Every edit recalculates (@errors, @test)
 
@@ -146,7 +158,15 @@ and `revert_refuses_when_the_user_changed_the_same_value`.
   while an AI save replaces the project: it lands on the current project or
   is refused with a note, never on the discarded one
   (`audit-r2-status.e2e.ts`). An AI settings change revert that keeps the
-  user's later value says so.
+  user's later value says so. The same for every editor action that awaits
+  the core (typed distance, wall length, building height, Duplicate,
+  Move / Rotate / Mirror, helpers, face to building): an AI save of other
+  things lets it land, a change of its own object refuses it with
+  `editor.actionStale` (`onCurrentJob`, `audit-r3-ed.e2e.ts`).
+- While a recalculation runs, Results, the status bar and the views mark
+  the figures as pending (`calc-pending`), never show the old roof as current.
+- Undo / Redo keep editor memory that a redo needs (the pitch Eave gives
+  back after Gable, Undo, Redo).
 - A failed save stays "not saved" through an outside change; export after a
   failed save stops.
 - Follow mode opens a job only for an AI write or `show_project`, never while

@@ -13,7 +13,7 @@
   import { numeric } from "./numeric.svelte";
   import { textfield } from "./textfield";
   import { pageStep, stepIndex } from "./itemstep";
-  import { pressTooSoon } from "./dblclick";
+  import { freshBar, pressTooSoon } from "./dblclick";
 
   let {
     project,
@@ -67,7 +67,7 @@
   }
 </script>
 
-<div class="bar" role="toolbar" aria-label={t(sel?.kind === "face" ? "manual.face" : "manual.line")} use:pageStep={step}>
+<div class="bar" role="toolbar" aria-label={t(sel?.kind === "face" ? "manual.face" : "manual.line")} use:pageStep={step} use:freshBar>
   {#if sel}
     <div class="nav">
       <button class="icon-btn" onclick={() => step(-1)} title="{t('opening.prev')} (PageUp)" aria-label={t("opening.prev")}><Icon name="left" /></button>
