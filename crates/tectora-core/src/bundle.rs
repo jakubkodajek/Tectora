@@ -672,8 +672,15 @@ fn received_history(bytes: &[u8]) -> Option<(String, u64)> {
     let now = now_ms();
     if last > now {
         let shift = last - now;
+        // A revert's and a put-back's link are times of entries of the
+        // same log: moved with them, or the revert would name no entry
+        // (audit 2026-11-23 HUNT-1501). Nothing is dropped: a revert
+        // without its link would read as a change.
         for e in &mut entries {
             e.ts_ms = e.ts_ms.saturating_sub(shift);
+            for link in [&mut e.undid_from, &mut e.restores].into_iter().flatten() {
+                *link = link.saturating_sub(shift);
+            }
         }
     }
     // Within the bytes a log is read to, as a save trims it; every entry
@@ -1593,6 +1600,106 @@ mod tests {
         assert_eq!(items[0].kind, Some(EntryKind::Restore));
         assert_eq!(items[1].kind, Some(EntryKind::Revert));
         assert!(other.pending_review(&got).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Rewrites every line of `id`'s change log with `edit`, as a sender
+    /// whose clock runs ahead (or another program) could have written it.
+    fn edit_log(store: &Store, id: &str, edit: impl Fn(usize, &mut crate::store::ActivityEntry)) {
+        let path = store.activity_path(id).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let lines: Vec<String> = text
+            .lines()
+            .filter(|l| !l.is_empty())
+            .enumerate()
+            .map(|(k, l)| {
+                let mut e: crate::store::ActivityEntry = serde_json::from_str(l).unwrap();
+                edit(k, &mut e);
+                serde_json::to_string(&e).unwrap()
+            })
+            .collect();
+        fs::write(&path, lines.join("\n") + "\n").unwrap();
+    }
+
+    /// A sent job: created by the user, two AI changes (notes, customer),
+    /// the user's revert of the second.
+    fn sent_with_a_revert(store: &Store) -> String {
+        use crate::store::USER_ACTOR;
+        let p = crate::examples::find("gable").unwrap().project();
+        let id = store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        let mut q = store.load(&id).unwrap();
+        q.notes = "A1".into();
+        store.save_as(Some(id.clone()), &q, "claude", "A1").unwrap();
+        q.job.customer = "A2".into();
+        store.save_as(Some(id.clone()), &q, "claude", "A2").unwrap();
+        store.revert_last(&id, USER_ACTOR, None).unwrap();
+        id
+    }
+
+    /// Audit 2026-11-23 HUNT-1501: a log received from a sender whose
+    /// clock runs a day ahead is moved back with its links. Every revert
+    /// and put-back names an entry of the imported log, and "revert the
+    /// latest change" undoes the change before the reverted one.
+    #[test]
+    fn a_received_log_from_a_clock_ahead_keeps_its_links() {
+        use crate::store::USER_ACTOR;
+        let dir = std::env::temp_dir().join(format!("tectora-bundle-ahead-{}", now_ms()));
+        let store = Store::new(dir.join("lib")).unwrap();
+        let id = sent_with_a_revert(&store);
+        const DAY: u64 = 24 * 3600 * 1000;
+        edit_log(&store, &id, |_, e| {
+            e.ts_ms += DAY;
+            for link in [&mut e.undid_from, &mut e.restores].into_iter().flatten() {
+                *link += DAY;
+            }
+        });
+        let bundle = dir.join("ahead.tectorajob");
+        export(&store, &id, &bundle).unwrap();
+        let other = Store::new(dir.join("other")).unwrap();
+        let got = import(&other, &bundle).unwrap();
+        let log = other.activity(&got);
+        let links: Vec<u64> = log
+            .iter()
+            .flat_map(|e| e.undid_from.into_iter().chain(e.restores))
+            .collect();
+        assert!(!links.is_empty(), "the revert came along");
+        for ts in links {
+            assert!(
+                log.iter().any(|e| e.ts_ms == ts),
+                "{ts} names no entry of {log:#?}"
+            );
+        }
+        let p = other.revert_last(&got, USER_ACTOR, None).unwrap();
+        assert_eq!((p.notes.as_str(), p.job.customer.as_str()), ("", ""));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Audit 2026-11-23 DANGLING (design B2): a received revert whose
+    /// reverted version is outside the limits keeps its link, which then
+    /// names no entry of the imported log; it is read by time, and the
+    /// change before it can still be reverted.
+    #[test]
+    fn a_received_revert_whose_version_was_left_out_still_leaves_the_change_before_it() {
+        use crate::store::USER_ACTOR;
+        let dir = std::env::temp_dir().join(format!("tectora-bundle-dangling-{}", now_ms()));
+        let store = Store::new(dir.join("lib")).unwrap();
+        let id = sent_with_a_revert(&store);
+        // The second AI change's version is out of the limits.
+        edit_log(&store, &id, |k, e| {
+            if k == 2 {
+                e.after.as_mut().unwrap().parts[0].edges[1].overhang = 1e300;
+            }
+        });
+        let bundle = dir.join("dangling.tectorajob");
+        export(&store, &id, &bundle).unwrap();
+        let other = Store::new(dir.join("other")).unwrap();
+        let got = import(&other, &bundle).unwrap();
+        let log = other.activity(&got);
+        assert!(!log.iter().any(|e| e.summary == "A2"), "left out: {log:#?}");
+        let revert = log.last().unwrap();
+        assert!(revert.undid_from.is_some(), "kept as a revert");
+        let p = other.revert_last(&got, USER_ACTOR, None).unwrap();
+        assert_eq!(p.notes, "");
         let _ = fs::remove_dir_all(&dir);
     }
 
