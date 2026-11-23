@@ -9,5 +9,7 @@ const PURPOSES: Record<string, string> = {
 
 /** The translation key of a request's lead sentence; an unknown purpose reads as plain "read". */
 export function fileRequestPurpose(purpose: string): string {
-  return PURPOSES[purpose] ?? "fileReq.read";
+  // Own keys only: the purpose is read from settings.json, and a hand-edited
+  // "constructor" would find Object.prototype's member (TEST-1403).
+  return Object.hasOwn(PURPOSES, purpose) ? PURPOSES[purpose] : "fileReq.read";
 }

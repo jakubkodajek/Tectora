@@ -6,7 +6,7 @@
   import { t } from "./i18n.svelte";
   import { partLabel } from "./partname";
   import { windowOutline, type OpeningSel } from "./openings";
-  import { codeKind, lineLength, type ManualSel } from "./manual";
+  import { kindOf, lineLength, type ManualSel } from "./manual";
   import type { Ghost } from "./changes";
   import { placementOf, type ItemRef, type PlanTarget } from "./items";
   import { gridStep as gridStepFor, gridValues } from "./grid";
@@ -1178,8 +1178,8 @@
         <line class="hit" x1={sx(l.a[0])} y1={sy(l.a[1])} x2={sx(l.b[0])} y2={sy(l.b[1])}
           role="button" tabindex="-1" aria-label={t("manual.lineN", { n: li + 1 })}
           onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "line", index: li } })} />
-        <line class="stroke" class:measure={!codeKind[l.code]} x1={sx(l.a[0])} y1={sy(l.a[1])} x2={sx(l.b[0])} y2={sy(l.b[1])}
-          stroke={codeKind[l.code] ? lineColor[codeKind[l.code]] : undefined} />
+        <line class="stroke" class:measure={!kindOf(l.code)} x1={sx(l.a[0])} y1={sy(l.a[1])} x2={sx(l.b[0])} y2={sy(l.b[1])}
+          stroke={kindOf(l.code) ? lineColor[kindOf(l.code)!] : undefined} />
         {#if showDims}
           <text class="dim" x={(sx(l.a[0]) + sx(l.b[0])) / 2} y={(sy(l.a[1]) + sy(l.b[1])) / 2} dy="-6">{l.label ? `${l.label} ` : ""}{lenText(lineLength(l))}</text>
         {/if}
