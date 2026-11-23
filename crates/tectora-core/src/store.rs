@@ -3228,8 +3228,24 @@ impl Store {
 
     /// Accepts every change recorded at or before `ts_ms`. Never moves the
     /// mark back, so a late call from a second window cannot reopen a review.
+    ///
+    /// A job that is not there (deleted meanwhile, or never) is refused
+    /// with [`StoreError::NotFound`] and gets no mark: a leftover mark made
+    /// the next job of that name, and the job restored from the trash,
+    /// take another id (audit 2026-11-23 HUNT-905). Looked at before the
+    /// job's lock is taken, so no lock file is made for it, and again under
+    /// the lock, which a delete holds.
     pub fn mark_reviewed(&self, id: &str, ts_ms: u64) -> Result<u64, StoreError> {
         let path = self.review_path(id)?;
+        let job = self.path(id)?;
+        let there = || {
+            fs::symlink_metadata(&job)
+                .map(|_| ())
+                .map_err(|_| StoreError::NotFound(id.to_string()))
+        };
+        there()?;
+        let _lock = self.lock(id)?;
+        there()?;
         let accepted_ms = self.reviewed_at(id).max(ts_ms);
         let io = |e| StoreError::io(Some(id), e);
         own_folder(&self.activity_dir()).map_err(io)?;
@@ -3938,6 +3954,35 @@ mod tests {
 
     /// How long a test's card waits for its figures.
     const TEST_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// Audit 2026-11-23 HUNT-905: Accept on a job that was deleted
+    /// meanwhile, or never existed, is refused and leaves nothing behind,
+    /// so the next job of that name keeps the name as its id.
+    #[test]
+    fn accepting_a_job_that_is_not_there_leaves_no_mark() {
+        let store = temp_store("accept-gone");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        assert!(store.mark_reviewed(&id, 5).is_ok());
+        store.delete(&id, "claude", "Deleted.").unwrap();
+        let review = store.activity_dir().join(format!("{id}.review.json"));
+        let _ = fs::remove_file(&review);
+        assert_eq!(store.mark_reviewed(&id, 6).unwrap_err().code(), "not_found");
+        assert!(fs::symlink_metadata(&review).is_err());
+        assert_eq!(store.save(None, &p).unwrap(), id);
+        // Never there: no mark and no lock file.
+        assert_eq!(
+            store.mark_reviewed("never-there", 5).unwrap_err().code(),
+            "not_found"
+        );
+        for leftover in ["never-there.review.json", "never-there.lock"] {
+            assert!(
+                fs::symlink_metadata(store.activity_dir().join(leftover)).is_err(),
+                "{leftover}"
+            );
+        }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
 
     /// Audit 2026-11-23 ARCH-901: every name only Tectora writes is
     /// reserved, in any spelling, and nothing else is.

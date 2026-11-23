@@ -123,7 +123,10 @@ fn a_mark_after_one_of_the_same_class_does_not_compose() {
         ("e\u{301}\u{301}", "\u{e9}\u{301}"),
         ("\u{627}\u{653}\u{653}", "\u{622}\u{653}"),
         // Reordered first (230 after the lower classes), then blocked.
-        ("x\u{30c}\u{651}\u{f71}\u{308}", "x\u{651}\u{f71}\u{30c}\u{308}"),
+        (
+            "x\u{30c}\u{651}\u{f71}\u{308}",
+            "x\u{651}\u{f71}\u{30c}\u{308}",
+        ),
     ] {
         assert_eq!(nfc(input), want, "{}", input.escape_unicode());
         assert_eq!(nfc(want), want, "{} stays", want.escape_unicode());
