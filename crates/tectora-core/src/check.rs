@@ -233,13 +233,18 @@ impl RoofWarning {
 /// the calculated roofs `geos` (same order as `project.parts`): the
 /// calculation leaves them out, so each is reported on the part nearest
 /// to it, as `(part, warning)`. Nothing is reported for a project without
-/// a calculated face (the calculation's error says enough).
+/// a calculated face (the calculation's error says enough). A building
+/// that failed cannot be judged: its faces are not looked at and nothing
+/// nearest to it is reported, while the other buildings' objects still
+/// are (audit 2026-11-23 HUNT-1502).
 pub fn off_roof(project: &crate::Project, geos: &[RoofGeometry]) -> Vec<(usize, RoofWarning)> {
-    if geos.iter().any(|g| g.error.is_some()) || geos.iter().all(|g| g.faces.is_empty()) {
+    let sound = |g: &RoofGeometry| g.error.is_none();
+    if !geos.iter().any(|g| sound(g) && !g.faces.is_empty()) {
         return Vec::new();
     }
     let plans: Vec<Vec<Point2>> = geos
         .iter()
+        .filter(|g| sound(g))
         .flat_map(|g| &g.faces)
         .filter(|f| f.polygon.len() >= 3)
         .map(plan)
@@ -263,7 +268,7 @@ pub fn off_roof(project: &crate::Project, geos: &[RoofGeometry]) -> Vec<(usize, 
     };
     let mut out = Vec::new();
     let mut report = |kind, item, at: Point2| {
-        if let Some(part) = nearest(at) {
+        if let Some(part) = nearest(at).filter(|&p| sound(&geos[p])) {
             out.push((
                 part,
                 RoofWarning {
