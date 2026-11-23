@@ -79,7 +79,7 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    put them back first only if the user wants to send those. A revert
    or put-back answered with `busy` did nothing (another program was
    saving the job): try it again in a moment. A revert answered with
-   `revert_out_of_limits` did nothing either: that earlier version is
+   "revert_out_of_limits" did nothing either: that earlier version is
    outside Tectora's limits, the job is fine; tell the user. When
    `get_project` or a write answers with `load_warnings`
    (`result_dropped`: a stored result with an impossible date was left
