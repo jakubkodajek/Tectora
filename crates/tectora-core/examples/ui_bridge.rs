@@ -731,7 +731,7 @@ fn serve(
         // Test harness: back to the library the bridge was started with
         // (a test may have switched the jobs folder), and drop pending events.
         if store.dir != home {
-            match Store::new(home.to_path_buf()) {
+            match open_store(home.to_path_buf()) {
                 Ok(next) => *store = next,
                 Err(e) => {
                     respond(
@@ -758,7 +758,7 @@ fn serve(
             if out.is_ok()
                 && after != before
                 && let Some(dir) = after.filter(|d| !d.is_empty())
-                && let Ok(next) = Store::new(PathBuf::from(dir))
+                && let Ok(next) = open_store(PathBuf::from(dir))
             {
                 *store = next;
                 // As the app's switch: the jobs of the new folder are not
@@ -801,6 +801,39 @@ fn serve(
     Ok(())
 }
 
+/// Most a short action (Revert, Revert all, the put-back, Accept) may be
+/// told to wait for a job's lock through `TECTORA_ACTION_WAIT_MS`: ten
+/// minutes.
+const MAX_ACTION_WAIT_MS: u64 = 600_000;
+
+/// How long the bridge's short actions wait for a job's lock, from
+/// `TECTORA_ACTION_WAIT_MS` (milliseconds): `None` keeps the app's own
+/// wait. The E2E harness sets a long one, so a test that holds the lock
+/// until its intruder was tried is not cut short by the app's 3 s on a
+/// loaded runner (audit 2026-11-23 TEST-1106).
+fn action_wait(var: Option<&str>) -> Result<Option<std::time::Duration>, String> {
+    let Some(text) = var.map(str::trim).filter(|t| !t.is_empty()) else {
+        return Ok(None);
+    };
+    match text.parse::<u64>() {
+        Ok(ms @ 1..=MAX_ACTION_WAIT_MS) => Ok(Some(std::time::Duration::from_millis(ms))),
+        _ => Err(format!(
+            "TECTORA_ACTION_WAIT_MS must be a whole number of milliseconds from 1 to {MAX_ACTION_WAIT_MS}, not {text:?}"
+        )),
+    }
+}
+
+/// The library in `dir`, its short actions waiting as `TECTORA_ACTION_WAIT_MS`
+/// says (checked once in `main`).
+fn open_store(dir: PathBuf) -> std::io::Result<Store> {
+    let store = Store::new(dir)?;
+    let var = std::env::var("TECTORA_ACTION_WAIT_MS").ok();
+    Ok(match action_wait(var.as_deref()) {
+        Ok(Some(wait)) => store.with_action_wait(wait),
+        _ => store,
+    })
+}
+
 /// The jobs folder the settings name (`effective.projects_dir`).
 fn effective_projects_dir() -> Option<String> {
     Settings::load().describe()["effective"]["projects_dir"]
@@ -820,7 +853,19 @@ fn main() -> std::io::Result<()> {
         // SAFETY: set before any other thread exists.
         unsafe { std::env::set_var("TECTORA_CONFIG_DIR", "target/ui-preview-config") };
     }
-    let mut store = Store::new(dir.clone())?;
+    let wait = std::env::var("TECTORA_ACTION_WAIT_MS").ok();
+    match action_wait(wait.as_deref()) {
+        Ok(Some(w)) => eprintln!(
+            "[preview] short actions wait up to {} ms for a job's lock",
+            w.as_millis()
+        ),
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("[preview] {e}");
+            std::process::exit(2);
+        }
+    }
+    let mut store = open_store(dir.clone())?;
     if store.list().is_empty() {
         // Same first-run seed as the app, plus a few more shapes to look at.
         for id in ["gable", "l-shape", "hip", "t-shape"] {
@@ -846,4 +891,27 @@ fn main() -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Audit 2026-11-23 TEST-1106: the E2E harness's long lock wait is
+    /// read in milliseconds; nothing set keeps the app's wait, and a value
+    /// that is no wait is refused, never taken as zero or forever.
+    #[test]
+    fn the_action_wait_comes_from_the_environment() {
+        use std::time::Duration;
+        assert_eq!(action_wait(None), Ok(None));
+        assert_eq!(action_wait(Some(" ")), Ok(None));
+        assert_eq!(
+            action_wait(Some("30000")),
+            Ok(Some(Duration::from_secs(30)))
+        );
+        assert_eq!(action_wait(Some("3000")), Ok(Some(Duration::from_secs(3))));
+        for bad in ["0", "-5", "1.5", "30s", "600001", "99999999999999999999"] {
+            assert!(action_wait(Some(bad)).is_err(), "{bad}");
+        }
+    }
 }

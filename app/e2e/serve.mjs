@@ -39,6 +39,11 @@ const child = spawn(process.execPath, [path.join(app, "scripts", "preview.mjs")]
     TECTORA_CONFIG_DIR: path.join(e2e, "config"),
     TECTORA_PREVIEW_PORT: process.env.TECTORA_E2E_PORT ?? "1440",
     TECTORA_BRIDGE_PORT: process.env.TECTORA_E2E_BRIDGE_PORT ?? "7890",
+    // Revert, Revert all, the put-back and Accept wait 30 s for a held job
+    // lock instead of the app's 3 s, so a test that holds the lock until
+    // its intruder was tried is not cut short on a loaded runner
+    // (TEST-1106). TECTORA_ACTION_WAIT_MS=3000 runs with the app's wait.
+    TECTORA_ACTION_WAIT_MS: process.env.TECTORA_ACTION_WAIT_MS ?? "30000",
   },
 });
 child.on("exit", (code) => process.exit(code ?? 0));
