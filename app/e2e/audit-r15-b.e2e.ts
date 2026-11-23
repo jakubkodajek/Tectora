@@ -7,11 +7,12 @@
 //           own job back
 // UX-1401   a window or chimney placed on no roof face: a warning at once and
 //           the Results tab's mark, from the core's warning
+// UI-1401   a status change refused after Back names the job over the library
 import fs from "node:fs";
 import path from "node:path";
 import { bar, clickPlan, openEditor, selectWall, setField, tool } from "./editor";
 import { LIBRARY_DIR } from "./env";
-import { bridge, createExample, expect, listProjects, noToast, test, waitForProject } from "./fixtures";
+import { bridge, createExample, expect, listProjects, loadProject, noToast, test, waitForProject } from "./fixtures";
 import { cs, tr } from "./i18n";
 
 // TECTORA_SHOTS=<folder>/ saves a screenshot after each test (fix evidence).
@@ -126,5 +127,33 @@ test.describe("round 15, part B", () => {
     await waitForProject(id, (p) => p.chimneys?.length === 1);
     await expect(app.toasts().filter({ hasText: cs("res.warn.chimney_off_roof", { n: 1 }) })).toHaveCount(1);
     await expect(page.getByTestId("results-warned")).toHaveCount(1);
+  });
+
+  test("a status change the core refuses after Back names the job over the library (UI-1401)", async ({ app, page }) => {
+    const id = await createExample("gable", "R15 stav");
+    await openEditor(app, "R15 stav");
+    await app.saved();
+    let gate!: () => void;
+    const held = new Promise<void>((r) => (gate = r));
+    await page.route("**/take_snapshot", async (route) => {
+      await held;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        headers: { "access-control-allow-origin": "*" },
+        body: JSON.stringify({ err: { code: "too_complex", id, detail: "the design is too complex to calculate" } }),
+      });
+    });
+    await page.getByRole("tab", { name: cs("dock.job") }).click();
+    await page.getByRole("tabpanel").getByRole("combobox", { name: cs("job.status") }).selectOption("offer");
+    await page.getByRole("button", { name: cs("editor.back") }).first().click();
+    gate();
+    await expect(page.locator("header .brand")).toBeVisible();
+    const refused = app.toasts().filter({ hasText: cs("err.too_complex") });
+    await expect(refused).toHaveCount(1);
+    await expect(refused).toContainText(cs("err.ofJob", { name: "R15 stav", title: cs("err.action.status") }));
+    expect((await loadProject(id)).job.status).toBe("draft");
+    // The refusal is logged as an error by notifyError.
+    app.errors.length = 0;
   });
 });
