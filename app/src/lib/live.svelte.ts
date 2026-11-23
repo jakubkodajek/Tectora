@@ -202,17 +202,25 @@ const MAX_NESTED = 8;
  * (audit 2026-11-23 ARCH-1401: an AI wrote "Reverted: …" or the engine's
  * sentence and it read as Tectora's). The entry a revert quotes is
  * translated only when it is found in `log` by `undid_from` and has a kind
- * itself; otherwise its words stay as they are.
+ * itself; a user's or the engine's change found there is shown as it is,
+ * and every other quoted part (an AI's change, or one not found) in
+ * quotation marks (ARCH-1501).
  */
 export function entryText(a: EntryLike, log: readonly LoggedEntry[] = [], depth = 0): string {
   const kind = entryKind(a);
   if (kind === null) return isAi(a.actor) ? t("ai.quoted", { s: a.summary }) : a.summary;
   return coreSentence(a.summary, a.reason, kind, (inner) => {
     const undone = a.undid_from == null || depth >= MAX_NESTED ? undefined : log.find((e) => e.ts_ms === a.undid_from);
-    if (!undone) return inner;
+    // The quoted part is shown as Tectora's only when the undone entry is
+    // found and is Tectora's own (it has a kind, or the user or the engine
+    // wrote it); an AI's change, or one not in the list (the library card,
+    // a trimmed log), keeps its words in quotation marks (audit 2026-11-23
+    // ARCH-1501).
+    if (!undone) return t("ai.quoted", { s: inner });
     // The words as the revert quoted them, the fields of the entry it undid.
     const u: EntryLike = { ...undone, summary: inner };
-    return entryKind(u) ? entryText(u, log, depth + 1) : inner;
+    if (entryKind(u)) return entryText(u, log, depth + 1);
+    return isAi(u.actor) ? t("ai.quoted", { s: inner }) : inner;
   });
 }
 
