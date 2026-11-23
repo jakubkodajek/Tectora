@@ -52,7 +52,7 @@
   import { roofState } from "./results";
   import { isTyping, releaseLeaveGuard, setLeaveGuard } from "./leave";
   import { PendingEdits, exclusive } from "./inflight";
-  import { CoreAction, DragSession, closedForInput, inertBut, type Drag, type DragState } from "./dragsession";
+  import { CoreAction, DragSession, closedForInput, inertBut, refuseInput, type Drag, type DragState } from "./dragsession";
   import { m2, num } from "./format";
   import { i18n, t } from "./i18n.svelte";
   import { hscroll } from "./hscroll";
@@ -2781,7 +2781,7 @@
         {/if}
       </div>
 
-      <aside class:open={dockOpen} inert={closed}>
+      <aside class:open={dockOpen} inert={dragState !== "idle"} use:refuseInput={{ on: reviewOut }}>
         <div class="tabs" role="tablist" use:tablist use:fitlabels>
           <button role="tab" id={dockIds.tab("results")} aria-controls={dockIds.panel} aria-selected={dock === "results"} class:on={dock === "results"} onclick={() => showDock("results")} title={t("dock.results")}><Icon name="chart" size={15} /><span class="tab-label">{t("dock.results")}</span></button>
           <button role="tab" id={dockIds.tab("breakdown")} aria-controls={dockIds.panel} aria-selected={dock === "breakdown"} class:on={dock === "breakdown"} onclick={() => showDock("breakdown")} title={t("bd.title")}><Icon name="sigma" size={15} /><span class="tab-label">{t("dock.breakdown")}</span></button>

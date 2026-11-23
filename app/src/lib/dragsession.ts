@@ -357,6 +357,34 @@ export function closedForInput(...writers: readonly { readonly active: boolean }
   return writers.some((w) => w.active);
 }
 
+/** The user's input events a closed part of the editor swallows (`refuseInput`). */
+export const REFUSED_EVENTS = ["pointerdown", "mousedown", "mouseup", "click", "dblclick", "contextmenu", "touchstart", "keydown", "keypress", "beforeinput", "paste", "drop"] as const;
+
+/**
+ * Svelte action: while `on`, the user's input in the node is swallowed in
+ * the capture phase (no press, no focus, no key, no typed text), and
+ * unlike `inert` the focus stays where it is: the dock during a review
+ * action, whose pressed button keeps the keyboard's focus while it waits
+ * (UI-604, design A1).
+ */
+export function refuseInput(node: HTMLElement, opts: { on: boolean }) {
+  let now = opts;
+  const swallow = (e: Event) => {
+    if (!now.on) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  };
+  for (const type of REFUSED_EVENTS) node.addEventListener(type, swallow, true);
+  return {
+    update(next: { on: boolean }) {
+      now = next;
+    },
+    destroy() {
+      for (const type of REFUSED_EVENTS) node.removeEventListener(type, swallow, true);
+    },
+  };
+}
+
 /**
  * Svelte action: while `on`, every child of the node except the one with
  * class `keep` is `inert` (no click, no focus, no key reaches it), also

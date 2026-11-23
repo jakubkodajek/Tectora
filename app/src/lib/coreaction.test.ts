@@ -4,7 +4,7 @@
 // of the job. One predicate (`closedForInput`) answers for the drag and
 // for these actions at every point that refuses the user's input.
 import { describe, expect, it } from "vitest";
-import { CoreAction, DragSession, closedForInput } from "./dragsession";
+import { CoreAction, DragSession, REFUSED_EVENTS, closedForInput, refuseInput } from "./dragsession";
 import { JobEdits } from "./jobedits";
 import type { Project } from "./types";
 
@@ -81,5 +81,41 @@ describe("closedForInput (design A1)", () => {
     answer();
     await out;
     expect(ran).toEqual(["now", "second"]);
+  });
+});
+
+// The dock is not made inert during a review action: the pressed button
+// keeps the keyboard's focus while it waits (UI-604); its input is
+// swallowed instead.
+describe("refuseInput (design A1, UI-604)", () => {
+  class Node {
+    listeners = new Map<string, (e: Event) => void>();
+    addEventListener(type: string, fn: (e: Event) => void, capture: boolean) {
+      expect(capture).toBe(true);
+      this.listeners.set(type, fn);
+    }
+    removeEventListener(type: string) {
+      this.listeners.delete(type);
+    }
+  }
+  const event = () => {
+    const e = { prevented: false, stopped: false, preventDefault: () => (e.prevented = true), stopImmediatePropagation: () => (e.stopped = true) };
+    return e;
+  };
+  it("swallows presses, keys and typed text only while on", () => {
+    const node = new Node();
+    const a = refuseInput(node as unknown as HTMLElement, { on: false });
+    for (const type of ["pointerdown", "mousedown", "click", "keydown", "beforeinput", "contextmenu"]) expect(REFUSED_EVENTS).toContain(type);
+    const off = event();
+    node.listeners.get("mousedown")!(off as unknown as Event);
+    expect(off.prevented).toBe(false);
+    a.update({ on: true });
+    for (const type of REFUSED_EVENTS) {
+      const e = event();
+      node.listeners.get(type)!(e as unknown as Event);
+      expect(e.prevented && e.stopped, type).toBe(true);
+    }
+    a.destroy();
+    expect(node.listeners.size).toBe(0);
   });
 });
