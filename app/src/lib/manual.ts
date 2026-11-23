@@ -13,8 +13,11 @@ export const MANUAL_CODES = ["M", "T", "F", "G", "K", "P", "OL", "OR", "OS", "c"
 /** Codes counted in the line totals (as tectora-core COUNTED_LINE_CODES). */
 export const COUNTED = new Set(["T", "F", "G", "K", "OL", "OR", "OS", "P", "c", "S", "WV", "WH", "WS"]);
 
-/** Plan colour key (PlanView's line colours) of a code. */
-export const codeKind: Record<string, string> = {
+/** Plan colour key of a hand-drawn line's code (from the job file), or null: own keys only (TEST-1403). */
+export const kindOf = (code: string): string | null => (Object.hasOwn(codeKind, code) ? codeKind[code] : null);
+
+/** Plan colour key (PlanView's line colours) of a code; read it through `kindOf`. */
+const codeKind: Record<string, string> = {
   T: "eave",
   F: "ridge",
   G: "hip",

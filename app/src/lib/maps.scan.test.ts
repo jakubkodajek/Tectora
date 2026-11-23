@@ -3,12 +3,14 @@
 // inherited function, so a job named "Constructor" looked busy for good and
 // its Duplicate and Delete stayed disabled. Data-keyed sets and maps are
 // `SvelteSet` / `SvelteMap` / `Set` / `Map`, or read with `Object.hasOwn`.
-// This scan lists every `Record<string, …>` variable of the Svelte files
-// (and `.svelte.ts` modules) with what its keys are: a new one fails here
+// This scan lists every `Record<string, …>` (or `{ [k: string]: … }`) variable of the Svelte files
+// and the `.ts` modules with what its keys are: a new one fails here
 // until it is written down with a reason its keys cannot be such a name.
 import { describe, expect, it } from "vitest";
 
-const sources = import.meta.glob(["./**/*.svelte", "./**/*.svelte.ts", "../*.svelte", "!./**/*.test.ts"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+// Plain `.ts` modules too (TEST-1403): filerequest.ts read its table with a
+// purpose from settings.json.
+const sources = import.meta.glob(["./**/*.svelte", "./**/*.ts", "../*.svelte", "../*.ts", "!./**/*.test.ts", "!./**/*.d.ts"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 const files = Object.fromEntries(Object.entries(sources).map(([k, v]) => [k.replace(/^\.\.?\//, ""), v]));
 
 /** `file:variable` -> what its keys are and why a prototype name cannot hurt. */
@@ -23,12 +25,24 @@ const ALLOWED: Record<string, string> = {
   "settings.svelte.ts:patch": "keyed by the settings' own field names",
   "AiPanel.svelte:open": "keyed by change-log timestamps (digits)",
   "Home.svelte:c": "keyed by `all`, `ai` and the core's job statuses (a fixed enum)",
+  // Plain .ts modules (TEST-1403).
+  "filerequest.ts:PURPOSES": "keyed by a purpose from settings.json, read only through `Object.hasOwn` (fileRequestPurpose)",
+  "linecodes.ts:KEY": "keyed by line codes, also a hand-drawn line's code from the job file: read only through `Object.hasOwn` (lineName)",
+  "linecodes.ts:SUB_CODES": "constant table, read with the Results rows' own codes (O, W) and a `??` fallback",
+  "manual.ts:codeKind": "keyed by a hand-drawn line's code from the job file: module-private, read only through `Object.hasOwn` (kindOf)",
+  "changes.ts:ITEM_LABEL": "keyed by the change list's field names, read only after `hasOwnProperty` (isItemChange)",
+  "fold.ts:SPELLED": "constant table, keyed by one character of a name (no prototype member has a one-character name)",
+  "tabs.ts:NEXT": "constant table, keyed by KeyboardEvent.key (arrow keys; no key value is a prototype member's name)",
+  "merge.ts:out": "built from a job's own keys, written only, `__proto__` skipped (ARCH-1202)",
 };
 
-/** Every `const|let|var name: Record<string, …>` and `name = $state<Record<string, …>>`. */
+/**
+ * Every `const|let|var name: Record<string, …>`, `name: { [k: string]: … }`
+ * and `name = $state<Record<string, …>>` (or the index signature there).
+ */
 function records(): string[] {
   const found: string[] = [];
-  const re = /\b(?:const|let|var)\s+(\w+)\s*(?::\s*Record<string,|=\s*\$state<Record<string,)/g;
+  const re = /\b(?:const|let|var)\s+(\w+)\s*(?::\s*(?:Record<string,|\{\s*\[\w+\s*:\s*string\s*\]\s*:)|=\s*\$state<(?:Record<string,|\{\s*\[\w+\s*:\s*string\s*\]\s*:))/g;
   for (const [file, src] of Object.entries(files)) {
     for (const m of src.matchAll(re)) found.push(`${file}:${m[1]}`);
   }
@@ -49,6 +63,21 @@ describe("plain objects keyed by data (ARCH-1301)", () => {
   it("has no stale entry", () => {
     const found = new Set(records());
     expect(Object.keys(ALLOWED).filter((k) => !found.has(k))).toEqual([]);
+  });
+
+  it("also finds the index-signature form and plain .ts modules (TEST-1403)", () => {
+    expect(Object.keys(files)).toContain("filerequest.ts");
+    expect(records()).toContain("filerequest.ts:PURPOSES");
+    const re = /\b(?:const|let|var)\s+(\w+)\s*(?::\s*(?:Record<string,|\{\s*\[\w+\s*:\s*string\s*\]\s*:)|=\s*\$state<(?:Record<string,|\{\s*\[\w+\s*:\s*string\s*\]\s*:))/g;
+    const sample = "const a: { [k: string]: number } = {};\nlet b = $state<{ [id: string]: boolean }>({});\nconst c: Record<string, string> = {};";
+    expect([...sample.matchAll(re)].map((m) => m[1])).toEqual(["a", "b", "c"]);
+  });
+
+  it("the data-keyed tables of the .ts modules are read through Object.hasOwn (TEST-1403)", () => {
+    expect(files["filerequest.ts"]).toMatch(/Object\.hasOwn\(PURPOSES, purpose\)/);
+    expect(files["linecodes.ts"]).toMatch(/Object\.hasOwn\(KEY, code\)/);
+    expect(files["manual.ts"]).toMatch(/Object\.hasOwn\(codeKind, code\)/);
+    expect(files["manual.ts"]).not.toMatch(/export const codeKind/);
   });
 
   it("Home's busy marks and JobPanel's removal marks are sets", () => {

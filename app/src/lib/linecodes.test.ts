@@ -35,3 +35,9 @@ describe("line code names (UX-013)", () => {
     expect(text).not.toContain("OS");
   });
 });
+
+describe("a hand-drawn line's code from the job file (TEST-1403)", () => {
+  it("reads a prototype name as other line, never Object.prototype's member", () => {
+    for (const code of ["constructor", "toString", "__proto__", "valueOf"]) expect(lineName(code), code).toBe(lineName("ZZ"));
+  });
+});

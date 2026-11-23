@@ -38,6 +38,8 @@ Texts live in `app/src/lib/i18n.svelte.ts`: one dictionary per language
   - cs / sk: okap / odkvap, štít, štítová hrana, pultová hrana, nároží /
     nárožie, úžlabí / úžľabie, vodorovné úžlabí, zlom; sk "Štandardná strecha".
   - en is British English (neighbour, anticlockwise); shed edge = "shed top edge".
+  - cs nabídka / sk ponuka is only the offer; a menu (context menu, the
+    card's menu) is menu (cs), menu (sk), menu (en), Menü (de).
 - **Counts** as "Label: n", so Czech and Slovak plurals cannot go wrong.
 - Units and numbers through `numberLocale()` (cs-CZ, sk-SK, en-GB, de-DE):
   decimal comma in cs, sk and de.

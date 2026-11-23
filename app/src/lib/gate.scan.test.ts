@@ -414,6 +414,35 @@ describe("round 14: the press's questions and exits (TEST-1303, TEST-1305, UX-13
     expect(asking).toMatch(/questions\+\+;\s*try \{[\s\S]*\} finally \{\s*questions--/);
   });
 
+  it("every confirm( call in app/src is awaited right there, so none slips past the scan below as .then (TEST-1403)", () => {
+    const calls: string[] = [];
+    const bare: string[] = [];
+    for (const [file, src] of Object.entries(files)) {
+      const code = stripComments(src);
+      // A call of confirm or window.confirm, not a method of another object or a definition.
+      for (const m of code.matchAll(/(?<![\w$.])(?:window\.)?confirm\s*\(/g)) {
+        const before = code.slice(Math.max(0, m.index! - 40), m.index!);
+        if (/function\s+$/.test(before)) continue;
+        calls.push(file);
+        if (!/\bawait\s+$/.test(before)) bare.push(`${file}: …${before.slice(-30)}${m[0]}`);
+      }
+    }
+    expect(calls.length, "the scan finds the confirm calls").toBeGreaterThan(5);
+    expect(bare, "await confirm(…) directly: a Promise is always truthy, and confirm(…).then edits escape the asking() scan").toEqual([]);
+  });
+
+  it("the confirm scan flags a call that is not awaited (TEST-1403)", () => {
+    const bad = ["if (confirm(t(\"x\"))) del();", "confirm(t(\"x\")).then((ok) => ok && del());", "void window.confirm(\"x\");"];
+    for (const code of bad) {
+      const m = [...code.matchAll(/(?<![\w$.])(?:window\.)?confirm\s*\(/g)][0];
+      const before = code.slice(0, m.index!);
+      expect(/\bawait\s+$/.test(before), code).toBe(false);
+    }
+    const good = "if (!(await confirm(t(\"x\")))) return;";
+    const m = [...good.matchAll(/(?<![\w$.])(?:window\.)?confirm\s*\(/g)][0];
+    expect(/\bawait\s+$/.test(good.slice(0, m.index!))).toBe(true);
+  });
+
   it("every await confirm( of the editor is inside asking() or listed as passive with a reason (TEST-1305)", () => {
     const editor = script(stripComments(files["Editor.svelte"]));
     const fns = functions(editor);

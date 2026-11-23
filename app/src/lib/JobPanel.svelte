@@ -130,6 +130,9 @@
       // A result stored before (the job went back to draft since) stays the
       // offer's; the user is told when the roof now gives other figures (UX-206).
       kept = p.result_snapshot ?? null;
+      // Taken now: the notices below may come after the editor closed and
+      // then stand over the library, so they name the job (UI-1401).
+      const name = p.name.trim() || id;
       roof = edits.holdRoof();
       try {
         fresh = await api.takeSnapshot(JSON.parse(JSON.stringify(p)));
@@ -138,7 +141,7 @@
         // also when it keeps an earlier result, which is not of this roof
         // (ERR-303). Not a failed save: the status was refused (UX-005).
         back();
-        notifyError(e, "status");
+        notifyError(e, "status", name);
         return;
       }
       // The roof changed while the core calculated, by an AI save (ERR-102)
@@ -148,7 +151,7 @@
       if (!latest()) return;
       if (!edits.roofSame(roof)) {
         back();
-        info(t("job.statusStale"));
+        info(t("err.ofJob", { name, title: t("job.statusStale") }));
         return;
       }
       if (!kept) snap = fresh;

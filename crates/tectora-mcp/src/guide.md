@@ -138,6 +138,9 @@ The tools cover every operation of the Tectora editor:
   sentences ("Reverted: …") is a change like any other, undone as one,
   and the app shows it in quotation marks as your words. Write what you
   did in your own words.
+  "revert_out_of_limits" means the earlier version in the history is
+  outside Tectora's current limits and cannot be put back; the job itself
+  is fine and unchanged, so tell the user and change it by edits instead.
   A revert, `revert_to` and `restore_offer_result` wait a few seconds at
   most for another program saving the same job; then they answer "busy"
   and nothing was done: call `get_history` again and try once more in a

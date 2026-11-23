@@ -1063,11 +1063,15 @@ const cs: Dict = {
   "edge.flatOff": "Plochá střecha: sklon a okap / štít stěn se nepoužijí",
   "new.pastChosen": "Kopíruje se:",
   "err.unknown_keys": "Zakázka obsahuje cizí data (klíče, které Tectora nezná), která jsou příliš velká nebo příliš hluboko vnořená (nejvýš 64 KB a 32 úrovní), a Tectora s ní proto nemůže pracovat. Co je nad limit, uvádějí podrobnosti: odstraňte ta data v programu, který je zapsal.",
-  "err.busy_open": "Je otevřená nabídka, okno nebo dotaz, proto se nic neprovedlo. Zavřete je a zkuste to znovu.",
+  "err.busy_open": "Je otevřené menu, okno nebo dotaz, proto se nic neprovedlo. Zavřete je a zkuste to znovu.",
   "err.action.revertAll": "Změny se nepodařilo vrátit",
   "folderReq.jobCloses": "Otevřená zakázka se uloží a zavře.",
   "folderReq.jobsStay": "Stávající zakázky zůstanou v původní složce.",
   "ai.quoted": "„{s}“",
+  "err.revert_out_of_limits": "Starší verzi zakázky z historie nelze obnovit, protože přesahuje dnešní limity Tectory. Zakázka sama je v pořádku a nezměnila se.",
+  "editor.outsideUnreadable": "Jiný program zakázku mezitím změnil tak, že ji Tectora nepřečte. Pokud budete dál upravovat, uloží se přes ni verze otevřená zde. Chcete-li soubor toho programu zachovat, zavřete zakázku bez dalších úprav.",
+  "editor.outsideReplaced": "Soubor, který zapsal jiný program, byl nahrazen verzí otevřenou zde.",
+  "dock.resultsWarned": "Výsledky: střechu zkontrolujte",
 };
 
 const sk: Dict = {
@@ -2122,11 +2126,15 @@ const sk: Dict = {
   "edge.flatOff": "Plochá strecha: sklon a odkvap / štít stien sa nepoužijú",
   "new.pastChosen": "Kopíruje sa:",
   "err.unknown_keys": "Zákazka obsahuje cudzie údaje (kľúče, ktoré Tectora nepozná), ktoré sú príliš veľké alebo príliš hlboko vnorené (najviac 64 KB a 32 úrovní), a Tectora s ňou preto nemôže pracovať. Čo je nad limit, uvádzajú podrobnosti: odstráňte tie údaje v programe, ktorý ich zapísal.",
-  "err.busy_open": "Je otvorená ponuka, okno alebo otázka, preto sa nič nevykonalo. Zatvorte ich a skúste to znova.",
+  "err.busy_open": "Je otvorené menu, okno alebo otázka, preto sa nič nevykonalo. Zatvorte ich a skúste to znova.",
   "err.action.revertAll": "Zmeny sa nepodarilo vrátiť",
   "folderReq.jobCloses": "Otvorená zákazka sa uloží a zatvorí.",
   "folderReq.jobsStay": "Existujúce zákazky zostanú v pôvodnom priečinku.",
   "ai.quoted": "„{s}“",
+  "err.revert_out_of_limits": "Staršiu verziu zákazky z histórie nemožno obnoviť, pretože presahuje dnešné limity Tectory. Zákazka samotná je v poriadku a nezmenila sa.",
+  "editor.outsideUnreadable": "Iný program zákazku medzitým zmenil tak, že ju Tectora neprečíta. Ak budete ďalej upravovať, uloží sa cez ňu verzia otvorená tu. Ak chcete súbor toho programu zachovať, zatvorte zákazku bez ďalších úprav.",
+  "editor.outsideReplaced": "Súbor, ktorý zapísal iný program, bol nahradený verziou otvorenou tu.",
+  "dock.resultsWarned": "Výsledky: strechu skontrolujte",
 };
 
 const en: Dict = {
@@ -3186,6 +3194,10 @@ const en: Dict = {
   "folderReq.jobCloses": "The open job is saved and closed.",
   "folderReq.jobsStay": "Existing jobs stay in the old folder.",
   "ai.quoted": "“{s}”",
+  "err.revert_out_of_limits": "The earlier version in the history cannot be restored because it is outside Tectora's current limits. The job itself is fine and was not changed.",
+  "editor.outsideUnreadable": "Another program changed this job into a file Tectora cannot read. If you keep editing, the version open here is saved over it. To keep that program's file, leave the job without further edits.",
+  "editor.outsideReplaced": "The file another program wrote was replaced by the version open here.",
+  "dock.resultsWarned": "Results: check this roof",
 };
 
 const de: Dict = {
@@ -4245,6 +4257,10 @@ const de: Dict = {
   "folderReq.jobCloses": "Der geöffnete Auftrag wird gespeichert und geschlossen.",
   "folderReq.jobsStay": "Bestehende Aufträge bleiben im alten Ordner.",
   "ai.quoted": "„{s}“",
+  "err.revert_out_of_limits": "Die frühere Fassung aus dem Verlauf lässt sich nicht wiederherstellen, weil sie außerhalb der heutigen Grenzen von Tectora liegt. Der Auftrag selbst ist in Ordnung und wurde nicht geändert.",
+  "editor.outsideUnreadable": "Ein anderes Programm hat den Auftrag so geändert, dass Tectora ihn nicht lesen kann. Wenn Sie weiter bearbeiten, wird er mit der hier geöffneten Fassung überschrieben. Um die Datei des anderen Programms zu behalten, verlassen Sie den Auftrag ohne weitere Änderungen.",
+  "editor.outsideReplaced": "Die Datei des anderen Programms wurde durch die hier geöffnete Fassung ersetzt.",
+  "dock.resultsWarned": "Ergebnisse: Dach prüfen",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };

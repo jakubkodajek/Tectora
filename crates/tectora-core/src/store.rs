@@ -909,6 +909,13 @@ pub enum StoreError {
     /// ERR-1202, ARCH-1201). Code `too_many`, as the calculation's refusal.
     #[error("{id}: the job cannot be opened ({detail})")]
     TooMany { id: String, detail: String },
+    /// The earlier version a revert or a restore would write back is
+    /// outside the current limits (`Project::check_limits`): nothing is
+    /// written, the job itself is fine (audit 2026-11-23 HUNT-1402).
+    #[error(
+        "{id}: the earlier version is outside the current limits and cannot be restored; the job itself is unchanged ({detail})"
+    )]
+    RevertOutOfLimits { id: String, detail: String },
 }
 
 /// The kinds of file system failure the app explains differently.
@@ -951,6 +958,7 @@ impl StoreError {
             StoreError::RevertStale { .. } => "revert_stale",
             StoreError::Busy(_) => "busy",
             StoreError::TooMany { .. } => "too_many",
+            StoreError::RevertOutOfLimits { .. } => "revert_out_of_limits",
         }
     }
 
@@ -967,7 +975,8 @@ impl StoreError {
             | StoreError::NoSuchChange { id, .. }
             | StoreError::RevertConflict { id, .. }
             | StoreError::RevertStale { id, .. }
-            | StoreError::TooMany { id, .. } => Some(id),
+            | StoreError::TooMany { id, .. }
+            | StoreError::RevertOutOfLimits { id, .. } => Some(id),
             StoreError::Io { id, .. } => id.as_deref(),
         }
     }
@@ -979,7 +988,8 @@ impl StoreError {
             | StoreError::Io { detail, .. }
             | StoreError::RevertConflict { detail, .. }
             | StoreError::RevertStale { detail, .. }
-            | StoreError::TooMany { detail, .. } => Some(detail),
+            | StoreError::TooMany { detail, .. }
+            | StoreError::RevertOutOfLimits { detail, .. } => Some(detail),
             _ => None,
         }
     }
@@ -1113,10 +1123,107 @@ fn modified_ms(path: &Path) -> u64 {
 /// server saving the same design at once cannot write into each other's file.
 /// The `schema_version` of a project file's JSON when it is newer than this
 /// app reads, else `None` (also for text that is not JSON).
+///
+/// Text serde cannot parse (nested over its limit, or cut short by a sync)
+/// is looked at by [`scan_version`], so a newer file is still known as
+/// newer and refused instead of repaired as damaged (audit ERR-1402).
 pub(crate) fn newer_format(text: &str) -> Option<u64> {
-    let v: serde_json::Value = serde_json::from_str(text).ok()?;
-    let version = whole_version(v.get("schema_version")?)?;
+    let version = match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(v) => whole_version(v.get("schema_version")?)?,
+        Err(_) => scan_version(text.as_bytes())?,
+    };
     (version > u64::from(crate::model::SCHEMA_VERSION)).then_some(version)
+}
+
+/// How much of a job file too large to read is scanned for its version:
+/// Tectora writes `schema_version` first.
+const VERSION_WINDOW: u64 = 64 * 1024;
+
+/// [`newer_format`] for the job file at `path` that cannot be read as
+/// text (over [`MAX_JOB_FILE`], or not UTF-8): its first
+/// [`VERSION_WINDOW`] bytes are scanned. `None` when it cannot be opened.
+fn newer_format_head(path: &Path) -> Option<u64> {
+    let mut head = Vec::new();
+    let file = open_regular(path, u64::MAX).ok()?;
+    std::io::Read::read_to_end(&mut std::io::Read::take(file, VERSION_WINDOW), &mut head).ok()?;
+    let version = scan_version(&head)?;
+    (version > u64::from(crate::model::SCHEMA_VERSION)).then_some(version)
+}
+
+/// The largest `schema_version` among the top-level keys of the JSON
+/// object in `bytes`, found without parsing it: one pass, no recursion,
+/// so it works on text nested deeper than serde reads and on text cut
+/// short. A leading byte order mark and white space are skipped; text
+/// that does not start with `{` has none.
+pub(crate) fn scan_version(bytes: &[u8]) -> Option<u64> {
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+    let start = bytes.iter().position(|b| !b.is_ascii_whitespace())?;
+    if bytes[start] != b'{' {
+        return None;
+    }
+    let mut best: Option<u64> = None;
+    let mut depth = 0usize;
+    let mut expect_key = false;
+    let mut i = start;
+    while let Some(&b) = bytes.get(i) {
+        i += 1;
+        match b {
+            b'"' => {
+                // A string: its end, past escaped characters.
+                let from = i;
+                while let Some(&c) = bytes.get(i) {
+                    i += 1;
+                    match c {
+                        b'\\' => i += 1,
+                        b'"' => break,
+                        _ => {}
+                    }
+                }
+                let key = depth == 1 && expect_key;
+                expect_key = false;
+                if key && bytes.get(from..i.saturating_sub(1)) == Some(&b"schema_version"[..]) {
+                    let mut j = i;
+                    while bytes.get(j).is_some_and(u8::is_ascii_whitespace) {
+                        j += 1;
+                    }
+                    if bytes.get(j) != Some(&b':') {
+                        continue;
+                    }
+                    j += 1;
+                    while bytes.get(j).is_some_and(u8::is_ascii_whitespace) {
+                        j += 1;
+                    }
+                    let end = bytes[j.min(bytes.len())..]
+                        .iter()
+                        .position(|c| !matches!(c, b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E'))
+                        .map_or(bytes.len(), |n| j + n);
+                    let number = std::str::from_utf8(&bytes[j.min(end)..end])
+                        .ok()
+                        .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok())
+                        .and_then(|n| n.is_number().then(|| whole_version(&n)).flatten());
+                    if let Some(n) = number {
+                        best = Some(best.map_or(n, |b| b.max(n)));
+                    }
+                    i = end.max(i);
+                }
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                expect_key = depth == 1;
+            }
+            b'}' | b']' => {
+                depth = depth.saturating_sub(1);
+                expect_key = false;
+                if depth == 0 {
+                    break;
+                }
+            }
+            b',' => expect_key = depth == 1,
+            c if c.is_ascii_whitespace() => {}
+            _ => expect_key = false,
+        }
+    }
+    best
 }
 
 /// A format version in a file as a whole number: `4.0` and `1e30` are
@@ -2656,6 +2763,17 @@ impl Store {
         let text = match read_job_text(&path) {
             Ok(t) => t,
             Err(e) if matches!(e.code, "not_a_file" | "too_large" | "unreadable") => {
+                // Too large or not text: a newer Tectora's file is still
+                // refused as newer, never repaired (ERR-1402).
+                if e.code != "not_a_file"
+                    && let Some(version) = newer_format_head(&path)
+                {
+                    return Err(StoreError::NewerFormat {
+                        id: id.to_string(),
+                        version,
+                        max: crate::model::SCHEMA_VERSION,
+                    });
+                }
                 return Err(StoreError::Unreadable {
                     id: id.to_string(),
                     detail: e.detail,
@@ -2918,9 +3036,12 @@ impl Store {
         let path = self.path(id)?;
         self.library_present()?;
         if let Some(version) = (!checked)
-            .then(|| read_job_text(&path).ok())
+            .then(|| match read_job_text(&path) {
+                Ok(t) => newer_format(&t),
+                Err(e) if matches!(e.code, "too_large" | "unreadable") => newer_format_head(&path),
+                Err(_) => None,
+            })
             .flatten()
-            .and_then(|t| newer_format(&t))
         {
             return Err(StoreError::NewerFormat {
                 id: id.to_string(),
@@ -3470,7 +3591,7 @@ impl Store {
         // not written back into the job (HUNTIO-004).
         target
             .check_limits()
-            .map_err(|detail| StoreError::Unreadable {
+            .map_err(|detail| StoreError::RevertOutOfLimits {
                 id: id.to_string(),
                 detail,
             })?;
@@ -7040,6 +7161,155 @@ mod tests {
         store.save(Some(id.clone()), &p).unwrap();
         assert_eq!(store.load(&id).unwrap(), p);
         let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ERR-1402: a newer file serde cannot parse (nested over its limit,
+    /// cut short by a sync, or over the size limit) is still known as newer
+    /// by its top-level `schema_version`, and is neither read nor written.
+    #[test]
+    fn a_newer_file_that_does_not_parse_is_still_refused_as_newer() {
+        let store = temp_store("newer-deep");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let mut ai = p.clone();
+        ai.parts[0].edges[0].overhang = 0.8;
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "AI")
+            .unwrap();
+        let p = ai;
+        let path = store.path(&id).unwrap();
+        let v = crate::model::SCHEMA_VERSION + 1;
+        let deep = format!(
+            "{{\"schema_version\": {v}, \"name\": \"x\", \"crm\": {}{}}}",
+            "[".repeat(130),
+            "]".repeat(130)
+        );
+        let cut = deep[..deep.len() / 2].to_string();
+        let mut big = format!("\u{feff}{{ \"schema_version\" : {v}.0, \"pad\": \"");
+        big.push_str(&"x".repeat(MAX_JOB_FILE as usize + 10));
+        big.push_str("\"}");
+        for text in [&deep, &cut, &big] {
+            fs::write(&path, text).unwrap();
+            assert_eq!(store.load(&id).unwrap_err().code(), "newer_format");
+            let (_, broken) = store.scan().unwrap();
+            assert_eq!(broken[0].code, "newer_format", "{broken:?}");
+            let mut mine = p.clone();
+            mine.parts[0].edges[0].overhang = 0.9;
+            assert_eq!(
+                store.save_checked(&id, &mine, &p).unwrap_err().code(),
+                "newer_format"
+            );
+            assert_eq!(
+                store.save(Some(id.clone()), &mine).unwrap_err().code(),
+                "newer_format"
+            );
+            assert_eq!(
+                store
+                    .save_as(Some(id.clone()), &mine, "claude", "edit")
+                    .unwrap_err()
+                    .code(),
+                "newer_format"
+            );
+            assert_eq!(
+                store.revert_last(&id, USER_ACTOR, None).unwrap_err().code(),
+                "newer_format"
+            );
+            assert!(fs::read(&path).unwrap() == text.as_bytes(), "file kept");
+        }
+        // Only the top level counts: in a string or one level down it is
+        // data, and a damaged file of today's format is still repaired.
+        for text in [
+            format!(
+                "{{\"note\": \"\\\"schema_version\\\": {v}\", \"crm\": {}",
+                "[".repeat(130)
+            ),
+            format!(
+                "{{\"crm\": {{\"schema_version\": {v}}}, \"x\": {}",
+                "[".repeat(130)
+            ),
+            format!("{{\"schema_version\": 1, \"crm\": {}", "[".repeat(130)),
+        ] {
+            fs::write(&path, &text).unwrap();
+            assert_eq!(
+                store.load(&id).unwrap_err().code(),
+                "unreadable",
+                "{text:.60}"
+            );
+            let mut mine = p.clone();
+            mine.parts[0].edges[0].overhang = 0.7;
+            assert!(matches!(
+                store.save_checked(&id, &mine, &p).unwrap(),
+                CheckedSave::Saved { .. }
+            ));
+            assert_eq!(store.load(&id).unwrap(), mine);
+        }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// HUNT-1402: an earlier version in the log outside today's limits has
+    /// its own refusal, not "damaged, restore from a backup", and the job
+    /// is not touched.
+    #[test]
+    fn a_history_version_outside_the_limits_is_refused_with_its_own_code() {
+        let store = temp_store("revert-limits");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let mut ai = p.clone();
+        ai.parts[0].edges[0].overhang = 0.8;
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "AI")
+            .unwrap();
+        let log = store.activity_path(&id).unwrap();
+        let lines: Vec<String> = fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let mut v: serde_json::Value = serde_json::from_str(l).unwrap();
+                v["before"]["parts"][0]["edges"][0]["start"]["x"] = serde_json::json!(1e9);
+                v.to_string()
+            })
+            .collect();
+        fs::write(&log, lines.join("\n") + "\n").unwrap();
+        let ts = store.activity(&id)[0].ts_ms;
+        let file = fs::read(store.path(&id).unwrap()).unwrap();
+        let e = store.revert_to(&id, ts, USER_ACTOR, None).unwrap_err();
+        assert_eq!(e.code(), "revert_out_of_limits", "{e}");
+        assert_eq!(e.id(), Some(id.as_str()));
+        assert!(e.detail().is_some_and(|d| !d.is_empty()));
+        assert!(e.to_string().contains("unchanged"), "{e}");
+        assert_eq!(
+            store.revert_last(&id, USER_ACTOR, None).unwrap_err().code(),
+            "revert_out_of_limits"
+        );
+        assert_eq!(fs::read(store.path(&id).unwrap()).unwrap(), file);
+        assert_eq!(store.activity(&id).len(), 1, "nothing logged");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn newer_format_scan_reads_only_top_level_keys() {
+        let v = crate::model::SCHEMA_VERSION + 1;
+        assert_eq!(
+            scan_version(format!("{{\"schema_version\":{v}").as_bytes()),
+            Some(u64::from(v))
+        );
+        assert_eq!(
+            scan_version(
+                format!("\u{feff} {{\"a\":[1,{{\"schema_version\":99}}],\"schema_version\": {v} ,")
+                    .as_bytes()
+            ),
+            Some(u64::from(v))
+        );
+        assert_eq!(
+            scan_version(b"{\"a\":\"schema_version\",\"b\":\"\\\\\"}"),
+            None
+        );
+        assert_eq!(scan_version(b"[{\"schema_version\":99}]"), None);
+        assert_eq!(scan_version(b"{\"schema_version\":\"99\"}"), None);
+        assert_eq!(
+            scan_version(b"{\"schema_version\":2,\"schema_version\":7}"),
+            Some(7)
+        );
     }
 
     #[test]

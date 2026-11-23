@@ -48,17 +48,16 @@ export function savePrefs() {
   write("tectora.prefs", $state.snapshot(prefs));
 }
 
-/** Timestamp of the newest AI change the user accepted, per project. */
+/**
+ * Timestamp of the newest AI change the user accepted, per project, as an
+ * older Tectora kept it here: read once to move it into the core's review
+ * (Editor `migrateLocalReview`); nothing writes it any more (TEST-1404).
+ */
 const reviewed = $state<Record<string, number>>(read("tectora.reviewed", {}));
 
 export function reviewedAt(id: string): number {
   // Own keys only: an id such as "constructor" must not read Object.prototype's member (ARCH-1301).
   return Object.hasOwn(reviewed, id) ? reviewed[id] : 0;
-}
-
-export function markReviewed(id: string, ts: number) {
-  reviewed[id] = ts;
-  write("tectora.reviewed", $state.snapshot(reviewed));
 }
 
 /** The app-wide settings as last read from / written to the settings file. */
