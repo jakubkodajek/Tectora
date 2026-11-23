@@ -8,6 +8,7 @@
   import { numeric, parseNumber } from "./numeric.svelte";
   import { presets, setPreset } from "./settings.svelte";
   import { describeError } from "./errors";
+  import { anyWriterOpen } from "./dragsession";
   import { MAX_ANGLE, angledStep, type Step } from "./drawstep";
 
   let {
@@ -88,6 +89,10 @@
   }
 
   function onkeydown(e: KeyboardEvent) {
+    // A window listener, outside the editor's refusal: no key acts on the
+    // footprint while a writer of the job is out (a drag, Revert, the offer
+    // put-back), or the answer would throw the building away (ERR-1101).
+    if (anyWriterOpen()) return;
     const d = DIRS.find((d) => d.key && d.key === e.key);
     const inLength = !!lengthInput && e.target === lengthInput;
     if (angleInput && e.target === angleInput) {

@@ -469,6 +469,33 @@ case, and assert that it really came while the pointer was down.
   `app/e2e/audit-r11-ed.e2e.ts`, ERR-901 in `audit-r10-ed.e2e.ts`). Hold
   the lock until the intruder was tried, never for a fixed time. No key
   shortcut acts while the job is still being read (HUNT-908).
+- One writer gate (round 12, fix design 1): the press of Revert / the
+  put-back first waits, input still open and at most 3 s, for every edit
+  still with the core and for the save, then claims the call in the same
+  tick; past 3 s it answers `busy` under its own title, changes nothing and
+  the editor stays usable (HUNT-1101, ERR-1102). Everything outside the
+  editor's DOM refusal asks `anyWriterOpen()` / `gatedKeys()`
+  (dragsession.ts): window keys (App's Ctrl/Cmd+, , the draw bar, PageUp /
+  PageDown, dialogs, the context menu), the window presses that commit a
+  field, toast actions (the press does nothing, the toast stays). `commit()`
+  and `restore()` refuse while the call is out (`CoreAction.foreign`: throws
+  in dev and tests, else drops the edit with a notice). Leaving waits for the
+  answer; a failure is told also after the editor is gone and names the job
+  (ERR-1105). `app/src/lib/gate.scan.test.ts` lists every window / document
+  listener, toast action and `mayLeave` site: a new one fails until it is
+  gated or marked passive with a reason. Intruders of
+  `app/e2e/audit-r12-ed.e2e.ts`, each with the answer held at the browser
+  (`hold()` of review.ts): `draw-enter`, `async-answer-status`,
+  `async-answer-store`, `toast-action`, `settings-key`, `leave-open`
+  (busy, a notice names the job), `ai-save` (the AI's change on screen =
+  file, for revert, revert all and the put-back; TEST-1101),
+  `presave-held-lock`. Limit: the preview bridge answers one request at a
+  time (TEST-1102), so a command sent while the call waits for the lock is
+  answered only after it; a class-15 guard therefore holds the answer at the
+  browser (`hold()`, `page.route`) to make the order of the real app, never
+  relies on the bridge's timing. Accept keeps the banner until the core
+  answered (ERR-1103); the banner's buttons keep the keyboard's focus
+  (UI-1103).
 
 ## 16. Huge but valid jobs reach every view (@arch, @ui)
 

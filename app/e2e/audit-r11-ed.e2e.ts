@@ -94,6 +94,9 @@ async function states(page: Page, id: string, t: Target) {
  * "Uloženo" while the screen and the file differ (TEST-1003: the guard of
  * round 10 passed at its first poll).
  */
+/** Samples the status watcher must have taken to tell anything. */
+const MIN_SAMPLES = 5;
+
 function watchSaved(page: Page, id: string, t: Target) {
   let on = true;
   let samples = 0;
@@ -111,6 +114,12 @@ function watchSaved(page: Page, id: string, t: Target) {
     }
   })();
   return async () => {
+    // Under load one sample (a file read and two status reads) can take
+    // longer than the wait it was given: keep sampling, the screen staying
+    // as it is, until enough samples were taken (at most 20 s more), rather
+    // than ending with too few to tell anything.
+    const end = Date.now() + 20_000;
+    while (samples <= MIN_SAMPLES && Date.now() < end) await page.waitForTimeout(50);
     on = false;
     await run;
     return { bad, samples };
@@ -235,11 +244,13 @@ test.describe("round 11: Revert and the put-back are a transaction; an edit trie
         try {
           await button.click();
           await expect.poll(() => call.sent.length, { timeout: 4000 }).toBe(1);
-          await expect(status(page)).toHaveText(cs("editor.reverting"));
+          // The put-back has its own word (UX-1102).
+          const word = cs(action.startsWith("put-back") ? "editor.restoringOffer" : "editor.reverting");
+          await expect(status(page)).toHaveText(word);
           await intrude(page, app, intruder, t);
           expect(call.answered, "the call is still out while the intruder was tried").toHaveLength(0);
           // Refused: the editor still says it is reverting, and nothing was saved.
-          await expect(status(page)).toHaveText(cs("editor.reverting"));
+          await expect(status(page)).toHaveText(word);
         } finally {
           lock.kill();
         }
@@ -249,7 +260,7 @@ test.describe("round 11: Revert and the put-back are a transaction; an edit trie
         // Sampled on past the answer: a later save or reload would show here.
         await page.waitForTimeout(1500);
         const { bad, samples } = await done();
-        expect(samples, "the status was sampled").toBeGreaterThan(5);
+        expect(samples, "the status was sampled").toBeGreaterThan(MIN_SAMPLES);
         expect(bad, "the status said Uloženo while the screen and the file differed").toEqual([]);
         // Nothing of the intruder in the file, and the file is still the core's answer.
         const now = await loadProject(id);
@@ -435,7 +446,8 @@ test.describe("round 11: a recalculated offer sent as a bundle (UX-1003)", () =>
     await dockTab(page, "dock.job").click();
     await app.answerFileDialog(file);
     await page.getByRole("button", { name: cs("files.export") }).click();
-    await expect(app.toasts().filter({ hasText: cs("snap.exportRecalculated") })).toHaveCount(1);
+    // A warning naming the job and the way (UX-1101).
+    await expect(app.toasts().filter({ hasText: cs("snap.exportRecalculated", { tab: cs("dock.results"), button: cs("snap.revertRefresh") }) })).toHaveCount(1);
     await expect.poll(() => fs.existsSync(file)).toBe(true);
 
     // Received (the same library stands in for the colleague's).

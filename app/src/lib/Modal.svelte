@@ -6,6 +6,7 @@
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
   import { shownNow } from "./dblclick";
+  import { anyWriterOpen } from "./dragsession";
 
   let {
     title,
@@ -48,6 +49,9 @@
   });
 
   function onkeydown(e: KeyboardEvent) {
+    // A window listener: no key closes or moves in a dialog while a writer
+    // of the job is out (round 12, fix design 1).
+    if (anyWriterOpen()) return;
     if (e.key === "Escape") {
       onclose();
       return;

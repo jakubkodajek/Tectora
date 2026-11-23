@@ -119,3 +119,45 @@ describe("refuseInput (design A1, UI-604)", () => {
     expect(node.listeners.size).toBe(0);
   });
 });
+
+// Round 12 (audit 2026-11-23 fix design 1, HUNT-1101, UI-1101, ERR-1105):
+// a commit that reaches the editor while the call is out is refused
+// (`foreign`), and leaving waits for the answer (`settled`).
+describe("CoreAction.foreign and settled (round 12, fix design 1)", () => {
+  it("refuses a write only while the call is out; strict throws", async () => {
+    const product = new CoreAction(() => () => {});
+    const strict = new CoreAction(() => () => {}, undefined, true);
+    expect(product.foreign("commit")).toBe(false);
+    expect(strict.foreign("commit")).toBe(false);
+    let a!: () => void;
+    let b!: () => void;
+    const one = product.run(() => new Promise<void>((r) => (a = r)));
+    const two = strict.run(() => new Promise<void>((r) => (b = r)));
+    expect(product.foreign("commit")).toBe(true);
+    expect(() => strict.foreign("commit")).toThrow(/core action: foreign commit/);
+    a();
+    b();
+    await one;
+    await two;
+    expect(product.foreign("commit")).toBe(false);
+    expect(strict.foreign("undo step")).toBe(false);
+  });
+
+  it("settled resolves at once when no call is out, else once it ended, also when it failed", async () => {
+    const action = new CoreAction(() => () => {});
+    let early = false;
+    await action.settled().then(() => (early = true));
+    expect(early).toBe(true);
+    let fail!: (e: unknown) => void;
+    const out = action.run(() => new Promise<void>((_, r) => (fail = r)));
+    let done = false;
+    const waited = action.settled().then(() => (done = true));
+    await Promise.resolve();
+    expect(done).toBe(false);
+    fail(new Error("busy"));
+    await expect(out).rejects.toThrow("busy");
+    await waited;
+    expect(done).toBe(true);
+    expect(action.active).toBe(false);
+  });
+});

@@ -14,6 +14,7 @@
   // Right-click menu of the plan and the 3D view: a small list at the
   // pointer, closed by a click outside, Escape, scrolling or losing focus.
   import { tick } from "svelte";
+  import { anyWriterOpen } from "./dragsession";
   import Icon from "./Icon.svelte";
 
   let { menu = $bindable() }: { menu: MenuState | null } = $props();
@@ -48,7 +49,9 @@
   }
 
   function onkeydown(ev: KeyboardEvent) {
-    if (!menu || !el) return;
+    // Capture phase, before the editor's refusal: no key runs a menu entry
+    // while a writer of the job is out (round 12, fix design 1).
+    if (!menu || !el || anyWriterOpen()) return;
     if (ev.key === "Escape") {
       ev.preventDefault();
       ev.stopPropagation();

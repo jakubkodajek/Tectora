@@ -64,6 +64,7 @@
   import type { ActivityItem, Arc, HelperRequest, Recalculation, RefreshedEntry, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
   import { GABLE_PITCH, buildingHeight, emptyProject, isAi, isGable, isMarker } from "./types";
   import { eavePitchFor, pruneEavePitches, rememberEavePitch, useEavePitchJob } from "./walltype";
+  import { pressKeepingFocus } from "./press";
 
   let {
     id: idProp,
@@ -277,6 +278,10 @@
       title: hold ? t("editor.notMadeOf", { name: heldName(hold, project) }) : t("editor.notMade"),
       message: t(o === "gone" ? "editor.actionStale" : "editor.actionBusy"),
     });
+  }
+  /** An edit that reached the job while Revert or the put-back was out was dropped (`CoreAction.foreign`): said once, neutrally. */
+  function refusedDuringAction() {
+    notify({ kind: "warning", title: t("editor.notMade"), message: t("editor.refusedDuringAction") });
   }
   const plain = (p: Project) => $state.snapshot(p) as Project;
   /** One-shot actions under way: their buttons are off and a second press does nothing (UI-302, UI-308). */
@@ -583,6 +588,15 @@
   function commit() {
     // Not while a drag is open, unless it is the drag's own (jobedits.ts rule 7).
     drag.foreign("commit");
+    // Not while Revert or the put-back is out: its answer replaces the job,
+    // so the edit would be lost behind "Saved". The caller changed `project`
+    // already: it goes back to the newest step, and the user is told
+    // (backstop of round 12 fix design 1; the gates before it leave nothing).
+    if (reviewing.foreign("commit")) {
+      if (history[at]) project = JSON.parse(history[at]);
+      refusedDuringAction();
+      return;
+    }
     const prev = history[at];
     if (!pushHistory()) return;
     // Edits under way follow their items past a delete or a copy (jobedits.ts).
@@ -593,6 +607,10 @@
 
   function restore(i: number) {
     drag.foreign("undo step");
+    if (reviewing.foreign("undo step")) {
+      refusedDuringAction();
+      return;
+    }
     const prev = history[at];
     at = i;
     project = JSON.parse(history[i]);
@@ -880,6 +898,14 @@
   });
   /** Saves pending edits before the job is left; asks when they cannot be saved. */
   async function leaveGuard(mode: "ask" | "quiet"): Promise<boolean> {
+    // Revert or the put-back is with the core: its answer (also `busy`) is
+    // the user's to see before the job is left. Follow mode stays; the
+    // user's own ways out wait for it, at most the core's lock wait
+    // (ERR-1105, round 12 fix design 1).
+    if (reviewing.active) {
+      if (mode === "quiet") return false;
+      await reviewing.settled();
+    }
     // A footprint being drawn is not in the job yet: leaving drops it, so
     // ask as Escape does (UX-013). Follow mode (not the user's) never drops it.
     const pts = drawing?.length ?? 0;
@@ -919,6 +945,15 @@
   let reviewBusy = $state(false);
   const reviewAction = exclusive((run: () => Promise<void>) => run(), (b) => (reviewBusy = b));
   const accept = () => reviewAction(acceptNow);
+  let bannerEl = $state<HTMLElement>();
+  /**
+   * The banner's Revert and Accept, pressed from the keyboard, keep the
+   * focus: on the button while it waits (a `busy` answer keeps the banner),
+   * else on the banner, or the dock's open tab once the banner is gone
+   * (UI-1103).
+   */
+  const pressBanner = (run: () => void | Promise<void>) =>
+    pressKeepingFocus(run, () => (bannerEl?.isConnected ? bannerEl : document.getElementById(dockIds.tab(dock))));
   /** Reverts the pending AI changes from the banner, or the latest one from the AI tab. */
   const revert = (all = false, expectTs?: number) => reviewAction(() => revertNow(all, expectTs));
   /** Puts the offer's own figures back in place of the engine's recalculation logged at `entryTs` (the AI tab's button on that entry). */
@@ -941,19 +976,68 @@
   }
 
   /**
-   * Revert, Revert all and the put-back of the offer's figures: a short
-   * transaction like a drag (dragsession.ts `CoreAction`). A value being
-   * typed is stored and the job saved first; then, until the answer is in,
-   * keys, fields, bar buttons and plan presses are refused, the core's
-   * answers to earlier edits wait, and the status bar says so. The core
-   * waits for the job's lock a few seconds at most and answers `busy`,
-   * having changed nothing: the button stays and a short note says why.
+   * How long (ms) a press of Revert or the put-back waits for the edits
+   * made before it to be answered by the core and saved: the core's own
+   * wait for the job's lock (store.rs `action_wait`). Past it the press
+   * gives up with `busy` and changes nothing (ERR-1102).
    */
-  async function reviewTransaction(call: () => Promise<Project>, after: (p: Project) => void | Promise<void>) {
-    commitFocused();
-    await tick();
-    await reviewing.run(async () => {
-      if (saveState !== "saved" && !(await save())) return;
+  const PREPARE_MS = 3000;
+
+  /**
+   * Revert, Revert all and the put-back of the offer's figures: a short
+   * transaction like a drag (dragsession.ts `CoreAction`), in two phases
+   * (round 12 fix design 1).
+   * 1. Prepare, input still open, at most PREPARE_MS: a value being typed
+   *    is stored, the edits still with the core are waited for (a status
+   *    change, Store, a finished footprint: HUNT-1101) and the job saved,
+   *    again until, checked at one moment, nothing is with the core and
+   *    the file has every edit. Past the deadline the press says `busy`
+   *    under its own title and changes nothing; a save still under way
+   *    lands as the user's own edit. A failed save stops it (it said why).
+   * 2. In the same tick the call goes out: until the answer is in, keys,
+   *    fields, bar buttons, plan presses, window keys and toast actions are
+   *    refused (`anyWriterOpen`), the core's answers to earlier edits wait,
+   *    and the status bar says so. The core waits for the job's lock a few
+   *    seconds at most and answers `busy`, having changed nothing: the
+   *    button stays and a note says why, naming the job (it may have been
+   *    left meanwhile, ERR-1105).
+   */
+  async function reviewTransaction(what: "revert" | "restoreOffer", call: () => Promise<Project>, after: (p: Project) => void | Promise<void>) {
+    if (reviewing.active) return;
+    const name = project?.name.trim() || id;
+    const deadline = Date.now() + PREPARE_MS;
+    const LATE = Symbol("late");
+    const within = <T,>(p: Promise<T>): Promise<T | typeof LATE> =>
+      Promise.race([p, new Promise<typeof LATE>((r) => setTimeout(() => r(LATE), Math.max(0, deadline - Date.now())))]);
+    for (;;) {
+      if (Date.now() >= deadline) break;
+      commitFocused();
+      await tick();
+      if ((await within(pendingEdits.settled())) === LATE) break;
+      if ((await within(drag.settled())) === LATE) break;
+      await tick();
+      if (destroyed || !project) return;
+      // Checked at one moment, and the call claimed in the same tick: no
+      // answer of an earlier edit can land between the two.
+      if (pendingEdits.size === 0 && saveState === "saved" && !drag.active) return runReview(what, name, call, after);
+      if (saveState !== "saved" && !pendingEdits.size) {
+        const ok = await within(save());
+        if (ok === LATE) break;
+        // The save showed its error; nothing is reverted over edits not on disk.
+        if (!ok) return;
+      } else {
+        // An edit came in meanwhile: let it reach the core first.
+        await within(new Promise((r) => setTimeout(r, 20)));
+      }
+    }
+    if (destroyed) return;
+    notifyError({ code: "busy", id, detail: `the edits made before the press were not saved within ${PREPARE_MS} ms` }, what, name);
+  }
+
+  /** Phase 2 of `reviewTransaction`: claims the transaction at once (synchronously) and sends the call. */
+  function runReview(what: "revert" | "restoreOffer", name: string, call: () => Promise<Project>, after: (p: Project) => void | Promise<void>) {
+    reviewWhat = what;
+    return reviewing.run(async () => {
       try {
         clearTimeout(saveTimer);
         // A read of the file that runs across this write may be older than
@@ -973,11 +1057,13 @@
         await after(p);
         await refreshActivity();
       } catch (e) {
-        if (destroyed) return;
+        // Told also when the editor was left meanwhile (a teardown that does
+        // not ask, the folder switched): the notice outlives it and names
+        // the job (ERR-1105).
         // `busy`: another writer held the job's lock, nothing changed.
         // `revert_stale`: the job is another one by now. The list is read again.
-        notifyError(e, "revert");
-        await refreshActivity();
+        notifyError(e, what, name);
+        if (!destroyed) await refreshActivity();
       }
     });
   }
@@ -985,22 +1071,30 @@
   /** Puts the offer's own figures back in place of the recalculation logged at `entryTs`. */
   function restoreOfferNow(entryTs: number) {
     return reviewTransaction(
+      "restoreOffer",
       () => api.restoreOfferResult(id, entryTs),
       () => {},
     );
   }
 
+  /**
+   * Accept: the banner stays (its buttons busy) until the core answered;
+   * a `busy` answer keeps the AI's changes pending and says so under
+   * Accept's own title (ERR-1103).
+   */
   async function acceptNow() {
     if (!pending) return;
     const ts = pending.ts_ms;
-    review = null;
-    focusChange = null;
+    const name = project?.name.trim() || id;
     try {
       await api.acceptChanges(id, ts);
+      if (destroyed) return;
+      review = null;
+      focusChange = null;
     } catch (e) {
-      notifyError(e, "save");
+      notifyError(e, "accept", name);
     }
-    await refreshActivity();
+    if (!destroyed) await refreshActivity();
   }
 
   async function revertNow(all: boolean, expectTs?: number) {
@@ -1018,6 +1112,7 @@
     // the file, merging the revert onto them (ERR-001); the transaction
     // saves them first.
     await reviewTransaction(
+      "revert",
       () => {
         const oldest = pendingList[pendingList.length - 1];
         // The latest change is undone only if it still is the entry the button was drawn on (ERR-801).
@@ -1881,8 +1976,11 @@
   const reviewing = new CoreAction(
     () => jobEdits.pause(),
     (on) => (reviewOut = on),
+    import.meta.env.DEV,
   );
   let reviewOut = $state(false);
+  /** Which review action is out, for the status bar's word (UX-1102). */
+  let reviewWhat = $state<"revert" | "restoreOffer">("revert");
   /** The user's input is refused now: a drag is open or a review action is out (one predicate for every refusal). */
   const inputClosed = () => closedForInput(drag, reviewing);
   /**
@@ -2409,6 +2507,9 @@
     await drag.settled();
     // Drawing went on or was left while the core answered: this finish is stale.
     if (!project || !drawing || JSON.stringify($state.snapshot(drawing)) !== drawn) return;
+    // Revert or the put-back went out meanwhile: its answer would throw the
+    // building away. The footprint stays open to be closed again (ERR-1101).
+    if (reviewing.active) return;
     if (pts.length < 3) return;
     const area = pts.reduce((s, p, i) => {
       const q = pts[(i + 1) % pts.length];
@@ -2618,9 +2719,10 @@
 
   {#if project}
     <div class="body">
-      <div class="main" use:inertBut={{ on: closed, keep: reviewOut ? "" : "views" }}>
+      <div class="main" use:inertBut={{ on: closed, keep: reviewOut ? "review" : "views" }}>
         {#if pending}
-          <div class="review" class:open={reviewDetails} role="status">
+          <!-- Not inert while Revert is out: its pressed button keeps the keyboard's focus; the banner swallows input itself (UI-1103). -->
+          <div class="review" class:open={reviewDetails} role="status" tabindex="-1" bind:this={bannerEl} use:refuseInput={{ on: reviewOut }}>
             <Icon name="sparkle" size={18} />
             <div class="review-text">
               <strong>
@@ -2644,8 +2746,8 @@
               <!-- A check, not a look-alike of the other buttons: "Show previous state" ticked while it shows (UX-008). -->
               <button class="btn sm before" class:on={showBefore} aria-pressed={showBefore} onclick={() => (showBefore = !showBefore)} aria-label={t("review.before")} title={t("review.beforeHint")} data-testid="review-before"><span class="chk" aria-hidden="true">{#if showBefore}<Icon name="check" size={11} />{/if}</span><span class="lbl">{t("review.before")}</span></button>
             {/if}
-            <button class="btn sm" disabled={reviewBusy} onclick={() => revert(true)} aria-label={pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")} title={pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}><Icon name="undo" size={14} /><span class="lbl">{pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}</span></button>
-            <button class="btn sm accept" disabled={reviewBusy} onclick={accept}><Icon name="check" size={14} />{t("review.accept")}</button>
+            <button class="btn sm" aria-disabled={reviewBusy} aria-busy={reviewBusy} onclick={() => !reviewBusy && pressBanner(() => revert(true))} aria-label={pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")} title={pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}><Icon name="undo" size={14} /><span class="lbl">{pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}</span></button>
+            <button class="btn sm accept" aria-disabled={reviewBusy} aria-busy={reviewBusy} title={t("review.accept")} onclick={() => !reviewBusy && pressBanner(accept)}><Icon name="check" size={14} />{t("review.accept")}</button>
           </div>
         {/if}
         {#if calcError}
@@ -2812,7 +2914,7 @@
       {#if result}<span data-testid="status-area" class:pending={calcPending} aria-busy={calcPending}>{t("res.area")}: <b title={roofState(result) !== "ok" ? t(roofState(result) === "none" ? "res.notCalculated" : "res.calcPartial") : undefined}>{roofState(result) === "none" ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save">
-        {#if reviewOut}{t("editor.reverting")}{:else if saveState === "saved" && !editsWaiting}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving" || saveState === "saved"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
+        {#if reviewOut}{t(reviewWhat === "restoreOffer" ? "editor.restoringOffer" : "editor.reverting")}{:else if saveState === "saved" && !editsWaiting}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving" || saveState === "saved"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
       </span>
     </footer>
   {:else if !loadError}
