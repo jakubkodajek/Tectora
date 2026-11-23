@@ -60,7 +60,7 @@
   import { partLabel } from "./partname";
   import { exportTitle } from "./exportlist";
   import { tabIds, tablist } from "./tabs";
-  import { actorName, entrySummary, isFresh, live, liveText, pillText, receivedRecalculation, refreshedNotice } from "./live.svelte";
+  import { actorName, entryText, isFresh, live, liveText, pillText, receivedRecalculation, refreshedNotice } from "./live.svelte";
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
   import type { ActivityItem, Arc, HelperRequest, Recalculation, RefreshedEntry, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
   import { GABLE_PITCH, buildingHeight, emptyProject, isAi, isGable, isMarker } from "./types";
@@ -1201,7 +1201,8 @@
     // was open, while the press waited for the edits before it or for the
     // job's lock) are reverted too, and said so with the count the core
     // took under the lock (DR-003; HUNT-1205, round 13 design E), also when
-    // the banner showed one change.
+    // the banner showed one change. Only the AI's entries count, as in the
+    // banner: a user's revert from a second Tectora is no AI step (HUNT-1401).
     let undone = 0;
     // Edits not on disk yet would be lost: the store keeps only the edits in
     // the file, merging the revert onto them (ERR-001); the transaction
@@ -1212,7 +1213,7 @@
         const oldest = pendingList[pendingList.length - 1];
         if (all && oldest) {
           const r = await api.revertAll(id, oldest.ts_ms);
-          undone = r.undone;
+          undone = r.undone_ai;
           return r.project;
         }
         // The latest change is undone only if it still is the entry the button was drawn on (ERR-801).
@@ -2841,7 +2842,7 @@
               <strong>
                 {t("review.title", { who: actorName(pending.actor) })}{#if pendingList.length > 1}<span class="steps">{t("review.steps", { n: pendingList.length })}</span>{/if}
               </strong>
-              <span class="review-summary" title={pendingList.map((a) => entrySummary(a.summary)).reverse().join(" → ")}>{pendingList.map((a) => entrySummary(a.summary)).reverse().join(" → ")}</span>
+              <span class="review-summary" title={pendingList.map((a) => entryText(a, activity)).reverse().join(" → ")}>{pendingList.map((a) => entryText(a, activity)).reverse().join(" → ")}</span>
               {#if pendingChanges.length}
                 <span class="review-list">
                   {pendingChanges.slice(0, 4).map((c) => describeChange(c, project)).join(" · ")}{pendingChanges.length > 4 ? ` · ${t("review.more", { n: pendingChanges.length - 4 })}` : ""}

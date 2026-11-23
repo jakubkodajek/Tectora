@@ -137,10 +137,19 @@ export interface RoofWindow {
   height: number;
 }
 
+/**
+ * What Tectora wrote a change-log entry as (store.rs `EntryKind`), from the
+ * entry's fields, never from its words (audit 2026-11-23 ARCH-1401). An
+ * entry without it is a change, and an AI's summary is its own words.
+ */
+export type EntryKind = "revert" | "restore" | "refresh";
+
 export interface ActivityInfo {
   ts_ms: number;
   actor: string;
   summary: string;
+  /** Absent for a change (store.rs `ActivityEntry::kind`). */
+  kind?: EntryKind;
 }
 
 export interface ProjectSummary {

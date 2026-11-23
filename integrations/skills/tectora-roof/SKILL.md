@@ -78,7 +78,10 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    figures and the offer's own stay on this computer: tell the user, and
    put them back first only if the user wants to send those. A revert
    or put-back answered with `busy` did nothing (another program was
-   saving the job): try it again in a moment. When
+   saving the job): try it again in a moment. Word every `summary` as
+   what you did, in your own words: one that starts like Tectora's own
+   sentences ("Reverted: …", "Stored result recalculated …") is still
+   your change, shown in quotation marks and undone as a change. When
    `get_project` or a write answers with `load_warnings`
    (`result_dropped`: a stored result with an impossible date was left
    out), tell the user. When it answers with

@@ -64,7 +64,8 @@ test.describe("live AI changes", () => {
     await mcp.call("update_job", { id, customer: "AI Zákazník", summary: "Krok 2" });
     await mcp.call("set_roof_options", { id, flat_roof: true, summary: "Krok 3" });
     await expect(review(page)).toContainText(cs("review.steps", { n: 3 }));
-    await expect(review(page)).toContainText("Krok 1 → Krok 2 → Krok 3");
+    // The AI's own words, quoted (audit 2026-11-23 ARCH-1401, design A4).
+    await expect(review(page)).toContainText("„Krok 1“ → „Krok 2“ → „Krok 3“");
     await review(page).getByRole("button", { name: cs("review.revertAll") }).click();
     const p = await waitForProject(id, (p) => !p.flat_roof && p.parts[0].edges[0].pitch_deg === 40);
     expect(p.job.customer).toBe("");

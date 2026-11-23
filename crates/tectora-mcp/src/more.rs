@@ -3986,6 +3986,95 @@ mod tool_coverage {
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
+    /// Audit 2026-11-23 ARCH-1401: a write summarised like the core's revert
+    /// sentence is a change: `revert_last_change` undoes that write, and
+    /// `get_history` gives `kind` only to the real revert.
+    #[test]
+    fn a_summary_that_reads_like_a_revert_is_undone_as_a_change() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "Call the customer", "summary": "Notes" }),
+        );
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "customer": "Evil s.r.o.", "summary": "Reverted: Notes" }),
+        );
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        assert_eq!(history[0]["summary"], "Reverted: Notes", "{history}");
+        assert!(history[0].get("kind").is_none(), "{history}");
+        let spoof = history[0]["ts_ms"].as_u64().unwrap();
+        let r = call(
+            &mut s,
+            "revert_last_change",
+            json!({ "id": id, "ts_ms": spoof, "summary": "Wrong customer" }),
+        );
+        assert_eq!(r["reverted"], true, "{r}");
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(p.job.customer, "");
+        assert_eq!(p.notes, "Call the customer");
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        assert_eq!(history[0]["kind"], "revert", "{history}");
+        assert!(history[1].get("kind").is_none(), "{history}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// TEST-1401 through MCP: `revert_to` with the time of the user's
+    /// put-back of the offer's figures undoes that put-back alone (the
+    /// recalculated figures are back). `revert_last_change` steps over
+    /// the user's put-back by design (`latest_undone`), so the time is
+    /// given.
+    #[test]
+    fn revert_to_a_put_back_by_itself_brings_the_recalculation_back() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "status": "offer", "summary": "Offer sent" }),
+        );
+        let file = s.store.dir.join(format!("{id}.tectora"));
+        let mut p = s.store.load(&id).unwrap();
+        {
+            let r = p
+                .result_snapshot
+                .as_mut()
+                .expect("the offer stored a result");
+            r.engine_version = "0.0.1".into();
+            r.roof_area += 2.0;
+        }
+        std::fs::write(&file, p.to_json().unwrap()).unwrap();
+        let origins = s.store.activity_dir().join(format!("{id}.result.json"));
+        let text = std::fs::read_to_string(&origins)
+            .unwrap()
+            .replace(tectora_core::snapshot::ENGINE_VERSION, "0.0.1");
+        std::fs::write(&origins, text).unwrap();
+        s.store.mark_reviewed(&id, now_ms() + 1000).unwrap();
+        let done = s.store.refresh_entry(&id).unwrap().expect("recalculated");
+        let recalculated = s.store.load(&id).unwrap().result_snapshot;
+        s.store
+            .restore_offer_result(&id, done.entry_ts_ms, tectora_core::store::USER_ACTOR, None)
+            .unwrap();
+        let put_back = s.store.activity(&id).last().unwrap().ts_ms;
+        let r = call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": put_back, "summary": "The new figures are right" }),
+        );
+        assert_eq!(r["reverted"], true, "{r}");
+        assert_eq!(s.store.load(&id).unwrap().result_snapshot, recalculated);
+        let last = s.store.activity(&id).last().unwrap().clone();
+        assert!(
+            last.summary.starts_with("Reverted: Offer result restored"),
+            "{}",
+            last.summary
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
     #[test]
     fn create_from_example_makes_the_example_job() {
         let mut s = server();

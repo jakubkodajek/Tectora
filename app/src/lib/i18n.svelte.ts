@@ -1067,6 +1067,7 @@ const cs: Dict = {
   "err.action.revertAll": "Změny se nepodařilo vrátit",
   "folderReq.jobCloses": "Otevřená zakázka se uloží a zavře.",
   "folderReq.jobsStay": "Stávající zakázky zůstanou v původní složce.",
+  "ai.quoted": "„{s}“",
 };
 
 const sk: Dict = {
@@ -2125,6 +2126,7 @@ const sk: Dict = {
   "err.action.revertAll": "Zmeny sa nepodarilo vrátiť",
   "folderReq.jobCloses": "Otvorená zákazka sa uloží a zatvorí.",
   "folderReq.jobsStay": "Existujúce zákazky zostanú v pôvodnom priečinku.",
+  "ai.quoted": "„{s}“",
 };
 
 const en: Dict = {
@@ -3183,6 +3185,7 @@ const en: Dict = {
   "err.action.revertAll": "Could not revert the changes",
   "folderReq.jobCloses": "The open job is saved and closed.",
   "folderReq.jobsStay": "Existing jobs stay in the old folder.",
+  "ai.quoted": "“{s}”",
 };
 
 const de: Dict = {
@@ -4241,6 +4244,7 @@ const de: Dict = {
   "err.action.revertAll": "Die Änderungen konnten nicht verworfen werden",
   "folderReq.jobCloses": "Der geöffnete Auftrag wird gespeichert und geschlossen.",
   "folderReq.jobsStay": "Bestehende Aufträge bleiben im alten Ordner.",
+  "ai.quoted": "„{s}“",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };

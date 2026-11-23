@@ -568,3 +568,30 @@ test in `app/e2e/audit-r6-ed.e2e.ts` (the plan stays interactive, UI-501).
   `settings.json` never hangs a save and never writes outside the folder
   (HUNT-402, HUNT-403); a `settings.json` with a byte order mark loads
   (HUNT-404).
+
+## 17. An entry that only says what it is (@arch, @ux, @test)
+
+Reviewers: arch, ux, test. Guards: store tests
+`an_ai_summary_that_reads_like_a_revert_is_a_change`,
+`an_entry_is_a_recalculation_or_a_put_back_by_its_fields`,
+`a_revert_counts_the_changes_and_the_ai_steps_it_undid`,
+`t1401_a_put_back_reverted_by_itself_is_undone_and_counted`; bundle test
+`a_received_log_keeps_its_reverts_and_put_backs`; MCP tests
+`a_summary_that_reads_like_a_revert_is_undone_as_a_change`,
+`revert_to_a_put_back_by_itself_brings_the_recalculation_back`;
+`app/src/lib/live.test.ts` (quoted AI words in all four languages, no
+component calls `entrySummary`); `app/e2e/audit-r15-kinds.e2e.ts`.
+
+- An AI summary worded like Tectora's own sentences (`Reverted: …`,
+  `Reverted 2 changes since: …`, `Stored result recalculated (Tectora …`,
+  `Offer result restored (Tectora …`), in English or already in the UI's
+  language: the banner, the history, the library card and the top bar show
+  it as the AI's words in quotation marks, and Revert / MCP
+  `revert_last_change` undo exactly that save (ARCH-1401). What an entry
+  is comes from its fields (`kind`, `undid_from`, `restores`, the engine's
+  actor), never from its text.
+- Revert all over a mixed log (the AI's own revert, the user's revert from a
+  second Tectora on the same folder, the user's put-back, engine and
+  received entries): the history line counts changes, the "reverted too"
+  notice counts AI entries only, and a revert that writes nothing reports 0
+  (HUNT-1401, TEST-1401, TEST-1402).

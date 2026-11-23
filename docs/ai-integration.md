@@ -188,6 +188,25 @@ stay a `folder_request` the user allows or keeps.
   <entry_ts_ms>`, and pins the origin of the result it put back, so no later
   engine recalculates it. The user's restore entry neither ends nor joins an
   AI review, and Revert / Revert all of other entries leave it alone.
+- What an entry is comes from its fields, never from its summary, which an
+  AI writes freely (audit 2026-11-23 ARCH-1401): `ActivityEntry::kind` is
+  `restore` for an entry with `restores`, `revert` for one with
+  `undid_from` (or the user's own revert logged by Tectora 0.8.0 and older,
+  told by its sentence), `refresh` for the engine's recalculation (also one
+  received), and none for a change. The history items, the library card's
+  `last_activity` / `changed_by_ai` and MCP `get_history` carry it as
+  `kind`. "Revert the latest change" steps over reverts by `undid_from`
+  only; an AI save summarised `Reverted: …` is undone as a change. The app
+  translates Tectora's sentences only by `kind` and shows an AI's own
+  summary in quotation marks.
+- Revert all reports two numbers (`RevertedChanges`, audit 2026-11-23
+  HUNT-1401, TEST-1402): `undone`, the undone entries that are changes
+  (not reverts themselves, at least 1), which the history line
+  `Reverted n changes since: …` names; and `undone_ai`, the undone entries
+  by an AI client (an actor outside `RESERVED_ACTORS`), which the app
+  compares with the AI steps its banner showed for the "reverted too"
+  notice. A revert that ends where the job already is writes nothing and
+  reports 0 and 0.
   A bundle carries no offer figures (Jakub's decision 2026-11-23): the
   app's export of a recalculated offer warns the user, and MCP `export_job`
   adds a `note` with both sets of figures and the way back
