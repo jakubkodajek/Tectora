@@ -38,6 +38,28 @@ pub const ENGINE_ACTOR: &str = "tectora";
 /// or trusted as the engine's own (audit 2026-11-22 ARCH-802). The app
 /// knows the name (`types.ts`).
 pub const RECEIVED_ENGINE_ACTOR: &str = "tectora (received)";
+/// The actor names only Tectora itself writes: a name from outside (an
+/// MCP client's, a received bundle's entry) that reads as one of them is
+/// renamed, or its change would skip the user's review (HUNTIO-003, audit
+/// 2026-11-23 ARCH-901). One list for every such check; the app's copy
+/// (`types.ts`) is compared with it by `actors.test.ts`.
+pub const RESERVED_ACTORS: [&str; 3] = [USER_ACTOR, ENGINE_ACTOR, RECEIVED_ENGINE_ACTOR];
+
+/// The reserved actor ([`RESERVED_ACTORS`]) `name` reads as, compared as
+/// a written entry's actor is (control and invisible characters taken
+/// out, trimmed, ASCII case ignored); `None` for any other name.
+pub fn reserved_actor(name: &str) -> Option<&'static str> {
+    let clean = crate::edit::clean_line(name, crate::edit::MAX_ACTOR_CHARS);
+    let clean = clean.trim();
+    RESERVED_ACTORS
+        .into_iter()
+        .find(|r| clean.eq_ignore_ascii_case(r))
+}
+
+/// Whether `name` reads as one of [`RESERVED_ACTORS`].
+pub fn is_reserved_actor(name: &str) -> bool {
+    reserved_actor(name).is_some()
+}
 /// How long the recalculation on open waits for the job's lock before the
 /// job opens as it is (audit 2026-11-22 ERR-803) [no source: a save holds
 /// the lock for well under a second].
@@ -3916,6 +3938,30 @@ mod tests {
 
     /// How long a test's card waits for its figures.
     const TEST_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// Audit 2026-11-23 ARCH-901: every name only Tectora writes is
+    /// reserved, in any spelling, and nothing else is.
+    #[test]
+    fn every_reserved_actor_is_known_in_any_spelling() {
+        for name in [
+            "user",
+            " User ",
+            "tectora",
+            "TECTORA",
+            "tectora (received)",
+            " Tectora (Received) ",
+            "tectora (received)\u{200b}",
+        ] {
+            assert!(is_reserved_actor(name), "{name:?}");
+        }
+        assert_eq!(
+            reserved_actor(" Tectora (Received) "),
+            Some(RECEIVED_ENGINE_ACTOR)
+        );
+        for name in ["claude", "AI (tectora)", "tectora received", "users", ""] {
+            assert!(!is_reserved_actor(name), "{name:?}");
+        }
+    }
 
     /// Audit 2026-11-22 TEST-603: the test store waits long enough for a
     /// card's figures on a loaded machine.

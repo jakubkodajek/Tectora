@@ -2259,9 +2259,9 @@ fn client_actor(name: &str) -> String {
         .to_string();
     if !tectora_core::edit::has_visible(&clean) {
         "AI".into()
-    } else if clean.eq_ignore_ascii_case(tectora_core::store::USER_ACTOR)
-        || clean.eq_ignore_ascii_case(tectora_core::store::ENGINE_ACTOR)
-    {
+    } else if tectora_core::store::is_reserved_actor(&clean) {
+        // One list of the names only Tectora writes (audit 2026-11-23
+        // ARCH-901: `tectora (received)` was missing).
         format!("AI ({clean})")
     } else {
         clean
@@ -2351,7 +2351,17 @@ mod tests {
     #[test]
     fn a_client_named_user_is_still_reviewed() {
         // HUNTIO-003: its saves were logged as the user's own.
-        for name in ["user", "User", "  USER ", "", "tectora", "Tectora"] {
+        // Audit 2026-11-23 ARCH-901: and like a received engine entry.
+        for name in [
+            "user",
+            "User",
+            "  USER ",
+            "",
+            "tectora",
+            "Tectora",
+            "tectora (received)",
+            " Tectora (Received) ",
+        ] {
             let mut s = server();
             s.handle(&json!({
                 "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -2368,7 +2378,8 @@ mod tests {
             assert!(!log.is_empty());
             assert!(
                 log.iter()
-                    .all(|e| e.actor != tectora_core::store::USER_ACTOR
+                    .all(|e| !tectora_core::store::is_reserved_actor(&e.actor)
+                        && e.actor != tectora_core::store::USER_ACTOR
                         && e.actor != tectora_core::store::ENGINE_ACTOR
                         && !e.actor.is_empty()),
                 "{name:?}: {:?}",

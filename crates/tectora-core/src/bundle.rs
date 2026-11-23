@@ -641,10 +641,9 @@ fn received_history(bytes: &[u8]) -> Option<(String, u64)> {
         // sender: it is kept as history under another name and never
         // shown or trusted as this engine's recalculation (audit
         // 2026-11-22 ARCH-802).
-        if e.actor
-            .trim()
-            .eq_ignore_ascii_case(crate::store::ENGINE_ACTOR)
-        {
+        // Also one that already reads as received (any spelling), so the
+        // app knows it by its one name (audit 2026-11-23 ARCH-901).
+        if crate::store::reserved_actor(&e.actor).is_some_and(|r| r != crate::store::USER_ACTOR) {
             e.actor = crate::store::RECEIVED_ENGINE_ACTOR.to_string();
         }
         for p in [&mut e.before, &mut e.after].into_iter().flatten() {
@@ -1553,7 +1552,13 @@ mod tests {
             })
             .unwrap()
         };
-        for actor in ["tectora", "Tectora", " TECTORA "] {
+        for actor in [
+            "tectora",
+            "Tectora",
+            " TECTORA ",
+            "tectora (received)",
+            " Tectora (Received) ",
+        ] {
             let (text, _) = received_history(line(actor).as_bytes()).unwrap();
             let e: crate::store::ActivityEntry = serde_json::from_str(text.trim()).unwrap();
             assert_eq!(e.actor, RECEIVED_ENGINE_ACTOR, "{actor:?}");
