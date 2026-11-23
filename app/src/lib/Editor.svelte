@@ -1149,27 +1149,35 @@
   async function revertNow(all: boolean, expectTs?: number) {
     // Reverting several AI steps at once is one click next to Accept, and
     // after a reopen it cannot be undone: ask first, naming the steps (UX-011).
-    const steps = pendingList.length;
-    if (all && steps > 1) {
+    const shown = pendingList.length;
+    if (all && shown > 1) {
       // Tauri's dialog plugin makes confirm asynchronous: always await it.
-      if (!(await confirm(t("review.confirmRevertAll", { n: steps })))) return;
+      if (!(await confirm(t("review.confirmRevertAll", { n: shown })))) return;
     }
-    // AI steps that came in while the question was open are reverted too
-    // (the user asked for all), and said so (DR-003).
-    const extra = all && steps > 1 ? pendingList.length - steps : 0;
+    // AI steps that came in after the banner was drawn (while the question
+    // was open, while the press waited for the edits before it or for the
+    // job's lock) are reverted too, and said so with the count the core
+    // took under the lock (DR-003; HUNT-1205, round 13 design E), also when
+    // the banner showed one change.
+    let undone = 0;
     // Edits not on disk yet would be lost: the store keeps only the edits in
     // the file, merging the revert onto them (ERR-001); the transaction
     // saves them first.
     await reviewTransaction(
       "revert",
-      () => {
+      async () => {
         const oldest = pendingList[pendingList.length - 1];
+        if (all && oldest) {
+          const r = await api.revertAll(id, oldest.ts_ms);
+          undone = r.undone;
+          return r.project;
+        }
         // The latest change is undone only if it still is the entry the button was drawn on (ERR-801).
-        return all && oldest ? api.revertChanges(id, oldest.ts_ms) : api.revertLastChange(id, expectTs);
+        return api.revertLastChange(id, expectTs);
       },
       () => {
         focusChange = null;
-        if (extra > 0) info(t("review.revertedMore", { n: extra }));
+        if (all && undone > shown) info(t("review.revertedMore", { n: undone - shown }));
       },
     );
   }
