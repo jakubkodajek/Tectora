@@ -1188,8 +1188,8 @@ fn base_tools() -> Value {
         },
         {
             "name": "revert_last_change",
-            "description": "Undo the latest recorded change of a design.",
-            "inputSchema": schema(json!({ "id": { "type": "string" }, "summary": summary_prop() }), &["id", "summary"]),
+            "description": "Undo the latest recorded change of a design. With `ts_ms` (from get_history) it is undone only if it is still that change: when another one was saved meanwhile nothing is undone (`revert_stale`).",
+            "inputSchema": schema(json!({ "id": { "type": "string" }, "ts_ms": { "type": "integer", "description": "The change you expect to undo." }, "summary": summary_prop() }), &["id", "summary"]),
         },
     ])
 }
@@ -2089,7 +2089,20 @@ impl Server {
             "revert_last_change" => {
                 let (id, _) = self.load(args)?;
                 let summary = arg_str(args, "summary")?;
-                let p = self.store.revert_last(&id, &self.client, Some(summary))?;
+                let expect: Option<u64> = match args.get("ts_ms") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(
+                        v.as_u64()
+                            .ok_or("`ts_ms` must be a whole number (from get_history)")?,
+                    ),
+                };
+                let p = self
+                    .store
+                    .revert_last_expecting(&id, &self.client, Some(summary), expect)
+                    .map_err(|e| match e {
+                        StoreError::RevertStale { .. } => format!("{}: {e}", e.code()),
+                        e => e.to_string(),
+                    })?;
                 self.live_follow(
                     "reverted",
                     Some(&p.name),

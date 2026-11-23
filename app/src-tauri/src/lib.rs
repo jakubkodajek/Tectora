@@ -13,7 +13,6 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
-use tectora_core::diff::Change;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::settings::{self, Settings};
 use tectora_core::store::{self, BrokenFile, LiveStatus, Store, USER_ACTOR, card_outlines};
@@ -107,61 +106,54 @@ fn startup_warnings(state: State<AppState>) -> Vec<AppError> {
         .collect()
 }
 
-#[derive(Serialize)]
-struct ActivityItem {
-    ts_ms: u64,
-    actor: String,
-    summary: String,
-    changes: Vec<Change>,
-    /// For the engine's recalculation of the stored result: the offer's
-    /// figures against the new ones (audit UX-702a/b).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    refreshed: Option<Value>,
-}
-
-/// What the engine's recalculation of a stored result changed: the offer's
-/// date and engine and each figure old -> new, from the entry's two
-/// versions (`snapshot::compare`). `None` for every other entry. Same in
-/// the preview's bridge.
-fn refresh_figures(e: &store::ActivityEntry) -> Option<Value> {
-    if e.actor != store::ENGINE_ACTOR {
-        return None;
-    }
-    let old = e.before.as_ref()?.result_snapshot.as_ref()?;
-    let new = e.after.as_ref()?.result_snapshot.as_ref()?;
-    Some(json!({
-        "offer_ms": old.taken_ms,
-        "from": old.engine_version,
-        "to": new.engine_version,
-        "differences": snapshot::compare(old, new),
-    }))
-}
-
-/// Recorded changes of a project, newest first.
+/// Recorded changes of a project, newest first, as the core maps them
+/// (`Store::activity_items`: the engine's recalculation with its figures
+/// old -> new).
 #[tauri::command(async)]
-fn project_activity(state: State<AppState>, id: String) -> Vec<ActivityItem> {
-    let mut out: Vec<ActivityItem> = state
-        .store()
-        .history(&id)
-        .into_iter()
-        .map(|e| {
-            let refreshed = refresh_figures(&e);
-            ActivityItem {
-                ts_ms: e.ts_ms,
-                actor: e.actor,
-                refreshed,
-                summary: e.summary,
-                changes: e.changes,
-            }
-        })
-        .collect();
-    out.reverse();
-    out
+fn project_activity(state: State<AppState>, id: String) -> Vec<store::ActivityItem> {
+    state.store().activity_items(&id)
 }
 
+/// The engine's recalculation the job's stored result is, if it still is
+/// one (`Store::recalculation`): the result card's "recalculated" line and
+/// the history's "put the offer's figures back" show for this alone
+/// (audit 2026-11-22 ERR-802, ARCH-802).
 #[tauri::command(async)]
-fn revert_last_change(state: State<AppState>, id: String) -> CmdResult<Project> {
-    guard(|| Ok(state.store().revert_last(&id, USER_ACTOR, None)?))
+fn result_recalculation(state: State<AppState>, id: String) -> Option<store::Recalculation> {
+    state.store().recalculation(&id)
+}
+
+/// Puts the offer's own stored result back in place of the engine's
+/// recalculation logged at `entry_ts_ms`, and nothing else
+/// (`Store::restore_offer_result`; `revert_stale` when the stored result
+/// is no longer that recalculation).
+#[tauri::command(async)]
+fn restore_offer_result(
+    state: State<AppState>,
+    id: String,
+    entry_ts_ms: u64,
+) -> CmdResult<Project> {
+    guard(|| {
+        Ok(state
+            .store()
+            .restore_offer_result(&id, entry_ts_ms, USER_ACTOR, None)?)
+    })
+}
+
+/// Undoes the latest recorded change. `expect_ts`: the entry the button
+/// was drawn on; when another change is the latest by now nothing is
+/// undone (`revert_stale`, audit 2026-11-22 ERR-801).
+#[tauri::command(async)]
+fn revert_last_change(
+    state: State<AppState>,
+    id: String,
+    expect_ts: Option<u64>,
+) -> CmdResult<Project> {
+    guard(|| {
+        Ok(state
+            .store()
+            .revert_last_expecting(&id, USER_ACTOR, None, expect_ts)?)
+    })
 }
 
 /// Undoes the change recorded at `ts_ms` and everything after it.
@@ -247,13 +239,15 @@ fn load_warnings(state: State<AppState>, id: String) -> Vec<AppError> {
 
 /// Recalculates the job's stored result where an older engine stored it
 /// (Jakub's decision 2026-11-21; the change log keeps the old figures),
-/// before the editor loads the job. Returns the change log's summary when
-/// it did. Off the main thread: it calculates the roof under the job's
-/// lock (HUNT-703). An error leaves the stored result as it was and is
-/// only logged: the job still opens.
+/// before the editor loads the job. Returns the change-log entry (its time
+/// and summary) when it did. Off the main thread: it calculates the roof
+/// under the job's lock (HUNT-703), which it takes only when a
+/// recalculation is due and waits for a few seconds at most (ERR-803). An
+/// error leaves the stored result as it was and is only logged: the job
+/// still opens.
 #[tauri::command(async)]
-fn refresh_stored_result(state: State<AppState>, id: String) -> Option<String> {
-    let r = guard(|| Ok(state.store().refresh_result(&id)?));
+fn refresh_stored_result(state: State<AppState>, id: String) -> Option<store::RefreshedEntry> {
+    let r = guard(|| Ok(state.store().refresh_entry(&id)?));
     r.unwrap_or_else(|e| {
         eprintln!(
             "tectora: stored result of {id} not recalculated: {} {}",
@@ -1187,6 +1181,8 @@ pub fn run() {
             name_seeded_examples,
             duplicate_project,
             project_activity,
+            result_recalculation,
+            restore_offer_result,
             revert_last_change,
             revert_changes,
             review_status,
@@ -1258,6 +1254,9 @@ mod tests {
             "list_projects",
             "load_project",
             "refresh_stored_result",
+            "project_activity",
+            "result_recalculation",
+            "restore_offer_result",
             "review_status",
             "revert_last_change",
             "revert_changes",

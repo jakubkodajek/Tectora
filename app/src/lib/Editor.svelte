@@ -60,8 +60,8 @@
   import { tabIds, tablist } from "./tabs";
   import { actorName, entrySummary, isFresh, live, liveText, pillText, refreshedNotice } from "./live.svelte";
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
-  import type { ActivityItem, Arc, HelperRequest, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
-  import { ENGINE_ACTOR, GABLE_PITCH, buildingHeight, emptyProject, isAi, isGable, isMarker } from "./types";
+  import type { ActivityItem, Arc, HelperRequest, Recalculation, RefreshedEntry, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
+  import { GABLE_PITCH, buildingHeight, emptyProject, isAi, isGable, isMarker } from "./types";
   import { eavePitchFor, pruneEavePitches, rememberEavePitch, useEavePitchJob } from "./walltype";
 
   let {
@@ -415,15 +415,50 @@
     }
   }
 
-  async function refreshActivity() {
+  /**
+   * The engine's recalculation the job's stored result is, as the core
+   * says (`Store::recalculation`): the one fact the result card's
+   * "recalculated" line and the history's "put the offer's figures back"
+   * come from (audit 2026-11-22 ERR-802, UI-802, ARCH-802). `null` for any
+   * other stored result.
+   */
+  let recalculation = $state<Recalculation | null>(null);
+  /** `taken_ms` of the stored result on disk that `recalculation` was asked for (`undefined`: not asked yet). */
+  let recalcFor: number | null | undefined;
+
+  /**
+   * Reads the history, the review and the recalculation. `hold`: asked once
+   * they are read; when it says so nothing is shown and the answer is
+   * `false` (a reload that a drag overtook: the AI's review banner must not
+   * appear in the middle of the drag, jobedits.ts rule 7).
+   */
+  async function refreshActivity(hold?: () => boolean): Promise<boolean> {
     try {
-      const [a, r] = await Promise.all([api.projectActivity(id), api.reviewStatus(id).catch(() => null)]);
+      const [a, r, rec] = await Promise.all([api.projectActivity(id), api.reviewStatus(id).catch(() => null), api.resultRecalculation(id).catch(() => null)]);
+      if (hold?.()) return false;
       activity = a;
       review = r;
+      recalculation = rec;
     } catch {
       activity = [];
       review = null;
+      recalculation = null;
     }
+    return true;
+  }
+
+  /**
+   * After a save: the editor's own saves write no change-log entry, so a
+   * stored result that changed on disk (Store result, an Undo or Redo
+   * across one) is asked about again. The card then never credits the
+   * user's own result to the recalculation, and an Undo that brings the
+   * engine's result back says so (ERR-802, UI-802).
+   */
+  async function syncRecalculation(taken: number | null) {
+    if (taken === recalcFor) return;
+    recalcFor = taken;
+    const rec = await api.resultRecalculation(id).catch(() => null);
+    if (!destroyed && recalcFor === taken) recalculation = rec;
   }
 
   /** Accepts done in an older version were kept in this browser only. */
@@ -519,6 +554,7 @@
         lastSaved = JSON.stringify(await api.normalizeProject(written));
         // An edit made while this save was running is still unsaved.
         saveState = edits === seq ? "saved" : "dirty";
+        void syncRecalculation((written as Project).result_snapshot?.taken_ms ?? null);
         return true;
       }
     } catch (e) {
@@ -658,9 +694,19 @@
             return null;
           })
         : null;
+      // The user left this job while it was read: nothing of it is shown in
+      // the editor of the next one (audit 2026-11-22 HUNT-801).
+      if (destroyed) return;
       const p = await api.loadProject(id);
+      if (destroyed) return;
       const json = JSON.stringify(p);
-      await refreshActivity();
+      // A drag that began while this was read: read again after it.
+      if (!(await refreshActivity(() => destroyed || (!initial && drag.active)))) {
+        if (!destroyed) drag.defer("reload", reloadAfterDrag);
+        return;
+      }
+      if (destroyed) return;
+      recalcFor = p.result_snapshot?.taken_ms ?? null;
       if (!initial && inFlight) {
         // A save started while reading: this read may be older than it.
         reloadWanted = true;
@@ -698,6 +744,7 @@
       if (!initial) closeStaleDialogs();
       if (initial) {
         await migrateLocalReview();
+        if (destroyed) return;
         history = [snapshot()];
         at = 0;
         historyLen = 1;
@@ -716,6 +763,7 @@
       }
       recalc();
     } catch (e) {
+      if (destroyed) return;
       if (initial || !project) {
         loadError = describeError(e, "load");
         loadErrorCode = toAppError(e).code;
@@ -733,32 +781,32 @@
   let shownEntry = $state<number | null>(null);
 
   /** One neutral notice that opening the job recalculated its stored result, with the way to the old figures. */
-  function noticeRecalculated(summary: string) {
-    const entry = activity.find((a) => a.actor === ENGINE_ACTOR && a.summary === summary);
+  function noticeRecalculated(entry: RefreshedEntry) {
     notify({
       kind: "info",
-      title: refreshedNotice(summary),
-      action: entry
-        ? {
-            label: t("snap.refreshedShow"),
-            run: () => {
-              dock = "ai";
-              shownEntry = entry.ts_ms;
-            },
-          }
-        : undefined,
+      title: refreshedNotice(entry.summary),
+      action: {
+        label: t("snap.refreshedShow"),
+        run: () => {
+          // Not after the job was left: the button would switch the panel of an editor that is gone (HUNT-801).
+          if (destroyed) return;
+          // The panel is opened too: in a narrow window it is closed until asked for (UI-801).
+          dock = "ai";
+          dockOpen = true;
+          shownEntry = entry.entry_ts_ms;
+        },
+      },
     });
   }
 
   /**
-   * The stored result as the engine recalculated it, while that is the
-   * newest change of the stored result (audit UX-702b): the card then says
-   * so and keeps the offer's date.
+   * The stored result as the engine recalculated it (audit UX-702b): the
+   * card then says so and keeps the offer's date. Only while the job's
+   * stored result is that very result, by the core's word and by its
+   * `taken_ms` here, so an edit not saved yet (Store result, Undo) shows
+   * at once.
    */
-  const recalculatedResult = $derived.by(() => {
-    const last = activity.find((a) => a.changes.some((c) => c.field === "result_snapshot"));
-    return last?.actor === ENGINE_ACTOR && last.refreshed ? { at: last.ts_ms, ...last.refreshed } : null;
-  });
+  const recalculatedResult = $derived(recalculation && project?.result_snapshot?.taken_ms === recalculation.taken_ms ? recalculation : null);
 
   let dockEl: HTMLElement | undefined = $state();
   /** A text field in the side panel has the focus. */
@@ -820,7 +868,10 @@
   }
   setLeaveGuard(leaveGuard, () => saveState !== "saved", busy);
 
+  /** The editor was left: answers that come later change nothing (HUNT-801). */
+  let destroyed = false;
   onDestroy(() => {
+    destroyed = true;
     unlisten?.();
     cutDrag();
     releaseLeaveGuard(leaveGuard);
@@ -832,7 +883,38 @@
   const reviewAction = exclusive((run: () => Promise<void>) => run(), (b) => (reviewBusy = b));
   const accept = () => reviewAction(acceptNow);
   /** Reverts the pending AI changes from the banner, or the latest one from the AI tab. */
-  const revert = (all = false) => reviewAction(() => revertNow(all));
+  const revert = (all = false, expectTs?: number) => reviewAction(() => revertNow(all, expectTs));
+  /** Puts the offer's own figures back in place of the engine's recalculation logged at `entryTs` (the AI tab's button on that entry). */
+  const restoreOffer = (entryTs: number) => reviewAction(() => restoreOfferNow(entryTs));
+
+  async function restoreOfferNow(entryTs: number) {
+    // Edits not on disk yet stay: the core changes the stored result of the file only.
+    commitFocused();
+    await tick();
+    if (saveState !== "saved" && !(await save())) return;
+    try {
+      clearTimeout(saveTimer);
+      // A read of the file that runs across this write may be older than it:
+      // it is read again instead of passing for an outside change that puts
+      // the recalculated result back (as for the editor's own saves).
+      saveGen++;
+      const p = await api.restoreOfferResult(id, entryTs).finally(() => saveGen++);
+      await drag.settled();
+      swapOutside(lastSaved ? (JSON.parse(lastSaved) as Project) : null, p, p);
+      lastSaved = JSON.stringify(p);
+      saveState = "saved";
+      // An editor step like any other: Undo brings the recalculated result
+      // back, and the card and the history then say so again (UI-802).
+      pushHistory();
+      recalcFor = p.result_snapshot?.taken_ms ?? null;
+      recalc();
+      await refreshActivity();
+    } catch (e) {
+      // `revert_stale`: the stored result is another one by now; the list is read again.
+      notifyError(e, "revert");
+      await refreshActivity();
+    }
+  }
 
   async function acceptNow() {
     if (!pending) return;
@@ -847,7 +929,7 @@
     await refreshActivity();
   }
 
-  async function revertNow(all: boolean) {
+  async function revertNow(all: boolean, expectTs?: number) {
     // Reverting several AI steps at once is one click next to Accept, and
     // after a reopen it cannot be undone: ask first, naming the steps (UX-011).
     const steps = pendingList.length;
@@ -866,11 +948,15 @@
     try {
       clearTimeout(saveTimer);
       const oldest = pendingList[pendingList.length - 1];
-      const p = all && oldest ? await api.revertChanges(id, oldest.ts_ms) : await api.revertLastChange(id);
+      // The latest change is undone only if it still is the entry the button was drawn on (ERR-801).
+      // As above: a read across this write is read again.
+      saveGen++;
+      const p = await (all && oldest ? api.revertChanges(id, oldest.ts_ms) : api.revertLastChange(id, expectTs)).finally(() => saveGen++);
       await drag.settled();
       swapOutside(lastSaved ? (JSON.parse(lastSaved) as Project) : null, p, p);
       lastSaved = JSON.stringify(p);
       saveState = "saved";
+      recalcFor = p.result_snapshot?.taken_ms ?? null;
       pushHistory();
       closeStaleDialogs();
       selection = null;
@@ -2412,7 +2498,7 @@
   </header>
 
   {#if !loadError}
-  <div class="toolbar" class:tight={toolLevel >= 1} class:compact-minor={toolLevel >= 2 && !prefs.toolLabels} class:compact={compactTools && !prefs.toolLabels} class:labels={prefs.toolLabels} role="toolbar" bind:this={toolbarEl} use:hscroll inert={closed}>
+  <div class="toolbar" class:tight={toolLevel >= 1} class:compact-minor={toolLevel >= 2 && !prefs.toolLabels} class:compact={compactTools && !prefs.toolLabels} class:labels={prefs.toolLabels} role="toolbar" bind:this={toolbarEl} use:hscroll inert={closed || !project} aria-busy={!project}>
     <div class="group">
       <button class="tool" onclick={undo} disabled={at <= 0} title="{t('editor.undo')} ({keys('Ctrl+Z')})"><Icon name="undo" /><span>{t("editor.undo")}</span></button>
       <button class="tool" onclick={redo} disabled={at >= historyLen - 1} title="{t('editor.redo')} ({keys('Ctrl+Shift+Z')})"><Icon name="redo" /><span>{t("editor.redo")}</span></button>
@@ -2632,7 +2718,7 @@
           {:else if dock === "breakdown"}
             <Breakdown {project} {result} bind:data={breakdown} onmark={(mk) => (planMark = mk)} />
           {:else if dock === "ai"}
-            <AiPanel {id} {project} {activity} bind:shown={shownEntry} onrevert={() => revert(false)} busy={reviewBusy} {onconnect} onfocus={(c) => (focusChange = c)} />
+            <AiPanel {id} {project} {activity} recalculation={recalculatedResult} bind:shown={shownEntry} onrevert={(ts) => revert(false, ts)} onrestore={restoreOffer} busy={reviewBusy} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
             <JobPanel {id} {project} current={() => project} onchange={commit} onsave={save} blocked={blockedReason} edits={jobEdits} track={(p) => pendingEdits.track(p)} />
           {/if}
@@ -2650,7 +2736,11 @@
         {#if saveState === "saved" && !editsWaiting}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving" || saveState === "saved"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
       </span>
     </footer>
-  {:else if loadError}
+  {:else if !loadError}
+    <!-- The job is being read (its stored result may be recalculated first): said so, and the tools
+         above wait for it, instead of an empty page with live tools (audit 2026-11-22 ERR-803). -->
+    <div class="loading" role="status" data-testid="editor-loading"><span>{t("editor.loading")}</span></div>
+  {:else}
     <div class="load-error" role="alert">
       <code class="code">{loadErrorCode}</code>
       <h2>{loadError.title}</h2>
@@ -2981,6 +3071,29 @@
   }
   .retry:hover {
     background: var(--surface-2);
+  }
+  /* The job is being read: one quiet line, shown only when the read takes a moment. */
+  .loading {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-2);
+    font-size: 13px;
+  }
+  .loading span {
+    animation: loading-in 0s linear 0.3s both;
+  }
+  @keyframes loading-in {
+    from {
+      visibility: hidden;
+    }
+    to {
+      visibility: visible;
+    }
+  }
+  .toolbar[aria-busy="true"] {
+    opacity: 0.5;
   }
   .load-error {
     flex: 1;

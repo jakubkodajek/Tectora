@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DICTS, i18n } from "./i18n.svelte";
-import { actorLabel, entrySummary, isRevert, liveText, refreshedNotice } from "./live.svelte";
+import { actorLabel, entrySummary, historyText, isRevert, liveText, refreshedNotice } from "./live.svelte";
 
 // The codes the MCP server sends (crates/tectora-core/src/store.rs LIVE_KINDS).
 const KINDS = [
@@ -141,6 +141,123 @@ describe("actorLabel", () => {
       expect(actorLabel("tectora"), locale).not.toBe(you[locale]);
     }
     expect(you.cs).toBe("Vy");
+    i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-22 UX-807: a recalculation that leaves the roof area said
+// "roof area 142.83 -> 142.83 m2", which reads as "nothing changed".
+describe("a recalculation that changed no roof area (UX-807)", () => {
+  const LOCALES = Object.keys(DICTS) as (keyof typeof DICTS)[];
+  const files = import.meta.glob("../../../tests/fixtures/parity/refreshed_more_entries.json", { eager: true, import: "default" }) as Record<string, unknown>;
+  // Written by store::tests::a_recalculation_of_line_lengths_only_names_the_line_codes.
+  const file = Object.values(files)[0] as { from: string; to: string; codes: string; lines_summary: string; restored_summary: string };
+
+  it("names the line codes of a real recalculation the core wrote, in the notice and the entry, in every language", () => {
+    expect(file.lines_summary).toMatch(/^Stored result recalculated .*: line lengths /);
+    for (const locale of LOCALES) {
+      i18n.locale = locale;
+      for (const text of [refreshedNotice(file.lines_summary), entrySummary(file.lines_summary)]) {
+        expect(text, locale).not.toBe(file.lines_summary);
+        expect(text, locale).not.toContain("{");
+        expect(text, locale).not.toContain(" -> ");
+        expect(text, locale).toContain(`${file.from} → ${file.to}`);
+        expect(text, locale).toContain(`: ${file.codes}.`);
+        // No area pair that reads "a → a m²".
+        expect(text, locale).not.toContain(" m²");
+      }
+    }
+    i18n.locale = "en";
+    expect(refreshedNotice("Stored result recalculated (Tectora 0.8.0 -> 0.9.0): line lengths G, K")).toBe(
+      "The offer's stored result was recalculated with the corrected calculation (Tectora 0.8.0 → 0.9.0): the roof area is the same, line lengths changed: G, K.",
+    );
+    i18n.locale = "cs";
+  });
+
+  it("says that other figures changed when neither the area nor a line did", () => {
+    const entry = "Stored result recalculated (Tectora 0.8.0 -> 0.9.0): other figures";
+    for (const locale of LOCALES) {
+      i18n.locale = locale;
+      for (const text of [refreshedNotice(entry), entrySummary(entry)]) {
+        expect(text, locale).not.toBe(entry);
+        expect(text, locale).not.toContain("{");
+        expect(text, locale).toContain("0.8.0 → 0.9.0");
+      }
+    }
+    i18n.locale = "cs";
+  });
+
+  it("translates the entry of the offer's result put back, with an AI's reason too", () => {
+    expect(file.restored_summary).toMatch(/^Offer result restored \(Tectora /);
+    for (const locale of LOCALES) {
+      i18n.locale = locale;
+      const text = entrySummary(file.restored_summary);
+      expect(text, locale).not.toBe(file.restored_summary);
+      expect(text, locale).not.toContain("{");
+      expect(text, locale).toContain(`${file.to} → ${file.from}`);
+    }
+    i18n.locale = "en";
+    expect(entrySummary("Offer result restored (Tectora 0.9.0 -> 0.8.0): roof area 142.83 -> 150.00 m2")).toBe("Offer figures put back (Tectora 0.9.0 → 0.8.0)");
+    expect(entrySummary("Offer result restored (Tectora 0.9.0 -> 0.8.0) (reason: The customer signed these)")).toBe(
+      "Offer figures put back (Tectora 0.9.0 → 0.8.0) (reason: The customer signed these)",
+    );
+    // An AI summary that only starts like it is left as it is.
+    expect(entrySummary("Offer result restored by hand")).toBe("Offer result restored by hand");
+    i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-22 UI-803: the user's revert of Tectora's recalculation was
+// listed as "AI changes reverted".
+describe("historyText (UI-803)", () => {
+  const RECALC = "Stored result recalculated (Tectora 0.8.0 -> 0.9.0): roof area 150.00 -> 142.83 m2";
+  const log = [
+    { ts_ms: 30, actor: "user" },
+    { ts_ms: 20, actor: "claude" },
+    { ts_ms: 10, actor: "tectora" },
+  ];
+
+  it("says 'AI changes reverted' only when the undone entry is an AI's, in every language", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const ai = DICTS[locale]["ai.revertedEntry"];
+      // The user's revert of the AI's entry.
+      expect(historyText({ actor: "user", summary: "Reverted: Notes", undid_from: 20 }, log), locale).toBe(ai);
+      // Of Tectora's recalculation: the sentence itself, no AI in it.
+      const engine = historyText({ actor: "user", summary: `Reverted: ${RECALC}`, undid_from: 10 }, log);
+      expect(engine, locale).not.toBe(ai);
+      expect(engine, locale).toBe(entrySummary(`Reverted: ${RECALC}`));
+      expect(engine, locale).toContain("0.8.0 → 0.9.0");
+      // The undone entry is no longer in the list: told by the sentence.
+      expect(historyText({ actor: "user", summary: `Reverted: ${RECALC}`, undid_from: 5 }, log), locale).not.toBe(ai);
+      expect(historyText({ actor: "user", summary: `Reverted: ${RECALC}` }, log), locale).not.toBe(ai);
+      expect(historyText({ actor: "user", summary: "Reverted: Notes" }, log), locale).toBe(ai);
+      // The user's revert of the user's own logged change is no AI change either.
+      expect(historyText({ actor: "user", summary: "Reverted: Mine", undid_from: 30 }, log), locale).toBe(entrySummary("Reverted: Mine"));
+    }
+    i18n.locale = "cs";
+  });
+
+  it("shows a restore of the offer's figures and an AI's own revert as their sentences", () => {
+    i18n.locale = "en";
+    expect(historyText({ actor: "user", summary: "Offer result restored (Tectora 0.9.0 -> 0.8.0)", restores: 10 }, log)).toBe("Offer figures put back (Tectora 0.9.0 → 0.8.0)");
+    expect(historyText({ actor: "claude", summary: "Reverted: Notes (reason: wrong)", undid_from: 20 }, log)).toBe("Reverted: Notes (reason: wrong)");
+    expect(historyText({ actor: "claude", summary: "Pitch 45" }, log)).toBe("Pitch 45");
+    i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-22 ARCH-802: an engine's entry that came with a bundle is
+// neither this Tectora's nor an AI's.
+describe("actorLabel of a received engine entry (ARCH-802)", () => {
+  it("is named as received, never as Tectora or as the user, in every language", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const label = actorLabel("tectora (received)");
+      expect(label, locale).toBe(DICTS[locale]["ai.receivedEngine"]);
+      expect(label, locale).not.toBe("Tectora");
+      expect(label, locale).not.toBe(actorLabel("user"));
+    }
     i18n.locale = "cs";
   });
 });

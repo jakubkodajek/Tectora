@@ -149,6 +149,8 @@ export interface ProjectSummary {
   notes: string;
   job: JobInfo;
   last_activity: ActivityInfo | null;
+  /** The newest change when an AI client made it, by the core's one rule (store.rs `changed_by_ai`): the library's AI filter, count and badge (UX-806). */
+  changed_by_ai?: ActivityInfo | null;
   modified_ms: number;
   roof_area: number;
   parts: number;
@@ -418,6 +420,30 @@ export interface ActivityItem extends ActivityInfo {
   changes: Change[];
   /** Only on the engine's recalculation of the stored result: the offer's date and engine, and each figure old -> new. */
   refreshed?: ResultRefresh;
+  /** For a revert: the time of the oldest entry it undid. */
+  undid_from?: number;
+  /** For "offer result restored": the time of the engine's entry whose old result it put back. */
+  restores?: number;
+}
+
+/**
+ * The engine's recalculation the job's stored result is (store.rs
+ * `Store::recalculation`): the result card's "recalculated" line and the
+ * history's "put the offer's figures back" show for this alone.
+ */
+export interface Recalculation extends ResultRefresh {
+  /** The engine's change-log entry. */
+  entry_ts_ms: number;
+  /** When it was recalculated. */
+  at: number;
+  /** `taken_ms` of the recalculated result, the one in the job file. */
+  taken_ms: number;
+}
+
+/** What opening a job recalculated (store.rs `RefreshedEntry`): the engine's change-log entry. */
+export interface RefreshedEntry {
+  entry_ts_ms: number;
+  summary: string;
 }
 
 /** What the engine's recalculation of a stored result changed (the app's `refresh_figures`). */
@@ -521,7 +547,9 @@ export interface AppSettingsView {
 export const USER_ACTOR = "user";
 /** Actor of the entries Tectora writes itself (store.rs `ENGINE_ACTOR`): neither the user nor an AI. */
 export const ENGINE_ACTOR = "tectora";
-export const isAi = (actor: string) => actor !== USER_ACTOR && actor !== ENGINE_ACTOR;
+/** What an engine's entry of a received bundle is renamed to (store.rs `RECEIVED_ENGINE_ACTOR`): history of the sender's Tectora, never this engine's. */
+export const RECEIVED_ENGINE_ACTOR = "tectora (received)";
+export const isAi = (actor: string) => actor !== USER_ACTOR && actor !== ENGINE_ACTOR && actor !== RECEIVED_ENGINE_ACTOR;
 
 export function emptyProject(name: string): Project {
   return {

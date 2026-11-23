@@ -55,7 +55,8 @@ programs; Codex in the ChatGPT desktop app can.
 | `place_item` | Put one dormer, chimney, window or opening at distances on its roof face: from the eave (along the slope) and from the left or right side edge, as the editor's position fields and plan dimensions show them |
 | `roof_helper` | Calculation helpers (triangle, two parallels, point in space, merge, hip/valley, build-up, round roof), preview or apply |
 | `update_job`, `store_result` | Job data and status; the stored result for the offer |
-| `get_history`, `get_review`, `revert_to`, `revert_last_change`, `show_project` | History, review state (accepted or still pending in the app, effect on the figures), undo, focus in the app |
+| `get_history`, `get_review`, `revert_to`, `revert_last_change`, `show_project` | History, review state (accepted or still pending in the app, effect on the figures), undo (`revert_last_change` with `ts_ms` undoes only that very change, else `revert_stale`), focus in the app |
+| `restore_offer_result` | Puts an offer's own stored figures back in place of Tectora's recalculation of them, and nothing else (the editor's "Put the offer's figures back") |
 | `duplicate_project`, `delete_project`, `list_examples` | Library; `duplicate_project` with `job` starts a new job from a past roof; `delete_project` moves the job to the library's trash (`.trash`, 30 days) |
 | `list_deleted`, `restore_project` | Deleted jobs and removed files in the trash, and bringing them back |
 | `list_files`, `attach_file`, `remove_file` | Files attached to a job (drawings): regular drawing, photo or document files up to 256 MB; a removed file goes to the trash |
@@ -76,8 +77,10 @@ draft whose figures then differ from its stored result says so in its
 `note` and returns `stored_result.differences`. A stored result an older
 Tectora took is recalculated only when the user opens an offer job in the
 app (`refresh_stored_result`, before `load_project`), with a change-log
-entry by `tectora` the user can revert; `get_project` and the other MCP
-tools only read it. A request line that is
+entry by `tectora`; `get_project` and the other MCP
+tools only read it. The offer's own figures are put back by that entry
+(`Store::restore_offer_result`: the app's button on the entry, MCP
+`restore_offer_result`), see "The recalculation and its way back" below. A request line that is
 not a JSON object, or has no `method`, is answered with JSON-RPC
 `-32600` (invalid request).
 
@@ -142,6 +145,36 @@ stay a `folder_request` the user allows or keeps.
 - A revert's change-log entry starts with the fixed English sentence the app
   translates (`Reverted: <summary>`, `Reverted <n> changes since: <summary>`);
   an AI's reason follows as ` (reason: <reason>)`.
+- A Revert button undoes the entry it is drawn on: the app sends that
+  entry's time (`revert_last_change` with `expectTs`, MCP `ts_ms`) and the
+  store refuses with `revert_stale` when another change is the latest by
+  now (an AI saved between the draw and the press).
+- **The recalculation and its way back.** Whether a job's stored result is
+  the engine's recalculation is one fact in the core,
+  `Store::recalculation(id)` (the app's `result_recalculation`): the file's
+  stored result has an origin record (`.activity/<id>.result.json`, local,
+  never in a bundle) that names the engine's change-log entry, and that
+  entry's saved result is the file's. The result card's "recalculated" line,
+  the history's "Put the offer's figures back" button and `get_history`'s
+  `stored_result_recalculation` come from it alone, wherever the entry is in
+  the log by now and whatever the job's status. So a result the user or an
+  AI stored since shows neither; an editor Undo that brings the engine's
+  result back shows both again; and an entry by `tectora` that came with a
+  bundle (renamed `tectora (received)` on import) shows neither.
+  `Store::restore_offer_result(id, entry_ts_ms, actor)` replaces only
+  `result_snapshot` under the job's lock, refuses with `revert_stale` unless
+  the stored result still is that recalculation, logs
+  `Offer result restored (Tectora <to> -> <from>)…` with `restores:
+  <entry_ts_ms>`, and pins the origin of the result it put back, so no later
+  engine recalculates it. The user's restore entry neither ends nor joins an
+  AI review, and Revert / Revert all of other entries leave it alone.
+- "Changed by AI" is one rule, `store::changed_by_ai`: the newest entry that
+  is neither the engine's nor a restore of the offer's figures is an AI
+  client's. `ProjectSummary.changed_by_ai` carries it for the library's
+  filter, count and badge; `list_projects` `by_ai` reads the same field.
+- Opening a job checks without the job's lock whether a recalculation is
+  due (status, stored result, origin); only a due one takes the lock, waits
+  for it three seconds at most and then opens the job as it is.
 - Saves never overwrite each other. The app saves with
   `save_project_checked` (`Store::save_checked`): only if the file still
   holds the version the editor last read or wrote, otherwise it gets the

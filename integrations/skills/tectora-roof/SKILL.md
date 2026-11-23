@@ -68,7 +68,11 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    0.1 m, a dormer below the roof or flatter than 2°, a `roof_helper`
    result no wall takes. Fix the value (often m against cm or mm) and call
    again. When a write answers with `stored_result`, the job's offer
-   figures no longer match the roof: tell the user. When it answers with
+   figures no longer match the roof: tell the user. When the user wants
+   the figures the customer was offered back after Tectora recalculated
+   an offer's stored result (the entry by `tectora` that `get_history`
+   marks `stored_result_recalculation`), call `restore_offer_result` with
+   a one-sentence `summary`: it changes the stored result only. When it answers with
    `warnings` (the roof looks wrong) or `roof_trouble` (for example
    `walls_overlap`: a point list that goes round twice), fix it first.
    A job `calc` refuses as "too complex to calculate" (buildings stacked

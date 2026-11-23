@@ -223,6 +223,17 @@ and `revert_refuses_when_the_user_changed_the_same_value`.
   "recalculated <date> (Tectora a -> b)" with the offer's own date; the
   entry's button puts the offer's figures back for good
   (`app/e2e/audit-r8-ed.e2e.ts`, UX-702a-d).
+- That recalculated offer, later (`app/e2e/audit-r9-recalc.e2e.ts`, round 9
+  Design A): an AI save lands just before the press on "put the offer's
+  figures back" (only the stored result changes, the AI's change stays;
+  Revert on a stale entry answers `revert_stale`); the user stores a new
+  result (no "recalculated" line, no button, also after a reopen); Undo
+  across the put-back (line and button return); an AI save and its revert
+  (the button stays; an opened entry stays open); an "engine" entry the
+  library did not write itself (no line, no button); the job is left while
+  it is read (no notice in the next editor); the notice's button at 800x600;
+  line lengths changed and the area did not (the notice names the codes);
+  the library after the open (still "changed by AI", the panel names Tectora).
 
 ## 7. Window size and language (@ui)
 

@@ -6,17 +6,19 @@
   import { describeChange, describeFigure } from "./changes";
   import { relativeTime } from "./format";
   import { t } from "./i18n.svelte";
-  import { actorName, entrySummary, isFresh, isRevert, live, liveText } from "./live.svelte";
+  import { actorLabel, actorName, historyText, isFresh, isRevert, live, liveText } from "./live.svelte";
   import { app as appSettings } from "./settings.svelte";
   import { changeRows, changeState, rowLabel } from "./settingschange";
-  import type { ActivityItem, Change, Project } from "./types";
-  import { ENGINE_ACTOR, isAi } from "./types";
+  import type { ActivityItem, Change, Project, Recalculation } from "./types";
+  import { ENGINE_ACTOR, USER_ACTOR, isAi } from "./types";
 
   let {
     id,
     project,
     activity,
+    recalculation = null,
     onrevert,
+    onrestore,
     onconnect,
     onfocus,
     busy = false,
@@ -25,7 +27,16 @@
     id: string;
     project: Project;
     activity: ActivityItem[];
-    onrevert: () => void;
+    /** The engine's recalculation the job's stored result still is (core `Store::recalculation`), if any. */
+    recalculation?: Recalculation | null;
+    /**
+     * Reverts the latest change, the entry at `ts` (the one the button is
+     * drawn on). Without `ts` for an AI's own revert entry: the core steps
+     * over reverts to the change before them, as it always did.
+     */
+    onrevert: (ts?: number) => void;
+    /** Puts the offer's own figures back in place of the recalculation logged at `ts`. */
+    onrestore: (ts: number) => void;
     onconnect: () => void;
     onfocus: (c: Change | null) => void;
     /** A revert or accept is running: the button waits for it. */
@@ -34,14 +45,30 @@
     shown?: number | null;
   } = $props();
 
-  let open = $state<Record<number, boolean>>({});
+  /**
+   * Which entries show their changes, by entry (UI-804): keyed by position,
+   * an opened entry folded and its neighbour unfolded when an AI saved.
+   */
+  let open = $state<Record<string, boolean>>({});
+  /**
+   * An entry's key: its time, and for entries that share a millisecond
+   * (two writers, a clock step, ERRU-009) how many older ones do. Stable
+   * when new entries arrive on top.
+   */
+  const keys = $derived(activity.map((a, i) => `${a.ts_ms}:${activity.slice(i + 1).filter((b) => b.ts_ms === a.ts_ms).length}`));
+  /**
+   * The entry "Revert" undoes, the newest one a revert would take
+   * (store.rs `latest_undone` steps over the user's "offer figures put
+   * back"): the button is drawn on it and names it to the core (ERR-801).
+   */
+  const latest = $derived(activity.findIndex((a) => !(a.restores != null && a.actor === USER_ACTOR)));
   let list: HTMLOListElement | undefined = $state();
   $effect(() => {
     if (shown == null) return;
     const i = activity.findIndex((a) => a.ts_ms === shown);
     shown = null;
     if (i < 0) return;
-    open[i] = true;
+    open[keys[i]] = true;
     tick().then(() => list?.children[i]?.scrollIntoView({ block: "nearest" }));
   });
   /** What the "show changes" list holds: for the engine's recalculation each figure old -> new (UX-702a). */
@@ -75,22 +102,22 @@
     <p class="empty">{t("ai.noHistory")}</p>
   {/if}
   <ol bind:this={list}>
-    <!-- Two entries can share a millisecond (two writers, a clock step): the
-         index keeps the key unique (ERRU-009). -->
-    {#each activity as a, i (`${a.ts_ms}:${i}`)}
+    {#each activity as a, i (keys[i])}
       {@const ai = isAi(a.actor)}
       {@const figures = rows(a)}
-      <li class:ai>
+      {@const k = keys[i]}
+      <li class:ai data-testid="history-entry">
         <div class="head">
-          <span class="who" class:ai><Icon name={ai ? "sparkle" : "cursor"} size={13} />{ai ? actorName(a.actor) : a.actor === ENGINE_ACTOR ? "Tectora" : t("ai.you")}</span>
+          <!-- Tectora's own entry is neither the user's (cursor) nor an AI's (sparkle). -->
+          <span class="who" class:ai><Icon name={ai ? "sparkle" : a.actor === USER_ACTOR ? "cursor" : "refresh"} size={13} />{actorLabel(a.actor)}</span>
           <time>{relativeTime(a.ts_ms)}</time>
         </div>
-        <p class="summary">{!ai && isRevert(a.summary) ? t("ai.revertedEntry") : entrySummary(a.summary)}</p>
+        <p class="summary">{historyText(a, activity)}</p>
         {#if figures}
-          <button class="link" aria-expanded={!!open[i]} onclick={() => (open[i] = !open[i])}>
-            {open[i] ? t("ai.hideChanges") : t("ai.showChanges", { n: figures.length })}
+          <button class="link" aria-expanded={!!open[k]} onclick={() => (open[k] = !open[k])}>
+            {open[k] ? t("ai.hideChanges") : t("ai.showChanges", { n: figures.length })}
           </button>
-          {#if open[i]}
+          {#if open[k]}
             <ul data-testid="refreshed-figures">
               {#each figures as d (d.key)}
                 <li>{describeFigure(d, project)}</li>
@@ -98,10 +125,10 @@
             </ul>
           {/if}
         {:else if a.changes.length}
-          <button class="link" onclick={() => (open[i] = !open[i])}>
-            {open[i] ? t("ai.hideChanges") : t("ai.showChanges", { n: a.changes.length })}
+          <button class="link" onclick={() => (open[k] = !open[k])}>
+            {open[k] ? t("ai.hideChanges") : t("ai.showChanges", { n: a.changes.length })}
           </button>
-          {#if open[i]}
+          {#if open[k]}
             <ul>
               {#each a.changes as c}
                 <li onpointerenter={() => onfocus(c)} onpointerleave={() => onfocus(null)}>
@@ -111,11 +138,13 @@
             </ul>
           {/if}
         {/if}
-        {#if i === 0 && ai}
-          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && onrevert()}><Icon name="undo" size={14} />{t("ai.revert")}</button>
-        {:else if i === 0 && a.actor === ENGINE_ACTOR && a.refreshed}
-          <!-- The offer's own figures back (owner decision 2026-11-22, UX-702d): the same revert of the newest entry. -->
-          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && onrevert()}><Icon name="undo" size={14} />{t("snap.revertRefresh")}</button>
+        {#if i === latest && ai}
+          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && onrevert(isRevert(a.summary) ? undefined : a.ts_ms)}><Icon name="undo" size={14} />{t("ai.revert")}</button>
+        {:else if a.actor === ENGINE_ACTOR && recalculation?.entry_ts_ms === a.ts_ms}
+          <!-- The offer's own figures back (owner decision 2026-11-22, UX-702d), on the recalculation the
+               stored result still is, wherever it is in the history by now (UX-802): by this entry, and
+               only the stored result (ERR-801). -->
+          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && onrestore(a.ts_ms)}><Icon name="undo" size={14} />{t("snap.revertRefresh")}</button>
         {/if}
       </li>
     {/each}

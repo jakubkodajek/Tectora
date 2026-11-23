@@ -341,7 +341,37 @@ pub fn change_in_figures(before: Option<&Project>, after: &Project) -> Option<Ve
 /// How the change-log entry of [`refreshed`] begins; the app reads it to
 /// show the sentence in the user's language. The entry reads
 /// `Stored result recalculated (Tectora <from> -> <to>): roof area <a> -> <b> m2`.
+/// When the roof area is the same it names what else changed instead
+/// ([`refreshed_what`]): `line lengths G, K` or `other figures`.
 pub const REFRESHED_PREFIX: &str = "Stored result recalculated";
+
+/// How many line codes the summary of a recalculation names.
+const REFRESHED_CODES: usize = 8;
+
+/// What a recalculation changed, for its change-log summary, from the
+/// `differences` themselves (audit 2026-11-22 UX-807: "roof area 142.83 ->
+/// 142.83 m2" read as "nothing changed" while the hips changed by 2 m):
+/// the roof area when it differs, else the codes of the lines whose
+/// lengths differ, else "other figures" (the ridge height, the areas by
+/// material). The app reads all three (`live.svelte.ts`).
+fn refreshed_what(differences: &[Difference]) -> String {
+    if let Some(area) = differences.iter().find(|d| d.key == "roof_area") {
+        return format!("roof area {:.2} -> {:.2} m2", area.stored, area.current);
+    }
+    let codes: Vec<&str> = differences
+        .iter()
+        .filter_map(|d| d.key.strip_prefix("line:"))
+        // A code is a word of a DACAD line table; one from a file that is
+        // none would break the sentence.
+        .filter(|c| !c.is_empty() && c.len() <= 8 && c.chars().all(|c| c.is_ascii_alphanumeric()))
+        .take(REFRESHED_CODES)
+        .collect();
+    if codes.is_empty() {
+        "other figures".into()
+    } else {
+        format!("line lengths {}", codes.join(", "))
+    }
+}
 
 /// `a.b.c` as numbers, for comparing engine versions.
 fn version(v: &str) -> Option<(u64, u64, u64)> {
@@ -392,12 +422,15 @@ pub fn refreshed(project: &Project) -> Option<(Project, String)> {
         return None;
     }
     let current = take_checked(project).ok()?;
-    if compare(stored, &current).is_empty() {
+    let differences = compare(stored, &current);
+    if differences.is_empty() {
         return None;
     }
     let summary = format!(
-        "{REFRESHED_PREFIX} (Tectora {} -> {}): roof area {:.2} -> {:.2} m2",
-        stored.engine_version, ENGINE_VERSION, stored.roof_area, current.roof_area
+        "{REFRESHED_PREFIX} (Tectora {} -> {}): {}",
+        stored.engine_version,
+        ENGINE_VERSION,
+        refreshed_what(&differences)
     );
     let mut p = project.clone();
     p.result_snapshot = Some(current);
@@ -434,6 +467,56 @@ mod tests {
     use super::*;
     use crate::examples;
     use crate::model::JobStatus;
+
+    /// Audit 2026-11-22 UX-807: the summary of a recalculation says what
+    /// changed, from the differences: the area when it differs, else the
+    /// line codes, else "other figures".
+    #[test]
+    fn the_recalculation_summary_names_what_changed() {
+        let d = |key: &str, stored: f64, current: f64| Difference {
+            key: key.into(),
+            stored,
+            current,
+        };
+        assert_eq!(
+            refreshed_what(&[d("roof_area", 150.0, 142.834), d("line:G", 30.41, 28.41)]),
+            "roof area 150.00 -> 142.83 m2"
+        );
+        assert_eq!(
+            refreshed_what(&[d("line:G", 30.41, 28.41), d("line:K", 1.0, 2.0)]),
+            "line lengths G, K"
+        );
+        assert_eq!(
+            refreshed_what(&[d("ridge_height", 4.0, 4.2)]),
+            "other figures"
+        );
+        assert_eq!(
+            refreshed_what(&[d("material:2", 4.0, 4.2)]),
+            "other figures"
+        );
+        // A code that is no word of a line table never breaks the sentence.
+        assert_eq!(
+            refreshed_what(&[d("line:a, b): x", 1.0, 2.0), d("line:WV", 1.0, 2.0)]),
+            "line lengths WV"
+        );
+        let many: Vec<Difference> = (0..20)
+            .map(|i| d(&format!("line:L{i}"), 1.0, 2.0))
+            .collect();
+        assert_eq!(refreshed_what(&many).split(", ").count(), REFRESHED_CODES);
+
+        // Through `refreshed`: the same area, one line 2 m longer before.
+        let mut p = examples::find("gable").unwrap().project();
+        let mut s = take(&p);
+        s.engine_version = "0.0.1".into();
+        let code = s.lines_by_code.keys().next().unwrap().clone();
+        *s.lines_by_code.get_mut(&code).unwrap() += 2.0;
+        p.result_snapshot = Some(s);
+        let (_, summary) = refreshed(&p).expect("recalculated");
+        assert_eq!(
+            summary,
+            format!("{REFRESHED_PREFIX} (Tectora 0.0.1 -> {ENGINE_VERSION}): line lengths {code}")
+        );
+    }
 
     /// Audit 2026-11-22 HUNT-405, ARCH-403 item 1: the result of a roof
     /// the core calculates but a stored result may not hold (a face of

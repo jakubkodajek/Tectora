@@ -90,7 +90,34 @@ pub fn is_too_complex(payload: &(dyn std::any::Any + Send)) -> bool {
 /// another bounded calculation it shares that one's steps and lets the
 /// outer one answer.
 pub fn bounded<T>(f: impl FnOnce() -> T) -> Result<T, TooComplex> {
+    #[cfg(test)]
+    if let Some(limit) = TEST_LIMIT.with(|l| l.get()) {
+        return bounded_by(limit, f).0;
+    }
     bounded_by(limit(), f).0
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The limit [`bounded`] uses on this thread instead of [`limit`]
+    /// ([`with_limit`]).
+    static TEST_LIMIT: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+/// Runs `f` with every [`bounded`] calculation it starts on this thread
+/// held to `limit` steps, so a test sees what an entry point does with a
+/// roof over its bound (audit 2026-11-22 TEST-801).
+#[cfg(test)]
+pub(crate) fn with_limit<T>(limit: u64, f: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_LIMIT.with(|l| l.set(None));
+        }
+    }
+    TEST_LIMIT.with(|l| l.set(Some(limit)));
+    let _reset = Reset;
+    f()
 }
 
 /// [`bounded`] with its own limit, and the steps used (tests, calibration).

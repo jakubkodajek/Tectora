@@ -174,22 +174,6 @@ fn calc_command(cmd: &str, a: &Value) -> Option<Result<Value, Value>> {
     })
 }
 
-/// What the engine's recalculation of a stored result changed, as the
-/// app's `project_activity` gives it (`refresh_figures` in lib.rs).
-fn refresh_figures(e: &tectora_core::store::ActivityEntry) -> Option<Value> {
-    if e.actor != tectora_core::store::ENGINE_ACTOR {
-        return None;
-    }
-    let old = e.before.as_ref()?.result_snapshot.as_ref()?;
-    let new = e.after.as_ref()?.result_snapshot.as_ref()?;
-    Some(json!({
-        "offer_ms": old.taken_ms,
-        "from": old.engine_version,
-        "to": new.engine_version,
-        "differences": tectora_core::snapshot::compare(old, new),
-    }))
-}
-
 /// Loading and saving a job, with the library's own error (see `serve`).
 fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fail>> {
     let id = arg::<String>(a, "id").ok()?;
@@ -206,10 +190,11 @@ fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fa
             .load_warnings(&id)
             .map(|ws| to_json(ws).unwrap_or(Value::Null))
             .unwrap_or_else(|_| json!([])))),
-        // As the app: the change log's summary when the stored result was
-        // recalculated, else null; an error is logged, the job still opens.
-        "refresh_stored_result" => Some(Ok(match store.refresh_result(&id) {
-            Ok(summary) => to_json(summary).unwrap_or(Value::Null),
+        // As the app: the change-log entry (time and summary) when the
+        // stored result was recalculated, else null; an error is logged,
+        // the job still opens.
+        "refresh_stored_result" => Some(Ok(match store.refresh_entry(&id) {
+            Ok(entry) => to_json(entry).unwrap_or(Value::Null),
             Err(e) => {
                 eprintln!("ui_bridge: stored result of {id} not recalculated: {e}");
                 Value::Null
@@ -243,12 +228,27 @@ fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fa
             )
         }
         // Reverts with their codes too (`revert_conflict`, ERR-001).
-        "revert_last_change" => Some(
-            store
-                .revert_last(&id, USER_ACTOR, None)
-                .map(|p| to_json(p).unwrap_or(Value::Null))
-                .map_err(Fail::from),
-        ),
+        // `expectTs`: the entry the button was drawn on (`revert_stale`
+        // when another change is the latest by now, ERR-801).
+        "revert_last_change" => {
+            let expect = arg::<Option<u64>>(a, "expectTs").ok()?;
+            Some(
+                store
+                    .revert_last_expecting(&id, USER_ACTOR, None, expect)
+                    .map(|p| to_json(p).unwrap_or(Value::Null))
+                    .map_err(Fail::from),
+            )
+        }
+        // The offer's own stored result back, by the engine's entry.
+        "restore_offer_result" => {
+            let ts = arg::<u64>(a, "entryTsMs").ok()?;
+            Some(
+                store
+                    .restore_offer_result(&id, ts, USER_ACTOR, None)
+                    .map(|p| to_json(p).unwrap_or(Value::Null))
+                    .map_err(Fail::from),
+            )
+        }
         "revert_changes" => {
             let ts = arg::<u64>(a, "tsMs").ok()?;
             Some(
@@ -285,21 +285,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             |version| json!({ "version": version, "notes": "- Preview release notes" }),
         )),
         "update_install" => Err("updates are not installed in the preview".into()),
-        "project_activity" => {
-            let mut items: Vec<Value> = store
-                .history(&id()?)
-                .into_iter()
-                .map(|e| {
-                    let mut item = json!({ "ts_ms": e.ts_ms, "actor": e.actor, "summary": e.summary, "changes": e.changes });
-                    if let Some(r) = refresh_figures(&e) {
-                        item["refreshed"] = r;
-                    }
-                    item
-                })
-                .collect();
-            items.reverse();
-            Ok(Value::Array(items))
-        }
+        "project_activity" => to_json(store.activity_items(&id()?)),
+        "result_recalculation" => to_json(store.recalculation(&id()?)),
         "review_status" => to_json(store.review_status(&id()?)?),
         "accept_changes" => to_json(store.mark_reviewed(&id()?, arg(a, "tsMs")?)?),
         "live_status" => to_json(store.live()),
