@@ -19,7 +19,8 @@ test.afterEach(async ({ page }, info) => {
   const dir = process.env.TECTORA_SHOTS;
   if (!dir) return;
   const id = info.title.match(/(HUNT|UX|TEST|ARCH|ERR)-\d+/)?.[0] ?? "r10";
-  await page.screenshot({ path: `${dir}r10-${id}-${process.env.TECTORA_SHOTS_TAG ?? "after"}.png`, timeout: 10_000 }).catch(() => {});
+  const n = info.title.replace(/[^a-z0-9]+/gi, "-").slice(0, 32);
+  await page.screenshot({ path: `${dir}r10-${id}-${n}-${process.env.TECTORA_SHOTS_TAG ?? "after"}.png`, timeout: 10_000 }).catch(() => {});
 });
 
 const dockTab = (page: Page, key: string) => page.locator("aside .tabs").getByRole("tab", { name: cs(key) });
@@ -76,6 +77,7 @@ test.describe("round 10: the offer's stored result", () => {
     await expect(putBack(page)).toHaveCount(0);
     await dockTab(page, "dock.results").click();
     await expect(page.getByTestId("snap-offer")).toHaveText(cs("snap.offerStored", { date: new Date(OFFER_MS).toLocaleDateString("cs-CZ") }));
+    if (process.env.TECTORA_SHOTS) await page.screenshot({ path: `${process.env.TECTORA_SHOTS}r10-HUNT-902-card-put-back-${process.env.TECTORA_SHOTS_TAG ?? "after"}.png` });
     await page.getByTestId("snap-restore").click();
     const back = await waitForProject(id, (q) => q.result_snapshot?.engine_version === "0.8.0");
     expect(back.result_snapshot.roof_area).toBe(150);
@@ -103,6 +105,8 @@ test.describe("round 10: the offer's stored result", () => {
     const card = page.getByTestId("snap-none");
     await expect(card).toContainText(cs("snap.none"));
     await expect(page.getByRole("heading", { name: cs("snap.title") })).toBeVisible();
+    const shots = process.env.TECTORA_SHOTS;
+    if (shots) await page.screenshot({ path: `${shots}r10-UX-902-none-stored-card-${process.env.TECTORA_SHOTS_TAG ?? "after"}.png` });
     await card.getByRole("button", { name: cs("snap.store") }).click();
     const stored = await waitForProject(id, (q) => !!q.result_snapshot);
     expect(stored.job.status).toBe("ordered");

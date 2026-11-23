@@ -473,6 +473,13 @@
   }
   .btn.sm {
     align-self: flex-start;
+    /* A long label (de "put the offer's figures back") wraps inside the
+       button instead of leaving it (the UI-901 class). */
+    height: auto;
+    min-height: 30px;
+    padding: 4px 12px;
+    white-space: normal;
+    text-align: left;
   }
   .note {
     margin: 0;
