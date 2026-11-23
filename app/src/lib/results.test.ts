@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DICTS, i18n } from "./i18n.svelte";
-import { areaRows, failedParts, joinedWith, roofState, warningText } from "./results";
+import { areaRows, failedParts, hasRoofWarning, joinedWith, offRoofWarning, roofState, warningText } from "./results";
 import type { CalcResult, RoofWarning } from "./types";
 
 const part = (name: string, joined_with?: number[]) => ({
@@ -241,5 +241,28 @@ describe("texts fixed in the round-4 wording group (UX-302)", () => {
   });
   it("the figure of a recalculation on its way is --text-2 on the hero (UI-305)", () => {
     expect(sources["./Results.svelte"]).toMatch(/\.results\.pending \.hero strong \{\s*color: var\(--text-2\);/);
+  });
+});
+
+describe("an object placed on no roof face (audit 2026-11-23 UX-1401)", () => {
+  const warned = (...warnings: RoofWarning[][]) =>
+    ({ parts: warnings.map((w, i) => ({ ...part(`P${i}`), geometry: { ...part(`P${i}`).geometry, warnings: w } })) }) as unknown as CalcResult;
+  it("finds the core's off-roof warning of the placed item in any building, nothing else", () => {
+    const r = warned([{ kind: "chimney_off_roof", value: 0, item: 0 }], [{ kind: "window_off_roof", value: 0, item: 2 }]);
+    expect(offRoofWarning(r, "window", 2)?.kind).toBe("window_off_roof");
+    expect(offRoofWarning(r, "window", 1)).toBeNull();
+    expect(offRoofWarning(r, "chimney", 0)?.kind).toBe("chimney_off_roof");
+    expect(offRoofWarning(r, "opening", 0)).toBeNull();
+    expect(offRoofWarning(warned([{ kind: "opening_off_roof", value: 0, item: 3 }]), "opening", 3)?.item).toBe(3);
+    expect(offRoofWarning(null, "window", 0)).toBeNull();
+  });
+  it("marks the Results tab for a warning, not for a notice of the core", () => {
+    expect(hasRoofWarning(warned([{ kind: "window_off_roof", value: 0, item: 0 }]))).toBe(true);
+    expect(hasRoofWarning(warned([], [{ kind: "overlapping_faces", value: 1 }]))).toBe(true);
+    for (const kind of ["plane_over_wall", "merged_planes", "wing_joined", "far_from_origin"] as const) {
+      expect(hasRoofWarning(warned([{ kind, value: 1 }])), kind).toBe(false);
+    }
+    expect(hasRoofWarning(warned([]))).toBe(false);
+    expect(hasRoofWarning(null)).toBe(false);
   });
 });

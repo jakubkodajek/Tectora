@@ -50,7 +50,7 @@
   import { merge3, sameJob } from "./merge";
   import { keepMissedNotice, takeMissedNotice } from "./missed";
   import { JobEdits, heldName, notMade, type Hold, type ListName, type Outcome } from "./jobedits";
-  import { roofState } from "./results";
+  import { hasRoofWarning, offRoofWarning, roofState, warningText } from "./results";
   import { isTyping, releaseLeaveGuard, setLeaveGuard } from "./leave";
   import { PendingEdits, exclusive } from "./inflight";
   import { CoreAction, DragSession, closedForInput, dropForeign, inertBut, refuseInput, type Drag, type DragState } from "./dragsession";
@@ -82,6 +82,8 @@
 
   let project = $state<Project | null>(null);
   let result = $state<CalcResult | null>(null);
+  /** The result holds a warning that is not a notice: the Results tab carries the mark (UX-1401). */
+  const roofWarned = $derived(hasRoofWarning(result));
   /** Why the last calculation of the whole job failed, for Results to keep saying it (UX-101). */
   let calcFailure = $state<Described | null>(null);
   let selection = $state<Selection>(null);
@@ -410,6 +412,16 @@
   /** How long a calculation runs before it is marked as pending, ms [no source: editor choice]. */
   const PENDING_MS = 250;
 
+  /**
+   * The window, chimney or roof opening just placed, and the calculation
+   * before it: the first result after it says at once when the core finds
+   * it on no roof face (audit 2026-11-23 UX-1401; kept, as MCP keeps it).
+   */
+  let placed: { kind: "window" | "chimney" | "opening"; index: number; after: number } | null = null;
+  function placedOn(kind: "window" | "chimney" | "opening", index: number) {
+    placed = { kind, index, after: calcSeq };
+  }
+
   async function recalc() {
     if (!project) return;
     const seq = ++calcSeq;
@@ -418,6 +430,11 @@
     try {
       const r = await api.calc($state.snapshot(project) as Project);
       if (seq === calcSeq) (result = r), (calcFailure = null);
+      if (seq === calcSeq && placed && seq > placed.after) {
+        const off = offRoofWarning(r, placed.kind, placed.index);
+        placed = null;
+        if (off) ownToasts.add(notify({ kind: "warning", code: off.kind, title: t("res.warn.title"), message: warningText(off) }));
+      }
     } catch (e) {
       if (seq === calcSeq) (result = null), (calcFailure = describeError(e, "calc"));
       notifyError(e, "calc");
@@ -1881,6 +1898,7 @@
     project.roof_openings ??= [];
     project.roof_openings.push(hole);
     selectOpening({ kind: "hole", index: project.roof_openings.length - 1 });
+    placedOn("opening", project.roof_openings.length - 1);
     commit();
   }
 
@@ -1903,6 +1921,7 @@
     if (!project) return;
     project.chimneys.push(chimney);
     selectOpening({ kind: "chimney", index: project.chimneys.length - 1 });
+    placedOn("chimney", project.chimneys.length - 1);
     commit();
   }
 
@@ -1914,6 +1933,7 @@
     // 0.78 x 1.18 m, a common skylight size [no source: common size].
     project.windows.push({ x, y, width: 0.78, height: 1.18 });
     selectOpening({ kind: "window", index: project.windows.length - 1 });
+    placedOn("window", project.windows.length - 1);
     commit();
   }
 
@@ -3020,7 +3040,7 @@
 
       <aside class:open={dockOpen} inert={dragState !== "idle"} use:refuseInput={{ on: reviewOut }}>
         <div class="tabs" role="tablist" use:tablist use:fitlabels>
-          <button role="tab" id={dockIds.tab("results")} aria-controls={dockIds.panel} aria-selected={dock === "results"} class:on={dock === "results"} onclick={() => showDock("results")} title={t("dock.results")}><Icon name="chart" size={15} /><span class="tab-label">{t("dock.results")}</span></button>
+          <button role="tab" id={dockIds.tab("results")} aria-controls={dockIds.panel} aria-selected={dock === "results"} class:on={dock === "results"} onclick={() => showDock("results")} title={t("dock.results")} aria-label={roofWarned ? t("dock.resultsWarned") : undefined}><Icon name="chart" size={15} /><span class="tab-label">{t("dock.results")}</span>{#if roofWarned}<i class="badge warned" data-testid="results-warned"></i>{/if}</button>
           <button role="tab" id={dockIds.tab("breakdown")} aria-controls={dockIds.panel} aria-selected={dock === "breakdown"} class:on={dock === "breakdown"} onclick={() => showDock("breakdown")} title={t("bd.title")}><Icon name="sigma" size={15} /><span class="tab-label">{t("dock.breakdown")}</span></button>
           <button role="tab" id={dockIds.tab("ai")} aria-controls={dockIds.panel} aria-selected={dock === "ai"} class:on={dock === "ai"} onclick={() => showDock("ai")} title={t("dock.ai")}>
             <Icon name="sparkle" size={15} /><span class="tab-label">{t("dock.ai")}</span>{#if pending}<i class="badge"></i>{/if}
@@ -3643,6 +3663,10 @@
     height: 8px;
     border-radius: 50%;
     background: var(--ai);
+  }
+  /* A warning in the result: the square of the warning mark (Toasts, Results), not the AI's dot. */
+  .badge.warned {
+    border-radius: 1px;
   }
   .dock {
     flex: 1;

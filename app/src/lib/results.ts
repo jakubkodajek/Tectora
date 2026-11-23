@@ -43,6 +43,32 @@ export function warningText(w: RoofWarning): string {
   }
 }
 
+/**
+ * The core's notices: a hint about the input or what Tectora did beyond the
+ * standard calculation, not a sign that the roof is wrong (core
+ * `WarningKind::is_notice`).
+ */
+const NOTICES = new Set<RoofWarning["kind"]>(["plane_over_wall", "merged_planes", "wing_joined", "far_from_origin"]);
+
+/** Whether the calculation holds a warning that is not a notice: the Results tab is marked (UX-1401). */
+export function hasRoofWarning(result: CalcResult | null): boolean {
+  return (result?.parts ?? []).some((p) => (p.geometry.warnings ?? []).some((w) => !NOTICES.has(w.kind)));
+}
+
+/**
+ * The core's warning that window, chimney or roof opening `index` lies on
+ * no roof face (`check::off_roof`), or null. Nothing is guessed from the
+ * plan here: the test is the core's (UX-1401).
+ */
+export function offRoofWarning(result: CalcResult | null, kind: "window" | "chimney" | "opening", index: number): RoofWarning | null {
+  const want = `${kind}_off_roof`;
+  for (const p of result?.parts ?? []) {
+    const w = (p.geometry.warnings ?? []).find((w) => w.kind === want && w.item === index);
+    if (w) return w;
+  }
+  return null;
+}
+
 /** One row of the Results area list: a part, or a face added by hand. */
 export interface AreaRow {
   name: string;

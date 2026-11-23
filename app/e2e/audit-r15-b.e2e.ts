@@ -5,12 +5,14 @@
 //           writes nothing
 // ERR-1403  two jobs of one name deleted: two toasts, each Restore brings its
 //           own job back
+// UX-1401   a window or chimney placed on no roof face: a warning at once and
+//           the Results tab's mark, from the core's warning
 import fs from "node:fs";
 import path from "node:path";
-import { bar, openEditor, selectWall, setField } from "./editor";
+import { bar, clickPlan, openEditor, selectWall, setField, tool } from "./editor";
 import { LIBRARY_DIR } from "./env";
-import { bridge, createExample, expect, listProjects, noToast, test } from "./fixtures";
-import { cs } from "./i18n";
+import { bridge, createExample, expect, listProjects, noToast, test, waitForProject } from "./fixtures";
+import { cs, tr } from "./i18n";
 
 // TECTORA_SHOTS=<folder>/ saves a screenshot after each test (fix evidence).
 test.afterEach(async ({ page }, info) => {
@@ -88,5 +90,41 @@ test.describe("round 15, part B", () => {
     for (let k = 0; k < 2; k++) await deleted.first().getByRole("button", { name: cs("home.restore") }).click();
     await expect.poll(async () => (await listProjects()).map((p) => p.id).sort()).toEqual([a, b].sort());
     await expect.poll(async () => (await bridge<unknown[]>("list_deleted")).length).toBe(0);
+  });
+
+  test("a roof window placed below the building is said at once and marks the Results tab, in de at 600 x 420 (UX-1401)", async ({ app, page }) => {
+    const id = await createExample("hip", "R15 mimo");
+    await app.open({ locale: "de" });
+    await app.openJob("R15 mimo");
+    const de = (key: string, vars?: Record<string, string | number>) => tr("de", key, vars);
+    const winTool = page.getByRole("toolbar").first().getByRole("button", { name: de("tool.window"), exact: true });
+    const mark = page.getByRole("tab", { name: de("dock.resultsWarned") });
+    // On a face: neither the warning nor the mark.
+    await winTool.click();
+    await clickPlan(page, 3, 1.5);
+    await waitForProject(id, (p) => p.windows?.length === 1);
+    await noToast(app.toasts().filter({ hasText: de("res.warn.title") }));
+    await expect(page.getByTestId("results-warned")).toHaveCount(0);
+    // Below the building: kept, as MCP keeps it, and said at once.
+    await winTool.click();
+    await clickPlan(page, 6, -5);
+    await waitForProject(id, (p) => p.windows?.length === 2);
+    const warned = app.toasts().filter({ hasText: de("res.warn.window_off_roof", { n: 2 }) });
+    await expect(warned).toHaveCount(1);
+    await expect(warned).toContainText(de("res.warn.title"));
+    await expect(mark).toHaveCount(1);
+    await page.setViewportSize({ width: 600, height: 420 });
+    await expect(page.getByTestId("results-warned")).toBeVisible();
+    await expect(mark).toBeVisible();
+  });
+
+  test("a chimney placed beside the building is said at once (UX-1401)", async ({ app, page }) => {
+    const id = await createExample("hip", "R15 komín");
+    await openEditor(app, "R15 komín");
+    await tool(page, "tool.chimney").click();
+    await clickPlan(page, 6, -4);
+    await waitForProject(id, (p) => p.chimneys?.length === 1);
+    await expect(app.toasts().filter({ hasText: cs("res.warn.chimney_off_roof", { n: 1 }) })).toHaveCount(1);
+    await expect(page.getByTestId("results-warned")).toHaveCount(1);
   });
 });
