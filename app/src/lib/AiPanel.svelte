@@ -30,12 +30,8 @@
     activity: ActivityItem[];
     /** The engine's recalculation the job's stored result still is (core `Store::recalculation`), if any. */
     recalculation?: Recalculation | null;
-    /**
-     * Reverts the latest change, the entry at `ts` (the one the button is
-     * drawn on). Without `ts` for an AI's own revert entry: the core steps
-     * over reverts to the change before them, as it always did.
-     */
-    onrevert: (ts?: number) => void | Promise<void>;
+    /** Reverts the latest change, the entry at `ts` (the one the button is drawn on). */
+    onrevert: (ts: number) => void | Promise<void>;
     /** Puts the offer's own figures back in place of the recalculation logged at `ts`. */
     onrestore: (ts: number) => void | Promise<void>;
     onconnect: () => void;
@@ -58,11 +54,13 @@
    */
   const keys = $derived(activity.map((a, i) => `${a.ts_ms}:${activity.slice(i + 1).filter((b) => b.ts_ms === a.ts_ms).length}`));
   /**
-   * The entry "Revert" undoes, the newest one a revert would take
-   * (store.rs `latest_undone` steps over the user's "offer figures put
-   * back"): the button is drawn on it and names it to the core (ERR-801).
+   * The entry "Revert" undoes, the newest one a revert would take, by the
+   * core's own walk (store.rs `latest_undone`): not undone by a later
+   * revert (`undone`), not a revert itself, not the user's "offer figures
+   * put back". The button is drawn on it when an AI made it and names it to
+   * the core (ERR-801); an AI's revert entry gets none (UX-1505, UI-1501).
    */
-  const latest = $derived(activity.findIndex((a) => !(a.restores != null && a.actor === USER_ACTOR)));
+  const latest = $derived(activity.findIndex((a) => !a.undone && entryKind(a) !== "revert" && !(a.restores != null && a.actor === USER_ACTOR)));
   let list: HTMLOListElement | undefined = $state();
   /**
    * Runs a history button's action. Its button is gone once the action is
@@ -113,10 +111,11 @@
       {@const ai = isAi(a.actor)}
       {@const figures = rows(a)}
       {@const k = keys[i]}
-      <li class:ai data-testid="history-entry">
+      <li class:ai class:undone={a.undone} data-testid="history-entry">
         <div class="head">
           <!-- Tectora's own entry is neither the user's (cursor) nor an AI's (sparkle). -->
           <span class="who" class:ai><Icon name={ai ? "sparkle" : a.actor === USER_ACTOR ? "cursor" : "refresh"} size={13} />{actorLabel(a.actor)}</span>
+          {#if a.undone}<span class="undone-mark" data-testid="history-undone">{t("ai.undone")}</span>{/if}
           <time>{relativeTime(a.ts_ms)}</time>
         </div>
         <p class="summary">{historyText(a, activity, recalculation?.entry_ts_ms)}</p>
@@ -146,7 +145,7 @@
           {/if}
         {/if}
         {#if i === latest && ai}
-          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && press(() => onrevert(entryKind(a) === "revert" ? undefined : a.ts_ms))}><Icon name="undo" size={14} />{t("ai.revert")}</button>
+          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && press(() => onrevert(a.ts_ms))}><Icon name="undo" size={14} />{t("ai.revert")}</button>
         {:else if a.actor === ENGINE_ACTOR && recalculation?.entry_ts_ms === a.ts_ms}
           <!-- The offer's own figures back (owner decision 2026-11-22, UX-702d), on the recalculation the
                stored result still is, wherever it is in the history by now (UX-802): by this entry, and
@@ -284,6 +283,15 @@
   .summary {
     margin: 0;
     font-size: 13px;
+  }
+  /* Undone by a later revert: muted, with a small mark (UX-1505). */
+  li.undone .summary {
+    color: var(--text-2);
+  }
+  .undone-mark {
+    margin-left: auto;
+    margin-right: 8px;
+    color: var(--text-2);
   }
   .link {
     padding: 0;

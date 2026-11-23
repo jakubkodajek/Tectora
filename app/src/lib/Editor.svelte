@@ -337,7 +337,12 @@
   }
 
   /** AI changes since the user's last own action or accept, newest first. */
-  const pendingList = $derived(review ? activity.filter((a) => isAi(a.actor) && a.ts_ms >= review!.since_ts_ms) : []);
+  // The steps the core says wait (`review.steps`): an AI step the user
+  // reverted by itself is none, the others still are (UX-1501). An older
+  // bridge without the list: every AI entry since the oldest one.
+  const pendingList = $derived(
+    review ? activity.filter((a) => isAi(a.actor) && (review!.steps ? review!.steps.includes(a.ts_ms) : a.ts_ms >= review!.since_ts_ms)) : [],
+  );
   const pending = $derived(pendingList.length ? pendingList[0] : null);
   // DACAD calculates no roof once a chimney or roof opening is non-convex.
   const nonConvex = $derived(project ? nonConvexOpenings(project) : []);
@@ -1243,6 +1248,9 @@
     // the banner showed one change. Only the AI's entries count, as in the
     // banner: a user's revert from a second Tectora is no AI step (HUNT-1401).
     let undone = 0;
+    // The entry the AI tab's Revert was drawn on, named when it is undone.
+    const entry = all || expectTs == null ? undefined : activity.find((a) => a.ts_ms === expectTs);
+    const entryWords = entry ? entryText(entry, activity) : "";
     // Edits not on disk yet would be lost: the store keeps only the edits in
     // the file, merging the revert onto them (ERR-001); the transaction
     // saves them first.
@@ -1261,6 +1269,8 @@
       () => {
         focusChange = null;
         if (all && undone > shown) info(t("review.revertedMore", { n: undone - shown }));
+        // The one change undone, by name: the banner may stay for the others (UX-1501).
+        if (entry) info(t("ai.revertedOne", { s: entryWords }));
       },
     );
   }
