@@ -48,6 +48,25 @@ describe("describeError", () => {
     expect(describeError({ code: "revert_out_of_limits", detail }, "revert").message).not.toMatch(/damaged|backup/i);
   });
 
+  it("revert_out_of_limits_damaged does not call a job whose file cannot be read fine, in every language (audit 2026-11-23 ARCH-1503)", () => {
+    const detail = "dum: the earlier version is outside the current limits and cannot be restored; the job file itself cannot be read (value 1000000000 at `parts[0].edges[0].start.x` is out of range)";
+    const seen = new Set<string>();
+    for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
+      setLocale(l);
+      const d = describeError({ code: "revert_out_of_limits_damaged", id: "dum", detail }, "revert");
+      expect(d.code).toBe("revert_out_of_limits_damaged");
+      expect(d.message, l).toBe(DICTS[l]["err.revert_out_of_limits_damaged"]);
+      expect(d.message, l).not.toBe(DICTS[l]["err.revert_out_of_limits"]);
+      expect(d.detail).toBe(detail);
+      seen.add(d.message);
+    }
+    expect(seen.size).toBe(4);
+    setLocale("en");
+    const m = describeError({ code: "revert_out_of_limits_damaged", detail }, "revert").message;
+    expect(m).not.toMatch(/is fine|not changed/i);
+    expect(m).toMatch(/cannot be read/);
+  });
+
   it("too_complex says the job is too complex and what to remove, in every language (HUNTIO-004)", () => {
     const detail = "the design is too complex to calculate: its buildings overlap too much";
     const seen = new Set<string>();

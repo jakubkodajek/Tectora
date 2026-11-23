@@ -287,7 +287,18 @@ every wall…", `app/e2e/results.e2e.ts`.
   objects on it) in one save; both joined roofs recalculate; one undo
   restores it.
 - Windows, chimneys and openings off every roof face carry a warning; the
-  result is unchanged.
+  result is unchanged. Also while another building of the job has no roof:
+  only objects nearest a failing building go unjudged (core
+  `an_object_off_the_roof_is_warned_while_another_building_fails`, E2E
+  audit-r16-b HUNT-1502). Results counts them apart ("off the roof: n"),
+  and every placement made before one calculation answers is checked; Undo
+  takes its toast back (audit-r16-b UI-1502).
+- A save or a revert that writes over a file another program made
+  unreadable says "replaced" from the store's answer (`repaired`), never
+  from a flag the reload set; the notice before it stays until then and the
+  status bar does not say saved (store
+  `a_write_over_an_unreadable_file_says_it_replaced_it`, E2E audit-r16-b
+  ERR-1502, UX-1504, TEST-1504).
 - The Results area rows add up to the total, hand-drawn faces included.
 
 ## 10. One building stops every roof (@math, @errors, @ux)

@@ -834,12 +834,15 @@ impl Server {
                 let (id, _) = self.load(args)?;
                 let ts: u64 = req(args, "ts_ms")?;
                 let summary = arg_str(args, "summary")?;
-                let p = self
+                let r = self
                     .store
-                    .revert_to(&id, ts, &self.client, Some(summary))
+                    .revert_to_counted(&id, ts, &self.client, Some(summary))
                     .map_err(super::coded)?;
+                let p = &r.project;
                 self.live_follow("reverted_changes", Some(&p.name), format!("Reverted changes: {summary}"), &id);
-                Ok(json!({ "id": id, "reverted": true, "quantities": super::quantities(&p) }))
+                let mut out = json!({ "id": id, "reverted": true, "quantities": super::quantities(p) });
+                super::replaced_note(&mut out, r.repaired);
+                Ok(out)
             })(),
             "list_examples" => Ok(json!(EXAMPLES
                 .iter()

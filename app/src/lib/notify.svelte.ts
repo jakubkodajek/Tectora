@@ -23,6 +23,12 @@ export interface Toast {
    * key, so each keeps its own action (audit 2026-11-23 ERR-1403).
    */
   key?: string;
+  /**
+   * Stays until closed or taken away by the code that raised it, with no
+   * timer: a notice about something still to happen (another program's
+   * file the next save replaces, audit 2026-11-23 UX-1504).
+   */
+  sticky?: boolean;
 }
 
 export const toasts = $state<Toast[]>([]);
@@ -34,6 +40,8 @@ const LIFETIME = { info: 4000, warning: 9000, error: 12000 };
 
 function schedule(id: number, kind: Toast["kind"]) {
   clearTimeout(timers.get(id));
+  timers.delete(id);
+  if (toasts.find((t) => t.id === id)?.sticky) return;
   timers.set(
     id,
     setTimeout(() => dismiss(id), LIFETIME[kind]),

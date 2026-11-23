@@ -404,16 +404,31 @@ fn roof_trouble_of(geos: &[RoofGeometry], project: &Project) -> Option<Value> {
 /// the client is to act on it: `revert_stale` (look at the history again)
 /// and `busy` (another program holds the job's lock; nothing was done, try
 /// again in a moment, audit 2026-11-23 ERR-1002), `revert_out_of_limits`
-/// (the earlier version is outside the limits; the job is unchanged).
+/// (the earlier version is outside the limits; the job is unchanged) and
+/// `revert_out_of_limits_damaged` (the same, while the job file itself
+/// cannot be read, audit 2026-11-23 ARCH-1503).
 pub(crate) fn coded(e: StoreError) -> String {
     match e {
         StoreError::RevertStale { .. }
         | StoreError::Busy(_)
         | StoreError::TooMany { .. }
-        | StoreError::RevertOutOfLimits { .. } => {
+        | StoreError::RevertOutOfLimits { .. }
+        | StoreError::RevertOutOfLimitsDamaged { .. } => {
             format!("{}: {e}", e.code())
         }
         e => e.to_string(),
+    }
+}
+
+/// A revert that wrote over a job file another program had made
+/// unreadable says so, for the AI to tell the user (audit 2026-11-23
+/// ERR-1502).
+pub(crate) fn replaced_note(out: &mut Value, repaired: bool) {
+    if repaired {
+        out["replaced_unreadable_file"] = json!(true);
+        out["note"] = json!(
+            "the job file could not be read (another program had damaged it or nested it too deep); it was replaced with the restored version: tell the user"
+        );
     }
 }
 
@@ -1187,7 +1202,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer` or `item` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out), `plane_over_wall` (a wing's plane runs on over the house's eave: no ridge of its own), `doubled_line` (joined roofs: a line lies on another one, `value` m counted twice), `no_roof_area` (roofed walls, 0 m² of roof: a chimney or opening took all of it, or eaves at 100 m), `objects_overlap` (`value` pairs of windows, chimneys, openings or dormers on top of each other, each still deducted), `dormer_above_roof` (a dormer `value` m above the roof it sits on: area and lines too large), `uncovered_plan` (joined buildings: `value` m2 of plan within this building's eave outline has no roof over it, the area is too small), `hidden_under_neighbour` (joined buildings: `value` m2 of this roof lies inside another building's walls under its roof, hidden yet counted; usually the overhang on a shared wall, which the user can set to 0), `inside_another` (a building wholly within another one's walls whose roof leaves the other roof's planes still adds area; keep a building that marks part of a face and give it the roof's pitch and eave height), the notice `far_from_origin` (the building is `value` m, 2.5 km or more, from the origin, where the area loses precision; move the plan to the origin) and three notices of a roof that is not the standard result because the standard calculation stops on it: `merged_planes` (two parallel planes within 10 cm calculated as one face), `wing_joined` (a low wing calculated as a lean-to against the house) and `not_calculated_by_core` (Tectora's own engine, result self-checked). Tell the user about every warning. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with.",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer` or `item` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out), `doubled_line` (joined roofs: a line lies on another one, `value` m counted twice), `no_roof_area` (roofed walls, 0 m² of roof: a chimney or opening took all of it, or eaves at 100 m), `objects_overlap` (`value` pairs of windows, chimneys, openings or dormers on top of each other, each still deducted), `dormer_above_roof` (a dormer `value` m above the roof it sits on: area and lines too large), `uncovered_plan` (joined buildings: `value` m2 of plan within this building's eave outline has no roof over it, the area is too small), `hidden_under_neighbour` (joined buildings: `value` m2 of this roof lies inside another building's walls under its roof, hidden yet counted; usually the overhang on a shared wall, which the user can set to 0), `inside_another` (a building wholly within another one's walls whose roof leaves the other roof's planes still adds area; keep a building that marks part of a face and give it the roof's pitch and eave height), `not_calculated_by_core` (the standard calculation stops on this roof and Tectora's own engine calculated it, result self-checked: its figures may differ from the standard result, so check the roof); and these notices, which say the roof is sound as calculated: `far_from_origin` (the building is `value` m, 2.5 km or more, from the origin, where the area loses precision; move the plan to the origin), `plane_over_wall` (a wing's plane runs on over the house's eave: no ridge of its own), and two of a roof that is not the standard result because the standard calculation stops on it: `merged_planes` (two parallel planes within 10 cm calculated as one face) and `wing_joined` (a low wing calculated as a lean-to against the house). Tell the user about every warning and notice. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -1521,7 +1536,7 @@ impl Server {
                 .store
                 .save_as_checked(id, &next, &self.client, summary, Some(&base))?
             {
-                CheckedSave::Saved { id } => return Ok((id, Some(base), next)),
+                CheckedSave::Saved { id, .. } => return Ok((id, Some(base), next)),
                 CheckedSave::Conflict { current } => {
                     let value = |p: &Project| serde_json::to_value(p).map_err(|e| e.to_string());
                     let merged = tectora_core::merge::merge3(
@@ -2152,17 +2167,20 @@ impl Server {
                             .ok_or("`ts_ms` must be a whole number (from get_history)")?,
                     ),
                 };
-                let p = self
+                let r = self
                     .store
-                    .revert_last_expecting(&id, &self.client, Some(summary), expect)
+                    .revert_last_reported(&id, &self.client, Some(summary), expect)
                     .map_err(coded)?;
+                let p = &r.project;
                 self.live_follow(
                     "reverted",
                     Some(&p.name),
                     format!("Reverted the latest change: {summary}"),
                     &id,
                 );
-                Ok(json!({ "id": id, "reverted": true, "quantities": quantities(&p) }))
+                let mut out = json!({ "id": id, "reverted": true, "quantities": quantities(p) });
+                replaced_note(&mut out, r.repaired);
+                Ok(out)
             }
             _ => self
                 .call_more(name, args)
@@ -3304,6 +3322,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
+    /// Audit 2026-11-23 ARCH-1504 / TEST-1505: the `calc` description
+    /// lists every warning kind of the core, the notices after "these
+    /// notices" and the rest before, as `WarningKind::is_notice` splits
+    /// them.
+    #[test]
+    fn calc_description_splits_warnings_and_notices_as_the_core_does() {
+        let check = include_str!("../../tectora-core/src/check.rs");
+        let body = |from: &str, to: &str| {
+            let at = check.find(from).unwrap() + from.len();
+            &check[at..at + check[at..].find(to).unwrap()]
+        };
+        let snake = |s: &str| {
+            let mut out = String::new();
+            for (i, c) in s.chars().enumerate() {
+                if c.is_ascii_uppercase() {
+                    if i > 0 {
+                        out.push('_');
+                    }
+                    out.push(c.to_ascii_lowercase());
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        };
+        let kinds: Vec<String> = body("pub enum WarningKind {", "\n}")
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
+            .map(|l| snake(l.trim_end_matches(',')))
+            .collect();
+        let notices: Vec<String> = body("pub fn is_notice(self) -> bool {", "\n    }")
+            .split("WarningKind::")
+            .skip(1)
+            .map(|w| {
+                snake(
+                    w.split(|c: char| !c.is_ascii_alphanumeric())
+                        .next()
+                        .unwrap(),
+                )
+            })
+            .collect();
+        assert!(
+            kinds.len() > 10 && notices.len() >= 4,
+            "{kinds:?} {notices:?}"
+        );
+        let tools = tools();
+        let calc = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "calc")
+            .unwrap()["description"]
+            .as_str()
+            .unwrap();
+        let (warnings, notes) = calc.split_once("these notices").unwrap();
+        for k in &kinds {
+            let named = format!("`{k}`");
+            let (in_warnings, in_notes) = (warnings.contains(&named), notes.contains(&named));
+            assert!(in_warnings != in_notes, "{k}: named once, in one list");
+            assert_eq!(in_notes, notices.contains(k), "{k}");
+        }
+    }
+
     #[test]
     fn calc_warns_about_a_window_on_no_roof_face() {
         // Re-check of ERR-011: the window was saved and left out silently.
@@ -3326,6 +3408,74 @@ mod tests {
             "{w}"
         );
         let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// Audit 2026-11-23 HUNT-1502: a window on no roof face beside a
+    /// building that calculated is named while another building of the
+    /// job has no roof; one over the failing building is not.
+    #[test]
+    fn set_openings_names_a_window_off_the_roof_while_another_building_fails() {
+        let mut s = server();
+        let id = gable_job(&mut s, 40.0);
+        let mut p = s.store.load(&id).unwrap();
+        let mut b = p.parts[0].clone();
+        b.name = "B".into();
+        for (e, (x, y)) in
+            b.edges
+                .iter_mut()
+                .zip([(40.0, 0.0), (46.0, 0.0), (46.0, 6.0), (40.0, 6.0)])
+        {
+            e.start = Point2::new(x, y);
+            e.pitch_deg = GABLE_PITCH_DEG;
+        }
+        p.parts.push(b);
+        s.store.save(Some(id.clone()), &p).unwrap();
+        let r = s
+            .call_tool(
+                "set_openings",
+                &json!({ "id": id, "summary": "Windows", "windows": [
+                    { "x": 6, "y": -5, "width": 0.78, "height": 1.18 },
+                    { "x": 43, "y": 3, "width": 0.78, "height": 1.18 }
+                ] }),
+            )
+            .unwrap();
+        assert!(r.to_string().contains("window_off_roof"), "{r}");
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        assert!(r["parts"][1]["error"].is_object(), "B has no roof: {r}");
+        let warned: Vec<&Value> = r["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|p| p["warnings"].as_array().into_iter().flatten())
+            .filter(|w| w["kind"] == "window_off_roof")
+            .collect();
+        assert_eq!(warned.len(), 1, "{r}");
+        assert_eq!(warned[0]["item"], 0, "{r}");
+        assert!(
+            r["parts"][0]["warnings"]
+                .as_array()
+                .is_some_and(|w| w.iter().any(|w| w["kind"] == "window_off_roof")),
+            "{r}"
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// ARCH-1503 / ERR-1502: the revert codes an AI acts on keep their
+    /// code in front, and a revert over an unreadable file says so.
+    #[test]
+    fn a_damaged_out_of_limits_revert_keeps_its_code_and_a_replaced_file_is_named() {
+        let e = coded(StoreError::RevertOutOfLimitsDamaged {
+            id: "j".into(),
+            detail: "x".into(),
+        });
+        assert!(e.starts_with("revert_out_of_limits_damaged: "), "{e}");
+        assert!(e.contains("cannot be read"), "{e}");
+        let mut out = json!({ "reverted": true });
+        replaced_note(&mut out, false);
+        assert_eq!(out, json!({ "reverted": true }));
+        replaced_note(&mut out, true);
+        assert_eq!(out["replaced_unreadable_file"], true);
+        assert!(out["note"].as_str().unwrap().contains("replaced"), "{out}");
     }
 
     #[test]

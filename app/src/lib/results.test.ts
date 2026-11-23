@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DICTS, i18n } from "./i18n.svelte";
-import { areaRows, failedParts, hasRoofWarning, joinedWith, offRoofWarning, roofState, warningText } from "./results";
-import type { CalcResult, RoofWarning } from "./types";
+import { areaRows, failedParts, hasRoofWarning, joinedWith, objectCounts, offRoofWarning, roofState, warningText } from "./results";
+import type { CalcResult, Project, RoofWarning } from "./types";
 
 const part = (name: string, joined_with?: number[]) => ({
   name,
@@ -264,5 +264,27 @@ describe("an object placed on no roof face (audit 2026-11-23 UX-1401)", () => {
     }
     expect(hasRoofWarning(warned([]))).toBe(false);
     expect(hasRoofWarning(null)).toBe(false);
+  });
+});
+
+describe("objectCounts (audit 2026-11-23 UX-1503)", () => {
+  const win = (x: number) => ({ x, y: 0, width: 0.78, height: 1.18 });
+  const sq = { corners: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }], height: 1 };
+  const job = { windows: [win(1), win(2)], chimneys: [sq, sq], roof_openings: [sq], dormers: [] } as unknown as Project;
+  const result = (warnings: RoofWarning[]) =>
+    ({ parts: [{ ...part("A"), geometry: { ...part("A").geometry, warnings } }] }) as unknown as CalcResult;
+  it("takes what the core reported off the roof out of the counts on the roof", () => {
+    const c = objectCounts(job, result([{ kind: "window_off_roof", value: 0, item: 1 }, { kind: "opening_off_roof", value: 0, item: 0 }]));
+    expect(c.windows).toEqual([win(1)]);
+    expect([c.chimneys, c.holes, c.dormers]).toEqual([2, 0, 0]);
+    expect(c.off).toEqual({ windows: 1, chimneys: 0, holes: 1, dormers: 0 });
+    i18n.locale = "en";
+    expect(DICTS.en["res.obj.windows"].replace("{n}", String(c.windows.length))).toBe("Roof windows: 1");
+    expect(DICTS.en["res.offRoof"].replace("{n}", String(c.off.windows))).toBe("off the roof: 1");
+    for (const l of ["cs", "sk", "en", "de"] as const) expect(DICTS[l]["res.offRoof"], l).toContain("{n}");
+  });
+  it("counts everything on the roof without a result, and ignores an index the job does not have", () => {
+    expect(objectCounts(job, null).off).toEqual({ windows: 0, chimneys: 0, holes: 0, dormers: 0 });
+    expect(objectCounts(job, result([{ kind: "chimney_off_roof", value: 0, item: 7 }])).chimneys).toBe(2);
   });
 });

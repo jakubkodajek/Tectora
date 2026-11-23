@@ -34,7 +34,7 @@
   import { keptSelection } from "./selection";
   import { fitlabels } from "./fitlabels";
   import { describeCalcError, describeError, describeProblem, toAppError, type AppError, type Described } from "./errors";
-  import { dismiss, info, notify, notifyError, notifyRefusal, notifyWarning } from "./notify.svelte";
+  import { dismiss, info, notify, notifyError, notifyRefusal, notifyWarning, toasts } from "./notify.svelte";
   import { nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, parseDormer, roofHeightAt, type DormerParams } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
@@ -251,9 +251,25 @@
    * Another program made the open job a file Tectora cannot read
    * (`unreadable`, `too_many`): the next save writes the version open here
    * over it, which the user is told when it happens (audit 2026-11-23
-   * ERR-1401). Cleared by that save and by a later good read.
+   * ERR-1401). Cleared by that save and by a later good read. Meanwhile
+   * its notice stays and the status bar does not say saved (UX-1504).
    */
-  let outsideUnreadable = false;
+  let outsideUnreadable = $state(false);
+  /** The notice of `outsideUnreadable`, sticky until it is over. */
+  let outsideNotice: number | null = null;
+  /**
+   * The time of `outsideUnreadable` is over: its notice goes, and when the
+   * store says a save or a revert wrote over the file it could not read
+   * (`repaired`), the user is told the other program's file was replaced
+   * (audit 2026-11-23 ERR-1502: told from the store's answer, also when
+   * the reload had not failed first).
+   */
+  function outsideOver(replaced: boolean) {
+    outsideUnreadable = false;
+    if (outsideNotice !== null) dismiss(outsideNotice);
+    outsideNotice = null;
+    if (replaced) ownToasts.add(info(t("editor.outsideReplaced")));
+  }
   /** Saves started so far: a read that a save overtook is stale. */
   let saveGen = 0;
   /** Saves run one after another: two from the same base would conflict
@@ -417,9 +433,36 @@
    * before it: the first result after it says at once when the core finds
    * it on no roof face (audit 2026-11-23 UX-1401; kept, as MCP keeps it).
    */
-  let placed: { kind: "window" | "chimney" | "opening"; index: number; after: number } | null = null;
+  type Placed = { kind: "window" | "chimney" | "opening"; index: number };
+  /**
+   * Every placement not checked yet: several made before one calculation
+   * answers are each checked against the first result after them, and a
+   * warning toast goes when a later result no longer has its warning (the
+   * object was moved or Undo took it away; audit 2026-11-23 UI-1502).
+   */
+  let placed: (Placed & { after: number })[] = [];
+  let offToasts: (Placed & { toast: number })[] = [];
   function placedOn(kind: "window" | "chimney" | "opening", index: number) {
-    placed = { kind, index, after: calcSeq };
+    placed.push({ kind, index, after: calcSeq });
+  }
+  /** The placement toasts after the current result `r`. */
+  function checkPlaced(r: CalcResult | null, seq: number) {
+    offToasts = offToasts.filter((o) => {
+      // Closed already (by its timer or the user): nothing to take back.
+      if (!toasts.some((x) => x.id === o.toast)) return false;
+      if (offRoofWarning(r, o.kind, o.index)) return true;
+      dismiss(o.toast);
+      return false;
+    });
+    const due = placed.filter((p) => seq > p.after);
+    placed = placed.filter((p) => seq <= p.after);
+    for (const p of due) {
+      const off = offRoofWarning(r, p.kind, p.index);
+      if (!off || offToasts.some((o) => o.kind === p.kind && o.index === p.index)) continue;
+      const toast = notify({ kind: "warning", code: off.kind, title: t("res.warn.title"), message: warningText(off) });
+      ownToasts.add(toast);
+      offToasts.push({ kind: p.kind, index: p.index, toast });
+    }
   }
 
   async function recalc() {
@@ -430,11 +473,7 @@
     try {
       const r = await api.calc($state.snapshot(project) as Project);
       if (seq === calcSeq) (result = r), (calcFailure = null);
-      if (seq === calcSeq && placed && seq > placed.after) {
-        const off = offRoofWarning(r, placed.kind, placed.index);
-        placed = null;
-        if (off) ownToasts.add(notify({ kind: "warning", code: off.kind, title: t("res.warn.title"), message: warningText(off) }));
-      }
+      if (seq === calcSeq) checkPlaced(r, seq);
     } catch (e) {
       if (seq === calcSeq) (result = null), (calcFailure = describeError(e, "calc"));
       notifyError(e, "calc");
@@ -549,6 +588,7 @@
       if (libraryDir !== null && (await api.projectsDir()) !== libraryDir) {
         throw { code: "library_changed", id, detail: `${libraryDir} -> ${await api.projectsDir()}` };
       }
+      let repaired = false;
       for (let tries = 0; ; tries++) {
         const written = JSON.parse(snapshot());
         if (lastSaved) {
@@ -575,6 +615,7 @@
             refreshActivity();
             continue;
           }
+          repaired = !!r.repaired;
         } else {
           await api.saveProject(id, written);
         }
@@ -585,18 +626,16 @@
         lastSaved = JSON.stringify(await api.normalizeProject(written));
         // An edit made while this save was running is still unsaved.
         saveState = edits === seq ? "saved" : "dirty";
-        if (outsideUnreadable) {
-          // The other program's file the reload could not read is gone now.
-          outsideUnreadable = false;
-          ownToasts.add(info(t("editor.outsideReplaced")));
-        }
+        // The other program's file the store could not read is gone now.
+        if (repaired || outsideUnreadable) outsideOver(repaired);
         void syncRecalculation((written as Project).result_snapshot?.taken_ms ?? null);
         return true;
       }
     } catch (e) {
       // Keep the edits in memory; the status bar offers to try again.
       saveState = "failed";
-      notifyError(e, "save");
+      // Named: the notice may outlive the editor (UI-1503).
+      notifyError(e, "save", project?.name.trim() || id);
       return false;
     }
   }
@@ -760,7 +799,7 @@
       const p = await api.loadProject(id);
       if (destroyed) return;
       // Readable again: nothing of the other program's file is replaced.
-      if (!initial) outsideUnreadable = false;
+      if (!initial && outsideUnreadable) outsideOver(false);
       const json = JSON.stringify(p);
       // A drag that began while this was read: read again after it.
       if (!(await refreshActivity(() => destroyed || (!initial && drag.active)))) {
@@ -848,15 +887,30 @@
         saveState = "failed";
         notifyError(e, "load");
       } else if (["unreadable", "too_many"].includes(toAppError(e).code)) {
+        // A save started while this was read: it may have replaced the file
+        // already (and said so, ERR-1502); read again after it instead of
+        // warning about a save that is done.
+        if (inFlight) {
+          reloadWanted = true;
+          return;
+        }
+        if (gen !== saveGen) {
+          load(false);
+          return;
+        }
         // Another program wrote a file Tectora cannot read: not the open-time
         // advice (remove the data, restore a backup), but what the next save
         // does (audit 2026-11-23 ERR-1401; the repair is ARCH-1302).
+        // Its own title (the job stays open, UX-1502), and it stays until
+        // the save or revert that replaces the file, a good read or the
+        // editor's end (UX-1504).
         outsideUnreadable = true;
         const d = describeError(e, "load");
         const name = project.name.trim() || id;
-        ownToasts.add(notify({ kind: "warning", code: d.code, title: t("err.ofJob", { name, title: d.title }), message: t("editor.outsideUnreadable"), detail: d.detail }));
+        outsideNotice = notify({ kind: "warning", code: d.code, title: t("err.ofJob", { name, title: t("editor.outsideTitle") }), message: t("editor.outsideUnreadable"), detail: d.detail, sticky: true });
+        ownToasts.add(outsideNotice);
       } else {
-        notifyError(e, "load");
+        notifyError(e, "load", project.name.trim() || id);
       }
     } finally {
       // Not shown here: the user left the job while it opened.
@@ -1243,6 +1297,8 @@
     // the banner showed one change. Only the AI's entries count, as in the
     // banner: a user's revert from a second Tectora is no AI step (HUNT-1401).
     let undone = 0;
+    // The revert wrote over a file another program made unreadable (ERR-1502).
+    let repaired = false;
     // Edits not on disk yet would be lost: the store keeps only the edits in
     // the file, merging the revert onto them (ERR-001); the transaction
     // saves them first.
@@ -1253,13 +1309,17 @@
         if (all && oldest) {
           const r = await api.revertAll(id, oldest.ts_ms);
           undone = r.undone_ai;
+          repaired = !!r.repaired;
           return r.project;
         }
         // The latest change is undone only if it still is the entry the button was drawn on (ERR-801).
-        return api.revertLastChange(id, expectTs);
+        const r = await api.revertLastChange(id, expectTs);
+        repaired = !!r.repaired;
+        return r.project;
       },
       () => {
         focusChange = null;
+        if (repaired || outsideUnreadable) outsideOver(repaired);
         if (all && undone > shown) info(t("review.revertedMore", { n: undone - shown }));
       },
     );
@@ -3070,7 +3130,7 @@
       {#if result}<span data-testid="status-area" class:pending={calcPending} aria-busy={calcPending}>{t("res.area")}: <b title={roofState(result) !== "ok" ? t(roofState(result) === "none" ? "res.notCalculated" : "res.calcPartial") : undefined}>{roofState(result) === "none" ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save">
-        {#if reviewOut}{t(reviewWhat === "restoreOffer" ? "editor.restoringOffer" : "editor.reverting")}{:else if saveState === "saved" && !editsWaiting}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving" || saveState === "saved"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
+        {#if reviewOut}{t(reviewWhat === "restoreOffer" ? "editor.restoringOffer" : "editor.reverting")}{:else if saveState === "saved" && !editsWaiting && outsideUnreadable}{t("editor.outsideState")}{:else if saveState === "saved" && !editsWaiting}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving" || saveState === "saved"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
       </span>
     </footer>
   {:else if !loadError}

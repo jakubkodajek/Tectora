@@ -306,6 +306,11 @@ pub struct RevertedChanges {
     /// [`RESERVED_ACTORS`]), the review banner's own rule: the app
     /// compares it with the AI steps it showed.
     pub undone_ai: usize,
+    /// The job file could not be read (another program damaged it, or
+    /// nested it too deep to open) and the revert wrote over it: the app
+    /// says the other program's file was replaced (audit 2026-11-23
+    /// ERR-1502).
+    pub repaired: bool,
 }
 
 /// The job's stored result is the engine's recalculation of the offer's
@@ -916,6 +921,14 @@ pub enum StoreError {
         "{id}: the earlier version is outside the current limits and cannot be restored; the job itself is unchanged ({detail})"
     )]
     RevertOutOfLimits { id: String, detail: String },
+    /// [`StoreError::RevertOutOfLimits`] while the job file itself cannot
+    /// be read (damaged, or nested too deep by another program): nothing
+    /// is written, and the job is not called fine (audit 2026-11-23
+    /// ARCH-1503).
+    #[error(
+        "{id}: the earlier version is outside the current limits and cannot be restored; the job file itself cannot be read ({detail})"
+    )]
+    RevertOutOfLimitsDamaged { id: String, detail: String },
 }
 
 /// The kinds of file system failure the app explains differently.
@@ -959,6 +972,7 @@ impl StoreError {
             StoreError::Busy(_) => "busy",
             StoreError::TooMany { .. } => "too_many",
             StoreError::RevertOutOfLimits { .. } => "revert_out_of_limits",
+            StoreError::RevertOutOfLimitsDamaged { .. } => "revert_out_of_limits_damaged",
         }
     }
 
@@ -976,7 +990,8 @@ impl StoreError {
             | StoreError::RevertConflict { id, .. }
             | StoreError::RevertStale { id, .. }
             | StoreError::TooMany { id, .. }
-            | StoreError::RevertOutOfLimits { id, .. } => Some(id),
+            | StoreError::RevertOutOfLimits { id, .. }
+            | StoreError::RevertOutOfLimitsDamaged { id, .. } => Some(id),
             StoreError::Io { id, .. } => id.as_deref(),
         }
     }
@@ -989,7 +1004,8 @@ impl StoreError {
             | StoreError::RevertConflict { detail, .. }
             | StoreError::RevertStale { detail, .. }
             | StoreError::TooMany { detail, .. }
-            | StoreError::RevertOutOfLimits { detail, .. } => Some(detail),
+            | StoreError::RevertOutOfLimits { detail, .. }
+            | StoreError::RevertOutOfLimitsDamaged { detail, .. } => Some(detail),
             _ => None,
         }
     }
@@ -1440,12 +1456,15 @@ fn same_for_js(a: &Project, b: &Project) -> bool {
 pub enum CheckedSave {
     Saved {
         id: String,
+        /// The file could not be read (damaged, or nested too deep to
+        /// open, by another program) and was written over with the
+        /// caller's copy, as decided (ARCH-1302): the app says so (audit
+        /// 2026-11-23 ERR-1502). False for a missing file.
+        repaired: bool,
     },
     /// Someone else saved the job after the base was read: `current` is the
     /// file now, to merge with and save again.
-    Conflict {
-        current: Box<Project>,
-    },
+    Conflict { current: Box<Project> },
 }
 
 /// Longest accepted project id (file names stay well inside the 255-byte
@@ -3073,27 +3092,27 @@ impl Store {
     ) -> Result<CheckedSave, StoreError> {
         self.path(id)?;
         let _lock = self.lock(id)?;
-        match self.load(id) {
+        let repaired = match self.load(id) {
             Ok(current) if !same_for_js(&current, base) => {
                 return Ok(CheckedSave::Conflict {
                     current: Box::new(current),
                 });
             }
+            Ok(_) | Err(StoreError::NotFound(_)) => false,
             // A file another program made too deep to open is repaired
             // like a damaged one: the editor's copy passed the limits when
             // it was opened and the app's command checks it before this
-            // (Jakub's decision 2026-11-23, audit ARCH-1302).
-            Ok(_)
-            | Err(
-                StoreError::NotFound(_)
-                | StoreError::Unreadable { .. }
-                | StoreError::TooMany { .. },
-            ) => {}
+            // (Jakub's decision 2026-11-23, audit ARCH-1302). The answer
+            // says so (ERR-1502).
+            Err(StoreError::Unreadable { .. } | StoreError::TooMany { .. }) => true,
             Err(e) => return Err(e),
-        }
+        };
         // `load` above refused a newer file.
         self.write(id, project, true)?;
-        Ok(CheckedSave::Saved { id: id.to_string() })
+        Ok(CheckedSave::Saved {
+            id: id.to_string(),
+            repaired,
+        })
     }
 
     /// Writes the file; the caller holds the job's lock. A file saved by a
@@ -3249,7 +3268,7 @@ impl Store {
             }
         };
         match self.save_as_checked(&id, project, actor, summary, None)? {
-            CheckedSave::Saved { id } => Ok(id),
+            CheckedSave::Saved { id, .. } => Ok(id),
             CheckedSave::Conflict { .. } => unreachable!("no base, no conflict"),
         }
     }
@@ -3269,7 +3288,12 @@ impl Store {
     ) -> Result<CheckedSave, StoreError> {
         self.path(id)?;
         let _lock = self.lock(id)?;
-        let before = match self.load(id) {
+        let loaded = self.load(id);
+        let damaged = matches!(
+            loaded,
+            Err(StoreError::Unreadable { .. } | StoreError::TooMany { .. })
+        );
+        let before = match loaded {
             // Refused before anything is logged (see `save`).
             Err(e @ StoreError::NewerFormat { .. }) => return Err(e),
             r => r.ok(),
@@ -3281,10 +3305,14 @@ impl Store {
                 current: Box::new(current.clone()),
             });
         }
-        if before.as_ref() != Some(project) {
+        let wrote = before.as_ref() != Some(project);
+        if wrote {
             self.log_and_write(id, before, project, actor, summary, None, None, None, None)?;
         }
-        Ok(CheckedSave::Saved { id: id.to_string() })
+        Ok(CheckedSave::Saved {
+            id: id.to_string(),
+            repaired: wrote && damaged,
+        })
     }
 
     /// Logs the change and writes the file; the caller holds the job's lock.
@@ -3495,6 +3523,22 @@ impl Store {
         reason: Option<&str>,
         expect_ts_ms: Option<u64>,
     ) -> Result<Project, StoreError> {
+        self.revert_last_reported(id, actor, reason, expect_ts_ms)
+            .map(|r| r.project)
+    }
+
+    /// [`Store::revert_last_expecting`] with the answer of Revert all,
+    /// [`RevertedChanges`]: `undone` and `undone_ai` are 1 or 0 (the one
+    /// change, and whether an AI wrote it), `repaired` whether a file
+    /// another program made unreadable was written over (audit 2026-11-23
+    /// ERR-1502). The app's command and the MCP tool use it.
+    pub fn revert_last_reported(
+        &self,
+        id: &str,
+        actor: &str,
+        reason: Option<&str>,
+        expect_ts_ms: Option<u64>,
+    ) -> Result<RevertedChanges, StoreError> {
         // The log is read, the expected entry checked, the file merged and
         // written under one hold of the job's lock: an AI save waiting for
         // the lock lands before (the press is stale) or after the revert,
@@ -3516,8 +3560,14 @@ impl Store {
         // Reverting from `pos` also undoes the reverts logged after it, so
         // the job ends as it was before that change.
         let summary = with_reason(reason, format!("{REVERTED_PREFIX}{}", log[pos].summary));
+        let ai = !RESERVED_ACTORS.contains(&log[pos].actor.as_str());
         self.revert_locked(id, &log, pos, actor, summary)
-            .map(|(p, _)| p)
+            .map(|(project, wrote, repaired)| RevertedChanges {
+                project,
+                undone: usize::from(wrote),
+                undone_ai: usize::from(wrote && ai),
+                repaired,
+            })
     }
 
     /// Restores the version from before the change recorded at `ts_ms`,
@@ -3581,7 +3631,7 @@ impl Store {
         } else {
             format!("Reverted {undone} changes since: {}", log[pos].summary)
         };
-        let (project, wrote) =
+        let (project, wrote, repaired) =
             self.revert_locked(id, &log, pos, actor, with_reason(reason, summary))?;
         // Nothing written, nothing undone (arch to-check 60).
         let (undone, undone_ai) = if wrote { (undone, undone_ai) } else { (0, 0) };
@@ -3589,6 +3639,7 @@ impl Store {
             project,
             undone,
             undone_ai,
+            repaired,
         })
     }
 
@@ -3608,8 +3659,9 @@ impl Store {
     /// nothing written, when one of them touches a value a reverted change
     /// set. The caller holds the job's lock and read `log` under it, so the
     /// file read here is the one written over (no second try with a log
-    /// that may be stale, ERR-1002). Returns the job and whether the
-    /// revert wrote it (nothing is written when it ends as it was).
+    /// that may be stale, ERR-1002). Returns the job, whether the revert
+    /// wrote it (nothing is written when it ends as it was) and whether
+    /// that write replaced a file that could not be read (ERR-1502).
     fn revert_locked(
         &self,
         id: &str,
@@ -3617,7 +3669,7 @@ impl Store {
         pos: usize,
         actor: &str,
         (summary, reason): (String, Option<String>),
-    ) -> Result<(Project, bool), StoreError> {
+    ) -> Result<(Project, bool, bool), StoreError> {
         let mut wrote = false;
         let value = |p: &Project| {
             serde_json::to_value(p).map_err(|e| StoreError::Unreadable {
@@ -3625,12 +3677,22 @@ impl Store {
                 detail: e.to_string(),
             })
         };
+        // Why the file was not read, when it could not be: a damaged one
+        // (or one nested too deep to open) is said to be replaced, and an
+        // earlier version outside the limits does not call it fine.
+        let mut damaged = false;
         let mut current = match self.load(id) {
             Ok(p) => Some(p),
             // A file newer than this Tectora is neither read nor written.
             Err(e @ StoreError::NewerFormat { .. }) => return Err(e),
             // A damaged file: the version before the change is restored.
-            Err(_) => None,
+            Err(e) => {
+                damaged = matches!(
+                    e,
+                    StoreError::Unreadable { .. } | StoreError::TooMany { .. }
+                );
+                None
+            }
         };
         let before = current.clone();
         let mut target = None;
@@ -3663,12 +3725,14 @@ impl Store {
         let target = target.ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
         // The log is a file like the job: a version outside the limits is
         // not written back into the job (HUNTIO-004).
-        target
-            .check_limits()
-            .map_err(|detail| StoreError::RevertOutOfLimits {
-                id: id.to_string(),
-                detail,
-            })?;
+        target.check_limits().map_err(|detail| {
+            let id = id.to_string();
+            if damaged {
+                StoreError::RevertOutOfLimitsDamaged { id, detail }
+            } else {
+                StoreError::RevertOutOfLimits { id, detail }
+            }
+        })?;
         if before.as_ref() != Some(&target) {
             self.log_and_write(
                 id,
@@ -3684,7 +3748,7 @@ impl Store {
             wrote = true;
         }
         self.pin_restored(id, &log[pos..], &target);
-        Ok((target, wrote))
+        Ok((target, wrote, wrote && damaged))
     }
 
     /// After a revert of `undone` gave `target`: when that put an offer's
@@ -7070,7 +7134,10 @@ mod tests {
         merged.parts[0].edges[2].pitch_deg = 41.0;
         assert_eq!(
             store.save_checked(&id, &merged, &current).unwrap(),
-            CheckedSave::Saved { id: id.clone() }
+            CheckedSave::Saved {
+                id: id.clone(),
+                repaired: false
+            }
         );
         assert_eq!(store.load(&id).unwrap(), merged);
         // The editor's own save is still not logged as a change.
@@ -7159,7 +7226,10 @@ mod tests {
             store
                 .save_as_checked(&id, &merged, "claude", "AI", Some(&user))
                 .unwrap(),
-            CheckedSave::Saved { id: id.clone() }
+            CheckedSave::Saved {
+                id: id.clone(),
+                repaired: false
+            }
         );
         assert_eq!(store.load(&id).unwrap(), merged);
         assert_eq!(store.activity(&id)[0].before.as_ref(), Some(&user));
@@ -7356,6 +7426,124 @@ mod tests {
             "revert_out_of_limits"
         );
         assert_eq!(fs::read(store.path(&id).unwrap()).unwrap(), file);
+        assert_eq!(store.activity(&id).len(), 1, "nothing logged");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-23 ERR-1502: a save or a revert that writes over a
+    /// file another program made unreadable says so (`repaired`), and a
+    /// missing or good file is not called replaced.
+    #[test]
+    fn a_write_over_an_unreadable_file_says_it_replaced_it() {
+        let store = temp_store("repaired");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let path = store.path(&id).unwrap();
+        let mut mine = p.clone();
+        mine.parts[0].edges[0].overhang = 0.9;
+        let repaired = |r: CheckedSave| match r {
+            CheckedSave::Saved { repaired, .. } => repaired,
+            other => panic!("expected saved, got {other:?}"),
+        };
+        // A good file and a missing one: nothing replaced.
+        assert!(!repaired(store.save_checked(&id, &mine, &p).unwrap()));
+        fs::remove_file(&path).unwrap();
+        assert!(!repaired(store.save_checked(&id, &mine, &mine).unwrap()));
+        // Cut short, and nested 40 deep by another program: replaced.
+        let good = fs::read_to_string(&path).unwrap();
+        fs::write(&path, &good[..good.len() / 2]).unwrap();
+        assert_eq!(store.load(&id).unwrap_err().code(), "unreadable");
+        assert!(repaired(store.save_checked(&id, &mine, &mine).unwrap()));
+        let mut v = serde_json::to_value(&mine).unwrap();
+        v["crm"] = nested_objects(40);
+        fs::write(&path, v.to_string()).unwrap();
+        assert_eq!(store.load(&id).unwrap_err().code(), "too_many");
+        assert!(repaired(store.save_checked(&id, &mine, &mine).unwrap()));
+        // An MCP save over a cut file says it too.
+        fs::write(&path, &good[..good.len() / 2]).unwrap();
+        assert!(repaired(
+            store
+                .save_as_checked(&id, &p, "claude", "AI", None)
+                .unwrap()
+        ));
+
+        // A revert over a cut file restores from the history and says so;
+        // over a readable one it does not.
+        let mut ai = p.clone();
+        ai.parts[0].edges[0].pitch_deg = 35.0;
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "AI pitch")
+            .unwrap();
+        let r = store
+            .revert_last_reported(&id, USER_ACTOR, None, None)
+            .unwrap();
+        assert!(!r.repaired);
+        assert_eq!((r.undone, r.undone_ai), (1, 1));
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "AI pitch again")
+            .unwrap();
+        let good = fs::read_to_string(&path).unwrap();
+        fs::write(&path, &good[..good.len() / 2]).unwrap();
+        let r = store
+            .revert_last_reported(&id, USER_ACTOR, None, None)
+            .unwrap();
+        assert!(r.repaired);
+        assert_eq!(store.load(&id).unwrap(), r.project);
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "AI pitch third")
+            .unwrap();
+        let ts = store.activity(&id).last().unwrap().ts_ms;
+        let good = fs::read_to_string(&path).unwrap();
+        fs::write(&path, &good[..good.len() / 2]).unwrap();
+        assert!(
+            store
+                .revert_to_counted(&id, ts, USER_ACTOR, None)
+                .unwrap()
+                .repaired
+        );
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-23 ARCH-1503: an earlier version outside the limits
+    /// while the job file cannot be read has its own code, which does not
+    /// call the job fine, and nothing is written.
+    #[test]
+    fn an_out_of_limits_revert_over_a_damaged_file_does_not_call_it_fine() {
+        let store = temp_store("revert-limits-damaged");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let mut ai = p.clone();
+        ai.parts[0].edges[0].overhang = 0.8;
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "AI")
+            .unwrap();
+        let log = store.activity_path(&id).unwrap();
+        let lines: Vec<String> = fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let mut v: serde_json::Value = serde_json::from_str(l).unwrap();
+                v["before"]["parts"][0]["edges"][0]["start"]["x"] = serde_json::json!(1e9);
+                v.to_string()
+            })
+            .collect();
+        fs::write(&log, lines.join("\n") + "\n").unwrap();
+        let path = store.path(&id).unwrap();
+        let good = fs::read_to_string(&path).unwrap();
+        fs::write(&path, &good[..good.len() / 2]).unwrap();
+        let file = fs::read(&path).unwrap();
+        let ts = store.activity(&id)[0].ts_ms;
+        for e in [
+            store.revert_to(&id, ts, USER_ACTOR, None).unwrap_err(),
+            store.revert_last(&id, USER_ACTOR, None).unwrap_err(),
+        ] {
+            assert_eq!(e.code(), "revert_out_of_limits_damaged", "{e}");
+            assert_eq!(e.id(), Some(id.as_str()));
+            assert!(e.detail().is_some_and(|d| !d.is_empty()));
+            assert!(!e.to_string().contains("unchanged"), "{e}");
+            assert!(e.to_string().contains("cannot be read"), "{e}");
+        }
+        assert_eq!(fs::read(&path).unwrap(), file);
         assert_eq!(store.activity(&id).len(), 1, "nothing logged");
         let _ = fs::remove_dir_all(&store.dir);
     }

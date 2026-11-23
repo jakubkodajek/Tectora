@@ -142,17 +142,19 @@ fn restore_offer_result(
 
 /// Undoes the latest recorded change. `expect_ts`: the entry the button
 /// was drawn on; when another change is the latest by now nothing is
-/// undone (`revert_stale`, audit 2026-11-22 ERR-801).
+/// undone (`revert_stale`, audit 2026-11-22 ERR-801). Answers as Revert
+/// all, with `repaired` when it wrote over a file another program had
+/// made unreadable (audit 2026-11-23 ERR-1502).
 #[tauri::command(async)]
 fn revert_last_change(
     state: State<AppState>,
     id: String,
     expect_ts: Option<u64>,
-) -> CmdResult<Project> {
+) -> CmdResult<store::RevertedChanges> {
     guard(|| {
         Ok(state
             .store()
-            .revert_last_expecting(&id, USER_ACTOR, None, expect_ts)?)
+            .revert_last_reported(&id, USER_ACTOR, None, expect_ts)?)
     })
 }
 
