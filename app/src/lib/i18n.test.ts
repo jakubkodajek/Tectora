@@ -137,3 +137,17 @@ describe("round-12 wording (UX-1101, UX-1102)", () => {
     expect(DICTS.en["snap.exportRecalculated"]).toContain("was exported");
   });
 });
+
+describe("round-15 wording (UX-1402, UI-1402)", () => {
+  it("calls a menu menu in Czech and Slovak; nabídka / ponuka is only the offer", () => {
+    for (const loc of ["cs", "sk"] as const) {
+      expect(DICTS[loc]["err.busy_open"], loc).toMatch(/\bmenu\b/);
+      expect(DICTS[loc]["err.busy_open"], loc).not.toMatch(/nabídk|ponuk/i);
+    }
+    // Every text that says menu in English says menu, never the offer's word, in cs and sk.
+    for (const [key, text] of Object.entries(DICTS.en)) {
+      if (!/\bmenu/i.test(text)) continue;
+      for (const loc of ["cs", "sk"] as const) expect(DICTS[loc][key], `${loc} ${key}`).not.toMatch(/nabídk|ponuk/i);
+    }
+  });
+});
