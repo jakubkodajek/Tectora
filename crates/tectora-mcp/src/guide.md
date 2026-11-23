@@ -131,6 +131,13 @@ The tools cover every operation of the Tectora editor:
   value the reverted step set, so ask the user then; pass `ts_ms` of the
   change you mean and it is refused with "revert_stale" when another change
   was saved meanwhile, so you never undo somebody else's step).
+  `get_history` gives an entry Tectora wrote as more than a change a
+  `kind`: `revert`, `restore` (the offer's figures put back) or `refresh`
+  (Tectora's recalculation). It comes from the entry's own fields, never
+  from its words: a `summary` of yours that starts like Tectora's
+  sentences ("Reverted: …") is a change like any other, undone as one,
+  and the app shows it in quotation marks as your words. Write what you
+  did in your own words.
   A revert, `revert_to` and `restore_offer_result` wait a few seconds at
   most for another program saving the same job; then they answer "busy"
   and nothing was done: call `get_history` again and try once more in a

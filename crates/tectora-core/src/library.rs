@@ -572,6 +572,7 @@ mod tests {
             ts_ms: 0,
             actor: "claude".into(),
             summary: String::new(),
+            kind: None,
         });
         // As the store fills it for a job an AI changed last
         // (`store::changed_by_ai`), which is what `by_ai` reads (UX-806).

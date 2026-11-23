@@ -1529,6 +1529,73 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    /// Audit 2026-11-23 ARCH-1401 (verifier's note): a received change log
+    /// keeps the sender's `undid_from`, `restores` and `user` actor, so its
+    /// reverts and put-backs keep their kinds; everything received is
+    /// reviewed on import, so none of them waits for the user's review.
+    #[test]
+    fn a_received_log_keeps_its_reverts_and_put_backs() {
+        use crate::store::{EntryKind, USER_ACTOR};
+        let dir = std::env::temp_dir().join(format!("tectora-bundle-kinds-{}", now_ms()));
+        let store = Store::new(dir.join("lib")).unwrap();
+        let mut p = crate::examples::find("gable").unwrap().project();
+        p.job.status = crate::model::JobStatus::Offer;
+        p.result_snapshot = Some(crate::snapshot::take(&p));
+        let id = store.save(None, &p).unwrap();
+        let s = p.result_snapshot.as_mut().unwrap();
+        s.engine_version = "0.0.1".into();
+        s.roof_area += 2.0;
+        fs::write(
+            store.dir.join(format!("{id}.tectora")),
+            p.to_json().unwrap(),
+        )
+        .unwrap();
+        let origins = store.activity_dir().join(format!("{id}.result.json"));
+        let text = fs::read_to_string(&origins)
+            .unwrap()
+            .replace(crate::snapshot::ENGINE_VERSION, "0.0.1");
+        fs::write(&origins, text).unwrap();
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        let mut q = store.load(&id).unwrap();
+        q.notes = "AI note".into();
+        store
+            .save_as(Some(id.clone()), &q, "claude", "Note")
+            .unwrap();
+        let noted = store.activity(&id).last().unwrap().ts_ms;
+        store.revert_last(&id, USER_ACTOR, None).unwrap();
+        store
+            .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        let sent = store.activity(&id);
+        let (revert, put_back) = (sent[sent.len() - 2].clone(), sent[sent.len() - 1].clone());
+        assert_eq!(revert.undid_from, Some(noted));
+
+        let bundle = dir.join("offer.tectorajob");
+        export(&store, &id, &bundle).unwrap();
+        let other = Store::new(dir.join("other")).unwrap();
+        let got = import(&other, &bundle).unwrap();
+        let log = other.activity(&got);
+        let r = log
+            .iter()
+            .find(|e| e.ts_ms == revert.ts_ms)
+            .expect("the revert");
+        assert_eq!(r.undid_from, Some(noted));
+        assert_eq!(r.actor, USER_ACTOR);
+        assert_eq!(r.kind(), Some(EntryKind::Revert));
+        let b = log
+            .iter()
+            .find(|e| e.ts_ms == put_back.ts_ms)
+            .expect("the put-back");
+        assert_eq!(b.restores, Some(done.entry_ts_ms));
+        assert_eq!(b.actor, USER_ACTOR);
+        assert_eq!(b.kind(), Some(EntryKind::Restore));
+        let items = other.activity_items(&got);
+        assert_eq!(items[0].kind, Some(EntryKind::Restore));
+        assert_eq!(items[1].kind, Some(EntryKind::Revert));
+        assert!(other.pending_review(&got).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// Audit 2026-11-22 ARCH-802: a change-log entry that came with a
     /// bundle under the engine's name (a real one of the sender's Tectora,
     /// or a forged one) is history under another name: never shown as this

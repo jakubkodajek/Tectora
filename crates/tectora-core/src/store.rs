@@ -293,11 +293,19 @@ fn entry_results(
 }
 
 /// What [`Store::revert_to_counted`] did: the job as it is now and how
-/// many recorded changes were undone.
+/// many recorded changes were undone (audit 2026-11-23 HUNT-1401,
+/// TEST-1402). Both are 0 when the revert wrote nothing.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RevertedChanges {
     pub project: Project,
+    /// The undone entries that are changes, not reverts themselves (a
+    /// revert in the range is bookkeeping: what it undid is counted
+    /// once), at least 1: the number in the history line.
     pub undone: usize,
+    /// The undone entries an AI client wrote (an actor outside
+    /// [`RESERVED_ACTORS`]), the review banner's own rule: the app
+    /// compares it with the AI steps it showed.
+    pub undone_ai: usize,
 }
 
 /// The job's stored result is the engine's recalculation of the offer's
@@ -340,6 +348,25 @@ pub struct ActivityItem {
     /// The AI's reason at the end of the summary ([`ActivityEntry::reason`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// What Tectora itself wrote the entry as ([`ActivityEntry::kind`]);
+    /// absent for a change. The app translates a summary only by it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<EntryKind>,
+}
+
+/// What a change-log entry is when Tectora itself wrote it as more than a
+/// change: known from the entry's fields, never from its words, which an
+/// AI writes freely (audit 2026-11-23 ARCH-1401: an AI save summarised
+/// `Reverted: …` was shown and reverted as a revert).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryKind {
+    /// A revert: it undid the entries from `undid_from` on.
+    Revert,
+    /// The offer's own result put back ([`Store::restore_offer_result`]).
+    Restore,
+    /// The engine's recalculation of the stored result.
+    Refresh,
 }
 
 /// The newest change of `log` (oldest first) when an AI client made it,
@@ -386,6 +413,9 @@ pub struct ActivityInfo {
     pub ts_ms: u64,
     pub actor: String,
     pub summary: String,
+    /// [`ActivityEntry::kind`]: the library card translates by it alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<EntryKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -438,6 +468,39 @@ impl ActivityEntry {
             ts_ms: self.ts_ms,
             actor: self.actor.clone(),
             summary: self.summary.clone(),
+            kind: self.kind(),
+        }
+    }
+
+    /// What Tectora wrote this entry as, from its fields: a put-back
+    /// names the recalculation it put back (`restores`), a revert the
+    /// entry it undid from (`undid_from`), and a recalculation is the
+    /// engine's (also one received with a bundle). A summary's words count
+    /// only for the user's own reverts logged before reverts recorded
+    /// `undid_from` (Tectora 0.8.0 and older): an MCP client never logs as
+    /// the user (audit 2026-11-23 ARCH-1401). `None` for a change.
+    pub fn kind(&self) -> Option<EntryKind> {
+        if self.restores.is_some() {
+            Some(EntryKind::Restore)
+        } else if self.undid_from.is_some() || self.legacy_user_revert() > 0 {
+            Some(EntryKind::Revert)
+        } else if (self.actor == ENGINE_ACTOR || self.actor == RECEIVED_ENGINE_ACTOR)
+            && self.summary.starts_with(crate::snapshot::REFRESHED_PREFIX)
+        {
+            Some(EntryKind::Refresh)
+        } else {
+            None
+        }
+    }
+
+    /// How many entries before it this entry undid when it is the user's
+    /// revert of a Tectora that did not record `undid_from` yet, told by
+    /// its sentence ([`reverted_count`]); 0 for every other entry.
+    fn legacy_user_revert(&self) -> usize {
+        if self.undid_from.is_none() && self.restores.is_none() && self.actor == USER_ACTOR {
+            reverted_count(&self.summary)
+        } else {
+            0
         }
     }
 }
@@ -2552,6 +2615,7 @@ impl Store {
             .into_iter()
             .map(|e| ActivityItem {
                 refreshed: refresh_figures(&e),
+                kind: e.kind(),
                 ts_ms: e.ts_ms,
                 actor: e.actor,
                 summary: e.summary,
@@ -3258,6 +3322,7 @@ impl Store {
         // the job ends as it was before that change.
         let summary = with_reason(reason, format!("{REVERTED_PREFIX}{}", log[pos].summary));
         self.revert_locked(id, &log, pos, actor, summary)
+            .map(|(p, _)| p)
     }
 
     /// Restores the version from before the change recorded at `ts_ms`,
@@ -3302,18 +3367,34 @@ impl Store {
                 })?;
         // What `revert_locked` undoes, by its own rule: the user's put-back
         // of the offer's figures after `pos` stays and is not counted
-        // (audit 2026-11-23 HUNT-1301). The pending review starts after
-        // the last user and engine entry and the engine does not
-        // recalculate while a review waits (`refresh_due`), so from a
-        // pending AI change on this counts the AI changes undone.
-        let undone = reverted_entries(&log[pos..]).count();
+        // (audit 2026-11-23 HUNT-1301). The history line counts the
+        // changes undone, the app's notice the AI's entries undone: a
+        // user's revert written by a second Tectora on the same folder is
+        // neither a change nor an AI step (HUNT-1401).
+        let undo: Vec<&ActivityEntry> = reverted_entries(&log[pos..]).collect();
+        let undone = undo
+            .iter()
+            .filter(|e| e.undid_from.is_none())
+            .count()
+            .max(1);
+        let undone_ai = undo
+            .iter()
+            .filter(|e| !RESERVED_ACTORS.contains(&e.actor.as_str()))
+            .count();
         let summary = if undone == 1 {
             format!("{REVERTED_PREFIX}{}", log[pos].summary)
         } else {
             format!("Reverted {undone} changes since: {}", log[pos].summary)
         };
-        let project = self.revert_locked(id, &log, pos, actor, with_reason(reason, summary))?;
-        Ok(RevertedChanges { project, undone })
+        let (project, wrote) =
+            self.revert_locked(id, &log, pos, actor, with_reason(reason, summary))?;
+        // Nothing written, nothing undone (arch to-check 60).
+        let (undone, undone_ai) = if wrote { (undone, undone_ai) } else { (0, 0) };
+        Ok(RevertedChanges {
+            project,
+            undone,
+            undone_ai,
+        })
     }
 
     /// Whether the job file or its change log is there: a revert of a job
@@ -3332,7 +3413,8 @@ impl Store {
     /// nothing written, when one of them touches a value a reverted change
     /// set. The caller holds the job's lock and read `log` under it, so the
     /// file read here is the one written over (no second try with a log
-    /// that may be stale, ERR-1002).
+    /// that may be stale, ERR-1002). Returns the job and whether the
+    /// revert wrote it (nothing is written when it ends as it was).
     fn revert_locked(
         &self,
         id: &str,
@@ -3340,7 +3422,8 @@ impl Store {
         pos: usize,
         actor: &str,
         (summary, reason): (String, Option<String>),
-    ) -> Result<Project, StoreError> {
+    ) -> Result<(Project, bool), StoreError> {
+        let mut wrote = false;
         let value = |p: &Project| {
             serde_json::to_value(p).map_err(|e| StoreError::Unreadable {
                 id: id.to_string(),
@@ -3403,9 +3486,10 @@ impl Store {
                 None,
                 None,
             )?;
+            wrote = true;
         }
         self.pin_restored(id, &log[pos..], &target);
-        Ok(target)
+        Ok((target, wrote))
     }
 
     /// After a revert of `undone` gave `target`: when that put an offer's
@@ -4101,8 +4185,6 @@ fn move_all(moves: &[(PathBuf, PathBuf)]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// `what (reason: …)` when a reason is given, else `what`: the sentence
-/// the core wrote stays first, so the app recognises and translates it.
 /// How many log entries before it a revert entry undid: 1 for
 /// `Reverted: …`, n for `Reverted n changes since: …`, 0 for a change.
 fn reverted_count(summary: &str) -> usize {
@@ -4116,9 +4198,6 @@ fn reverted_count(summary: &str) -> usize {
         .unwrap_or(0)
 }
 
-/// The latest logged change that no later revert undid. A second "revert
-/// the latest change" used to revert the first revert and so put the change
-/// back (audit 2026-11-15 HUNTIO-002); it now undoes one more step.
 /// The entries a revert from `from[0]` on undoes, oldest first: the user's
 /// "offer result restored" stays when other changes are undone, it is
 /// undone only when asked for by itself. One rule for the revert and for
@@ -4130,6 +4209,9 @@ fn reverted_entries(from: &[ActivityEntry]) -> impl Iterator<Item = &ActivityEnt
         .map(|(_, e)| e)
 }
 
+/// The latest logged change that no later revert undid. A second "revert
+/// the latest change" used to revert the first revert and so put the change
+/// back (audit 2026-11-15 HUNTIO-002); it now undoes one more step.
 fn latest_undone(log: &[ActivityEntry]) -> Option<usize> {
     let mut i = log.len();
     while i > 0 {
@@ -4145,8 +4227,10 @@ fn latest_undone(log: &[ActivityEntry]) -> Option<usize> {
             i = log[..i].iter().rposition(|x| x.ts_ms == from)?;
             continue;
         }
-        // A revert logged before reverts recorded what they undid.
-        match reverted_count(&e.summary) {
+        // The user's revert logged before reverts recorded what they
+        // undid. Any other entry without `undid_from` is a change, also
+        // one an AI summarised as a revert (audit 2026-11-23 ARCH-1401).
+        match e.legacy_user_revert() {
             0 => return Some(i),
             n => i = i.saturating_sub(n),
         }
@@ -4170,6 +4254,9 @@ thread_local! {
 /// make room, never the reason, which is cut only past what leaves
 /// [`MIN_WHAT_CHARS`] for the core's sentence (audit 2026-11-23
 /// HUNT-1002, ERR-1003: the log's cap cut the reason off the line).
+///
+/// `what (reason: …)` when a reason is given, else `what`: the sentence
+/// the core wrote stays first, so the app recognises and translates it.
 ///
 /// [`MAX_SUMMARY_CHARS`]: crate::edit::MAX_SUMMARY_CHARS
 fn with_reason(reason: Option<&str>, what: String) -> (String, Option<String>) {
@@ -7608,8 +7695,10 @@ mod tests {
         let ts = store.activity(&id)[1].ts_ms;
         store.revert_to(&id, ts, "claude", Some("back")).unwrap();
         let s = store.activity(&id).last().unwrap().summary.clone();
+        // Two changes and the AI's revert between them: the revert is not
+        // a change of its own (audit 2026-11-23 HUNT-1401, design B).
         assert!(
-            s.starts_with("Reverted 3 changes since: Steeper wall 4")
+            s.starts_with("Reverted 2 changes since: Steeper wall 4")
                 && s.ends_with(" (reason: back)"),
             "{s}"
         );
@@ -8590,6 +8679,330 @@ mod tests {
                 .summary
                 .starts_with("Reverted 2 changes since: First")
         );
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Rewrites the actor and summary of the newest entry of `id`'s change
+    /// log, as another program (or an old Tectora) could have written it.
+    fn relabel_last(store: &Store, id: &str, actor: &str, summary: &str) {
+        let path = store.activity_path(id).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let mut lines: Vec<String> = text
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect();
+        let mut e: ActivityEntry = serde_json::from_str(lines.last().unwrap()).unwrap();
+        e.actor = actor.into();
+        e.summary = summary.into();
+        *lines.last_mut().unwrap() = serde_json::to_string(&e).unwrap();
+        fs::write(&path, lines.join("\n") + "\n").unwrap();
+    }
+
+    /// Audit 2026-11-23 ARCH-1401: an AI save whose summary reads like the
+    /// core's revert sentence is a change like any other. "Revert the
+    /// latest change" (the review's Revert, MCP `revert_last_change`)
+    /// undoes exactly that save, and the entry has no kind; only the
+    /// user's own revert of an old Tectora (no `undid_from`) is still
+    /// told by its sentence (HUNTIO-002).
+    #[test]
+    fn an_ai_summary_that_reads_like_a_revert_is_a_change() {
+        let store = temp_store("spoof-revert");
+        for spoof in [
+            "Reverted: Notes",
+            "Reverted 2 changes since: Notes",
+            "Reverted: Notes (reason: wrong)",
+        ] {
+            let p = examples::find("gable").unwrap().project();
+            let id = store.save_as(None, &p, USER_ACTOR, "create").unwrap();
+            let mut q = p.clone();
+            q.notes = "AI note".into();
+            store
+                .save_as(Some(id.clone()), &q, "claude", "Notes")
+                .unwrap();
+            let noted = q.clone();
+            q.job.customer = "Evil s.r.o.".into();
+            store
+                .save_as(Some(id.clone()), &q, "claude", spoof)
+                .unwrap();
+            let last = store.activity(&id).last().unwrap().clone();
+            assert_eq!(last.kind(), None, "{spoof}");
+            assert_eq!(last.info().kind, None, "{spoof}");
+            let item = store.activity_items(&id).remove(0);
+            assert_eq!(item.kind, None, "{spoof}");
+            let json = serde_json::to_value(&item).unwrap();
+            assert!(json.get("kind").is_none(), "{spoof}: {json}");
+            let back = store
+                .revert_last_expecting(&id, USER_ACTOR, None, Some(last.ts_ms))
+                .unwrap();
+            assert_eq!(back, noted, "{spoof}");
+            assert_eq!(store.load(&id).unwrap(), noted, "{spoof}");
+            // The real revert has its kind; the next one undoes the note.
+            let real = store.activity(&id).last().unwrap().clone();
+            assert_eq!(real.undid_from, Some(last.ts_ms));
+            assert_eq!(real.kind(), Some(EntryKind::Revert));
+            assert_eq!(store.activity_items(&id)[0].kind, Some(EntryKind::Revert));
+            assert_eq!(
+                serde_json::to_value(store.activity(&id).last().unwrap().info()).unwrap()["kind"],
+                "revert"
+            );
+            let back = store.revert_last(&id, USER_ACTOR, None).unwrap();
+            assert_eq!(back, p, "{spoof}");
+        }
+        // The user's revert as Tectora 0.8.0 logged it (no `undid_from`)
+        // still undid the entry before it.
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save_as(None, &p, USER_ACTOR, "create").unwrap();
+        let mut q = p.clone();
+        q.notes = "first".into();
+        store
+            .save_as(Some(id.clone()), &q, "claude", "First")
+            .unwrap();
+        let first = q.clone();
+        q.notes = "second".into();
+        store
+            .save_as(Some(id.clone()), &q, "claude", "Second")
+            .unwrap();
+        store
+            .save_as(Some(id.clone()), &first, USER_ACTOR, "Reverted: Second")
+            .unwrap();
+        let old = store.activity(&id).last().unwrap().clone();
+        assert_eq!(old.undid_from, None);
+        assert_eq!(old.kind(), Some(EntryKind::Revert));
+        assert_eq!(store.revert_last(&id, USER_ACTOR, None).unwrap(), p);
+        assert_eq!(
+            store.activity(&id).last().unwrap().summary,
+            format!("{REVERTED_PREFIX}First")
+        );
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ARCH-1401: an entry's kind comes from its fields alone. A summary
+    /// that reads like the engine's recalculation or the offer's put-back
+    /// is no such entry unless the engine wrote it or it names what it
+    /// put back.
+    #[test]
+    fn an_entry_is_a_recalculation_or_a_put_back_by_its_fields() {
+        let store = temp_store("entry-kind");
+        let (id, _) = old_offer(&store);
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        let refresh = store.activity(&id).last().unwrap().clone();
+        assert_eq!(refresh.kind(), Some(EntryKind::Refresh));
+        let mut received = refresh.clone();
+        received.actor = RECEIVED_ENGINE_ACTOR.into();
+        assert_eq!(received.kind(), Some(EntryKind::Refresh));
+        store
+            .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        let put_back = store.activity(&id).last().unwrap().clone();
+        assert_eq!(put_back.kind(), Some(EntryKind::Restore));
+        let card = store.summarize(&id).unwrap().last_activity.unwrap();
+        assert_eq!(card.kind, Some(EntryKind::Restore));
+        for (actor, summary) in [
+            ("claude", refresh.summary.as_str()),
+            ("claude", put_back.summary.as_str()),
+            (USER_ACTOR, refresh.summary.as_str()),
+            (USER_ACTOR, put_back.summary.as_str()),
+            (ENGINE_ACTOR, "Notes"),
+        ] {
+            let mut q = store.load(&id).unwrap();
+            q.notes.push('x');
+            store.save_as(Some(id.clone()), &q, actor, summary).unwrap();
+            let e = store.activity(&id).last().unwrap().clone();
+            assert_eq!(e.kind(), None, "{actor}: {summary}");
+            assert_eq!(e.info().kind, None, "{actor}: {summary}");
+        }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// TEST-1401: the user's put-back, reverted by itself (the first entry
+    /// of the revert), is undone and counted once.
+    #[test]
+    fn t1401_a_put_back_reverted_by_itself_is_undone_and_counted() {
+        let store = temp_store("t1401");
+        let (id, _p) = old_offer(&store);
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        let recalculated = store.load(&id).unwrap().result_snapshot.clone();
+        store
+            .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        let put_back = store.activity(&id).last().unwrap().ts_ms;
+        let r = store
+            .revert_to_counted(&id, put_back, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(r.undone, 1);
+        assert_eq!(r.project.result_snapshot, recalculated);
+        assert_eq!(store.load(&id).unwrap().result_snapshot, recalculated);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-23 HUNT-1401, TEST-1402 (design B): what a revert from
+    /// an entry counts, over every mix of entries after it. `undone` (the
+    /// history line) counts the changes undone, not the reverts among
+    /// them; `undone_ai` the AI's entries undone, which the app compares
+    /// with the AI steps its banner showed. A revert that writes nothing
+    /// undoes nothing.
+    #[test]
+    fn a_revert_counts_the_changes_and_the_ai_steps_it_undid() {
+        #[derive(Clone, Copy)]
+        enum Step {
+            /// An AI change (each one sets another field).
+            A,
+            /// The AI's revert of the latest change.
+            Ar,
+            /// The AI's put-back of the offer's figures.
+            Ap,
+            /// The user's revert of the latest change (a second Tectora).
+            Ur,
+            /// The user's put-back of the offer's figures.
+            Up,
+            /// The engine's recalculation (planted: `refresh_due` refuses
+            /// while a review waits).
+            E,
+            /// An engine entry received with a bundle (planted).
+            X,
+            /// Another `user` entry (another program, an old log).
+            U,
+        }
+        use Step::*;
+        type Row = (
+            &'static str,
+            &'static [Step],
+            usize,
+            usize,
+            Option<&'static str>,
+        );
+        let rows: [Row; 11] = [
+            (
+                "A A A",
+                &[A, A, A],
+                3,
+                3,
+                Some("Reverted 3 changes since: A1"),
+            ),
+            ("A Up", &[A, Up], 1, 1, Some("Reverted: A1")),
+            ("Up", &[Up], 1, 0, Some("Reverted: Offer result restored")),
+            (
+                "A A Ur",
+                &[A, A, Ur],
+                2,
+                2,
+                Some("Reverted 2 changes since: A1"),
+            ),
+            (
+                "A A Ur A",
+                &[A, A, Ur, A],
+                3,
+                3,
+                Some("Reverted 3 changes since: A1"),
+            ),
+            ("A Ar", &[A, Ar], 0, 0, None),
+            (
+                "A A Ar",
+                &[A, A, Ar],
+                2,
+                3,
+                Some("Reverted 2 changes since: A1"),
+            ),
+            ("A E", &[A, E], 2, 1, Some("Reverted 2 changes since: A1")),
+            ("A Ap", &[A, Ap], 2, 2, Some("Reverted 2 changes since: A1")),
+            ("A X", &[A, X], 2, 1, Some("Reverted 2 changes since: A1")),
+            ("A U", &[A, U], 2, 1, Some("Reverted 2 changes since: A1")),
+        ];
+        let store = temp_store("revert-count-table");
+        for (name, steps, undone, undone_ai, line) in rows {
+            let (id, _) = old_offer(&store);
+            let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+            let start = store.activity(&id).len();
+            let mut n = 0;
+            for step in steps {
+                let mut q = store.load(&id).unwrap();
+                match step {
+                    A => {
+                        n += 1;
+                        match n {
+                            1 => q.notes = "A1".into(),
+                            2 => q.job.address = "A2".into(),
+                            _ => q.job.customer = format!("A{n}"),
+                        }
+                        store
+                            .save_as(Some(id.clone()), &q, "claude", &format!("A{n}"))
+                            .unwrap();
+                    }
+                    Ar => {
+                        store.revert_last(&id, "claude", Some("back")).unwrap();
+                    }
+                    Ur => {
+                        store.revert_last(&id, USER_ACTOR, None).unwrap();
+                    }
+                    Ap | Up => {
+                        let actor = if matches!(step, Ap) {
+                            "claude"
+                        } else {
+                            USER_ACTOR
+                        };
+                        store
+                            .restore_offer_result(&id, done.entry_ts_ms, actor, None)
+                            .unwrap();
+                    }
+                    E | X | U => {
+                        q.job.number = "N-1".into();
+                        store
+                            .save_as(Some(id.clone()), &q, USER_ACTOR, "By hand")
+                            .unwrap();
+                        let actor = match step {
+                            E => ENGINE_ACTOR,
+                            X => RECEIVED_ENGINE_ACTOR,
+                            _ => USER_ACTOR,
+                        };
+                        let summary = if matches!(step, U) {
+                            "By hand".to_string()
+                        } else {
+                            done.summary.clone()
+                        };
+                        relabel_last(&store, &id, actor, &summary);
+                    }
+                }
+            }
+            let log = store.activity(&id);
+            let from = &log[start];
+            let file_before = fs::read(store.path(&id).unwrap()).unwrap();
+            let r = store
+                .revert_to_counted(&id, from.ts_ms, USER_ACTOR, None)
+                .unwrap();
+            assert_eq!((r.undone, r.undone_ai), (undone, undone_ai), "{name}");
+            let after = store.activity(&id);
+            match line {
+                Some(line) => {
+                    assert_eq!(after.len(), log.len() + 1, "{name}");
+                    let last = after.last().unwrap();
+                    assert!(last.summary.starts_with(line), "{name}: {}", last.summary);
+                    assert_eq!(last.undid_from, Some(from.ts_ms), "{name}");
+                }
+                None => {
+                    assert_eq!(after.len(), log.len(), "{name}");
+                    assert_eq!(
+                        fs::read(store.path(&id).unwrap()).unwrap(),
+                        file_before,
+                        "{name}"
+                    );
+                }
+            }
+            // The file: as before the first undone entry, the user's kept
+            // put-back of the offer's figures aside.
+            let mut want = from.before.clone().unwrap();
+            if name == "A Up" {
+                want.result_snapshot = log
+                    .last()
+                    .unwrap()
+                    .after
+                    .as_ref()
+                    .unwrap()
+                    .result_snapshot
+                    .clone();
+            }
+            assert_eq!(store.load(&id).unwrap(), want, "{name}");
+        }
         let _ = fs::remove_dir_all(&store.dir);
     }
 
