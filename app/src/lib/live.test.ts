@@ -150,6 +150,38 @@ describe("entrySummary", () => {
   });
 });
 
+// Audit 2026-11-23 HUNT-902: the offer's figures no longer live in the
+// change log, so the entry no longer promises they "stay in this
+// history"; the recalculation the stored result still is says they can be
+// put back, an older or a received one says nothing about it.
+describe("the recalculation's entry in the history (HUNT-902)", () => {
+  const entry = "Stored result recalculated (Tectora 0.0.1 -> 0.9.0): roof area 157.73 -> 152.73 m2";
+  it("says the figures can be put back only on the current recalculation, in every language", () => {
+    const back: Record<string, string> = {
+      cs: "Původní čísla lze vrátit.",
+      sk: "Pôvodné čísla sa dajú vrátiť.",
+      en: "The original figures can be put back.",
+      de: "Die ursprünglichen Zahlen lassen sich zurückholen.",
+    };
+    for (const [loc, sentence] of Object.entries(back)) {
+      i18n.locale = loc as typeof i18n.locale;
+      const current = historyText({ actor: "tectora", summary: entry, ts_ms: 5 }, [], 5);
+      expect(current, loc).toMatch(new RegExp(`m²\\. ${sentence.replace(/[.]/g, "\\.")}$`));
+      for (const text of [
+        historyText({ actor: "tectora", summary: entry, ts_ms: 4 }, [], 5),
+        historyText({ actor: "tectora", summary: entry, ts_ms: 5 }, [], null),
+        historyText({ actor: "tectora (received)", summary: entry, ts_ms: 5 }, [], 5),
+        entrySummary(entry),
+      ]) {
+        expect(text, loc).not.toContain(sentence);
+        expect(text, loc).toMatch(/m²\.$/);
+      }
+      expect(current, loc).not.toMatch(/histor|Verlauf/i);
+    }
+    i18n.locale = "cs";
+  });
+});
+
 // Audit 2026-11-22 UX-704: the library's job panel showed the engine's
 // recalculation of a stored result as the user's own change.
 describe("actorLabel", () => {

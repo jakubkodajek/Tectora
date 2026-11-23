@@ -23,6 +23,8 @@
     failure = null,
     pending = false,
     recalculated = null,
+    onrestore,
+    restoring = false,
   }: {
     result: CalcResult | null;
     project?: Project | null;
@@ -35,8 +37,12 @@
     failure?: Described | null;
     /** A recalculation is on its way: the figures are of the roof before the last edit (ERR-204). */
     pending?: boolean;
-    /** The engine recalculated the stored result (when: `at`) and nothing stored one since (UX-702b). */
-    recalculated?: (ResultRefresh & { at: number }) | null;
+    /** The engine recalculated the stored result (when: `at`, its entry: `entry_ts_ms`) and nothing stored one since (UX-702b). */
+    recalculated?: (ResultRefresh & { at: number; entry_ts_ms?: number }) | null;
+    /** Puts the offer's own figures back in place of the recalculation logged at `ts` (HUNT-902: also once the history no longer lists the entry). */
+    onrestore?: (ts: number) => void;
+    /** A put-back or another review action is running: the button is off. */
+    restoring?: boolean;
   } = $props();
   const day = (ms: number) => new Date(ms).toLocaleDateString(numberLocale());
 
@@ -78,6 +84,12 @@
 
   /** The stored result (figures of the offer) against the current one. */
   const stored = $derived(result?.stored_result ?? null);
+  /**
+   * A job past the draft without a stored result (dropped for an impossible
+   * date, or an old job): the card says so and offers to store one, which
+   * the load warning asks for (audit 2026-11-23 UX-902).
+   */
+  const noneStored = $derived(!stored && !!result && !!project && project.job.status !== "draft" && !project.result_snapshot);
   const diffLabel = (key: string) => figureName(key, project);
   /** A roof of hand-drawn faces only: no "ridge 0,00 m" and no rows of zeros (UX-302). */
   const facesOnly = $derived(isFacesOnly(project));
@@ -262,6 +274,11 @@
           <p class="mono" data-testid="snap-recalculated">{t("snap.recalculated", { date: day(recalculated.at), from: recalculated.from, to: recalculated.to })}</p>
         {/if}
         <p class="mono" data-testid="snap-offer">{t("snap.offerStored", { date: day(recalculated.offer_ms) })}</p>
+        {#if onrestore && recalculated.entry_ts_ms != null}
+          {@const ts = recalculated.entry_ts_ms}
+          <!-- The same put-back as on the history's entry, which the change log may have dropped by now (HUNT-902). -->
+          <button class="btn sm" data-testid="snap-restore" aria-disabled={restoring} aria-busy={restoring} onclick={() => !restoring && onrestore?.(ts)}>{t("snap.revertRefresh")}</button>
+        {/if}
       {/if}
       {#if stored.differences.length}
         <table class="diff">
@@ -279,6 +296,17 @@
       {/if}
       {#if stored.differences.length && onstore}
         <button class="btn sm" disabled={!!storeBlocked} aria-disabled={storing} aria-busy={storing} title={storeBlocked ?? undefined} onclick={() => !storing && onstore?.()}>{t("snap.store")}</button>
+      {/if}
+    </div>
+  {:else if noneStored}
+    <h4>{t("snap.title")}</h4>
+    <div class="snap" data-testid="snap-none">
+      <div class="snap-head" data-testid="snap-state">
+        <i class="sq"></i>
+        <span>{t("snap.none")}</span>
+      </div>
+      {#if onstore}
+        <button class="btn sm" data-testid="snap-store" disabled={!!storeBlocked} aria-disabled={storing} aria-busy={storing} title={storeBlocked ?? undefined} onclick={() => !storing && onstore?.()}>{t("snap.store")}</button>
       {/if}
     </div>
   {/if}

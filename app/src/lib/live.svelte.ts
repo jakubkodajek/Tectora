@@ -117,8 +117,22 @@ export function refreshedNotice(summary: string): string {
  * Tectora's own recalculation, or of the user's own change, is no AI
  * change and keeps its sentence (audit 2026-11-22 UI-803); the undone
  * entry is looked up in `log` by the revert's `undid_from`.
+ *
+ * `recalculationTs`: the entry of the recalculation the job's stored
+ * result still is (`Store::recalculation`). Only that entry says the
+ * offer's figures can be put back (they can, from the result card and the
+ * entry, audit 2026-11-23 HUNT-902); an older one, or one received with a
+ * bundle, says nothing about it.
  */
-export function historyText(a: Pick<ActivityItem, "actor" | "summary" | "undid_from" | "restores" | "reason">, log: Pick<ActivityItem, "ts_ms" | "actor">[]): string {
+export function historyText(
+  a: Pick<ActivityItem, "actor" | "summary" | "undid_from" | "restores" | "reason"> & { ts_ms?: number },
+  log: Pick<ActivityItem, "ts_ms" | "actor">[],
+  recalculationTs?: number | null,
+): string {
+  if (a.actor === ENGINE_ACTOR && recalculationTs != null && a.ts_ms === recalculationTs && REFRESHED_ANY.test(a.summary)) {
+    const text = refreshedText("chg.resultRefreshed", a.summary);
+    if (text) return `${text} ${t("chg.refreshedBack")}`;
+  }
   if (!isAi(a.actor) && a.restores == null && isRevert(a.summary)) {
     const undone = a.undid_from == null ? undefined : log.find((e) => e.ts_ms === a.undid_from);
     // Not in the list any more (or an entry of an older Tectora): told by the sentence.
@@ -136,9 +150,8 @@ export function historyText(a: Pick<ActivityItem, "actor" | "summary" | "undid_f
  * are split at the last ` (reason: `.
  */
 export function entrySummary(summary: string, reason?: string | null): string {
-  const suffix = reason ? `${REASON_OPEN}${reason})` : null;
-  if (suffix && summary.endsWith(suffix)) {
-    const head = summary.slice(0, -suffix.length);
+  if (reason && summary.endsWith(`${REASON_OPEN}${reason})`)) {
+    const head = summary.slice(0, -`${REASON_OPEN}${reason})`.length);
     const restored = RESTORED.exec(head);
     if (restored) return t("chg.revertReason", { s: t("chg.resultRestored", { to: restored[1], from: restored[2] }), r: reason });
     if (revertSentence(head)) return t("chg.revertReason", { s: revertText(head), r: reason });

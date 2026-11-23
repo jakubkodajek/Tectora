@@ -112,7 +112,7 @@
           <span class="who" class:ai><Icon name={ai ? "sparkle" : a.actor === USER_ACTOR ? "cursor" : "refresh"} size={13} />{actorLabel(a.actor)}</span>
           <time>{relativeTime(a.ts_ms)}</time>
         </div>
-        <p class="summary">{historyText(a, activity)}</p>
+        <p class="summary">{historyText(a, activity, recalculation?.entry_ts_ms)}</p>
         {#if figures}
           <button class="link" aria-expanded={!!open[k]} onclick={() => (open[k] = !open[k])}>
             {open[k] ? t("ai.hideChanges") : t("ai.showChanges", { n: figures.length })}
