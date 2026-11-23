@@ -3580,6 +3580,38 @@ mod tool_coverage {
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
+    /// Audit 2026-11-23 ARCH-1201, ERR-1202: a job whose unknown keys nest
+    /// deeper than 32 levels is refused as the app refuses it, with its
+    /// code and the reason; nothing is written or logged for it.
+    #[test]
+    fn a_job_with_too_deep_unknown_keys_is_refused_with_its_code() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        let mut v = serde_json::to_value(s.store.load(&id).unwrap()).unwrap();
+        let mut deep = json!([]);
+        for _ in 0..40 {
+            deep = Value::Array(vec![deep]);
+        }
+        v["crm"] = deep;
+        std::fs::write(s.store.dir.join(format!("{id}.tectora")), v.to_string()).unwrap();
+        let log = s.store.activity(&id).len();
+        for (tool, args) in [
+            ("get_project", json!({ "id": id })),
+            (
+                "update_job",
+                json!({ "id": id, "notes": "x", "summary": "Notes" }),
+            ),
+        ] {
+            let e = s.call_tool(tool, &args).unwrap_err().to_string();
+            assert!(
+                e.contains("too_many") && e.contains("nested too deep"),
+                "{tool}: {e}"
+            );
+        }
+        assert_eq!(s.store.activity(&id).len(), log);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
     /// Audit 2026-11-23 ARCH-1203: a description is the AI client's
     /// contract. export_plan of a recalculated offer answers without a
     /// `note`, so its description promises none and says what the sheet
