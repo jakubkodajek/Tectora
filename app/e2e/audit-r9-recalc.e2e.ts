@@ -24,7 +24,7 @@ import path from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { bar, selectWall } from "./editor";
 import { LIBRARY_DIR } from "./env";
-import { bridge, createExample, expect, listProjects, loadProject, test, waitForProject } from "./fixtures";
+import { bridge, createExample, expect, listProjects, loadProject, noToast, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 
 // TECTORA_SHOTS=<folder>/ saves a screenshot after each test (fix evidence).
@@ -252,9 +252,10 @@ test.describe("round 9: the recalculation entry and its way back (Design A)", ()
     await waitForProject(id, (p) => p.result_snapshot?.engine_version === "0.8.0");
     await app.saved();
     await page.getByRole("button", { name: cs("editor.back") }).click();
+    await expect(recalcToast(app)).toHaveCount(0, { timeout: 12_000 });
     await app.openJob("Zpět a zpět");
     await app.saved();
-    await expect(recalcToast(app)).toHaveCount(0);
+    await noToast(recalcToast(app), 1500, "a notice after the put-back");
     expect((await loadProject(id)).result_snapshot.roof_area).toBe(150);
   });
 

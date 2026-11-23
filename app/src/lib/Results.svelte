@@ -12,6 +12,7 @@
   import { legend, lineName, SUB_CODES } from "./linecodes";
   import { partLabel } from "./partname";
   import { api } from "./api";
+  import { pressKeepingFocus } from "./press";
   import type { CalcBreakdown, CalcResult, Project, ResultRefresh } from "./types";
 
   let {
@@ -25,10 +26,11 @@
     recalculated = null,
     onrestore,
     restoring = false,
+    received = null,
   }: {
     result: CalcResult | null;
     project?: Project | null;
-    onstore?: () => void;
+    onstore?: () => void | Promise<void>;
     /** The result is being stored: the button is off. */
     storing?: boolean;
     /** Why the figures cannot become the offer's stored result now (the core gave no roof), or null. */
@@ -40,11 +42,20 @@
     /** The engine recalculated the stored result (when: `at`, its entry: `entry_ts_ms`) and nothing stored one since (UX-702b). */
     recalculated?: (ResultRefresh & { at: number; entry_ts_ms?: number }) | null;
     /** Puts the offer's own figures back in place of the recalculation logged at `ts` (HUNT-902: also once the history no longer lists the entry). */
-    onrestore?: (ts: number) => void;
+    onrestore?: (ts: number) => void | Promise<void>;
     /** A put-back or another review action is running: the button is off. */
     restoring?: boolean;
+    /**
+     * The sender's engine recalculated the stored result of this received
+     * job (`receivedRecalculation`): said on the card, without the put-back,
+     * as the offer's own figures stayed with the sender (UX-1003).
+     */
+    received?: { at: number; from: string; to: string; area: number | null } | null;
   } = $props();
   const day = (ms: number) => new Date(ms).toLocaleDateString(numberLocale());
+  /** The card's heading: the keyboard's focus lands there when the pressed button went away (UI-1001). */
+  let cardHead: HTMLElement | undefined = $state();
+  const pressCard = (run: () => void | Promise<void>) => pressKeepingFocus(run, () => cardHead);
 
   // What is on the roof (UX-005): counts and window sizes from the job,
   // the area each kind took off the roof from the core's breakdown.
@@ -253,7 +264,7 @@
   <p class="note" data-testid="res-legend">{legend(shownRows.map((r) => r.code), codes)}</p>
 
   {#if stored}
-    <h4>{t("snap.title")}</h4>
+    <h4 bind:this={cardHead} tabindex="-1" data-testid="snap-title">{t("snap.title")}</h4>
     <!-- Figures that leave out a building the calculation cannot take are no
          comparison: equal figures would read "unchanged" (UX-103). -->
     <div class="snap" class:changed={stored.differences.length > 0 || !!blocked}>
@@ -263,6 +274,8 @@
           {#if recalculated && !blocked && !stored.differences.length}
             <!-- Not "unchanged since stored" with the date of the open: the engine stored these figures (UX-702b). -->
             {t("snap.recalculated", { date: day(recalculated.at), from: recalculated.from, to: recalculated.to })}
+          {:else if received && !recalculated && !blocked && !stored.differences.length}
+            {t("snap.recalculated", { date: day(received.at), from: received.from, to: received.to })}
           {:else}
             {blocked ? t("snap.unchecked") : stored.differences.length ? t("snap.changed") : t("snap.same")}
             · {day(stored.stored.taken_ms)}
@@ -277,8 +290,14 @@
         {#if onrestore && recalculated.entry_ts_ms != null}
           {@const ts = recalculated.entry_ts_ms}
           <!-- The same put-back as on the history's entry, which the change log may have dropped by now (HUNT-902). -->
-          <button class="btn sm" data-testid="snap-restore" aria-disabled={restoring} aria-busy={restoring} onclick={() => !restoring && onrestore?.(ts)}>{t("snap.revertRefresh")}</button>
+          <button class="btn sm" data-testid="snap-restore" aria-disabled={restoring} aria-busy={restoring} onclick={() => !restoring && pressCard(() => onrestore?.(ts))}>{t("snap.revertRefresh")}</button>
         {/if}
+      {/if}
+      {#if received && !recalculated}
+        {#if blocked || stored.differences.length}
+          <p class="mono" data-testid="snap-recalculated">{t("snap.recalculated", { date: day(received.at), from: received.from, to: received.to })}</p>
+        {/if}
+        <p class="mono" data-testid="snap-received">{received.area != null ? t("snap.receivedOfferArea", { a: m2(received.area) }) : t("snap.receivedOffer")}</p>
       {/if}
       {#if stored.differences.length}
         <table class="diff">
@@ -295,18 +314,18 @@
         <p class="mono">{t("snap.engine", { v: stored.stored.engine_version })}</p>
       {/if}
       {#if stored.differences.length && onstore}
-        <button class="btn sm" disabled={!!storeBlocked} aria-disabled={storing} aria-busy={storing} title={storeBlocked ?? undefined} onclick={() => !storing && onstore?.()}>{t("snap.store")}</button>
+        <button class="btn sm" disabled={!!storeBlocked} aria-disabled={storing} aria-busy={storing} title={storeBlocked ?? undefined} onclick={() => !storing && pressCard(() => onstore?.())}>{t("snap.store")}</button>
       {/if}
     </div>
   {:else if noneStored}
-    <h4>{t("snap.title")}</h4>
+    <h4 bind:this={cardHead} tabindex="-1" data-testid="snap-title">{t("snap.title")}</h4>
     <div class="snap" data-testid="snap-none">
       <div class="snap-head" data-testid="snap-state">
         <i class="sq"></i>
         <span>{t("snap.none")}</span>
       </div>
       {#if onstore}
-        <button class="btn sm" data-testid="snap-store" disabled={!!storeBlocked} aria-disabled={storing} aria-busy={storing} title={storeBlocked ?? undefined} onclick={() => !storing && onstore?.()}>{t("snap.store")}</button>
+        <button class="btn sm" data-testid="snap-store" disabled={!!storeBlocked} aria-disabled={storing} aria-busy={storing} title={storeBlocked ?? undefined} onclick={() => !storing && pressCard(() => onstore?.())}>{t("snap.store")}</button>
       {/if}
     </div>
   {/if}
@@ -348,6 +367,10 @@
     font-weight: 700;
     letter-spacing: -0.02em;
     font-variant-numeric: tabular-nums;
+  }
+  h4:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
   }
   h4 {
     margin: 6px 0 0;
@@ -467,6 +490,7 @@
   }
   .mono {
     margin: 0;
+    overflow-wrap: anywhere;
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     font-size: 11.5px;
     color: var(--text-2);

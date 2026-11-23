@@ -107,12 +107,15 @@
   .info .dot {
     background: var(--ok);
   }
+  /* A job's name without spaces wraps instead of running under the close button (UI-1003). */
   strong {
     flex: 1;
     min-width: 0;
     font-weight: 600;
+    overflow-wrap: anywhere;
   }
   p {
+    overflow-wrap: anywhere;
     margin: 4px 0 0 14px;
     color: var(--text-2);
     line-height: 1.45;

@@ -88,6 +88,8 @@ const REFRESHED_ANY = /^Stored result recalculated /;
 
 /** The entry the core writes when the offer's result is put back (store.rs `RESTORED_PREFIX`). */
 const RESTORED = /^Offer result restored \(Tectora (\S+) -> (\S+)\)(?:: roof area -?[\d.]+ -> -?[\d.]+ m2)?$/;
+/** Its start, for an entry the store cut (`cutHead`). */
+const RESTORED_START = /^Offer result restored \(Tectora (\S+) -> (\S+)\)/;
 
 /** A recalculation's sentence under the i18n keys `<key>`, `<key>Lines` and `<key>Other`; null for any other summary. */
 function refreshedText(key: "snap.refreshedNotice" | "chg.resultRefreshed", summary: string): string | null {
@@ -101,6 +103,28 @@ function refreshedText(key: "snap.refreshedNotice" | "chg.resultRefreshed", summ
   const other = REFRESHED_OTHER.exec(summary);
   if (other) return t(`${key}Other`, { from: other[1], to: other[2] });
   return null;
+}
+
+/**
+ * The recalculation of the stored result a received job came with (audit
+ * 2026-11-23 UX-1003; owner decision: bundles carry no offer figures): the
+ * newest entry that changed the stored result is the sender's engine's
+ * (`tectora (received)`), and the job's result is of the engine it names.
+ * The card shows it as information, without the put-back; `area` is the
+ * offer's roof area when the entry names it.
+ */
+export function receivedRecalculation(
+  log: readonly Pick<ActivityItem, "ts_ms" | "actor" | "summary" | "changes">[],
+  project: { result_snapshot?: { engine_version: string } | null } | null,
+): { at: number; from: string; to: string; area: number | null } | null {
+  const engine = project?.result_snapshot?.engine_version;
+  if (!engine) return null;
+  const last = log.find((a) => a.changes.some((c) => c.field === "result_snapshot"));
+  if (!last || last.actor !== RECEIVED_ENGINE_ACTOR) return null;
+  const head = new RegExp(`^${REFRESHED_HEAD}`).exec(last.summary);
+  if (!head || head[2] !== engine) return null;
+  const area = REFRESHED.exec(last.summary);
+  return { at: last.ts_ms, from: head[1], to: head[2], area: area ? Number(area[3]) : null };
 }
 
 /**
@@ -156,6 +180,12 @@ export function entrySummary(summary: string, reason?: string | null): string {
     if (restored) return t("chg.revertReason", { s: t("chg.resultRestored", { to: restored[1], from: restored[2] }), r: reason });
     if (revertSentence(head)) return t("chg.revertReason", { s: revertText(head), r: reason });
   }
+  const cut = reason ? cutHead(summary, reason) : null;
+  if (cut !== null && reason) {
+    const restored = RESTORED_START.exec(cut);
+    if (restored) return t("chg.revertReason", { s: t("chg.resultRestored", { to: restored[1], from: restored[2] }), r: reason });
+    if (revertSentence(cut)) return t("chg.revertReason", { s: revertText(cut), r: reason });
+  }
   const refreshed = REFRESHED_ANY.test(summary) ? refreshedText("chg.resultRefreshed", summary) : null;
   if (refreshed) return refreshed;
   if (summary.startsWith("Offer result restored ")) {
@@ -178,6 +208,29 @@ export function entrySummary(summary: string, reason?: string | null): string {
   }
   const legacy = LEGACY_REASON.exec(summary);
   if (legacy) return t("chg.revertReason", { s: revertText(legacy[2]), r: legacy[1] });
+  return summary;
+}
+
+/** The mark the store ends a capped text with (edit `capped`). */
+const CUT = "…";
+
+/**
+ * The core's sentence of an entry whose summary the store capped at 500
+ * characters before it kept the reason whole (audit 2026-11-23 HUNT-1002,
+ * ERR-1003): the cut fell inside the reason (the head is the text before
+ * its ` (reason: `), or inside the sentence before it (the head is the
+ * sentence as cut, ending in "…", without a begun ` (reason: `). Null
+ * when the summary was not cut.
+ */
+function cutHead(summary: string, reason: string): string | null {
+  if (!summary.endsWith(CUT)) return null;
+  const body = summary.slice(0, -CUT.length);
+  const at = body.lastIndexOf(REASON_OPEN);
+  // The text after the last ` (reason: ` is the start of the reason, not an AI's own "(reason: …)".
+  if (at >= 0 && reason.startsWith(body.slice(at + REASON_OPEN.length))) return body.slice(0, at);
+  for (let k = REASON_OPEN.length - 1; k > 0; k--) {
+    if (body.endsWith(REASON_OPEN.slice(0, k))) return `${body.slice(0, -k)}${CUT}`;
+  }
   return summary;
 }
 

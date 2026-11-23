@@ -59,6 +59,21 @@ export async function waitForProject(id: string, check: (p: any) => boolean, tim
   throw new Error(`project ${id} did not reach the expected state:\n${JSON.stringify(last, null, 1).slice(0, 3000)}`);
 }
 
+/**
+ * Fails on any sighting of `locator` during `ms` (sampled every 20 ms; a
+ * toast stays seconds). `expect(..).toHaveCount(0)` passes once a toast
+ * that was there has gone, so it cannot tell "never shown" (audit
+ * 2026-11-23 TEST-1002): wait for an earlier toast to go first.
+ */
+export async function noToast(locator: import("@playwright/test").Locator, ms = 1500, what = "a toast that must not be shown") {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    const n = await locator.count();
+    if (n > 0) throw new Error(`${what} was shown: ${JSON.stringify(await locator.allTextContents())}`);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
 // Tauri's dialog plugin makes window.confirm / alert / prompt asynchronous (a
 // Promise), and the preview's tauri-mock asks for file paths with prompt().
 // The tests answer both from a queue; every dialog is recorded.

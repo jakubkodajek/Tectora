@@ -8,6 +8,7 @@
   import { t } from "./i18n.svelte";
   import { actorLabel, actorName, historyText, isFresh, isRevert, live, liveText } from "./live.svelte";
   import { app as appSettings } from "./settings.svelte";
+  import { pressKeepingFocus } from "./press";
   import { changeRows, changeState, rowLabel } from "./settingschange";
   import type { ActivityItem, Change, Project, Recalculation } from "./types";
   import { ENGINE_ACTOR, USER_ACTOR, isAi } from "./types";
@@ -65,18 +66,10 @@
   let list: HTMLOListElement | undefined = $state();
   /**
    * Runs a history button's action. Its button is gone once the action is
-   * done (the entry it was drawn on changed), so a press from the keyboard
-   * (the button has the keyboard's focus ring) leaves the focus on the
-   * history list instead of the page's body (UI-902).
+   * done (the entry it was drawn on changed): from the keyboard the focus
+   * then stays on the history list (UI-902).
    */
-  async function press(run: () => void | Promise<void>) {
-    const keyboard = !!document.activeElement?.matches(":focus-visible");
-    await run();
-    if (!keyboard) return;
-    await tick();
-    const a = document.activeElement;
-    if (!a || a === document.body || !a.isConnected) list?.focus();
-  }
+  const press = (run: () => void | Promise<void>) => pressKeepingFocus(run, () => list);
   $effect(() => {
     if (shown == null) return;
     const i = activity.findIndex((a) => a.ts_ms === shown);

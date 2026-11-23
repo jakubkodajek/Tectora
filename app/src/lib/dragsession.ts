@@ -285,6 +285,107 @@ export class DragSession<T, S> {
 }
 
 /**
+ * Revert, Revert all and the put-back of the offer's figures: a short
+ * transaction of the core's that replaces the job, like a drag (audit
+ * 2026-11-23 design A1, owner decision; HUNT-1001, UX-1001, UX-1002,
+ * ERR-1004). While the call is out the editor is no writer of the job:
+ * 1. User input is refused at the points that refuse it during a drag
+ *    (`closedForInput`): keys, fields, bar buttons, delete, drag presses.
+ *    Nothing is replayed; the call takes at most the core's lock wait
+ *    (about 3 s, then it answers `busy` and changed nothing).
+ * 2. The core's answers to edits made before (JobEdits.pause) and reloads
+ *    after outside saves (`defer`) wait for the end of the transaction.
+ * 3. The answer replaces the job as it is: there is nothing local to
+ *    merge into it.
+ * A second action while one is out does nothing.
+ */
+export class CoreAction {
+  private resume: (() => void) | null = null;
+  private deferred = new Map<string, () => void>();
+
+  /** `pause`: JobEdits.pause; `changed`: the action began (true) or ended (false), for what the editor shows. */
+  constructor(
+    private pause: () => () => void,
+    private changed?: (active: boolean) => void,
+  ) {}
+
+  /** The call is out. */
+  get active(): boolean {
+    return this.resume !== null;
+  }
+
+  /** Runs `work` as the transaction; resolves to undefined without running it when one is out already. Rethrows what `work` throws, after the end. */
+  async run<R>(work: () => Promise<R>): Promise<R | undefined> {
+    if (this.resume) return undefined;
+    this.resume = this.pause();
+    this.changed?.(true);
+    try {
+      return await work();
+    } finally {
+      const resume = this.resume;
+      const deferred = [...this.deferred.values()];
+      this.resume = null;
+      this.deferred = new Map();
+      try {
+        this.changed?.(false);
+      } finally {
+        resume?.();
+        for (const run of deferred) {
+          try {
+            run();
+          } catch (e) {
+            console.error(e);
+          }
+        }
+      }
+    }
+  }
+
+  /** Something that is not the user's waits for the end of the transaction; one run per `key`, the newest wins. At once when none is out. */
+  defer(key: string, run: () => void) {
+    if (!this.resume) run();
+    else this.deferred.set(key, run);
+  }
+}
+
+/**
+ * The editor is closed for the user's input: a drag is open or a core
+ * action is out. The one predicate every refusal asks (keys, fields, bar
+ * buttons, delete, drag presses, the autosave's timer).
+ */
+export function closedForInput(...writers: readonly { readonly active: boolean }[]): boolean {
+  return writers.some((w) => w.active);
+}
+
+/** The user's input events a closed part of the editor swallows (`refuseInput`). */
+export const REFUSED_EVENTS = ["pointerdown", "mousedown", "mouseup", "click", "dblclick", "contextmenu", "touchstart", "keydown", "keypress", "beforeinput", "paste", "drop"] as const;
+
+/**
+ * Svelte action: while `on`, the user's input in the node is swallowed in
+ * the capture phase (no press, no focus, no key, no typed text), and
+ * unlike `inert` the focus stays where it is: the dock during a review
+ * action, whose pressed button keeps the keyboard's focus while it waits
+ * (UI-604, design A1).
+ */
+export function refuseInput(node: HTMLElement, opts: { on: boolean }) {
+  let now = opts;
+  const swallow = (e: Event) => {
+    if (!now.on) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  };
+  for (const type of REFUSED_EVENTS) node.addEventListener(type, swallow, true);
+  return {
+    update(next: { on: boolean }) {
+      now = next;
+    },
+    destroy() {
+      for (const type of REFUSED_EVENTS) node.removeEventListener(type, swallow, true);
+    },
+  };
+}
+
+/**
  * Svelte action: while `on`, every child of the node except the one with
  * class `keep` is `inert` (no click, no focus, no key reaches it), also
  * children added meanwhile (the bar under the plan changes with the

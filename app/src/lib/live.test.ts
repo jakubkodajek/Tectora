@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DICTS, i18n } from "./i18n.svelte";
-import { actorLabel, entrySummary, historyText, isRevert, liveText, refreshedNotice } from "./live.svelte";
+import { actorLabel, entrySummary, historyText, isRevert, liveText, receivedRecalculation, refreshedNotice } from "./live.svelte";
+import { RECEIVED_ENGINE_ACTOR } from "./types";
 
 // The codes the MCP server sends (crates/tectora-core/src/store.rs LIVE_KINDS).
 const KINDS = [
@@ -146,6 +147,52 @@ describe("entrySummary", () => {
       // The history passes the item's field.
       expect(historyText({ actor: "claude", summary: reverted, reason: "Mistake (reason: typo) fixed" }, [])).toBe(v);
     }
+    i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-23 HUNT-1002, ERR-1003: entries written before the core
+// kept the reason whole had the whole summary capped at 500 characters, so
+// it ends inside the reason or inside the sentence before it ("…"). The
+// reason field holds it whole: the line shows the translated head and it.
+describe("an entry whose summary was cut by the cap (HUNT-1002, ERR-1003)", () => {
+  const cap = (s: string) => (s.length <= 500 ? s : `${s.slice(0, 499)}…`);
+  const reason = `The customer signed these figures. ${"y".repeat(415)}`;
+  const restored = cap(`Offer result restored (Tectora 0.9.0 -> 0.8.0): roof area 152.73 -> 154.73 m2 (reason: ${reason})`);
+  const what = `Note. ${"x".repeat(480)}`;
+  const reverted = cap(`Reverted: ${what} (reason: Customer asked)`);
+  const head: Record<string, [string, string, string]> = {
+    cs: ["Původní čísla nabídky vrácena (Tectora 0.9.0 → 0.8.0)", "Vráceno: Note. ", "důvod"],
+    sk: ["Pôvodné čísla ponuky vrátené (Tectora 0.9.0 → 0.8.0)", "Vrátené: Note. ", "dôvod"],
+    en: ["Offer figures put back (Tectora 0.9.0 → 0.8.0)", "Reverted: Note. ", "reason"],
+    de: ["Ursprüngliche Zahlen des Angebots zurückgeholt (Tectora 0.9.0 → 0.8.0)", "Verworfen: Note. ", "Grund"],
+  };
+  it("is cut as the store cut it", () => {
+    expect(restored).toHaveLength(500);
+    expect(restored.endsWith(`${reason})`)).toBe(false);
+    expect(reverted).toHaveLength(500);
+    expect(reverted).not.toContain(" (reason: ");
+  });
+  it("shows the translated sentence and the whole reason, in every language", () => {
+    for (const [loc, [put, rev, word]] of Object.entries(head)) {
+      i18n.locale = loc as typeof i18n.locale;
+      expect(entrySummary(restored, reason), loc).toBe(`${put} (${word}: ${reason})`);
+      expect(historyText({ actor: "claude", summary: restored, reason }, []), loc).toBe(`${put} (${word}: ${reason})`);
+      const r = entrySummary(reverted, "Customer asked");
+      expect(r.startsWith(rev), `${loc}: ${r.slice(0, 40)}`).toBe(true);
+      expect(r.endsWith(`… (${word}: Customer asked)`), `${loc}: ${r.slice(-40)}`).toBe(true);
+      expect(r, loc).not.toContain(" (r…");
+    }
+    i18n.locale = "cs";
+  });
+  it("finds the cut reason after a reason-like text in the AI's own summary", () => {
+    i18n.locale = "en";
+    const long = `Mistake fixed ${"z".repeat(480)}`;
+    const s = cap(`Reverted: Note (reason: x) (reason: ${long})`);
+    expect(entrySummary(s, long)).toBe(`Reverted: Note (reason: x) (reason: ${long})`);
+    // The cut fell before the reason began: the AI's "(reason: x)" is not taken for it.
+    const s2 = cap(`Reverted: Note (reason: x) ${"w".repeat(480)} (reason: Customer asked)`);
+    expect(entrySummary(s2, "Customer asked")).toMatch(/^Reverted: Note \(reason: x\) w+… \(reason: Customer asked\)$/);
     i18n.locale = "cs";
   });
 });
@@ -313,5 +360,34 @@ describe("actorLabel of a received engine entry (ARCH-802)", () => {
       expect(label, locale).not.toBe(actorLabel("user"));
     }
     i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-23 UX-1003 (owner decision: bundles carry no offer
+// figures): a job received after the sender's Tectora recalculated its
+// stored result says so on its card, from the received entry, without
+// the put-back (the offer's own figures stayed with the sender).
+describe("receivedRecalculation (UX-1003)", () => {
+  const entry = (ts_ms: number, actor: string, summary: string, fields: string[] = []) => ({
+    ts_ms,
+    actor,
+    summary,
+    changes: fields.map((field) => ({ kind: "modified" as const, field, before: null, after: null })),
+  });
+  const RECALC = "Stored result recalculated (Tectora 0.8.0 -> 0.9.0): roof area 150.00 -> 152.73 m2";
+  const job = (engine_version = "0.9.0") => ({ result_snapshot: { engine_version } });
+  it("reads the received engine entry the stored result still is", () => {
+    const log = [entry(30, "claude", "Notes", ["notes"]), entry(20, RECEIVED_ENGINE_ACTOR, RECALC, ["result_snapshot"]), entry(10, "user", "Status", ["result_snapshot", "status"])];
+    expect(receivedRecalculation(log, job())).toEqual({ at: 20, from: "0.8.0", to: "0.9.0", area: 150 });
+    const lines = entry(20, RECEIVED_ENGINE_ACTOR, "Stored result recalculated (Tectora 0.8.0 -> 0.9.0): line lengths G, K", ["result_snapshot"]);
+    expect(receivedRecalculation([lines], job())).toEqual({ at: 20, from: "0.8.0", to: "0.9.0", area: null });
+  });
+  it("is null once a later entry stored another result, for this engine's own entry and for another engine", () => {
+    expect(receivedRecalculation([entry(30, "user", "Stored", ["result_snapshot"]), entry(20, RECEIVED_ENGINE_ACTOR, RECALC, ["result_snapshot"])], job())).toBeNull();
+    expect(receivedRecalculation([entry(20, "tectora", RECALC, ["result_snapshot"])], job())).toBeNull();
+    expect(receivedRecalculation([entry(20, RECEIVED_ENGINE_ACTOR, RECALC, ["result_snapshot"])], job("0.8.0"))).toBeNull();
+    expect(receivedRecalculation([entry(20, RECEIVED_ENGINE_ACTOR, RECALC, ["result_snapshot"])], { result_snapshot: null })).toBeNull();
+    expect(receivedRecalculation([entry(20, RECEIVED_ENGINE_ACTOR, "Something else", ["result_snapshot"])], job())).toBeNull();
+    expect(receivedRecalculation([], job())).toBeNull();
   });
 });

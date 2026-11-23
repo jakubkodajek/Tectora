@@ -75,7 +75,8 @@ export function notifyError(e: unknown, action?: Action): number {
   const d = describeError(e, action);
   console.error(`[tectora] ${action ?? "error"}:`, e);
   return notify({
-    kind: d.code === "watcher" || d.code === "settings_unreadable" ? "warning" : "error",
+    // `busy`: another writer held the job, nothing was done (the action can be pressed again).
+    kind: d.code === "watcher" || d.code === "settings_unreadable" || d.code === "busy" ? "warning" : "error",
     code: d.code,
     title: d.title,
     message: d.message,
