@@ -52,7 +52,8 @@ export function savePrefs() {
 const reviewed = $state<Record<string, number>>(read("tectora.reviewed", {}));
 
 export function reviewedAt(id: string): number {
-  return reviewed[id] ?? 0;
+  // Own keys only: an id such as "constructor" must not read Object.prototype's member (ARCH-1301).
+  return Object.hasOwn(reviewed, id) ? reviewed[id] : 0;
 }
 
 export function markReviewed(id: string, ts: number) {

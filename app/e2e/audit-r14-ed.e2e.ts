@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { selectWall } from "./editor";
 import { E2E_DIR, LIBRARY_DIR } from "./env";
-import { createExample, expect, loadProject, test, waitForProject } from "./fixtures";
+import { createExample, expect, listProjects, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 import { acceptAll, hold } from "./review";
 
@@ -103,5 +103,29 @@ test.describe("round 14: the kept-result toast belongs to its editor (design A, 
     const p = await waitForProject(id, (p) => Math.abs(p.result_snapshot.roof_area - before.roof_area) > 0.01, 8000);
     expect(p.job.status).toBe("offer");
     await app.saved();
+  });
+});
+
+test.describe("round 14: job ids that are Object.prototype names (design D, ARCH-1301)", () => {
+  test("a job named Constructor can be duplicated and deleted in the library (ARCH-1301)", async ({ app, page }) => {
+    const id = await createExample("gable", "Constructor");
+    expect(id).toBe("constructor");
+    await app.open();
+    await page.getByRole("row").filter({ hasText: "Constructor" }).first().click();
+    const detail = page.locator("aside.detail");
+    await expect(detail.getByRole("heading", { name: "Constructor" })).toBeVisible();
+    const duplicate = detail.getByRole("button", { name: cs("card.duplicate") });
+    const remove = detail.getByRole("button", { name: cs("card.delete") });
+    await expect(duplicate).toBeEnabled();
+    await expect(remove).toBeEnabled();
+    const before = (await listProjects()).length;
+    await duplicate.click();
+    await expect.poll(async () => (await listProjects()).length).toBe(before + 1);
+    await page.getByRole("row").filter({ hasText: "Constructor" }).filter({ hasNotText: cs("lib.copyName", { name: "Constructor" }) }).first().click();
+    await expect(detail.getByRole("heading", { name: "Constructor", exact: true })).toBeVisible();
+    await expect(remove).toBeEnabled();
+    await app.answerConfirm(true);
+    await remove.click();
+    await expect.poll(async () => (await listProjects()).some((p: any) => p.id === "constructor")).toBe(false);
   });
 });
