@@ -2445,6 +2445,10 @@
       } else if (e.key === "Escape") cancelDrag();
       return;
     }
+    // The job is still being read: its toolbar is inert, and so are its
+    // keys (Insert would open the footprint entry on the job once it is in,
+    // HUNT-908).
+    if (!project) return;
     const tag = (e.target as HTMLElement).tagName;
     // A number field with its value stored (nothing typed since Enter):
     // Ctrl+Z undoes that change, not only the field's text (UX-001).
@@ -2559,8 +2563,8 @@
       <button class="tool" class:on={prefs.layout === "3d"} aria-pressed={prefs.layout === "3d"} onclick={() => setLayout("3d")} title="{t('editor.modelHint')} (F3)"><Icon name="cube" /><span>{t("editor.model")}</span></button>
       <button class="tool" onclick={() => plan?.fit()} disabled={prefs.layout === "3d"} title={t("plan.fitHint")}><Icon name="fit" /><span>{t("plan.fit")}</span></button>
       <!-- Zoom without a wheel (touch, pen, keyboard; UX-703). -->
-      <button class="tool zoom" onclick={() => plan?.zoomBy(1.25)} disabled={prefs.layout === "3d"} aria-label={t("plan.zoomIn")} title={t("plan.zoomIn")}><Icon name="plus" /></button>
-      <button class="tool zoom" onclick={() => plan?.zoomBy(0.8)} disabled={prefs.layout === "3d"} aria-label={t("plan.zoomOut")} title={t("plan.zoomOut")}><Icon name="minus" /></button>
+      <button class="tool zoom" onclick={() => plan?.zoomBy(1.25)} disabled={prefs.layout === "3d"} aria-label={t("plan.zoomIn")} title="{t('plan.zoomIn')} (+)"><Icon name="plus" /></button>
+      <button class="tool zoom" onclick={() => plan?.zoomBy(0.8)} disabled={prefs.layout === "3d"} aria-label={t("plan.zoomOut")} title="{t('plan.zoomOut')} (−)"><Icon name="minus" /></button>
       <button class="tool" class:on={showDims} aria-pressed={showDims} onclick={() => (showDims = !showDims)} title={t("tool.dims")}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
     </div>
     <div class="group minor">
