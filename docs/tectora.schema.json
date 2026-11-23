@@ -453,6 +453,7 @@
   "$id": "https://github.com/jakubkodajek/tectora/blob/main/docs/tectora.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
+  "description": "A roof design, saved as a `.tectora` file. Top-level keys this version\ndoes not know are kept and written back as they are, up to 64 KB and 32\nlevels of nesting (a deeper one refuses the job); a key named\n`__proto__` is not kept, at any depth.",
   "properties": {
     "chimneys": {
       "default": [],

@@ -1060,6 +1060,7 @@ const cs: Dict = {
   "edge.leaning": "převislá plocha",
   "edge.flatOff": "Plochá střecha: sklon a okap / štít stěn se nepoužijí",
   "new.pastChosen": "Kopíruje se:",
+  "err.unknown_keys": "Zakázka obsahuje cizí data (klíče, které Tectora nezná), která jsou příliš velká nebo příliš hluboko vnořená (nejvýš 64 KB a 32 úrovní), a Tectora s ní proto nemůže pracovat. Co je nad limit, uvádějí podrobnosti: odstraňte ta data v programu, který je zapsal.",
 };
 
 const sk: Dict = {
@@ -2111,6 +2112,7 @@ const sk: Dict = {
   "edge.leaning": "previslá plocha",
   "edge.flatOff": "Plochá strecha: sklon a odkvap / štít stien sa nepoužijú",
   "new.pastChosen": "Kopíruje sa:",
+  "err.unknown_keys": "Zákazka obsahuje cudzie údaje (kľúče, ktoré Tectora nepozná), ktoré sú príliš veľké alebo príliš hlboko vnorené (najviac 64 KB a 32 úrovní), a Tectora s ňou preto nemôže pracovať. Čo je nad limit, uvádzajú podrobnosti: odstráňte tie údaje v programe, ktorý ich zapísal.",
 };
 
 const en: Dict = {
@@ -3162,6 +3164,7 @@ const en: Dict = {
   "edge.leaning": "overhanging plane",
   "edge.flatOff": "Flat roof: the walls' pitch and eave / gable are not used",
   "new.pastChosen": "Copying:",
+  "err.unknown_keys": "The job holds foreign data (keys Tectora does not know) that is too large or nested too deep (at most 64 KB and 32 levels), so Tectora cannot work with it. The details say what is over the limit: remove that data in the program that wrote it.",
 };
 
 const de: Dict = {
@@ -4213,6 +4216,7 @@ const de: Dict = {
   "edge.leaning": "überhängende Fläche",
   "edge.flatOff": "Flachdach: Neigung und Traufe / Giebel der Wände werden nicht verwendet",
   "new.pastChosen": "Kopiert wird:",
+  "err.unknown_keys": "Der Auftrag enthält fremde Daten (Schlüssel, die Tectora nicht kennt), die zu groß oder zu tief verschachtelt sind (höchstens 64 KB und 32 Ebenen), deshalb kann Tectora nicht mit ihm arbeiten. Was über der Grenze liegt, steht in den Details: Entfernen Sie diese Daten in dem Programm, das sie geschrieben hat.",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };

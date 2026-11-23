@@ -58,6 +58,24 @@ describe("describeError", () => {
     }
   });
 
+  it("too_many for unknown keys names them, not buildings or walls (audit 2026-11-23 ARCH-1201)", () => {
+    for (const detail of [
+      "deep: the job cannot be opened (unknown keys nested too deep: 40 levels (at most 32))",
+      "too much data in unknown keys: 70000 bytes (at most 65536)",
+    ]) {
+      for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
+        setLocale(l);
+        const d = describeError({ code: "too_many", detail }, "load");
+        expect(d.code).toBe("too_many");
+        expect(d.message, l).toBe(DICTS[l]["err.unknown_keys"]);
+        expect(d.message, l).toContain("32");
+        expect(d.detail).toBe(detail);
+      }
+    }
+    setLocale("en");
+    expect(describeError({ code: "too_many", detail: "too many parts: 201 (at most 200)" }, "load").message).toBe(DICTS.en["err.too_many"]);
+  });
+
   it("not_calculated says the result cannot be stored for the offer", () => {
     for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
       setLocale(l);
