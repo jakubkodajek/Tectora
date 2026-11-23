@@ -60,7 +60,7 @@ programs; Codex in the ChatGPT desktop app can.
 | `duplicate_project`, `delete_project`, `list_examples` | Library; `duplicate_project` with `job` starts a new job from a past roof; `delete_project` moves the job to the library's trash (`.trash`, 30 days) |
 | `list_deleted`, `restore_project` | Deleted jobs and removed files in the trash, and bringing them back |
 | `list_files`, `attach_file`, `remove_file` | Files attached to a job (drawings): regular drawing, photo or document files up to 256 MB; a removed file goes to the trash |
-| `export_job`, `import_job`, `get_schema` | `.tectorajob` bundles, file schema |
+| `export_job`, `import_job`, `get_schema` | `.tectorajob` bundles, file schema; `export_job` of a job whose stored result is Tectora's recalculation of an offer's answers with a `note` naming the recalculated figures the bundle carries, the offer's own that stay in this library, and `restore_offer_result` as the way to send them |
 | `export_list`, `export_plan` | The roof for the offer: the text list the Excel price sheet reads (the Export dialog's copy button) and the roof sheet with lengths, areas and pitches as PDF or SVG in the library's `exports` folder (PNG only from the app's Export dialog: the web view rasterises the sheet and the core has no rasteriser; an MCP PNG would need one, e.g. `resvg`, a new dependency). Both run in the calculation worker with its 60 s deadline, and `export_list` does not draw the sheet |
 | `get_settings`, `update_settings` | App settings shared with the Settings screen: jobs folder, drawings inbox folder, language, theme, defaults for new roofs, follow mode |
 | `list_drawings`, `drawing_info`, `view_drawing`, `drawing_dimensions`, `trace_outline`, `drawing_lines`, `measure_drawing` | Technical drawings (PDF in the drawings inbox or attached to a job): page size and kind, rendered pages and crops with a sheet-mm grid, every dimension chain with its drawn length, an outline snapped to the drawn corners and returned in metres, the exact vector lines and the text-layer labels (filtered, e.g. every height label), measuring between two points against a dimension the AI read, and the calculated roof drawn over the plan (`view_drawing` `overlay`) to check it |
@@ -185,6 +185,10 @@ stay a `folder_request` the user allows or keeps.
   <entry_ts_ms>`, and pins the origin of the result it put back, so no later
   engine recalculates it. The user's restore entry neither ends nor joins an
   AI review, and Revert / Revert all of other entries leave it alone.
+  A bundle carries no offer figures (Jakub's decision 2026-11-23): the
+  app's export of a recalculated offer warns the user, and MCP `export_job`
+  adds a `note` with both sets of figures and the way back
+  (`restore_offer_result`, then export again).
 - A stored result with an impossible date is left out when a job is read
   (`Store::load_warnings`, code `result_dropped`): the app says so on open,
   MCP `get_project` lists it as `load_warnings`, and the next MCP write,

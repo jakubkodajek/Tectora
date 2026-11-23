@@ -42,6 +42,30 @@ fn opt<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> Result<Option
     }
 }
 
+/// What `export_job` tells the AI about a job whose stored result is
+/// Tectora's recalculation of the offer's: the bundle carries the
+/// recalculated figures, the offer's own stay in this library, and
+/// `restore_offer_result` is the way to send them (audit 2026-11-23
+/// ERR-1104).
+fn export_recalculated_note(project: &Project, r: &tectora_core::store::Recalculation) -> String {
+    let fresh = project
+        .result_snapshot
+        .as_ref()
+        .map_or(0.0, |s| s.roof_area);
+    let offer = r
+        .differences
+        .iter()
+        .find(|d| d.key == "roof_area")
+        .map_or(fresh, |d| d.stored);
+    format!(
+        "The bundle carries the recalculated result (Tectora {}, {fresh:.2} m2). \
+         The offer's own figures (Tectora {}, {offer:.2} m2) stay in this library only; \
+         to send them, call restore_offer_result first (with the user's go) and export again. \
+         Tell the user which figures the colleague gets.",
+        r.to, r.from
+    )
+}
+
 /// `line_names` of `export_plan`: code → name, at most 64 codes of up to 8
 /// characters and names of up to 60 characters.
 fn line_names_arg(args: &Value) -> Result<std::collections::BTreeMap<String, String>, String> {
@@ -633,7 +657,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "export_job",
-            "description": "Write a job to a .tectorajob file (project, attached files, history and a plan preview in one ZIP) in the `exports` folder of the job library. The file is named after the job (or `name`); an existing file is never replaced. Returns the path to give the user.",
+            "description": "Write a job to a .tectorajob file (project, attached files, history and a plan preview in one ZIP) in the `exports` folder of the job library. The file is named after the job (or `name`); an existing file is never replaced. Returns the path to give the user. When the job's stored result is Tectora's recalculation of an offer's, a `note` names the recalculated figures the bundle carries and the offer's own that stay in this library (restore_offer_result first to send those); tell the user.",
             "inputSchema": schema(json!({
                 "id": id,
                 "name": { "type": "string", "description": "File name without folder, e.g. \"Novak-strecha\"; default: the job's id." },
@@ -650,7 +674,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "export_plan",
-            "description": "Write the roof sheet (A4 landscape plan with line lengths, face areas, pitches and totals; the picture the user adds to the Excel price sheet) to the `exports` folder of the job library as PDF or SVG (a PNG can only be saved from the app's Export dialog; there is no PNG here). The file is named after the job (or `name`); an existing file is never replaced. Returns the path to give the user.",
+            "description": "Write the roof sheet (A4 landscape plan with line lengths, face areas, pitches and totals; the picture the user adds to the Excel price sheet) to the `exports` folder of the job library as PDF or SVG (a PNG can only be saved from the app's Export dialog; there is no PNG here). The file is named after the job (or `name`); an existing file is never replaced. Returns the path to give the user. When the job's stored result is Tectora's recalculation of an offer's, a `note` names the recalculated figures the bundle carries and the offer's own that stay in this library (restore_offer_result first to send those); tell the user.",
             "inputSchema": schema(json!({
                 "id": id,
                 "format": { "type": "string", "enum": ["pdf", "svg"], "description": "Default: pdf." },
@@ -917,7 +941,7 @@ impl Server {
                 Ok(json!({ "id": id, "removed": name, "trash": entry }))
             })(),
             "export_job" => (|| {
-                let (id, _) = self.load(args)?;
+                let (id, project) = self.load(args)?;
                 let summary = arg_str(args, "summary")?;
                 if args.get("path").is_some() {
                     return Err("`path` is not accepted: bundles are written to the library's exports folder; pass `name` for the file name".into());
@@ -927,9 +951,18 @@ impl Server {
                     None => id.clone(),
                 };
                 let path = bundle::export_path(&self.store, &name)?;
+                // Asked before the bundle is written, of the same file.
+                let recalculated = self.store.recalculation(&id);
                 let m = bundle::export(&self.store, &id, &path)?;
                 self.live("exported", Some(&path.display().to_string()), format!("Exported to {}: {summary}", path.display()), Some(&id));
-                Ok(json!({ "id": id, "path": path.display().to_string(), "manifest": m }))
+                let mut out = json!({ "id": id, "path": path.display().to_string(), "manifest": m });
+                // The bundle carries no offer figures (owner decision
+                // 2026-11-23): the AI must hear what stays behind, as the
+                // app's user does (audit 2026-11-23 ERR-1104).
+                if let Some(r) = recalculated {
+                    out["note"] = json!(export_recalculated_note(&project, &r));
+                }
+                Ok(out)
             })(),
             "export_list" => (|| {
                 let (id, p) = self.load(args)?;
@@ -3511,6 +3544,40 @@ mod tool_coverage {
         let offer = make_old(s, &id);
         let done = s.store.refresh_entry(&id).unwrap().expect("recalculated");
         (id, offer, done)
+    }
+
+    /// Audit 2026-11-23 ERR-1104: export_job of an offer whose stored
+    /// result Tectora recalculated says which figures the bundle carries,
+    /// which stay behind, and the way to send the offer's own; a job
+    /// without a recalculation gets no note.
+    #[test]
+    fn exporting_a_recalculated_offer_names_the_figures_that_stay_behind() {
+        let mut s = server();
+        let (id, offer, _) = recalculated_offer(&mut s);
+        let fresh = s.store.load(&id).unwrap().result_snapshot.unwrap();
+        let out = call(
+            &mut s,
+            "export_job",
+            json!({ "id": id, "summary": "To Petr" }),
+        );
+        let note = out["note"].as_str().expect("a note");
+        for part in [
+            format!(
+                "recalculated result (Tectora {}, {:.2} m2)",
+                fresh.engine_version, fresh.roof_area
+            ),
+            format!(
+                "offer's own figures (Tectora 0.0.1, {:.2} m2)",
+                offer.roof_area
+            ),
+            "restore_offer_result".to_string(),
+        ] {
+            assert!(note.contains(&part), "{part:?} in {note}");
+        }
+        let other = example(&mut s, "gable");
+        let out = call(&mut s, "export_job", json!({ "id": other, "summary": "s" }));
+        assert!(out.get("note").is_none(), "{out}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
     /// Audit 2026-11-23 HUNT-902: get_project names the recalculation the

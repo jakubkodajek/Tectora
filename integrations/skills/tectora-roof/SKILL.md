@@ -73,7 +73,10 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    an offer's stored result (the entry by `tectora` that `get_history`
    marks `stored_result_recalculation`, `get_project` gives it as
    `result_recalculation`), call `restore_offer_result` with a
-   one-sentence `summary`: it changes the stored result only. A revert
+   one-sentence `summary`: it changes the stored result only. When
+   `export_job` answers with a `note`, the bundle carries the recalculated
+   figures and the offer's own stay on this computer: tell the user, and
+   put them back first only if the user wants to send those. A revert
    or put-back answered with `busy` did nothing (another program was
    saving the job): try it again in a moment. When
    `get_project` or a write answers with `load_warnings`

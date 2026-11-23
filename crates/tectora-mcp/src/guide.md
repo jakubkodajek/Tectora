@@ -215,6 +215,11 @@ The tools cover every operation of the Tectora editor:
 - Hand-over: `export_job`, `import_job` (`.tectorajob` = project, files,
   history and a preview in one file). `export_job` writes into the
   library's `exports` folder and returns the path; tell the user where it is.
+  A bundle carries no offer figures: when the job's stored result is
+  Tectora's recalculation of an offer's, `export_job` answers with a `note`
+  naming the recalculated figures the bundle carries and the offer's own
+  that stay in this library. Tell the user; to send the offer's figures,
+  call `restore_offer_result` first (only on the user's go) and export again.
 - Price sheet: `export_list` returns the text list the user pastes into the
   Excel price sheet (the app's Export dialog has the same text with a copy
   button); hand it over verbatim, never translated or reformatted. It has
