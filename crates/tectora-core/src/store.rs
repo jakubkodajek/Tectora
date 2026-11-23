@@ -2393,11 +2393,8 @@ impl Store {
         log: &[ActivityEntry],
     ) -> Option<(Recalculation, crate::snapshot::ResultSnapshot)> {
         let (rec, offer) = self.recorded_recalculation(id, project, log)?;
-        let damaged = |r: &crate::snapshot::ResultSnapshot| {
-            r.problem().is_some() || r.impossible_time().is_some()
-        };
         let fresh = project.result_snapshot.as_ref()?;
-        (!damaged(&offer) && !damaged(fresh)).then_some((rec, offer))
+        (offer.writable().is_ok() && fresh.writable().is_ok()).then_some((rec, offer))
     }
 
     /// [`Store::recalculation_and_offer`] as the origin record has it,
@@ -2491,6 +2488,13 @@ impl Store {
             .recorded_recalculation(id, &current, &log)
             .filter(|(r, _)| r.entry_ts_ms == entry_ts_ms)
             .ok_or_else(stale)?;
+        // Damaged figures or an impossible date are refused before
+        // anything is built or written: every later read would drop such
+        // a stored result (audit 2026-11-23 HUNT-1102).
+        old.writable().map_err(|detail| StoreError::Unreadable {
+            id: id.to_string(),
+            detail,
+        })?;
         let fresh_area = current
             .result_snapshot
             .as_ref()
@@ -8440,7 +8444,8 @@ mod tests {
     /// Audit 2026-11-23 ARCH-1003: an origin record whose offer figures
     /// break the stored-result bounds (a hand-edited `.result.json`) is no
     /// recalculation: nothing of it reaches the card or MCP, and a
-    /// put-back asked for anyway writes nothing.
+    /// put-back asked for anyway writes nothing, an impossible date of
+    /// the offer's result too (audit 2026-11-23 HUNT-1102, TEST-1103).
     #[test]
     fn a_damaged_origin_record_is_no_recalculation() {
         let store = temp_store("recalc-hostile");
@@ -8453,7 +8458,11 @@ mod tests {
             let mut all = good.clone();
             for o in &mut all {
                 if let Some(r) = o.refreshed.as_mut() {
-                    f(r.offer.as_mut().unwrap());
+                    let offer = r.offer.as_mut().unwrap();
+                    f(offer);
+                    // The record stays consistent, so each damage reaches
+                    // the bounds check, not the lookup (TEST-1103).
+                    r.offer_taken_ms = offer.taken_ms;
                 }
             }
             store.write_result_origins(&id, &all).unwrap();
@@ -8464,7 +8473,7 @@ mod tests {
                 o.lines_by_code.insert("K".repeat(200), 1.0);
             },
             |o| o.roof_area = f64::INFINITY,
-            |o| o.taken_ms = u64::MAX,
+            |o| o.taken_ms = crate::snapshot::MAX_TAKEN_MS + 1,
         ];
         let job = fs::read(store.path(&id).unwrap()).unwrap();
         let entries = store.activity(&id).len();

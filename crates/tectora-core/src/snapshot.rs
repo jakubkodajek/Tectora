@@ -126,6 +126,18 @@ impl ResultSnapshot {
         })
     }
 
+    /// Why this result, read from a record or the change log, may not be
+    /// written into a job as its stored result: damaged
+    /// ([`ResultSnapshot::problem`]) or dated after any calendar date
+    /// ([`ResultSnapshot::impossible_time`]), which every later read would
+    /// drop (audit 2026-11-23 HUNT-1102). `Ok` when it may.
+    pub fn writable(&self) -> Result<(), String> {
+        match self.problem().or_else(|| self.impossible_time()) {
+            Some(why) => Err(why),
+            None => Ok(()),
+        }
+    }
+
     /// The engine version of a stored result from outside as one line of
     /// at most [`MAX_ENGINE_VERSION_CHARS`] characters (ARCH-303).
     pub fn clean(&mut self) {
