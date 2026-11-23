@@ -180,7 +180,9 @@ test.describe("round 10: an edit made while Revert or the put-back is with the c
       const call = timeline(page, cmd);
       // A save's first question (is the jobs folder still the same?): the autosave has begun.
       const saves = timeline(page, "projects_dir");
-      const lock = await holdLock(id, 3000);
+      // Held until the autosave is seen (the finally below), not for a fixed
+      // time: on a slow runner typing alone took longer than 3 s.
+      const lock = await holdLock(id, 20_000);
       try {
         await press();
         await typeCustomer(page, "Novák během");
