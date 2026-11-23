@@ -336,7 +336,10 @@ test.describe("round 12: one writer gate while Revert or the put-back is out (fi
       const note = app.toasts().filter({ hasText: cs("err.ofJob", { name: "R12 zámek", title: cs("err.action.revert") }) });
       await expect(note).toHaveCount(1, { timeout: 4500 });
       expect(Date.now() - pressed, "answered within about the core's lock wait").toBeLessThan(4500);
-      await expect(note).toContainText(cs("err.busy"));
+      // The editor's own save waited: the prepare phase's notice (round 13
+      // design A, UX-1201), which names another program saving the job as
+      // one of its causes; `err.busy` is the core's own lock answer.
+      await expect(note).toContainText(cs("err.busy_edits"));
       expect(reverts, "the call never went out").toEqual([]);
       // Usable meanwhile: not "reverting", the bar and the Back button take input.
       await expect(status(page)).not.toHaveText(cs("editor.reverting"));
