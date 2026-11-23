@@ -3207,7 +3207,7 @@ const de: Dict = {
   "snap.refreshedShow": "Ursprüngliche Zahlen",
   "snap.recalculated": "Neu berechnet am {date} (Tectora {from} → {to})",
   "snap.offerStored": "Ergebnis des Angebots gespeichert am {date}",
-  "snap.revertRefresh": "Ursprüngliche Zahlen des Angebots zurückholen",
+  "snap.revertRefresh": "Angebotszahlen zurückholen",
   "snap.refreshedNoticeLines": "Das gespeicherte Ergebnis des Angebots wurde mit der korrigierten Berechnung neu berechnet (Tectora {from} → {to}): Die Dachfläche ist gleich, geändert haben sich die Linienlängen: {codes}.",
   "snap.refreshedNoticeOther": "Das gespeicherte Ergebnis des Angebots wurde mit der korrigierten Berechnung neu berechnet (Tectora {from} → {to}): Die Dachfläche ist gleich, andere Werte haben sich geändert.",
   "snap.store": "Aktuelles als Ergebnis speichern",

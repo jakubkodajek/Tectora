@@ -34,9 +34,9 @@
      * drawn on). Without `ts` for an AI's own revert entry: the core steps
      * over reverts to the change before them, as it always did.
      */
-    onrevert: (ts?: number) => void;
+    onrevert: (ts?: number) => void | Promise<void>;
     /** Puts the offer's own figures back in place of the recalculation logged at `ts`. */
-    onrestore: (ts: number) => void;
+    onrestore: (ts: number) => void | Promise<void>;
     onconnect: () => void;
     onfocus: (c: Change | null) => void;
     /** A revert or accept is running: the button waits for it. */
@@ -63,6 +63,20 @@
    */
   const latest = $derived(activity.findIndex((a) => !(a.restores != null && a.actor === USER_ACTOR)));
   let list: HTMLOListElement | undefined = $state();
+  /**
+   * Runs a history button's action. Its button is gone once the action is
+   * done (the entry it was drawn on changed), so a press from the keyboard
+   * (the button has the keyboard's focus ring) leaves the focus on the
+   * history list instead of the page's body (UI-902).
+   */
+  async function press(run: () => void | Promise<void>) {
+    const keyboard = !!document.activeElement?.matches(":focus-visible");
+    await run();
+    if (!keyboard) return;
+    await tick();
+    const a = document.activeElement;
+    if (!a || a === document.body || !a.isConnected) list?.focus();
+  }
   $effect(() => {
     if (shown == null) return;
     const i = activity.findIndex((a) => a.ts_ms === shown);
@@ -101,7 +115,7 @@
   {#if activity.length === 0}
     <p class="empty">{t("ai.noHistory")}</p>
   {/if}
-  <ol bind:this={list}>
+  <ol bind:this={list} class="history" tabindex="-1" aria-label={t("ai.history")}>
     {#each activity as a, i (keys[i])}
       {@const ai = isAi(a.actor)}
       {@const figures = rows(a)}
@@ -139,12 +153,12 @@
           {/if}
         {/if}
         {#if i === latest && ai}
-          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && onrevert(isRevert(a.summary) ? undefined : a.ts_ms)}><Icon name="undo" size={14} />{t("ai.revert")}</button>
+          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && press(() => onrevert(isRevert(a.summary) ? undefined : a.ts_ms))}><Icon name="undo" size={14} />{t("ai.revert")}</button>
         {:else if a.actor === ENGINE_ACTOR && recalculation?.entry_ts_ms === a.ts_ms}
           <!-- The offer's own figures back (owner decision 2026-11-22, UX-702d), on the recalculation the
                stored result still is, wherever it is in the history by now (UX-802): by this entry, and
                only the stored result (ERR-801). -->
-          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && onrestore(a.ts_ms)}><Icon name="undo" size={14} />{t("snap.revertRefresh")}</button>
+          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && press(() => onrestore(a.ts_ms))}><Icon name="undo" size={14} />{t("snap.revertRefresh")}</button>
         {/if}
       </li>
     {/each}
@@ -301,9 +315,18 @@
     font-size: 12px;
     color: var(--text-3);
   }
+  /* A label that wraps (German) makes the button taller, never runs over its border (UI-901). */
   .btn.sm {
-    height: 28px;
-    padding: 0 10px;
+    height: auto;
+    min-height: 28px;
+    padding: 4px 10px;
     font-size: 12.5px;
+    line-height: 1.3;
+    white-space: normal;
+    text-align: left;
+  }
+  .history:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
   }
 </style>
