@@ -12,7 +12,7 @@ import path from "node:path";
 import type { Page } from "@playwright/test";
 import { plan, planXY } from "./editor";
 import { LIBRARY_DIR } from "./env";
-import { bridge, createExample, expect, loadProject, test, waitForProject } from "./fixtures";
+import { bridge, createExample, expect, loadProject, noToast, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 
 // TECTORA_SHOTS=<folder>/ saves a screenshot after each test (fix evidence).
@@ -89,11 +89,12 @@ test.describe("round 8: a stored result recalculated on open (UX-702)", () => {
     await expect(figures).toBeVisible();
     await expect(figures.locator("li").first()).toContainText(`${cs("res.area")} ${a} → ${b}`);
 
-    // Opened again: nothing more to recalculate, no second notice.
+    // Opened again: nothing more to recalculate, no second notice (strict, TEST-1002).
     await page.getByRole("button", { name: cs("editor.back") }).click();
+    await expect(app.toasts().filter({ hasText: "Tectora 0.8.0" })).toHaveCount(0, { timeout: 12_000 });
     await app.openJob("Přepočet");
     await app.saved();
-    await expect(app.toasts().filter({ hasText: "Tectora 0.8.0" })).toHaveCount(0);
+    await noToast(app.toasts().filter({ hasText: "Tectora 0.8.0" }), 1500, "a second notice");
   });
 
   test("the job follow mode opens is recalculated and told the same way", async ({ app, page, mcp }) => {
@@ -126,9 +127,10 @@ test.describe("round 8: a stored result recalculated on open (UX-702)", () => {
     expect(back.result_snapshot.taken_ms).toBe(OFFER_MS);
     await app.saved();
     await page.getByRole("button", { name: cs("editor.back") }).click();
+    await expect(app.toasts().filter({ hasText: "Tectora 0.8.0" })).toHaveCount(0, { timeout: 12_000 });
     await app.openJob("Zpět");
     await app.saved();
-    await expect(app.toasts().filter({ hasText: "Tectora 0.8.0" })).toHaveCount(0);
+    await noToast(app.toasts().filter({ hasText: "Tectora 0.8.0" }), 1500, "a notice after the put-back");
     expect((await loadProject(id)).result_snapshot.roof_area).toBe(150);
   });
 });
