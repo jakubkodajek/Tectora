@@ -400,6 +400,17 @@ fn roof_trouble_of(geos: &[RoofGeometry], project: &Project) -> Option<Value> {
     Some(out)
 }
 
+/// A library error for an AI client, with its stable code in front where
+/// the client is to act on it: `revert_stale` (look at the history again)
+/// and `busy` (another program holds the job's lock; nothing was done, try
+/// again in a moment, audit 2026-11-23 ERR-1002).
+pub(crate) fn coded(e: StoreError) -> String {
+    match e {
+        StoreError::RevertStale { .. } | StoreError::Busy(_) => format!("{}: {e}", e.code()),
+        e => e.to_string(),
+    }
+}
+
 fn quantities(project: &Project) -> Value {
     quantities_of(&tectora_core::openings::generate_project(project), project)
 }
@@ -1188,7 +1199,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "revert_last_change",
-            "description": "Undo the latest recorded change of a design. With `ts_ms` (from get_history) it is undone only if it is still that change: when another one was saved meanwhile nothing is undone (`revert_stale`).",
+            "description": "Undo the latest recorded change of a design. With `ts_ms` (from get_history) it is undone only if it is still that change: when another one was saved meanwhile nothing is undone (`revert_stale`). Refused with `busy` (nothing done, try again in a moment) while another program is saving the job.",
             "inputSchema": schema(json!({ "id": { "type": "string" }, "ts_ms": { "type": "integer", "description": "The change you expect to undo." }, "summary": summary_prop() }), &["id", "summary"]),
         },
     ])
@@ -2130,10 +2141,7 @@ impl Server {
                 let p = self
                     .store
                     .revert_last_expecting(&id, &self.client, Some(summary), expect)
-                    .map_err(|e| match e {
-                        StoreError::RevertStale { .. } => format!("{}: {e}", e.code()),
-                        e => e.to_string(),
-                    })?;
+                    .map_err(coded)?;
                 self.live_follow(
                     "reverted",
                     Some(&p.name),

@@ -52,6 +52,11 @@ export interface ListSummary {
 }
 
 export type CheckedSave = { status: "saved"; id: string } | { status: "conflict"; current: Project };
+/** What Revert all did (`Store::revert_to_counted`): the job as it is now and how many recorded changes it undid. */
+export interface RevertedChanges {
+  project: Project;
+  undone: number;
+}
 
 export interface StandardParams {
   kind: StandardKind;
@@ -108,7 +113,10 @@ export const api = {
   restoreOfferResult: (id: string, entryTsMs: number) => invoke<Project>("restore_offer_result", { id, entryTsMs }),
   /** Undoes the latest change; with `expectTs` only if it is still that entry (`revert_stale` otherwise). */
   revertLastChange: (id: string, expectTs?: number) => invoke<Project>("revert_last_change", { id, expectTs: expectTs ?? null }),
-  revertChanges: (id: string, tsMs: number) => invoke<Project>("revert_changes", { id, tsMs }),
+  /** Revert all: undoes the change at `tsMs` and every later one; `undone` counts the entries, also AI ones that came in after the press (ERR-1002). */
+  revertAll: (id: string, tsMs: number) => invoke<RevertedChanges>("revert_changes", { id, tsMs }),
+  revertChanges: (id: string, tsMs: number) =>
+    invoke<RevertedChanges>("revert_changes", { id, tsMs }).then((r) => r.project),
   reviewStatus: (id: string) => invoke<ReviewStatus | null>("review_status", { id }),
   acceptChanges: (id: string, tsMs: number) => invoke<number>("accept_changes", { id, tsMs }),
   liveStatus: () => invoke<LiveStatus | null>("live_status"),

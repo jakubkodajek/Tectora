@@ -156,10 +156,19 @@ fn revert_last_change(
     })
 }
 
-/// Undoes the change recorded at `ts_ms` and everything after it.
+/// Undoes the change recorded at `ts_ms` and everything after it, with
+/// the number of entries undone (Revert all, audit 2026-11-23 ERR-1002).
 #[tauri::command(async)]
-fn revert_changes(state: State<AppState>, id: String, ts_ms: u64) -> CmdResult<Project> {
-    guard(|| Ok(state.store().revert_to(&id, ts_ms, USER_ACTOR, None)?))
+fn revert_changes(
+    state: State<AppState>,
+    id: String,
+    ts_ms: u64,
+) -> CmdResult<store::RevertedChanges> {
+    guard(|| {
+        Ok(state
+            .store()
+            .revert_to_counted(&id, ts_ms, USER_ACTOR, None)?)
+    })
 }
 
 /// The AI changes of `id` waiting for review, with the version before them
@@ -171,8 +180,10 @@ fn review_status(state: State<AppState>, id: String) -> CmdResult<Option<store::
     guard(|| Ok(state.store().review_status(&id)?))
 }
 
-/// Accepts every change of `id` recorded at or before `ts_ms`.
-#[tauri::command]
+/// Accepts every change of `id` recorded at or before `ts_ms`. Off the
+/// main thread: it takes the job's lock (`busy` after a short wait,
+/// audit 2026-11-23 ARCH-1001).
+#[tauri::command(async)]
 fn accept_changes(state: State<AppState>, id: String, ts_ms: u64) -> CmdResult<u64> {
     guard(|| Ok(state.store().mark_reviewed(&id, ts_ms)?))
 }
@@ -258,7 +269,9 @@ fn refresh_stored_result(state: State<AppState>, id: String) -> Option<store::Re
     })
 }
 
-#[tauri::command]
+/// Off the main thread: it takes the job's lock, which another program
+/// may hold while it saves (audit 2026-11-23 ARCH-1001).
+#[tauri::command(async)]
 fn save_project(state: State<AppState>, id: Option<String>, project: Project) -> CmdResult<String> {
     guard(|| {
         let before = id.as_deref().and_then(|i| state.store().load(i).ok());
@@ -1260,6 +1273,8 @@ mod tests {
             "review_status",
             "revert_last_change",
             "revert_changes",
+            "accept_changes",
+            "save_project",
             "duplicate_project",
             "delete_project",
             "attach_files",
@@ -1278,6 +1293,35 @@ mod tests {
                 "`{name}` must be #[tauri::command(async)]"
             );
         }
+    }
+
+    /// A command that runs on the window's main thread may only read the
+    /// library: anything that writes takes the job's lock, which another
+    /// program may hold for seconds (audit 2026-11-23 ARCH-1001). A new
+    /// sync command that touches the store fails here until it is made
+    /// `#[tauri::command(async)]` or shown to only read.
+    #[test]
+    fn sync_commands_only_read_the_library() {
+        let src = include_str!("lib.rs").replace("\r\n", "\n");
+        let reads_only = [
+            "projects_dir",
+            "live_status",
+            "list_attachments",
+            "open_attachment",
+        ];
+        let mut seen = 0;
+        for part in src.split("#[tauri::command]\nfn ").skip(1) {
+            seen += 1;
+            let name = part.split('(').next().unwrap_or_default();
+            let body = part.split("\n}\n").next().unwrap_or_default();
+            if body.contains(".store()") {
+                assert!(
+                    reads_only.contains(&name),
+                    "`{name}` uses the library on the main thread: make it #[tauri::command(async)]"
+                );
+            }
+        }
+        assert!(seen > 5, "no sync commands found: the scan is broken");
     }
 
     /// Double-click open and start-up arguments (TEST-008): Tectora files

@@ -571,7 +571,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "revert_to",
-            "description": "Undo every change of a design made at or after `ts_ms` (from get_history).",
+            "description": "Undo every change of a design made at or after `ts_ms` (from get_history). Refused with `busy` (nothing done, try again in a moment) while another program is saving the job.",
             "inputSchema": schema(json!({ "id": id, "ts_ms": { "type": "integer" }, "summary": summary_prop() }), &["id", "ts_ms", "summary"]),
         }),
         json!({
@@ -672,7 +672,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "restore_offer_result",
-            "description": "Put the offer's own stored figures back in place of Tectora's recalculation of them (the entry by `tectora` that get_history marks `stored_result_recalculation`). Only the stored result changes: the design and every other change stay. The figures put back are never recalculated again. Refused with `revert_stale` when the stored result is not that recalculation (any more). Do it only when the user asks for the figures the customer was offered.",
+            "description": "Put the offer's own stored figures back in place of Tectora's recalculation of them (the entry by `tectora` that get_history marks `stored_result_recalculation`). Only the stored result changes: the design and every other change stay. The figures put back are never recalculated again. Refused with `revert_stale` when the stored result is not that recalculation (any more), and with `busy` (nothing done, try again in a moment) while another program is saving the job. Do it only when the user asks for the figures the customer was offered.",
             "inputSchema": schema(json!({ "id": id, "ts_ms": { "type": "integer", "description": "The recalculation's entry (get_history); left out: the one the stored result is." }, "summary": summary_prop() }), &["id", "summary"]),
         }),
         json!({
@@ -810,7 +810,10 @@ impl Server {
                 let (id, _) = self.load(args)?;
                 let ts: u64 = req(args, "ts_ms")?;
                 let summary = arg_str(args, "summary")?;
-                let p = self.store.revert_to(&id, ts, &self.client, Some(summary))?;
+                let p = self
+                    .store
+                    .revert_to(&id, ts, &self.client, Some(summary))
+                    .map_err(super::coded)?;
                 self.live_follow("reverted_changes", Some(&p.name), format!("Reverted changes: {summary}"), &id);
                 Ok(json!({ "id": id, "reverted": true, "quantities": super::quantities(&p) }))
             })(),
@@ -3665,6 +3668,53 @@ mod tool_coverage {
         );
         assert!(r.get("load_warnings").is_none(), "{r}");
         let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// Audit 2026-11-23 ERR-1002: while another program holds the job's
+    /// lock, the revert tools and the put-back answer `busy` after a short
+    /// wait, with nothing done, so the AI knows to try again.
+    #[test]
+    fn mcp_reverts_answer_busy_while_the_job_is_being_saved() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "AI note", "summary": "Note" }),
+        );
+        let dir = s.store.dir.clone();
+        s.store = Store::at(dir.clone()).with_action_wait(std::time::Duration::from_millis(100));
+        let ts = s.store.activity(&id).last().unwrap().ts_ms;
+        let log = s.store.activity(&id).len();
+        let held = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join(".activity").join(format!("{id}.lock")))
+            .unwrap();
+        held.lock().unwrap();
+        for (tool, args) in [
+            ("revert_last_change", json!({ "id": id, "summary": "Undo" })),
+            (
+                "revert_to",
+                json!({ "id": id, "ts_ms": ts, "summary": "Undo" }),
+            ),
+            (
+                "restore_offer_result",
+                json!({ "id": id, "ts_ms": ts, "summary": "Back" }),
+            ),
+        ] {
+            let e = s.call_tool(tool, &args).unwrap_err();
+            assert!(e.starts_with("busy: "), "{tool}: {e}");
+            assert!(e.contains("try again"), "{tool}: {e}");
+        }
+        assert_eq!(s.store.activity(&id).len(), log);
+        drop(held);
+        call(
+            &mut s,
+            "revert_last_change",
+            json!({ "id": id, "summary": "Undo" }),
+        );
+        assert_eq!(s.store.load(&id).unwrap().notes, "");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

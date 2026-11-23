@@ -292,6 +292,14 @@ fn entry_results(
     ))
 }
 
+/// What [`Store::revert_to_counted`] did: the job as it is now and how
+/// many recorded changes were undone.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RevertedChanges {
+    pub project: Project,
+    pub undone: usize,
+}
+
 /// The job's stored result is the engine's recalculation of the offer's
 /// ([`Store::recalculation`]): the result card's "recalculated" line and
 /// the history's "put the offer's figures back" come from this alone.
@@ -755,6 +763,11 @@ pub struct Store {
     /// How many bytes of a change log are read, [`MAX_ACTIVITY_FILE`]
     /// (smaller in tests).
     activity_window: u64,
+    /// How long a short action of the user (Revert, Revert all, putting
+    /// the offer's figures back, Accept) waits for the job's lock before it
+    /// answers [`StoreError::Busy`], [`REFRESH_LOCK_WAIT`] (shorter in
+    /// tests).
+    action_wait: std::time::Duration,
 }
 
 #[derive(Default)]
@@ -820,6 +833,14 @@ pub enum StoreError {
     /// (audit 2026-11-22 ERR-801).
     #[error("{id}: the job changed meanwhile ({detail})")]
     RevertStale { id: String, detail: String },
+    /// Another program holds the job's lock (an AI save that calculates,
+    /// the recalculation on open) for longer than a short action waits
+    /// ([`REFRESH_LOCK_WAIT`]): nothing is done, the caller may try again
+    /// (audit 2026-11-23 ERR-1002, ARCH-1001).
+    #[error(
+        "{0}: the job is being saved by another program; nothing was done, try again in a moment"
+    )]
+    Busy(String),
 }
 
 /// The kinds of file system failure the app explains differently.
@@ -860,6 +881,7 @@ impl StoreError {
             StoreError::NoSuchChange { .. } => "no_such_change",
             StoreError::RevertConflict { .. } => "revert_conflict",
             StoreError::RevertStale { .. } => "revert_stale",
+            StoreError::Busy(_) => "busy",
         }
     }
 
@@ -869,7 +891,8 @@ impl StoreError {
             StoreError::InvalidId(id)
             | StoreError::NotFound(id)
             | StoreError::NothingToRevert(id)
-            | StoreError::RevertCreated(id) => Some(id),
+            | StoreError::RevertCreated(id)
+            | StoreError::Busy(id) => Some(id),
             StoreError::Unreadable { id, .. }
             | StoreError::NewerFormat { id, .. }
             | StoreError::NoSuchChange { id, .. }
@@ -1855,6 +1878,7 @@ impl Store {
             cache: Arc::default(),
             summary_budget: SUMMARY_BUDGET,
             activity_window: MAX_ACTIVITY_FILE,
+            action_wait: REFRESH_LOCK_WAIT,
         }
     }
 
@@ -1870,6 +1894,13 @@ impl Store {
     #[cfg(test)]
     fn with_activity_window(mut self, bytes: u64) -> Self {
         self.activity_window = bytes;
+        self
+    }
+
+    /// The same store whose short actions wait at most `wait` for the
+    /// job's lock ([`Store::lock_briefly`]), for tests.
+    pub fn with_action_wait(mut self, wait: std::time::Duration) -> Self {
+        self.action_wait = wait;
         self
     }
 
@@ -2322,7 +2353,18 @@ impl Store {
     /// status.
     pub fn recalculation(&self, id: &str) -> Option<Recalculation> {
         let project = self.load(id).ok()?;
-        self.recalculation_of(id, &project, &self.activity(id))
+        // The change log only for a record a round-9 build wrote without
+        // the figures: a job without a recalculated stored result answers
+        // without reading it (audit 2026-11-23 ARCH-1002, a large log
+        // cost every MCP get_project a second).
+        let stored = project.result_snapshot.as_ref()?;
+        let from = self.result_origin(id, stored.taken_ms)?.refreshed?;
+        let log = if from.offer.is_some() && from.result.is_some() {
+            Vec::new()
+        } else {
+            self.activity(id)
+        };
+        self.recalculation_of(id, &project, &log)
     }
 
     /// [`Store::recalculation`] of the job as read, with its change log.
@@ -2340,7 +2382,28 @@ impl Store {
     /// Both results come from the origin record ([`RefreshedFrom`]); from
     /// the engine's change-log entry only for a record a round-9 build
     /// wrote without them.
+    ///
+    /// Held to the bounds of a stored result from a file: a damaged record
+    /// is no recalculation, so its text never reaches the result card or
+    /// MCP (audit 2026-11-23 ARCH-1003).
     fn recalculation_and_offer(
+        &self,
+        id: &str,
+        project: &Project,
+        log: &[ActivityEntry],
+    ) -> Option<(Recalculation, crate::snapshot::ResultSnapshot)> {
+        let (rec, offer) = self.recorded_recalculation(id, project, log)?;
+        let damaged = |r: &crate::snapshot::ResultSnapshot| {
+            r.problem().is_some() || r.impossible_time().is_some()
+        };
+        let fresh = project.result_snapshot.as_ref()?;
+        (!damaged(&offer) && !damaged(fresh)).then_some((rec, offer))
+    }
+
+    /// [`Store::recalculation_and_offer`] as the origin record has it,
+    /// within bounds or not: the put-back checks the figures it would write
+    /// itself (TEST-903).
+    fn recorded_recalculation(
         &self,
         id: &str,
         project: &Project,
@@ -2412,7 +2475,8 @@ impl Store {
         reason: Option<&str>,
     ) -> Result<Project, StoreError> {
         self.path(id)?;
-        let _lock = self.lock(id)?;
+        // A short action of the user: never waits long (ERR-1002).
+        let _lock = self.lock_briefly(id)?;
         let current = self.load(id)?;
         let log = self.activity(id);
         let stale = || StoreError::RevertStale {
@@ -2421,8 +2485,10 @@ impl Store {
         };
         // The offer's figures from the origin record, which outlives the
         // change-log entry (HUNT-902).
+        // The record as it is: figures outside the limits are refused
+        // below without writing anything (TEST-903).
         let (rec, old) = self
-            .recalculation_and_offer(id, &current, &log)
+            .recorded_recalculation(id, &current, &log)
             .filter(|(r, _)| r.entry_ts_ms == entry_ts_ms)
             .ok_or_else(stale)?;
         let fresh_area = current
@@ -2668,7 +2734,13 @@ impl Store {
             Err(e) if is_foreign(&e) => return Err(StoreError::io(id, e)),
             Err(_) => return Ok(None),
         }
-        take_lock_file_within(&dir.join(name), wait).map_err(|e| StoreError::io(id, e))
+        take_lock_file_within(&dir.join(name), wait).map_err(|e| match id {
+            // Only the bounded wait gives up with `WouldBlock`.
+            Some(id) if wait.is_some() && e.kind() == std::io::ErrorKind::WouldBlock => {
+                StoreError::Busy(id.to_string())
+            }
+            _ => StoreError::io(id, e),
+        })
     }
 
     /// Saves without recording activity (app autosave of its own edits).
@@ -2854,6 +2926,15 @@ impl Store {
         self.lock_file(Some(id), &format!("{id}.lock"))
     }
 
+    /// [`Store::lock`] for a short action of the user, which must not hang
+    /// the window behind another writer: waits at most the store's action
+    /// wait ([`REFRESH_LOCK_WAIT`]), then fails with [`StoreError::Busy`]
+    /// and nothing is done (audit 2026-11-23 ERR-1002, ARCH-1001).
+    fn lock_briefly(&self, id: &str) -> Result<Option<fs::File>, StoreError> {
+        self.path(id)?;
+        self.lock_file_within(Some(id), &format!("{id}.lock"), Some(self.action_wait))
+    }
+
     /// Saves and records who made the change and why, keeping the previous
     /// version so it can be reviewed and reverted.
     pub fn save_as(
@@ -2892,20 +2973,6 @@ impl Store {
         summary: &str,
         base: Option<&Project>,
     ) -> Result<CheckedSave, StoreError> {
-        self.save_checked_undoing(id, project, actor, (summary, None), base, None)
-    }
-
-    /// [`Store::save_as_checked`] that records, for a revert, the time of
-    /// the oldest entry it undid.
-    fn save_checked_undoing(
-        &self,
-        id: &str,
-        project: &Project,
-        actor: &str,
-        (summary, reason): (&str, Option<&str>),
-        base: Option<&Project>,
-        undid_from: Option<u64>,
-    ) -> Result<CheckedSave, StoreError> {
         self.path(id)?;
         let _lock = self.lock(id)?;
         let before = match self.load(id) {
@@ -2921,17 +2988,7 @@ impl Store {
             });
         }
         if before.as_ref() != Some(project) {
-            self.log_and_write(
-                id,
-                before,
-                project,
-                actor,
-                summary,
-                reason.map(str::to_string),
-                undid_from,
-                None,
-                None,
-            )?;
+            self.log_and_write(id, before, project, actor, summary, None, None, None, None)?;
         }
         Ok(CheckedSave::Saved { id: id.to_string() })
     }
@@ -3094,6 +3151,8 @@ impl Store {
 
     /// Recorded changes of a project, oldest first.
     pub fn activity(&self, id: &str) -> Vec<ActivityEntry> {
+        #[cfg(test)]
+        LOG_READS.with(|n| n.set(n.get() + 1));
         let Ok(path) = self.activity_path(id) else {
             return Vec::new();
         };
@@ -3142,6 +3201,16 @@ impl Store {
         reason: Option<&str>,
         expect_ts_ms: Option<u64>,
     ) -> Result<Project, StoreError> {
+        // The log is read, the expected entry checked, the file merged and
+        // written under one hold of the job's lock: an AI save waiting for
+        // the lock lands before (the press is stale) or after the revert,
+        // never between the check and the write (audit 2026-11-23
+        // ERR-1002: the older change was undone under the AI's newer one,
+        // which then skipped the review).
+        if !self.has_job_or_log(id)? {
+            return Err(StoreError::NothingToRevert(id.to_string()));
+        }
+        let _lock = self.lock_briefly(id)?;
         let log = self.activity(id);
         let pos = latest_undone(&log).ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
         if expect_ts_ms.is_some_and(|ts| ts != log[pos].ts_ms) {
@@ -3152,13 +3221,8 @@ impl Store {
         }
         // Reverting from `pos` also undoes the reverts logged after it, so
         // the job ends as it was before that change.
-        self.revert_from(
-            id,
-            &log,
-            pos,
-            actor,
-            with_reason(reason, format!("{REVERTED_PREFIX}{}", log[pos].summary)),
-        )
+        let summary = with_reason(reason, format!("{REVERTED_PREFIX}{}", log[pos].summary));
+        self.revert_locked(id, &log, pos, actor, summary)
     }
 
     /// Restores the version from before the change recorded at `ts_ms`,
@@ -3170,6 +3234,29 @@ impl Store {
         actor: &str,
         reason: Option<&str>,
     ) -> Result<Project, StoreError> {
+        self.revert_to_counted(id, ts_ms, actor, reason)
+            .map(|r| r.project)
+    }
+
+    /// [`Store::revert_to`] that also says how many recorded changes it
+    /// undid, counted under the job's lock: the app tells the user about
+    /// AI changes that came in while Revert all was asked (audit
+    /// 2026-11-23 ERR-1002).
+    pub fn revert_to_counted(
+        &self,
+        id: &str,
+        ts_ms: u64,
+        actor: &str,
+        reason: Option<&str>,
+    ) -> Result<RevertedChanges, StoreError> {
+        // As in `revert_last_expecting`: one hold of the lock.
+        if !self.has_job_or_log(id)? {
+            return Err(StoreError::NoSuchChange {
+                id: id.to_string(),
+                ts_ms,
+            });
+        }
+        let _lock = self.lock_briefly(id)?;
         let log = self.activity(id);
         let pos =
             log.iter()
@@ -3184,7 +3271,16 @@ impl Store {
         } else {
             format!("Reverted {undone} changes since: {}", log[pos].summary)
         };
-        self.revert_from(id, &log, pos, actor, with_reason(reason, summary))
+        let project = self.revert_locked(id, &log, pos, actor, with_reason(reason, summary))?;
+        Ok(RevertedChanges { project, undone })
+    }
+
+    /// Whether the job file or its change log is there: a revert of a job
+    /// that has neither makes no lock file for it (as `mark_reviewed`,
+    /// HUNT-905).
+    fn has_job_or_log(&self, id: &str) -> Result<bool, StoreError> {
+        Ok(fs::symlink_metadata(self.path(id)?).is_ok()
+            || fs::symlink_metadata(self.activity_path(id)?).is_ok())
     }
 
     /// Undoes `log[pos..]`, latest first: the inverse of each change is
@@ -3193,8 +3289,10 @@ impl Store {
     /// file can be newer than the last entry's result, and an edit can lie
     /// between two entries; such edits are kept (ERR-001). Refuses, with
     /// nothing written, when one of them touches a value a reverted change
-    /// set.
-    fn revert_from(
+    /// set. The caller holds the job's lock and read `log` under it, so the
+    /// file read here is the one written over (no second try with a log
+    /// that may be stale, ERR-1002).
+    fn revert_locked(
         &self,
         id: &str,
         log: &[ActivityEntry],
@@ -3202,30 +3300,6 @@ impl Store {
         actor: &str,
         (summary, reason): (String, Option<String>),
     ) -> Result<Project, StoreError> {
-        // The file is read, merged and written back only if nobody saved in
-        // between (the app's autosave); otherwise the merge runs again on
-        // the newer file.
-        for _ in 0..4 {
-            if let Some(p) = self.revert_once(id, log, pos, actor, (&summary, reason.as_deref()))? {
-                return Ok(p);
-            }
-        }
-        Err(StoreError::RevertConflict {
-            id: id.to_string(),
-            detail: "the job kept changing while it was reverted".into(),
-        })
-    }
-
-    /// One attempt of [`Store::revert_from`]: `None` when the file changed
-    /// between reading and writing it.
-    fn revert_once(
-        &self,
-        id: &str,
-        log: &[ActivityEntry],
-        pos: usize,
-        actor: &str,
-        summary: (&str, Option<&str>),
-    ) -> Result<Option<Project>, StoreError> {
         let value = |p: &Project| {
             serde_json::to_value(p).map_err(|e| StoreError::Unreadable {
                 id: id.to_string(),
@@ -3239,7 +3313,7 @@ impl Store {
             // A damaged file: the version before the change is restored.
             Err(_) => None,
         };
-        let base = current.clone();
+        let before = current.clone();
         let mut target = None;
         for (k, entry) in log[pos..].iter().enumerate().rev() {
             // The user's "offer result restored" stays when other changes
@@ -3247,14 +3321,14 @@ impl Store {
             if k > 0 && entry.user_restore() {
                 continue;
             }
-            let before = entry
+            let earlier = entry
                 .before
                 .clone()
                 .ok_or_else(|| StoreError::RevertCreated(id.to_string()))?;
             let undone = match (entry.after.as_ref(), current.as_ref()) {
                 (Some(after), Some(cur)) if cur != after => {
                     let merged =
-                        crate::merge::merge3(&value(after)?, &value(cur)?, &value(&before)?)
+                        crate::merge::merge3(&value(after)?, &value(cur)?, &value(&earlier)?)
                             .map_err(|paths| StoreError::RevertConflict {
                                 id: id.to_string(),
                                 detail: paths.join(", "),
@@ -3266,7 +3340,7 @@ impl Store {
                 }
                 // Unchanged since, written by Tectora 0.5 or older (no
                 // `after`), or no readable file: the version before it.
-                _ => before,
+                _ => earlier,
             };
             current = Some(undone.clone());
             target = Some(undone);
@@ -3280,14 +3354,21 @@ impl Store {
                 id: id.to_string(),
                 detail,
             })?;
-        let undid_from = Some(log[pos].ts_ms);
-        match self.save_checked_undoing(id, &target, actor, summary, base.as_ref(), undid_from)? {
-            CheckedSave::Saved { .. } => {
-                self.pin_restored(id, &log[pos..], &target);
-                Ok(Some(target))
-            }
-            CheckedSave::Conflict { .. } => Ok(None),
+        if before.as_ref() != Some(&target) {
+            self.log_and_write(
+                id,
+                before,
+                &target,
+                actor,
+                &summary,
+                reason,
+                Some(log[pos].ts_ms),
+                None,
+                None,
+            )?;
         }
+        self.pin_restored(id, &log[pos..], &target);
+        Ok(target)
     }
 
     /// After a revert of `undone` gave `target`: when that put an offer's
@@ -3346,7 +3427,9 @@ impl Store {
                 .map_err(|_| StoreError::NotFound(id.to_string()))
         };
         there()?;
-        let _lock = self.lock(id)?;
+        // Pressed in the review banner: waits only briefly, then `busy`
+        // and the banner stays (audit 2026-11-23 ARCH-1001).
+        let _lock = self.lock_briefly(id)?;
         there()?;
         let accepted_ms = self.reviewed_at(id).max(ts_ms);
         let io = |e| StoreError::io(Some(id), e);
@@ -4023,18 +4106,41 @@ fn latest_undone(log: &[ActivityEntry]) -> Option<usize> {
     None
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How often [`Store::activity`] read a change log on this thread, for
+    /// tests of what reads it (ARCH-1002).
+    static LOG_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The summary of a revert or a put-back: the core's sentence `what`,
 /// with the AI's reason at its end when there is one, and that reason
 /// ([`ActivityEntry::reason`]).
+///
+/// The whole summary is at most [`MAX_SUMMARY_CHARS`] characters and
+/// always ends with ` (reason: <reason>)`: the quoted change is cut to
+/// make room, never the reason, which is cut only past what leaves
+/// [`MIN_WHAT_CHARS`] for the core's sentence (audit 2026-11-23
+/// HUNT-1002, ERR-1003: the log's cap cut the reason off the line).
+///
+/// [`MAX_SUMMARY_CHARS`]: crate::edit::MAX_SUMMARY_CHARS
 fn with_reason(reason: Option<&str>, what: String) -> (String, Option<String>) {
+    use crate::edit::{MAX_SUMMARY_CHARS, capped};
     match reason.map(str::trim).filter(|r| !r.is_empty()) {
         Some(r) => {
-            let r = crate::edit::capped(r, crate::edit::MAX_SUMMARY_CHARS);
+            // " (reason: " and ")".
+            let frame = REVERT_REASON_OPEN.chars().count() + 1;
+            let r = capped(r, MAX_SUMMARY_CHARS - frame - MIN_WHAT_CHARS);
+            let what = capped(&what, MAX_SUMMARY_CHARS - frame - r.chars().count());
             (format!("{what}{REVERT_REASON_OPEN}{r})"), Some(r))
         }
         None => (what, None),
     }
 }
+
+/// Characters of a revert's or put-back's own sentence that an AI's long
+/// reason leaves ([`with_reason`]).
+const MIN_WHAT_CHARS: usize = 120;
 
 /// The text of a caught panic payload.
 pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
@@ -6500,6 +6606,8 @@ mod tests {
         let e = store.load("bad").unwrap_err();
         assert_eq!(e.code(), "unreadable");
         assert_eq!(e.id(), Some("bad"));
+        assert_eq!(StoreError::Busy("x".into()).code(), "busy");
+        assert_eq!(StoreError::Busy("x".into()).id(), Some("x"));
         let _ = fs::remove_dir_all(&store.dir);
     }
 
@@ -8014,6 +8122,296 @@ mod tests {
             .expect("refused without waiting for a writer");
         assert_eq!(attach, Err("not_a_file"));
         assert_eq!(open, Err("not_a_file"));
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-23 ERR-1002: the user's Revert of the AI's change A1
+    /// waits behind another program holding the job's lock, and so does
+    /// the AI's next save A2. However the two are let in, A2 is never
+    /// undone under it nor skips the review: either A2 lands first and the
+    /// press is stale, or the revert lands first and A2 comes after it.
+    #[test]
+    fn a_revert_waiting_behind_an_ai_save_never_lets_the_ai_change_skip_the_review() {
+        for run in 0..3 {
+            let store = temp_store(&format!("revert-race-{run}"));
+            let p = examples::find("gable").unwrap().project();
+            let id = store.save(None, &p).unwrap();
+            let mut a1 = p.clone();
+            a1.notes = "A1 note".into();
+            store
+                .save_as(Some(id.clone()), &a1, "claude", "A1: notes")
+                .unwrap();
+            let a1_ts = store.activity(&id).last().unwrap().ts_ms;
+            let held = store.lock(&id).unwrap().expect("a lock");
+            let (ai, revert) = std::thread::scope(|scope| {
+                let ai = scope.spawn(|| {
+                    let mut a2 = a1.clone();
+                    a2.job.customer = "A2 customer".into();
+                    store.save_as(Some(id.clone()), &a2, "claude", "A2: customer")
+                });
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                let revert =
+                    scope.spawn(|| store.revert_last_expecting(&id, USER_ACTOR, None, Some(a1_ts)));
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                drop(held);
+                (ai.join().unwrap(), revert.join().unwrap())
+            });
+            ai.unwrap();
+            let log = store.activity(&id);
+            let a2 = log
+                .iter()
+                .position(|e| e.summary == "A2: customer")
+                .expect("A2 logged");
+            let now = store.load(&id).unwrap();
+            assert_eq!(now.job.customer, "A2 customer");
+            match revert {
+                Err(e) => {
+                    assert_eq!(e.code(), "revert_stale", "{e}");
+                    assert_eq!(now.notes, "A1 note");
+                    assert_eq!(log.len(), 2, "nothing logged by the stale press");
+                }
+                Ok(_) => {
+                    // The revert came first: A2 is the latest entry.
+                    assert_eq!(
+                        a2,
+                        log.len() - 1,
+                        "{:?}",
+                        log.iter().map(|e| &e.summary).collect::<Vec<_>>()
+                    );
+                    assert_eq!(now.notes, "");
+                }
+            }
+            let pending = store.pending_review(&id).expect("A2 waits for review");
+            assert!(pending.since_ts_ms <= log[a2].ts_ms);
+            let _ = fs::remove_dir_all(&store.dir);
+        }
+    }
+
+    /// Audit 2026-11-23 ERR-1002 / ARCH-1001 (design A1): Revert, Revert
+    /// all, putting the offer's figures back and Accept wait for a held
+    /// lock only briefly, then answer `busy` with nothing written; once the
+    /// lock is free each works.
+    #[test]
+    fn short_actions_answer_busy_while_another_program_holds_the_lock() {
+        let wait = std::time::Duration::from_millis(150);
+        let store = temp_store("busy").with_action_wait(wait);
+        let (id, _) = old_offer(&store);
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        let mut q = store.load(&id).unwrap();
+        q.notes = "AI".into();
+        store
+            .save_as(Some(id.clone()), &q, "claude", "Notes")
+            .unwrap();
+        let last = store.activity(&id).last().unwrap().ts_ms;
+        let file = fs::read(store.path(&id).unwrap()).unwrap();
+        let log = store.activity(&id).len();
+        let reviewed = store.reviewed_at(&id);
+        let held = store.lock(&id).unwrap().expect("a lock");
+        let busy = |r: Result<(), StoreError>| {
+            let e = r.unwrap_err();
+            assert_eq!(e.code(), "busy", "{e}");
+            assert_eq!(e.id(), Some(id.as_str()));
+        };
+        let started = std::time::Instant::now();
+        busy(
+            store
+                .revert_last_expecting(&id, USER_ACTOR, None, Some(last))
+                .map(|_| ()),
+        );
+        busy(store.revert_last(&id, "claude", Some("Undo")).map(|_| ()));
+        busy(
+            store
+                .revert_to_counted(&id, last, USER_ACTOR, None)
+                .map(|_| ()),
+        );
+        busy(
+            store
+                .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+                .map(|_| ()),
+        );
+        busy(store.mark_reviewed(&id, last).map(|_| ()));
+        let took = started.elapsed();
+        assert!(took >= wait * 5, "{took:?}");
+        assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+        assert_eq!(fs::read(store.path(&id).unwrap()).unwrap(), file);
+        assert_eq!(store.activity(&id).len(), log);
+        assert_eq!(store.reviewed_at(&id), reviewed);
+        drop(held);
+        assert_eq!(store.mark_reviewed(&id, last).unwrap(), last);
+        store
+            .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(last))
+            .unwrap();
+        // The wait is the one opening a job has, a few seconds.
+        assert_eq!(Store::at(store.dir.clone()).action_wait, REFRESH_LOCK_WAIT);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-23 ERR-1002: Revert all says how many recorded changes
+    /// it undid, also the ones that came in after the press was drawn.
+    #[test]
+    fn revert_all_counts_the_changes_it_undid() {
+        let store = temp_store("revert-count");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        logged_saves(&store, &id, 3);
+        let first = store.activity(&id)[0].ts_ms;
+        let r = store
+            .revert_to_counted(&id, first, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(r.undone, 3);
+        assert_eq!(r.project, p);
+        assert_eq!(store.load(&id).unwrap(), p);
+        // Nothing there: refused without a lock file.
+        let e = store
+            .revert_to_counted("nope", 1, USER_ACTOR, None)
+            .unwrap_err();
+        assert_eq!(e.code(), "no_such_change");
+        let e = store.revert_last("nope", USER_ACTOR, None).unwrap_err();
+        assert_eq!(e.code(), "nothing_to_revert");
+        assert!(!store.activity_dir().join("nope.lock").exists());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-23 HUNT-1002, ERR-1003: an AI's reason stays at the
+    /// end of the history line however long the reverted change's summary
+    /// or the reason is; the line keeps the summary cap.
+    #[test]
+    fn a_long_reason_always_ends_the_revert_and_put_back_line() {
+        use crate::edit::MAX_SUMMARY_CHARS;
+        let ends_with_reason = |e: &ActivityEntry| {
+            let r = e.reason.as_deref().expect("a reason");
+            assert!(
+                e.summary.ends_with(&format!("{REVERT_REASON_OPEN}{r})")),
+                "{}",
+                e.summary
+            );
+            assert!(e.summary.chars().count() <= MAX_SUMMARY_CHARS);
+            r.to_string()
+        };
+        let store = temp_store("long-reason");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let mut q = p.clone();
+        q.notes = "x".into();
+        let long = format!("Note. {}", "x".repeat(480));
+        store
+            .save_as(Some(id.clone()), &q, "claude", &long)
+            .unwrap();
+        // A short reason after a long summary: the summary is cut.
+        store
+            .revert_last(&id, "claude", Some("Customer asked"))
+            .unwrap();
+        let e = store.activity(&id).last().unwrap().clone();
+        assert_eq!(ends_with_reason(&e), "Customer asked");
+        assert!(e.summary.starts_with(REVERTED_PREFIX));
+        // A long reason after a long summary: both cut, the reason last.
+        store
+            .save_as(Some(id.clone()), &q, "claude", &long)
+            .unwrap();
+        store
+            .revert_last(&id, "claude", Some(&"y".repeat(450)))
+            .unwrap();
+        let e = store.activity(&id).last().unwrap().clone();
+        let r = ends_with_reason(&e);
+        assert!(r.starts_with("yyyy") && r.chars().count() >= 300, "{r}");
+        assert!(e.summary.chars().count() - r.chars().count() >= 120);
+        // The put-back of the offer's figures.
+        let (id, _) = old_offer(&store);
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        let reason = format!("The customer signed these figures. {}", "y".repeat(450));
+        store
+            .restore_offer_result(&id, done.entry_ts_ms, "claude", Some(&reason))
+            .unwrap();
+        let e = store.activity(&id).last().unwrap().clone();
+        let r = ends_with_reason(&e);
+        assert!(r.starts_with("The customer signed"), "{r}");
+        assert!(e.summary.starts_with(RESTORED_PREFIX), "{}", e.summary);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-23 ARCH-1002: asking for the recalculation reads the
+    /// change log only for an origin record without the offer's figures,
+    /// not for a draft, an offer whose result was never recalculated, or
+    /// a record that has them.
+    #[test]
+    fn the_recalculation_reads_the_change_log_only_when_it_needs_it() {
+        let store = temp_store("recalc-noread");
+        let p = examples::find("gable").unwrap().project();
+        let draft = store.save(None, &p).unwrap();
+        logged_saves(&store, &draft, 3);
+        let reads = || LOG_READS.with(|n| n.get());
+        let before = reads();
+        assert_eq!(store.recalculation(&draft), None);
+        assert_eq!(reads(), before, "a draft without a stored result");
+        let (offer, _) = old_offer(&store);
+        let before = reads();
+        assert_eq!(store.recalculation(&offer), None);
+        assert_eq!(reads(), before, "an offer not recalculated");
+        store.refresh_entry(&offer).unwrap().expect("recalculated");
+        let before = reads();
+        assert!(store.recalculation(&offer).is_some());
+        assert_eq!(reads(), before, "a record with the offer's figures");
+        // A record of a round-9 build: the figures from the log.
+        let mut all = store.result_origins(&offer);
+        for o in &mut all {
+            if let Some(r) = o.refreshed.as_mut() {
+                r.offer = None;
+                r.result = None;
+            }
+        }
+        store.write_result_origins(&offer, &all).unwrap();
+        let before = reads();
+        assert!(store.recalculation(&offer).is_some());
+        assert_eq!(reads(), before + 1);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-23 ARCH-1003: an origin record whose offer figures
+    /// break the stored-result bounds (a hand-edited `.result.json`) is no
+    /// recalculation: nothing of it reaches the card or MCP, and a
+    /// put-back asked for anyway writes nothing.
+    #[test]
+    fn a_damaged_origin_record_is_no_recalculation() {
+        let store = temp_store("recalc-hostile");
+        let (id, _) = old_offer(&store);
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        assert!(store.recalculation(&id).is_some());
+        let good = store.result_origins(&id);
+        type Snap = crate::snapshot::ResultSnapshot;
+        let damaged = |f: fn(&mut Snap)| {
+            let mut all = good.clone();
+            for o in &mut all {
+                if let Some(r) = o.refreshed.as_mut() {
+                    f(r.offer.as_mut().unwrap());
+                }
+            }
+            store.write_result_origins(&id, &all).unwrap();
+        };
+        let checks: [fn(&mut Snap); 4] = [
+            |o| o.engine_version = format!("0.0.1 \u{202e}RLO\u{7}{}", "x".repeat(600)),
+            |o| {
+                o.lines_by_code.insert("K".repeat(200), 1.0);
+            },
+            |o| o.roof_area = f64::INFINITY,
+            |o| o.taken_ms = u64::MAX,
+        ];
+        let job = fs::read(store.path(&id).unwrap()).unwrap();
+        let entries = store.activity(&id).len();
+        for f in checks {
+            damaged(f);
+            assert_eq!(store.recalculation(&id), None);
+            let e = store
+                .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+                .unwrap_err();
+            assert!(["revert_stale", "unreadable"].contains(&e.code()), "{e}");
+            assert_eq!(fs::read(store.path(&id).unwrap()).unwrap(), job);
+            assert_eq!(store.activity(&id).len(), entries);
+        }
+        store.write_result_origins(&id, &good).unwrap();
+        assert!(store.recalculation(&id).is_some());
         let _ = fs::remove_dir_all(&store.dir);
     }
 }

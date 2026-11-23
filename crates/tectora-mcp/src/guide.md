@@ -131,6 +131,10 @@ The tools cover every operation of the Tectora editor:
   value the reverted step set, so ask the user then; pass `ts_ms` of the
   change you mean and it is refused with "revert_stale" when another change
   was saved meanwhile, so you never undo somebody else's step).
+  A revert, `revert_to` and `restore_offer_result` wait a few seconds at
+  most for another program saving the same job; then they answer "busy"
+  and nothing was done: call `get_history` again and try once more in a
+  moment.
   `restore_offer_result` puts an offer's own stored figures back in place
   of Tectora's recalculation of them (see "Stored result" below). `get_review`
   tells whether the user has accepted your changes yet and how they changed
@@ -259,7 +263,10 @@ offered. It changes the stored result alone (the design and every other
 change stay, also ones saved after the recalculation), works in a job of
 any status, and the figures put back are never recalculated again. It is
 refused with "revert_stale" once the stored result is another one (the
-user or you stored a new result, or the figures are back already). Only
+user or you stored a new result, or the figures are back already), and
+with "busy" while another program is saving the job (nothing was done;
+try again in a moment). A long `summary` of a revert or a put-back is cut
+to fit the history line, never past its end: keep it to one sentence. Only
 offers are
 recalculated (draft, ordered and done jobs keep their figures), only while
 the design is the one the result was taken from, no AI change waits for

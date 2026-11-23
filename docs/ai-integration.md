@@ -148,7 +148,19 @@ stay a `folder_request` the user allows or keeps.
 - A Revert button undoes the entry it is drawn on: the app sends that
   entry's time (`revert_last_change` with `expectTs`, MCP `ts_ms`) and the
   store refuses with `revert_stale` when another change is the latest by
-  now (an AI saved between the draw and the press).
+  now (an AI saved between the draw and the press). The store takes the
+  job's lock once for the whole revert (read the log, check the entry,
+  merge, write), so an AI save waiting for the lock lands before the
+  revert (then it is stale) or after it (then it waits for review), never
+  in between (audit 2026-11-23 ERR-1002). Revert, Revert all, the
+  put-back of the offer's figures and Accept wait for that lock at most a
+  few seconds (`REFRESH_LOCK_WAIT`), then answer `busy` with nothing
+  written; Revert all also returns how many entries it undid
+  (`revert_changes` gives `{ project, undone }`).
+- An AI's reason always ends its revert or put-back entry: the core cuts
+  the quoted summary (and a very long reason, leaving the sentence 120
+  characters) so `<sentence> (reason: <reason>)` fits the 500-character
+  summary cap and ends with the entry's `reason` field.
 - **The recalculation and its way back.** Whether a job's stored result is
   the engine's recalculation is one fact in the core,
   `Store::recalculation(id)` (the app's `result_recalculation`): the file's

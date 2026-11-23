@@ -249,12 +249,13 @@ fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fa
                     .map_err(Fail::from),
             )
         }
+        // With the number of entries undone, as the app (ERR-1002).
         "revert_changes" => {
             let ts = arg::<u64>(a, "tsMs").ok()?;
             Some(
                 store
-                    .revert_to(&id, ts, USER_ACTOR, None)
-                    .map(|p| to_json(p).unwrap_or(Value::Null))
+                    .revert_to_counted(&id, ts, USER_ACTOR, None)
+                    .map(|r| to_json(r).unwrap_or(Value::Null))
                     .map_err(Fail::from),
             )
         }
