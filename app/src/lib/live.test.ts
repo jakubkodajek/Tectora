@@ -126,6 +126,28 @@ describe("entrySummary", () => {
     // An AI summary that only mentions a reason is left as it is.
     expect(entrySummary("Pitch 45 (reason: drawing)")).toBe("Pitch 45 (reason: drawing)");
   });
+
+  it("takes the AI's reason from the entry's own field, whatever its texts contain (HUNT-904)", () => {
+    const want: Record<string, [string, string]> = {
+      cs: ["Původní čísla nabídky vrácena (Tectora 0.9.0 → 0.0.1) (důvod: Signed (reason: contract) these)", "Vráceno: Note (reason: x) (důvod: Mistake (reason: typo) fixed)"],
+      sk: ["", "Vrátené: Note (reason: x) (dôvod: Mistake (reason: typo) fixed)"],
+      en: ["Offer figures put back (Tectora 0.9.0 → 0.0.1) (reason: Signed (reason: contract) these)", "Reverted: Note (reason: x) (reason: Mistake (reason: typo) fixed)"],
+      de: ["", "Verworfen: Note (reason: x) (Grund: Mistake (reason: typo) fixed)"],
+    };
+    const restored = "Offer result restored (Tectora 0.9.0 -> 0.0.1): roof area 152.73 -> 157.73 m2 (reason: Signed (reason: contract) these)";
+    const reverted = "Reverted: Note (reason: x) (reason: Mistake (reason: typo) fixed)";
+    for (const [loc, [r, v]] of Object.entries(want)) {
+      i18n.locale = loc as typeof i18n.locale;
+      const put = entrySummary(restored, "Signed (reason: contract) these");
+      if (r) expect(put).toBe(r);
+      expect(put, loc).not.toMatch(/^Offer result restored/);
+      expect(put, loc).toContain("Signed (reason: contract) these");
+      expect(entrySummary(reverted, "Mistake (reason: typo) fixed")).toBe(v);
+      // The history passes the item's field.
+      expect(historyText({ actor: "claude", summary: reverted, reason: "Mistake (reason: typo) fixed" }, [])).toBe(v);
+    }
+    i18n.locale = "cs";
+  });
 });
 
 // Audit 2026-11-22 UX-704: the library's job panel showed the engine's

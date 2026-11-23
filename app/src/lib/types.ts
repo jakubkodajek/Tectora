@@ -424,6 +424,8 @@ export interface ActivityItem extends ActivityInfo {
   undid_from?: number;
   /** For "offer result restored": the time of the engine's entry whose old result it put back. */
   restores?: number;
+  /** The AI's reason of a revert or a put-back, as it ends the summary (store.rs `ActivityEntry::reason`, HUNT-904). */
+  reason?: string;
 }
 
 /**

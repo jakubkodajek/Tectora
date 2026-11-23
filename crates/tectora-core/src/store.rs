@@ -329,6 +329,9 @@ pub struct ActivityItem {
     /// For "offer result restored": the engine's entry it put back.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub restores: Option<u64>,
+    /// The AI's reason at the end of the summary ([`ActivityEntry::reason`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// The newest change of `log` (oldest first) when an AI client made it,
@@ -405,6 +408,13 @@ pub struct ActivityEntry {
     /// back. Such an entry changes the stored result only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restores: Option<u64>,
+    /// The reason an AI gave for a revert or a put-back of the offer's
+    /// figures, as it ends the summary (` (reason: <reason>)`): the app
+    /// shows the core's sentence in the user's language and the reason
+    /// as it is, without parsing the summary, whose texts are free (audit
+    /// 2026-11-23 HUNT-904). The summary keeps it for older readers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl ActivityEntry {
@@ -2243,6 +2253,7 @@ impl Store {
                     &summary,
                     None,
                     None,
+                    None,
                     fresh,
                 )?;
                 // Only once saved (audit ARCH-502): the old result, put
@@ -2423,7 +2434,7 @@ impl Store {
         if rec.differences.iter().any(|d| d.key == "roof_area") {
             what += &format!(": roof area {fresh_area:.2} -> {:.2} m2", old.roof_area);
         }
-        let summary = with_reason(reason, what);
+        let (summary, reason) = with_reason(reason, what);
         let pinned = self.result_origin(id, old.taken_ms).map(|mut o| {
             o.pinned = true;
             o
@@ -2443,6 +2454,7 @@ impl Store {
             &next,
             actor,
             &summary,
+            reason,
             None,
             Some(entry_ts_ms),
             pinned,
@@ -2464,6 +2476,7 @@ impl Store {
                 changes: e.changes,
                 undid_from: e.undid_from,
                 restores: e.restores,
+                reason: e.reason,
             })
             .collect();
         out.reverse();
@@ -2856,7 +2869,7 @@ impl Store {
                 let _creating = self.creation_lock()?;
                 let id = self.free_id(&project.name)?;
                 let _lock = self.lock(&id)?;
-                self.log_and_write(&id, None, project, actor, summary, None, None, None)?;
+                self.log_and_write(&id, None, project, actor, summary, None, None, None, None)?;
                 return Ok(id);
             }
         };
@@ -2879,7 +2892,7 @@ impl Store {
         summary: &str,
         base: Option<&Project>,
     ) -> Result<CheckedSave, StoreError> {
-        self.save_checked_undoing(id, project, actor, summary, base, None)
+        self.save_checked_undoing(id, project, actor, (summary, None), base, None)
     }
 
     /// [`Store::save_as_checked`] that records, for a revert, the time of
@@ -2889,7 +2902,7 @@ impl Store {
         id: &str,
         project: &Project,
         actor: &str,
-        summary: &str,
+        (summary, reason): (&str, Option<&str>),
         base: Option<&Project>,
         undid_from: Option<u64>,
     ) -> Result<CheckedSave, StoreError> {
@@ -2908,7 +2921,17 @@ impl Store {
             });
         }
         if before.as_ref() != Some(project) {
-            self.log_and_write(id, before, project, actor, summary, undid_from, None, None)?;
+            self.log_and_write(
+                id,
+                before,
+                project,
+                actor,
+                summary,
+                reason.map(str::to_string),
+                undid_from,
+                None,
+                None,
+            )?;
         }
         Ok(CheckedSave::Saved { id: id.to_string() })
     }
@@ -2925,6 +2948,7 @@ impl Store {
         project: &Project,
         actor: &str,
         summary: &str,
+        reason: Option<String>,
         undid_from: Option<u64>,
         restores: Option<u64>,
         mut known: Option<ResultOrigin>,
@@ -2963,6 +2987,7 @@ impl Store {
                 after: Some(project.clone()),
                 undid_from,
                 restores,
+                reason,
             },
             log,
         )?;
@@ -3175,13 +3200,13 @@ impl Store {
         log: &[ActivityEntry],
         pos: usize,
         actor: &str,
-        summary: String,
+        (summary, reason): (String, Option<String>),
     ) -> Result<Project, StoreError> {
         // The file is read, merged and written back only if nobody saved in
         // between (the app's autosave); otherwise the merge runs again on
         // the newer file.
         for _ in 0..4 {
-            if let Some(p) = self.revert_once(id, log, pos, actor, &summary)? {
+            if let Some(p) = self.revert_once(id, log, pos, actor, (&summary, reason.as_deref()))? {
                 return Ok(p);
             }
         }
@@ -3199,7 +3224,7 @@ impl Store {
         log: &[ActivityEntry],
         pos: usize,
         actor: &str,
-        summary: &str,
+        summary: (&str, Option<&str>),
     ) -> Result<Option<Project>, StoreError> {
         let value = |p: &Project| {
             serde_json::to_value(p).map_err(|e| StoreError::Unreadable {
@@ -3998,10 +4023,16 @@ fn latest_undone(log: &[ActivityEntry]) -> Option<usize> {
     None
 }
 
-fn with_reason(reason: Option<&str>, what: String) -> String {
+/// The summary of a revert or a put-back: the core's sentence `what`,
+/// with the AI's reason at its end when there is one, and that reason
+/// ([`ActivityEntry::reason`]).
+fn with_reason(reason: Option<&str>, what: String) -> (String, Option<String>) {
     match reason.map(str::trim).filter(|r| !r.is_empty()) {
-        Some(r) => format!("{what}{REVERT_REASON_OPEN}{r})"),
-        None => what,
+        Some(r) => {
+            let r = crate::edit::capped(r, crate::edit::MAX_SUMMARY_CHARS);
+            (format!("{what}{REVERT_REASON_OPEN}{r})"), Some(r))
+        }
+        None => (what, None),
     }
 }
 
@@ -4251,6 +4282,7 @@ mod tests {
                 after: Some(after),
                 undid_from: None,
                 restores: None,
+                reason: None,
             }
         };
         let write = |entries: &[ActivityEntry]| {
@@ -6016,6 +6048,7 @@ mod tests {
             after: Some(p.clone()),
             undid_from: None,
             restores: None,
+            reason: None,
         };
         fs::create_dir_all(store.activity_dir()).unwrap();
         fs::write(
@@ -7190,6 +7223,61 @@ mod tests {
         let _ = fs::remove_dir_all(&store.dir);
     }
 
+    /// Audit 2026-11-23 HUNT-904: the AI's reason of a revert and of a
+    /// put-back is its own field on the entry and the history item, also
+    /// when the AI's texts themselves contain " (reason: ".
+    #[test]
+    fn the_reason_of_a_revert_or_a_put_back_is_its_own_field() {
+        let store = temp_store("reason-field");
+        let a = examples::find("hip").unwrap().project();
+        let id = store.save_as(None, &a, USER_ACTOR, "create").unwrap();
+        let mut ai = a.clone();
+        ai.notes = "x".into();
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "Note (reason: drawing)")
+            .unwrap();
+        store
+            .revert_last(&id, "claude", Some(" Mistake (reason: typo) fixed "))
+            .unwrap();
+        let entry = store.activity(&id).last().unwrap().clone();
+        assert_eq!(
+            entry.reason.as_deref(),
+            Some("Mistake (reason: typo) fixed")
+        );
+        assert_eq!(
+            entry.summary,
+            format!(
+                "{REVERTED_PREFIX}Note (reason: drawing){REVERT_REASON_OPEN}Mistake (reason: typo) fixed)"
+            )
+        );
+        assert_eq!(
+            store.activity_items(&id)[0].reason.as_deref(),
+            Some("Mistake (reason: typo) fixed")
+        );
+        // An ordinary save has none.
+        let log = store.activity(&id);
+        assert!(log[..log.len() - 1].iter().all(|e| e.reason.is_none()));
+
+        let (oid, _) = old_offer(&store);
+        let done = store.refresh_entry(&oid).unwrap().expect("recalculated");
+        store
+            .restore_offer_result(
+                &oid,
+                done.entry_ts_ms,
+                "claude",
+                Some("Signed (reason: contract)"),
+            )
+            .unwrap();
+        let item = &store.activity_items(&oid)[0];
+        assert_eq!(item.reason.as_deref(), Some("Signed (reason: contract)"));
+        assert!(
+            item.summary.starts_with(RESTORED_PREFIX),
+            "{}",
+            item.summary
+        );
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
     /// UX-002: a revert's entry starts with the fixed sentence the app
     /// translates, and the AI's reason follows in a fixed form.
     #[test]
@@ -7449,6 +7537,7 @@ mod tests {
             after: Some(old.clone()),
             undid_from: None,
             restores: None,
+            reason: None,
         };
         fs::write(
             store.activity_dir().join("novak-2.jsonl"),

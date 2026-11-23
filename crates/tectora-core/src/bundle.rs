@@ -637,6 +637,10 @@ fn received_history(bytes: &[u8]) -> Option<(String, u64)> {
     for e in &mut entries {
         e.summary = crate::edit::clean_line(&e.summary, crate::edit::MAX_SUMMARY_CHARS);
         e.actor = crate::edit::clean_line(&e.actor, crate::edit::MAX_ACTOR_CHARS);
+        e.reason = e
+            .reason
+            .as_deref()
+            .map(|r| crate::edit::clean_line(r, crate::edit::MAX_SUMMARY_CHARS));
         // An entry that says Tectora itself wrote it was written by the
         // sender: it is kept as history under another name and never
         // shown or trusted as this engine's recalculation (audit
@@ -924,6 +928,7 @@ mod tests {
                 after: Some(big.clone()),
                 undid_from: None,
                 restores: None,
+                reason: None,
             })
             .unwrap()
                 + "\n"
@@ -1030,6 +1035,7 @@ mod tests {
                 after: Some(p.clone()),
                 undid_from: None,
                 restores: None,
+                reason: None,
             })
             .unwrap()
         };
@@ -1108,6 +1114,7 @@ mod tests {
             after: Some(p.clone()),
             undid_from: None,
             restores: None,
+            reason: None,
         })
         .unwrap();
         let path = dir.join("evil.tectorajob");
@@ -1232,6 +1239,7 @@ mod tests {
             after: Some(renamed.clone()),
             undid_from: None,
             restores: None,
+            reason: None,
         })
         .unwrap();
         entry["changes"] = serde_json::json!([
@@ -1375,6 +1383,7 @@ mod tests {
             after: Some(after),
             undid_from: None,
             restores: None,
+            reason: None,
         })
         .unwrap();
         let path = dir.join("bomb.tectorajob");
@@ -1423,6 +1432,7 @@ mod tests {
                     after: Some(after),
                     undid_from: None,
                     restores: None,
+                    reason: None,
                 })
                 .unwrap()
                     + "\n"
@@ -1465,6 +1475,7 @@ mod tests {
             after: Some(p.clone()),
             undid_from: None,
             restores: None,
+            reason: None,
         })
         .unwrap();
         let path = bundle_with_log(
@@ -1549,6 +1560,7 @@ mod tests {
                 after: None,
                 undid_from: None,
                 restores: None,
+                reason: None,
             })
             .unwrap()
         };

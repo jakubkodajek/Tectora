@@ -118,18 +118,31 @@ export function refreshedNotice(summary: string): string {
  * change and keeps its sentence (audit 2026-11-22 UI-803); the undone
  * entry is looked up in `log` by the revert's `undid_from`.
  */
-export function historyText(a: Pick<ActivityItem, "actor" | "summary" | "undid_from" | "restores">, log: Pick<ActivityItem, "ts_ms" | "actor">[]): string {
+export function historyText(a: Pick<ActivityItem, "actor" | "summary" | "undid_from" | "restores" | "reason">, log: Pick<ActivityItem, "ts_ms" | "actor">[]): string {
   if (!isAi(a.actor) && a.restores == null && isRevert(a.summary)) {
     const undone = a.undid_from == null ? undefined : log.find((e) => e.ts_ms === a.undid_from);
     // Not in the list any more (or an entry of an older Tectora): told by the sentence.
     const ofAi = undone ? isAi(undone.actor) : !/Stored result recalculated \(Tectora /.test(a.summary);
     if (ofAi) return t("ai.revertedEntry");
   }
-  return entrySummary(a.summary);
+  return entrySummary(a.summary, a.reason);
 }
 
-/** A change-log summary with the core's English revert sentences translated. */
-export function entrySummary(summary: string): string {
+/**
+ * A change-log summary with the core's English revert sentences translated.
+ * `reason`: the entry's own reason field (written since audit 2026-11-23
+ * HUNT-904); the summary then ends with exactly ` (reason: <reason>)`, and
+ * nothing is parsed out of the AI's free texts. Entries without the field
+ * are split at the last ` (reason: `.
+ */
+export function entrySummary(summary: string, reason?: string | null): string {
+  const suffix = reason ? `${REASON_OPEN}${reason})` : null;
+  if (suffix && summary.endsWith(suffix)) {
+    const head = summary.slice(0, -suffix.length);
+    const restored = RESTORED.exec(head);
+    if (restored) return t("chg.revertReason", { s: t("chg.resultRestored", { to: restored[1], from: restored[2] }), r: reason });
+    if (revertSentence(head)) return t("chg.revertReason", { s: revertText(head), r: reason });
+  }
   const refreshed = REFRESHED_ANY.test(summary) ? refreshedText("chg.resultRefreshed", summary) : null;
   if (refreshed) return refreshed;
   if (summary.startsWith("Offer result restored ")) {
