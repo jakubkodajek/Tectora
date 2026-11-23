@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeCalcError, describeError, describeProblem, describeRefusal, refusalReason, toAppError } from "./errors";
+import { describeBroken, describeCalcError, describeError, describeProblem, describeRefusal, refusalReason, toAppError } from "./errors";
 import { DICTS, i18n, t, type Locale } from "./i18n.svelte";
 
 const setLocale = (l: Locale) => (i18n.locale = l);
@@ -330,5 +330,27 @@ describe("round 14: the press's own notices (TEST-1303, UX-1301, UI-1301)", () =
     }
     setLocale("en");
     expect(describeError({ code: "busy" }, "revertAll").title).toBe("Could not revert the changes");
+  });
+});
+
+describe("round 14: the library's list of files that cannot be read (ARCH-1303)", () => {
+  const LOCALES = ["cs", "sk", "en", "de"] as Locale[];
+
+  it("a job refused for too-deep unknown keys is explained as such, never as the operating system's refusal", () => {
+    for (const l of LOCALES) {
+      setLocale(l);
+      const text = describeBroken({ id: "deep", code: "too_many", detail: "unknown keys nested too deep: 33 levels (at most 32)" });
+      expect(text, l).toBe(t("err.unknown_keys"));
+      expect(text, l).not.toBe(t("err.io"));
+    }
+  });
+
+  it("each code the store's scan gives has its own text; one errors.ts does not know is an io error", () => {
+    setLocale("en");
+    for (const code of ["unreadable", "newer_format", "permission_denied", "internal", "disk_full", "foreign_entry", "invalid_id", "not_found", "busy", "too_many", "io"]) {
+      expect(describeBroken({ id: "j", code, detail: "" }), code).toBe(t(`err.${code}`, { id: "j" }));
+    }
+    expect(describeBroken({ id: "j", code: "unreadable", detail: "j: not UTF-8 text" })).toBe(t("err.unreadable_text"));
+    expect(describeBroken({ id: "j", code: "something_new", detail: "" })).toBe(t("err.io"));
   });
 });

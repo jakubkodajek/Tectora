@@ -143,6 +143,18 @@ export function describeError(e: unknown, action?: Action): Described {
 }
 
 /**
+ * Why the library cannot read one of its files (store.rs `scan`), in the
+ * user's language: the same text the editor gives when it opens that file
+ * (a job refused for its unknown keys, a file in another encoding, ...),
+ * not the operating system's refusal (ARCH-1303). A code this file does
+ * not know is an input / output error.
+ */
+export function describeBroken(b: { id: string; code: string; detail?: string | null }): string {
+  if (!KNOWN.has(b.code)) return t("err.io");
+  return describeError({ code: b.code, id: b.id, detail: b.detail ?? undefined }).message;
+}
+
+/**
  * The roof calculation's error in the user's language. With several
  * buildings, the title names the ones whose roof fails on its own and the
  * hint says the others wait for them (one error stops every roof). Where

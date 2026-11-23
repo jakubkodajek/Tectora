@@ -13,7 +13,7 @@
   import { listedArea, offerDiffers, storedArea, storedAreaHint } from "./offer";
   import { numberLocale, t } from "./i18n.svelte";
   import { actorLabel, actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
-  import { notUtf8, type Action } from "./errors";
+  import { describeBroken, type Action } from "./errors";
   import { fold, searchWords } from "./fold";
   import { foreignSentences, type Foreign } from "./foreign";
   import { dismiss, notify, notifyError } from "./notify.svelte";
@@ -369,7 +369,7 @@
               {#if showBroken}
                 <ul>
                   {#each broken as b (b.id)}
-                    <li><code>{b.id}.tectora</code> {t(`err.${b.code === "unreadable" && notUtf8(b.detail) ? "unreadable_text" : b.code === "unreadable" || b.code === "newer_format" || b.code === "permission_denied" || b.code === "internal" ? b.code : "io"}`, { id: b.id })}{#if b.detail}<small>{b.detail}</small>{/if}</li>
+                    <li><code>{b.id}.tectora</code> {describeBroken(b)}{#if b.detail}<small>{b.detail}</small>{/if}</li>
                   {/each}
                 </ul>
               {/if}

@@ -200,3 +200,22 @@ test.describe("round 14: Revert all refused is titled in the plural (UI-1301)", 
     app.errors.length = 0;
   });
 });
+
+test.describe("round 14: the library's broken-file list (ARCH-1303)", () => {
+  test("a job with unknown keys nested too deep is explained as such, not as the operating system's refusal (ARCH-1303)", async ({ app, page }) => {
+    const id = await createExample("gable", "R14 hloubka");
+    const file = path.join(LIBRARY_DIR, `${id}.tectora`);
+    const p = JSON.parse(fs.readFileSync(file, "utf8"));
+    let v: unknown = {};
+    for (let i = 0; i < 40; i++) v = { a: v };
+    p.crm = v;
+    fs.writeFileSync(file, JSON.stringify(p));
+    await app.open();
+    const broken = page.locator(".broken").filter({ hasText: cs("lib.broken", { n: 1 }) });
+    await expect(broken).toBeVisible();
+    await broken.getByRole("button", { name: cs("lib.brokenShow") }).click();
+    const line = broken.locator("li").filter({ hasText: `${id}.tectora` });
+    await expect(line).toContainText(cs("err.unknown_keys"));
+    await expect(line).not.toContainText(cs("err.io"));
+  });
+});
