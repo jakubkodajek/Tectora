@@ -107,3 +107,25 @@ fn marks_are_put_in_canonical_order_before_they_compose() {
         assert_eq!(nfc(want), want, "{} stays", want.escape_unicode());
     }
 }
+
+/// Audit 2026-11-23 TEST-902: a mark of the same combining class as the
+/// one before it is blocked from composing with the letter (Unicode's
+/// "blocked" rule: an earlier mark of class 0 or of a class >= its own
+/// stands between them). Expected values from Python's `unicodedata`
+/// 15.1 `normalize("NFC", ...)`.
+#[test]
+fn a_mark_after_one_of_the_same_class_does_not_compose() {
+    for (input, want) in [
+        // U+20D0 and U+0308 are both class 230; U+20D0 composes with nothing.
+        ("a\u{20d0}\u{308}", "a\u{20d0}\u{308}"),
+        // The first acute composes, the grave after it (230) is blocked.
+        ("a\u{301}\u{300}", "\u{e1}\u{300}"),
+        ("e\u{301}\u{301}", "\u{e9}\u{301}"),
+        ("\u{627}\u{653}\u{653}", "\u{622}\u{653}"),
+        // Reordered first (230 after the lower classes), then blocked.
+        ("x\u{30c}\u{651}\u{f71}\u{308}", "x\u{651}\u{f71}\u{30c}\u{308}"),
+    ] {
+        assert_eq!(nfc(input), want, "{}", input.escape_unicode());
+        assert_eq!(nfc(want), want, "{} stays", want.escape_unicode());
+    }
+}
