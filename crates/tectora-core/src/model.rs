@@ -474,18 +474,8 @@ impl Project {
     fn check_values(&self) -> Result<(), String> {
         let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
         // The stored result is computed output with a timestamp, not input.
-        // Unknown top-level keys are not input either: the core never
-        // reads them, and a CRM's millisecond time in one blocked the job
-        // (audit 2026-11-23 HUNT-901). `flatten` puts exactly these keys at
-        // the top level; a known field never lands in `extra`. Their size
-        // stays bounded ([`MAX_EXTRA_BYTES`]) and they stay finite (no
-        // JSON value holds NaN). The app's save may round an integer above
-        // 2^53 in such a key (JavaScript numbers), which is allowed.
         if let Some(obj) = value.as_object_mut() {
             obj.remove("result_snapshot");
-            for k in self.extra.keys() {
-                obj.remove(k);
-            }
         }
         if let Some((path, v)) = first_out_of_range(&value, &mut String::new()) {
             return Err(format!(
@@ -1621,25 +1611,6 @@ mod tests {
         let mut p = crate::examples::find("gable").unwrap().project();
         assert!(p.set_status(JobStatus::Offer));
         assert!(p.check_limits().is_ok());
-    }
-
-    /// Audit 2026-11-23 HUNT-901: unknown keys are metadata, not input
-    /// geometry (lessons-learned 2026-11-03), at any depth; a known field
-    /// out of range is still refused.
-    #[test]
-    fn check_limits_ignores_unknown_keys() {
-        let mut p = crate::examples::find("gable").unwrap().project();
-        p.extra.insert(
-            "exported_at_ms".into(),
-            serde_json::json!(1_732_300_000_000u64),
-        );
-        p.extra.insert(
-            "crm".into(),
-            serde_json::json!({ "price": 250_000.5, "ids": [1e21] }),
-        );
-        assert_eq!(p.check_limits(), Ok(()));
-        p.parts[0].edges[0].start.x = 1e9;
-        assert!(p.check_limits().unwrap_err().contains("out of range"));
     }
 
     #[test]
