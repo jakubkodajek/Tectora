@@ -245,6 +245,13 @@
   let edits = 0;
   /** A file-change event came in while a save was running. */
   let reloadWanted = false;
+  /**
+   * Another program made the open job a file Tectora cannot read
+   * (`unreadable`, `too_many`): the next save writes the version open here
+   * over it, which the user is told when it happens (audit 2026-11-23
+   * ERR-1401). Cleared by that save and by a later good read.
+   */
+  let outsideUnreadable = false;
   /** Saves started so far: a read that a save overtook is stale. */
   let saveGen = 0;
   /** Saves run one after another: two from the same base would conflict
@@ -561,6 +568,11 @@
         lastSaved = JSON.stringify(await api.normalizeProject(written));
         // An edit made while this save was running is still unsaved.
         saveState = edits === seq ? "saved" : "dirty";
+        if (outsideUnreadable) {
+          // The other program's file the reload could not read is gone now.
+          outsideUnreadable = false;
+          ownToasts.add(info(t("editor.outsideReplaced")));
+        }
         void syncRecalculation((written as Project).result_snapshot?.taken_ms ?? null);
         return true;
       }
@@ -730,6 +742,8 @@
       if (destroyed) return;
       const p = await api.loadProject(id);
       if (destroyed) return;
+      // Readable again: nothing of the other program's file is replaced.
+      if (!initial) outsideUnreadable = false;
       const json = JSON.stringify(p);
       // A drag that began while this was read: read again after it.
       if (!(await refreshActivity(() => destroyed || (!initial && drag.active)))) {
@@ -816,6 +830,14 @@
         // Deleted outside the app while open: keep the edits, offer to save.
         saveState = "failed";
         notifyError(e, "load");
+      } else if (["unreadable", "too_many"].includes(toAppError(e).code)) {
+        // Another program wrote a file Tectora cannot read: not the open-time
+        // advice (remove the data, restore a backup), but what the next save
+        // does (audit 2026-11-23 ERR-1401; the repair is ARCH-1302).
+        outsideUnreadable = true;
+        const d = describeError(e, "load");
+        const name = project.name.trim() || id;
+        ownToasts.add(notify({ kind: "warning", code: d.code, title: t("err.ofJob", { name, title: d.title }), message: t("editor.outsideUnreadable"), detail: d.detail }));
       } else {
         notifyError(e, "load");
       }
