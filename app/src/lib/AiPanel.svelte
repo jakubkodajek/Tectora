@@ -6,7 +6,7 @@
   import { describeChange, describeFigure } from "./changes";
   import { relativeTime } from "./format";
   import { t } from "./i18n.svelte";
-  import { actorLabel, actorName, historyText, isFresh, isRevert, live, liveText } from "./live.svelte";
+  import { actorLabel, actorName, entryKind, historyText, isFresh, live, liveText } from "./live.svelte";
   import { app as appSettings } from "./settings.svelte";
   import { pressKeepingFocus } from "./press";
   import { changeRows, changeState, rowLabel } from "./settingschange";
@@ -146,7 +146,7 @@
           {/if}
         {/if}
         {#if i === latest && ai}
-          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && press(() => onrevert(isRevert(a.summary) ? undefined : a.ts_ms))}><Icon name="undo" size={14} />{t("ai.revert")}</button>
+          <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && press(() => onrevert(entryKind(a) === "revert" ? undefined : a.ts_ms))}><Icon name="undo" size={14} />{t("ai.revert")}</button>
         {:else if a.actor === ENGINE_ACTOR && recalculation?.entry_ts_ms === a.ts_ms}
           <!-- The offer's own figures back (owner decision 2026-11-22, UX-702d), on the recalculation the
                stored result still is, wherever it is in the history by now (UX-802): by this entry, and

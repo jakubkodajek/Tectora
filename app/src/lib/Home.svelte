@@ -12,7 +12,7 @@
   import { cardArea, cardAreaNote, cardRoof, m2, relativeTime } from "./format";
   import { listedArea, offerDiffers, storedArea, storedAreaHint } from "./offer";
   import { numberLocale, t } from "./i18n.svelte";
-  import { actorLabel, actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
+  import { actorLabel, actorName, entryText, isFresh, live, liveText } from "./live.svelte";
   import { describeBroken, type Action } from "./errors";
   import { fold, searchWords } from "./fold";
   import { foreignSentences, type Foreign } from "./foreign";
@@ -453,7 +453,7 @@
                   <td class="mod c-mod">
                     {relativeTime(p.modified_ms)}
                     {#if p.changed_by_ai}
-                      <span class="ai-tag" data-testid="ai-tag" title={entrySummary(p.changed_by_ai.summary)}><Icon name="sparkle" size={11} />{actorName(p.changed_by_ai.actor)}</span>
+                      <span class="ai-tag" data-testid="ai-tag" title={entryText(p.changed_by_ai)}><Icon name="sparkle" size={11} />{actorName(p.changed_by_ai.actor)}</span>
                     {/if}
                   </td>
                 </tr>
@@ -495,7 +495,7 @@
         {#if selected.last_activity}
           <div class="last" class:ai={isAi(selected.last_activity.actor)} data-testid="detail-last">
             <span>{actorLabel(selected.last_activity.actor)} · {relativeTime(selected.last_activity.ts_ms)}</span>
-            {entrySummary(selected.last_activity.summary)}
+            {entryText(selected.last_activity)}
           </div>
         {/if}
         <div class="detail-actions">

@@ -55,7 +55,10 @@ export type CheckedSave = { status: "saved"; id: string } | { status: "conflict"
 /** What Revert all did (`Store::revert_to_counted`): the job as it is now and how many recorded changes it undid. */
 export interface RevertedChanges {
   project: Project;
+  /** The changes undone (reverts among them not counted again), as the history line says; 0 when nothing was written. */
   undone: number;
+  /** The AI's entries undone, the banner's own rule (`isAi`): compared with the AI steps the banner showed (HUNT-1401). */
+  undone_ai: number;
 }
 
 export interface StandardParams {
@@ -113,7 +116,7 @@ export const api = {
   restoreOfferResult: (id: string, entryTsMs: number) => invoke<Project>("restore_offer_result", { id, entryTsMs }),
   /** Undoes the latest change; with `expectTs` only if it is still that entry (`revert_stale` otherwise). */
   revertLastChange: (id: string, expectTs?: number) => invoke<Project>("revert_last_change", { id, expectTs: expectTs ?? null }),
-  /** Revert all: undoes the change at `tsMs` and every later one; `undone` counts the entries, also AI ones that came in after the press (ERR-1002). */
+  /** Revert all: undoes the change at `tsMs` and every later one; `undone_ai` counts the AI entries undone, also ones that came in after the press (ERR-1002, HUNT-1401). */
   revertAll: (id: string, tsMs: number) => invoke<RevertedChanges>("revert_changes", { id, tsMs }),
   revertChanges: (id: string, tsMs: number) =>
     invoke<RevertedChanges>("revert_changes", { id, tsMs }).then((r) => r.project),

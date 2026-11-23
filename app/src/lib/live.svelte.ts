@@ -2,7 +2,7 @@
 
 import { num } from "./format";
 import { DICTS, t } from "./i18n.svelte";
-import { ENGINE_ACTOR, RECEIVED_ENGINE_ACTOR, isAi, type ActivityItem, type LiveStatus } from "./types";
+import { ENGINE_ACTOR, RECEIVED_ENGINE_ACTOR, USER_ACTOR, isAi, type ActivityItem, type EntryKind, type LiveStatus } from "./types";
 
 /** A status older than this is shown as idle. */
 export const LIVE_FRESH_MS = 90_000;
@@ -43,6 +43,8 @@ export function actorLabel(actor: string): string {
  */
 export function liveText(s: LiveStatus): string {
   if (s.kind && s.kind !== "changed" && `ai.live.${s.kind}` in DICTS.en) return t(`ai.live.${s.kind}`, { name: s.name ?? "" });
+  // A change's message is the agent's own summary: its words, quoted (ARCH-1401).
+  if (s.kind === "changed") return t("ai.quoted", { s: s.message });
   return s.message;
 }
 
@@ -66,11 +68,6 @@ const LEGACY_REASON = /^(.*?) \((Reverted: .*|Reverted \d+ changes since: .*)\)$
 
 function revertSentence(summary: string): boolean {
   return summary.startsWith(REVERTED) || REVERTED_MANY.test(summary);
-}
-
-/** Whether a change-log summary is one the core wrote for a revert. */
-export function isRevert(summary: string): boolean {
-  return revertSentence(summary) || LEGACY_REASON.test(summary);
 }
 
 /**
@@ -149,46 +146,113 @@ export function refreshedNotice(summary: string): string {
  * bundle, says nothing about it.
  */
 export function historyText(
-  a: Pick<ActivityItem, "actor" | "summary" | "undid_from" | "restores" | "reason"> & { ts_ms?: number },
-  log: Pick<ActivityItem, "ts_ms" | "actor">[],
+  a: Pick<ActivityItem, "actor" | "summary" | "undid_from" | "restores" | "reason" | "kind"> & { ts_ms?: number },
+  log: readonly LoggedEntry[],
   recalculationTs?: number | null,
 ): string {
-  if (a.actor === ENGINE_ACTOR && recalculationTs != null && a.ts_ms === recalculationTs && REFRESHED_ANY.test(a.summary)) {
+  const kind = entryKind(a);
+  if (kind === "refresh" && a.actor === ENGINE_ACTOR && recalculationTs != null && a.ts_ms === recalculationTs) {
     const text = refreshedText("chg.resultRefreshed", a.summary);
     if (text) return `${text} ${t("chg.refreshedBack")}`;
   }
-  if (!isAi(a.actor) && a.restores == null && isRevert(a.summary)) {
+  if (kind === "revert" && !isAi(a.actor)) {
     const undone = a.undid_from == null ? undefined : log.find((e) => e.ts_ms === a.undid_from);
-    // Not in the list any more (or an entry of an older Tectora): told by the sentence.
+    // Not in the list any more (or the user's revert of an older Tectora): told by the sentence.
     const ofAi = undone ? isAi(undone.actor) : !/Stored result recalculated \(Tectora /.test(a.summary);
     if (ofAi) return t("ai.revertedEntry");
   }
-  return entrySummary(a.summary, a.reason);
+  return entryText(a, log);
+}
+
+/** A change-log entry as `entryText` reads it. */
+export type EntryLike = Pick<ActivityItem, "actor" | "summary"> & {
+  kind?: EntryKind;
+  reason?: string | null;
+  undid_from?: number;
+  restores?: number;
+};
+/** An entry of the list a revert's undone entry is looked up in (by `undid_from`). */
+export type LoggedEntry = Pick<ActivityItem, "ts_ms" | "actor"> & Partial<EntryLike>;
+
+/**
+ * What Tectora wrote an entry as: the core's `kind` (store.rs
+ * `ActivityEntry::kind`); for an item without it (an older bridge), the
+ * same rule from its fields. Never from an AI's words: an AI's summary
+ * that reads like a revert is a change (audit 2026-11-23 ARCH-1401). The
+ * words count only for the user's own reverts of Tectora 0.8.0 and older,
+ * which did not record `undid_from`; an AI client never logs as the user.
+ */
+export function entryKind(a: Pick<EntryLike, "actor" | "kind" | "undid_from" | "restores"> & { summary?: string }): EntryKind | null {
+  if (a.kind) return a.kind;
+  const summary = a.summary ?? "";
+  if (a.restores != null) return "restore";
+  if (a.undid_from != null || (a.actor === USER_ACTOR && revertSentence(summary))) return "revert";
+  if ((a.actor === ENGINE_ACTOR || a.actor === RECEIVED_ENGINE_ACTOR) && REFRESHED_ANY.test(summary)) return "refresh";
+  return null;
+}
+
+/** How deep a revert's quoted entry is followed back through the list. */
+const MAX_NESTED = 8;
+
+/**
+ * What the history, the review banner and the library card show for an
+ * entry: Tectora's own sentence in the user's language when the entry is
+ * a revert, a put-back or a recalculation by its kind (`entryKind`), else
+ * the summary as written, an AI's in quotation marks as its own words
+ * (audit 2026-11-23 ARCH-1401: an AI wrote "Reverted: …" or the engine's
+ * sentence and it read as Tectora's). The entry a revert quotes is
+ * translated only when it is found in `log` by `undid_from` and has a kind
+ * itself; otherwise its words stay as they are.
+ */
+export function entryText(a: EntryLike, log: readonly LoggedEntry[] = [], depth = 0): string {
+  const kind = entryKind(a);
+  if (kind === null) return isAi(a.actor) ? t("ai.quoted", { s: a.summary }) : a.summary;
+  return coreSentence(a.summary, a.reason, kind, (inner) => {
+    const undone = a.undid_from == null || depth >= MAX_NESTED ? undefined : log.find((e) => e.ts_ms === a.undid_from);
+    if (!undone) return inner;
+    // The words as the revert quoted them, the fields of the entry it undid.
+    const u: EntryLike = { ...undone, summary: inner };
+    return entryKind(u) ? entryText(u, log, depth + 1) : inner;
+  });
 }
 
 /**
- * A change-log summary with the core's English revert sentences translated.
+ * A summary Tectora itself wrote, with the core's English sentences
+ * translated, entries a revert quotes too. Only for a text known to be
+ * the core's (the recalculation notice on open); the history, the banner
+ * and the card go by the entry's kind (`entryText`).
  * `reason`: the entry's own reason field (written since audit 2026-11-23
  * HUNT-904); the summary then ends with exactly ` (reason: <reason>)`, and
  * nothing is parsed out of the AI's free texts. Entries without the field
  * are split at the last ` (reason: `.
  */
 export function entrySummary(summary: string, reason?: string | null): string {
+  return coreSentence(summary, reason, null, (inner) => entrySummary(inner));
+}
+
+/**
+ * `summary` as the core's sentence of `kind` (any of them when null) in
+ * the user's language, the entry a revert quotes shown by `nested`; the
+ * summary as written when it is not that sentence.
+ */
+function coreSentence(summary: string, reason: string | null | undefined, kind: EntryKind | null, nested: (s: string) => string): string {
+  const restore = kind === null || kind === "restore";
+  const revert = kind === null || kind === "revert";
   if (reason && summary.endsWith(`${REASON_OPEN}${reason})`)) {
     const head = summary.slice(0, -`${REASON_OPEN}${reason})`.length);
-    const restored = RESTORED.exec(head);
+    const restored = restore ? RESTORED.exec(head) : null;
     if (restored) return t("chg.revertReason", { s: t("chg.resultRestored", { to: restored[1], from: restored[2] }), r: reason });
-    if (revertSentence(head)) return t("chg.revertReason", { s: revertText(head), r: reason });
+    if (revert && revertSentence(head)) return t("chg.revertReason", { s: revertText(head, nested), r: reason });
   }
   const cut = reason ? cutHead(summary, reason) : null;
   if (cut !== null && reason) {
-    const restored = RESTORED_START.exec(cut);
+    const restored = restore ? RESTORED_START.exec(cut) : null;
     if (restored) return t("chg.revertReason", { s: t("chg.resultRestored", { to: restored[1], from: restored[2] }), r: reason });
-    if (revertSentence(cut)) return t("chg.revertReason", { s: revertText(cut), r: reason });
+    if (revert && revertSentence(cut)) return t("chg.revertReason", { s: revertText(cut, nested), r: reason });
   }
-  const refreshed = REFRESHED_ANY.test(summary) ? refreshedText("chg.resultRefreshed", summary) : null;
+  const refreshed = (kind === null || kind === "refresh") && REFRESHED_ANY.test(summary) ? refreshedText("chg.resultRefreshed", summary) : null;
   if (refreshed) return refreshed;
-  if (summary.startsWith("Offer result restored ")) {
+  if (restore && summary.startsWith("Offer result restored ")) {
     // An AI's reason is the entry's last ` (reason: …)`.
     const at = summary.lastIndexOf(REASON_OPEN);
     const reason = at >= 0 && summary.endsWith(")") ? summary.slice(at + REASON_OPEN.length, -1) : null;
@@ -198,16 +262,17 @@ export function entrySummary(summary: string, reason?: string | null): string {
       return reason === null ? s : t("chg.revertReason", { s, r: reason });
     }
   }
+  if (!revert) return summary;
   if (revertSentence(summary)) {
     // The AI's reason is the entry's last ` (reason: …)`.
     const at = summary.lastIndexOf(REASON_OPEN);
     if (at >= 0 && summary.endsWith(")")) {
-      return t("chg.revertReason", { s: revertText(summary.slice(0, at)), r: summary.slice(at + REASON_OPEN.length, -1) });
+      return t("chg.revertReason", { s: revertText(summary.slice(0, at), nested), r: summary.slice(at + REASON_OPEN.length, -1) });
     }
-    return revertText(summary);
+    return revertText(summary, nested);
   }
   const legacy = LEGACY_REASON.exec(summary);
-  if (legacy) return t("chg.revertReason", { s: revertText(legacy[2]), r: legacy[1] });
+  if (legacy) return t("chg.revertReason", { s: revertText(legacy[2], nested), r: legacy[1] });
   return summary;
 }
 
@@ -234,10 +299,10 @@ function cutHead(summary: string, reason: string): string | null {
   return summary;
 }
 
-/** A revert's sentence (without a reason) in the user's language. */
-function revertText(summary: string): string {
-  if (summary.startsWith(REVERTED)) return t("chg.revertedEntry", { s: entrySummary(summary.slice(REVERTED.length)) });
+/** A revert's sentence (without a reason) in the user's language, the entry it quotes shown by `nested`. */
+function revertText(summary: string, nested: (s: string) => string): string {
+  if (summary.startsWith(REVERTED)) return t("chg.revertedEntry", { s: nested(summary.slice(REVERTED.length)) });
   const m = REVERTED_MANY.exec(summary);
-  if (m) return t("chg.revertedMany", { n: m[1], s: entrySummary(summary.slice(m[0].length)) });
+  if (m) return t("chg.revertedMany", { n: m[1], s: nested(summary.slice(m[0].length)) });
   return summary;
 }
