@@ -3986,6 +3986,51 @@ mod tool_coverage {
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
+    /// HUNT-1402: an earlier version outside today's limits is refused with
+    /// its own code by both revert tools, and the job is not touched.
+    #[test]
+    fn a_revert_to_a_version_outside_the_limits_says_so_and_changes_nothing() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        call(
+            &mut s,
+            "update_edges",
+            json!({ "id": id, "changes": [{ "index": 0, "pitch_deg": 35.0 }], "summary": "step" }),
+        );
+        let log = s.store.dir.join(".activity").join(format!("{id}.jsonl"));
+        let text: Vec<String> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let mut v: Value = serde_json::from_str(l).unwrap();
+                if v["before"].is_object() {
+                    v["before"]["parts"][0]["edges"][0]["start"]["x"] = json!(1e9);
+                }
+                v.to_string()
+            })
+            .collect();
+        std::fs::write(&log, text.join("\n") + "\n").unwrap();
+        let file = std::fs::read(s.store.dir.join(format!("{id}.tectora"))).unwrap();
+        let ts = s.store.activity(&id).last().unwrap().ts_ms;
+        for (tool, args) in [
+            (
+                "revert_to",
+                json!({ "id": id, "ts_ms": ts, "summary": "back" }),
+            ),
+            ("revert_last_change", json!({ "id": id, "summary": "back" })),
+        ] {
+            let e = s.call_tool(tool, &args).unwrap_err();
+            assert!(e.starts_with("revert_out_of_limits: "), "{tool}: {e}");
+            assert!(e.contains("outside the current limits"), "{e}");
+            assert!(e.contains("the job itself is unchanged"), "{e}");
+        }
+        assert_eq!(
+            std::fs::read(s.store.dir.join(format!("{id}.tectora"))).unwrap(),
+            file
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
     #[test]
     fn create_from_example_makes_the_example_job() {
         let mut s = server();

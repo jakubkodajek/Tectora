@@ -131,6 +131,9 @@ The tools cover every operation of the Tectora editor:
   value the reverted step set, so ask the user then; pass `ts_ms` of the
   change you mean and it is refused with "revert_stale" when another change
   was saved meanwhile, so you never undo somebody else's step).
+  "revert_out_of_limits" means the earlier version in the history is
+  outside Tectora's current limits and cannot be put back; the job itself
+  is fine and unchanged, so tell the user and change it by edits instead.
   A revert, `revert_to` and `restore_offer_result` wait a few seconds at
   most for another program saving the same job; then they answer "busy"
   and nothing was done: call `get_history` again and try once more in a

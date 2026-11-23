@@ -1067,6 +1067,7 @@ const cs: Dict = {
   "err.action.revertAll": "Změny se nepodařilo vrátit",
   "folderReq.jobCloses": "Otevřená zakázka se uloží a zavře.",
   "folderReq.jobsStay": "Stávající zakázky zůstanou v původní složce.",
+  "err.revert_out_of_limits": "Starší verzi zakázky z historie nelze obnovit, protože přesahuje dnešní limity Tectory. Zakázka sama je v pořádku a nezměnila se.",
 };
 
 const sk: Dict = {
@@ -2125,6 +2126,7 @@ const sk: Dict = {
   "err.action.revertAll": "Zmeny sa nepodarilo vrátiť",
   "folderReq.jobCloses": "Otvorená zákazka sa uloží a zatvorí.",
   "folderReq.jobsStay": "Existujúce zákazky zostanú v pôvodnom priečinku.",
+  "err.revert_out_of_limits": "Staršiu verziu zákazky z histórie nemožno obnoviť, pretože presahuje dnešné limity Tectory. Zákazka samotná je v poriadku a nezmenila sa.",
 };
 
 const en: Dict = {
@@ -3183,6 +3185,7 @@ const en: Dict = {
   "err.action.revertAll": "Could not revert the changes",
   "folderReq.jobCloses": "The open job is saved and closed.",
   "folderReq.jobsStay": "Existing jobs stay in the old folder.",
+  "err.revert_out_of_limits": "The earlier version in the history cannot be restored because it is outside Tectora's current limits. The job itself is fine and was not changed.",
 };
 
 const de: Dict = {
@@ -4241,6 +4244,7 @@ const de: Dict = {
   "err.action.revertAll": "Die Änderungen konnten nicht verworfen werden",
   "folderReq.jobCloses": "Der geöffnete Auftrag wird gespeichert und geschlossen.",
   "folderReq.jobsStay": "Bestehende Aufträge bleiben im alten Ordner.",
+  "err.revert_out_of_limits": "Die frühere Fassung aus dem Verlauf lässt sich nicht wiederherstellen, weil sie außerhalb der heutigen Grenzen von Tectora liegt. Der Auftrag selbst ist in Ordnung und wurde nicht geändert.",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };

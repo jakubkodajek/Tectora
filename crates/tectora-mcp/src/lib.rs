@@ -403,10 +403,14 @@ fn roof_trouble_of(geos: &[RoofGeometry], project: &Project) -> Option<Value> {
 /// A library error for an AI client, with its stable code in front where
 /// the client is to act on it: `revert_stale` (look at the history again)
 /// and `busy` (another program holds the job's lock; nothing was done, try
-/// again in a moment, audit 2026-11-23 ERR-1002).
+/// again in a moment, audit 2026-11-23 ERR-1002), `revert_out_of_limits`
+/// (the earlier version is outside the limits; the job is unchanged).
 pub(crate) fn coded(e: StoreError) -> String {
     match e {
-        StoreError::RevertStale { .. } | StoreError::Busy(_) | StoreError::TooMany { .. } => {
+        StoreError::RevertStale { .. }
+        | StoreError::Busy(_)
+        | StoreError::TooMany { .. }
+        | StoreError::RevertOutOfLimits { .. } => {
             format!("{}: {e}", e.code())
         }
         e => e.to_string(),

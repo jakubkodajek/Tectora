@@ -846,6 +846,13 @@ pub enum StoreError {
     /// ERR-1202, ARCH-1201). Code `too_many`, as the calculation's refusal.
     #[error("{id}: the job cannot be opened ({detail})")]
     TooMany { id: String, detail: String },
+    /// The earlier version a revert or a restore would write back is
+    /// outside the current limits (`Project::check_limits`): nothing is
+    /// written, the job itself is fine (audit 2026-11-23 HUNT-1402).
+    #[error(
+        "{id}: the earlier version is outside the current limits and cannot be restored; the job itself is unchanged ({detail})"
+    )]
+    RevertOutOfLimits { id: String, detail: String },
 }
 
 /// The kinds of file system failure the app explains differently.
@@ -888,6 +895,7 @@ impl StoreError {
             StoreError::RevertStale { .. } => "revert_stale",
             StoreError::Busy(_) => "busy",
             StoreError::TooMany { .. } => "too_many",
+            StoreError::RevertOutOfLimits { .. } => "revert_out_of_limits",
         }
     }
 
@@ -904,7 +912,8 @@ impl StoreError {
             | StoreError::NoSuchChange { id, .. }
             | StoreError::RevertConflict { id, .. }
             | StoreError::RevertStale { id, .. }
-            | StoreError::TooMany { id, .. } => Some(id),
+            | StoreError::TooMany { id, .. }
+            | StoreError::RevertOutOfLimits { id, .. } => Some(id),
             StoreError::Io { id, .. } => id.as_deref(),
         }
     }
@@ -916,7 +925,8 @@ impl StoreError {
             | StoreError::Io { detail, .. }
             | StoreError::RevertConflict { detail, .. }
             | StoreError::RevertStale { detail, .. }
-            | StoreError::TooMany { detail, .. } => Some(detail),
+            | StoreError::TooMany { detail, .. }
+            | StoreError::RevertOutOfLimits { detail, .. } => Some(detail),
             _ => None,
         }
     }
@@ -3498,7 +3508,7 @@ impl Store {
         // not written back into the job (HUNTIO-004).
         target
             .check_limits()
-            .map_err(|detail| StoreError::Unreadable {
+            .map_err(|detail| StoreError::RevertOutOfLimits {
                 id: id.to_string(),
                 detail,
             })?;
@@ -7076,7 +7086,9 @@ mod tests {
         let id = store.save(None, &p).unwrap();
         let mut ai = p.clone();
         ai.parts[0].edges[0].overhang = 0.8;
-        store.save_as(Some(id.clone()), &ai, "claude", "AI").unwrap();
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "AI")
+            .unwrap();
         let p = ai;
         let path = store.path(&id).unwrap();
         let v = crate::model::SCHEMA_VERSION + 1;
@@ -7144,6 +7156,46 @@ mod tests {
             ));
             assert_eq!(store.load(&id).unwrap(), mine);
         }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// HUNT-1402: an earlier version in the log outside today's limits has
+    /// its own refusal, not "damaged, restore from a backup", and the job
+    /// is not touched.
+    #[test]
+    fn a_history_version_outside_the_limits_is_refused_with_its_own_code() {
+        let store = temp_store("revert-limits");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let mut ai = p.clone();
+        ai.parts[0].edges[0].overhang = 0.8;
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "AI")
+            .unwrap();
+        let log = store.activity_path(&id).unwrap();
+        let lines: Vec<String> = fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let mut v: serde_json::Value = serde_json::from_str(l).unwrap();
+                v["before"]["parts"][0]["edges"][0]["start"]["x"] = serde_json::json!(1e9);
+                v.to_string()
+            })
+            .collect();
+        fs::write(&log, lines.join("\n") + "\n").unwrap();
+        let ts = store.activity(&id)[0].ts_ms;
+        let file = fs::read(store.path(&id).unwrap()).unwrap();
+        let e = store.revert_to(&id, ts, USER_ACTOR, None).unwrap_err();
+        assert_eq!(e.code(), "revert_out_of_limits", "{e}");
+        assert_eq!(e.id(), Some(id.as_str()));
+        assert!(e.detail().is_some_and(|d| !d.is_empty()));
+        assert!(e.to_string().contains("unchanged"), "{e}");
+        assert_eq!(
+            store.revert_last(&id, USER_ACTOR, None).unwrap_err().code(),
+            "revert_out_of_limits"
+        );
+        assert_eq!(fs::read(store.path(&id).unwrap()).unwrap(), file);
+        assert_eq!(store.activity(&id).len(), 1, "nothing logged");
         let _ = fs::remove_dir_all(&store.dir);
     }
 
