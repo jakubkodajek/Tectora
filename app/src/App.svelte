@@ -237,6 +237,7 @@
 {#if appSettings.view?.settings.folder_request}
   <FolderRequest
     request={appSettings.view.settings.folder_request}
+    jobOpen={!!openId}
     onanswered={async (moved) => {
       applySettings(await api.getSettings());
       if (moved) libraryChanged();

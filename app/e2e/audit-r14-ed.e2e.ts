@@ -219,3 +219,31 @@ test.describe("round 14: the library's broken-file list (ARCH-1303)", () => {
     await expect(line).not.toContainText(cs("err.io"));
   });
 });
+
+test.describe("round 14: the AI's folder request says what Allow does (design F, UX-1302)", () => {
+  async function askFolder(mcp: any, name: string) {
+    const other = path.join(E2E_DIR, `r14-${name}`);
+    fs.rmSync(other, { recursive: true, force: true });
+    fs.mkdirSync(other, { recursive: true });
+    await mcp.call("update_settings", { projects_dir: other, summary: "Use the shared folder" });
+  }
+  const request = (page: Page) => page.getByRole("dialog", { name: cs("folderReq.title") });
+
+  test("with a job open the request says the job is saved and closed and the jobs stay in the old folder (UX-1302)", async ({ app, page, mcp }) => {
+    await createExample("gable", "R14 složka");
+    await app.open();
+    await app.openJob("R14 složka");
+    await app.saved();
+    await askFolder(mcp, "open");
+    await expect(request(page)).toContainText(cs("folderReq.jobCloses"));
+    await expect(request(page)).toContainText(cs("folderReq.jobsStay"));
+  });
+
+  test("in the library the request says only that the jobs stay in the old folder (UX-1302)", async ({ app, page, mcp }) => {
+    await createExample("gable", "R14 knihovna");
+    await app.open();
+    await askFolder(mcp, "library");
+    await expect(request(page)).toContainText(cs("folderReq.jobsStay"));
+    await expect(request(page)).not.toContainText(cs("folderReq.jobCloses"));
+  });
+});

@@ -9,7 +9,7 @@
   import { t } from "./i18n.svelte";
   import type { FolderRequest } from "./types";
 
-  let { request, onanswered }: { request: FolderRequest; onanswered: (moved: boolean) => void } = $props();
+  let { request, onanswered, jobOpen = false }: { request: FolderRequest; onanswered: (moved: boolean) => void; jobOpen?: boolean } = $props();
 
   let busy = $state(false);
   const rows = $derived(
@@ -52,6 +52,8 @@
     {/each}
   </dl>
   {#if request.summary}<p class="why">{request.summary}</p>{/if}
+  <!-- What Allow does to the jobs: the open one closes, the others stay behind (UX-1302). -->
+  {#if "projects_dir" in request.changes}<p class="muted" data-testid="folder-consequence">{jobOpen ? `${t("folderReq.jobCloses")} ` : ""}{t("folderReq.jobsStay")}</p>{/if}
   <p class="muted">{t("folderReq.note")}</p>
   {#snippet footer()}
     <button class="btn" aria-disabled={busy} aria-busy={busy} onclick={() => answer(false)}>{t("folderReq.keep")}</button>
