@@ -248,7 +248,16 @@
         return;
       }
       await api.exportJob(id, path);
-      if (recalculated) info(t("snap.exportRecalculated"));
+      // A warning that stays long enough to be read, naming the job and the
+      // way to send the offer's own figures (UX-1101).
+      if (recalculated) {
+        const name = (current?.()?.name ?? project.name).trim();
+        notify({
+          kind: "warning",
+          title: name ? t("snap.titleOf", { name }) : t("snap.title"),
+          message: t("snap.exportRecalculated", { tab: t("dock.results"), button: t("snap.revertRefresh") }),
+        });
+      }
     } catch (e) {
       notifyError(e, "export");
     }

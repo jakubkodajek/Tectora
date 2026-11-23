@@ -103,3 +103,37 @@ describe("round-6 wording (UX-504)", () => {
     }
   });
 });
+
+// Round 12 (UX-1101, UX-1102): one verb per action in every language, the
+// put-back's failure is titled as the put-back, and the export warning names
+// the job tab and button by their own keys.
+describe("round-12 wording (UX-1101, UX-1102)", () => {
+  it("German uses one verb for Revert (verwerfen) and one for the put-back (zurückholen)", () => {
+    const de = DICTS.de;
+    for (const k of ["ai.revert", "editor.reverting", "err.action.revert", "chg.revertedEntry", "review.revertAll"]) expect(de[k].toLowerCase(), k).toContain("verw");
+    for (const k of ["snap.revertRefresh", "editor.restoringOffer", "err.action.restoreOffer"]) expect(de[k], k).toMatch(/zurück(ge)?hol/);
+    expect(de["editor.reverting"]).not.toMatch(/zurück/);
+  });
+
+  it("the put-back and Accept have their own failure titles and status word", () => {
+    for (const [loc, dict] of Object.entries(DICTS)) {
+      expect(dict["err.action.restoreOffer"], loc).not.toBe(dict["err.action.revert"]);
+      expect(dict["err.action.accept"], loc).not.toBe(dict["err.action.save"]);
+      expect(dict["editor.restoringOffer"], loc).not.toBe(dict["editor.reverting"]);
+      expect(placeholders(dict["err.ofJob"]), loc).toEqual(["name", "title"]);
+    }
+    expect(DICTS.cs["err.action.accept"]).toContain(DICTS.cs["review.accept"].toLowerCase());
+    expect(DICTS.sk["err.action.accept"]).toContain(DICTS.sk["review.accept"].toLowerCase());
+    expect(DICTS.en["err.action.accept"]).toContain(DICTS.en["review.accept"].toLowerCase());
+  });
+
+  it("the export warning says exported, not went out, and takes the tab and button from their keys", () => {
+    for (const [loc, dict] of Object.entries(DICTS)) {
+      expect(placeholders(dict["snap.exportRecalculated"]), loc).toEqual(["button", "tab"]);
+      expect(dict["snap.exportRecalculated"], loc).not.toMatch(/odešla|odišla|went out/);
+    }
+    expect(DICTS.cs["snap.exportRecalculated"]).toContain("exportována");
+    expect(DICTS.sk["snap.exportRecalculated"]).toContain("exportovaná");
+    expect(DICTS.en["snap.exportRecalculated"]).toContain("was exported");
+  });
+});
