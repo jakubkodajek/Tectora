@@ -496,6 +496,25 @@ case, and assert that it really came while the pointer was down.
   relies on the bridge's timing. Accept keeps the banner until the core
   answered (ERR-1103); the banner's buttons keep the keyboard's focus
   (UI-1103).
+- The prepare phase ends only on a quiet editor (round 13, design A): the
+  field focused at the press is stored once, before the loop, and never
+  blurred by it (UI-1201); the claim waits while a field holds typed text, a
+  confirm-then-edit is open (`asking`), the context menu or any dialog is
+  open, and gives up after 3 s with `busy_edits` (the editor's own edits,
+  not `busy`, which is the core's lock: UX-1201). Back pressed meanwhile
+  waits for the whole press (`reviewPress`, ERR-1203); a press cut by a
+  teardown says `left_before_action`. The menu's entries and `restore` refuse
+  while the call is out, and a refused restore keeps the history whole. The
+  backstop's release branch is `dropForeign` (coreaction.test.ts). Allowing
+  an AI's folder request asks `mayLeave` before the switch (HUNT-1201).
+  Intruders of `app/e2e/audit-r13-ed.e2e.ts`, each acting while the earlier
+  edit's answer is held: `prepare-typing` (with and without Enter),
+  `prepare-half-typed`, `prepare-menu`, `prepare-dialog`, `prepare-confirm`,
+  `prepare-leave`, `own-slow-edit`, plus the folder request with a failed
+  save, a footprint being drawn and a Revert out. `gate.scan.test.ts` counts
+  listeners per file, receiver and event in every shape, requires the gate
+  first in each gated handler, counts toast actions of every shape and lists
+  every `openId =` and `libraryChanged` use in App.svelte with its reason.
 
 ## 16. Huge but valid jobs reach every view (@arch, @ui)
 
