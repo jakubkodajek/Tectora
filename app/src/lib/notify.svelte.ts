@@ -3,6 +3,7 @@
 // keeps its original text under "Details".
 
 import { describeError, describeRefusal, type Action, type RefusedAction } from "./errors";
+import { t } from "./i18n.svelte";
 
 export interface Toast {
   id: number;
@@ -70,15 +71,18 @@ export function notify(t: Omit<Toast, "id" | "count">): number {
 
 export const info = (title: string) => notify({ kind: "info", title });
 
-/** Shows a translated error for anything thrown by `action`. */
-export function notifyError(e: unknown, action?: Action): number {
+/**
+ * Shows a translated error for anything thrown by `action`. `job`: the
+ * job's name, put in the title (a notice that may outlive its editor).
+ */
+export function notifyError(e: unknown, action?: Action, job?: string): number {
   const d = describeError(e, action);
   console.error(`[tectora] ${action ?? "error"}:`, e);
   return notify({
     // `busy`: another writer held the job, nothing was done (the action can be pressed again).
     kind: d.code === "watcher" || d.code === "settings_unreadable" || d.code === "busy" ? "warning" : "error",
     code: d.code,
-    title: d.title,
+    title: job ? t("err.ofJob", { name: job, title: d.title }) : d.title,
     message: d.message,
     detail: d.detail,
   });

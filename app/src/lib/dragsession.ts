@@ -70,6 +70,34 @@ export function anyDragOpen(): boolean {
   return open.size > 0;
 }
 
+/** Core actions (Revert, Revert all, the offer put-back) with their call out, across components. */
+const actions = new Set<object>();
+
+/**
+ * A writer of the job is out: a drag, or a core action whose call is out.
+ * The one gate of everything outside the editor's DOM refusal (round 12,
+ * audit 2026-11-23 fix design 1: HUNT-1103, ERR-1101, UI-1101): window
+ * keys (App's Ctrl/Cmd+, , the draw bar, the object bars' PageUp /
+ * PageDown, dialogs, the context menu), the window-level presses that
+ * commit a field, and toast actions. `gate.scan.test.ts` lists every such
+ * entry point; a new one fails it until it is gated or marked passive.
+ */
+export function anyWriterOpen(): boolean {
+  return open.size > 0 || actions.size > 0;
+}
+
+/**
+ * Wraps a window-level key handler: the key does nothing while a writer
+ * of the job is out, or when a listener before it took the key already
+ * (the editor's refusal calls `preventDefault`).
+ */
+export function gatedKeys<E extends { defaultPrevented: boolean }>(handler: (e: E) => void): (e: E) => void {
+  return (e: E) => {
+    if (e.defaultPrevented || anyWriterOpen()) return;
+    handler(e);
+  };
+}
+
 export class DragSession<T, S> {
   private current: DragState = "idle";
   private pointerId: number | null = null;
@@ -298,15 +326,22 @@ export class DragSession<T, S> {
  * 3. The answer replaces the job as it is: there is nothing local to
  *    merge into it.
  * A second action while one is out does nothing.
+ * 4. A write that reaches the editor anyway (`foreign`: a commit or an
+ *    undo step while the call is out) is refused: it throws when `strict`
+ *    (tests, the dev build), else the editor drops it and says so. The
+ *    gates before it (the prepare phase, `anyWriterOpen`) should leave
+ *    nothing for it (round 12, fix design 1).
  */
 export class CoreAction {
   private resume: (() => void) | null = null;
   private deferred = new Map<string, () => void>();
+  private waiting: (() => void)[] = [];
 
-  /** `pause`: JobEdits.pause; `changed`: the action began (true) or ended (false), for what the editor shows. */
+  /** `pause`: JobEdits.pause; `changed`: the action began (true) or ended (false), for what the editor shows; `strict`: a foreign write throws. */
   constructor(
     private pause: () => () => void,
     private changed?: (active: boolean) => void,
+    private strict = false,
   ) {}
 
   /** The call is out. */
@@ -318,18 +353,23 @@ export class CoreAction {
   async run<R>(work: () => Promise<R>): Promise<R | undefined> {
     if (this.resume) return undefined;
     this.resume = this.pause();
+    actions.add(this);
     this.changed?.(true);
     try {
       return await work();
     } finally {
       const resume = this.resume;
       const deferred = [...this.deferred.values()];
+      const waiting = this.waiting;
       this.resume = null;
       this.deferred = new Map();
+      this.waiting = [];
+      actions.delete(this);
       try {
         this.changed?.(false);
       } finally {
         resume?.();
+        for (const r of waiting) r();
         for (const run of deferred) {
           try {
             run();
@@ -339,6 +379,23 @@ export class CoreAction {
         }
       }
     }
+  }
+
+  /**
+   * Called by the editor before every write of the job of its own (commit,
+   * undo step). True when the write must be refused: the call is out and
+   * its answer will replace the job. Throws instead when `strict`.
+   */
+  foreign(what = "write"): boolean {
+    if (!this.resume) return false;
+    if (this.strict) throw new Error(`core action: foreign ${what} while the call is out`);
+    return true;
+  }
+
+  /** Resolves once no call is out (at once when none is). Never rejects. */
+  settled(): Promise<void> {
+    if (!this.resume) return Promise.resolve();
+    return new Promise((r) => this.waiting.push(r));
   }
 
   /** Something that is not the user's waits for the end of the transaction; one run per `key`, the newest wins. At once when none is out. */

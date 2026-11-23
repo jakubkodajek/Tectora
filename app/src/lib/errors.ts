@@ -22,6 +22,8 @@ export type Action =
   | "duplicate"
   | "import"
   | "revert"
+  | "restoreOffer"
+  | "accept"
   | "calc"
   | "preview"
   | "files"

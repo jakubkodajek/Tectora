@@ -9,6 +9,8 @@
 // still current. Number fields (lib/numeric.svelte.ts) do the same for
 // their own ▲▼ buttons.
 
+import { anyWriterOpen } from "./dragsession";
+
 /** Blurs the focused text field when a press lands outside it (and outside its own controls). */
 export function commitBeforePress(target: Node | null, active: Element | null): boolean {
   if (!(active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement)) return false;
@@ -19,7 +21,13 @@ export function commitBeforePress(target: Node | null, active: Element | null): 
 }
 
 export function installCommitBeforePress(win: Window = window): () => void {
-  const onPress = (e: Event) => commitBeforePress(e.target as Node | null, win.document.activeElement);
+  // Not while a writer of the job is out (a drag, Revert, the offer
+  // put-back): the stored value would land in the job the answer replaces
+  // (round 12, fix design 1). The field keeps its text and focus.
+  const onPress = (e: Event) => {
+    if (anyWriterOpen()) return;
+    commitBeforePress(e.target as Node | null, win.document.activeElement);
+  };
   win.addEventListener("pointerdown", onPress, true);
   return () => win.removeEventListener("pointerdown", onPress, true);
 }

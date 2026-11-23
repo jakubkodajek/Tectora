@@ -18,6 +18,7 @@
 
 import { untrack } from "svelte";
 import { numberLocale, t } from "./i18n.svelte";
+import { anyWriterOpen } from "./dragsession";
 
 /** Width the ▲▼ buttons take from the field's right padding, px. */
 const SPIN_W = 15;
@@ -383,6 +384,10 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
   // A press anywhere outside commits first, before the press itself selects
   // another wall, closes a bar or opens a dialog (capture phase on window).
   function onOutsidePress(e: Event) {
+    // Not while a writer of the job is out (a drag, Revert, the offer
+    // put-back): the value would land in the job the answer replaces
+    // (round 12, fix design 1).
+    if (anyWriterOpen()) return;
     const target = e.target as Node | null;
     if (target && (input.contains(target) || spin?.contains(target))) return;
     commit();

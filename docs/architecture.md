@@ -192,6 +192,19 @@ release. Undo and Redo also wait for edits still with the core. A number field r
 item (PageDown in a bar) forgets what it sent for the one before (its
 `key`). The bars' selection follows its item the same way.
 
+Revert, Revert all and the put-back of the offer's figures are the same kind
+of transaction (`CoreAction`, dragsession.ts), in two phases. The press first
+waits, input still open and at most 3 s, for the edits still with the core
+and for the save, then claims the call in the same tick; past 3 s it answers
+`busy` and changes nothing. While the call is out every writer path is
+refused: the editor's own DOM refusal, plus one module gate
+(`anyWriterOpen()`, `gatedKeys()`) asked by every window-level listener,
+the window presses that commit a field and toast actions;
+`gate.scan.test.ts` fails on a new entry point that does not ask it.
+`commit()` and the undo step refuse a write while the call is out (throw in
+the dev build, dropped with a notice in a release). Leaving waits for the
+answer, and a failure is told also after the editor is gone, naming the job.
+
 The settings file is changed only through `Settings::update` (read, change
 and write under one lock file), so the app and an MCP server writing at the
 same moment do not drop each other's change.

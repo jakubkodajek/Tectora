@@ -99,7 +99,7 @@ test.describe("round 10, rewritten in round 11 (design A1): an edit tried while 
       try {
         await press();
         await expect.poll(() => call.sent.length, { timeout: 4000 }).toBe(1);
-        await expect(page.locator(".statusbar .save")).toHaveText(cs("editor.reverting"));
+        await expect(page.locator(".statusbar .save")).toHaveText(cs(action === "put-back" ? "editor.restoringOffer" : "editor.reverting"));
         // The job tab and its field take no press while the call is out (mouse at their place: they are inert).
         for (const l of [dockTab(page, "dock.job"), customer(page)]) {
           const box = (await l.count()) ? await l.first().boundingBox() : null;
