@@ -80,6 +80,8 @@ const KNOWN = new Set([
   "revert_conflict",
   "revert_stale",
   "busy",
+  "busy_edits",
+  "left_before_action",
   "save_conflict",
   "not_saved",
   "unknown_example",

@@ -13,7 +13,7 @@
   import Icon from "./Icon.svelte";
   import JobPanel from "./JobPanel.svelte";
   import LanguagePicker from "./LanguagePicker.svelte";
-  import Modal from "./Modal.svelte";
+  import Modal, { openModals } from "./Modal.svelte";
   import ExportDialog from "./ExportDialog.svelte";
   import PlanView from "./PlanView.svelte";
   import Results from "./Results.svelte";
@@ -52,7 +52,7 @@
   import { roofState } from "./results";
   import { isTyping, releaseLeaveGuard, setLeaveGuard } from "./leave";
   import { PendingEdits, exclusive } from "./inflight";
-  import { CoreAction, DragSession, closedForInput, inertBut, refuseInput, type Drag, type DragState } from "./dragsession";
+  import { CoreAction, DragSession, closedForInput, dropForeign, inertBut, refuseInput, type Drag, type DragState } from "./dragsession";
   import { m2, num } from "./format";
   import { i18n, t } from "./i18n.svelte";
   import { hscroll } from "./hscroll";
@@ -592,11 +592,10 @@
     // so the edit would be lost behind "Saved". The caller changed `project`
     // already: it goes back to the newest step, and the user is told
     // (backstop of round 12 fix design 1; the gates before it leave nothing).
-    if (reviewing.foreign("commit")) {
+    const putBack = () => {
       if (history[at]) project = JSON.parse(history[at]);
-      refusedDuringAction();
-      return;
-    }
+    };
+    if (dropForeign(reviewing, "commit", putBack, refusedDuringAction)) return;
     const prev = history[at];
     if (!pushHistory()) return;
     // Edits under way follow their items past a delete or a copy (jobedits.ts).
@@ -605,12 +604,10 @@
     scheduleSave();
   }
 
-  function restore(i: number) {
+  /** Goes to undo step `i`; false when it was refused (a core action is out). */
+  function restore(i: number): boolean {
     drag.foreign("undo step");
-    if (reviewing.foreign("undo step")) {
-      refusedDuringAction();
-      return;
-    }
+    if (dropForeign(reviewing, "undo step", () => {}, refusedDuringAction)) return false;
     const prev = history[at];
     at = i;
     project = JSON.parse(history[i]);
@@ -621,6 +618,7 @@
     selection = keptSelection(project, selection);
     recalc();
     scheduleSave();
+    return true;
   }
 
   /**
@@ -902,8 +900,11 @@
     // the user's to see before the job is left. Follow mode stays; the
     // user's own ways out wait for it, at most the core's lock wait
     // (ERR-1105, round 12 fix design 1).
-    if (reviewing.active) {
+    // The whole press counts, its prepare phase too: Back pressed then was
+    // dropped without a word (ERR-1203, round 13 design A).
+    if (reviewPress || reviewing.active) {
       if (mode === "quiet") return false;
+      await reviewPress;
       await reviewing.settled();
     }
     // A footprint being drawn is not in the job yet: leaving drops it, so
@@ -987,13 +988,16 @@
    * Revert, Revert all and the put-back of the offer's figures: a short
    * transaction like a drag (dragsession.ts `CoreAction`), in two phases
    * (round 12 fix design 1).
-   * 1. Prepare, input still open, at most PREPARE_MS: a value being typed
-   *    is stored, the edits still with the core are waited for (a status
-   *    change, Store, a finished footprint: HUNT-1101) and the job saved,
-   *    again until, checked at one moment, nothing is with the core and
-   *    the file has every edit. Past the deadline the press says `busy`
-   *    under its own title and changes nothing; a save still under way
-   *    lands as the user's own edit. A failed save stops it (it said why).
+   * 1. Prepare, input still open, at most PREPARE_MS: the value being
+   *    typed at the press is stored, the edits still with the core are
+   *    waited for (a status change, Store, a finished footprint:
+   *    HUNT-1101) and the job saved, again until, checked at one moment,
+   *    the editor is quiet (`quiet`: nothing with the core, the file has
+   *    every edit, no text typed and not stored, no question, menu or
+   *    dialog open; round 13 design A). Past the deadline the press says
+   *    `busy_edits` under its own title and changes nothing; a save still
+   *    under way lands as the user's own edit. A failed save stops it (it
+   *    said why). Leaving waits for the whole press (`reviewPress`).
    * 2. In the same tick the call goes out: until the answer is in, keys,
    *    fields, bar buttons, plan presses, window keys and toast actions are
    *    refused (`anyWriterOpen`), the core's answers to earlier edits wait,
@@ -1002,36 +1006,81 @@
    *    button stays and a note says why, naming the job (it may have been
    *    left meanwhile, ERR-1105).
    */
-  async function reviewTransaction(what: "revert" | "restoreOffer", call: () => Promise<Project>, after: (p: Project) => void | Promise<void>) {
-    if (reviewing.active) return;
+  /** The running press of Revert or the put-back, prepare phase and call; leaving waits for it (ERR-1203). */
+  let reviewPress: Promise<void> | null = null;
+  /** Questions (async confirm under Tauri) open now whose answer ends in an edit (HUNT-1204). */
+  let questions = 0;
+  /** Runs a confirm-then-edit as one: the prepare phase waits for its answer and its edit, no tick between (HUNT-1204). */
+  async function asking<R>(run: () => Promise<R>): Promise<R> {
+    questions++;
+    try {
+      return await run();
+    } finally {
+      questions--;
+    }
+  }
+  /**
+   * Nothing of the user's is under way: no edit with the core or unsaved, no
+   * drag, no value typed and not stored, no question open, no menu, no
+   * dialog (round 13 design A: what "ready" means for the claim).
+   */
+  const quiet = () =>
+    pendingEdits.size === 0 && saveState === "saved" && !drag.active && !isTyping(document.activeElement) && questions === 0 && !menu && openModals() === 0;
+
+  function reviewTransaction(what: "revert" | "restoreOffer", call: () => Promise<Project>, after: (p: Project) => void | Promise<void>): Promise<void> {
+    if (reviewing.active || reviewPress) return Promise.resolve();
+    const press: Promise<void> = prepareReview(what, call, after).finally(() => {
+      if (reviewPress === press) reviewPress = null;
+    });
+    reviewPress = press;
+    return press;
+  }
+
+  async function prepareReview(what: "revert" | "restoreOffer", call: () => Promise<Project>, after: (p: Project) => void | Promise<void>) {
     const name = project?.name.trim() || id;
     const deadline = Date.now() + PREPARE_MS;
     const LATE = Symbol("late");
     const within = <T,>(p: Promise<T>): Promise<T | typeof LATE> =>
       Promise.race([p, new Promise<typeof LATE>((r) => setTimeout(() => r(LATE), Math.max(0, deadline - Date.now())))]);
+    // The editor was left before the call could go out: say so, as a
+    // failure after leaving is said (ERR-1203; ERR-1105).
+    const left = () => notifyError({ code: "left_before_action", id, detail: "the job was closed before the call went out" }, what, name);
+    // The field focused at the press is stored, once (UI-1201): a field
+    // entered later is never blurred by the loop; while it holds typed
+    // text the claim waits (`quiet`).
+    commitFocused();
+    await tick();
     for (;;) {
       if (Date.now() >= deadline) break;
-      commitFocused();
-      await tick();
       if ((await within(pendingEdits.settled())) === LATE) break;
       if ((await within(drag.settled())) === LATE) break;
       await tick();
-      if (destroyed || !project) return;
+      if (destroyed) {
+        left();
+        return;
+      }
+      if (!project) return;
       // Checked at one moment, and the call claimed in the same tick: no
       // answer of an earlier edit can land between the two.
-      if (pendingEdits.size === 0 && saveState === "saved" && !drag.active) return runReview(what, name, call, after);
-      if (saveState !== "saved" && !pendingEdits.size) {
+      if (quiet()) return runReview(what, name, call, after);
+      if (saveState !== "saved" && !pendingEdits.size && !drag.active) {
         const ok = await within(save());
         if (ok === LATE) break;
         // The save showed its error; nothing is reverted over edits not on disk.
         if (!ok) return;
       } else {
-        // An edit came in meanwhile: let it reach the core first.
+        // An edit is under way (typed, asked, with the core): let it finish first.
         await within(new Promise((r) => setTimeout(r, 20)));
       }
     }
-    if (destroyed) return;
-    notifyError({ code: "busy", id, detail: `the edits made before the press were not saved within ${PREPARE_MS} ms` }, what, name);
+    if (destroyed) {
+      left();
+      return;
+    }
+    // The edits before the press did not settle in time: typed, asked,
+    // still with the core, or their save waits for another writer's lock
+    // (UX-1201; `busy` is the core's own lock answer).
+    notifyError({ code: "busy_edits", id, detail: `the edits made before the press were not saved within ${PREPARE_MS} ms` }, what, name);
   }
 
   /** Phase 2 of `reviewTransaction`: claims the transaction at once (synchronously) and sends the call. */
@@ -1467,24 +1516,27 @@
    * footprint, so it asks first (UX-006). The bar's trash button does not.
    */
   async function deleteVertexByKey() {
-    if (!project || !selection) return;
-    const sel = selection;
-    const part = project.parts[sel.part];
-    const es = part?.edges;
-    if (!es?.[sel.edge] || (!isMarker(es[sel.edge]) && es.filter((e) => !isMarker(e)).length <= 3)) return;
-    const msg = isMarker(es[sel.edge]) ? t("edge.confirmDeleteMarker") : t("edge.confirmDeleteVertex", { n: sel.edge + 1, name: partLabel(part.name, sel.part) });
-    // The building asked about is held (jobedits.ts): an AI save or the
-    // user's own edit landing while the question is open moves it or, when
-    // the save changed or removed it, refuses with a note (UI-401).
-    const hold = jobEdits.hold("parts", sel.part);
-    // Tauri's dialog plugin makes confirm asynchronous: always await it.
-    if (!(await confirm(msg))) return;
-    if (!project) return;
-    if (hold.gone) {
-      if (!hold.removed) notMadeNote("gone", hold);
-      return;
-    }
-    deleteVertexAt(hold.index, sel.edge);
+    // One question and its edit: the prepare phase of Revert waits for both (HUNT-1204).
+    return asking(async () => {
+      if (!project || !selection) return;
+      const sel = selection;
+      const part = project.parts[sel.part];
+      const es = part?.edges;
+      if (!es?.[sel.edge] || (!isMarker(es[sel.edge]) && es.filter((e) => !isMarker(e)).length <= 3)) return;
+      const msg = isMarker(es[sel.edge]) ? t("edge.confirmDeleteMarker") : t("edge.confirmDeleteVertex", { n: sel.edge + 1, name: partLabel(part.name, sel.part) });
+      // The building asked about is held (jobedits.ts): an AI save or the
+      // user's own edit landing while the question is open moves it or, when
+      // the save changed or removed it, refuses with a note (UI-401).
+      const hold = jobEdits.hold("parts", sel.part);
+      // Tauri's dialog plugin makes confirm asynchronous: always await it.
+      if (!(await confirm(msg))) return;
+      if (!project) return;
+      if (hold.gone) {
+        if (!hold.removed) notMadeNote("gone", hold);
+        return;
+      }
+      deleteVertexAt(hold.index, sel.edge);
+    });
   }
 
   /** A corner's coordinates typed in the wall bar: the corner moves there, as a drop would put it. */
@@ -1901,7 +1953,8 @@
     const sel = openSel;
     // Back to the step the dialog opened on, and the cancelled edits out of
     // the history, so Undo does not bring them back.
-    restore(objDlgAt);
+    // Refused (a core action is out): the history stays whole, Undo works.
+    if (!restore(objDlgAt)) return;
     history = history.slice(0, objDlgAt + 1);
     historyLen = history.length;
     openSel = sel && project && itemExists(project, sel) ? sel : null;
@@ -2369,22 +2422,25 @@
 
   /** Asks first (UI-006): one press would remove the dormer with its faces. */
   async function deleteDormer() {
-    if (!project || dormerSel === null) return;
-    const hold = jobEdits.hold("dormers", dormerSel);
-    // Tauri's dialog plugin makes confirm asynchronous: always await it.
-    if (!(await confirm(t("dormer.confirmDelete", { n: dormerSel + 1 })))) return;
-    if (!project) return;
-    // An AI save while the question was open: the dormer asked about is
-    // removed where it is now; one the save changed or removed is not (jobedits.ts).
-    if (hold.gone) {
-      if (!hold.removed) notMadeNote("gone", hold);
-      return;
-    }
-    const index = hold.index;
-    project.dormers.splice(index, 1);
-    if (dormerSel === index) dormerSel = null;
-    else if (dormerSel !== null && dormerSel > index) dormerSel--;
-    commit();
+    // One question and its edit: the prepare phase of Revert waits for both (HUNT-1204).
+    return asking(async () => {
+      if (!project || dormerSel === null) return;
+      const hold = jobEdits.hold("dormers", dormerSel);
+      // Tauri's dialog plugin makes confirm asynchronous: always await it.
+      if (!(await confirm(t("dormer.confirmDelete", { n: dormerSel + 1 })))) return;
+      if (!project) return;
+      // An AI save while the question was open: the dormer asked about is
+      // removed where it is now; one the save changed or removed is not (jobedits.ts).
+      if (hold.gone) {
+        if (!hold.removed) notMadeNote("gone", hold);
+        return;
+      }
+      const index = hold.index;
+      project.dormers.splice(index, 1);
+      if (dormerSel === index) dormerSel = null;
+      else if (dormerSel !== null && dormerSel > index) dormerSel--;
+      commit();
+    });
   }
 
   /** Whether anything is drawn that Clear would remove. */
@@ -2396,50 +2452,56 @@
   // Removes everything drawn and leaves an empty canvas (MCP clear_roof);
   // job data and roof options stay, and Undo brings the roof back.
   async function clearRoof() {
-    if (!hasDrawing(project)) return;
-    const roof = jobEdits.holdRoof();
-    if (!(await confirm(t("editor.confirmClear")))) return;
-    // An AI save changed the roof while the dialog was open: the user did
-    // not see what is there now, so say so instead (ERR-203). A save of the
-    // notes or the job data clears as asked (ERR-301).
-    if (!project) return;
-    if (!jobEdits.roofSame(roof)) {
-      notMadeNote("gone", null);
-      return;
-    }
-    project.parts = [];
-    project.dormers = [];
-    project.chimneys = [];
-    project.windows = [];
-    project.roof_openings = [];
-    project.manual_lines = [];
-    project.manual_faces = [];
-    selection = null;
-    dormerSel = null;
-    openSel = null;
-    manualSel = null;
-    placing = false;
-    commit();
+    // One question and its edit: the prepare phase of Revert waits for both (HUNT-1204).
+    return asking(async () => {
+      if (!hasDrawing(project)) return;
+      const roof = jobEdits.holdRoof();
+      if (!(await confirm(t("editor.confirmClear")))) return;
+      // An AI save changed the roof while the dialog was open: the user did
+      // not see what is there now, so say so instead (ERR-203). A save of the
+      // notes or the job data clears as asked (ERR-301).
+      if (!project) return;
+      if (!jobEdits.roofSame(roof)) {
+        notMadeNote("gone", null);
+        return;
+      }
+      project.parts = [];
+      project.dormers = [];
+      project.chimneys = [];
+      project.windows = [];
+      project.roof_openings = [];
+      project.manual_lines = [];
+      project.manual_faces = [];
+      selection = null;
+      dormerSel = null;
+      openSel = null;
+      manualSel = null;
+      placing = false;
+      commit();
+    });
   }
 
   async function deletePart() {
-    if (!project || !selection) return;
-    // The last part takes the whole roof with it: that is Clear.
-    if (project.parts.length === 1) return clearRoof();
-    const hold = jobEdits.hold("parts", selection.part);
-    // Tauri's dialog plugin replaces window.confirm with an async version
-    // (a Promise is always truthy), so the answer must be awaited.
-    if (!(await confirm(t("editor.confirmDeletePart", { name: partLabel(project.parts[selection.part].name, selection.part) })))) return;
-    if (!project) return;
-    // An AI save while the question was open: the building asked about is
-    // removed where it is now; one the save changed or removed is not (jobedits.ts).
-    if (hold.gone) {
-      if (!hold.removed) notMadeNote("gone", hold);
-      return;
-    }
-    project.parts.splice(hold.index, 1);
-    selection = null;
-    commit();
+    // One question and its edit: the prepare phase of Revert waits for both (HUNT-1204).
+    return asking(async () => {
+      if (!project || !selection) return;
+      // The last part takes the whole roof with it: that is Clear.
+      if (project.parts.length === 1) return clearRoof();
+      const hold = jobEdits.hold("parts", selection.part);
+      // Tauri's dialog plugin replaces window.confirm with an async version
+      // (a Promise is always truthy), so the answer must be awaited.
+      if (!(await confirm(t("editor.confirmDeletePart", { name: partLabel(project.parts[selection.part].name, selection.part) })))) return;
+      if (!project) return;
+      // An AI save while the question was open: the building asked about is
+      // removed where it is now; one the save changed or removed is not (jobedits.ts).
+      if (hold.gone) {
+        if (!hold.removed) notMadeNote("gone", hold);
+        return;
+      }
+      project.parts.splice(hold.index, 1);
+      selection = null;
+      commit();
+    });
   }
 
   // Drawing a new footprint.

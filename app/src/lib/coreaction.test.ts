@@ -4,7 +4,7 @@
 // of the job. One predicate (`closedForInput`) answers for the drag and
 // for these actions at every point that refuses the user's input.
 import { describe, expect, it } from "vitest";
-import { CoreAction, DragSession, REFUSED_EVENTS, closedForInput, refuseInput } from "./dragsession";
+import { CoreAction, DragSession, REFUSED_EVENTS, closedForInput, dropForeign, refuseInput } from "./dragsession";
 import { JobEdits } from "./jobedits";
 import type { Project } from "./types";
 
@@ -159,5 +159,38 @@ describe("CoreAction.foreign and settled (round 12, fix design 1)", () => {
     await waited;
     expect(done).toBe(true);
     expect(action.active).toBe(false);
+  });
+});
+
+// Round 13 (audit 2026-11-23 design A, TEST-1202 c): the release branch of
+// the backstop. E2E runs the dev build, where `foreign` throws; this is the
+// product path the editor's commit and undo step take.
+describe("dropForeign, the backstop's release path (round 13, design A)", () => {
+  it("passes a write while no call is out, and drops it with one notice while one is", async () => {
+    const action = new CoreAction(() => () => {});
+    let putBack = 0;
+    let told = 0;
+    const drop = () => dropForeign(action, "commit", () => putBack++, () => told++);
+    expect(drop()).toBe(false);
+    expect([putBack, told]).toEqual([0, 0]);
+    let answer!: () => void;
+    const out = action.run(() => new Promise<void>((r) => (answer = r)));
+    expect(drop()).toBe(true);
+    expect([putBack, told], "put back to the newest step, told once").toEqual([1, 1]);
+    answer();
+    await out;
+    expect(drop()).toBe(false);
+    expect([putBack, told]).toEqual([1, 1]);
+  });
+
+  it("throws in strict mode and then neither puts back nor tells", async () => {
+    const action = new CoreAction(() => () => {}, undefined, true);
+    let calls = 0;
+    let answer!: () => void;
+    const out = action.run(() => new Promise<void>((r) => (answer = r)));
+    expect(() => dropForeign(action, "undo step", () => calls++, () => calls++)).toThrow(/foreign undo step/);
+    expect(calls).toBe(0);
+    answer();
+    await out;
   });
 });
