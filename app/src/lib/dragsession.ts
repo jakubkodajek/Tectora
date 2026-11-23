@@ -406,6 +406,20 @@ export class CoreAction {
 }
 
 /**
+ * The product path of the backstop (`CoreAction.foreign`): a write of the
+ * editor's own that reached it while the call is out is dropped. `putBack`
+ * returns the job to the newest step, `tell` says so once. True when the
+ * write was dropped; throws when the action is `strict` (round 13 design A,
+ * TEST-1202: the release branch gets a test without a release build).
+ */
+export function dropForeign(action: CoreAction, what: string, putBack: () => void, tell: () => void): boolean {
+  if (!action.foreign(what)) return false;
+  putBack();
+  tell();
+  return true;
+}
+
+/**
  * The editor is closed for the user's input: a drag is open or a core
  * action is out. The one predicate every refusal asks (keys, fields, bar
  * buttons, delete, drag presses, the autosave's timer).

@@ -157,6 +157,9 @@
     const un = onProjectsChanged(() => refresh());
     const unLive = onLiveStatus(onLive);
     // Settings changed outside this window (e.g. by an AI agent over MCP).
+    // The folder has switched already, so there is nothing to ask: the
+    // editor closes and says so (`err.library_changed`, ERR-1105). The ways
+    // out that can still ask go through `mayLeave` (HUNT-1201).
     const unSettings = onSettingsChanged((v) => {
       const moved = v.effective.projects_dir !== dir;
       applySettings(v);

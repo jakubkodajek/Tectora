@@ -43,7 +43,9 @@
   }
 
   function run(e: Extract<MenuEntry, { action: () => void }>) {
-    if (e.disabled) return;
+    // A click runs no entry while a writer of the job is out: the menu may
+    // have been opened before the call went out (round 13 design A, ERR-1201).
+    if (e.disabled || anyWriterOpen()) return;
     close();
     e.action();
   }

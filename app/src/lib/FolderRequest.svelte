@@ -4,6 +4,7 @@
   // allows it here; Keep closes the request.
   import Modal from "./Modal.svelte";
   import { api } from "./api";
+  import { mayLeave } from "./leave";
   import { notifyError } from "./notify.svelte";
   import { t } from "./i18n.svelte";
   import type { FolderRequest } from "./types";
@@ -26,6 +27,12 @@
     if (busy) return;
     busy = true;
     try {
+      // Allowing a new jobs folder closes the open job: it is a way out of
+      // the editor like Back or the Settings field, so the editor saves
+      // first, waits for a Revert under way and asks about edits that cannot
+      // be saved. Before the call: the core switches the folder in it. "No"
+      // keeps the editor, the folder and this request (HUNT-1201).
+      if (allow && "projects_dir" in request.changes && !(await mayLeave())) return;
       await api.answerFolderRequest($state.snapshot(request.changes), allow);
       onanswered(allow);
     } catch (e) {

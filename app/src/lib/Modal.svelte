@@ -1,3 +1,12 @@
+<script lang="ts" module>
+  /** Dialogs mounted now (round 13 design A: one opened during Revert's prepare phase holds the call). */
+  let mounted = 0;
+  /** How many dialogs are open now. */
+  export function openModals(): number {
+    return mounted;
+  }
+</script>
+
 <script lang="ts">
   // A dialog over the app: takes the focus (its first field, else the dialog
   // itself), keeps Tab / Shift+Tab inside, closes with Escape or a press on
@@ -30,6 +39,7 @@
   }
 
   onMount(() => {
+    mounted++;
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     tick().then(() => {
       if (!dialog || dialog.contains(document.activeElement)) return;
@@ -41,6 +51,7 @@
       (typing ? first! : dialog).focus({ preventScroll: true });
     });
     return () => {
+      mounted--;
       // Back to the opener when it is still on the page (not when another
       // dialog or the editor took the focus meanwhile).
       const now = document.activeElement;
