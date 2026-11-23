@@ -426,9 +426,16 @@
   /** `taken_ms` of the stored result on disk that `recalculation` was asked for (`undefined`: not asked yet). */
   let recalcFor: number | null | undefined;
 
-  async function refreshActivity() {
+  /**
+   * Reads the history, the review and the recalculation. `hold`: asked once
+   * they are read; when it says so nothing is shown and the answer is
+   * `false` (a reload that a drag overtook: the AI's review banner must not
+   * appear in the middle of the drag, jobedits.ts rule 7).
+   */
+  async function refreshActivity(hold?: () => boolean): Promise<boolean> {
     try {
       const [a, r, rec] = await Promise.all([api.projectActivity(id), api.reviewStatus(id).catch(() => null), api.resultRecalculation(id).catch(() => null)]);
+      if (hold?.()) return false;
       activity = a;
       review = r;
       recalculation = rec;
@@ -437,6 +444,7 @@
       review = null;
       recalculation = null;
     }
+    return true;
   }
 
   /**
@@ -692,7 +700,11 @@
       const p = await api.loadProject(id);
       if (destroyed) return;
       const json = JSON.stringify(p);
-      await refreshActivity();
+      // A drag that began while this was read: read again after it.
+      if (!(await refreshActivity(() => destroyed || (!initial && drag.active)))) {
+        if (!destroyed) drag.defer("reload", reloadAfterDrag);
+        return;
+      }
       if (destroyed) return;
       recalcFor = p.result_snapshot?.taken_ms ?? null;
       if (!initial && inFlight) {
