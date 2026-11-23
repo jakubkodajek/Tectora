@@ -6,6 +6,13 @@
 
 type Json = unknown;
 
+/**
+ * `out[k] = v` with this key sets the object's prototype instead of a key
+ * (audit 2026-11-23 ARCH-1202). The core drops it from every job it reads
+ * (model.rs `without_proto`); the merge never copies it either.
+ */
+const PROTO = "__proto__";
+
 const isObject = (v: Json): v is Record<string, Json> => !!v && typeof v === "object" && !Array.isArray(v);
 
 /** Drops what the store leaves out of its files (null, empty lists), so the comparison ignores it. */
@@ -14,6 +21,7 @@ function canon(v: Json): Json {
   if (isObject(v)) {
     const out: Record<string, Json> = {};
     for (const k of Object.keys(v).sort()) {
+      if (k === PROTO) continue;
       const x = v[k];
       if (x === null || x === undefined || (Array.isArray(x) && x.length === 0)) continue;
       out[k] = canon(x);
@@ -39,6 +47,7 @@ function mergeValue(base: Json, local: Json, remote: Json): Json {
     const b = isObject(base) ? base : {};
     const out: Record<string, Json> = {};
     for (const k of new Set([...Object.keys(local), ...Object.keys(remote)])) {
+      if (k === PROTO) continue;
       const v = mergeValue(b[k], local[k], remote[k]);
       if (v !== undefined) out[k] = v;
     }

@@ -674,7 +674,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "export_plan",
-            "description": "Write the roof sheet (A4 landscape plan with line lengths, face areas, pitches and totals; the picture the user adds to the Excel price sheet) to the `exports` folder of the job library as PDF or SVG (a PNG can only be saved from the app's Export dialog; there is no PNG here). The file is named after the job (or `name`); an existing file is never replaced. Returns the path to give the user. When the job's stored result is Tectora's recalculation of an offer's, a `note` names the recalculated figures the bundle carries and the offer's own that stay in this library (restore_offer_result first to send those); tell the user.",
+            "description": "Write the roof sheet (A4 landscape plan with line lengths, face areas, pitches and totals; the picture the user adds to the Excel price sheet) to the `exports` folder of the job library as PDF or SVG (a PNG can only be saved from the app's Export dialog; there is no PNG here). The file is named after the job (or `name`); an existing file is never replaced. Returns the path to give the user. The sheet shows the current calculation, not a stored offer result.",
             "inputSchema": schema(json!({
                 "id": id,
                 "format": { "type": "string", "enum": ["pdf", "svg"], "description": "Default: pdf." },
@@ -3577,6 +3577,81 @@ mod tool_coverage {
         let other = example(&mut s, "gable");
         let out = call(&mut s, "export_job", json!({ "id": other, "summary": "s" }));
         assert!(out.get("note").is_none(), "{out}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// Audit 2026-11-23 ARCH-1201, ERR-1202: a job whose unknown keys nest
+    /// deeper than 32 levels is refused as the app refuses it, with its
+    /// code and the reason; nothing is written or logged for it.
+    #[test]
+    fn a_job_with_too_deep_unknown_keys_is_refused_with_its_code() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        let mut v = serde_json::to_value(s.store.load(&id).unwrap()).unwrap();
+        let mut deep = json!([]);
+        for _ in 0..40 {
+            deep = Value::Array(vec![deep]);
+        }
+        v["crm"] = deep;
+        std::fs::write(s.store.dir.join(format!("{id}.tectora")), v.to_string()).unwrap();
+        let log = s.store.activity(&id).len();
+        for (tool, args) in [
+            ("get_project", json!({ "id": id })),
+            (
+                "update_job",
+                json!({ "id": id, "notes": "x", "summary": "Notes" }),
+            ),
+        ] {
+            let e = s.call_tool(tool, &args).unwrap_err().to_string();
+            assert!(
+                e.contains("too_many") && e.contains("nested too deep"),
+                "{tool}: {e}"
+            );
+        }
+        assert_eq!(s.store.activity(&id).len(), log);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// Audit 2026-11-23 ARCH-1203: a description is the AI client's
+    /// contract. export_plan of a recalculated offer answers without a
+    /// `note`, so its description promises none and says what the sheet
+    /// shows; a description promising a `note` belongs to a tool whose
+    /// test above receives one.
+    #[test]
+    fn only_tools_that_answer_with_a_note_promise_one() {
+        const NOTE_TESTED: &[&str] = &["export_job"];
+        let tools = crate::tools();
+        for t in tools.as_array().unwrap() {
+            let name = t["name"].as_str().unwrap();
+            let d = t["description"].as_str().unwrap_or_default();
+            if d.contains("a `note`") {
+                assert!(NOTE_TESTED.contains(&name), "{name} promises a note: {d}");
+            }
+            if name == "export_plan" {
+                assert!(
+                    d.contains(
+                        "The sheet shows the current calculation, not a stored offer result."
+                    ),
+                    "{d}"
+                );
+                assert!(!d.contains("bundle"), "{d}");
+            }
+        }
+        let mut s = server();
+        let (id, _, _) = recalculated_offer(&mut s);
+        let out = call(
+            &mut s,
+            "export_plan",
+            json!({ "id": id, "format": "svg", "summary": "Sheet" }),
+        );
+        let mut keys: Vec<&str> = out
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["id", "path"], "{out}");
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 

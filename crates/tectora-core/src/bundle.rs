@@ -1196,6 +1196,36 @@ mod tests {
     /// read 23 MB) and its texts are cleaned; the change log's `changes`
     /// are what its cleaned versions differ in, not what the sender wrote
     /// (a null value crashed the app's change list, bidi text spoofed it).
+    /// Audit 2026-11-23 ERR-1202, ARCH-1201: a bundle whose unknown keys
+    /// nest deeper than the library takes is refused as `too_many`, with
+    /// the reason, and adds no job; a key named `__proto__` comes in
+    /// without it (ARCH-1202).
+    #[test]
+    fn a_bundle_with_too_deep_unknown_keys_is_refused() {
+        let dir = std::env::temp_dir().join(format!("tectora-bundle-deep-{}", now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        let store = Store::new(dir.join("lib")).unwrap();
+        let p = crate::examples::find("gable").unwrap().project();
+        let mut v = serde_json::to_value(&p).unwrap();
+        let mut deep = serde_json::json!([]);
+        for _ in 0..crate::model::MAX_EXTRA_DEPTH {
+            deep = serde_json::Value::Array(vec![deep]);
+        }
+        v["crm"] = deep;
+        let path = bundle_with_log(&dir, "deep.tectorajob", &v.to_string(), "");
+        let e = import(&store, &path).unwrap_err();
+        assert_eq!(e.code, "too_many", "{e}");
+        assert!(e.to_string().contains("nested too deep: 33 levels"), "{e}");
+        assert!(store.list().is_empty());
+        let mut v = serde_json::to_value(&p).unwrap();
+        v["__proto__"] = serde_json::json!({ "flat_roof": true });
+        let path = bundle_with_log(&dir, "proto.tectorajob", &v.to_string(), "");
+        let id = import(&store, &path).unwrap();
+        let got = store.load(&id).unwrap();
+        assert!(got.extra.is_empty() && !got.flat_roof, "{:?}", got.extra);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_received_stored_result_and_change_list_are_bounded_and_cleaned() {
         let dir = std::env::temp_dir().join(format!("tectora-bundle-snap-{}", now_ms()));

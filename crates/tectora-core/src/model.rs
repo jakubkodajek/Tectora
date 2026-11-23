@@ -23,6 +23,10 @@ pub const SCHEMA_VERSION: u32 = 3;
 /// Pitch at or above this value (degrees) means a vertical gable wall.
 pub const GABLE_PITCH_DEG: f64 = 89.999;
 
+/// A roof design, saved as a `.tectora` file. Top-level keys this version
+/// does not know are kept and written back as they are, up to 64 KB and 32
+/// levels of nesting (a deeper one refuses the job); a key named
+/// `__proto__` is not kept, at any depth.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Project {
     pub schema_version: u32,
@@ -62,8 +66,10 @@ pub struct Project {
     pub result_snapshot: Option<crate::snapshot::ResultSnapshot>,
     /// Top-level keys this build does not know (written by a later release
     /// of the same format version), kept and written back as they are.
-    /// Never read by the core; bounded by [`MAX_EXTRA_BYTES`].
-    #[serde(flatten)]
+    /// Never read by the core; bounded by [`MAX_EXTRA_BYTES`] and
+    /// [`MAX_EXTRA_DEPTH`]. A key named `__proto__` is not kept, at any
+    /// depth ([`without_proto`]).
+    #[serde(flatten, deserialize_with = "extra_without_proto")]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -455,6 +461,11 @@ impl Project {
                 .and_then(crate::snapshot::ResultSnapshot::problem),
         );
         // Unknown top-level keys are kept, not used: bound what they cost.
+        // Their depth first, and alone: a file reads up to 128 levels, but
+        // the change log and the app's command arguments wrap the project
+        // two and one levels deeper (audit 2026-11-23 ERR-1202, ARCH-1201),
+        // and the byte count below recurses.
+        self.check_extra_depth()?;
         let extra_bytes = self
             .extra
             .iter()
@@ -469,6 +480,41 @@ impl Project {
             Some(e) => Err(e),
             None => Ok(()),
         }
+    }
+
+    /// Refuses unknown keys nested deeper than [`MAX_EXTRA_DEPTH`], with
+    /// the reason. The store reads no such job (`StoreError::TooMany`):
+    /// the app could not even send it back to the core.
+    pub fn check_extra_depth(&self) -> Result<(), String> {
+        let depth = self.extra_depth();
+        if depth > MAX_EXTRA_DEPTH {
+            return Err(format!(
+                "unknown keys nested too deep: {depth} levels (at most {MAX_EXTRA_DEPTH})"
+            ));
+        }
+        Ok(())
+    }
+
+    /// How deeply the unknown keys nest: arrays and objects inside each
+    /// other, 0 when every value is a plain one. Without recursion.
+    pub fn extra_depth(&self) -> usize {
+        let mut deepest = 0;
+        let mut stack: Vec<(&serde_json::Value, usize)> =
+            self.extra.values().map(|v| (v, 1)).collect();
+        while let Some((v, level)) = stack.pop() {
+            match v {
+                serde_json::Value::Array(a) => {
+                    deepest = deepest.max(level);
+                    stack.extend(a.iter().map(|v| (v, level + 1)));
+                }
+                serde_json::Value::Object(o) => {
+                    deepest = deepest.max(level);
+                    stack.extend(o.values().map(|v| (v, level + 1)));
+                }
+                _ => {}
+            }
+        }
+        deepest
     }
 
     fn check_values(&self) -> Result<(), String> {
@@ -518,6 +564,43 @@ pub const MAX_ABS_VALUE: f64 = 1.0e5;
 /// Most bytes the unknown top-level keys of a file may hold together
 /// ([`Project::extra`]).
 pub const MAX_EXTRA_BYTES: usize = 64 * 1024;
+
+/// Most levels the unknown top-level keys may nest ([`Project::extra`]):
+/// far below the 128 levels `serde_json` reads, with room for the change
+/// log's and the app's wrappers around the project.
+pub const MAX_EXTRA_DEPTH: usize = 32;
+
+/// The one key name the unknown keys never carry (audit 2026-11-23
+/// ARCH-1202): JavaScript's `JSON.parse` keeps it, but a copy made with
+/// `out[k] = v` (the app's merge, Svelte's snapshot) sets the object's
+/// prototype instead, and the editor showed what was not in the job.
+pub const DROPPED_KEY: &str = "__proto__";
+
+fn extra_without_proto<'de, D>(d: D) -> Result<serde_json::Map<String, serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let mut extra = serde_json::Map::<String, serde_json::Value>::deserialize(d)?;
+    without_proto(&mut extra);
+    Ok(extra)
+}
+
+/// Removes every key named [`DROPPED_KEY`] from `map` and from the
+/// objects inside it, at any depth, without recursion.
+pub fn without_proto(map: &mut serde_json::Map<String, serde_json::Value>) {
+    map.remove(DROPPED_KEY);
+    let mut stack: Vec<&mut serde_json::Value> = map.values_mut().collect();
+    while let Some(v) = stack.pop() {
+        match v {
+            serde_json::Value::Array(a) => stack.extend(a.iter_mut()),
+            serde_json::Value::Object(o) => {
+                o.remove(DROPPED_KEY);
+                stack.extend(o.values_mut());
+            }
+            _ => {}
+        }
+    }
+}
 
 /// Most parts (buildings, wings) a design may have. Generous: a large
 /// TERRAN job has a few dozen; 200 still calculate in a few seconds.
@@ -1640,6 +1723,78 @@ mod tests {
         assert_eq!(p.check_limits(), Ok(()));
         p.parts[0].edges[0].start.x = 1e9;
         assert!(p.check_limits().unwrap_err().contains("out of range"));
+    }
+
+    /// `"k": [[…[]…]]` with `n` nested arrays.
+    fn nested(n: usize) -> serde_json::Value {
+        let mut v = serde_json::json!([]);
+        for _ in 1..n {
+            v = serde_json::Value::Array(vec![v]);
+        }
+        v
+    }
+
+    /// Audit 2026-11-23 ERR-1202, ARCH-1201: an unknown key nested near the
+    /// parser's 128 levels made the change log and the app's commands fail.
+    /// 32 levels pass, 33 are refused as `too_many`, with the reason.
+    #[test]
+    fn check_limits_refuses_deep_unknown_keys() {
+        let mut p = crate::examples::find("gable").unwrap().project();
+        p.extra.insert("crm".into(), nested(32));
+        assert_eq!(p.check_input(), Ok(()));
+        p.extra
+            .insert("crm".into(), serde_json::json!({ "a": nested(31) }));
+        assert_eq!(p.check_input(), Ok(()));
+        p.extra.insert("crm".into(), nested(33));
+        let e = p.check_input().unwrap_err();
+        assert_eq!(e.code, "too_many");
+        assert!(
+            e.message
+                .contains("unknown keys nested too deep: 33 levels (at most 32)"),
+            "{e}"
+        );
+        p.extra
+            .insert("crm".into(), serde_json::json!({ "a": nested(32) }));
+        assert_eq!(p.check_input().unwrap_err().code, "too_many");
+        // Thousands of levels built in code (no parser limit): no stack
+        // overflow.
+        p.extra.insert("crm".into(), nested(100_000));
+        assert_eq!(p.check_input().unwrap_err().code, "too_many");
+        // Dropped by hand: serde_json drops nested values recursively.
+        let mut stack = vec![p.extra.remove("crm").unwrap()];
+        while let Some(v) = stack.pop() {
+            if let serde_json::Value::Array(a) = v {
+                stack.extend(a);
+            }
+        }
+    }
+
+    /// Audit 2026-11-23 ARCH-1202: JavaScript turns a key named `__proto__`
+    /// into the object's prototype, so the core does not carry it: it is
+    /// dropped from the unknown keys on every read, at any depth; other
+    /// unknown keys, `constructor` among them, stay.
+    #[test]
+    fn a_key_named_proto_is_dropped_from_unknown_keys_on_load() {
+        let p = crate::examples::find("gable").unwrap().project();
+        let mut v = serde_json::to_value(&p).unwrap();
+        v["__proto__"] = serde_json::json!({ "flat_roof": true });
+        v["constructor"] = serde_json::json!({ "prototype": 1 });
+        v["crm"] = serde_json::json!({ "a": [{ "__proto__": 1, "b": 2 }], "__proto__": 3 });
+        let text = serde_json::to_string(&v).unwrap();
+        for read in [
+            Project::from_json(&text).unwrap(),
+            serde_json::from_value::<Project>(v.clone()).unwrap(),
+            serde_json::from_str::<Project>(&text).unwrap(),
+        ] {
+            assert!(!read.extra.contains_key("__proto__"), "{:?}", read.extra);
+            assert!(!read.flat_roof);
+            assert_eq!(
+                read.extra["constructor"],
+                serde_json::json!({ "prototype": 1 })
+            );
+            assert_eq!(read.extra["crm"], serde_json::json!({ "a": [{ "b": 2 }] }));
+            assert!(!read.to_json().unwrap().contains("__proto__"));
+        }
     }
 
     #[test]

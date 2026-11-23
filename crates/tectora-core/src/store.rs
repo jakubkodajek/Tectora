@@ -841,6 +841,11 @@ pub enum StoreError {
         "{0}: the job is being saved by another program; nothing was done, try again in a moment"
     )]
     Busy(String),
+    /// The file holds what no job may (`Project::check_extra_depth`): it is
+    /// not opened, as a bundle with it is not imported (audit 2026-11-23
+    /// ERR-1202, ARCH-1201). Code `too_many`, as the calculation's refusal.
+    #[error("{id}: the job cannot be opened ({detail})")]
+    TooMany { id: String, detail: String },
 }
 
 /// The kinds of file system failure the app explains differently.
@@ -882,6 +887,7 @@ impl StoreError {
             StoreError::RevertConflict { .. } => "revert_conflict",
             StoreError::RevertStale { .. } => "revert_stale",
             StoreError::Busy(_) => "busy",
+            StoreError::TooMany { .. } => "too_many",
         }
     }
 
@@ -897,7 +903,8 @@ impl StoreError {
             | StoreError::NewerFormat { id, .. }
             | StoreError::NoSuchChange { id, .. }
             | StoreError::RevertConflict { id, .. }
-            | StoreError::RevertStale { id, .. } => Some(id),
+            | StoreError::RevertStale { id, .. }
+            | StoreError::TooMany { id, .. } => Some(id),
             StoreError::Io { id, .. } => id.as_deref(),
         }
     }
@@ -908,7 +915,8 @@ impl StoreError {
             StoreError::Unreadable { detail, .. }
             | StoreError::Io { detail, .. }
             | StoreError::RevertConflict { detail, .. }
-            | StoreError::RevertStale { detail, .. } => Some(detail),
+            | StoreError::RevertStale { detail, .. }
+            | StoreError::TooMany { detail, .. } => Some(detail),
             _ => None,
         }
     }
@@ -2615,6 +2623,15 @@ impl Store {
             id: id.to_string(),
             detail: e.to_string(),
         })?;
+        // Unknown keys nested near the parser's limit: the change log and
+        // the app's commands wrap the job deeper and could not read it
+        // back (audit 2026-11-23 ERR-1202, ARCH-1201).
+        project
+            .check_extra_depth()
+            .map_err(|detail| StoreError::TooMany {
+                id: id.to_string(),
+                detail,
+            })?;
         // A stored result with an impossible time is left out, the job
         // opens (HUNT-802); the file keeps it until the next save.
         let dropped = crate::snapshot::drop_impossible(&mut project);
@@ -7055,6 +7072,80 @@ mod tests {
         assert_eq!(log.len(), 2, "the entry after the torn line is kept");
         assert_eq!(log[1].summary, "Steeper");
         assert!(store.pending_review(&id).is_some());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// `n` arrays inside each other.
+    fn nested(n: usize) -> serde_json::Value {
+        let mut v = serde_json::json!([]);
+        for _ in 1..n {
+            v = serde_json::Value::Array(vec![v]);
+        }
+        v
+    }
+
+    /// Audit 2026-11-23 ERR-1202: the change log wraps the job in its
+    /// entry, and a line its reader cannot parse is skipped without a
+    /// word, so an AI change then had no review and no Revert. Every line
+    /// written for a job at the deepest allowed nesting parses back.
+    #[test]
+    fn every_change_log_line_of_the_deepest_allowed_job_parses_back() {
+        let store = temp_store("deep-log");
+        let mut a = examples::find("hip").unwrap().project();
+        a.extra.insert(
+            "crm".into(),
+            serde_json::json!({ "a": nested(crate::model::MAX_EXTRA_DEPTH - 1) }),
+        );
+        assert_eq!(a.check_input(), Ok(()));
+        let id = store.save_as(None, &a, "claude", "Created").unwrap();
+        let mut b = store.load(&id).unwrap();
+        b.parts[0].edges[0].pitch_deg = 45.0;
+        store
+            .save_as(Some(id.clone()), &b, "claude", "Steeper")
+            .unwrap();
+        assert!(store.pending_review(&id).is_some());
+        let text = fs::read_to_string(store.activity_path(&id).unwrap()).unwrap();
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines.len(), 2);
+        for line in &lines {
+            serde_json::from_str::<ActivityEntry>(line).expect("a written line parses back");
+        }
+        assert_eq!(store.activity(&id).len(), 2);
+        let back = store.revert_last(&id, USER_ACTOR, None).unwrap();
+        assert_eq!(
+            back.parts[0].edges[0].pitch_deg,
+            a.parts[0].edges[0].pitch_deg
+        );
+        assert_eq!(back.extra, a.extra);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-23 ARCH-1201: a file nested one level more than
+    /// allowed, up to the parser's limit, is not opened: `too_many` with
+    /// the reason (the app could not send it back), and the library shows
+    /// it as a file that cannot be opened.
+    #[test]
+    fn a_job_with_too_deep_unknown_keys_is_refused_on_open() {
+        let store = temp_store("deep-open");
+        let p = examples::find("hip").unwrap().project();
+        for n in [crate::model::MAX_EXTRA_DEPTH + 1, 120, 125, 126] {
+            let mut v = serde_json::to_value(&p).unwrap();
+            v["crm"] = nested(n);
+            let id = format!("deep-{n}");
+            fs::write(
+                store.dir.join(format!("{id}.tectora")),
+                serde_json::to_string(&v).unwrap(),
+            )
+            .unwrap();
+            let e = store.load(&id).unwrap_err();
+            assert_eq!(e.code(), "too_many", "{n}: {e}");
+            assert!(e.to_string().contains("nested too deep"), "{e}");
+            assert_eq!(e.id(), Some(id.as_str()));
+        }
+        let (ok, broken) = store.scan().unwrap();
+        assert!(ok.is_empty());
+        assert_eq!(broken.len(), 4);
+        assert!(broken.iter().all(|b| b.code == "too_many"));
         let _ = fs::remove_dir_all(&store.dir);
     }
 

@@ -353,3 +353,69 @@ fn an_app_save_refuses_a_key_or_element_removed_meanwhile() {
     ));
     assert_eq!(store.load("j").unwrap().notes, "");
 }
+
+/// `"crm": [[…[]…]]` with `n` arrays inside each other.
+fn nested(n: usize) -> Value {
+    let mut v = json!([]);
+    for _ in 1..n {
+        v = Value::Array(vec![v]);
+    }
+    v
+}
+
+/// Audit 2026-11-23 ARCH-1201: every app command sends the job one level
+/// deeper than the file (`{ project }`), and the change log two. At the
+/// deepest nesting allowed the job goes through the wrapper, calculates
+/// and saves from the app; from one level more up to the parser's limit it
+/// is refused cleanly on open (`too_many`, or `unreadable` past the
+/// parser), never half-opened.
+#[test]
+fn deep_unknown_keys_go_through_the_command_wrapper_or_are_refused_on_open() {
+    let store = temp_store("deep");
+    let max = tectora_core::model::MAX_EXTRA_DEPTH;
+    plant(
+        &store,
+        "ok",
+        "1700000000000",
+        &format!("\"crm\": {}", nested(max)),
+    );
+    let p = store.load("ok").unwrap();
+    // The app's argument, as text through a parser with serde_json's
+    // default limit (Tauri's).
+    let arg = serde_json::to_string(&json!({ "project": p })).unwrap();
+    let back: Value = serde_json::from_str(&arg).unwrap();
+    let sent: Project = serde_json::from_value(back["project"].clone()).unwrap();
+    assert_eq!(sent, p);
+    tectora_core::commands::calc(&sent).unwrap();
+    assert!(matches!(app_save(&store, "ok"), CheckedSave::Saved { .. }));
+    for n in (max + 1..max + 3).chain(120..=128) {
+        let id = format!("deep-{n}");
+        plant(
+            &store,
+            &id,
+            "1700000000000",
+            &format!("\"crm\": {}", nested(n)),
+        );
+        let e = store.load(&id).unwrap_err();
+        assert!(
+            ["too_many", "unreadable"].contains(&e.code()),
+            "{n}: {} {e}",
+            e.code()
+        );
+        if n <= 126 {
+            assert_eq!(e.code(), "too_many", "{n}: {e}");
+        }
+    }
+    // A file opened from outside the library is not added either.
+    let out = std::env::temp_dir().join(format!(
+        "tectora-js-deep-outside-{}.tectora",
+        std::process::id()
+    ));
+    let mut v = serde_json::to_value(&p).unwrap();
+    v["crm"] = nested(max + 1);
+    std::fs::write(&out, v.to_string()).unwrap();
+    let e = tectora_core::bundle::open_path(&store, &out).unwrap_err();
+    assert_eq!(e.code, "too_many", "{e}");
+    let _ = std::fs::remove_file(out);
+    let _ = std::fs::remove_dir_all(&store.dir);
+}

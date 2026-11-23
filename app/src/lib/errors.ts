@@ -128,12 +128,14 @@ export function describeError(e: unknown, action?: Action): Described {
   const settings = SETTINGS_CODES.has(err.code) && (action === "settings" || !KNOWN.has(err.code));
   // An export refused for the job's own size, not for its files (bundle.rs, ARCH-205).
   const jobTooLarge = code === "too_large" && /the job is too large to hand over/.test(err.detail ?? "");
+  // Refused for its unknown keys (model.rs `check_counts`: their size or depth), not for its buildings or walls.
+  const unknownKeys = code === "too_many" && /unknown keys/.test(err.detail ?? "");
   // A job file in another encoding is intact text, not a damaged file (store.rs `read_text`).
   const notText = code === "unreadable" && notUtf8(err.detail);
   return {
     code: err.code,
     title: t(action ? `err.action.${action}` : "err.title"),
-    message: settings ? t(`settings.err.${err.code}`) : jobTooLarge ? t("err.job_too_large") : notText ? t("err.unreadable_text") : t(`err.${code}`, { id: err.id ?? "" }),
+    message: settings ? t(`settings.err.${err.code}`) : jobTooLarge ? t("err.job_too_large") : unknownKeys ? t("err.unknown_keys") : notText ? t("err.unreadable_text") : t(`err.${code}`, { id: err.id ?? "" }),
     detail: err.detail,
   };
 }

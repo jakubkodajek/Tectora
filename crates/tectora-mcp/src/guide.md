@@ -226,7 +226,8 @@ The tools cover every operation of the Tectora editor:
   the faces, the wall and material areas and the line totals, as the sheet
   reads them.
   `export_plan` writes the roof sheet (plan with line lengths, areas and
-  pitches) as PDF or SVG into the `exports` folder and returns the path. There
+  pitches) as PDF or SVG into the `exports` folder and returns the path. The
+  sheet shows the current calculation, not a stored offer result. There
   is no PNG over MCP (the app draws it in its own window): offer the SVG,
   or ask the user to press PNG in the app's Export dialog.
   Pass `line_names` (code → name in the user's language, e.g.

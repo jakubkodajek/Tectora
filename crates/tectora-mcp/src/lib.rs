@@ -406,7 +406,9 @@ fn roof_trouble_of(geos: &[RoofGeometry], project: &Project) -> Option<Value> {
 /// again in a moment, audit 2026-11-23 ERR-1002).
 pub(crate) fn coded(e: StoreError) -> String {
     match e {
-        StoreError::RevertStale { .. } | StoreError::Busy(_) => format!("{}: {e}", e.code()),
+        StoreError::RevertStale { .. } | StoreError::Busy(_) | StoreError::TooMany { .. } => {
+            format!("{}: {e}", e.code())
+        }
         e => e.to_string(),
     }
 }

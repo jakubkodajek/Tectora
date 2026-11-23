@@ -213,7 +213,7 @@ same moment do not drop each other's change.
 
 | file | format | written by |
 | --- | --- | --- |
-| `*.tectora` | JSON, `docs/tectora.schema.json`, versioned with migrations on load, newer neither read nor overwritten | core `store` |
+| `*.tectora` | JSON, `docs/tectora.schema.json`, versioned with migrations on load, newer neither read nor overwritten; unknown top-level keys kept (at most 64 KB and 32 levels deep, a key named `__proto__` dropped) | core `store` |
 | `*.tectorajob` | ZIP: `manifest.json`, `project.tectora`, `history.jsonl`, `preview.svg`, `files/` | core `bundle` |
 | `.activity/<id>.jsonl`, `.activity/live.json` | change log with previous versions; current AI activity | core `store`, MCP |
 | `settings.json` | user settings, unknown keys kept | core `settings` |

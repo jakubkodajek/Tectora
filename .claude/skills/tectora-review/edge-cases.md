@@ -255,6 +255,14 @@ Guards: core `only_regular_files_of_a_sane_size_are_attached`,
 
 - MCP paths: devices, pipes, folders, private files, huge files are refused.
 - Huge part / wall / object counts are refused before the core runs.
+- Unknown top-level keys: at most 64 KB and 32 levels of nesting (deeper is
+  `too_many`, the job is not opened or imported; the change log and the
+  app's `{ project }` argument wrap the job deeper than its file), and a key
+  named `__proto__` is dropped on every read (JavaScript would set the
+  prototype). Guards: `check_limits_refuses_deep_unknown_keys`,
+  `deep_unknown_keys_go_through_the_command_wrapper_or_are_refused_on_open`,
+  `every_change_log_line_of_the_deepest_allowed_job_parses_back`,
+  `a_key_named_proto_is_dropped_from_unknown_keys_on_load`, `merge.test.ts`.
 - The same editor operation gives the same value in the UI and over MCP
   (rounding at exact halves).
 - Every Tauri command has a bridge counterpart reading the same arguments.
