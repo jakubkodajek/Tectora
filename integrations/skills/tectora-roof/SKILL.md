@@ -71,8 +71,12 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    figures no longer match the roof: tell the user. When the user wants
    the figures the customer was offered back after Tectora recalculated
    an offer's stored result (the entry by `tectora` that `get_history`
-   marks `stored_result_recalculation`), call `restore_offer_result` with
-   a one-sentence `summary`: it changes the stored result only. When it answers with
+   marks `stored_result_recalculation`, `get_project` gives it as
+   `result_recalculation`), call `restore_offer_result` with a
+   one-sentence `summary`: it changes the stored result only. When
+   `get_project` or a write answers with `load_warnings`
+   (`result_dropped`: a stored result with an impossible date was left
+   out), tell the user. When it answers with
    `warnings` (the roof looks wrong) or `roof_trouble` (for example
    `walls_overlap`: a point list that goes round twice), fix it first.
    A job `calc` refuses as "too complex to calculate" (buildings stacked

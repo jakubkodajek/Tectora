@@ -1050,7 +1050,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "get_project",
-            "description": "Full design: parts with an edge table (index, from, to, length, eave/gable, pitch, eave height, overhang), job data and quantities.",
+            "description": "Full design: parts with an edge table (index, from, to, length, eave/gable, pitch, eave height, overhang), job data and quantities. `result_recalculation`: Tectora's recalculation the stored result is (its `entry_ts_ms` for restore_offer_result), or null. `load_warnings`: what reading the job left out (`result_dropped`: a stored result with an impossible date); tell the user.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -1325,6 +1325,17 @@ impl Server {
         });
     }
 
+    /// [`Store::load_warnings`] of `id` as the tools give them: what
+    /// reading the job left out (a stored result with an impossible date).
+    fn load_warnings(&self, id: &str) -> Vec<Value> {
+        self.store
+            .load_warnings(id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|w| json!({ "code": w.code, "detail": w.detail }))
+            .collect()
+    }
+
     /// Saves `project` as a change by the connected client and reports it.
     fn commit(
         &self,
@@ -1363,6 +1374,9 @@ impl Server {
                 "changes": [],
             }));
         }
+        // Read before the save, which writes the job without what reading
+        // it left out (audit 2026-11-23 ARCH-902).
+        let dropped = id.map(|id| self.load_warnings(id)).unwrap_or_default();
         let (id, before, project) = match (id, before) {
             (Some(id), Some(before)) => self.save_onto_current(id, before, project, summary)?,
             _ => {
@@ -1446,6 +1460,13 @@ impl Server {
                     "Saved, but the roof of this job takes too long to calculate here, so no figures are given. Call calc on it (it has its own limit) and tell the user."
                 );
             }
+        }
+        if !dropped.is_empty() {
+            let note = out["note"].as_str().unwrap_or("Saved.").to_string();
+            out["note"] = json!(format!(
+                "{note} The job's stored offer result had an impossible date, so it was left out when the job was read, and this save wrote the job without it: tell the user, and call store_result if they want the current figures stored as the offer's."
+            ));
+            out["load_warnings"] = Value::Array(dropped);
         }
         if skipped_check {
             out["window_check_skipped"] = json!(
@@ -1711,7 +1732,17 @@ impl Server {
                     "files": self.store.attachments(&id).iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
                     "stored_result": stored_result,
                     "quantities": quantities,
+                    // The recalculation the stored result is (its entry
+                    // for restore_offer_result), also once the change log
+                    // no longer holds the entry (audit 2026-11-23 HUNT-902).
+                    "result_recalculation": self.store.recalculation(&id),
                 });
+                // What reading the job left out, as the app says it on
+                // open (audit 2026-11-23 ARCH-902).
+                let warnings = self.load_warnings(&id);
+                if !warnings.is_empty() {
+                    v["load_warnings"] = Value::Array(warnings);
+                }
                 match refusal {
                     None => {}
                     Some(tectora_core::work::Refusal::TooComplex) => {

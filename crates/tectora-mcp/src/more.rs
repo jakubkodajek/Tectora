@@ -3469,6 +3469,204 @@ mod tool_coverage {
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
+    /// The job's stored result set back as if engine 0.0.1 had stored it
+    /// 2 m2 off, the AI's changes accepted: the app's next open
+    /// recalculates it. Returns the offer's result.
+    fn make_old(s: &Server, id: &str) -> tectora_core::snapshot::ResultSnapshot {
+        let file = s.store.dir.join(format!("{id}.tectora"));
+        let mut p = s.store.load(id).unwrap();
+        let offer = {
+            let r = p.result_snapshot.as_mut().expect("a stored result");
+            r.engine_version = "0.0.1".into();
+            r.roof_area += 2.0;
+            r.clone()
+        };
+        std::fs::write(&file, p.to_json().unwrap()).unwrap();
+        let origins = s.store.activity_dir().join(format!("{id}.result.json"));
+        let text = std::fs::read_to_string(&origins)
+            .unwrap()
+            .replace(tectora_core::snapshot::ENGINE_VERSION, "0.0.1");
+        std::fs::write(&origins, text).unwrap();
+        s.store.mark_reviewed(id, now_ms() + 1000).unwrap();
+        offer
+    }
+
+    /// An offer whose stored result the app's open recalculated.
+    fn recalculated_offer(
+        s: &mut Server,
+    ) -> (
+        String,
+        tectora_core::snapshot::ResultSnapshot,
+        tectora_core::store::RefreshedEntry,
+    ) {
+        let id = example(s, "gable");
+        call(
+            s,
+            "update_job",
+            json!({ "id": id, "status": "offer", "summary": "Offer sent" }),
+        );
+        let offer = make_old(s, &id);
+        let done = s.store.refresh_entry(&id).unwrap().expect("recalculated");
+        (id, offer, done)
+    }
+
+    /// Audit 2026-11-23 HUNT-902: get_project names the recalculation the
+    /// stored result is, so an AI can put the offer's figures back after
+    /// the engine's entry left the change log.
+    #[test]
+    fn the_offer_figures_go_back_after_the_change_log_dropped_the_recalculation() {
+        let mut s = server();
+        let (id, offer, done) = recalculated_offer(&mut s);
+        let p = call(&mut s, "get_project", json!({ "id": id }));
+        assert_eq!(
+            p["result_recalculation"]["entry_ts_ms"], done.entry_ts_ms,
+            "{p}"
+        );
+        for i in 0..55 {
+            call(
+                &mut s,
+                "update_job",
+                json!({ "id": id, "notes": format!("note {i}"), "summary": "Note" }),
+            );
+        }
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        assert!(
+            history
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|e| e["ts_ms"] != done.entry_ts_ms),
+            "the engine's entry is trimmed"
+        );
+        let p = call(&mut s, "get_project", json!({ "id": id }));
+        let ts = p["result_recalculation"]["entry_ts_ms"].clone();
+        assert_eq!(ts, done.entry_ts_ms, "{p}");
+        let r = call(
+            &mut s,
+            "restore_offer_result",
+            json!({ "id": id, "ts_ms": ts, "summary": "The customer signed these figures" }),
+        );
+        assert_eq!(r["restored"], true);
+        assert_eq!(s.store.load(&id).unwrap().result_snapshot, Some(offer));
+        let p = call(&mut s, "get_project", json!({ "id": id }));
+        assert_eq!(p["result_recalculation"], Value::Null, "{p}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// Audit 2026-11-23 TEST-903: restore_offer_result refuses a ts_ms
+    /// that is no entry time and writes nothing, tells the app live, and
+    /// get_history marks only the recalculation the stored result is now.
+    #[test]
+    fn restore_offer_result_checks_its_input_tells_the_app_and_marks_one_entry() {
+        let mut s = server();
+        let (id, _, first) = recalculated_offer(&mut s);
+        // The user stores an own result, an older engine's again, and the
+        // app recalculates it once more: two engine entries.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        call(
+            &mut s,
+            "store_result",
+            json!({ "id": id, "summary": "Store the figures" }),
+        );
+        make_old(&s, &id);
+        let second = s.store.refresh_entry(&id).unwrap().expect("recalculated");
+        assert_ne!(first.entry_ts_ms, second.entry_ts_ms);
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let marked: Vec<&Value> = history
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["stored_result_recalculation"] == true)
+            .collect();
+        assert_eq!(marked.len(), 1, "{history}");
+        assert_eq!(marked[0]["ts_ms"], second.entry_ts_ms);
+        assert!(
+            history
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["ts_ms"] == first.entry_ts_ms),
+            "{history}"
+        );
+
+        let file = s.store.dir.join(format!("{id}.tectora"));
+        let bytes = std::fs::read(&file).unwrap();
+        let entries = s.store.activity(&id).len();
+        for ts in [
+            json!(-1),
+            json!("x"),
+            json!(1.5),
+            json!([second.entry_ts_ms]),
+            json!({}),
+        ] {
+            let e = s
+                .call_tool(
+                    "restore_offer_result",
+                    &json!({ "id": id, "ts_ms": ts, "summary": "x" }),
+                )
+                .unwrap_err();
+            assert!(e.contains("ts_ms"), "{ts}: {e}");
+        }
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+        assert_eq!(s.store.activity(&id).len(), entries);
+
+        s.call_tool("list_projects", &json!({})).unwrap();
+        call(
+            &mut s,
+            "restore_offer_result",
+            json!({ "id": id, "ts_ms": second.entry_ts_ms, "summary": "Signed figures" }),
+        );
+        let live = s.store.live().unwrap();
+        assert_eq!(live.kind.as_deref(), Some("changed"));
+        assert_eq!(live.project_id.as_deref(), Some(id.as_str()));
+        assert!(live.follow);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// Audit 2026-11-23 ARCH-902: a stored result with an impossible date
+    /// is left out when the job is read; over MCP the read and the write
+    /// that then saves the job without it say so.
+    #[test]
+    fn mcp_says_when_a_stored_result_was_left_out() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "status": "offer", "summary": "Offer sent" }),
+        );
+        let file = s.store.dir.join(format!("{id}.tectora"));
+        let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        v["result_snapshot"]["taken_ms"] = json!(8_640_000_000_000_001u64);
+        std::fs::write(&file, serde_json::to_string(&v).unwrap()).unwrap();
+        let p = call(&mut s, "get_project", json!({ "id": id }));
+        assert_eq!(p["load_warnings"][0]["code"], "result_dropped", "{p}");
+        assert!(
+            p["load_warnings"][0]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("8640000000000001"),
+            "{p}"
+        );
+        let r = call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "AI note", "summary": "Note" }),
+        );
+        assert_eq!(r["load_warnings"][0]["code"], "result_dropped", "{r}");
+        assert!(r["note"].as_str().unwrap().contains("left out"), "{r}");
+        // Saved without it: nothing more to say.
+        let p = call(&mut s, "get_project", json!({ "id": id }));
+        assert!(p.get("load_warnings").is_none(), "{p}");
+        let r = call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "AI note 2", "summary": "Note" }),
+        );
+        assert!(r.get("load_warnings").is_none(), "{r}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
     #[test]
     fn revert_to_undoes_every_change_since_the_given_step() {
         let mut s = server();

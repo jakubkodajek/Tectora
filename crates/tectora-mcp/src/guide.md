@@ -245,9 +245,13 @@ of an earlier offer (it went back to draft since): a roof the app would
 refuse stays a draft, and the kept result stays the offer's when the roof
 calculates. A result stored by an older Tectora whose figures the
 corrected calculation changes is recalculated when the user opens an offer
-job in the app, with a change-log entry by `tectora` that keeps the old
-figures (`get_history` marks it `stored_result_recalculation` while the
-job's stored result still is that recalculation). The user can put the
+job in the app, with a change-log entry by `tectora` (`get_history` marks
+it `stored_result_recalculation` while the job's stored result still is
+that recalculation). `get_project` gives it as `result_recalculation`
+(`entry_ts_ms`, the offer's date `offer_ms`, engines `from` / `to`,
+`differences`; null when the stored result is not a recalculation), also
+after the change log dropped the entry: the offer's figures are kept
+apart from the log. The user can put the
 offer's own figures back in the app, and so can you with
 `restore_offer_result` (id, a one-sentence `summary`, optionally the
 entry's `ts_ms`): only when the user asks for the figures the customer was
@@ -265,7 +269,12 @@ read the stored result: they never recalculate it. `list_projects` with
 own recalculation and a restore of the offer's figures do not count as
 that change, the same rule as the app's "changed by AI" list. `stored_result.engine_changed`
 says when it came from another Tectora version; tell the user, the app
-updates it when they open the job.
+updates it when they open the job. A stored result with an impossible date
+(after the last date a calendar shows) is left out when the job is read:
+`get_project` then lists `load_warnings` (`code: "result_dropped"`, with
+the date), and your next write saves the job without it and says so in
+its `note` and `load_warnings`. Tell the user; call `store_result` only
+if they want the current figures stored as the offer's.
 
 ## Results (DACAD line codes)
 

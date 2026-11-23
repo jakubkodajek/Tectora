@@ -153,9 +153,14 @@ stay a `folder_request` the user allows or keeps.
   the engine's recalculation is one fact in the core,
   `Store::recalculation(id)` (the app's `result_recalculation`): the file's
   stored result has an origin record (`.activity/<id>.result.json`, local,
-  never in a bundle) that names the engine's change-log entry, and that
-  entry's saved result is the file's. The result card's "recalculated" line,
-  the history's "Put the offer's figures back" button and `get_history`'s
+  never in a bundle) that names the engine's change-log entry and keeps the
+  offer's result and the recalculated one, and the recalculated one is the
+  file's. The record, not the log, holds the offer's figures, so they can
+  be put back after the entry was trimmed from the log (the log keeps 50
+  entries); a record of a round-9 build without them reads the entry and
+  gets them copied in on the next logged save. The result card's "recalculated" line,
+  the history's and the result card's "Put the offer's figures back"
+  buttons, `get_project`'s `result_recalculation` and `get_history`'s
   `stored_result_recalculation` come from it alone, wherever the entry is in
   the log by now and whatever the job's status. So a result the user or an
   AI stored since shows neither; an editor Undo that brings the engine's
@@ -168,6 +173,12 @@ stay a `folder_request` the user allows or keeps.
   <entry_ts_ms>`, and pins the origin of the result it put back, so no later
   engine recalculates it. The user's restore entry neither ends nor joins an
   AI review, and Revert / Revert all of other entries leave it alone.
+- A stored result with an impossible date is left out when a job is read
+  (`Store::load_warnings`, code `result_dropped`): the app says so on open,
+  MCP `get_project` lists it as `load_warnings`, and the next MCP write,
+  which saves the job without it, repeats it in its `note` and
+  `load_warnings`. The dropped figures are not kept in the change log
+  (Jakub's decision 2026-11-23: the date is impossible, the warnings tell).
 - "Changed by AI" is one rule, `store::changed_by_ai`: the newest entry that
   is neither the engine's nor a restore of the offer's figures is an AI
   client's. `ProjectSummary.changed_by_ai` carries it for the library's
