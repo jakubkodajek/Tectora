@@ -32,7 +32,7 @@
   import { snapToRoof, type ManualSel } from "./manual";
   import { keptSelection } from "./selection";
   import { fitlabels } from "./fitlabels";
-  import { describeCalcError, describeError, describeProblem, toAppError, type Described } from "./errors";
+  import { describeCalcError, describeError, describeProblem, toAppError, type AppError, type Described } from "./errors";
   import { info, notify, notifyError, notifyRefusal, notifyWarning } from "./notify.svelte";
   import { nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, parseDormer, roofHeightAt, type DormerParams } from "./dormers";
@@ -46,7 +46,8 @@
   import { api, onProjectsChanged } from "./api";
   import { changedEdges, changedItems, describeChange, describeFigure, ghostOf } from "./changes";
   import { wallNotes } from "./wallnotes";
-  import { merge3 } from "./merge";
+  import { merge3, sameJob } from "./merge";
+  import { keepMissedNotice, takeMissedNotice } from "./missed";
   import { JobEdits, heldName, notMade, type Hold, type ListName, type Outcome } from "./jobedits";
   import { roofState } from "./results";
   import { isTyping, releaseLeaveGuard, setLeaveGuard } from "./leave";
@@ -684,16 +685,24 @@
       return;
     }
     const gen = saveGen;
+    // The recalculation this open made, until the notice is shown: an editor
+    // left before that keeps it for the next editor of the job (ERR-902).
+    let recalculated: RefreshedEntry | null = null;
     try {
       // A result an older engine stored follows the corrected calculation
       // before the job opens (owner decision 2026-11-21); the editor says
       // so (audit UX-702c). A failed check opens the job as it is.
-      const recalculated = initial
-        ? await api.refreshStoredResult(id).catch((e) => {
+      const refreshing = initial
+        ? api.refreshStoredResult(id).catch((e) => {
             console.warn("[tectora] refresh_stored_result:", e);
             return null;
           })
         : null;
+      // What reading the job leaves out of it (a stored result with an
+      // impossible time, HUNT-802), asked as the job opens and told below,
+      // in this editor only (UX-901).
+      const warned = initial ? api.loadWarnings(id).catch(() => [] as AppError[]) : null;
+      recalculated = await refreshing;
       // The user left this job while it was read: nothing of it is shown in
       // the editor of the next one (audit 2026-11-22 HUNT-801).
       if (destroyed) return;
@@ -752,7 +761,17 @@
         // hand-drawn faces only is a roof to look at (UX-301).
         if (!hasBuilding(p)) drawing = [];
         if (pending) dock = "ai";
-        if (recalculated) noticeRecalculated(recalculated);
+        // Or the notice an editor of this job left before it could show it,
+        // while the stored result still is that recalculation (ERR-902).
+        const missed = takeMissedNotice(id);
+        const tell = recalculated ?? (missed && recalculation?.entry_ts_ms === missed.entry_ts_ms ? missed : null);
+        recalculated = null;
+        if (tell) noticeRecalculated(tell);
+        // Said once, as a warning naming the job (UX-901).
+        const name = project?.name.trim();
+        void warned?.then((ws) => {
+          if (!destroyed) ws.forEach((w) => notifyWarning(w, name ? t("snap.titleOf", { name }) : t("snap.title")));
+        });
       } else {
         // External change (AI agent, CLI): keep it undoable and show it.
         // Merged local edits are still to be saved (the timer is running).
@@ -774,6 +793,9 @@
       } else {
         notifyError(e, "load");
       }
+    } finally {
+      // Not shown here: the user left the job while it opened.
+      if (recalculated) keepMissedNotice(id, recalculated);
     }
   }
 
@@ -827,12 +849,6 @@
   onMount(() => {
     api.projectsDir().then((d) => (libraryDir = d), () => {});
     load(true);
-    // What reading the job left out of it (a stored result with an
-    // impossible time, HUNT-802): said once, as a warning.
-    api.loadWarnings(id).then(
-      (ws) => ws.forEach((w) => notifyWarning(w, t("snap.title"))),
-      () => {},
-    );
     onProjectsChanged((ids) => {
       if (!ids.includes(id)) return;
       // While our own save runs, `lastSaved` is not yet up to date, so the
@@ -887,6 +903,24 @@
   /** Puts the offer's own figures back in place of the engine's recalculation logged at `entryTs` (the AI tab's button on that entry). */
   const restoreOffer = (entryTs: number) => reviewAction(() => restoreOfferNow(entryTs));
 
+  /**
+   * Takes in the job the core wrote for a Revert or a put-back (`p`) as an
+   * outside save, like `load(false)` does: what the user changed while the
+   * call was out (it can wait seconds behind another writer's lock) stays,
+   * merged onto `p`, and is saved next; only when nothing was changed is the
+   * job "Saved" (audit ERR-901). `base` is the file as last read or written
+   * before the call: a save that lands during the call is then merged too,
+   * not taken for the core's own change.
+   */
+  function applyCoreAnswer(base: string | null, p: Project) {
+    const from = base ? (JSON.parse(base) as Project) : null;
+    const next = from && project ? merge3(from, plain(project), p) : p;
+    swapOutside(from, p, next);
+    lastSaved = JSON.stringify(p);
+    if (sameJob(next, p)) saveState = "saved";
+    else scheduleSave();
+  }
+
   async function restoreOfferNow(entryTs: number) {
     // Edits not on disk yet stay: the core changes the stored result of the file only.
     commitFocused();
@@ -898,11 +932,10 @@
       // it is read again instead of passing for an outside change that puts
       // the recalculated result back (as for the editor's own saves).
       saveGen++;
+      const base = lastSaved;
       const p = await api.restoreOfferResult(id, entryTs).finally(() => saveGen++);
       await drag.settled();
-      swapOutside(lastSaved ? (JSON.parse(lastSaved) as Project) : null, p, p);
-      lastSaved = JSON.stringify(p);
-      saveState = "saved";
+      applyCoreAnswer(base, p);
       // An editor step like any other: Undo brings the recalculated result
       // back, and the card and the history then say so again (UI-802).
       pushHistory();
@@ -951,11 +984,10 @@
       // The latest change is undone only if it still is the entry the button was drawn on (ERR-801).
       // As above: a read across this write is read again.
       saveGen++;
+      const base = lastSaved;
       const p = await (all && oldest ? api.revertChanges(id, oldest.ts_ms) : api.revertLastChange(id, expectTs)).finally(() => saveGen++);
       await drag.settled();
-      swapOutside(lastSaved ? (JSON.parse(lastSaved) as Project) : null, p, p);
-      lastSaved = JSON.stringify(p);
-      saveState = "saved";
+      applyCoreAnswer(base, p);
       recalcFor = p.result_snapshot?.taken_ms ?? null;
       pushHistory();
       closeStaleDialogs();
@@ -2413,6 +2445,10 @@
       } else if (e.key === "Escape") cancelDrag();
       return;
     }
+    // The job is still being read: its toolbar is inert, and so are its
+    // keys (Insert would open the footprint entry on the job once it is in,
+    // HUNT-908).
+    if (!project) return;
     const tag = (e.target as HTMLElement).tagName;
     // A number field with its value stored (nothing typed since Enter):
     // Ctrl+Z undoes that change, not only the field's text (UX-001).
@@ -2527,8 +2563,8 @@
       <button class="tool" class:on={prefs.layout === "3d"} aria-pressed={prefs.layout === "3d"} onclick={() => setLayout("3d")} title="{t('editor.modelHint')} (F3)"><Icon name="cube" /><span>{t("editor.model")}</span></button>
       <button class="tool" onclick={() => plan?.fit()} disabled={prefs.layout === "3d"} title={t("plan.fitHint")}><Icon name="fit" /><span>{t("plan.fit")}</span></button>
       <!-- Zoom without a wheel (touch, pen, keyboard; UX-703). -->
-      <button class="tool zoom" onclick={() => plan?.zoomBy(1.25)} disabled={prefs.layout === "3d"} aria-label={t("plan.zoomIn")} title={t("plan.zoomIn")}><Icon name="plus" /></button>
-      <button class="tool zoom" onclick={() => plan?.zoomBy(0.8)} disabled={prefs.layout === "3d"} aria-label={t("plan.zoomOut")} title={t("plan.zoomOut")}><Icon name="minus" /></button>
+      <button class="tool zoom" onclick={() => plan?.zoomBy(1.25)} disabled={prefs.layout === "3d"} aria-label={t("plan.zoomIn")} title="{t('plan.zoomIn')} (+)"><Icon name="plus" /></button>
+      <button class="tool zoom" onclick={() => plan?.zoomBy(0.8)} disabled={prefs.layout === "3d"} aria-label={t("plan.zoomOut")} title="{t('plan.zoomOut')} (−)"><Icon name="minus" /></button>
       <button class="tool" class:on={showDims} aria-pressed={showDims} onclick={() => (showDims = !showDims)} title={t("tool.dims")}><Icon name="dims" /><span>{t("tool.dims")}</span></button>
     </div>
     <div class="group minor">
