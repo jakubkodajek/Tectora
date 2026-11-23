@@ -3587,13 +3587,22 @@ mod tool_coverage {
     fn a_job_with_too_deep_unknown_keys_is_refused_with_its_code() {
         let mut s = server();
         let id = example(&mut s, "gable");
+        // A logged change, so the revert tools have one to undo (TEST-1303:
+        // they refuse the file, they do not "repair" it from the log).
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "AI note", "summary": "Note" }),
+        );
+        let ts = s.store.activity(&id).last().unwrap().ts_ms;
         let mut v = serde_json::to_value(s.store.load(&id).unwrap()).unwrap();
         let mut deep = json!([]);
         for _ in 0..40 {
             deep = Value::Array(vec![deep]);
         }
         v["crm"] = deep;
-        std::fs::write(s.store.dir.join(format!("{id}.tectora")), v.to_string()).unwrap();
+        let file = s.store.dir.join(format!("{id}.tectora"));
+        std::fs::write(&file, v.to_string()).unwrap();
         let log = s.store.activity(&id).len();
         for (tool, args) in [
             ("get_project", json!({ "id": id })),
@@ -3601,11 +3610,29 @@ mod tool_coverage {
                 "update_job",
                 json!({ "id": id, "notes": "x", "summary": "Notes" }),
             ),
+            ("revert_last_change", json!({ "id": id, "summary": "Undo" })),
+            (
+                "revert_last_change",
+                json!({ "id": id, "ts_ms": ts, "summary": "Undo" }),
+            ),
+            (
+                "revert_to",
+                json!({ "id": id, "ts_ms": ts, "summary": "Undo" }),
+            ),
+            (
+                "restore_offer_result",
+                json!({ "id": id, "ts_ms": ts, "summary": "Back" }),
+            ),
         ] {
             let e = s.call_tool(tool, &args).unwrap_err().to_string();
             assert!(
-                e.contains("too_many") && e.contains("nested too deep"),
+                e.contains("(too_many)") && e.contains("nested too deep"),
                 "{tool}: {e}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&file).unwrap(),
+                v.to_string(),
+                "{tool}"
             );
         }
         assert_eq!(s.store.activity(&id).len(), log);
