@@ -1575,6 +1575,36 @@ mod tests {
             let e: crate::store::ActivityEntry = serde_json::from_str(text.trim()).unwrap();
             assert_eq!(e.actor, RECEIVED_ENGINE_ACTOR, "{actor:?}");
         }
+        // The sender's own entries stay the user's, in any spelling as the
+        // one name (audit 2026-11-23 TEST-1006).
+        for actor in ["user", " User "] {
+            let (text, _) = received_history(line(actor).as_bytes()).unwrap();
+            let e: crate::store::ActivityEntry = serde_json::from_str(text.trim()).unwrap();
+            assert_eq!(e.actor.trim().to_ascii_lowercase(), USER_ACTOR, "{actor:?}");
+            assert_ne!(e.actor, RECEIVED_ENGINE_ACTOR, "{actor:?}");
+        }
+        // A received reason is held to what a write keeps: one line,
+        // no control or bidi characters, at most the summary cap.
+        let raw = format!(
+            "a\u{202e}b\n{}",
+            "x".repeat(crate::edit::MAX_SUMMARY_CHARS + 10)
+        );
+        let mut with_reason: serde_json::Value = serde_json::from_str(&line("claude")).unwrap();
+        with_reason["reason"] = serde_json::json!(raw);
+        let (text, _) = received_history(with_reason.to_string().as_bytes()).unwrap();
+        let e: crate::store::ActivityEntry = serde_json::from_str(text.trim()).unwrap();
+        let r = e.reason.expect("the reason is kept");
+        assert!(r.starts_with('a') && r.contains('b'), "{r:?}");
+        assert!(
+            !r.chars()
+                .any(|c| c.is_control() || ('\u{202a}'..='\u{202e}').contains(&c)),
+            "{r:?}"
+        );
+        assert!(
+            r.chars().count() <= crate::edit::MAX_SUMMARY_CHARS,
+            "{}",
+            r.len()
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
