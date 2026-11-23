@@ -454,6 +454,12 @@ case, and assert that it really came while the pointer was down.
   (UX-502; hold the answer until the sampling ends, never for a fixed
   time, TEST-706); a dialog's OK keeps the focus while it waits (UI-503); a
   dialog's own core checks run one after another (the dormer dialog).
+- An edit typed while Revert or the put-back of the offer's figures waits
+  for the core (another process holds the job's lock: an AI save that is
+  calculating) is kept on screen and in the file, with its autosave before
+  and after the core's answer; the status says saved only once it is
+  written (ERR-901, `app/e2e/audit-r10-ed.e2e.ts`). No key shortcut acts
+  while the job is still being read (HUNT-908).
 
 ## 16. Huge but valid jobs reach every view (@arch, @ui)
 

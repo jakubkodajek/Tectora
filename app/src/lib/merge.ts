@@ -25,6 +25,9 @@ function canon(v: Json): Json {
 
 const same = (a: Json, b: Json) => JSON.stringify(canon(a ?? null)) === JSON.stringify(canon(b ?? null));
 
+/** The two jobs are the same file to the store (key order, nulls and empty lists aside). */
+export const sameJob = <T>(a: T, b: T): boolean => same(a, b);
+
 export function merge3<T>(base: T, local: T, remote: T): T {
   return mergeValue(base, local, remote) as T;
 }
