@@ -1769,6 +1769,48 @@ mod tests {
         }
     }
 
+    /// Audit 2026-11-23 TEST-1302: objects inside objects, the usual shape
+    /// of foreign data, count as arrays do, and so do both in turn.
+    #[test]
+    fn deep_unknown_objects_are_refused_as_deep_arrays_are() {
+        let objects = |n: usize| {
+            let mut v = serde_json::json!({});
+            for _ in 1..n {
+                v = serde_json::json!({ "a": v });
+            }
+            v
+        };
+        let mixed = |n: usize| {
+            let mut v = serde_json::json!({});
+            for k in 1..n {
+                v = if k % 2 == 1 {
+                    serde_json::Value::Array(vec![v])
+                } else {
+                    serde_json::json!({ "a": v })
+                };
+            }
+            v
+        };
+        let mut p = crate::examples::find("gable").unwrap().project();
+        for (shape, chain) in [
+            ("objects", &objects as &dyn Fn(usize) -> serde_json::Value),
+            ("mixed", &mixed),
+        ] {
+            p.extra.insert("crm".into(), chain(MAX_EXTRA_DEPTH));
+            assert_eq!(p.extra_depth(), MAX_EXTRA_DEPTH, "{shape}");
+            assert_eq!(p.check_input(), Ok(()), "{shape}");
+            p.extra.insert("crm".into(), chain(MAX_EXTRA_DEPTH + 1));
+            assert_eq!(p.extra_depth(), MAX_EXTRA_DEPTH + 1, "{shape}");
+            let e = p.check_input().unwrap_err();
+            assert_eq!(e.code, "too_many", "{shape}");
+            assert!(e.message.contains("33 levels (at most 32)"), "{shape}: {e}");
+        }
+        // An object chain beside a short array: the deepest one counts.
+        p.extra.insert("crm".into(), serde_json::json!([1, 2]));
+        p.extra.insert("vendor".into(), objects(40));
+        assert_eq!(p.check_input().unwrap_err().code, "too_many");
+    }
+
     /// Audit 2026-11-23 ARCH-1202: JavaScript turns a key named `__proto__`
     /// into the object's prototype, so the core does not carry it: it is
     /// dropped from the unknown keys on every read, at any depth; other
