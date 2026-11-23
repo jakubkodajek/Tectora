@@ -8125,64 +8125,132 @@ mod tests {
         let _ = fs::remove_dir_all(&store.dir);
     }
 
+    /// Saves `next` (made on `base`) the way MCP's `save_onto_current`
+    /// does: checked against `base`, merged onto the current file on a
+    /// conflict and saved again.
+    fn save_like_mcp(store: &Store, id: &str, base: &Project, next: &Project, summary: &str) {
+        let (mut base, mut next) = (base.clone(), next.clone());
+        for _ in 0..5 {
+            match store
+                .save_as_checked(id, &next, "claude", summary, Some(&base))
+                .unwrap()
+            {
+                CheckedSave::Saved { .. } => return,
+                CheckedSave::Conflict { current } => {
+                    let value = |p: &Project| serde_json::to_value(p).unwrap();
+                    let merged =
+                        crate::merge::merge3(&value(&base), &value(&next), &value(&current))
+                            .expect("no overlapping change");
+                    next = serde_json::from_value(merged).unwrap();
+                    base = *current;
+                }
+            }
+        }
+        panic!("the AI save kept conflicting");
+    }
+
+    /// A job with the user's original and the AI's change A1 (a note),
+    /// with A1's time; A2 adds a customer onto A1.
+    fn ai_change_a1(store: &Store) -> (String, Project, Project, u64) {
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let mut a1 = p.clone();
+        a1.notes = "A1 note".into();
+        store
+            .save_as(Some(id.clone()), &a1, "claude", "A1: notes")
+            .unwrap();
+        let a1_ts = store.activity(&id).last().unwrap().ts_ms;
+        let mut a2 = a1.clone();
+        a2.job.customer = "A2 customer".into();
+        (id, a1, a2, a1_ts)
+    }
+
+    /// What holds after the AI's A2 and the user's Revert of A1, in either
+    /// order: A2's customer stays and A2 waits for the review. `revert` is
+    /// the press's answer.
+    fn assert_a2_survives(store: &Store, id: &str, revert: Result<Project, StoreError>) {
+        let log = store.activity(id);
+        let a2 = log
+            .iter()
+            .position(|e| e.summary == "A2: customer")
+            .expect("A2 logged");
+        let now = store.load(id).unwrap();
+        assert_eq!(now.job.customer, "A2 customer");
+        match revert {
+            Err(e) => {
+                // A2 came first: the press is stale.
+                assert_eq!(e.code(), "revert_stale", "{e}");
+                assert_eq!(now.notes, "A1 note");
+                assert_eq!(log.len(), 2, "nothing logged by the stale press");
+            }
+            Ok(_) => {
+                // The revert came first: A2 is the latest entry, merged
+                // onto the reverted file.
+                assert_eq!(
+                    a2,
+                    log.len() - 1,
+                    "{:?}",
+                    log.iter().map(|e| &e.summary).collect::<Vec<_>>()
+                );
+                assert_eq!(now.notes, "");
+            }
+        }
+        let pending = store.pending_review(id).expect("A2 waits for review");
+        assert!(pending.since_ts_ms <= log[a2].ts_ms);
+    }
+
+    /// Audit 2026-11-23 ERR-1002, fixed order (ARCH-1101): the AI's A2
+    /// lands first, so the Revert drawn on A1 is stale and writes nothing.
+    #[test]
+    fn a_revert_after_the_ai_saved_again_is_stale() {
+        let store = temp_store("revert-order-ai-first");
+        let (id, a1, a2, a1_ts) = ai_change_a1(&store);
+        save_like_mcp(&store, &id, &a1, &a2, "A2: customer");
+        let revert = store.revert_last_expecting(&id, USER_ACTOR, None, Some(a1_ts));
+        assert!(revert.is_err(), "the press is stale");
+        assert_a2_survives(&store, &id, revert);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-23 ERR-1002, fixed order (ARCH-1101): the Revert
+    /// lands first, and the AI's A2, made on A1, is merged onto the
+    /// reverted file: the note stays cleared and A2 waits for the review.
+    #[test]
+    fn an_ai_save_after_the_revert_is_merged_onto_it() {
+        let store = temp_store("revert-order-revert-first");
+        let (id, a1, a2, a1_ts) = ai_change_a1(&store);
+        let revert = store.revert_last_expecting(&id, USER_ACTOR, None, Some(a1_ts));
+        assert!(revert.is_ok(), "{:?}", revert.as_ref().err());
+        save_like_mcp(&store, &id, &a1, &a2, "A2: customer");
+        assert_a2_survives(&store, &id, revert);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
     /// Audit 2026-11-23 ERR-1002: the user's Revert of the AI's change A1
     /// waits behind another program holding the job's lock, and so does
     /// the AI's next save A2. However the two are let in, A2 is never
     /// undone under it nor skips the review: either A2 lands first and the
     /// press is stale, or the revert lands first and A2 comes after it.
+    /// The order is up to the threads: a smoke test; the two orders are
+    /// pinned by the two tests above. The AI saves as MCP does (checked,
+    /// merged on a conflict), not blindly (audit 2026-11-23 ARCH-1101).
     #[test]
     fn a_revert_waiting_behind_an_ai_save_never_lets_the_ai_change_skip_the_review() {
         for run in 0..3 {
             let store = temp_store(&format!("revert-race-{run}"));
-            let p = examples::find("gable").unwrap().project();
-            let id = store.save(None, &p).unwrap();
-            let mut a1 = p.clone();
-            a1.notes = "A1 note".into();
-            store
-                .save_as(Some(id.clone()), &a1, "claude", "A1: notes")
-                .unwrap();
-            let a1_ts = store.activity(&id).last().unwrap().ts_ms;
+            let (id, a1, a2, a1_ts) = ai_change_a1(&store);
             let held = store.lock(&id).unwrap().expect("a lock");
-            let (ai, revert) = std::thread::scope(|scope| {
-                let ai = scope.spawn(|| {
-                    let mut a2 = a1.clone();
-                    a2.job.customer = "A2 customer".into();
-                    store.save_as(Some(id.clone()), &a2, "claude", "A2: customer")
-                });
+            let revert = std::thread::scope(|scope| {
+                let ai = scope.spawn(|| save_like_mcp(&store, &id, &a1, &a2, "A2: customer"));
                 std::thread::sleep(std::time::Duration::from_millis(150));
                 let revert =
                     scope.spawn(|| store.revert_last_expecting(&id, USER_ACTOR, None, Some(a1_ts)));
                 std::thread::sleep(std::time::Duration::from_millis(150));
                 drop(held);
-                (ai.join().unwrap(), revert.join().unwrap())
+                ai.join().unwrap();
+                revert.join().unwrap()
             });
-            ai.unwrap();
-            let log = store.activity(&id);
-            let a2 = log
-                .iter()
-                .position(|e| e.summary == "A2: customer")
-                .expect("A2 logged");
-            let now = store.load(&id).unwrap();
-            assert_eq!(now.job.customer, "A2 customer");
-            match revert {
-                Err(e) => {
-                    assert_eq!(e.code(), "revert_stale", "{e}");
-                    assert_eq!(now.notes, "A1 note");
-                    assert_eq!(log.len(), 2, "nothing logged by the stale press");
-                }
-                Ok(_) => {
-                    // The revert came first: A2 is the latest entry.
-                    assert_eq!(
-                        a2,
-                        log.len() - 1,
-                        "{:?}",
-                        log.iter().map(|e| &e.summary).collect::<Vec<_>>()
-                    );
-                    assert_eq!(now.notes, "");
-                }
-            }
-            let pending = store.pending_review(&id).expect("A2 waits for review");
-            assert!(pending.since_ts_ms <= log[a2].ts_ms);
+            assert_a2_survives(&store, &id, revert);
             let _ = fs::remove_dir_all(&store.dir);
         }
     }
