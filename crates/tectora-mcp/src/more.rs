@@ -590,7 +590,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "get_review",
-            "description": "Whether the user has reviewed your changes to a design in the app. `pending` is null when every change is accepted or reverted; otherwise it gives the oldest unreviewed change (`since_ts_ms`), how many there are, who made them and how they change the figures (`differences`: roof_area, ridge_height, line:<code>, material:<n>, before → now). Only the user accepts changes, in the app.",
+            "description": "Whether the user has reviewed your changes to a design in the app. `pending` is null when every change is accepted or reverted; otherwise it gives the oldest unreviewed change (`since_ts_ms`), how many there are, their ts_ms (`steps`, oldest first: a change the user reverted by itself is no longer one of them, the others still wait), who made them and how they change the figures (`differences`: roof_area, ridge_height, line:<code>, material:<n>, before → now). Only the user accepts changes, in the app.",
             "inputSchema": schema(json!({ "id": id }), &["id"]),
         }),
         json!({
@@ -796,7 +796,9 @@ impl Server {
             "set_roof_options" => self.set_roof_options(args),
             "roof_helper" => self.roof_helper(args),
             "get_history" => self.load(args).map(|(id, _)| {
-                let since = self.store.pending_review(&id).map_or(u64::MAX, |r| r.since_ts_ms);
+                // The steps the banner lists: an AI step the user reverted
+                // by itself waits no more (audit 2026-11-23 UX-1501).
+                let steps = self.store.pending_review(&id).map(|r| r.steps).unwrap_or_default();
                 let recalculation = self.store.recalculation(&id).map(|r| r.entry_ts_ms);
                 json!(self
                     .store
@@ -805,7 +807,7 @@ impl Server {
                     .rev()
                     .map(|e| {
                         let mut v = json!(e.info());
-                        v["pending_review"] = json!(e.ts_ms >= since);
+                        v["pending_review"] = json!(steps.contains(&e.ts_ms));
                         if recalculation == Some(e.ts_ms) {
                             v["stored_result_recalculation"] = json!(true);
                         }
@@ -826,6 +828,7 @@ impl Server {
                         "since_ts_ms": s.pending.since_ts_ms,
                         "count": s.pending.count,
                         "actors": s.pending.actors,
+                        "steps": s.pending.steps,
                         "differences": s.differences,
                     })),
                 }))
@@ -3351,6 +3354,39 @@ mod tool_coverage {
     fn call(s: &mut Server, name: &str, args: Value) -> Value {
         s.call_tool(name, &args)
             .unwrap_or_else(|e| panic!("{name}: {e}"))
+    }
+
+    /// Audit 2026-11-23 UX-1501: the user's Revert of the latest of three
+    /// AI steps leaves the other two waiting, and `get_review` and
+    /// `get_history` say so to the AI.
+    #[test]
+    fn get_review_keeps_the_steps_the_user_did_not_revert() {
+        use tectora_core::store::USER_ACTOR;
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let id = s.store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        for (field, value) in [("notes", "A1"), ("customer", "A2"), ("address", "A3")] {
+            call(
+                &mut s,
+                "update_job",
+                json!({ "id": id, field: value, "summary": value }),
+            );
+        }
+        let log = s.store.activity(&id);
+        let (a1, a2) = (log[1].ts_ms, log[2].ts_ms);
+        s.store.revert_last(&id, USER_ACTOR, None).unwrap();
+        let review = call(&mut s, "get_review", json!({ "id": id }));
+        assert_eq!(review["pending"]["count"], 2, "{review}");
+        assert_eq!(review["pending"]["steps"], json!([a1, a2]));
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let waiting: Vec<bool> = history
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["pending_review"].as_bool().unwrap())
+            .collect();
+        // Newest first: the revert, A3 (reverted), A2, A1, the creation.
+        assert_eq!(waiting, [false, false, true, true, false]);
     }
 
     fn example(s: &mut Server, example_id: &str) -> String {

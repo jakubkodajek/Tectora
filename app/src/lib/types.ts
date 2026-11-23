@@ -419,6 +419,8 @@ export interface ReviewStatus {
   since_ts_ms: number;
   count: number;
   actors: string[];
+  /** The times of the AI steps waiting for review, oldest first (store.rs `PendingReview::steps`): a step the user reverted by itself is not one (UX-1501). Absent from an older bridge. */
+  steps?: number[];
   before: Project | null;
   accepted_ms: number;
   /** Figures before the pending changes against now; null when unknown. */
@@ -435,6 +437,8 @@ export interface ActivityItem extends ActivityInfo {
   restores?: number;
   /** The AI's reason of a revert or a put-back, as it ends the summary (store.rs `ActivityEntry::reason`, HUNT-904). */
   reason?: string;
+  /** A later revert undid it (store.rs `undone_by`): muted in the history, and no Revert is drawn on it (UX-1505, UI-1501). */
+  undone?: boolean;
 }
 
 /**

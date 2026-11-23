@@ -1072,6 +1072,8 @@ const cs: Dict = {
   "editor.outsideUnreadable": "Jiný program zakázku mezitím změnil tak, že ji Tectora nepřečte. Pokud budete dál upravovat, uloží se přes ni verze otevřená zde. Chcete-li soubor toho programu zachovat, zavřete zakázku bez dalších úprav.",
   "editor.outsideReplaced": "Soubor, který zapsal jiný program, byl nahrazen verzí otevřenou zde.",
   "dock.resultsWarned": "Výsledky: střechu zkontrolujte",
+  "ai.undone": "vráceno",
+  "ai.revertedOne": "Vrácena změna AI: {s}",
 };
 
 const sk: Dict = {
@@ -2135,6 +2137,8 @@ const sk: Dict = {
   "editor.outsideUnreadable": "Iný program zákazku medzitým zmenil tak, že ju Tectora neprečíta. Ak budete ďalej upravovať, uloží sa cez ňu verzia otvorená tu. Ak chcete súbor toho programu zachovať, zatvorte zákazku bez ďalších úprav.",
   "editor.outsideReplaced": "Súbor, ktorý zapísal iný program, bol nahradený verziou otvorenou tu.",
   "dock.resultsWarned": "Výsledky: strechu skontrolujte",
+  "ai.undone": "vrátené",
+  "ai.revertedOne": "Vrátená zmena AI: {s}",
 };
 
 const en: Dict = {
@@ -3198,6 +3202,8 @@ const en: Dict = {
   "editor.outsideUnreadable": "Another program changed this job into a file Tectora cannot read. If you keep editing, the version open here is saved over it. To keep that program's file, leave the job without further edits.",
   "editor.outsideReplaced": "The file another program wrote was replaced by the version open here.",
   "dock.resultsWarned": "Results: check this roof",
+  "ai.undone": "reverted",
+  "ai.revertedOne": "AI change reverted: {s}",
 };
 
 const de: Dict = {
@@ -4261,6 +4267,8 @@ const de: Dict = {
   "editor.outsideUnreadable": "Ein anderes Programm hat den Auftrag so geändert, dass Tectora ihn nicht lesen kann. Wenn Sie weiter bearbeiten, wird er mit der hier geöffneten Fassung überschrieben. Um die Datei des anderen Programms zu behalten, verlassen Sie den Auftrag ohne weitere Änderungen.",
   "editor.outsideReplaced": "Die Datei des anderen Programms wurde durch die hier geöffnete Fassung ersetzt.",
   "dock.resultsWarned": "Ergebnisse: Dach prüfen",
+  "ai.undone": "verworfen",
+  "ai.revertedOne": "KI-Änderung verworfen: {s}",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };

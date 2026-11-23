@@ -595,3 +595,19 @@ component calls `entrySummary`); `app/e2e/audit-r15-kinds.e2e.ts`.
   received entries): the history line counts changes, the "reverted too"
   notice counts AI entries only, and a revert that writes nothing reports 0
   (HUNT-1401, TEST-1401, TEST-1402).
+- A Revert button is drawn on the entry the core will undo (store.rs
+  `undone_by`, the one walk for `latest_undone`, the review's steps,
+  `undone_ai` and `ActivityItem.undone`): never on an AI's own revert, and
+  after A1 A2 Ar(A2) on A1; the user's Revert of one of several AI steps
+  keeps the others in review (UX-1501, UX-1505, UI-1501). A revert whose
+  `undid_from` names no entry (a received log, a hand-edited one) is read
+  by time and blocks nothing before it (HUNT-1501, DANGLING). The AI's
+  words inside a revert sentence are quoted unless the undone entry is
+  found and is Tectora's own (ARCH-1501). Guards: store tests
+  `a_users_revert_of_one_ai_step_keeps_the_review_of_the_others`,
+  `the_latest_change_and_the_undone_marks_follow_one_walk`,
+  `a_revert_naming_no_entry_is_read_by_time`; bundle tests
+  `a_received_log_from_a_clock_ahead_keeps_its_links`,
+  `a_received_revert_whose_version_was_left_out_still_leaves_the_change_before_it`;
+  MCP `get_review_keeps_the_steps_the_user_did_not_revert`;
+  `app/e2e/audit-r16-review.e2e.ts`.

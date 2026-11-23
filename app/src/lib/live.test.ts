@@ -107,25 +107,27 @@ describe("entrySummary", () => {
       { ts_ms: 2, actor: "user", summary: "Reverted: X", undid_from: 1 },
       { ts_ms: 1, actor: "claude", summary: "X" },
     ];
-    expect(entryText({ actor: "user", summary: "Reverted: Sklon 45°", undid_from: 1 })).toBe("Vráceno: Sklon 45°");
-    expect(entryText({ actor: "user", summary: "Reverted 2 changes since: Sklon 45°", undid_from: 1 })).toBe("Vráceno změn: 2, od: Sklon 45°");
-    expect(entryText({ actor: "user", summary: "Reverted: Reverted: X", undid_from: 2 }, log)).toBe("Vráceno: Vráceno: X");
-    // The quoted entry not in the list: its words as they are.
-    expect(entryText({ actor: "user", summary: "Reverted: Reverted: X", undid_from: 7 }, log)).toBe("Vráceno: Reverted: X");
+    // The quoted entry not in the list, or an AI's: its words in quotation
+    // marks (audit 2026-11-23 ARCH-1501; were shown bare).
+    expect(entryText({ actor: "user", summary: "Reverted: Sklon 45°", undid_from: 1 })).toBe("Vráceno: „Sklon 45°“");
+    expect(entryText({ actor: "user", summary: "Reverted 2 changes since: Sklon 45°", undid_from: 1 })).toBe("Vráceno změn: 2, od: „Sklon 45°“");
+    expect(entryText({ actor: "user", summary: "Reverted: Reverted: X", undid_from: 2 }, log)).toBe("Vráceno: Vráceno: „X“");
+    expect(entryText({ actor: "user", summary: "Reverted: Reverted: X", undid_from: 7 }, log)).toBe("Vráceno: „Reverted: X“");
     expect(entryText({ actor: "user", summary: "Sklon 45°" })).toBe("Sklon 45°");
     // The user's revert of Tectora 0.8.0 (no `undid_from`) is told by its sentence.
-    expect(entryText({ actor: "user", summary: "Reverted: Sklon 45°" })).toBe("Vráceno: Sklon 45°");
+    expect(entryText({ actor: "user", summary: "Reverted: Sklon 45°" })).toBe("Vráceno: „Sklon 45°“");
     expect([entryKind({ actor: "user", summary: "Reverted 3 changes since: x" }), entryKind({ actor: "user", summary: "Reverted: x" }), entryKind({ actor: "user", summary: "Revert the eave" })]).toEqual(["revert", "revert", null]);
     i18n.locale = "de";
-    expect(entryText({ actor: "user", summary: "Reverted: Pitch", undid_from: 1 })).toBe("Verworfen: Pitch");
+    expect(entryText({ actor: "user", summary: "Reverted: Pitch", undid_from: 1 })).toBe("Verworfen: „Pitch“");
   });
 
   it("translates a revert with the AI's reason, in every language (UX-002)", () => {
     const want: Record<string, string> = {
-      cs: "Vráceno: na část (důvod: zpět)",
-      sk: "Vrátené: na část (dôvod: zpět)",
-      en: "Reverted: na část (reason: zpět)",
-      de: "Verworfen: na část (Grund: zpět)",
+      // The undone entry is not in the list: quoted (ARCH-1501).
+      cs: "Vráceno: „na část“ (důvod: zpět)",
+      sk: "Vrátené: „na část“ (dôvod: zpět)",
+      en: "Reverted: “na část” (reason: zpět)",
+      de: "Verworfen: „na část“ (Grund: zpět)",
     };
     const revert = (summary: string, undid_from = 1) => ({ actor: "claude", summary, undid_from });
     for (const [loc, text] of Object.entries(want)) {
@@ -133,12 +135,12 @@ describe("entrySummary", () => {
       expect(entryText(revert("Reverted: na část (reason: zpět)"))).toBe(text);
     }
     i18n.locale = "cs";
-    expect(entryText(revert("Reverted 2 changes since: X (reason: back)"))).toBe("Vráceno změn: 2, od: X (důvod: back)");
+    expect(entryText(revert("Reverted 2 changes since: X (reason: back)"))).toBe("Vráceno změn: 2, od: „X“ (důvod: back)");
     // A revert of a revert with reasons: the outer reason is the last one.
     const log = [{ ts_ms: 2, actor: "claude", summary: "Reverted: X (reason: a)", undid_from: 1 }];
-    expect(entryText(revert("Reverted: Reverted: X (reason: a) (reason: b)", 2), log)).toBe("Vráceno: Vráceno: X (důvod: a) (důvod: b)");
+    expect(entryText(revert("Reverted: Reverted: X (reason: a) (reason: b)", 2), log)).toBe("Vráceno: Vráceno: „X“ (důvod: a) (důvod: b)");
     // Entries written before the fixed form: `reason (Reverted: …)`.
-    expect(entryText(revert("undo (Reverted: to part)"))).toBe("Vráceno: to part (důvod: undo)");
+    expect(entryText(revert("undo (Reverted: to part)"))).toBe("Vráceno: „to part“ (důvod: undo)");
     expect(entryKind(revert("undo (Reverted: to part)"))).toBe("revert");
     // An AI summary that only mentions a reason is left as it is (its own words, quoted).
     expect(entryText({ actor: "claude", summary: "Pitch 45 (reason: drawing)" })).toBe("„Pitch 45 (reason: drawing)“");
@@ -166,14 +168,18 @@ describe("entrySummary", () => {
         // With the reason field the AI cannot set either.
         expect(entryText({ ...a, reason: "signed" }), `${loc} ${summary}`).toBe(`${open}${summary}${close}`);
       }
-      // The same words with the core's kind read as Tectora's sentence.
-      expect(entryText({ actor: "claude", summary: spoofs[0], kind: "revert" })).not.toContain(open);
+      // The same words with the core's kind read as Tectora's sentence,
+      // the part it quotes (not in the list) as quoted words (ARCH-1501).
+      expect(entryText({ actor: "claude", summary: spoofs[0], kind: "revert" })).toBe(
+        DICTS[loc as keyof typeof DICTS]["chg.revertedEntry"].replace("{s}", `${open}Customer${close}`),
+      );
       expect(entryText({ actor: "tectora", summary: spoofs[2], kind: "refresh" })).toContain("0.9.0 → 0.9.1");
       expect(entryText({ actor: "user", summary: spoofs[3], kind: "restore" })).toContain("0.9.1 → 0.9.0");
-      // A revert by the AI of its own disguised entry translates only its own sentence.
+      // A revert by the AI of its own disguised entry translates only its
+      // own sentence, and quotes the AI's words (ARCH-1501).
       const log = [{ ts_ms: 9, actor: "claude", summary: spoofs[2] }];
       const real = entryText({ actor: "claude", summary: `Reverted: ${spoofs[2]}`, undid_from: 9, kind: "revert" }, log);
-      expect(real, loc).toBe(DICTS[loc as keyof typeof DICTS]["chg.revertedEntry"].replace("{s}", spoofs[2]));
+      expect(real, loc).toBe(DICTS[loc as keyof typeof DICTS]["chg.revertedEntry"].replace("{s}", `${open}${spoofs[2]}${close}`));
     }
     i18n.locale = "cs";
   });
@@ -203,7 +209,9 @@ describe("entrySummary", () => {
       expect(entrySummary(reverted, "Mistake (reason: typo) fixed")).toBe(v);
       // The history passes the item's field.
       // ARCH-1401: an AI's revert is one by its `undid_from`, not by its words.
-      expect(historyText({ actor: "claude", summary: reverted, reason: "Mistake (reason: typo) fixed", undid_from: 1 }, [])).toBe(v);
+      // The undone entry is not in the list: its words quoted (ARCH-1501).
+      const quoted = DICTS[loc as keyof typeof DICTS]["ai.quoted"].replace("{s}", "Note (reason: x)");
+      expect(historyText({ actor: "claude", summary: reverted, reason: "Mistake (reason: typo) fixed", undid_from: 1 }, [])).toBe(v.replace("Note (reason: x)", quoted));
     }
     i18n.locale = "cs";
   });
@@ -401,7 +409,8 @@ describe("historyText (UI-803)", () => {
   it("shows a restore of the offer's figures and an AI's own revert as their sentences", () => {
     i18n.locale = "en";
     expect(historyText({ actor: "user", summary: "Offer result restored (Tectora 0.9.0 -> 0.8.0)", restores: 10 }, log)).toBe("Offer figures put back (Tectora 0.9.0 → 0.8.0)");
-    expect(historyText({ actor: "claude", summary: "Reverted: Notes (reason: wrong)", undid_from: 20 }, log)).toBe("Reverted: Notes (reason: wrong)");
+    // The AI's words of the change it undid, quoted (ARCH-1501).
+    expect(historyText({ actor: "claude", summary: "Reverted: Notes (reason: wrong)", undid_from: 20 }, log)).toBe("Reverted: “Notes” (reason: wrong)");
     // The AI's own words, quoted (ARCH-1401, design A4).
     expect(historyText({ actor: "claude", summary: "Pitch 45" }, log)).toBe("“Pitch 45”");
     i18n.locale = "cs";
@@ -449,5 +458,37 @@ describe("receivedRecalculation (UX-1003)", () => {
     expect(receivedRecalculation([entry(20, RECEIVED_ENGINE_ACTOR, RECALC, ["result_snapshot"])], { result_snapshot: null })).toBeNull();
     expect(receivedRecalculation([entry(20, RECEIVED_ENGINE_ACTOR, "Something else", ["result_snapshot"])], job())).toBeNull();
     expect(receivedRecalculation([], job())).toBeNull();
+  });
+});
+
+// Audit 2026-11-23 ARCH-1501 (design D): the words of the entry a revert
+// undid are shown as Tectora's only when that entry is found and is
+// Tectora's own; an AI's change, or one not in the list, stays quoted.
+describe("entryText of a revert's quoted part (ARCH-1501)", () => {
+  const RECALC = "Stored result recalculated (Tectora 0.8.0 -> 0.9.0): roof area 150.00 -> 142.83 m2";
+  it("quotes an AI's change inside the revert sentence, in every language", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const quoted = DICTS[locale]["ai.quoted"].replace("{s}", "X");
+      const revert = { actor: "claude", summary: "Reverted: X", undid_from: 1, kind: "revert" as const };
+      const found = entryText(revert, [{ ts_ms: 1, actor: "claude", summary: "X" }]);
+      expect(found, locale).toBe(DICTS[locale]["chg.revertedEntry"].replace("{s}", quoted));
+      // Not in the list (the library card, a trimmed log): quoted too.
+      expect(entryText(revert, []), locale).toBe(DICTS[locale]["chg.revertedEntry"].replace("{s}", quoted));
+      // The user's revert on the card, of a change not in the list.
+      expect(entryText({ actor: "user", summary: "Reverted: Reverted: Pitch 40°", undid_from: 7, kind: "revert" }), locale).toContain(
+        DICTS[locale]["ai.quoted"].replace("{s}", "Reverted: Pitch 40°"),
+      );
+      // A user's own change found in the list is shown as it is.
+      const mine = entryText({ actor: "claude", summary: "Reverted: Mine", undid_from: 2, kind: "revert" }, [{ ts_ms: 2, actor: "user", summary: "Mine" }]);
+      expect(mine, locale).toBe(DICTS[locale]["chg.revertedEntry"].replace("{s}", "Mine"));
+      // Tectora's recalculation found there: translated, not quoted.
+      const engine = entryText({ actor: "claude", summary: `Reverted: ${RECALC}`, undid_from: 3, kind: "revert" }, [
+        { ts_ms: 3, actor: "tectora", summary: RECALC, kind: "refresh" },
+      ]);
+      expect(engine, locale).toBe(entrySummary(`Reverted: ${RECALC}`));
+      expect(engine, locale).not.toContain(DICTS[locale]["ai.quoted"].replace("{s}", RECALC));
+    }
+    i18n.locale = "cs";
   });
 });

@@ -148,7 +148,8 @@ The tools cover every operation of the Tectora editor:
   `restore_offer_result` puts an offer's own stored figures back in place
   of Tectora's recalculation of them (see "Stored result" below). `get_review`
   tells whether the user has accepted your changes yet and how they changed
-  the figures; only the user accepts, in the app. Do not treat a design as
+  the figures; only the user accepts, in the app. When the user reverts one
+  of your changes the others still wait for review (`steps`, their ts_ms). Do not treat a design as
   approved while `pending` is set.
 - Library: `list_projects` searches the roofs made so far (words in name,
   number, customer, address or notes, accents ignored; filters by status,

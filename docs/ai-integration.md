@@ -132,7 +132,9 @@ stay a `folder_request` the user allows or keeps.
 - The changes are computed per item (`tectora_core::diff`): one entry per
   dormer, chimney, window, opening, hand-drawn line or face (`item` index),
   plus flat roof, material names, wall material and the stored result.
-- Accept / Revert all act on every pending step at once. The review state is
+- Accept / Revert all act on every pending step at once. The user's Revert
+  of one step in the AI tab takes only that step out of the review; the
+  others still wait (`PendingReview.steps`, owner decision of round 16). The review state is
   kept in the library (`.activity/<id>.review.json`), so it survives a restart
   and the agent can read it with `get_review`; only the user accepts.
   The AI tab keeps the full history.
