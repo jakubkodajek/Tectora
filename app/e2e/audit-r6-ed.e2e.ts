@@ -499,17 +499,23 @@ test.describe("round-6 audit: a job at the limits in the plan (UI-501, TEST-501)
     const view3d = page.locator(".view .host").first();
     await expect(view3d).toHaveAttribute("data-builds", /\d+/, { timeout: 30_000 });
     // The scene is built once for the job and once more when its result
-    // arrives, which on 200 buildings can land after the results panel; take
-    // the count once it has stood still, then the clicks must not move it.
+    // arrives, which on 200 buildings can land after the results panel
+    // (about 5 s after the first build); take the count once the result is
+    // in and the count has stood still for two intervals in a row (one
+    // 1.5 s window could fall between the two builds), then the clicks must
+    // not move it.
+    await expect(page.getByTestId("status-area")).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByTestId("status-area")).not.toHaveAttribute("aria-busy", "true", { timeout: 60_000 });
     let builds = await view3d.getAttribute("data-builds");
+    let stillFor = 0;
     await expect
       .poll(
         async () => {
           await page.waitForTimeout(1500);
           const now = await view3d.getAttribute("data-builds");
-          const still = now === builds;
+          stillFor = now === builds ? stillFor + 1 : 0;
           builds = now;
-          return still;
+          return stillFor >= 2;
         },
         { timeout: 60_000, intervals: [0] },
       )
