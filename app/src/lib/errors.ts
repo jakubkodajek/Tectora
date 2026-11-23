@@ -77,6 +77,7 @@ const KNOWN = new Set([
   "no_such_change",
   "revert_conflict",
   "revert_stale",
+  "busy",
   "save_conflict",
   "not_saved",
   "unknown_example",

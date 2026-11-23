@@ -33,7 +33,7 @@
   import { keptSelection } from "./selection";
   import { fitlabels } from "./fitlabels";
   import { describeCalcError, describeError, describeProblem, toAppError, type AppError, type Described } from "./errors";
-  import { info, notify, notifyError, notifyRefusal, notifyWarning } from "./notify.svelte";
+  import { dismiss, info, notify, notifyError, notifyRefusal, notifyWarning } from "./notify.svelte";
   import { nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, parseDormer, roofHeightAt, type DormerParams } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
@@ -52,14 +52,14 @@
   import { roofState } from "./results";
   import { isTyping, releaseLeaveGuard, setLeaveGuard } from "./leave";
   import { PendingEdits, exclusive } from "./inflight";
-  import { DragSession, inertBut, type Drag, type DragState } from "./dragsession";
+  import { CoreAction, DragSession, closedForInput, inertBut, type Drag, type DragState } from "./dragsession";
   import { m2, num } from "./format";
   import { i18n, t } from "./i18n.svelte";
   import { hscroll } from "./hscroll";
   import { partLabel } from "./partname";
   import { exportTitle } from "./exportlist";
   import { tabIds, tablist } from "./tabs";
-  import { actorName, entrySummary, isFresh, live, liveText, pillText, refreshedNotice } from "./live.svelte";
+  import { actorName, entrySummary, isFresh, live, liveText, pillText, receivedRecalculation, refreshedNotice } from "./live.svelte";
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
   import type { ActivityItem, Arc, HelperRequest, Recalculation, RefreshedEntry, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
   import { GABLE_PITCH, buildingHeight, emptyProject, isAi, isGable, isMarker } from "./types";
@@ -487,7 +487,7 @@
    * change detection to read; the drop saves anyway (TEST-505).
    */
   function autosave() {
-    if (dragging()) saveTimer = setTimeout(autosave, 500);
+    if (inputClosed()) saveTimer = setTimeout(autosave, 500);
     else void save();
   }
 
@@ -684,6 +684,11 @@
       drag.defer("reload", reloadAfterDrag);
       return;
     }
+    if (!initial && reviewing.active) {
+      // The same during a review action: its answer is the job (design A1).
+      reviewing.defer("reload", reloadAfterDrag);
+      return;
+    }
     const gen = saveGen;
     // The recalculation this open made, until the notice is shown: an editor
     // left before that keeps it for the next editor of the job (ERR-902).
@@ -735,6 +740,10 @@
         drag.defer("reload", reloadAfterDrag);
         return;
       }
+      if (!initial && reviewing.active) {
+        reviewing.defer("reload", reloadAfterDrag);
+        return;
+      }
       // Indices in an open menu refer to the old project.
       menu = null;
       // An external edit while local edits are not saved yet (waiting for
@@ -770,7 +779,7 @@
         // Said once, as a warning naming the job (UX-901).
         const name = project?.name.trim();
         void warned?.then((ws) => {
-          if (!destroyed) ws.forEach((w) => notifyWarning(w, name ? t("snap.titleOf", { name }) : t("snap.title")));
+          if (!destroyed) ws.forEach((w) => ownToasts.add(notifyWarning(w, name ? t("snap.titleOf", { name }) : t("snap.title"))));
         });
       } else {
         // External change (AI agent, CLI): keep it undoable and show it.
@@ -802,11 +811,20 @@
   /** The history entry the AI tab opens (the recalculation notice's button). */
   let shownEntry = $state<number | null>(null);
 
+  /**
+   * The notices of this job the editor showed (the recalculation, load
+   * warnings): they name the job and close with the editor, so they never
+   * stand in the next job's editor (audit 2026-11-23 UI-1002).
+   */
+  const ownToasts = new Set<number>();
+
   /** One neutral notice that opening the job recalculated its stored result, with the way to the old figures. */
   function noticeRecalculated(entry: RefreshedEntry) {
-    notify({
+    const name = project?.name.trim();
+    ownToasts.add(notify({
       kind: "info",
-      title: refreshedNotice(entry.summary),
+      title: name ? t("snap.titleOf", { name }) : t("snap.title"),
+      message: refreshedNotice(entry.summary),
       action: {
         label: t("snap.refreshedShow"),
         run: () => {
@@ -818,7 +836,7 @@
           shownEntry = entry.entry_ts_ms;
         },
       },
-    });
+    }));
   }
 
   /**
@@ -829,6 +847,8 @@
    * at once.
    */
   const recalculatedResult = $derived(recalculation && project?.result_snapshot?.taken_ms === recalculation.taken_ms ? recalculation : null);
+  /** A received job whose sender's engine recalculated its stored result (UX-1003): told on the card, without the put-back. */
+  const receivedResult = $derived(recalculatedResult ? null : receivedRecalculation(activity, project));
 
   let dockEl: HTMLElement | undefined = $state();
   /** A text field in the side panel has the focus. */
@@ -841,7 +861,7 @@
   function busy(): boolean {
     if ((drawing?.length ?? 0) > 0 || placing !== false || manualDraft.length > 0) return true;
     // A drag from its press on, also a corner's (ERR-601).
-    if (drag.active || menu) return true;
+    if (drag.active || reviewing.active || menu) return true;
     return isTyping(document.activeElement);
   }
 
@@ -888,6 +908,7 @@
   let destroyed = false;
   onDestroy(() => {
     destroyed = true;
+    for (const toast of ownToasts) dismiss(toast);
     unlisten?.();
     cutDrag();
     releaseLeaveGuard(leaveGuard);
@@ -904,49 +925,69 @@
   const restoreOffer = (entryTs: number) => reviewAction(() => restoreOfferNow(entryTs));
 
   /**
-   * Takes in the job the core wrote for a Revert or a put-back (`p`) as an
-   * outside save, like `load(false)` does: what the user changed while the
-   * call was out (it can wait seconds behind another writer's lock) stays,
-   * merged onto `p`, and is saved next; only when nothing was changed is the
-   * job "Saved" (audit ERR-901). `base` is the file as last read or written
-   * before the call: a save that lands during the call is then merged too,
-   * not taken for the core's own change.
+   * Takes in the job the core wrote for a Revert or a put-back (`p`): the
+   * job is replaced by it as it is. Nothing local can be merged into it,
+   * as the editor took no edit while the call was out (`reviewing`, design
+   * A1; owner decision 2026-11-23, retracting the round-10 merge of
+   * ERR-901, which lost or resurrected edits: HUNT-1001, UX-1001, UX-1002,
+   * ERR-1004). Edits under way, dialogs and the selection follow their
+   * items (`swapOutside`); `base` is the file as last read or written
+   * before the call.
    */
   function applyCoreAnswer(base: string | null, p: Project) {
-    const from = base ? (JSON.parse(base) as Project) : null;
-    const next = from && project ? merge3(from, plain(project), p) : p;
-    swapOutside(from, p, next);
+    swapOutside(base ? (JSON.parse(base) as Project) : null, p, p);
     lastSaved = JSON.stringify(p);
-    if (sameJob(next, p)) saveState = "saved";
-    else scheduleSave();
+    saveState = "saved";
   }
 
-  async function restoreOfferNow(entryTs: number) {
-    // Edits not on disk yet stay: the core changes the stored result of the file only.
+  /**
+   * Revert, Revert all and the put-back of the offer's figures: a short
+   * transaction like a drag (dragsession.ts `CoreAction`). A value being
+   * typed is stored and the job saved first; then, until the answer is in,
+   * keys, fields, bar buttons and plan presses are refused, the core's
+   * answers to earlier edits wait, and the status bar says so. The core
+   * waits for the job's lock a few seconds at most and answers `busy`,
+   * having changed nothing: the button stays and a short note says why.
+   */
+  async function reviewTransaction(call: () => Promise<Project>, after: (p: Project) => void | Promise<void>) {
     commitFocused();
     await tick();
-    if (saveState !== "saved" && !(await save())) return;
-    try {
-      clearTimeout(saveTimer);
-      // A read of the file that runs across this write may be older than it:
-      // it is read again instead of passing for an outside change that puts
-      // the recalculated result back (as for the editor's own saves).
-      saveGen++;
-      const base = lastSaved;
-      const p = await api.restoreOfferResult(id, entryTs).finally(() => saveGen++);
-      await drag.settled();
-      applyCoreAnswer(base, p);
-      // An editor step like any other: Undo brings the recalculated result
-      // back, and the card and the history then say so again (UI-802).
-      pushHistory();
-      recalcFor = p.result_snapshot?.taken_ms ?? null;
-      recalc();
-      await refreshActivity();
-    } catch (e) {
-      // `revert_stale`: the stored result is another one by now; the list is read again.
-      notifyError(e, "revert");
-      await refreshActivity();
-    }
+    await reviewing.run(async () => {
+      if (saveState !== "saved" && !(await save())) return;
+      try {
+        clearTimeout(saveTimer);
+        // A read of the file that runs across this write may be older than
+        // it: it is read again instead of passing for an outside change
+        // (as for the editor's own saves).
+        saveGen++;
+        const base = lastSaved;
+        const p = await call().finally(() => saveGen++);
+        if (destroyed) return;
+        await drag.settled();
+        applyCoreAnswer(base, p);
+        recalcFor = p.result_snapshot?.taken_ms ?? null;
+        // An editor step like any other: Undo brings the job before it back (UI-802).
+        pushHistory();
+        closeStaleDialogs();
+        recalc();
+        await after(p);
+        await refreshActivity();
+      } catch (e) {
+        if (destroyed) return;
+        // `busy`: another writer held the job's lock, nothing changed.
+        // `revert_stale`: the job is another one by now. The list is read again.
+        notifyError(e, "revert");
+        await refreshActivity();
+      }
+    });
+  }
+
+  /** Puts the offer's own figures back in place of the recalculation logged at `entryTs`. */
+  function restoreOfferNow(entryTs: number) {
+    return reviewTransaction(
+      () => api.restoreOfferResult(id, entryTs),
+      () => {},
+    );
   }
 
   async function acceptNow() {
@@ -974,32 +1015,19 @@
     // (the user asked for all), and said so (DR-003).
     const extra = all && steps > 1 ? pendingList.length - steps : 0;
     // Edits not on disk yet would be lost: the store keeps only the edits in
-    // the file, merging the revert onto them (ERR-001).
-    commitFocused();
-    await tick();
-    if (saveState !== "saved" && !(await save())) return;
-    try {
-      clearTimeout(saveTimer);
-      const oldest = pendingList[pendingList.length - 1];
-      // The latest change is undone only if it still is the entry the button was drawn on (ERR-801).
-      // As above: a read across this write is read again.
-      saveGen++;
-      const base = lastSaved;
-      const p = await (all && oldest ? api.revertChanges(id, oldest.ts_ms) : api.revertLastChange(id, expectTs)).finally(() => saveGen++);
-      await drag.settled();
-      applyCoreAnswer(base, p);
-      recalcFor = p.result_snapshot?.taken_ms ?? null;
-      pushHistory();
-      closeStaleDialogs();
-      selection = null;
-      recalc();
-      focusChange = null;
-      if (extra > 0) info(t("review.revertedMore", { n: extra }));
-      await refreshActivity();
-    } catch (e) {
-      notifyError(e, "revert");
-      await refreshActivity();
-    }
+    // the file, merging the revert onto them (ERR-001); the transaction
+    // saves them first.
+    await reviewTransaction(
+      () => {
+        const oldest = pendingList[pendingList.length - 1];
+        // The latest change is undone only if it still is the entry the button was drawn on (ERR-801).
+        return all && oldest ? api.revertChanges(id, oldest.ts_ms) : api.revertLastChange(id, expectTs);
+      },
+      () => {
+        focusChange = null;
+        if (extra > 0) info(t("review.revertedMore", { n: extra }));
+      },
+    );
   }
 
   /**
@@ -1366,7 +1394,7 @@
 
   /** A corner's coordinates typed in the wall bar: the corner moves there, as a drop would put it. */
   function setCorner(part: number, v: number, x: number, y: number) {
-    if (!project || dragging()) return;
+    if (!project || inputClosed()) return;
     const es = project.parts[part]?.edges;
     if (!es?.[v] || !Number.isFinite(x) || !Number.isFinite(y)) return;
     const p = es[v].start;
@@ -1397,7 +1425,7 @@
   }
 
   function insertVertex(part: number, edge: number, x: number, y: number) {
-    if (!project || dragging()) return;
+    if (!project || inputClosed()) return;
     const es = project.parts[part].edges;
     const copy: EdgeDef = { ...$state.snapshot(es[edge]), start: { x, y }, half_hip: null, direction_rad: null };
     es.splice(edge + 1, 0, copy);
@@ -1790,7 +1818,7 @@
    * opening, the bar's first field for a hand-drawn line or face.
    */
   function openProperties(it: ItemRef) {
-    if (!project || dragging() || !itemExists(project, it)) return;
+    if (!project || inputClosed() || !itemExists(project, it)) return;
     selectItem(it);
     if (it.kind === "dormer") editDormer();
     else if (it.kind === "chimney" || it.kind === "window" || it.kind === "hole") {
@@ -1846,16 +1874,29 @@
   /** A drag is open: pressed, moving, or its drop still with the core. */
   const dragging = () => drag.active;
   /**
+   * Revert, Revert all or the put-back of the offer's figures is with the
+   * core: like a drag, the only writer of the job until its answer is in
+   * (dragsession.ts `CoreAction`, design A1).
+   */
+  const reviewing = new CoreAction(
+    () => jobEdits.pause(),
+    (on) => (reviewOut = on),
+  );
+  let reviewOut = $state(false);
+  /** The user's input is refused now: a drag is open or a review action is out (one predicate for every refusal). */
+  const inputClosed = () => closedForInput(drag, reviewing);
+  /**
    * The editor is closed for the user's input: a drag is the only writer
    * of the job until its result is in the history. Bars, toolbar, dock and
    * header are `inert`, keys are refused (Escape cancels, F3 passes; Undo
    * and Redo wait for a drop that settles), the plan takes no new press.
+   * A review action closes the plan too: nothing in it is the action's.
    */
-  const closed = $derived(dragState !== "idle");
+  const closed = $derived(dragState !== "idle" || reviewOut);
 
   /** A press in the plan that may become a drag: false when a drag is open already. */
   function armDrag(target: PlanTarget, pointerId: number): boolean {
-    if (!project) return false;
+    if (!project || reviewing.active) return false;
     const ok = drag.arm(pointerId, target);
     if (ok && target.type === "item") dragStart.from = itemCentre(project, target.item);
     return ok;
@@ -2120,7 +2161,7 @@
   }
 
   function openMenu(target: PlanTarget, client: { x: number; y: number }, world: Point2) {
-    if (!project || dragging()) return;
+    if (!project || inputClosed()) return;
     let title: string | undefined;
     let entries: MenuEntry[] = [];
     if (target.type === "item") {
@@ -2437,9 +2478,11 @@
     // drag, F3 switches the view, and Undo / Redo pressed while the drop is
     // with the core run right after it (ERR-603). Function keys stay the
     // browser's.
-    if (drag.active && e.key !== "F3") {
+    if (inputClosed() && e.key !== "F3") {
       if (/^F\d+$/.test(e.key)) return;
       e.preventDefault();
+      // A review action takes no key at all: nothing of the user's is replayed after it (design A1).
+      if (!drag.active) return;
       if (dragState === "settling") {
         if (undoKey(e)) undoKey(e) === "redo" ? redo() : undo();
       } else if (e.key === "Escape") cancelDrag();
@@ -2575,7 +2618,7 @@
 
   {#if project}
     <div class="body">
-      <div class="main" use:inertBut={{ on: closed, keep: "views" }}>
+      <div class="main" use:inertBut={{ on: closed, keep: reviewOut ? "" : "views" }}>
         {#if pending}
           <div class="review" class:open={reviewDetails} role="status">
             <Icon name="sparkle" size={18} />
@@ -2690,7 +2733,7 @@
               <span class="view-label">{t("editor.model")}</span>
               {#if prefs.layout === "3d"}{@render calcMark()}{/if}
               <Roof3D {project} {result} {selection} item={selectedItem}
-                onpick={(tg) => { if (dragging()) return; if (tg.type === "item") selectItem(tg.item); else if (tg.type === "edge") { selectItem(null); selection = { part: tg.part, edge: tg.edge }; } }}
+                onpick={(tg) => { if (inputClosed()) return; if (tg.type === "item") selectItem(tg.item); else if (tg.type === "edge") { selectItem(null); selection = { part: tg.part, edge: tg.edge }; } }}
                 oncontext={openMenu} onitemdbl={openProperties} />
             </div>
           {/if}
@@ -2750,13 +2793,13 @@
         <div class="dock" role="tabpanel" id={dockIds.panel} aria-labelledby={dockIds.tab(dock)} bind:this={dockEl}>
           <button class="icon-btn dock-close" onclick={() => (dockOpen = false)} aria-label={t("common.close")} title={t("common.close")}><Icon name="x" size={16} /></button>
           {#if dock === "results"}
-            <Results {result} {project} recalculated={recalculatedResult} onrestore={restoreOffer} restoring={reviewBusy} onstore={storeResult} storing={acting.store} blocked={blockedReason} failure={calcFailure} pending={calcPending} />
+            <Results {result} {project} recalculated={recalculatedResult} received={receivedResult} onrestore={restoreOffer} restoring={reviewBusy} onstore={storeResult} storing={acting.store} blocked={blockedReason} failure={calcFailure} pending={calcPending} />
           {:else if dock === "breakdown"}
             <Breakdown {project} {result} bind:data={breakdown} onmark={(mk) => (planMark = mk)} />
           {:else if dock === "ai"}
             <AiPanel {id} {project} {activity} recalculation={recalculatedResult} bind:shown={shownEntry} onrevert={(ts) => revert(false, ts)} onrestore={restoreOffer} busy={reviewBusy} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
-            <JobPanel {id} {project} current={() => project} onchange={commit} onsave={save} blocked={blockedReason} edits={jobEdits} track={(p) => pendingEdits.track(p)} />
+            <JobPanel {id} {project} current={() => project} onchange={commit} onsave={save} blocked={blockedReason} recalculated={!!recalculatedResult} edits={jobEdits} track={(p) => pendingEdits.track(p)} />
           {/if}
         </div>
       </aside>
@@ -2769,7 +2812,7 @@
       {#if result}<span data-testid="status-area" class:pending={calcPending} aria-busy={calcPending}>{t("res.area")}: <b title={roofState(result) !== "ok" ? t(roofState(result) === "none" ? "res.notCalculated" : "res.calcPartial") : undefined}>{roofState(result) === "none" ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save">
-        {#if saveState === "saved" && !editsWaiting}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving" || saveState === "saved"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
+        {#if reviewOut}{t("editor.reverting")}{:else if saveState === "saved" && !editsWaiting}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving" || saveState === "saved"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
       </span>
     </footer>
   {:else if !loadError}

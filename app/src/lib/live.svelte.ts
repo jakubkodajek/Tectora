@@ -106,6 +106,28 @@ function refreshedText(key: "snap.refreshedNotice" | "chg.resultRefreshed", summ
 }
 
 /**
+ * The recalculation of the stored result a received job came with (audit
+ * 2026-11-23 UX-1003; owner decision: bundles carry no offer figures): the
+ * newest entry that changed the stored result is the sender's engine's
+ * (`tectora (received)`), and the job's result is of the engine it names.
+ * The card shows it as information, without the put-back; `area` is the
+ * offer's roof area when the entry names it.
+ */
+export function receivedRecalculation(
+  log: readonly Pick<ActivityItem, "ts_ms" | "actor" | "summary" | "changes">[],
+  project: { result_snapshot?: { engine_version: string } | null } | null,
+): { at: number; from: string; to: string; area: number | null } | null {
+  const engine = project?.result_snapshot?.engine_version;
+  if (!engine) return null;
+  const last = log.find((a) => a.changes.some((c) => c.field === "result_snapshot"));
+  if (!last || last.actor !== RECEIVED_ENGINE_ACTOR) return null;
+  const head = new RegExp(`^${REFRESHED_HEAD}`).exec(last.summary);
+  if (!head || head[2] !== engine) return null;
+  const area = REFRESHED.exec(last.summary);
+  return { at: last.ts_ms, from: head[1], to: head[2], area: area ? Number(area[3]) : null };
+}
+
+/**
  * The notice the editor shows when opening a job recalculated its stored
  * result (audit UX-702c): the engine's summary in the user's language.
  */

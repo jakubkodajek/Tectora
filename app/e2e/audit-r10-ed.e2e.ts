@@ -1,8 +1,12 @@
 // Guards for the round-10 audit (2026-11-23), the editor's half:
 //
-// ERR-901  an edit made while Revert or the put-back of the offer's figures
+// ERR-901  an edit tried while Revert or the put-back of the offer's figures
 //          is with the core (behind another process's lock on the job) is
-//          kept and saved, with the autosave before and after the answer
+//          refused, nothing is lost, and the value typed after the answer
+//          lands within 3 s (rewritten in round 11 to the owner's decision
+//          of design A1: the call is a transaction like a drag; the round-10
+//          rule "an edit typed while Revert waits is kept" is retracted;
+//          the full matrix is in audit-r11-ed.e2e.ts)
 // ERR-902  leaving an offer while its stored result is recalculated: the
 //          next open of the job shows the notice it missed
 // UX-901   a load warning is shown only in the editor that asked, and names
@@ -13,13 +17,13 @@
 // UI-903   the zoom buttons' tooltips name their keys
 // HUNT-908 no key shortcut acts while the job is still being read
 // TEST-904 after the put-back the AI change below it still offers Revert
-import { spawn, type ChildProcess } from "node:child_process";
+import type { Locator, Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
-import type { Locator, Page } from "@playwright/test";
 import { LIBRARY_DIR } from "./env";
-import { bridge, createExample, expect, loadProject, test, waitForProject, type Locale } from "./fixtures";
+import { createExample, expect, loadProject, noToast, test, waitForProject, type Locale } from "./fixtures";
 import { LOCALES, cs, tr } from "./i18n";
+import { hold, holdLock, olderOffer, timeline } from "./review";
 
 // TECTORA_SHOTS=<folder>/ saves a screenshot after each test (fix evidence).
 test.afterEach(async ({ page }, info) => {
@@ -36,95 +40,6 @@ const putBack = (page: Page, locale: Locale = "cs") => page.getByRole("button", 
 const recalcToast = (app: { toasts(): Locator }) => app.toasts().filter({ hasText: "Tectora 0.8.0" });
 const customer = (page: Page) => page.locator("aside .job").getByLabel(cs("job.customer"));
 
-/** 12 November 2026, the day the "offer" was made. */
-const OFFER_MS = Date.UTC(2026, 10, 12, 10, 0, 0);
-
-/**
- * An offer job whose stored result looks like one engine 0.8.0 stored (as
- * audit-r9-recalc `olderOffer`): roof area `stored` m², taken on OFFER_MS,
- * its origin checked by 0.8.0 and the AI's status change accepted.
- */
-async function olderOffer(mcp: any, name: string, stored = 150): Promise<string> {
-  const id = await createExample("gable", name);
-  await mcp.call("update_job", { id, status: "offer", summary: "Offer sent." });
-  const file = path.join(LIBRARY_DIR, `${id}.tectora`);
-  const p = JSON.parse(fs.readFileSync(file, "utf8"));
-  const origins = path.join(LIBRARY_DIR, ".activity", `${id}.result.json`);
-  const o = JSON.parse(fs.readFileSync(origins, "utf8")) as { taken_ms: number; checked: string }[];
-  for (const x of o) {
-    if (x.taken_ms === p.result_snapshot.taken_ms) x.taken_ms = OFFER_MS;
-    x.checked = "0.8.0";
-  }
-  p.result_snapshot.engine_version = "0.8.0";
-  p.result_snapshot.roof_area = stored;
-  p.result_snapshot.taken_ms = OFFER_MS;
-  fs.writeFileSync(file, JSON.stringify(p));
-  fs.writeFileSync(origins, JSON.stringify(o));
-  await acceptAll(id);
-  return id;
-}
-
-/** Accepts every change in the job's log (no review banner). */
-async function acceptAll(id: string) {
-  const log = await bridge<{ ts_ms: number }[]>("project_activity", { id });
-  await bridge("accept_changes", { id, tsMs: log.reduce((m, a) => Math.max(m, a.ts_ms), 0) });
-}
-
-/**
- * Another process (a slow AI save, a second Tectora on a shared folder)
- * holds the job's lock file for `ms`: every write of the job waits for it.
- * Resolves once the lock is taken. Python's flock, as the audit's
- * reproducer; the E2E suite runs on Linux.
- */
-async function holdLock(id: string, ms: number): Promise<ChildProcess> {
-  const file = path.join(LIBRARY_DIR, ".activity", `${id}.lock`);
-  const h = spawn(
-    "python3",
-    ["-I", "-c", "import fcntl,sys,time\nf=open(sys.argv[1],'a')\nfcntl.flock(f,fcntl.LOCK_EX)\nprint('held',flush=True)\ntime.sleep(float(sys.argv[2]))", file, String(ms / 1000)],
-    { stdio: ["ignore", "pipe", "inherit"] },
-  );
-  await new Promise<void>((ok, fail) => {
-    h.stdout!.once("data", () => ok());
-    h.once("error", fail);
-    h.once("exit", (code) => fail(new Error(`lock holder exited with ${code}`)));
-  });
-  return h;
-}
-
-/** Holds the bridge's answers to `cmd` (after the core ran it) until released. */
-async function hold(page: Page, cmd: string, when: (body: any) => boolean = () => true): Promise<{ release: () => void; held: () => number }> {
-  let open!: () => void;
-  const gate = new Promise<void>((r) => (open = r));
-  let n = 0;
-  await page.route(`**/${cmd}`, async (route) => {
-    let body: any = {};
-    try {
-      body = JSON.parse(route.request().postData() ?? "{}");
-    } catch {
-      // Not JSON: not ours to hold.
-    }
-    if (!when(body)) return route.continue();
-    const res = await route.fetch();
-    n++;
-    await gate;
-    await route.fulfill({ response: res }).catch(() => {});
-  });
-  return { release: open, held: () => n };
-}
-
-/** Times (ms since the page's start) the editor sent requests to `cmd` and got their answers. */
-function timeline(page: Page, cmd: string) {
-  const sent: number[] = [];
-  const answered: number[] = [];
-  page.on("request", (r) => {
-    if (r.url().endsWith(`/${cmd}`)) sent.push(Date.now());
-  });
-  page.on("requestfinished", (r) => {
-    if (r.url().endsWith(`/${cmd}`)) answered.push(Date.now());
-  });
-  return { sent, answered };
-}
-
 /** Types `text` into the job's customer field and leaves it (the value is stored then). */
 async function typeCustomer(page: Page, text: string) {
   await dockTab(page, "dock.job").click();
@@ -134,7 +49,7 @@ async function typeCustomer(page: Page, text: string) {
   await page.keyboard.press("Tab");
 }
 
-test.describe("round 10: an edit made while Revert or the put-back is with the core stays (ERR-901)", () => {
+test.describe("round 10, rewritten in round 11 (design A1): an edit tried while Revert or the put-back is with the core is refused, nothing is lost (ERR-901)", () => {
   test.skip(process.platform === "win32", "the lock holder uses Python's fcntl");
 
   /** An offer recalculated on open, the editor on its AI tab with the put-back button. */
@@ -165,7 +80,7 @@ test.describe("round 10: an edit made while Revert or the put-back is with the c
   }
 
   for (const action of ["put-back", "revert"] as const) {
-    test(`${action}: the autosave of an edit typed during the call is sent before the answer, and the edit is saved (ERR-901)`, async ({ app, page, mcp }) => {
+    test(`${action}: an edit tried while the call waits for the lock is refused, and the value typed after the answer is saved (ERR-901, design A1)`, async ({ app, page, mcp }) => {
       let id: string;
       let press: () => Promise<void>;
       if (action === "put-back") {
@@ -178,62 +93,59 @@ test.describe("round 10: an edit made while Revert or the put-back is with the c
       }
       const cmd = action === "put-back" ? "restore_offer_result" : "revert_last_change";
       const call = timeline(page, cmd);
-      // A save's first question (is the jobs folder still the same?): the autosave has begun.
-      const saves = timeline(page, "projects_dir");
-      // Held until the autosave is seen (the finally below), not for a fixed
-      // time: on a slow runner typing alone took longer than 3 s.
-      const lock = await holdLock(id, 20_000);
+      const saves = timeline(page, "save_project_checked");
+      // Held until the intruder was tried, never for a fixed time (TEST-706, TEST-1004).
+      const lock = await holdLock(id, 60_000);
       try {
         await press();
-        await typeCustomer(page, "Novák během");
-        // The edit's autosave begins while the core still waits for the lock.
-        await expect.poll(() => saves.sent.length, { timeout: 2500 }).toBeGreaterThan(0);
-        await expect(page.locator(".statusbar .save")).toHaveText(cs("editor.saving"));
-        expect(call.answered, "the call is still out when the autosave begins").toHaveLength(0);
+        await expect.poll(() => call.sent.length, { timeout: 4000 }).toBe(1);
+        await expect(page.locator(".statusbar .save")).toHaveText(cs("editor.reverting"));
+        // The job tab and its field take no press while the call is out (mouse at their place: they are inert).
+        for (const l of [dockTab(page, "dock.job"), customer(page)]) {
+          const box = (await l.count()) ? await l.first().boundingBox() : null;
+          if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+        }
+        await page.keyboard.type("Novák během");
+        await page.keyboard.press("Tab");
+        await page.waitForTimeout(600);
+        expect(call.answered, "the call is still out").toHaveLength(0);
+        expect(saves.sent, "nothing is saved while the call is out").toHaveLength(0);
       } finally {
         lock.kill();
       }
-      const done = await waitForProject(id, (p) => p.job?.customer === "Novák během" && (action === "put-back" ? p.result_snapshot?.engine_version === "0.8.0" : !p.notes), 12_000);
-      expect(call.answered.length).toBe(1);
+      const done = await waitForProject(id, (p) => (action === "put-back" ? p.result_snapshot?.engine_version === "0.8.0" : !p.notes), 12_000);
       if (action === "put-back") expect(done.result_snapshot.roof_area).toBe(150);
       await app.saved();
-      await expect(customer(page)).toHaveValue("Novák během");
-      expect((await loadProject(id)).job.customer).toBe("Novák během");
+      expect((await loadProject(id)).job?.customer ?? "").not.toBe("Novák během");
+      // Nothing lost: the editor takes the value now, and it lands within 3 s.
+      await typeCustomer(page, "Novák potom");
+      await waitForProject(id, (p) => p.job?.customer === "Novák potom", 3000);
+      await app.saved();
+      await expect(customer(page)).toHaveValue("Novák potom");
     });
 
-    test(`${action}: an edit typed during the call whose autosave runs after the answer is saved (ERR-901)`, async ({ app, page, mcp }) => {
+    test(`${action}: a value typed before the press (no Enter) is saved before the call and kept by the answer (ERR-901, design A1)`, async ({ app, page, mcp }) => {
       let id: string;
       let press: () => Promise<void>;
       if (action === "put-back") {
-        id = await putBackReady(app, page, mcp, `Po odpovědi ${action}`);
+        id = await putBackReady(app, page, mcp, `Před ${action}`);
         press = () => putBack(page).click();
       } else {
-        const r = await revertReady(app, page, mcp, `Po odpovědi ${action}`);
+        const r = await revertReady(app, page, mcp, `Před ${action}`);
         id = r.id;
         press = () => r.revert.click();
       }
-      const cmd = action === "put-back" ? "restore_offer_result" : "revert_last_change";
-      const saves = timeline(page, "save_project_checked");
-      // The core waits for the lock; its answer then waits for the edit.
-      const answer = await hold(page, cmd);
-      const lock = await holdLock(id, 1200);
-      try {
-        await press();
-        await expect.poll(() => answer.held(), { timeout: 8000 }).toBe(1);
-      } finally {
-        lock.kill();
-      }
-      await typeCustomer(page, "Novák potom");
-      const before = saves.sent.length;
-      answer.release();
-      // The answer is in before the edit's autosave (0.5 s after the edit) leaves.
-      await expect(page.locator(".statusbar .save")).not.toHaveText(/Uloženo/, { timeout: 400 });
-      const done = await waitForProject(id, (p) => p.job?.customer === "Novák potom", 8000);
-      expect(saves.sent.length).toBeGreaterThan(before);
-      if (action === "put-back") expect(done.result_snapshot).toMatchObject({ engine_version: "0.8.0", roof_area: 150 });
-      else expect(done.notes ?? "").toBe("");
+      await dockTab(page, "dock.job").click();
+      await customer(page).click();
+      await customer(page).press("ControlOrMeta+a");
+      await page.keyboard.type("Novák předem");
+      await dockTab(page, "dock.ai").click();
+      await press();
+      const done = await waitForProject(id, (p) => p.job?.customer === "Novák předem" && (action === "put-back" ? p.result_snapshot?.engine_version === "0.8.0" : !p.notes), 8000);
+      if (action === "put-back") expect(done.result_snapshot.roof_area).toBe(150);
       await app.saved();
-      await expect(customer(page)).toHaveValue("Novák potom");
+      await dockTab(page, "dock.job").click();
+      await expect(customer(page)).toHaveValue("Novák předem");
     });
   }
 });
@@ -249,9 +161,8 @@ test.describe("round 10: notices and warnings of the job being opened (ERR-902, 
     const answered = page.waitForResponse((r) => r.url().endsWith("/refresh_stored_result"));
     held.release();
     await answered;
-    // Not in the library.
-    await page.waitForTimeout(300);
-    await expect(recalcToast(app)).toHaveCount(0);
+    // Not in the library: never seen there (TEST-1002, a strict check).
+    await noToast(recalcToast(app), 1000, "the notice in the library");
     expect((await loadProject(id)).result_snapshot.engine_version).not.toBe("0.8.0");
     // The next open has nothing to recalculate, and still says what the first one did.
     await app.openJob("Odchod");
@@ -263,8 +174,7 @@ test.describe("round 10: notices and warnings of the job being opened (ERR-902, 
     await expect(recalcToast(app)).toHaveCount(0, { timeout: 8000 });
     await app.openJob("Odchod");
     await app.saved();
-    await page.waitForTimeout(500);
-    await expect(recalcToast(app)).toHaveCount(0);
+    await noToast(recalcToast(app), 1500, "a second notice");
   });
 
   /** A job whose stored result has an impossible time: the app opens it without the result and warns. */

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DICTS, i18n } from "./i18n.svelte";
-import { actorLabel, entrySummary, historyText, isRevert, liveText, refreshedNotice } from "./live.svelte";
+import { actorLabel, entrySummary, historyText, isRevert, liveText, receivedRecalculation, refreshedNotice } from "./live.svelte";
+import { RECEIVED_ENGINE_ACTOR } from "./types";
 
 // The codes the MCP server sends (crates/tectora-core/src/store.rs LIVE_KINDS).
 const KINDS = [
@@ -359,5 +360,34 @@ describe("actorLabel of a received engine entry (ARCH-802)", () => {
       expect(label, locale).not.toBe(actorLabel("user"));
     }
     i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-23 UX-1003 (owner decision: bundles carry no offer
+// figures): a job received after the sender's Tectora recalculated its
+// stored result says so on its card, from the received entry, without
+// the put-back (the offer's own figures stayed with the sender).
+describe("receivedRecalculation (UX-1003)", () => {
+  const entry = (ts_ms: number, actor: string, summary: string, fields: string[] = []) => ({
+    ts_ms,
+    actor,
+    summary,
+    changes: fields.map((field) => ({ kind: "modified" as const, field, before: null, after: null })),
+  });
+  const RECALC = "Stored result recalculated (Tectora 0.8.0 -> 0.9.0): roof area 150.00 -> 152.73 m2";
+  const job = (engine_version = "0.9.0") => ({ result_snapshot: { engine_version } });
+  it("reads the received engine entry the stored result still is", () => {
+    const log = [entry(30, "claude", "Notes", ["notes"]), entry(20, RECEIVED_ENGINE_ACTOR, RECALC, ["result_snapshot"]), entry(10, "user", "Status", ["result_snapshot", "status"])];
+    expect(receivedRecalculation(log, job())).toEqual({ at: 20, from: "0.8.0", to: "0.9.0", area: 150 });
+    const lines = entry(20, RECEIVED_ENGINE_ACTOR, "Stored result recalculated (Tectora 0.8.0 -> 0.9.0): line lengths G, K", ["result_snapshot"]);
+    expect(receivedRecalculation([lines], job())).toEqual({ at: 20, from: "0.8.0", to: "0.9.0", area: null });
+  });
+  it("is null once a later entry stored another result, for this engine's own entry and for another engine", () => {
+    expect(receivedRecalculation([entry(30, "user", "Stored", ["result_snapshot"]), entry(20, RECEIVED_ENGINE_ACTOR, RECALC, ["result_snapshot"])], job())).toBeNull();
+    expect(receivedRecalculation([entry(20, "tectora", RECALC, ["result_snapshot"])], job())).toBeNull();
+    expect(receivedRecalculation([entry(20, RECEIVED_ENGINE_ACTOR, RECALC, ["result_snapshot"])], job("0.8.0"))).toBeNull();
+    expect(receivedRecalculation([entry(20, RECEIVED_ENGINE_ACTOR, RECALC, ["result_snapshot"])], { result_snapshot: null })).toBeNull();
+    expect(receivedRecalculation([entry(20, RECEIVED_ENGINE_ACTOR, "Something else", ["result_snapshot"])], job())).toBeNull();
+    expect(receivedRecalculation([], job())).toBeNull();
   });
 });

@@ -454,12 +454,21 @@ case, and assert that it really came while the pointer was down.
   (UX-502; hold the answer until the sampling ends, never for a fixed
   time, TEST-706); a dialog's OK keeps the focus while it waits (UI-503); a
   dialog's own core checks run one after another (the dormer dialog).
-- An edit typed while Revert or the put-back of the offer's figures waits
-  for the core (another process holds the job's lock: an AI save that is
-  calculating) is kept on screen and in the file, with its autosave before
-  and after the core's answer; the status says saved only once it is
-  written (ERR-901, `app/e2e/audit-r10-ed.e2e.ts`). No key shortcut acts
-  while the job is still being read (HUNT-908).
+- Revert, Revert all and the put-back of the offer's figures (AI tab and
+  result card) are a short transaction like a drag (owner decision
+  2026-11-23, design A1; retracts the round-10 rule "an edit typed while
+  Revert waits is kept", which lost or resurrected edits: HUNT-1001,
+  UX-1001, UX-1002, ERR-1004). A value being typed is stored and saved
+  before the call; while the call is out (another process holds the job's
+  lock) every edit is refused: same field + Enter, another field + Enter,
+  a value typed without Enter, a confirmed building delete, Ctrl+Z; the
+  status says "Vracím…". The answer is the job (no merge); the file and
+  the screen agree whenever the status says saved (sample it every 50 ms,
+  TEST-1003); the value typed afterwards lands within 3 s; a `busy` answer
+  changes nothing and keeps the button (`coreaction.test.ts`,
+  `app/e2e/audit-r11-ed.e2e.ts`, ERR-901 in `audit-r10-ed.e2e.ts`). Hold
+  the lock until the intruder was tried, never for a fixed time. No key
+  shortcut acts while the job is still being read (HUNT-908).
 
 ## 16. Huge but valid jobs reach every view (@arch, @ui)
 

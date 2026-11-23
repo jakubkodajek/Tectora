@@ -35,6 +35,7 @@
     blocked = null,
     current,
     edits,
+    recalculated = false,
   }: {
     id: string;
     project: Project;
@@ -45,6 +46,12 @@
     track?: (p: Promise<unknown>) => Promise<unknown>;
     /** Why the roof cannot be offered or ordered now (the core gave no roof), or null. */
     blocked?: string | null;
+    /**
+     * The stored result is the engine's recalculation of the offer's: a
+     * bundle carries it without the offer's own figures, which stay here
+     * (owner decision 2026-11-23, UX-1003); the export says so.
+     */
+    recalculated?: boolean;
     /** The project the editor holds now. The panel may be gone (the AI tab took the dock)
      *  when an awaited answer comes back, so its own prop can be the replaced project (ERR-102). */
     current?: () => Project | null;
@@ -241,6 +248,7 @@
         return;
       }
       await api.exportJob(id, path);
+      if (recalculated) info(t("snap.exportRecalculated"));
     } catch (e) {
       notifyError(e, "export");
     }
