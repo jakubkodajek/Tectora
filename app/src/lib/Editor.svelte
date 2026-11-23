@@ -845,6 +845,9 @@
   const storedKey = () => JSON.stringify(project?.result_snapshot ?? null);
   function resultToast(toast: number) {
     resultToasts.set(toast, storedKey());
+    // Closes with the editor as every notice of the job: its button stores
+    // into this job, never into the next one opened (HUNT-1302).
+    ownToasts.add(toast);
   }
   $effect(() => {
     const now = storedKey();
@@ -2994,7 +2997,7 @@
           {:else if dock === "ai"}
             <AiPanel {id} {project} {activity} recalculation={recalculatedResult} bind:shown={shownEntry} onrevert={(ts) => revert(false, ts)} onrestore={restoreOffer} busy={reviewBusy} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
-            <JobPanel {id} {project} current={() => project} onchange={commit} onsave={save} blocked={blockedReason} recalculated={!!recalculatedResult} edits={jobEdits} track={(p) => pendingEdits.track(p)} onresulttoast={resultToast} />
+            <JobPanel {id} {project} current={() => (destroyed ? null : project)} onchange={commit} onsave={save} blocked={blockedReason} recalculated={!!recalculatedResult} edits={jobEdits} track={(p) => pendingEdits.track(p)} onresulttoast={resultToast} />
           {/if}
         </div>
       </aside>

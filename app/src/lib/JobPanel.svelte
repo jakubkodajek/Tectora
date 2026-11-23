@@ -173,9 +173,11 @@
 
   /** Says that the job keeps its earlier result, with the figure that differs and the action that stores the new one (UX-206). */
   function offerKept(differences: FigureDifference[], fresh: ResultSnapshot, roof: RoofHold) {
+    // Named: the notice can stand over another screen (HUNT-1302).
+    const name = latest()?.name.trim();
     const toast = notify({
       kind: "warning",
-      title: t("job.offerKeptTitle"),
+      title: name ? t("err.ofJob", { name, title: t("job.offerKeptTitle") }) : t("job.offerKeptTitle"),
       message: keptText(differences),
       action: {
         label: t("snap.store"),

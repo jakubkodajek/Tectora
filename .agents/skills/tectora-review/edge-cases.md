@@ -523,6 +523,15 @@ case, and assert that it really came while the pointer was down.
   listeners per file, receiver and event in every shape, requires the gate
   first in each gated handler, counts toast actions of every shape and lists
   every `openId =` and `libraryChanged` use in App.svelte with its reason.
+- A toast action after its editor is gone (round 14, HUNT-1302): every
+  editor toast whose button edits the job is one of the editor's own
+  (`ownToasts`, closed in `onDestroy`) and names the job in its title; the
+  panel's `current()` answers null once the editor is destroyed. Show the
+  Job tab's "keeps the result stored earlier" toast, then: an unrelated edit
+  (it stays), Back (it is gone at once, not by its timer: hover it first),
+  Back and another job opened (no toast, the left job's stored result
+  unchanged), the dock moved to Results (its button still stores).
+  `app/e2e/audit-r14-ed.e2e.ts`.
 
 ## 16. Huge but valid jobs reach every view (@arch, @ui)
 
