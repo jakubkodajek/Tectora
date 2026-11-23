@@ -1346,10 +1346,13 @@ mod tests {
 
     /// The sync Tauri commands of `src` (`#[tauri::command]` without
     /// `async` anywhere in the attribute block, whatever else is in it),
-    /// and those of them that use the library: `.store()` or
-    /// `state.store`, or a call of a helper that reaches it — one that
-    /// takes `&AppState` / `State<AppState>` without being a command, or
-    /// gets the state from the app handle (`switch_library`).
+    /// and those of them that use the library: `.store()`, `.store.` or
+    /// `state.store`, or a call of a helper that reaches it. A helper is a
+    /// function that is no command and takes `&AppState` / `State<AppState>`,
+    /// gets the state from the app handle (`switch_library`), is a method
+    /// of `impl AppState` (other than `store`, called as `.name(`), or
+    /// calls a helper itself, however many levels deep (audit 2026-11-23
+    /// TEST-1204).
     fn sync_store_users(src: &str) -> (Vec<String>, Vec<String>) {
         let fns = functions(src);
         let is_command = |attrs: &str| {
@@ -1357,17 +1360,67 @@ mod tests {
                 .lines()
                 .any(|l| l.trim_start().starts_with("#[tauri::command"))
         };
-        let helpers: Vec<&str> = fns
-            .iter()
-            .filter(|(name, attrs, sig, body)| {
-                !is_command(attrs)
-                    && name != "store"
-                    && (sig.contains("AppState")
-                        || body.contains("state::<AppState>")
-                        || name == "switch_library")
+        // The methods declared inside `impl AppState { … }` blocks.
+        let mut methods: Vec<String> = Vec::new();
+        let mut in_impl = false;
+        for line in src.lines() {
+            if line.starts_with("impl AppState") {
+                in_impl = true;
+            } else if in_impl && line == "}" {
+                in_impl = false;
+            } else if in_impl
+                && let Some(name) = declared_fn(line)
+                && name != "store"
+            {
+                methods.push(name.to_string());
+            }
+        }
+        // A plain call `h(`, not `x.h(`, `x::h(` or `other_h(`.
+        let calls = |body: &str, h: &str| {
+            body.match_indices(&format!("{h}(")).any(|(at, _)| {
+                !body[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == ':')
             })
-            .map(|(name, ..)| name.as_str())
-            .collect();
+        };
+        let reaches = |body: &str, helpers: &[String]| {
+            body.contains(".store()")
+                || body.contains(".store.")
+                || body.contains("state.store")
+                || helpers.iter().any(|h| {
+                    calls(body, h) || (methods.contains(h) && body.contains(&format!(".{h}(")))
+                })
+        };
+        let mut helpers: Vec<String> = methods.clone();
+        helpers.extend(
+            fns.iter()
+                .filter(|(name, attrs, sig, body)| {
+                    !is_command(attrs)
+                        && name != "store"
+                        && (sig.contains("AppState")
+                            || body.contains("state::<AppState>")
+                            || name == "switch_library")
+                })
+                .map(|(name, ..)| name.clone()),
+        );
+        // Until no function that is no command calls a helper it is not.
+        loop {
+            let more: Vec<String> = fns
+                .iter()
+                .filter(|(name, attrs, _, body)| {
+                    !is_command(attrs)
+                        && name != "store"
+                        && !helpers.contains(name)
+                        && reaches(body, &helpers)
+                })
+                .map(|(name, ..)| name.clone())
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            helpers.extend(more);
+        }
         let mut sync = Vec::new();
         let mut users = Vec::new();
         for (name, attrs, _, body) in &fns {
@@ -1381,18 +1434,7 @@ mod tests {
                 continue;
             }
             sync.push(name.clone());
-            let calls = |h: &str| {
-                body.match_indices(&format!("{h}(")).any(|(at, _)| {
-                    !body[..at]
-                        .chars()
-                        .next_back()
-                        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == ':')
-                })
-            };
-            if body.contains(".store()")
-                || body.contains("state.store")
-                || helpers.iter().any(|h| calls(h))
-            {
+            if reaches(body, &helpers) {
                 users.push(name.clone());
             }
         }
@@ -1437,9 +1479,10 @@ mod tests {
     }
 
     /// The scan above on made-up commands: a second attribute between
-    /// `#[tauri::command]` and `fn`, a store use through a helper and
-    /// through `switch_library` are all seen; async commands and commands
-    /// that do not touch the store are not flagged.
+    /// `#[tauri::command]` and `fn`, a store use through a helper, through
+    /// `switch_library`, through a helper of a helper, an `AppState`
+    /// method and the `store` field are all seen (TEST-1204); async
+    /// commands and commands that do not touch the store are not flagged.
     #[test]
     fn the_sync_command_scan_sees_attributes_and_helpers() {
         // Each line starts with `|`, so the scan of lib.rs itself does not
@@ -1481,15 +1524,68 @@ mod tests {
 |fn no_store(path: String) {
 |    Settings::load();
 |}
+|
+|fn helper_a(state: &AppState) {
+|    state.store().delete("x");
+|}
+|
+|fn helper_b(id: &str) {
+|    helper_a(GLOBAL);
+|}
+|
+|#[tauri::command]
+|fn two_levels(id: String) {
+|    helper_b(&id);
+|}
+|
+|impl AppState {
+|    fn wipe(&self) {
+|        self.store().delete("x");
+|    }
+|}
+|
+|#[tauri::command]
+|fn through_method(state: State<AppState>) {
+|    state.wipe();
+|}
+|
+|#[tauri::command]
+|fn through_field(state: State<AppState>) {
+|    state.inner().store.write().unwrap().delete("x");
+|}
+|
+|#[tauri::command]
+|fn other_helper(state: State<AppState>) {
+|    other_helper_a(1);
+|}
 "#
         .replace('|', "");
         let (sync, mut users) = sync_store_users(&src);
         users.sort();
         assert_eq!(
             sync,
-            ["with_allow", "through_helper", "through_switch", "no_store"]
+            [
+                "with_allow",
+                "through_helper",
+                "through_switch",
+                "no_store",
+                "two_levels",
+                "through_method",
+                "through_field",
+                "other_helper"
+            ]
         );
-        assert_eq!(users, ["through_helper", "through_switch", "with_allow"]);
+        assert_eq!(
+            users,
+            [
+                "through_field",
+                "through_helper",
+                "through_method",
+                "through_switch",
+                "two_levels",
+                "with_allow"
+            ]
+        );
     }
 
     /// Double-click open and start-up arguments (TEST-008): Tectora files
