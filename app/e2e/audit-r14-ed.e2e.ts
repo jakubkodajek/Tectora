@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { selectWall } from "./editor";
 import { E2E_DIR, LIBRARY_DIR } from "./env";
-import { createExample, expect, listProjects, loadProject, test, waitForProject } from "./fixtures";
+import { bridge, createExample, expect, listProjects, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 import { acceptAll, hold } from "./review";
 
@@ -127,5 +127,76 @@ test.describe("round 14: job ids that are Object.prototype names (design D, ARCH
     await app.answerConfirm(true);
     await remove.click();
     await expect.poll(async () => (await listProjects()).some((p: any) => p.id === "constructor")).toBe(false);
+  });
+});
+
+const bannerRevert = (page: Page) => page.locator(".review").getByRole("button", { name: cs("ai.revert") });
+
+/** A gable job open in the editor with the AI's notes pending (and, with `two`, its customer too). */
+async function readyAi(app: any, page: Page, mcp: any, name: string, two = false, chimney = false) {
+  const id = await createExample("gable", name);
+  if (chimney) {
+    const p0 = await loadProject(id);
+    p0.chimneys = [{ corners: [{ x: 5, y: 1.5 }, { x: 5.6, y: 1.5 }, { x: 5.6, y: 2.1 }, { x: 5, y: 2.1 }], height: 8 }];
+    await bridge("save_project", { id, project: p0 });
+    await acceptAll(id);
+  }
+  await app.open({ prefs: { followAi: false } });
+  await app.openJob(name);
+  await app.saved();
+  await mcp.call("update_job", { id, notes: "Od AI", summary: "Poznámka od AI" });
+  await waitForProject(id, (p) => p.notes === "Od AI");
+  if (two) {
+    await mcp.call("update_job", { id, customer: "Zákazník od AI", summary: "Zákazník podle výkresu" });
+    await waitForProject(id, (p) => p.job.customer === "Zákazník od AI");
+  }
+  await app.saved();
+  await expect(page.locator(".review")).toBeVisible();
+  return id;
+}
+
+test.describe("round 14: the prepare phase and its dialogs (design E, TEST-1301)", () => {
+  test("after-dialog: Settings and the object dialog opened and closed before the press do not hold Revert (TEST-1301)", async ({ app, page, mcp }) => {
+    const id = await readyAi(app, page, mcp, "R14 po dialogu", false, true);
+    const settings = page.getByRole("dialog", { name: cs("settings.title") });
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press("ControlOrMeta+Comma");
+    await expect(settings).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(settings).toHaveCount(0);
+    const bb = (await page.locator("path.opening.chimney").first().boundingBox())!;
+    await page.mouse.dblclick(bb.x + bb.width / 2, bb.y + bb.height / 2);
+    const dlg = page.getByTestId("object-dialog");
+    await expect(dlg).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(dlg).toHaveCount(0);
+    await app.saved();
+    await bannerRevert(page).click();
+    await waitForProject(id, (p) => !p.notes, 8000);
+    await app.saved();
+    await expect(app.toasts().filter({ hasText: cs("err.busy_edits") })).toHaveCount(0);
+    await expect(app.toasts().filter({ hasText: cs("err.busy_open") })).toHaveCount(0);
+  });
+});
+
+test.describe("round 14: Revert all refused is titled in the plural (UI-1301)", () => {
+  test("a busy Revert all of two AI steps says the changes could not be reverted (UI-1301)", async ({ app, page, mcp }) => {
+    const id = await readyAi(app, page, mcp, "R14 vše", true);
+    await expect(page.locator(".review").getByRole("button", { name: cs("review.revertAll") })).toBeVisible();
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    let n = 0;
+    await page.route("**/revert_changes", async (route) => {
+      n++;
+      await gate;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ err: { code: "busy", id, detail: "the job is locked by another writer" } }) }).catch(() => {});
+    });
+    await app.answerConfirm(true);
+    await page.locator(".review").getByRole("button", { name: cs("review.revertAll") }).click();
+    await expect.poll(() => n, { timeout: 5000 }).toBe(1);
+    open();
+    await expect(app.toasts().filter({ hasText: cs("err.ofJob", { name: "R14 vše", title: cs("err.action.revertAll") }) })).toHaveCount(1);
+    await expect(app.toasts().filter({ hasText: cs("err.action.revert") })).toHaveCount(0);
+    app.errors.length = 0;
   });
 });

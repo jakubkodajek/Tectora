@@ -949,7 +949,7 @@ const cs: Dict = {
   "err.revert_conflict": "Od této změny jste upravili stejné hodnoty. Vrácení by vaše úpravy přepsalo, proto se nic nezměnilo. Upravte hodnoty ručně, nebo nejdřív vraťte své úpravy.",
   "err.revert_stale": "Zakázka se mezitím změnila (například ji uložila AI), proto se nic nevrátilo. Podívejte se do historie a zkuste to znovu.",
   "err.busy": "Zakázku právě ukládá jiný program (například AI), proto se nic neprovedlo. Zkuste to za chvíli znovu.",
-  "err.busy_edits": "Úpravy provedené před tímto krokem ještě nejsou uložené (zadávají se, počítají, nebo zakázku právě ukládá jiný program), proto se nic neprovedlo. Zkuste to za chvíli znovu.",
+  "err.busy_edits": "Úpravy provedené před stisknutím ještě nejsou uložené (zadávají se, počítají nebo zakázku právě ukládá jiný program), proto se nic neprovedlo. Zkuste to za chvíli znovu.",
   "err.left_before_action": "Zakázka byla zavřena dřív, než to mohlo začít, proto se nic neprovedlo.",
   "err.save_conflict": "Zakázku mezitím stále ukládá někdo jiný (např. AI). Vaše úpravy zůstaly v editoru; zkuste uložit znovu za chvíli.",
   "err.not_saved": "Zakázku se nepodařilo uložit, proto se neexportovala. Uložte ji a exportujte znovu.",
@@ -1063,6 +1063,10 @@ const cs: Dict = {
   "edge.flatOff": "Plochá střecha: sklon a okap / štít stěn se nepoužijí",
   "new.pastChosen": "Kopíruje se:",
   "err.unknown_keys": "Zakázka obsahuje cizí data (klíče, které Tectora nezná), která jsou příliš velká nebo příliš hluboko vnořená (nejvýš 64 KB a 32 úrovní), a Tectora s ní proto nemůže pracovat. Co je nad limit, uvádějí podrobnosti: odstraňte ta data v programu, který je zapsal.",
+  "err.busy_open": "Je otevřená nabídka, okno nebo dotaz, proto se nic neprovedlo. Zavřete je a zkuste to znovu.",
+  "err.action.revertAll": "Změny se nepodařilo vrátit",
+  "folderReq.jobCloses": "Otevřená zakázka se uloží a zavře.",
+  "folderReq.jobsStay": "Stávající zakázky zůstanou v původní složce.",
 };
 
 const sk: Dict = {
@@ -2003,7 +2007,7 @@ const sk: Dict = {
   "err.revert_conflict": "Od tejto zmeny ste upravili rovnaké hodnoty. Vrátenie by vaše úpravy prepísalo, preto sa nič nezmenilo. Upravte hodnoty ručne alebo najprv vráťte svoje úpravy.",
   "err.revert_stale": "Zákazka sa medzitým zmenila (napríklad ju uložila AI), preto sa nič nevrátilo. Pozrite sa do histórie a skúste to znova.",
   "err.busy": "Zákazku práve ukladá iný program (napríklad AI), preto sa nič nevykonalo. Skúste to o chvíľu znova.",
-  "err.busy_edits": "Úpravy vykonané pred týmto krokom ešte nie sú uložené (zadávajú sa, počítajú, alebo zákazku práve ukladá iný program), preto sa nič nevykonalo. Skúste to o chvíľu znova.",
+  "err.busy_edits": "Úpravy vykonané pred stlačením ešte nie sú uložené (zadávajú sa, počítajú alebo zákazku práve ukladá iný program), preto sa nič nevykonalo. Skúste to o chvíľu znova.",
   "err.left_before_action": "Zákazka bola zatvorená skôr, než sa to mohlo začať, preto sa nič nevykonalo.",
   "err.save_conflict": "Zákazku medzitým stále ukladá niekto iný (napr. AI). Vaše úpravy zostali v editore; skúste uložiť znova o chvíľu.",
   "err.not_saved": "Zákazku sa nepodarilo uložiť, preto sa neexportovala. Uložte ju a exportujte znova.",
@@ -2117,6 +2121,10 @@ const sk: Dict = {
   "edge.flatOff": "Plochá strecha: sklon a odkvap / štít stien sa nepoužijú",
   "new.pastChosen": "Kopíruje sa:",
   "err.unknown_keys": "Zákazka obsahuje cudzie údaje (kľúče, ktoré Tectora nepozná), ktoré sú príliš veľké alebo príliš hlboko vnorené (najviac 64 KB a 32 úrovní), a Tectora s ňou preto nemôže pracovať. Čo je nad limit, uvádzajú podrobnosti: odstráňte tie údaje v programe, ktorý ich zapísal.",
+  "err.busy_open": "Je otvorená ponuka, okno alebo otázka, preto sa nič nevykonalo. Zatvorte ich a skúste to znova.",
+  "err.action.revertAll": "Zmeny sa nepodarilo vrátiť",
+  "folderReq.jobCloses": "Otvorená zákazka sa uloží a zatvorí.",
+  "folderReq.jobsStay": "Existujúce zákazky zostanú v pôvodnom priečinku.",
 };
 
 const en: Dict = {
@@ -3057,7 +3065,7 @@ const en: Dict = {
   "err.revert_conflict": "Since this change you edited the same values. Reverting would overwrite your edits, so nothing was changed. Change the values by hand, or undo your edits first.",
   "err.revert_stale": "The job changed meanwhile (for example an AI saved it), so nothing was put back. Look at the history and try again.",
   "err.busy": "Another program (for example an AI) is saving the job right now, so nothing was done. Try again in a moment.",
-  "err.busy_edits": "The edits made before this step are not saved yet (still being entered or calculated, or another program is saving the job), so nothing was done. Try again in a moment.",
+  "err.busy_edits": "The edits made before you pressed it are not saved yet (still being entered or calculated, or another program is saving the job), so nothing was done. Try again in a moment.",
   "err.left_before_action": "The job was closed before this could start, so nothing was done.",
   "err.save_conflict": "Someone else (for example an AI) keeps saving the job meanwhile. Your edits are kept in the editor; try saving again in a moment.",
   "err.not_saved": "The job could not be saved, so it was not exported. Save it and export again.",
@@ -3171,6 +3179,10 @@ const en: Dict = {
   "edge.flatOff": "Flat roof: the walls' pitch and eave / gable are not used",
   "new.pastChosen": "Copying:",
   "err.unknown_keys": "The job holds foreign data (keys Tectora does not know) that is too large or nested too deep (at most 64 KB and 32 levels), so Tectora cannot work with it. The details say what is over the limit: remove that data in the program that wrote it.",
+  "err.busy_open": "A menu, dialog or question is open, so nothing was done. Close it and try again.",
+  "err.action.revertAll": "Could not revert the changes",
+  "folderReq.jobCloses": "The open job is saved and closed.",
+  "folderReq.jobsStay": "Existing jobs stay in the old folder.",
 };
 
 const de: Dict = {
@@ -4111,7 +4123,7 @@ const de: Dict = {
   "err.revert_conflict": "Seit dieser Änderung haben Sie dieselben Werte bearbeitet. Das Zurücksetzen würde Ihre Änderungen überschreiben, daher wurde nichts geändert. Ändern Sie die Werte von Hand oder machen Sie zuerst Ihre Änderungen rückgängig.",
   "err.revert_stale": "Der Auftrag wurde inzwischen geändert (zum Beispiel hat eine KI gespeichert), daher wurde nichts zurückgesetzt. Sehen Sie im Verlauf nach und versuchen Sie es erneut.",
   "err.busy": "Ein anderes Programm (zum Beispiel eine KI) speichert den Auftrag gerade, daher wurde nichts ausgeführt. Versuchen Sie es gleich noch einmal.",
-  "err.busy_edits": "Die Änderungen vor diesem Schritt sind noch nicht gespeichert (sie werden noch eingegeben oder berechnet, oder ein anderes Programm speichert den Auftrag), daher wurde nichts ausgeführt. Versuchen Sie es gleich noch einmal.",
+  "err.busy_edits": "Die Änderungen vor dem Klick sind noch nicht gespeichert (sie werden noch eingegeben oder berechnet, oder ein anderes Programm speichert den Auftrag), daher wurde nichts ausgeführt. Versuchen Sie es gleich noch einmal.",
   "err.left_before_action": "Der Auftrag wurde geschlossen, bevor dies beginnen konnte, daher wurde nichts ausgeführt.",
   "err.save_conflict": "Der Auftrag wird währenddessen ständig von anderer Seite gespeichert (z. B. von einer KI). Ihre Änderungen bleiben im Editor; versuchen Sie es gleich noch einmal.",
   "err.not_saved": "Der Auftrag konnte nicht gespeichert werden und wurde daher nicht exportiert. Speichern Sie ihn und exportieren Sie erneut.",
@@ -4225,6 +4237,10 @@ const de: Dict = {
   "edge.flatOff": "Flachdach: Neigung und Traufe / Giebel der Wände werden nicht verwendet",
   "new.pastChosen": "Kopiert wird:",
   "err.unknown_keys": "Der Auftrag enthält fremde Daten (Schlüssel, die Tectora nicht kennt), die zu groß oder zu tief verschachtelt sind (höchstens 64 KB und 32 Ebenen), deshalb kann Tectora nicht mit ihm arbeiten. Was über der Grenze liegt, steht in den Details: Entfernen Sie diese Daten in dem Programm, das sie geschrieben hat.",
+  "err.busy_open": "Ein Menü, ein Dialog oder eine Rückfrage ist geöffnet, daher wurde nichts ausgeführt. Schließen Sie es und versuchen Sie es erneut.",
+  "err.action.revertAll": "Die Änderungen konnten nicht verworfen werden",
+  "folderReq.jobCloses": "Der geöffnete Auftrag wird gespeichert und geschlossen.",
+  "folderReq.jobsStay": "Bestehende Aufträge bleiben im alten Ordner.",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };

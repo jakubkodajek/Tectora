@@ -288,3 +288,47 @@ describe("a job file in another encoding (round 5)", () => {
     expect(DICTS.de["err.unreadable_text"]).not.toMatch(/beschädigt/i);
   });
 });
+
+describe("round 14: the press's own notices (TEST-1303, UX-1301, UI-1301)", () => {
+  const LOCALES = ["cs", "sk", "en", "de"] as Locale[];
+
+  it("busy_edits, busy_open and left_before_action give their own text in every language, as warnings", async () => {
+    const { notifyError, toasts, dismiss } = await import("./notify.svelte");
+    for (const l of LOCALES) {
+      setLocale(l);
+      const texts = new Set<string>();
+      for (const code of ["busy_edits", "busy_open", "left_before_action"]) {
+        const d = describeError({ code, id: "x", detail: "d" }, "revert");
+        expect(d.code).toBe(code);
+        expect(d.message, `${l} ${code}`).toBe(t(`err.${code}`));
+        expect(d.message, `${l} ${code} is not the unknown-code text`).not.toBe(t("err.unknown"));
+        texts.add(d.message);
+        const id = notifyError({ code, id: "x" }, "revert", "Job");
+        expect(toasts.find((x) => x.id === id)?.kind, `${l} ${code}`).toBe("warning");
+        dismiss(id);
+      }
+      expect(texts.size, l).toBe(3);
+    }
+  });
+
+  it("busy_edits speaks of the press, not of a step, and cs / sk have no comma before nebo / alebo (UX-1301)", () => {
+    expect(DICTS.cs["err.busy_edits"]).toContain("před stisknutím");
+    expect(DICTS.sk["err.busy_edits"]).toContain("pred stlačením");
+    expect(DICTS.en["err.busy_edits"]).toContain("before you pressed it");
+    expect(DICTS.de["err.busy_edits"]).toContain("vor dem Klick");
+    expect(DICTS.cs["err.busy_edits"]).not.toMatch(/, nebo/);
+    expect(DICTS.sk["err.busy_edits"]).not.toMatch(/, alebo/);
+    for (const l of LOCALES) expect(DICTS[l]["err.busy_edits"], l).not.toMatch(/tímto krokem|týmto krokom|this step|diesem Schritt/);
+  });
+
+  it("Revert all refused is titled in the plural, its own key in every language (UI-1301)", () => {
+    for (const l of LOCALES) {
+      setLocale(l);
+      const all = describeError({ code: "busy", id: "x" }, "revertAll").title;
+      expect(all, l).toBe(t("err.action.revertAll"));
+      expect(all, l).not.toBe(t("err.action.revert"));
+    }
+    setLocale("en");
+    expect(describeError({ code: "busy" }, "revertAll").title).toBe("Could not revert the changes");
+  });
+});

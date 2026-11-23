@@ -13,7 +13,8 @@
   import Icon from "./Icon.svelte";
   import JobPanel from "./JobPanel.svelte";
   import LanguagePicker from "./LanguagePicker.svelte";
-  import Modal, { openModals } from "./Modal.svelte";
+  import Modal from "./Modal.svelte";
+  import { openModals } from "./modalcount";
   import ExportDialog from "./ExportDialog.svelte";
   import PlanView from "./PlanView.svelte";
   import Results from "./Results.svelte";
@@ -1009,6 +1010,13 @@
    * gives up with `busy` and changes nothing (ERR-1102).
    */
   const PREPARE_MS = 3000;
+  /**
+   * The budget of this press. Only the dev build (the E2E run) reads a
+   * longer one a test set on `window.__e2e.prepareMs`, for the tests whose
+   * steps inside the budget are wall-clock (TEST-1306); a release build
+   * always waits PREPARE_MS.
+   */
+  const prepareMs = (): number => (import.meta.env.DEV && Number((globalThis as { __e2e?: { prepareMs?: unknown } }).__e2e?.prepareMs)) || PREPARE_MS;
 
   /**
    * Revert, Revert all and the put-back of the offer's figures: a short
@@ -1053,7 +1061,10 @@
   const quiet = () =>
     pendingEdits.size === 0 && saveState === "saved" && !drag.active && !isTyping(document.activeElement) && questions === 0 && !menu && openModals() === 0;
 
-  function reviewTransaction(what: "revert" | "restoreOffer", call: () => Promise<Project>, after: (p: Project) => void | Promise<void>): Promise<void> {
+  /** What a press is, for its notices: Revert of several steps has its own (plural) title (UI-1301). */
+  type ReviewPress = "revert" | "revertAll" | "restoreOffer";
+
+  function reviewTransaction(what: ReviewPress, call: () => Promise<Project>, after: (p: Project) => void | Promise<void>): Promise<void> {
     if (reviewing.active || reviewPress) return Promise.resolve();
     const press: Promise<void> = prepareReview(what, call, after).finally(() => {
       if (reviewPress === press) reviewPress = null;
@@ -1062,9 +1073,10 @@
     return press;
   }
 
-  async function prepareReview(what: "revert" | "restoreOffer", call: () => Promise<Project>, after: (p: Project) => void | Promise<void>) {
+  async function prepareReview(what: ReviewPress, call: () => Promise<Project>, after: (p: Project) => void | Promise<void>) {
     const name = project?.name.trim() || id;
-    const deadline = Date.now() + PREPARE_MS;
+    const budget = prepareMs();
+    const deadline = Date.now() + budget;
     const LATE = Symbol("late");
     const within = <T,>(p: Promise<T>): Promise<T | typeof LATE> =>
       Promise.race([p, new Promise<typeof LATE>((r) => setTimeout(() => r(LATE), Math.max(0, deadline - Date.now())))]);
@@ -1103,15 +1115,20 @@
       left();
       return;
     }
-    // The edits before the press did not settle in time: typed, asked,
-    // still with the core, or their save waits for another writer's lock
-    // (UX-1201; `busy` is the core's own lock answer).
-    notifyError({ code: "busy_edits", id, detail: `the edits made before the press were not saved within ${PREPARE_MS} ms` }, what, name);
+    // The edits before the press did not settle in time: typed, still with
+    // the core, or their save waits for another writer's lock (UX-1201;
+    // `busy` is the core's own lock answer). When they did and only a
+    // question, a menu or a dialog held the claim, the notice says that
+    // instead: the status bar says saved by then (UX-1301).
+    const settled = pendingEdits.size === 0 && saveState === "saved" && !drag.active && !isTyping(document.activeElement);
+    const held = questions > 0 || !!menu || openModals() > 0;
+    if (settled && held) notifyError({ code: "busy_open", id, detail: `a menu, dialog or question was still open after ${budget} ms` }, what, name);
+    else notifyError({ code: "busy_edits", id, detail: `the edits made before the press were not saved within ${budget} ms` }, what, name);
   }
 
   /** Phase 2 of `reviewTransaction`: claims the transaction at once (synchronously) and sends the call. */
-  function runReview(what: "revert" | "restoreOffer", name: string, call: () => Promise<Project>, after: (p: Project) => void | Promise<void>) {
-    reviewWhat = what;
+  function runReview(what: ReviewPress, name: string, call: () => Promise<Project>, after: (p: Project) => void | Promise<void>) {
+    reviewWhat = what === "restoreOffer" ? "restoreOffer" : "revert";
     return reviewing.run(async () => {
       try {
         clearTimeout(saveTimer);
@@ -1190,7 +1207,7 @@
     // the file, merging the revert onto them (ERR-001); the transaction
     // saves them first.
     await reviewTransaction(
-      "revert",
+      all && shown > 1 ? "revertAll" : "revert",
       async () => {
         const oldest = pendingList[pendingList.length - 1];
         if (all && oldest) {

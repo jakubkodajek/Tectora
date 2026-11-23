@@ -22,6 +22,7 @@ export type Action =
   | "duplicate"
   | "import"
   | "revert"
+  | "revertAll"
   | "restoreOffer"
   | "accept"
   | "calc"
@@ -81,6 +82,7 @@ const KNOWN = new Set([
   "revert_stale",
   "busy",
   "busy_edits",
+  "busy_open",
   "left_before_action",
   "save_conflict",
   "not_saved",

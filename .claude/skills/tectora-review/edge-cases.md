@@ -532,6 +532,16 @@ case, and assert that it really came while the pointer was down.
   Back and another job opened (no toast, the left job's stored result
   unchanged), the dock moved to Results (its button still stores).
   `app/e2e/audit-r14-ed.e2e.ts`.
+- The prepare phase says what held it (round 14, UX-1301, TEST-1301): with
+  the edits saved and only a menu, dialog or question open at the deadline
+  the notice is `busy_open`, else `busy_edits`; a dialog opened and closed
+  before the press holds nothing (`modalcount.ts`, its release counts
+  once). Revert all refused is titled in the plural (`err.action.revertAll`,
+  UI-1301). `gate.scan.test.ts` lists every `await confirm(` of the editor
+  by its function (inside `asking`, or passive with a reason), requires
+  `asking`'s `finally`, and refuses a spread inside a `notify(` literal
+  (TEST-1303, TEST-1305). A test whose steps inside the 3 s budget are
+  wall-clock sets the dev build's `window.__e2e.prepareMs` (TEST-1306).
 
 ## 16. Huge but valid jobs reach every view (@arch, @ui)
 

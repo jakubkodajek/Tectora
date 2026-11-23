@@ -259,6 +259,8 @@ describe("the writer gate covers every entry point outside the editor's refusal 
         const arg = balanced(src, m.index! + m[0].length - 1).slice(1, -1).trim();
         // An options object built elsewhere would hide its action.
         expect(arg.startsWith("{"), `${file}: notify( with something other than an object literal: ${arg.slice(0, 40)}`).toBe(true);
+        // A spread hides an action from the count (TEST-1305).
+        expect(arg.includes("..."), `${file}: a spread inside notify( ${arg.slice(0, 40)}`).toBe(false);
         const keys = [...arg.matchAll(/(?<![\w$.])action\s*(?=[:,}]|$)/g)].length;
         const named = [...arg.matchAll(/(?<![\w$.])action:\s*\{\s*label:\s*t\("([\w.]+)"/g)];
         expect(keys, `${file}: a toast action of another shape (shorthand, variable)`).toBe(named.length);
@@ -386,3 +388,66 @@ function body2(src: string, name: string): string {
   if (at < 0) return "";
   return src.slice(at, src.indexOf("\n  }\n", at));
 }
+
+describe("round 14: the press's questions and exits (TEST-1303, TEST-1305, UX-1301)", () => {
+  const script = (src: string) => {
+    const at = src.indexOf('<script lang="ts">');
+    return src.slice(at, src.indexOf("</script>", at));
+  };
+
+  /** Every named function of `src` with the range of its body. */
+  function functions(src: string): { name: string; from: number; to: number }[] {
+    const out: { name: string; from: number; to: number }[] = [];
+    for (const m of src.matchAll(/\bfunction\s+([\w$]+)\s*(?:<[^>(]*>)?\(/g)) {
+      const params = balanced(src, m.index! + m[0].length - 1);
+      const open = src.indexOf("{", m.index! + m[0].length - 1 + params.length);
+      out.push({ name: m[1], from: open, to: open + balanced(src, open).length });
+    }
+    return out;
+  }
+
+  it("asking() counts its question down in a finally, so a throw cannot leave the claim held (TEST-1303)", () => {
+    const editor = stripComments(files["Editor.svelte"]);
+    const at = editor.indexOf("async function asking<R>(");
+    expect(at).toBeGreaterThan(0);
+    const asking = editor.slice(at, editor.indexOf("\n  }\n", at));
+    expect(asking).toMatch(/questions\+\+;\s*try \{[\s\S]*\} finally \{\s*questions--/);
+  });
+
+  it("every await confirm( of the editor is inside asking() or listed as passive with a reason (TEST-1305)", () => {
+    const editor = script(stripComments(files["Editor.svelte"]));
+    const fns = functions(editor);
+    const ASKING = ["deleteVertexByKey", "deleteDormer", "clearRoof", "deletePart"];
+    const PASSIVE: Record<string, string> = {
+      leaveGuard: "the way out asks before dropping a footprint being drawn; no job edit follows its answer",
+      revertNow: "asks before Revert all; the press and its prepare phase start only after the answer",
+      cancelDraw: "drops the footprint being drawn, which is not in the job; no job edit follows",
+    };
+    const seen: string[] = [];
+    for (const m of editor.matchAll(/await\s+confirm\(/g)) {
+      const at = m.index!;
+      const inner = fns.filter((f) => f.from < at && at < f.to).sort((a, b) => a.to - a.from - (b.to - b.from))[0];
+      expect(inner, `an await confirm( outside any named function at ${at}`).toBeTruthy();
+      expect(ASKING.includes(inner.name) || inner.name in PASSIVE, `${inner.name}: a new confirm-then-edit: wrap it in asking() and list it, or list it as passive with why`).toBe(true);
+      seen.push(inner.name);
+      if (ASKING.includes(inner.name)) {
+        const body = editor.slice(inner.from, inner.to);
+        const call = body.search(/\basking\(/);
+        expect(call, `${inner.name} runs asking(`).toBeGreaterThan(0);
+        const span = balanced(body, body.indexOf("(", call));
+        const rel = at - inner.from;
+        const start = body.indexOf("(", call);
+        expect(rel > start && rel < start + span.length, `${inner.name}: the confirm lies inside asking(`).toBe(true);
+      }
+    }
+    expect([...new Set(seen)].sort()).toEqual([...ASKING, ...Object.keys(PASSIVE)].sort());
+  });
+
+  it("the prepare phase names what held it at the deadline: busy_open for a menu, dialog or question, busy_edits for edits (UX-1301)", () => {
+    const editor = stripComments(files["Editor.svelte"]);
+    const prep = body2(editor, "prepareReview");
+    expect(prep).toMatch(/const held = questions > 0 \|\| !!menu \|\| openModals\(\) > 0;/);
+    expect(prep).toMatch(/if \(settled && held\) notifyError\(\{ code: "busy_open"/);
+    expect(prep).toContain('code: "busy_edits"');
+  });
+});

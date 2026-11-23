@@ -80,8 +80,8 @@ export function notifyError(e: unknown, action?: Action, job?: string): number {
   console.error(`[tectora] ${action ?? "error"}:`, e);
   return notify({
     // `busy`: another writer held the job, nothing was done (the action can be pressed again);
-    // `busy_edits` / `left_before_action`: the editor's own press gave up, nothing was done.
-    kind: ["watcher", "settings_unreadable", "busy", "busy_edits", "left_before_action"].includes(d.code) ? "warning" : "error",
+    // `busy_edits` / `busy_open` / `left_before_action`: the editor's own press gave up, nothing was done.
+    kind: ["watcher", "settings_unreadable", "busy", "busy_edits", "busy_open", "left_before_action"].includes(d.code) ? "warning" : "error",
     code: d.code,
     title: job ? t("err.ofJob", { name: job, title: d.title }) : d.title,
     message: d.message,

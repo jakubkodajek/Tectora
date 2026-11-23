@@ -108,6 +108,11 @@ test.describe("round 13: the prepare phase claims only a quiet editor (design A)
 
   test("prepare-typing with Enter: the value is saved first, then the revert runs (ERR-1201)", async ({ app, page, mcp }) => {
     const id = await readyNotes(app, page, mcp, "R13 Enter");
+    // The steps below are wall-clock inside the press's budget: the dev
+    // build's longer one, so a loaded machine does not turn a correct run
+    // into busy_edits (TEST-1306). Enter cannot come before the release:
+    // the status change's figures would be of a roof the job no longer has.
+    await page.evaluate(() => ((window as any).__e2e.prepareMs = 15_000));
     const snap = await pressDuringEdit(page);
     await typeInto(page, pitch(page), "37");
     snap.release();
@@ -148,10 +153,12 @@ test.describe("round 13: the prepare phase claims only a quiet editor (design A)
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: "right" });
     const entry = page.getByRole("menuitem", { name: cs("menu.makeGable") });
     await expect(entry).toBeVisible();
-    snap.release();
-    await page.waitForTimeout(600);
+    await page.waitForTimeout(300);
     expect(reverts, "no call while the menu is open").toEqual([]);
+    // The entry before the release: no wall-clock step lies inside the
+    // press's 3 s budget after it (TEST-1306).
     await entry.click();
+    snap.release();
     const p = await waitForProject(id, (p) => !p.notes, 8000);
     expect(p.parts[0].edges[0].pitch_deg, "the menu's edit was made").toBe(90);
     await app.saved();
@@ -185,7 +192,9 @@ test.describe("round 13: the prepare phase claims only a quiet editor (design A)
     await expect(dlg).toBeVisible();
     snap.release();
     await expect(revertNote(app, "R13 dialog")).toHaveCount(1, { timeout: 6000 });
-    await expect(revertNote(app, "R13 dialog")).toContainText(cs("err.busy_edits"));
+    // The edits were saved by then: the notice names the open dialog (round 14 design E, UX-1301).
+    await expect(revertNote(app, "R13 dialog")).toContainText(cs("err.busy_open"));
+    await expect(revertNote(app, "R13 dialog")).not.toContainText(cs("err.busy_edits"));
     expect(reverts).toEqual([]);
     await page.keyboard.press("Escape");
     await expect(dlg).toHaveCount(0);
@@ -212,7 +221,9 @@ test.describe("round 13: the prepare phase claims only a quiet editor (design A)
     await expect.poll(() => page.evaluate(() => typeof (window as any).__answer)).toBe("function");
     snap.release();
     await expect(revertNote(app, "R13 dotaz")).toHaveCount(1, { timeout: 6000 });
-    await expect(revertNote(app, "R13 dotaz")).toContainText(cs("err.busy_edits"));
+    // The edits were saved by then: the notice names the open question (round 14 design E, UX-1301).
+    await expect(revertNote(app, "R13 dotaz")).toContainText(cs("err.busy_open"));
+    await expect(revertNote(app, "R13 dotaz")).not.toContainText(cs("err.busy_edits"));
     expect(reverts).toEqual([]);
     await page.evaluate(() => (window as any).__answer(true));
     const p = await waitForProject(id, (p) => p.parts.length === 0, 8000);
