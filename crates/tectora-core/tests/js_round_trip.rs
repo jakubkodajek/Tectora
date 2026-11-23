@@ -272,3 +272,84 @@ mod fuzz {
         }
     }
 }
+
+/// Audit 2026-11-23 HUNT-901: an unknown key is not input geometry, so a
+/// big number in it (a CRM's millisecond time, a price) neither blocks the
+/// calculation nor a save. The app's save goes through JavaScript, which
+/// keeps every number as an f64: an integer above 2^53 in an unknown key
+/// may come back rounded. That is allowed (Jakub's decision 2026-11-23,
+/// round 10 question 5), as for `taken_ms` under Design B, and the test
+/// says what the file then holds.
+#[test]
+fn a_big_number_in_an_unknown_key_saves_from_the_app_and_may_be_rounded() {
+    let store = temp_store("bigext");
+    for (id, extra) in [
+        ("x-ts", r#""exported_at_ms": 1732300000000"#),
+        ("x-nest", r#""crm": {"price": 250000.5}"#),
+        ("x-1e21", r#""vendor": 1e21"#),
+        ("x-u64max", r#""vendor": 18446744073709551615"#),
+        ("x-2p53", r#""vendor": 9007199254740993"#),
+        ("x-negbig", r#""vendor": -9223372036854775809"#),
+    ] {
+        plant(&store, id, "1700000000000", extra);
+        let p = store.load(id).unwrap();
+        assert_eq!(p.check_limits(), Ok(()), "{id}");
+        assert!(
+            matches!(app_save(&store, id), CheckedSave::Saved { .. }),
+            "{id}: the app's save was refused"
+        );
+        assert_eq!(store.load(id).unwrap().notes, "typed in the app", "{id}");
+    }
+    // The app's save wrote the f64 JavaScript had: 2^53 + 1 is 2^53 now.
+    let text = std::fs::read_to_string(store.dir.join("x-2p53.tectora")).unwrap();
+    assert!(text.contains("9007199254740992"), "{text}");
+    // An exact writer (MCP, the CLI) keeps the digits.
+    plant(
+        &store,
+        "x-mcp",
+        "1700000000000",
+        r#""vendor": 9007199254740993"#,
+    );
+    let mut p = store.load("x-mcp").unwrap();
+    p.notes = "from the AI".into();
+    store
+        .save_as(Some("x-mcp".into()), &p, "claude", "Notes")
+        .unwrap();
+    let text = std::fs::read_to_string(store.dir.join("x-mcp.tectora")).unwrap();
+    assert!(text.contains("9007199254740993"), "{text}");
+}
+
+/// Audit 2026-11-23 TEST-901: a key or an array element another writer
+/// removed meanwhile is a change the app's checked save must not write
+/// back over (`same_for_js` compares lengths, not only the common part).
+#[test]
+fn an_app_save_refuses_a_key_or_element_removed_meanwhile() {
+    let store = temp_store("removed");
+    plant(
+        &store,
+        "j",
+        "1700000000000",
+        r#""vendor_a": 1, "vendor_b": 2, "vendor_l": [1, 2, 3]"#,
+    );
+    let base = through_js(&store.load("j").unwrap());
+    let mut mine = base.clone();
+    mine.notes = "typed in the app".into();
+    // Another writer removes a key.
+    let mut other = store.load("j").unwrap();
+    other.extra.remove("vendor_b");
+    store.save(Some("j".into()), &other).unwrap();
+    assert!(matches!(
+        store.save_checked("j", &mine, &base).unwrap(),
+        CheckedSave::Conflict { .. }
+    ));
+    // And one that shortens an array.
+    let mut other = store.load("j").unwrap();
+    other.extra.insert("vendor_b".into(), json!(2));
+    other.extra.insert("vendor_l".into(), json!([1, 2]));
+    store.save(Some("j".into()), &other).unwrap();
+    assert!(matches!(
+        store.save_checked("j", &mine, &base).unwrap(),
+        CheckedSave::Conflict { .. }
+    ));
+    assert_eq!(store.load("j").unwrap().notes, "");
+}
