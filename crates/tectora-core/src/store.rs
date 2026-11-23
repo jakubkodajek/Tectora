@@ -1127,12 +1127,33 @@ fn modified_ms(path: &Path) -> u64 {
 /// Text serde cannot parse (nested over its limit, or cut short by a sync)
 /// is looked at by [`scan_version`], so a newer file is still known as
 /// newer and refused instead of repaired as damaged (audit ERR-1402).
+/// One rule for both paths (audit 2026-11-23 ARCH-1502): the version is
+/// the largest of what serde read and what the scan finds, so a duplicate
+/// key, an escaped key, `1e400` or `99.5` answer the same whether the
+/// text parses or not.
 pub(crate) fn newer_format(text: &str) -> Option<u64> {
-    let version = match serde_json::from_str::<serde_json::Value>(text) {
-        Ok(v) => whole_version(v.get("schema_version")?)?,
-        Err(_) => scan_version(text.as_bytes())?,
-    };
+    let parsed = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("schema_version").and_then(whole_version));
+    let version = parsed
+        .into_iter()
+        .chain(scan_version(text.as_bytes()))
+        .max()?;
     (version > u64::from(crate::model::SCHEMA_VERSION)).then_some(version)
+}
+
+/// The `schema_version` of the job file at `path` when it is newer than
+/// this Tectora reads, else `None`: its text through [`newer_format`], or,
+/// when it cannot be read as text (too large, not UTF-8), its head scanned
+/// ([`newer_format_head`]). The store's open and save ask it, and so does
+/// the CLI, so a newer file is called newer everywhere (audit 2026-11-23
+/// HUNT-1503).
+pub fn newer_format_of(path: &Path) -> Option<u64> {
+    match read_job_text(path) {
+        Ok(t) => newer_format(&t),
+        Err(e) if matches!(e.code, "too_large" | "unreadable") => newer_format_head(path),
+        Err(_) => None,
+    }
 }
 
 /// How much of a job file too large to read is scanned for its version:
@@ -1181,7 +1202,7 @@ pub(crate) fn scan_version(bytes: &[u8]) -> Option<u64> {
                 }
                 let key = depth == 1 && expect_key;
                 expect_key = false;
-                if key && bytes.get(from..i.saturating_sub(1)) == Some(&b"schema_version"[..]) {
+                if key && is_version_key(bytes.get(from.saturating_sub(1)..i)) {
                     let mut j = i;
                     while bytes.get(j).is_some_and(u8::is_ascii_whitespace) {
                         j += 1;
@@ -1197,11 +1218,7 @@ pub(crate) fn scan_version(bytes: &[u8]) -> Option<u64> {
                         .iter()
                         .position(|c| !matches!(c, b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E'))
                         .map_or(bytes.len(), |n| j + n);
-                    let number = std::str::from_utf8(&bytes[j.min(end)..end])
-                        .ok()
-                        .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok())
-                        .and_then(|n| n.is_number().then(|| whole_version(&n)).flatten());
-                    if let Some(n) = number {
+                    if let Some(n) = scanned_version(&bytes[j.min(end)..end]) {
                         best = Some(best.map_or(n, |b| b.max(n)));
                     }
                     i = end.max(i);
@@ -1224,6 +1241,70 @@ pub(crate) fn scan_version(bytes: &[u8]) -> Option<u64> {
         }
     }
     best
+}
+
+/// Whether `raw`, a JSON string with its quotes, is the key
+/// `schema_version`, also spelled with escapes (`"schema\u005fversion"`,
+/// audit ARCH-1502). `None` (a string cut short) is not.
+fn is_version_key(raw: Option<&[u8]>) -> bool {
+    let Some(raw) = raw.filter(|r| r.len() >= 2 && r.ends_with(b"\"")) else {
+        return false;
+    };
+    if !raw.contains(&b'\\') {
+        return &raw[1..raw.len() - 1] == b"schema_version";
+    }
+    serde_json::from_slice::<String>(raw).is_ok_and(|k| k == "schema_version")
+}
+
+/// The version a number token after `schema_version` stands for, by the
+/// scan's own rule (audit ARCH-1502): a whole number as it is, a fraction
+/// rounded up (`99.5` is newer than 99), a number too large for serde
+/// (`1e400`) held at `u64::MAX`; `None` for a negative number or what is
+/// not a JSON number.
+fn scanned_version(token: &[u8]) -> Option<u64> {
+    if !is_json_number(token) || token.starts_with(b"-") {
+        return None;
+    }
+    let text = std::str::from_utf8(token).ok()?;
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(n) => n.as_u64().or_else(|| {
+            n.as_f64()
+                .filter(|f| f.is_finite() && *f >= 0.0)
+                .map(|f| f.ceil().min(u64::MAX as f64) as u64)
+        }),
+        // A well-formed positive number serde cannot hold is too large.
+        Err(_) => Some(u64::MAX),
+    }
+}
+
+/// `token` is a number by JSON's grammar: `-?(0|[1-9][0-9]*)(.[0-9]+)?([eE][+-]?[0-9]+)?`.
+fn is_json_number(token: &[u8]) -> bool {
+    let digits = |t: &[u8], at: usize| t[at..].iter().take_while(|c| c.is_ascii_digit()).count();
+    let mut i = usize::from(token.first() == Some(&b'-'));
+    match token.get(i) {
+        Some(b'0') => i += 1,
+        Some(b'1'..=b'9') => i += digits(token, i),
+        _ => return false,
+    }
+    if token.get(i) == Some(&b'.') {
+        let n = digits(token, i + 1);
+        if n == 0 {
+            return false;
+        }
+        i += 1 + n;
+    }
+    if matches!(token.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(token.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        let n = digits(token, i);
+        if n == 0 {
+            return false;
+        }
+        i += n;
+    }
+    i == token.len()
 }
 
 /// A format version in a file as a whole number: `4.0` and `1e30` are
@@ -3035,14 +3116,7 @@ impl Store {
     ) -> Result<(), StoreError> {
         let path = self.path(id)?;
         self.library_present()?;
-        if let Some(version) = (!checked)
-            .then(|| match read_job_text(&path) {
-                Ok(t) => newer_format(&t),
-                Err(e) if matches!(e.code, "too_large" | "unreadable") => newer_format_head(&path),
-                Err(_) => None,
-            })
-            .flatten()
-        {
+        if let Some(version) = (!checked).then(|| newer_format_of(&path)).flatten() {
             return Err(StoreError::NewerFormat {
                 id: id.to_string(),
                 version,
@@ -7310,6 +7384,131 @@ mod tests {
             scan_version(b"{\"schema_version\":2,\"schema_version\":7}"),
             Some(7)
         );
+    }
+
+    /// TEST-1501: a newer Tectora's file cut by a sync inside a multi-byte
+    /// character (any Czech name) is not UTF-8: still refused as newer on
+    /// open and on save, and the file is kept (`newer_format_head` on
+    /// `unreadable`).
+    #[test]
+    fn t1601_a_newer_file_cut_inside_a_character_is_refused_as_newer() {
+        let store = temp_store("t1601");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let path = store.path(&id).unwrap();
+        let v = crate::model::SCHEMA_VERSION + 1;
+        let text = format!("{{\"schema_version\": {v}, \"name\": \"Střecha\", \"notes\": \"ř\"}}");
+        let bytes = text.as_bytes();
+        let at = text.find("ř\"}").unwrap() + 1; // inside the two bytes of the last "ř"
+        let cut = &bytes[..at];
+        assert!(std::str::from_utf8(cut).is_err());
+        fs::write(&path, cut).unwrap();
+        assert_eq!(store.load(&id).unwrap_err().code(), "newer_format");
+        let mut mine = p.clone();
+        mine.notes = "mine".into();
+        assert_eq!(
+            store.save(Some(id.clone()), &mine).unwrap_err().code(),
+            "newer_format"
+        );
+        assert_eq!(
+            store.save_checked(&id, &mine, &p).unwrap_err().code(),
+            "newer_format"
+        );
+        assert_eq!(fs::read(&path).unwrap(), cut);
+        assert_eq!(newer_format_of(&path), Some(u64::from(v)));
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// TEST-1501: the scan steps over escaped quotes in a string before
+    /// the version, and takes the largest of duplicate keys in either order.
+    #[test]
+    fn t1602_scan_version_steps_over_escaped_quotes() {
+        assert_eq!(
+            scan_version(br#"{"name":"a \" b","schema_version":99,"x":[[["#),
+            Some(99)
+        );
+        assert_eq!(
+            scan_version(br#"{"schema_version":7,"schema_version":2,"x":["#),
+            Some(7)
+        );
+        assert_eq!(
+            scan_version(br#"{"schema_version":2,"schema_version":7,"x":["#),
+            Some(7)
+        );
+    }
+
+    /// Audit 2026-11-23 ARCH-1502: every spelling of a newer version is
+    /// newer on both paths (text serde parses, and text it cannot: nested
+    /// over its limit), and the app's save leaves the file as it is.
+    #[test]
+    fn newer_spellings_are_refused_on_open_and_on_save() {
+        let store = temp_store("newer-spellings");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let path = store.path(&id).unwrap();
+        let good: serde_json::Value = serde_json::from_str(&p.to_json().unwrap()).unwrap();
+        let body = good
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| *k != "schema_version");
+        let rest: String = body
+            .map(|(k, v)| format!(",{}:{v}", serde_json::Value::String(k.clone())))
+            .collect();
+        let deep = format!(",\"crm\":{}{}", "[".repeat(300), "]".repeat(300));
+        let mine = {
+            let mut m = p.clone();
+            m.notes = "mine".into();
+            m
+        };
+        for (name, head) in [
+            ("huge", "{\"schema_version\":1e400"),
+            ("fraction", "{\"schema_version\":99.5"),
+            ("escaped key", "{\"schema\\u005fversion\":99"),
+            (
+                "dup 99 then 3",
+                "{\"schema_version\":99,\"schema_version\":3",
+            ),
+            (
+                "dup 3 then 99",
+                "{\"schema_version\":3,\"schema_version\":99",
+            ),
+        ] {
+            for tail in ["", deep.as_str()] {
+                let text = format!("{head}{rest}{tail}}}");
+                fs::write(&path, &text).unwrap();
+                let what = format!("{name}, deep: {}", !tail.is_empty());
+                assert!(newer_format(&text).is_some(), "{what}");
+                assert_eq!(
+                    store.load(&id).unwrap_err().code(),
+                    "newer_format",
+                    "{what}"
+                );
+                assert_eq!(
+                    store.save_checked(&id, &mine, &p).unwrap_err().code(),
+                    "newer_format",
+                    "{what}"
+                );
+                assert_eq!(
+                    fs::read_to_string(&path).unwrap(),
+                    text,
+                    "{what}: file kept"
+                );
+            }
+        }
+        // Not newer: the current version, a fraction below it, a negative
+        // or broken number, and a string (known-open TEST-008).
+        let v = crate::model::SCHEMA_VERSION;
+        for head in [
+            format!("{{\"schema_version\":{v}"),
+            format!("{{\"schema_version\":{}.5", v - 1),
+            "{\"schema_version\":-1e400".to_string(),
+            "{\"schema_version\":1e".to_string(),
+            "{\"schema_version\":\"99\"".to_string(),
+        ] {
+            assert_eq!(newer_format(&format!("{head}{rest}}}")), None, "{head}");
+        }
+        let _ = fs::remove_dir_all(&store.dir);
     }
 
     #[test]
