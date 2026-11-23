@@ -17,6 +17,12 @@ export interface Toast {
   count: number;
   /** One button that does what the message offers (e.g. "Open"); the toast closes after it. */
   action?: { label: string; run: () => unknown };
+  /**
+   * What the toast is about when its text may repeat for another thing
+   * (the trash entry of a deleted job): toasts merge only with the same
+   * key, so each keeps its own action (audit 2026-11-23 ERR-1403).
+   */
+  key?: string;
 }
 
 export const toasts = $state<Toast[]>([]);
@@ -54,7 +60,7 @@ export function hold(id: number, on: boolean) {
 }
 
 export function notify(t: Omit<Toast, "id" | "count">): number {
-  const same = toasts.find((x) => x.kind === t.kind && x.title === t.title && x.message === t.message);
+  const same = toasts.find((x) => x.kind === t.kind && x.title === t.title && x.message === t.message && x.key === t.key);
   if (same) {
     same.count += 1;
     same.detail = t.detail ?? same.detail;

@@ -202,7 +202,7 @@
       onchanged();
       loadTrash();
       // The confirm promised the trash: say where it went and offer it back at once (UX-010).
-      if (gone) deleteToasts.set(gone.entry, notify({ kind: "info", title: t("home.deleted", { name: gone.name || p.name }), action: { label: t("home.restore"), run: () => restore(gone) } }));
+      if (gone) deleteToasts.set(gone.entry, notify({ kind: "info", title: t("home.deleted", { name: gone.name || p.name }), key: gone.entry, action: { label: t("home.restore"), run: () => restore(gone) } }));
     });
 
   /** Deleted jobs in the library's trash (removed attachments are left out), newest first. */

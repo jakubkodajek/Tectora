@@ -3,11 +3,13 @@
 // ERR-1401  an open job another program made unreadable: the notice says what
 //           the next save does, "replaced" after it; leaving without an edit
 //           writes nothing
+// ERR-1403  two jobs of one name deleted: two toasts, each Restore brings its
+//           own job back
 import fs from "node:fs";
 import path from "node:path";
 import { bar, openEditor, selectWall, setField } from "./editor";
 import { LIBRARY_DIR } from "./env";
-import { createExample, expect, noToast, test } from "./fixtures";
+import { bridge, createExample, expect, listProjects, noToast, test } from "./fixtures";
 import { cs } from "./i18n";
 
 // TECTORA_SHOTS=<folder>/ saves a screenshot after each test (fix evidence).
@@ -67,5 +69,24 @@ test.describe("round 15, part B", () => {
     await expect(page.locator("header .brand")).toBeVisible();
     await noToast(app.toasts().filter({ hasText: cs("editor.outsideReplaced") }));
     expect(fs.readFileSync(file, "utf8")).toBe(text);
+  });
+
+  test("two jobs of one name deleted give two toasts, and each Restore brings its own job back (ERR-1403)", async ({ app, page }) => {
+    const a = await createExample("hip", "R15 dvojče");
+    const b = await createExample("gable", "R15 dvojče");
+    expect(a).not.toBe(b);
+    await app.open();
+    const detail = page.locator("aside.detail");
+    for (let k = 0; k < 2; k++) {
+      await app.answerConfirm(true);
+      await page.getByRole("row").filter({ hasText: "R15 dvojče" }).first().click();
+      await detail.getByRole("button", { name: cs("card.delete") }).click();
+      await expect.poll(async () => (await listProjects()).length).toBe(1 - k);
+    }
+    const deleted = app.toasts().filter({ hasText: cs("home.deleted", { name: "R15 dvojče" }) });
+    await expect(deleted).toHaveCount(2);
+    for (let k = 0; k < 2; k++) await deleted.first().getByRole("button", { name: cs("home.restore") }).click();
+    await expect.poll(async () => (await listProjects()).map((p) => p.id).sort()).toEqual([a, b].sort());
+    await expect.poll(async () => (await bridge<unknown[]>("list_deleted")).length).toBe(0);
   });
 });
