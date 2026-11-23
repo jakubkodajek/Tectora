@@ -363,6 +363,99 @@ fn nested(n: usize) -> Value {
     v
 }
 
+/// `{"a": {"a": … {}}}` with `n` objects inside each other.
+fn nested_objects(n: usize) -> Value {
+    let mut v = json!({});
+    for _ in 1..n {
+        v = json!({ "a": v });
+    }
+    v
+}
+
+/// `n` levels, arrays and objects in turn.
+fn nested_mixed(n: usize) -> Value {
+    let mut v = json!({});
+    for k in 1..n {
+        v = if k % 2 == 1 {
+            Value::Array(vec![v])
+        } else {
+            json!({ "a": v })
+        };
+    }
+    v
+}
+
+/// Audit 2026-11-23 TEST-1302: objects inside objects, and objects and
+/// arrays in turn, go through the app's path at the deepest nesting
+/// allowed and are refused on open one level deeper, as arrays are.
+#[test]
+fn deep_unknown_objects_go_the_way_deep_arrays_go() {
+    let store = temp_store("deep-objects");
+    let max = tectora_core::model::MAX_EXTRA_DEPTH;
+    for (shape, chain) in [
+        ("obj", nested_objects as fn(usize) -> Value),
+        ("mixed", nested_mixed),
+    ] {
+        let ok = format!("ok-{shape}");
+        plant(
+            &store,
+            &ok,
+            "1700000000000",
+            &format!("\"crm\": {}", chain(max)),
+        );
+        let p = store.load(&ok).unwrap();
+        let arg = serde_json::to_string(&json!({ "project": p })).unwrap();
+        let back: Value = serde_json::from_str(&arg).unwrap();
+        let sent: Project = serde_json::from_value(back["project"].clone()).unwrap();
+        assert_eq!(sent, p, "{shape}");
+        assert!(
+            matches!(app_save(&store, &ok), CheckedSave::Saved { .. }),
+            "{shape}"
+        );
+        for n in [max + 1, 120] {
+            let id = format!("deep-{shape}-{n}");
+            plant(
+                &store,
+                &id,
+                "1700000000000",
+                &format!("\"crm\": {}", chain(n)),
+            );
+            let e = store.load(&id).unwrap_err();
+            assert_eq!(e.code(), "too_many", "{id}: {e}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&store.dir);
+}
+
+/// Audit 2026-11-23 ARCH-1302 (Jakub's decision 2026-11-23): a job another
+/// program made too deep to open while it was open in the app is repaired
+/// by the app's save with the editor's copy, as a damaged file is.
+#[test]
+fn an_app_save_repairs_a_job_made_too_deep_meanwhile() {
+    let store = temp_store("deep-meanwhile");
+    plant(&store, "j", "1700000000000", "");
+    let base = through_js(&store.load("j").unwrap());
+    let mut mine = base.clone();
+    mine.notes = "typed in the app".into();
+    let max = tectora_core::model::MAX_EXTRA_DEPTH;
+    for deep in [nested_objects(max + 8), nested(max + 8)] {
+        let mut v = serde_json::to_value(store.load("j").unwrap()).unwrap();
+        v["crm"] = deep;
+        std::fs::write(store.dir.join("j.tectora"), v.to_string()).unwrap();
+        assert_eq!(store.load("j").unwrap_err().code(), "too_many");
+        // The app's command checks its copy before the store is called.
+        tectora_core::commands::check_write(Some(&base), &mine).unwrap();
+        assert!(matches!(
+            store.save_checked("j", &mine, &base).unwrap(),
+            CheckedSave::Saved { .. }
+        ));
+        let now = store.load("j").unwrap();
+        assert_eq!(now.notes, "typed in the app");
+        assert!(!now.extra.contains_key("crm"));
+    }
+    let _ = std::fs::remove_dir_all(&store.dir);
+}
+
 /// Audit 2026-11-23 ARCH-1201: every app command sends the job one level
 /// deeper than the file (`{ project }`), and the change log two. At the
 /// deepest nesting allowed the job goes through the wrapper, calculates

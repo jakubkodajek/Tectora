@@ -35,7 +35,8 @@ enum Command {
         #[arg(long)]
         dir: Option<PathBuf>,
     },
-    /// Print a JSON summary of a .tectora file.
+    /// Print a JSON summary of a .tectora file (refused, exit 1, when the
+    /// file is outside the limits `calc` checks).
     Info { input: PathBuf },
     /// Run the MCP server on stdin/stdout for AI clients (Claude, ChatGPT, Gemini).
     Mcp {
@@ -120,6 +121,11 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
         }
         Command::Info { input } => {
             let project = load(&input)?;
+            // The limits `calc` checks, answered as `calc` does: a file the
+            // app would refuse gets no sums (non-finite ones printed as
+            // null, audit 2026-11-23 ERR-1303). The roof is not calculated.
+            tectora_core::commands::check_input(&project)
+                .map_err(|e| anyhow::Error::msg(e.to_string()))?;
             Ok(json!({ "ok": true, "name": project.name, "quantities": plan_quantities(&project) }))
         }
         Command::Calc { input, summary } => {

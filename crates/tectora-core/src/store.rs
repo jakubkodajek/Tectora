@@ -2795,7 +2795,8 @@ impl Store {
     /// overwritten. The check and the write happen under the job's lock
     /// file, which every save of every process (app, MCP server, CLI) takes.
     /// A missing or damaged file is written (repaired with the editor's
-    /// copy, ERR-018); one saved by a newer Tectora is refused.
+    /// copy, ERR-018), so is one that holds too much to open (`TooMany`,
+    /// ARCH-1302); one saved by a newer Tectora is refused.
     ///
     /// The base went through the app's `JSON.parse` / `JSON.stringify`,
     /// which keeps every number as an f64: numbers are compared that way
@@ -2815,7 +2816,16 @@ impl Store {
                     current: Box::new(current),
                 });
             }
-            Ok(_) | Err(StoreError::NotFound(_) | StoreError::Unreadable { .. }) => {}
+            // A file another program made too deep to open is repaired
+            // like a damaged one: the editor's copy passed the limits when
+            // it was opened and the app's command checks it before this
+            // (Jakub's decision 2026-11-23, audit ARCH-1302).
+            Ok(_)
+            | Err(
+                StoreError::NotFound(_)
+                | StoreError::Unreadable { .. }
+                | StoreError::TooMany { .. },
+            ) => {}
             Err(e) => return Err(e),
         }
         // `load` above refused a newer file.
@@ -3290,7 +3300,13 @@ impl Store {
                     id: id.to_string(),
                     ts_ms,
                 })?;
-        let undone = log.len() - pos;
+        // What `revert_locked` undoes, by its own rule: the user's put-back
+        // of the offer's figures after `pos` stays and is not counted
+        // (audit 2026-11-23 HUNT-1301). The pending review starts after
+        // the last user and engine entry and the engine does not
+        // recalculate while a review waits (`refresh_due`), so from a
+        // pending AI change on this counts the AI changes undone.
+        let undone = reverted_entries(&log[pos..]).count();
         let summary = if undone == 1 {
             format!("{REVERTED_PREFIX}{}", log[pos].summary)
         } else {
@@ -3340,12 +3356,8 @@ impl Store {
         };
         let before = current.clone();
         let mut target = None;
-        for (k, entry) in log[pos..].iter().enumerate().rev() {
-            // The user's "offer result restored" stays when other changes
-            // are undone: it is undone only when asked for by itself.
-            if k > 0 && entry.user_restore() {
-                continue;
-            }
+        let undo: Vec<&ActivityEntry> = reverted_entries(&log[pos..]).collect();
+        for entry in undo.into_iter().rev() {
             let earlier = entry
                 .before
                 .clone()
@@ -4107,6 +4119,17 @@ fn reverted_count(summary: &str) -> usize {
 /// The latest logged change that no later revert undid. A second "revert
 /// the latest change" used to revert the first revert and so put the change
 /// back (audit 2026-11-15 HUNTIO-002); it now undoes one more step.
+/// The entries a revert from `from[0]` on undoes, oldest first: the user's
+/// "offer result restored" stays when other changes are undone, it is
+/// undone only when asked for by itself. One rule for the revert and for
+/// the count it reports (audit 2026-11-23 HUNT-1301).
+fn reverted_entries(from: &[ActivityEntry]) -> impl Iterator<Item = &ActivityEntry> {
+    from.iter()
+        .enumerate()
+        .filter(|(k, e)| *k == 0 || !e.user_restore())
+        .map(|(_, e)| e)
+}
+
 fn latest_undone(log: &[ActivityEntry]) -> Option<usize> {
     let mut i = log.len();
     while i > 0 {
@@ -6794,6 +6817,21 @@ mod tests {
             CheckedSave::Saved { .. }
         ));
         assert_eq!(store.load(&id).unwrap(), mine);
+        // Made too deep to open by another program (40 objects, then 40
+        // arrays): repaired the same way, no deep key left (ARCH-1302).
+        for deep in [nested_objects(40), nested(40)] {
+            let mut v = serde_json::to_value(&p).unwrap();
+            v["crm"] = deep;
+            fs::write(store.path(&id).unwrap(), v.to_string()).unwrap();
+            assert_eq!(store.load(&id).unwrap_err().code(), "too_many");
+            assert!(matches!(
+                store.save_checked(&id, &mine, &p).unwrap(),
+                CheckedSave::Saved { .. }
+            ));
+            assert_eq!(store.load(&id).unwrap(), mine);
+            let text = fs::read_to_string(store.path(&id).unwrap()).unwrap();
+            assert!(!text.contains("crm"), "{text}");
+        }
         // Saved by a newer Tectora: refused, file kept.
         let newer = format!(
             "{{\"schema_version\": {}, \"name\": \"x\"}}",
@@ -7084,6 +7122,28 @@ mod tests {
         v
     }
 
+    /// `{"a": {"a": … {}}}` with `n` objects inside each other.
+    fn nested_objects(n: usize) -> serde_json::Value {
+        let mut v = serde_json::json!({});
+        for _ in 1..n {
+            v = serde_json::json!({ "a": v });
+        }
+        v
+    }
+
+    /// `n` levels, objects and arrays in turn: `{"a": [{"a": [ … ]}]}`.
+    fn nested_mixed(n: usize) -> serde_json::Value {
+        let mut v = serde_json::json!({});
+        for k in 1..n {
+            v = if k % 2 == 1 {
+                serde_json::Value::Array(vec![v])
+            } else {
+                serde_json::json!({ "a": v })
+            };
+        }
+        v
+    }
+
     /// Audit 2026-11-23 ERR-1202: the change log wraps the job in its
     /// entry, and a line its reader cannot parse is skipped without a
     /// word, so an AI change then had no review and no Revert. Every line
@@ -7128,23 +7188,42 @@ mod tests {
     fn a_job_with_too_deep_unknown_keys_is_refused_on_open() {
         let store = temp_store("deep-open");
         let p = examples::find("hip").unwrap().project();
-        for n in [crate::model::MAX_EXTRA_DEPTH + 1, 120, 125, 126] {
+        let max = crate::model::MAX_EXTRA_DEPTH;
+        // Arrays, objects (the usual shape of foreign data, TEST-1302) and
+        // both in turn.
+        let deep = [max + 1, 120, 125, 126]
+            .map(|n| (format!("deep-{n}"), nested(n)))
+            .into_iter()
+            .chain([
+                ("deep-obj".to_string(), nested_objects(max + 1)),
+                ("deep-mixed".to_string(), nested_mixed(max + 1)),
+            ]);
+        for (id, deep) in deep {
             let mut v = serde_json::to_value(&p).unwrap();
-            v["crm"] = nested(n);
-            let id = format!("deep-{n}");
+            v["crm"] = deep;
             fs::write(
                 store.dir.join(format!("{id}.tectora")),
                 serde_json::to_string(&v).unwrap(),
             )
             .unwrap();
             let e = store.load(&id).unwrap_err();
-            assert_eq!(e.code(), "too_many", "{n}: {e}");
+            assert_eq!(e.code(), "too_many", "{id}: {e}");
             assert!(e.to_string().contains("nested too deep"), "{e}");
             assert_eq!(e.id(), Some(id.as_str()));
         }
+        // One level less opens, in every shape.
+        for (id, deep) in [
+            ("ok-obj", nested_objects(max)),
+            ("ok-mixed", nested_mixed(max)),
+        ] {
+            let mut v = serde_json::to_value(&p).unwrap();
+            v["crm"] = deep.clone();
+            fs::write(store.dir.join(format!("{id}.tectora")), v.to_string()).unwrap();
+            assert_eq!(store.load(id).unwrap().extra["crm"], deep, "{id}");
+        }
         let (ok, broken) = store.scan().unwrap();
-        assert!(ok.is_empty());
-        assert_eq!(broken.len(), 4);
+        assert_eq!(ok.len(), 2);
+        assert_eq!(broken.len(), 6);
         assert!(broken.iter().all(|b| b.code == "too_many"));
         let _ = fs::remove_dir_all(&store.dir);
     }
@@ -8454,6 +8533,63 @@ mod tests {
         let e = store.revert_last("nope", USER_ACTOR, None).unwrap_err();
         assert_eq!(e.code(), "nothing_to_revert");
         assert!(!store.activity_dir().join("nope.lock").exists());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-23 HUNT-1301: Revert all from an AI change with only
+    /// the user's put-back of the offer's figures after it undoes the AI
+    /// change alone, and says so: the put-back stays and is not counted,
+    /// in the answer nor in the history line.
+    #[test]
+    fn revert_all_does_not_count_the_put_back_it_keeps() {
+        let store = temp_store("revert-count-restore");
+        let (id, p) = old_offer(&store);
+        let offer = p.result_snapshot.clone().unwrap();
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        let mut q = store.load(&id).unwrap();
+        q.notes = "AI note".into();
+        store
+            .save_as(Some(id.clone()), &q, "claude", "Note from AI")
+            .unwrap();
+        let ai_ts = store.activity(&id).last().unwrap().ts_ms;
+        store
+            .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(store.pending_review(&id).unwrap().count, 1);
+        let r = store
+            .revert_to_counted(&id, ai_ts, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(r.undone, 1);
+        assert_eq!(r.project.notes, p.notes);
+        // The put-back's figures are still the stored result.
+        assert_eq!(r.project.result_snapshot, Some(offer.clone()));
+        assert_eq!(store.load(&id).unwrap().result_snapshot, Some(offer));
+        let last = store.activity(&id).last().unwrap().clone();
+        assert_eq!(last.summary, format!("{REVERTED_PREFIX}Note from AI"));
+        assert!(!last.summary.contains("2 changes"), "{}", last.summary);
+        // Two AI changes later: both undone and counted.
+        let mut q = store.load(&id).unwrap();
+        q.notes = "first".into();
+        store
+            .save_as(Some(id.clone()), &q, "claude", "First")
+            .unwrap();
+        let first = store.activity(&id).last().unwrap().ts_ms;
+        q.job.address = "Somewhere 1".into();
+        store
+            .save_as(Some(id.clone()), &q, "claude", "Second")
+            .unwrap();
+        let r = store
+            .revert_to_counted(&id, first, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(r.undone, 2);
+        assert!(
+            store
+                .activity(&id)
+                .last()
+                .unwrap()
+                .summary
+                .starts_with("Reverted 2 changes since: First")
+        );
         let _ = fs::remove_dir_all(&store.dir);
     }
 
