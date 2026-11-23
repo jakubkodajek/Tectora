@@ -223,6 +223,17 @@ struct RefreshedFrom {
     offer_taken_ms: u64,
     /// The engine version of the offer's result.
     from: String,
+    /// The offer's result the recalculation replaced, and the result it
+    /// wrote: the put-back and the card's "recalculated" line read them
+    /// here, so they outlive the change-log entry, which is trimmed after
+    /// [`ACTIVITY_KEEP`] later changes (audit 2026-11-23 HUNT-902).
+    /// `None` in records written by round-9 builds: those read the entry
+    /// while it is in the log, and the next logged save copies them here
+    /// ([`Store::keep_offer_figures`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    offer: Option<crate::snapshot::ResultSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    result: Option<crate::snapshot::ResultSnapshot>,
 }
 
 /// What [`Store::refresh_entry`] did: the engine's change-log entry.
@@ -259,6 +270,26 @@ pub fn refresh_figures(e: &ActivityEntry) -> Option<RefreshFigures> {
         to: new.engine_version.clone(),
         differences: crate::snapshot::compare(old, new),
     })
+}
+
+/// The offer's result and the recalculated one of the engine's change-log
+/// entry at `ts_ms` in `log` (its `before` and `after`); `None` when the
+/// entry is not there or is not the engine's.
+fn entry_results(
+    log: &[ActivityEntry],
+    ts_ms: u64,
+) -> Option<(
+    crate::snapshot::ResultSnapshot,
+    crate::snapshot::ResultSnapshot,
+)> {
+    let e = log.iter().rfind(|e| e.ts_ms == ts_ms)?;
+    if e.actor != ENGINE_ACTOR {
+        return None;
+    }
+    Some((
+        e.before.as_ref()?.result_snapshot.clone()?,
+        e.after.as_ref()?.result_snapshot.clone()?,
+    ))
 }
 
 /// The job's stored result is the engine's recalculation of the offer's
@@ -2199,6 +2230,8 @@ impl Store {
                         entry_ts_ms: 0,
                         offer_taken_ms: old.taken_ms,
                         from: old.engine_version.clone(),
+                        offer: Some(old.clone()),
+                        result: Some(s.clone()),
                     }),
                     pinned: false,
                 });
@@ -2288,27 +2321,67 @@ impl Store {
         project: &Project,
         log: &[ActivityEntry],
     ) -> Option<Recalculation> {
+        self.recalculation_and_offer(id, project, log)
+            .map(|(rec, _)| rec)
+    }
+
+    /// [`Store::recalculation_of`] with the offer's result it replaced.
+    /// Both results come from the origin record ([`RefreshedFrom`]); from
+    /// the engine's change-log entry only for a record a round-9 build
+    /// wrote without them.
+    fn recalculation_and_offer(
+        &self,
+        id: &str,
+        project: &Project,
+        log: &[ActivityEntry],
+    ) -> Option<(Recalculation, crate::snapshot::ResultSnapshot)> {
         let stored = project.result_snapshot.as_ref()?;
         let from = self.result_origin(id, stored.taken_ms)?.refreshed?;
-        let entry = log.iter().rfind(|e| e.ts_ms == from.entry_ts_ms)?;
-        let figures = refresh_figures(entry)?;
-        let fresh = entry.after.as_ref()?.result_snapshot.as_ref()?;
-        if figures.offer_ms != from.offer_taken_ms
+        let (offer, fresh) = match (from.offer, from.result) {
+            (Some(offer), Some(fresh)) => (offer, fresh),
+            _ => entry_results(log, from.entry_ts_ms)?,
+        };
+        if offer.taken_ms != from.offer_taken_ms
             || fresh.taken_ms != stored.taken_ms
             || fresh.engine_version != stored.engine_version
-            || !crate::snapshot::compare(fresh, stored).is_empty()
+            || !crate::snapshot::compare(&fresh, stored).is_empty()
         {
             return None;
         }
-        Some(Recalculation {
-            entry_ts_ms: entry.ts_ms,
-            at: entry.ts_ms,
+        let rec = Recalculation {
+            entry_ts_ms: from.entry_ts_ms,
+            at: from.entry_ts_ms,
             taken_ms: stored.taken_ms,
-            offer_ms: figures.offer_ms,
-            from: figures.from,
-            to: figures.to,
-            differences: figures.differences,
-        })
+            offer_ms: offer.taken_ms,
+            from: offer.engine_version.clone(),
+            to: fresh.engine_version.clone(),
+            differences: crate::snapshot::compare(&offer, &fresh),
+        };
+        Some((rec, offer))
+    }
+
+    /// Copies the offer's and the recalculated result from the engine's
+    /// change-log entry into each origin record a round-9 build wrote
+    /// without them, while the entry is still in `log`; the caller holds
+    /// the job's lock and is about to append (and maybe trim) the log
+    /// (audit 2026-11-23 HUNT-902). Best effort: a record it cannot write
+    /// is tried again on the next save.
+    fn keep_offer_figures(&self, id: &str, log: &[ActivityEntry]) {
+        let mut all = self.result_origins(id);
+        let mut changed = false;
+        for o in &mut all {
+            if let Some(r) = o.refreshed.as_mut()
+                && (r.offer.is_none() || r.result.is_none())
+                && let Some((offer, fresh)) = entry_results(log, r.entry_ts_ms)
+            {
+                r.offer = Some(offer);
+                r.result = Some(fresh);
+                changed = true;
+            }
+        }
+        if changed {
+            let _ = self.write_result_origins(id, &all);
+        }
     }
 
     /// Puts the offer's own stored result back in place of the engine's
@@ -2335,14 +2408,11 @@ impl Store {
             id: id.to_string(),
             detail: "the stored result is not that recalculation".into(),
         };
-        let rec = self
-            .recalculation_of(id, &current, &log)
-            .filter(|r| r.entry_ts_ms == entry_ts_ms)
-            .ok_or_else(stale)?;
-        let old = log
-            .iter()
-            .rfind(|e| e.ts_ms == entry_ts_ms)
-            .and_then(|e| e.before.as_ref()?.result_snapshot.clone())
+        // The offer's figures from the origin record, which outlives the
+        // change-log entry (HUNT-902).
+        let (rec, old) = self
+            .recalculation_and_offer(id, &current, &log)
+            .filter(|(r, _)| r.entry_ts_ms == entry_ts_ms)
             .ok_or_else(stale)?;
         let fresh_area = current
             .result_snapshot
@@ -2744,12 +2814,17 @@ impl Store {
     /// Records `origin`, replacing the one of the same result; the oldest
     /// recorded go beyond [`ORIGINS_KEPT`].
     fn write_result_origin(&self, id: &str, origin: &ResultOrigin) -> Result<(), StoreError> {
-        let io = |e| StoreError::io(Some(id), e);
         let mut all = self.result_origins(id);
         all.retain(|o| o.taken_ms != origin.taken_ms);
         all.push(origin.clone());
         let over = all.len().saturating_sub(ORIGINS_KEPT);
         all.drain(..over);
+        self.write_result_origins(id, &all)
+    }
+
+    /// Writes the origin records of `id` as they are, in their order.
+    fn write_result_origins(&self, id: &str, all: &[ResultOrigin]) -> Result<(), StoreError> {
+        let io = |e| StoreError::io(Some(id), e);
         own_folder(&self.activity_dir()).map_err(io)?;
         let text = serde_json::to_string(&all).map_err(|e| io(e.into()))?;
         write_atomic(&self.result_origin_path(id)?, &text).map_err(io)
@@ -2864,6 +2939,8 @@ impl Store {
         // in the history and the review (audit 2026-11-15 ERR-008).
         // The log is read once per save (ARCH-401).
         let log = self.read_log(id)?;
+        // Before this entry may push the engine's out of the log.
+        self.keep_offer_figures(id, &log.entries);
         // Entries are found and accepted by their time, so each one is later
         // than the one before, even when two saves fall in one millisecond
         // (the review's list then had two equal keys, ERRU-009) or the log
@@ -5780,6 +5857,136 @@ mod tests {
         let engine = items.iter().find(|a| a.actor == ENGINE_ACTOR).unwrap();
         assert_eq!(engine.ts_ms, done.entry_ts_ms);
         assert!(engine.refreshed.is_some());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// `n` logged saves of `id` by an AI, each changing the notes.
+    fn logged_saves(store: &Store, id: &str, n: usize) {
+        for i in 0..n {
+            let mut q = store.load(id).unwrap();
+            q.notes = format!("AI note {i}");
+            store
+                .save_as(Some(id.to_string()), &q, "claude", "Notes")
+                .unwrap();
+        }
+    }
+
+    /// Audit 2026-11-23 HUNT-902, Design A: the offer's figures do not
+    /// depend on the change log. After more logged changes than the log
+    /// keeps, the engine's entry is trimmed, but the stored result is
+    /// still known as the recalculation and the offer's figures go back.
+    #[test]
+    fn the_offer_figures_outlive_the_trimmed_change_log() {
+        let store = temp_store("recalc-trim");
+        let (id, p) = old_offer(&store);
+        let offer = p.result_snapshot.clone().unwrap();
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        let rec = store.recalculation(&id).expect("recalculated");
+        logged_saves(&store, &id, ACTIVITY_KEEP + 10);
+        assert!(
+            store
+                .activity(&id)
+                .iter()
+                .all(|e| e.ts_ms != done.entry_ts_ms),
+            "the engine's entry is trimmed"
+        );
+        assert_eq!(store.recalculation(&id), Some(rec));
+        let back = store
+            .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(back.result_snapshot, Some(offer.clone()));
+        assert_eq!(store.load(&id).unwrap().result_snapshot, Some(offer));
+        assert_eq!(store.recalculation(&id), None);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Design A: an origin a round-9 build wrote (no offer figures in it)
+    /// still reads from the change log while the entry is there, and the
+    /// next logged save copies the figures into it before a trim.
+    #[test]
+    fn a_recalculation_recorded_without_the_offer_figures_is_upgraded() {
+        let store = temp_store("recalc-r9");
+        let (id, p) = old_offer(&store);
+        let offer = p.result_snapshot.clone().unwrap();
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        let rec = store.recalculation(&id).expect("recalculated");
+        // As round 9 wrote it.
+        let path = store.result_origin_path(&id).unwrap();
+        let mut all: Vec<serde_json::Value> =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let mut stripped = 0;
+        for o in &mut all {
+            if let Some(r) = o.get_mut("refreshed").and_then(|r| r.as_object_mut()) {
+                assert!(r.remove("offer").is_some() && r.remove("result").is_some());
+                stripped += 1;
+            }
+        }
+        assert_eq!(stripped, 1);
+        fs::write(&path, serde_json::to_string(&all).unwrap()).unwrap();
+        assert_eq!(store.recalculation(&id), Some(rec.clone()));
+        logged_saves(&store, &id, ACTIVITY_KEEP + 10);
+        assert_eq!(store.recalculation(&id), Some(rec));
+        let back = store
+            .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(back.result_snapshot, Some(offer));
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-23 TEST-906: a stored result with the recalculation's
+    /// time but other figures, or another engine, is no recalculation
+    /// (a hand edit); the history's items say which entry a put-back is.
+    #[test]
+    fn a_result_with_the_recalculations_time_but_other_figures_is_none() {
+        let store = temp_store("recalc-same-time");
+        let (id, _) = old_offer(&store);
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        let engines = store.load(&id).unwrap();
+        assert!(store.recalculation(&id).is_some());
+        let mut other = engines.clone();
+        other.result_snapshot.as_mut().unwrap().roof_area += 7.0;
+        store.save(Some(id.clone()), &other).unwrap();
+        assert_eq!(store.recalculation(&id), None);
+        let mut other = engines.clone();
+        other.result_snapshot.as_mut().unwrap().engine_version = "0.0.2".into();
+        store.save(Some(id.clone()), &other).unwrap();
+        assert_eq!(store.recalculation(&id), None);
+        store.save(Some(id.clone()), &engines).unwrap();
+        assert!(store.recalculation(&id).is_some());
+        store
+            .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(
+            store.activity_items(&id)[0].restores,
+            Some(done.entry_ts_ms)
+        );
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-23 TEST-903: offer figures outside the limits (a
+    /// damaged or hand-edited record) are not written back into the job.
+    #[test]
+    fn restoring_an_offer_result_outside_the_limits_writes_nothing() {
+        let store = temp_store("restore-limits");
+        let (id, _) = old_offer(&store);
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        let path = store.result_origin_path(&id).unwrap();
+        let mut all: Vec<serde_json::Value> =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        for o in &mut all {
+            if let Some(offer) = o.pointer_mut("/refreshed/offer") {
+                offer["roof_area"] = serde_json::json!(2e9);
+            }
+        }
+        fs::write(&path, serde_json::to_string(&all).unwrap()).unwrap();
+        let job = fs::read(store.path(&id).unwrap()).unwrap();
+        let entries = store.activity(&id).len();
+        let e = store
+            .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap_err();
+        assert_eq!(e.code(), "unreadable", "{e}");
+        assert_eq!(fs::read(store.path(&id).unwrap()).unwrap(), job);
+        assert_eq!(store.activity(&id).len(), entries);
         let _ = fs::remove_dir_all(&store.dir);
     }
 
