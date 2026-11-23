@@ -6,7 +6,7 @@
 import { num } from "./format";
 import { t } from "./i18n.svelte";
 import { partLabel } from "./partname";
-import type { CalcResult, Project, RoofWarning } from "./types";
+import type { CalcResult, Project, RoofWarning, RoofWindow } from "./types";
 import { hasBuilding } from "./offer";
 
 /** The translated sentence of one plausibility warning. */
@@ -67,6 +67,52 @@ export function offRoofWarning(result: CalcResult | null, kind: "window" | "chim
     if (w) return w;
   }
   return null;
+}
+
+/** Windows, chimneys, openings and dormers of a job, split by whether the calculation placed them on the roof. */
+export interface ObjectCounts {
+  /** The windows on the roof (their sizes are listed). */
+  windows: RoofWindow[];
+  chimneys: number;
+  holes: number;
+  dormers: number;
+  /** Per kind, how many the core reported on no roof face (`*_off_roof`). */
+  off: { windows: number; chimneys: number; holes: number; dormers: number };
+}
+
+/**
+ * What the Results panel lists as on the roof: every object of the job but
+ * the ones the core's warnings say lie on no roof face, which are counted
+ * apart (audit 2026-11-23 UX-1503). From the core's warnings only; nothing
+ * is judged from the plan here.
+ */
+export function objectCounts(project: Project, result: CalcResult | null): ObjectCounts {
+  const off = { window: new Set<number>(), chimney: new Set<number>(), opening: new Set<number>(), dormer: new Set<number>() };
+  for (const p of result?.parts ?? []) {
+    for (const w of p.geometry.warnings ?? []) {
+      if (w.kind === "dormer_off_roof" && w.dormer !== undefined) off.dormer.add(w.dormer);
+      else if ((w.kind === "window_off_roof" || w.kind === "chimney_off_roof" || w.kind === "opening_off_roof") && w.item !== undefined) {
+        off[w.kind.replace("_off_roof", "") as "window" | "chimney" | "opening"].add(w.item);
+      }
+    }
+  }
+  // Only indices the job has (a warning of an older result is not counted).
+  const within = (s: Set<number>, n: number) => [...s].filter((i) => i >= 0 && i < n).length;
+  const windows = project.windows ?? [];
+  const n = { chimneys: project.chimneys?.length ?? 0, holes: project.roof_openings?.length ?? 0, dormers: project.dormers?.length ?? 0 };
+  const o = {
+    windows: within(off.window, windows.length),
+    chimneys: within(off.chimney, n.chimneys),
+    holes: within(off.opening, n.holes),
+    dormers: within(off.dormer, n.dormers),
+  };
+  return {
+    windows: windows.filter((_, i) => !off.window.has(i)),
+    chimneys: n.chimneys - o.chimneys,
+    holes: n.holes - o.holes,
+    dormers: n.dormers - o.dormers,
+    off: o,
+  };
 }
 
 /** One row of the Results area list: a part, or a face added by hand. */

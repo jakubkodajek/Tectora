@@ -230,12 +230,13 @@ fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fa
         // Reverts with their codes too (`revert_conflict`, ERR-001).
         // `expectTs`: the entry the button was drawn on (`revert_stale`
         // when another change is the latest by now, ERR-801).
+        // As Revert all, with `repaired` (ERR-1502).
         "revert_last_change" => {
             let expect = arg::<Option<u64>>(a, "expectTs").ok()?;
             Some(
                 store
-                    .revert_last_expecting(&id, USER_ACTOR, None, expect)
-                    .map(|p| to_json(p).unwrap_or(Value::Null))
+                    .revert_last_reported(&id, USER_ACTOR, None, expect)
+                    .map(|r| to_json(r).unwrap_or(Value::Null))
                     .map_err(Fail::from),
             )
         }

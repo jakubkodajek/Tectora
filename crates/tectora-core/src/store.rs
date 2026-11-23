@@ -306,6 +306,11 @@ pub struct RevertedChanges {
     /// [`RESERVED_ACTORS`]), the review banner's own rule: the app
     /// compares it with the AI steps it showed.
     pub undone_ai: usize,
+    /// The job file could not be read (another program damaged it, or
+    /// nested it too deep to open) and the revert wrote over it: the app
+    /// says the other program's file was replaced (audit 2026-11-23
+    /// ERR-1502).
+    pub repaired: bool,
 }
 
 /// The job's stored result is the engine's recalculation of the offer's
@@ -927,6 +932,14 @@ pub enum StoreError {
         "{id}: the earlier version is outside the current limits and cannot be restored; the job itself is unchanged ({detail})"
     )]
     RevertOutOfLimits { id: String, detail: String },
+    /// [`StoreError::RevertOutOfLimits`] while the job file itself cannot
+    /// be read (damaged, or nested too deep by another program): nothing
+    /// is written, and the job is not called fine (audit 2026-11-23
+    /// ARCH-1503).
+    #[error(
+        "{id}: the earlier version is outside the current limits and cannot be restored; the job file itself cannot be read ({detail})"
+    )]
+    RevertOutOfLimitsDamaged { id: String, detail: String },
 }
 
 /// The kinds of file system failure the app explains differently.
@@ -970,6 +983,7 @@ impl StoreError {
             StoreError::Busy(_) => "busy",
             StoreError::TooMany { .. } => "too_many",
             StoreError::RevertOutOfLimits { .. } => "revert_out_of_limits",
+            StoreError::RevertOutOfLimitsDamaged { .. } => "revert_out_of_limits_damaged",
         }
     }
 
@@ -987,7 +1001,8 @@ impl StoreError {
             | StoreError::RevertConflict { id, .. }
             | StoreError::RevertStale { id, .. }
             | StoreError::TooMany { id, .. }
-            | StoreError::RevertOutOfLimits { id, .. } => Some(id),
+            | StoreError::RevertOutOfLimits { id, .. }
+            | StoreError::RevertOutOfLimitsDamaged { id, .. } => Some(id),
             StoreError::Io { id, .. } => id.as_deref(),
         }
     }
@@ -1000,7 +1015,8 @@ impl StoreError {
             | StoreError::RevertConflict { detail, .. }
             | StoreError::RevertStale { detail, .. }
             | StoreError::TooMany { detail, .. }
-            | StoreError::RevertOutOfLimits { detail, .. } => Some(detail),
+            | StoreError::RevertOutOfLimits { detail, .. }
+            | StoreError::RevertOutOfLimitsDamaged { detail, .. } => Some(detail),
             _ => None,
         }
     }
@@ -1138,12 +1154,33 @@ fn modified_ms(path: &Path) -> u64 {
 /// Text serde cannot parse (nested over its limit, or cut short by a sync)
 /// is looked at by [`scan_version`], so a newer file is still known as
 /// newer and refused instead of repaired as damaged (audit ERR-1402).
+/// One rule for both paths (audit 2026-11-23 ARCH-1502): the version is
+/// the largest of what serde read and what the scan finds, so a duplicate
+/// key, an escaped key, `1e400` or `99.5` answer the same whether the
+/// text parses or not.
 pub(crate) fn newer_format(text: &str) -> Option<u64> {
-    let version = match serde_json::from_str::<serde_json::Value>(text) {
-        Ok(v) => whole_version(v.get("schema_version")?)?,
-        Err(_) => scan_version(text.as_bytes())?,
-    };
+    let parsed = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("schema_version").and_then(whole_version));
+    let version = parsed
+        .into_iter()
+        .chain(scan_version(text.as_bytes()))
+        .max()?;
     (version > u64::from(crate::model::SCHEMA_VERSION)).then_some(version)
+}
+
+/// The `schema_version` of the job file at `path` when it is newer than
+/// this Tectora reads, else `None`: its text through [`newer_format`], or,
+/// when it cannot be read as text (too large, not UTF-8), its head scanned
+/// ([`newer_format_head`]). The store's open and save ask it, and so does
+/// the CLI, so a newer file is called newer everywhere (audit 2026-11-23
+/// HUNT-1503).
+pub fn newer_format_of(path: &Path) -> Option<u64> {
+    match read_job_text(path) {
+        Ok(t) => newer_format(&t),
+        Err(e) if matches!(e.code, "too_large" | "unreadable") => newer_format_head(path),
+        Err(_) => None,
+    }
 }
 
 /// How much of a job file too large to read is scanned for its version:
@@ -1192,7 +1229,7 @@ pub(crate) fn scan_version(bytes: &[u8]) -> Option<u64> {
                 }
                 let key = depth == 1 && expect_key;
                 expect_key = false;
-                if key && bytes.get(from..i.saturating_sub(1)) == Some(&b"schema_version"[..]) {
+                if key && is_version_key(bytes.get(from.saturating_sub(1)..i)) {
                     let mut j = i;
                     while bytes.get(j).is_some_and(u8::is_ascii_whitespace) {
                         j += 1;
@@ -1208,11 +1245,7 @@ pub(crate) fn scan_version(bytes: &[u8]) -> Option<u64> {
                         .iter()
                         .position(|c| !matches!(c, b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E'))
                         .map_or(bytes.len(), |n| j + n);
-                    let number = std::str::from_utf8(&bytes[j.min(end)..end])
-                        .ok()
-                        .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok())
-                        .and_then(|n| n.is_number().then(|| whole_version(&n)).flatten());
-                    if let Some(n) = number {
+                    if let Some(n) = scanned_version(&bytes[j.min(end)..end]) {
                         best = Some(best.map_or(n, |b| b.max(n)));
                     }
                     i = end.max(i);
@@ -1235,6 +1268,70 @@ pub(crate) fn scan_version(bytes: &[u8]) -> Option<u64> {
         }
     }
     best
+}
+
+/// Whether `raw`, a JSON string with its quotes, is the key
+/// `schema_version`, also spelled with escapes (`"schema\u005fversion"`,
+/// audit ARCH-1502). `None` (a string cut short) is not.
+fn is_version_key(raw: Option<&[u8]>) -> bool {
+    let Some(raw) = raw.filter(|r| r.len() >= 2 && r.ends_with(b"\"")) else {
+        return false;
+    };
+    if !raw.contains(&b'\\') {
+        return &raw[1..raw.len() - 1] == b"schema_version";
+    }
+    serde_json::from_slice::<String>(raw).is_ok_and(|k| k == "schema_version")
+}
+
+/// The version a number token after `schema_version` stands for, by the
+/// scan's own rule (audit ARCH-1502): a whole number as it is, a fraction
+/// rounded up (`99.5` is newer than 99), a number too large for serde
+/// (`1e400`) held at `u64::MAX`; `None` for a negative number or what is
+/// not a JSON number.
+fn scanned_version(token: &[u8]) -> Option<u64> {
+    if !is_json_number(token) || token.starts_with(b"-") {
+        return None;
+    }
+    let text = std::str::from_utf8(token).ok()?;
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(n) => n.as_u64().or_else(|| {
+            n.as_f64()
+                .filter(|f| f.is_finite() && *f >= 0.0)
+                .map(|f| f.ceil().min(u64::MAX as f64) as u64)
+        }),
+        // A well-formed positive number serde cannot hold is too large.
+        Err(_) => Some(u64::MAX),
+    }
+}
+
+/// `token` is a number by JSON's grammar: `-?(0|[1-9][0-9]*)(.[0-9]+)?([eE][+-]?[0-9]+)?`.
+fn is_json_number(token: &[u8]) -> bool {
+    let digits = |t: &[u8], at: usize| t[at..].iter().take_while(|c| c.is_ascii_digit()).count();
+    let mut i = usize::from(token.first() == Some(&b'-'));
+    match token.get(i) {
+        Some(b'0') => i += 1,
+        Some(b'1'..=b'9') => i += digits(token, i),
+        _ => return false,
+    }
+    if token.get(i) == Some(&b'.') {
+        let n = digits(token, i + 1);
+        if n == 0 {
+            return false;
+        }
+        i += 1 + n;
+    }
+    if matches!(token.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(token.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        let n = digits(token, i);
+        if n == 0 {
+            return false;
+        }
+        i += n;
+    }
+    i == token.len()
 }
 
 /// A format version in a file as a whole number: `4.0` and `1e30` are
@@ -1370,12 +1467,15 @@ fn same_for_js(a: &Project, b: &Project) -> bool {
 pub enum CheckedSave {
     Saved {
         id: String,
+        /// The file could not be read (damaged, or nested too deep to
+        /// open, by another program) and was written over with the
+        /// caller's copy, as decided (ARCH-1302): the app says so (audit
+        /// 2026-11-23 ERR-1502). False for a missing file.
+        repaired: bool,
     },
     /// Someone else saved the job after the base was read: `current` is the
     /// file now, to merge with and save again.
-    Conflict {
-        current: Box<Project>,
-    },
+    Conflict { current: Box<Project> },
 }
 
 /// Longest accepted project id (file names stay well inside the 255-byte
@@ -3006,27 +3106,27 @@ impl Store {
     ) -> Result<CheckedSave, StoreError> {
         self.path(id)?;
         let _lock = self.lock(id)?;
-        match self.load(id) {
+        let repaired = match self.load(id) {
             Ok(current) if !same_for_js(&current, base) => {
                 return Ok(CheckedSave::Conflict {
                     current: Box::new(current),
                 });
             }
+            Ok(_) | Err(StoreError::NotFound(_)) => false,
             // A file another program made too deep to open is repaired
             // like a damaged one: the editor's copy passed the limits when
             // it was opened and the app's command checks it before this
-            // (Jakub's decision 2026-11-23, audit ARCH-1302).
-            Ok(_)
-            | Err(
-                StoreError::NotFound(_)
-                | StoreError::Unreadable { .. }
-                | StoreError::TooMany { .. },
-            ) => {}
+            // (Jakub's decision 2026-11-23, audit ARCH-1302). The answer
+            // says so (ERR-1502).
+            Err(StoreError::Unreadable { .. } | StoreError::TooMany { .. }) => true,
             Err(e) => return Err(e),
-        }
+        };
         // `load` above refused a newer file.
         self.write(id, project, true)?;
-        Ok(CheckedSave::Saved { id: id.to_string() })
+        Ok(CheckedSave::Saved {
+            id: id.to_string(),
+            repaired,
+        })
     }
 
     /// Writes the file; the caller holds the job's lock. A file saved by a
@@ -3049,14 +3149,7 @@ impl Store {
     ) -> Result<(), StoreError> {
         let path = self.path(id)?;
         self.library_present()?;
-        if let Some(version) = (!checked)
-            .then(|| match read_job_text(&path) {
-                Ok(t) => newer_format(&t),
-                Err(e) if matches!(e.code, "too_large" | "unreadable") => newer_format_head(&path),
-                Err(_) => None,
-            })
-            .flatten()
-        {
+        if let Some(version) = (!checked).then(|| newer_format_of(&path)).flatten() {
             return Err(StoreError::NewerFormat {
                 id: id.to_string(),
                 version,
@@ -3189,7 +3282,7 @@ impl Store {
             }
         };
         match self.save_as_checked(&id, project, actor, summary, None)? {
-            CheckedSave::Saved { id } => Ok(id),
+            CheckedSave::Saved { id, .. } => Ok(id),
             CheckedSave::Conflict { .. } => unreachable!("no base, no conflict"),
         }
     }
@@ -3209,7 +3302,12 @@ impl Store {
     ) -> Result<CheckedSave, StoreError> {
         self.path(id)?;
         let _lock = self.lock(id)?;
-        let before = match self.load(id) {
+        let loaded = self.load(id);
+        let damaged = matches!(
+            loaded,
+            Err(StoreError::Unreadable { .. } | StoreError::TooMany { .. })
+        );
+        let before = match loaded {
             // Refused before anything is logged (see `save`).
             Err(e @ StoreError::NewerFormat { .. }) => return Err(e),
             r => r.ok(),
@@ -3221,10 +3319,14 @@ impl Store {
                 current: Box::new(current.clone()),
             });
         }
-        if before.as_ref() != Some(project) {
+        let wrote = before.as_ref() != Some(project);
+        if wrote {
             self.log_and_write(id, before, project, actor, summary, None, None, None, None)?;
         }
-        Ok(CheckedSave::Saved { id: id.to_string() })
+        Ok(CheckedSave::Saved {
+            id: id.to_string(),
+            repaired: wrote && damaged,
+        })
     }
 
     /// Logs the change and writes the file; the caller holds the job's lock.
@@ -3438,6 +3540,22 @@ impl Store {
         reason: Option<&str>,
         expect_ts_ms: Option<u64>,
     ) -> Result<Project, StoreError> {
+        self.revert_last_reported(id, actor, reason, expect_ts_ms)
+            .map(|r| r.project)
+    }
+
+    /// [`Store::revert_last_expecting`] with the answer of Revert all,
+    /// [`RevertedChanges`]: `undone` and `undone_ai` are 1 or 0 (the one
+    /// change, and whether an AI wrote it), `repaired` whether a file
+    /// another program made unreadable was written over (audit 2026-11-23
+    /// ERR-1502). The app's command and the MCP tool use it.
+    pub fn revert_last_reported(
+        &self,
+        id: &str,
+        actor: &str,
+        reason: Option<&str>,
+        expect_ts_ms: Option<u64>,
+    ) -> Result<RevertedChanges, StoreError> {
         // The log is read, the expected entry checked, the file merged and
         // written under one hold of the job's lock: an AI save waiting for
         // the lock lands before (the press is stale) or after the revert,
@@ -3459,8 +3577,14 @@ impl Store {
         // Reverting from `pos` also undoes the reverts logged after it, so
         // the job ends as it was before that change.
         let summary = with_reason(reason, format!("{REVERTED_PREFIX}{}", log[pos].summary));
+        let ai = !RESERVED_ACTORS.contains(&log[pos].actor.as_str());
         self.revert_locked(id, &log, pos, actor, summary)
-            .map(|(p, _)| p)
+            .map(|(project, wrote, repaired)| RevertedChanges {
+                project,
+                undone: usize::from(wrote),
+                undone_ai: usize::from(wrote && ai),
+                repaired,
+            })
     }
 
     /// Restores the version from before the change recorded at `ts_ms`,
@@ -3529,7 +3653,7 @@ impl Store {
         } else {
             format!("Reverted {undone} changes since: {}", log[pos].summary)
         };
-        let (project, wrote) =
+        let (project, wrote, repaired) =
             self.revert_locked(id, &log, pos, actor, with_reason(reason, summary))?;
         // Nothing written, nothing undone (arch to-check 60).
         let (undone, undone_ai) = if wrote { (undone, undone_ai) } else { (0, 0) };
@@ -3537,6 +3661,7 @@ impl Store {
             project,
             undone,
             undone_ai,
+            repaired,
         })
     }
 
@@ -3556,8 +3681,9 @@ impl Store {
     /// nothing written, when one of them touches a value a reverted change
     /// set. The caller holds the job's lock and read `log` under it, so the
     /// file read here is the one written over (no second try with a log
-    /// that may be stale, ERR-1002). Returns the job and whether the
-    /// revert wrote it (nothing is written when it ends as it was).
+    /// that may be stale, ERR-1002). Returns the job, whether the revert
+    /// wrote it (nothing is written when it ends as it was) and whether
+    /// that write replaced a file that could not be read (ERR-1502).
     fn revert_locked(
         &self,
         id: &str,
@@ -3565,7 +3691,7 @@ impl Store {
         pos: usize,
         actor: &str,
         (summary, reason): (String, Option<String>),
-    ) -> Result<(Project, bool), StoreError> {
+    ) -> Result<(Project, bool, bool), StoreError> {
         let mut wrote = false;
         let value = |p: &Project| {
             serde_json::to_value(p).map_err(|e| StoreError::Unreadable {
@@ -3573,12 +3699,22 @@ impl Store {
                 detail: e.to_string(),
             })
         };
+        // Why the file was not read, when it could not be: a damaged one
+        // (or one nested too deep to open) is said to be replaced, and an
+        // earlier version outside the limits does not call it fine.
+        let mut damaged = false;
         let mut current = match self.load(id) {
             Ok(p) => Some(p),
             // A file newer than this Tectora is neither read nor written.
             Err(e @ StoreError::NewerFormat { .. }) => return Err(e),
             // A damaged file: the version before the change is restored.
-            Err(_) => None,
+            Err(e) => {
+                damaged = matches!(
+                    e,
+                    StoreError::Unreadable { .. } | StoreError::TooMany { .. }
+                );
+                None
+            }
         };
         let before = current.clone();
         let mut target = None;
@@ -3611,12 +3747,14 @@ impl Store {
         let target = target.ok_or_else(|| StoreError::NothingToRevert(id.to_string()))?;
         // The log is a file like the job: a version outside the limits is
         // not written back into the job (HUNTIO-004).
-        target
-            .check_limits()
-            .map_err(|detail| StoreError::RevertOutOfLimits {
-                id: id.to_string(),
-                detail,
-            })?;
+        target.check_limits().map_err(|detail| {
+            let id = id.to_string();
+            if damaged {
+                StoreError::RevertOutOfLimitsDamaged { id, detail }
+            } else {
+                StoreError::RevertOutOfLimits { id, detail }
+            }
+        })?;
         if before.as_ref() != Some(&target) {
             self.log_and_write(
                 id,
@@ -3632,7 +3770,7 @@ impl Store {
             wrote = true;
         }
         self.pin_restored(id, &log[pos..], &target);
-        Ok((target, wrote))
+        Ok((target, wrote, wrote && damaged))
     }
 
     /// After a revert of `undone` gave `target`: when that put an offer's
@@ -7119,7 +7257,10 @@ mod tests {
         merged.parts[0].edges[2].pitch_deg = 41.0;
         assert_eq!(
             store.save_checked(&id, &merged, &current).unwrap(),
-            CheckedSave::Saved { id: id.clone() }
+            CheckedSave::Saved {
+                id: id.clone(),
+                repaired: false
+            }
         );
         assert_eq!(store.load(&id).unwrap(), merged);
         // The editor's own save is still not logged as a change.
@@ -7208,7 +7349,10 @@ mod tests {
             store
                 .save_as_checked(&id, &merged, "claude", "AI", Some(&user))
                 .unwrap(),
-            CheckedSave::Saved { id: id.clone() }
+            CheckedSave::Saved {
+                id: id.clone(),
+                repaired: false
+            }
         );
         assert_eq!(store.load(&id).unwrap(), merged);
         assert_eq!(store.activity(&id)[0].before.as_ref(), Some(&user));
@@ -7409,6 +7553,124 @@ mod tests {
         let _ = fs::remove_dir_all(&store.dir);
     }
 
+    /// Audit 2026-11-23 ERR-1502: a save or a revert that writes over a
+    /// file another program made unreadable says so (`repaired`), and a
+    /// missing or good file is not called replaced.
+    #[test]
+    fn a_write_over_an_unreadable_file_says_it_replaced_it() {
+        let store = temp_store("repaired");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let path = store.path(&id).unwrap();
+        let mut mine = p.clone();
+        mine.parts[0].edges[0].overhang = 0.9;
+        let repaired = |r: CheckedSave| match r {
+            CheckedSave::Saved { repaired, .. } => repaired,
+            other => panic!("expected saved, got {other:?}"),
+        };
+        // A good file and a missing one: nothing replaced.
+        assert!(!repaired(store.save_checked(&id, &mine, &p).unwrap()));
+        fs::remove_file(&path).unwrap();
+        assert!(!repaired(store.save_checked(&id, &mine, &mine).unwrap()));
+        // Cut short, and nested 40 deep by another program: replaced.
+        let good = fs::read_to_string(&path).unwrap();
+        fs::write(&path, &good[..good.len() / 2]).unwrap();
+        assert_eq!(store.load(&id).unwrap_err().code(), "unreadable");
+        assert!(repaired(store.save_checked(&id, &mine, &mine).unwrap()));
+        let mut v = serde_json::to_value(&mine).unwrap();
+        v["crm"] = nested_objects(40);
+        fs::write(&path, v.to_string()).unwrap();
+        assert_eq!(store.load(&id).unwrap_err().code(), "too_many");
+        assert!(repaired(store.save_checked(&id, &mine, &mine).unwrap()));
+        // An MCP save over a cut file says it too.
+        fs::write(&path, &good[..good.len() / 2]).unwrap();
+        assert!(repaired(
+            store
+                .save_as_checked(&id, &p, "claude", "AI", None)
+                .unwrap()
+        ));
+
+        // A revert over a cut file restores from the history and says so;
+        // over a readable one it does not.
+        let mut ai = p.clone();
+        ai.parts[0].edges[0].pitch_deg = 35.0;
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "AI pitch")
+            .unwrap();
+        let r = store
+            .revert_last_reported(&id, USER_ACTOR, None, None)
+            .unwrap();
+        assert!(!r.repaired);
+        assert_eq!((r.undone, r.undone_ai), (1, 1));
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "AI pitch again")
+            .unwrap();
+        let good = fs::read_to_string(&path).unwrap();
+        fs::write(&path, &good[..good.len() / 2]).unwrap();
+        let r = store
+            .revert_last_reported(&id, USER_ACTOR, None, None)
+            .unwrap();
+        assert!(r.repaired);
+        assert_eq!(store.load(&id).unwrap(), r.project);
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "AI pitch third")
+            .unwrap();
+        let ts = store.activity(&id).last().unwrap().ts_ms;
+        let good = fs::read_to_string(&path).unwrap();
+        fs::write(&path, &good[..good.len() / 2]).unwrap();
+        assert!(
+            store
+                .revert_to_counted(&id, ts, USER_ACTOR, None)
+                .unwrap()
+                .repaired
+        );
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-23 ARCH-1503: an earlier version outside the limits
+    /// while the job file cannot be read has its own code, which does not
+    /// call the job fine, and nothing is written.
+    #[test]
+    fn an_out_of_limits_revert_over_a_damaged_file_does_not_call_it_fine() {
+        let store = temp_store("revert-limits-damaged");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let mut ai = p.clone();
+        ai.parts[0].edges[0].overhang = 0.8;
+        store
+            .save_as(Some(id.clone()), &ai, "claude", "AI")
+            .unwrap();
+        let log = store.activity_path(&id).unwrap();
+        let lines: Vec<String> = fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let mut v: serde_json::Value = serde_json::from_str(l).unwrap();
+                v["before"]["parts"][0]["edges"][0]["start"]["x"] = serde_json::json!(1e9);
+                v.to_string()
+            })
+            .collect();
+        fs::write(&log, lines.join("\n") + "\n").unwrap();
+        let path = store.path(&id).unwrap();
+        let good = fs::read_to_string(&path).unwrap();
+        fs::write(&path, &good[..good.len() / 2]).unwrap();
+        let file = fs::read(&path).unwrap();
+        let ts = store.activity(&id)[0].ts_ms;
+        for e in [
+            store.revert_to(&id, ts, USER_ACTOR, None).unwrap_err(),
+            store.revert_last(&id, USER_ACTOR, None).unwrap_err(),
+        ] {
+            assert_eq!(e.code(), "revert_out_of_limits_damaged", "{e}");
+            assert_eq!(e.id(), Some(id.as_str()));
+            assert!(e.detail().is_some_and(|d| !d.is_empty()));
+            assert!(!e.to_string().contains("unchanged"), "{e}");
+            assert!(e.to_string().contains("cannot be read"), "{e}");
+        }
+        assert_eq!(fs::read(&path).unwrap(), file);
+        assert_eq!(store.activity(&id).len(), 1, "nothing logged");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
     #[test]
     fn newer_format_scan_reads_only_top_level_keys() {
         let v = crate::model::SCHEMA_VERSION + 1;
@@ -7433,6 +7695,131 @@ mod tests {
             scan_version(b"{\"schema_version\":2,\"schema_version\":7}"),
             Some(7)
         );
+    }
+
+    /// TEST-1501: a newer Tectora's file cut by a sync inside a multi-byte
+    /// character (any Czech name) is not UTF-8: still refused as newer on
+    /// open and on save, and the file is kept (`newer_format_head` on
+    /// `unreadable`).
+    #[test]
+    fn t1601_a_newer_file_cut_inside_a_character_is_refused_as_newer() {
+        let store = temp_store("t1601");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let path = store.path(&id).unwrap();
+        let v = crate::model::SCHEMA_VERSION + 1;
+        let text = format!("{{\"schema_version\": {v}, \"name\": \"Střecha\", \"notes\": \"ř\"}}");
+        let bytes = text.as_bytes();
+        let at = text.find("ř\"}").unwrap() + 1; // inside the two bytes of the last "ř"
+        let cut = &bytes[..at];
+        assert!(std::str::from_utf8(cut).is_err());
+        fs::write(&path, cut).unwrap();
+        assert_eq!(store.load(&id).unwrap_err().code(), "newer_format");
+        let mut mine = p.clone();
+        mine.notes = "mine".into();
+        assert_eq!(
+            store.save(Some(id.clone()), &mine).unwrap_err().code(),
+            "newer_format"
+        );
+        assert_eq!(
+            store.save_checked(&id, &mine, &p).unwrap_err().code(),
+            "newer_format"
+        );
+        assert_eq!(fs::read(&path).unwrap(), cut);
+        assert_eq!(newer_format_of(&path), Some(u64::from(v)));
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// TEST-1501: the scan steps over escaped quotes in a string before
+    /// the version, and takes the largest of duplicate keys in either order.
+    #[test]
+    fn t1602_scan_version_steps_over_escaped_quotes() {
+        assert_eq!(
+            scan_version(br#"{"name":"a \" b","schema_version":99,"x":[[["#),
+            Some(99)
+        );
+        assert_eq!(
+            scan_version(br#"{"schema_version":7,"schema_version":2,"x":["#),
+            Some(7)
+        );
+        assert_eq!(
+            scan_version(br#"{"schema_version":2,"schema_version":7,"x":["#),
+            Some(7)
+        );
+    }
+
+    /// Audit 2026-11-23 ARCH-1502: every spelling of a newer version is
+    /// newer on both paths (text serde parses, and text it cannot: nested
+    /// over its limit), and the app's save leaves the file as it is.
+    #[test]
+    fn newer_spellings_are_refused_on_open_and_on_save() {
+        let store = temp_store("newer-spellings");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save(None, &p).unwrap();
+        let path = store.path(&id).unwrap();
+        let good: serde_json::Value = serde_json::from_str(&p.to_json().unwrap()).unwrap();
+        let body = good
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| *k != "schema_version");
+        let rest: String = body
+            .map(|(k, v)| format!(",{}:{v}", serde_json::Value::String(k.clone())))
+            .collect();
+        let deep = format!(",\"crm\":{}{}", "[".repeat(300), "]".repeat(300));
+        let mine = {
+            let mut m = p.clone();
+            m.notes = "mine".into();
+            m
+        };
+        for (name, head) in [
+            ("huge", "{\"schema_version\":1e400"),
+            ("fraction", "{\"schema_version\":99.5"),
+            ("escaped key", "{\"schema\\u005fversion\":99"),
+            (
+                "dup 99 then 3",
+                "{\"schema_version\":99,\"schema_version\":3",
+            ),
+            (
+                "dup 3 then 99",
+                "{\"schema_version\":3,\"schema_version\":99",
+            ),
+        ] {
+            for tail in ["", deep.as_str()] {
+                let text = format!("{head}{rest}{tail}}}");
+                fs::write(&path, &text).unwrap();
+                let what = format!("{name}, deep: {}", !tail.is_empty());
+                assert!(newer_format(&text).is_some(), "{what}");
+                assert_eq!(
+                    store.load(&id).unwrap_err().code(),
+                    "newer_format",
+                    "{what}"
+                );
+                assert_eq!(
+                    store.save_checked(&id, &mine, &p).unwrap_err().code(),
+                    "newer_format",
+                    "{what}"
+                );
+                assert_eq!(
+                    fs::read_to_string(&path).unwrap(),
+                    text,
+                    "{what}: file kept"
+                );
+            }
+        }
+        // Not newer: the current version, a fraction below it, a negative
+        // or broken number, and a string (known-open TEST-008).
+        let v = crate::model::SCHEMA_VERSION;
+        for head in [
+            format!("{{\"schema_version\":{v}"),
+            format!("{{\"schema_version\":{}.5", v - 1),
+            "{\"schema_version\":-1e400".to_string(),
+            "{\"schema_version\":1e".to_string(),
+            "{\"schema_version\":\"99\"".to_string(),
+        ] {
+            assert_eq!(newer_format(&format!("{head}{rest}}}")), None, "{head}");
+        }
+        let _ = fs::remove_dir_all(&store.dir);
     }
 
     #[test]

@@ -6,7 +6,7 @@
   import { m, m2, num } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
-  import { areaRows, failedParts, isFacesOnly, joinedWith, lineRowsShown, missingResult, roofState, warningText } from "./results";
+  import { areaRows, failedParts, isFacesOnly, joinedWith, lineRowsShown, missingResult, objectCounts, roofState, warningText } from "./results";
   import type { Described } from "./errors";
   import { inputWarnings } from "./plausible";
   import { legend, lineName, SUB_CODES } from "./linecodes";
@@ -58,18 +58,13 @@
   const pressCard = (run: () => void | Promise<void>) => pressKeepingFocus(run, () => cardHead);
 
   // What is on the roof (UX-005): counts and window sizes from the job,
-  // the area each kind took off the roof from the core's breakdown.
-  const objects = $derived(
-    project
-      ? {
-          windows: project.windows ?? [],
-          chimneys: project.chimneys?.length ?? 0,
-          holes: project.roof_openings?.length ?? 0,
-          dormers: project.dormers?.length ?? 0,
-        }
-      : null,
+  // the area each kind took off the roof from the core's breakdown. What
+  // the core reported on no roof face is counted apart (UX-1503).
+  const objects = $derived(project ? objectCounts(project, result) : null);
+  const hasObjects = $derived(
+    !!objects &&
+      objects.windows.length + objects.chimneys + objects.holes + objects.dormers + objects.off.windows + objects.off.chimneys + objects.off.holes + objects.off.dormers > 0,
   );
-  const hasObjects = $derived(!!objects && objects.windows.length + objects.chimneys + objects.holes + objects.dormers > 0);
   let breakdown = $state<CalcBreakdown | null>(null);
   let seq = 0;
   $effect(() => {
@@ -223,23 +218,24 @@
     <h4>{t("res.objects")}</h4>
     <table class="objects" data-testid="res-objects">
       <tbody>
-        {#if objects.windows.length}
+        {#if objects.windows.length || objects.off.windows}
           <tr>
             <td>
               {t("res.obj.windows", { n: objects.windows.length })}
-              <small class="joined">{objects.windows.map((w) => `${num(w.width)} × ${num(w.height)} m`).join(", ")}</small>
+              {#if objects.windows.length}<small class="joined">{objects.windows.map((w) => `${num(w.width)} × ${num(w.height)} m`).join(", ")}</small>{/if}
+              {#if objects.off.windows}<small class="joined" data-testid="res-off-windows">{t("res.offRoof", { n: objects.off.windows })}</small>{/if}
             </td>
             <td class="v">{#if deducted.window}−{m2(deducted.window)}{/if}</td>
           </tr>
         {/if}
-        {#if objects.chimneys}
-          <tr><td>{t("res.obj.chimneys", { n: objects.chimneys })}</td><td class="v">{#if deducted.chimney}−{m2(deducted.chimney)}{/if}</td></tr>
+        {#if objects.chimneys || objects.off.chimneys}
+          <tr><td>{t("res.obj.chimneys", { n: objects.chimneys })}{#if objects.off.chimneys} <small class="joined">{t("res.offRoof", { n: objects.off.chimneys })}</small>{/if}</td><td class="v">{#if deducted.chimney}−{m2(deducted.chimney)}{/if}</td></tr>
         {/if}
-        {#if objects.holes}
-          <tr><td>{t("res.obj.holes", { n: objects.holes })}</td><td class="v">{#if deducted.hole}−{m2(deducted.hole)}{/if}</td></tr>
+        {#if objects.holes || objects.off.holes}
+          <tr><td>{t("res.obj.holes", { n: objects.holes })}{#if objects.off.holes} <small class="joined">{t("res.offRoof", { n: objects.off.holes })}</small>{/if}</td><td class="v">{#if deducted.hole}−{m2(deducted.hole)}{/if}</td></tr>
         {/if}
-        {#if objects.dormers}
-          <tr><td>{t("res.obj.dormers", { n: objects.dormers })}</td><td class="v">{#if deducted.dormer}−{m2(deducted.dormer)}{/if}</td></tr>
+        {#if objects.dormers || objects.off.dormers}
+          <tr><td>{t("res.obj.dormers", { n: objects.dormers })}{#if objects.off.dormers} <small class="joined">{t("res.offRoof", { n: objects.off.dormers })}</small>{/if}</td><td class="v">{#if deducted.dormer}−{m2(deducted.dormer)}{/if}</td></tr>
         {/if}
       </tbody>
     </table>

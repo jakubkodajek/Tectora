@@ -87,6 +87,16 @@ fn load(path: &Path) -> Result<Project> {
             tectora_core::bundle::EXTENSION
         );
     }
+    // A newer Tectora's file is called that, also when this version cannot
+    // parse it (nested deeper than it reads, cut short by a sync): the same
+    // rule and sentence as the app and the MCP server (audit 2026-11-23
+    // HUNT-1503).
+    if let Some(version) = tectora_core::store::newer_format_of(path) {
+        anyhow::bail!(
+            "the file was saved by a newer Tectora (format {version}, this version reads up to {})",
+            tectora_core::model::SCHEMA_VERSION
+        );
+    }
     // Bounded, and a pipe or device is refused instead of hanging or
     // reading until the memory is gone (ARCH-204).
     let text = tectora_core::store::read_job_text(path)

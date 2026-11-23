@@ -141,6 +141,12 @@ The tools cover every operation of the Tectora editor:
   "revert_out_of_limits" means the earlier version in the history is
   outside Tectora's current limits and cannot be put back; the job itself
   is fine and unchanged, so tell the user and change it by edits instead.
+  "revert_out_of_limits_damaged" is the same refusal while the job file
+  itself cannot be read: nothing was written; tell the user the file is
+  damaged (they can save the job from the app's editor or restore a
+  backup). A revert answered with `replaced_unreadable_file: true` (and a
+  `note`) wrote the restored version over a job file another program had
+  made unreadable: tell the user that program's file was replaced.
   A revert, `revert_to` and `restore_offer_result` wait a few seconds at
   most for another program saving the same job; then they answer "busy"
   and nothing was done: call `get_history` again and try once more in a
@@ -357,7 +363,7 @@ a little below, so they never meet. Where the standard calculation stops
 with an error, Tectora calculates the building another way and shows the
 result only if it passes a self-check (planar faces at their pitches, every
 wall's eave height, the plan covered, every line on a face); otherwise the
-error stands. Three notices say which way was taken; the figures are then
+error stands. Three codes say which way was taken; the figures are then
 not the standard result: `merged_planes` (`edges`: two parallel planes
 within 10 cm of one plane, calculated as one face; also where the standard
 calculation would leave a step of those few centimetres), `wing_joined`
@@ -365,8 +371,10 @@ calculation would leave a step of those few centimetres), `wing_joined`
 calculated as a lean-to against the house wall) and
 `not_calculated_by_core` (Tectora's own engine). Windows, chimneys,
 openings and dormers are applied to such a roof as to any other, and other
-buildings of the job keep their roofs. Pass the notices on; they
-need no fix. `covered`: the part has no roof
+buildings of the job keep their roofs. `merged_planes` and `wing_joined`
+are notices (like `plane_over_wall` and `far_from_origin`): pass them on,
+they need no fix. `not_calculated_by_core` is a warning: the app marks
+the results for it, so have the user check that roof. `covered`: the part has no roof
 of its own because another part covers it; move or delete one of them.
 `cut_exceeds_face`: a face lost more than it has (a window larger than its
 face, or joined buildings), so the area is too small. `dormer_off_roof`: the

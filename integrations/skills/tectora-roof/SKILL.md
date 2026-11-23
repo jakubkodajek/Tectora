@@ -80,7 +80,11 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    or put-back answered with `busy` did nothing (another program was
    saving the job): try it again in a moment. A revert answered with
    "revert_out_of_limits" did nothing either: that earlier version is
-   outside Tectora's limits, the job is fine; tell the user. Word every
+   outside Tectora's limits, the job is fine; tell the user
+   ("revert_out_of_limits_damaged": the same, and the job file itself is
+   damaged; tell the user). A revert answer with
+   `replaced_unreadable_file` replaced a file another program had made
+   unreadable: tell the user. Word every
    `summary` as what you did, in your own words: one that starts like
    Tectora's own sentences ("Reverted: …", "Stored result recalculated …")
    is still your change, shown in quotation marks and undone as a change.
@@ -121,8 +125,10 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    make a warning go away.
    `merged_planes`, `wing_joined` and `not_calculated_by_core` mean the
    roof is not the standard calculation's result (two planes joined, a low
-   wing as a lean-to, the fallback): say so and have the user check it;
-   `plane_over_wall` is a hint that a wing has no ridge of its own.
+   wing as a lean-to, the fallback): say so and have the user check it
+   (the first two are notices, `not_calculated_by_core` is a warning the
+   app marks the results for); `plane_over_wall` is a notice that a wing
+   has no ridge of its own.
 8. When the roof is approved and the user wants it for the offer,
    `export_plan` writes the roof sheet (PDF; pass `line_names` in the
    user's language for the legend of line codes; PDF or SVG, no PNG: the app's
