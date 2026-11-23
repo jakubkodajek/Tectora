@@ -2471,7 +2471,11 @@ impl Store {
         actor: &str,
         reason: Option<&str>,
     ) -> Result<Project, StoreError> {
-        self.path(id)?;
+        // A job that is not there makes no lock file for it, as Revert
+        // (audit 2026-11-23 ARCH-1102).
+        if !self.has_job_or_log(id)? {
+            return Err(StoreError::NotFound(id.to_string()));
+        }
         // A short action of the user: never waits long (ERR-1002).
         let _lock = self.lock_briefly(id)?;
         let current = self.load(id)?;
@@ -4199,6 +4203,21 @@ mod tests {
                 "{leftover}"
             );
         }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-23 ARCH-1102: putting the offer's figures back on a
+    /// job that was never there answers `not_found` and, as Revert, Revert
+    /// all and Accept, makes no lock file for it.
+    #[test]
+    fn putting_figures_back_on_a_job_that_is_not_there_leaves_no_lock() {
+        let store = temp_store("restore-gone");
+        fs::create_dir_all(store.activity_dir()).unwrap();
+        let e = store
+            .restore_offer_result("ghost-job", 5, USER_ACTOR, None)
+            .unwrap_err();
+        assert_eq!(e.code(), "not_found", "{e}");
+        assert!(fs::symlink_metadata(store.activity_dir().join("ghost-job.lock")).is_err());
         let _ = fs::remove_dir_all(&store.dir);
     }
 
