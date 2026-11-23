@@ -1295,11 +1295,117 @@ mod tests {
         }
     }
 
+    /// The name of the function a line declares (`fn`, `pub fn`, `async
+    /// fn`, … at the start of the line), if it declares one.
+    fn declared_fn(line: &str) -> Option<&str> {
+        let mut rest = line.trim_start();
+        for q in ["pub(crate) ", "pub ", "async "] {
+            rest = rest.strip_prefix(q).unwrap_or(rest);
+        }
+        let name = rest.strip_prefix("fn ")?;
+        name.split(['(', '<']).next().filter(|n| !n.is_empty())
+    }
+
+    /// Each function of `src` declared at the start of a line, with the
+    /// lines of its attribute block (doc comments and attributes above
+    /// it), its signature (up to the line that opens the body) and its
+    /// body (up to the `}` that closes it at the same indent).
+    fn functions(src: &str) -> Vec<(String, String, String, String)> {
+        let lines: Vec<&str> = src.lines().collect();
+        let mut out = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let Some(name) = declared_fn(line) else {
+                continue;
+            };
+            let indent = line.len() - line.trim_start().len();
+            let mut start = i;
+            while start > 0 {
+                let above = lines[start - 1].trim_start();
+                if above.starts_with("#[") || above.starts_with("///") || above.starts_with("//") {
+                    start -= 1;
+                } else {
+                    break;
+                }
+            }
+            let attrs = lines[start..i].join("\n");
+            let open = (i..lines.len())
+                .find(|&j| lines[j].trim_end().ends_with('{') || lines[j].trim_end().ends_with(';'))
+                .unwrap_or(i);
+            let sig = lines[i..=open].join("\n");
+            let close = (open + 1..lines.len())
+                .find(|&j| {
+                    let l = lines[j];
+                    l.trim() == "}" && l.len() - l.trim_start().len() == indent
+                })
+                .unwrap_or(open);
+            let body = lines[open + 1..=close.max(open)].join("\n");
+            out.push((name.to_string(), attrs, sig, body));
+        }
+        out
+    }
+
+    /// The sync Tauri commands of `src` (`#[tauri::command]` without
+    /// `async` anywhere in the attribute block, whatever else is in it),
+    /// and those of them that use the library: `.store()` or
+    /// `state.store`, or a call of a helper that reaches it — one that
+    /// takes `&AppState` / `State<AppState>` without being a command, or
+    /// gets the state from the app handle (`switch_library`).
+    fn sync_store_users(src: &str) -> (Vec<String>, Vec<String>) {
+        let fns = functions(src);
+        let is_command = |attrs: &str| {
+            attrs
+                .lines()
+                .any(|l| l.trim_start().starts_with("#[tauri::command"))
+        };
+        let helpers: Vec<&str> = fns
+            .iter()
+            .filter(|(name, attrs, sig, body)| {
+                !is_command(attrs)
+                    && name != "store"
+                    && (sig.contains("AppState")
+                        || body.contains("state::<AppState>")
+                        || name == "switch_library")
+            })
+            .map(|(name, ..)| name.as_str())
+            .collect();
+        let mut sync = Vec::new();
+        let mut users = Vec::new();
+        for (name, attrs, _, body) in &fns {
+            let Some(attr) = attrs
+                .lines()
+                .find(|l| l.trim_start().starts_with("#[tauri::command"))
+            else {
+                continue;
+            };
+            if attr.contains("async") {
+                continue;
+            }
+            sync.push(name.clone());
+            let calls = |h: &str| {
+                body.match_indices(&format!("{h}(")).any(|(at, _)| {
+                    !body[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == ':')
+                })
+            };
+            if body.contains(".store()")
+                || body.contains("state.store")
+                || helpers.iter().any(|h| calls(h))
+            {
+                users.push(name.clone());
+            }
+        }
+        (sync, users)
+    }
+
     /// A command that runs on the window's main thread may only read the
     /// library: anything that writes takes the job's lock, which another
     /// program may hold for seconds (audit 2026-11-23 ARCH-1001). A new
     /// sync command that touches the store fails here until it is made
-    /// `#[tauri::command(async)]` or shown to only read.
+    /// `#[tauri::command(async)]` or shown to only read. The scan reads
+    /// each command's whole attribute block and sees the store through a
+    /// helper too (audit 2026-11-23 TEST-1104).
     #[test]
     fn sync_commands_only_read_the_library() {
         let src = include_str!("lib.rs").replace("\r\n", "\n");
@@ -1309,19 +1415,81 @@ mod tests {
             "list_attachments",
             "open_attachment",
         ];
-        let mut seen = 0;
-        for part in src.split("#[tauri::command]\nfn ").skip(1) {
-            seen += 1;
-            let name = part.split('(').next().unwrap_or_default();
-            let body = part.split("\n}\n").next().unwrap_or_default();
-            if body.contains(".store()") {
-                assert!(
-                    reads_only.contains(&name),
-                    "`{name}` uses the library on the main thread: make it #[tauri::command(async)]"
-                );
-            }
+        // Reviewed (audit 2026-11-23 TEST-1104): they switch the library
+        // through `switch_library`, which writes the store only when the
+        // jobs folder changed, a rare press in Settings. Kept sync until a
+        // freeze is measured (owner decision 2026-11-23).
+        let reviewed = ["update_settings", "answer_folder_request"];
+        let (sync, users) = sync_store_users(&src);
+        for name in &users {
+            assert!(
+                reads_only.contains(&name.as_str()) || reviewed.contains(&name.as_str()),
+                "`{name}` uses the library on the main thread: make it #[tauri::command(async)]"
+            );
         }
-        assert!(seen > 5, "no sync commands found: the scan is broken");
+        for name in reviewed {
+            assert!(
+                users.iter().any(|u| u == name),
+                "`{name}` no longer uses the library on the main thread: take it off the list"
+            );
+        }
+        assert!(sync.len() > 5, "no sync commands found: the scan is broken");
+    }
+
+    /// The scan above on made-up commands: a second attribute between
+    /// `#[tauri::command]` and `fn`, a store use through a helper and
+    /// through `switch_library` are all seen; async commands and commands
+    /// that do not touch the store are not flagged.
+    #[test]
+    fn the_sync_command_scan_sees_attributes_and_helpers() {
+        // Each line starts with `|`, so the scan of lib.rs itself does not
+        // take these for commands.
+        let src = r#"
+|struct AppState { store: u8 }
+|
+|fn wipe_all(state: &AppState) {
+|    state.store();
+|}
+|
+|fn switch_library(app: &AppHandle) {
+|    let state = app.state::<AppState>();
+|}
+|
+|/// Doc.
+|#[tauri::command]
+|#[allow(clippy::needless_pass_by_value)]
+|fn with_allow(state: State<AppState>) {
+|    state.store().delete("x");
+|}
+|
+|#[tauri::command]
+|fn through_helper(state: State<AppState>) {
+|    wipe_all(&state);
+|}
+|
+|#[tauri::command]
+|fn through_switch(app: AppHandle) {
+|    switch_library(&app).ok();
+|}
+|
+|#[tauri::command(async)]
+|fn off_thread(state: State<AppState>) {
+|    state.store().save();
+|}
+|
+|#[tauri::command]
+|fn no_store(path: String) {
+|    Settings::load();
+|}
+"#
+        .replace('|', "");
+        let (sync, mut users) = sync_store_users(&src);
+        users.sort();
+        assert_eq!(
+            sync,
+            ["with_allow", "through_helper", "through_switch", "no_store"]
+        );
+        assert_eq!(users, ["through_helper", "through_switch", "with_allow"]);
     }
 
     /// Double-click open and start-up arguments (TEST-008): Tectora files
