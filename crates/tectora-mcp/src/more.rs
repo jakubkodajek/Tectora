@@ -3717,6 +3717,59 @@ mod tool_coverage {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Audit 2026-11-23 ERR-1001: when the write that follows a dropped
+    /// stored result stores the current figures (store_result, a status
+    /// change), the note says so and never tells the AI to call
+    /// store_result.
+    #[test]
+    fn mcp_says_when_a_dropped_stored_result_was_replaced_by_this_write() {
+        let drop_result = |s: &mut Server, id: &str| {
+            let file = s.store.dir.join(format!("{id}.tectora"));
+            let mut v: Value =
+                serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+            v["result_snapshot"]["taken_ms"] = json!(8_640_000_000_000_001u64);
+            std::fs::write(&file, serde_json::to_string(&v).unwrap()).unwrap();
+        };
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "status": "offer", "summary": "Offer sent" }),
+        );
+        drop_result(&mut s, &id);
+        let r = call(
+            &mut s,
+            "store_result",
+            json!({ "id": id, "summary": "Store the figures" }),
+        );
+        assert_eq!(r["load_warnings"][0]["code"], "result_dropped", "{r}");
+        let note = r["note"].as_str().unwrap();
+        assert!(note.contains("left out"), "{r}");
+        assert!(note.contains("stored the current figures"), "{r}");
+        assert!(!note.contains("call store_result"), "{r}");
+        assert!(!note.contains("without it"), "{r}");
+        assert!(s.store.load(&id).unwrap().result_snapshot.is_some());
+        // A job leaving the draft status stores the current result as well.
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "status": "draft", "summary": "Back to draft" }),
+        );
+        drop_result(&mut s, &id);
+        let r = call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "status": "offer", "summary": "Offer sent" }),
+        );
+        assert_eq!(r["load_warnings"][0]["code"], "result_dropped", "{r}");
+        let note = r["note"].as_str().unwrap();
+        assert!(note.contains("stored the current figures"), "{r}");
+        assert!(!note.contains("call store_result"), "{r}");
+        assert!(s.store.load(&id).unwrap().result_snapshot.is_some());
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
     #[test]
     fn revert_to_undoes_every_change_since_the_given_step() {
         let mut s = server();

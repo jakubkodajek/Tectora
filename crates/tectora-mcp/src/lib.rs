@@ -1474,8 +1474,16 @@ impl Server {
         }
         if !dropped.is_empty() {
             let note = out["note"].as_str().unwrap_or("Saved.").to_string();
+            // What the saved job holds, not what was read (audit
+            // 2026-11-23 ERR-1001: store_result and a status change store
+            // the current figures in its place).
+            let what = if project.result_snapshot.is_some() {
+                "this save stored the current figures in its place: tell the user that the offer's own figures are lost and the stored result is now the current one."
+            } else {
+                "this save wrote the job without it: tell the user, and call store_result if they want the current figures stored as the offer's."
+            };
             out["note"] = json!(format!(
-                "{note} The job's stored offer result had an impossible date, so it was left out when the job was read, and this save wrote the job without it: tell the user, and call store_result if they want the current figures stored as the offer's."
+                "{note} The job's stored offer result had an impossible date, so it was left out when the job was read, and {what}"
             ));
             out["load_warnings"] = Value::Array(dropped);
         }
