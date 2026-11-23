@@ -150,6 +150,52 @@ describe("entrySummary", () => {
   });
 });
 
+// Audit 2026-11-23 HUNT-1002, ERR-1003: entries written before the core
+// kept the reason whole had the whole summary capped at 500 characters, so
+// it ends inside the reason or inside the sentence before it ("…"). The
+// reason field holds it whole: the line shows the translated head and it.
+describe("an entry whose summary was cut by the cap (HUNT-1002, ERR-1003)", () => {
+  const cap = (s: string) => (s.length <= 500 ? s : `${s.slice(0, 499)}…`);
+  const reason = `The customer signed these figures. ${"y".repeat(415)}`;
+  const restored = cap(`Offer result restored (Tectora 0.9.0 -> 0.8.0): roof area 152.73 -> 154.73 m2 (reason: ${reason})`);
+  const what = `Note. ${"x".repeat(480)}`;
+  const reverted = cap(`Reverted: ${what} (reason: Customer asked)`);
+  const head: Record<string, [string, string, string]> = {
+    cs: ["Původní čísla nabídky vrácena (Tectora 0.9.0 → 0.8.0)", "Vráceno: Note. ", "důvod"],
+    sk: ["Pôvodné čísla ponuky vrátené (Tectora 0.9.0 → 0.8.0)", "Vrátené: Note. ", "dôvod"],
+    en: ["Offer figures put back (Tectora 0.9.0 → 0.8.0)", "Reverted: Note. ", "reason"],
+    de: ["Ursprüngliche Zahlen des Angebots zurückgeholt (Tectora 0.9.0 → 0.8.0)", "Verworfen: Note. ", "Grund"],
+  };
+  it("is cut as the store cut it", () => {
+    expect(restored).toHaveLength(500);
+    expect(restored.endsWith(`${reason})`)).toBe(false);
+    expect(reverted).toHaveLength(500);
+    expect(reverted).not.toContain(" (reason: ");
+  });
+  it("shows the translated sentence and the whole reason, in every language", () => {
+    for (const [loc, [put, rev, word]] of Object.entries(head)) {
+      i18n.locale = loc as typeof i18n.locale;
+      expect(entrySummary(restored, reason), loc).toBe(`${put} (${word}: ${reason})`);
+      expect(historyText({ actor: "claude", summary: restored, reason }, []), loc).toBe(`${put} (${word}: ${reason})`);
+      const r = entrySummary(reverted, "Customer asked");
+      expect(r.startsWith(rev), `${loc}: ${r.slice(0, 40)}`).toBe(true);
+      expect(r.endsWith(`… (${word}: Customer asked)`), `${loc}: ${r.slice(-40)}`).toBe(true);
+      expect(r, loc).not.toContain(" (r…");
+    }
+    i18n.locale = "cs";
+  });
+  it("finds the cut reason after a reason-like text in the AI's own summary", () => {
+    i18n.locale = "en";
+    const long = `Mistake fixed ${"z".repeat(480)}`;
+    const s = cap(`Reverted: Note (reason: x) (reason: ${long})`);
+    expect(entrySummary(s, long)).toBe(`Reverted: Note (reason: x) (reason: ${long})`);
+    // The cut fell before the reason began: the AI's "(reason: x)" is not taken for it.
+    const s2 = cap(`Reverted: Note (reason: x) ${"w".repeat(480)} (reason: Customer asked)`);
+    expect(entrySummary(s2, "Customer asked")).toMatch(/^Reverted: Note \(reason: x\) w+… \(reason: Customer asked\)$/);
+    i18n.locale = "cs";
+  });
+});
+
 // Audit 2026-11-23 HUNT-902: the offer's figures no longer live in the
 // change log, so the entry no longer promises they "stay in this
 // history"; the recalculation the stored result still is says they can be
