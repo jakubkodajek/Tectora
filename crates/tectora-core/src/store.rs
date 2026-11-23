@@ -3290,7 +3290,13 @@ impl Store {
                     id: id.to_string(),
                     ts_ms,
                 })?;
-        let undone = log.len() - pos;
+        // What `revert_locked` undoes, by its own rule: the user's put-back
+        // of the offer's figures after `pos` stays and is not counted
+        // (audit 2026-11-23 HUNT-1301). The pending review starts after
+        // the last user and engine entry and the engine does not
+        // recalculate while a review waits (`refresh_due`), so from a
+        // pending AI change on this counts the AI changes undone.
+        let undone = reverted_entries(&log[pos..]).count();
         let summary = if undone == 1 {
             format!("{REVERTED_PREFIX}{}", log[pos].summary)
         } else {
@@ -3340,12 +3346,8 @@ impl Store {
         };
         let before = current.clone();
         let mut target = None;
-        for (k, entry) in log[pos..].iter().enumerate().rev() {
-            // The user's "offer result restored" stays when other changes
-            // are undone: it is undone only when asked for by itself.
-            if k > 0 && entry.user_restore() {
-                continue;
-            }
+        let undo: Vec<&ActivityEntry> = reverted_entries(&log[pos..]).collect();
+        for entry in undo.into_iter().rev() {
             let earlier = entry
                 .before
                 .clone()
@@ -4107,6 +4109,17 @@ fn reverted_count(summary: &str) -> usize {
 /// The latest logged change that no later revert undid. A second "revert
 /// the latest change" used to revert the first revert and so put the change
 /// back (audit 2026-11-15 HUNTIO-002); it now undoes one more step.
+/// The entries a revert from `from[0]` on undoes, oldest first: the user's
+/// "offer result restored" stays when other changes are undone, it is
+/// undone only when asked for by itself. One rule for the revert and for
+/// the count it reports (audit 2026-11-23 HUNT-1301).
+fn reverted_entries(from: &[ActivityEntry]) -> impl Iterator<Item = &ActivityEntry> {
+    from.iter()
+        .enumerate()
+        .filter(|(k, e)| *k == 0 || !e.user_restore())
+        .map(|(_, e)| e)
+}
+
 fn latest_undone(log: &[ActivityEntry]) -> Option<usize> {
     let mut i = log.len();
     while i > 0 {
@@ -8454,6 +8467,63 @@ mod tests {
         let e = store.revert_last("nope", USER_ACTOR, None).unwrap_err();
         assert_eq!(e.code(), "nothing_to_revert");
         assert!(!store.activity_dir().join("nope.lock").exists());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-23 HUNT-1301: Revert all from an AI change with only
+    /// the user's put-back of the offer's figures after it undoes the AI
+    /// change alone, and says so: the put-back stays and is not counted,
+    /// in the answer nor in the history line.
+    #[test]
+    fn revert_all_does_not_count_the_put_back_it_keeps() {
+        let store = temp_store("revert-count-restore");
+        let (id, p) = old_offer(&store);
+        let offer = p.result_snapshot.clone().unwrap();
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        let mut q = store.load(&id).unwrap();
+        q.notes = "AI note".into();
+        store
+            .save_as(Some(id.clone()), &q, "claude", "Note from AI")
+            .unwrap();
+        let ai_ts = store.activity(&id).last().unwrap().ts_ms;
+        store
+            .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(store.pending_review(&id).unwrap().count, 1);
+        let r = store
+            .revert_to_counted(&id, ai_ts, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(r.undone, 1);
+        assert_eq!(r.project.notes, p.notes);
+        // The put-back's figures are still the stored result.
+        assert_eq!(r.project.result_snapshot, Some(offer.clone()));
+        assert_eq!(store.load(&id).unwrap().result_snapshot, Some(offer));
+        let last = store.activity(&id).last().unwrap().clone();
+        assert_eq!(last.summary, format!("{REVERTED_PREFIX}Note from AI"));
+        assert!(!last.summary.contains("2 changes"), "{}", last.summary);
+        // Two AI changes later: both undone and counted.
+        let mut q = store.load(&id).unwrap();
+        q.notes = "first".into();
+        store
+            .save_as(Some(id.clone()), &q, "claude", "First")
+            .unwrap();
+        let first = store.activity(&id).last().unwrap().ts_ms;
+        q.job.address = "Somewhere 1".into();
+        store
+            .save_as(Some(id.clone()), &q, "claude", "Second")
+            .unwrap();
+        let r = store
+            .revert_to_counted(&id, first, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(r.undone, 2);
+        assert!(
+            store
+                .activity(&id)
+                .last()
+                .unwrap()
+                .summary
+                .starts_with("Reverted 2 changes since: First")
+        );
         let _ = fs::remove_dir_all(&store.dir);
     }
 

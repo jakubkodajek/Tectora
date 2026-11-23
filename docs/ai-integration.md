@@ -145,7 +145,9 @@ stay a `folder_request` the user allows or keeps.
   two AI steps is kept too (or the whole revert is refused).
 - A revert's change-log entry starts with the fixed English sentence the app
   translates (`Reverted: <summary>`, `Reverted <n> changes since: <summary>`);
-  an AI's reason follows as ` (reason: <reason>)`.
+  an AI's reason follows as ` (reason: <reason>)`. `<n>` counts the entries
+  the revert undid: the user's own put-back of the offer's figures after the
+  first undone entry stays and is not counted.
 - A Revert button undoes the entry it is drawn on: the app sends that
   entry's time (`revert_last_change` with `expectTs`, MCP `ts_ms`) and the
   store refuses with `revert_stale` when another change is the latest by
