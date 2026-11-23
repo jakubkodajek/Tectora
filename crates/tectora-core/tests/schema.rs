@@ -112,8 +112,10 @@ fn unknown_keys_are_bounded_and_never_reach_the_calculation() {
         .insert("big".into(), Value::String("x".repeat(MAX_EXTRA_BYTES + 1)));
     assert_eq!(p.check_input().unwrap_err().code, "too_many");
     p.extra.clear();
+    // A big number in a key another tool added is metadata, not geometry:
+    // it opens and calculates (Jakub's decision 2026-11-23, HUNT-901).
     p.extra.insert("huge".into(), json!(1e300));
-    assert_eq!(p.check_input().unwrap_err().code, "out_of_range");
+    assert!(p.check_input().is_ok());
     // The roof does not depend on them.
     p.extra.clear();
     let area = tectora_core::quantities::roof_totals(&p).roof_area;
