@@ -164,7 +164,7 @@ returns for the case, taken from `tectora calc`, and make sure the component
 calls that helper (Roof3D draws gables through `scene3d.wallTriangles`,
 which `scene3d.test.ts` covers). A roof whose core result has no gable
 polygon for a gable wall (shed roof) still shows closed walls
-(`wallUpToRoof`); manual faces appear in 3D; at any zoom the plan grid stays
+(`wallUnderRoof`); manual faces appear in 3D; at any zoom the plan grid stays
 at least 8 px apart (`grid.test.ts`).
 
 Object bars that read a shape back from stored corners (chimney, roof
