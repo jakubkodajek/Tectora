@@ -92,7 +92,7 @@ const cs: Dict = {
   "snap.offerStored": "Výsledek nabídky uložen {date}",
   "snap.receivedOffer": "Původní čísla nabídky zůstala na počítači odesílatele.",
   "snap.receivedOfferArea": "Plocha střechy v nabídce byla {a}; původní čísla zůstala na počítači odesílatele.",
-  "snap.exportRecalculated": "Zakázka byla exportována s přepočítaným výsledkem. Původní čísla nabídky zůstávají jen na tomto počítači; chcete-li poslat je, nejdřív je vraťte ({tab} > {button}) a exportujte znovu.",
+  "snap.exportRecalculated": "Zakázka byla exportována s přepočítaným výsledkem. Původní čísla nabídky zůstávají jen na tomto počítači; chcete-li je poslat, nejdřív je vraťte ({tab} > {button}) a exportujte znovu.",
   "snap.revertRefresh": "Vrátit původní čísla nabídky",
   "snap.refreshedNoticeLines": "Uložený výsledek nabídky byl přepočítán opraveným výpočtem (Tectora {from} → {to}): plocha střechy se nezměnila, změnily se délky linií: {codes}.",
   "snap.refreshedNoticeOther": "Uložený výsledek nabídky byl přepočítán opraveným výpočtem (Tectora {from} → {to}): plocha střechy se nezměnila, změnily se jiné hodnoty.",
