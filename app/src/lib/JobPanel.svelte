@@ -36,6 +36,7 @@
     current,
     edits,
     recalculated = false,
+    onresulttoast,
   }: {
     id: string;
     project: Project;
@@ -57,6 +58,12 @@
     current?: () => Project | null;
     /** The editor's edit rule (jobedits.ts): a status change holds the roof it stores the result of. */
     edits: JobEdits;
+    /**
+     * A notice whose text quotes the stored result was shown: the editor
+     * closes it once the stored result changes (the panel may be gone by
+     * then), so it never stands with old figures (UI-1202).
+     */
+    onresulttoast?: (toast: number) => void;
   } = $props();
 
   /** Whether status `s` cannot be chosen now: any status past the draft while the core gives
@@ -166,7 +173,7 @@
 
   /** Says that the job keeps its earlier result, with the figure that differs and the action that stores the new one (UX-206). */
   function offerKept(differences: FigureDifference[], fresh: ResultSnapshot, roof: RoofHold) {
-    notify({
+    const toast = notify({
       kind: "warning",
       title: t("job.offerKeptTitle"),
       message: keptText(differences),
@@ -185,6 +192,7 @@
         },
       },
     });
+    onresulttoast?.(toast);
   }
 
   // Files attached to the job (drawings, photos).

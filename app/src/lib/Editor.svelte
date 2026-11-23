@@ -834,6 +834,29 @@
    */
   const ownToasts = new Set<number>();
 
+  /**
+   * Notices that quote the job's stored result (the Job tab's "kept its
+   * earlier result"), with the stored result they quote: once it changes
+   * (the put-back, Undo, an AI save) they close, so no toast stands with
+   * old figures next to the card (UI-1202). The next comparison shows a
+   * fresh one if the figures still differ.
+   */
+  const resultToasts = new Map<number, string>();
+  const storedKey = () => JSON.stringify(project?.result_snapshot ?? null);
+  function resultToast(toast: number) {
+    resultToasts.set(toast, storedKey());
+  }
+  $effect(() => {
+    const now = storedKey();
+    untrack(() => {
+      for (const [toast, quoted] of resultToasts) {
+        if (quoted === now) continue;
+        dismiss(toast);
+        resultToasts.delete(toast);
+      }
+    });
+  });
+
   /** One neutral notice that opening the job recalculated its stored result, with the way to the old figures. */
   function noticeRecalculated(entry: RefreshedEntry) {
     const name = project?.name.trim();
@@ -2971,7 +2994,7 @@
           {:else if dock === "ai"}
             <AiPanel {id} {project} {activity} recalculation={recalculatedResult} bind:shown={shownEntry} onrevert={(ts) => revert(false, ts)} onrestore={restoreOffer} busy={reviewBusy} {onconnect} onfocus={(c) => (focusChange = c)} />
           {:else}
-            <JobPanel {id} {project} current={() => project} onchange={commit} onsave={save} blocked={blockedReason} recalculated={!!recalculatedResult} edits={jobEdits} track={(p) => pendingEdits.track(p)} />
+            <JobPanel {id} {project} current={() => project} onchange={commit} onsave={save} blocked={blockedReason} recalculated={!!recalculatedResult} edits={jobEdits} track={(p) => pendingEdits.track(p)} onresulttoast={resultToast} />
           {/if}
         </div>
       </aside>
