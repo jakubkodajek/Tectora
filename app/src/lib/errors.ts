@@ -22,6 +22,7 @@ export type Action =
   | "duplicate"
   | "import"
   | "revert"
+  | "revertAll"
   | "restoreOffer"
   | "accept"
   | "calc"
@@ -81,6 +82,7 @@ const KNOWN = new Set([
   "revert_stale",
   "busy",
   "busy_edits",
+  "busy_open",
   "left_before_action",
   "save_conflict",
   "not_saved",
@@ -138,6 +140,18 @@ export function describeError(e: unknown, action?: Action): Described {
     message: settings ? t(`settings.err.${err.code}`) : jobTooLarge ? t("err.job_too_large") : unknownKeys ? t("err.unknown_keys") : notText ? t("err.unreadable_text") : t(`err.${code}`, { id: err.id ?? "" }),
     detail: err.detail,
   };
+}
+
+/**
+ * Why the library cannot read one of its files (store.rs `scan`), in the
+ * user's language: the same text the editor gives when it opens that file
+ * (a job refused for its unknown keys, a file in another encoding, ...),
+ * not the operating system's refusal (ARCH-1303). A code this file does
+ * not know is an input / output error.
+ */
+export function describeBroken(b: { id: string; code: string; detail?: string | null }): string {
+  if (!KNOWN.has(b.code)) return t("err.io");
+  return describeError({ code: b.code, id: b.id, detail: b.detail ?? undefined }).message;
 }
 
 /**

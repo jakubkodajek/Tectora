@@ -13,7 +13,7 @@
   import { listedArea, offerDiffers, storedArea, storedAreaHint } from "./offer";
   import { numberLocale, t } from "./i18n.svelte";
   import { actorLabel, actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
-  import { notUtf8, type Action } from "./errors";
+  import { describeBroken, type Action } from "./errors";
   import { fold, searchWords } from "./fold";
   import { foreignSentences, type Foreign } from "./foreign";
   import { dismiss, notify, notifyError } from "./notify.svelte";
@@ -21,6 +21,7 @@
   import { prefs, savePrefs } from "./settings.svelte";
   import { hscroll } from "./hscroll";
   import { tick } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
   import { firstPress } from "./dblclick";
   import type { BrokenFile, ExampleInfo, JobStatus, ProjectSummary, TrashEntry } from "./types";
   import { JOB_STATUSES, isAi } from "./types";
@@ -177,15 +178,17 @@
 
   /** Jobs with a delete or duplicate under way: a double click must not
    *  make two copies, or ask twice and then fail (UI-018). */
-  let busy = $state<Record<string, boolean>>({});
+  // A set, not a plain object: a job id such as "constructor" must not find
+  // Object.prototype's member and look busy for good (ARCH-1301).
+  const busy = new SvelteSet<string>();
 
   async function once(id: string, f: () => Promise<void>) {
-    if (busy[id]) return;
-    busy[id] = true;
+    if (busy.has(id)) return;
+    busy.add(id);
     try {
       await f();
     } finally {
-      delete busy[id];
+      busy.delete(id);
     }
   }
 
@@ -199,7 +202,7 @@
       onchanged();
       loadTrash();
       // The confirm promised the trash: say where it went and offer it back at once (UX-010).
-      if (gone) deleteToasts[gone.entry] = notify({ kind: "info", title: t("home.deleted", { name: gone.name || p.name }), action: { label: t("home.restore"), run: () => restore(gone) } });
+      if (gone) deleteToasts.set(gone.entry, notify({ kind: "info", title: t("home.deleted", { name: gone.name || p.name }), action: { label: t("home.restore"), run: () => restore(gone) } }));
     });
 
   /** Deleted jobs in the library's trash (removed attachments are left out), newest first. */
@@ -220,7 +223,7 @@
 
   /** The delete toast offering each trash entry back, so a restore from the
    *  trash list takes the offer away (UI-001). */
-  const deleteToasts: Record<string, number> = {};
+  const deleteToasts = new Map<string, number>();
 
   /** Brings a deleted job back into the library and selects it. Once: a
    *  double click must not restore and then report the entry missing (UI-001). */
@@ -228,8 +231,9 @@
     once(`trash:${e.entry}`, async () => {
       const id = await run("restore", () => api.restoreDeleted(e.entry));
       if (!id) return loadTrash();
-      if (deleteToasts[e.entry] !== undefined) dismiss(deleteToasts[e.entry]);
-      delete deleteToasts[e.entry];
+      const toast = deleteToasts.get(e.entry);
+      if (toast !== undefined) dismiss(toast);
+      deleteToasts.delete(e.entry);
       trash = trash.filter((x) => x.entry !== e.entry);
       notify({ kind: "info", title: t("home.restored", { name: e.name }) });
       selectedId = id;
@@ -332,7 +336,7 @@
             {#each trash as e (e.entry)}
               <li>
                 <div class="trash-text"><strong>{e.name || e.id}</strong><small class="muted">{t("home.deletedWhen", { when: relativeTime(e.ts_ms) })}{#if isAi(e.actor)} · {actorName(e.actor)}{/if}</small></div>
-                <button class="btn sm" disabled={!!busy[`trash:${e.entry}`]} onclick={() => restore(e)}><Icon name="undo" size={15} />{t("home.restore")}</button>
+                <button class="btn sm" disabled={busy.has(`trash:${e.entry}`)} onclick={() => restore(e)}><Icon name="undo" size={15} />{t("home.restore")}</button>
               </li>
             {/each}
           </ul>
@@ -365,7 +369,7 @@
               {#if showBroken}
                 <ul>
                   {#each broken as b (b.id)}
-                    <li><code>{b.id}.tectora</code> {t(`err.${b.code === "unreadable" && notUtf8(b.detail) ? "unreadable_text" : b.code === "unreadable" || b.code === "newer_format" || b.code === "permission_denied" || b.code === "internal" ? b.code : "io"}`, { id: b.id })}{#if b.detail}<small>{b.detail}</small>{/if}</li>
+                    <li><code>{b.id}.tectora</code> {describeBroken(b)}{#if b.detail}<small>{b.detail}</small>{/if}</li>
                   {/each}
                 </ul>
               {/if}
@@ -496,9 +500,9 @@
         {/if}
         <div class="detail-actions">
           <button class="btn primary" onclick={() => onopen(selected!.id)}><Icon name="open" size={16} />{t("card.open")}</button>
-          <button class="btn" disabled={!!busy[selected!.id]} onclick={() => duplicate(selected!)} title={t("card.duplicate")}><Icon name="copy" size={16} /><span class="label">{t("card.duplicate")}</span></button>
+          <button class="btn" disabled={busy.has(selected!.id)} onclick={() => duplicate(selected!)} title={t("card.duplicate")}><Icon name="copy" size={16} /><span class="label">{t("card.duplicate")}</span></button>
           <button class="btn reuse" onclick={() => (newJob = { example: null, from: selected!.id })} title={t("card.reuse")}><Icon name="plus" size={16} /><span class="label">{t("card.reuse")}</span></button>
-          <button class="btn ghost danger" disabled={!!busy[selected!.id]} onclick={() => remove(selected!)} title={t("card.delete")}><Icon name="trash" size={16} /><span class="label">{t("card.delete")}</span></button>
+          <button class="btn ghost danger" disabled={busy.has(selected!.id)} onclick={() => remove(selected!)} title={t("card.delete")}><Icon name="trash" size={16} /><span class="label">{t("card.delete")}</span></button>
         </div>
       </aside>
     {/if}

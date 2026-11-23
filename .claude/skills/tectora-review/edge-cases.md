@@ -523,6 +523,25 @@ case, and assert that it really came while the pointer was down.
   listeners per file, receiver and event in every shape, requires the gate
   first in each gated handler, counts toast actions of every shape and lists
   every `openId =` and `libraryChanged` use in App.svelte with its reason.
+- A toast action after its editor is gone (round 14, HUNT-1302): every
+  editor toast whose button edits the job is one of the editor's own
+  (`ownToasts`, closed in `onDestroy`) and names the job in its title; the
+  panel's `current()` answers null once the editor is destroyed. Show the
+  Job tab's "keeps the result stored earlier" toast, then: an unrelated edit
+  (it stays), Back (it is gone at once, not by its timer: hover it first),
+  Back and another job opened (no toast, the left job's stored result
+  unchanged), the dock moved to Results (its button still stores).
+  `app/e2e/audit-r14-ed.e2e.ts`.
+- The prepare phase says what held it (round 14, UX-1301, TEST-1301): with
+  the edits saved and only a menu, dialog or question open at the deadline
+  the notice is `busy_open`, else `busy_edits`; a dialog opened and closed
+  before the press holds nothing (`modalcount.ts`, its release counts
+  once). Revert all refused is titled in the plural (`err.action.revertAll`,
+  UI-1301). `gate.scan.test.ts` lists every `await confirm(` of the editor
+  by its function (inside `asking`, or passive with a reason), requires
+  `asking`'s `finally`, and refuses a spread inside a `notify(` literal
+  (TEST-1303, TEST-1305). A test whose steps inside the 3 s budget are
+  wall-clock sets the dev build's `window.__e2e.prepareMs` (TEST-1306).
 
 ## 16. Huge but valid jobs reach every view (@arch, @ui)
 

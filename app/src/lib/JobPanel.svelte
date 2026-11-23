@@ -2,6 +2,7 @@
   import { info, notify, notifyError } from "./notify.svelte";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { untrack } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
   import Icon from "./Icon.svelte";
   import { api } from "./api";
   import { safeFileName } from "./filename";
@@ -173,9 +174,11 @@
 
   /** Says that the job keeps its earlier result, with the figure that differs and the action that stores the new one (UX-206). */
   function offerKept(differences: FigureDifference[], fresh: ResultSnapshot, roof: RoofHold) {
+    // Named: the notice can stand over another screen (HUNT-1302).
+    const name = latest()?.name.trim();
     const toast = notify({
       kind: "warning",
-      title: t("job.offerKeptTitle"),
+      title: name ? t("err.ofJob", { name, title: t("job.offerKeptTitle") }) : t("job.offerKeptTitle"),
       message: keptText(differences),
       action: {
         label: t("snap.store"),
@@ -222,11 +225,12 @@
   }
 
   /** Files with a removal under way: a double click asks once and removes once (UI-009). */
-  let removing = $state<Record<string, boolean>>({});
+  // A set: a file name never finds an Object.prototype member (ARCH-1301).
+  const removing = new SvelteSet<string>();
 
   async function removeFile(name: string) {
-    if (removing[name]) return;
-    removing[name] = true;
+    if (removing.has(name)) return;
+    removing.add(name);
     try {
       // Tauri's dialog plugin makes window.confirm asynchronous (a Promise is
       // always truthy), so the answer must be awaited.
@@ -238,7 +242,7 @@
       }
       await loadFiles();
     } finally {
-      delete removing[name];
+      removing.delete(name);
     }
   }
 
@@ -313,7 +317,7 @@
         <li>
           <button class="link" onclick={() => openFile(f.name)} title={t("files.open")}>{f.name}</button>
           <span class="size">{fileSize(f.size)}</span>
-          <button class="icon" disabled={!!removing[f.name]} onclick={() => removeFile(f.name)} title={t("files.remove")} aria-label={t("files.remove")}><Icon name="trash" size={14} /></button>
+          <button class="icon" disabled={removing.has(f.name)} onclick={() => removeFile(f.name)} title={t("files.remove")} aria-label={t("files.remove")}><Icon name="trash" size={14} /></button>
         </li>
       {/each}
     </ul>
