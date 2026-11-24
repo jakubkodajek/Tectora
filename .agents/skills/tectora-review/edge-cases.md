@@ -708,3 +708,23 @@ Guards: store tests `r18_*`, `t1801_*`, `t1802_*`, `t1803_*`; bundle test
 `an_ais_take_back_of_the_users_revert_of_accepted_work_waits`,
 `a_write_raced_by_a_delete_does_not_bring_the_job_back`; `live.test.ts`
 "historyText by what a revert did"; `app/e2e/audit-r18-a.e2e.ts`.
+
+## 19. The review by the job's version (@arch, @test, @errors)
+
+- Random mixes of AI changes, AI reverts and take-backs, the user's
+  reverts, Undo, Accept, Revert all and the editor's unlogged saves: Revert
+  all always ends at the job the user last settled and keeps the unlogged
+  edit; one Accept ends the review; an AI step that changes the settled job
+  always waits; card, by-AI filter and banner agree (TEST-1801, ARCH-1802,
+  HUNT-1803, ERR-1801).
+- The AI takes a change out and puts it back exactly: no banner.
+- A long foreign log (100 000 reverts naming missing times, in and out of
+  time order) costs linear work (ARCH-1801).
+- A received job's own user entries are the sender's, never "you"
+  (UX-1801).
+
+Guards: store tests `t1901_*` to `t1907_*` (t1905 seeded, `T1905_SEED` /
+`T1905_RUNS` / `T1905_STEPS` for more), `t19_*`; bundle test
+`a_received_log_keeps_its_reverts_and_put_backs`; `live.test.ts` "the
+mixed revert sentence with n ≠ m", "actorLabel of a received user entry";
+`app/e2e/audit-r19-a.e2e.ts`.

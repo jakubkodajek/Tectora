@@ -574,7 +574,11 @@ export const USER_ACTOR = "user";
 export const ENGINE_ACTOR = "tectora";
 /** What an engine's entry of a received bundle is renamed to (store.rs `RECEIVED_ENGINE_ACTOR`): history of the sender's Tectora, never this engine's. */
 export const RECEIVED_ENGINE_ACTOR = "tectora (received)";
-export const isAi = (actor: string) => actor !== USER_ACTOR && actor !== ENGINE_ACTOR && actor !== RECEIVED_ENGINE_ACTOR;
+/** What the sender's own entries of a received bundle are renamed to (store.rs `RECEIVED_USER_ACTOR`): a colleague's, never this user's (UX-1801). */
+export const RECEIVED_USER_ACTOR = "user (received)";
+/** An entry by this user or, received, by the sender: a user's revert or put-back, no AI's. */
+export const byAUser = (actor: string) => actor === USER_ACTOR || actor === RECEIVED_USER_ACTOR;
+export const isAi = (actor: string) => !byAUser(actor) && actor !== ENGINE_ACTOR && actor !== RECEIVED_ENGINE_ACTOR;
 
 export function emptyProject(name: string): Project {
   return {

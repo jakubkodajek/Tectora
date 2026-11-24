@@ -1561,11 +1561,13 @@
   /**
    * Accept: the banner stays (its buttons busy) until the core answered;
    * a `busy` answer keeps the AI's changes pending and says so under
-   * Accept's own title (ERR-1103).
+   * Accept's own title (ERR-1103). It accepts everything the editor has
+   * shown (`seenTs`), also the AI's own reverts that are no listed step,
+   * so one Accept ends the review (audit 2026-11-24 ERR-1801).
    */
   async function acceptNow() {
     if (!pending) return;
-    const ts = pending.ts_ms;
+    const ts = Math.max(seenTs ?? pending.ts_ms, pending.ts_ms);
     const name = project?.name.trim() || id;
     try {
       await api.acceptChanges(id, ts);

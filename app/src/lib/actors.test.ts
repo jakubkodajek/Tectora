@@ -3,7 +3,7 @@
 // types.ts must name the same, or an entry of a new reserved name would be
 // shown and reviewed as an AI's (or an AI's as Tectora's).
 import { describe, expect, it } from "vitest";
-import { ENGINE_ACTOR, RECEIVED_ENGINE_ACTOR, USER_ACTOR, isAi } from "./types";
+import { ENGINE_ACTOR, RECEIVED_ENGINE_ACTOR, RECEIVED_USER_ACTOR, USER_ACTOR, isAi } from "./types";
 
 // The module names are built at run time: the UI has no Node type definitions.
 const fs: { readFileSync(p: URL, enc: "utf8"): string } = await import(/* @vite-ignore */ ["node", "fs"].join(":"));
@@ -21,7 +21,7 @@ describe("reserved actors", () => {
     const m = /pub const RESERVED_ACTORS: \[&str; \d+\] = \[([^\]]*)\];/.exec(store);
     expect(m, "RESERVED_ACTORS in store.rs").not.toBeNull();
     const reserved = m![1].split(",").map((s) => s.trim()).filter(Boolean).map(rustStr);
-    expect(reserved.sort()).toEqual([USER_ACTOR, ENGINE_ACTOR, RECEIVED_ENGINE_ACTOR].sort());
+    expect(reserved.sort()).toEqual([USER_ACTOR, ENGINE_ACTOR, RECEIVED_ENGINE_ACTOR, RECEIVED_USER_ACTOR].sort());
     for (const r of reserved) expect(isAi(r), r).toBe(false);
     expect(isAi("claude")).toBe(true);
   });

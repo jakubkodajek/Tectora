@@ -11,7 +11,7 @@
   import { pressKeepingFocus } from "./press";
   import { changeRows, changeState, rowLabel } from "./settingschange";
   import type { ActivityItem, Change, Project, Recalculation } from "./types";
-  import { ENGINE_ACTOR, USER_ACTOR, isAi } from "./types";
+  import { ENGINE_ACTOR, byAUser, isAi } from "./types";
 
   let {
     id,
@@ -61,7 +61,7 @@
    * the core (ERR-801); an AI's revert entry gets none (UX-1505, UI-1501),
    * nor the entry that created the job (`created`, HUNT-1601).
    */
-  const latest = $derived(activity.findIndex((a) => !a.undone && entryKind(a) !== "revert" && !(a.restores != null && a.actor === USER_ACTOR)));
+  const latest = $derived(activity.findIndex((a) => !a.undone && entryKind(a) !== "revert" && !(a.restores != null && byAUser(a.actor))));
   let list: HTMLOListElement | undefined = $state();
   /**
    * Runs a history button's action. Its button is gone once the action is
@@ -115,7 +115,7 @@
       <li class:ai class:undone={a.undone} data-testid="history-entry">
         <div class="head">
           <!-- Tectora's own entry is neither the user's (cursor) nor an AI's (sparkle). -->
-          <span class="who" class:ai><Icon name={ai ? "sparkle" : a.actor === USER_ACTOR ? "cursor" : "refresh"} size={13} />{actorLabel(a.actor)}</span>
+          <span class="who" class:ai><Icon name={ai ? "sparkle" : byAUser(a.actor) ? "cursor" : "refresh"} size={13} />{actorLabel(a.actor)}</span>
           {#if a.undone}<span class="undone-mark" data-testid="history-undone">{t("ai.undone")}</span>{/if}
           <time>{relativeTime(a.ts_ms)}</time>
         </div>
