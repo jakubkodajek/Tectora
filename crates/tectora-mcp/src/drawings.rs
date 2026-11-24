@@ -332,11 +332,12 @@ impl Server {
             }
         };
         let mut errors = Vec::new();
-        for (part, g) in p
-            .parts
-            .iter()
-            .zip(tectora_core::openings::generate_project(&p))
-        {
+        // Within the bound of a write (HUNT-1802): a job too complex to
+        // calculate gives no overlay, said at once.
+        let geos = self.roof_of(&p).ok_or(
+            "the roof of this job takes too long to calculate here, so it cannot be drawn over the drawing; call view_drawing without `overlay`, call calc on the job and tell the user",
+        )?;
+        for (part, g) in p.parts.iter().zip(geos) {
             if let Some(e) = &g.error {
                 errors.push(calc_error_line(&part.name, e));
             }

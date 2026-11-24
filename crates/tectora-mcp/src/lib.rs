@@ -25,6 +25,8 @@ use tectora_core::{
     Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow,
 };
 
+#[cfg(test)]
+mod bound_tests;
 mod drawings;
 #[cfg(test)]
 mod input_tests;
@@ -52,6 +54,10 @@ pub struct Server {
 const COMMIT_CALC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 type ToolResult = Result<Value, String>;
+
+/// The answer of a tool that needs the roof of a job too complex to
+/// calculate within the bound of a write (HUNT-1802).
+const ROOF_TOO_LONG: &str = "the roof of this job takes too long to calculate here, so this tool cannot use it; nothing was saved. Call calc on the job (it has its own limit), tell the user and simplify the job (remove copies of buildings that lie on top of each other)";
 
 fn arg<'a>(args: &'a Value, key: &str) -> Result<&'a Value, String> {
     args.get(key)
@@ -439,8 +445,20 @@ pub(crate) fn replaced_note(out: &mut Value, repaired: bool) {
     }
 }
 
-fn quantities(project: &Project) -> Value {
-    quantities_of(&tectora_core::openings::generate_project(project), project)
+impl Server {
+    /// The job's quantities for an answer, or null with a note when the
+    /// roof takes too long to calculate here ([`Server::roof_of`]).
+    fn quantities_into(&self, out: &mut Value, project: &Project) {
+        match self.roof_of(project) {
+            Some(geos) => out["quantities"] = quantities_of(&geos, project),
+            None => {
+                out["quantities"] = Value::Null;
+                out["calculation_note"] = json!(
+                    "the roof of this job takes too long to calculate here, so no figures are given. Call calc on it (it has its own limit) and tell the user."
+                );
+            }
+        }
+    }
 }
 
 /// [`quantities`] of roofs already calculated: one request calculates the
@@ -1261,6 +1279,32 @@ impl Server {
         }
     }
 
+    /// The roofs of `project` for a tool that calculates beside its own
+    /// work (the commit's figures, a snap to the roof, a dormer's host):
+    /// within the work bound of `tectora_core::work`, and for a heavy job
+    /// within the commit timeout too. `None` when the job is too complex to
+    /// calculate here, so no MCP call waits minutes for a roof (audit
+    /// 2026-11-24 HUNT-1802). Every roof calculation of a tool outside a
+    /// whole-call bound goes through here or [`Server::host_roof_of`]
+    /// (`every_roof_calculation_of_a_tool_is_bounded`).
+    pub(crate) fn roof_of(&self, project: &Project) -> Option<Vec<RoofGeometry>> {
+        let p = project.clone();
+        self.bounded(project, move || {
+            tectora_core::work::calculate(|| tectora_core::openings::generate_project(&p)).ok()
+        })
+        .flatten()
+    }
+
+    /// [`Server::roof_of`] without the dormers (`dormers::host_roof`): the
+    /// roof a dormer sits on.
+    pub(crate) fn host_roof_of(&self, project: &Project) -> Option<Vec<RoofGeometry>> {
+        let p = project.clone();
+        self.bounded(project, move || {
+            tectora_core::work::calculate(|| tectora_core::edit::dormers::host_roof(&p)).ok()
+        })
+        .flatten()
+    }
+
     /// Runs `f` on its own thread and waits for it at most the commit
     /// timeout; `None` when it took longer (it then finishes unobserved and
     /// no other one starts until it has) or panicked.
@@ -1426,10 +1470,7 @@ impl Server {
             }
         };
         let project = &project;
-        let p = project.clone();
-        let geos = self.bounded(project, move || {
-            tectora_core::openings::generate_project(&p)
-        });
+        let geos = self.roof_of(project);
         self.live_follow("changed", None, summary.to_string(), &id);
         let changes = before
             .as_ref()
@@ -2196,7 +2237,8 @@ impl Server {
                     format!("Reverted the latest change: {summary}"),
                     &id,
                 );
-                let mut out = json!({ "id": id, "reverted": true, "quantities": quantities(p) });
+                let mut out = json!({ "id": id, "reverted": true });
+                self.quantities_into(&mut out, p);
                 replaced_note(&mut out, r.repaired);
                 Ok(out)
             }
