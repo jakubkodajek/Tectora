@@ -84,7 +84,11 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    ("revert_out_of_limits_damaged": the same, and the job file itself is
    damaged; tell the user). A revert answer with
    `replaced_unreadable_file` replaced a file another program had made
-   unreadable: tell the user. Word every
+   unreadable: tell the user. In `get_history` an entry with
+   `undone: true` is not in the design; your change waits for the user's
+   review while it stands, so reverting your own change leaves nothing to
+   review, and a Ctrl+Z of the user's Revert in the app makes your changes
+   wait again. Word every
    `summary` as what you did, in your own words: one that starts like
    Tectora's own sentences ("Reverted: …", "Stored result recalculated …")
    is still your change, shown in quotation marks and undone as a change.

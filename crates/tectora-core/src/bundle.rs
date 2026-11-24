@@ -1737,12 +1737,20 @@ mod tests {
         // A3 out, then A1 out (A2 stays out): never a change put back.
         let p = other.revert_last(&got, USER_ACTOR, None).unwrap();
         assert_eq!(
-            (p.notes.as_str(), p.job.customer.as_str(), p.job.address.as_str()),
+            (
+                p.notes.as_str(),
+                p.job.customer.as_str(),
+                p.job.address.as_str()
+            ),
             ("A1", "", "")
         );
         let p = other.revert_last(&got, USER_ACTOR, None).unwrap();
         assert_eq!(
-            (p.notes.as_str(), p.job.customer.as_str(), p.job.address.as_str()),
+            (
+                p.notes.as_str(),
+                p.job.customer.as_str(),
+                p.job.address.as_str()
+            ),
             ("", "", "")
         );
         let _ = fs::remove_dir_all(&dir);

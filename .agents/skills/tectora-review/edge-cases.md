@@ -622,3 +622,39 @@ component calls `entrySummary`); `app/e2e/audit-r15-kinds.e2e.ts`.
   `a_received_revert_whose_version_was_left_out_still_leaves_the_change_before_it`;
   MCP `get_review_keeps_the_steps_the_user_did_not_revert`;
   `app/e2e/audit-r16-review.e2e.ts`.
+
+## 18. Review state changed outside Accept / Revert (@ux, @arch, @test)
+
+The change log is the only record of what is in a job, and the review reads
+it one way: an AI change waits exactly while it stands (round 17 design A).
+Anything that puts AI work back into the job, or takes it out, must be a
+logged revert, and every view must use the one predicate (`store::waits`).
+
+- Ctrl+Z right after Revert all, or after the AI tab's one-step Revert: the
+  revert is taken back through the core (`take_back_revert`, logged), the
+  banner comes back with the same steps, the rows are no longer muted, the
+  file has the AI values; Ctrl+Shift+Z takes them out again, logged
+  (UX-1601). Ctrl+Z over an AI's outside save is the banner's Revert from
+  its oldest new entry, logged (design A3).
+- An AI's own revert of its only step: no banner, no AI mark on the card;
+  Revert all would write nothing and says "nothing to revert" (ERR-1601).
+- A, B, the user's revert of B, Revert all: the revert-of-B row is not
+  marked undone (UI-1601); the user's one-step revert names its step
+  (UX-1603); `get_history` carries `undone` / `undid_from` (ARCH-1602).
+- Three AI steps, the user's revert of one: the job stays in "changed by
+  AI" (UX-1602); after Revert all it leaves.
+- A job the AI created: no Revert on the creation entry, Revert all goes to
+  the job right after the creation, the lone creation offers Delete job
+  (HUNT-1601).
+- A received log with one entry dated far ahead keeps distinct, increasing
+  times and its links (HUNT-1602).
+
+Guards: store tests `an_ais_own_revert_of_its_only_step_ends_the_review`,
+`t1701_revert_all_over_an_ais_own_revert_ends_the_review`,
+`an_ais_revert_of_an_accepted_change_is_a_step`,
+`taking_back_a_review_revert_brings_the_steps_back`,
+`a_revert_that_a_later_revert_swallowed_is_not_marked_undone`,
+`the_creation_is_marked_and_the_ai_mark_follows_what_stands`; bundle test
+`a_received_log_with_one_entry_far_ahead_keeps_distinct_times`; MCP
+`get_history_marks_what_a_revert_undid`; `live.test.ts` "historyText of
+reverts of AI steps"; `app/e2e/audit-r17-review.e2e.ts`.

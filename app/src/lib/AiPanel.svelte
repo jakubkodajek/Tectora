@@ -58,7 +58,8 @@
    * core's own walk (store.rs `latest_undone`): not undone by a later
    * revert (`undone`), not a revert itself, not the user's "offer figures
    * put back". The button is drawn on it when an AI made it and names it to
-   * the core (ERR-801); an AI's revert entry gets none (UX-1505, UI-1501).
+   * the core (ERR-801); an AI's revert entry gets none (UX-1505, UI-1501),
+   * nor the entry that created the job (`created`, HUNT-1601).
    */
   const latest = $derived(activity.findIndex((a) => !a.undone && entryKind(a) !== "revert" && !(a.restores != null && a.actor === USER_ACTOR)));
   let list: HTMLOListElement | undefined = $state();
@@ -144,7 +145,8 @@
             </ul>
           {/if}
         {/if}
-        {#if i === latest && ai}
+        <!-- Not on the entry that created the job: there is no version before it (HUNT-1601). -->
+        {#if i === latest && ai && !a.created}
           <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && press(() => onrevert(a.ts_ms))}><Icon name="undo" size={14} />{t("ai.revert")}</button>
         {:else if a.actor === ENGINE_ACTOR && recalculation?.entry_ts_ms === a.ts_ms}
           <!-- The offer's own figures back (owner decision 2026-11-22, UX-702d), on the recalculation the

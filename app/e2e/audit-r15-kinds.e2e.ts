@@ -46,7 +46,8 @@ test.describe("round 15, part A: an entry is what its fields say", () => {
     const p = await waitForProject(id, (p) => p.job.customer === "");
     // Only that save: the two walls the step before it set stay.
     expect(p.parts[0].edges.map((e: { pitch_deg: number }) => e.pitch_deg).join(",")).toBe("40,90,20,90");
-    await expect(entries(page).first().locator(".summary")).toHaveText(cs("ai.revertedEntry"));
+    // The one AI change undone, named in its quoted words (UX-1603; was "AI changes reverted").
+    await expect(entries(page).first().locator(".summary")).toHaveText(cs("ai.revertedOne", { s: "„Reverted: Customer“" }));
   });
 
   test("Revert all says nothing more when a second Tectora reverted one of the AI steps while it asked (HUNT-1401)", async ({ app, page, mcp }) => {

@@ -237,6 +237,18 @@
   let history: string[] = [];
   let at = $state(0);
   let historyLen = $state(0);
+  /**
+   * Steps whose Undo or Redo goes through the core, so that whatever puts
+   * AI work back into the job or takes it out again is a logged revert the
+   * review reads (audit 2026-11-24 UX-1601, design A2 / A3). `undoVia[i]`:
+   * leaving step `i` backwards takes back the revert logged at `take` (a
+   * Revert in the review), or reverts every change from the AI's entry
+   * `from` on (the AI's outside save). `redoVia[i]`: leaving step `i`
+   * forwards takes back the revert logged at that time (the Undo's own).
+   */
+  type CoreUndo = { take: number } | { from: number };
+  let undoVia: (CoreUndo | undefined)[] = [];
+  let redoVia: (number | undefined)[] = [];
   // Last JSON written by us, to tell our own saves from external edits.
   let lastSaved = "";
   /** The jobs folder the job was opened from (see `save`). */
@@ -507,6 +519,8 @@
    * `false` (a reload that a drag overtook: the AI's review banner must not
    * appear in the middle of the drag, jobedits.ts rule 7).
    */
+  /** The history was read at least once: `activity` then says which entries the editor knows (UX-1601). */
+  let activityRead = false;
   async function refreshActivity(hold?: () => boolean): Promise<boolean> {
     try {
       const [a, r, rec] = await Promise.all([api.projectActivity(id), api.reviewStatus(id).catch(() => null), api.resultRecalculation(id).catch(() => null)]);
@@ -514,6 +528,7 @@
       activity = a;
       review = r;
       recalculation = rec;
+      activityRead = true;
     } catch {
       activity = [];
       review = null;
@@ -534,6 +549,36 @@
     recalcFor = taken;
     const rec = await api.resultRecalculation(id).catch(() => null);
     if (!destroyed && recalcFor === taken) recalculation = rec;
+  }
+
+  /** Only the AI's creation of the job waits: the banner offers Delete job instead of Revert (HUNT-1601). */
+  const onlyCreation = $derived(pendingList.length > 0 && pendingList.every((a) => a.created));
+  /** The job was deleted from the banner: nothing of it is saved or read again (HUNT-1601). */
+  let deleted = false;
+
+  /**
+   * The banner's Delete job, when only the AI's creation of the job waits
+   * for review (owner decision 3 of round 17): the job goes to the trash
+   * after the same question the library asks, and the editor is left. The
+   * library's trash brings it back for 30 days.
+   */
+  async function deleteJobNow() {
+    const name = project?.name.trim() || id;
+    if (!(await asking(async () => await confirm(t("home.confirmDelete", { name }))))) return;
+    if (destroyed) return;
+    deleted = true;
+    clearTimeout(saveTimer);
+    try {
+      await saveQueue;
+      const gone = await api.deleteProject(id);
+      // Gone on purpose: leaving asks about no unsaved edit.
+      saveState = "saved";
+      notify({ kind: "info", title: t("home.deleted", { name: gone.name || name }) });
+      onback();
+    } catch (e) {
+      deleted = false;
+      notifyError(e, "delete", name);
+    }
   }
 
   /** Accepts done in an older version were kept in this browser only. */
@@ -567,7 +612,7 @@
 
   /** Writes the job; resolves to whether the edits are on disk (errors are shown, never thrown). */
   function save(): Promise<boolean> {
-    if (!project) return Promise.resolve(false);
+    if (!project || deleted) return Promise.resolve(false);
     clearTimeout(saveTimer);
     saveState = "saving";
     inFlight++;
@@ -652,7 +697,12 @@
     if (history[at] === s) return false;
     steps++;
     history = history.slice(0, at + 1);
+    undoVia.length = at + 1;
+    redoVia.length = at + 1;
+    redoVia[at] = undefined;
     history.push(s);
+    undoVia.push(undefined);
+    redoVia.push(undefined);
     at = history.length - 1;
     historyLen = history.length;
     return true;
@@ -739,6 +789,11 @@
 
   function undoNow() {
     if (at <= 0) return;
+    const via = undoVia[at];
+    if (via) {
+      void stepThroughCore(at - 1, via);
+      return;
+    }
     const reopen = !drawing && finished && history[at] === finished.step ? finished.corners : null;
     restore(at - 1);
     if (reopen) {
@@ -751,10 +806,56 @@
 
   function redoNow() {
     if (at >= history.length - 1) return;
+    const via = redoVia[at];
+    if (via !== undefined) {
+      void stepThroughCore(at + 1, { take: via });
+      return;
+    }
     // Redo of the closed outline: the building comes back, the draw bar goes.
     if (drawing && reopened === JSON.stringify($state.snapshot(drawing))) drawing = null;
     reopened = null;
     restore(at + 1);
+  }
+
+  /**
+   * Undo or Redo across a step the core made (`undoVia`, `redoVia`): a
+   * review transaction like Revert, whose answer becomes step `to`; the
+   * revert it logged is what the opposite press takes back. `revert_stale`
+   * (another entry came in), `revert_conflict` or `busy`: the notice says
+   * so and the step stays (audit 2026-11-24 UX-1601, design A2 / A3).
+   */
+  function stepThroughCore(to: number, via: CoreUndo) {
+    const from = at;
+    let entry: number | null = null;
+    let repaired = false;
+    return reviewTransaction(
+      "revert",
+      async () => {
+        const r = "take" in via ? await api.takeBackRevert(id, via.take) : await api.revertAll(id, via.from);
+        entry = r.entry_ts_ms ?? null;
+        repaired = !!r.repaired;
+        return r.project;
+      },
+      () => {
+        focusChange = null;
+        if (repaired || outsideUnreadable) outsideOver(repaired);
+      },
+      () => {
+        // The transaction held the editor: nothing moved the history meanwhile.
+        if (at !== from || !history[to]) {
+          pushHistory();
+          return;
+        }
+        history[to] = snapshot();
+        at = to;
+        selection = project ? keptSelection(project, selection) : null;
+        if (to < from) {
+          redoVia[to] = entry ?? undefined;
+        } else {
+          undoVia[to] = entry === null ? undefined : { take: entry };
+        }
+      },
+    );
   }
 
   /**
@@ -768,6 +869,7 @@
   }
 
   async function load(initial: boolean) {
+    if (deleted) return;
     if (!initial && drag.active) {
       // An outside save of this job during a drag is read once the drag is
       // over (jobedits.ts rule 7); its review banner comes with it.
@@ -806,6 +908,8 @@
       // Readable again: nothing of the other program's file is replaced.
       if (!initial && outsideUnreadable) outsideOver(false);
       const json = JSON.stringify(p);
+      // The entries known before this read: the AI's new ones made it (UX-1601).
+      const known = activityRead ? new Set(activity.map((a) => a.ts_ms)) : null;
       // A drag that began while this was read: read again after it.
       if (!(await refreshActivity(() => destroyed || (!initial && drag.active)))) {
         if (!destroyed) drag.defer("reload", reloadAfterDrag);
@@ -876,7 +980,11 @@
       } else {
         // External change (AI agent, CLI): keep it undoable and show it.
         // Merged local edits are still to be saved (the timer is running).
-        pushHistory();
+        // Undo of an AI's save is the banner's Revert from its oldest new
+        // entry, logged, never an unlogged save of the job before it
+        // (UX-1601, design A3).
+        const fresh = known ? activity.filter((a) => !known.has(a.ts_ms) && isAi(a.actor) && !a.undone && !a.created) : [];
+        if (pushHistory() && fresh.length) undoVia[at] = { from: fresh[fresh.length - 1].ts_ms };
         // Not while the user types in the dock: switching the tab would
         // remove the field and the typed text with it (UI-002).
         if (pending && !typingInDock()) dock = "ai";
@@ -1064,7 +1172,7 @@
     unlisten?.();
     cutDrag();
     releaseLeaveGuard(leaveGuard);
-    if (saveState === "dirty" || saveState === "failed") save();
+    if (!deleted && (saveState === "dirty" || saveState === "failed")) save();
   });
 
   /** Accept or Revert is running: a second press (double-click) must not run it twice (UI-002). */
@@ -1162,16 +1270,16 @@
   /** What a press is, for its notices: Revert of several steps has its own (plural) title (UI-1301). */
   type ReviewPress = "revert" | "revertAll" | "restoreOffer";
 
-  function reviewTransaction(what: ReviewPress, call: () => Promise<Project>, after: (p: Project) => void | Promise<void>): Promise<void> {
+  function reviewTransaction(what: ReviewPress, call: () => Promise<Project>, after: (p: Project) => void | Promise<void>, place?: () => void): Promise<void> {
     if (reviewing.active || reviewPress) return Promise.resolve();
-    const press: Promise<void> = prepareReview(what, call, after).finally(() => {
+    const press: Promise<void> = prepareReview(what, call, after, place).finally(() => {
       if (reviewPress === press) reviewPress = null;
     });
     reviewPress = press;
     return press;
   }
 
-  async function prepareReview(what: ReviewPress, call: () => Promise<Project>, after: (p: Project) => void | Promise<void>) {
+  async function prepareReview(what: ReviewPress, call: () => Promise<Project>, after: (p: Project) => void | Promise<void>, place?: () => void) {
     const name = project?.name.trim() || id;
     const budget = prepareMs();
     const deadline = Date.now() + budget;
@@ -1198,7 +1306,7 @@
       if (!project) return;
       // Checked at one moment, and the call claimed in the same tick: no
       // answer of an earlier edit can land between the two.
-      if (quiet()) return runReview(what, name, call, after);
+      if (quiet()) return runReview(what, name, call, after, place);
       if (saveState !== "saved" && !pendingEdits.size && !drag.active) {
         const ok = await within(save());
         if (ok === LATE) break;
@@ -1224,8 +1332,14 @@
     else notifyError({ code: "busy_edits", id, detail: `the edits made before the press were not saved within ${budget} ms` }, what, name);
   }
 
-  /** Phase 2 of `reviewTransaction`: claims the transaction at once (synchronously) and sends the call. */
-  function runReview(what: ReviewPress, name: string, call: () => Promise<Project>, after: (p: Project) => void | Promise<void>) {
+  /** Whether the last review answer became a new undo step (`runReview`), for the tag of its Undo (UX-1601). */
+  let reviewStepPushed = false;
+  /**
+   * Phase 2 of `reviewTransaction`: claims the transaction at once
+   * (synchronously) and sends the call. `place`: where the answer goes in
+   * the undo history, a new step when not given.
+   */
+  function runReview(what: ReviewPress, name: string, call: () => Promise<Project>, after: (p: Project) => void | Promise<void>, place?: () => void) {
     reviewWhat = what === "restoreOffer" ? "restoreOffer" : "revert";
     return reviewing.run(async () => {
       try {
@@ -1240,8 +1354,14 @@
         await drag.settled();
         applyCoreAnswer(base, p);
         recalcFor = p.result_snapshot?.taken_ms ?? null;
-        // An editor step like any other: Undo brings the job before it back (UI-802).
-        pushHistory();
+        // An editor step: Undo brings the job before it back (UI-802), for a
+        // revert through the core, logged (`undoVia`, UX-1601).
+        if (place) {
+          reviewStepPushed = false;
+          place();
+        } else {
+          reviewStepPushed = pushHistory();
+        }
         closeStaleDialogs();
         recalc();
         await after(p);
@@ -1307,30 +1427,43 @@
     const entryWords = entry ? entryText(entry, activity) : "";
     // The revert wrote over a file another program made unreadable (ERR-1502).
     let repaired = false;
+    // The revert entry the core logged: Undo takes exactly it back (UX-1601).
+    let logged: number | null = null;
+    // Revert all goes back to the job as it was right after the AI created
+    // it: the creation itself has no version before it (HUNT-1601).
+    const steps = pendingList.filter((a) => !a.created);
     // Edits not on disk yet would be lost: the store keeps only the edits in
     // the file, merging the revert onto them (ERR-001); the transaction
     // saves them first.
     await reviewTransaction(
       all && shown > 1 ? "revertAll" : "revert",
       async () => {
-        const oldest = pendingList[pendingList.length - 1];
+        const oldest = steps[steps.length - 1];
         if (all && oldest) {
-          const r = await api.revertAll(id, oldest.ts_ms);
+          // From where the core says Revert all starts (`since_ts_ms`: below
+          // an AI's revert of accepted work, ERR-1601), or after the creation.
+          const createdFirst = !!pendingList[pendingList.length - 1]?.created;
+          const r = await api.revertAll(id, createdFirst || review?.since_ts_ms == null ? oldest.ts_ms : review.since_ts_ms);
           undone = r.undone_ai;
           repaired = !!r.repaired;
+          logged = r.entry_ts_ms ?? null;
           return r.project;
         }
         // The latest change is undone only if it still is the entry the button was drawn on (ERR-801).
         const r = await api.revertLastChange(id, expectTs);
         repaired = !!r.repaired;
+        logged = r.entry_ts_ms ?? null;
         return r.project;
       },
       () => {
         focusChange = null;
+        if (logged !== null && reviewStepPushed) undoVia[at] = { take: logged };
         if (repaired || outsideUnreadable) outsideOver(repaired);
-        if (all && undone > shown) info(t("review.revertedMore", { n: undone - shown }));
+        // Nothing written: the job already is as before the changes (ERR-1601).
+        if (logged === null) info(t("review.nothingToRevert"));
+        else if (all && undone > shown) info(t("review.revertedMore", { n: undone - shown }));
         // The one change undone, by name: the banner may stay for the others (UX-1501).
-        if (entry) info(t("ai.revertedOne", { s: entryWords }));
+        else if (entry) info(t("ai.revertedOne", { s: entryWords }));
       },
     );
   }
@@ -2972,7 +3105,12 @@
               <!-- A check, not a look-alike of the other buttons: "Show previous state" ticked while it shows (UX-008). -->
               <button class="btn sm before" class:on={showBefore} aria-pressed={showBefore} onclick={() => (showBefore = !showBefore)} aria-label={t("review.before")} title={t("review.beforeHint")} data-testid="review-before"><span class="chk" aria-hidden="true">{#if showBefore}<Icon name="check" size={11} />{/if}</span><span class="lbl">{t("review.before")}</span></button>
             {/if}
-            <button class="btn sm" aria-disabled={reviewBusy} aria-busy={reviewBusy} onclick={() => !reviewBusy && pressBanner(() => revert(true))} aria-label={pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")} title={pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}><Icon name="undo" size={14} /><span class="lbl">{pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}</span></button>
+            {#if onlyCreation}
+              <!-- The AI created the job and nothing else waits: there is no version to go back to (HUNT-1601). -->
+              <button class="btn sm" aria-disabled={reviewBusy} aria-busy={reviewBusy} onclick={() => !reviewBusy && pressBanner(() => reviewAction(deleteJobNow))} aria-label={t("review.deleteJob")} title={t("review.deleteJobHint")} data-testid="review-delete"><Icon name="trash" size={14} /><span class="lbl">{t("review.deleteJob")}</span></button>
+            {:else}
+              <button class="btn sm" aria-disabled={reviewBusy} aria-busy={reviewBusy} onclick={() => !reviewBusy && pressBanner(() => revert(true))} aria-label={pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")} title={pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}><Icon name="undo" size={14} /><span class="lbl">{pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}</span></button>
+            {/if}
             <button class="btn sm accept" aria-disabled={reviewBusy} aria-busy={reviewBusy} title={t("review.accept")} onclick={() => !reviewBusy && pressBanner(accept)}><Icon name="check" size={14} />{t("review.accept")}</button>
           </div>
         {/if}

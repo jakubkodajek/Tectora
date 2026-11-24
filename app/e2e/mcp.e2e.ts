@@ -47,7 +47,8 @@ test.describe("live AI changes", () => {
     expect(p.parts[0].edges).toHaveLength(4);
     const ai = page.locator("aside .panel");
     await expect(ai).toContainText("Výška okapu 4 m");
-    await expect(ai).toContainText(cs("ai.revertedEntry"));
+    // The one AI change undone, named (audit 2026-11-24 UX-1603; was "AI changes reverted").
+    await expect(ai).toContainText(cs("ai.revertedOne", { s: "„Výška okapu 4 m“" }));
     await ai.getByRole("button", { name: cs("ai.showChanges", { n: 4 }) }).first().click();
     await expect(ai.locator("ol > li ul li")).toHaveCount(4);
     await ai.getByRole("button", { name: cs("ai.hideChanges") }).click();

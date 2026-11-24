@@ -132,7 +132,7 @@ The tools cover every operation of the Tectora editor:
   change you mean and it is refused with "revert_stale" when another change
   was saved meanwhile, so you never undo somebody else's step).
   `get_history` gives an entry Tectora wrote as more than a change a
-  `kind`: `revert`, `restore` (the offer's figures put back) or `refresh`
+  `kind` (`null` for a change): `revert`, `restore` (the offer's figures put back) or `refresh`
   (Tectora's recalculation). It comes from the entry's own fields, never
   from its words: a `summary` of yours that starts like Tectora's
   sentences ("Reverted: …") is a change like any other, undone as one,
@@ -156,7 +156,18 @@ The tools cover every operation of the Tectora editor:
   tells whether the user has accepted your changes yet and how they changed
   the figures; only the user accepts, in the app. When the user reverts one
   of your changes the others still wait for review (`steps`, their ts_ms). Do not treat a design as
-  approved while `pending` is set.
+  approved while `pending` is set. A change of yours waits exactly while it
+  stands in the design: when you revert your own change, it and your revert
+  are no steps (if you took everything back, nothing waits). Your revert of
+  a change the user already accepted is a step. `get_history` marks an entry
+  that is not in the design with `undone: true` (a revert with `undone` was
+  taken back, so its changes stand again), a revert with `undid_from` (the
+  ts_ms of the oldest entry it undid) and the entry that created the job
+  with `created: true` (there is nothing to revert it to); every entry
+  carries `kind` (`null` for a change). When the user presses Ctrl+Z after
+  a Revert in the app, the revert is taken back by a logged revert and your
+  changes wait for review again; `revert_to` with a revert's `ts_ms` does
+  the same.
 - Library: `list_projects` searches the roofs made so far (words in name,
   number, customer, address or notes, accents ignored; filters by status,
   AI change, date range and roof area; sort and limit). `list_examples`,

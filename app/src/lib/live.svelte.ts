@@ -157,16 +157,29 @@ export function historyText(
   }
   if (kind === "revert" && !isAi(a.actor)) {
     const undone = a.undid_from == null ? undefined : log.find((e) => e.ts_ms === a.undid_from);
+    // The user's take-back of a revert of AI changes (the editor's Undo of
+    // a Revert, UX-1601): the AI's changes stand again.
+    if (undone && entryKind(undone) === "revert" && !isAi(undone.actor)) {
+      const inner = undone.undid_from == null ? undefined : log.find((e) => e.ts_ms === undone.undid_from);
+      if (inner && isAi(inner.actor)) return t("ai.revertTakenBack");
+    }
     // Not in the list any more (or the user's revert of an older Tectora): told by the sentence.
     const ofAi = undone ? isAi(undone.actor) : !/Stored result recalculated \(Tectora /.test(a.summary);
-    if (ofAi) return t("ai.revertedEntry");
+    if (ofAi) {
+      // One AI change undone: named, as the toast of the same press (UX-1603).
+      if (undone && a.summary.startsWith(REVERTED)) {
+        const words = undone.summary != null ? entryText(undone as EntryLike, log) : t("ai.quoted", { s: a.summary.slice(REVERTED.length) });
+        return t("ai.revertedOne", { s: words });
+      }
+      return t("ai.revertedEntry");
+    }
   }
   return entryText(a, log);
 }
 
 /** A change-log entry as `entryText` reads it. */
 export type EntryLike = Pick<ActivityItem, "actor" | "summary"> & {
-  kind?: EntryKind;
+  kind?: EntryKind | null;
   reason?: string | null;
   undid_from?: number;
   restores?: number;
@@ -183,7 +196,9 @@ export type LoggedEntry = Pick<ActivityItem, "ts_ms" | "actor"> & Partial<EntryL
  * which did not record `undid_from`; an AI client never logs as the user.
  */
 export function entryKind(a: Pick<EntryLike, "actor" | "kind" | "undid_from" | "restores"> & { summary?: string }): EntryKind | null {
-  if (a.kind) return a.kind;
+  // The core always sends the field, `null` for a change (ARCH-1601): the
+  // rule below is only for an item without it (an older bridge).
+  if (a.kind !== undefined) return a.kind;
   const summary = a.summary ?? "";
   if (a.restores != null) return "restore";
   if (a.undid_from != null || (a.actor === USER_ACTOR && revertSentence(summary))) return "revert";

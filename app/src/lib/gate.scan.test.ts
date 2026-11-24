@@ -446,7 +446,7 @@ describe("round 14: the press's questions and exits (TEST-1303, TEST-1305, UX-13
   it("every await confirm( of the editor is inside asking() or listed as passive with a reason (TEST-1305)", () => {
     const editor = script(stripComments(files["Editor.svelte"]));
     const fns = functions(editor);
-    const ASKING = ["deleteVertexByKey", "deleteDormer", "clearRoof", "deletePart"];
+    const ASKING = ["deleteVertexByKey", "deleteDormer", "clearRoof", "deletePart", "deleteJobNow"];
     const PASSIVE: Record<string, string> = {
       leaveGuard: "the way out asks before dropping a footprint being drawn; no job edit follows its answer",
       revertNow: "asks before Revert all; the press and its prepare phase start only after the answer",

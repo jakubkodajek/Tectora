@@ -2852,7 +2852,9 @@ impl Store {
     pub fn activity_items(&self, id: &str) -> Vec<ActivityItem> {
         let log = self.history(id);
         let by = undone_by(&log);
-        let marks: Vec<bool> = (0..log.len()).map(|i| marked_undone(&log, &by, i)).collect();
+        let marks: Vec<bool> = (0..log.len())
+            .map(|i| marked_undone(&log, &by, i))
+            .collect();
         let mut out: Vec<ActivityItem> = log
             .into_iter()
             .zip(marks)
@@ -3719,7 +3721,10 @@ impl Store {
         }
         let _lock = self.lock_briefly(id)?;
         let log = self.activity(id);
-        let pos = log.len().checked_sub(1).ok_or_else(|| stale("the job has no change log"))?;
+        let pos = log
+            .len()
+            .checked_sub(1)
+            .ok_or_else(|| stale("the job has no change log"))?;
         let last = &log[pos];
         if last.ts_ms != revert_ts || !is_revert_entry(last) {
             return Err(stale("another change is the latest one by now"));
@@ -10239,7 +10244,11 @@ mod tests {
         ai_change(&store, &id, 2);
         store.revert_last(&id, "claude", Some("back")).unwrap();
         let review = store.pending_review(&id).expect("A1 waits");
-        assert_eq!(review.steps, vec![a1], "A2 and the AI's revert are no steps");
+        assert_eq!(
+            review.steps,
+            vec![a1],
+            "A2 and the AI's revert are no steps"
+        );
         assert_eq!(review.since_ts_ms, a1);
         let r = store.revert_to_counted(&id, a1, USER_ACTOR, None).unwrap();
         assert_eq!(r.project, created);
@@ -10286,7 +10295,10 @@ mod tests {
         let ar = store.activity(&id).last().unwrap().ts_ms;
         let review = store.pending_review(&id).expect("the AI's revert waits");
         assert_eq!(review.steps, vec![ar]);
-        assert_eq!(review.since_ts_ms, a2, "from the first covered entry after the accept");
+        assert_eq!(
+            review.since_ts_ms, a2,
+            "from the first covered entry after the accept"
+        );
         let r = store
             .revert_to_counted(&id, review.since_ts_ms, USER_ACTOR, None)
             .unwrap();
@@ -10319,7 +10331,10 @@ mod tests {
         let last = store.activity(&id).last().unwrap().clone();
         assert_eq!((last.ts_ms, last.undid_from), (taken, Some(revert)));
         assert_eq!(last.kind(), Some(EntryKind::Revert));
-        assert_eq!(store.pending_review(&id).expect("A1 waits again").steps, vec![a1]);
+        assert_eq!(
+            store.pending_review(&id).expect("A1 waits again").steps,
+            vec![a1]
+        );
         let items = store.activity_items(&id);
         let mark = |ts: u64| items.iter().find(|a| a.ts_ms == ts).unwrap().undone;
         assert!(!mark(a1), "A1 stands");
@@ -10347,7 +10362,9 @@ mod tests {
         }
         assert_eq!(fs::read(store.path(&id).unwrap()).unwrap(), file);
         assert_eq!(store.activity(&id).len(), entries);
-        let e = store.take_back_revert("missing", 1, USER_ACTOR).unwrap_err();
+        let e = store
+            .take_back_revert("missing", 1, USER_ACTOR)
+            .unwrap_err();
         assert_eq!(e.code(), "revert_stale");
         let _ = fs::remove_dir_all(&store.dir);
     }
@@ -10397,7 +10414,9 @@ mod tests {
         assert!(!mark(&store));
         let mut q = store.load(&id).unwrap();
         q.notes = "later".into();
-        store.save_as(Some(id.clone()), &q, USER_ACTOR, "Notes").unwrap();
+        store
+            .save_as(Some(id.clone()), &q, USER_ACTOR, "Notes")
+            .unwrap();
         // A revert from the recalculation runs over the put-back: it stays.
         store
             .revert_to_counted(&id, done.entry_ts_ms, USER_ACTOR, None)
