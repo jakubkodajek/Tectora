@@ -27,5 +27,5 @@ export function reviewStatusKey(what: ReviewPress): "editor.reverting" | "editor
  * waiting and brings the banner back (audit 2026-11-24 TEST-2012).
  */
 export function acceptTs(seenTs: number | null, pendingTs: number, steps: number[] | undefined): number {
-  return Math.max(seenTs ?? pendingTs, pendingTs, ...(steps ?? []));
+  return (steps ?? []).reduce((m, s) => Math.max(m, s), Math.max(seenTs ?? pendingTs, pendingTs));
 }
