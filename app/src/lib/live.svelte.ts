@@ -1,6 +1,7 @@
 // What the connected AI agent is doing right now (from `.activity/live.json`).
 
 import { num } from "./format";
+import { minOf } from "./extent";
 import { DICTS, t } from "./i18n.svelte";
 import { ENGINE_ACTOR, RECEIVED_ENGINE_ACTOR, USER_ACTOR, isAi, type ActivityItem, type EntryKind, type LiveStatus } from "./types";
 
@@ -292,7 +293,7 @@ export function entryText(a: EntryLike, log: readonly LoggedEntry[] = [], depth 
     // as one.
     const listed = [...(a.took_out ?? []), ...(a.put_back ?? [])];
     if (entryKind(undone) === "revert" && !revertSentence(inner) && listed.length > 0) {
-      const oldest = Math.min(...listed);
+      const oldest = minOf(listed);
       const quoted = log.find((e) => e.ts_ms === oldest);
       if (!quoted) return t("ai.quoted", { s: inner });
       const q: EntryLike = { ...quoted, summary: inner };
