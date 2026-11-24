@@ -266,8 +266,21 @@ pub fn off_roof(project: &crate::Project, geos: &[RoofGeometry]) -> Vec<(usize, 
                 .total_cmp(&crate::engine::outline_distance(&project.parts[b], q))
         })
     };
+    // An object inside the walls of a building that failed belongs to that
+    // building, whose roof is not there to judge it against (HUNT-1603).
+    let failing: Vec<Vec<Point2>> = project
+        .parts
+        .iter()
+        .zip(geos)
+        .filter(|(_, g)| !sound(g))
+        .map(|(p, _)| p.edges.iter().map(|e| e.start).collect())
+        .collect();
+    let in_failing = |q: Point2| failing.iter().any(|o| o.len() >= 3 && inside(o, q));
     let mut out = Vec::new();
     let mut report = |kind, item, at: Point2| {
+        if in_failing(at) {
+            return;
+        }
         if let Some(part) = nearest(at).filter(|&p| sound(&geos[p])) {
             out.push((
                 part,

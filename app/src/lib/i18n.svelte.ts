@@ -1076,12 +1076,15 @@ const cs: Dict = {
   "ai.revertedOne": "Vrácena změna AI: {s}",
   "editor.outsideTitle": "Zakázku změnil jiný program",
   "editor.outsideState": "Soubor změnil jiný program",
-  "err.revert_out_of_limits_damaged": "Starší verzi zakázky z historie nelze obnovit, protože přesahuje dnešní limity Tectory. Soubor zakázky navíc nejde přečíst: uložte zakázku z editoru, nebo obnovte soubor ze zálohy.",
+  "err.revert_out_of_limits_damaged": "Starší verzi zakázky z historie nelze obnovit, protože přesahuje dnešní limity Tectory. Soubor zakázky navíc nejde přečíst: je-li zakázka otevřená v editoru, změňte v ní cokoli a uloží se znovu; jinak obnovte soubor ze zálohy.",
   "res.offRoof": "mimo střechu: {n}",
   "review.nothingToRevert": "Není co vrátit: zakázka už je jako před těmito změnami.",
   "ai.revertTakenBack": "Vrácení změn AI vzato zpět",
   "review.deleteJob": "Smazat zakázku",
   "review.deleteJobHint": "AI tuto zakázku založila: smazáním ji přesunete do koše, 30 dní ji lze obnovit.",
+  "folderReq.reason": "Důvod od {by}:",
+  "editor.outsideNewer": "Tuto zakázku mezitím uložila novější verze Tectory. Změny provedené zde přes ni nelze uložit.",
+  "editor.outsideNewerState": "Uložila novější verze",
 };
 
 const sk: Dict = {
@@ -2149,12 +2152,15 @@ const sk: Dict = {
   "ai.revertedOne": "Vrátená zmena AI: {s}",
   "editor.outsideTitle": "Zákazku zmenil iný program",
   "editor.outsideState": "Súbor zmenil iný program",
-  "err.revert_out_of_limits_damaged": "Staršiu verziu zákazky z histórie nemožno obnoviť, pretože presahuje dnešné limity Tectory. Súbor zákazky navyše nejde prečítať: uložte zákazku z editora alebo obnovte súbor zo zálohy.",
+  "err.revert_out_of_limits_damaged": "Staršiu verziu zákazky z histórie nemožno obnoviť, pretože presahuje dnešné limity Tectory. Súbor zákazky navyše nejde prečítať: ak je zákazka otvorená v editore, zmeňte v nej čokoľvek a uloží sa znova; inak obnovte súbor zo zálohy.",
   "res.offRoof": "mimo strechy: {n}",
   "review.nothingToRevert": "Nie je čo vrátiť: zákazka už je ako pred týmito zmenami.",
   "ai.revertTakenBack": "Vrátenie zmien AI vzaté späť",
   "review.deleteJob": "Zmazať zákazku",
   "review.deleteJobHint": "AI túto zákazku založila: zmazaním ju presuniete do koša, 30 dní ju možno obnoviť.",
+  "folderReq.reason": "Dôvod od {by}:",
+  "editor.outsideNewer": "Túto zákazku medzitým uložila novšia verzia Tectory. Zmeny urobené tu cez ňu nemožno uložiť.",
+  "editor.outsideNewerState": "Uložila novšia verzia",
 };
 
 const en: Dict = {
@@ -3222,12 +3228,15 @@ const en: Dict = {
   "ai.revertedOne": "AI change reverted: {s}",
   "editor.outsideTitle": "Another program changed this job",
   "editor.outsideState": "File changed by another program",
-  "err.revert_out_of_limits_damaged": "The earlier version in the history cannot be restored because it is outside Tectora's current limits. The job file itself cannot be read either: save the job from the editor, or restore the file from a backup.",
+  "err.revert_out_of_limits_damaged": "The earlier version in the history cannot be restored because it is outside Tectora's current limits. The job file itself cannot be read either: if the job is open in the editor, change anything there and it is saved again; otherwise restore the file from a backup.",
   "res.offRoof": "off the roof: {n}",
   "review.nothingToRevert": "Nothing to revert: the job already is as before these changes.",
   "ai.revertTakenBack": "Revert of AI changes taken back",
   "review.deleteJob": "Delete job",
   "review.deleteJobHint": "The AI created this job: deleting moves it to the trash, where it can be restored for 30 days.",
+  "folderReq.reason": "Reason given by {by}:",
+  "editor.outsideNewer": "A newer Tectora saved this job. Changes made here cannot be saved over it.",
+  "editor.outsideNewerState": "Saved by a newer Tectora",
 };
 
 const de: Dict = {
@@ -4294,13 +4303,16 @@ const de: Dict = {
   "ai.undone": "verworfen",
   "ai.revertedOne": "KI-Änderung verworfen: {s}",
   "editor.outsideTitle": "Ein anderes Programm hat den Auftrag geändert",
-  "editor.outsideState": "Datei von anderem Programm geändert",
-  "err.revert_out_of_limits_damaged": "Die frühere Fassung aus dem Verlauf lässt sich nicht wiederherstellen, weil sie außerhalb der heutigen Grenzen von Tectora liegt. Die Auftragsdatei selbst ist außerdem nicht lesbar: Speichern Sie den Auftrag aus dem Editor oder stellen Sie die Datei aus einer Sicherung wieder her.",
+  "editor.outsideState": "Datei extern geändert",
+  "err.revert_out_of_limits_damaged": "Die frühere Fassung aus dem Verlauf lässt sich nicht wiederherstellen, weil sie außerhalb der heutigen Grenzen von Tectora liegt. Die Auftragsdatei selbst ist außerdem nicht lesbar: Ist der Auftrag im Editor geöffnet, ändern Sie dort irgendetwas, dann wird er neu gespeichert; sonst stellen Sie die Datei aus einer Sicherung wieder her.",
   "res.offRoof": "nicht auf dem Dach: {n}",
   "review.nothingToRevert": "Nichts zu verwerfen: Der Auftrag ist bereits wie vor diesen Änderungen.",
   "ai.revertTakenBack": "Verwerfen der KI-Änderungen zurückgenommen",
   "review.deleteJob": "Auftrag löschen",
   "review.deleteJobHint": "Die KI hat diesen Auftrag angelegt: Löschen verschiebt ihn in den Papierkorb, 30 Tage lang lässt er sich wiederherstellen.",
+  "folderReq.reason": "Begründung von {by}:",
+  "editor.outsideNewer": "Eine neuere Tectora-Version hat diesen Auftrag gespeichert. Hier vorgenommene Änderungen können nicht darüber gespeichert werden.",
+  "editor.outsideNewerState": "Neuere Version gespeichert",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };

@@ -280,7 +280,25 @@
     outsideUnreadable = false;
     if (outsideNotice !== null) dismiss(outsideNotice);
     outsideNotice = null;
-    if (replaced) ownToasts.add(info(t("editor.outsideReplaced")));
+    // Not one of the editor's own notices: it tells what happened to the
+    // other program's file and stays its time over the library too, also
+    // when the save before Back or the editor's last save wrote it; so it
+    // names the job (audit 2026-11-23 ERR-1602).
+    if (replaced) info(t("err.ofJob", { name: project?.name.trim() || id, title: t("editor.outsideReplaced") }));
+  }
+  /**
+   * A newer Tectora wrote the open job meanwhile: nothing made here can be
+   * saved over it (the store refuses, the file is never written over). A
+   * notice of its own that stays, and the status bar says so instead of
+   * saved (audit 2026-11-23 UI-1603, HUNT-1604). Cleared by a good read or
+   * a save that went through.
+   */
+  let outsideNewer = $state(false);
+  let outsideNewerNotice: number | null = null;
+  function newerOver() {
+    outsideNewer = false;
+    if (outsideNewerNotice !== null) dismiss(outsideNewerNotice);
+    outsideNewerNotice = null;
   }
   /** Saves started so far: a read that a save overtook is stale. */
   let saveGen = 0;
@@ -678,6 +696,7 @@
         saveState = edits === seq ? "saved" : "dirty";
         // The other program's file the store could not read is gone now.
         if (repaired || outsideUnreadable) outsideOver(repaired);
+        if (outsideNewer) newerOver();
         void syncRecalculation((written as Project).result_snapshot?.taken_ms ?? null);
         return true;
       }
@@ -907,6 +926,7 @@
       if (destroyed) return;
       // Readable again: nothing of the other program's file is replaced.
       if (!initial && outsideUnreadable) outsideOver(false);
+      if (!initial && outsideNewer) newerOver();
       const json = JSON.stringify(p);
       // The entries known before this read: the AI's new ones made it (UX-1601).
       const known = activityRead ? new Set(activity.map((a) => a.ts_ms)) : null;
@@ -999,7 +1019,7 @@
         // Deleted outside the app while open: keep the edits, offer to save.
         saveState = "failed";
         notifyError(e, "load");
-      } else if (["unreadable", "too_many"].includes(toAppError(e).code)) {
+      } else if (["unreadable", "too_many", "newer_format"].includes(toAppError(e).code)) {
         // A save started while this was read: it may have replaced the file
         // already (and said so, ERR-1502); read again after it instead of
         // warning about a save that is done.
@@ -1017,9 +1037,21 @@
         // Its own title (the job stays open, UX-1502), and it stays until
         // the save or revert that replaces the file, a good read or the
         // editor's end (UX-1504).
-        outsideUnreadable = true;
         const d = describeError(e, "load");
         const name = project.name.trim() || id;
+        if (d.code === "newer_format") {
+          // A newer Tectora's file is never written over: not the "will be
+          // replaced" text, and not "could not open" for a job that is open
+          // (UI-1603, HUNT-1604).
+          if (outsideUnreadable) outsideOver(false);
+          if (outsideNewer) return;
+          outsideNewer = true;
+          outsideNewerNotice = notify({ kind: "warning", code: d.code, title: t("err.ofJob", { name, title: t("editor.outsideTitle") }), message: t("editor.outsideNewer"), detail: d.detail, sticky: true });
+          ownToasts.add(outsideNewerNotice);
+          return;
+        }
+        if (outsideNewer) newerOver();
+        outsideUnreadable = true;
         outsideNotice = notify({ kind: "warning", code: d.code, title: t("err.ofJob", { name, title: t("editor.outsideTitle") }), message: t("editor.outsideUnreadable"), detail: d.detail, sticky: true });
         ownToasts.add(outsideNotice);
       } else {
@@ -3278,7 +3310,7 @@
       {#if result}<span data-testid="status-area" class:pending={calcPending} aria-busy={calcPending}>{t("res.area")}: <b title={roofState(result) !== "ok" ? t(roofState(result) === "none" ? "res.notCalculated" : "res.calcPartial") : undefined}>{roofState(result) === "none" ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save">
-        {#if reviewOut}{t(reviewWhat === "restoreOffer" ? "editor.restoringOffer" : "editor.reverting")}{:else if saveState === "saved" && !editsWaiting && outsideUnreadable}{t("editor.outsideState")}{:else if saveState === "saved" && !editsWaiting}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving" || saveState === "saved"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
+        {#if reviewOut}{t(reviewWhat === "restoreOffer" ? "editor.restoringOffer" : "editor.reverting")}{:else if saveState === "saved" && !editsWaiting && outsideUnreadable}<span class="state-text" title={t("editor.outsideState")}>{t("editor.outsideState")}</span>{:else if saveState === "saved" && !editsWaiting && outsideNewer}<span class="state-text" title={t("editor.outsideNewerState")} data-testid="status-newer">{t("editor.outsideNewerState")}</span>{:else if saveState === "saved" && !editsWaiting}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving" || saveState === "saved"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
       </span>
     </footer>
   {:else if !loadError}
@@ -3906,6 +3938,14 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
+    /* A long state text shrinks with an ellipsis; it never widens the bar (UI-1602). */
+    min-width: 0;
+    overflow: hidden;
+  }
+  .save .state-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .mode {
     display: flex;

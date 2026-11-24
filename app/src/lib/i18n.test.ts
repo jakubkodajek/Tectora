@@ -151,3 +151,34 @@ describe("round-15 wording (UX-1402, UI-1402)", () => {
     }
   });
 });
+
+describe("round-17 wording (SAVEHINT, UI-1602, UI-1603, UI-1604)", () => {
+  it("the damaged-file revert advice names a step the editor has (no Save command) and the backup", () => {
+    const old = { cs: /uložte zakázku/, sk: /uložte zákazku/, en: /save the job from/i, de: /Speichern Sie den Auftrag/ };
+    const editor = { cs: /editoru/, sk: /editore/, en: /editor/, de: /Editor/ };
+    const backup = { cs: /zálohy/, sk: /zálohy/, en: /backup/, de: /Sicherung/ };
+    for (const loc of ["cs", "sk", "en", "de"] as const) {
+      const s = DICTS[loc]["err.revert_out_of_limits_damaged"];
+      expect(s, loc).not.toMatch(old[loc]);
+      expect(s, loc).toMatch(editor[loc]);
+      expect(s, loc).toMatch(backup[loc]);
+    }
+  });
+
+  it("the German outside state fits the 960 px status bar (UI-1602)", () => {
+    expect(DICTS.de["editor.outsideState"].length).toBeLessThanOrEqual(DICTS.de["editor.saved"].length + 12);
+  });
+
+  it("a newer Tectora's outside write has its own notice and status, never the replace text (UI-1603)", () => {
+    for (const [loc, dict] of Object.entries(DICTS)) {
+      expect(dict["editor.outsideNewer"], loc).toBeTruthy();
+      expect(dict["editor.outsideNewerState"], loc).toBeTruthy();
+      expect(dict["editor.outsideNewerState"], loc).not.toBe(dict["editor.saved"]);
+      expect(dict["editor.outsideNewer"], loc).not.toBe(dict["editor.outsideUnreadable"]);
+    }
+  });
+
+  it("the AI's reason has a lead naming the AI (UI-1604)", () => {
+    for (const [loc, dict] of Object.entries(DICTS)) expect(dict["folderReq.reason"], loc).toContain("{by}");
+  });
+});

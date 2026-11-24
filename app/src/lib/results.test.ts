@@ -287,4 +287,20 @@ describe("objectCounts (audit 2026-11-23 UX-1503)", () => {
     expect(objectCounts(job, null).off).toEqual({ windows: 0, chimneys: 0, holes: 0, dormers: 0 });
     expect(objectCounts(job, result([{ kind: "chimney_off_roof", value: 0, item: 7 }])).chimneys).toBe(2);
   });
+  it("counts a chimney, an opening and a dormer off the roof apart, each by its own index (TEST-1607)", () => {
+    const withDormers = { ...job, dormers: [{}, {}] } as unknown as Project;
+    const c = objectCounts(
+      withDormers,
+      result([
+        { kind: "chimney_off_roof", value: 0, item: 1 },
+        { kind: "opening_off_roof", value: 0, item: 0 },
+        { kind: "dormer_off_roof", value: 0, dormer: 1 },
+        // A dormer warning names its dormer, not an item: an `item` alone is no dormer.
+        { kind: "dormer_off_roof", value: 0, item: 0 },
+      ]),
+    );
+    expect([c.chimneys, c.holes, c.dormers]).toEqual([1, 0, 1]);
+    expect(c.off).toEqual({ windows: 0, chimneys: 1, holes: 1, dormers: 1 });
+    expect(c.windows).toEqual([win(1), win(2)]);
+  });
 });

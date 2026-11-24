@@ -1522,6 +1522,65 @@ fn an_object_off_the_roof_is_warned_while_another_building_fails() {
     assert_eq!(roof.lines, bare.lines);
 }
 
+/// HUNT-1603: B, a failing building, crosses A (a cross drawn as two
+/// rectangles). A window inside B's walls but nearer to A's eave wall is
+/// not judged (B has no roof yet); moved outside both it is warned on A.
+/// The roof itself is the same with and without the window.
+#[test]
+fn an_object_inside_a_failing_building_is_not_judged() {
+    let mut base = Project::new("Cross");
+    let a = [
+        (0.0, 0.0, 40.0),
+        (12.0, 0.0, G),
+        (12.0, 8.0, 40.0),
+        (0.0, 8.0, G),
+    ];
+    let b = [(6.0, -6.0), (10.0, -6.0), (10.0, 14.0), (6.0, 14.0)];
+    base.parts = vec![
+        RoofPart::new(
+            "Main",
+            a.iter().map(|&(x, y, d)| edge(x, y, d, 3.0, 0.5)).collect(),
+        ),
+        RoofPart::new(
+            "B",
+            b.iter().map(|&(x, y)| edge(x, y, G, 3.0, 0.5)).collect(),
+        ),
+    ];
+    let bare = calc(&base);
+    assert!(bare.geos[0].error.is_none(), "{:?}", bare.geos[0].error);
+    assert!(bare.geos[1].error.is_some(), "B fails");
+    let mut p = base.clone();
+    // Inside B's walls, 1 m from Main's eave wall, 2 m from B's walls.
+    p.windows.push(window(8.0, -1.0));
+    // A chimney inside B's walls too, near Main.
+    p.chimneys.push(square(7.8, -1.6, 0.4));
+    let roof = calc(&p);
+    assert_eq!(off_items(&roof, 0), vec![]);
+    assert_eq!(off_items(&roof, 1), vec![]);
+    for (g, b) in roof.geos.iter().zip(&bare.geos) {
+        assert_eq!(g.faces, b.faces);
+        assert_eq!(
+            g.error.as_ref().map(|e| e.kind),
+            b.error.as_ref().map(|e| e.kind)
+        );
+    }
+    near("area", roof.area, bare.area, 1e-9);
+    assert_eq!(roof.lines, bare.lines);
+    // Moved outside both buildings (and still nearest to Main): warned.
+    let mut q = base.clone();
+    q.windows.push(window(3.0, -3.0));
+    q.chimneys.push(square(2.0, -4.0, 0.4));
+    let roof = calc(&q);
+    assert_eq!(
+        off_items(&roof, 0),
+        vec![
+            (WarningKind::WindowOffRoof, Some(0)),
+            (WarningKind::ChimneyOffRoof, Some(0)),
+        ]
+    );
+    assert_eq!(off_items(&roof, 1), vec![]);
+}
+
 /// HUNT-1502 (pin): when every building fails nothing is reported, as
 /// before (the calculation's errors say enough).
 #[test]

@@ -149,7 +149,9 @@ test.describe("round 16, part B", () => {
     newer.schema_version = 99;
     const text = JSON.stringify(newer);
     fs.writeFileSync(file, text);
-    const load = app.toasts().filter({ hasText: cs("err.ofJob", { name: "R16 novější", title: cs("err.action.load") }) });
+    // Round 17 (UI-1603 / HUNT-1604, owner decision 5): the reload of the
+    // open job says what happened under its own title, not "could not open".
+    const load = app.toasts().filter({ hasText: cs("err.ofJob", { name: "R16 novější", title: cs("editor.outsideTitle") }) }).filter({ hasText: cs("editor.outsideNewer") });
     await expect(load).toHaveCount(1);
     await selectWall(page, 0);
     await setField(bar(page, "def.title").getByLabel(cs("edge.pitch")), 33);
@@ -158,7 +160,9 @@ test.describe("round 16, part B", () => {
     await app.answerConfirm(true);
     await page.getByRole("button", { name: cs("editor.back") }).first().click();
     await expect(page.locator("header .brand")).toBeVisible();
-    await expect(load).toHaveCount(1);
+    // The lasting notice speaks about the open job: it goes with the editor;
+    // the save refusal names the job and stays over the library.
+    await expect(load).toHaveCount(0);
     await expect(save).toHaveCount(1);
     expect(fs.readFileSync(file, "utf8")).toBe(text);
     // The refusals are logged as errors by notifyError.
@@ -211,7 +215,8 @@ test.describe("round 16, part B", () => {
     // Undo both: the window the toast is about is gone, and so is the toast.
     for (let k = 0; k < 2; k++) await page.locator("body").press("ControlOrMeta+z");
     await waitForProject(id, (p) => !p.windows?.length && !p.chimneys?.length);
-    await expect(warned).toHaveCount(0);
+    // Well inside the warning's own 9 s timer: Undo took it (TEST-1604).
+    await expect(warned).toHaveCount(0, { timeout: 2_500 });
     await expect(page.getByTestId("results-warned")).toHaveCount(0);
   });
 

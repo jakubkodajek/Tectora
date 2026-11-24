@@ -51,7 +51,8 @@
       <dd><code>{r.value}</code></dd>
     {/each}
   </dl>
-  {#if request.summary}<p class="why">{request.summary}</p>{/if}
+  <!-- The AI's own words, quoted after a lead naming it: never read as Tectora's advice (UI-1604). -->
+  {#if request.summary}<p class="why" data-testid="folder-reason">{t("folderReq.reason", { by: request.by })} {t("ai.quoted", { s: request.summary })}</p>{/if}
   <!-- What Allow does to the jobs: the open one closes, the others stay behind (UX-1302). -->
   {#if "projects_dir" in request.changes}<p class="muted" data-testid="folder-consequence">{jobOpen ? `${t("folderReq.jobCloses")} ` : ""}{t("folderReq.jobsStay")}</p>{/if}
   <p class="muted">{t("folderReq.note")}</p>
