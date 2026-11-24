@@ -764,3 +764,32 @@ Guards: store tests `t2001_*` (`T2001_SEED` / `T2001_RUNS` /
 `a_put_back_by_revert_to_is_told_as_a_put_back`,
 `a_review_past_the_log_trim_still_waits_over_mcp`; E2E
 `app/e2e/audit-r20-review.e2e.ts`.
+
+## 21. Reads that answer out of order, figures over the work bound, faces that touch themselves (@errors, @hunt, @ux, @ui)
+
+Round 20 (HUNT-1903, ERR-1902 to ERR-1906, HUNT-1902, ERR-1901, UX-1902,
+UI-1901). Check each:
+
+- Hold the first answer of every shown read with `page.route` (library
+  list, trash, a job's files, Export preview, `load_project`,
+  `review_status`) while a newer one is asked: the older answer never
+  replaces the newer one; Accept or Revert while a review read is out never
+  brings the banner back; a failed history or review read keeps the banner.
+- A job too complex to calculate: the review banner, MCP `get_review`,
+  `store_result` and `update_job` leaving the draft answer within the work
+  bound, and the editor opens the job without waiting for the review.
+- A hand-drawn face whose bow-tie centre is clicked twice (also 0.5 mm off),
+  an edge folded back along another, corners on one line: refused when new,
+  warned about when stored; in a job without a building the warning is in
+  `calc`'s job-level `warnings`.
+- Ctrl+Z while corners are placed removes the last corner only.
+- At 600x420 a real click on every field of the wall and dormer bars lands
+  in the field (nothing sticky lies over it), in all four languages.
+
+Guards: `order.scan.test.ts`, `latest.test.ts`, `results.test.ts` (faces
+only), `keys.test.ts` (draftKey); core `snapshot::tests::the_review_figures_and_a_stored_result_stay_in_the_work_bound`,
+`app_commands::no_app_command_calculates_a_roof_outside_the_work_bound`,
+`check_cases::manual_face_crossing::*`; MCP `bound_tests` (scan and heavy
+job), `set_manual_refuses_a_face_that_touches_or_folds_over_itself`,
+`calc_warns_about_a_crossing_face_in_a_job_without_a_building`;
+`app/e2e/audit-r20-b.e2e.ts`, `editor-ux.e2e.ts` "corners being placed".

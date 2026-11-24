@@ -525,7 +525,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "set_manual",
-            "description": "Replace the lines and/or faces drawn by hand on the calculated roof (omit a list to keep it). A line end given as [x, y] snaps to the nearest roof point within 0.25 m, else lies at height 0 (as DACAD); [x, y, z] is taken as it is. A line of a counted code adds to that code's totals; M (dimension) and X do not. A face is a plan polygon with its pitch (default 30°) and adds its sloped area; give its corners in order around the face: an outline that crosses itself (a bow tie) is refused.",
+            "description": "Replace the lines and/or faces drawn by hand on the calculated roof (omit a list to keep it). A line end given as [x, y] snaps to the nearest roof point within 0.25 m, else lies at height 0 (as DACAD); [x, y, z] is taken as it is. A line of a counted code adds to that code's totals; M (dimension) and X do not. A face is a plan polygon with its pitch (default 30°) and adds its sloped area; give its corners in order around the face: an outline that crosses itself (a bow tie), touches itself at a corner or folds back along an edge is refused.",
             "inputSchema": schema(json!({
                 "id": id,
                 "lines": { "type": "array", "items": { "type": "object", "properties": {
@@ -843,17 +843,32 @@ impl Server {
                     .collect::<Vec<_>>())
             }),
             "get_review" => (|| {
-                let (id, _) = self.load(args)?;
-                let status = self.store.review_status(&id)?;
+                let (id, current) = self.load(args)?;
+                let pending = self.store.pending_review(&id);
+                // The figures of `Store::review_status`, within the bound of
+                // a heavy job too: a job too complex to calculate gives
+                // `differences: null` ("not available") in seconds instead
+                // of no answer (audit 2026-11-24 HUNT-1903).
+                let differences = match &pending {
+                    Some(pr) => {
+                        let before = pr.before.clone();
+                        let after = current.clone();
+                        self.bounded(&current, move || {
+                            snapshot::change_in_figures(before.as_ref(), &after)
+                        })
+                        .flatten()
+                    }
+                    None => None,
+                };
                 Ok(json!({
                     "id": id,
                     "accepted_ms": self.store.reviewed_at(&id),
-                    "pending": status.map(|s| json!({
-                        "since_ts_ms": s.pending.since_ts_ms,
-                        "count": s.pending.count,
-                        "actors": s.pending.actors,
-                        "steps": s.pending.steps,
-                        "differences": s.differences,
+                    "pending": pending.map(|s| json!({
+                        "since_ts_ms": s.since_ts_ms,
+                        "count": s.count,
+                        "actors": s.actors,
+                        "steps": s.steps,
+                        "differences": differences,
                     })),
                 }))
             })(),
@@ -1055,7 +1070,13 @@ impl Server {
             "store_result" => (|| {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
-                p.result_snapshot = Some(snapshot::take_checked(&p).map_err(|e| e.to_string())?);
+                // Within the bound of a heavy job too (HUNT-1903).
+                let q = p.clone();
+                p.result_snapshot = Some(
+                    self.bounded(&p, move || snapshot::take_checked(&q))
+                        .ok_or(crate::ROOF_TOO_LONG)?
+                        .map_err(|e| e.to_string())?,
+                );
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
             })(),
             "restore_offer_result" => (|| {
@@ -2560,6 +2581,72 @@ mod tests {
         assert_eq!(w.len(), 1, "{r}");
         assert_eq!(w[0]["face"], 0);
         assert!(w[0]["message"].as_str().unwrap().contains("crosses itself"));
+    }
+
+    /// Audit 2026-11-24 ERR-1901: a stored bow tie in a job of hand-drawn
+    /// faces only is warned about by `calc` beside the parts.
+    #[test]
+    fn calc_warns_about_a_crossing_face_in_a_job_without_a_building() {
+        let (mut s, id) = setup();
+        let mut p = s.store.load(&id).unwrap();
+        p.parts.clear();
+        p.dormers.clear();
+        p.windows.clear();
+        p.chimneys.clear();
+        p.roof_openings.clear();
+        p.manual_faces = vec![tectora_core::model::ManualFace {
+            points: [(0.0, 0.0), (10.0, 4.0), (10.0, 0.0), (0.0, 10.0)]
+                .iter()
+                .map(|&(x, y)| tectora_core::geom::Point2::new(x, y))
+                .collect(),
+            pitch_deg: 30.0,
+            label: String::new(),
+        }];
+        s.store.save(Some(id.clone()), &p).unwrap();
+        let r = call(&mut s, "calc", json!({ "id": id }));
+        assert_eq!(r["parts"].as_array().unwrap().len(), 0, "{r}");
+        let w = r["warnings"].as_array().expect("job-level warnings");
+        assert_eq!(w.len(), 1, "{r}");
+        assert_eq!(w[0]["kind"], "manual_face_crosses");
+        assert_eq!(w[0]["face"], 0);
+        assert!(w[0]["message"].as_str().unwrap().contains("crosses itself"));
+    }
+
+    /// Audit 2026-11-24 HUNT-1902: a face that touches itself at a corner,
+    /// nearly (0.5 mm), folds an edge back or lies on one line is refused
+    /// like a bow tie, nothing saved.
+    #[test]
+    fn set_manual_refuses_a_face_that_touches_or_folds_over_itself() {
+        let (mut s, id) = setup();
+        let before = s.store.load(&id).unwrap();
+        let log = s.store.activity(&id).len();
+        for pts in [
+            json!([[20, 0], [22, 2], [24, 4], [24, 0], [22, 2], [20, 4]]),
+            json!([[20, 0], [22, 2], [24, 4], [24, 0], [22.0005, 2], [20, 4]]),
+            json!([
+                [20, 0],
+                [24, 0],
+                [24, 3],
+                [22, 3],
+                [22, 0],
+                [20, 0],
+                [20, 3]
+            ]),
+            json!([[20, 0], [22, 0], [24, 0.0005]]),
+        ] {
+            let err = s
+                .call_tool(
+                    "set_manual",
+                    &json!({ "id": id, "summary": "x", "faces": [{ "points": pts, "pitch_deg": 30 }] }),
+                )
+                .unwrap_err();
+            assert!(
+                err.contains("face 0") && err.contains("crosses itself"),
+                "{pts}: {err}"
+            );
+        }
+        assert_eq!(s.store.load(&id).unwrap(), before);
+        assert_eq!(s.store.activity(&id).len(), log);
     }
 
     #[test]

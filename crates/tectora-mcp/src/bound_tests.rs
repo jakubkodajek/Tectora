@@ -233,6 +233,11 @@ fn every_roof_calculation_of_a_tool_is_bounded() {
                 "host_roof(",
                 "roof_trouble(",
                 "export_ready(",
+                // The review's figures and a stored result (HUNT-1903).
+                "take_checked(",
+                "change_in_figures(",
+                "review_status(",
+                "snapshot::take(",
             ] {
                 if !l.contains(what) || l.contains(&format!("fn {what}")) {
                     continue;
@@ -250,6 +255,15 @@ fn every_roof_calculation_of_a_tool_is_bounded() {
                             || whole
                     }
                     "roof_trouble(" => f == "export_ready",
+                    // Bounded in the core by work; a heavy job also within
+                    // the commit timeout (`Server::bounded`).
+                    "take_checked(" | "change_in_figures(" | "review_status("
+                    | "snapshot::take(" => {
+                        lines[i.saturating_sub(8)..=i]
+                            .iter()
+                            .any(|l| l.contains(".bounded(") || l.contains("fn roof_of"))
+                            || whole
+                    }
                     _ => whole,
                 };
                 if !ok {
@@ -267,4 +281,41 @@ fn every_roof_calculation_of_a_tool_is_bounded() {
         "roof calculations outside the bound:\n{}",
         bad.join("\n")
     );
+}
+
+/// Audit 2026-11-24 HUNT-1903: the review, store_result and update_job
+/// leaving the draft answer within the bound on a job too complex to
+/// calculate: the review without figures, the other two with the error, and
+/// nothing saved.
+#[test]
+fn the_review_and_the_stored_result_answer_within_the_bound_on_a_heavy_job() {
+    let (mut s, id) = heavy();
+    let mut p = s.store.load(&id).unwrap();
+    p.notes = "AI note".into();
+    s.store
+        .save_as(Some(id.clone()), &p, "claude", "AI note")
+        .unwrap();
+    let (r, t) = timed(&mut s, "get_review", json!({ "id": id }));
+    let r = r.unwrap();
+    assert!(t < QUICK, "get_review took {t:?}");
+    assert_eq!(r["pending"]["count"], 1, "{r}");
+    assert!(r["pending"]["differences"].is_null(), "{r}");
+    let before = s.store.load(&id).unwrap();
+    for (tool, args) in [
+        ("store_result", json!({ "id": id, "summary": "figures" })),
+        (
+            "update_job",
+            json!({ "id": id, "summary": "offer", "status": "offer" }),
+        ),
+    ] {
+        let (r, t) = timed(&mut s, tool, args);
+        assert!(t < QUICK, "{tool} took {t:?}");
+        let e = r.unwrap_err();
+        assert!(
+            e.contains("takes too long") || e.contains("too complex"),
+            "{tool}: {e}"
+        );
+    }
+    assert_eq!(s.store.load(&id).unwrap(), before);
+    let _ = std::fs::remove_dir_all(&s.store.dir);
 }

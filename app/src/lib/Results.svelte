@@ -6,7 +6,7 @@
   import { m, m2, num } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName } from "./materials";
-  import { areaRows, failedParts, isFacesOnly, joinedWith, lineRowsShown, missingResult, objectCounts, roofState, warningText } from "./results";
+  import { areaListShown, areaRows, failedParts, isFacesOnly, joinedWith, lineRowsShown, missingResult, objectCounts, resultWarnings, roofState } from "./results";
   import type { Described } from "./errors";
   import { inputWarnings } from "./plausible";
   import { legend, lineName, SUB_CODES } from "./linecodes";
@@ -127,9 +127,7 @@
 
   /** Plausibility warnings of every part, with the part's name when there are several. */
   const warnings = $derived(
-    (result?.parts ?? []).flatMap((p, i) =>
-      (p.geometry.warnings ?? []).map((w) => ({ part: result!.parts.length > 1 ? partLabel(p.name, i) : null, text: warningText(w) })),
-    ).concat(
+    resultWarnings(result).concat(
       // Typed values that are allowed but unlikely (a lost decimal comma,
       // UX-009) and half-hips or breaks above the ridge (UX-003).
       inputWarnings(project, result),
@@ -182,7 +180,7 @@
     </div>
   {/if}
 
-  {#if result && areas.length > 1}
+  {#if result && areaListShown(areas, facesOnly)}
     <h4>{t("res.areas")}</h4>
     <table class="areas">
       <tbody>
@@ -242,6 +240,8 @@
     <p class="note">{t("res.obj.note")}</p>
   {/if}
 
+  <!-- No lines (a job of hand-drawn faces only): no empty section and no "Line codes: ." (UX-1904). -->
+  {#if shownRows.length}
   <h4>{t("res.lines")}</h4>
   <table data-testid="res-lines">
     <tbody>
@@ -258,6 +258,7 @@
     </tbody>
   </table>
   <p class="note" data-testid="res-legend">{legend(shownRows.map((r) => r.code), codes)}</p>
+  {/if}
 
   {#if stored}
     <h4 bind:this={cardHead} tabindex="-1" data-testid="snap-title">{t("snap.title")}</h4>

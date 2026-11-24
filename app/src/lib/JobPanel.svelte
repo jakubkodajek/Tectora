@@ -15,6 +15,7 @@
   import { hasBuilding, snapshotDifferences } from "./offer";
   import { figureName, formatFigure } from "./changes";
   import { exclusive } from "./inflight";
+  import { sequence } from "./latest";
   import type { JobEdits, RoofHold } from "./jobedits";
   import type { FigureDifference } from "./types";
 
@@ -203,11 +204,16 @@
 
   // Files attached to the job (drawings, photos).
   let files = $state<Attachment[]>([]);
+  /** Only the newest listing of this job's files is shown, never one of the job before (audit 2026-11-24 ERR-1904). */
+  const fileReads = sequence();
   async function loadFiles() {
+    const k = fileReads.next();
+    const of = id;
     try {
-      files = await api.listAttachments(id);
+      const listed = await api.listAttachments(of);
+      if (fileReads.current(k) && of === id) files = listed;
     } catch (e) {
-      notifyError(e, "files");
+      if (fileReads.current(k) && of === id) notifyError(e, "files");
     }
   }
   $effect(() => {

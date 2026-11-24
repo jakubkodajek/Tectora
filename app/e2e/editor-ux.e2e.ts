@@ -2,7 +2,7 @@
 // on a wall asks first, the selected wall stands out from an eave, the
 // calculation breakdown shows no float noise, a manual face is in the 3D
 // scene, and a double click on Duplicate / Delete in the library acts once.
-import { bar, openEditor, selectWall } from "./editor";
+import { bar, clickPlan, openEditor, selectWall, setField, tool } from "./editor";
 import { bridge, createExample, expect, listProjects, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 
@@ -81,4 +81,41 @@ test.describe("library", () => {
     expect((await app.dialogs()).filter((d) => d.kind === "confirm")).toHaveLength(1);
     await expect(page.locator(".toast")).toHaveCount(0);
   });
+});
+
+// Audit 2026-11-24 UX-1902 (owner decision 3): Ctrl+Z while the corners of a
+// new building or a hand-drawn face are placed removes only the last corner;
+// the roof edit made before stays. Backspace does the same for a face.
+test.describe("corners being placed (UX-1902)", () => {
+  for (const kind of ["walls", "face"] as const) {
+    test(`Ctrl+Z while placing ${kind === "walls" ? "a building's" : "a face's"} corners removes only the last corner (UX-1902)`, async ({ app, page }) => {
+      const id = await createExample("gable", "R20 Ctrl Z");
+      await openEditor(app, "R20 Ctrl Z");
+      await app.saved();
+      await selectWall(page, 0);
+      await setField(bar(page, "def.title").getByLabel(cs("edge.pitch")), 45);
+      await waitForProject(id, (p) => p.parts[0].edges[0].pitch_deg === 45);
+      await app.saved();
+      await tool(page, kind === "walls" ? "tool.draw" : "tool.face").click();
+      await clickPlan(page, 2, 1);
+      await clickPlan(page, 6, 1);
+      const count = kind === "walls" ? page.locator(".bar").filter({ hasText: cs("draw.points", { n: 2 }) }) : page.getByTestId("place-points");
+      if (kind === "walls") await expect(count).toHaveCount(1);
+      else await expect(count).toHaveText(cs("place.points", { n: 2 }));
+      await page.locator("body").press("ControlOrMeta+z");
+      if (kind === "walls") await expect(page.locator(".bar").filter({ hasText: cs("draw.points", { n: 1 }) })).toHaveCount(1);
+      else await expect(count).toHaveText(cs("place.points", { n: 1 }));
+      // Redo does nothing while corners are placed.
+      await page.locator("body").press("ControlOrMeta+Shift+z");
+      await page.waitForTimeout(700);
+      expect((await loadProject(id)).parts[0].edges[0].pitch_deg).toBe(45);
+      if (kind === "face") {
+        await clickPlan(page, 6, 3);
+        await expect(count).toHaveText(cs("place.points", { n: 2 }));
+        await page.locator("body").press("Backspace");
+        await expect(count).toHaveText(cs("place.points", { n: 1 }));
+        expect((await loadProject(id)).parts[0].edges[0].pitch_deg).toBe(45);
+      }
+    });
+  }
 });

@@ -289,6 +289,26 @@ fn manual_faces_crossing(
         .collect()
 }
 
+/// The warnings of `project` that belong to no building: the hand-drawn
+/// faces whose outline crosses itself ([`WarningKind::ManualFaceCrosses`])
+/// in a job without a building, which [`off_roof`] has no part to put on
+/// (audit 2026-11-24 ERR-1901). `calc` lists them beside the parts.
+pub fn job_warnings(project: &crate::Project, geos: &[RoofGeometry]) -> Vec<RoofWarning> {
+    if project.parts.len().min(geos.len()) > 0 {
+        return Vec::new();
+    }
+    project
+        .manual_faces
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.crosses())
+        .map(|(i, _)| RoofWarning {
+            face: Some(i),
+            ..RoofWarning::new(WarningKind::ManualFaceCrosses, 0.0)
+        })
+        .collect()
+}
+
 fn off_roof_objects(project: &crate::Project, geos: &[RoofGeometry]) -> Vec<(usize, RoofWarning)> {
     let sound = |g: &RoofGeometry| g.error.is_none();
     if !geos.iter().any(|g| sound(g) && !g.faces.is_empty()) {

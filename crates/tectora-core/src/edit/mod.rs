@@ -225,7 +225,7 @@ pub fn check_manual_face(face: &crate::model::ManualFace) -> Result<(), (&'stati
     if face.crosses() {
         return Err((
             "face_crosses",
-            "its outline crosses itself; give the corners in order around the face".into(),
+            "its outline crosses itself (or touches or folds back over itself); give the corners in order around the face, each once".into(),
         ));
     }
     Ok(())

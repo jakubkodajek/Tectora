@@ -505,6 +505,145 @@ mod manual_face_crossing {
         );
     }
 
+    /// Audit 2026-11-24 HUNT-1902: a face that touches itself (the bow
+    /// tie's crossing point clicked as a corner, also 0.5 mm off), folds an
+    /// edge back along another one, or lies on one line is refused like a
+    /// crossing one, in the editor (`check_face`) and over MCP; a stored one
+    /// is warned about. A double click (a repeated corner in a row) and two
+    /// squares meeting corner to corner stay accepted.
+    #[test]
+    fn a_face_touching_or_folding_over_itself_is_refused_and_warned_about() {
+        let touch_bowtie = [
+            (0.0, 0.0),
+            (2.0, 2.0),
+            (4.0, 4.0),
+            (4.0, 0.0),
+            (2.0, 2.0),
+            (0.0, 4.0),
+        ];
+        let near_bowtie = [
+            (0.0, 0.0),
+            (2.0, 2.0),
+            (4.0, 4.0),
+            (4.0, 0.0),
+            (2.0005, 2.0),
+            (0.0, 4.0),
+        ];
+        let fold = [
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (4.0, 3.0),
+            (2.0, 3.0),
+            (2.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 3.0),
+        ];
+        let collinear3 = [(0.0, 0.0), (2.0, 0.0), (4.0, 0.0005)];
+        let spike = [
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (4.0, 4.0),
+            (0.0, 4.0),
+            (0.0, 8.0),
+            (0.0, 4.0),
+        ];
+        for (name, pts) in [
+            ("touch_bowtie", &touch_bowtie[..]),
+            ("near_bowtie", &near_bowtie[..]),
+            ("fold", &fold[..]),
+            ("collinear3", &collinear3[..]),
+            ("spike", &spike[..]),
+            ("plain_bowtie", &BOW[..]),
+        ] {
+            let f = face(pts);
+            assert!(f.crosses(), "{name}");
+            assert_eq!(
+                check_manual_face(&f).unwrap_err().0,
+                "face_crosses",
+                "{name}"
+            );
+        }
+        for (name, pts) in [
+            ("square", &IN_ORDER[..]),
+            (
+                "double click",
+                &[(0.0, 0.0), (4.0, 0.0), (4.0, 0.0), (0.0, 4.0), (0.0, 4.0)][..],
+            ),
+            (
+                "corner on the line",
+                &[(0.0, 0.0), (2.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)][..],
+            ),
+            (
+                "closing click",
+                &[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 0.0)][..],
+            ),
+        ] {
+            let f = face(pts);
+            assert!(!f.crosses(), "{name}");
+            assert_eq!(check_manual_face(&f), Ok(()), "{name}");
+        }
+        // Stored in a file: warned about, the area counted as before.
+        let mut p = tectora_core::examples::find("gable").unwrap().project();
+        p.manual_faces.push(face(&touch_bowtie));
+        let warned = generate_project(&p)
+            .iter()
+            .flat_map(|g| g.warnings.iter())
+            .any(|w| w.kind == WarningKind::ManualFaceCrosses && w.face == Some(0));
+        assert!(warned);
+    }
+
+    /// Audit 2026-11-24 ERR-1901 (and TEST-1906 F03): a crossing face in a
+    /// job without a building is warned about at job level in `calc`; with
+    /// two buildings, on the one nearest to the face.
+    #[test]
+    fn a_crossing_face_without_a_building_is_warned_about_at_job_level() {
+        let mut p = tectora_core::examples::find("gable").unwrap().project();
+        p.parts.clear();
+        p.manual_faces.push(face(&IN_ORDER));
+        p.manual_faces.push(face(&BOW));
+        let geos = generate_project(&p);
+        let job = tectora_core::check::job_warnings(&p, &geos);
+        assert_eq!(job.len(), 1, "{job:?}");
+        assert_eq!(
+            (job[0].kind, job[0].face),
+            (WarningKind::ManualFaceCrosses, Some(1))
+        );
+        let report = tectora_core::report::calc(&p);
+        assert_eq!(
+            report["warnings"][0]["kind"], "manual_face_crosses",
+            "{report}"
+        );
+        assert_eq!(report["warnings"][0]["face"], 1);
+        // In order: nothing.
+        p.manual_faces.remove(1);
+        assert!(tectora_core::report::calc(&p).get("warnings").is_none());
+
+        // Two buildings, the face beside the second: on the second, none
+        // at job level.
+        let mut two = tectora_core::examples::find("gable").unwrap().project();
+        let mut second = two.parts[0].clone();
+        for e in &mut second.edges {
+            e.start.x += 40.0;
+        }
+        two.parts.push(second);
+        two.manual_faces
+            .push(face(&[(41.0, 1.0), (46.0, 6.0), (46.0, 1.0), (41.0, 6.0)]));
+        let geos = generate_project(&two);
+        let on: Vec<usize> = geos
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| {
+                g.warnings
+                    .iter()
+                    .any(|w| w.kind == WarningKind::ManualFaceCrosses)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(on, vec![1]);
+        assert!(tectora_core::check::job_warnings(&two, &geos).is_empty());
+        assert!(tectora_core::report::calc(&two).get("warnings").is_none());
+    }
+
     #[test]
     fn a_face_of_fewer_than_three_different_corners_or_a_bad_pitch_is_refused() {
         let flat = face(&[(1.0, 1.0), (1.0, 1.0), (5.0, 1.0), (5.0, 1.002)]);

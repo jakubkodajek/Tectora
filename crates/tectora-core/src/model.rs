@@ -156,12 +156,13 @@ impl ManualFace {
     }
 
     /// Whether the face's outline crosses itself (a bow tie: corners given
-    /// out of order). Its [`ManualFace::area`] is then the difference of
-    /// its lobes; new faces like this are refused
+    /// out of order), or touches or folds over itself so that its area is
+    /// wrong ([`folded_loop`], HUNT-1902). Its [`ManualFace::area`] is then
+    /// the difference of its lobes; new faces like this are refused
     /// ([`crate::edit::check_manual_face`]), stored ones are warned about
     /// ([`crate::check::WarningKind::ManualFaceCrosses`]).
     pub fn crosses(&self) -> bool {
-        !crossing_edges(&self.points).is_empty()
+        !crossing_edges(&self.points).is_empty() || folded_loop(&self.points)
     }
 
     /// Whether the pitch gives the face an area (see [`ManualFace::area`]).
@@ -796,6 +797,111 @@ pub fn crossing_edges(points: &[Point2]) -> Vec<usize> {
         return Vec::new();
     }
     loop_crossings(points)
+}
+
+/// Whether the closed point loop `points` (a hand-drawn roof face) touches
+/// or folds over itself so that its shoelace area is not the area it
+/// shows (audit 2026-11-24 HUNT-1902): a bow tie whose crossing point is
+/// clicked as a corner (two lobes of opposite turn, counted 0), the same
+/// within 1 mm, an edge that runs back along another one, or a face whose
+/// corners lie on one line. Corners within 1 mm of another corner or of an
+/// edge count as touching it. The loop is cut at every touch into simple
+/// loops: each must have an area (wider than 1 mm on average) and all must
+/// turn the same way. Two squares that meet corner to corner, turning the
+/// same way, are counted right and pass; proper crossings are
+/// [`crossing_edges`]'. Repeated consecutive corners (a double click) are
+/// ignored; a loop that is not finite is not checked.
+pub fn folded_loop(points: &[Point2]) -> bool {
+    const TOL: f64 = 1e-3;
+    if !points.iter().all(|&p| finite_point(p)) {
+        return false;
+    }
+    // Consecutive corners closer than the tolerance are one corner.
+    let mut pts: Vec<Point2> = Vec::with_capacity(points.len());
+    for &p in points {
+        if pts.last().is_none_or(|q: &Point2| q.distance(p) >= TOL) {
+            pts.push(p);
+        }
+    }
+    while pts.len() > 1 && pts[0].distance(pts[pts.len() - 1]) < TOL {
+        pts.pop();
+    }
+    if pts.len() < 3 {
+        return false;
+    }
+    // A corner lying on another edge (not at its ends) becomes a corner of
+    // that edge too, so every touch is a repeated corner.
+    let n = pts.len();
+    let mut loop_pts: Vec<Point2> = Vec::with_capacity(n * 2);
+    for i in 0..n {
+        let (a, b) = (pts[i], pts[(i + 1) % n]);
+        loop_pts.push(a);
+        let len2 = (b.x - a.x).powi(2) + (b.y - a.y).powi(2);
+        if len2 <= 0.0 {
+            continue;
+        }
+        let mut on: Vec<(f64, Point2)> = Vec::new();
+        for (k, &c) in pts.iter().enumerate() {
+            if k == i || k == (i + 1) % n || c.distance(a) < TOL || c.distance(b) < TOL {
+                continue;
+            }
+            let t = ((c.x - a.x) * (b.x - a.x) + (c.y - a.y) * (b.y - a.y)) / len2;
+            if !(0.0..=1.0).contains(&t) {
+                continue;
+            }
+            let foot = Point2::new(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y));
+            if foot.distance(c) < TOL {
+                on.push((t, c));
+            }
+        }
+        on.sort_by(|x, y| x.0.total_cmp(&y.0));
+        loop_pts.extend(on.into_iter().map(|(_, c)| c));
+    }
+    let signed = |l: &[Point2]| -> f64 {
+        (0..l.len())
+            .map(|i| {
+                let (p, q) = (l[i], l[(i + 1) % l.len()]);
+                p.x * q.y - q.x * p.y
+            })
+            .sum::<f64>()
+            / 2.0
+    };
+    let longest = |l: &[Point2]| -> f64 {
+        (0..l.len())
+            .map(|i| l[i].distance(l[(i + 1) % l.len()]))
+            .fold(0.0, f64::max)
+    };
+    // Cut at repeated corners until every loop is simple.
+    let mut todo = vec![loop_pts];
+    let mut turn = 0.0f64;
+    while let Some(l) = todo.pop() {
+        let m = l.len();
+        let pair = (0..m).find_map(|i| {
+            (i + 1..m)
+                .find(|&j| l[i].distance(l[j]) < TOL)
+                .map(|j| (i, j))
+        });
+        match pair {
+            Some((i, j)) => {
+                let inner: Vec<Point2> = l[i..j].to_vec();
+                let outer: Vec<Point2> = l[j..].iter().chain(&l[..i]).copied().collect();
+                todo.push(inner);
+                todo.push(outer);
+            }
+            None => {
+                let a = signed(&l);
+                // A loop thinner than the tolerance on average folds back.
+                if m < 3 || a.abs() < TOL * longest(&l) {
+                    return true;
+                }
+                if turn != 0.0 && turn.signum() != a.signum() {
+                    return true;
+                }
+                turn = a;
+            }
+        }
+    }
+    false
 }
 
 fn loop_crossings(pts: &[Point2]) -> Vec<usize> {

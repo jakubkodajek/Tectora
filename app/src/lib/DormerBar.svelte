@@ -134,6 +134,8 @@
 </script>
 
 <div class="bar" role="toolbar" aria-label={t("dormer.title")} use:pageStep={step} use:freshBar>
+  <!-- More and Delete sit beside the scrolled strip, not on it: at 600 px they never lie over a field (UI-1901). -->
+  <div class="line">
   <div class="row" use:hscroll>
     <div class="nav">
       <button class="icon-btn" onclick={() => step(-1)} title="{t('dormer.prev')} (PageUp)" aria-label={t("dormer.prev")}><Icon name="left" /></button>
@@ -189,20 +191,23 @@
           </label>
         {/if}
       {/if}
-      <div class="end">
-        {#if onedit && kind !== "general"}
-          <button class="btn sm edit" onclick={onedit} title={t("dormer.editHint")} aria-label={t("dormer.edit")}><Icon name="draw" size={15} /><span class="label">{t("dormer.edit")}</span></button>
-        {/if}
-        {#if kind !== "general"}
-          <button class="btn sm more-btn" class:on={moreOpen} data-testid="dormer-more" aria-expanded={moreOpen} aria-controls="dormer-more-row"
-            aria-describedby={moreSet.length ? "dormer-more-set" : undefined}
-            title={moreTitle} onclick={toggleMore}>
-            {t("bar.more")}
-            {#if moreSet.length}<b class="count" data-testid="dormer-more-count">{moreSet.length}</b><span class="sr-only" id="dormer-more-set">{t("bar.moreSet", { list: moreSet.join(", ") })}</span>{/if}
-          </button>
-        {/if}
-        <button class="btn sm ghost danger del" onclick={ondelete} title={t("dormer.delete")} aria-label={t("dormer.delete")}><Icon name="trash" size={15} /><span class="label">{t("dormer.delete")}</span></button>
-      </div>
+    {/if}
+  </div>
+    {#if params && kind}
+    <div class="end">
+      {#if onedit && kind !== "general"}
+        <button class="btn sm edit" onclick={onedit} title={t("dormer.editHint")} aria-label={t("dormer.edit")}><Icon name="draw" size={15} /><span class="label">{t("dormer.edit")}</span></button>
+      {/if}
+      {#if kind !== "general"}
+        <button class="btn sm more-btn" class:on={moreOpen} data-testid="dormer-more" aria-expanded={moreOpen} aria-controls="dormer-more-row"
+          aria-describedby={moreSet.length ? "dormer-more-set" : undefined}
+          title={moreTitle} onclick={toggleMore}>
+          {t("bar.more")}
+          {#if moreSet.length}<b class="count" data-testid="dormer-more-count">{moreSet.length}</b><span class="sr-only" id="dormer-more-set">{t("bar.moreSet", { list: moreSet.join(", ") })}</span>{/if}
+        </button>
+      {/if}
+      <button class="btn sm ghost danger del" onclick={ondelete} title={t("dormer.delete")} aria-label={t("dormer.delete")}><Icon name="trash" size={15} /><span class="label">{t("dormer.delete")}</span></button>
+    </div>
     {/if}
   </div>
 
@@ -274,19 +279,25 @@
   .row.more .unit input {
     width: 92px;
   }
-  /* Stays in view at the row's end when a narrow window scrolls the row. */
-  /* More and Delete stay in view at the row's end when a narrow window scrolls the row. */
+  /* The first row, and More and Delete beside it: the row scrolls, they
+     stay at the end, never over a field (UI-1901). */
+  .line {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    min-width: 0;
+  }
+  .line > .row {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
   .end {
-    position: sticky;
-    right: 0;
-    z-index: 1;
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     gap: 8px;
     margin-left: auto;
-    margin-bottom: 1px;
-    background: var(--surface);
-    box-shadow: -8px 0 8px -4px var(--surface);
+    margin-bottom: 3px;
   }
   .more-btn {
     display: inline-flex;

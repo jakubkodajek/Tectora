@@ -10,7 +10,7 @@
   import { lastStep } from "./drawstep";
   import { stepWall, wallStepKey } from "./wallstep";
   import { reviewStatusKey, type ReviewPress } from "./reviewstatus";
-  import { deleteKeyHint, drawKeyHint, editorTakesUndo, isDrawKey, isMacPlatform, shortcut, undoKey, zoomKey } from "./keys";
+  import { deleteKeyHint, drawKeyHint, editorTakesUndo, isDrawKey, isMacPlatform, shortcut, undoKey, zoomKey, draftKey } from "./keys";
   import Icon from "./Icon.svelte";
   import JobPanel from "./JobPanel.svelte";
   import LanguagePicker from "./LanguagePicker.svelte";
@@ -44,7 +44,7 @@
   import RoofCalcForm from "./RoofCalcForm.svelte";
   import TransformForm from "./TransformForm.svelte";
   import { transformPart, translation, type TransformMode, type TransformOp } from "./transform";
-  import { latest } from "./latest";
+  import { latest, sequence } from "./latest";
   import { api, onProjectsChanged } from "./api";
   import { handOverDeleted } from "./deleted";
   import { changedEdges, changedItems, describeChange, describeFigure, ghostOf } from "./changes";
@@ -569,28 +569,90 @@
    */
   /** The last read of the history went through: `activity` is the log as it is (for `seenTs`, design B). */
   let activityOk = false;
-  /** The last read of the review status succeeded (a failed one reads as "nothing waits"). */
+  /** The last read of the review status succeeded (a failed one keeps the banner as it was, ERR-1903). */
   let reviewRead = true;
-  async function refreshActivity(hold?: () => boolean): Promise<boolean> {
-    try {
-      let reviewFailed = false;
-      const [a, r, rec] = await Promise.all([
-        api.projectActivity(id),
-        api.reviewStatus(id).catch(() => ((reviewFailed = true), null)),
-        api.resultRecalculation(id).catch(() => null),
-      ]);
-      if (hold?.()) return false;
-      reviewRead = !reviewFailed;
-      activity = a;
-      review = r;
-      recalculation = rec;
-      activityOk = true;
-    } catch {
-      activity = [];
-      review = null;
-      recalculation = null;
-      activityOk = false;
+  /**
+   * The reads of history and review can overtake each other (a reload, an
+   * Accept, a review action): only the newest one's answer is shown, so a
+   * slow read of an older version never brings back a banner Accept just
+   * closed (audit 2026-11-24 ERR-1905). An action that changes the review
+   * `bump()`s it before and after its call.
+   */
+  const activityReads = sequence();
+  /** The newest read under way, which an obsolete read waits for, so its caller goes on with the newest state. */
+  let newestActivity: { k: number; run: Promise<boolean> } | null = null;
+  /** The one retry after a failed read (ERR-1903). */
+  let activityRetry: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * `reviewLater`: the job opens without waiting for the review status (two
+   * roof calculations, up to the work bound on a heavy job, HUNT-1903): the
+   * banner comes when it arrives, and `reviewLater` runs then.
+   */
+  type ActivityOptions = { reviewLater?: () => void; retry?: boolean };
+  /** How long after a failed read of history or review it is tried once more, ms. */
+  const ACTIVITY_RETRY_MS = 1500;
+  function refreshActivity(hold?: () => boolean, opts: ActivityOptions = {}): Promise<boolean> {
+    const k = activityReads.next();
+    const run = readActivity(k, hold, opts);
+    newestActivity = { k, run };
+    return run;
+  }
+  async function readActivity(k: number, hold: (() => boolean) | undefined, opts: ActivityOptions): Promise<boolean> {
+    clearTimeout(activityRetry);
+    let reviewFailed = false;
+    let activityFailed = false;
+    const reviewAnswer = api.reviewStatus(id).catch(() => ((reviewFailed = true), null));
+    const [a, rec] = await Promise.all([
+      api.projectActivity(id).catch(() => ((activityFailed = true), [] as ActivityItem[])),
+      api.resultRecalculation(id).then(
+        (r) => ({ r }),
+        () => null,
+      ),
+    ]);
+    const r = opts.reviewLater ? null : await reviewAnswer;
+    if (!activityReads.current(k)) {
+      // A newer read was started (or an action changed the review): its
+      // answer is the one shown; the caller goes on once it is in.
+      const newer = newestActivity && newestActivity.k !== k ? newestActivity.run : null;
+      if (newer) await newer.catch(() => {});
+      return !hold?.();
     }
+    if (hold?.()) return false;
+    // A failed read never replaces what is known: the banner, Accept and
+    // Revert stay, only marked unchecked, and the read is tried once more
+    // (ERR-1903).
+    if (activityFailed) activityOk = false;
+    else {
+      activity = a;
+      activityOk = true;
+    }
+    if (rec) recalculation = rec.r;
+    const retry = () => {
+      if (opts.retry || destroyed) return;
+      clearTimeout(activityRetry);
+      activityRetry = setTimeout(() => {
+        if (!destroyed) void refreshActivity(undefined, { retry: true });
+      }, ACTIVITY_RETRY_MS);
+    };
+    if (opts.reviewLater) {
+      const later = opts.reviewLater;
+      void reviewAnswer.then((late) => {
+        if (destroyed || !activityReads.current(k)) return;
+        if (reviewFailed) {
+          reviewRead = false;
+          retry();
+          return;
+        }
+        reviewRead = true;
+        review = late;
+        later();
+      });
+    } else if (reviewFailed) reviewRead = false;
+    else {
+      reviewRead = true;
+      review = r;
+    }
+    if (activityFailed || (!opts.reviewLater && reviewFailed) || !rec) retry();
     return true;
   }
   /** The newest entry of the history just read, when the read went through. */
@@ -752,6 +814,8 @@
             const base = JSON.parse(lastSaved) as Project;
             swapOutside(base, r.current, merge3(base, $state.snapshot(project) as Project, r.current));
             lastSaved = JSON.stringify(r.current);
+            // The outside save's entries are in the job now (TEST-1905).
+            mergedOutside = true;
             closeStaleDialogs();
             pushHistory();
             recalc();
@@ -1026,7 +1090,35 @@
     else load(false);
   }
 
-  async function load(initial: boolean) {
+  /**
+   * One load at a time: a file event while one runs reads once more after
+   * it, so an older read never lands after a newer one and passes for an
+   * outside save (audit 2026-11-24 ERR-1906), and file events do not pile
+   * up calculating reads (HUNT-1903). As `reloadWanted` does for saves.
+   */
+  let loading: Promise<void> | null = null;
+  let loadAgain = false;
+  /** The newest entry a reload of the unchanged job did not pass `seenTs` over (TEST-1905). */
+  let heldFor: number | null = null;
+  /** A save merged an outside save in: its entries are in the job the editor has (TEST-1905). */
+  let mergedOutside = false;
+  function load(initial: boolean): Promise<void> {
+    if (loading) {
+      if (!initial) loadAgain = true;
+      return loading;
+    }
+    const run = loadOnce(initial).finally(() => {
+      loading = null;
+      if (loadAgain && !destroyed) {
+        loadAgain = false;
+        void load(false);
+      }
+    });
+    loading = run;
+    return run;
+  }
+
+  async function loadOnce(initial: boolean) {
     if (deleted) return;
     if (!initial && drag.active) {
       // An outside save of this job during a drag is read once the drag is
@@ -1067,8 +1159,19 @@
       if (!initial && outsideUnreadable) outsideOver(false);
       if (!initial && outsideNewer) newerOver();
       const json = JSON.stringify(p);
-      // A drag that began while this was read: read again after it.
-      if (!(await refreshActivity(() => destroyed || (!initial && drag.active)))) {
+      // A drag that began while this was read: read again after it. The
+      // job opens without waiting for the review's figures (HUNT-1903):
+      // the banner comes when they are in.
+      const hold = () => destroyed || (!initial && drag.active);
+      const opened = initial
+        ? refreshActivity(hold, {
+            reviewLater: () => {
+              if (pending && !typingInDock()) dock = "ai";
+              void migrateLocalReview();
+            },
+          })
+        : refreshActivity(hold);
+      if (!(await opened)) {
         if (!destroyed) drag.defer("reload", reloadAfterDrag);
         return;
       }
@@ -1087,8 +1190,20 @@
         return;
       }
       if (!initial && json === lastSaved) {
-        // The job the editor has: every entry read is in it (design B).
-        seenTs = newestRead() ?? seenTs;
+        // The job the editor has: every entry read is in it (design B),
+        // except an AI entry logged before its file was written (the store
+        // logs first): the job read is still the one before it. Not passed
+        // over once, so the AI's save that follows comes in as a step the
+        // core undoes (audit 2026-11-24 TEST-1905). A save merged with an
+        // outside one has those entries in it already.
+        const newest = newestRead();
+        const unseenAi = newest !== null && activity.some((a) => a.ts_ms > (seenTs ?? 0) && isAi(a.actor) && !a.undone && !a.created);
+        if (unseenAi && !mergedOutside && heldFor !== newest) heldFor = newest;
+        else {
+          heldFor = null;
+          mergedOutside = false;
+          seenTs = newest ?? seenTs;
+        }
         retryFailedSave();
         return;
       }
@@ -1117,13 +1232,13 @@
       // The AI's entries the editor had not applied before this read (UX-1601, ERR-1702).
       const seenBefore = seenTs;
       seenTs = newestRead() ?? seenTs;
+      heldFor = null;
+      mergedOutside = false;
       pruneEavePitches(project!.parts);
       // A dialog open on a part the outside save removed or changed must not
       // act on whatever part now has its index (ERRU-010).
       if (!initial) closeStaleDialogs();
       if (initial) {
-        await migrateLocalReview();
-        if (destroyed) return;
         history = [snapshot()];
         at = 0;
         historyLen = 1;
@@ -1356,6 +1471,8 @@
   let destroyed = false;
   onDestroy(() => {
     destroyed = true;
+    clearTimeout(activityRetry);
+    activityReads.bump();
     for (const toast of ownToasts) dismiss(toast);
     unlisten?.();
     cutDrag();
@@ -1541,7 +1658,13 @@
         saveGen++;
         const base = lastSaved;
         answerEntry = null;
-        const p = await call().finally(() => saveGen++);
+        // Reads of the review from before the call are of the job before
+        // it: dropped, the read after it is the one shown (ERR-1905).
+        activityReads.bump();
+        const p = await call().finally(() => {
+          saveGen++;
+          activityReads.bump();
+        });
         if (destroyed) return;
         await drag.settled();
         applyCoreAnswer(base, p, answerEntry);
@@ -1598,8 +1721,12 @@
     if (!pending) return;
     const ts = Math.max(seenTs ?? pending.ts_ms, pending.ts_ms);
     const name = project?.name.trim() || id;
+    // A read of the review on its way from before the Accept never brings
+    // the banner back after it (ERR-1905).
+    activityReads.bump();
     try {
       await api.acceptChanges(id, ts);
+      activityReads.bump();
       if (destroyed) return;
       review = null;
       focusChange = null;
@@ -1618,6 +1745,11 @@
     const steps = pendingList.filter((a) => !a.created);
     const createdFirst = !!pendingList[pendingList.length - 1]?.created;
     const shown = steps.length;
+    // The review the banner showed: the core refuses (`revert_stale`) when
+    // it is no longer open, so a banner a slow read brought back after
+    // Accept takes nothing accepted out (ERR-1905).
+    const shownSince = review?.since_ts_ms;
+    let staleReview = false;
     if (all && shown > 1) {
       // Tauri's dialog plugin makes confirm asynchronous: always await it.
       if (!(await confirm(t(createdFirst ? "review.confirmRevertAllCreated" : "review.confirmRevertAll", { n: shown })))) return;
@@ -1646,9 +1778,13 @@
         if (all && oldest) {
           // The review the banner showed (`since_ts_ms`): the core writes the
           // job as the user last settled it, or answers `revert_stale` when
-          // that review is over by now (ADR 0007, ERR-1905). An AI's new job
-          // keeps its creation.
-          const r = review ? await api.revertReview(id, review.since_ts_ms) : await api.revertAll(id, oldest.ts_ms);
+          // that review is over by now (ADR 0007, ERR-1905); the editor then
+          // says so and reads the job again. An AI's new job keeps its creation.
+          const r = await (review ? api.revertReview(id, review.since_ts_ms) : api.revertAll(id, oldest.ts_ms)).catch((e) => {
+            if (shownSince == null || toAppError(e).code !== "revert_stale") throw e;
+            staleReview = true;
+            throw { code: "review_stale", id, detail: toAppError(e).detail };
+          });
           undone = r.undone_ai;
           repaired = !!r.repaired;
           logged = r.entry_ts_ms ?? null;
@@ -1673,6 +1809,9 @@
         else if (entry) info(t("ai.revertedOne", { s: entryWords }));
       },
     );
+    // The review shown is gone (accepted or reverted meanwhile): nothing was
+    // reverted, the note said so; the job and its review are read again.
+    if (staleReview && !destroyed) void load(false);
   }
 
   /**
@@ -3198,6 +3337,18 @@
     if ((tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") && !editorTakesUndo(e.target as HTMLElement, e)) return;
     // A dialog is open: its keys (Escape closes it) must not edit the roof behind it.
     if (document.querySelector('[role="dialog"]')) return;
+    // Corners being placed: Ctrl+Z (and Backspace for a face or line)
+    // removes the last one and nothing else (UX-1902, owner decision 3).
+    const draftKind = drawing ? "walls" : placing === "face" || placing === "line" ? "manual" : null;
+    const onDraft = draftKey(e, draftKind, drawing ? drawing.length : manualDraft.length);
+    if (onDraft) {
+      e.preventDefault();
+      if (onDraft === "drop") {
+        if (drawing) drawing.pop();
+        else manualDraft = manualDraft.slice(0, -1);
+      }
+      return;
+    }
     if (undoKey(e)) {
       e.preventDefault();
       undoKey(e) === "redo" ? redo() : undo();

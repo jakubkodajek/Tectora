@@ -10,6 +10,7 @@
   import Icon from "./Icon.svelte";
   import { api, type ListSummary } from "./api";
   import { exportPreview, stampNow } from "./exportlist";
+  import { sequence } from "./latest";
   import { numberLocale, t } from "./i18n.svelte";
   import { lineName, lineNames } from "./linecodes";
   import { materialName } from "./materials";
@@ -27,19 +28,30 @@
   let copied = $state<"list" | "image" | null>(null);
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 
+  /**
+   * The preview follows the job live (an AI save while the dialog is open):
+   * only the newest preview's answer is shown, so a slow answer of the old
+   * job never replaces the new one (audit 2026-11-24 ERR-1902).
+   */
+  const previews = sequence();
   $effect(() => {
+    const k = previews.next();
     exportPreview($state.snapshot(project) as Project, title, stamp)
       .then((r) => {
+        if (!previews.current(k)) return;
         list = r.list;
         svg = r.svg;
         summary = r.summary ?? null;
+        failed = false;
       })
       .catch((e) => {
+        if (!previews.current(k)) return;
         failed = true;
         notifyError(e, "export");
       });
     return () => clearTimeout(copiedTimer);
   });
+  $effect(() => () => previews.bump());
 
   /** A length or area with the list's decimals, in the UI language. */
   const fix = (v: number) =>

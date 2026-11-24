@@ -82,6 +82,7 @@ const KNOWN = new Set([
   "no_such_change",
   "revert_conflict",
   "revert_stale",
+  "review_stale",
   "revert_out_of_limits",
   "revert_out_of_limits_damaged",
   "revert_outside",

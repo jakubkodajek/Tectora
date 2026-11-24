@@ -366,6 +366,8 @@ export interface CalcResult {
   }[];
   /** Every face added by hand with its area (already in `totals`). */
   manual_faces?: { label: string; pitch_deg: number; area: number }[];
+  /** Warnings that belong to no building (a crossing hand-drawn face in a job without one). */
+  warnings?: RoofWarning[];
   totals: RoofQuantities;
   /** Line lengths by DACAD code (T, F, G, K, O, W). */
   codes: Record<string, number>;

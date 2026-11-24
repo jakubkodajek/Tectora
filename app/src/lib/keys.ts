@@ -79,3 +79,21 @@ export function zoomKey(e: KeyLike): 1.25 | 0.8 | null {
   if (e.key === "-") return 0.8;
   return null;
 }
+
+/**
+ * What a key does while corners are being placed (`draft`: a new
+ * building's walls, or a hand-drawn face's or line's corners, with
+ * `points` placed): Ctrl/⌘+Z removes the last corner, as the bar's button
+ * does, and touches nothing else; Redo does nothing (`ignore`); Backspace
+ * removes a face's or line's last corner (the draw bar takes it for walls).
+ * `null`: the key is not theirs. An undo of an earlier roof edit while the
+ * corners stay would be out of sight (audit 2026-11-24 UX-1902, owner
+ * decision 3).
+ */
+export function draftKey(e: KeyLike, draft: "walls" | "manual" | null, points: number): "drop" | "ignore" | null {
+  if (!draft || points <= 0) return null;
+  const u = undoKey(e);
+  if (u) return u === "undo" ? "drop" : "ignore";
+  if (draft === "manual" && e.key === "Backspace" && !e.ctrlKey && !e.metaKey && !e.altKey) return "drop";
+  return null;
+}
