@@ -45,6 +45,7 @@
   import { transformPart, translation, type TransformMode, type TransformOp } from "./transform";
   import { latest } from "./latest";
   import { api, onProjectsChanged } from "./api";
+  import { handOverDeleted } from "./deleted";
   import { changedEdges, changedItems, describeChange, describeFigure, ghostOf } from "./changes";
   import { wallNotes } from "./wallnotes";
   import { merge3, sameJob } from "./merge";
@@ -249,6 +250,17 @@
   type CoreUndo = { take: number } | { from: number };
   let undoVia: (CoreUndo | undefined)[] = [];
   let redoVia: (number | undefined)[] = [];
+  /**
+   * The newest change-log entry whose effect is in the editor's job: every
+   * Undo / Redo through the core names it, and the core refuses with
+   * `revert_stale` when the log has a newer one (an AI saved during the
+   * press), so a key press never reverts a change the user has not seen
+   * (audit 2026-11-24 ERR-1704, ARCH-1703, design B). Set only where a job
+   * is applied: `load` when it applies the job read or finds it is the one
+   * the editor has, and `applyCoreAnswer`; never by a bare read of the
+   * history (ERR-1702). `null` until the first read.
+   */
+  let seenTs: number | null = null;
   // Last JSON written by us, to tell our own saves from external edits.
   let lastSaved = "";
   /** The jobs folder the job was opened from (see `save`). */
@@ -302,6 +314,19 @@
   }
   /** Saves started so far: a read that a save overtook is stale. */
   let saveGen = 0;
+  /** The last save failed: its code and its error notice (UX-1702). */
+  let failedSave: { code: string; toast: number } | null = null;
+  /**
+   * The file is readable again after a save failed because of it (a newer
+   * Tectora's file, one Tectora cannot read): that save's advice is stale,
+   * so its notice goes and the edits are saved once more (UX-1702).
+   */
+  function retryFailedSave() {
+    if (!failedSave || !["newer_format", "unreadable", "too_many"].includes(failedSave.code)) return;
+    dismiss(failedSave.toast);
+    failedSave = null;
+    if (saveState === "failed") void save();
+  }
   /** Saves run one after another: two from the same base would conflict
       with each other, and the merge would drop the later local value. */
   let saveQueue: Promise<unknown> = Promise.resolve();
@@ -390,6 +415,8 @@
     review ? activity.filter((a) => isAi(a.actor) && (review!.steps ? review!.steps.includes(a.ts_ms) : a.ts_ms >= review!.since_ts_ms)) : [],
   );
   const pending = $derived(pendingList.length ? pendingList[0] : null);
+  /** The steps Revert all takes out: the AI's creation of the job stays (HUNT-1601, ERR-1705). */
+  const revertSteps = $derived(pendingList.filter((a) => !a.created).length);
   // DACAD calculates no roof once a chimney or roof opening is non-convex.
   const nonConvex = $derived(project ? nonConvexOpenings(project) : []);
   /** DACAD's calculation error, if it gave no roof. The non-convex case
@@ -537,8 +564,8 @@
    * `false` (a reload that a drag overtook: the AI's review banner must not
    * appear in the middle of the drag, jobedits.ts rule 7).
    */
-  /** The history was read at least once: `activity` then says which entries the editor knows (UX-1601). */
-  let activityRead = false;
+  /** The last read of the history went through: `activity` is the log as it is (for `seenTs`, design B). */
+  let activityOk = false;
   async function refreshActivity(hold?: () => boolean): Promise<boolean> {
     try {
       const [a, r, rec] = await Promise.all([api.projectActivity(id), api.reviewStatus(id).catch(() => null), api.resultRecalculation(id).catch(() => null)]);
@@ -546,14 +573,17 @@
       activity = a;
       review = r;
       recalculation = rec;
-      activityRead = true;
+      activityOk = true;
     } catch {
       activity = [];
       review = null;
       recalculation = null;
+      activityOk = false;
     }
     return true;
   }
+  /** The newest entry of the history just read, when the read went through. */
+  const newestRead = (): number | null => (activityOk ? activity.reduce((m, a) => Math.max(m, a.ts_ms), 0) : null);
 
   /**
    * After a save: the editor's own saves write no change-log entry, so a
@@ -584,6 +614,16 @@
     const name = project?.name.trim() || id;
     if (!(await asking(async () => await confirm(t("home.confirmDelete", { name }))))) return;
     if (destroyed) return;
+    // An AI step that came in while the question was open is not deleted
+    // with the job unseen: read the review again, and when an AI step
+    // besides the creation waits by now, delete nothing and say so
+    // (UI-1702, design E).
+    await refreshActivity();
+    if (destroyed) return;
+    if (pendingList.some((a) => !a.created)) {
+      info(t("review.deleteChanged"));
+      return;
+    }
     deleted = true;
     clearTimeout(saveTimer);
     try {
@@ -591,12 +631,27 @@
       const gone = await api.deleteProject(id);
       // Gone on purpose: leaving asks about no unsaved edit.
       saveState = "saved";
-      notify({ kind: "info", title: t("home.deleted", { name: gone.name || name }) });
+      // The library says so, with its Restore at once (UX-1703).
+      handOverDeleted(gone, name);
       onback();
+      // The focus goes to the library's list (or its search), not to the page (UI-1702).
+      focusLibrary();
     } catch (e) {
       deleted = false;
       notifyError(e, "delete", name);
+      // A reload an outside save asked for while the delete was out was
+      // dropped (`load` returns while `deleted`): read the job now (HUNT-1706).
+      if (!destroyed) load(false);
     }
+  }
+
+  /** After the editor is left by Delete job: the library's focused row, else its search field. */
+  function focusLibrary(tries = 10) {
+    requestAnimationFrame(() => {
+      const el = document.querySelector<HTMLElement>("tbody tr[tabindex='0'], .search input");
+      if (el) el.focus();
+      else if (tries > 0) focusLibrary(tries - 1);
+    });
   }
 
   /** Accepts done in an older version were kept in this browser only. */
@@ -692,6 +747,7 @@
         // as an external edit and break undo. Not read back from the file: an
         // AI edit saved right after ours would then pass for our own.
         lastSaved = JSON.stringify(await api.normalizeProject(written));
+        failedSave = null;
         // An edit made while this save was running is still unsaved.
         saveState = edits === seq ? "saved" : "dirty";
         // The other program's file the store could not read is gone now.
@@ -704,7 +760,7 @@
       // Keep the edits in memory; the status bar offers to try again.
       saveState = "failed";
       // Named: the notice may outlive the editor (UI-1503).
-      notifyError(e, "save", project?.name.trim() || id);
+      failedSave = { code: toAppError(e).code, toast: notifyError(e, "save", project?.name.trim() || id) };
       return false;
     }
   }
@@ -805,26 +861,48 @@
   }
   const undo = () => afterEdits(undoNow);
   const redo = () => afterEdits(redoNow);
+  /** Runs the next Undo / Redo press queued while a core action was out (UI-1704). */
+  function runQueued() {
+    const next = coreQueue.shift();
+    if (next) (next === "undo" ? undo : redo)();
+  }
 
   function undoNow() {
-    if (at <= 0) return;
+    // A step through the core is out: this press runs after its answer (UI-1704).
+    if (coreStep) {
+      coreQueue.push("undo");
+      return;
+    }
+    if (at <= 0) {
+      coreQueue = [];
+      return;
+    }
     const via = undoVia[at];
     if (via) {
       void stepThroughCore(at - 1, via);
       return;
     }
     const reopen = !drawing && finished && history[at] === finished.step ? finished.corners : null;
-    restore(at - 1);
+    const ok = restore(at - 1);
     if (reopen) {
       selection = null;
       placing = false;
       drawing = reopen.map((p) => ({ ...p }));
       reopened = JSON.stringify(reopen);
     }
+    if (ok) runQueued();
+    else coreQueue = [];
   }
 
   function redoNow() {
-    if (at >= history.length - 1) return;
+    if (coreStep) {
+      coreQueue.push("redo");
+      return;
+    }
+    if (at >= history.length - 1) {
+      coreQueue = [];
+      return;
+    }
     const via = redoVia[at];
     if (via !== undefined) {
       void stepThroughCore(at + 1, { take: via });
@@ -833,49 +911,90 @@
     // Redo of the closed outline: the building comes back, the draw bar goes.
     if (drawing && reopened === JSON.stringify($state.snapshot(drawing))) drawing = null;
     reopened = null;
-    restore(at + 1);
+    if (restore(at + 1)) runQueued();
+    else coreQueue = [];
   }
 
   /**
    * Undo or Redo across a step the core made (`undoVia`, `redoVia`): a
    * review transaction like Revert, whose answer becomes step `to`; the
-   * revert it logged is what the opposite press takes back. `revert_stale`
-   * (another entry came in), `revert_conflict` or `busy`: the notice says
-   * so and the step stays (audit 2026-11-24 UX-1601, design A2 / A3).
+   * revert it logged is what the opposite press takes back. Each press
+   * names the newest entry the editor has applied (`seenTs`): when the log
+   * has a newer one (an AI saved during the press) the core refuses with
+   * `revert_stale`, nothing is undone, the notice says so under the
+   * press's own title and the job is read again, so the AI's save arrives
+   * as a step of its own (audit 2026-11-24 ERR-1704, ARCH-1703, design B).
+   * `revert_conflict` or `busy`: the notice says so and the step stays.
    */
-  function stepThroughCore(to: number, via: CoreUndo) {
+  async function stepThroughCore(to: number, via: CoreUndo) {
     const from = at;
     let entry: number | null = null;
     let repaired = false;
-    return reviewTransaction(
-      "revert",
-      async () => {
-        const r = "take" in via ? await api.takeBackRevert(id, via.take) : await api.revertAll(id, via.from);
-        entry = r.entry_ts_ms ?? null;
-        repaired = !!r.repaired;
-        return r.project;
-      },
-      () => {
-        focusChange = null;
-        if (repaired || outsideUnreadable) outsideOver(repaired);
-      },
-      () => {
-        // The transaction held the editor: nothing moved the history meanwhile.
-        if (at !== from || !history[to]) {
-          pushHistory();
-          return;
-        }
-        history[to] = snapshot();
-        at = to;
-        selection = project ? keptSelection(project, selection) : null;
-        if (to < from) {
-          redoVia[to] = entry ?? undefined;
-        } else {
-          undoVia[to] = entry === null ? undefined : { take: entry };
-        }
-      },
-    );
+    let failed: unknown = undefined;
+    let done = false;
+    const what = to < from ? "undo" : "redo";
+    // Another press (Revert, the put-back) is out: refused with a word, as
+    // a local step is then (UI-1704).
+    if (reviewing.active || reviewPress) {
+      refusedDuringAction();
+      return;
+    }
+    coreStep = true;
+    try {
+      await reviewTransaction(
+        what,
+        async () => {
+          const seen = seenTs ?? 0;
+          try {
+            const r = "take" in via ? await api.takeBackRevert(id, via.take, seen) : await api.revertAll(id, via.from, seen);
+            entry = r.entry_ts_ms ?? null;
+            answerEntry = entry;
+            repaired = !!r.repaired;
+            return r.project;
+          } catch (e) {
+            failed = e;
+            throw e;
+          }
+        },
+        () => {
+          focusChange = null;
+          if (repaired || outsideUnreadable) outsideOver(repaired);
+        },
+        () => {
+          done = true;
+          // The transaction held the editor: nothing moved the history meanwhile.
+          if (at !== from || !history[to]) {
+            pushHistory();
+            return;
+          }
+          history[to] = snapshot();
+          at = to;
+          selection = project ? keptSelection(project, selection) : null;
+          if (to < from) {
+            redoVia[to] = entry ?? undefined;
+          } else {
+            undoVia[to] = entry === null ? undefined : { take: entry };
+          }
+        },
+      );
+    } finally {
+      coreStep = false;
+    }
+    if (destroyed) return;
+    if (!done) {
+      // Refused, failed or not run: the presses made meanwhile are dropped
+      // with it (its notice is the one word on them).
+      coreQueue = [];
+      // The log has an entry the editor has not shown: read it, so the
+      // AI's save comes in as a step of its own and the next press is right.
+      if (failed !== undefined && toAppError(failed).code === "revert_stale") load(false);
+      return;
+    }
+    runQueued();
   }
+  /** A step through the core is out (`stepThroughCore`), and the Undo / Redo presses made meanwhile, in order (UI-1704). */
+  let coreStep = false;
+  let coreQueue: ("undo" | "redo")[] = [];
 
   /**
    * The reload an outside save asked for during a drag, run by the drag
@@ -928,8 +1047,6 @@
       if (!initial && outsideUnreadable) outsideOver(false);
       if (!initial && outsideNewer) newerOver();
       const json = JSON.stringify(p);
-      // The entries known before this read: the AI's new ones made it (UX-1601).
-      const known = activityRead ? new Set(activity.map((a) => a.ts_ms)) : null;
       // A drag that began while this was read: read again after it.
       if (!(await refreshActivity(() => destroyed || (!initial && drag.active)))) {
         if (!destroyed) drag.defer("reload", reloadAfterDrag);
@@ -949,7 +1066,12 @@
         load(false);
         return;
       }
-      if (!initial && json === lastSaved) return;
+      if (!initial && json === lastSaved) {
+        // The job the editor has: every entry read is in it (design B).
+        seenTs = newestRead() ?? seenTs;
+        retryFailedSave();
+        return;
+      }
       if (!initial && drag.active) {
         // An outside save of this job during a drag waits for its end: the
         // drag is the only writer of the job meanwhile (jobedits.ts rule 7).
@@ -972,6 +1094,9 @@
       if (initial) project = next;
       else swapOutside(lastSaved ? (JSON.parse(lastSaved) as Project) : null, p, next);
       lastSaved = json;
+      // The AI's entries the editor had not applied before this read (UX-1601, ERR-1702).
+      const seenBefore = seenTs;
+      seenTs = newestRead() ?? seenTs;
       pruneEavePitches(project!.parts);
       // A dialog open on a part the outside save removed or changed must not
       // act on whatever part now has its index (ERRU-010).
@@ -1003,11 +1128,12 @@
         // Undo of an AI's save is the banner's Revert from its oldest new
         // entry, logged, never an unlogged save of the job before it
         // (UX-1601, design A3).
-        const fresh = known ? activity.filter((a) => !known.has(a.ts_ms) && isAi(a.actor) && !a.undone && !a.created) : [];
+        const fresh = seenBefore !== null && activityOk ? activity.filter((a) => a.ts_ms > seenBefore && isAi(a.actor) && !a.undone && !a.created) : [];
         if (pushHistory() && fresh.length) undoVia[at] = { from: fresh[fresh.length - 1].ts_ms };
         // Not while the user types in the dock: switching the tab would
         // remove the field and the typed text with it (UI-002).
         if (pending && !typingInDock()) dock = "ai";
+        retryFailedSave();
       }
       recalc();
     } catch (e) {
@@ -1233,13 +1359,17 @@
    * ERR-901, which lost or resurrected edits: HUNT-1001, UX-1001, UX-1002,
    * ERR-1004). Edits under way, dialogs and the selection follow their
    * items (`swapOutside`); `base` is the file as last read or written
-   * before the call.
+   * before the call. `entry`: the change-log entry the call logged, now
+   * the newest one the job has (`seenTs`, design B).
    */
-  function applyCoreAnswer(base: string | null, p: Project) {
+  function applyCoreAnswer(base: string | null, p: Project, entry: number | null) {
     swapOutside(base ? (JSON.parse(base) as Project) : null, p, p);
     lastSaved = JSON.stringify(p);
     saveState = "saved";
+    if (entry !== null) seenTs = entry;
   }
+  /** The entry the running review call logged, set by its `call` (`applyCoreAnswer`). */
+  let answerEntry: number | null = null;
 
   /**
    * How long (ms) a press of Revert or the put-back waits for the edits
@@ -1300,7 +1430,7 @@
     pendingEdits.size === 0 && saveState === "saved" && !drag.active && !isTyping(document.activeElement) && questions === 0 && !menu && openModals() === 0;
 
   /** What a press is, for its notices: Revert of several steps has its own (plural) title (UI-1301). */
-  type ReviewPress = "revert" | "revertAll" | "restoreOffer";
+  type ReviewPress = "revert" | "revertAll" | "restoreOffer" | "undo" | "redo";
 
   function reviewTransaction(what: ReviewPress, call: () => Promise<Project>, after: (p: Project) => void | Promise<void>, place?: () => void): Promise<void> {
     if (reviewing.active || reviewPress) return Promise.resolve();
@@ -1381,10 +1511,11 @@
         // (as for the editor's own saves).
         saveGen++;
         const base = lastSaved;
+        answerEntry = null;
         const p = await call().finally(() => saveGen++);
         if (destroyed) return;
         await drag.settled();
-        applyCoreAnswer(base, p);
+        applyCoreAnswer(base, p, answerEntry);
         recalcFor = p.result_snapshot?.taken_ms ?? null;
         // An editor step: Undo brings the job before it back (UI-802), for a
         // revert through the core, logged (`undoVia`, UX-1601).
@@ -1414,7 +1545,15 @@
   function restoreOfferNow(entryTs: number) {
     return reviewTransaction(
       "restoreOffer",
-      () => api.restoreOfferResult(id, entryTs),
+      async () => {
+        const p = await api.restoreOfferResult(id, entryTs);
+        // The put-back's own entry, newest when nothing came after it: the
+        // job the core answered has its effect (`seenTs`, design B).
+        const log = await api.projectActivity(id).catch(() => [] as ActivityItem[]);
+        const own = log[0];
+        if (own && own.restores === entryTs && !isAi(own.actor)) answerEntry = own.ts_ms;
+        return p;
+      },
       () => {},
     );
   }
@@ -1442,10 +1581,15 @@
   async function revertNow(all: boolean, expectTs?: number) {
     // Reverting several AI steps at once is one click next to Accept, and
     // after a reopen it cannot be undone: ask first, naming the steps (UX-011).
-    const shown = pendingList.length;
+    // Revert all goes back to the job as it was right after the AI created
+    // it: the creation itself has no version before it (HUNT-1601), so it
+    // is neither counted nor promised away (ERR-1705).
+    const steps = pendingList.filter((a) => !a.created);
+    const createdFirst = !!pendingList[pendingList.length - 1]?.created;
+    const shown = steps.length;
     if (all && shown > 1) {
       // Tauri's dialog plugin makes confirm asynchronous: always await it.
-      if (!(await confirm(t("review.confirmRevertAll", { n: shown })))) return;
+      if (!(await confirm(t(createdFirst ? "review.confirmRevertAllCreated" : "review.confirmRevertAll", { n: shown })))) return;
     }
     // AI steps that came in after the banner was drawn (while the question
     // was open, while the press waited for the edits before it or for the
@@ -1461,9 +1605,6 @@
     let repaired = false;
     // The revert entry the core logged: Undo takes exactly it back (UX-1601).
     let logged: number | null = null;
-    // Revert all goes back to the job as it was right after the AI created
-    // it: the creation itself has no version before it (HUNT-1601).
-    const steps = pendingList.filter((a) => !a.created);
     // Edits not on disk yet would be lost: the store keeps only the edits in
     // the file, merging the revert onto them (ERR-001); the transaction
     // saves them first.
@@ -1474,17 +1615,18 @@
         if (all && oldest) {
           // From where the core says Revert all starts (`since_ts_ms`: below
           // an AI's revert of accepted work, ERR-1601), or after the creation.
-          const createdFirst = !!pendingList[pendingList.length - 1]?.created;
           const r = await api.revertAll(id, createdFirst || review?.since_ts_ms == null ? oldest.ts_ms : review.since_ts_ms);
           undone = r.undone_ai;
           repaired = !!r.repaired;
           logged = r.entry_ts_ms ?? null;
+          answerEntry = logged;
           return r.project;
         }
         // The latest change is undone only if it still is the entry the button was drawn on (ERR-801).
         const r = await api.revertLastChange(id, expectTs);
         repaired = !!r.repaired;
         logged = r.entry_ts_ms ?? null;
+        answerEntry = logged;
         return r.project;
       },
       () => {
@@ -2973,7 +3115,13 @@
     if (inputClosed() && e.key !== "F3") {
       if (/^F\d+$/.test(e.key)) return;
       e.preventDefault();
-      // A review action takes no key at all: nothing of the user's is replayed after it (design A1).
+      // Undo / Redo pressed while one of them is with the core run after
+      // it, in order (UI-1704, round 18 design B).
+      if (coreStep && undoKey(e)) {
+        coreQueue.push(undoKey(e) === "redo" ? "redo" : "undo");
+        return;
+      }
+      // Any other review action takes no key at all: nothing of the user's is replayed after it (design A1).
       if (!drag.active) return;
       if (dragState === "settling") {
         if (undoKey(e)) undoKey(e) === "redo" ? redo() : undo();
@@ -3141,7 +3289,7 @@
               <!-- The AI created the job and nothing else waits: there is no version to go back to (HUNT-1601). -->
               <button class="btn sm" aria-disabled={reviewBusy} aria-busy={reviewBusy} onclick={() => !reviewBusy && pressBanner(() => reviewAction(deleteJobNow))} aria-label={t("review.deleteJob")} title={t("review.deleteJobHint")} data-testid="review-delete"><Icon name="trash" size={14} /><span class="lbl">{t("review.deleteJob")}</span></button>
             {:else}
-              <button class="btn sm" aria-disabled={reviewBusy} aria-busy={reviewBusy} onclick={() => !reviewBusy && pressBanner(() => revert(true))} aria-label={pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")} title={pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}><Icon name="undo" size={14} /><span class="lbl">{pendingList.length > 1 ? t("review.revertAll") : t("ai.revert")}</span></button>
+              <button class="btn sm" aria-disabled={reviewBusy} aria-busy={reviewBusy} onclick={() => !reviewBusy && pressBanner(() => revert(true))} aria-label={revertSteps > 1 ? t("review.revertAll") : t("ai.revert")} title={revertSteps > 1 ? t("review.revertAll") : t("ai.revert")}><Icon name="undo" size={14} /><span class="lbl">{revertSteps > 1 ? t("review.revertAll") : t("ai.revert")}</span></button>
             {/if}
             <button class="btn sm accept" aria-disabled={reviewBusy} aria-busy={reviewBusy} title={t("review.accept")} onclick={() => !reviewBusy && pressBanner(accept)}><Icon name="check" size={14} />{t("review.accept")}</button>
           </div>
@@ -3309,7 +3457,7 @@
       <span class="opt">{t("status.walls", { n: wallCount, p: project.parts.length })}</span>
       {#if result}<span data-testid="status-area" class:pending={calcPending} aria-busy={calcPending}>{t("res.area")}: <b title={roofState(result) !== "ok" ? t(roofState(result) === "none" ? "res.notCalculated" : "res.calcPartial") : undefined}>{roofState(result) === "none" ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
-      <span class="save">
+      <span class="save" class:failed={!reviewOut && saveState === "failed"}>
         {#if reviewOut}{t(reviewWhat === "restoreOffer" ? "editor.restoringOffer" : "editor.reverting")}{:else if saveState === "saved" && !editsWaiting && outsideUnreadable}<span class="state-text" title={t("editor.outsideState")}>{t("editor.outsideState")}</span>{:else if saveState === "saved" && !editsWaiting && outsideNewer}<span class="state-text" title={t("editor.outsideNewerState")} data-testid="status-newer">{t("editor.outsideNewerState")}</span>{:else if saveState === "saved" && !editsWaiting}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving" || saveState === "saved"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
       </span>
     </footer>
@@ -3637,6 +3785,7 @@
     font-weight: 600;
   }
   .retry {
+    flex-shrink: 0;
     margin-left: 6px;
     padding: 0 8px;
     height: 20px;
@@ -3938,9 +4087,18 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    /* A long state text shrinks with an ellipsis; it never widens the bar (UI-1602). */
+    /* A long state text shrinks with an ellipsis; it never widens the bar
+       (UI-1602). The box itself does not clip: Retry stays whole (UI-1701). */
+    min-width: 0;
+  }
+  /* A failed save: the state and Retry keep their room, the hints beside them give way (UI-1701). */
+  .save.failed {
+    flex-shrink: 0;
+  }
+  .statusbar .opt {
     min-width: 0;
     overflow: hidden;
+    text-overflow: ellipsis;
   }
   .save .state-text {
     min-width: 0;

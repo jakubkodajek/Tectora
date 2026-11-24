@@ -1085,6 +1085,10 @@ const cs: Dict = {
   "folderReq.reason": "Důvod od {by}:",
   "editor.outsideNewer": "Tuto zakázku mezitím uložila novější verze Tectory. Změny provedené zde přes ni nelze uložit.",
   "editor.outsideNewerState": "Uložila novější verze",
+  "err.action.undo": "Krok se nepodařilo vrátit zpět",
+  "err.action.redo": "Krok se nepodařilo zopakovat",
+  "review.deleteChanged": "Zakázka se nesmazala: AI do ní mezitím přidala další krok. Podívejte se na něj a rozhodněte znovu.",
+  "review.confirmRevertAllCreated": "Vrátit kroky AI ({n})? Zakázka se vrátí do stavu, v jakém ji AI založila.",
 };
 
 const sk: Dict = {
@@ -2161,6 +2165,10 @@ const sk: Dict = {
   "folderReq.reason": "Dôvod od {by}:",
   "editor.outsideNewer": "Túto zákazku medzitým uložila novšia verzia Tectory. Zmeny urobené tu cez ňu nemožno uložiť.",
   "editor.outsideNewerState": "Uložila novšia verzia",
+  "err.action.undo": "Krok sa nepodarilo vrátiť späť",
+  "err.action.redo": "Krok sa nepodarilo zopakovať",
+  "review.deleteChanged": "Zákazka sa nezmazala: AI do nej medzitým pridala ďalší krok. Pozrite sa naň a rozhodnite znova.",
+  "review.confirmRevertAllCreated": "Vrátiť kroky AI ({n})? Zákazka sa vráti do stavu, v akom ju AI založila.",
 };
 
 const en: Dict = {
@@ -3237,6 +3245,10 @@ const en: Dict = {
   "folderReq.reason": "Reason given by {by}:",
   "editor.outsideNewer": "A newer Tectora saved this job. Changes made here cannot be saved over it.",
   "editor.outsideNewerState": "Saved by a newer Tectora",
+  "err.action.undo": "Could not undo the step",
+  "err.action.redo": "Could not redo the step",
+  "review.deleteChanged": "The job was not deleted: the AI added another step meanwhile. Look at it and decide again.",
+  "review.confirmRevertAllCreated": "Revert {n} AI steps? The job goes back to how the AI created it.",
 };
 
 const de: Dict = {
@@ -4313,6 +4325,10 @@ const de: Dict = {
   "folderReq.reason": "Begründung von {by}:",
   "editor.outsideNewer": "Eine neuere Tectora-Version hat diesen Auftrag gespeichert. Hier vorgenommene Änderungen können nicht darüber gespeichert werden.",
   "editor.outsideNewerState": "Neuere Version gespeichert",
+  "err.action.undo": "Der Schritt konnte nicht rückgängig gemacht werden",
+  "err.action.redo": "Der Schritt konnte nicht wiederholt werden",
+  "review.deleteChanged": "Der Auftrag wurde nicht gelöscht: Die KI hat inzwischen einen weiteren Schritt hinzugefügt. Sehen Sie ihn an und entscheiden Sie erneut.",
+  "review.confirmRevertAllCreated": "{n} KI-Schritte verwerfen? Der Auftrag wird auf den Stand zurückgesetzt, in dem die KI ihn angelegt hat.",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };
