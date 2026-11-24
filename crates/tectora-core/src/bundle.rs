@@ -668,25 +668,46 @@ fn received_history(bytes: &[u8]) -> Option<(String, u64)> {
             _ => Vec::new(),
         };
     }
-    let last = entries.iter().map(|e| e.ts_ms).max()?;
-    let now = now_ms();
-    if last > now {
-        let shift = last - now;
-        // A revert's and a put-back's link are times of entries of the
-        // same log: moved with them, or the revert would name no entry
-        // (audit 2026-11-23 HUNT-1501). Nothing is dropped: a revert
-        // without its link would read as a change.
-        for e in &mut entries {
-            e.ts_ms = e.ts_ms.saturating_sub(shift);
-            for link in [&mut e.undid_from, &mut e.restores].into_iter().flatten() {
-                *link = link.saturating_sub(shift);
-            }
-        }
+    if entries.is_empty() {
+        return None;
     }
+    let last = order_times(&mut entries, now_ms());
     // Within the bytes a log is read to, as a save trims it; every entry
     // is the sender's, none waits for this user's review.
     let text = crate::store::trim_log(&entries, entries.len(), crate::store::MAX_ACTIVITY_FILE);
-    Some((text, last.min(now)))
+    Some((text, last))
+}
+
+/// Gives the received `entries` (file order) times this computer can
+/// follow, and returns the newest. Times ahead of `now` are moved back by
+/// how far the newest is ahead; then each entry is at least 1 ms later
+/// than the one before, so no two collapse into one time (an entry dated
+/// far ahead moved the others to 0, and a revert then named the wrong
+/// one: audit 2026-11-24 HUNT-1602). A revert's and a put-back's link is
+/// rewritten to the new time of the entry it named (the newest earlier
+/// one of that time, as `revert_range` finds it), or moved like the
+/// times when it names no entry (it dangles and is read by time, audit
+/// 2026-11-23 HUNT-1501, DANGLING). Nothing is dropped.
+fn order_times(entries: &mut [crate::store::ActivityEntry], now: u64) -> u64 {
+    let newest = entries.iter().map(|e| e.ts_ms).max().unwrap_or(0);
+    let shift = newest.saturating_sub(now);
+    let mut new_time: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+    let mut prev: Option<u64> = None;
+    for e in entries.iter_mut() {
+        let old = e.ts_ms;
+        let shifted = old.saturating_sub(shift);
+        let ts = prev.map_or(shifted, |p| shifted.max(p.saturating_add(1)));
+        for link in [&mut e.undid_from, &mut e.restores].into_iter().flatten() {
+            *link = new_time
+                .get(link)
+                .copied()
+                .unwrap_or_else(|| link.saturating_sub(shift));
+        }
+        e.ts_ms = ts;
+        new_time.insert(old, ts);
+        prev = Some(ts);
+    }
+    prev.unwrap_or(0)
 }
 
 /// The library job for a file the user opened (double-click, drag and drop):
@@ -1671,6 +1692,59 @@ mod tests {
         }
         let p = other.revert_last(&got, USER_ACTOR, None).unwrap();
         assert_eq!((p.notes.as_str(), p.job.customer.as_str()), ("", ""));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Audit 2026-11-24 HUNT-1602 (design C): one entry dated far ahead
+    /// (2100) moved every other entry to 0. Now every time is distinct
+    /// and increasing, every link names the entry it named before, and
+    /// "revert the latest change" twice walks two steps back without ever
+    /// putting a change back.
+    #[test]
+    fn a_received_log_with_one_entry_far_ahead_keeps_distinct_times() {
+        use crate::store::USER_ACTOR;
+        let dir = std::env::temp_dir().join(format!("tectora-bundle-far-{}", now_ms()));
+        let store = Store::new(dir.join("lib")).unwrap();
+        let id = sent_with_a_revert(&store);
+        // A3 after the revert of A2, dated 2100-01-01.
+        let mut q = store.load(&id).unwrap();
+        q.job.address = "A3".into();
+        store.save_as(Some(id.clone()), &q, "claude", "A3").unwrap();
+        let sent = store.activity(&id);
+        edit_log(&store, &id, |k, e| {
+            if k == sent.len() - 1 {
+                e.ts_ms = 4_102_444_800_000;
+            }
+        });
+        let named = |log: &[crate::store::ActivityEntry]| -> Vec<Option<String>> {
+            log.iter()
+                .map(|e| {
+                    e.undid_from
+                        .map(|ts| log.iter().rfind(|x| x.ts_ms == ts).unwrap().summary.clone())
+                })
+                .collect()
+        };
+        let before = named(&store.activity(&id));
+        let bundle = dir.join("far.tectorajob");
+        export(&store, &id, &bundle).unwrap();
+        let other = Store::new(dir.join("other")).unwrap();
+        let got = import(&other, &bundle).unwrap();
+        let log = other.activity(&got);
+        assert_eq!(log.len(), sent.len(), "nothing dropped");
+        assert!(log.windows(2).all(|w| w[0].ts_ms < w[1].ts_ms), "{log:#?}");
+        assert!(log.last().unwrap().ts_ms <= now_ms() + log.len() as u64);
+        assert_eq!(named(&log), before, "links name the same entries");
+        // A3 out, then A1 out (A2 stays out): never a change put back.
+        let p = other.revert_last(&got, USER_ACTOR, None).unwrap();
+        assert_eq!(
+            (p.notes.as_str(), p.job.customer.as_str(), p.job.address.as_str()),
+            ("A1", "", "")
+        );
+        let p = other.revert_last(&got, USER_ACTOR, None).unwrap();
+        assert_eq!(
+            (p.notes.as_str(), p.job.customer.as_str(), p.job.address.as_str()),
+            ("", "", "")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

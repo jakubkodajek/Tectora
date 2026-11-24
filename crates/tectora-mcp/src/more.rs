@@ -585,7 +585,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "get_history",
-            "description": "The change log of a design: who changed what and when (ts_ms), newest first, at most the 50 changes a log keeps. `stored_result_recalculation: true` marks Tectora's own recalculation of an offer's stored result while the job's stored result still is that one (restore_offer_result puts the offer's figures back); `restores` on an entry is the ts_ms of the recalculation it put back.",
+            "description": "The change log of a design: who changed what and when (ts_ms), newest first, at most the 50 changes a log keeps. `stored_result_recalculation: true` marks Tectora's own recalculation of an offer's stored result while the job's stored result still is that one (restore_offer_result puts the offer's figures back); `restores` on an entry is the ts_ms of the recalculation it put back. A revert has `kind: \"revert\"` and `undid_from` (the ts_ms of the oldest entry it undid); an entry with `undone: true` is not in the design (a revert that stands undid it; a revert with `undone` was taken back, so its changes stand again); `created: true` marks the entry that created the job (nothing to revert it to); `pending_review` marks the changes that wait for the user's review.",
             "inputSchema": schema(json!({ "id": id }), &["id"]),
         }),
         json!({
@@ -595,7 +595,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "revert_to",
-            "description": "Undo every change of a design made at or after `ts_ms` (from get_history). Refused with `busy` (nothing done, try again in a moment) while another program is saving the job.",
+            "description": "Undo every change of a design made at or after `ts_ms` (from get_history). Given the ts_ms of a revert, it takes that revert back: the changes it undid stand again (and an AI's changes wait for the user's review again). Refused with `busy` (nothing done, try again in a moment) while another program is saving the job.",
             "inputSchema": schema(json!({ "id": id, "ts_ms": { "type": "integer" }, "summary": summary_prop() }), &["id", "ts_ms", "summary"]),
         }),
         json!({
@@ -796,23 +796,39 @@ impl Server {
             "set_roof_options" => self.set_roof_options(args),
             "roof_helper" => self.roof_helper(args),
             "get_history" => self.load(args).map(|(id, _)| {
-                // The steps the banner lists: an AI step the user reverted
-                // by itself waits no more (audit 2026-11-23 UX-1501).
+                // The steps the banner lists: an AI step a standing revert
+                // undid waits no more (audit 2026-11-23 UX-1501). Built
+                // from the history the app shows, with its marks: an entry
+                // with `undone` is not in the design (audit 2026-11-24
+                // ARCH-1602).
                 let steps = self.store.pending_review(&id).map(|r| r.steps).unwrap_or_default();
                 let recalculation = self.store.recalculation(&id).map(|r| r.entry_ts_ms);
                 json!(self
                     .store
-                    .history(&id)
+                    .activity_items(&id)
                     .iter()
-                    .rev()
                     .map(|e| {
-                        let mut v = json!(e.info());
+                        let mut v = json!({
+                            "ts_ms": e.ts_ms,
+                            "actor": e.actor,
+                            "summary": e.summary,
+                            "kind": e.kind,
+                        });
                         v["pending_review"] = json!(steps.contains(&e.ts_ms));
                         if recalculation == Some(e.ts_ms) {
                             v["stored_result_recalculation"] = json!(true);
                         }
                         if let Some(ts) = e.restores {
                             v["restores"] = json!(ts);
+                        }
+                        if let Some(ts) = e.undid_from {
+                            v["undid_from"] = json!(ts);
+                        }
+                        if e.undone {
+                            v["undone"] = json!(true);
+                        }
+                        if e.created {
+                            v["created"] = json!(true);
                         }
                         v
                     })
@@ -3390,6 +3406,56 @@ mod tool_coverage {
             .collect();
         // Newest first: the revert, A3 (reverted), A2, A1, the creation.
         assert_eq!(waiting, [false, false, true, true, false]);
+    }
+
+    /// Audit 2026-11-24 ARCH-1602 (design A4): `get_history` says what is
+    /// in the design as the app's history does: A3, which the user
+    /// reverted, is `undone`, the revert names it by `undid_from`, every
+    /// entry carries `kind` (ARCH-1601) and the creation is `created`.
+    #[test]
+    fn get_history_marks_what_a_revert_undid() {
+        use tectora_core::store::USER_ACTOR;
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let id = s.store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        for (field, value) in [("notes", "A1"), ("customer", "A2"), ("address", "A3")] {
+            call(
+                &mut s,
+                "update_job",
+                json!({ "id": id, field: value, "summary": value }),
+            );
+        }
+        let a3 = s.store.activity(&id)[3].ts_ms;
+        s.store.revert_last(&id, USER_ACTOR, None).unwrap();
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let h = history.as_array().unwrap();
+        assert_eq!(h.len(), 5, "{history}");
+        assert!(h.iter().all(|e| e.get("kind").is_some()), "{history}");
+        assert_eq!(h[0]["kind"], "revert", "{history}");
+        assert_eq!(h[0]["undid_from"], json!(a3), "{history}");
+        assert!(h[0].get("undone").is_none(), "{history}");
+        assert_eq!(h[1]["ts_ms"], json!(a3));
+        assert_eq!(h[1]["undone"], true, "{history}");
+        assert_eq!(h[1]["kind"], Value::Null, "{history}");
+        for e in &h[2..4] {
+            assert!(e.get("undone").is_none(), "{history}");
+        }
+        assert_eq!(h[4]["created"], true, "{history}");
+        assert!(h[..4].iter().all(|e| e.get("created").is_none()));
+        // The revert taken back (MCP `revert_to` with its ts_ms): A3
+        // stands again and waits, the revert is `undone`.
+        let revert = h[0]["ts_ms"].clone();
+        call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": revert, "summary": "Back in" }),
+        );
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let h = history.as_array().unwrap();
+        assert_eq!(h[1]["ts_ms"], revert);
+        assert_eq!(h[1]["undone"], true, "{history}");
+        assert!(h[2].get("undone").is_none(), "{history}");
+        assert_eq!(h[2]["pending_review"], true, "{history}");
     }
 
     fn example(s: &mut Server, example_id: &str) -> String {
