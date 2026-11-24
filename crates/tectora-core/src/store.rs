@@ -3389,6 +3389,12 @@ impl Store {
         let before = match loaded {
             // Refused before anything is logged (see `save`).
             Err(e @ StoreError::NewerFormat { .. }) => return Err(e),
+            // A write with a base changes an existing job: when the user
+            // deleted it meanwhile there is nothing to change, and the job
+            // must not come back under its id while it is in the trash
+            // (audit 2026-11-24 ARCH-1702). Creation with a given id has no
+            // base and is unchanged.
+            Err(e @ StoreError::NotFound(_)) if base.is_some() => return Err(e),
             r => r.ok(),
         };
         if let (Some(base), Some(current)) = (base, before.as_ref())
@@ -10849,6 +10855,35 @@ mod tests {
         let r = store.revert_to_counted(&id, a1, USER_ACTOR, None).unwrap();
         assert_eq!(r.entry_ts_ms, None);
         assert_eq!(store.activity(&id).len(), n);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ARCH-1702 / TEST-1708 (design E): a write with a base is a change of
+    /// an existing job; after a delete there is none, so nothing is
+    /// written or logged, and the deleted job restores under its id.
+    #[test]
+    fn r18_a_write_with_a_base_after_a_delete_is_refused() {
+        let store = temp_store("r18-e");
+        let id = users_job(&store);
+        let base = store.load(&id).unwrap();
+        let mut next = base.clone();
+        next.notes = "AI note".into();
+        let entry = store.delete(&id, USER_ACTOR, "Deleted").unwrap();
+        let e = store
+            .save_as_checked(&id, &next, "claude", "AI note", Some(&base))
+            .unwrap_err();
+        assert_eq!(e.code(), "not_found", "{e}");
+        assert!(!store.path(&id).unwrap().exists(), "no file");
+        assert!(store.activity(&id).is_empty(), "no log");
+        assert!(!store.exists(&id));
+        assert_eq!(store.restore(&entry.entry).unwrap(), id);
+        assert_eq!(store.load(&id).unwrap(), base);
+        // Creation with a given id (no base) is unchanged.
+        let other = format!("{id}-new");
+        assert!(matches!(
+            store.save_as_checked(&other, &next, "claude", "New", None),
+            Ok(CheckedSave::Saved { .. })
+        ));
         let _ = fs::remove_dir_all(&store.dir);
     }
 

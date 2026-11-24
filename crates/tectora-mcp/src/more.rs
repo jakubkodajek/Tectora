@@ -3512,6 +3512,39 @@ mod tool_coverage {
         assert!(listed.to_string().contains(&id), "{listed}");
     }
 
+    /// ARCH-1702 / TEST-1708: the user deletes the job while an MCP write
+    /// is between its read and its save: nothing is written, the AI is
+    /// told the job was deleted, and the job is not back in the library.
+    #[test]
+    fn a_write_raced_by_a_delete_does_not_bring_the_job_back() {
+        use tectora_core::store::USER_ACTOR;
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let id = s.store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        let (_, before) = s.load(&json!({ "id": id })).unwrap();
+        let mut next = before.clone();
+        next.notes = "AI note".into();
+        s.store.delete(&id, USER_ACTOR, "Deleted").unwrap();
+        let e = s
+            .save_onto_current(&id, &before, &next, "AI writes a note")
+            .unwrap_err();
+        assert!(
+            e.contains("no design with id") && e.contains("deleted"),
+            "{e}"
+        );
+        assert!(!s.store.exists(&id));
+        assert!(s.store.activity(&id).is_empty());
+        let listed = call(&mut s, "list_projects", json!({}));
+        assert!(!listed.to_string().contains(&id), "{listed}");
+        let e = s
+            .call_tool(
+                "update_job",
+                &json!({ "id": id, "notes": "again", "summary": "Again" }),
+            )
+            .unwrap_err();
+        assert!(e.contains("no design with id"), "{e}");
+    }
+
     fn example(s: &mut Server, example_id: &str) -> String {
         let r = call(
             s,

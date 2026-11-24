@@ -1532,10 +1532,21 @@ impl Server {
         let mut base = before.clone();
         let mut next = project.clone();
         for _ in 0..5 {
-            match self
+            let saved = self
                 .store
-                .save_as_checked(id, &next, &self.client, summary, Some(&base))?
-            {
+                .save_as_checked(id, &next, &self.client, summary, Some(&base))
+                .map_err(|e| match e {
+                    // The user deleted the job while this change was made:
+                    // nothing is written, the job stays in the trash (audit
+                    // 2026-11-24 ARCH-1702).
+                    StoreError::NotFound(_) => format!(
+                        "no design with id `{id}`: it was deleted in the app while this \
+                         change was made, and nothing was saved. Do not create it again \
+                         unless the user asks; call list_projects to see the ids"
+                    ),
+                    e => e.to_string(),
+                })?;
+            match saved {
                 CheckedSave::Saved { id, .. } => return Ok((id, Some(base), next)),
                 CheckedSave::Conflict { current } => {
                     let value = |p: &Project| serde_json::to_value(p).map_err(|e| e.to_string());

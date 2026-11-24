@@ -197,6 +197,9 @@ The tools cover every operation of the Tectora editor:
 - Deleting: `delete_project` and `remove_file` move the job (with its
   history and files) or the file to the library's trash for 30 days;
   `list_deleted` shows what is there and `restore_project` brings it back.
+  When the user deletes a job while your change to it is being saved, the
+  change is refused with "no design with id …" and nothing is written: the
+  job stays deleted. Do not create it again unless the user asks.
 - Files of a job (the drawings): `attach_file`, `list_files`, `remove_file`.
   Attach the drawing a roof was made from, so the colleague reviewing it has
   it at hand. Only regular files up to 256 MB of a drawing, photo or document
