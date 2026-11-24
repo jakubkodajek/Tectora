@@ -685,7 +685,7 @@ fn received_history(bytes: &[u8]) -> Option<(String, u64)> {
 /// far ahead moved the others to 0, and a revert then named the wrong
 /// one: audit 2026-11-24 HUNT-1602). A revert's and a put-back's link is
 /// rewritten to the new time of the entry it named (the newest earlier
-/// one of that time, as `revert_range` finds it), or moved like the
+/// one of that time, as `revert_ranges` finds it), or moved like the
 /// times when it names no entry (it dangles and is read by time, audit
 /// 2026-11-23 HUNT-1501, DANGLING). Nothing is dropped.
 fn order_times(entries: &mut [crate::store::ActivityEntry], now: u64) -> u64 {
