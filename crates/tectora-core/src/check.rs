@@ -167,7 +167,31 @@ pub enum WarningKind {
     /// faces like this are refused. Reported on the building nearest to
     /// it. `face`: its index in `project.manual_faces`. `value`: 0.
     ManualFaceCrosses,
+    /// Two faces added by hand lie on each other in plan (a face drawn
+    /// twice, one traced inside another): each adds its full area, so the
+    /// plan they share is counted twice (audit 2026-11-24 HUNT-2002).
+    /// Tectora's own check, Jakub's decision 2 of round 21: the areas are
+    /// kept as counted. Reported on the building nearest to the first
+    /// face, at job level without a building. `face`, `other_face`: the
+    /// two faces' indices in `project.manual_faces`. `value`: the plan area
+    /// they share, m².
+    ManualFacesOverlap,
+    /// A face added by hand lies in plan over a calculated roof face: its
+    /// area is added to the roof's. Often meant (a dormer or porch roof
+    /// drawn by hand over the main roof), so only a note (Jakub's decision
+    /// 2 of round 21, HUNT-2002); the areas are kept as counted. Reported
+    /// on the building nearest to the face. `face`: its index. `value`: the
+    /// plan area over the roof, m².
+    ManualFaceOverRoof,
 }
+
+/// Plan area two hand-drawn faces may share (or a hand-drawn face and the
+/// calculated roof) before it is reported, m²: rounding of corners drawn
+/// on each other's edges.
+pub const MANUAL_OVERLAP_TOL: f64 = 0.01;
+/// Share of the smaller face that must be covered before an overlap is
+/// reported (1 %).
+pub const MANUAL_OVERLAP_SHARE: f64 = 0.01;
 
 /// Distance from the plan's origin (along x or y) from which
 /// [`WarningKind::FarFromOrigin`] is reported, m.
@@ -200,6 +224,7 @@ impl WarningKind {
                 | WarningKind::MergedPlanes
                 | WarningKind::WingJoined
                 | WarningKind::FarFromOrigin
+                | WarningKind::ManualFaceOverRoof
         )
     }
 }
@@ -225,6 +250,10 @@ pub struct RoofWarning {
     /// is about.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub face: Option<usize>,
+    /// The second hand-drawn face of a pair
+    /// ([`WarningKind::ManualFacesOverlap`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub other_face: Option<usize>,
 }
 
 impl RoofWarning {
@@ -237,6 +266,7 @@ impl RoofWarning {
             dormer: None,
             item: None,
             face: None,
+            other_face: None,
         }
     }
 }
@@ -253,10 +283,174 @@ impl RoofWarning {
 /// Also the hand-drawn faces whose outline crosses itself
 /// ([`WarningKind::ManualFaceCrosses`]), on the building nearest to the
 /// face's first corner, whether or not a roof was calculated.
+///
+/// And the hand-drawn faces lying on each other
+/// ([`WarningKind::ManualFacesOverlap`]) or over the calculated roof
+/// ([`WarningKind::ManualFaceOverRoof`], a note), on the building nearest
+/// to the (first) face (HUNT-2002). A job without hand-drawn faces gets
+/// none of these three.
 pub fn off_roof(project: &crate::Project, geos: &[RoofGeometry]) -> Vec<(usize, RoofWarning)> {
-    let mut faces = manual_faces_crossing(project, geos);
+    // Each face's crossing test once: it is quadratic in its corners
+    // (audit 2026-11-24 TEST-2006, 500 faces of 500 corners).
+    let crossing: Vec<bool> = project.manual_faces.iter().map(|f| f.crosses()).collect();
+    let mut faces = manual_faces_crossing(project, geos, &crossing);
     let mut out = off_roof_objects(project, geos);
     out.append(&mut faces);
+    if !project.manual_faces.is_empty() {
+        let plans = manual_plans(project, &crossing);
+        let mut found = manual_faces_overlap(&plans);
+        found.append(&mut manual_faces_over_roof(&plans, geos));
+        out.extend(found.into_iter().filter_map(|w| {
+            let at = project.manual_faces.get(w.face?)?.points.first().copied()?;
+            Some((nearest_part(project, geos, at)?, w))
+        }));
+    }
+    out
+}
+
+/// The part (of those with a geometry) whose outline is nearest to `at`.
+fn nearest_part(project: &crate::Project, geos: &[RoofGeometry], at: Point2) -> Option<usize> {
+    let parts = project.parts.len().min(geos.len());
+    (0..parts).min_by(|&a, &b| {
+        crate::engine::outline_distance(&project.parts[a], at)
+            .total_cmp(&crate::engine::outline_distance(&project.parts[b], at))
+    })
+}
+
+/// A hand-drawn face's plan for the overlap checks: polygon, box and plan
+/// area. `None` for a face with fewer than three corners, a corner that is
+/// not a number, or an outline that crosses itself (it has its own
+/// warning, and its plan is no polygon to intersect).
+type ManualPlan = Option<(Polygon<f64>, [f64; 4], f64)>;
+
+/// `crossing`: [`crate::model::ManualFace::crosses`] of each face.
+fn manual_plans(project: &crate::Project, crossing: &[bool]) -> Vec<ManualPlan> {
+    project
+        .manual_faces
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let finite = f.points.iter().all(|p| p.x.is_finite() && p.y.is_finite());
+            if f.points.len() < 3 || !finite || crossing.get(i).copied().unwrap_or(true) {
+                return None;
+            }
+            let area = signed_area(&f.points).abs();
+            (area > 0.0).then(|| (to_geo(&f.points), bbox(&f.points), area))
+        })
+        .collect()
+}
+
+/// How much clipping the hand-drawn face checks may do per calculation, in
+/// corner pairs compared: far beyond any real job (500 faces of 4 corners
+/// on each other are 2 million). A file built to exhaust it (hundreds of
+/// stacked faces of hundreds of corners) gets the overlaps found so far,
+/// never a refused calculation for the sake of a warning (HUNT-2002).
+const MANUAL_CLIP_BUDGET: usize = 50_000_000;
+
+/// Corner pairs one clip of `a` with `b` costs against the budget.
+fn clip_cost(a: &Polygon<f64>, b: &MultiPolygon<f64>) -> usize {
+    let m: usize = b.0.iter().map(|p| p.exterior().0.len()).sum();
+    a.exterior().0.len().saturating_mul(m.max(1))
+}
+
+/// Plan area of `a` ∩ `b`; 0 when the clipper fails on the input.
+fn shared_plan(a: &Polygon<f64>, b: &MultiPolygon<f64>) -> f64 {
+    crate::model::guarded(|| a.intersection(b).unsigned_area())
+        .ok()
+        .filter(|v| v.is_finite())
+        .unwrap_or(0.0)
+}
+
+/// Whether a shared plan area is more than rounding for faces of plan
+/// areas `a` and `b`.
+fn overlaps(shared: f64, a: f64, b: f64) -> bool {
+    shared > MANUAL_OVERLAP_TOL && shared > MANUAL_OVERLAP_SHARE * a.min(b)
+}
+
+/// [`WarningKind::ManualFacesOverlap`]: one warning per pair of hand-drawn
+/// faces lying on each other in plan, on the first face of the pair.
+fn manual_faces_overlap(plans: &[ManualPlan]) -> Vec<RoofWarning> {
+    let mut out = Vec::new();
+    let mut budget = MANUAL_CLIP_BUDGET;
+    for (i, a) in plans.iter().enumerate() {
+        let Some((pa, ba, aa)) = a else { continue };
+        for (j, b) in plans.iter().enumerate().skip(i + 1) {
+            let Some((pb, bb, ab)) = b else { continue };
+            if !boxes_meet(*ba, *bb) {
+                continue;
+            }
+            let other = MultiPolygon::new(vec![pb.clone()]);
+            let Some(left) = budget.checked_sub(clip_cost(pa, &other)) else {
+                return out;
+            };
+            budget = left;
+            let shared = shared_plan(pa, &other);
+            if overlaps(shared, *aa, *ab) {
+                out.push(RoofWarning {
+                    face: Some(i),
+                    other_face: Some(j),
+                    ..RoofWarning::new(WarningKind::ManualFacesOverlap, shared)
+                });
+            }
+        }
+    }
+    out
+}
+
+/// [`WarningKind::ManualFaceOverRoof`]: the hand-drawn faces lying in plan
+/// over the roof faces of the calculated buildings (their own sloped
+/// faces, not dormers, of buildings that calculated).
+fn manual_faces_over_roof(plans: &[ManualPlan], geos: &[RoofGeometry]) -> Vec<RoofWarning> {
+    let roof: Vec<(Polygon<f64>, [f64; 4], f64)> = geos
+        .iter()
+        .filter(|g| g.error.is_none())
+        .flat_map(roof_faces)
+        .map(|f| {
+            let pts = plan(f);
+            (to_geo(&pts), bbox(&pts), signed_area(&pts).abs())
+        })
+        .filter(|(_, _, a)| *a > 0.0 && a.is_finite())
+        .collect();
+    if roof.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut budget = MANUAL_CLIP_BUDGET;
+    for (i, m) in plans.iter().enumerate() {
+        let Some((pm, bm, am)) = m else { continue };
+        let under: Vec<Polygon<f64>> = roof
+            .iter()
+            .filter(|(_, b, _)| boxes_meet(*bm, *b))
+            .map(|(p, _, _)| p.clone())
+            .collect();
+        if under.is_empty() {
+            continue;
+        }
+        // The roof faces under it joined first: faces of joined buildings
+        // (and a dormer's host) may lie on each other.
+        let mut joined = MultiPolygon::new(Vec::new());
+        for p in under {
+            let Some(left) = budget.checked_sub(clip_cost(&p, &joined)) else {
+                return out;
+            };
+            budget = left;
+            let one = MultiPolygon::new(vec![p]);
+            if let Ok(u) = crate::model::guarded(|| joined.union(&one)) {
+                joined = u;
+            }
+        }
+        let Some(left) = budget.checked_sub(clip_cost(pm, &joined)) else {
+            return out;
+        };
+        budget = left;
+        let shared = shared_plan(pm, &joined);
+        if overlaps(shared, *am, *am) {
+            out.push(RoofWarning {
+                face: Some(i),
+                ..RoofWarning::new(WarningKind::ManualFaceOverRoof, shared)
+            });
+        }
+    }
     out
 }
 
@@ -265,13 +459,14 @@ pub fn off_roof(project: &crate::Project, geos: &[RoofGeometry]) -> Vec<(usize, 
 fn manual_faces_crossing(
     project: &crate::Project,
     geos: &[RoofGeometry],
+    crossing: &[bool],
 ) -> Vec<(usize, RoofWarning)> {
     let parts = project.parts.len().min(geos.len());
     project
         .manual_faces
         .iter()
         .enumerate()
-        .filter(|(_, f)| f.crosses())
+        .filter(|(i, _)| crossing.get(*i).copied().unwrap_or(false))
         .filter_map(|(i, f)| {
             let at = f.points[0];
             let part = (0..parts).min_by(|&a, &b| {
@@ -293,20 +488,25 @@ fn manual_faces_crossing(
 /// faces whose outline crosses itself ([`WarningKind::ManualFaceCrosses`])
 /// in a job without a building, which [`off_roof`] has no part to put on
 /// (audit 2026-11-24 ERR-1901). `calc` lists them beside the parts.
+///
+/// Also the hand-drawn faces lying on each other
+/// ([`WarningKind::ManualFacesOverlap`]) in such a job (HUNT-2002).
 pub fn job_warnings(project: &crate::Project, geos: &[RoofGeometry]) -> Vec<RoofWarning> {
-    if project.parts.len().min(geos.len()) > 0 {
+    if project.parts.len().min(geos.len()) > 0 || project.manual_faces.is_empty() {
         return Vec::new();
     }
-    project
-        .manual_faces
+    let crossing: Vec<bool> = project.manual_faces.iter().map(|f| f.crosses()).collect();
+    let mut out: Vec<RoofWarning> = crossing
         .iter()
         .enumerate()
-        .filter(|(_, f)| f.crosses())
+        .filter(|(_, c)| **c)
         .map(|(i, _)| RoofWarning {
             face: Some(i),
             ..RoofWarning::new(WarningKind::ManualFaceCrosses, 0.0)
         })
-        .collect()
+        .collect();
+    out.append(&mut manual_faces_overlap(&manual_plans(project, &crossing)));
+    out
 }
 
 fn off_roof_objects(project: &crate::Project, geos: &[RoofGeometry]) -> Vec<(usize, RoofWarning)> {

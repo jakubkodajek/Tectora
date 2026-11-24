@@ -9,7 +9,7 @@
   import PlaceBar from "./PlaceBar.svelte";
   import { lastStep } from "./drawstep";
   import { stepWall, wallStepKey } from "./wallstep";
-  import { reviewStatusKey, type ReviewPress } from "./reviewstatus";
+  import { acceptTs, reviewStatusKey, type ReviewPress } from "./reviewstatus";
   import { bannerChanges, beforeKey as reviewBeforeKey } from "./reviewbanner";
   import { deleteKeyHint, drawKeyHint, editorTakesUndo, isDrawKey, isMacPlatform, shortcut, undoKey, zoomKey, draftKey } from "./keys";
   import Icon from "./Icon.svelte";
@@ -586,6 +586,10 @@
   let newestActivity: { k: number; run: Promise<boolean> } | null = null;
   /** The one retry after a failed read (ERR-1903). */
   let activityRetry: ReturnType<typeof setTimeout> | undefined;
+  /** The open's `reviewLater`, when its review read failed: run once a later read gets the review (OPENFAIL). */
+  let reviewLaterWaiting: (() => void) | null = null;
+  /** The notice that the review could not be read was shown, since the last read that got it. */
+  let reviewUnreadSaid = false;
   /**
    * `reviewLater`: the job opens without waiting for the review status (two
    * roof calculations, up to the work bound on a heavy job, HUNT-1903): the
@@ -643,17 +647,32 @@
         if (destroyed || !activityReads.current(k)) return;
         if (reviewFailed) {
           reviewRead = false;
+          // The banner and the dock's switch to the AI tab come with the
+          // retry's review (audit 2026-11-24 OPENFAIL).
+          reviewLaterWaiting = later;
           retry();
           return;
         }
         reviewRead = true;
+        reviewUnreadSaid = false;
         review = late;
         later();
       });
-    } else if (reviewFailed) reviewRead = false;
-    else {
+    } else if (reviewFailed) {
+      reviewRead = false;
+      // The retry failed too: whether AI changes wait is not known, so say
+      // so once instead of showing no banner as if none waited (OPENFAIL).
+      if (opts.retry && !reviewUnreadSaid && !destroyed) {
+        reviewUnreadSaid = true;
+        notify({ kind: "warning", title: t("review.unread") });
+      }
+    } else {
       reviewRead = true;
+      reviewUnreadSaid = false;
       review = r;
+      const later = reviewLaterWaiting;
+      reviewLaterWaiting = null;
+      later?.();
     }
     if (activityFailed || (!opts.reviewLater && reviewFailed) || !rec) retry();
     return true;
@@ -1718,11 +1737,13 @@
    * a `busy` answer keeps the AI's changes pending and says so under
    * Accept's own title (ERR-1103). It accepts everything the editor has
    * shown (`seenTs`), also the AI's own reverts that are no listed step,
-   * so one Accept ends the review (audit 2026-11-24 ERR-1801).
+   * so one Accept ends the review (audit 2026-11-24 ERR-1801), and at least
+   * up to the newest step of the review shown (TEST-2012).
    */
   async function acceptNow() {
     if (!pending) return;
-    const ts = Math.max(seenTs ?? pending.ts_ms, pending.ts_ms);
+    // Also up to the newest step the banner's review lists (TEST-2012).
+    const ts = acceptTs(seenTs, pending.ts_ms, review?.steps);
     const name = project?.name.trim() || id;
     // A read of the review on its way from before the Accept never brings
     // the banner back after it (ERR-1905).
@@ -3082,6 +3103,7 @@
     // Another tool ends the footprint being drawn: ask as Escape does (UX-013).
     if (drawing && !(await cancelDraw(true))) return;
     placing = placing === kind ? false : kind;
+    if (placing === "line" || placing === "face") clearSelection();
   }
 
   function setDormer(d: Dormer, at: number) {
@@ -3179,11 +3201,22 @@
     // Already drawing: the Insert key keeps going; the toolbar button
     // (toggle) and the context menu go through cancelDraw, which asks.
     if (drawing) return;
+    clearSelection();
+    placing = false;
+    drawing = [];
+  }
+
+  /**
+   * Picking a drawing tool (Building, Manual face, Roof line) ends the
+   * selection: Delete or Backspace meant for a corner must never remove a
+   * wall or object still selected from before (audit 2026-11-24 UX-2002,
+   * owner decision 6).
+   */
+  function clearSelection() {
     selection = null;
     dormerSel = null;
     openSel = null;
-    placing = false;
-    drawing = [];
+    manualSel = null;
   }
 
   /**
@@ -3341,7 +3374,8 @@
     // A dialog is open: its keys (Escape closes it) must not edit the roof behind it.
     if (document.querySelector('[role="dialog"]')) return;
     // Corners being placed: Ctrl+Z (and Backspace for a face or line)
-    // removes the last one and nothing else (UX-1902, owner decision 3).
+    // removes the last one and nothing else (UX-1902, owner decision 3);
+    // with none left, and for Delete, nothing (UX-2002, decision 6).
     const draftKind = drawing ? "walls" : placing === "face" || placing === "line" ? "manual" : null;
     const onDraft = draftKey(e, draftKind, drawing ? drawing.length : manualDraft.length);
     if (onDraft) {

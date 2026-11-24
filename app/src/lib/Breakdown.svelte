@@ -245,6 +245,8 @@
       </section>
     {/if}
 
+    <!-- No heading without lines (a job of hand-drawn faces only), as in Results (UX-1904, UX-2004). -->
+    {#if data.lines.length}
     <section>
       <h4><span>{t("res.lines")}</span></h4>
       {#each data.lines as g}
@@ -294,6 +296,7 @@
         </details>
       {/each}
     </section>
+    {/if}
 
     <section class="total">
       <h4><span>{t("bd.total")}</span><b>{a2(data.roof_area)}</b></h4>

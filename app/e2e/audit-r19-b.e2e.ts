@@ -363,7 +363,11 @@ test.describe("round 19, HUNT-1805: Restore of a job the AI already brought back
 
   test("Restore pressed after the AI restored the entry says it is no longer in the trash, not that the job is gone (HUNT-1805)", async ({ app, page, mcp }) => {
     const name = "R19 obnoveno AI";
-    const { id, toast, entry } = await deletedFromBanner(app, page, mcp, name);
+    const { id, toast, entry, gone } = await deletedFromBanner(app, page, mcp, name);
+    // The bridge has seen the file gone, so the restore below is an event of
+    // its own (TEST-1904), and the wait started in deletedFromBanner ends
+    // inside this test (audit 2026-11-24 TEST-2003).
+    await gone;
     // The library's trash read is held, so the notice is still there when the user presses.
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
@@ -386,9 +390,26 @@ test.describe("round 19, HUNT-1805: Restore of a job the AI already brought back
   test("the delete notice goes by itself once the AI has restored its entry (HUNT-1805)", async ({ app, page, mcp }) => {
     const name = "R19 obnoveno samo";
     const { toast, entry, gone } = await deletedFromBanner(app, page, mcp, name);
+    // The pointer on the notice keeps it open: it may only go by the trash read.
+    await toast.hover();
     await gone;
+    // The trash read is held: the notice goes with the trash read that no
+    // longer lists its entry, not before (audit 2026-11-24 TEST-2010, Z14).
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let held = 0;
+    await page.route("**/list_deleted", async (route) => {
+      const res = await route.fetch();
+      held++;
+      await gate;
+      await route.fulfill({ response: res }).catch(() => {});
+    });
     await mcp.call("restore_project", { entry, summary: "Zakázka zpět" });
     await expect(page.getByRole("row").filter({ hasText: name })).toHaveCount(1);
+    await expect.poll(() => held, { timeout: 10_000 }).toBeGreaterThan(0);
+    await expect(toast).toHaveCount(1);
+    release();
     await expect(toast).toHaveCount(0);
+    await page.unroute("**/list_deleted");
   });
 });

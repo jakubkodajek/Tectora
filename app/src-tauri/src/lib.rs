@@ -819,44 +819,38 @@ fn face_to_part(
 
 /// Where a dormer, chimney, roof window or opening sits on its roof face
 /// (`tectora_core::edit::position::placement`): the dormer window asks it
-/// for the dormer being edited. Calculates the roof, so guarded like `calc`.
+/// for the dormer being edited. Calculates the roof, so bounded and guarded
+/// like `calc` (`tectora_core::commands::item_placement`, HUNT-2001).
 #[tauri::command(async)]
 fn item_placement(
     project: Project,
     kind: tectora_core::edit::transform::ItemKind,
     index: usize,
 ) -> CmdResult<Option<tectora_core::edit::position::Placement>> {
-    guard(|| {
-        project
-            .check_input()
-            .map_err(|e| AppError::new(e.code).detail(e.message))?;
-        let it = tectora_core::edit::transform::ItemRef { kind, index };
-        Ok(tectora_core::edit::position::placement(&project, it))
-    })
+    let it = tectora_core::edit::transform::ItemRef { kind, index };
+    guard(|| Ok(commands::item_placement(&project, it)?))
 }
 
 /// The editor's dimension fields of a dormer, chimney, roof window or
 /// opening: moves it to `from_eave` (along the slope) and `from_left` or
 /// `from_right` on its roof face (`tectora_core::edit::position::place`, the
-/// MCP tool place_item). Calculates the roof, so off the main thread and
-/// guarded like `calc`.
+/// MCP tool place_item). Calculates the roof, so off the main thread,
+/// bounded and guarded like `calc` (`tectora_core::commands::place_item`,
+/// HUNT-2001).
 #[tauri::command(async)]
 fn place_item(
-    mut project: Project,
+    project: Project,
     kind: tectora_core::edit::transform::ItemKind,
     index: usize,
     from_eave: Option<f64>,
     from_left: Option<f64>,
     from_right: Option<f64>,
 ) -> CmdResult<Project> {
+    let it = tectora_core::edit::transform::ItemRef { kind, index };
     guard(|| {
-        project
-            .check_input()
-            .map_err(|e| AppError::new(e.code).detail(e.message))?;
-        let it = tectora_core::edit::transform::ItemRef { kind, index };
-        tectora_core::edit::position::place(&mut project, it, from_eave, from_left, from_right)
-            .map_err(|d| AppError::new("refused").detail(d))?;
-        Ok(project)
+        Ok(commands::place_item(
+            &project, it, from_eave, from_left, from_right,
+        )?)
     })
 }
 

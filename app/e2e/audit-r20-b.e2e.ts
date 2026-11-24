@@ -95,13 +95,24 @@ test.describe("round 20, design 2: an older answer never replaces a newer one", 
       armed = false;
       return true;
     });
+    const loads = timeline(page, "load_project");
     await mcp.call("update_job", { id, customer: "AI jedna", summary: "Zákazník od AI" });
     await expect.poll(() => held.held(), { timeout: 10_000 }).toBe(1);
+    const sentBefore = loads.sent.length;
     await mcp.call("update_edges", { id, changes: [{ all: true, pitch_deg: 25 }], summary: "Sklon 25°" });
+    // Single flight (audit 2026-11-24 TEST-2004, the test reviewer's
+    // r21-load): two event polls after the second save are answered and no
+    // second load_project went out while the first is held.
+    for (let i = 0; i < 2; i++) await page.waitForResponse((r) => r.url().includes("__events"), { timeout: 10_000 });
+    expect(loads.sent.length, "no second load_project while the first is out").toBe(sentBefore);
     held.release();
-    // The newer job, and it stays: no older read lands after it.
+    // The coalesced read goes out once the first is in.
+    await expect.poll(() => loads.sent.length, { timeout: 10_000 }).toBeGreaterThan(sentBefore);
+    // The newer job, and it stays: every read sent has been answered and
+    // applied, and no older one landed after it (no fixed wait).
     await expect(statusArea(page)).toContainText("129,10", { timeout: 15_000 });
-    await page.waitForTimeout(1500);
+    await expect.poll(() => loads.answered.length >= loads.sent.length, { timeout: 15_000 }).toBe(true);
+    await frame(page);
     await expect(statusArea(page)).toContainText("129,10");
     await app.saved();
     const p = await loadProject(id);
@@ -143,11 +154,20 @@ test.describe("round 20, design 2: an older answer never replaces a newer one", 
     await expect(review(page).locator("button.accept")).toBeVisible();
     // The retry is out (held) when the user accepts.
     await expect.poll(() => retried, { timeout: 10_000 }).toBe(1);
+    // From now on the editor hears of no file change, so no newer read than
+    // the editor's own after Accept can hide a held read applied late
+    // (audit 2026-11-24 TEST-2007 U10, verifier note U09).
+    await page.route("**/__events", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: [] }) }));
+    await page.waitForResponse((r) => r.url().includes("__events"));
+    const reads = timeline(page, "review_status");
     await review(page).locator("button.accept").click();
     await expect(review(page)).toHaveCount(0);
     expect((await mcp.call("get_review", { id })).pending).toBeNull();
+    // The editor's own read after Accept is in; then the held one is let go.
+    await expect.poll(() => reads.answered.length, { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
     open();
-    await page.waitForTimeout(800);
+    await expect.poll(() => reads.answered.length, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+    await frame(page);
     await expect(review(page)).toHaveCount(0);
     const p = await loadProject(id);
     expect([p.notes, p.job.customer]).toEqual(["A1", "A2"]);
@@ -289,6 +309,30 @@ async function clickLandsIn(page: Page, field: import("@playwright/test").Locato
   return focused ? "ok" : `covered by ${hit}`;
 }
 
+/**
+ * The controls of a bar's scrolled strip (`.line > .row`) that something
+ * else lies over at their centre, each scrolled into view first (audit
+ * 2026-11-24 TEST-2008: every field, select and button, not two of them).
+ */
+async function coveredControls(page: Page, bar: import("@playwright/test").Locator): Promise<string[]> {
+  const controls = bar.locator(".line > .row").locator("input, select, button");
+  const n = await controls.count();
+  expect(n, "the strip's controls").toBeGreaterThan(3);
+  const bad: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const c = controls.nth(i);
+    if (!(await c.isVisible())) continue;
+    await c.scrollIntoViewIfNeeded();
+    const hit = await c.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return at && (el === at || el.contains(at) || (el as HTMLInputElement).labels?.[0]?.contains(at)) ? "" : `${el.tagName}[${el.getAttribute("aria-label") ?? el.textContent?.trim()}] under ${at?.tagName}.${at?.className}`;
+    });
+    if (hit) bad.push(hit);
+  }
+  return bad;
+}
+
 test.describe("round 20, UI-1901: More never lies over a field at 600x420", () => {
   for (const locale of LOCALES) {
     test(`the wall bar's fields and the gable dormer's pitch take a real click at 600x420 (UI-1901, ${locale})`, async ({ app, page }) => {
@@ -303,6 +347,8 @@ test.describe("round 20, UI-1901: More never lies over a field at 600x420", () =
         const field = wall.getByLabel(tr(locale as Locale, key));
         expect(await clickLandsIn(page, field), `${locale} ${key}`).toBe("ok");
       }
+      // Every control of the strip, the last one before More too (TEST-2008).
+      expect(await coveredControls(page, wall), locale).toEqual([]);
       // The scrolled strip and More side by side: More is not inside the strip.
       const inside = await wall.getByTestId("def-more").evaluate((b) => !!b.closest(".row"));
       expect(inside).toBe(false);
@@ -321,6 +367,7 @@ test.describe("round 20, UI-1901: More never lies over a field at 600x420", () =
       await expect(db.getByTestId("dormer-more")).toBeVisible();
       const field = db.getByLabel(tr(locale as Locale, "edge.pitch"));
       expect(await clickLandsIn(page, field), `${locale} dormer pitch`).toBe("ok");
+      expect(await coveredControls(page, db), locale).toEqual([]);
       const inside = await db.getByTestId("dormer-more").evaluate((b) => !!b.closest(".row"));
       expect(inside).toBe(false);
     });

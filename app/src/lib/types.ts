@@ -313,8 +313,10 @@ export interface RoofWarning {
     | "inside_another"
     | "hidden_under_neighbour"
     | "uncovered_plan"
-    | "manual_face_crosses";
-  /** m outside, m² overlapping, the relative area difference, m² below zero (cut_exceeds_face), m higher (plane_over_wall), m apart (merged_planes), m counted twice (doubled_line), m from the origin (far_from_origin), pairs (objects_overlap), m above the roof (dormer_above_roof), m² hidden (hidden_under_neighbour), m² without roof (uncovered_plan), else 0. */
+    | "manual_face_crosses"
+    | "manual_faces_overlap"
+    | "manual_face_over_roof";
+  /** m outside, m² overlapping, the relative area difference, m² below zero (cut_exceeds_face), m higher (plane_over_wall), m apart (merged_planes), m counted twice (doubled_line), m from the origin (far_from_origin), pairs (objects_overlap), m above the roof (dormer_above_roof), m² hidden (hidden_under_neighbour), m² without roof (uncovered_plan), m² of plan shared (manual_faces_overlap) or over the roof (manual_face_over_roof), else 0. */
   value: number;
   /** merged_walls: the edge whose pitch is used, then the edge whose pitch and breaks are ignored; plane_over_wall, merged_planes: the outer wall, then the inner wall; wing_joined: the wing's walls; cut_exceeds_face: the walls of the faces. */
   edges?: number[];
@@ -322,8 +324,10 @@ export interface RoofWarning {
   dormer?: number;
   /** window_off_roof, chimney_off_roof, opening_off_roof: the object's index in its list. */
   item?: number;
-  /** manual_face_crosses: the hand-drawn face's index in `manual_faces`. */
+  /** manual_face_crosses, manual_faces_overlap, manual_face_over_roof: the hand-drawn face's index in `manual_faces`. */
   face?: number;
+  /** manual_faces_overlap: the second hand-drawn face of the pair. */
+  other_face?: number;
 }
 
 /**

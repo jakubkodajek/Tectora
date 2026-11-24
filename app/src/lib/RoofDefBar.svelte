@@ -278,7 +278,7 @@
         {#if onstandard}<button class="btn sm" onclick={onstandard}><Icon name="house" size={15} />{t("tool.standard")}</button>{/if}
         <p class="tip empty" data-testid="empty-tip">{t("editor.empty")}</p>
       {:else}
-        <p class="tip">{t("editor.tip")}</p>
+        <p class="tip" data-testid="def-tip">{t("editor.tip")}</p>
       {/if}
     {/if}
   </div>
@@ -640,8 +640,10 @@
     font-size: 13px;
     color: var(--text-2);
   }
-  /* The empty job's tip takes the room that is left and wraps in it. */
-  .row > .tip.empty {
+  /* A tip (the empty job's, and the one with no wall selected) takes the
+     room that is left and wraps in it, never cut mid-word in the strip
+     (UI-303, audit 2026-11-24 UI-2001). */
+  .row > .tip {
     flex: 1 1 0;
     min-width: 120px;
     line-height: 1.25;

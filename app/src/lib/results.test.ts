@@ -132,9 +132,11 @@ describe("warningText for every kind", () => {
     hidden_under_neighbour: { kind: "hidden_under_neighbour", value: 2.4 },
     uncovered_plan: { kind: "uncovered_plan", value: 15.3 },
     manual_face_crosses: { kind: "manual_face_crosses", value: 0, face: 1 },
+    manual_faces_overlap: { kind: "manual_faces_overlap", value: 36, face: 0, other_face: 2 },
+    manual_face_over_roof: { kind: "manual_face_over_roof", value: 8.25, face: 1 },
   };
-  it("gives a filled-in sentence for all 23 kinds in all four languages (TEST-003)", () => {
-    expect(Object.keys(every)).toHaveLength(23);
+  it("gives a filled-in sentence for all 25 kinds in all four languages (TEST-003)", () => {
+    expect(Object.keys(every)).toHaveLength(25);
     for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
       i18n.locale = locale;
       for (const w of Object.values(every)) {
@@ -151,6 +153,18 @@ describe("warningText for every kind", () => {
     for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
       i18n.locale = locale;
       expect(warningText(every.manual_face_crosses), locale).toContain(" 2 ");
+    }
+    i18n.locale = "cs";
+  });
+  it("names both hand-drawn faces lying on each other and the shared area (HUNT-2002)", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const both = warningText(every.manual_faces_overlap);
+      expect(both, locale).toMatch(/ 1 .* 3 /);
+      expect(both, locale).toContain("36");
+      const over = warningText(every.manual_face_over_roof);
+      expect(over, locale).toContain(" 2 ");
+      expect(over, locale).toMatch(/8[,.]25/);
     }
     i18n.locale = "cs";
   });
@@ -337,5 +351,14 @@ describe("a job of hand-drawn faces only (audit 2026-11-24 UX-1904, ERR-1901)", 
     expect(w[0].part).toBeNull();
     expect(w[0].text).toContain(" 1 ");
     expect(resultWarnings(null)).toEqual([]);
+  });
+
+  it("marks the Results tab for a warning that belongs to no building, not for a notice (UI-2002)", () => {
+    expect(hasRoofWarning(facesOnly)).toBe(true);
+    const overlap = { ...facesOnly, warnings: [{ kind: "manual_faces_overlap", value: 36, face: 0, other_face: 1 }] } as unknown as CalcResult;
+    expect(hasRoofWarning(overlap)).toBe(true);
+    const notice = { ...facesOnly, warnings: [{ kind: "far_from_origin", value: 3000 }] } as unknown as CalcResult;
+    expect(hasRoofWarning(notice)).toBe(false);
+    expect(hasRoofWarning({ ...facesOnly, warnings: undefined } as unknown as CalcResult)).toBe(false);
   });
 });
