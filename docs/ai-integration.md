@@ -132,37 +132,50 @@ stay a `folder_request` the user allows or keeps.
 - The changes are computed per item (`tectora_core::diff`): one entry per
   dormer, chimney, window, opening, hand-drawn line or face (`item` index),
   plus flat roof, material names, wall material and the stored result.
-- Accept / Revert all act on every pending step at once. The user's Revert
+- Accept / Revert all act on the whole review at once. The user's Revert
   of one step in the AI tab takes only that step out of the review; the
   others still wait (`PendingReview.steps`, owner decision of round 16). The review state is
   kept in the library (`.activity/<id>.review.json`), so it survives a restart
   and the agent can read it with `get_review`; only the user accepts.
   The AI tab keeps the full history.
-- **One rule for the review** (audit 2026-11-24, round 17 design A). The
-  change log is the only record of what is in the job: an AI change waits
-  for review exactly while it **stands** (after the last Accept, and no
-  revert that stands undid it, `undone_by`). The banner, the AI tab's
-  marks, the library's AI mark (`changed_by_ai`, the newest change that
-  stands), MCP `get_review` / `get_history` / `list_projects by_ai` and
-  Revert all's `undone_ai` all use that one predicate (`store::waits`). An
-  AI's own revert inside the review is bookkeeping, no step: when the AI
-  took everything back the banner closes by itself (owner decision 1 of
-  round 17). A revert is read by **what it did** (`store::revert_effect`,
-  round 18 design A): the changes it took out (they stood just before it)
-  and the ones it put back. An AI's revert whose effect touches anything
-  below the last Accept is a step: its revert of accepted work, and its
-  take-back of the user's revert of accepted work, which puts that change
-  back (ARCH-1701, owner decision 1 of round 18). Revert all then starts at
-  the oldest change after the Accept that the step took out, else at the
-  step itself (`since_ts_ms`), so it never brings a covered AI step back
-  and takes out what the step put back. The library's AI mark is the
-  newest waiting step while a review is open (HUNT-1702), else the newest
-  change that stands. A Revert that finds the file already as before still
-  logs its entry when a change in its range still stands (the user typed
-  the old value back, the AI set and reset it), so the review ends
-  (ERR-1701, design D); only a revert that changes neither the file nor the
-  log writes nothing and says "nothing to revert". Logs longer than 1000
-  entries (another program wrote them) keep the round-17 rule by range.
+- **The review by the job's version** (audit 2026-11-24 round 19 design A,
+  ADR 0006, replacing the per-entry rules of rounds 17 and 18). Every
+  logged entry leaves the job in a *version* (`store::versions`): a change
+  makes a new one, a revert of `log[u..]` goes back to the version that
+  stood just before `log[u]`, the user's put-back of the offer's figures
+  keeps the version. The user **settles** the job, its version and every
+  version it was made from: by Accept (the newest entry at or before the
+  accepted time), by their own change, by their own revert that lands on a
+  version already settled, and Tectora's own recalculation settles it; an
+  AI's entry never settles anything. The review starts at the entry after
+  the last settling one; its *baseline* is the version before that entry.
+  **A review is open exactly while the job's version is not the baseline
+  because of the AI** (`store::review_of`, one forward walk). Revert all
+  reverts from that first entry (`since_ts_ms`, which may be an AI's revert
+  that is no listed step) as one logged revert and lands on the baseline,
+  so it always ends the review and never takes accepted work out. Accept
+  marks the newest entry the editor has shown (`seenTs`), so one Accept
+  ends the review. The steps are for display only: the AI's changes in the
+  job's version that no settled version has; the newest AI revert when
+  settled work was taken out or put back; else the newest AI entry. The
+  banner, the AI tab, MCP `get_review` / `get_history`, the library's AI
+  mark (the newest step while a review is open, else the newest change
+  that stands, `changed_by_ai`) and `list_projects by_ai` read the one
+  function. Visible consequences: the AI taking a change out and putting it
+  back exactly (or the reverse) leaves no banner; the user's own Undo that
+  brings back an AI change they never accepted (one the sender of a bundle
+  had reverted) opens it. A Revert that finds the file already as before is
+  still logged when it moves the version (the user typed the old value
+  back), so the review ends (ERR-1701); only a revert that changes neither
+  the file nor the version writes nothing and says "nothing to revert".
+  What every revert covers is read in one forward walk of the log (a map of
+  times, a binary search in time order, a scan with a budget out of order:
+  ARCH-1801), so a long foreign log costs linear work; nothing in the file
+  format or `.review.json` changed.
+- **A received job names the sender** (UX-1801). Importing a bundle renames
+  the sender's own entries to `user (received)` (shown as "Sender") like
+  the engine's to `tectora (received)`: they keep their kinds (revert,
+  put-back) but are never this user's decision.
 - **A deleted job stays deleted** (ARCH-1702, design E). A write that
   carries a base (every MCP change, `save_as_checked`) is a change of an
   existing job: when the file is gone it answers `not_found` and writes

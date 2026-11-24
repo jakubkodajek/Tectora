@@ -85,12 +85,15 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    damaged; tell the user). A revert answer with
    `replaced_unreadable_file` replaced a file another program had made
    unreadable: tell the user. In `get_history` an entry with
-   `undone: true` is not in the design; your change waits for the user's
-   review while it stands, so reverting your own change leaves nothing to
-   review, and a Ctrl+Z of the user's Revert in the app makes your changes
-   wait again. Putting back a change the user reverted (`revert_to` with
-   the user's revert) waits for review like a new change; `took_out` and
-   `put_back` in `get_history` say what a revert did. A write answered
+   `undone: true` is not in the design. A review is open exactly while the
+   design differs, because of you, from the state the user last settled
+   (Accept, their own change or revert): putting the design back exactly
+   as the user left it leaves nothing to review, and a Ctrl+Z of the
+   user's Revert in the app makes your changes wait again. Putting back a
+   change the user reverted (`revert_to` with the user's revert) waits for
+   review like a new change; `took_out` and `put_back` in `get_history` say
+   what a revert did. `since_ts_ms` in `get_review` is where the user's
+   Revert all starts and may be an entry that is no listed step. A write answered
    with "no design with id …" after the user deleted the job saved
    nothing: do not create the job again unless the user asks. Word every
    `summary` as what you did, in your own words: one that starts like
