@@ -10955,4 +10955,71 @@ mod tests {
         assert!(json.get("took_out").is_none(), "{json}");
         let _ = fs::remove_dir_all(&store.dir);
     }
+
+    /// TEST-1704: Undo of the user's Revert must take back exactly that
+    /// revert. When an AI's revert came in after it (also a revert, also
+    /// the newest entry), the take-back is stale and nothing is written;
+    /// it must never take back the AI's revert instead.
+    #[test]
+    fn t1801_a_take_back_names_its_revert_even_when_the_newest_is_another_revert() {
+        let store = temp_store("t1801");
+        let id = users_job(&store);
+        ai_change(&store, &id, 1);
+        let a2 = ai_change(&store, &id, 2);
+        store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(a2))
+            .unwrap();
+        let user_revert = store.activity(&id).last().unwrap().ts_ms;
+        // The AI reverts its A1 meanwhile: the newest entry is a revert too.
+        store.revert_last(&id, "claude", Some("oops")).unwrap();
+        let file = fs::read(store.path(&id).unwrap()).unwrap();
+        let n = store.activity(&id).len();
+        let e = store
+            .take_back_revert(&id, user_revert, USER_ACTOR)
+            .unwrap_err();
+        assert_eq!(e.code(), "revert_stale", "{e}");
+        assert_eq!(fs::read(store.path(&id).unwrap()).unwrap(), file);
+        assert_eq!(store.activity(&id).len(), n);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// TEST-1705: A, B, the user's revert of B, C, then a revert from B
+    /// again (B and C out). The revert of B was swallowed by a revert from
+    /// the same entry, not taken back: B is still out, so the revert of B
+    /// is not marked undone (design A4, the `u > own` boundary).
+    #[test]
+    fn t1802_a_revert_swallowed_by_one_from_the_same_entry_is_not_marked_undone() {
+        let store = temp_store("t1802");
+        let id = users_job(&store);
+        ai_change(&store, &id, 1);
+        let b = ai_change(&store, &id, 2);
+        store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(b))
+            .unwrap();
+        let rb = store.activity(&id).last().unwrap().ts_ms;
+        let c = ai_change(&store, &id, 3);
+        store.revert_to(&id, b, USER_ACTOR, None).unwrap();
+        assert_eq!(store.load(&id).unwrap().job.address, "", "B still out");
+        let items = store.activity_items(&id);
+        let mark = |ts: u64| items.iter().find(|x| x.ts_ms == ts).unwrap().undone;
+        assert!(mark(b) && mark(c));
+        assert!(!mark(rb), "B is still out: its revert was not taken back");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// TEST-1707 (R15): the answer of "revert the latest change" names the
+    /// entry it logged, the one the app's Undo then takes back.
+    #[test]
+    fn t1803_revert_last_reports_the_entry_it_logged() {
+        let store = temp_store("t1803");
+        let id = users_job(&store);
+        let a1 = ai_change(&store, &id, 1);
+        let r = store
+            .revert_last_reported(&id, USER_ACTOR, None, Some(a1))
+            .unwrap();
+        let last = store.activity(&id).last().unwrap().clone();
+        assert_eq!(r.entry_ts_ms, Some(last.ts_ms));
+        assert_eq!(last.undid_from, Some(a1));
+        let _ = fs::remove_dir_all(&store.dir);
+    }
 }

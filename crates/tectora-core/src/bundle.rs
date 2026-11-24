@@ -1756,6 +1756,66 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// TEST-1707 (B03): a received log dated ahead whose last revert names
+    /// no entry (its link lies between two entries) is moved back with its
+    /// link: the link stays at or before the revert's own new time and
+    /// still covers only the entry after it, so "revert the latest change"
+    /// undoes the change before that one.
+    #[test]
+    fn a_received_dangling_link_dated_ahead_is_moved_back_with_the_log() {
+        use crate::store::USER_ACTOR;
+        let dir = std::env::temp_dir().join(format!("tectora-bundle-dangling-ahead-{}", now_ms()));
+        let store = Store::new(dir.join("lib")).unwrap();
+        let id = sent_with_a_revert(&store);
+        // A3 (the address) and the user's revert of it.
+        let mut q = store.load(&id).unwrap();
+        q.job.address = "A3".into();
+        store.save_as(Some(id.clone()), &q, "claude", "A3").unwrap();
+        store.revert_last(&id, USER_ACTOR, None).unwrap();
+        let sent = store.activity(&id);
+        let n = sent.len();
+        let a3 = sent[n - 2].ts_ms;
+        const DAY: u64 = 24 * 3600 * 1000;
+        // Everything a day ahead; the last revert names a time just before
+        // A3 that no entry has.
+        edit_log(&store, &id, |k, e| {
+            e.ts_ms += DAY;
+            if k == n - 2 {
+                e.ts_ms += 10;
+            }
+            if k == n - 1 {
+                e.ts_ms += 20;
+                e.undid_from = Some(a3 + DAY + 9);
+            } else if let Some(t) = e.undid_from.as_mut() {
+                *t += DAY;
+            }
+        });
+        let bundle = dir.join("dangling-ahead.tectorajob");
+        export(&store, &id, &bundle).unwrap();
+        let other = Store::new(dir.join("other")).unwrap();
+        let got = import(&other, &bundle).unwrap();
+        let log = other.activity(&got);
+        assert_eq!(log.len(), n, "nothing dropped");
+        let last = log.last().unwrap();
+        let link = last.undid_from.unwrap();
+        assert!(link <= last.ts_ms, "{link} > {}", last.ts_ms);
+        assert!(
+            link > log[n - 3].ts_ms && link < log[n - 2].ts_ms,
+            "{log:#?}"
+        );
+        // The revert still covers A3 only: the latest change is A1 (A2 out).
+        let p = other.revert_last(&got, USER_ACTOR, None).unwrap();
+        assert_eq!(
+            (
+                p.notes.as_str(),
+                p.job.customer.as_str(),
+                p.job.address.as_str()
+            ),
+            ("", "", "")
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// Audit 2026-11-23 DANGLING (design B2): a received revert whose
     /// reverted version is outside the limits keeps its link, which then
     /// names no entry of the imported log; it is read by time, and the
