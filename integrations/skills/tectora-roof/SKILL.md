@@ -45,7 +45,9 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    a text layer, `drawing_lines` with `limit: 0` and `text_contains`
    (`["+", "°"]`) lists every height and pitch label at once.
 5. Search with `list_projects` (customer, address, job number) so you edit the
-   existing job instead of creating a duplicate. A similar roof made before
+   existing job instead of creating a duplicate (`review_pending` on a job
+   says how many of an AI's changes still wait for the user's review;
+   `review_pending: true` lists those jobs). A similar roof made before
    can be the starting point: `duplicate_project` with the new `job` data and
    `with_files: false`. Jobs listed under `broken` cannot be read (damaged or
    from a newer Tectora): tell the user instead of starting a new one.

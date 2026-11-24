@@ -160,6 +160,8 @@ export interface ProjectSummary {
   last_activity: ActivityInfo | null;
   /** The newest change when an AI client made it, by the core's one rule (store.rs `changed_by_ai`): the library's AI filter, count and badge (UX-806). */
   changed_by_ai?: ActivityInfo | null;
+  /** How many AI steps wait for the user's review (the banner's check, store.rs `ProjectSummary::review_pending`); absent when nothing waits (UX-2003). */
+  review_pending?: number | null;
   modified_ms: number;
   roof_area: number;
   parts: number;
@@ -430,6 +432,12 @@ export interface ReviewStatus {
   accepted_ms: number;
   /** Figures before the pending changes against now; null when unknown. */
   differences: FigureDifference[] | null;
+  /** What differs between `before` (for an AI's new job the job as created) and the job now: the banner's change line and the plan's marks, the pair of `differences` (UX-2001). Absent from an older bridge. */
+  changes?: Change[];
+  /** A digest of `before`: it moves with the user's own edits while `since_ts_ms` and `count` stay (ARCH-2004). Absent from an older bridge. */
+  before_rev?: string;
+  /** False when none of the listed steps stands any more (they are history; the change is only `before` against now). Absent from an older bridge. */
+  steps_stand?: boolean;
 }
 
 export interface ActivityItem extends ActivityInfo {

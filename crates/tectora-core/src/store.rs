@@ -150,6 +150,12 @@ pub struct ProjectSummary {
     /// `library::search`'s `by_ai` all read this (audit 2026-11-22 UX-806).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed_by_ai: Option<ActivityInfo>,
+    /// The AI's changes wait for the user's review (the banner's check,
+    /// [`Store::pending_review`]): the number of listed steps; `None` when
+    /// nothing waits. The library's "waits for review" mark and filter and
+    /// MCP `list_projects` read it (audit 2026-11-24 UX-2003).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_pending: Option<u32>,
     /// Lowest and highest roof pitch, degrees (gables left out).
     pub pitch_range: Option<[f64; 2]>,
     pub dormers: usize,
@@ -611,6 +617,17 @@ pub struct PendingReview {
     /// 2026-11-23 UX-1501; round 19 design A).
     #[serde(default)]
     pub steps: Vec<u64>,
+    /// The listed steps stand in the job. False when none does and the
+    /// job still differs from `before` (the AI's steps were reverted one by
+    /// one and something else is left, R10): the steps are history then,
+    /// and the review's change is only `before` against the job (audit
+    /// 2026-11-24 UX-2001).
+    #[serde(default = "yes")]
+    pub steps_stand: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// A pending review with what it does to the figures, for the app and the
@@ -624,6 +641,19 @@ pub struct ReviewStatus {
     /// Figures before the pending changes against now; `None` when one of
     /// the two versions cannot be calculated.
     pub differences: Option<Vec<crate::snapshot::Difference>>,
+    /// A digest of `before` (the baseline): it moves with the user's own
+    /// edits (R3, R10) while `since_ts_ms` and `count` stay, so the
+    /// editor's drawing of the roof before the changes knows to calculate
+    /// it again (audit 2026-11-24 ARCH-2004). Empty for an AI's new job.
+    #[serde(default)]
+    pub before_rev: String,
+    /// What differs between the baseline (the job as the user last settled
+    /// it; for an AI's new job the job as created) and the job now: the
+    /// banner's change line and the plan's marks, the same pair as
+    /// `differences` (owner decision 4 of round 21, UX-2001). Each step's
+    /// own change stays in its log entry (the AI tab).
+    #[serde(default)]
+    pub changes: Vec<Change>,
 }
 
 /// What an AI agent is doing right now, shown live in the app.
@@ -951,7 +981,7 @@ fn lock_cache(cache: &Mutex<SummaryCache>) -> std::sync::MutexGuard<'_, SummaryC
 
 /// What a cached summary depends on: the project file, its activity log and
 /// its files folder (modification time and size of each).
-type Stamp = [Option<(SystemTime, u64)>; 4];
+type Stamp = [Option<(SystemTime, u64)>; 5];
 
 /// Why a library operation failed. Each variant has a stable [`code`]
 /// (`StoreError::code`) so the app can show a translated message; the
@@ -2379,13 +2409,16 @@ impl Store {
             of(self.files_dir(id)?),
             // Accept moves the card's AI mark (`summarize_uncached`).
             of(self.review_path(id)?),
+            // So does the review's baseline (`review_pending`).
+            of(self.baseline_path(id)?),
         ])
     }
 
     /// The card of job `id` without its roof figures, and the job.
     fn summarize_uncached(&self, id: &str) -> Result<(ProjectSummary, Project), StoreError> {
-        let project = self.load(id)?;
+        let (project, digest) = self.load_with_digest(id)?;
         let log = self.activity(id);
+        let waiting = self.pending_steps(id, &log, &project, Some(&digest));
         let summary = ProjectSummary {
             id: id.to_string(),
             name: project.name.clone(),
@@ -2401,10 +2434,12 @@ impl Store {
             // an AI's revert of accepted work, which no "newest change"
             // rule sees), else the newest change that stands (audit
             // 2026-11-24 HUNT-1702).
-            changed_by_ai: match self.pending_steps(id, &log, &project).last() {
+            changed_by_ai: match waiting.last() {
                 Some(&i) => Some(log[i].info()),
                 None => changed_by_ai(&log).map(ActivityEntry::info),
             },
+            review_pending: (!waiting.is_empty())
+                .then(|| u32::try_from(waiting.len()).unwrap_or(u32::MAX)),
             pitch_range: crate::library::pitch_range(&project),
             dormers: project.dormers.len(),
             files: self.attachments(id).len(),
@@ -2973,6 +3008,17 @@ impl Store {
 
     /// [`Store::load`] that also says why a stored result was dropped.
     fn load_noted(&self, id: &str) -> Result<(Project, Option<String>), StoreError> {
+        self.load_read(id).map(|(p, dropped, _)| (p, dropped))
+    }
+
+    /// [`Store::load`] with the digest of the bytes it parsed
+    /// ([`baseline::job_digest`]): one read gives the job and what the
+    /// review compares with the file (R10, ADR 0007).
+    pub(crate) fn load_with_digest(&self, id: &str) -> Result<(Project, String), StoreError> {
+        self.load_read(id).map(|(p, _, d)| (p, d))
+    }
+
+    fn load_read(&self, id: &str) -> Result<(Project, Option<String>, String), StoreError> {
         let path = self.path(id)?;
         // Bounded, and never blocked by a pipe or a device named like a
         // job (ARCH-204).
@@ -3017,6 +3063,7 @@ impl Store {
                 max: crate::model::SCHEMA_VERSION,
             });
         }
+        let digest = baseline::job_digest(text.as_bytes());
         let mut project = Project::from_json(&text).map_err(|e| StoreError::Unreadable {
             id: id.to_string(),
             detail: e.to_string(),
@@ -3045,7 +3092,7 @@ impl Store {
                 detail: why,
             });
         }
-        Ok((project, dropped))
+        Ok((project, dropped, digest))
     }
 
     /// Picks an unused id based on the project name: no job file, attached
@@ -3182,7 +3229,8 @@ impl Store {
             None => self.free_id(&project.name)?,
         };
         let _lock = self.lock(&id)?;
-        // R3: the user's edit goes into an open review's baseline too.
+        // R3: the user's edit goes into an open review's baseline too
+        // (after R10 for the file as it is).
         let undo = self.baseline_on_unlogged(&id, None, project);
         self.write(&id, project, false).inspect_err(|_| {
             if let Some(raw) = undo {
@@ -3216,8 +3264,8 @@ impl Store {
         self.path(id)?;
         let _lock = self.lock(id)?;
         let mut file = None;
-        let repaired = match self.load(id) {
-            Ok(current) if !same_for_js(&current, base) => {
+        let repaired = match self.load_with_digest(id) {
+            Ok((current, _)) if !same_for_js(&current, base) => {
                 return Ok(CheckedSave::Conflict {
                     current: Box::new(current),
                 });
@@ -3238,7 +3286,9 @@ impl Store {
         // R3, with the file read above (one read per save, ARCH-504). A
         // file that could not be read gives the baseline nothing to merge.
         let undo = match &file {
-            Some(old) => self.baseline_on_unlogged(id, Some(old), project),
+            Some((old, digest)) => {
+                self.baseline_on_unlogged(id, Some((old, digest.as_str())), project)
+            }
             None => None,
         };
         // `load` above refused a newer file.
@@ -3787,9 +3837,13 @@ impl Store {
         // An AI's new job keeps its creation and is reverted from its first
         // step, as before.
         if seen_ts.is_none() {
-            let now = self.load(id).ok();
-            if let Some(b) = self.review_baseline(id, &log, now.as_ref())
-                && b.since_ts_ms == ts_ms
+            let read = self.load_with_digest(id).ok();
+            if let Some(b) = self.review_baseline_at(
+                id,
+                &log,
+                read.as_ref().map(|(p, _)| p),
+                read.as_ref().map(|(_, d)| d.as_str()),
+            ) && b.since_ts_ms == ts_ms
                 && !b.created
             {
                 return self.revert_to_baseline(id, &log, &b, actor, reason);
@@ -4069,8 +4123,14 @@ impl Store {
     /// Indices of the AI steps of `log` the review lists, oldest first, for
     /// the job `now` ([`baseline::steps_of`], display only); empty when no
     /// review is open.
-    fn pending_steps(&self, id: &str, log: &[ActivityEntry], now: &Project) -> Vec<usize> {
-        match self.review_baseline(id, log, Some(now)) {
+    fn pending_steps(
+        &self,
+        id: &str,
+        log: &[ActivityEntry],
+        now: &Project,
+        file: Option<&str>,
+    ) -> Vec<usize> {
+        match self.review_baseline_at(id, log, Some(now), file) {
             Some(b) if baseline::is_open(&b, Some(now)) => baseline::steps_of(log, &b),
             _ => Vec::new(),
         }
@@ -4086,32 +4146,51 @@ impl Store {
     /// open.
     pub fn pending_review(&self, id: &str) -> Option<PendingReview> {
         let (b, _, log) = self.open_review(id)?;
-        let steps = baseline::steps_of(&log, &b);
+        Some(Self::pending_of(b, &log))
+    }
+
+    /// The [`PendingReview`] of the open review of baseline `b`.
+    fn pending_of(b: baseline::Baseline, log: &[ActivityEntry]) -> PendingReview {
+        let steps = baseline::steps_of(log, &b);
+        let steps_stand = baseline::steps_stand(log, &b, &steps);
         let mut actors: Vec<String> = Vec::new();
         for &i in &steps {
             if !actors.contains(&log[i].actor) {
                 actors.push(log[i].actor.clone());
             }
         }
-        Some(PendingReview {
+        PendingReview {
             since_ts_ms: b.since_ts_ms,
             count: steps.len(),
             actors,
             before: (!b.created).then_some(b.project),
             steps: steps.iter().map(|&i| log[i].ts_ms).collect(),
-        })
+            steps_stand,
+        }
     }
 
     /// The pending review of `id` with its effect on the figures, or `None`
     /// when every change is reviewed.
     pub fn review_status(&self, id: &str) -> Result<Option<ReviewStatus>, StoreError> {
-        let Some(pending) = self.pending_review(id) else {
+        let Some((b, now, log)) = self.open_review(id) else {
             return Ok(None);
         };
-        let current = self.load(id)?;
+        let current = match now {
+            Some(p) => p,
+            None => self.load(id)?,
+        };
+        let changes = diff(&b.project, &current);
+        let pending = Self::pending_of(b, &log);
         Ok(Some(ReviewStatus {
+            changes,
             differences: crate::snapshot::change_in_figures(pending.before.as_ref(), &current),
             accepted_ms: self.reviewed_at(id),
+            before_rev: pending
+                .before
+                .as_ref()
+                .and_then(|p| p.to_json().ok())
+                .map(|j| baseline::job_digest(j.as_bytes()))
+                .unwrap_or_default(),
             pending,
         }))
     }
@@ -11549,10 +11628,12 @@ mod tests {
     }
 
     /// The job without what the editor saves unlogged in [`t1905_mix`]
-    /// (the job number), to compare it with the job the user settled.
+    /// (the job number) and another program saves in [`t2001_mix`] (the
+    /// name), to compare it with the job the user settled.
     fn t1905_logged(p: &Project) -> Project {
         let mut p = p.clone();
         p.job.number = String::new();
+        p.name = String::new();
         p
     }
 
@@ -12080,6 +12161,10 @@ mod tests {
                 Some(t1905_logged(&store.load(&id).unwrap()))
             };
             let mut number = String::new();
+            // Another program's unlogged save (an older Tectora): its name
+            // is a token no AI entry writes, so nothing may take it out
+            // (R10, round 21 ERR-2001).
+            let mut name = store.load(&id).unwrap().name;
             let mut trace: Vec<String> = Vec::new();
             for step in 0..steps {
                 if rnd(5) == 0 {
@@ -12088,6 +12173,11 @@ mod tests {
                     q.job.number = number.clone();
                     store.save(Some(id.clone()), &q).unwrap();
                     trace.push("u".into());
+                }
+                if rnd(6) == 0 {
+                    name = format!("O{step}");
+                    outside_write(&store, &id, |p| p.name = name.clone());
+                    trace.push("o".into());
                 }
                 let log = store.activity(&id);
                 let pick_ts = |k: usize| log[log.len() - 1 - k % log.len()].ts_ms;
@@ -12098,6 +12188,9 @@ mod tests {
                 let op = rnd(11);
                 let mut ai_op = false;
                 let mut undo_check: Option<(Vec<u64>, Project)> = None;
+                // An Accept up to the first step the banner showed, with
+                // later ones waiting (TEST-2002).
+                let mut partial: Option<u64> = None;
                 let r: Result<(), StoreError> = match op {
                     0..=2 => {
                         ai_op = true;
@@ -12151,6 +12244,10 @@ mod tests {
                         }
                     }
                     8 => match &before_pending {
+                        Some(p) if p.steps.len() >= 2 && rnd(3) == 0 => {
+                            partial = Some(p.steps[0]);
+                            store.mark_reviewed(&id, p.steps[0]).map(|_| ())
+                        }
                         Some(_) => store
                             .mark_reviewed(&id, log.last().unwrap().ts_ms)
                             .map(|_| ()),
@@ -12256,8 +12353,50 @@ mod tests {
                 if listed != card.changed_by_ai.is_some() {
                     failures.push(format!("by-AI filter != card mark; {}", ctx(&trace)));
                 }
-                if op == 8 && before_pending.is_some() && pending.is_some() {
+                if op == 8 && partial.is_none() && before_pending.is_some() && pending.is_some() {
                     failures.push(format!("Accept left a review; {}", ctx(&trace)));
+                }
+                if now.name != name {
+                    failures.push(format!(
+                        "another program's save was taken out ({:?}, want {name:?}); {}",
+                        now.name,
+                        ctx(&trace)
+                    ));
+                }
+                if op == 9
+                    && let Err(e) = &r
+                    && e.code() == "revert_outside"
+                {
+                    failures.push(format!(
+                        "Revert all refused an outside save it can tell apart; {}",
+                        ctx(&trace)
+                    ));
+                }
+                if let (Some(ts), true) = (partial, r.is_ok()) {
+                    match &pending {
+                        Some(p) if p.steps.iter().any(|s| *s <= ts) => failures.push(format!(
+                            "an accepted step still waits: {:?} after {ts}; {}",
+                            p.steps,
+                            ctx(&trace)
+                        )),
+                        Some(_) => {}
+                        None => {
+                            // Nothing waits: the later AI entries changed
+                            // nothing that stands.
+                            let k = log2.iter().position(|e| {
+                                e.ts_ms > ts && !RESERVED_ACTORS.contains(&e.actor.as_str())
+                            });
+                            if let Some(k) = k
+                                && let Ok(b) = baseline::undo_onto(&id, &log2, k, Some(now.clone()))
+                                && b != now
+                            {
+                                failures.push(format!(
+                                    "Accept up to {ts} accepted a later AI step unseen; {}",
+                                    ctx(&trace)
+                                ));
+                            }
+                        }
+                    }
                 }
                 if op == 9 && r.is_ok() && !trace.last().unwrap().starts_with("undo") {
                     if pending.is_some() {
@@ -12308,6 +12447,13 @@ mod tests {
                 // The oracle's settled job.
                 if trace.last().unwrap().starts_with("undo") {
                     // back to the open review
+                } else if op == 8 && partial.is_some() {
+                    settled = Some(t1905_logged(
+                        pending
+                            .as_ref()
+                            .and_then(|p| p.before.as_ref())
+                            .unwrap_or(&now),
+                    ));
                 } else if op == 8
                     || (op == 10 && log2.last().map(|e| e.ts_ms) != log.last().map(|e| e.ts_ms))
                     || (!ai_op && op != 11 && op != 10 && pending.is_none())
@@ -12737,11 +12883,38 @@ mod tests {
         assert_eq!(r.project, created);
         assert!(store.pending_review(&id).is_none(), "the user's decision");
         let undo = r.entry_ts_ms.unwrap();
-        store.take_back_revert(&id, undo, undo, USER_ACTOR).unwrap();
+        let redo = store.take_back_revert(&id, undo, undo, USER_ACTOR).unwrap();
         let p = store.load(&id).unwrap();
         assert_eq!((p.notes.as_str(), p.job.address.as_str()), ("A1", "A2"));
         let back = store.pending_review(&id).expect("A2 waits again");
         assert_eq!(back.before.unwrap().notes, "A1");
+        // ARCH-2003: Undo, Redo, Undo, Redo again: R7 is a swap, so the
+        // banner is none, 1, none, 1 and the baseline the accepted A1.
+        let mut last = redo.entry_ts_ms.unwrap();
+        for (round, waits) in [false, true, false, true].into_iter().enumerate() {
+            let r = store.take_back_revert(&id, last, last, USER_ACTOR).unwrap();
+            last = r.entry_ts_ms.unwrap();
+            let p = store.load(&id).unwrap();
+            let review = store.pending_review(&id);
+            assert_eq!(review.is_some(), waits, "round {round}");
+            if waits {
+                let review = review.unwrap();
+                assert_eq!(review.steps, vec![a2], "round {round}");
+                assert_eq!(review.before.unwrap().notes, "A1", "round {round}");
+                assert_eq!((p.notes.as_str(), p.job.address.as_str()), ("A1", "A2"));
+            } else {
+                assert_eq!(p, created, "round {round}");
+            }
+        }
+        // And the banner's Revert all then keeps the accepted A1.
+        let open = store.pending_review(&id).unwrap();
+        let r = store
+            .revert_review(&id, open.since_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(
+            (r.project.notes.as_str(), r.project.job.address.as_str()),
+            ("A1", "")
+        );
         let _ = fs::remove_dir_all(&store.dir);
     }
 
@@ -12928,20 +13101,30 @@ mod tests {
         let _ = fs::remove_dir_all(&store.dir);
     }
 
-    /// ADR 0007 digest guard: another program's unlogged save (an older
-    /// Tectora on the same folder) while the AI's change waits makes Revert
-    /// all refuse; Accept and the Revert of the single step still work.
+    /// ADR 0007 R10 (owner decision 1 of round 21; until round 20 this
+    /// test was `y_revert_all_refuses_after_another_programs_unlogged_save`
+    /// and expected `revert_outside`): another program's unlogged save (an
+    /// older Tectora on the same folder) while the AI's change waits is the
+    /// colleague's edit: Revert all keeps it; the Revert of the single step
+    /// keeps it too.
     #[test]
-    fn y_revert_all_refuses_after_another_programs_unlogged_save() {
+    fn y_revert_all_keeps_another_programs_unlogged_save() {
         let store = temp_store("y-digest");
         let id = users_job(&store);
         let a1 = ai_change(&store, &id, 1);
         let mut other = store.load(&id).unwrap();
         other.job.number = "by an older Tectora".into();
         fs::write(store.path(&id).unwrap(), other.to_json().unwrap()).unwrap();
-        let e = store.revert_review(&id, a1, USER_ACTOR, None).unwrap_err();
-        assert_eq!(e.code(), "revert_outside", "{e}");
-        assert_eq!(store.load(&id).unwrap(), other);
+        let r = store.revert_review(&id, a1, USER_ACTOR, None).unwrap();
+        assert_eq!(
+            (r.project.notes.as_str(), r.project.job.number.as_str()),
+            ("", "by an older Tectora")
+        );
+        assert!(store.pending_review(&id).is_none());
+        // The same with the Revert of the single step.
+        let id = users_job(&store);
+        let a1 = ai_change(&store, &id, 1);
+        outside_write(&store, &id, |p| p.job.number = "by an older Tectora".into());
         let p = store
             .revert_last_expecting(&id, USER_ACTOR, None, Some(a1))
             .unwrap();
@@ -12949,6 +13132,7 @@ mod tests {
             (p.notes.as_str(), p.job.number.as_str()),
             ("", "by an older Tectora")
         );
+        assert!(store.pending_review(&id).is_none());
         let _ = fs::remove_dir_all(&store.dir);
     }
 
@@ -13042,18 +13226,641 @@ mod tests {
             Some(created.notes.as_str())
         );
         let _ = a3;
-        let r = store
-            .revert_review(&id, open.since_ts_ms, USER_ACTOR, None)
-            .unwrap_err();
-        // The file was written behind the store's back: refused, untouched.
-        assert_eq!(r.code(), "revert_outside");
-        store.save(Some(id.clone()), &after).unwrap();
+        // The file was written behind the store's back, but it is the job
+        // of the log's newest entry: the log explains it (R10, case 2;
+        // until round 20 this first Revert all answered `revert_outside`
+        // and the test saved the job once more before it).
         let r = store
             .revert_review(&id, open.since_ts_ms, USER_ACTOR, None)
             .unwrap();
         assert_eq!(r.project, created);
         assert_eq!(r.undone_ai, 2);
         assert!(store.pending_review(&id).is_none());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    // ---- Round 21 (audit 2026-11-24): R10, an older Tectora's Accept,
+    // conflicts that end, R7 as a swap ----
+
+    /// Writes job `id` as another program does: no log entry, no baseline.
+    fn outside_write(store: &Store, id: &str, f: impl FnOnce(&mut Project)) -> Project {
+        let mut p = store.load(id).unwrap();
+        f(&mut p);
+        fs::write(store.path(id).unwrap(), p.to_json().unwrap()).unwrap();
+        p
+    }
+
+    /// The colleague's two edits of [`outside_write`] in the R10 tests.
+    fn colleague(p: &mut Project) {
+        p.job.number = "OLD-TECTORA".into();
+        p.parts[0].edges[1].overhang = 0.9;
+    }
+
+    fn colleague_kept(p: &Project) -> bool {
+        p.job.number == "OLD-TECTORA" && p.parts[0].edges[1].overhang == 0.9
+    }
+
+    /// ERR-2001: AI step, another program's unlogged save, AI step, Revert
+    /// all: the colleague's job number and overhang stay, the AI's two
+    /// values go, and the banner's figures leave the colleague's overhang
+    /// out (it is in `before`).
+    #[test]
+    fn r10_an_outside_save_before_an_ai_step_survives_revert_all() {
+        let store = temp_store("r10-ai");
+        let id = users_job(&store);
+        ai_change(&store, &id, 1);
+        outside_write(&store, &id, colleague);
+        ai_change(&store, &id, 2);
+        let open = store.pending_review(&id).unwrap();
+        assert!(
+            colleague_kept(open.before.as_ref().unwrap()),
+            "folded into the baseline"
+        );
+        assert_eq!(open.count, 2);
+        let r = store
+            .revert_review(&id, open.since_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        assert!(colleague_kept(&r.project));
+        assert_eq!(
+            (r.project.notes.as_str(), r.project.job.address.as_str()),
+            ("", "")
+        );
+        assert!(colleague_kept(&store.load(&id).unwrap()));
+        assert!(store.pending_review(&id).is_none());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ERR-2001 with a per-step revert, and with the editor's own save,
+    /// between the outside save and Revert all; and after both per-step
+    /// reverts the job is its baseline: the review ends (UX-2001 item 2).
+    #[test]
+    fn r10_an_outside_save_survives_a_step_revert_and_an_editor_save() {
+        let store = temp_store("r10-mix");
+        let id = users_job(&store);
+        let a1 = ai_change(&store, &id, 1);
+        outside_write(&store, &id, colleague);
+        let a2 = ai_change(&store, &id, 2);
+        store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(a2))
+            .unwrap();
+        let open = store.pending_review(&id).unwrap();
+        let r = store
+            .revert_review(&id, open.since_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        assert!(colleague_kept(&r.project));
+        assert_eq!(r.project.notes, "");
+
+        // The editor saves after the outside save.
+        let id = users_job(&store);
+        ai_change(&store, &id, 1);
+        outside_write(&store, &id, colleague);
+        let cur = store.load(&id).unwrap();
+        let mut u = cur.clone();
+        u.job.customer = "C-ed".into();
+        store.save_checked(&id, &u, &cur).unwrap();
+        ai_change(&store, &id, 2);
+        let open = store.pending_review(&id).unwrap();
+        let r = store
+            .revert_review(&id, open.since_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        assert!(colleague_kept(&r.project));
+        assert_eq!(
+            (
+                r.project.notes.as_str(),
+                r.project.job.address.as_str(),
+                r.project.job.customer.as_str()
+            ),
+            ("", "", "C-ed")
+        );
+
+        // An outside save after the editor's own save (its base is the job
+        // the editor saved), then the two per-step reverts: nothing waits.
+        let id = users_job(&store);
+        let a1b = ai_change(&store, &id, 1);
+        let cur = store.load(&id).unwrap();
+        let mut u = cur.clone();
+        u.job.customer = "C-ed".into();
+        store.save_checked(&id, &u, &cur).unwrap();
+        outside_write(&store, &id, colleague);
+        let a2 = ai_change(&store, &id, 2);
+        store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(a2))
+            .unwrap();
+        store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(a1b))
+            .unwrap();
+        let now = store.load(&id).unwrap();
+        assert!(colleague_kept(&now));
+        assert_eq!(
+            (now.notes.as_str(), now.job.customer.as_str()),
+            ("", "C-ed")
+        );
+        assert!(
+            store.pending_review(&id).is_none(),
+            "the job is its baseline"
+        );
+        assert_eq!(store.summarize(&id).unwrap().review_pending, None);
+        let _ = (a1, fs::remove_dir_all(&store.dir));
+    }
+
+    /// ERR-2001 case 4: a baseline of round 20 (no `last_saved`) after the
+    /// editor's unlogged save cannot tell another program's save from the
+    /// AI's: Revert all refuses, also after one more AI step (sticky), and
+    /// nothing is written; the per-step Revert still works, the steps left
+    /// are history then (`steps_stand`), and Accept ends it.
+    #[test]
+    fn r10_an_outside_save_that_cannot_be_told_apart_is_refused_and_sticks() {
+        let store = temp_store("r10-sticky");
+        let id = users_job(&store);
+        let a1 = ai_change(&store, &id, 1);
+        let cur = store.load(&id).unwrap();
+        let mut u = cur.clone();
+        u.job.customer = "C-ed".into();
+        store.save_checked(&id, &u, &cur).unwrap();
+        let mut file = baseline_json(&store, &id);
+        assert!(file["baseline"]["last_saved"].is_object());
+        file["baseline"]
+            .as_object_mut()
+            .unwrap()
+            .remove("last_saved");
+        fs::write(store.baseline_path(&id).unwrap(), file.to_string()).unwrap();
+        outside_write(&store, &id, colleague);
+        let job = fs::read(store.path(&id).unwrap()).unwrap();
+        let e = store.revert_review(&id, a1, USER_ACTOR, None).unwrap_err();
+        assert_eq!(e.code(), "revert_outside", "{e}");
+        assert_eq!(fs::read(store.path(&id).unwrap()).unwrap(), job);
+        let a2 = ai_change(&store, &id, 2);
+        assert_eq!(baseline_json(&store, &id)["baseline"]["outside"], true);
+        let e = store.revert_review(&id, a1, USER_ACTOR, None).unwrap_err();
+        assert_eq!(e.code(), "revert_outside", "sticky: {e}");
+        store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(a2))
+            .unwrap();
+        store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(a1))
+            .unwrap();
+        let left = store
+            .pending_review(&id)
+            .expect("the colleague's edit differs");
+        assert!(!left.steps_stand, "no AI step stands: history only");
+        let e = store.revert_review(&id, a1, USER_ACTOR, None).unwrap_err();
+        assert_eq!(e.code(), "revert_outside");
+        let now = store.load(&id).unwrap();
+        assert!(colleague_kept(&now));
+        store
+            .mark_reviewed(&id, store.activity(&id).last().unwrap().ts_ms)
+            .unwrap();
+        assert!(store.pending_review(&id).is_none());
+        assert!(baseline_json(&store, &id)["baseline"].is_null());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// R10: another program's edit of a value the AI set is a conflict
+    /// like the editor's (R3): Revert all refuses, nothing is written.
+    #[test]
+    fn r10_an_outside_edit_of_an_ai_value_is_a_conflict() {
+        let store = temp_store("r10-conflict");
+        let id = users_job(&store);
+        let a1 = ai_change(&store, &id, 1);
+        outside_write(&store, &id, |p| p.notes = "the colleague's".into());
+        let job = fs::read(store.path(&id).unwrap()).unwrap();
+        let e = store.revert_review(&id, a1, USER_ACTOR, None).unwrap_err();
+        assert_eq!(e.code(), "revert_conflict", "{e}");
+        assert_eq!(e.detail(), Some("notes"));
+        assert_eq!(fs::read(store.path(&id).unwrap()).unwrap(), job);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ARCH-2002: an older Tectora's logged AI write (its entry, its file,
+    /// the baseline file as before it) is no outside save: Revert all
+    /// writes. When it then saved unlogged too, that edit is kept.
+    #[test]
+    fn arch2002_a_logged_ai_write_of_an_older_tectora_is_no_outside_save() {
+        let store = temp_store("arch2002");
+        let id = users_job(&store);
+        let created = store.load(&id).unwrap();
+        let a1 = ai_change(&store, &id, 1);
+        let path = store.baseline_path(&id).unwrap();
+        let old = fs::read(&path).unwrap();
+        ai_change(&store, &id, 2);
+        fs::write(&path, &old).unwrap();
+        let open = store.pending_review(&id).unwrap();
+        assert_eq!(open.count, 2);
+        let r = store.revert_review(&id, a1, USER_ACTOR, None).unwrap();
+        assert_eq!(r.project, created);
+
+        let id = users_job(&store);
+        let a1 = ai_change(&store, &id, 1);
+        let path = store.baseline_path(&id).unwrap();
+        let old = fs::read(&path).unwrap();
+        ai_change(&store, &id, 2);
+        fs::write(&path, &old).unwrap();
+        outside_write(&store, &id, colleague);
+        let r = store.revert_review(&id, a1, USER_ACTOR, None).unwrap();
+        assert!(colleague_kept(&r.project));
+        assert_eq!(
+            (r.project.notes.as_str(), r.project.job.address.as_str()),
+            ("", "")
+        );
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ARCH-2001: an Accept that wrote only the review mark (an older
+    /// Tectora, or ours when the baseline write after the mark failed)
+    /// ends the review: no banner, no card mark, Revert all is stale.
+    /// Accepted up to the first of two steps, the later one alone waits.
+    #[test]
+    fn arch2001_an_older_tectoras_accept_ends_the_review() {
+        let store = temp_store("arch2001");
+        let id = users_job(&store);
+        let a1 = ai_change(&store, &id, 1);
+        assert_eq!(store.summarize(&id).unwrap().review_pending, Some(1));
+        fs::write(
+            store.review_path(&id).unwrap(),
+            serde_json::json!({ "accepted_ms": a1 }).to_string(),
+        )
+        .unwrap();
+        assert!(store.pending_review(&id).is_none());
+        assert!(store.review_status(&id).unwrap().is_none());
+        assert_eq!(store.summarize(&id).unwrap().review_pending, None);
+        let e = store.revert_review(&id, a1, USER_ACTOR, None).unwrap_err();
+        assert_eq!(e.code(), "revert_stale", "{e}");
+        assert_eq!(store.load(&id).unwrap().notes, "A1");
+
+        // With a later step: that step alone waits, with the user's edit.
+        let id = users_job(&store);
+        let a1 = ai_change(&store, &id, 1);
+        let cur = store.load(&id).unwrap();
+        let mut u = cur.clone();
+        u.job.number = "N-1".into();
+        store.save_checked(&id, &u, &cur).unwrap();
+        let a2 = ai_change(&store, &id, 2);
+        fs::write(
+            store.review_path(&id).unwrap(),
+            serde_json::json!({ "accepted_ms": a1 }).to_string(),
+        )
+        .unwrap();
+        let open = store.pending_review(&id).expect("A2 was not accepted");
+        assert_eq!(open.steps, vec![a2]);
+        let before = open.before.clone().unwrap();
+        assert_eq!(
+            (before.notes.as_str(), before.job.number.as_str()),
+            ("A1", "N-1")
+        );
+        assert_eq!(store.summarize(&id).unwrap().review_pending, Some(1));
+        let r = store
+            .revert_review(&id, open.since_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(
+            (
+                r.project.notes.as_str(),
+                r.project.job.address.as_str(),
+                r.project.job.number.as_str()
+            ),
+            ("A1", "", "N-1")
+        );
+
+        // Our own Accept whose baseline write was lost: the mark decides.
+        let id = users_job(&store);
+        let a1 = ai_change(&store, &id, 1);
+        let path = store.baseline_path(&id).unwrap();
+        let open_file = fs::read(&path).unwrap();
+        store.mark_reviewed(&id, a1).unwrap();
+        fs::write(&path, &open_file).unwrap();
+        assert!(store.pending_review(&id).is_none());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ERR-2002: the user's edit of a value the AI set is a conflict only
+    /// while it stands: putting the AI's value back, or typing the settled
+    /// value, ends it and Revert all writes again; of two conflicts the
+    /// one put back goes and the refusal names only the other.
+    #[test]
+    fn err2002_putting_the_ai_value_back_clears_the_conflict() {
+        let store = temp_store("err2002");
+        let set = |store: &Store, id: &str, f: &dyn Fn(&mut Project)| {
+            let cur = store.load(id).unwrap();
+            let mut u = cur.clone();
+            f(&mut u);
+            store.save_checked(id, &u, &cur).unwrap();
+        };
+        for back in [25.0, 40.0] {
+            let id = users_job(&store);
+            let settled = store.load(&id).unwrap();
+            assert_eq!(settled.parts[0].edges[0].pitch_deg, 40.0);
+            let mut q = settled.clone();
+            q.parts[0].edges[0].pitch_deg = 25.0;
+            store
+                .save_as(Some(id.clone()), &q, "claude", "Pitch 25")
+                .unwrap();
+            let a1 = store.activity(&id).last().unwrap().ts_ms;
+            set(&store, &id, &|p| p.parts[0].edges[0].pitch_deg = 30.0);
+            let e = store.revert_review(&id, a1, USER_ACTOR, None).unwrap_err();
+            assert_eq!(e.code(), "revert_conflict");
+            set(&store, &id, &|p| p.parts[0].edges[0].pitch_deg = back);
+            assert!(
+                baseline_json(&store, &id)["baseline"]["conflicts"]
+                    .as_array()
+                    .is_none_or(Vec::is_empty)
+            );
+            let r = store.revert_review(&id, a1, USER_ACTOR, None).unwrap();
+            assert_eq!(
+                r.project.parts[0].edges[0].pitch_deg, 40.0,
+                "back to {back}"
+            );
+        }
+        // Two conflicts, one put back.
+        let id = users_job(&store);
+        let mut q = store.load(&id).unwrap();
+        q.parts[0].edges[0].pitch_deg = 25.0;
+        q.notes = "AI".into();
+        store
+            .save_as(Some(id.clone()), &q, "claude", "Two")
+            .unwrap();
+        let a1 = store.activity(&id).last().unwrap().ts_ms;
+        set(&store, &id, &|p| {
+            p.parts[0].edges[0].pitch_deg = 30.0;
+            p.notes = "mine".into();
+        });
+        set(&store, &id, &|p| p.notes = "AI".into());
+        let e = store.revert_review(&id, a1, USER_ACTOR, None).unwrap_err();
+        assert_eq!(e.code(), "revert_conflict");
+        assert_eq!(e.detail(), Some("parts[0].edges[0].pitch_deg"));
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ARCH-2005: Revert all of an AI-created job whose creation the trim
+    /// took out counts and names from the first kept step, not one later.
+    #[test]
+    fn arch2005_revert_all_of_a_created_job_past_the_trim_counts_every_step() {
+        let store = temp_store("arch2005");
+        let mut p = examples::find("gable").unwrap().project();
+        let id = store.save_as(None, &p, "claude", "Created by AI").unwrap();
+        for n in 0..55 {
+            p.notes = format!("AI {n}");
+            store
+                .save_as(Some(id.clone()), &p, "claude", &format!("AI step {n}"))
+                .unwrap();
+        }
+        let log = store.activity(&id);
+        assert!(
+            log.iter().all(|e| e.before.is_some()),
+            "the creation was trimmed"
+        );
+        let open = store.pending_review(&id).unwrap();
+        let r = store
+            .revert_review(&id, open.since_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!((r.undone, r.undone_ai), (log.len(), log.len()));
+        let last = store.activity(&id).last().unwrap().clone();
+        assert_eq!(last.undid_from, Some(log[0].ts_ms));
+        assert!(last.summary.ends_with(&log[0].summary), "{}", last.summary);
+        assert_eq!(r.project.notes, "");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ARCH-2006: a baseline file an older Tectora's delete left at an id
+    /// is not the review of the next job of that id, logged or not.
+    #[test]
+    fn arch2006_a_baseline_left_by_another_job_is_no_review() {
+        let store = temp_store("arch2006");
+        for logged in [true, false] {
+            let id = users_job(&store);
+            ai_change(&store, &id, 1);
+            let path = store.baseline_path(&id).unwrap();
+            let left = fs::read(&path).unwrap();
+            // The older Tectora's delete: the job and its log go, the
+            // baseline stays.
+            store.purge(&id).unwrap();
+            let mut p = examples::find("gable").unwrap().project();
+            p.notes = "a new job".into();
+            let again = if logged {
+                store.save_as(None, &p, USER_ACTOR, "Created").unwrap()
+            } else {
+                store.save(None, &p).unwrap()
+            };
+            assert_eq!(again, id);
+            fs::write(&path, &left).unwrap();
+            assert!(store.pending_review(&id).is_none(), "logged {logged}");
+            assert!(store.review_status(&id).unwrap().is_none());
+            assert_eq!(store.summarize(&id).unwrap().review_pending, None);
+            store.purge(&id).unwrap();
+        }
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// UX-2001 (owner decision 4 of round 21): the review's `changes` are
+    /// the baseline against the job now, the pair the figures use: the
+    /// user's 0.7 over the AI's 0.9 is "0.5 -> 0.7", and two AI steps on
+    /// one value of an AI's new job are one change from the job as created.
+    #[test]
+    fn ux2001_the_review_changes_are_the_net_difference() {
+        let store = temp_store("ux2001");
+        let id = users_job(&store);
+        let mut q = store.load(&id).unwrap();
+        let was = q.parts[0].edges[0].overhang;
+        q.parts[0].edges[0].overhang = 0.9;
+        store
+            .save_as(Some(id.clone()), &q, "claude", "AI 0.9")
+            .unwrap();
+        let mut u = q.clone();
+        u.parts[0].edges[0].overhang = 0.7;
+        store.save_checked(&id, &u, &q).unwrap();
+        let r = store.review_status(&id).unwrap().unwrap();
+        let c: Vec<_> = r
+            .changes
+            .iter()
+            .map(|c| (c.field.as_str(), c.before.clone(), c.after.clone()))
+            .collect();
+        assert_eq!(
+            c,
+            vec![("overhang", serde_json::json!(was), serde_json::json!(0.7))]
+        );
+
+        let mut p = examples::find("gable").unwrap().project();
+        let was = p.parts[0].edges[0].overhang;
+        let id = store.save_as(None, &p, "claude", "Created by AI").unwrap();
+        for o in [0.6, 0.7] {
+            p.parts[0].edges[0].overhang = o;
+            store.save_as(Some(id.clone()), &p, "claude", "AI").unwrap();
+        }
+        let r = store.review_status(&id).unwrap().unwrap();
+        assert_eq!(r.pending.count, 3);
+        let c: Vec<_> = r
+            .changes
+            .iter()
+            .map(|c| (c.field.as_str(), c.before.clone(), c.after.clone()))
+            .collect();
+        assert_eq!(
+            c,
+            vec![("overhang", serde_json::json!(was), serde_json::json!(0.7))]
+        );
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// ARCH-2004: the review's `before_rev` moves with the user's own
+    /// edit of the baseline (R3) while `since_ts_ms` and `count` stay.
+    #[test]
+    fn arch2004_before_rev_moves_with_the_users_edit() {
+        let store = temp_store("arch2004");
+        let id = users_job(&store);
+        ai_change(&store, &id, 1);
+        let one = store.review_status(&id).unwrap().unwrap();
+        assert!(!one.before_rev.is_empty());
+        let cur = store.load(&id).unwrap();
+        let mut u = cur.clone();
+        u.parts[0].edges[1].overhang = 0.8;
+        store.save_checked(&id, &u, &cur).unwrap();
+        let two = store.review_status(&id).unwrap().unwrap();
+        assert_eq!(
+            (two.pending.since_ts_ms, two.pending.count),
+            (one.pending.since_ts_ms, one.pending.count)
+        );
+        assert_ne!(two.before_rev, one.before_rev);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    // ---- Round-21 TEST proposals (appended to the copy's store.rs tests only) ----
+
+    /// TEST-2101 (ADR 0007 R9 with a later entry): Accept up to the step the
+    /// banner showed leaves the AI step that came in after it waiting; the
+    /// new baseline keeps the user's unlogged edits made before and after
+    /// that step, and Revert all takes out only the later step.
+    #[test]
+    fn t2101_accept_up_to_a_shown_step_keeps_the_later_ai_step_waiting() {
+        let store = temp_store("t2101");
+        let id = users_job(&store);
+        let a1 = ai_change(&store, &id, 1);
+        let cur = store.load(&id).unwrap();
+        let mut u = cur.clone();
+        u.job.number = "N-1".into();
+        store.save_checked(&id, &u, &cur).unwrap();
+        let a2 = ai_change(&store, &id, 2);
+        let cur = store.load(&id).unwrap();
+        let mut u = cur.clone();
+        u.job.customer = "C-2".into();
+        store.save_checked(&id, &u, &cur).unwrap();
+        // The banner showed A1 only; A2 landed before the press.
+        store.mark_reviewed(&id, a1).unwrap();
+        let open = store
+            .pending_review(&id)
+            .expect("A2 was never shown: it still waits");
+        assert_eq!(open.steps, vec![a2]);
+        let before = open.before.clone().unwrap();
+        assert_eq!(
+            (
+                before.notes.as_str(),
+                before.job.address.as_str(),
+                before.job.number.as_str(),
+                before.job.customer.as_str()
+            ),
+            ("A1", "", "N-1", "C-2")
+        );
+        let r = store
+            .revert_review(&id, open.since_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(
+            (
+                r.project.notes.as_str(),
+                r.project.job.address.as_str(),
+                r.project.job.number.as_str(),
+                r.project.job.customer.as_str()
+            ),
+            ("A1", "", "N-1", "C-2")
+        );
+        assert!(store.pending_review(&id).is_none());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// TEST-2102 (ADR 0007 R4): the user's own logged change while the AI's
+    /// change waits settles the job: no review, the file says settled.
+    #[test]
+    fn t2102_the_users_logged_change_settles_the_review() {
+        let store = temp_store("t2102");
+        let id = users_job(&store);
+        ai_change(&store, &id, 1);
+        assert!(store.pending_review(&id).is_some());
+        let mut q = store.load(&id).unwrap();
+        q.job.number = "by the user".into();
+        store
+            .save_as(Some(id.clone()), &q, USER_ACTOR, "Number")
+            .unwrap();
+        assert!(store.pending_review(&id).is_none());
+        assert!(baseline_json(&store, &id)["baseline"].is_null());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// TEST-2103: a failed bundle import leaves no baseline file (the
+    /// import's Accept writes one), so the next job of that name keeps it.
+    #[test]
+    fn t2103_purge_and_restore_move_the_baseline_and_leave_nothing() {
+        let store = temp_store("t2103");
+        let id = users_job(&store);
+        ai_change(&store, &id, 1);
+        let path = store.baseline_path(&id).unwrap();
+        assert!(path.exists());
+        let e = store.delete(&id, USER_ACTOR, "gone").unwrap();
+        assert!(!path.exists());
+        store.restore(&e.entry).unwrap();
+        assert!(path.exists(), "the baseline comes back with the job");
+        store.purge(&id).unwrap();
+        assert!(!path.exists());
+        // A job of the same name gets the name as its id again.
+        let p = examples::find("gable").unwrap().project();
+        let again = store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        assert_eq!(again, id);
+        assert!(store.pending_review(&again).is_none());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// TEST-2104: a baseline file left at an id (no job, no log) is a
+    /// leftover: a new job of that name takes another id and opens with no
+    /// review (ARCH-2006's shape, by this Tectora).
+    #[test]
+    fn t2104_a_stray_baseline_file_keeps_its_id_from_a_new_job() {
+        let store = temp_store("t2104");
+        let id = users_job(&store);
+        ai_change(&store, &id, 1);
+        let path = store.baseline_path(&id).unwrap();
+        let stray = fs::read(&path).unwrap();
+        store.purge(&id).unwrap();
+        fs::write(&path, &stray).unwrap();
+        let p = examples::find("gable").unwrap().project();
+        let again = store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        assert_ne!(again, id, "the stray baseline is a leftover");
+        assert!(store.pending_review(&again).is_none());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// TEST-2105: a hostile baseline file is not used: one with too many
+    /// conflicts, or of a newer format, whose baseline differs from what
+    /// the log gives. The review is the log's (`before` the job before A1),
+    /// never the file's.
+    #[test]
+    fn t2105_a_hostile_baseline_is_not_used_even_when_it_parses() {
+        let store = temp_store("t2105");
+        let id = users_job(&store);
+        let created = store.load(&id).unwrap();
+        ai_change(&store, &id, 1);
+        let path = store.baseline_path(&id).unwrap();
+        let good = baseline_json(&store, &id);
+        let mut bait = good.clone();
+        bait["baseline"]["project"]["job"]["customer"] = serde_json::json!("from the file");
+        let mut newer = bait.clone();
+        newer["format"] = serde_json::json!(99);
+        let mut many = bait.clone();
+        many["baseline"]["conflicts"] = serde_json::json!(vec!["x"; baseline::MAX_CONFLICTS + 1]);
+        let mut long = bait.clone();
+        long["baseline"]["conflicts"] = serde_json::json!(vec!["y".repeat(301)]);
+        for (name, bad) in [("newer", newer), ("many", many), ("long", long)] {
+            fs::write(&path, bad.to_string()).unwrap();
+            let p = store.pending_review(&id).expect("derived from the log");
+            assert_eq!(
+                p.before.as_ref().map(|b| b.job.customer.as_str()),
+                Some(created.job.customer.as_str()),
+                "{name}"
+            );
+        }
         let _ = fs::remove_dir_all(&store.dir);
     }
 }

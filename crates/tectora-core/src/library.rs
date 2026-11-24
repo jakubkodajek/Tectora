@@ -32,6 +32,9 @@ pub struct Query {
     pub status: Option<JobStatus>,
     /// Only jobs whose last recorded change was made by an AI client.
     pub by_ai: bool,
+    /// Only jobs whose AI changes wait for the user's review
+    /// (`ProjectSummary::review_pending`, audit 2026-11-24 UX-2003).
+    pub review_pending: bool,
     /// Last changed on or after this day (`YYYY-MM-DD`, UTC).
     pub modified_from: Option<String>,
     /// Last changed on or before this day (`YYYY-MM-DD`, UTC).
@@ -65,6 +68,7 @@ pub fn search(list: Vec<ProjectSummary>, q: &Query) -> Result<Vec<ProjectSummary
                 // One rule with the app's filter, count and badge
                 // (`store::changed_by_ai`, audit 2026-11-22 UX-806).
                 && (!q.by_ai || p.changed_by_ai.is_some())
+                && (!q.review_pending || p.review_pending.is_some())
                 && from.is_none_or(|f| p.modified_ms >= f)
                 && to.is_none_or(|t| p.modified_ms < t)
                 // An area not known yet (ARCH-001) hides no job.
@@ -286,6 +290,7 @@ mod tests {
             lines: vec![],
             last_activity: None,
             changed_by_ai: None,
+            review_pending: None,
             pitch_range: None,
             dormers: 0,
             files: 0,
@@ -577,6 +582,9 @@ mod tests {
         // As the store fills it for a job an AI changed last
         // (`store::changed_by_ai`), which is what `by_ai` reads (UX-806).
         list[1].changed_by_ai = list[1].last_activity.clone();
+        // An AI change of `a` waits for review (an older AI change of a job
+        // changed since by the user is not "changed by AI", UX-2003).
+        list[0].review_pending = Some(2);
         let run = |q: Query| ids(&search(list.clone(), &q).unwrap()).join(",");
         assert_eq!(run(Query::default()), "c,b,a");
         assert_eq!(
@@ -607,6 +615,13 @@ mod tests {
                 ..Default::default()
             }),
             "b"
+        );
+        assert_eq!(
+            run(Query {
+                review_pending: true,
+                ..Default::default()
+            }),
+            "a"
         );
         assert_eq!(
             run(Query {

@@ -10,6 +10,7 @@
   import { lastStep } from "./drawstep";
   import { stepWall, wallStepKey } from "./wallstep";
   import { reviewStatusKey, type ReviewPress } from "./reviewstatus";
+  import { bannerChanges, beforeKey as reviewBeforeKey } from "./reviewbanner";
   import { deleteKeyHint, drawKeyHint, editorTakesUndo, isDrawKey, isMacPlatform, shortcut, undoKey, zoomKey, draftKey } from "./keys";
   import Icon from "./Icon.svelte";
   import JobPanel from "./JobPanel.svelte";
@@ -442,7 +443,9 @@
   $effect(() => {
     if (blockedReason) exporting = false;
   });
-  const pendingChanges = $derived(pendingList.flatMap((a) => a.changes));
+  // The banner's change line and the plan's marks: the approved state
+  // against the job now (UX-2001); each step's own change is in the AI tab.
+  const pendingChanges = $derived(bannerChanges(review, pendingList));
   const highlight = $derived.by(() => {
     if (!project) return new Set<string>();
     if (focusChange) return changedEdges([focusChange], project);
@@ -458,7 +461,7 @@
    * the outlines, as before.
    */
   let beforeResult = $state<CalcResult | null>(null);
-  const beforeKey = $derived(review?.before ? `${review.since_ts_ms}:${review.count}` : "");
+  const beforeKey = $derived(reviewBeforeKey(review));
   $effect(() => {
     const key = beforeKey;
     beforeResult = null;
@@ -3478,7 +3481,8 @@
               <strong>
                 {t("review.title", { who: actorName(pending.actor) })}<!-- The steps Revert all takes back: a creation is listed, not counted (UI-1802). -->{#if revertSteps > 1}<span class="steps">{t("review.steps", { n: revertSteps })}</span>{/if}
               </strong>
-              <span class="review-summary" title={pendingList.map((a) => entryText(a, activity)).reverse().join(" → ")}>{pendingList.map((a) => entryText(a, activity)).reverse().join(" → ")}</span>
+              <!-- Steps none of which stands any more are history: only the AI tab lists them (UX-2001). -->
+              {#if review?.steps_stand !== false}<span class="review-summary" title={pendingList.map((a) => entryText(a, activity)).reverse().join(" → ")}>{pendingList.map((a) => entryText(a, activity)).reverse().join(" → ")}</span>{/if}
               {#if pendingChanges.length}
                 <span class="review-list">
                   {pendingChanges.slice(0, 4).map((c) => describeChange(c, project)).join(" · ")}{pendingChanges.length > 4 ? ` · ${t("review.more", { n: pendingChanges.length - 4 })}` : ""}

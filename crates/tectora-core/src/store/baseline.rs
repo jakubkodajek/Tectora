@@ -19,9 +19,10 @@
 //! | R4 | the user's own other logged change, the engine's recalculation | settled: no baseline |
 //! | R5 | the user's revert from an entry at or after `since_ts_ms` | unchanged |
 //! | R6 | the user's revert from before `since_ts_ms` | the job it writes is the baseline; the old one is kept for the take-back (`replaced`) |
-//! | R7 | the take-back of that revert | the old baseline comes back |
+//! | R7 | the take-back of that revert | the two swap again: the old baseline comes back and the one it replaced is kept, so a take-back of the take-back is R7 again |
 //! | R8 | no baseline, the user's revert puts back an AI change that did not stand at the last Accept | the job before that revert |
-//! | R9 | Accept up to `ts` | settled; with an AI entry newer than `ts`: the job without the AI's entries from that one on |
+//! | R9 | Accept up to `ts` (also an older Tectora's: the review mark is newer than the file's `accepted_ms`) | settled; with an AI entry newer than `ts`: the job without the AI's entries from that one on |
+//! | R10 | another program saved the job without a log entry (the file's digest is not Tectora's last write) | the edit is applied like R3 from the job Tectora last wrote or the log explains; when that job is not known, `outside`: Revert all refuses until the baseline goes |
 //!
 //! The file is untrusted input like every library file: read only as a
 //! regular file (never through a link) of bounded size, and a damaged or
@@ -29,16 +30,23 @@
 //! Tectora: its review is derived once from the change log (the round-19
 //! rule, [`review_of`]) and written at the next write. Entries another
 //! program logged since the file was written are caught up on read (R1,
-//! R4); an older Tectora's unlogged saves are not, and the job's digest in
-//! the file makes Revert all refuse then (`revert_outside`).
+//! R4, R9 from the review mark), and so are its unlogged saves (R10), on
+//! every read and before every write, so the banner, `get_review`, Revert
+//! all and the next write agree.
 
 use super::*;
+use std::collections::BTreeMap;
 
 /// The format of the baseline file.
 const BASELINE_FORMAT: u32 = 1;
 
-/// Largest baseline file read: the job and the one it replaced (R6).
-const MAX_BASELINE_FILE: u64 = 2 * MAX_JOB_FILE + MAX_SMALL_FILE;
+/// Largest baseline file read: the job, the one it replaced (R6) and the
+/// job Tectora last saved without a log entry (R10).
+const MAX_BASELINE_FILE: u64 = 3 * MAX_JOB_FILE + MAX_SMALL_FILE;
+
+/// Largest value a conflict remembers (`conflict_was`): a bigger one is not
+/// kept, and its conflict stays until the baseline goes.
+const MAX_CONFLICT_VALUE: usize = 4096;
 
 /// Most places a baseline remembers where the user edited what the AI set
 /// (R3), and the longest one: a hostile file cannot make Revert all's
@@ -62,6 +70,11 @@ pub struct Baseline {
     /// refuses and names them.
     #[serde(default)]
     pub conflicts: Vec<String>,
+    /// For each conflict, the value the place had before the user's first
+    /// edit there (the AI's value): a later edit that puts it back, or that
+    /// makes the place the baseline's again, ends the conflict (ERR-2002).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub conflict_was: BTreeMap<String, serde_json::Value>,
     /// The baseline a user's revert from before `since_ts_ms` replaced
     /// (R6), for its take-back (R7).
     #[serde(default)]
@@ -73,6 +86,17 @@ pub struct Baseline {
     /// older Tectora's log.
     #[serde(default)]
     pub job_digest: Option<String>,
+    /// The job as Tectora last saved it without a log entry (the editor's
+    /// save, a copy), the base for another program's later unlogged save
+    /// (R10); `None` after a logged write, whose job the log holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_saved: Option<Box<Project>>,
+    /// Another program saved the job without a log entry and Tectora could
+    /// not tell its edit from the AI's (R10, case 4): Revert all refuses
+    /// (`revert_outside`) until the baseline goes (Accept, R4) or R6 sets
+    /// it anew.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outside: bool,
 }
 
 /// The baseline a user's revert from before the review replaced (R6).
@@ -94,6 +118,11 @@ struct BaselineFile {
     /// `None`: settled, no review.
     #[serde(default)]
     baseline: Option<Baseline>,
+    /// The review mark when the file was written: a newer mark is an Accept
+    /// by a Tectora that writes no baseline (R9 on read, ARCH-2001). `None`
+    /// in a file of round 20: not checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    accepted_ms: Option<u64>,
 }
 
 /// FNV-1a of the job file's bytes as Tectora writes them.
@@ -136,8 +165,11 @@ fn before_entry(e: &ActivityEntry) -> Option<Baseline> {
         project,
         created,
         conflicts: Vec::new(),
+        conflict_was: BTreeMap::new(),
         replaced: None,
         job_digest: None,
+        last_saved: None,
+        outside: false,
     })
 }
 
@@ -181,6 +213,23 @@ pub(super) fn steps_of(log: &[ActivityEntry], b: &Baseline) -> Vec<usize> {
     steps
 }
 
+/// Whether the steps [`steps_of`] lists stand in the job: false when the
+/// list is its fallback (no AI step stands, the job differs from the
+/// baseline by something else), so a banner shows them as history only.
+pub(super) fn steps_stand(log: &[ActivityEntry], b: &Baseline, steps: &[usize]) -> bool {
+    let pos = since_index(log, b.since_ts_ms);
+    let ranges = revert_ranges(log);
+    let by = undone_by(log, &ranges);
+    steps.iter().any(|&i| {
+        i >= pos
+            && by[i].is_none()
+            && match ranges[i] {
+                None => true,
+                Some((u, _)) => u < pos,
+            }
+    })
+}
+
 /// `ours` with the edit from `old` to `new` applied ([`crate::merge`]):
 /// where the edit touches a value `ours` changed too, `ours` keeps its
 /// value and the place is named. `None` when a side cannot be merged.
@@ -194,16 +243,47 @@ fn rebased(old: &Project, ours: &Project, new: &Project) -> Option<(Project, Vec
 
 impl Baseline {
     /// R3: the user's edit from `old` to `new` applied to the baseline,
-    /// and to the one a take-back would bring back.
+    /// and to the one a take-back would bring back. A remembered conflict
+    /// ends when the edit puts the AI's value back or makes the place the
+    /// baseline's (ERR-2002); a place whose value cannot be found stays a
+    /// conflict.
     fn rebase(&mut self, old: &Project, new: &Project) {
         if old == new {
             return;
         }
+        let v = |p: &Project| serde_json::to_value(p).ok();
         if let Some((p, conflicts)) = rebased(old, &self.project, new) {
             self.project = p;
+            let (vo, vn, vb) = (v(old), v(new), v(&self.project));
             for c in conflicts {
                 if self.conflicts.len() < MAX_CONFLICTS && !self.conflicts.contains(&c) {
+                    if let Some(was) = vo.as_ref().and_then(|o| crate::merge::value_at(o, &c))
+                        && was.to_string().len() <= MAX_CONFLICT_VALUE
+                    {
+                        self.conflict_was.insert(c.clone(), was.clone());
+                    }
                     self.conflicts.push(c);
+                }
+            }
+            if let (Some(vn), Some(vb)) = (vn.as_ref(), vb.as_ref()) {
+                let was = &self.conflict_was;
+                let ended = |c: &String| {
+                    let Some(now) = crate::merge::value_at(vn, c) else {
+                        return false;
+                    };
+                    was.get(c).is_some_and(|w| crate::merge::same_value(now, w))
+                        || crate::merge::value_at(vb, c)
+                            .is_some_and(|b| crate::merge::same_value(now, b))
+                };
+                let ended: Vec<String> = self
+                    .conflicts
+                    .iter()
+                    .filter(|c| ended(c))
+                    .cloned()
+                    .collect();
+                self.conflicts.retain(|c| !ended.contains(c));
+                for c in ended {
+                    self.conflict_was.remove(&c);
                 }
             }
         }
@@ -221,7 +301,91 @@ impl Baseline {
                 .conflicts
                 .iter()
                 .all(|c| c.chars().count() <= MAX_CONFLICT_CHARS)
+            && self.conflict_was.len() <= self.conflicts.len()
+            && self.conflict_was.keys().all(|c| self.conflicts.contains(c))
     }
+
+    /// Ends every remembered conflict (R6, R7: the baseline is another
+    /// job).
+    fn clear_conflicts(&mut self) {
+        self.conflicts.clear();
+        self.conflict_was.clear();
+    }
+}
+
+/// R10 for the baseline `b` of a file written after the log entry
+/// `log_ts_ms`, given the log, the job `now` and the digest of its file
+/// `file` (audit 2026-11-24 round 21, ERR-2001, ARCH-2002): when the file is
+/// not what Tectora last wrote, what changed it is found out:
+/// 1. the file is Tectora's last write, or no digest is known: nothing;
+/// 2. entries another program logged since (an older Tectora's MCP) are
+///    R2 for their own change, and a gap between the job known so far and
+///    the `before` of such an entry is an unlogged save, applied like R3;
+/// 3. the job that is left differs from the file: another program's
+///    unlogged save, applied like R3 from the job Tectora last wrote (the
+///    one saved without a log entry, `last_saved`, or the newest logged
+///    one, whose digest is the file's then), so the colleague's edit lands
+///    in the baseline, an edit of a value the AI set is a conflict, and
+///    Revert all keeps it;
+/// 4. that job is not known: `outside`, Revert all refuses; unless the
+///    log's newest entry is the file, which the log then explains.
+///
+/// A file that cannot be read (`now` `None`) is left to Revert all, which
+/// repairs it.
+fn fold_outside(
+    b: &mut Baseline,
+    log_ts_ms: u64,
+    log: &[ActivityEntry],
+    now: Option<&Project>,
+    file: Option<&str>,
+) {
+    let (Some(want), Some(file), Some(now)) = (b.job_digest.clone(), file, now) else {
+        return;
+    };
+    if want == file {
+        return;
+    }
+    let ours = |p: &Project| digest_of(p).as_deref() == Some(want.as_str());
+    let saved = b.last_saved.as_deref().filter(|p| ours(p)).cloned();
+    let mut known: Option<Project> = saved.or_else(|| {
+        log.iter()
+            .rev()
+            .find(|e| e.ts_ms <= log_ts_ms)
+            .and_then(|e| e.after.as_ref())
+            .filter(|p| ours(p))
+            .cloned()
+    });
+    let mut told_apart = true;
+    for e in log.iter().filter(|e| e.ts_ms > log_ts_ms) {
+        work(1);
+        match (&known, &e.before) {
+            (Some(k), Some(before)) if k != before => b.rebase(k, before),
+            (Some(_), Some(_)) => {}
+            (None, Some(before)) if ours(before) => {}
+            _ => told_apart = false,
+        }
+        known = e.after.clone();
+    }
+    match known {
+        Some(k) if told_apart => b.rebase(&k, now),
+        // The log's newest entry is the file (a log rewritten with its
+        // file): the log explains it.
+        _ if log
+            .last()
+            .and_then(|e| e.after.as_ref())
+            .is_some_and(|a| digest_of(a).as_deref() == Some(file)) => {}
+        _ => b.outside = true,
+    }
+    b.job_digest = Some(file.to_string());
+    b.last_saved = Some(Box::new(now.clone()));
+}
+
+/// A baseline left at an id by another job (ARCH-2006: an older Tectora's
+/// delete leaves the file, and a new job takes the id): the log is empty,
+/// or it starts with the creation of a job after the baseline's start.
+fn stray(b: &Baseline, log: &[ActivityEntry]) -> bool {
+    log.first()
+        .is_none_or(|e| e.before.is_none() && e.ts_ms > b.since_ts_ms)
 }
 
 /// What a baseline file says about a job before the entries `log` holds
@@ -231,10 +395,13 @@ enum Stored {
     Missing,
     Settled {
         log_ts_ms: u64,
+        accepted_ms: Option<u64>,
     },
     Open {
         log_ts_ms: u64,
         baseline: Box<Baseline>,
+        /// [`BaselineFile::accepted_ms`].
+        accepted_ms: Option<u64>,
     },
 }
 
@@ -268,10 +435,12 @@ impl Store {
         match f.baseline {
             None => Stored::Settled {
                 log_ts_ms: f.log_ts_ms,
+                accepted_ms: f.accepted_ms,
             },
             Some(b) if b.plausible() => Stored::Open {
                 log_ts_ms: f.log_ts_ms,
                 baseline: Box::new(b),
+                accepted_ms: f.accepted_ms,
             },
             Some(_) => Stored::Missing,
         }
@@ -289,6 +458,7 @@ impl Store {
             format: BASELINE_FORMAT,
             log_ts_ms,
             baseline: baseline.cloned(),
+            accepted_ms: Some(self.reviewed_at(id)),
         };
         if self.dir.is_dir()
             && own_folder(&self.activity_dir()).is_ok()
@@ -329,22 +499,84 @@ impl Store {
     /// The baseline of `id` given its change log `log` and the job `now`
     /// (`None` when the file cannot be read): the file, with entries
     /// another program logged since caught up (R4 when one settles the
-    /// job, then R1 for the AI's next entry); for a job without a file
-    /// (an older Tectora's), derived once from the log. `None`: settled.
+    /// job, then R1 for the AI's next entry), an Accept of a Tectora that
+    /// writes no baseline (R9 from the review mark) and another program's
+    /// unlogged save (R10); for a job without a file (an older Tectora's)
+    /// or a file another job left (ARCH-2006), derived once from the log.
+    /// `None`: settled. The job file is read for its digest when a stored
+    /// baseline needs it ([`Store::review_baseline_at`] when the caller
+    /// has it).
     pub(super) fn review_baseline(
         &self,
         id: &str,
         log: &[ActivityEntry],
         now: Option<&Project>,
     ) -> Option<Baseline> {
-        let (b, newer_than) = match self.stored_baseline(id) {
+        self.review_baseline_at(id, log, now, None)
+    }
+
+    /// [`Store::review_baseline`] with the digest of the job file `now`
+    /// was read from, `file` (`None`: read here when needed).
+    pub(super) fn review_baseline_at(
+        &self,
+        id: &str,
+        log: &[ActivityEntry],
+        now: Option<&Project>,
+        file: Option<&str>,
+    ) -> Option<Baseline> {
+        let (b, newer_than, accepted_ms) = match self.stored_baseline(id) {
             Stored::Missing => return self.derived_baseline(id, log, now),
-            Stored::Settled { log_ts_ms } => (None, log_ts_ms),
+            Stored::Settled {
+                log_ts_ms,
+                accepted_ms,
+            } => (None, log_ts_ms, accepted_ms),
+            Stored::Open { baseline, .. } if stray(&baseline, log) => {
+                return self.derived_baseline(id, log, now);
+            }
             Stored::Open {
                 log_ts_ms,
                 baseline,
-            } => (Some(*baseline), log_ts_ms),
+                accepted_ms,
+            } => (Some(*baseline), log_ts_ms, accepted_ms),
         };
+        let mut b = self.caught_up_logged(log, b, newer_than, now)?;
+        if b.job_digest.is_some() {
+            let read;
+            let file = match file {
+                Some(f) => Some(f),
+                None => {
+                    read = self
+                        .path(id)
+                        .ok()
+                        .and_then(|p| read_regular(&p, MAX_JOB_FILE).ok())
+                        .map(|bytes| {
+                            job_digest(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes))
+                        });
+                    read.as_deref()
+                }
+            };
+            fold_outside(&mut b, newer_than, log, now, file);
+        }
+        // An Accept no baseline was written for (an older Tectora's, or
+        // ours when the write after the mark failed): R9 with its time.
+        let mark = accepted_ms.map(|_| self.reviewed_at(id));
+        if let (Some(at), Some(mark)) = (accepted_ms, mark)
+            && mark > at
+        {
+            return self.accepted(id, log, now, b, mark);
+        }
+        Some(b)
+    }
+
+    /// Catches up the entries another program logged after the file's
+    /// `newer_than` on the stored state `b` (R4, then R1).
+    fn caught_up_logged(
+        &self,
+        log: &[ActivityEntry],
+        b: Option<Baseline>,
+        newer_than: u64,
+        now: Option<&Project>,
+    ) -> Option<Baseline> {
         // An entry another program logged after the file was written (or
         // the user's revert of a Tectora that did not record `undid_from`,
         // which no Tectora with baselines writes) that settles the job (R4):
@@ -421,8 +653,11 @@ impl Store {
         id: &str,
     ) -> Option<(Baseline, Option<Project>, Vec<ActivityEntry>)> {
         let log = self.activity(id);
-        let now = self.load(id).ok();
-        let b = self.review_baseline(id, &log, now.as_ref())?;
+        let (now, file) = match self.load_with_digest(id) {
+            Ok((p, d)) => (Some(p), Some(d)),
+            Err(_) => (None, None),
+        };
+        let b = self.review_baseline_at(id, &log, now.as_ref(), file.as_deref())?;
         is_open(&b, now.as_ref()).then_some((b, now, log))
     }
 
@@ -491,12 +726,18 @@ impl Store {
                             return;
                         }
                         // R7: the take-back of the revert that replaced it.
+                        // A swap, so the take-back of this take-back is R7
+                        // again, any number of times (ARCH-2003).
                         Some(from)
                             if b.replaced.as_ref().is_some_and(|r| r.revert_ts_ms == from) =>
                         {
                             let r = b.replaced.take().expect("checked");
-                            b.project = *r.project;
-                            b.conflicts.clear();
+                            let old = std::mem::replace(&mut b.project, *r.project);
+                            b.replaced = Some(Replaced {
+                                revert_ts_ms: ts_ms,
+                                project: Box::new(old),
+                            });
+                            b.clear_conflicts();
                         }
                         // R6: the user reverted work settled before the
                         // review: the job they wrote is the baseline.
@@ -506,7 +747,8 @@ impl Store {
                                 revert_ts_ms: ts_ms,
                                 project: Box::new(old),
                             });
-                            b.conflicts.clear();
+                            b.clear_conflicts();
+                            b.outside = false;
                         }
                         // R5: a revert inside the review moves the job only.
                         Some(_) => {}
@@ -515,8 +757,10 @@ impl Store {
                 Some(b)
             }
         };
+        // The job is the log's now (R10 reads it from the newest entry).
         let next = next.map(|mut b| {
             b.job_digest = digest();
+            b.last_saved = None;
             b
         });
         self.write_baseline(id, ts_ms, next.as_ref());
@@ -526,43 +770,66 @@ impl Store {
     /// the lock, read here when not given): applied to an open baseline.
     /// Only the baseline file is read when no review is open. Returns the
     /// raw file to put back if the job write fails.
+    ///
+    /// The file's digest `file` (read here when not given) first goes
+    /// through R10, so another program's save before this one is folded in
+    /// before the digest moves on (ERR-2001); the entries another program
+    /// logged and an Accept without a baseline are caught up the same way,
+    /// and the file is written as of the newest entry.
     pub(super) fn baseline_on_unlogged(
         &self,
         id: &str,
-        old: Option<&Project>,
+        old: Option<(&Project, &str)>,
         new: &Project,
     ) -> Option<Option<Vec<u8>>> {
         let Stored::Open {
-            log_ts_ms,
-            baseline: mut b,
+            log_ts_ms: stored_ts,
+            baseline: stored,
+            ..
         } = self.stored_baseline(id)
         else {
             return None;
         };
         let raw = self.baseline_file_bytes(id);
         let read;
-        let old = match old {
-            Some(o) => Some(o),
+        let (old, file) = match old {
+            Some((o, d)) => (Some(o), Some(d)),
             None => {
-                read = self.load(id).ok();
-                read.as_ref()
+                read = self.load_with_digest(id).ok();
+                (
+                    read.as_ref().map(|(p, _)| p),
+                    read.as_ref().map(|(_, d)| d.as_str()),
+                )
             }
+        };
+        let log = self.activity(id);
+        let newest = log.last().map_or(0, |e| e.ts_ms);
+        let Some(mut b) = self.review_baseline_at(id, &log, old, file) else {
+            self.write_baseline(id, newest, None);
+            return Some(raw);
         };
         if let Some(old) = old {
             b.rebase(old, new);
         }
         b.job_digest = digest_of(new);
-        self.write_baseline(id, log_ts_ms, Some(&b));
+        b.last_saved = Some(Box::new(new.clone()));
+        // Nothing to write when the file says this already (an autosave
+        // of the same job).
+        if *stored != b || stored_ts != newest {
+            self.write_baseline(id, newest, Some(&b));
+        }
         Some(raw)
     }
 
     /// R9: the user accepted every entry up to `accepted_ms`. The caller
-    /// holds the job's lock.
+    /// holds the job's lock and wrote the review mark.
     pub(super) fn baseline_on_accept(&self, id: &str, accepted_ms: u64) {
         let log = self.activity(id);
-        let now = self.load(id).ok();
+        let read = self.load_with_digest(id).ok();
+        let now = read.as_ref().map(|(p, _)| p);
+        let file = read.as_ref().map(|(_, d)| d.as_str());
         let newest = log.last().map_or(0, |e| e.ts_ms);
-        let Some(prior) = self.review_baseline(id, &log, now.as_ref()) else {
+        let Some(prior) = self.review_baseline_at(id, &log, now, file) else {
             // Settled already (written, so an older Tectora's log is
             // never read for it again).
             if !matches!(self.stored_baseline(id), Stored::Settled { .. }) {
@@ -570,23 +837,44 @@ impl Store {
             }
             return;
         };
-        let later = log
-            .iter()
-            .position(|e| e.ts_ms > accepted_ms && is_ai(e) && e.ts_ms >= prior.since_ts_ms);
-        let next = later.and_then(|k| {
-            let mut b = before_entry(&log[k])?;
-            if prior.created && b.created {
-                return Some(prior.clone());
-            }
-            if let Some(now) = now.as_ref()
-                && let Ok(p) = undo_onto(id, &log, k, Some(now.clone()))
-            {
-                b.project = p;
-            }
-            b.job_digest = prior.job_digest.clone();
-            Some(b)
-        });
+        let next = self.accepted(id, &log, now, prior, accepted_ms);
         self.write_baseline(id, newest, next.as_ref());
+    }
+
+    /// R9 on the baseline `prior`, in memory: every entry up to
+    /// `accepted_ms` is accepted. `None`: settled; with an AI entry newer
+    /// than `accepted_ms` from the review's start on, the job `now` without
+    /// the AI's entries from that one on (the user's unlogged edits kept).
+    /// The same for our Accept and for one read from the review mark
+    /// (ARCH-2001), so applying it twice gives the same baseline.
+    fn accepted(
+        &self,
+        id: &str,
+        log: &[ActivityEntry],
+        now: Option<&Project>,
+        prior: Baseline,
+        accepted_ms: u64,
+    ) -> Option<Baseline> {
+        let k = log
+            .iter()
+            .position(|e| e.ts_ms > accepted_ms && is_ai(e) && e.ts_ms >= prior.since_ts_ms)?;
+        let mut b = before_entry(&log[k])?;
+        if prior.created && b.created {
+            return Some(prior);
+        }
+        let mut kept = false;
+        if let Some(now) = now
+            && let Ok(p) = undo_onto(id, log, k, Some(now.clone()))
+        {
+            b.project = p;
+            kept = true;
+        }
+        b.job_digest = prior.job_digest;
+        b.last_saved = prior.last_saved;
+        // Taken from the job as it is, the baseline holds every edit saved
+        // without a log entry, another program's too.
+        b.outside = prior.outside && !kept;
+        Some(b)
     }
 
     /// The baseline of an open review of `id` (ADR 0007), `None` when no
@@ -621,13 +909,13 @@ impl Store {
         }
         let _lock = self.lock_briefly(id)?;
         let log = self.activity(id);
-        let now = match self.load(id) {
-            Ok(p) => Some(p),
+        let (now, file) = match self.load_with_digest(id) {
+            Ok((p, d)) => (Some(p), Some(d)),
             Err(e @ StoreError::NewerFormat { .. }) => return Err(e),
-            Err(_) => None,
+            Err(_) => (None, None),
         };
         let b = self
-            .review_baseline(id, &log, now.as_ref())
+            .review_baseline_at(id, &log, now.as_ref(), file.as_deref())
             .filter(|b| b.since_ts_ms == since_ts_ms)
             .ok_or_else(stale)?;
         self.revert_to_baseline(id, &log, &b, actor, reason)
@@ -638,7 +926,8 @@ impl Store {
     /// `since_ts_ms` (from the AI's first step after its creation for an
     /// AI's new job, which stays). Refused, with nothing written, while
     /// the user edited a value the AI set (`revert_conflict`), when
-    /// another program saved the job unlogged since (`revert_outside`),
+    /// another program's unlogged save could not be told apart from the
+    /// AI's changes (`revert_outside`, R10),
     /// and for a baseline outside the limits (`revert_out_of_limits`,
     /// `_damaged` when the job file cannot be read either). Counts as
     /// [`Store::revert_to_counted`]: `undone` the changes undone,
@@ -657,6 +946,16 @@ impl Store {
                 detail: b.conflicts.join(", "),
             });
         }
+        // R10, case 4: another program's unlogged save that could not be
+        // told apart from the AI's changes (the digest itself is checked
+        // where the baseline is read, `fold_outside`).
+        if b.outside {
+            return Err(StoreError::RevertOutside {
+                id: id.to_string(),
+                detail: "the job file was saved by another program while the AI's changes waited, and its edit cannot be told apart from the AI's"
+                    .into(),
+            });
+        }
         let mut damaged = false;
         let now = match self.load(id) {
             Ok(p) => Some(p),
@@ -669,17 +968,6 @@ impl Store {
                 None
             }
         };
-        if now.is_some()
-            && let Some(want) = &b.job_digest
-            && let Ok(bytes) = read_regular(&self.path(id)?, MAX_JOB_FILE)
-            && job_digest(&bytes) != *want
-        {
-            return Err(StoreError::RevertOutside {
-                id: id.to_string(),
-                detail: "the job file was saved by another program while the AI's changes waited"
-                    .into(),
-            });
-        }
         b.project.check_limits().map_err(|detail| {
             let id = id.to_string();
             if damaged {
@@ -689,8 +977,13 @@ impl Store {
             }
         })?;
         let pos = since_index(log, b.since_ts_ms);
-        // The AI's creation stays: counted and named from the step after it.
-        let from = if b.created && pos < log.len() {
+        // The AI's creation stays: counted and named from the step after
+        // it, when the log still holds it (ARCH-2005).
+        let from = if b.created
+            && log
+                .get(pos)
+                .is_some_and(|e| e.ts_ms == b.since_ts_ms && e.before.is_none())
+        {
             pos + 1
         } else {
             pos
@@ -768,8 +1061,11 @@ impl Store {
                 project: before.clone(),
                 created: false,
                 conflicts: Vec::new(),
+                conflict_was: BTreeMap::new(),
                 replaced: None,
                 job_digest: digest_of(before),
+                last_saved: None,
+                outside: false,
             };
             self.write_baseline(id, log.last().map_or(0, |e| e.ts_ms), Some(&b));
         }
@@ -791,7 +1087,11 @@ impl Store {
             b.project = p;
         }
         b.replaced = None;
+        // The copy is written without a log entry: its own job is the base
+        // for another program's save (R10), and nothing outside is in it.
         b.job_digest = digest_of(copy);
+        b.last_saved = Some(Box::new(copy.clone()));
+        b.outside = false;
         let pos = since_index(&log, b.since_ts_ms);
         let lines: String = log[pos..]
             .iter()

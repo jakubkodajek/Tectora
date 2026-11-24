@@ -41,7 +41,7 @@ programs; Codex in the ChatGPT desktop app can.
 | Tool | Purpose |
 | --- | --- |
 | `tectora_guide` | Model conventions (DACAD terms, units) and the drawing-to-roof workflow |
-| `list_projects`, `get_project`, `calc` | Search the library (text, status, AI change, dates, area, sort), read designs, edge tables, dormers, quantities by DACAD line code, per-part warnings, calculation errors and the parts each roof is joined with, stored result |
+| `list_projects`, `get_project`, `calc` | Search the library (text, status, AI change, waiting review, dates, area, sort; each job's `review_pending` counts the AI steps that wait for review), read designs, edge tables, dormers, quantities by DACAD line code, per-part warnings, calculation errors and the parts each roof is joined with, stored result |
 | | A job too complex to calculate (buildings stacked on each other, work bound of `tectora_core::work`): `calc`, `calc_breakdown`, `export_list` and `export_plan` refuse it with "too complex to calculate"; `get_project` still returns its walls and objects with `too_complex: true` and a `note` and leaves out `quantities`, `placements` and `stored_result`, so the AI can remove the copies (`delete_items`); `list_projects` marks it `too_complex` |
 | | Unknown top-level keys of a job (written by another tool) are kept as they are, up to 64 KB and 32 levels of nesting; a job nested deeper is refused everywhere with `too_many: … unknown keys nested too deep` (read, calculation, import), the same as in the app, and a key named `__proto__` is dropped when a job is read. When another program makes a job too deep while it is open in the app, the editor's next save writes its own copy over it, as it repairs a damaged file; the editor keeps a notice up meanwhile ("Another program changed this job"), the status bar does not say saved, and the store's answer (`repaired` on a checked save and on a revert, `replaced_unreadable_file` in an MCP revert) says when that program's file was replaced (the app's notice names the job and stays over the library after Back). A job a newer Tectora writes while it is open is never written over: the editor keeps a notice up ("A newer Tectora saved this job") and its status bar says so instead of saved; `tectora info` refuses such a file as `calc` does (exit 1). A revert to an earlier version outside the limits answers `revert_out_of_limits`, or `revert_out_of_limits_damaged` when the job file itself cannot be read |
 | `calc_breakdown` | How every face area and line length was calculated, step by step (the app's Calculation tab) |
@@ -167,11 +167,33 @@ stay a `folder_request` the user allows or keeps.
   review it showed (`revert_changes` with `review: true`,
   `Store::revert_review`): when that review is over by now (accepted,
   reverted, or another one) the answer is `revert_stale` and nothing is
-  written (ERR-1905). An older Tectora on the same folder does not apply
-  the merge for its unlogged saves: the baseline records a digest of the
-  job as Tectora last wrote it, and Revert all then answers
-  `revert_outside` (Accept and the Revert of single steps still work); an
-  older Tectora's logged entries are caught up on read. A job of an older
+  written (ERR-1905). Another program's unlogged save (an older Tectora on
+  the same folder, a sync tool, a hand edit; R10, round 21 ERR-2001, owner
+  decision 1) is the colleague's edit: the baseline records a digest of the
+  job as Tectora last wrote it and that job itself when the write had no
+  log entry (`last_saved`); on every read and before every write a file
+  with another digest is folded into the baseline like an editor save,
+  from the job Tectora last wrote (or the `before` of an entry another
+  program logged), so Revert all keeps the edit and an edit of a value the
+  AI set is a conflict. Only when that job is not known (a baseline file of
+  round 20) the baseline is marked `outside` and Revert all answers
+  `revert_outside` until Accept (the Revert of single steps still works).
+  An older Tectora's logged entries are caught up on read, and so is its
+  Accept, which writes only the review mark: the file records the mark it
+  was written with (`accepted_ms`) and a newer mark is R9 (ARCH-2001). A
+  remembered conflict ends when the user puts the AI's value back or types
+  the settled one (ERR-2002); the take-back of the take-back of a revert
+  past accepted work swaps the baselines again (R7, ARCH-2003); a baseline
+  file another job left at the id (an older Tectora's delete) counts as
+  missing (ARCH-2006). `review_status` also carries `changes`, the
+  baseline against the job now, which the banner's change line and the
+  plan's marks show (owner decision 4 of round 21: the net difference
+  against the approved state; each step's own change is in the AI tab),
+  `before_rev` (a digest of the baseline, for the editor's drawing of the
+  roof before) and `steps_stand` (false when the listed steps are history).
+  The library card's `review_pending` is the number of waiting steps: the
+  library's "waits for review" mark and filter and MCP `list_projects`
+  (`review_pending: true`) read it (owner decision 3 of round 21). A job of an older
   Tectora (no baseline file) gets its review from the log once, by the
   round-19 rule, and the file is written at its next write. The file is
   read only as a regular file (never through a link) of bounded size; a
