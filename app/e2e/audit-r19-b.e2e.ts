@@ -348,12 +348,17 @@ test.describe("round 19, HUNT-1805: Restore of a job the AI already brought back
     await app.open({ prefs: { followAi: false } });
     await app.openJob(name);
     await app.answerConfirm(true);
+    // The preview bridge's poll that sees the file gone (audit 2026-11-24
+    // TEST-1904): a restore inside the same poll would leave the file as it
+    // was and no event would come.
+    const id = created.id as string;
+    const gone = page.waitForResponse(async (r) => r.url().endsWith("/__events") && (await r.text()).includes(id), { timeout: 20_000 });
     await review(page).getByTestId("review-delete").click();
     await expect(page.locator("header .brand")).toBeVisible();
     const toast = app.toasts().filter({ hasText: cs("home.deleted", { name }) });
     await expect(toast).toHaveCount(1);
     const entry = (await mcp.call("list_deleted", {})).find((e: any) => e.id === created.id).entry as string;
-    return { id: created.id as string, toast, entry };
+    return { id, toast, entry, gone };
   }
 
   test("Restore pressed after the AI restored the entry says it is no longer in the trash, not that the job is gone (HUNT-1805)", async ({ app, page, mcp }) => {
@@ -380,7 +385,8 @@ test.describe("round 19, HUNT-1805: Restore of a job the AI already brought back
 
   test("the delete notice goes by itself once the AI has restored its entry (HUNT-1805)", async ({ app, page, mcp }) => {
     const name = "R19 obnoveno samo";
-    const { toast, entry } = await deletedFromBanner(app, page, mcp, name);
+    const { toast, entry, gone } = await deletedFromBanner(app, page, mcp, name);
+    await gone;
     await mcp.call("restore_project", { entry, summary: "Zakázka zpět" });
     await expect(page.getByRole("row").filter({ hasText: name })).toHaveCount(1);
     await expect(toast).toHaveCount(0);
