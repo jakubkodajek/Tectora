@@ -441,6 +441,14 @@ export interface ActivityItem extends ActivityInfo {
   undone?: boolean;
   /** The entry created the job (no version before it): no Revert is drawn on it and Revert all stops after it (HUNT-1601). */
   created?: boolean;
+  /** For a revert: the times of the changes it took out of the job, oldest first, at most 20 (store.rs `ActivityItem::took_out`, UX-1701). Absent for a change and from an older bridge. */
+  took_out?: number[];
+  /** For a revert: how many changes it took out (`took_out` is capped). */
+  took_out_count?: number;
+  /** For a revert: the times of the changes it put back into the job (a take-back of a revert), oldest first, at most 20. */
+  put_back?: number[];
+  /** For a revert: how many changes it put back. */
+  put_back_count?: number;
 }
 
 /**

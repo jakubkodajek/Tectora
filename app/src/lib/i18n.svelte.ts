@@ -1085,6 +1085,12 @@ const cs: Dict = {
   "folderReq.reason": "Důvod od {by}:",
   "editor.outsideNewer": "Tuto zakázku mezitím uložila novější verze Tectory. Změny provedené zde přes ni nelze uložit.",
   "editor.outsideNewerState": "Uložila novější verze",
+  // Audit 2026-11-24 UX-1701, ERR-1703: a revert of a revert says what it did.
+  "ai.putBackOne": "Obnovena změna AI: {s}",
+  "ai.revertedMixed": "Změny AI: vráceno {n}, obnoveno {m}",
+  "chg.putBack": "Obnoveno: {s}",
+  "chg.putBackMany": "Obnoveno změn: {n}, od: {s}",
+  "chg.revertedMixed": "Vráceno změn: {n}, obnoveno: {m}, od: {s}",
 };
 
 const sk: Dict = {
@@ -2161,6 +2167,12 @@ const sk: Dict = {
   "folderReq.reason": "Dôvod od {by}:",
   "editor.outsideNewer": "Túto zákazku medzitým uložila novšia verzia Tectory. Zmeny urobené tu cez ňu nemožno uložiť.",
   "editor.outsideNewerState": "Uložila novšia verzia",
+  // Audit 2026-11-24 UX-1701, ERR-1703: a revert of a revert says what it did.
+  "ai.putBackOne": "Obnovená zmena AI: {s}",
+  "ai.revertedMixed": "Zmeny AI: vrátené {n}, obnovené {m}",
+  "chg.putBack": "Obnovené: {s}",
+  "chg.putBackMany": "Obnovené zmeny: {n}, od: {s}",
+  "chg.revertedMixed": "Vrátené zmeny: {n}, obnovené: {m}, od: {s}",
 };
 
 const en: Dict = {
@@ -3237,6 +3249,12 @@ const en: Dict = {
   "folderReq.reason": "Reason given by {by}:",
   "editor.outsideNewer": "A newer Tectora saved this job. Changes made here cannot be saved over it.",
   "editor.outsideNewerState": "Saved by a newer Tectora",
+  // Audit 2026-11-24 UX-1701, ERR-1703: a revert of a revert says what it did.
+  "ai.putBackOne": "AI change put back: {s}",
+  "ai.revertedMixed": "AI changes: {n} reverted, {m} put back",
+  "chg.putBack": "Put back: {s}",
+  "chg.putBackMany": "Put back {n} changes since: {s}",
+  "chg.revertedMixed": "Reverted {n} and put back {m} changes since: {s}",
 };
 
 const de: Dict = {
@@ -4313,6 +4331,12 @@ const de: Dict = {
   "folderReq.reason": "Begründung von {by}:",
   "editor.outsideNewer": "Eine neuere Tectora-Version hat diesen Auftrag gespeichert. Hier vorgenommene Änderungen können nicht darüber gespeichert werden.",
   "editor.outsideNewerState": "Neuere Version gespeichert",
+  // Audit 2026-11-24 UX-1701, ERR-1703: a revert of a revert says what it did.
+  "ai.putBackOne": "KI-Änderung zurückgeholt: {s}",
+  "ai.revertedMixed": "KI-Änderungen: {n} verworfen, {m} zurückgeholt",
+  "chg.putBack": "Zurückgeholt: {s}",
+  "chg.putBackMany": "{n} Änderungen zurückgeholt seit: {s}",
+  "chg.revertedMixed": "{n} Änderungen verworfen und {m} zurückgeholt seit: {s}",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };

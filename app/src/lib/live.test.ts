@@ -524,3 +524,75 @@ describe("historyText of reverts of AI steps (UX-1603, UX-1601)", () => {
     expect(entryKind({ actor: "user", summary: "Reverted: x" })).toBe("revert");
   });
 });
+
+// Audit 2026-11-24 UX-1701, UI-1703, ERR-1703, HUNT-1704 (design C): the
+// history says what the user's revert did to the AI's change, from the
+// core's `took_out` / `put_back`, never from the actors along a chain of
+// reverts; a revert of a revert quotes a change, never another revert.
+describe("historyText by what a revert did (UX-1701, ERR-1703)", () => {
+  const rev = "revert" as const;
+  // AI change B, the AI's own revert, the user's Undo (B back), the user's Redo (B out).
+  const own = [
+    { ts_ms: 50, actor: "user", summary: "Reverted: B", undid_from: 40, kind: rev, took_out: [20], put_back: [] },
+    { ts_ms: 40, actor: "user", summary: "Put back: B", undid_from: 30, kind: rev, took_out: [], put_back: [20] },
+    { ts_ms: 30, actor: "claude", summary: "Reverted: B (reason: AI takes it back)", reason: "AI takes it back", undid_from: 20, kind: rev, took_out: [20], put_back: [] },
+    { ts_ms: 20, actor: "claude", summary: "B", kind: null },
+    { ts_ms: 10, actor: "user", summary: "Created", kind: null },
+  ];
+  // Revert all of A1 and A2, then the user's take-back three times.
+  const chain = [
+    { ts_ms: 80, actor: "user", summary: "Put back 2 changes since: A1", undid_from: 70, kind: rev, took_out: [], put_back: [20, 25] },
+    { ts_ms: 70, actor: "user", summary: "Reverted 2 changes since: A1", undid_from: 60, kind: rev, took_out: [20, 25], put_back: [] },
+    { ts_ms: 60, actor: "user", summary: "Put back 2 changes since: A1", undid_from: 50, kind: rev, took_out: [], put_back: [20, 25] },
+    { ts_ms: 50, actor: "user", summary: "Reverted 2 changes since: A1", undid_from: 20, kind: rev, took_out: [20, 25], put_back: [] },
+    { ts_ms: 25, actor: "claude", summary: "A2", kind: null },
+    { ts_ms: 20, actor: "claude", summary: "A1", kind: null },
+    { ts_ms: 10, actor: "user", summary: "Created", kind: null },
+  ];
+
+  it("says put back and reverted by the effect, in every language", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const d = DICTS[locale];
+      const q = (s: string) => d["ai.quoted"].replace("{s}", s);
+      // The Undo of the AI's own revert put B back; the Redo took it out.
+      expect(historyText(own[1], own), locale).toBe(d["ai.putBackOne"].replace("{s}", q("B")));
+      expect(historyText(own[0], own), locale).toBe(d["ai.revertedOne"].replace("{s}", q("B")));
+      // Several AI changes: the short sentences, alternating down the chain.
+      expect(historyText(chain[3], chain), locale).toBe(d["ai.revertedEntry"]);
+      expect(historyText(chain[2], chain), locale).toBe(d["ai.revertTakenBack"]);
+      expect(historyText(chain[1], chain), locale).toBe(d["ai.revertedEntry"]);
+      expect(historyText(chain[0], chain), locale).toBe(d["ai.revertTakenBack"]);
+      // One out and one in.
+      const mixed = { ts_ms: 90, actor: "user", summary: "Reverted 1 and put back 1 changes since: A1", undid_from: 60, kind: rev, took_out: [25], put_back: [20] };
+      expect(historyText(mixed, chain), locale).toBe(d["ai.revertedMixed"].replace("{n}", "1").replace("{m}", "1"));
+      // The new keys are there and say different things.
+      for (const k of ["ai.putBackOne", "ai.revertedMixed", "chg.putBack", "chg.putBackMany", "chg.revertedMixed"]) {
+        expect(d[k], `${locale} ${k}`).toBeTruthy();
+      }
+      expect(d["ai.putBackOne"], locale).not.toBe(d["ai.revertedOne"]);
+    }
+    i18n.locale = "cs";
+  });
+
+  it("never stacks the revert sentence and quotes the change", () => {
+    i18n.locale = "en";
+    for (const a of [...own.slice(0, 2), ...chain.slice(0, 4)]) {
+      const text = entryText(a, a.ts_ms >= 50 && a.summary.includes("2 changes") ? chain : own);
+      expect(text.match(/Reverted|Put back/g)?.length ?? 0, text).toBeLessThanOrEqual(1);
+    }
+    expect(entryText(chain[0], chain)).toBe("Put back 2 changes since: “A1”");
+    expect(entryText(own[1], own)).toBe("Put back: “B”");
+    // An AI's revert_to of the user's revert: its own sentence, the AI's words quoted.
+    const ai = { ts_ms: 60, actor: "claude", summary: "Put back: B (reason: back in)", reason: "back in", undid_from: 50, kind: rev, took_out: [], put_back: [20] };
+    expect(historyText(ai, own)).toBe("Put back: “B” (reason: back in)");
+    // The user's revert that moved no AI change keeps its sentence.
+    const mine = [
+      { ts_ms: 30, actor: "user", summary: "Put back: Mine", undid_from: 25, kind: rev, took_out: [], put_back: [20] },
+      { ts_ms: 25, actor: "user", summary: "Reverted: Mine", undid_from: 20, kind: rev, took_out: [20], put_back: [] },
+      { ts_ms: 20, actor: "user", summary: "Mine", kind: null },
+    ];
+    expect(historyText(mine[0], mine)).toBe("Put back: Mine");
+    i18n.locale = "cs";
+  });
+});
