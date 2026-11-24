@@ -3,7 +3,8 @@
 - **Status:** Proposed
 - **Date:** 2026-11-24
 - **Deciders:** Jakub Kodajek (to accept; owner decision 1 of audit round 20,
-  recommended option a)
+  recommended option a; amended by round 21, owner decisions 1, 3, 4 and 5,
+  recommended options, pending)
 - **Supersedes:** the mechanism of ADR-0006 (option 3, versions from the log).
   ADR-0006's invariants stay; how they are kept changes.
 
@@ -52,7 +53,7 @@ rebase would swallow the reopened review after an Undo of Revert all.
    engine's recalculation settle (no baseline); R5 the user's revert from
    inside the review leaves it; R6 the user's revert from before it (Ctrl+Z
    past accepted work) makes the job it writes the baseline, R7 its take-back
-   brings the old one back; R8 with no baseline, the user's revert that puts
+   swaps the two baselines (amended in round 21, below); R8 with no baseline, the user's revert that puts
    back an AI change which did not stand at the last Accept starts one; R9
    Accept drops it, or starts it again before an AI entry newer than the
    accepted time.
@@ -70,6 +71,78 @@ reverts and take-backs do not rebase (R5), so Undo of Revert all reopens the
 review. The random mixes that broke every log rule pass (t1905 at 80 steps
 over 30 seeds, t2001 with user changes, AI take-backs, AI-created jobs,
 Revert all followed by Undo and logs past the trim).
+
+## Amendments of round 21 (audit 2026-11-24, commit fca71c3)
+
+Status unchanged: Proposed, for Jakub to accept with the round-20 text.
+
+- **R10: another program's unlogged save is the colleague's edit**
+  (ERR-2001, ARCH-2002; owner decision 1, option a). Round 20 refreshed the
+  job's digest on every write without comparing it first, so an older
+  Tectora's save followed by one more Tectora write (an AI step, a per-step
+  revert, an editor save) was taken out by Revert all without a word, and an
+  older Tectora's *logged* AI write was refused as an outside save. Now one
+  function (`fold_outside`) runs on every read of the baseline and before
+  every write sets a new digest: when the file is not what Tectora last
+  wrote, entries another program logged since are R2 for their own change
+  and a gap before their `before` is an unlogged save; what is left is
+  applied to the baseline like R3, from the job Tectora last wrote (the
+  file now keeps the job of an unlogged write, `last_saved`, so this base
+  is always known for files of this version; for a logged write the log's
+  entry is the base). The colleague's edit therefore stays through Revert
+  all, an edit of a value the AI set is a conflict, and after the per-step
+  reverts the job is its baseline and the review closes. Only when the base
+  is not known (a baseline file of round 20 after an editor save) the
+  baseline is marked `outside` and Revert all answers `revert_outside`
+  until Accept, R4 or R6; nothing is lost silently.
+- **An older Tectora's Accept is read from the review mark** (ARCH-2001).
+  A Tectora without baseline files accepts by writing the review mark only.
+  The baseline file now records the mark it was written with
+  (`accepted_ms`); a newer mark on read is R9 with that time, in memory,
+  and the next write persists it (the same pure rule as our own Accept, so
+  applying it twice gives the same baseline). Not "mark newer than
+  `since_ts_ms`" (R8 opens reviews whose start is at or below the mark) nor
+  "newer than `log_ts_ms`" (the editor accepts with an entry's own time).
+  A file of round 20 (no `accepted_ms`) is not checked.
+- **R7 is a swap** (ARCH-2003): the take-back of a revert past accepted work
+  brings the old baseline back and keeps the one it replaced, under the
+  take-back's own time, so Undo, Redo, Undo, Redo alternate "no review" and
+  "review" any number of times.
+- Also: a remembered conflict ends when the user puts the AI's value back or
+  makes the place the baseline's again (`conflict_was`, ERR-2002); a
+  baseline file another job left at the id counts as missing (the log is
+  empty or starts with a creation after the baseline's start, ARCH-2006);
+  Revert all of an AI's new job whose creation the trim took out counts
+  from the first kept step (ARCH-2005); the file is at most three jobs'
+  size (`3 * MAX_JOB_FILE + MAX_SMALL_FILE`).
+- The banner's change line and the plan's marks are `review_status.changes`,
+  the baseline against the job now (owner decision 4); `before_rev` tells
+  the editor when the baseline moved; the library card's `review_pending`
+  feeds a "waits for review" mark and filter, also in MCP `list_projects`
+  (owner decision 3).
+- Test expectations changed by these amendments (rule 4 of AGENTS.md; this
+  ADR is the written decision, pending Jakub):
+  - `y_revert_all_refuses_after_another_programs_unlogged_save`, renamed
+    `y_revert_all_keeps_another_programs_unlogged_save`: Revert all writes
+    and keeps the other program's job number, and so does the Revert of the
+    single step (was: Revert all answered `revert_outside`). The refusal is
+    kept for the case it still applies to,
+    `r10_an_outside_save_that_cannot_be_told_apart_is_refused_and_sticks`.
+  - `y_an_out_of_order_log_lists_what_its_revert_left`: the first Revert all
+    writes, because the file is the job of the log's newest entry (was:
+    `revert_outside`, then the test saved the job once more and Revert all
+    wrote). The listed steps and the job written are unchanged.
+  - `y_undo_past_accepted_work_and_its_redo_keep_the_review_right`: extended
+    (Undo, Redo, Undo, Redo and the banner's Revert all); no assertion
+    changed.
+  - `t2001` (random mixes): extended with another program's unlogged save
+    (invariant: nothing takes out a value no AI entry wrote) and an Accept
+    up to the first shown step (the later ones still wait); the oracle's
+    "job without unlogged edits" also leaves out the name, which only that
+    save writes. No check was removed or loosened.
+  - `err.revert_outside` (all four languages) ends with "revert the AI's
+    steps one by one in the AI tab, or accept them" (was: "accept or revert
+    the AI's changes one by one", but Accept is not per step).
 
 ## Consequences
 
@@ -114,12 +187,12 @@ Revert all followed by Undo and logs past the trim).
   together: the baseline is written first and put back when the job write
   fails; a lost baseline write is caught up from the log on read (R1, R4).
   An older Tectora on the same folder does not apply R3: its unlogged saves
-  would look like part of the review, so the baseline records a digest of
-  the job as Tectora last wrote it and Revert all then answers
+  are folded in by R10 from the digest of the job as Tectora last wrote it,
+  and only an edit that cannot be told apart makes Revert all answer
   `revert_outside` (Accept and the Revert of single steps still work); its
-  logged entries are caught up on read. The file is untrusted input: read
-  only as a regular file, never through a link, at most two jobs' size; a
-  damaged one counts as missing.
+  logged entries and its Accept are caught up on read. The file is
+  untrusted input: read only as a regular file, never through a link, at
+  most three jobs' size; a damaged one counts as missing.
 - Migration: a job without a baseline file (written by an older Tectora) gets
   its review from the log once, by the round-19 rule, with what its Revert
   all would have written; the file is written at the next write (also by
@@ -134,3 +207,8 @@ Revert all followed by Undo and logs past the trim).
   ARCH-1901, TEST-1901, TEST-1902, UX-1901, HUNT-1901, ERR-1905, UX-1905.
 - `crates/tectora-core/src/store/baseline.rs`; store tests `t2001`-`t2004`,
   `arch1901_*`, `hunt1901_shape`, `y_*`, `t1905_long_mixes_cross_the_log_trim`.
+- Audit 2026-11-24 round 21, `verify/verdicts-rules.md` section 1 (1a-1e) and
+  section 4, owner decisions 1, 3, 4 and 5; findings ERR-2001, ERR-2002,
+  ARCH-2001 to ARCH-2006, UX-2001, UX-2003, TEST-2002, TEST-2005; store tests
+  `r10_*`, `arch2001_*` to `arch2006_*`, `err2002_*`, `ux2001_*`,
+  `t2101`-`t2105`.
