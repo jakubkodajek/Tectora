@@ -435,18 +435,42 @@ test.describe("round-7 audit: what is not the user's waits for the end of the dr
 
   test("leaving the job while a dormer is dragged and a typed width is still with the core closes it and keeps both (TEST-705 E5, ERR-501)", async ({ app, page, mcp }) => {
     const { id, pre } = await stage(app, page, mcp, "Odchod s šířkou");
-    let hold = true;
-    await slow(page, "check_dormer", 3000, () => hold);
+    // Deterministic (audit round 18, TEST known flake): the width's answer
+    // and the leave's re-ask of it on the dragged job (jobedits rule 5) are
+    // each held by a gate the test opens itself, so no timer races the 5 s
+    // bound and the width is with the core at Back in every run.
+    let open1!: () => void;
+    let open2!: () => void;
+    const gate1 = new Promise<void>((r) => (open1 = r));
+    const gate2 = new Promise<void>((r) => (open2 = r));
+    let calls = 0;
+    await page.route(/\/check_dormer$/, async (r: Route) => {
+      calls++;
+      if (calls === 1) await gate1;
+      else if (calls === 2) await gate2;
+      await r.continue();
+    });
     const db = await selectDormer(page, 1);
     await typeInto(page, db.getByLabel(cs("dormer.width")), "2,5");
     await page.keyboard.press("Enter");
-    // At once a drag of another dormer: its pause holds the width's answer.
+    // The width is with the core (its answer is held) before the drag starts.
+    await expect.poll(() => calls).toBe(1);
+    // At once a drag of another dormer.
     const a = await aim(page, "object");
     await pressAt(page, a.at);
     await moveSteps(page, a, 1, 6);
     await page.locator("header .icon-btn").first().dispatchEvent("click");
+    // The leave waits for the width: the editor stays while its answer is held.
+    await page.waitForTimeout(300);
+    await expect(page.locator(".editor")).toBeVisible();
+    expect(calls).toBe(1);
+    open1();
+    // The leave asks the width again on the dragged job, and waits for that answer too.
+    await expect.poll(() => calls).toBe(2);
+    await page.waitForTimeout(300);
+    await expect(page.locator(".editor")).toBeVisible();
+    open2();
     await expect(page.locator(".editor")).toBeHidden({ timeout: 5000 });
-    hold = false;
     await page.mouse.up();
     const p = await waitForProject(id, (q) => dormerWidth(q.dormers[0]) === 2.5 && moved("object", pre)(q), 6000);
     expect(dormerWidth(p.dormers[1])).toBe(1.5);
