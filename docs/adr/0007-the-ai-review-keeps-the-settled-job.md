@@ -1,6 +1,6 @@
 # ADR-0007: The AI review keeps a copy of the job as the user last settled it
 
-- **Status:** Proposed
+- **Status:** Accepted by Jakub on 2026-11-24, with the round-20 text and the round-21 amendments
 - **Date:** 2026-11-24
 - **Deciders:** Jakub Kodajek (to accept; owner decision 1 of audit round 20,
   recommended option a; amended by round 21, owner decisions 1, 3, 4 and 5,
@@ -74,7 +74,7 @@ Revert all followed by Undo and logs past the trim).
 
 ## Amendments of round 21 (audit 2026-11-24, commit fca71c3)
 
-Status unchanged: Proposed, for Jakub to accept with the round-20 text.
+Status: Accepted by Jakub on 2026-11-24 with the round-20 text.
 
 - **R10: another program's unlogged save is the colleague's edit**
   (ERR-2001, ARCH-2002; owner decision 1, option a). Round 20 refreshed the
