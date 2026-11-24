@@ -86,14 +86,18 @@ export function zoomKey(e: KeyLike): 1.25 | 0.8 | null {
  * `points` placed): Ctrl/⌘+Z removes the last corner, as the bar's button
  * does, and touches nothing else; Redo does nothing (`ignore`); Backspace
  * removes a face's or line's last corner (the draw bar takes it for walls).
- * `null`: the key is not theirs. An undo of an earlier roof edit while the
- * corners stay would be out of sight (audit 2026-11-24 UX-1902, owner
- * decision 3).
+ * With no corner placed these keys do nothing (`ignore`), and Delete never
+ * acts while corners are placed: one press more than there are corners
+ * must not undo an earlier roof edit or delete a selected wall out of
+ * sight (audit 2026-11-24 UX-1902, owner decision 3; round 21 UX-2002,
+ * owner decision 6). `null`: the key is not theirs.
  */
 export function draftKey(e: KeyLike, draft: "walls" | "manual" | null, points: number): "drop" | "ignore" | null {
-  if (!draft || points <= 0) return null;
+  if (!draft) return null;
   const u = undoKey(e);
-  if (u) return u === "undo" ? "drop" : "ignore";
-  if (draft === "manual" && e.key === "Backspace" && !e.ctrlKey && !e.metaKey && !e.altKey) return "drop";
+  if (u) return u === "undo" && points > 0 ? "drop" : "ignore";
+  const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
+  if (draft === "manual" && e.key === "Backspace" && plain) return points > 0 ? "drop" : "ignore";
+  if (e.key === "Delete") return "ignore";
   return null;
 }

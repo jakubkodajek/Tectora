@@ -3079,6 +3079,7 @@
     // Another tool ends the footprint being drawn: ask as Escape does (UX-013).
     if (drawing && !(await cancelDraw(true))) return;
     placing = placing === kind ? false : kind;
+    if (placing === "line" || placing === "face") clearSelection();
   }
 
   function setDormer(d: Dormer, at: number) {
@@ -3176,11 +3177,22 @@
     // Already drawing: the Insert key keeps going; the toolbar button
     // (toggle) and the context menu go through cancelDraw, which asks.
     if (drawing) return;
+    clearSelection();
+    placing = false;
+    drawing = [];
+  }
+
+  /**
+   * Picking a drawing tool (Building, Manual face, Roof line) ends the
+   * selection: Delete or Backspace meant for a corner must never remove a
+   * wall or object still selected from before (audit 2026-11-24 UX-2002,
+   * owner decision 6).
+   */
+  function clearSelection() {
     selection = null;
     dormerSel = null;
     openSel = null;
-    placing = false;
-    drawing = [];
+    manualSel = null;
   }
 
   /**
@@ -3338,7 +3350,8 @@
     // A dialog is open: its keys (Escape closes it) must not edit the roof behind it.
     if (document.querySelector('[role="dialog"]')) return;
     // Corners being placed: Ctrl+Z (and Backspace for a face or line)
-    // removes the last one and nothing else (UX-1902, owner decision 3).
+    // removes the last one and nothing else (UX-1902, owner decision 3);
+    // with none left, and for Delete, nothing (UX-2002, decision 6).
     const draftKind = drawing ? "walls" : placing === "face" || placing === "line" ? "manual" : null;
     const onDraft = draftKey(e, draftKind, drawing ? drawing.length : manualDraft.length);
     if (onDraft) {

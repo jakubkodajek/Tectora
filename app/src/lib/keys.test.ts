@@ -106,10 +106,22 @@ describe("keys while corners are placed (audit 2026-11-24 UX-1902)", () => {
     expect(draftKey(k("Backspace"), "manual", 3)).toBe("drop");
     expect(draftKey(k("Backspace"), "walls", 3)).toBeNull();
   });
-  it("leaves every key alone without corners, and other keys always", () => {
-    expect(draftKey(k("z", { ctrlKey: true }), "walls", 0)).toBeNull();
+  it("with no corner placed, Ctrl+Z, Redo and Backspace do nothing; Delete never acts (UX-2002, owner decision 6)", () => {
+    expect(draftKey(k("z", { ctrlKey: true }), "walls", 0)).toBe("ignore");
+    expect(draftKey(k("z", { metaKey: true }), "manual", 0)).toBe("ignore");
+    expect(draftKey(k("z", { ctrlKey: true, shiftKey: true }), "walls", 0)).toBe("ignore");
+    expect(draftKey(k("y", { ctrlKey: true }), "manual", 0)).toBe("ignore");
+    expect(draftKey(k("Backspace"), "manual", 0)).toBe("ignore");
+    for (const n of [0, 2]) {
+      expect(draftKey(k("Delete"), "manual", n)).toBe("ignore");
+      expect(draftKey(k("Delete"), "walls", n)).toBe("ignore");
+    }
+  });
+  it("leaves keys alone when no corners are being placed, and other keys always", () => {
     expect(draftKey(k("z", { ctrlKey: true }), null, 3)).toBeNull();
-    expect(draftKey(k("Backspace"), "manual", 0)).toBeNull();
+    expect(draftKey(k("Delete"), null, 0)).toBeNull();
+    expect(draftKey(k("Backspace"), null, 0)).toBeNull();
     expect(draftKey(k("a"), "manual", 3)).toBeNull();
+    expect(draftKey(k("a"), "walls", 0)).toBeNull();
   });
 });
