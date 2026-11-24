@@ -60,7 +60,8 @@ fn warning_kinds() -> Vec<String> {
         | W::DormerAboveRoof
         | W::InsideAnother
         | W::HiddenUnderNeighbour
-        | W::UncoveredPlan => k,
+        | W::UncoveredPlan
+        | W::ManualFaceCrosses => k,
     };
     [
         W::OutsideOutline,
@@ -85,6 +86,7 @@ fn warning_kinds() -> Vec<String> {
         W::InsideAnother,
         W::HiddenUnderNeighbour,
         W::UncoveredPlan,
+        W::ManualFaceCrosses,
     ]
     .into_iter()
     .map(|k| name(all(k)))

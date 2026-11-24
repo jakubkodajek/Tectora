@@ -160,6 +160,13 @@ pub enum WarningKind {
     /// The standard calculation gives that result and it is kept.
     /// `value`: the plan area without roof, m².
     UncoveredPlan,
+    /// A face added by hand has an outline that crosses itself (a bow
+    /// tie: its corners were given out of order), so its area counts the
+    /// difference of its two lobes, not the face (audit 2026-11-24
+    /// HUNT-1801). Tectora's own check: the area is kept as counted; new
+    /// faces like this are refused. Reported on the building nearest to
+    /// it. `face`: its index in `project.manual_faces`. `value`: 0.
+    ManualFaceCrosses,
 }
 
 /// Distance from the plan's origin (along x or y) from which
@@ -214,6 +221,10 @@ pub struct RoofWarning {
     /// that kind) the finding is about.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub item: Option<usize>,
+    /// The hand-drawn face (index into `project.manual_faces`) the finding
+    /// is about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub face: Option<usize>,
 }
 
 impl RoofWarning {
@@ -225,6 +236,7 @@ impl RoofWarning {
             edges: Vec::new(),
             dormer: None,
             item: None,
+            face: None,
         }
     }
 }
@@ -237,7 +249,47 @@ impl RoofWarning {
 /// that failed cannot be judged: its faces are not looked at and nothing
 /// nearest to it is reported, while the other buildings' objects still
 /// are (audit 2026-11-23 HUNT-1502).
+///
+/// Also the hand-drawn faces whose outline crosses itself
+/// ([`WarningKind::ManualFaceCrosses`]), on the building nearest to the
+/// face's first corner, whether or not a roof was calculated.
 pub fn off_roof(project: &crate::Project, geos: &[RoofGeometry]) -> Vec<(usize, RoofWarning)> {
+    let mut faces = manual_faces_crossing(project, geos);
+    let mut out = off_roof_objects(project, geos);
+    out.append(&mut faces);
+    out
+}
+
+/// [`WarningKind::ManualFaceCrosses`] of `project`, each on the part
+/// nearest to the face's first corner (none without a part).
+fn manual_faces_crossing(
+    project: &crate::Project,
+    geos: &[RoofGeometry],
+) -> Vec<(usize, RoofWarning)> {
+    let parts = project.parts.len().min(geos.len());
+    project
+        .manual_faces
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.crosses())
+        .filter_map(|(i, f)| {
+            let at = f.points[0];
+            let part = (0..parts).min_by(|&a, &b| {
+                crate::engine::outline_distance(&project.parts[a], at)
+                    .total_cmp(&crate::engine::outline_distance(&project.parts[b], at))
+            })?;
+            Some((
+                part,
+                RoofWarning {
+                    face: Some(i),
+                    ..RoofWarning::new(WarningKind::ManualFaceCrosses, 0.0)
+                },
+            ))
+        })
+        .collect()
+}
+
+fn off_roof_objects(project: &crate::Project, geos: &[RoofGeometry]) -> Vec<(usize, RoofWarning)> {
     let sound = |g: &RoofGeometry| g.error.is_none();
     if !geos.iter().any(|g| sound(g) && !g.faces.is_empty()) {
         return Vec::new();

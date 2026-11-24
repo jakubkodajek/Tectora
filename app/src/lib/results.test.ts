@@ -131,9 +131,10 @@ describe("warningText for every kind", () => {
     inside_another: { kind: "inside_another", value: 0 },
     hidden_under_neighbour: { kind: "hidden_under_neighbour", value: 2.4 },
     uncovered_plan: { kind: "uncovered_plan", value: 15.3 },
+    manual_face_crosses: { kind: "manual_face_crosses", value: 0, face: 1 },
   };
-  it("gives a filled-in sentence for all 22 kinds in all four languages (TEST-003)", () => {
-    expect(Object.keys(every)).toHaveLength(22);
+  it("gives a filled-in sentence for all 23 kinds in all four languages (TEST-003)", () => {
+    expect(Object.keys(every)).toHaveLength(23);
     for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
       i18n.locale = locale;
       for (const w of Object.values(every)) {
@@ -143,6 +144,13 @@ describe("warningText for every kind", () => {
         expect(text, `${locale} ${w.kind}`).not.toMatch(/dacad|res\.warn/i);
         expect(text.length, `${locale} ${w.kind}`).toBeGreaterThan(20);
       }
+    }
+    i18n.locale = "cs";
+  });
+  it("names the hand-drawn face whose outline crosses itself by its number (HUNT-1801)", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      expect(warningText(every.manual_face_crosses), locale).toContain(" 2 ");
     }
     i18n.locale = "cs";
   });

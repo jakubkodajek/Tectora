@@ -291,6 +291,10 @@ pub enum GeometryRequest {
     },
     /// The sloped area of a hand-drawn face (`ManualFace::area`).
     FaceArea { face: crate::model::ManualFace },
+    /// Whether a new hand-drawn face may be added (`edit::check_manual_face`):
+    /// `{ "refused": null }`, or the reason's code (`face_corners`,
+    /// `pitch_range`, `face_crosses`), which the editor localizes.
+    CheckFace { face: crate::model::ManualFace },
     /// The corners of a regular polygon (`edit::transform::regular_polygon`).
     RegularPolygon {
         centre: crate::geom::Point2,
@@ -428,6 +432,15 @@ pub fn item_geometry(req: &GeometryRequest) -> Result<Value, CommandError> {
                 return Err(bad());
             }
             Ok(serde_json::json!({ "area": face.area() }))
+        }
+        GeometryRequest::CheckFace { face } => {
+            if !points_ok(&face.points) || !face.pitch_deg.is_finite() {
+                return Err(bad());
+            }
+            let refused = crate::edit::check_manual_face(face)
+                .err()
+                .map(|(code, _)| code);
+            Ok(serde_json::json!({ "refused": refused }))
         }
     }
 }
@@ -804,6 +817,19 @@ mod tests {
         assert_eq!(ask(face(0.0)).unwrap()["area"], 12.0);
         assert!((ask(face(60.0)).unwrap()["area"].as_f64().unwrap() - 24.0).abs() < 1e-9);
         assert_eq!(ask(face(89.99999)).unwrap()["area"], 0.0);
+        // A new face: refused with the reason's code when its outline
+        // crosses itself (HUNT-1801), accepted in order.
+        let check = |pts: Value| {
+            ask(
+                serde_json::json!({ "op": "check_face", "face": { "points": pts, "pitch_deg": 30 } }),
+            )
+        };
+        let bow = serde_json::json!([{"x": 1, "y": 1}, {"x": 6, "y": 6}, {"x": 6, "y": 1}, {"x": 1, "y": 6}]);
+        assert_eq!(check(bow).unwrap()["refused"], "face_crosses");
+        let square = serde_json::json!([{"x": 1, "y": 1}, {"x": 6, "y": 1}, {"x": 6, "y": 6}, {"x": 1, "y": 6}]);
+        assert_eq!(check(square).unwrap()["refused"], Value::Null);
+        let far = serde_json::json!([{"x": 1e12, "y": 1}, {"x": 6, "y": 1}, {"x": 6, "y": 6}]);
+        assert_eq!(check(far).unwrap_err().code, "out_of_range");
     }
 
     #[test]

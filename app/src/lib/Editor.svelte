@@ -2171,12 +2171,36 @@
     manualDraft = [...manualDraft, p];
   }
 
-  /** Closes the face being drawn (a click on its first corner, Enter or the bar's Close, UX-010). */
-  function closeFace() {
+  /**
+   * Closes the face being drawn (a click on its first corner, Enter or the
+   * bar's Close, UX-010). The core checks it first: corners clicked out of
+   * order (an outline that crosses itself) are refused with a note and the
+   * draft stays open to be finished again (HUNT-1801).
+   */
+  const closeFace = () => pendingEdits.track(closeFaceNow());
+  async function closeFaceNow() {
     if (!project || placing !== "face" || manualDraft.length < 3) return;
-    project.manual_faces ??= [];
+    const drawn = JSON.stringify($state.snapshot(manualDraft));
     // DACAD asks for the pitch with 30° filled in.
-    project.manual_faces.push({ points: manualDraft.map((q) => ({ x: q[0], y: q[1] })), pitch_deg: 30 });
+    const face: ManualFace = { points: manualDraft.map((q) => ({ x: q[0], y: q[1] })), pitch_deg: 30 };
+    let refused: Awaited<ReturnType<typeof api.checkFace>>;
+    try {
+      refused = await api.checkFace(face);
+    } catch (e) {
+      notifyError(e, "calc");
+      return;
+    }
+    await drag.settled();
+    // Drawing went on or was left while the core answered: this close is stale.
+    if (!project || placing !== "face" || JSON.stringify($state.snapshot(manualDraft)) !== drawn) return;
+    // Revert or the put-back went out meanwhile: the face stays open (as finishDraw, ERR-1101).
+    if (reviewing.active) return;
+    if (refused) {
+      info(t(`manual.refused.${refused}`));
+      return;
+    }
+    project.manual_faces ??= [];
+    project.manual_faces.push(face);
     manualDraft = [];
     placing = false;
     selectManual({ kind: "face", index: project.manual_faces.length - 1 });

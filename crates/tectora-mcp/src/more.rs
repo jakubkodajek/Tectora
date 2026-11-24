@@ -525,7 +525,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "set_manual",
-            "description": "Replace the lines and/or faces drawn by hand on the calculated roof (omit a list to keep it). A line end given as [x, y] snaps to the nearest roof point within 0.25 m, else lies at height 0 (as DACAD); [x, y, z] is taken as it is. A line of a counted code adds to that code's totals; M (dimension) and X do not. A face is a plan polygon with its pitch (default 30°) and adds its sloped area.",
+            "description": "Replace the lines and/or faces drawn by hand on the calculated roof (omit a list to keep it). A line end given as [x, y] snaps to the nearest roof point within 0.25 m, else lies at height 0 (as DACAD); [x, y, z] is taken as it is. A line of a counted code adds to that code's totals; M (dimension) and X do not. A face is a plan polygon with its pitch (default 30°) and adds its sloped area; give its corners in order around the face: an outline that crosses itself (a bow tie) is refused.",
             "inputSchema": schema(json!({
                 "id": id,
                 "lines": { "type": "array", "items": { "type": "object", "properties": {
@@ -1622,7 +1622,7 @@ impl Server {
                     let pitch_deg = arg_f64(v, "pitch_deg")?.unwrap_or(30.0);
                     tectora_core::edit::check_manual_face_pitch(pitch_deg)
                         .map_err(|m| format!("face {i}: {m}"))?;
-                    Ok(ManualFace {
+                    let face = ManualFace {
                         points,
                         pitch_deg,
                         label: v
@@ -1630,7 +1630,11 @@ impl Server {
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_string(),
-                    })
+                    };
+                    // Corners out of order (a bow tie) are refused (HUNT-1801).
+                    tectora_core::edit::check_manual_face(&face)
+                        .map_err(|(_, m)| format!("face {i}: {m}"))?;
+                    Ok(face)
                 })
                 .collect::<Result<_, String>>()?;
         }
@@ -2444,6 +2448,50 @@ mod tests {
             json!({ "id": id, "summary": "x", "lines": [{ "a": [0, 0, 0], "b": [1, 0, 0], "code": "T", "length": 0 }],
                 "faces": [{ "points": [[20, 0], [24, 0], [24, 3], [20, 3]], "pitch_deg": 89.9 }] }),
         );
+    }
+
+    /// Audit 2026-11-24 HUNT-1801: a bow tie is refused, nothing is saved;
+    /// a stored one is warned about by `calc` with its face index.
+    #[test]
+    fn set_manual_refuses_a_face_whose_outline_crosses_itself_and_calc_warns_about_a_stored_one() {
+        let (mut s, id) = setup();
+        let before = s.store.load(&id).unwrap();
+        let log = s.store.activity(&id).len();
+        let err = s
+            .call_tool(
+                "set_manual",
+                &json!({ "id": id, "summary": "x",
+                    "faces": [{ "points": [[20, 0], [30, 10], [30, 0], [20, 10]], "pitch_deg": 30 }] }),
+            )
+            .unwrap_err();
+        assert!(
+            err.contains("face 0") && err.contains("crosses itself"),
+            "{err}"
+        );
+        assert_eq!(s.store.load(&id).unwrap(), before);
+        assert_eq!(s.store.activity(&id).len(), log);
+        // A file that already holds one (an older Tectora wrote it).
+        let mut p = before.clone();
+        p.manual_faces.push(tectora_core::model::ManualFace {
+            points: [(20.0, 0.0), (30.0, 10.0), (30.0, 0.0), (20.0, 10.0)]
+                .iter()
+                .map(|&(x, y)| tectora_core::geom::Point2::new(x, y))
+                .collect(),
+            pitch_deg: 30.0,
+            label: String::new(),
+        });
+        s.store.save(Some(id.clone()), &p).unwrap();
+        let r = call(&mut s, "calc", json!({ "id": id }));
+        let w: Vec<&Value> = r["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|part| part["warnings"].as_array().into_iter().flatten())
+            .filter(|w| w["kind"] == "manual_face_crosses")
+            .collect();
+        assert_eq!(w.len(), 1, "{r}");
+        assert_eq!(w[0]["face"], 0);
+        assert!(w[0]["message"].as_str().unwrap().contains("crosses itself"));
     }
 
     #[test]

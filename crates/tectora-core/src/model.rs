@@ -155,6 +155,15 @@ impl ManualFace {
         plan / self.pitch_deg.to_radians().cos()
     }
 
+    /// Whether the face's outline crosses itself (a bow tie: corners given
+    /// out of order). Its [`ManualFace::area`] is then the difference of
+    /// its lobes; new faces like this are refused
+    /// ([`crate::edit::check_manual_face`]), stored ones are warned about
+    /// ([`crate::check::WarningKind::ManualFaceCrosses`]).
+    pub fn crosses(&self) -> bool {
+        !crossing_edges(&self.points).is_empty()
+    }
+
     /// Whether the pitch gives the face an area (see [`ManualFace::area`]).
     pub fn pitch_counts(&self) -> bool {
         self.pitch_deg >= 0.0 && self.pitch_deg < 90.0 && self.pitch_deg.to_radians().cos() > 1e-6
@@ -772,7 +781,26 @@ pub fn crossing_walls(part: &RoofPart) -> Vec<usize> {
     {
         return Vec::new();
     }
-    let seg = |i: usize| (part.edges[i].start, part.edges[(i + 1) % n].start);
+    let pts: Vec<Point2> = part.edges.iter().map(|e| e.start).collect();
+    loop_crossings(&pts)
+}
+
+/// The first edge of each pair of edges of the closed point loop `points`
+/// that cross each other: the test of [`crossing_walls`] on a plain point
+/// loop (a hand-drawn roof face, audit 2026-11-24 HUNT-1801). Only a proper
+/// crossing counts; edges that touch at a corner or run along each other
+/// are left alone. A loop of fewer than 4 points or with a point that is
+/// not a finite coordinate is not checked.
+pub fn crossing_edges(points: &[Point2]) -> Vec<usize> {
+    if points.len() < 4 || !points.iter().all(|&p| finite_point(p)) {
+        return Vec::new();
+    }
+    loop_crossings(points)
+}
+
+fn loop_crossings(pts: &[Point2]) -> Vec<usize> {
+    let n = pts.len();
+    let seg = |i: usize| (pts[i], pts[(i + 1) % n]);
     // Side of `c` relative to the line a-b, with a tolerance of 1 mm in
     // distance so that corners lying on a wall do not count as crossing.
     let side = |a: Point2, b: Point2, c: Point2| {

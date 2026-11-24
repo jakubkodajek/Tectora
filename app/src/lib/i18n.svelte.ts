@@ -1095,6 +1095,10 @@ const cs: Dict = {
   "err.action.redo": "Krok se nepodařilo zopakovat",
   "review.deleteChanged": "Zakázka se nesmazala: AI do ní mezitím přidala další krok. Podívejte se na něj a rozhodněte znovu.",
   "review.confirmRevertAllCreated": "Vrátit kroky AI ({n})? Zakázka se vrátí do stavu, v jakém ji AI založila.",
+  "res.warn.manual_face_crosses": "Ruční plocha {n} má obrys, který kříží sám sebe (rohy nejsou zadané postupně po obvodu), proto se její výměra počítá jako rozdíl dvou částí a nesedí. Nakreslete ji znovu s rohy postupně po obvodu.",
+  "manual.refused.face_crosses": "Plocha se neuzavřela: její obrys kříží sám sebe. Klikejte na rohy postupně po obvodu plochy.",
+  "manual.refused.face_corners": "Plocha se neuzavřela: potřebuje aspoň 3 různé rohy.",
+  "manual.refused.pitch_range": "Plocha se neuzavřela: sklon musí být 0 až 89,9°.",
 };
 
 const sk: Dict = {
@@ -2181,6 +2185,10 @@ const sk: Dict = {
   "err.action.redo": "Krok sa nepodarilo zopakovať",
   "review.deleteChanged": "Zákazka sa nezmazala: AI do nej medzitým pridala ďalší krok. Pozrite sa naň a rozhodnite znova.",
   "review.confirmRevertAllCreated": "Vrátiť kroky AI ({n})? Zákazka sa vráti do stavu, v akom ju AI založila.",
+  "res.warn.manual_face_crosses": "Ručná plocha {n} má obrys, ktorý kríži sám seba (rohy nie sú zadané postupne po obvode), preto sa jej výmera počíta ako rozdiel dvoch častí a nesedí. Nakreslite ju znova s rohmi postupne po obvode.",
+  "manual.refused.face_crosses": "Plocha sa neuzavrela: jej obrys kríži sám seba. Klikajte na rohy postupne po obvode plochy.",
+  "manual.refused.face_corners": "Plocha sa neuzavrela: potrebuje aspoň 3 rôzne rohy.",
+  "manual.refused.pitch_range": "Plocha sa neuzavrela: sklon musí byť 0 až 89,9°.",
 };
 
 const en: Dict = {
@@ -3267,6 +3275,10 @@ const en: Dict = {
   "err.action.redo": "Could not redo the step",
   "review.deleteChanged": "The job was not deleted: the AI added another step meanwhile. Look at it and decide again.",
   "review.confirmRevertAllCreated": "Revert {n} AI steps? The job goes back to how the AI created it.",
+  "res.warn.manual_face_crosses": "Manual face {n} has an outline that crosses itself (its corners are not in order around it), so its area is counted as the difference of two parts and is wrong. Draw it again with the corners in order around the face.",
+  "manual.refused.face_crosses": "The face was not closed: its outline crosses itself. Click the corners in order around the face.",
+  "manual.refused.face_corners": "The face was not closed: it needs at least 3 different corners.",
+  "manual.refused.pitch_range": "The face was not closed: the pitch must be 0 to 89.9°.",
 };
 
 const de: Dict = {
@@ -4353,6 +4365,10 @@ const de: Dict = {
   "err.action.redo": "Der Schritt konnte nicht wiederholt werden",
   "review.deleteChanged": "Der Auftrag wurde nicht gelöscht: Die KI hat inzwischen einen weiteren Schritt hinzugefügt. Sehen Sie ihn an und entscheiden Sie erneut.",
   "review.confirmRevertAllCreated": "{n} KI-Schritte verwerfen? Der Auftrag wird auf den Stand zurückgesetzt, in dem die KI ihn angelegt hat.",
+  "res.warn.manual_face_crosses": "Die manuelle Fläche {n} hat einen Umriss, der sich selbst kreuzt (die Ecken liegen nicht der Reihe nach am Rand), daher wird ihre Fläche als Differenz zweier Teile gezählt und stimmt nicht. Zeichnen Sie sie mit den Ecken der Reihe nach am Rand neu.",
+  "manual.refused.face_crosses": "Die Fläche wurde nicht geschlossen: Ihr Umriss kreuzt sich selbst. Klicken Sie die Ecken der Reihe nach am Rand der Fläche an.",
+  "manual.refused.face_corners": "Die Fläche wurde nicht geschlossen: Sie braucht mindestens 3 verschiedene Ecken.",
+  "manual.refused.pitch_range": "Die Fläche wurde nicht geschlossen: Die Neigung muss 0 bis 89,9° betragen.",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };

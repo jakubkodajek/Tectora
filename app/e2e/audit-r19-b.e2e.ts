@@ -1,11 +1,16 @@
 // Guards for the round-19 audit (2026-11-24), editor side, second half.
 //
+// HUNT-1801 a hand-drawn face clicked out of order (a bow tie) is refused
+//          with a note and the draft stays open; in order it is added.
 // UI-1801  after Revert, Revert all, the AI tab's Revert, Undo / Redo through
 //          the core and the offer put-back the plan and the 3D view take a
 //          real mouse click (no `dispatchEvent`: it reaches inert elements).
+import fs from "node:fs";
+import path from "node:path";
 import type { Page } from "@playwright/test";
-import { bar, openEditor } from "./editor";
-import { createExample, expect, test, waitForProject } from "./fixtures";
+import { bar, clickPlan, openEditor, tool } from "./editor";
+import { LIBRARY_DIR } from "./env";
+import { createExample, expect, loadProject, test, waitForProject } from "./fixtures";
 import { cs } from "./i18n";
 import { olderOffer } from "./review";
 
@@ -121,5 +126,53 @@ test.describe("round 19, UI-1801: the plan and the 3D view are live after every 
     await waitForProject(id, (q) => q.result_snapshot?.engine_version === "0.8.0");
     await expect(page.getByTestId("snap-restore")).toHaveCount(0);
     await editorIsLive(page, 1);
+  });
+});
+
+test.describe("round 19, HUNT-1801: a hand-drawn face that crosses itself", () => {
+  test("four corners clicked out of order and Enter: a note, no face, the draft stays; in order it closes (HUNT-1801)", async ({ app, page }) => {
+    const id = await createExample("gable", "R19 motýlek");
+    await openEditor(app, "R19 motýlek");
+    await app.saved();
+    await tool(page, "tool.face").click();
+    const pb = page.getByTestId("place-bar");
+    for (const [x, y] of [
+      [2, 1],
+      [6, 3],
+      [6, 1],
+      [2, 3],
+    ])
+      await clickPlan(page, x, y);
+    await expect(pb.getByTestId("place-points")).toHaveText(cs("place.points", { n: 4 }));
+    await page.keyboard.press("Enter");
+    await expect(app.toasts().filter({ hasText: cs("manual.refused.face_crosses") })).toHaveCount(1);
+    await expect(pb).toBeVisible();
+    await expect(pb.getByTestId("place-points")).toHaveText(cs("place.points", { n: 4 }));
+    expect((await loadProject(id)).manual_faces ?? []).toHaveLength(0);
+    // Esc and the same corners in order: the face is added, no note.
+    await page.keyboard.press("Escape");
+    await expect(pb).toHaveCount(0);
+    await tool(page, "tool.face").click();
+    for (const [x, y] of [
+      [2, 1],
+      [6, 1],
+      [6, 3],
+      [2, 3],
+    ])
+      await clickPlan(page, x, y);
+    await page.keyboard.press("Enter");
+    await waitForProject(id, (p) => (p.manual_faces ?? []).length === 1);
+    await expect(pb).toHaveCount(0);
+  });
+
+  test("a stored face that crosses itself keeps its area and the Results tab warns about it (HUNT-1801)", async ({ app, page }) => {
+    const id = await createExample("gable", "R19 uložený motýlek");
+    const p = await loadProject(id);
+    p.manual_faces = [{ points: [{ x: 1, y: 1 }, { x: 6, y: 6 }, { x: 6, y: 1 }, { x: 1, y: 6 }], pitch_deg: 30 }];
+    fs.writeFileSync(path.join(LIBRARY_DIR, `${id}.tectora`), JSON.stringify(p));
+    await openEditor(app, "R19 uložený motýlek");
+    await dockTab(page, "dock.results").click();
+    await expect(page.getByTestId("results-warned")).toBeVisible();
+    await expect(page.getByRole("tabpanel")).toContainText(cs("res.warn.manual_face_crosses", { n: 1 }));
   });
 });

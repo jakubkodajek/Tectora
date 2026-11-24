@@ -32,6 +32,8 @@ export function warningText(w: RoofWarning): string {
     case "chimney_off_roof":
     case "opening_off_roof":
       return t(`res.warn.${w.kind}`, { n: (w.item ?? 0) + 1 });
+    case "manual_face_crosses":
+      return t("res.warn.manual_face_crosses", { n: (w.face ?? 0) + 1 });
     case "area_mismatch":
       return t("res.warn.area_mismatch", { v: num(w.value * 100) });
     case "far_from_origin":
