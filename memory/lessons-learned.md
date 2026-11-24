@@ -4,6 +4,8 @@ Short imperative rules learned the hard way. Add one when the same mistake
 happens twice or a review finding would have been prevented by a rule.
 Newest first. Format: `- YYYY-MM-DD: <rule> (why: <one line, with the commit or PR>)`
 
+- 2026-11-24: In E2E wait for a gate (a held route, an answer, an event), never a fixed hold or sleep; and click covered or inert controls with the real mouse (why: fixed holds flaked in audit-r7-drag, r19-b and r20-b; `inert` and overlays were missed by `.click()` until real-mouse tests, PR #55 rounds 18-21).
+- 2026-11-24: A rule that must survive a trimmed log keeps its own state file, not a walk over the log (why: four rounds of log-walk review fixes broke on the 50-entry trim; ADR 0007 baseline file, PR #55).
 - 2026-11-14: Draw 3D walls up to the roof over the wall line, never to the eave or building height; the eave is measured at the overhang line (why: gaps under every roof with an overhang and stacked walls, f5d9531).
 - 2026-11-14: Pick a new id and write its file under one lock, and never reuse an id that still has leftovers (why: TEST-001 and ERR-005, two jobs became one and a new job inherited old drawings).
 - 2026-11-10: Check every number a closed form returns with `is_finite` before it reaches the project; serde_json writes inf/NaN as null and the job no longer opens (why: MATH-001 in the dormer-window review, `check_values` now round-trips the project).
