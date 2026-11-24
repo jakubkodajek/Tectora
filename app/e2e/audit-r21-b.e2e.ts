@@ -8,9 +8,16 @@
 // UX-2004   Postup of a job of hand-drawn faces only has no empty line heading
 // TEST-2009 U20: one hand-drawn face alone is listed under the areas
 // UI-2001   the wall bar's tip with no wall selected wraps, never cut mid-word
+// TEST-2010 (round-20 TEST-1906's UI half): a face whose check answers after
+//           a corner was added is not added (Z09). The Z10 guard (a Revert
+//           out when the check answers) cannot be reached from the UI: the
+//           banner's Revert waits for the check (busy_edits), and the editor
+//           is inert while a Revert is out.
 import type { Page } from "@playwright/test";
 import { bridge, createExample, expect, loadProject, test } from "./fixtures";
+import { clickPlan, openEditor, tool } from "./editor";
 import { cs, LOCALES, tr } from "./i18n";
+import { hold, timeline } from "./review";
 
 // TECTORA_SHOTS=<folder>/ saves a screenshot after each test (fix evidence).
 test.afterEach(async ({ page }, info) => {
@@ -137,4 +144,32 @@ test.describe("round 21, UI-2001: the wall bar's tip at the reference size", () 
       expect(fit.bottom).toBeGreaterThanOrEqual(-1);
     });
   }
+});
+
+test.describe("round 21, TEST-2010: a face whose check answers late", () => {
+  const isCheck = (b: any) => b?.request?.op === "check_face";
+  const frame = (page: Page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 50))));
+
+  test("a corner added while the face's check is out: the face is not closed, the draft goes on (TEST-2010, Z09)", async ({ app, page }) => {
+    const id = await createExample("gable", "R21 pozdní kontrola");
+    await openEditor(app, "R21 pozdní kontrola");
+    await app.saved();
+    await tool(page, "tool.face").click();
+    for (const [x, y] of [[2, 1], [6, 1], [6, 3]]) await clickPlan(page, x, y);
+    const points = page.getByTestId("place-points");
+    await expect(points).toHaveText(cs("place.points", { n: 3 }));
+    const held = await hold(page, "item_geometry", isCheck);
+    const checks = timeline(page, "item_geometry");
+    await page.keyboard.press("Enter");
+    await expect.poll(() => held.held()).toBe(1);
+    await clickPlan(page, 2, 3);
+    await expect(points).toHaveText(cs("place.points", { n: 4 }));
+    held.release();
+    await expect.poll(() => checks.answered.length).toBeGreaterThanOrEqual(1);
+    await frame(page);
+    // The stale close added nothing: the four corners are still being placed.
+    await expect(points).toHaveText(cs("place.points", { n: 4 }));
+    await app.saved();
+    expect((await loadProject(id)).manual_faces ?? []).toHaveLength(0);
+  });
 });
