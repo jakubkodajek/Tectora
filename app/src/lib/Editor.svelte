@@ -155,6 +155,8 @@
   });
   /** Narrow windows only: whether the side panel is expanded over the views. */
   let dockOpen = $state(false);
+  /** The side panel is a drawer over the views (the window's CSS breakpoint, `max-width: 900px`). */
+  const narrowDock = () => typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches;
 
   function showDock(d: typeof dock) {
     dockOpen = dock !== d || !dockOpen;
@@ -1150,7 +1152,17 @@
         if (pushHistory() && fresh.length) undoVia[at] = { from: fresh[fresh.length - 1].ts_ms };
         // Not while the user types in the dock: switching the tab would
         // remove the field and the typed text with it (UI-002).
-        if (pending && !typingInDock()) dock = "ai";
+        if (pending && !typingInDock()) {
+          dock = "ai";
+          // A drawer over the banner (narrow window): closed, so the
+          // banner's Accept and Revert show; the AI tab is the one it
+          // opens with (UI-1805).
+          if (dockOpen && narrowDock()) {
+            const inDock = !!document.activeElement?.closest("aside");
+            dockOpen = false;
+            if (inDock) void tick().then(() => bannerEl?.isConnected && bannerEl.focus());
+          }
+        }
         retryFailedSave();
       }
       recalc();

@@ -292,3 +292,28 @@ test.describe("round 19, UI-1804: a refused Delete job", () => {
     app.errors.length = 0;
   });
 });
+
+test.describe("round 19, UI-1805: an AI save in a narrow window with the drawer open", () => {
+  for (const [w, h] of [
+    [600, 420],
+    [800, 600],
+  ] as const) {
+    test(`at ${w}x${h} the drawer closes and the banner's Accept takes a real click (UI-1805)`, async ({ app, page, mcp }) => {
+      await page.setViewportSize({ width: w, height: h });
+      const id = await createExample("gable", `R19 úzké ${w}`);
+      await openEditor(app, `R19 úzké ${w}`);
+      await app.saved();
+      await dockTab(page, "dock.results").click();
+      await expect(page.locator("aside.open")).toHaveCount(1);
+      await oneAiSave(page, mcp, id);
+      await expect(page.locator("aside.open")).toHaveCount(0);
+      // The AI tab is the one the drawer opens with.
+      await expect(dockTab(page, "dock.ai")).toHaveAttribute("aria-selected", "true");
+      const accept = review(page).getByRole("button", { name: cs("review.accept") });
+      if (process.env.TECTORA_SHOTS) await page.screenshot({ path: `${process.env.TECTORA_SHOTS}r19-UI-1805-${w}x${h}-after-ai-save.png` });
+      const p = await freePoint(page, accept);
+      await page.mouse.click(p.x, p.y);
+      await expect(review(page)).toHaveCount(0);
+    });
+  }
+});
