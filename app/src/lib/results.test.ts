@@ -352,4 +352,13 @@ describe("a job of hand-drawn faces only (audit 2026-11-24 UX-1904, ERR-1901)", 
     expect(w[0].text).toContain(" 1 ");
     expect(resultWarnings(null)).toEqual([]);
   });
+
+  it("marks the Results tab for a warning that belongs to no building, not for a notice (UI-2002)", () => {
+    expect(hasRoofWarning(facesOnly)).toBe(true);
+    const overlap = { ...facesOnly, warnings: [{ kind: "manual_faces_overlap", value: 36, face: 0, other_face: 1 }] } as unknown as CalcResult;
+    expect(hasRoofWarning(overlap)).toBe(true);
+    const notice = { ...facesOnly, warnings: [{ kind: "far_from_origin", value: 3000 }] } as unknown as CalcResult;
+    expect(hasRoofWarning(notice)).toBe(false);
+    expect(hasRoofWarning({ ...facesOnly, warnings: undefined } as unknown as CalcResult)).toBe(false);
+  });
 });

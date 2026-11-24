@@ -56,9 +56,13 @@ export function warningText(w: RoofWarning): string {
  */
 const NOTICES = new Set<RoofWarning["kind"]>(["plane_over_wall", "merged_planes", "wing_joined", "far_from_origin", "manual_face_over_roof"]);
 
-/** Whether the calculation holds a warning that is not a notice: the Results tab is marked (UX-1401). */
+/**
+ * Whether the calculation holds a warning that is not a notice: the Results tab is marked (UX-1401). Also the
+ * warnings that belong to no building (a job of hand-drawn faces only, ERR-1901; audit 2026-11-24 UI-2002).
+ */
 export function hasRoofWarning(result: CalcResult | null): boolean {
-  return (result?.parts ?? []).some((p) => (p.geometry.warnings ?? []).some((w) => !NOTICES.has(w.kind)));
+  const warned = (ws: RoofWarning[] | undefined) => (ws ?? []).some((w) => !NOTICES.has(w.kind));
+  return (result?.parts ?? []).some((p) => warned(p.geometry.warnings)) || warned(result?.warnings);
 }
 
 /**
