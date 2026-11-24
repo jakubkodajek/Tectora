@@ -134,8 +134,8 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    line lengths at a join of two buildings need a look; `far_from_origin`
    means the plan should be moved to the origin; `manual_face_crosses`
    means a hand-drawn face's corners are out of order (set it again with
-   `set_manual`, corners in order around the face: a crossing outline is
-   refused); never bend the input to
+   `set_manual`, corners in order around the face, each once: an outline
+   that crosses, touches or folds back over itself is refused); never bend the input to
    make a warning go away.
    `merged_planes`, `wing_joined` and `not_calculated_by_core` mean the
    roof is not the standard calculation's result (two planes joined, a low

@@ -169,6 +169,8 @@ fn calc(
     let totals = q::roof_totals_of(&geos, project);
     let area_by_pitch = q::area_by_pitch_in(&geos, project);
     let by_line_material = q::lines_by_material_of(&geos);
+    // Warnings that belong to no building, as MCP `calc` (ERR-1901).
+    let job = tectora_core::check::job_warnings(project, &geos);
     let parts: Vec<_> = project
         .parts
         .iter()
@@ -234,6 +236,9 @@ fn calc(
     }
     if !problems.is_empty() {
         out["problems"] = json!(problems);
+    }
+    if !job.is_empty() {
+        out["warnings"] = job.iter().map(tectora_mcp::warning).collect();
     }
     match coverage {
         // Nothing to calculate: the "no building" refusal of a stored

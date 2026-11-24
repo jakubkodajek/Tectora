@@ -98,7 +98,8 @@ The tools cover every operation of the Tectora editor:
   footprint was traced as a face, `face_to_part` turns it into a building
   in one change. A face pitch is 0 to 89.9 degrees and a typed line length
   0 or more; anything else is refused. Give a face's corners in order
-  around it: an outline that crosses itself (a bow tie) is refused, and a
+  around it, each corner once: an outline that crosses itself (a bow tie),
+  touches itself at a corner or folds back along an edge is refused, and a
   stored one gets the `manual_face_crosses` warning (its `face` index).
 - Single objects (dormers, chimneys, windows, openings, hand-drawn lines and
   faces): `transform_items` moves, rotates (about the object's centre) or
@@ -414,7 +415,8 @@ of its own because another part covers it; move or delete one of them.
 face, or joined buildings), so the area is too small.
 `manual_face_crosses`: the hand-drawn face `face` (0-based) has an outline
 that crosses itself, so its area is the difference of its two lobes; ask
-the user and set it again with its corners in order. `dormer_off_roof`: the
+the user and set it again with its corners in order (in a job without a
+building it is in the `warnings` list beside `parts`). `dormer_off_roof`: the
 dormer (`dormer`, index from 0) sits on no roof face and is left out of the
 result; move it onto the roof or delete it. `window_off_roof`,
 `chimney_off_roof`, `opening_off_roof`: that window, chimney or opening
