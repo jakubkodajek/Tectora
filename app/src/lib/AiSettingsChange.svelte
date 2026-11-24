@@ -62,7 +62,8 @@
     <button class="more" aria-expanded={open} onclick={() => (open = !open)}>{t("review.details")}</button>
   </div>
   <div class="details">
-    {#if change.summary}<p class="why">{change.summary}</p>{/if}
+    <!-- The AI's own words, quoted after a lead naming it (UI-1604). -->
+    {#if change.summary}<p class="why" data-testid="aichange-reason">{t("folderReq.reason", { by: actorName(change.by) })} {t("ai.quoted", { s: change.summary })}</p>{/if}
     <dl>
       {#each rows as r (r.key)}
         <dt>{rowLabel(r)}</dt>
