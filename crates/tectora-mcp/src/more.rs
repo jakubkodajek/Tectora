@@ -2652,6 +2652,10 @@ mod tests {
                 [20, 3]
             ]),
             json!([[20, 0], [22, 0], [24, 0.0005]]),
+            // A corner on the middle of another edge, and 0.5 mm off it
+            // (TEST-2006).
+            json!([[20, 0], [22, 1], [26, 3], [24, 0], [20, 2]]),
+            json!([[20, 0], [22.0005, 1], [26, 3], [24, 0], [20, 2]]),
         ] {
             let err = s
                 .call_tool(

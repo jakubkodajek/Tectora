@@ -547,7 +547,14 @@ mod manual_face_crossing {
             (0.0, 8.0),
             (0.0, 4.0),
         ];
+        // Audit 2026-11-24 TEST-2006: a corner on the middle of another edge
+        // (a T touch): the lobes count +2 and -4 m², the shoelace 2 m²
+        // instead of 6. Only the on-edge pass of `folded_loop` sees it.
+        let t_touch = [(0.0, 0.0), (2.0, 1.0), (6.0, 3.0), (4.0, 0.0), (0.0, 2.0)];
+        let near_t_touch = [(0.0, 0.0), (2.0005, 1.0), (6.0, 3.0), (4.0, 0.0), (0.0, 2.0)];
         for (name, pts) in [
+            ("t_touch", &t_touch[..]),
+            ("near_t_touch", &near_t_touch[..]),
             ("touch_bowtie", &touch_bowtie[..]),
             ("near_bowtie", &near_bowtie[..]),
             ("fold", &fold[..]),
@@ -585,6 +592,16 @@ mod manual_face_crossing {
         // Stored in a file: warned about, the area counted as before.
         let mut p = tectora_core::examples::find("gable").unwrap().project();
         p.manual_faces.push(face(&touch_bowtie));
+        let warned = generate_project(&p)
+            .iter()
+            .flat_map(|g| g.warnings.iter())
+            .any(|w| w.kind == WarningKind::ManualFaceCrosses && w.face == Some(0));
+        assert!(warned);
+        // The T touch stored beside the roof: warned about too (TEST-2006).
+        let mut p = tectora_core::examples::find("gable").unwrap().project();
+        p.manual_faces.push(face(
+            &t_touch.map(|(x, y)| (x + 20.0, y)),
+        ));
         let warned = generate_project(&p)
             .iter()
             .flat_map(|g| g.warnings.iter())
