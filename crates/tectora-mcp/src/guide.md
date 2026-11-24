@@ -204,7 +204,7 @@ The tools cover every operation of the Tectora editor:
   bound: `quantities: null` with a `calculation_note`; `set_manual` saves
   its lines without snapping to the roof (`snap_note`), a
   `transform_items` move does not follow the roof (`follow_roof_note`),
-  and `add_dormer`, `update_dormer`, `roof_helper` points and a
+  and `add_dormer`, `update_dormer`, `place_item`, `roof_helper` points and a
   `view_drawing` overlay answer "takes too long to calculate here" and
   save nothing. Tell the user; the job needs simplifying. `parts_without_roof` counts the buildings
   without a roof, those the core gave none for and those left out for

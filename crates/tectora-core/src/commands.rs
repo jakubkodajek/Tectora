@@ -155,6 +155,46 @@ pub fn check_dormer(project: &Project, index: usize) -> Result<(), CommandError>
         .map_err(|(code, detail)| CommandError { code, detail })
 }
 
+/// Where object `it` sits on its roof face (`edit::position::placement`),
+/// `None` when it does not exist or stands on no face, with the same guards
+/// as [`calc`]: the editor's dormer dialog asks it on every change, so a job
+/// too complex to calculate answers `too_complex` instead of keeping a
+/// thread busy for minutes (audit 2026-11-24 HUNT-2001). An object that
+/// does not exist answers at once, before the roof is calculated.
+pub fn item_placement(
+    project: &Project,
+    it: crate::edit::transform::ItemRef,
+) -> Result<Option<crate::edit::position::Placement>, CommandError> {
+    check_input(project)?;
+    if crate::edit::position::check_item(project, it).is_err() {
+        return Ok(None);
+    }
+    calculating(|| crate::edit::position::placement(project, it))
+}
+
+/// The editor's distance fields (`edit::position::place`, MCP `place_item`):
+/// `project` with object `it` moved to the distances given, `refused` with
+/// the reason, with the guards of [`calc`] (HUNT-2001). The arguments are
+/// checked before the roof is calculated; the project is changed only when
+/// the move succeeds.
+pub fn place_item(
+    project: &Project,
+    it: crate::edit::transform::ItemRef,
+    from_eave: Option<f64>,
+    from_left: Option<f64>,
+    from_right: Option<f64>,
+) -> Result<Project, CommandError> {
+    check_input(project)?;
+    crate::edit::position::check_place(project, it, from_eave, from_left, from_right)
+        .map_err(refused)?;
+    let mut moved = project.clone();
+    calculating(|| {
+        crate::edit::position::place(&mut moved, it, from_eave, from_left, from_right)
+    })?
+    .map_err(refused)?;
+    Ok(moved)
+}
+
 /// A request the edit operation refused or found no solution for: the UI
 /// shows its own message, `detail` is the English reason.
 fn refused(detail: String) -> CommandError {

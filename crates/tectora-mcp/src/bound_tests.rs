@@ -101,6 +101,11 @@ fn the_snapping_tools_answer_within_the_bound_on_a_job_too_complex_to_calculate(
             "roof_helper",
             json!({ "id": id, "edge": 0, "tool": "point", "target": "pitch" }),
         ),
+        // HUNT-2001: placing by distances calculates the bare roof.
+        (
+            "place_item",
+            json!({ "id": id, "summary": "place", "kind": "chimney", "index": 0, "from_eave": 1.0 }),
+        ),
     ] {
         let (r, t) = timed(&mut s, tool, args);
         assert!(t < QUICK, "{tool} took {t:?}");
@@ -137,6 +142,17 @@ fn a_refused_argument_answers_before_any_roof_calculation() {
             "roof_helper",
             json!({ "id": id, "edge": 0, "tool": "point", "target": "pitch", "point": [1, 2] }),
             "[x, y, z]",
+        ),
+        // HUNT-2001: a wrong index or distance before the bare roof.
+        (
+            "place_item",
+            json!({ "id": id, "summary": "x", "kind": "window", "index": 0, "from_eave": 1.0 }),
+            "does not exist",
+        ),
+        (
+            "place_item",
+            json!({ "id": id, "summary": "x", "kind": "chimney", "index": 0, "from_eave": 1e9 }),
+            "out of range",
         ),
     ] {
         let (r, t) = timed(&mut s, tool, args);
@@ -219,6 +235,23 @@ fn every_roof_calculation_of_a_tool_is_bounded() {
             (tail.trim_start().starts_with("=>") && !name.contains(' ')).then(|| name.to_string())
         })
     };
+    // Whether line `at` lies inside the block of a `work::calculate(`
+    // closure that opens at most 40 lines above it, in the same function.
+    let inside_calculate = |lines: &[&str], at: usize| -> bool {
+        let mut depth: i64 = 0;
+        for j in (at.saturating_sub(40)..at).rev() {
+            let l = lines[j];
+            depth += l.matches(['{', '(']).count() as i64 - l.matches(['}', ')']).count() as i64;
+            if l.contains("work::calculate(") {
+                return depth > 0;
+            }
+            let t = l.trim_start();
+            if t.starts_with("fn ") || t.starts_with("pub fn ") || t.starts_with("pub(crate) fn ") {
+                return false;
+            }
+        }
+        false
+    };
     let mut bad = Vec::new();
     let mut calls = 0;
     for (file, src) in files {
@@ -238,6 +271,11 @@ fn every_roof_calculation_of_a_tool_is_bounded() {
                 "change_in_figures(",
                 "review_status(",
                 "snapshot::take(",
+                // Placing by distances calculates the bare roof (HUNT-2001).
+                "position::place(",
+                "position::placement(",
+                "position::placements(",
+                "bare_roof(",
             ] {
                 if !l.contains(what) || l.contains(&format!("fn {what}")) {
                     continue;
@@ -255,6 +293,8 @@ fn every_roof_calculation_of_a_tool_is_bounded() {
                             || whole
                     }
                     "roof_trouble(" => f == "export_ready",
+                    "position::place(" | "position::placement(" | "position::placements("
+                    | "bare_roof(" => inside_calculate(&lines, i) || whole,
                     // Bounded in the core by work; a heavy job also within
                     // the commit timeout (`Server::bounded`).
                     "take_checked(" | "change_in_figures(" | "review_status("

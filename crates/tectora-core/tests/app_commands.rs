@@ -303,6 +303,12 @@ fn no_app_command_calculates_a_roof_outside_the_work_bound() {
         "change_in_figures(",
         "breakdown::breakdown(",
         "report::calc_of(",
+        // Placing by distances calculates the bare roof (HUNT-2001): only
+        // through `commands::item_placement` / `commands::place_item`.
+        "position::place(",
+        "position::placement(",
+        "position::placements(",
+        "bare_roof(",
     ];
     let mut bad = Vec::new();
     for file in [

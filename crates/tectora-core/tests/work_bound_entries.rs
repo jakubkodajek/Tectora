@@ -170,6 +170,45 @@ fn the_dormer_check_of_a_job_too_complex_answers_too_complex() {
 }
 
 #[test]
+fn placing_an_object_on_a_job_too_complex_answers_too_complex() {
+    // Audit 2026-11-24 HUNT-2001: the dormer dialog's `item_placement` and
+    // the distance fields' `place_item` calculated the bare roof unbounded.
+    use tectora_core::edit::transform::{ItemKind, ItemRef};
+    low_bound();
+    let dormer = ItemRef {
+        kind: ItemKind::Dormer,
+        index: 0,
+    };
+    let e = within(120, move || {
+        tectora_core::commands::item_placement(&stacked_with_dormer(50), dormer).unwrap_err()
+    });
+    assert_eq!(e.code, "too_complex", "{e}");
+    let e = within(120, move || {
+        tectora_core::commands::place_item(&stacked_with_dormer(50), dormer, Some(1.0), None, None)
+            .unwrap_err()
+    });
+    assert_eq!(e.code, "too_complex", "{e}");
+    // A wrong index answers at once: no placement, a refusal.
+    let gone = ItemRef {
+        kind: ItemKind::Window,
+        index: 0,
+    };
+    let r = within(5, move || {
+        tectora_core::commands::item_placement(&stacked_with_dormer(50), gone)
+    });
+    assert_eq!(r, Ok(None));
+    let e = within(5, move || {
+        tectora_core::commands::place_item(&stacked_with_dormer(50), gone, Some(1.0), None, None)
+            .unwrap_err()
+    });
+    assert_eq!(e.code, "refused", "{e}");
+    // Inside the bound the dormer is measured as before.
+    let small = stacked_with_dormer(1);
+    let r = tectora_core::commands::item_placement(&small, dormer);
+    assert!(r.as_ref().is_ok_and(Option::is_some), "{r:?}");
+}
+
+#[test]
 fn the_plan_sheet_of_a_job_too_complex_is_refused_in_both_formats() {
     // TEST-102: the app's PDF / SVG sheet (`checked_sheet_file_named`).
     low_bound();

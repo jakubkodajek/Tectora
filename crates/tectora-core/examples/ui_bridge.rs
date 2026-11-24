@@ -504,35 +504,32 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             .map_err(|d| coded("refused", d))?;
             to_json(project)
         }
+        // Bounded like `calc` (`tectora_core::commands`, HUNT-2001).
         "item_placement" => {
             let project = arg::<Project>(a, "project")?;
-            project
-                .check_input()
-                .map_err(|e| coded(e.code, e.message))?;
             let it = tectora_core::edit::transform::ItemRef {
                 kind: arg(a, "kind")?,
                 index: arg(a, "index")?,
             };
-            to_json(tectora_core::edit::position::placement(&project, it))
+            let placed = tectora_core::commands::item_placement(&project, it)
+                .map_err(|e| coded(e.code, e.detail))?;
+            to_json(placed)
         }
         "place_item" => {
-            let mut project = arg::<Project>(a, "project")?;
-            project
-                .check_input()
-                .map_err(|e| coded(e.code, e.message))?;
+            let project = arg::<Project>(a, "project")?;
             let it = tectora_core::edit::transform::ItemRef {
                 kind: arg(a, "kind")?,
                 index: arg(a, "index")?,
             };
-            tectora_core::edit::position::place(
-                &mut project,
+            let moved = tectora_core::commands::place_item(
+                &project,
                 it,
                 arg::<Option<f64>>(a, "fromEave")?,
                 arg::<Option<f64>>(a, "fromLeft")?,
                 arg::<Option<f64>>(a, "fromRight")?,
             )
-            .map_err(|d| coded("refused", d))?;
-            to_json(project)
+            .map_err(|e| coded(e.code, e.detail))?;
+            to_json(moved)
         }
         "set_part_height" => {
             let mut project = arg::<Project>(a, "project")?;

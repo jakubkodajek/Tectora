@@ -724,19 +724,38 @@ impl Server {
                 .map_err(|_| "`kind` must be dormer, chimney, window or roof_opening".to_string())?;
                 let index: usize = req(args, "index")?;
                 let it = tectora_core::edit::transform::ItemRef { kind, index };
-                let moved = tectora_core::edit::position::place(
-                    &mut p,
-                    it,
+                let (fe, fl, fr) = (
                     arg_f64(args, "from_eave")?,
                     arg_f64(args, "from_left")?,
                     arg_f64(args, "from_right")?,
-                )?;
-                if !moved {
+                );
+                // Kind, index and distances at once, before any roof
+                // (HUNT-2001); the move and its new placement within the
+                // work bound, and for a heavy job within the commit timeout.
+                tectora_core::edit::position::check_place(&p, it, fe, fl, fr)?;
+                let q = p.clone();
+                let (moved, q) = self
+                    .bounded(&p, move || {
+                        let mut q = q;
+                        tectora_core::work::calculate(|| {
+                            let moved = tectora_core::edit::position::place(&mut q, it, fe, fl, fr);
+                            let pl = tectora_core::edit::position::placement(&q, it);
+                            (moved, pl)
+                        })
+                        .map(|r| (r, q))
+                    })
+                    .ok_or(crate::ROOF_TOO_LONG)?
+                    .map_err(|e| match e {
+                        tectora_core::work::Refusal::TooComplex => crate::ROOF_TOO_LONG.to_string(),
+                        tectora_core::work::Refusal::Failed(d) => d,
+                    })?;
+                let (moved, pl) = moved;
+                if !moved? {
                     return Err("the object already is at these distances".into());
                 }
+                p = q;
                 refuse_new_problems(&before, &p)?;
                 let r = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
-                let pl = tectora_core::edit::position::placement(&p, it);
                 Ok(json!({ "saved": r, "placement": pl }))
             })(),
             "add_shape_part" => self.add_shape_part(args),

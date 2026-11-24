@@ -248,9 +248,75 @@ fn locate(project: &Project, bare: &[RoofGeometry], it: ItemRef) -> Option<(Plac
     ok.then_some((p, k))
 }
 
-/// [`placement_in`] on the project's own bare roof.
+/// [`placement_in`] on the project's own bare roof. An object that does not
+/// exist has none, answered before the roof is calculated (audit
+/// 2026-11-24 HUNT-2001).
 pub fn placement(project: &Project, it: ItemRef) -> Option<Placement> {
+    if check_item(project, it).is_err() {
+        return None;
+    }
     placement_in(project, &bare_roof(project), it)
+}
+
+/// Whether `it` is an object [`place`] can move: a dormer, chimney, roof
+/// window or opening that exists. Checked before any roof is calculated, so
+/// a wrong kind or index answers at once even on a job too complex to
+/// calculate (audit 2026-11-24 HUNT-2001).
+pub fn check_item(project: &Project, it: ItemRef) -> Result<(), String> {
+    let n = match it.kind {
+        ItemKind::Dormer => project.dormers.len(),
+        ItemKind::Chimney => project.chimneys.len(),
+        ItemKind::RoofOpening => project.roof_openings.len(),
+        ItemKind::Window => project.windows.len(),
+        ItemKind::ManualLine | ItemKind::ManualFace => {
+            return Err(
+                "only dormers, chimneys, roof windows and openings are placed on a face".into(),
+            );
+        }
+    };
+    if it.index >= n {
+        let kind = match it.kind {
+            ItemKind::Dormer => "dormer",
+            ItemKind::Chimney => "chimney",
+            ItemKind::RoofOpening => "roof opening",
+            _ => "roof window",
+        };
+        return Err(format!(
+            "{kind} {} does not exist (the job has {n})",
+            it.index
+        ));
+    }
+    Ok(())
+}
+
+/// The checks of [`place`] that need no roof: the object exists and each
+/// distance given is a number in range, only one side given. A caller that
+/// bounds the calculation runs it first, so a refused argument answers at
+/// once.
+pub fn check_place(
+    project: &Project,
+    it: ItemRef,
+    from_eave: Option<f64>,
+    from_left: Option<f64>,
+    from_right: Option<f64>,
+) -> Result<(), String> {
+    if from_left.is_some() && from_right.is_some() {
+        return Err("give from_left or from_right, not both".into());
+    }
+    for (name, v) in [
+        ("from_eave", from_eave),
+        ("from_left", from_left),
+        ("from_right", from_right),
+    ] {
+        if let Some(v) = v
+            && (!v.is_finite() || !(0.0..=MAX_DISTANCE).contains(&v))
+        {
+            return Err(format!(
+                "{name} {v:.3} is out of range (0 to {MAX_DISTANCE} m from the edge of its roof face)"
+            ));
+        }
+    }
+    check_item(project, it)
 }
 
 /// The placement of every dormer, chimney, roof opening and window, in
@@ -308,27 +374,8 @@ pub fn place(
     from_left: Option<f64>,
     from_right: Option<f64>,
 ) -> Result<bool, String> {
-    if from_left.is_some() && from_right.is_some() {
-        return Err("give from_left or from_right, not both".into());
-    }
-    for (name, v) in [
-        ("from_eave", from_eave),
-        ("from_left", from_left),
-        ("from_right", from_right),
-    ] {
-        if let Some(v) = v
-            && (!v.is_finite() || !(0.0..=MAX_DISTANCE).contains(&v))
-        {
-            return Err(format!(
-                "{name} {v:.3} is out of range (0 to {MAX_DISTANCE} m from the edge of its roof face)"
-            ));
-        }
-    }
-    if matches!(it.kind, ItemKind::ManualLine | ItemKind::ManualFace) {
-        return Err(
-            "only dormers, chimneys, roof windows and openings are placed on a face".into(),
-        );
-    }
+    // Everything that needs no roof first (HUNT-2001).
+    check_place(project, it, from_eave, from_left, from_right)?;
     let bare = bare_roof(project);
     let before = project.clone();
     let Some((now, k)) = locate(project, &bare, it) else {
@@ -633,6 +680,59 @@ mod tests {
         }
         assert!(place(&mut p, it, None, Some(1.0), Some(1.0)).is_err());
         assert_eq!(p, before);
+    }
+
+    /// Audit 2026-11-24 HUNT-2001: a wrong kind or index, or a distance out
+    /// of range, is refused before the roof is calculated: not one step of
+    /// the work bound is used, so the answer comes at once even on a job
+    /// too complex to calculate.
+    #[test]
+    fn an_object_that_does_not_exist_is_refused_before_the_roof_is_calculated() {
+        let mut p = gable(0.5, 40.0);
+        // A second building 20 m away: the join of two roofs counts work.
+        let mut far = p.parts[0].clone();
+        far.edges.iter_mut().for_each(|e| e.start.x += 20.0);
+        p.parts.push(far);
+        p.windows.push(RoofWindow {
+            x: 2.0,
+            y: 2.0,
+            width: 1.0,
+            height: 1.0,
+        });
+        let before = p.clone();
+        let gone = |kind, index| ItemRef { kind, index };
+        for it in [
+            gone(ItemKind::Window, 1),
+            gone(ItemKind::Dormer, 0),
+            gone(ItemKind::Chimney, 3),
+            gone(ItemKind::RoofOpening, 0),
+            gone(ItemKind::ManualFace, 0),
+            gone(ItemKind::ManualLine, 0),
+        ] {
+            let (r, used) = crate::work::bounded_by(1, || placement(&p, it));
+            assert_eq!((r, used), (Ok(None), 0), "{it:?}");
+            let (r, used) =
+                crate::work::bounded_by(1, || place(&mut p, it, Some(1.0), None, None));
+            assert!(r.unwrap().is_err(), "{it:?}");
+            assert_eq!(used, 0, "{it:?}");
+            assert!(check_item(&p, it).is_err());
+        }
+        let it = gone(ItemKind::Window, 0);
+        for (e, l, r) in [
+            (Some(f64::NAN), None, None),
+            (Some(1e9), None, None),
+            (None, Some(1.0), Some(1.0)),
+        ] {
+            let (res, used) = crate::work::bounded_by(1, || place(&mut p, it, e, l, r));
+            assert!(res.unwrap().is_err());
+            assert_eq!(used, 0);
+        }
+        assert_eq!(p, before);
+        // The window that exists is measured (the roof is calculated).
+        assert!(check_item(&p, it).is_ok());
+        let (r, used) = crate::work::bounded_by(u64::MAX / 2, || placement(&p, it));
+        assert!(r.unwrap().is_some());
+        assert!(used > 0);
     }
 
     #[test]
