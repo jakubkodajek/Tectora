@@ -234,9 +234,15 @@ button {
 .btn.ghost:hover {
   background: var(--surface-2);
 }
-.btn:disabled {
+.btn:disabled,
+.btn[aria-disabled="true"] {
   opacity: 0.45;
   cursor: default;
+}
+/* Busy, not disabled: a focused control that becomes disabled drops the
+   focus to the page (UI-402), so it stays enabled and ignores input. */
+select[aria-disabled="true"] {
+  cursor: progress;
 }
 
 .icon-btn {

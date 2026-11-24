@@ -16,8 +16,10 @@ export interface Bounds {
 export const PITCH: Bounds = { min: 2, max: 89.9 };
 /** Overhang, m. */
 export const OVERHANG: Bounds = { min: 0, max: 20 };
-/** Eave height of the presets and the New job form, m (below the ground for a building on a slope). */
-export const EAVE_HEIGHT: Bounds = { min: -100, max: 1000 };
+/** Eave height of the presets and the New job form, m: the core takes no eave below 0 (`model.rs`, settings `RoofDefaults::EAVE`, UI-003). */
+export const EAVE_HEIGHT: Bounds = { min: 0, max: 1000 };
+/** Default pitch for new roofs (draw bar presets), degrees: the settings' range (`RoofDefaults::PITCH`, UX-004). */
+export const PRESET_PITCH: Bounds = { min: 2, max: 89 };
 /** Building height, eave height, pitch-break and half-hip heights of a wall, m. */
 export const WALL_HEIGHT: Bounds = { min: 0, max: 1000 };
 

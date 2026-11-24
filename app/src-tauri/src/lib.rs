@@ -13,10 +13,9 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
-use tectora_core::diff::Change;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::settings::{self, Settings};
-use tectora_core::store::{self, BrokenFile, LiveStatus, Store, USER_ACTOR, outlines};
+use tectora_core::store::{self, BrokenFile, LiveStatus, Store, USER_ACTOR, card_outlines};
 use tectora_core::{Project, assistants, bundle, commands, examples, snapshot};
 
 use error::{AppError, guard};
@@ -66,6 +65,9 @@ struct Library {
     projects: Vec<store::ProjectSummary>,
     /// Project files in the folder that could not be read.
     broken: Vec<BrokenFile>,
+    /// What in the library's own folders blocks work, with its `kind`
+    /// (UX-601, ARCH-701).
+    foreign: Vec<store::ForeignItem>,
 }
 
 /// Runs off the main thread: summarising computes every roof, and the
@@ -74,7 +76,12 @@ struct Library {
 fn list_projects(state: State<AppState>) -> CmdResult<Library> {
     guard(|| {
         let (projects, broken) = state.store().scan()?;
-        Ok(Library { projects, broken })
+        let foreign = state.store().foreign_entries();
+        Ok(Library {
+            projects,
+            broken,
+            foreign,
+        })
     })
 }
 
@@ -99,41 +106,101 @@ fn startup_warnings(state: State<AppState>) -> Vec<AppError> {
         .collect()
 }
 
-#[derive(Serialize)]
-struct ActivityItem {
+/// Recorded changes of a project, newest first, as the core maps them
+/// (`Store::activity_items`: the engine's recalculation with its figures
+/// old -> new).
+#[tauri::command(async)]
+fn project_activity(state: State<AppState>, id: String) -> Vec<store::ActivityItem> {
+    state.store().activity_items(&id)
+}
+
+/// The engine's recalculation the job's stored result is, if it still is
+/// one (`Store::recalculation`): the result card's "recalculated" line and
+/// the history's "put the offer's figures back" show for this alone
+/// (audit 2026-11-22 ERR-802, ARCH-802).
+#[tauri::command(async)]
+fn result_recalculation(state: State<AppState>, id: String) -> Option<store::Recalculation> {
+    state.store().recalculation(&id)
+}
+
+/// Puts the offer's own stored result back in place of the engine's
+/// recalculation logged at `entry_ts_ms`, and nothing else
+/// (`Store::restore_offer_result`; `revert_stale` when the stored result
+/// is no longer that recalculation).
+#[tauri::command(async)]
+fn restore_offer_result(
+    state: State<AppState>,
+    id: String,
+    entry_ts_ms: u64,
+) -> CmdResult<Project> {
+    guard(|| {
+        Ok(state
+            .store()
+            .restore_offer_result(&id, entry_ts_ms, USER_ACTOR, None)?)
+    })
+}
+
+/// Undoes the latest recorded change. `expect_ts`: the entry the button
+/// was drawn on; when another change is the latest by now nothing is
+/// undone (`revert_stale`, audit 2026-11-22 ERR-801). Answers as Revert
+/// all, with `repaired` when it wrote over a file another program had
+/// made unreadable (audit 2026-11-23 ERR-1502).
+#[tauri::command(async)]
+fn revert_last_change(
+    state: State<AppState>,
+    id: String,
+    expect_ts: Option<u64>,
+) -> CmdResult<store::RevertedChanges> {
+    guard(|| {
+        Ok(state
+            .store()
+            .revert_last_reported(&id, USER_ACTOR, None, expect_ts)?)
+    })
+}
+
+/// Undoes the change recorded at `ts_ms` and everything after it, with
+/// the number of entries undone (Revert all, audit 2026-11-23 ERR-1002).
+/// `seen_ts`: the newest entry the editor has applied (its Undo over an
+/// AI's save); `revert_stale` when a newer one is there (ERR-1704).
+/// `review`: the banner's Revert all of the review starting at `ts_ms`
+/// (its `since_ts_ms`), which writes the review's baseline and answers
+/// `revert_stale` when that review is not open any more (ADR 0007,
+/// audit 2026-11-24 ERR-1905).
+#[tauri::command(async)]
+fn revert_changes(
+    state: State<AppState>,
+    id: String,
     ts_ms: u64,
-    actor: String,
-    summary: String,
-    changes: Vec<Change>,
-}
-
-/// Recorded changes of a project, newest first.
-#[tauri::command(async)]
-fn project_activity(state: State<AppState>, id: String) -> Vec<ActivityItem> {
-    let mut out: Vec<ActivityItem> = state
-        .store()
-        .activity(&id)
-        .into_iter()
-        .map(|e| ActivityItem {
-            ts_ms: e.ts_ms,
-            actor: e.actor,
-            summary: e.summary,
-            changes: e.changes,
+    seen_ts: Option<u64>,
+    review: Option<bool>,
+) -> CmdResult<store::RevertedChanges> {
+    guard(|| {
+        let store = state.store();
+        Ok(if review == Some(true) {
+            store.revert_review(&id, ts_ms, USER_ACTOR, None)?
+        } else {
+            store.revert_to_counted_seen(&id, ts_ms, seen_ts, USER_ACTOR, None)?
         })
-        .collect();
-    out.reverse();
-    out
+    })
 }
 
+/// Takes back the review revert logged at `revert_ts` (the editor's Undo
+/// and Redo of a review's Revert), itself a logged revert, so the review
+/// reads it (audit 2026-11-24 UX-1601). `seen_ts`: the newest entry the
+/// editor has applied; `revert_stale` when the log ends at another one
+/// (ARCH-1703, design B).
 #[tauri::command(async)]
-fn revert_last_change(state: State<AppState>, id: String) -> CmdResult<Project> {
-    guard(|| Ok(state.store().revert_last(&id, USER_ACTOR, None)?))
-}
-
-/// Undoes the change recorded at `ts_ms` and everything after it.
-#[tauri::command(async)]
-fn revert_changes(state: State<AppState>, id: String, ts_ms: u64) -> CmdResult<Project> {
-    guard(|| Ok(state.store().revert_to(&id, ts_ms, USER_ACTOR, None)?))
+fn take_back_revert(
+    state: State<AppState>,
+    id: String,
+    revert_ts: u64,
+    seen_ts: u64,
+) -> CmdResult<store::RevertedChanges> {
+    guard(|| {
+        Ok(state
+            .store()
+            .take_back_revert(&id, revert_ts, seen_ts, USER_ACTOR)?)
+    })
 }
 
 /// The AI changes of `id` waiting for review, with the version before them
@@ -145,8 +212,10 @@ fn review_status(state: State<AppState>, id: String) -> CmdResult<Option<store::
     guard(|| Ok(state.store().review_status(&id)?))
 }
 
-/// Accepts every change of `id` recorded at or before `ts_ms`.
-#[tauri::command]
+/// Accepts every change of `id` recorded at or before `ts_ms`. Off the
+/// main thread: it takes the job's lock (`busy` after a short wait,
+/// audit 2026-11-23 ARCH-1001).
+#[tauri::command(async)]
 fn accept_changes(state: State<AppState>, id: String, ts_ms: u64) -> CmdResult<u64> {
     guard(|| Ok(state.store().mark_reviewed(&id, ts_ms)?))
 }
@@ -187,17 +256,54 @@ fn connect_ai_assistant(id: assistants::Assistant) -> CmdResult<assistants::Conn
     })
 }
 
-#[tauri::command]
+/// Off the main thread: a job file can be large and its lock can be held
+/// by another process's save (audit 2026-11-22 HUNT-703). The stored
+/// result is recalculated before, by `refresh_stored_result`.
+#[tauri::command(async)]
 fn load_project(state: State<AppState>, id: String) -> CmdResult<Project> {
-    guard(|| {
-        // A result stored by an older engine follows the corrected
-        // calculation; the change log keeps the old figures.
-        let _ = state.store().refresh_stored_result(&id);
-        Ok(state.store().load(&id)?)
+    guard(|| Ok(state.store().load(&id)?))
+}
+
+/// What reading the job left out of it, for the editor to say when it
+/// opens the job: a stored result with an impossible time (HUNT-802).
+/// Empty when the job cannot be read; `load_project` says why.
+#[tauri::command(async)]
+fn load_warnings(state: State<AppState>, id: String) -> Vec<AppError> {
+    state
+        .store()
+        .load_warnings(&id)
+        .map(|ws| {
+            ws.into_iter()
+                .map(|w| AppError::new(w.code).detail(w.detail))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Recalculates the job's stored result where an older engine stored it
+/// (Jakub's decision 2026-11-21; the change log keeps the old figures),
+/// before the editor loads the job. Returns the change-log entry (its time
+/// and summary) when it did. Off the main thread: it calculates the roof
+/// under the job's lock (HUNT-703), which it takes only when a
+/// recalculation is due and waits for a few seconds at most (ERR-803). An
+/// error leaves the stored result as it was and is only logged: the job
+/// still opens.
+#[tauri::command(async)]
+fn refresh_stored_result(state: State<AppState>, id: String) -> Option<store::RefreshedEntry> {
+    let r = guard(|| Ok(state.store().refresh_entry(&id)?));
+    r.unwrap_or_else(|e| {
+        eprintln!(
+            "tectora: stored result of {id} not recalculated: {} {}",
+            e.code,
+            e.detail.as_deref().unwrap_or_default()
+        );
+        None
     })
 }
 
-#[tauri::command]
+/// Off the main thread: it takes the job's lock, which another program
+/// may hold while it saves (audit 2026-11-23 ARCH-1001).
+#[tauri::command(async)]
 fn save_project(state: State<AppState>, id: Option<String>, project: Project) -> CmdResult<String> {
     guard(|| {
         let before = id.as_deref().and_then(|i| state.store().load(i).ok());
@@ -289,11 +395,10 @@ fn duplicate_project(
             .map_err(|d| AppError::new("out_of_range").detail(d))?;
         let mut project = state.store().load(&id)?;
         tectora_core::library::prepare_copy(&mut project, &name, job);
-        let new_id = state.store().save(None, &project)?;
-        if with_files.unwrap_or(true) {
-            state.store().copy_attachments(&id, &new_id)?;
-        }
-        Ok(new_id)
+        // A refused copy leaves no new job (ARCH-602).
+        Ok(state
+            .store()
+            .copy_job(&id, &project, with_files.unwrap_or(true), None)?)
     })
 }
 
@@ -366,7 +471,10 @@ fn show_folder(dir: &std::path::Path) -> Result<(), String> {
 /// Async: the preview in the bundle runs the roof kernel.
 #[tauri::command(async)]
 fn export_job(state: State<AppState>, id: String, path: String) -> CmdResult<()> {
-    guard(|| Ok(bundle::export(&state.store(), &id, &PathBuf::from(path)).map(|_| ())?))
+    // A name typed without the ending gets it: never the job file itself
+    // or a file of another type (HUNTIO-002).
+    let dest = bundle::with_extension(&PathBuf::from(path));
+    guard(|| Ok(bundle::export(&state.store(), &id, &dest).map(|_| ())?))
 }
 
 /// The text list for the price sheet and the plan sheet (SVG) of the open
@@ -382,13 +490,8 @@ fn export_preview(
     line_names: Option<std::collections::BTreeMap<String, String>>,
 ) -> CmdResult<Value> {
     guard(|| {
-        let opts = tectora_core::export::ListOptions::new(title, stamp);
         let names = line_names.unwrap_or_default();
-        let (list, svg) = tectora_core::export::checked_named(&project, &opts, &names)
-            .map_err(|d| AppError::new("out_of_range").detail(d))?;
-        let summary = tectora_core::export::checked_summary(&project, &opts)
-            .map_err(|d| AppError::new("out_of_range").detail(d))?;
-        Ok(serde_json::json!({ "list": list, "svg": svg, "summary": summary }))
+        Ok(commands::export_preview(&project, title, stamp, &names)?)
     })
 }
 
@@ -478,7 +581,14 @@ fn create_standard(
     overhang: f64,
 ) -> CmdResult<String> {
     guard(|| {
-        commands::check_new_roof(Some(&name), pitch_deg, eave_height, overhang)?;
+        commands::check_standard_roof(
+            Some(&name),
+            length,
+            width,
+            pitch_deg,
+            eave_height,
+            overhang,
+        )?;
         let mut project = Project::new(name);
         project.parts.push(standard_roof(
             kind,
@@ -503,7 +613,7 @@ fn standard_part(
     overhang: f64,
 ) -> CmdResult<tectora_core::RoofPart> {
     guard(|| {
-        commands::check_new_roof(None, pitch_deg, eave_height, overhang)?;
+        commands::check_standard_roof(None, length, width, pitch_deg, eave_height, overhang)?;
         Ok(standard_roof(
             kind,
             length,
@@ -523,7 +633,7 @@ fn list_examples() -> Vec<ExampleInfo> {
             id: e.id,
             name: e.name,
             description: e.description,
-            outlines: outlines(&e.project()),
+            outlines: card_outlines(&e.project()),
             lines: store::roof_lines(&e.project()),
         })
         .collect()
@@ -594,6 +704,14 @@ fn check_windows(project: Project) -> CmdResult<Option<tectora_core::edit::Overs
 #[tauri::command(async)]
 fn dormer_host(project: Project, index: usize) -> CmdResult<Value> {
     guard(|| Ok(commands::dormer_host(&project, index)?))
+}
+
+/// Whether dormer `index` can be stored as it is
+/// (`tectora_core::commands::check_dormer`): the dormer bar and dialog ask
+/// before they store a pitch or eave height (MATH-001, MATH-003).
+#[tauri::command(async)]
+fn check_dormer(project: Project, index: usize) -> CmdResult<()> {
+    guard(|| Ok(commands::check_dormer(&project, index)?))
 }
 
 /// What the calculation dialog needs to know about wall `edge` of part `part`
@@ -701,44 +819,38 @@ fn face_to_part(
 
 /// Where a dormer, chimney, roof window or opening sits on its roof face
 /// (`tectora_core::edit::position::placement`): the dormer window asks it
-/// for the dormer being edited. Calculates the roof, so guarded like `calc`.
+/// for the dormer being edited. Calculates the roof, so bounded and guarded
+/// like `calc` (`tectora_core::commands::item_placement`, HUNT-2001).
 #[tauri::command(async)]
 fn item_placement(
     project: Project,
     kind: tectora_core::edit::transform::ItemKind,
     index: usize,
 ) -> CmdResult<Option<tectora_core::edit::position::Placement>> {
-    guard(|| {
-        project
-            .check_input()
-            .map_err(|e| AppError::new(e.code).detail(e.message))?;
-        let it = tectora_core::edit::transform::ItemRef { kind, index };
-        Ok(tectora_core::edit::position::placement(&project, it))
-    })
+    let it = tectora_core::edit::transform::ItemRef { kind, index };
+    guard(|| Ok(commands::item_placement(&project, it)?))
 }
 
 /// The editor's dimension fields of a dormer, chimney, roof window or
 /// opening: moves it to `from_eave` (along the slope) and `from_left` or
 /// `from_right` on its roof face (`tectora_core::edit::position::place`, the
-/// MCP tool place_item). Calculates the roof, so off the main thread and
-/// guarded like `calc`.
+/// MCP tool place_item). Calculates the roof, so off the main thread,
+/// bounded and guarded like `calc` (`tectora_core::commands::place_item`,
+/// HUNT-2001).
 #[tauri::command(async)]
 fn place_item(
-    mut project: Project,
+    project: Project,
     kind: tectora_core::edit::transform::ItemKind,
     index: usize,
     from_eave: Option<f64>,
     from_left: Option<f64>,
     from_right: Option<f64>,
 ) -> CmdResult<Project> {
+    let it = tectora_core::edit::transform::ItemRef { kind, index };
     guard(|| {
-        project
-            .check_input()
-            .map_err(|e| AppError::new(e.code).detail(e.message))?;
-        let it = tectora_core::edit::transform::ItemRef { kind, index };
-        tectora_core::edit::position::place(&mut project, it, from_eave, from_left, from_right)
-            .map_err(|d| AppError::new("refused").detail(d))?;
-        Ok(project)
+        Ok(commands::place_item(
+            &project, it, from_eave, from_left, from_right,
+        )?)
     })
 }
 
@@ -769,10 +881,9 @@ fn get_settings() -> Value {
 /// Errors are codes the UI translates (`settings.err.<code>`).
 #[tauri::command]
 fn update_settings(app: tauri::AppHandle, patch: Value) -> Result<Value, String> {
-    let next = Settings::load()
-        .patched(&patch)
-        .map_err(|e| e.code().to_string())?;
-    next.save().map_err(|e| e.code().to_string())?;
+    // Read, changed and written under the settings lock: an AI client's
+    // change saved at the same moment is not lost (TEST-307).
+    let (_, next) = Settings::update(|s| s.patched(&patch)).map_err(|e| e.code().to_string())?;
     switch_library(&app, &next).map_err(|_| "not_writable".to_string())?;
     Ok(next.describe())
 }
@@ -787,10 +898,8 @@ fn answer_folder_request(
 ) -> Result<Value, String> {
     // `changes` is what the dialog showed; a request replaced meanwhile is
     // not answered (ARCH-005).
-    let next = Settings::load()
-        .answer_folder_request(&changes, allow)
+    let (_, next) = Settings::update(|s| s.answer_folder_request(&changes, allow))
         .map_err(|e| e.code().to_string())?;
-    next.save().map_err(|e| e.code().to_string())?;
     switch_library(&app, &next).map_err(|_| "not_writable".to_string())?;
     Ok(next.describe())
 }
@@ -802,8 +911,18 @@ fn answer_folder_request(
 fn answer_file_request(path: std::path::PathBuf, allow: bool) -> Result<Value, String> {
     // `path` is what the dialog showed; a request replaced meanwhile is not
     // answered (ARCH-005).
-    let next = Settings::load().answer_file_request(&path, allow);
-    next.save().map_err(|e| e.code().to_string())?;
+    let (_, next) = Settings::update(|s| Ok(s.answer_file_request(&path, allow)))
+        .map_err(|e| e.code().to_string())?;
+    Ok(next.describe())
+}
+
+/// The user's answer to a settings change an AI client made
+/// (`Settings::ai_changes`, UX-003): `revert` puts the previous values back,
+/// otherwise it is accepted. A change answered meanwhile is left alone.
+#[tauri::command]
+fn answer_ai_change(id: u64, revert: bool) -> Result<Value, String> {
+    let (_, next) =
+        Settings::update(|s| s.answer_ai_change(id, revert)).map_err(|e| e.code().to_string())?;
     Ok(next.describe())
 }
 
@@ -917,7 +1036,21 @@ fn start_watcher(
 /// Opens files given on the command line or by the OS (double-click on a
 /// `.tectora` or `.tectorajob` file): each becomes a library job, the last
 /// one is shown.
+///
+/// On its own thread: importing a received bundle can take a while, and
+/// this runs from the event loop (macOS file open, a second launch), which
+/// must never wait for it (audit 2026-11-22 HUNT-401).
 fn open_files(app: &tauri::AppHandle, paths: impl IntoIterator<Item = PathBuf>) {
+    let paths: Vec<PathBuf> = paths.into_iter().collect();
+    if paths.is_empty() {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || open_files_now(&app, paths));
+}
+
+/// [`open_files`] on the calling thread.
+fn open_files_now(app: &tauri::AppHandle, paths: Vec<PathBuf>) {
     let state = app.state::<AppState>();
     let opened = bundle::open_paths(&state.store(), paths);
     // A file that does not open is told to the user like a failed import
@@ -1076,6 +1209,8 @@ pub fn run() {
             startup_warnings,
             take_open_errors,
             load_project,
+            load_warnings,
+            refresh_stored_result,
             save_project,
             save_project_checked,
             normalize_project,
@@ -1085,8 +1220,11 @@ pub fn run() {
             name_seeded_examples,
             duplicate_project,
             project_activity,
+            result_recalculation,
+            restore_offer_result,
             revert_last_change,
             revert_changes,
+            take_back_revert,
             review_status,
             accept_changes,
             live_status,
@@ -1102,6 +1240,7 @@ pub fn run() {
             calc_breakdown,
             check_windows,
             dormer_host,
+            check_dormer,
             roof_helper_context,
             roof_helper_preview,
             roof_helper_apply,
@@ -1128,6 +1267,7 @@ pub fn run() {
             update_settings,
             answer_folder_request,
             answer_file_request,
+            answer_ai_change,
             open_folder,
             updates::update_check,
             updates::update_install
@@ -1152,9 +1292,17 @@ mod tests {
         let src = include_str!("lib.rs");
         for name in [
             "list_projects",
+            "load_project",
+            "refresh_stored_result",
+            "project_activity",
+            "result_recalculation",
+            "restore_offer_result",
             "review_status",
             "revert_last_change",
             "revert_changes",
+            "take_back_revert",
+            "accept_changes",
+            "save_project",
             "duplicate_project",
             "delete_project",
             "attach_files",
@@ -1166,12 +1314,306 @@ mod tests {
             "calc_breakdown",
             "take_snapshot",
             "dormer_host",
+            "check_dormer",
         ] {
             assert!(
                 src.contains(&format!("#[tauri::command(async)]\nfn {name}(")),
                 "`{name}` must be #[tauri::command(async)]"
             );
         }
+    }
+
+    /// The name of the function a line declares (`fn`, `pub fn`, `async
+    /// fn`, … at the start of the line), if it declares one.
+    fn declared_fn(line: &str) -> Option<&str> {
+        let mut rest = line.trim_start();
+        for q in ["pub(crate) ", "pub ", "async "] {
+            rest = rest.strip_prefix(q).unwrap_or(rest);
+        }
+        let name = rest.strip_prefix("fn ")?;
+        name.split(['(', '<']).next().filter(|n| !n.is_empty())
+    }
+
+    /// Each function of `src` declared at the start of a line, with the
+    /// lines of its attribute block (doc comments and attributes above
+    /// it), its signature (up to the line that opens the body) and its
+    /// body (up to the `}` that closes it at the same indent).
+    fn functions(src: &str) -> Vec<(String, String, String, String)> {
+        let lines: Vec<&str> = src.lines().collect();
+        let mut out = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let Some(name) = declared_fn(line) else {
+                continue;
+            };
+            let indent = line.len() - line.trim_start().len();
+            let mut start = i;
+            while start > 0 {
+                let above = lines[start - 1].trim_start();
+                if above.starts_with("#[") || above.starts_with("///") || above.starts_with("//") {
+                    start -= 1;
+                } else {
+                    break;
+                }
+            }
+            let attrs = lines[start..i].join("\n");
+            let open = (i..lines.len())
+                .find(|&j| lines[j].trim_end().ends_with('{') || lines[j].trim_end().ends_with(';'))
+                .unwrap_or(i);
+            let sig = lines[i..=open].join("\n");
+            let close = (open + 1..lines.len())
+                .find(|&j| {
+                    let l = lines[j];
+                    l.trim() == "}" && l.len() - l.trim_start().len() == indent
+                })
+                .unwrap_or(open);
+            let body = lines[open + 1..=close.max(open)].join("\n");
+            out.push((name.to_string(), attrs, sig, body));
+        }
+        out
+    }
+
+    /// The sync Tauri commands of `src` (`#[tauri::command]` without
+    /// `async` anywhere in the attribute block, whatever else is in it),
+    /// and those of them that use the library: `.store()`, `.store.` or
+    /// `state.store`, or a call of a helper that reaches it. A helper is a
+    /// function that is no command and takes `&AppState` / `State<AppState>`,
+    /// gets the state from the app handle (`switch_library`), is a method
+    /// of `impl AppState` (other than `store`, called as `.name(`), or
+    /// calls a helper itself, however many levels deep (audit 2026-11-23
+    /// TEST-1204).
+    fn sync_store_users(src: &str) -> (Vec<String>, Vec<String>) {
+        let fns = functions(src);
+        let is_command = |attrs: &str| {
+            attrs
+                .lines()
+                .any(|l| l.trim_start().starts_with("#[tauri::command"))
+        };
+        // The methods declared inside `impl AppState { … }` blocks.
+        let mut methods: Vec<String> = Vec::new();
+        let mut in_impl = false;
+        for line in src.lines() {
+            if line.starts_with("impl AppState") {
+                in_impl = true;
+            } else if in_impl && line == "}" {
+                in_impl = false;
+            } else if in_impl
+                && let Some(name) = declared_fn(line)
+                && name != "store"
+            {
+                methods.push(name.to_string());
+            }
+        }
+        // A plain call `h(`, not `x.h(`, `x::h(` or `other_h(`.
+        let calls = |body: &str, h: &str| {
+            body.match_indices(&format!("{h}(")).any(|(at, _)| {
+                !body[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == ':')
+            })
+        };
+        let reaches = |body: &str, helpers: &[String]| {
+            body.contains(".store()")
+                || body.contains(".store.")
+                || body.contains("state.store")
+                || helpers.iter().any(|h| {
+                    calls(body, h) || (methods.contains(h) && body.contains(&format!(".{h}(")))
+                })
+        };
+        let mut helpers: Vec<String> = methods.clone();
+        helpers.extend(
+            fns.iter()
+                .filter(|(name, attrs, sig, body)| {
+                    !is_command(attrs)
+                        && name != "store"
+                        && (sig.contains("AppState")
+                            || body.contains("state::<AppState>")
+                            || name == "switch_library")
+                })
+                .map(|(name, ..)| name.clone()),
+        );
+        // Until no function that is no command calls a helper it is not.
+        loop {
+            let more: Vec<String> = fns
+                .iter()
+                .filter(|(name, attrs, _, body)| {
+                    !is_command(attrs)
+                        && name != "store"
+                        && !helpers.contains(name)
+                        && reaches(body, &helpers)
+                })
+                .map(|(name, ..)| name.clone())
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            helpers.extend(more);
+        }
+        let mut sync = Vec::new();
+        let mut users = Vec::new();
+        for (name, attrs, _, body) in &fns {
+            let Some(attr) = attrs
+                .lines()
+                .find(|l| l.trim_start().starts_with("#[tauri::command"))
+            else {
+                continue;
+            };
+            if attr.contains("async") {
+                continue;
+            }
+            sync.push(name.clone());
+            if reaches(body, &helpers) {
+                users.push(name.clone());
+            }
+        }
+        (sync, users)
+    }
+
+    /// A command that runs on the window's main thread may only read the
+    /// library: anything that writes takes the job's lock, which another
+    /// program may hold for seconds (audit 2026-11-23 ARCH-1001). A new
+    /// sync command that touches the store fails here until it is made
+    /// `#[tauri::command(async)]` or shown to only read. The scan reads
+    /// each command's whole attribute block and sees the store through a
+    /// helper too (audit 2026-11-23 TEST-1104).
+    #[test]
+    fn sync_commands_only_read_the_library() {
+        let src = include_str!("lib.rs").replace("\r\n", "\n");
+        let reads_only = [
+            "projects_dir",
+            "live_status",
+            "list_attachments",
+            "open_attachment",
+        ];
+        // Reviewed (audit 2026-11-23 TEST-1104): they switch the library
+        // through `switch_library`, which writes the store only when the
+        // jobs folder changed, a rare press in Settings. Kept sync until a
+        // freeze is measured (owner decision 2026-11-23).
+        let reviewed = ["update_settings", "answer_folder_request"];
+        let (sync, users) = sync_store_users(&src);
+        for name in &users {
+            assert!(
+                reads_only.contains(&name.as_str()) || reviewed.contains(&name.as_str()),
+                "`{name}` uses the library on the main thread: make it #[tauri::command(async)]"
+            );
+        }
+        for name in reviewed {
+            assert!(
+                users.iter().any(|u| u == name),
+                "`{name}` no longer uses the library on the main thread: take it off the list"
+            );
+        }
+        assert!(sync.len() > 5, "no sync commands found: the scan is broken");
+    }
+
+    /// The scan above on made-up commands: a second attribute between
+    /// `#[tauri::command]` and `fn`, a store use through a helper, through
+    /// `switch_library`, through a helper of a helper, an `AppState`
+    /// method and the `store` field are all seen (TEST-1204); async
+    /// commands and commands that do not touch the store are not flagged.
+    #[test]
+    fn the_sync_command_scan_sees_attributes_and_helpers() {
+        // Each line starts with `|`, so the scan of lib.rs itself does not
+        // take these for commands.
+        let src = r#"
+|struct AppState { store: u8 }
+|
+|fn wipe_all(state: &AppState) {
+|    state.store();
+|}
+|
+|fn switch_library(app: &AppHandle) {
+|    let state = app.state::<AppState>();
+|}
+|
+|/// Doc.
+|#[tauri::command]
+|#[allow(clippy::needless_pass_by_value)]
+|fn with_allow(state: State<AppState>) {
+|    state.store().delete("x");
+|}
+|
+|#[tauri::command]
+|fn through_helper(state: State<AppState>) {
+|    wipe_all(&state);
+|}
+|
+|#[tauri::command]
+|fn through_switch(app: AppHandle) {
+|    switch_library(&app).ok();
+|}
+|
+|#[tauri::command(async)]
+|fn off_thread(state: State<AppState>) {
+|    state.store().save();
+|}
+|
+|#[tauri::command]
+|fn no_store(path: String) {
+|    Settings::load();
+|}
+|
+|fn helper_a(state: &AppState) {
+|    state.store().delete("x");
+|}
+|
+|fn helper_b(id: &str) {
+|    helper_a(GLOBAL);
+|}
+|
+|#[tauri::command]
+|fn two_levels(id: String) {
+|    helper_b(&id);
+|}
+|
+|impl AppState {
+|    fn wipe(&self) {
+|        self.store().delete("x");
+|    }
+|}
+|
+|#[tauri::command]
+|fn through_method(state: State<AppState>) {
+|    state.wipe();
+|}
+|
+|#[tauri::command]
+|fn through_field(state: State<AppState>) {
+|    state.inner().store.write().unwrap().delete("x");
+|}
+|
+|#[tauri::command]
+|fn other_helper(state: State<AppState>) {
+|    other_helper_a(1);
+|}
+"#
+        .replace('|', "");
+        let (sync, mut users) = sync_store_users(&src);
+        users.sort();
+        assert_eq!(
+            sync,
+            [
+                "with_allow",
+                "through_helper",
+                "through_switch",
+                "no_store",
+                "two_levels",
+                "through_method",
+                "through_field",
+                "other_helper"
+            ]
+        );
+        assert_eq!(
+            users,
+            [
+                "through_field",
+                "through_helper",
+                "through_method",
+                "through_switch",
+                "two_levels",
+                "with_allow"
+            ]
+        );
     }
 
     /// Double-click open and start-up arguments (TEST-008): Tectora files

@@ -285,3 +285,61 @@ fn the_parser_reads_parameters() {
     );
     assert_eq!(invoked("await invoke(\"calc\", { project })"), vec!["calc"]);
 }
+
+/// Audit 2026-11-24 HUNT-1903: no app command (and no command of the
+/// preview's bridge) calculates a roof outside the work bound: every
+/// calculation goes through `tectora_core::commands` (bounded with
+/// `work::calculate`), a store call that bounds its own figures
+/// (`review_status`, `refresh_result`), or a `work::calculate` closure. A
+/// direct call of the kernel would keep the app's command busy for minutes
+/// on a job too complex to calculate.
+#[test]
+fn no_app_command_calculates_a_roof_outside_the_work_bound() {
+    let direct = [
+        "generate_project(",
+        "host_roof(",
+        "snapshot::take(",
+        "take_checked(",
+        "change_in_figures(",
+        "breakdown::breakdown(",
+        "report::calc_of(",
+        // Placing by distances calculates the bare roof (HUNT-2001): only
+        // through `commands::item_placement` / `commands::place_item`.
+        "position::place(",
+        "position::placement(",
+        "position::placements(",
+        "bare_roof(",
+    ];
+    let mut bad = Vec::new();
+    for file in [
+        "app/src-tauri/src/lib.rs",
+        "crates/tectora-core/examples/ui_bridge.rs",
+    ] {
+        let src = read(file);
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, l) in lines.iter().enumerate() {
+            let t = l.trim_start();
+            if t.starts_with("//") {
+                continue;
+            }
+            for what in direct {
+                if !l.contains(what) || l.contains(&format!("fn {what}")) {
+                    continue;
+                }
+                let bounded = lines[i.saturating_sub(8)..=i]
+                    .iter()
+                    .any(|l| l.contains("work::calculate("));
+                if !bounded {
+                    bad.push(format!("{file}:{}: {t}", i + 1));
+                }
+            }
+        }
+        // The scan reads the commands: the review read is one of them.
+        assert!(src.contains("review_status"), "{file}: no review_status");
+    }
+    assert!(
+        bad.is_empty(),
+        "roof calculations outside the bound:\n{}",
+        bad.join("\n")
+    );
+}

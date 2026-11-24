@@ -28,7 +28,8 @@ export const NAMED_CODES = Object.keys(KEY);
 
 /** The name of line code `code`; codes without one of their own are "other line". */
 export function lineName(code: string): string {
-  return t(KEY[code] ?? "line.other");
+  // Own keys only: a hand-drawn line's code comes from the job file (TEST-1403).
+  return t(Object.hasOwn(KEY, code) ? KEY[code] : "line.other");
 }
 
 /** Code → name of every named code, for the legend of the plan sheet. */

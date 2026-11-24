@@ -13,6 +13,7 @@
   import { numeric } from "./numeric.svelte";
   import { textfield } from "./textfield";
   import { pageStep, stepIndex } from "./itemstep";
+  import { freshBar, pressTooSoon } from "./dblclick";
 
   let {
     project,
@@ -20,6 +21,7 @@
     online,
     onface,
     ontopart,
+    busy = false,
     ondelete,
   }: {
     project: Project;
@@ -28,12 +30,19 @@
     onface: (f: ManualFace) => void;
     /** Replaces the selected face with a building part of the same outline. */
     ontopart?: () => void;
+    /** "Make it a building" is under way: its button is off (UI-308). */
+    busy?: boolean;
     ondelete: () => void;
   } = $props();
+  // The bar replaces the face tool's bar right after "Close face", with
+  // Delete where Close was: a double click on Close must not delete (UI-103).
+  const shownAt = performance.now();
 
   const list = $derived(sel ? (sel.kind === "line" ? (project.manual_lines ?? []) : (project.manual_faces ?? [])) : []);
   const line = $derived(sel?.kind === "line" ? (project.manual_lines ?? [])[sel.index] ?? null : null);
   const face = $derived(sel?.kind === "face" ? (project.manual_faces ?? [])[sel.index] ?? null : null);
+  /** The line or face the fields edit now: a field reused for the next one forgets the one before (UI-403). */
+  const itemKey = $derived(sel ? `${sel.kind}:${sel.index}` : "");
 
 
   // The face's area comes from the core (`ManualFace::area`), asked again
@@ -63,7 +72,7 @@
   }
 </script>
 
-<div class="bar" role="toolbar" aria-label={t(sel?.kind === "face" ? "manual.face" : "manual.line")} use:pageStep={step}>
+<div class="bar" role="toolbar" aria-label={t(sel?.kind === "face" ? "manual.face" : "manual.line")} use:pageStep={step} use:freshBar>
   {#if sel}
     <div class="nav">
       <button class="icon-btn" onclick={() => step(-1)} title="{t('opening.prev')} (PageUp)" aria-label={t("opening.prev")}><Icon name="left" /></button>
@@ -82,7 +91,7 @@
       </label>
       <label>
         <span>{t("manual.length")}</span>
-        <div class="unit"><input type="text" use:numeric={{ value: lineLength(line), step: 0.01, min: 0,
+        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: lineLength(line), step: 0.01, min: 0,
             onchange: (v) => online({ ...$state.snapshot(line), length: v }),
             onclear: () => online({ ...$state.snapshot(line), length: null }) }} /><em>m</em></div>
       </label>
@@ -97,7 +106,7 @@
     {:else if face}
       <label>
         <span>{t("edge.pitch")}</span>
-        <div class="unit"><input type="text" use:numeric={{ value: face.pitch_deg, step: 0.5, min: 0, max: 89.9, onchange: (v) => onface({ ...$state.snapshot(face), pitch_deg: v }) }} /><em>°</em></div>
+        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: face.pitch_deg, step: 0.5, min: 0, max: 89.9, onchange: (v) => onface({ ...$state.snapshot(face), pitch_deg: v }) }} /><em>°</em></div>
       </label>
       <label>
         <span>{t("manual.label")}</span>
@@ -107,10 +116,10 @@
     {/if}
     <div class="spacer"></div>
     {#if face && ontopart}
-      <button class="btn sm" onclick={ontopart} title={t("manual.toPartHint")}><Icon name="house" size={15} />{t("manual.toPart")}</button>
+      <button class="btn sm" aria-disabled={busy} aria-busy={busy} onclick={() => !busy && ontopart?.()} title={t("manual.toPartHint")}><Icon name="house" size={15} />{t("manual.toPart")}</button>
     {/if}
     {@const del = t(sel.kind === "line" ? "manual.deleteLine" : "manual.deleteFace")}
-    <button class="btn sm ghost danger" onclick={ondelete} title={del}><Icon name="trash" size={15} />{del}</button>
+    <button class="btn sm ghost danger" onclick={(e) => !pressTooSoon(shownAt, e.detail) && ondelete()} title={del}><Icon name="trash" size={15} />{del}</button>
   {/if}
 </div>
 

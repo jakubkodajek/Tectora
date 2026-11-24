@@ -262,6 +262,7 @@ fn prepare(a: &Poly, b: &Poly, tol: f64, gap: f64, m: &Mat) -> Option<(Poly, Pol
 /// `a` minus `b`. Without a shared edge the result is empty (no holes);
 /// a fully covered `a` gives one empty polygon.
 pub fn difference(a: &Poly, b: &Poly, tol: f64, gap: f64, m: &Mat) -> Vec<Poly> {
+    crate::work::tick(a.edges.len() * b.edges.len());
     if a.is_empty() || b.is_empty() {
         return Vec::new();
     }
@@ -356,6 +357,7 @@ pub fn union(a: &Poly, b: &Poly, tol: f64, gap: f64, m: &Mat) -> Poly {
     let Some((pa, pb, back)) = prepare(a, b, tol, gap, m) else {
         return empty;
     };
+    crate::work::tick(pa.edges.len() * pb.edges.len());
     let mut l = Vec::new();
     for e in &pb.edges {
         let mut hit = 0;
@@ -497,6 +499,8 @@ fn add_unique(list: &mut Vec<Edge>, e: &Edge, tol: f64) {
 /// `b`'s footprint in `a`'s plane; 4 the same in `b`'s plane; 2 and 8 the
 /// outside variants.
 pub fn clip(a: &Poly, b: &Poly, tol: f64, m: &Mat, mode: u32) -> Vec<Poly> {
+    // The products and the copies of both polygons, then every pair.
+    crate::work::tick(a.edges.len() * b.edges.len() + 16 * (a.edges.len() + b.edges.len()));
     let (mut pa, back_a) = project(a, m);
     let (mut pb, back_b) = project(b, m);
     orient2d(&mut pa, 1.0);
@@ -672,6 +676,7 @@ pub fn split_line(
     mode: u32,
     template: &Edge,
 ) -> Vec<Poly> {
+    crate::work::tick(p.edges.len());
     let (mut q, back) = project(p, m);
     let d = line.1.sub(line.0);
     let (l0, dd) = if *m == XY {
@@ -783,6 +788,7 @@ pub fn split_line(
 /// quad from z = 0 up to `b`'s plane. The edges are copies of `a`'s first
 /// edge.
 pub fn below(a: &Poly, b: &Poly, tol: f64) -> Vec<Poly> {
+    crate::work::tick(a.edges.len() * b.edges.len());
     let Some(first) = a.edges.first() else {
         return Vec::new();
     };
@@ -850,6 +856,7 @@ pub fn below(a: &Poly, b: &Poly, tol: f64) -> Vec<Poly> {
 /// Merges collinear edges in the work projection and recomputes the
 /// vertices from the plane. Down to one edge, the polygon is left as it was.
 pub fn tidy(p: &mut Poly, m: &Mat, tol: f64) {
+    crate::work::tick(p.edges.len());
     let (mut q, back) = project(p, m);
     orient2d(&mut q, if *m == XY { 1.0 } else { -1.0 });
     let mut i: isize = 0;

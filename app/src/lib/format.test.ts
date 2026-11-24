@@ -47,9 +47,64 @@ describe("library card of a roof the core refused (ERRU-005)", () => {
     expect(cardAreaNote(p)).toBeTruthy();
   });
 
+  it("counts hand-drawn faces as a roof when every building is without one (ERR-202)", async () => {
+    const { cardArea, cardRoof, m2 } = await import("./format");
+    const p = { roof_area: 23.09, parts: 1, parts_failed: 1, faces: 1 };
+    expect(cardRoof(p)).toBe("partial");
+    expect(cardArea(p)).toBe(m2(23.09));
+    expect(cardArea({ roof_area: 23.09, parts: 0, parts_failed: 0, faces: 1 })).toBe(m2(23.09));
+  });
+
   it("leaves a complete roof unmarked", async () => {
     const { cardAreaNote, cardRoof } = await import("./format");
     expect(cardRoof({ roof_area: 12, parts: 1, parts_failed: 0 })).toBe("ok");
     expect(cardAreaNote({ roof_area: 12, parts: 1, parts_failed: 0 })).toBeUndefined();
+  });
+});
+
+describe("library card of a job too complex to calculate (ARCH-102)", () => {
+  it("says the job is too complex instead of only not calculated", async () => {
+    const { cardArea, cardAreaNote, cardRoof } = await import("./format");
+    const { t } = await import("./i18n.svelte");
+    const p = { roof_area: 0, parts: 50, parts_failed: 50, too_complex: true };
+    expect(cardRoof(p)).toBe("none");
+    expect(cardArea(p)).toBe("—");
+    expect(cardAreaNote(p)).toBe(t("err.too_complex"));
+    expect(cardAreaNote({ roof_area: 0, parts: 1, parts_failed: 1 })).not.toBe(t("err.too_complex"));
+  });
+
+  it("shows no area for a too-complex or refused job with a hand-drawn face (TEST-301)", async () => {
+    const { cardArea, cardAreaNote, cardRoof } = await import("./format");
+    const { t } = await import("./i18n.svelte");
+    const p = { roof_area: 0, parts: 50, parts_failed: 50, faces: 1, too_complex: true };
+    expect(cardRoof(p)).toBe("none");
+    expect(cardArea(p)).toBe("—");
+    expect(cardAreaNote(p)).toBe(t("err.too_complex"));
+    const r = { roof_area: 0, parts: 0, parts_failed: 0, faces: 1, refused: true };
+    expect(cardRoof(r)).toBe("none");
+    expect(cardArea(r)).toBe("—");
+  });
+});
+
+describe("attachment sizes follow the UI language (UI-010)", () => {
+  it("uses the locale's decimal separator", async () => {
+    const { fileSize } = await import("./format");
+    expect(fileSize(1.5 * 1048576, "cs-CZ")).toBe("1,5 MB");
+    expect(fileSize(1.5 * 1048576, "de-DE")).toBe("1,5 MB");
+    expect(fileSize(1.5 * 1048576, "en-GB")).toBe("1.5 MB");
+    expect(fileSize(152 * 1024, "sk-SK")).toBe("152 kB");
+    expect(fileSize(512, "cs-CZ")).toBe("512 B");
+    expect(fileSize(NaN, "cs-CZ")).toBe("—");
+  });
+});
+
+describe("a library job with no building (UX-111)", () => {
+  it("shows a dash and says there is no building yet, not 0,00 m²", async () => {
+    const { cardArea, cardAreaNote, m2 } = await import("./format");
+    const { t } = await import("./i18n.svelte");
+    expect(cardArea({ roof_area: 0, parts: 0 })).toBe("—");
+    expect(cardAreaNote({ roof_area: 0, parts: 0 })).toBe(t("res.empty"));
+    // Hand-drawn faces only: no building, but an area.
+    expect(cardArea({ roof_area: 12, parts: 0 })).toBe(m2(12));
   });
 });

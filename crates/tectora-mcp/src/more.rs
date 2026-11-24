@@ -42,6 +42,30 @@ fn opt<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> Result<Option
     }
 }
 
+/// What `export_job` tells the AI about a job whose stored result is
+/// Tectora's recalculation of the offer's: the bundle carries the
+/// recalculated figures, the offer's own stay in this library, and
+/// `restore_offer_result` is the way to send them (audit 2026-11-23
+/// ERR-1104).
+fn export_recalculated_note(project: &Project, r: &tectora_core::store::Recalculation) -> String {
+    let fresh = project
+        .result_snapshot
+        .as_ref()
+        .map_or(0.0, |s| s.roof_area);
+    let offer = r
+        .differences
+        .iter()
+        .find(|d| d.key == "roof_area")
+        .map_or(fresh, |d| d.stored);
+    format!(
+        "The bundle carries the recalculated result (Tectora {}, {fresh:.2} m2). \
+         The offer's own figures (Tectora {}, {offer:.2} m2) stay in this library only; \
+         to send them, call restore_offer_result first (with the user's go) and export again. \
+         Tell the user which figures the colleague gets.",
+        r.to, r.from
+    )
+}
+
 /// `line_names` of `export_plan`: code → name, at most 64 codes of up to 8
 /// characters and names of up to 60 characters.
 fn line_names_arg(args: &Value) -> Result<std::collections::BTreeMap<String, String>, String> {
@@ -57,7 +81,30 @@ fn line_names_arg(args: &Value) -> Result<std::collections::BTreeMap<String, Str
                 .into(),
         );
     }
+    // One line of plain text each, as every label (HUNT-303).
+    for (k, v) in &names {
+        tectora_core::edit::check_label("`line_names`", k)?;
+        tectora_core::edit::check_label("`line_names`", v)?;
+    }
     Ok(names)
+}
+
+/// `stamp` of `export_list` and `export_plan`: one line of plain text of
+/// at most 40 characters (a control character made the SVG sheet invalid
+/// XML, HUNT-303); default now (UTC).
+fn stamp_arg(args: &Value) -> Result<String, String> {
+    match args.get("stamp").and_then(Value::as_str) {
+        Some(s) if s.chars().count() > 40 => {
+            Err("`stamp` is too long (at most 40 characters)".into())
+        }
+        Some(s) => {
+            tectora_core::edit::check_label("`stamp`", s)?;
+            Ok(s.to_string())
+        }
+        None => Ok(tectora_core::export::utc_stamp(
+            tectora_core::store::now_ms(),
+        )),
+    }
 }
 
 fn req<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> Result<T, String> {
@@ -184,7 +231,7 @@ fn dormer_props() -> Value {
         "back_width": { "type": "number", "description": "trapezoid: width of the shed roof where it meets the roof, m, between 0 and width + 2 × side_overhang; sets pitch_deg (the cheek pitch), so do not give both." },
         "half_hip_height": { "type": "number", "description": "half_hip: height of the clipped part above the dormer eave, default 0.6." },
         "half_hip_pitch_deg": { "type": "number", "description": "half_hip: its pitch, default 60." },
-        "segments": { "type": "integer", "description": "round: polygon segments per side; 0 = automatic." },
+        "segments": { "type": "integer", "description": "round: polygon segments per side; 0 = automatic. Too many for the width (the flattest segment under 2°) is refused with `dormer_segments`." },
         "material": { "type": "integer", "minimum": 1, "description": "Roof material number, default 1." }
     })
 }
@@ -296,9 +343,7 @@ fn manual_line(v: &Value, geos: &[tectora_core::roof::RoofGeometry]) -> Result<M
         .and_then(Value::as_str)
         .unwrap_or("M")
         .to_string();
-    const CODES: [&str; 15] = [
-        "M", "T", "F", "G", "K", "P", "OL", "OR", "OS", "c", "S", "WV", "WH", "WS", "X",
-    ];
+    const CODES: [&str; 15] = tectora_core::model::MANUAL_LINE_CODES;
     if !CODES.contains(&code.as_str()) {
         return Err(format!("code `{code}` is not one of {}", CODES.join(", ")));
     }
@@ -480,7 +525,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "set_manual",
-            "description": "Replace the lines and/or faces drawn by hand on the calculated roof (omit a list to keep it). A line end given as [x, y] snaps to the nearest roof point within 0.25 m, else lies at height 0 (as DACAD); [x, y, z] is taken as it is. A line of a counted code adds to that code's totals; M (dimension) and X do not. A face is a plan polygon with its pitch (default 30°) and adds its sloped area.",
+            "description": "Replace the lines and/or faces drawn by hand on the calculated roof (omit a list to keep it). A line end given as [x, y] snaps to the nearest roof point within 0.25 m, else lies at height 0 (as DACAD); [x, y, z] is taken as it is. A line of a counted code adds to that code's totals; M (dimension) and X do not. A face is a plan polygon with its pitch (default 30°) and adds its sloped area; give its corners in order around the face: an outline that crosses itself (a bow tie), touches itself at a corner or folds back along an edge is refused.",
             "inputSchema": schema(json!({
                 "id": id,
                 "lines": { "type": "array", "items": { "type": "object", "properties": {
@@ -540,17 +585,17 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "get_history",
-            "description": "The change log of a design: who changed what and when (ts_ms), newest first.",
+            "description": "The change log of a design: who changed what and when (ts_ms), newest first, at most the 50 changes a log keeps. `stored_result_recalculation: true` marks Tectora's own recalculation of an offer's stored result while the job's stored result still is that one (restore_offer_result puts the offer's figures back); `restores` on an entry is the ts_ms of the recalculation it put back. A revert has `kind: \"revert\"` and `undid_from` (the ts_ms of the oldest entry it undid); a revert also has `took_out` and `put_back`, the ts_ms of the changes it took out of the design and put back into it (oldest first, at most 20; `took_out_count` and `put_back_count` count them all): read what a revert did from these, never from its summary; an entry with `undone: true` is not in the design (a revert that stands undid it; a revert with `undone` was taken back, so its changes stand again); `created: true` marks the entry that created the job (nothing to revert it to); `pending_review` marks the changes that wait for the user's review.",
             "inputSchema": schema(json!({ "id": id }), &["id"]),
         }),
         json!({
             "name": "get_review",
-            "description": "Whether the user has reviewed your changes to a design in the app. `pending` is null when every change is accepted or reverted; otherwise it gives the oldest unreviewed change (`since_ts_ms`), how many there are, who made them and how they change the figures (`differences`: roof_area, ridge_height, line:<code>, material:<n>, before → now). Only the user accepts changes, in the app.",
+            "description": "Whether the user has reviewed your changes to a design in the app. `pending` is null when every change is accepted or reverted; otherwise it gives the oldest unreviewed change (`since_ts_ms`), how many there are, their ts_ms (`steps`, oldest first: a change the user reverted by itself is no longer one of them, the others still wait), who made them and how they change the figures (`differences`: roof_area, ridge_height, line:<code>, material:<n>, before → now). Only the user accepts changes, in the app.",
             "inputSchema": schema(json!({ "id": id }), &["id"]),
         }),
         json!({
             "name": "revert_to",
-            "description": "Undo every change of a design made at or after `ts_ms` (from get_history).",
+            "description": "Undo every change of a design made at or after `ts_ms` (from get_history). Given the ts_ms of a revert, it takes that revert back: the changes it undid stand again (and an AI's changes wait for the user's review again). Refused with `busy` (nothing done, try again in a moment) while another program is saving the job.",
             "inputSchema": schema(json!({ "id": id, "ts_ms": { "type": "integer" }, "summary": summary_prop() }), &["id", "ts_ms", "summary"]),
         }),
         json!({
@@ -612,7 +657,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "export_job",
-            "description": "Write a job to a .tectorajob file (project, attached files, history and a plan preview in one ZIP) in the `exports` folder of the job library. The file is named after the job (or `name`); an existing file is never replaced. Returns the path to give the user.",
+            "description": "Write a job to a .tectorajob file (project, attached files, history and a plan preview in one ZIP) in the `exports` folder of the job library. The file is named after the job (or `name`); an existing file is never replaced. Returns the path to give the user. When the job's stored result is Tectora's recalculation of an offer's, a `note` names the recalculated figures the bundle carries and the offer's own that stay in this library (restore_offer_result first to send those); tell the user.",
             "inputSchema": schema(json!({
                 "id": id,
                 "name": { "type": "string", "description": "File name without folder, e.g. \"Novak-strecha\"; default: the job's id." },
@@ -629,7 +674,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "export_plan",
-            "description": "Write the roof sheet (A4 landscape plan with line lengths, face areas, pitches and totals; the picture the user adds to the Excel price sheet) to the `exports` folder of the job library as PDF or SVG (a PNG can only be saved from the app's Export dialog; there is no PNG here). The file is named after the job (or `name`); an existing file is never replaced. Returns the path to give the user.",
+            "description": "Write the roof sheet (A4 landscape plan with line lengths, face areas, pitches and totals; the picture the user adds to the Excel price sheet) to the `exports` folder of the job library as PDF or SVG (a PNG can only be saved from the app's Export dialog; there is no PNG here). The file is named after the job (or `name`); an existing file is never replaced. Returns the path to give the user. The sheet shows the current calculation, not a stored offer result.",
             "inputSchema": schema(json!({
                 "id": id,
                 "format": { "type": "string", "enum": ["pdf", "svg"], "description": "Default: pdf." },
@@ -648,6 +693,11 @@ pub(crate) fn tools() -> Vec<Value> {
             "name": "store_result",
             "description": "Store the current result as the job's result (the figures for the offer), replacing the stored one. The result is stored by itself when the job leaves the draft status.",
             "inputSchema": schema(json!({ "id": id, "summary": summary_prop() }), &["id", "summary"]),
+        }),
+        json!({
+            "name": "restore_offer_result",
+            "description": "Put the offer's own stored figures back in place of Tectora's recalculation of them (the entry by `tectora` that get_history marks `stored_result_recalculation`). Only the stored result changes: the design and every other change stay. The figures put back are never recalculated again. Refused with `revert_stale` when the stored result is not that recalculation (any more), and with `busy` (nothing done, try again in a moment) while another program is saving the job. Do it only when the user asks for the figures the customer was offered.",
+            "inputSchema": schema(json!({ "id": id, "ts_ms": { "type": "integer", "description": "The recalculation's entry (get_history); left out: the one the stored result is." }, "summary": summary_prop() }), &["id", "summary"]),
         }),
         json!({
             "name": "get_schema",
@@ -674,19 +724,38 @@ impl Server {
                 .map_err(|_| "`kind` must be dormer, chimney, window or roof_opening".to_string())?;
                 let index: usize = req(args, "index")?;
                 let it = tectora_core::edit::transform::ItemRef { kind, index };
-                let moved = tectora_core::edit::position::place(
-                    &mut p,
-                    it,
+                let (fe, fl, fr) = (
                     arg_f64(args, "from_eave")?,
                     arg_f64(args, "from_left")?,
                     arg_f64(args, "from_right")?,
-                )?;
-                if !moved {
+                );
+                // Kind, index and distances at once, before any roof
+                // (HUNT-2001); the move and its new placement within the
+                // work bound, and for a heavy job within the commit timeout.
+                tectora_core::edit::position::check_place(&p, it, fe, fl, fr)?;
+                let q = p.clone();
+                let (moved, q) = self
+                    .bounded(&p, move || {
+                        let mut q = q;
+                        tectora_core::work::calculate(|| {
+                            let moved = tectora_core::edit::position::place(&mut q, it, fe, fl, fr);
+                            let pl = tectora_core::edit::position::placement(&q, it);
+                            (moved, pl)
+                        })
+                        .map(|r| (r, q))
+                    })
+                    .ok_or(crate::ROOF_TOO_LONG)?
+                    .map_err(|e| match e {
+                        tectora_core::work::Refusal::TooComplex => crate::ROOF_TOO_LONG.to_string(),
+                        tectora_core::work::Refusal::Failed(d) => d,
+                    })?;
+                let (moved, pl) = moved;
+                if !moved? {
                     return Err("the object already is at these distances".into());
                 }
+                p = q;
                 refuse_new_problems(&before, &p)?;
                 let r = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
-                let pl = tectora_core::edit::position::placement(&p, it);
                 Ok(json!({ "saved": r, "placement": pl }))
             })(),
             "add_shape_part" => self.add_shape_part(args),
@@ -746,30 +815,79 @@ impl Server {
             "set_roof_options" => self.set_roof_options(args),
             "roof_helper" => self.roof_helper(args),
             "get_history" => self.load(args).map(|(id, _)| {
-                let since = self.store.pending_review(&id).map_or(u64::MAX, |r| r.since_ts_ms);
+                // The steps the banner lists: an AI step a standing revert
+                // undid waits no more (audit 2026-11-23 UX-1501). Built
+                // from the history the app shows, with its marks: an entry
+                // with `undone` is not in the design (audit 2026-11-24
+                // ARCH-1602).
+                let steps = self.store.pending_review(&id).map(|r| r.steps).unwrap_or_default();
+                let recalculation = self.store.recalculation(&id).map(|r| r.entry_ts_ms);
                 json!(self
                     .store
-                    .activity(&id)
+                    .activity_items(&id)
                     .iter()
-                    .rev()
                     .map(|e| {
-                        let mut v = json!(e.info());
-                        v["pending_review"] = json!(e.ts_ms >= since);
+                        let mut v = json!({
+                            "ts_ms": e.ts_ms,
+                            "actor": e.actor,
+                            "summary": e.summary,
+                            "kind": e.kind,
+                        });
+                        v["pending_review"] = json!(steps.contains(&e.ts_ms));
+                        if recalculation == Some(e.ts_ms) {
+                            v["stored_result_recalculation"] = json!(true);
+                        }
+                        if let Some(ts) = e.restores {
+                            v["restores"] = json!(ts);
+                        }
+                        if let Some(ts) = e.undid_from {
+                            v["undid_from"] = json!(ts);
+                        }
+                        if e.undone {
+                            v["undone"] = json!(true);
+                        }
+                        if e.created {
+                            v["created"] = json!(true);
+                        }
+                        // What a revert did, by entry time (audit
+                        // 2026-11-24 UX-1701): never read from its words.
+                        if let (Some(out), Some(back)) = (&e.took_out, &e.put_back) {
+                            v["took_out"] = json!(out);
+                            v["took_out_count"] = json!(e.took_out_count);
+                            v["put_back"] = json!(back);
+                            v["put_back_count"] = json!(e.put_back_count);
+                        }
                         v
                     })
                     .collect::<Vec<_>>())
             }),
             "get_review" => (|| {
-                let (id, _) = self.load(args)?;
-                let status = self.store.review_status(&id)?;
+                let (id, current) = self.load(args)?;
+                let pending = self.store.pending_review(&id);
+                // The figures of `Store::review_status`, within the bound of
+                // a heavy job too: a job too complex to calculate gives
+                // `differences: null` ("not available") in seconds instead
+                // of no answer (audit 2026-11-24 HUNT-1903).
+                let differences = match &pending {
+                    Some(pr) => {
+                        let before = pr.before.clone();
+                        let after = current.clone();
+                        self.bounded(&current, move || {
+                            snapshot::change_in_figures(before.as_ref(), &after)
+                        })
+                        .flatten()
+                    }
+                    None => None,
+                };
                 Ok(json!({
                     "id": id,
                     "accepted_ms": self.store.reviewed_at(&id),
-                    "pending": status.map(|s| json!({
-                        "since_ts_ms": s.pending.since_ts_ms,
-                        "count": s.pending.count,
-                        "actors": s.pending.actors,
-                        "differences": s.differences,
+                    "pending": pending.map(|s| json!({
+                        "since_ts_ms": s.since_ts_ms,
+                        "count": s.count,
+                        "actors": s.actors,
+                        "steps": s.steps,
+                        "differences": differences,
                     })),
                 }))
             })(),
@@ -777,9 +895,22 @@ impl Server {
                 let (id, _) = self.load(args)?;
                 let ts: u64 = req(args, "ts_ms")?;
                 let summary = arg_str(args, "summary")?;
-                let p = self.store.revert_to(&id, ts, &self.client, Some(summary))?;
-                self.live_follow("reverted_changes", Some(&p.name), format!("Reverted changes: {summary}"), &id);
-                Ok(json!({ "id": id, "reverted": true, "quantities": super::quantities(&p) }))
+                let r = self
+                    .store
+                    .revert_to_counted(&id, ts, &self.client, Some(summary))
+                    .map_err(super::coded)?;
+                let p = &r.project;
+                // A revert of a revert that only put changes back says so
+                // (audit 2026-11-24 UX-1903).
+                if tectora_core::store::only_put_back(&self.store.activity(&id), r.entry_ts_ms) {
+                    self.live_follow("put_back", Some(&p.name), format!("Put back changes: {summary}"), &id);
+                } else {
+                    self.live_follow("reverted_changes", Some(&p.name), format!("Reverted changes: {summary}"), &id);
+                }
+                let mut out = json!({ "id": id, "reverted": true });
+                self.quantities_into(&mut out, p);
+                super::replaced_note(&mut out, r.repaired);
+                Ok(out)
             })(),
             "list_examples" => Ok(json!(EXAMPLES
                 .iter()
@@ -799,22 +930,30 @@ impl Server {
                 let job = match args.get("job") {
                     None | Some(Value::Null) => None,
                     Some(j) => {
-                        let field = |k: &str| j.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+                        // A number sent as a JSON number is refused, not dropped (ERR-002).
+                        let field = |k: &str| {
+                            crate::text_arg(j, k)
+                                .map(Option::unwrap_or_default)
+                                .map_err(|m| format!("job.{m}"))
+                        };
                         Some(tectora_core::JobInfo {
-                            number: field("number"),
-                            customer: field("customer"),
-                            address: field("address"),
+                            number: field("number")?,
+                            customer: field("customer")?,
+                            address: field("address")?,
                             status: tectora_core::JobStatus::Draft,
                         })
                     }
                 };
                 tectora_core::edit::check_job_name(arg_str(args, "name")?)?;
+                let original = p.clone();
                 tectora_core::library::prepare_copy(&mut p, arg_str(args, "name")?, job);
+                // The copy's new job texts keep the rules of `update_job`
+                // (ARCH-202); what the original had is copied as it is.
+                tectora_core::edit::check_texts_change(Some(&original), &p)?;
                 let summary = arg_str(args, "summary")?;
-                let new_id = self.store.save_as(None, &p, &self.client, summary)?;
-                if args.get("with_files").and_then(Value::as_bool).unwrap_or(true) {
-                    self.store.copy_attachments(&id, &new_id)?;
-                }
+                let with_files = args.get("with_files").and_then(Value::as_bool).unwrap_or(true);
+                // A refused copy leaves no new job (ARCH-602).
+                let new_id = self.store.copy_job(&id, &p, with_files, Some((&self.client, summary)))?;
                 self.live_follow("copied", Some(&p.name), format!("Copied “{}”", p.name), &new_id);
                 Ok(json!({ "id": new_id }))
             })(),
@@ -838,32 +977,27 @@ impl Server {
                 self.live_follow("restored", Some(&name), format!("Restored “{name}”: {summary}"), &id);
                 Ok(json!({ "id": id, "restored": true }))
             })(),
-            "list_files" => self.load(args).map(|(id, _)| {
-                json!(self
+            "list_files" => self.load(args).and_then(|(id, _)| {
+                // Never the files where a link in the library points (ARCH-602).
+                Ok(json!(self
                     .store
-                    .attachments(&id)
+                    .try_attachments(&id)?
                     .iter()
                     .map(|a| json!({
                         "name": a.name, "size": a.size, "modified_ms": a.modified_ms,
                         "path": self.store.attachment_path(&id, &a.name).map(|p| p.display().to_string()).unwrap_or_default(),
                     }))
-                    .collect::<Vec<_>>())
+                    .collect::<Vec<_>>()))
             }),
             "attach_file" => (|| {
                 let (id, _) = self.load(args)?;
                 let summary = arg_str(args, "summary")?;
                 let src = PathBuf::from(arg_str(args, "path")?);
                 self.readable_path(&src, "attach")?;
-                // Drawings, photos and documents only: a path from text in a
+                // Drawings, photos and documents only, the rule the app
+                // shares (`Store::attach_file`): a path from text in a
                 // drawing must not copy a key or a program into a job that
-                // is later handed over (ARCH-001).
-                let name = src.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !tectora_core::store::Store::can_attach(name) {
-                    return Err(format!(
-                        "{}: only drawings, photos and documents can be attached (pdf, png, jpg, …, dwg, xlsx, docx)",
-                        src.display()
-                    ));
-                }
+                // is later handed over (ARCH-001, HUNTIO-001).
                 let name = self.store.attach_file(&id, &src)?;
                 self.live_follow("attached", Some(&name), format!("Attached {name}: {summary}"), &id);
                 let from = src.parent().map(|d| d.display().to_string()).unwrap_or_default();
@@ -878,7 +1012,7 @@ impl Server {
                 Ok(json!({ "id": id, "removed": name, "trash": entry }))
             })(),
             "export_job" => (|| {
-                let (id, _) = self.load(args)?;
+                let (id, project) = self.load(args)?;
                 let summary = arg_str(args, "summary")?;
                 if args.get("path").is_some() {
                     return Err("`path` is not accepted: bundles are written to the library's exports folder; pass `name` for the file name".into());
@@ -888,22 +1022,28 @@ impl Server {
                     None => id.clone(),
                 };
                 let path = bundle::export_path(&self.store, &name)?;
+                // Asked before the bundle is written, of the same file.
+                let recalculated = self.store.recalculation(&id);
                 let m = bundle::export(&self.store, &id, &path)?;
                 self.live("exported", Some(&path.display().to_string()), format!("Exported to {}: {summary}", path.display()), Some(&id));
-                Ok(json!({ "id": id, "path": path.display().to_string(), "manifest": m }))
+                let mut out = json!({ "id": id, "path": path.display().to_string(), "manifest": m });
+                // The bundle carries no offer figures (owner decision
+                // 2026-11-23): the AI must hear what stays behind, as the
+                // app's user does (audit 2026-11-23 ERR-1104).
+                if let Some(r) = recalculated {
+                    out["note"] = json!(export_recalculated_note(&project, &r));
+                }
+                Ok(out)
             })(),
             "export_list" => (|| {
                 let (id, p) = self.load(args)?;
-                let stamp = match args.get("stamp").and_then(Value::as_str) {
-                    Some(s) if s.chars().count() <= 40 => s.to_string(),
-                    Some(_) => return Err("`stamp` is too long".into()),
-                    None => tectora_core::export::utc_stamp(tectora_core::store::now_ms()),
-                };
+                let stamp = stamp_arg(args)?;
                 let title = if p.name.is_empty() { id.clone() } else { p.name.clone() };
                 let opts = tectora_core::export::ListOptions::new(title, stamp);
                 p.check_limits()?;
                 crate::export_ready(&p)?;
-                let (list, _) = tectora_core::export::checked(&p, &opts)?;
+                // The list alone: the sheet is not drawn (HUNTC-001).
+                let list = tectora_core::export::checked_list(&p, &opts)?;
                 Ok(json!({ "id": id, "list": list }))
             })(),
             "export_plan" => (|| {
@@ -923,20 +1063,18 @@ impl Server {
                 if format != "pdf" && format != "svg" {
                     return Err(format!("`format` must be pdf or svg, not `{format}`"));
                 }
-                let stamp = match args.get("stamp").and_then(Value::as_str) {
-                    Some(s) if s.chars().count() <= 40 => s.to_string(),
-                    Some(_) => return Err("`stamp` is too long".into()),
-                    None => tectora_core::export::utc_stamp(tectora_core::store::now_ms()),
-                };
+                let stamp = stamp_arg(args)?;
                 let name = match args.get("name").and_then(Value::as_str) {
                     Some(n) => n.trim().trim_end_matches(&format!(".{format}")).to_string(),
                     None => id.clone(),
                 };
-                let path = bundle::export_path_with(&self.store, &name, format)?;
+                // Checked before the sheet is drawn (a bad name, a linked folder).
+                bundle::export_path_with(&self.store, &name, format)?;
                 let line_names = line_names_arg(args)?;
                 let bytes =
                     tectora_core::export::checked_sheet_file_named(&p, &stamp, format, &line_names)?;
-                std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+                // Never through a link at the name (ARCH-603).
+                let path = bundle::write_export(&self.store, &name, format, &bytes)?;
                 self.live("exported_sheet", Some(&path.display().to_string()), format!("Exported sheet to {}: {summary}", path.display()), Some(&id));
                 Ok(json!({ "id": id, "path": path.display().to_string() }))
             })(),
@@ -951,8 +1089,36 @@ impl Server {
             "store_result" => (|| {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
-                p.result_snapshot = Some(snapshot::take_checked(&p).map_err(|e| e.to_string())?);
+                // Within the bound of a heavy job too (HUNT-1903).
+                let q = p.clone();
+                p.result_snapshot = Some(
+                    self.bounded(&p, move || snapshot::take_checked(&q))
+                        .ok_or(crate::ROOF_TOO_LONG)?
+                        .map_err(|e| e.to_string())?,
+                );
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+            })(),
+            "restore_offer_result" => (|| {
+                let (id, _) = self.load(args)?;
+                let summary = arg_str(args, "summary")?;
+                let ts: u64 = match opt(args, "ts_ms")? {
+                    Some(ts) => ts,
+                    None => self
+                        .store
+                        .recalculation(&id)
+                        .map(|r| r.entry_ts_ms)
+                        .ok_or("the job's stored result is not a recalculation by Tectora: there are no offer figures to put back (see get_history)")?,
+                };
+                let p = self
+                    .store
+                    .restore_offer_result(&id, ts, &self.client, Some(summary))
+                    .map_err(|e| format!("{}: {e}", e.code()))?;
+                self.live_follow("changed", Some(&p.name), summary.to_string(), &id);
+                Ok(json!({
+                    "id": id,
+                    "restored": true,
+                    "stored_result": p.result_snapshot,
+                }))
             })(),
             "get_schema" => Ok(tectora_core::model::json_schema()),
             _ => return None,
@@ -1117,7 +1283,10 @@ impl Server {
                     items.iter().filter_map(|&it| item_centre(&p, it)).collect();
                 let out = transform_items(&mut p, &items, PlanMap::Move { dx, dy }, copies)?;
                 if opt::<bool>(args, "follow_roof")?.unwrap_or(true) {
-                    let geos = tectora_core::openings::generate_project(&before);
+                    // Too complex to calculate here: moved as given, said (HUNT-1802).
+                    let Some(geos) = self.roof_of(&before) else {
+                        return self.items_reply(&id, &before, &p, args, out, true);
+                    };
                     let n = items.len();
                     let pairs: Vec<_> = out
                         .iter()
@@ -1198,9 +1367,30 @@ impl Server {
             }
             other => return Err(format!("unknown op `{other}`")),
         };
-        let mut reply = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
+        self.items_reply(&id, &before, &p, args, moved, false)
+    }
+
+    /// The commit of [`Server::transform_items`] with the items it made;
+    /// `unfollowed`: a move that could not follow the roof (too complex to
+    /// calculate here, HUNT-1802) says so.
+    fn items_reply(
+        &self,
+        id: &str,
+        before: &Project,
+        p: &Project,
+        args: &Value,
+        moved: Vec<ItemRef>,
+        unfollowed: bool,
+    ) -> ToolResult {
+        let mut reply = self.commit(Some(id), Some(before), p, arg_str(args, "summary")?)?;
         if let Some(o) = reply.as_object_mut() {
             o.insert("items".into(), json!(moved));
+            if unfollowed {
+                o.insert(
+                    "follow_roof_note".into(),
+                    json!("the roof of this job takes too long to calculate here, so the items were moved as given, without following the roof (chimney tops and dormer eaves keep their heights); tell the user"),
+                );
+            }
         }
         Ok(reply)
     }
@@ -1290,6 +1480,10 @@ impl Server {
                     "a polygon needs 3 to {MAX_POLYGON_SIDES} sides of positive length"
                 ));
             }
+            // The standard-roof form's side bounds (HUNTC-007): a side of
+            // 1 cm left walls without length after the corners' rounding.
+            tectora_core::edit::check_standard_size(side, side)
+                .map_err(|m| m.replacen("length", "side", 1))?;
             let c = at.unwrap_or(Point2::new(0.0, 0.0));
             let pts = regular_polygon(
                 c,
@@ -1313,6 +1507,7 @@ impl Server {
             if !(length > 0.0 && width > 0.0) {
                 return Err("length and width must be positive".into());
             }
+            tectora_core::edit::check_standard_size(length, width)?;
             let mut part = standard_roof(kind, length, width, pitch, eave, overhang);
             let (dx, dy) = match at {
                 Some(q) => (q.x, q.y),
@@ -1344,6 +1539,8 @@ impl Server {
             Some(r) => return Err(format!("part {r} does not exist")),
             None => p.parts.push(part),
         }
+        // As every other creating tool: no new input problem (HUNTC-007).
+        refuse_new_problems(&before, &p)?;
         self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
     }
 
@@ -1390,13 +1587,11 @@ impl Server {
             let start = point(args, "start")?.ok_or("missing `start`")?;
             let kind: DormerKind = req(args, "kind")?;
             let angle = dormers::nearest_wall_angle(&p.parts, start);
-            // The roof height just inside the front, as the editor places it.
-            let geos = tectora_core::openings::generate_project(&p);
-            let inside = Point2::new(start.x - angle.sin() * 0.01, start.y + angle.cos() * 0.01);
-            let host = roof_height_at(&geos, inside).unwrap_or(3.0);
+            // The eave height is filled in from the roof once the
+            // arguments are checked (HUNT-1802).
             (
                 p.dormers.len(),
-                dormers::default_params(kind, start, angle, round(host + 1.0, 2)),
+                dormers::default_params(kind, start, angle, f64::NAN),
             )
         } else {
             let i: usize = req(args, "index")?;
@@ -1452,11 +1647,27 @@ impl Server {
                 );
             }
         }
+        // The arguments are checked: now the roof, within the bound of a
+        // write (HUNT-1802).
+        if params.eave_height.is_nan() {
+            // The roof height just inside the front, as the editor places it.
+            let geos = self.roof_of(&p).ok_or(crate::ROOF_TOO_LONG)?;
+            let (start, angle) = (params.start, params.angle);
+            let inside = Point2::new(start.x - angle.sin() * 0.01, start.y + angle.cos() * 0.01);
+            let host = roof_height_at(&geos, inside).unwrap_or(3.0);
+            params.eave_height = round(host + 1.0, 2);
+        }
+        let host_roof = self.host_roof_of(&p).ok_or(crate::ROOF_TOO_LONG)?;
         if target.is_some() || back_width.is_some() {
-            let host = dormers::host_slope_in(&dormers::host_roof(&p), &params)
+            let host = dormers::host_slope_in(&host_roof, &params)
                 .ok_or("the dormer's front is not on the roof, so wall_height, depth, ridge_length and back_width cannot be used; give eave_height and pitch_deg")?;
             params = dormers::solve(&params, host, target, back_width)?;
         }
+        // The pitch and eave rules of the editor's dormer bar (MATH-001,
+        // MATH-003): a dormer flatter than 2° or below the roof is left out
+        // or takes the building's roof with it.
+        let host = dormers::host_slope_in(&host_roof, &params);
+        dormers::check_params(&params, host).map_err(|(code, why)| format!("{code}: {why}"))?;
         let mut d = dormers::build_dormer(&params);
         if let Some(old) = p.dormers.get(index) {
             d.host_wall = old.host_wall;
@@ -1465,22 +1676,14 @@ impl Server {
             p.dormers.push(d);
         }
         let mut out = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
-        out["dormer"] = describe_dormer(index, &p.dormers[index], &dormers::host_roof(&p));
+        // The host is the roof without the dormers: the same as before the save.
+        out["dormer"] = describe_dormer(index, &p.dormers[index], &host_roof);
         Ok(out)
     }
 
     fn set_manual(&self, args: &Value) -> ToolResult {
         let (id, before) = self.load(args)?;
         let mut p = before.clone();
-        if let Some(lines) = opt::<Vec<Value>>(args, "lines")? {
-            // Snap to the roof as it is without the hand-drawn lines.
-            let geos = tectora_core::openings::generate_project(&p);
-            p.manual_lines = lines
-                .iter()
-                .enumerate()
-                .map(|(i, v)| manual_line(v, &geos).map_err(|m| format!("line {i}: {m}")))
-                .collect::<Result<_, _>>()?;
-        }
         if let Some(faces) = opt::<Vec<Value>>(args, "faces")? {
             p.manual_faces = faces
                 .iter()
@@ -1491,7 +1694,7 @@ impl Server {
                     let pitch_deg = arg_f64(v, "pitch_deg")?.unwrap_or(30.0);
                     tectora_core::edit::check_manual_face_pitch(pitch_deg)
                         .map_err(|m| format!("face {i}: {m}"))?;
-                    Ok(ManualFace {
+                    let face = ManualFace {
                         points,
                         pitch_deg,
                         label: v
@@ -1499,11 +1702,46 @@ impl Server {
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_string(),
-                    })
+                    };
+                    // Corners out of order (a bow tie) are refused (HUNT-1801).
+                    tectora_core::edit::check_manual_face(&face)
+                        .map_err(|(_, m)| format!("face {i}: {m}"))?;
+                    Ok(face)
                 })
                 .collect::<Result<_, String>>()?;
         }
-        self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+        // The faces are checked before the lines snap to the roof, so a
+        // refused face answers at once (HUNT-1802).
+        let mut unsnapped = false;
+        if let Some(lines) = opt::<Vec<Value>>(args, "lines")? {
+            let parse = |geos: &[tectora_core::roof::RoofGeometry]| {
+                lines
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| manual_line(v, geos).map_err(|m| format!("line {i}: {m}")))
+                    .collect::<Result<Vec<_>, _>>()
+            };
+            // Every line checked without the roof first (HUNT-1802).
+            parse(&[])?;
+            // Snap to the roof as it is without the hand-drawn lines; too
+            // complex to calculate here: saved as given, said (HUNT-1802).
+            let geos = if lines.is_empty() {
+                Vec::new()
+            } else {
+                self.roof_of(&p).unwrap_or_else(|| {
+                    unsnapped = true;
+                    Vec::new()
+                })
+            };
+            p.manual_lines = parse(&geos)?;
+        }
+        let mut out = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
+        if unsnapped {
+            out["snap_note"] = json!(
+                "the roof of this job takes too long to calculate here, so the lines were saved as given, without snapping to the roof (an end given as [x, y] lies at height 0); tell the user"
+            );
+        }
+        Ok(out)
     }
 
     fn set_roof_options(&self, args: &Value) -> ToolResult {
@@ -1555,18 +1793,23 @@ impl Server {
             }
             "point" => {
                 let target = need_target()?;
-                let geos = tectora_core::openings::generate_project(&before);
-                let corners = roof_corner_points(&geos);
+                // The arguments first; the roof only for its corner points,
+                // within the bound of a write (HUNT-1802).
+                let corners = || {
+                    self.roof_of(&before)
+                        .map(|geos| roof_corner_points(&geos))
+                        .ok_or(crate::ROOF_TOO_LONG)
+                };
                 let q = match (
                     opt::<Vec<f64>>(args, "point")?,
                     opt::<usize>(args, "point_index")?,
                 ) {
                     (Some(v), _) if v.len() == 3 => [v[0], v[1], v[2]],
                     (Some(_), _) => return Err("`point` must be [x, y, z]".into()),
-                    (None, Some(i)) => *corners
+                    (None, Some(i)) => *corners()?
                         .get(i)
                         .ok_or_else(|| format!("point_index {i} out of range"))?,
-                    (None, None) => return Ok(json!({ "roof_points": corners })),
+                    (None, None) => return Ok(json!({ "roof_points": corners()? })),
                 };
                 HelperRequest::Point { target, point: q }
             }
@@ -1575,15 +1818,10 @@ impl Server {
                 walls: opt(args, "walls")?,
             },
             "hip" => HelperRequest::Hip {
-                neighbour: match args.get("neighbour").and_then(Value::as_str) {
-                    Some("prev") => Neighbour::Prev,
-                    _ => Neighbour::Next,
-                },
-                by: if args.get("by").and_then(Value::as_str) == Some("eaves") {
-                    HipBy::Eaves
-                } else {
-                    HipBy::Rafters
-                },
+                // Refused unless one of the schema's values (ERR-005): a
+                // misspelt neighbour gave the other wall's pitch.
+                neighbour: opt::<Neighbour>(args, "neighbour")?.unwrap_or_default(),
+                by: opt::<HipBy>(args, "by")?.unwrap_or_default(),
                 hip: arg_f64(args, "hip")?.ok_or("missing `hip`")?,
                 first: arg_f64(args, "first")?.ok_or("missing `first`")?,
                 second: arg_f64(args, "second")?.ok_or("missing `second`")?,
@@ -1606,13 +1844,20 @@ impl Server {
         // A helper that sets eave heights keeps the building's height, as
         // update_edges does (review ARCH-001).
         let applied = helper::apply_to_part(&mut p, pi, &helped.patches);
-        let mut out = if args.get("apply").and_then(Value::as_bool) == Some(true)
-            && !applied.is_empty()
-        {
+        // The wall bar's ranges, as the dialog's OK (ARCH-003).
+        let refused = helper::check_applied(&before.parts[pi].edges, &p, pi, &applied).err();
+        let apply = args.get("apply").and_then(Value::as_bool) == Some(true);
+        if apply && let Some(why) = refused.clone() {
+            return Err(format!("{why}; nothing was saved"));
+        }
+        let mut out = if apply && !applied.is_empty() {
             self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?
         } else {
             json!({ "id": id, "saved": false, "note": "Not saved; call again with apply: true to save." })
         };
+        if let Some(why) = refused {
+            out["note"] = json!(format!("Not saved: apply would be refused, {why}."));
+        }
         out["patches"] = patches_json(&applied);
         if let Some(t) = helped.triangle {
             out["triangle"] = json!(t);
@@ -2311,6 +2556,120 @@ mod tests {
             json!({ "id": id, "summary": "x", "lines": [{ "a": [0, 0, 0], "b": [1, 0, 0], "code": "T", "length": 0 }],
                 "faces": [{ "points": [[20, 0], [24, 0], [24, 3], [20, 3]], "pitch_deg": 89.9 }] }),
         );
+    }
+
+    /// Audit 2026-11-24 HUNT-1801: a bow tie is refused, nothing is saved;
+    /// a stored one is warned about by `calc` with its face index.
+    #[test]
+    fn set_manual_refuses_a_face_whose_outline_crosses_itself_and_calc_warns_about_a_stored_one() {
+        let (mut s, id) = setup();
+        let before = s.store.load(&id).unwrap();
+        let log = s.store.activity(&id).len();
+        let err = s
+            .call_tool(
+                "set_manual",
+                &json!({ "id": id, "summary": "x",
+                    "faces": [{ "points": [[20, 0], [30, 10], [30, 0], [20, 10]], "pitch_deg": 30 }] }),
+            )
+            .unwrap_err();
+        assert!(
+            err.contains("face 0") && err.contains("crosses itself"),
+            "{err}"
+        );
+        assert_eq!(s.store.load(&id).unwrap(), before);
+        assert_eq!(s.store.activity(&id).len(), log);
+        // A file that already holds one (an older Tectora wrote it).
+        let mut p = before.clone();
+        p.manual_faces.push(tectora_core::model::ManualFace {
+            points: [(20.0, 0.0), (30.0, 10.0), (30.0, 0.0), (20.0, 10.0)]
+                .iter()
+                .map(|&(x, y)| tectora_core::geom::Point2::new(x, y))
+                .collect(),
+            pitch_deg: 30.0,
+            label: String::new(),
+        });
+        s.store.save(Some(id.clone()), &p).unwrap();
+        let r = call(&mut s, "calc", json!({ "id": id }));
+        let w: Vec<&Value> = r["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|part| part["warnings"].as_array().into_iter().flatten())
+            .filter(|w| w["kind"] == "manual_face_crosses")
+            .collect();
+        assert_eq!(w.len(), 1, "{r}");
+        assert_eq!(w[0]["face"], 0);
+        assert!(w[0]["message"].as_str().unwrap().contains("crosses itself"));
+    }
+
+    /// Audit 2026-11-24 ERR-1901: a stored bow tie in a job of hand-drawn
+    /// faces only is warned about by `calc` beside the parts.
+    #[test]
+    fn calc_warns_about_a_crossing_face_in_a_job_without_a_building() {
+        let (mut s, id) = setup();
+        let mut p = s.store.load(&id).unwrap();
+        p.parts.clear();
+        p.dormers.clear();
+        p.windows.clear();
+        p.chimneys.clear();
+        p.roof_openings.clear();
+        p.manual_faces = vec![tectora_core::model::ManualFace {
+            points: [(0.0, 0.0), (10.0, 4.0), (10.0, 0.0), (0.0, 10.0)]
+                .iter()
+                .map(|&(x, y)| tectora_core::geom::Point2::new(x, y))
+                .collect(),
+            pitch_deg: 30.0,
+            label: String::new(),
+        }];
+        s.store.save(Some(id.clone()), &p).unwrap();
+        let r = call(&mut s, "calc", json!({ "id": id }));
+        assert_eq!(r["parts"].as_array().unwrap().len(), 0, "{r}");
+        let w = r["warnings"].as_array().expect("job-level warnings");
+        assert_eq!(w.len(), 1, "{r}");
+        assert_eq!(w[0]["kind"], "manual_face_crosses");
+        assert_eq!(w[0]["face"], 0);
+        assert!(w[0]["message"].as_str().unwrap().contains("crosses itself"));
+    }
+
+    /// Audit 2026-11-24 HUNT-1902: a face that touches itself at a corner,
+    /// nearly (0.5 mm), folds an edge back or lies on one line is refused
+    /// like a bow tie, nothing saved.
+    #[test]
+    fn set_manual_refuses_a_face_that_touches_or_folds_over_itself() {
+        let (mut s, id) = setup();
+        let before = s.store.load(&id).unwrap();
+        let log = s.store.activity(&id).len();
+        for pts in [
+            json!([[20, 0], [22, 2], [24, 4], [24, 0], [22, 2], [20, 4]]),
+            json!([[20, 0], [22, 2], [24, 4], [24, 0], [22.0005, 2], [20, 4]]),
+            json!([
+                [20, 0],
+                [24, 0],
+                [24, 3],
+                [22, 3],
+                [22, 0],
+                [20, 0],
+                [20, 3]
+            ]),
+            json!([[20, 0], [22, 0], [24, 0.0005]]),
+            // A corner on the middle of another edge, and 0.5 mm off it
+            // (TEST-2006).
+            json!([[20, 0], [22, 1], [26, 3], [24, 0], [20, 2]]),
+            json!([[20, 0], [22.0005, 1], [26, 3], [24, 0], [20, 2]]),
+        ] {
+            let err = s
+                .call_tool(
+                    "set_manual",
+                    &json!({ "id": id, "summary": "x", "faces": [{ "points": pts, "pitch_deg": 30 }] }),
+                )
+                .unwrap_err();
+            assert!(
+                err.contains("face 0") && err.contains("crosses itself"),
+                "{pts}: {err}"
+            );
+        }
+        assert_eq!(s.store.load(&id).unwrap(), before);
+        assert_eq!(s.store.activity(&id).len(), log);
     }
 
     #[test]
@@ -3250,6 +3609,265 @@ mod tool_coverage {
             .unwrap_or_else(|e| panic!("{name}: {e}"))
     }
 
+    /// Audit 2026-11-23 UX-1501: the user's Revert of the latest of three
+    /// AI steps leaves the other two waiting, and `get_review` and
+    /// `get_history` say so to the AI.
+    #[test]
+    fn get_review_keeps_the_steps_the_user_did_not_revert() {
+        use tectora_core::store::USER_ACTOR;
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let id = s.store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        for (field, value) in [("notes", "A1"), ("customer", "A2"), ("address", "A3")] {
+            call(
+                &mut s,
+                "update_job",
+                json!({ "id": id, field: value, "summary": value }),
+            );
+        }
+        let log = s.store.activity(&id);
+        let (a1, a2) = (log[1].ts_ms, log[2].ts_ms);
+        s.store.revert_last(&id, USER_ACTOR, None).unwrap();
+        let review = call(&mut s, "get_review", json!({ "id": id }));
+        assert_eq!(review["pending"]["count"], 2, "{review}");
+        assert_eq!(review["pending"]["steps"], json!([a1, a2]));
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let waiting: Vec<bool> = history
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["pending_review"].as_bool().unwrap())
+            .collect();
+        // Newest first: the revert, A3 (reverted), A2, A1, the creation.
+        assert_eq!(waiting, [false, false, true, true, false]);
+    }
+
+    /// Audit 2026-11-24 ARCH-1602 (design A4): `get_history` says what is
+    /// in the design as the app's history does: A3, which the user
+    /// reverted, is `undone`, the revert names it by `undid_from`, every
+    /// entry carries `kind` (ARCH-1601) and the creation is `created`.
+    #[test]
+    fn get_history_marks_what_a_revert_undid() {
+        use tectora_core::store::USER_ACTOR;
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let id = s.store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        for (field, value) in [("notes", "A1"), ("customer", "A2"), ("address", "A3")] {
+            call(
+                &mut s,
+                "update_job",
+                json!({ "id": id, field: value, "summary": value }),
+            );
+        }
+        let a3 = s.store.activity(&id)[3].ts_ms;
+        s.store.revert_last(&id, USER_ACTOR, None).unwrap();
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let h = history.as_array().unwrap();
+        assert_eq!(h.len(), 5, "{history}");
+        assert!(h.iter().all(|e| e.get("kind").is_some()), "{history}");
+        assert_eq!(h[0]["kind"], "revert", "{history}");
+        assert_eq!(h[0]["undid_from"], json!(a3), "{history}");
+        assert!(h[0].get("undone").is_none(), "{history}");
+        assert_eq!(h[1]["ts_ms"], json!(a3));
+        assert_eq!(h[1]["undone"], true, "{history}");
+        assert_eq!(h[1]["kind"], Value::Null, "{history}");
+        for e in &h[2..4] {
+            assert!(e.get("undone").is_none(), "{history}");
+        }
+        assert_eq!(h[4]["created"], true, "{history}");
+        assert!(h[..4].iter().all(|e| e.get("created").is_none()));
+        // The revert taken back (MCP `revert_to` with its ts_ms): A3
+        // stands again and waits, the revert is `undone`.
+        let revert = h[0]["ts_ms"].clone();
+        call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": revert, "summary": "Back in" }),
+        );
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let h = history.as_array().unwrap();
+        assert_eq!(h[1]["ts_ms"], revert);
+        assert_eq!(h[1]["undone"], true, "{history}");
+        assert!(h[2].get("undone").is_none(), "{history}");
+        assert_eq!(h[2]["pending_review"], true, "{history}");
+    }
+
+    /// Audit 2026-11-24 UX-1903: the AI's `revert_to` of the user's revert
+    /// puts the change back, and the live status says so (`put_back`),
+    /// not "reverted".
+    #[test]
+    fn a_put_back_by_revert_to_is_told_as_a_put_back() {
+        use tectora_core::store::USER_ACTOR;
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let id = s.store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "AI", "summary": "AI note" }),
+        );
+        s.store.revert_last(&id, USER_ACTOR, None).unwrap();
+        let r = s.store.activity(&id).last().unwrap().ts_ms;
+        call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": r, "summary": "Note back." }),
+        );
+        assert_eq!(s.store.live().unwrap().kind.as_deref(), Some("put_back"));
+        let a = s.store.activity(&id).last().unwrap().ts_ms;
+        let first = s.store.activity(&id)[1].ts_ms;
+        call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": first, "summary": "All out." }),
+        );
+        assert_ne!(a, s.store.activity(&id).last().unwrap().ts_ms);
+        assert_eq!(
+            s.store.live().unwrap().kind.as_deref(),
+            Some("reverted_changes")
+        );
+    }
+
+    /// Audit 2026-11-24 ARCH-1901 over MCP: the AI takes accepted work out,
+    /// makes 60 more changes (past the 50 entries a log keeps) and reverts
+    /// to one of them: `get_review` still waits, and `get_history` marks
+    /// exactly the listed steps.
+    #[test]
+    fn a_review_past_the_log_trim_still_waits_over_mcp() {
+        use tectora_core::store::USER_ACTOR;
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let id = s.store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "A1", "summary": "A1" }),
+        );
+        let a1 = s.store.activity(&id).last().unwrap().ts_ms;
+        s.store.mark_reviewed(&id, a1).unwrap();
+        call(
+            &mut s,
+            "revert_last_change",
+            json!({ "id": id, "summary": "Out." }),
+        );
+        for i in 1..=60 {
+            call(
+                &mut s,
+                "update_job",
+                json!({ "id": id, "customer": format!("C{i}"), "summary": format!("C{i}") }),
+            );
+        }
+        let old = s.store.activity(&id)[1].ts_ms;
+        call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": old, "summary": "Back." }),
+        );
+        let review = call(&mut s, "get_review", json!({ "id": id }));
+        let steps = review["pending"]["steps"]
+            .as_array()
+            .cloned()
+            .expect("waits");
+        assert!(!steps.is_empty(), "{review}");
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let marked: Vec<Value> = history
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["pending_review"] == true)
+            .map(|e| e["ts_ms"].clone())
+            .collect();
+        let mut want = steps.clone();
+        want.reverse();
+        assert_eq!(marked, want, "{history}");
+        // The user's Revert all ends at the accepted job.
+        let since = review["pending"]["since_ts_ms"].as_u64().unwrap();
+        let r = s.store.revert_review(&id, since, USER_ACTOR, None).unwrap();
+        assert_eq!(
+            (r.project.notes.as_str(), r.project.job.customer.as_str()),
+            ("A1", "")
+        );
+    }
+
+    /// ARCH-1701 / TEST-1708: the AI's `revert_to` of the user's revert of
+    /// a change the user accepted puts that change back, so it waits for
+    /// review: `get_review.pending` names the AI's entry, and
+    /// `get_history` says it put the change back.
+    #[test]
+    fn an_ais_take_back_of_the_users_revert_of_accepted_work_waits() {
+        use tectora_core::store::USER_ACTOR;
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let id = s.store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "AI note", "summary": "AI writes a note" }),
+        );
+        let a1 = s.store.activity(&id).last().unwrap().ts_ms;
+        s.store.mark_reviewed(&id, a1).unwrap();
+        s.store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(a1))
+            .unwrap();
+        let r = s.store.activity(&id).last().unwrap().ts_ms;
+        let review = call(&mut s, "get_review", json!({ "id": id }));
+        assert!(review["pending"].is_null(), "{review}");
+        call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": r, "summary": "Putting my note back." }),
+        );
+        let tb = s.store.activity(&id).last().unwrap().ts_ms;
+        let review = call(&mut s, "get_review", json!({ "id": id }));
+        assert_eq!(review["pending"]["steps"], json!([tb]), "{review}");
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let h = history.as_array().unwrap();
+        assert_eq!(h[0]["put_back"], json!([a1]), "{history}");
+        assert_eq!(h[0]["took_out"], json!([]), "{history}");
+        assert_eq!(h[0]["put_back_count"], json!(1), "{history}");
+        assert_eq!(
+            h[1]["took_out"],
+            json!([a1]),
+            "the user's revert: {history}"
+        );
+        assert!(h[2].get("took_out").is_none(), "a change: {history}");
+        let listed = call(&mut s, "list_projects", json!({ "by_ai": true }));
+        assert!(listed.to_string().contains(&id), "{listed}");
+    }
+
+    /// ARCH-1702 / TEST-1708: the user deletes the job while an MCP write
+    /// is between its read and its save: nothing is written, the AI is
+    /// told the job was deleted, and the job is not back in the library.
+    #[test]
+    fn a_write_raced_by_a_delete_does_not_bring_the_job_back() {
+        use tectora_core::store::USER_ACTOR;
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let id = s.store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        let (_, before) = s.load(&json!({ "id": id })).unwrap();
+        let mut next = before.clone();
+        next.notes = "AI note".into();
+        s.store.delete(&id, USER_ACTOR, "Deleted").unwrap();
+        let e = s
+            .save_onto_current(&id, &before, &next, "AI writes a note")
+            .unwrap_err();
+        assert!(
+            e.contains("no design with id") && e.contains("deleted"),
+            "{e}"
+        );
+        assert!(!s.store.exists(&id));
+        assert!(s.store.activity(&id).is_empty());
+        let listed = call(&mut s, "list_projects", json!({}));
+        assert!(!listed.to_string().contains(&id), "{listed}");
+        let e = s
+            .call_tool(
+                "update_job",
+                &json!({ "id": id, "notes": "again", "summary": "Again" }),
+            )
+            .unwrap_err();
+        assert!(e.contains("no design with id"), "{e}");
+    }
+
     fn example(s: &mut Server, example_id: &str) -> String {
         let r = call(
             s,
@@ -3279,6 +3897,561 @@ mod tool_coverage {
     fn applied(edges: &[tectora_core::EdgeDef], patches: &Patches) -> Patches {
         let mut es = edges.to_vec();
         apply_patches(&mut es, patches)
+    }
+
+    /// MCP parity for "put the offer's figures back" (audit 2026-11-22
+    /// Design A item 3): get_history marks the recalculation the stored
+    /// result is, restore_offer_result puts the offer's figures back with
+    /// the AI's summary and nothing else, and revert_last_change can name
+    /// the change it expects (item 4, ERR-801).
+    #[test]
+    fn restore_offer_result_puts_only_the_offer_figures_back() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "status": "offer", "summary": "Offer sent" }),
+        );
+        // No recalculation yet: nothing to put back.
+        let e = s
+            .call_tool("restore_offer_result", &json!({ "id": id, "summary": "x" }))
+            .unwrap_err();
+        assert!(e.contains("not a recalculation"), "{e}");
+        // As if engine 0.0.1 had stored figures 2 m2 off; the user accepted
+        // the AI's changes and opens the offer in the app.
+        let file = s.store.dir.join(format!("{id}.tectora"));
+        let mut p = s.store.load(&id).unwrap();
+        let offer = {
+            let r = p
+                .result_snapshot
+                .as_mut()
+                .expect("the offer stored a result");
+            r.engine_version = "0.0.1".into();
+            r.roof_area += 2.0;
+            r.clone()
+        };
+        std::fs::write(&file, p.to_json().unwrap()).unwrap();
+        let origins = s.store.activity_dir().join(format!("{id}.result.json"));
+        let text = std::fs::read_to_string(&origins)
+            .unwrap()
+            .replace(tectora_core::snapshot::ENGINE_VERSION, "0.0.1");
+        std::fs::write(&origins, text).unwrap();
+        s.store.mark_reviewed(&id, now_ms() + 1000).unwrap();
+        let done = s.store.refresh_entry(&id).unwrap().expect("recalculated");
+
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let marked: Vec<&Value> = history
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["stored_result_recalculation"] == true)
+            .collect();
+        assert_eq!(marked.len(), 1, "{history}");
+        assert_eq!(marked[0]["ts_ms"], done.entry_ts_ms);
+        assert_eq!(marked[0]["actor"], "tectora");
+
+        // An AI save after it stays; a stale revert_last_change is refused.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "Call the customer", "summary": "Note" }),
+        );
+        let e = s
+            .call_tool(
+                "revert_last_change",
+                &json!({ "id": id, "ts_ms": done.entry_ts_ms, "summary": "x" }),
+            )
+            .unwrap_err();
+        assert!(e.starts_with("revert_stale"), "{e}");
+        let e = s
+            .call_tool(
+                "revert_last_change",
+                &json!({ "id": id, "ts_ms": "now", "summary": "x" }),
+            )
+            .unwrap_err();
+        assert!(e.contains("ts_ms"), "{e}");
+        assert_eq!(s.store.load(&id).unwrap().notes, "Call the customer");
+
+        // The summary is required, as for every write.
+        assert!(
+            s.call_tool("restore_offer_result", &json!({ "id": id }))
+                .is_err()
+        );
+        let r = call(
+            &mut s,
+            "restore_offer_result",
+            json!({ "id": id, "summary": "The customer signed these figures" }),
+        );
+        assert_eq!(r["restored"], true);
+        assert_eq!(r["stored_result"]["roof_area"], offer.roof_area);
+        let now = s.store.load(&id).unwrap();
+        assert_eq!(now.result_snapshot, Some(offer));
+        assert_eq!(now.notes, "Call the customer");
+        let entry = s.store.activity(&id).last().unwrap().clone();
+        assert_eq!(entry.restores, Some(done.entry_ts_ms));
+        assert_ne!(entry.actor, tectora_core::store::USER_ACTOR);
+        assert!(
+            entry
+                .summary
+                .ends_with("(reason: The customer signed these figures)"),
+            "{}",
+            entry.summary
+        );
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        assert_eq!(history[0]["restores"], done.entry_ts_ms, "{history}");
+        assert!(
+            history
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|e| e.get("stored_result_recalculation").is_none()),
+            "{history}"
+        );
+        // Again, by the entry: no longer that recalculation.
+        let e = s
+            .call_tool(
+                "restore_offer_result",
+                &json!({ "id": id, "ts_ms": done.entry_ts_ms, "summary": "x" }),
+            )
+            .unwrap_err();
+        assert!(e.starts_with("revert_stale"), "{e}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// The job's stored result set back as if engine 0.0.1 had stored it
+    /// 2 m2 off, the AI's changes accepted: the app's next open
+    /// recalculates it. Returns the offer's result.
+    fn make_old(s: &Server, id: &str) -> tectora_core::snapshot::ResultSnapshot {
+        let file = s.store.dir.join(format!("{id}.tectora"));
+        let mut p = s.store.load(id).unwrap();
+        let offer = {
+            let r = p.result_snapshot.as_mut().expect("a stored result");
+            r.engine_version = "0.0.1".into();
+            r.roof_area += 2.0;
+            r.clone()
+        };
+        std::fs::write(&file, p.to_json().unwrap()).unwrap();
+        let origins = s.store.activity_dir().join(format!("{id}.result.json"));
+        let text = std::fs::read_to_string(&origins)
+            .unwrap()
+            .replace(tectora_core::snapshot::ENGINE_VERSION, "0.0.1");
+        std::fs::write(&origins, text).unwrap();
+        s.store.mark_reviewed(id, now_ms() + 1000).unwrap();
+        offer
+    }
+
+    /// An offer whose stored result the app's open recalculated.
+    fn recalculated_offer(
+        s: &mut Server,
+    ) -> (
+        String,
+        tectora_core::snapshot::ResultSnapshot,
+        tectora_core::store::RefreshedEntry,
+    ) {
+        let id = example(s, "gable");
+        call(
+            s,
+            "update_job",
+            json!({ "id": id, "status": "offer", "summary": "Offer sent" }),
+        );
+        let offer = make_old(s, &id);
+        let done = s.store.refresh_entry(&id).unwrap().expect("recalculated");
+        (id, offer, done)
+    }
+
+    /// Audit 2026-11-23 ERR-1104: export_job of an offer whose stored
+    /// result Tectora recalculated says which figures the bundle carries,
+    /// which stay behind, and the way to send the offer's own; a job
+    /// without a recalculation gets no note.
+    #[test]
+    fn exporting_a_recalculated_offer_names_the_figures_that_stay_behind() {
+        let mut s = server();
+        let (id, offer, _) = recalculated_offer(&mut s);
+        let fresh = s.store.load(&id).unwrap().result_snapshot.unwrap();
+        let out = call(
+            &mut s,
+            "export_job",
+            json!({ "id": id, "summary": "To Petr" }),
+        );
+        let note = out["note"].as_str().expect("a note");
+        for part in [
+            format!(
+                "recalculated result (Tectora {}, {:.2} m2)",
+                fresh.engine_version, fresh.roof_area
+            ),
+            format!(
+                "offer's own figures (Tectora 0.0.1, {:.2} m2)",
+                offer.roof_area
+            ),
+            "restore_offer_result".to_string(),
+        ] {
+            assert!(note.contains(&part), "{part:?} in {note}");
+        }
+        let other = example(&mut s, "gable");
+        let out = call(&mut s, "export_job", json!({ "id": other, "summary": "s" }));
+        assert!(out.get("note").is_none(), "{out}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// Audit 2026-11-23 ARCH-1201, ERR-1202: a job whose unknown keys nest
+    /// deeper than 32 levels is refused as the app refuses it, with its
+    /// code and the reason; nothing is written or logged for it.
+    #[test]
+    fn a_job_with_too_deep_unknown_keys_is_refused_with_its_code() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        // A logged change, so the revert tools have one to undo (TEST-1303:
+        // they refuse the file, they do not "repair" it from the log).
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "AI note", "summary": "Note" }),
+        );
+        let ts = s.store.activity(&id).last().unwrap().ts_ms;
+        let mut v = serde_json::to_value(s.store.load(&id).unwrap()).unwrap();
+        let mut deep = json!([]);
+        for _ in 0..40 {
+            deep = Value::Array(vec![deep]);
+        }
+        v["crm"] = deep;
+        let file = s.store.dir.join(format!("{id}.tectora"));
+        std::fs::write(&file, v.to_string()).unwrap();
+        let log = s.store.activity(&id).len();
+        for (tool, args) in [
+            ("get_project", json!({ "id": id })),
+            (
+                "update_job",
+                json!({ "id": id, "notes": "x", "summary": "Notes" }),
+            ),
+            ("revert_last_change", json!({ "id": id, "summary": "Undo" })),
+            (
+                "revert_last_change",
+                json!({ "id": id, "ts_ms": ts, "summary": "Undo" }),
+            ),
+            (
+                "revert_to",
+                json!({ "id": id, "ts_ms": ts, "summary": "Undo" }),
+            ),
+            (
+                "restore_offer_result",
+                json!({ "id": id, "ts_ms": ts, "summary": "Back" }),
+            ),
+        ] {
+            let e = s.call_tool(tool, &args).unwrap_err().to_string();
+            assert!(
+                e.contains("(too_many)") && e.contains("nested too deep"),
+                "{tool}: {e}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&file).unwrap(),
+                v.to_string(),
+                "{tool}"
+            );
+        }
+        assert_eq!(s.store.activity(&id).len(), log);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// Audit 2026-11-23 ARCH-1203: a description is the AI client's
+    /// contract. export_plan of a recalculated offer answers without a
+    /// `note`, so its description promises none and says what the sheet
+    /// shows; a description promising a `note` belongs to a tool whose
+    /// test above receives one.
+    #[test]
+    fn only_tools_that_answer_with_a_note_promise_one() {
+        const NOTE_TESTED: &[&str] = &["export_job"];
+        let tools = crate::tools();
+        for t in tools.as_array().unwrap() {
+            let name = t["name"].as_str().unwrap();
+            let d = t["description"].as_str().unwrap_or_default();
+            if d.contains("a `note`") {
+                assert!(NOTE_TESTED.contains(&name), "{name} promises a note: {d}");
+            }
+            if name == "export_plan" {
+                assert!(
+                    d.contains(
+                        "The sheet shows the current calculation, not a stored offer result."
+                    ),
+                    "{d}"
+                );
+                assert!(!d.contains("bundle"), "{d}");
+            }
+        }
+        let mut s = server();
+        let (id, _, _) = recalculated_offer(&mut s);
+        let out = call(
+            &mut s,
+            "export_plan",
+            json!({ "id": id, "format": "svg", "summary": "Sheet" }),
+        );
+        let mut keys: Vec<&str> = out
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["id", "path"], "{out}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// Audit 2026-11-23 HUNT-902: get_project names the recalculation the
+    /// stored result is, so an AI can put the offer's figures back after
+    /// the engine's entry left the change log.
+    #[test]
+    fn the_offer_figures_go_back_after_the_change_log_dropped_the_recalculation() {
+        let mut s = server();
+        let (id, offer, done) = recalculated_offer(&mut s);
+        let p = call(&mut s, "get_project", json!({ "id": id }));
+        assert_eq!(
+            p["result_recalculation"]["entry_ts_ms"], done.entry_ts_ms,
+            "{p}"
+        );
+        for i in 0..55 {
+            call(
+                &mut s,
+                "update_job",
+                json!({ "id": id, "notes": format!("note {i}"), "summary": "Note" }),
+            );
+        }
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        assert!(
+            history
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|e| e["ts_ms"] != done.entry_ts_ms),
+            "the engine's entry is trimmed"
+        );
+        let p = call(&mut s, "get_project", json!({ "id": id }));
+        let ts = p["result_recalculation"]["entry_ts_ms"].clone();
+        assert_eq!(ts, done.entry_ts_ms, "{p}");
+        let r = call(
+            &mut s,
+            "restore_offer_result",
+            json!({ "id": id, "ts_ms": ts, "summary": "The customer signed these figures" }),
+        );
+        assert_eq!(r["restored"], true);
+        assert_eq!(s.store.load(&id).unwrap().result_snapshot, Some(offer));
+        let p = call(&mut s, "get_project", json!({ "id": id }));
+        assert_eq!(p["result_recalculation"], Value::Null, "{p}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// Audit 2026-11-23 TEST-903: restore_offer_result refuses a ts_ms
+    /// that is no entry time and writes nothing, tells the app live, and
+    /// get_history marks only the recalculation the stored result is now.
+    #[test]
+    fn restore_offer_result_checks_its_input_tells_the_app_and_marks_one_entry() {
+        let mut s = server();
+        let (id, _, first) = recalculated_offer(&mut s);
+        // The user stores an own result, an older engine's again, and the
+        // app recalculates it once more: two engine entries.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        call(
+            &mut s,
+            "store_result",
+            json!({ "id": id, "summary": "Store the figures" }),
+        );
+        make_old(&s, &id);
+        let second = s.store.refresh_entry(&id).unwrap().expect("recalculated");
+        assert_ne!(first.entry_ts_ms, second.entry_ts_ms);
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let marked: Vec<&Value> = history
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["stored_result_recalculation"] == true)
+            .collect();
+        assert_eq!(marked.len(), 1, "{history}");
+        assert_eq!(marked[0]["ts_ms"], second.entry_ts_ms);
+        assert!(
+            history
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["ts_ms"] == first.entry_ts_ms),
+            "{history}"
+        );
+
+        let file = s.store.dir.join(format!("{id}.tectora"));
+        let bytes = std::fs::read(&file).unwrap();
+        let entries = s.store.activity(&id).len();
+        for ts in [
+            json!(-1),
+            json!("x"),
+            json!(1.5),
+            json!([second.entry_ts_ms]),
+            json!({}),
+        ] {
+            let e = s
+                .call_tool(
+                    "restore_offer_result",
+                    &json!({ "id": id, "ts_ms": ts, "summary": "x" }),
+                )
+                .unwrap_err();
+            assert!(e.contains("ts_ms"), "{ts}: {e}");
+        }
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+        assert_eq!(s.store.activity(&id).len(), entries);
+
+        s.call_tool("list_projects", &json!({})).unwrap();
+        call(
+            &mut s,
+            "restore_offer_result",
+            json!({ "id": id, "ts_ms": second.entry_ts_ms, "summary": "Signed figures" }),
+        );
+        let live = s.store.live().unwrap();
+        assert_eq!(live.kind.as_deref(), Some("changed"));
+        assert_eq!(live.project_id.as_deref(), Some(id.as_str()));
+        assert!(live.follow);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// Audit 2026-11-23 ARCH-902: a stored result with an impossible date
+    /// is left out when the job is read; over MCP the read and the write
+    /// that then saves the job without it say so.
+    #[test]
+    fn mcp_says_when_a_stored_result_was_left_out() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "status": "offer", "summary": "Offer sent" }),
+        );
+        let file = s.store.dir.join(format!("{id}.tectora"));
+        let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        v["result_snapshot"]["taken_ms"] = json!(8_640_000_000_000_001u64);
+        std::fs::write(&file, serde_json::to_string(&v).unwrap()).unwrap();
+        let p = call(&mut s, "get_project", json!({ "id": id }));
+        assert_eq!(p["load_warnings"][0]["code"], "result_dropped", "{p}");
+        assert!(
+            p["load_warnings"][0]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("8640000000000001"),
+            "{p}"
+        );
+        let r = call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "AI note", "summary": "Note" }),
+        );
+        assert_eq!(r["load_warnings"][0]["code"], "result_dropped", "{r}");
+        assert!(r["note"].as_str().unwrap().contains("left out"), "{r}");
+        // Saved without it: nothing more to say.
+        let p = call(&mut s, "get_project", json!({ "id": id }));
+        assert!(p.get("load_warnings").is_none(), "{p}");
+        let r = call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "AI note 2", "summary": "Note" }),
+        );
+        assert!(r.get("load_warnings").is_none(), "{r}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// Audit 2026-11-23 ERR-1002: while another program holds the job's
+    /// lock, the revert tools and the put-back answer `busy` after a short
+    /// wait, with nothing done, so the AI knows to try again.
+    #[test]
+    fn mcp_reverts_answer_busy_while_the_job_is_being_saved() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "AI note", "summary": "Note" }),
+        );
+        let dir = s.store.dir.clone();
+        s.store = Store::at(dir.clone()).with_action_wait(std::time::Duration::from_millis(100));
+        let ts = s.store.activity(&id).last().unwrap().ts_ms;
+        let log = s.store.activity(&id).len();
+        let held = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join(".activity").join(format!("{id}.lock")))
+            .unwrap();
+        held.lock().unwrap();
+        for (tool, args) in [
+            ("revert_last_change", json!({ "id": id, "summary": "Undo" })),
+            (
+                "revert_to",
+                json!({ "id": id, "ts_ms": ts, "summary": "Undo" }),
+            ),
+            (
+                "restore_offer_result",
+                json!({ "id": id, "ts_ms": ts, "summary": "Back" }),
+            ),
+        ] {
+            let e = s.call_tool(tool, &args).unwrap_err();
+            assert!(e.starts_with("busy: "), "{tool}: {e}");
+            assert!(e.contains("try again"), "{tool}: {e}");
+        }
+        assert_eq!(s.store.activity(&id).len(), log);
+        drop(held);
+        call(
+            &mut s,
+            "revert_last_change",
+            json!({ "id": id, "summary": "Undo" }),
+        );
+        assert_eq!(s.store.load(&id).unwrap().notes, "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Audit 2026-11-23 ERR-1001: when the write that follows a dropped
+    /// stored result stores the current figures (store_result, a status
+    /// change), the note says so and never tells the AI to call
+    /// store_result.
+    #[test]
+    fn mcp_says_when_a_dropped_stored_result_was_replaced_by_this_write() {
+        let drop_result = |s: &mut Server, id: &str| {
+            let file = s.store.dir.join(format!("{id}.tectora"));
+            let mut v: Value =
+                serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+            v["result_snapshot"]["taken_ms"] = json!(8_640_000_000_000_001u64);
+            std::fs::write(&file, serde_json::to_string(&v).unwrap()).unwrap();
+        };
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "status": "offer", "summary": "Offer sent" }),
+        );
+        drop_result(&mut s, &id);
+        let r = call(
+            &mut s,
+            "store_result",
+            json!({ "id": id, "summary": "Store the figures" }),
+        );
+        assert_eq!(r["load_warnings"][0]["code"], "result_dropped", "{r}");
+        let note = r["note"].as_str().unwrap();
+        assert!(note.contains("left out"), "{r}");
+        assert!(note.contains("stored the current figures"), "{r}");
+        assert!(!note.contains("call store_result"), "{r}");
+        assert!(!note.contains("without it"), "{r}");
+        assert!(s.store.load(&id).unwrap().result_snapshot.is_some());
+        // A job leaving the draft status stores the current result as well.
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "status": "draft", "summary": "Back to draft" }),
+        );
+        drop_result(&mut s, &id);
+        let r = call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "status": "offer", "summary": "Offer sent" }),
+        );
+        assert_eq!(r["load_warnings"][0]["code"], "result_dropped", "{r}");
+        let note = r["note"].as_str().unwrap();
+        assert!(note.contains("stored the current figures"), "{r}");
+        assert!(!note.contains("call store_result"), "{r}");
+        assert!(s.store.load(&id).unwrap().result_snapshot.is_some());
+        let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
     #[test]
@@ -3325,6 +4498,141 @@ mod tool_coverage {
             .unwrap_err();
         assert!(e.contains("no recorded change at 1"), "{e}");
         assert_eq!(s.store.activity(&id).len(), 5);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// Audit 2026-11-23 ARCH-1401: a write summarised like the core's revert
+    /// sentence is a change: `revert_last_change` undoes that write, and
+    /// `get_history` gives `kind` only to the real revert.
+    #[test]
+    fn a_summary_that_reads_like_a_revert_is_undone_as_a_change() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "Call the customer", "summary": "Notes" }),
+        );
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "customer": "Evil s.r.o.", "summary": "Reverted: Notes" }),
+        );
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        assert_eq!(history[0]["summary"], "Reverted: Notes", "{history}");
+        // No kind: sent as `null`, never left out (audit 2026-11-24 ARCH-1601).
+        assert!(history[0]["kind"].is_null(), "{history}");
+        let spoof = history[0]["ts_ms"].as_u64().unwrap();
+        let r = call(
+            &mut s,
+            "revert_last_change",
+            json!({ "id": id, "ts_ms": spoof, "summary": "Wrong customer" }),
+        );
+        assert_eq!(r["reverted"], true, "{r}");
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(p.job.customer, "");
+        assert_eq!(p.notes, "Call the customer");
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        assert_eq!(history[0]["kind"], "revert", "{history}");
+        assert!(history[1]["kind"].is_null(), "{history}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// TEST-1401 through MCP: `revert_to` with the time of the user's
+    /// put-back of the offer's figures undoes that put-back alone (the
+    /// recalculated figures are back). `revert_last_change` steps over
+    /// the user's put-back by design (`latest_undone`), so the time is
+    /// given.
+    #[test]
+    fn revert_to_a_put_back_by_itself_brings_the_recalculation_back() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "status": "offer", "summary": "Offer sent" }),
+        );
+        let file = s.store.dir.join(format!("{id}.tectora"));
+        let mut p = s.store.load(&id).unwrap();
+        {
+            let r = p
+                .result_snapshot
+                .as_mut()
+                .expect("the offer stored a result");
+            r.engine_version = "0.0.1".into();
+            r.roof_area += 2.0;
+        }
+        std::fs::write(&file, p.to_json().unwrap()).unwrap();
+        let origins = s.store.activity_dir().join(format!("{id}.result.json"));
+        let text = std::fs::read_to_string(&origins)
+            .unwrap()
+            .replace(tectora_core::snapshot::ENGINE_VERSION, "0.0.1");
+        std::fs::write(&origins, text).unwrap();
+        s.store.mark_reviewed(&id, now_ms() + 1000).unwrap();
+        let done = s.store.refresh_entry(&id).unwrap().expect("recalculated");
+        let recalculated = s.store.load(&id).unwrap().result_snapshot;
+        s.store
+            .restore_offer_result(&id, done.entry_ts_ms, tectora_core::store::USER_ACTOR, None)
+            .unwrap();
+        let put_back = s.store.activity(&id).last().unwrap().ts_ms;
+        let r = call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": put_back, "summary": "The new figures are right" }),
+        );
+        assert_eq!(r["reverted"], true, "{r}");
+        assert_eq!(s.store.load(&id).unwrap().result_snapshot, recalculated);
+        let last = s.store.activity(&id).last().unwrap().clone();
+        assert!(
+            last.summary.starts_with("Reverted: Offer result restored"),
+            "{}",
+            last.summary
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// HUNT-1402: an earlier version outside today's limits is refused with
+    /// its own code by both revert tools, and the job is not touched.
+    #[test]
+    fn a_revert_to_a_version_outside_the_limits_says_so_and_changes_nothing() {
+        let mut s = server();
+        let id = example(&mut s, "gable");
+        call(
+            &mut s,
+            "update_edges",
+            json!({ "id": id, "changes": [{ "index": 0, "pitch_deg": 35.0 }], "summary": "step" }),
+        );
+        let log = s.store.dir.join(".activity").join(format!("{id}.jsonl"));
+        let text: Vec<String> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let mut v: Value = serde_json::from_str(l).unwrap();
+                if v["before"].is_object() {
+                    v["before"]["parts"][0]["edges"][0]["start"]["x"] = json!(1e9);
+                }
+                v.to_string()
+            })
+            .collect();
+        std::fs::write(&log, text.join("\n") + "\n").unwrap();
+        let file = std::fs::read(s.store.dir.join(format!("{id}.tectora"))).unwrap();
+        let ts = s.store.activity(&id).last().unwrap().ts_ms;
+        for (tool, args) in [
+            (
+                "revert_to",
+                json!({ "id": id, "ts_ms": ts, "summary": "back" }),
+            ),
+            ("revert_last_change", json!({ "id": id, "summary": "back" })),
+        ] {
+            let e = s.call_tool(tool, &args).unwrap_err();
+            assert!(e.starts_with("revert_out_of_limits: "), "{tool}: {e}");
+            assert!(e.contains("outside the current limits"), "{e}");
+            assert!(e.contains("the job itself is unchanged"), "{e}");
+        }
+        assert_eq!(
+            std::fs::read(s.store.dir.join(format!("{id}.tectora"))).unwrap(),
+            file
+        );
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 

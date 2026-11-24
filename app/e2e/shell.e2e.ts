@@ -106,6 +106,8 @@ test.describe("library list", () => {
     const box = (await main.boundingBox())!;
     // The lowest row that is fully visible before anything is selected.
     const rows = page.locator("tbody tr");
+    // The list is filled after the page opens: counted before that, there was no row to pick (TEST-602).
+    await expect(rows).toHaveCount(5);
     let target: Locator | null = null;
     for (let i = (await rows.count()) - 1; i >= 0; i--) {
       const r = (await rows.nth(i).boundingBox())!;

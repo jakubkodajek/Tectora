@@ -15,6 +15,15 @@ use serde_json::{Map, Value};
 /// `parts[0].edges[3].pitch_deg`.
 pub type Conflicts = Vec<String>;
 
+/// [`merge3`] that always gives a value: where both sides changed the same
+/// value `ours` stays, and the places are named (the review's baseline,
+/// ADR 0007).
+pub fn merge3_keep_ours(base: &Value, ours: &Value, theirs: &Value) -> (Value, Conflicts) {
+    let mut conflicts = Vec::new();
+    let v = merge_value(base, ours, theirs, "", &mut conflicts);
+    (v, conflicts)
+}
+
 pub fn merge3(base: &Value, ours: &Value, theirs: &Value) -> Result<Value, Conflicts> {
     let mut conflicts = Vec::new();
     let v = merge_value(base, ours, theirs, "", &mut conflicts);
@@ -23,6 +32,50 @@ pub fn merge3(base: &Value, ours: &Value, theirs: &Value) -> Result<Value, Confl
     } else {
         Err(conflicts)
     }
+}
+
+/// The value at `path` in `v`, a path as [`merge3`] names its conflicts
+/// (`parts[0].edges[3].pitch_deg`, `/` for the whole value). `None` when
+/// the path does not parse or leads nowhere; a missing key is `Null`, as
+/// the merge treats it.
+pub fn value_at<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
+    const NULL: Value = Value::Null;
+    if path == "/" {
+        return Some(v);
+    }
+    let mut cur = v;
+    for seg in path.split('.') {
+        let (key, mut rest) = match seg.find('[') {
+            Some(i) => (&seg[..i], &seg[i..]),
+            None => (seg, ""),
+        };
+        if key.is_empty() && rest.is_empty() {
+            return None;
+        }
+        if !key.is_empty() {
+            cur = match cur {
+                Value::Object(m) => m.get(key).unwrap_or(&NULL),
+                Value::Null => &NULL,
+                _ => return None,
+            };
+        }
+        while !rest.is_empty() {
+            let end = rest.find(']')?;
+            let i: usize = rest.get(1..end)?.parse().ok()?;
+            cur = cur.as_array()?.get(i)?;
+            rest = &rest[end + 1..];
+            if !rest.is_empty() && !rest.starts_with('[') {
+                return None;
+            }
+        }
+    }
+    Some(cur)
+}
+
+/// Whether two values are the same for the merge: a missing key, `null`
+/// and an empty list alike.
+pub fn same_value(a: &Value, b: &Value) -> bool {
+    same(a, b)
 }
 
 /// Treats a missing key, `null` and an empty list alike (the store leaves
@@ -157,6 +210,36 @@ mod tests {
         );
         // The same change on both sides is no conflict.
         assert_eq!(merge3(&base, &theirs, &theirs).unwrap(), theirs);
+    }
+
+    #[test]
+    fn value_at_follows_the_paths_the_merge_names() {
+        let v = json!({ "parts": [{ "edges": [{ "pitch_deg": 40 }, { "pitch_deg": 25 }] }], "notes": "n" });
+        assert_eq!(
+            value_at(&v, "parts[0].edges[1].pitch_deg"),
+            Some(&json!(25))
+        );
+        assert_eq!(value_at(&v, "notes"), Some(&json!("n")));
+        assert_eq!(value_at(&v, "missing"), Some(&Value::Null));
+        assert_eq!(value_at(&v, "/"), Some(&v));
+        for bad in [
+            "parts[9].edges",
+            "parts[x]",
+            "parts[0",
+            "notes.x.y",
+            "",
+            "parts[0]x",
+        ] {
+            assert_eq!(value_at(&v, bad), None, "{bad}");
+        }
+        // Each conflict the merge names leads to the value it kept.
+        let base = json!({ "parts": [{ "pitch": 44 }], "d": [1, 2] });
+        let ours = json!({ "parts": [{ "pitch": 40 }], "d": [1, 3] });
+        let theirs = json!({ "parts": [{ "pitch": 35 }], "d": [1] });
+        let (merged, conflicts) = merge3_keep_ours(&base, &ours, &theirs);
+        for c in conflicts {
+            assert_eq!(value_at(&merged, &c), value_at(&ours, &c), "{c}");
+        }
     }
 
     #[test]

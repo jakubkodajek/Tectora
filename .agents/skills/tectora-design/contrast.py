@@ -35,6 +35,8 @@ PAIRS: list[tuple[str, str, str]] = [
     ("text-2", "surface", "text"),
     ("text-2", "surface-2", "text"),
     ("text-3", "surface", "large"),
+    # The result hero: its labels, and the area while a recalculation is on its way (UI-305).
+    ("text-2", "accent-soft", "text"),
     ("accent", "surface", "text"),
     ("accent", "accent-soft", "text"),
     ("#ffffff", "accent-fill|accent", "text"),

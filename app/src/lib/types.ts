@@ -1,3 +1,5 @@
+import { minOf } from "./extent";
+
 export interface Point2 {
   x: number;
   y: number;
@@ -38,7 +40,7 @@ export interface RoofPart {
 /** The building's height: its own, else its lowest eave (core `RoofPart::building_height`). */
 export function buildingHeight(part: RoofPart): number | null {
   if (part.height != null) return part.height;
-  return part.edges.length ? Math.min(...part.edges.map((e) => e.eave_height)) : null;
+  return part.edges.length ? minOf(part.edges, (e) => e.eave_height) : null;
 }
 
 export type JobStatus = "draft" | "offer" | "ordered" | "done";
@@ -135,10 +137,19 @@ export interface RoofWindow {
   height: number;
 }
 
+/**
+ * What Tectora wrote a change-log entry as (store.rs `EntryKind`), from the
+ * entry's fields, never from its words (audit 2026-11-23 ARCH-1401). An
+ * entry without it is a change, and an AI's summary is its own words.
+ */
+export type EntryKind = "revert" | "restore" | "refresh";
+
 export interface ActivityInfo {
   ts_ms: number;
   actor: string;
   summary: string;
+  /** `null` for a change (store.rs `ActivityEntry::kind`, always sent since ARCH-1601); absent only from an older bridge. */
+  kind?: EntryKind | null;
 }
 
 export interface ProjectSummary {
@@ -147,6 +158,10 @@ export interface ProjectSummary {
   notes: string;
   job: JobInfo;
   last_activity: ActivityInfo | null;
+  /** The newest change when an AI client made it, by the core's one rule (store.rs `changed_by_ai`): the library's AI filter, count and badge (UX-806). */
+  changed_by_ai?: ActivityInfo | null;
+  /** How many AI steps wait for the user's review (the banner's check, store.rs `ProjectSummary::review_pending`); absent when nothing waits (UX-2003). */
+  review_pending?: number | null;
   modified_ms: number;
   roof_area: number;
   parts: number;
@@ -167,6 +182,12 @@ export interface ProjectSummary {
   figures_pending?: boolean;
   /** Buildings the core gave no roof for: as many as `parts`, the roof is not calculated; fewer, the area leaves them out (ERRU-005). */
   parts_failed?: number;
+  /** Too complex to calculate (core work bound): no figures, `parts_failed` equals `parts`. */
+  too_complex?: boolean;
+  /** Hand-drawn faces: with any, the roof is (partly) calculated even when every building is without a roof (ERR-202). */
+  faces?: number;
+  /** The design is outside the limits: nothing is calculated, hand-drawn faces neither. */
+  refused?: boolean;
 }
 
 /** A deleted job or removed file in the library's trash (core `store::TrashEntry`). */
@@ -251,6 +272,7 @@ export interface Problem {
     | "too_few_edges"
     | "zero_length_wall"
     | "walls_cross"
+    | "walls_overlap"
     | "start_nan"
     | "pitch_range"
     | "eave_nan"
@@ -290,8 +312,11 @@ export interface RoofWarning {
     | "dormer_above_roof"
     | "inside_another"
     | "hidden_under_neighbour"
-    | "uncovered_plan";
-  /** m outside, m² overlapping, the relative area difference, m² below zero (cut_exceeds_face), m higher (plane_over_wall), m apart (merged_planes), m counted twice (doubled_line), m from the origin (far_from_origin), pairs (objects_overlap), m above the roof (dormer_above_roof), m² hidden (hidden_under_neighbour), m² without roof (uncovered_plan), else 0. */
+    | "uncovered_plan"
+    | "manual_face_crosses"
+    | "manual_faces_overlap"
+    | "manual_face_over_roof";
+  /** m outside, m² overlapping, the relative area difference, m² below zero (cut_exceeds_face), m higher (plane_over_wall), m apart (merged_planes), m counted twice (doubled_line), m from the origin (far_from_origin), pairs (objects_overlap), m above the roof (dormer_above_roof), m² hidden (hidden_under_neighbour), m² without roof (uncovered_plan), m² of plan shared (manual_faces_overlap) or over the roof (manual_face_over_roof), else 0. */
   value: number;
   /** merged_walls: the edge whose pitch is used, then the edge whose pitch and breaks are ignored; plane_over_wall, merged_planes: the outer wall, then the inner wall; wing_joined: the wing's walls; cut_exceeds_face: the walls of the faces. */
   edges?: number[];
@@ -299,6 +324,10 @@ export interface RoofWarning {
   dormer?: number;
   /** window_off_roof, chimney_off_roof, opening_off_roof: the object's index in its list. */
   item?: number;
+  /** manual_face_crosses, manual_faces_overlap, manual_face_over_roof: the hand-drawn face's index in `manual_faces`. */
+  face?: number;
+  /** manual_faces_overlap: the second hand-drawn face of the pair. */
+  other_face?: number;
 }
 
 /**
@@ -343,6 +372,8 @@ export interface CalcResult {
   }[];
   /** Every face added by hand with its area (already in `totals`). */
   manual_faces?: { label: string; pitch_deg: number; area: number }[];
+  /** Warnings that belong to no building (a crossing hand-drawn face in a job without one). */
+  warnings?: RoofWarning[];
   totals: RoofQuantities;
   /** Line lengths by DACAD code (T, F, G, K, O, W). */
   codes: Record<string, number>;
@@ -362,6 +393,18 @@ export interface BrokenFile {
 export interface Library {
   projects: ProjectSummary[];
   broken: BrokenFile[];
+  /** What in the library's own folders blocks work (`id` is its path in the library). */
+  foreign?: ForeignItem[];
+}
+
+/** What a [`ForeignItem`] blocks (store.rs `ForeignItem::kind`). */
+export type ForeignKind = "activity" | "files" | "trash" | "exports" | "job_files" | "lock" | "lock_fix" | "new_lock";
+
+/** A link, file or folder in the library's own folders that blocks work (store.rs `foreign_entries`). */
+export interface ForeignItem extends BrokenFile {
+  kind: ForeignKind;
+  /** The job it is about (`job_files`, `lock`). */
+  job?: string;
 }
 
 export interface Change {
@@ -387,14 +430,71 @@ export interface ReviewStatus {
   since_ts_ms: number;
   count: number;
   actors: string[];
+  /** The times of the AI steps waiting for review, oldest first (store.rs `PendingReview::steps`): a step the user reverted by itself is not one (UX-1501). Absent from an older bridge. */
+  steps?: number[];
   before: Project | null;
   accepted_ms: number;
   /** Figures before the pending changes against now; null when unknown. */
   differences: FigureDifference[] | null;
+  /** What differs between `before` (for an AI's new job the job as created) and the job now: the banner's change line and the plan's marks, the pair of `differences` (UX-2001). Absent from an older bridge. */
+  changes?: Change[];
+  /** A digest of `before`: it moves with the user's own edits while `since_ts_ms` and `count` stay (ARCH-2004). Absent from an older bridge. */
+  before_rev?: string;
+  /** False when none of the listed steps stands any more (they are history; the change is only `before` against now). Absent from an older bridge. */
+  steps_stand?: boolean;
 }
 
 export interface ActivityItem extends ActivityInfo {
   changes: Change[];
+  /** Only on the engine's recalculation of the stored result: the offer's date and engine, and each figure old -> new. */
+  refreshed?: ResultRefresh;
+  /** For a revert: the time of the oldest entry it undid. */
+  undid_from?: number;
+  /** For "offer result restored": the time of the engine's entry whose old result it put back. */
+  restores?: number;
+  /** The AI's reason of a revert or a put-back, as it ends the summary (store.rs `ActivityEntry::reason`, HUNT-904). */
+  reason?: string;
+  /** A later revert undid it (store.rs `undone_by`): muted in the history, and no Revert is drawn on it (UX-1505, UI-1501). */
+  undone?: boolean;
+  /** The entry created the job (no version before it): no Revert is drawn on it and Revert all stops after it (HUNT-1601). */
+  created?: boolean;
+  /** For a revert: the times of the changes it took out of the job, oldest first, at most 20 (store.rs `ActivityItem::took_out`, UX-1701). Absent for a change and from an older bridge. */
+  took_out?: number[];
+  /** For a revert: how many changes it took out (`took_out` is capped). */
+  took_out_count?: number;
+  /** For a revert: the times of the changes it put back into the job (a take-back of a revert), oldest first, at most 20. */
+  put_back?: number[];
+  /** For a revert: how many changes it put back. */
+  put_back_count?: number;
+}
+
+/**
+ * The engine's recalculation the job's stored result is (store.rs
+ * `Store::recalculation`): the result card's "recalculated" line and the
+ * history's "put the offer's figures back" show for this alone.
+ */
+export interface Recalculation extends ResultRefresh {
+  /** The engine's change-log entry. */
+  entry_ts_ms: number;
+  /** When it was recalculated. */
+  at: number;
+  /** `taken_ms` of the recalculated result, the one in the job file. */
+  taken_ms: number;
+}
+
+/** What opening a job recalculated (store.rs `RefreshedEntry`): the engine's change-log entry. */
+export interface RefreshedEntry {
+  entry_ts_ms: number;
+  summary: string;
+}
+
+/** What the engine's recalculation of a stored result changed (the app's `refresh_figures`). */
+export interface ResultRefresh {
+  /** When the offer's result was stored. */
+  offer_ms: number;
+  from: string;
+  to: string;
+  differences: FigureDifference[];
 }
 
 /** An AI app Tectora can add its MCP server to (`tectora_core::assistants`). */
@@ -445,6 +545,21 @@ export interface AppSettings {
   file_request?: FileRequest;
   /** Files outside the job folders the user allowed AI clients to read. */
   allowed_files?: string[];
+  /** Settings changes by AI clients, oldest first (core `AiSettingsChange`). */
+  ai_changes?: AiSettingsChange[];
+}
+
+/** A settings change an AI client made, for the user to accept or revert. */
+export interface AiSettingsChange {
+  id: number;
+  by: string;
+  summary: string;
+  /** Changed values by key: `locale`, `theme`, `follow_ai`, `roof_defaults.<key>`. */
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+  state: "open" | "accepted" | "reverted";
+  /** Keys a Revert left as they were (changed again since); all of them: nothing was put back (UX-104). */
+  kept?: string[];
 }
 
 export interface FileRequest {
@@ -474,7 +589,13 @@ export interface AppSettingsView {
 export const USER_ACTOR = "user";
 /** Actor of the entries Tectora writes itself (store.rs `ENGINE_ACTOR`): neither the user nor an AI. */
 export const ENGINE_ACTOR = "tectora";
-export const isAi = (actor: string) => actor !== USER_ACTOR && actor !== ENGINE_ACTOR;
+/** What an engine's entry of a received bundle is renamed to (store.rs `RECEIVED_ENGINE_ACTOR`): history of the sender's Tectora, never this engine's. */
+export const RECEIVED_ENGINE_ACTOR = "tectora (received)";
+/** What the sender's own entries of a received bundle are renamed to (store.rs `RECEIVED_USER_ACTOR`): a colleague's, never this user's (UX-1801). */
+export const RECEIVED_USER_ACTOR = "user (received)";
+/** An entry by this user or, received, by the sender: a user's revert or put-back, no AI's. */
+export const byAUser = (actor: string) => actor === USER_ACTOR || actor === RECEIVED_USER_ACTOR;
+export const isAi = (actor: string) => !byAUser(actor) && actor !== ENGINE_ACTOR && actor !== RECEIVED_ENGINE_ACTOR;
 
 export function emptyProject(name: string): Project {
   return {

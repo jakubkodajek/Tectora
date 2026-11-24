@@ -755,10 +755,22 @@ proptest! {
             Just("-1e308".to_string()), Just("1e7".to_string()), Just("-3e5".to_string()),
             Just("90".to_string()), Just("89.9999".to_string()),
             Just("null".to_string()), Just("\"x\"".to_string()), Just("[]".to_string()),
+            // Numbers JavaScript changes on the app's round trip, and
+            // stored-result times past the last calendar date (HUNT-802,
+            // HUNT-804).
+            Just("1.0".to_string()), Just("-0.0".to_string()), Just("1e3".to_string()),
+            Just("9007199254740993".to_string()), Just("8640000000000001".to_string()),
+            Just("18446744073709551615".to_string()),
             (-1e4..1e4f64).prop_map(|v| format!("{v}")),
         ]), 1..6),
     ) {
-        let base = rect(10.0, 6.0, [(40.0, 3.0, 0.5), (90.0, 3.0, 0.3), (40.0, 3.0, 0.5), (90.0, 3.0, 0.3)]);
+        let mut base = rect(10.0, 6.0, [(40.0, 3.0, 0.5), (90.0, 3.0, 0.3), (40.0, 3.0, 0.5), (90.0, 3.0, 0.3)]);
+        // A stored result (fixed time, no wall clock) and an unknown key
+        // holding a number, so their numbers are picked too.
+        let mut taken = tectora_core::snapshot::take(&base);
+        taken.taken_ms = 1_700_000_000_000;
+        base.result_snapshot = Some(taken);
+        base.extra.insert("vendor_scale".into(), serde_json::json!(2.5));
         let json = base.to_json().unwrap();
         // Spans of the numbers in the file.
         let bytes = json.as_bytes();
@@ -785,9 +797,15 @@ proptest! {
         }
         let loaded = catch_unwind(|| Project::from_json(&text))
             .map_err(|_| TestCaseError::fail(format!("from_json panicked on\n{text}")))?;
-        if let Ok(p) = loaded {
+        if let Ok(mut p) = loaded {
             catch_unwind(AssertUnwindSafe(|| generate_project(&p)))
                 .map_err(|_| TestCaseError::fail(format!("engine panicked on\n{text}")))?;
+            // What reading a job keeps of the stored result is a time the
+            // app can show and send back exactly.
+            tectora_core::snapshot::drop_impossible(&mut p);
+            if let Some(s) = &p.result_snapshot {
+                prop_assert!(s.taken_ms <= tectora_core::snapshot::MAX_TAKEN_MS, "kept {}", s.taken_ms);
+            }
         }
     }
 }

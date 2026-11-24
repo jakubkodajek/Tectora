@@ -245,6 +245,8 @@
       </section>
     {/if}
 
+    <!-- No heading without lines (a job of hand-drawn faces only), as in Results (UX-1904, UX-2004). -->
+    {#if data.lines.length}
     <section>
       <h4><span>{t("res.lines")}</span></h4>
       {#each data.lines as g}
@@ -258,12 +260,25 @@
           <table>
             <tbody>
               {#each g.items as l, li}
+                {@const openLine = () => (open = { title: t("bdd.lineTitle", { code: g.code, label: lineLabel(g.code), n: li + 1 }), detail: { kind: "line", code: g.code, line: l }, deductions: null })}
+                {@const markLine = () => onmark?.({ line: [[l.a[0], l.a[1]], [l.b[0], l.b[1]]] })}
+                <!-- A row is a button: Tab reaches it, Enter or Space opens its detail, focus shows its line in the plan (UI-008). -->
                 <tr
                   class="clickable"
+                  role="button"
+                  tabindex="0"
                   title={t("bd.open")}
-                  onclick={() => (open = { title: t("bdd.lineTitle", { code: g.code, label: lineLabel(g.code), n: li + 1 }), detail: { kind: "line", code: g.code, line: l }, deductions: null })}
-                  onpointerenter={() => onmark?.({ line: [[l.a[0], l.a[1]], [l.b[0], l.b[1]]] })}
+                  onclick={openLine}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      openLine();
+                    }
+                  }}
+                  onpointerenter={markLine}
                   onpointerleave={() => onmark?.(null)}
+                  onfocus={markLine}
+                  onblur={() => onmark?.(null)}
                 >
                   <td class="no">{li + 1}</td>
                   <td class="delta">
@@ -281,6 +296,7 @@
         </details>
       {/each}
     </section>
+    {/if}
 
     <section class="total">
       <h4><span>{t("bd.total")}</span><b>{a2(data.roof_area)}</b></h4>
@@ -408,6 +424,10 @@
   }
   tr.clickable {
     cursor: pointer;
+  }
+  tr.clickable:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
   .face-head {
     display: flex;

@@ -66,3 +66,38 @@ export function editorTakesUndo(target: FieldLike | null, e: KeyLike): boolean {
   if (tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") return true;
   return tag === "INPUT" && target.hasAttribute("data-field") && !target.hasAttribute("data-typing");
 }
+
+/**
+ * The plan's zoom factor for a key, as the toolbar's + / − buttons zoom:
+ * `+` (also `=`, the same key without Shift on many layouts) zooms in, `-`
+ * out; the number pad's keys give the same `key`. Null with Ctrl, ⌘ or
+ * Alt (the browser's own zoom) and for any other key (UX-805).
+ */
+export function zoomKey(e: KeyLike): 1.25 | 0.8 | null {
+  if (e.ctrlKey || e.metaKey || e.altKey) return null;
+  if (e.key === "+" || e.key === "=") return 1.25;
+  if (e.key === "-") return 0.8;
+  return null;
+}
+
+/**
+ * What a key does while corners are being placed (`draft`: a new
+ * building's walls, or a hand-drawn face's or line's corners, with
+ * `points` placed): Ctrl/⌘+Z removes the last corner, as the bar's button
+ * does, and touches nothing else; Redo does nothing (`ignore`); Backspace
+ * removes a face's or line's last corner (the draw bar takes it for walls).
+ * With no corner placed these keys do nothing (`ignore`), and Delete never
+ * acts while corners are placed: one press more than there are corners
+ * must not undo an earlier roof edit or delete a selected wall out of
+ * sight (audit 2026-11-24 UX-1902, owner decision 3; round 21 UX-2002,
+ * owner decision 6). `null`: the key is not theirs.
+ */
+export function draftKey(e: KeyLike, draft: "walls" | "manual" | null, points: number): "drop" | "ignore" | null {
+  if (!draft) return null;
+  const u = undoKey(e);
+  if (u) return u === "undo" && points > 0 ? "drop" : "ignore";
+  const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
+  if (draft === "manual" && e.key === "Backspace" && plain) return points > 0 ? "drop" : "ignore";
+  if (e.key === "Delete") return "ignore";
+  return null;
+}

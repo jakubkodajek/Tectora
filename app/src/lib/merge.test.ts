@@ -36,4 +36,18 @@ describe("merge3", () => {
   it("adds keys added on either side and drops keys removed on one side", () => {
     expect(merge3({ a: 1, b: 2 }, { a: 1, b: 2, c: 3 }, { a: 1 })).toEqual({ a: 1, c: 3 });
   });
+
+  it("never sets the prototype from a key named __proto__ (audit 2026-11-23 ARCH-1202)", () => {
+    const parse = (s: string) => JSON.parse(s) as Record<string, unknown>;
+    const base = parse('{"name":"A","p":1,"__proto__":{"flat_roof":true}}');
+    const local = parse('{"name":"A","p":2,"__proto__":{"flat_roof":true}}');
+    const remote = parse('{"name":"B","p":1,"__proto__":{"flat_roof":true,"x":1},"inner":{"__proto__":{"windows":[1]}}}');
+    const out = merge3(base, local, remote) as Record<string, unknown>;
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    expect(out.flat_roof).toBeUndefined();
+    expect(Object.keys(out).sort()).toEqual(["inner", "name", "p"]);
+    expect(out).toMatchObject({ name: "B", p: 2 });
+    const inner = out.inner as Record<string, unknown>;
+    expect(inner.windows).toBeUndefined();
+  });
 });

@@ -84,3 +84,29 @@ export function faceTags(faces: readonly RoofFace[]): FaceTag[] {
       return { x, y, angle_deg, pitch_deg: f.pitch_deg, area: f.area, along: a1 - a0, across: b1 - b0 };
     });
 }
+
+/** Where a face label may go, in order of preference: its centre, then moved
+ *  across the label direction (up and down the slope) and along it, keeping
+ *  only spots inside the face. Lets the label move off another building's
+ *  walls inside the face (UI-005). Display only. */
+export function tagSpots(tag: FaceTag, polygon: readonly (readonly number[])[]): { x: number; y: number }[] {
+  const r = (tag.angle_deg * Math.PI) / 180;
+  const [ux, uy] = [Math.cos(r), Math.sin(r)];
+  const [vx, vy] = [-uy, ux];
+  const out = [{ x: tag.x, y: tag.y }];
+  for (const [fa, fb] of [[0, 0.25], [0, -0.25], [0, 0.38], [0, -0.38], [0.3, 0], [-0.3, 0], [0.3, 0.3], [-0.3, 0.3], [0.3, -0.3], [-0.3, -0.3]]) {
+    const p = { x: tag.x + ux * fa * tag.along + vx * fb * tag.across, y: tag.y + uy * fa * tag.along + vy * fb * tag.across };
+    if (inside(p, polygon)) out.push(p);
+  }
+  return out;
+}
+
+function inside(p: { x: number; y: number }, poly: readonly (readonly number[])[]): boolean {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [ax, ay] = poly[i];
+    const [bx, by] = poly[j];
+    if (ay > p.y !== by > p.y && p.x < ((bx - ax) * (p.y - ay)) / (by - ay) + ax) c = !c;
+  }
+  return c;
+}

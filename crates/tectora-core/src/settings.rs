@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::edit::{MAX_SUMMARY_CHARS, capped};
+
 pub const SETTINGS_FILE: &str = "settings.json";
 /// Name of the drawings inbox inside the projects folder when none is set.
 pub const DEFAULT_DRAWINGS_SUBDIR: &str = "drawings";
@@ -52,9 +54,9 @@ impl RoofDefaults {
     /// The ranges every new wall accepts (`EdgeDef::problems`): a default
     /// the walls then refuse made every new job fail with an error about
     /// `defaults` (audit 2026-11-15 HUNTIO-007).
-    const PITCH: (f64, f64) = (crate::model::MIN_PITCH_DEG, 89.0);
-    const EAVE: (f64, f64) = (0.0, 1000.0);
-    const OVERHANG: (f64, f64) = (0.0, 20.0);
+    pub const PITCH: (f64, f64) = (crate::model::MIN_PITCH_DEG, 89.0);
+    pub const EAVE: (f64, f64) = (0.0, 1000.0);
+    pub const OVERHANG: (f64, f64) = (0.0, 20.0);
 
     fn validate(&self) -> Result<(), SettingsError> {
         let ok = |v: f64, (lo, hi): (f64, f64)| v.is_finite() && (lo..=hi).contains(&v);
@@ -115,6 +117,15 @@ pub struct Settings {
     /// Files outside those folders the user allowed AI clients to read.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub allowed_files: Vec<PathBuf>,
+    /// Settings changes AI clients made, oldest first, at most
+    /// [`MAX_AI_CHANGES`]; the app shows an open one for the user to accept
+    /// or revert (audit 2026-11-21 UX-003).
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient_changes"
+    )]
+    pub ai_changes: Vec<AiSettingsChange>,
     /// Keys this build does not know, kept as they are.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -132,6 +143,7 @@ impl Default for Settings {
             folder_request: None,
             file_request: None,
             allowed_files: Vec::new(),
+            ai_changes: Vec::new(),
             extra: Map::new(),
         }
     }
@@ -155,6 +167,29 @@ pub enum SettingsError {
 }
 
 impl SettingsError {
+    /// The refusal as an English sentence for AI clients (MCP
+    /// `update_settings`), with the range a value must lie in (HUNTIO-007).
+    pub fn explain(&self) -> String {
+        let range = |name: &str, (lo, hi): (f64, f64), unit: &str| {
+            format!("roof_defaults.{name} must be a number from {lo} to {hi}{unit}")
+        };
+        match self {
+            Self::NotAbsolute => "the folder must be an absolute path".into(),
+            Self::NotAFolder => "the path is not a folder".into(),
+            Self::NotWritable => "the folder cannot be written to".into(),
+            Self::InvalidValue("pitch_deg") => range("pitch_deg", RoofDefaults::PITCH, "°"),
+            Self::InvalidValue("eave_height") => range("eave_height", RoofDefaults::EAVE, " m"),
+            Self::InvalidValue("overhang") => range("overhang", RoofDefaults::OVERHANG, " m"),
+            Self::InvalidValue("locale") => "locale must be cs, sk, en, de or null".into(),
+            Self::InvalidValue("key") => "an unknown setting was given; see get_settings for the keys".into(),
+            Self::InvalidValue("type") => {
+                "a setting has the wrong type (folders and locale are strings, roof_defaults numbers, follow_ai true or false)".into()
+            }
+            Self::InvalidValue(what) => format!("invalid value ({what})"),
+            Self::Io(e) => format!("the settings file could not be written: {e}"),
+        }
+    }
+
     /// Stable code without details, for UI translation.
     pub fn code(&self) -> &'static str {
         match self {
@@ -202,6 +237,23 @@ pub fn env_projects_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Takes the lock of the settings file at `path` (`<file>.lock` beside it),
+/// held until the returned file is dropped. Best effort, like the job
+/// library's locks: where the folder cannot hold a lock file the change
+/// goes on without it.
+fn settings_lock(path: &Path) -> Result<Option<fs::File>, SettingsError> {
+    if let Some(parent) = path.parent()
+        && fs::create_dir_all(parent).is_err()
+    {
+        return Ok(None);
+    }
+    // Never through a link or a pipe put in its place (HUNT-402), and a
+    // folder with files there refuses the change instead of going on
+    // unlocked (HUNT-501).
+    crate::store::take_lock_file(&path.with_extension("json.lock"))
+        .map_err(|e| SettingsError::Io(e.to_string()))
+}
+
 impl Settings {
     /// Reads the settings file; a missing or unreadable file gives defaults
     /// (a broken file must never stop the app from starting).
@@ -221,14 +273,21 @@ impl Settings {
     }
 
     pub fn load_checked_from(path: &Path) -> (Self, Option<String>) {
-        let text = match fs::read_to_string(path) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        // A regular file of a sane size only: a pipe in its place would
+        // hang the app and every MCP server at start (HUNT-402).
+        let mut bytes = match crate::store::read_regular(path, crate::store::MAX_JOB_FILE) {
+            Ok(b) => b,
+            Err(e) if e.code == "file_not_found" => {
                 return (Self::default(), None);
             }
-            Err(e) => return (Self::default(), Some(format!("{}: {e}", path.display()))),
+            Err(e) => return (Self::default(), Some(e.detail)),
         };
-        match serde_json::from_str::<Self>(&text) {
+        // A byte order mark, which Notepad and PowerShell 5 write, is not
+        // part of the settings (HUNT-404).
+        if bytes.starts_with(b"\xef\xbb\xbf") {
+            bytes.drain(..3);
+        }
+        match serde_json::from_slice::<Self>(&bytes) {
             Ok(mut s) => {
                 s.roof_defaults = s.roof_defaults.repaired();
                 (s, None)
@@ -237,11 +296,36 @@ impl Settings {
         }
     }
 
-    pub fn save(&self) -> Result<(), SettingsError> {
-        self.save_to(&settings_path())
+    /// Changes the settings file in one step: reads it, applies `change`
+    /// and writes the result, all under the settings lock. The app and
+    /// every MCP server change the file this way; a plain `load` … `save`
+    /// in two processes at once lets the later save drop the other's
+    /// change without a word (TEST-307: the app's first-start write of its
+    /// language took an AI client's settings change with it, so the change
+    /// was never shown for review). Returns the settings before and after.
+    pub fn update(
+        change: impl FnOnce(&Settings) -> Result<Settings, SettingsError>,
+    ) -> Result<(Settings, Settings), SettingsError> {
+        Self::update_at(&settings_path(), change)
     }
 
-    pub fn save_to(&self, path: &Path) -> Result<(), SettingsError> {
+    /// [`Settings::update`] of the file at `path`.
+    pub fn update_at(
+        path: &Path,
+        change: impl FnOnce(&Settings) -> Result<Settings, SettingsError>,
+    ) -> Result<(Settings, Settings), SettingsError> {
+        let _lock = settings_lock(path)?;
+        let old = Self::load_from(path);
+        let next = change(&old)?;
+        next.save_to(path)?;
+        Ok((old, next))
+    }
+
+    /// Writes the settings file at `path`. Crate-only, so every writer
+    /// outside goes through [`Settings::update`] and the compiler keeps it
+    /// so (audit 2026-11-22 TEST-503: a text scan let `Settings::save(&s)`
+    /// through).
+    pub(crate) fn save_to(&self, path: &Path) -> Result<(), SettingsError> {
         self.validate()?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| SettingsError::Io(e.to_string()))?;
@@ -259,7 +343,11 @@ impl Settings {
         }
         // Unique per process: the app and an MCP server saving at the same
         // time must not rename each other's half-written file.
-        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+        // Unique per write too, so two threads of one process do not share
+        // one either (TEST-403).
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = path.with_extension(format!("{}-{n}.tmp", std::process::id()));
         crate::store::write_synced(&tmp, json.as_bytes())
             .map_err(|e| SettingsError::Io(e.to_string()))?;
         fs::rename(&tmp, path).map_err(|e| SettingsError::Io(e.to_string()))?;
@@ -325,6 +413,83 @@ pub struct FileRequest {
     pub by: String,
     /// What the file is wanted for: `read_drawing`, `attach` or `import`.
     pub purpose: String,
+}
+
+/// How the user answered an [`AiSettingsChange`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AiChangeState {
+    /// Applied, not reviewed yet.
+    #[default]
+    Open,
+    Accepted,
+    Reverted,
+}
+
+/// One settings change by an AI client (MCP `update_settings`): applied at
+/// once, recorded with who, why and the values before and after so the
+/// user can see it and put the old values back (UX-003). Folders are not
+/// in it: those wait for the user as a [`FolderRequest`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AiSettingsChange {
+    /// Unique in the history: the time in ms, bumped past the last one.
+    pub id: u64,
+    /// The AI client's name.
+    pub by: String,
+    /// Its one-sentence summary.
+    pub summary: String,
+    /// The changed values before, by key ([`AI_CHANGE_KEYS`]).
+    pub before: Map<String, Value>,
+    /// The same keys after the change.
+    pub after: Map<String, Value>,
+    #[serde(default)]
+    pub state: AiChangeState,
+    /// The keys a Revert left as they were, because they had been changed
+    /// again since (by the user or another client): with every key here,
+    /// the Revert put nothing back (UX-104).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<String>,
+}
+
+/// Most entries kept in [`Settings::ai_changes`]; the oldest go first.
+pub const MAX_AI_CHANGES: usize = 20;
+
+/// The settings an [`AiSettingsChange`] records, as `key` or
+/// `roof_defaults.<key>`, sorted.
+pub const AI_CHANGE_KEYS: [&str; 6] = [
+    "follow_ai",
+    "locale",
+    "roof_defaults.eave_height",
+    "roof_defaults.overhang",
+    "roof_defaults.pitch_deg",
+    "theme",
+];
+
+/// The value of an [`AI_CHANGE_KEYS`] key in serialized settings.
+fn key_value(doc: &Value, key: &str) -> Value {
+    key.split('.')
+        .try_fold(doc, |v, k| v.get(k))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// `ai_changes` from a file: an entry this build cannot read is dropped
+/// instead of making the whole settings file unreadable.
+fn lenient_changes<'de, D>(d: D) -> Result<Vec<AiSettingsChange>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Value::deserialize(d)?;
+    let Value::Array(items) = raw else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<AiSettingsChange> = items
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect();
+    let extra = out.len().saturating_sub(MAX_AI_CHANGES);
+    out.drain(..extra);
+    Ok(out)
 }
 
 /// Most files kept in [`Settings::allowed_files`]; the oldest go first.
@@ -408,7 +573,11 @@ impl Settings {
                         if !target.contains_key(k) {
                             return Err(SettingsError::InvalidValue("key"));
                         }
-                        target.insert(k.clone(), v.clone());
+                        // `null` counts as left out, as in every MCP tool
+                        // (HUNT-108).
+                        if !v.is_null() {
+                            target.insert(k.clone(), v.clone());
+                        }
                     }
                 }
                 ("projects_dir" | "drawings_dir" | "locale", Value::String(s))
@@ -468,7 +637,150 @@ impl Settings {
                 summary: summary.to_string(),
             });
         }
+        next.record_ai_change(self, by, summary)?;
         Ok((next, asks))
+    }
+
+    /// Adds what changed from `old` to `self` (outside the folders) to
+    /// [`Settings::ai_changes`] as an open change by `by`; nothing when
+    /// nothing changed.
+    fn record_ai_change(
+        &mut self,
+        old: &Settings,
+        by: &str,
+        summary: &str,
+    ) -> Result<(), SettingsError> {
+        let io = |e: serde_json::Error| SettingsError::Io(e.to_string());
+        let (was, now) = (
+            serde_json::to_value(old).map_err(io)?,
+            serde_json::to_value(&*self).map_err(io)?,
+        );
+        let (mut before, mut after) = (Map::new(), Map::new());
+        for key in AI_CHANGE_KEYS {
+            let (b, a) = (key_value(&was, key), key_value(&now, key));
+            if b != a {
+                before.insert(key.to_string(), b);
+                after.insert(key.to_string(), a);
+            }
+        }
+        if after.is_empty() {
+            return Ok(());
+        }
+        let last = self.ai_changes.iter().map(|c| c.id).max().unwrap_or(0);
+        let id = crate::store::now_ms().max(last.saturating_add(1));
+        self.ai_changes.push(AiSettingsChange {
+            id,
+            by: by.to_string(),
+            summary: capped(summary, MAX_SUMMARY_CHARS),
+            before,
+            after,
+            state: AiChangeState::Open,
+            kept: Vec::new(),
+        });
+        self.bound_ai_changes();
+        Ok(())
+    }
+
+    /// Keeps [`Settings::ai_changes`] at [`MAX_AI_CHANGES`] without losing
+    /// a change the user has not answered (ARCH-104): answered ones go
+    /// first, oldest first; when all are open, the two oldest become one
+    /// change (the first one's values before, the later one's after), so
+    /// Revert still puts back what the AI found.
+    fn bound_ai_changes(&mut self) {
+        while self.ai_changes.len() > MAX_AI_CHANGES {
+            if let Some(at) = self
+                .ai_changes
+                .iter()
+                .position(|c| c.state != AiChangeState::Open)
+            {
+                self.ai_changes.remove(at);
+                continue;
+            }
+            let older = self.ai_changes.remove(0);
+            let newer = &mut self.ai_changes[0];
+            for (key, value) in older.before {
+                newer.before.insert(key, value);
+            }
+            for (key, value) in older.after {
+                newer.after.entry(key).or_insert(value);
+            }
+            if older.by != newer.by {
+                newer.by = capped(&format!("{}, {}", older.by, newer.by), MAX_SUMMARY_CHARS);
+            }
+            newer.summary = capped(
+                &format!("{} / {}", older.summary, newer.summary),
+                MAX_SUMMARY_CHARS,
+            );
+        }
+    }
+
+    /// The newest AI settings change the user has not answered yet.
+    pub fn open_ai_change(&self) -> Option<&AiSettingsChange> {
+        self.ai_changes
+            .iter()
+            .rev()
+            .find(|c| c.state == AiChangeState::Open)
+    }
+
+    /// The user's answer to the open AI settings change `id`: `revert` puts
+    /// back the values it changed (a value changed again since, by the user
+    /// or another client, stays as it is now and is listed in `kept`),
+    /// otherwise it is accepted, with older open changes of only the same
+    /// keys. Either way it is closed. A change that is not open is left alone.
+    pub fn answer_ai_change(&self, id: u64, revert: bool) -> Result<Settings, SettingsError> {
+        let mut next = self.clone();
+        let Some(at) = next
+            .ai_changes
+            .iter()
+            .position(|c| c.id == id && c.state == AiChangeState::Open)
+        else {
+            return Ok(next);
+        };
+        if revert {
+            let now = serde_json::to_value(&next).map_err(|e| SettingsError::Io(e.to_string()))?;
+            let change = &next.ai_changes[at];
+            let mut patch = Map::new();
+            let mut roof = Map::new();
+            let mut kept = Vec::new();
+            for (key, after) in &change.after {
+                if !AI_CHANGE_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
+                if &key_value(&now, key) != after {
+                    kept.push(key.clone());
+                    continue;
+                }
+                let old = change.before.get(key).cloned().unwrap_or(Value::Null);
+                match key.strip_prefix("roof_defaults.") {
+                    Some(k) => {
+                        roof.insert(k.to_string(), old);
+                    }
+                    None => {
+                        patch.insert(key.clone(), old);
+                    }
+                }
+            }
+            if !roof.is_empty() {
+                patch.insert("roof_defaults".into(), Value::Object(roof));
+            }
+            next = next.patched_with(&Value::Object(patch), false)?;
+            next.ai_changes[at].kept = kept;
+        } else {
+            // Older open changes of only these keys no longer apply: the
+            // accepted values replaced theirs (UX-104).
+            let keys: Vec<String> = next.ai_changes[at].after.keys().cloned().collect();
+            for c in next.ai_changes[..at].iter_mut() {
+                if c.state == AiChangeState::Open && c.after.keys().all(|k| keys.contains(k)) {
+                    c.state = AiChangeState::Accepted;
+                }
+            }
+        }
+        next.ai_changes[at].state = if revert {
+            AiChangeState::Reverted
+        } else {
+            AiChangeState::Accepted
+        };
+        Ok(next)
     }
 
     /// The user's answer to [`Settings::folder_request`]: `allow` applies it,
@@ -768,12 +1080,454 @@ mod tests {
         assert!(!s.patched_by_ai(&same, "Claude", "x").unwrap().1);
     }
 
+    #[test]
+    fn a_damaged_ai_change_drops_only_itself_from_the_history() {
+        // TEST-106: one unreadable entry between two good ones keeps both
+        // good ones and every other setting of the file.
+        let good = |id: u64| {
+            serde_json::json!({
+                "id": id, "by": "Claude", "summary": "x",
+                "before": { "roof_defaults.pitch_deg": 40 },
+                "after": { "roof_defaults.pitch_deg": 25 },
+            })
+        };
+        let doc = serde_json::json!({
+            "locale": "de",
+            "ai_changes": [good(1), { "id": "x", "by": 3 }, good(2)],
+        });
+        let d = tmp("ai-change-damaged");
+        let path = d.join(SETTINGS_FILE);
+        fs::write(&path, doc.to_string()).unwrap();
+        let s = Settings::load_from(&path);
+        assert_eq!(s.locale.as_deref(), Some("de"), "the file was read");
+        let ids: Vec<u64> = s.ai_changes.iter().map(|c| c.id).collect();
+        assert_eq!(ids, [1, 2]);
+        assert_eq!(s.ai_changes[1].state, AiChangeState::Open);
+    }
+
+    #[test]
+    fn a_revert_says_which_values_it_kept_and_accept_closes_older_changes() {
+        // UX-104: a Revert that put nothing back was recorded as reverted,
+        // and accepting the newer of two changes left the older one open
+        // with values that no longer applied.
+        let pitch = |v: f64| serde_json::json!({ "roof_defaults": { "pitch_deg": v } });
+        let (a, _) = Settings::default()
+            .patched_by_ai(&pitch(25.0), "Claude", "A")
+            .unwrap();
+        let first = a.open_ai_change().cloned().unwrap();
+        // The user sets 30° himself, then reverts the AI's change: nothing to put back.
+        let mine = a.patched(&pitch(30.0)).unwrap();
+        let r = mine.answer_ai_change(first.id, true).unwrap();
+        assert_eq!(r.roof_defaults.pitch_deg, 30.0);
+        assert_eq!(r.ai_changes[0].state, AiChangeState::Reverted);
+        assert_eq!(r.ai_changes[0].kept, ["roof_defaults.pitch_deg"]);
+        // A revert that puts the value back keeps nothing.
+        let r = a.answer_ai_change(first.id, true).unwrap();
+        assert!(r.ai_changes[0].kept.is_empty());
+        // Two changes of the same key: accepting the newer closes the older.
+        let (b, _) = a.patched_by_ai(&pitch(35.0), "Claude", "B").unwrap();
+        let second = b.open_ai_change().cloned().unwrap();
+        assert_ne!(first.id, second.id);
+        let ok = b.answer_ai_change(second.id, false).unwrap();
+        assert!(ok.open_ai_change().is_none(), "{:?}", ok.ai_changes);
+        assert_eq!(ok.ai_changes[0].state, AiChangeState::Accepted);
+        // Reverting the newer one leaves the older open: its values apply again.
+        let back = b.answer_ai_change(second.id, true).unwrap();
+        assert_eq!(back.roof_defaults.pitch_deg, 25.0);
+        assert_eq!(back.open_ai_change().map(|c| c.id), Some(first.id));
+    }
+
+    #[test]
+    fn an_ai_settings_change_is_recorded_and_the_user_can_revert_it() {
+        // UX-003: MCP update_settings changed the roof defaults and the
+        // language with no record, no before -> after and no Revert.
+        let s = Settings::default();
+        let patch = serde_json::json!({
+            "roof_defaults": { "pitch_deg": 25, "overhang": 0.9 },
+            "locale": "de",
+        });
+        let (next, _) = s
+            .patched_by_ai(&patch, "Claude", "Company defaults")
+            .unwrap();
+        assert_eq!(next.roof_defaults.pitch_deg, 25.0, "applied at once");
+        let change = next.open_ai_change().cloned().expect("recorded");
+        assert_eq!(
+            (change.by.as_str(), change.summary.as_str()),
+            ("Claude", "Company defaults")
+        );
+        assert_eq!(change.state, AiChangeState::Open);
+        let keys: Vec<&str> = change.after.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "locale",
+                "roof_defaults.overhang",
+                "roof_defaults.pitch_deg"
+            ],
+            "only what changed"
+        );
+        assert_eq!(change.before["roof_defaults.pitch_deg"], 40.0);
+        assert_eq!(change.after["roof_defaults.pitch_deg"], 25.0);
+        assert_eq!(change.before["locale"], Value::Null);
+        assert_eq!(change.after["locale"], "de");
+        // The record survives a save.
+        let d = tmp("ai-change");
+        let path = d.join(SETTINGS_FILE);
+        next.save_to(&path).unwrap();
+        let next = Settings::load_from(&path);
+        assert_eq!(next.open_ai_change(), Some(&change));
+        // The user changes the overhang himself before reviewing: Revert
+        // puts back what the AI changed and keeps the user's own value.
+        let mut mine = next
+            .patched(&serde_json::json!({ "roof_defaults": { "overhang": 0.7 } }))
+            .unwrap();
+        mine.save_to(&path).unwrap();
+        mine = Settings::load_from(&path);
+        let reverted = mine.answer_ai_change(change.id, true).unwrap();
+        assert_eq!(reverted.roof_defaults.pitch_deg, 40.0);
+        assert_eq!(
+            reverted.roof_defaults.overhang, 0.7,
+            "the user's value stays"
+        );
+        assert_eq!(reverted.locale, None);
+        assert!(reverted.open_ai_change().is_none());
+        assert_eq!(reverted.ai_changes[0].state, AiChangeState::Reverted);
+        // Answering again, or a change that is not there, does nothing.
+        assert_eq!(
+            reverted.answer_ai_change(change.id, false).unwrap(),
+            reverted
+        );
+        assert_eq!(
+            reverted.answer_ai_change(change.id + 99, true).unwrap(),
+            reverted
+        );
+        // Accept keeps the values and closes it.
+        let accepted = next.answer_ai_change(change.id, false).unwrap();
+        assert_eq!(accepted.roof_defaults.pitch_deg, 25.0);
+        assert_eq!(accepted.ai_changes[0].state, AiChangeState::Accepted);
+        // A call that changes nothing records nothing; a folder request is
+        // asked as before and not recorded as a change.
+        let same = serde_json::json!({ "roof_defaults": { "pitch_deg": 40 } });
+        assert!(
+            s.patched_by_ai(&same, "Claude", "x")
+                .unwrap()
+                .0
+                .ai_changes
+                .is_empty()
+        );
+        let folder = serde_json::json!({ "projects_dir": d.join("shared") });
+        let (asked, yes) = s.patched_by_ai(&folder, "Claude", "x").unwrap();
+        assert!(yes && asked.ai_changes.is_empty() && asked.folder_request.is_some());
+        // The history is bounded and the ids stay unique.
+        let mut many = s.clone();
+        for i in 0..(MAX_AI_CHANGES + 5) {
+            let p = serde_json::json!({ "roof_defaults": { "pitch_deg": 20 + (i % 2) } });
+            many = many.patched_by_ai(&p, "Claude", "x").unwrap().0;
+        }
+        assert_eq!(many.ai_changes.len(), MAX_AI_CHANGES);
+        let ids: std::collections::BTreeSet<u64> = many.ai_changes.iter().map(|c| c.id).collect();
+        assert_eq!(ids.len(), MAX_AI_CHANGES);
+        // An AI client cannot write the history itself.
+        let forged = serde_json::json!({ "ai_changes": [] });
+        assert!(s.patched_by_ai(&forged, "Claude", "x").is_err());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Audit 2026-11-21 ARCH-104, ARCH-105: 20 later changes cannot push
+    /// an unanswered AI change out of the history, and a summary is stored
+    /// at most [`MAX_SUMMARY_CHARS`] long.
+    #[test]
+    fn an_open_ai_change_is_never_dropped_and_its_summary_is_capped() {
+        let s = Settings::default();
+        let pitch = serde_json::json!({ "roof_defaults": { "pitch_deg": 22 } });
+        let mut s = s
+            .patched_by_ai(&pitch, "Claude", "Set the default pitch")
+            .unwrap()
+            .0;
+        for i in 0..MAX_AI_CHANGES {
+            let theme = if i % 2 == 0 { "dark" } else { "light" };
+            let p = serde_json::json!({ "theme": theme });
+            s = s.patched_by_ai(&p, "Claude", &"x".repeat(5000)).unwrap().0;
+        }
+        assert!(s.ai_changes.len() <= MAX_AI_CHANGES);
+        let open: Vec<&AiSettingsChange> = s
+            .ai_changes
+            .iter()
+            .filter(|c| c.state == AiChangeState::Open)
+            .collect();
+        let pitch_change = open
+            .iter()
+            .find(|c| c.after.contains_key("roof_defaults.pitch_deg"))
+            .expect("the pitch change is still there to review");
+        assert!(pitch_change.summary.contains("Set the default pitch"));
+        assert!(
+            s.ai_changes
+                .iter()
+                .all(|c| c.summary.chars().count() <= MAX_SUMMARY_CHARS)
+        );
+        // Reverting it puts the pitch back.
+        let back = s.answer_ai_change(pitch_change.id, true).unwrap();
+        assert_eq!(
+            back.roof_defaults.pitch_deg,
+            Settings::default().roof_defaults.pitch_deg
+        );
+    }
+
+    /// Audit 2026-11-21 TEST-204: two open changes merged into one keep
+    /// the value from before the first, so Revert puts back the user's.
+    #[test]
+    fn a_merged_change_reverts_to_the_value_before_the_first() {
+        let ai = |s: Settings, p: serde_json::Value| s.patched_by_ai(&p, "Claude", "x").unwrap().0;
+        let s = Settings::default();
+        assert_eq!(s.theme, Theme::System);
+        let s = ai(s, serde_json::json!({ "theme": "dark" }));
+        let mut s = ai(s, serde_json::json!({ "theme": "light" }));
+        // More open changes of another key, so the two theme changes are
+        // merged.
+        for i in 0..MAX_AI_CHANGES - 1 {
+            let pitch = 20 + (i % 2) * 5;
+            s = ai(
+                s,
+                serde_json::json!({ "roof_defaults": { "pitch_deg": pitch } }),
+            );
+        }
+        assert_eq!(s.ai_changes.len(), MAX_AI_CHANGES);
+        let merged = s
+            .ai_changes
+            .iter()
+            .find(|c| c.after.contains_key("theme"))
+            .unwrap();
+        assert_eq!(merged.before["theme"], "system", "{merged:?}");
+        assert_eq!(merged.after["theme"], "light", "{merged:?}");
+        let back = s.answer_ai_change(merged.id, true).unwrap();
+        assert_eq!(back.theme, Theme::System);
+    }
+
+    /// TEST-204: accepting a change closes older open changes of only its
+    /// keys; one that also changed another key stays open for review.
+    #[test]
+    fn accepting_a_change_keeps_an_older_change_of_other_keys_open() {
+        let s = Settings::default();
+        let s = s
+            .patched_by_ai(
+                &serde_json::json!({ "roof_defaults": { "pitch_deg": 25 }, "locale": "de" }),
+                "Claude",
+                "Pitch and language",
+            )
+            .unwrap()
+            .0;
+        let s = s
+            .patched_by_ai(
+                &serde_json::json!({ "roof_defaults": { "pitch_deg": 30 } }),
+                "Claude",
+                "Steeper",
+            )
+            .unwrap()
+            .0;
+        let (a, b) = (s.ai_changes[0].id, s.ai_changes[1].id);
+        let s = s.answer_ai_change(b, false).unwrap();
+        assert_eq!(s.ai_changes[0].state, AiChangeState::Open);
+        assert_eq!(s.open_ai_change().map(|c| c.id), Some(a));
+    }
+
+    /// Audit 2026-11-21 HUNT-108 item 4: a roof default sent as `null` is
+    /// left as it is, not refused as the wrong type.
+    #[test]
+    fn a_null_roof_default_is_left_out() {
+        let s = Settings::default();
+        let p = serde_json::json!({ "roof_defaults": { "pitch_deg": null, "overhang": 0.8 } });
+        let next = s.patched(&p).unwrap();
+        assert_eq!(next.roof_defaults.pitch_deg, s.roof_defaults.pitch_deg);
+        assert_eq!(next.roof_defaults.overhang, 0.8);
+    }
+
     fn tmp(name: &str) -> PathBuf {
         let d =
             std::env::temp_dir().join(format!("tectora-settings-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// TEST-307: the app and an AI client's MCP server change the settings
+    /// at the same moment; neither change may be lost.
+    #[test]
+    fn two_writers_at_once_lose_no_change() {
+        let d = tmp("two-writers");
+        let path = d.join(SETTINGS_FILE);
+        Settings::default().save_to(&path).unwrap();
+        const N: usize = 12;
+        let ai = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for i in 0..N {
+                    Settings::update_at(&path, |s| {
+                        let patch = serde_json::json!({ "roof_defaults": { "pitch_deg": 20 + i } });
+                        Ok(s.patched_by_ai(&patch, "Claude", &format!("change {i}"))?.0)
+                    })
+                    .unwrap();
+                }
+            })
+        };
+        let user = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for i in 0..200 {
+                    let overhang = 0.3 + (i % 5) as f64 / 10.0;
+                    Settings::update_at(&path, |s| {
+                        s.patched(&serde_json::json!({ "roof_defaults": { "overhang": overhang } }))
+                    })
+                    .unwrap();
+                }
+            })
+        };
+        ai.join().unwrap();
+        user.join().unwrap();
+        let s = Settings::load_from(&path);
+        let summaries: Vec<&str> = s.ai_changes.iter().map(|c| c.summary.as_str()).collect();
+        for i in 0..N {
+            assert!(
+                summaries.contains(&format!("change {i}").as_str()),
+                "AI change {i} was lost: {summaries:?}"
+            );
+        }
+        assert_eq!(s.roof_defaults.overhang, 0.7, "the user's last value");
+    }
+
+    /// TEST-403: the lock itself, without chance: the AI's change is paused
+    /// inside `update_at` (after it read the file) while the user's change
+    /// is made; without the lock the user's change is lost every time.
+    #[test]
+    fn a_change_made_while_another_waits_inside_update_is_kept() {
+        let d = tmp("barrier");
+        let path = d.join(SETTINGS_FILE);
+        Settings::default().save_to(&path).unwrap();
+        let (read_tx, read_rx) = std::sync::mpsc::channel::<()>();
+        let ai = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                Settings::update_at(&path, |s| {
+                    read_tx.send(()).unwrap();
+                    // The user's change starts while this one holds the
+                    // file it read.
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    let patch = serde_json::json!({ "roof_defaults": { "pitch_deg": 33 } });
+                    Ok(s.patched_by_ai(&patch, "Claude", "AI change")?.0)
+                })
+                .unwrap();
+            })
+        };
+        read_rx.recv().unwrap();
+        Settings::update_at(&path, |s| {
+            s.patched(&serde_json::json!({ "roof_defaults": { "overhang": 0.7 } }))
+        })
+        .unwrap();
+        ai.join().unwrap();
+        let s = Settings::load_from(&path);
+        assert_eq!(s.roof_defaults.pitch_deg, 33.0, "the AI's change");
+        assert_eq!(s.roof_defaults.overhang, 0.7, "the user's change");
+        assert!(s.ai_changes.iter().any(|c| c.summary == "AI change"));
+    }
+
+    /// TEST-403: every settings writer of the app, the preview bridge and
+    /// the MCP server changes the file through `Settings::update`, never by
+    /// a `load` and a `save` of its own (which drops the other's change).
+    #[test]
+    fn every_settings_writer_goes_through_update() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for file in [
+            "app/src-tauri/src/lib.rs",
+            "crates/tectora-core/examples/ui_bridge.rs",
+            "crates/tectora-mcp/src/lib.rs",
+            "crates/tectora-mcp/src/more.rs",
+            "crates/tectora-mcp/src/drawings.rs",
+            "crates/tectora-mcp/src/worker.rs",
+            "crates/tectora-cli/src/main.rs",
+        ] {
+            let text = fs::read_to_string(root.join(file)).expect(file);
+            // The tests below may write as a user does.
+            let code = text.split("\nmod tests {").next().unwrap_or("");
+            for (n, line) in code.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                assert!(
+                    !code.contains(".save()") && !code.contains(".save_to("),
+                    "{file}:{}: settings written outside Settings::update: {line}",
+                    n + 1
+                );
+            }
+        }
+    }
+
+    /// Audit 2026-11-22 HUNT-501: a folder in place of the settings lock
+    /// turned the lock off; an empty one is replaced by a lock file, one
+    /// with files in it refuses the change instead of going on unlocked.
+    #[test]
+    fn a_folder_in_place_of_the_settings_lock_is_replaced_or_refuses() {
+        let d = tmp("lock-dir");
+        let path = d.join("settings.json");
+        let lock = path.with_extension("json.lock");
+        fs::create_dir(&lock).unwrap();
+        Settings::update_at(&path, |s| s.patched(&serde_json::json!({ "locale": "de" }))).unwrap();
+        assert!(fs::symlink_metadata(&lock).unwrap().is_file());
+        fs::remove_file(&lock).unwrap();
+        fs::create_dir(&lock).unwrap();
+        fs::write(lock.join("keep.txt"), "x").unwrap();
+        let e = Settings::update_at(&path, |s| s.patched(&serde_json::json!({ "locale": "en" })))
+            .unwrap_err();
+        assert!(matches!(e, SettingsError::Io(_)), "{e:?}");
+        assert_eq!(Settings::load_from(&path).locale.as_deref(), Some("de"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// HUNT-404: a settings file saved with a UTF-8 byte order mark
+    /// (Notepad, PowerShell 5) keeps its jobs folder and language.
+    #[test]
+    fn a_settings_file_with_a_byte_order_mark_loads() {
+        let d = tmp("bom");
+        let path = d.join(SETTINGS_FILE);
+        let mut bytes = b"\xef\xbb\xbf".to_vec();
+        bytes.extend_from_slice(br#"{ "projects_dir": "/srv/zakazky", "locale": "de" }"#);
+        fs::write(&path, bytes).unwrap();
+        let (s, problem) = Settings::load_checked_from(&path);
+        assert_eq!(problem, None);
+        assert_eq!(s.locale.as_deref(), Some("de"));
+        assert_eq!(s.projects_dir, Some(PathBuf::from("/srv/zakazky")));
+    }
+
+    /// HUNT-402: a named pipe as the settings file or its lock never hangs
+    /// loading or changing the settings.
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_as_the_settings_file_or_its_lock_never_hangs() {
+        let d = tmp("fifo");
+        let path = d.join(SETTINGS_FILE);
+        let lock = path.with_extension("json.lock");
+        let made = [&path, &lock].iter().all(|p| {
+            std::process::Command::new("mkfifo")
+                .arg(p)
+                .status()
+                .is_ok_and(|s| s.success())
+        });
+        if !made {
+            eprintln!("mkfifo not available, skipped");
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let p = path.clone();
+        std::thread::spawn(move || {
+            let (_, problem) = Settings::load_checked_from(&p);
+            let changed = Settings::update_at(&p, |s| {
+                s.patched(&serde_json::json!({ "roof_defaults": { "overhang": 0.7 } }))
+            });
+            let _ = tx.send((problem, changed.is_ok()));
+        });
+        let (problem, changed) = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("a pipe hung the settings");
+        assert!(problem.is_some_and(|p| p.contains("not a regular file")));
+        assert!(changed);
+        assert_eq!(Settings::load_from(&path).roof_defaults.overhang, 0.7);
+        assert!(fs::symlink_metadata(&lock).unwrap().is_file());
     }
 
     #[test]

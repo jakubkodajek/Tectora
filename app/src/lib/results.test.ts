@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DICTS, i18n } from "./i18n.svelte";
-import { areaRows, failedParts, joinedWith, roofState, warningText } from "./results";
-import type { CalcResult, RoofWarning } from "./types";
+import { areaListShown, areaRows, failedParts, hasRoofWarning, joinedWith, objectCounts, offRoofWarning, resultWarnings, roofState, warningText } from "./results";
+import type { CalcResult, Project, RoofWarning } from "./types";
 
 const part = (name: string, joined_with?: number[]) => ({
   name,
@@ -131,9 +131,12 @@ describe("warningText for every kind", () => {
     inside_another: { kind: "inside_another", value: 0 },
     hidden_under_neighbour: { kind: "hidden_under_neighbour", value: 2.4 },
     uncovered_plan: { kind: "uncovered_plan", value: 15.3 },
+    manual_face_crosses: { kind: "manual_face_crosses", value: 0, face: 1 },
+    manual_faces_overlap: { kind: "manual_faces_overlap", value: 36, face: 0, other_face: 2 },
+    manual_face_over_roof: { kind: "manual_face_over_roof", value: 8.25, face: 1 },
   };
-  it("gives a filled-in sentence for all 22 kinds in all four languages (TEST-003)", () => {
-    expect(Object.keys(every)).toHaveLength(22);
+  it("gives a filled-in sentence for all 25 kinds in all four languages (TEST-003)", () => {
+    expect(Object.keys(every)).toHaveLength(25);
     for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
       i18n.locale = locale;
       for (const w of Object.values(every)) {
@@ -143,6 +146,25 @@ describe("warningText for every kind", () => {
         expect(text, `${locale} ${w.kind}`).not.toMatch(/dacad|res\.warn/i);
         expect(text.length, `${locale} ${w.kind}`).toBeGreaterThan(20);
       }
+    }
+    i18n.locale = "cs";
+  });
+  it("names the hand-drawn face whose outline crosses itself by its number (HUNT-1801)", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      expect(warningText(every.manual_face_crosses), locale).toContain(" 2 ");
+    }
+    i18n.locale = "cs";
+  });
+  it("names both hand-drawn faces lying on each other and the shared area (HUNT-2002)", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const both = warningText(every.manual_faces_overlap);
+      expect(both, locale).toMatch(/ 1 .* 3 /);
+      expect(both, locale).toContain("36");
+      const over = warningText(every.manual_face_over_roof);
+      expect(over, locale).toContain(" 2 ");
+      expect(over, locale).toMatch(/8[,.]25/);
     }
     i18n.locale = "cs";
   });
@@ -167,5 +189,176 @@ describe("roofState (ERRU-003)", () => {
     expect(roofState({ parts: [failing("A")] } as unknown as CalcResult)).toBe("none");
     expect(roofState({ parts: [part("A"), part("B")] } as unknown as CalcResult)).toBe("ok");
     expect(roofState(null)).toBe("ok");
+  });
+  it("counts a building left out for its input as without roof (ERR-001, UI-004)", () => {
+    // A pitch of 1° or a doubled corner: the core leaves the part out, so
+    // it has no error, only problems, and its zeros are no figures.
+    const left = { parts: [part("A"), part("B")], problems: [{ item: "part", index: 1, edge: 0, code: "pitch_range" }] };
+    expect(roofState(left as unknown as CalcResult)).toBe("partial");
+    expect(failedParts(left as unknown as CalcResult)).toEqual([1]);
+    const alone = { parts: [part("A")], problems: [{ item: "part", index: 0, code: "too_few_edges" }] };
+    expect(roofState(alone as unknown as CalcResult)).toBe("none");
+    // A refused chimney leaves no building without its roof.
+    const chimney = { parts: [part("A")], problems: [{ item: "chimney", index: 0, code: "bad_size" }] };
+    expect(roofState(chimney as unknown as CalcResult)).toBe("ok");
+  });
+});
+
+describe("an empty job shows no zero figures (UX-011)", () => {
+  it("is empty with no building and no hand-drawn face", async () => {
+    const { emptyRoof } = await import("./results");
+    const base = { parts: [], totals: {}, codes: {}, problems: [] } as unknown as CalcResult;
+    expect(emptyRoof(null)).toBe(true);
+    expect(emptyRoof(base)).toBe(true);
+    expect(emptyRoof({ ...base, manual_faces: [{ label: "1", pitch_deg: 30, area: 4 }] })).toBe(false);
+    expect(emptyRoof({ ...base, parts: [{}] } as unknown as CalcResult)).toBe(false);
+  });
+});
+
+describe("no result for a job with buildings is not an empty job (UX-101)", () => {
+  it("says the calculation runs or failed, not that there is no building", async () => {
+    const { missingResult } = await import("./results");
+    const built = { parts: [{}], manual_faces: [] } as never;
+    const empty = { parts: [], manual_faces: [] } as never;
+    const fail = { code: "too_complex", title: "x", message: "too complex", detail: "" };
+    expect(missingResult(built, null, null)).toBe("calculating");
+    expect(missingResult(built, null, fail)).toBe("failed");
+    expect(missingResult(empty, null, fail)).toBe("empty");
+    expect(missingResult(empty, null, null)).toBe("empty");
+    const r = { parts: [{}], totals: {}, codes: {}, problems: [] } as unknown as CalcResult;
+    expect(missingResult(built, r, null)).toBeNull();
+    // Without the job, the result decides as before.
+    expect(missingResult(null, null, null)).toBe("empty");
+  });
+});
+
+describe("a roof of hand-drawn faces only (UX-302)", () => {
+  it("is a job with a face and no building", async () => {
+    const { isFacesOnly } = await import("./results");
+    expect(isFacesOnly({ parts: [], manual_faces: [{ points: [], pitch_deg: 30 }] })).toBe(true);
+    expect(isFacesOnly({ parts: [{ name: "A", edges: [] }], manual_faces: [{ points: [], pitch_deg: 30 }] })).toBe(false);
+    expect(isFacesOnly({ parts: [] })).toBe(false);
+    expect(isFacesOnly(null)).toBe(false);
+  });
+
+  it("lists no line rows of zero, and every row for a building", async () => {
+    const { lineRowsShown } = await import("./results");
+    const rows = [{ code: "T", value: 0 }, { code: "F", value: 0.004 }, { code: "O", value: 6 }];
+    expect(lineRowsShown(rows, true).map((r) => r.code)).toEqual(["O"]);
+    expect(lineRowsShown(rows, false)).toHaveLength(3);
+  });
+});
+
+describe("texts fixed in the round-4 wording group (UX-302)", () => {
+  const sources = import.meta.glob(["./Results.svelte", "./AiPanel.svelte"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+  it("the calculation steps' intro names the dormers the face rows deduct", () => {
+    for (const [lang, word] of [["cs", "vikýře"], ["sk", "vikiere"], ["en", "dormers"], ["de", "Gauben"]] as const) expect(DICTS[lang]["bd.intro"]).toContain(word);
+  });
+  it("the doubled-lines hint names no cause the job may not have", () => {
+    for (const [lang, word] of [["cs", "různou výškou"], ["sk", "rôznou výškou"], ["en", "different eave heights"], ["de", "unterschiedlicher Traufhöhe"]] as const)
+      expect(DICTS[lang]["res.warn.doubled_line"]).not.toContain(word);
+  });
+  it("the AI tab's settings history has one colon, as the card", () => {
+    expect(sources["./AiPanel.svelte"]).not.toContain("{rowLabel(r)}:");
+  });
+  it("the figure of a recalculation on its way is --text-2 on the hero (UI-305)", () => {
+    expect(sources["./Results.svelte"]).toMatch(/\.results\.pending \.hero strong \{\s*color: var\(--text-2\);/);
+  });
+});
+
+describe("an object placed on no roof face (audit 2026-11-23 UX-1401)", () => {
+  const warned = (...warnings: RoofWarning[][]) =>
+    ({ parts: warnings.map((w, i) => ({ ...part(`P${i}`), geometry: { ...part(`P${i}`).geometry, warnings: w } })) }) as unknown as CalcResult;
+  it("finds the core's off-roof warning of the placed item in any building, nothing else", () => {
+    const r = warned([{ kind: "chimney_off_roof", value: 0, item: 0 }], [{ kind: "window_off_roof", value: 0, item: 2 }]);
+    expect(offRoofWarning(r, "window", 2)?.kind).toBe("window_off_roof");
+    expect(offRoofWarning(r, "window", 1)).toBeNull();
+    expect(offRoofWarning(r, "chimney", 0)?.kind).toBe("chimney_off_roof");
+    expect(offRoofWarning(r, "opening", 0)).toBeNull();
+    expect(offRoofWarning(warned([{ kind: "opening_off_roof", value: 0, item: 3 }]), "opening", 3)?.item).toBe(3);
+    expect(offRoofWarning(null, "window", 0)).toBeNull();
+  });
+  it("marks the Results tab for a warning, not for a notice of the core", () => {
+    expect(hasRoofWarning(warned([{ kind: "window_off_roof", value: 0, item: 0 }]))).toBe(true);
+    expect(hasRoofWarning(warned([], [{ kind: "overlapping_faces", value: 1 }]))).toBe(true);
+    for (const kind of ["plane_over_wall", "merged_planes", "wing_joined", "far_from_origin"] as const) {
+      expect(hasRoofWarning(warned([{ kind, value: 1 }])), kind).toBe(false);
+    }
+    expect(hasRoofWarning(warned([]))).toBe(false);
+    expect(hasRoofWarning(null)).toBe(false);
+  });
+});
+
+describe("objectCounts (audit 2026-11-23 UX-1503)", () => {
+  const win = (x: number) => ({ x, y: 0, width: 0.78, height: 1.18 });
+  const sq = { corners: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }], height: 1 };
+  const job = { windows: [win(1), win(2)], chimneys: [sq, sq], roof_openings: [sq], dormers: [] } as unknown as Project;
+  const result = (warnings: RoofWarning[]) =>
+    ({ parts: [{ ...part("A"), geometry: { ...part("A").geometry, warnings } }] }) as unknown as CalcResult;
+  it("takes what the core reported off the roof out of the counts on the roof", () => {
+    const c = objectCounts(job, result([{ kind: "window_off_roof", value: 0, item: 1 }, { kind: "opening_off_roof", value: 0, item: 0 }]));
+    expect(c.windows).toEqual([win(1)]);
+    expect([c.chimneys, c.holes, c.dormers]).toEqual([2, 0, 0]);
+    expect(c.off).toEqual({ windows: 1, chimneys: 0, holes: 1, dormers: 0 });
+    i18n.locale = "en";
+    expect(DICTS.en["res.obj.windows"].replace("{n}", String(c.windows.length))).toBe("Roof windows: 1");
+    expect(DICTS.en["res.offRoof"].replace("{n}", String(c.off.windows))).toBe("off the roof: 1");
+    for (const l of ["cs", "sk", "en", "de"] as const) expect(DICTS[l]["res.offRoof"], l).toContain("{n}");
+  });
+  it("counts everything on the roof without a result, and ignores an index the job does not have", () => {
+    expect(objectCounts(job, null).off).toEqual({ windows: 0, chimneys: 0, holes: 0, dormers: 0 });
+    expect(objectCounts(job, result([{ kind: "chimney_off_roof", value: 0, item: 7 }])).chimneys).toBe(2);
+  });
+  it("counts a chimney, an opening and a dormer off the roof apart, each by its own index (TEST-1607)", () => {
+    const withDormers = { ...job, dormers: [{}, {}] } as unknown as Project;
+    const c = objectCounts(
+      withDormers,
+      result([
+        { kind: "chimney_off_roof", value: 0, item: 1 },
+        { kind: "opening_off_roof", value: 0, item: 0 },
+        { kind: "dormer_off_roof", value: 0, dormer: 1 },
+        // A dormer warning names its dormer, not an item: an `item` alone is no dormer.
+        { kind: "dormer_off_roof", value: 0, item: 0 },
+      ]),
+    );
+    expect([c.chimneys, c.holes, c.dormers]).toEqual([1, 0, 1]);
+    expect(c.off).toEqual({ windows: 0, chimneys: 1, holes: 1, dormers: 1 });
+    expect(c.windows).toEqual([win(1), win(2)]);
+  });
+});
+
+describe("a job of hand-drawn faces only (audit 2026-11-24 UX-1904, ERR-1901)", () => {
+  const facesOnly = {
+    parts: [],
+    manual_faces: [{ label: "", pitch_deg: 30, area: 27.71 }],
+    totals: { roof_area: 27.71 },
+    codes: {},
+    warnings: [{ kind: "manual_face_crosses", value: 0, face: 0 }],
+  } as unknown as CalcResult;
+
+  it("lists its one face under the areas, and a building's single row stays unlisted", () => {
+    i18n.locale = "en";
+    expect(areaListShown(areaRows(facesOnly), true)).toBe(true);
+    const one = { parts: [{ ...part("A"), quantities: { roof_area: 10 } }], manual_faces: [] } as unknown as CalcResult;
+    expect(areaListShown(areaRows(one), false)).toBe(false);
+    expect(areaListShown([], true)).toBe(false);
+  });
+
+  it("shows the warnings that belong to no building, with no building name", () => {
+    i18n.locale = "en";
+    const w = resultWarnings(facesOnly);
+    expect(w).toHaveLength(1);
+    expect(w[0].part).toBeNull();
+    expect(w[0].text).toContain(" 1 ");
+    expect(resultWarnings(null)).toEqual([]);
+  });
+
+  it("marks the Results tab for a warning that belongs to no building, not for a notice (UI-2002)", () => {
+    expect(hasRoofWarning(facesOnly)).toBe(true);
+    const overlap = { ...facesOnly, warnings: [{ kind: "manual_faces_overlap", value: 36, face: 0, other_face: 1 }] } as unknown as CalcResult;
+    expect(hasRoofWarning(overlap)).toBe(true);
+    const notice = { ...facesOnly, warnings: [{ kind: "far_from_origin", value: 3000 }] } as unknown as CalcResult;
+    expect(hasRoofWarning(notice)).toBe(false);
+    expect(hasRoofWarning({ ...facesOnly, warnings: undefined } as unknown as CalcResult)).toBe(false);
   });
 });

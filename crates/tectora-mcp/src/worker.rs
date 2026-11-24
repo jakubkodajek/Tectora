@@ -10,9 +10,11 @@
 //! it after [`timeout`] and reports a plain error; the session goes on.
 //!
 //! The tools that only calculate a stored design (`calc`, `calc_breakdown`,
-//! `get_project`) run the same way, with [`CALC_TIMEOUT`]: the count limits
-//! of `check_limits` keep a design to seconds, and the worker is the deadline
-//! for whatever still takes too long (ARCH-002).
+//! `get_project`) and the exports that draw it (`export_list`,
+//! `export_plan`; HUNTC-001) run the same way, with [`CALC_TIMEOUT`]: the
+//! count limits of `check_limits` and the work bound of
+//! `tectora_core::work` keep a design to seconds, and the worker is the
+//! deadline for whatever still takes too long (ARCH-002).
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::{BufRead, Read, Write};
@@ -45,9 +47,21 @@ const MEMORY_LIMIT: usize = 1536 * 1024 * 1024;
 /// Wall-clock time a drawing call may take.
 const TIMEOUT: Duration = Duration::from_secs(90);
 
-/// The read-only tools that calculate a whole stored design.
+/// The tools that calculate a whole stored design and change nothing in
+/// it: they run in a worker with [`CALC_TIMEOUT`] and within the work bound
+/// of `tectora_core::work`.
 pub fn calculates(name: &str) -> bool {
-    matches!(name, "calc" | "calc_breakdown" | "get_project")
+    matches!(
+        name,
+        "calc" | "calc_breakdown" | "get_project" | "export_list" | "export_plan"
+    )
+}
+
+/// The calculating tools refused as a whole when the job is over the work
+/// bound. `get_project` bounds only its figures and still returns the walls
+/// of a job too complex to calculate, so it can be repaired (ARCH-103).
+pub fn bounds_whole_call(name: &str) -> bool {
+    calculates(name) && name != "get_project"
 }
 
 /// The tools that open a PDF (`list_drawings` only lists file names).
@@ -193,6 +207,9 @@ fn worker_call(dir: PathBuf) -> ToolResult {
         server.client = client;
     }
     let args = call.get("args").cloned().unwrap_or(json!({}));
+    if bounds_whole_call(name) {
+        return tectora_core::work::calculate(|| server.call_tool_unguarded(name, &args))?;
+    }
     if calculates(name) {
         return tectora_core::model::guarded(|| server.call_tool_unguarded(name, &args))?;
     }

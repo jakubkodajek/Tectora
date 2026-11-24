@@ -7,11 +7,16 @@
 export class PendingEdits {
   private running = new Set<Promise<unknown>>();
 
+  /** `onsize` hears the number of edits under way whenever it changes (the status bar shows them as saving, UX-502). */
+  constructor(private onsize: (n: number) => void = () => {}) {}
+
   /** Registers `p` until it settles; returns it unchanged. */
   track<T>(p: Promise<T>): Promise<T> {
+    const had = this.running.size;
     this.running.add(p);
+    if (this.running.size !== had) this.onsize(this.running.size);
     const done = () => {
-      this.running.delete(p);
+      if (this.running.delete(p)) this.onsize(this.running.size);
     };
     p.then(done, done);
     return p;

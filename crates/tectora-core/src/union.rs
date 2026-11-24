@@ -91,6 +91,7 @@ impl Building {
 
 pub(crate) fn near_boundary(poly: &[Point2], p: Point2, tol: f64) -> bool {
     let n = poly.len();
+    crate::work::tick(n);
     (0..n).any(|i| {
         let (a, b) = (poly[i], poly[(i + 1) % n]);
         let (dx, dy) = (b.x - a.x, b.y - a.y);
@@ -184,8 +185,10 @@ pub(crate) fn splits(a: [f64; 3], b: [f64; 3], polys: &[&[Point2]], planes: &[Pl
     let (pa, pb) = (Point2::new(a[0], a[1]), Point2::new(b[0], b[1]));
     let d = Point2::new(pb.x - pa.x, pb.y - pa.y);
     let mut ts = vec![0.0, 1.0];
+    crate::work::tick(planes.len());
     for poly in polys {
         let n = poly.len();
+        crate::work::tick(n);
         for i in 0..n {
             let (p, q) = (poly[i], poly[(i + 1) % n]);
             let e = Point2::new(q.x - p.x, q.y - p.y);
@@ -304,6 +307,7 @@ pub fn join(geos: &mut [RoofGeometry], parts: &[RoofPart]) {
                 }
                 let walls = MultiPolygon::new(vec![to_geo(&b.walls)]);
                 for (gp, gpl) in &b.faces {
+                    crate::work::tick(gp.len() * f.polygon.len().max(1));
                     let higher = if gpl.same(&fp) {
                         if j < i {
                             MultiPolygon::new(vec![to_geo(gp)])

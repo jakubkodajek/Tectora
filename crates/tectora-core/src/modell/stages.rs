@@ -149,6 +149,7 @@ fn hidden_parts(st: &mut State, tol: &Tol) {
                     kind: b's' as i32,
                     ..g.rec
                 };
+                crate::work::tick(1 + f.pieces[0].edges.len());
                 let lp = vec![f.pieces[0].clone()];
                 let out = if vertical(f) {
                     hidden_vertical(&lp, &g.own, tol)

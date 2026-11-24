@@ -96,8 +96,9 @@ test.describe("dormers", () => {
     // Reopened from the bar, it shows the same depth.
     await bar(page, "dormer.title").getByRole("button", { name: cs("dormer.edit") }).click();
     const edit = page.getByRole("dialog", { name: cs("dormer.n", { n: 1 }) });
-    const shown = Number((await edit.getByLabel(cs("dormer.depth")).inputValue()).replace(",", "."));
-    expect(Math.abs(shown - 2.5)).toBeLessThan(0.003);
+    // The depth comes with the core's section: wait for it, not read at once (TEST-706).
+    const depth = edit.getByLabel(cs("dormer.depth"));
+    await expect.poll(async () => Math.abs(Number((await depth.inputValue()).replace(",", ".")) - 2.5)).toBeLessThan(0.003);
   });
 
   test("the dormer window takes front and side overhangs and a trapezoid's back width", async ({ app, page }) => {

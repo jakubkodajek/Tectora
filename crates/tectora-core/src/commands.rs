@@ -13,8 +13,9 @@ use crate::{Project, snapshot};
 
 /// Why a command refused: the code of [`Project::check_input`]
 /// (`too_many`: more parts, walls or objects than the limits allow;
-/// `out_of_range`: a number of the project is out of range) or `internal`
-/// (the roof kernel failed), with the English detail.
+/// `out_of_range`: a number of the project is out of range), `too_complex`
+/// (the calculation needs more work than [`crate::work::limit`]) or
+/// `internal` (the roof kernel failed), with the English detail.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CommandError {
     pub code: &'static str,
@@ -40,6 +41,28 @@ impl CommandError {
             detail,
         }
     }
+    fn refusal(r: crate::work::Refusal) -> Self {
+        match r {
+            crate::work::Refusal::TooComplex => Self {
+                code: crate::work::CODE,
+                detail: crate::work::TOO_COMPLEX.into(),
+            },
+            crate::work::Refusal::Failed(d) => Self::internal(d),
+        }
+    }
+}
+
+/// Runs a calculation of the whole job as every command does: bounded in
+/// work ([`crate::work`], `too_complex`) and with a panic as `internal`.
+fn calculating<T>(f: impl FnOnce() -> T) -> Result<T, CommandError> {
+    crate::work::calculate(f).map_err(CommandError::refusal)
+}
+
+/// The roofs of every part (`openings::generate_project`) with the guards
+/// of [`calc`], for a caller that formats them itself (the CLI).
+pub fn generate(project: &Project) -> Result<Vec<crate::roof::RoofGeometry>, CommandError> {
+    check_input(project)?;
+    calculating(|| crate::openings::generate_project(project))
 }
 
 impl std::fmt::Display for CommandError {
@@ -54,14 +77,13 @@ impl std::fmt::Display for CommandError {
 pub fn calc(project: &Project) -> Result<Value, CommandError> {
     check_input(project)?;
     // One calculation for the report and the stored result's status.
-    let (mut v, status) = crate::model::guarded(|| {
+    let (mut v, status) = calculating(|| {
         let geos = crate::openings::generate_project(project);
         (
             crate::report::calc_of(project, &geos),
             snapshot::status_of(&geos, project),
         )
-    })
-    .map_err(CommandError::internal)?;
+    })?;
     v["stored_result"] = serde_json::to_value(status).unwrap_or(Value::Null);
     Ok(v)
 }
@@ -70,20 +92,28 @@ pub fn calc(project: &Project) -> Result<Value, CommandError> {
 /// the same guards as [`calc`].
 pub fn calc_breakdown(project: &Project) -> Result<Value, CommandError> {
     check_input(project)?;
-    let b = crate::model::guarded(|| crate::breakdown::breakdown(project))
-        .map_err(CommandError::internal)?;
+    let b = calculating(|| crate::breakdown::breakdown(project))?;
     Ok(serde_json::to_value(b).unwrap_or(Value::Null))
 }
 
 /// The current result, to store as the job's result.
 pub fn take_snapshot(project: &Project) -> Result<snapshot::ResultSnapshot, CommandError> {
     check_input(project)?;
-    snapshot::take_checked(project).map_err(|e| match e {
+    calculating(|| snapshot::take_checked(project))?.map_err(|e| match e {
         snapshot::Refused::OutOfRange(d) => CommandError::out_of_range(d),
         snapshot::Refused::Internal(d) => CommandError::internal(d),
         snapshot::Refused::NotCalculated(detail) => CommandError {
             code: "not_calculated",
             detail,
+        },
+        snapshot::Refused::NoBuilding => CommandError {
+            code: "no_building",
+            detail: snapshot::Refused::NoBuilding.to_string(),
+        },
+        snapshot::Refused::TooComplex => CommandError::refusal(crate::work::Refusal::TooComplex),
+        e @ snapshot::Refused::TooLarge(_) => CommandError {
+            code: "figures_too_large",
+            detail: e.to_string(),
         },
     })
 }
@@ -92,8 +122,7 @@ pub fn take_snapshot(project: &Project) -> Result<snapshot::ResultSnapshot, Comm
 /// `null` when all fit, with the same guards as [`calc`].
 pub fn check_windows(project: &Project) -> Result<Value, CommandError> {
     check_input(project)?;
-    let bad = crate::model::guarded(|| crate::edit::check_windows(project).err())
-        .map_err(CommandError::internal)?;
+    let bad = calculating(|| crate::edit::check_windows(project).err())?;
     Ok(serde_json::to_value(bad).unwrap_or(Value::Null))
 }
 
@@ -102,9 +131,66 @@ pub fn check_windows(project: &Project) -> Result<Value, CommandError> {
 /// guards as [`calc`]. The editor's dormer dialog derives its section from it.
 pub fn dormer_host(project: &Project, index: usize) -> Result<Value, CommandError> {
     check_input(project)?;
-    let host = crate::model::guarded(|| crate::edit::dormers::host_slope(project, index))
-        .map_err(CommandError::internal)?;
+    let host = calculating(|| crate::edit::dormers::host_slope(project, index))?;
     Ok(serde_json::to_value(host).unwrap_or(Value::Null))
+}
+
+/// Whether dormer `index` of `project` can be saved as it is
+/// (`edit::dormers::check_params` on the roof under its front): `Ok` or the
+/// code `dormer_pitch` / `dormer_segments` / `dormer_below_roof` with the
+/// English reason. The editor's dormer bar and dialog ask it before they
+/// store a value, as MCP
+/// `add_dormer` / `update_dormer` do (MATH-001, MATH-003).
+pub fn check_dormer(project: &Project, index: usize) -> Result<(), CommandError> {
+    check_input(project)?;
+    let Some(d) = project.dormers.get(index) else {
+        return Err(CommandError::out_of_range(format!(
+            "dormer {index} does not exist"
+        )));
+    };
+    let params = crate::edit::dormers::parse_dormer(d);
+    // A whole-job calculation, bounded as in `dormer_host` (ARCH-106).
+    let host = calculating(|| crate::edit::dormers::host_slope(project, index))?;
+    crate::edit::dormers::check_params(&params, host)
+        .map_err(|(code, detail)| CommandError { code, detail })
+}
+
+/// Where object `it` sits on its roof face (`edit::position::placement`),
+/// `None` when it does not exist or stands on no face, with the same guards
+/// as [`calc`]: the editor's dormer dialog asks it on every change, so a job
+/// too complex to calculate answers `too_complex` instead of keeping a
+/// thread busy for minutes (audit 2026-11-24 HUNT-2001). An object that
+/// does not exist answers at once, before the roof is calculated.
+pub fn item_placement(
+    project: &Project,
+    it: crate::edit::transform::ItemRef,
+) -> Result<Option<crate::edit::position::Placement>, CommandError> {
+    check_input(project)?;
+    if crate::edit::position::check_item(project, it).is_err() {
+        return Ok(None);
+    }
+    calculating(|| crate::edit::position::placement(project, it))
+}
+
+/// The editor's distance fields (`edit::position::place`, MCP `place_item`):
+/// `project` with object `it` moved to the distances given, `refused` with
+/// the reason, with the guards of [`calc`] (HUNT-2001). The arguments are
+/// checked before the roof is calculated; the project is changed only when
+/// the move succeeds.
+pub fn place_item(
+    project: &Project,
+    it: crate::edit::transform::ItemRef,
+    from_eave: Option<f64>,
+    from_left: Option<f64>,
+    from_right: Option<f64>,
+) -> Result<Project, CommandError> {
+    check_input(project)?;
+    crate::edit::position::check_place(project, it, from_eave, from_left, from_right)
+        .map_err(refused)?;
+    let mut moved = project.clone();
+    calculating(|| crate::edit::position::place(&mut moved, it, from_eave, from_left, from_right))?
+        .map_err(refused)?;
+    Ok(moved)
 }
 
 /// A request the edit operation refused or found no solution for: the UI
@@ -137,10 +223,8 @@ pub fn roof_helper_context(
     with_points: bool,
 ) -> Result<Value, CommandError> {
     check_input(project)?;
-    let c =
-        crate::model::guarded(|| crate::edit::helper::context(project, part, edge, with_points))
-            .map_err(CommandError::internal)?
-            .map_err(refused)?;
+    let c = calculating(|| crate::edit::helper::context(project, part, edge, with_points))?
+        .map_err(refused)?;
     Ok(serde_json::to_value(c).unwrap_or(Value::Null))
 }
 
@@ -154,7 +238,7 @@ pub fn roof_helper_preview(
     req: &crate::edit::helper::HelperRequest,
 ) -> Result<Value, CommandError> {
     check_input(project)?;
-    let r = crate::model::guarded(|| {
+    let r = calculating(|| {
         let mut out = crate::edit::helper::preview(project, part, edge, req)?;
         let raw = std::mem::take(&mut out.patches);
         let patches = project
@@ -168,8 +252,7 @@ pub fn roof_helper_preview(
             unchanged,
             out,
         })
-    })
-    .map_err(CommandError::internal)?
+    })?
     .map_err(refused)?;
     Ok(serde_json::to_value(r).unwrap_or(Value::Null))
 }
@@ -247,6 +330,10 @@ pub enum GeometryRequest {
     },
     /// The sloped area of a hand-drawn face (`ManualFace::area`).
     FaceArea { face: crate::model::ManualFace },
+    /// Whether a new hand-drawn face may be added (`edit::check_manual_face`):
+    /// `{ "refused": null }`, or the reason's code (`face_corners`,
+    /// `pitch_range`, `face_crosses`), which the editor localizes.
+    CheckFace { face: crate::model::ManualFace },
     /// The corners of a regular polygon (`edit::transform::regular_polygon`).
     RegularPolygon {
         centre: crate::geom::Point2,
@@ -385,6 +472,15 @@ pub fn item_geometry(req: &GeometryRequest) -> Result<Value, CommandError> {
             }
             Ok(serde_json::json!({ "area": face.area() }))
         }
+        GeometryRequest::CheckFace { face } => {
+            if !points_ok(&face.points) || !face.pitch_deg.is_finite() {
+                return Err(bad());
+            }
+            let refused = crate::edit::check_manual_face(face)
+                .err()
+                .map(|(code, _)| code);
+            Ok(serde_json::json!({ "refused": refused }))
+        }
     }
 }
 
@@ -468,6 +564,35 @@ pub fn check_new_roof(
     }
     crate::edit::check_new_wall(pitch_deg, eave_height, overhang)
         .map_err(CommandError::out_of_range)
+}
+
+/// [`check_new_roof`] plus the standard-roof form's bounds of length and
+/// width (`edit::check_standard_size`), for the app's `create_standard` and
+/// `standard_part` as for MCP `create_standard_roof` (ARCH-001).
+pub fn check_standard_roof(
+    name: Option<&str>,
+    length: f64,
+    width: f64,
+    pitch_deg: f64,
+    eave_height: f64,
+    overhang: f64,
+) -> Result<(), CommandError> {
+    check_new_roof(name, pitch_deg, eave_height, overhang)?;
+    crate::edit::check_standard_size(length, width).map_err(CommandError::out_of_range)
+}
+
+/// The Export dialog's list, sheet and summary (`export::preview`) with the
+/// guards of [`calc`]; `line_names` label the sheet's line codes.
+pub fn export_preview(
+    project: &Project,
+    title: String,
+    stamp: String,
+    line_names: &std::collections::BTreeMap<String, String>,
+) -> Result<Value, CommandError> {
+    check_input(project)?;
+    let opts = crate::export::ListOptions::new(title, stamp);
+    let p = crate::export::preview(project, &opts, line_names).map_err(CommandError::refusal)?;
+    Ok(serde_json::to_value(p).unwrap_or(Value::Null))
 }
 
 /// [`Project::check_input`] as a command error, with its code.
@@ -554,6 +679,37 @@ mod tests {
         }
         assert_eq!(check_windows(&far_off()).unwrap_err().code, "out_of_range");
         assert!(check_windows(&hip()).unwrap().is_null());
+    }
+
+    #[test]
+    fn snapshot_of_a_job_without_a_building_is_refused() {
+        // An empty job has no figures to make an offer with (UX-102).
+        let mut p = hip();
+        p.parts.clear();
+        assert_eq!(take_snapshot(&p).unwrap_err().code, "no_building");
+        assert_eq!(
+            crate::snapshot::take_checked(&p),
+            Err(crate::snapshot::Refused::NoBuilding)
+        );
+    }
+
+    /// Audit 2026-11-21 TEST-203: hand-drawn faces alone are figures to
+    /// offer, not "no building".
+    #[test]
+    fn snapshot_of_hand_drawn_faces_only_is_taken() {
+        let mut p = hip();
+        p.parts.clear();
+        p.manual_faces.push(crate::model::ManualFace {
+            points: [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]
+                .iter()
+                .map(|&(x, y)| crate::geom::Point2::new(x, y))
+                .collect(),
+            pitch_deg: 30.0,
+            label: String::new(),
+        });
+        let s = take_snapshot(&p).unwrap();
+        let want = 16.0 / 30f64.to_radians().cos();
+        assert!((s.roof_area - want).abs() < 0.01, "{}", s.roof_area);
     }
 
     #[test]
@@ -700,6 +856,19 @@ mod tests {
         assert_eq!(ask(face(0.0)).unwrap()["area"], 12.0);
         assert!((ask(face(60.0)).unwrap()["area"].as_f64().unwrap() - 24.0).abs() < 1e-9);
         assert_eq!(ask(face(89.99999)).unwrap()["area"], 0.0);
+        // A new face: refused with the reason's code when its outline
+        // crosses itself (HUNT-1801), accepted in order.
+        let check = |pts: Value| {
+            ask(
+                serde_json::json!({ "op": "check_face", "face": { "points": pts, "pitch_deg": 30 } }),
+            )
+        };
+        let bow = serde_json::json!([{"x": 1, "y": 1}, {"x": 6, "y": 6}, {"x": 6, "y": 1}, {"x": 1, "y": 6}]);
+        assert_eq!(check(bow).unwrap()["refused"], "face_crosses");
+        let square = serde_json::json!([{"x": 1, "y": 1}, {"x": 6, "y": 1}, {"x": 6, "y": 6}, {"x": 1, "y": 6}]);
+        assert_eq!(check(square).unwrap()["refused"], Value::Null);
+        let far = serde_json::json!([{"x": 1e12, "y": 1}, {"x": 6, "y": 1}, {"x": 6, "y": 6}]);
+        assert_eq!(check(far).unwrap_err().code, "out_of_range");
     }
 
     #[test]

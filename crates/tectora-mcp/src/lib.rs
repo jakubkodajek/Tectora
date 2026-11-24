@@ -14,16 +14,22 @@ use tectora_core::diff::diff;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::geom::Point2;
 use tectora_core::model::{GABLE_PITCH_DEG, MIN_PITCH_DEG};
-use tectora_core::quantities::{area_by_pitch_of, dacad_line_totals_of, roof_totals_of};
+use tectora_core::quantities::{
+    RoofCoverage, area_by_pitch_in, dacad_line_totals_of, roof_totals_of,
+};
 use tectora_core::roof::LineKind;
 use tectora_core::roof::RoofGeometry;
-use tectora_core::settings::Settings;
+use tectora_core::settings::{RoofDefaults, Settings};
 use tectora_core::store::{CheckedSave, LiveStatus, Store, StoreError, now_ms};
 use tectora_core::{
     Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow,
 };
 
+#[cfg(test)]
+mod bound_tests;
 mod drawings;
+#[cfg(test)]
+mod input_tests;
 mod more;
 mod worker;
 
@@ -49,6 +55,10 @@ const COMMIT_CALC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 
 type ToolResult = Result<Value, String>;
 
+/// The answer of a tool that needs the roof of a job too complex to
+/// calculate within the bound of a write (HUNT-1802).
+const ROOF_TOO_LONG: &str = "the roof of this job takes too long to calculate here, so this tool cannot use it; nothing was saved. Call calc on the job (it has its own limit), tell the user and simplify the job (remove copies of buildings that lie on top of each other)";
+
 fn arg<'a>(args: &'a Value, key: &str) -> Result<&'a Value, String> {
     args.get(key)
         .filter(|v| !v.is_null())
@@ -59,6 +69,16 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     arg(args, key)?
         .as_str()
         .ok_or_else(|| format!("`{key}` must be a string"))
+}
+
+/// An optional text argument: a string, or left out / null. Any other
+/// value is refused, never dropped (HUNTIO-012, ERR-002).
+pub(crate) fn text_arg(args: &Value, key: &str) -> Result<Option<String>, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(v) => Err(format!("`{key}` must be a string, not {v}")),
+    }
 }
 
 fn arg_f64(args: &Value, key: &str) -> Result<Option<f64>, String> {
@@ -213,6 +233,21 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             w.value
         ),
         WarningKind::InsideAnother => "this building's walls lie wholly within another building's walls and its roof, outside the other roof's planes, still adds area and lines; check whether it is a copy left on its original or a building added twice. A building that marks part of a roof face (for example another material) is meant: keep it and give it the pitch and eave height of the roof around it".to_string(),
+        WarningKind::ManualFaceCrosses => format!(
+            "hand-drawn face {} (0-based) has an outline that crosses itself (its corners are not in order around the face), so its area counts the difference of its two lobes, not the face; the area is kept as counted. Tell the user and set the face again with set_manual, corners in order",
+            w.face.unwrap_or(0)
+        ),
+        WarningKind::ManualFacesOverlap => format!(
+            "hand-drawn faces {} and {} (0-based) lie on each other over {:.2} m2 of plan, so that plan is counted twice in the area (a face drawn twice, or one traced inside another); the areas are kept as counted. Tell the user; if it is a mistake, remove or reshape one of them with set_manual",
+            w.face.unwrap_or(0),
+            w.other_face.unwrap_or(0),
+            w.value
+        ),
+        WarningKind::ManualFaceOverRoof => format!(
+            "note: hand-drawn face {} (0-based) lies over {:.2} m2 of the calculated roof in plan, and its area is added to the roof's. Right for a roof drawn by hand on top of the main roof (a dormer or porch roof); if it traces a roof that is already calculated, tell the user",
+            w.face.unwrap_or(0),
+            w.value
+        ),
         WarningKind::MergedWalls => {
             let (kept, ignored) = (w.edges.first(), w.edges.get(1));
             format!(
@@ -233,6 +268,12 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
     }
     if let Some(i) = w.item {
         v["item"] = json!(i);
+    }
+    if let Some(f) = w.face {
+        v["face"] = json!(f);
+    }
+    if let Some(f) = w.other_face {
+        v["other_face"] = json!(f);
     }
     v
 }
@@ -287,12 +328,50 @@ pub fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
 /// its figures would be missing from the sheet, as the editor's Export is
 /// blocked then too.
 pub(crate) fn export_ready(project: &Project) -> Result<(), String> {
-    match roof_trouble(project) {
-        None => Ok(()),
-        Some(t) => Err(format!(
-            "not exported: some roofs are not calculated or input is left out; fix them first ({t})"
-        )),
+    // No building and no hand-drawn face: no figures, as `store_result`
+    // and the CLI say (HUNT-305 item 4).
+    if project.parts.is_empty() && project.manual_faces.is_empty() {
+        return Err("not exported: the job has no building, so there are no figures to export; nothing was written".into());
     }
+    let Some(t) = roof_trouble(project) else {
+        return Ok(());
+    };
+    // Its own sentence, nothing of the write path's "Saved, but … revert"
+    // (ERR-008): nothing was saved, and there is nothing to revert.
+    let mut why: Vec<String> = Vec::new();
+    for e in t["roof_errors"].as_array().into_iter().flatten() {
+        why.push(format!(
+            "building {} has no roof ({}: {})",
+            e["part"],
+            e["error"]["kind"].as_str().unwrap_or("error"),
+            e["error"]["message"].as_str().unwrap_or("")
+        ));
+    }
+    for p in t["problems"].as_array().into_iter().flatten() {
+        let edge = p["edge"]
+            .as_u64()
+            .map(|e| format!(", wall {e}"))
+            .unwrap_or_default();
+        why.push(format!(
+            "{} {}{edge} is left out ({})",
+            p["item"].as_str().unwrap_or("item"),
+            p["index"],
+            p["code"].as_str().unwrap_or("problem")
+        ));
+    }
+    for c in t["cut_exceeds_face"].as_array().into_iter().flatten() {
+        why.push(format!(
+            "building {}: {}",
+            c["part"],
+            c["message"]
+                .as_str()
+                .unwrap_or("a face lost more than it has")
+        ));
+    }
+    Err(format!(
+        "not exported: {}. Fix the job first (calc lists the details); nothing was written.",
+        why.join("; ")
+    ))
 }
 
 /// The buildings without a roof after a write, and the input problems that
@@ -348,8 +427,55 @@ fn roof_trouble_of(geos: &[RoofGeometry], project: &Project) -> Option<Value> {
     Some(out)
 }
 
-fn quantities(project: &Project) -> Value {
-    quantities_of(&tectora_core::openings::generate_project(project), project)
+/// A library error for an AI client, with its stable code in front where
+/// the client is to act on it: `revert_stale` (look at the history again)
+/// and `busy` (another program holds the job's lock; nothing was done, try
+/// again in a moment, audit 2026-11-23 ERR-1002), `revert_out_of_limits`
+/// (the earlier version is outside the limits; the job is unchanged) and
+/// `revert_out_of_limits_damaged` (the same, while the job file itself
+/// cannot be read, audit 2026-11-23 ARCH-1503), `revert_outside` (a
+/// revert of the whole review while another program saved the job
+/// unlogged, ADR 0007).
+pub(crate) fn coded(e: StoreError) -> String {
+    match e {
+        StoreError::RevertStale { .. }
+        | StoreError::RevertOutside { .. }
+        | StoreError::Busy(_)
+        | StoreError::TooMany { .. }
+        | StoreError::RevertOutOfLimits { .. }
+        | StoreError::RevertOutOfLimitsDamaged { .. } => {
+            format!("{}: {e}", e.code())
+        }
+        e => e.to_string(),
+    }
+}
+
+/// A revert that wrote over a job file another program had made
+/// unreadable says so, for the AI to tell the user (audit 2026-11-23
+/// ERR-1502).
+pub(crate) fn replaced_note(out: &mut Value, repaired: bool) {
+    if repaired {
+        out["replaced_unreadable_file"] = json!(true);
+        out["note"] = json!(
+            "the job file could not be read (another program had damaged it or nested it too deep); it was replaced with the restored version: tell the user"
+        );
+    }
+}
+
+impl Server {
+    /// The job's quantities for an answer, or null with a note when the
+    /// roof takes too long to calculate here ([`Server::roof_of`]).
+    fn quantities_into(&self, out: &mut Value, project: &Project) {
+        match self.roof_of(project) {
+            Some(geos) => out["quantities"] = quantities_of(&geos, project),
+            None => {
+                out["quantities"] = Value::Null;
+                out["calculation_note"] = json!(
+                    "the roof of this job takes too long to calculate here, so no figures are given. Call calc on it (it has its own limit) and tell the user."
+                );
+            }
+        }
+    }
 }
 
 /// [`quantities`] of roofs already calculated: one request calculates the
@@ -362,14 +488,14 @@ fn quantities_of(geos: &[RoofGeometry], project: &Project) -> Value {
         "hip_count": t.hip_count,
         "valley_count": t.valley_count,
         "lines_by_dacad_code_m": dacad_line_totals_of(geos, project),
-        "area_by_pitch_m2": area_by_pitch_of(geos)
+        "area_by_pitch_m2": area_by_pitch_in(geos, project)
             .iter()
             .map(|&(p, a)| json!({ "pitch_deg": p, "area": a }))
             .collect::<Vec<_>>(),
         "area_by_material_m2": t
             .area_by_material
             .iter()
-            .map(|&(m, a)| json!({ "material": m, "name": project.material_name(m), "area": round(a, 2) }))
+            .map(|&(m, a)| json!({ "material": m, "name": project.material_label(m), "area": round(a, 2) }))
             .collect::<Vec<_>>(),
     });
     // With more than one material: the lines each one's offer needs.
@@ -377,7 +503,7 @@ fn quantities_of(geos: &[RoofGeometry], project: &Project) -> Value {
     if by_line.len() > 1 {
         q["lines_by_material_m"] = by_line
             .into_iter()
-            .map(|(m, lines)| json!({ "material": m, "name": project.material_name(m), "lines_by_dacad_code_m": lines }))
+            .map(|(m, lines)| json!({ "material": m, "name": project.material_label(m), "lines_by_dacad_code_m": lines }))
             .collect();
     }
     q["heights_m"] = heights(geos, project);
@@ -428,6 +554,17 @@ fn parse_status(s: &str) -> Result<JobStatus, String> {
 
 /// Applies the optional per-edge fields of `v` to `edge`.
 fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
+    apply_edge_fields_with(edge, v, None)
+}
+
+/// [`apply_edge_fields`]; `eave_fallback` is the pitch a gable turned into
+/// an eave without a `pitch_deg` gets (`edit::eave_pitch`: the nearest eave
+/// wall's, as in the editor), else the user's default pitch (ARCH-005).
+fn apply_edge_fields_with(
+    edge: &mut EdgeDef,
+    v: &Value,
+    eave_fallback: Option<f64>,
+) -> Result<(), String> {
     if let Some(p) = arg_f64(v, "pitch_deg")? {
         // The editor's wall bar refuses the same values (UX-010).
         tectora_core::edit::check_eave_pitch(p, MIN_PITCH_DEG)?;
@@ -440,7 +577,10 @@ fn apply_edge_fields(edge: &mut EdgeDef, v: &Value) -> Result<(), String> {
     match gable {
         Some(true) => edge.pitch_deg = GABLE_PITCH_DEG.ceil(),
         Some(false) if edge.is_gable() => {
-            edge.pitch_deg = arg_f64(v, "pitch_deg")?.unwrap_or(40.0);
+            edge.pitch_deg = match arg_f64(v, "pitch_deg")? {
+                Some(p) => p,
+                None => eave_fallback.unwrap_or_else(|| Settings::load().roof_defaults.pitch_deg),
+            };
             edge.half_hip = None;
         }
         _ => {}
@@ -530,7 +670,14 @@ fn parse_points(v: &Value) -> Result<Vec<Point2>, String> {
     if pts.len() < 3 {
         return Err("a footprint needs at least 3 points".into());
     }
-    Ok(pts.into_iter().map(|[x, y]| Point2::new(x, y)).collect())
+    let mut pts: Vec<Point2> = pts.into_iter().map(|[x, y]| Point2::new(x, y)).collect();
+    // A closed polygon as most tools write it, the first corner repeated
+    // at the end: that corner is dropped, not made a wall of no length
+    // that leaves the building out (HUNT-108).
+    if pts.len() > 3 && pts[0].distance(pts[pts.len() - 1]) < tectora_core::model::MIN_WALL_LENGTH {
+        pts.pop();
+    }
+    Ok(pts)
 }
 
 /// A new wall: every edge field given in `defaults`; pitch, eave height and
@@ -568,14 +715,21 @@ fn default_edge(defaults: &Value) -> Result<EdgeDef, String> {
 
 /// Builds a part from `{name?, points, defaults?, edges?}`.
 fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
-    let points = parse_points(arg(v, "points")?)?;
+    let raw = arg(v, "points")?;
+    let points = parse_points(raw)?;
     let defaults = v.get("defaults").cloned().unwrap_or(json!({}));
     let base = default_edge(&defaults)?;
-    let specs = v
+    let mut specs = v
         .get("edges")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    // The entry of a dropped closing corner went with it.
+    if raw.as_array().is_some_and(|a| a.len() == points.len() + 1)
+        && specs.len() == points.len() + 1
+    {
+        specs.pop();
+    }
     if !specs.is_empty() && specs.len() != points.len() {
         return Err(format!(
             "`edges` has {} entries but there are {} points (one edge per point)",
@@ -613,6 +767,10 @@ fn parse_part(v: &Value, index: usize) -> Result<RoofPart, String> {
 
 /// Selected edge indices: `indices: [..]`, `all: true`, or `index`.
 fn edge_indices(v: &Value, n: usize) -> Result<Vec<usize>, String> {
+    // `n - 1` of an empty part read "0..18446744073709551615" (ERR-007).
+    if n == 0 {
+        return Err("the part has no walls; give it an outline with set_outline first".to_string());
+    }
     if v.get("all").and_then(Value::as_bool) == Some(true) {
         return Ok((0..n).collect());
     }
@@ -685,13 +843,125 @@ fn unknown_keys(schema: &Value, value: &Value, path: &str, out: &mut Vec<String>
     }
 }
 
+/// Argument paths whose enum the tool checks with its own explanation
+/// (`export_plan` says why `png` is not available over MCP).
+const ENUMS_EXPLAINED_BY_TOOL: &[&str] = &["format"];
+
+/// Checks `value` against the types, enums and item counts of `schema`
+/// (the tool's published `inputSchema`): a value of the wrong type or
+/// outside an enum used to be dropped or replaced by a default, and the
+/// tool still answered "Saved" (ERR-002, ERR-005). `null` counts as left
+/// out, as every tool reads it. Number ranges stay with each tool, which
+/// says why a value is out of range. Returns the first mismatch, with its
+/// path.
+fn schema_mismatch(schema: &Value, value: &Value, path: &str) -> Option<String> {
+    if value.is_null() {
+        return None;
+    }
+    // Enums a tool answers itself with a better reason.
+    if ENUMS_EXPLAINED_BY_TOOL.contains(&path) && value.is_string() {
+        return None;
+    }
+    // The value as the client sent it, cut so an answer never echoes a
+    // whole document.
+    let shown: String = {
+        let t = value.to_string();
+        if t.chars().count() > 60 {
+            format!("{}…", t.chars().take(60).collect::<String>())
+        } else {
+            t
+        }
+    };
+    let at = if path.is_empty() {
+        "the arguments".to_string()
+    } else {
+        format!("`{path}`")
+    };
+    let is = |t: &str| match t {
+        "string" => value.is_string(),
+        "boolean" => value.is_boolean(),
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "number" => value.is_number(),
+        "integer" => {
+            value.is_i64()
+                || value.is_u64()
+                || value
+                    .as_f64()
+                    .is_some_and(|f| f.is_finite() && f.fract() == 0.0)
+        }
+        "null" => value.is_null(),
+        _ => true,
+    };
+    let types: Vec<&str> = match schema.get("type") {
+        Some(Value::String(t)) => vec![t.as_str()],
+        Some(Value::Array(ts)) => ts.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    if !types.is_empty() && !types.iter().any(|t| is(t)) {
+        let want: Vec<&str> = types.iter().copied().filter(|t| *t != "null").collect();
+        return Some(format!("{at} must be {}, not {shown}", want.join(" or ")));
+    }
+    if let Some(options) = schema.get("enum").and_then(Value::as_array)
+        && !options.contains(value)
+    {
+        let list: Vec<String> = options
+            .iter()
+            .filter(|o| !o.is_null())
+            .map(|o| o.as_str().map_or_else(|| o.to_string(), str::to_string))
+            .collect();
+        return Some(format!(
+            "{at} must be one of {}, not {shown}",
+            list.join(", ")
+        ));
+    }
+    match value {
+        Value::Object(map) => {
+            let props = schema.get("properties").and_then(Value::as_object);
+            let extra = schema.get("additionalProperties").filter(|a| a.is_object());
+            for (k, v) in map {
+                let here = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
+                if let Some(sub) = props.and_then(|p| p.get(k)).or(extra)
+                    && let Some(m) = schema_mismatch(sub, v, &here)
+                {
+                    return Some(m);
+                }
+            }
+            None
+        }
+        Value::Array(items) => {
+            let n = items.len() as u64;
+            if let Some(min) = schema.get("minItems").and_then(Value::as_u64)
+                && n < min
+            {
+                return Some(format!("{at} must have at least {min} entries, not {n}"));
+            }
+            if let Some(max) = schema.get("maxItems").and_then(Value::as_u64)
+                && n > max
+            {
+                return Some(format!("{at} must have at most {max} entries, not {n}"));
+            }
+            let sub = schema.get("items")?;
+            items
+                .iter()
+                .enumerate()
+                .find_map(|(i, v)| schema_mismatch(sub, v, &format!("{path}[{i}]")))
+        }
+        _ => None,
+    }
+}
+
 fn schema(props: Value, required: &[&str]) -> Value {
     json!({ "type": "object", "properties": props, "required": required })
 }
 
 fn edge_props() -> Value {
     json!({
-        "pitch_deg": { "type": "number", "description": "Roof pitch rising from the edge, degrees (0–90)." },
+        "pitch_deg": { "type": "number", "description": "Roof pitch rising from the edge, degrees: 2 to below 90 for an eave (use `gable` for a gable wall)." },
         "gable": { "type": "boolean", "description": "true = gable wall (no roof plane rises from it)." },
         "eave_height": { "type": "number", "description": "Eave height above ±0.00 at the overhang line, m." },
         "overhang": { "type": "number", "description": "Horizontal eave overhang, m." },
@@ -818,7 +1088,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "update_settings",
-            "description": "Change Tectora settings, same as the app's Settings screen. Pass only the keys to change; null resets a folder or the language to its default. A new projects_dir or drawings_dir is only a request: the app asks the user to allow it, and the folders stay as they are until then.",
+            "description": "Change Tectora settings, same as the app's Settings screen. Pass only the keys to change; null resets a folder or the language to its default. A new projects_dir or drawings_dir is only a request: the app asks the user to allow it, and the folders stay as they are until then. Every other change applies at once and is shown to the user with your summary and the values before and after, to accept or revert (`settings.ai_changes`).",
             "inputSchema": schema(json!({
                 "projects_dir": { "type": ["string", "null"], "description": "Absolute path of the design library folder." },
                 "drawings_dir": { "type": ["string", "null"], "description": "Absolute path of the drawings inbox; default <projects_dir>/drawings." },
@@ -827,9 +1097,9 @@ fn base_tools() -> Value {
                 "roof_defaults": {
                     "type": "object",
                     "properties": {
-                        "pitch_deg": { "type": "number", "minimum": 0, "maximum": 89 },
-                        "eave_height": { "type": "number" },
-                        "overhang": { "type": "number", "minimum": 0 }
+                        "pitch_deg": { "type": "number", "minimum": RoofDefaults::PITCH.0, "maximum": RoofDefaults::PITCH.1 },
+                        "eave_height": { "type": "number", "minimum": RoofDefaults::EAVE.0, "maximum": RoofDefaults::EAVE.1 },
+                        "overhang": { "type": "number", "minimum": RoofDefaults::OVERHANG.0, "maximum": RoofDefaults::OVERHANG.1 }
                     }
                 },
                 "follow_ai": { "type": "boolean" },
@@ -838,11 +1108,12 @@ fn base_tools() -> Value {
         },
         {
             "name": "list_projects",
-            "description": "Search the user's library of roofs made so far (newest first by default): `projects` with id, name, job, roof area, pitch range, dormers, attached files, stored offer result, last change, and `broken`: job files the library cannot read (code `unreadable`: damaged, `newer_format`: saved by a newer Tectora, or a file system error), which you cannot open; tell the user about them. Use it to find a past roof to start a new job from (duplicate_project with `job`).",
+            "description": "Search the user's library of roofs made so far (newest first by default): `projects` with id, name, job, roof area, pitch range, dormers, attached files, stored offer result, last change, `review_pending` (how many AI steps wait for the user's review, null when nothing waits), and `broken`: job files the library cannot read (code `unreadable`: damaged, `newer_format`: saved by a newer Tectora, or a file system error), which you cannot open; tell the user about them. Use it to find a past roof to start a new job from (duplicate_project with `job`).",
             "inputSchema": schema(json!({
                 "query": { "type": "string", "description": "Words that must all appear in the name, job number, customer, address or notes (case and accents ignored)." },
                 "status": { "type": "string", "enum": ["draft", "offer", "ordered", "done"] },
                 "by_ai": { "type": "boolean", "description": "Only jobs last changed by an AI client." },
+                "review_pending": { "type": "boolean", "description": "Only jobs whose AI changes wait for the user's review (Accept or Revert in the app)." },
                 "modified_from": { "type": "string", "description": "Last changed on or after this day, YYYY-MM-DD." },
                 "modified_to": { "type": "string", "description": "Last changed on or before this day, YYYY-MM-DD." },
                 "min_area": { "type": "number", "description": "Roof area at least, m²." },
@@ -854,7 +1125,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "get_project",
-            "description": "Full design: parts with an edge table (index, from, to, length, eave/gable, pitch, eave height, overhang), job data and quantities.",
+            "description": "Full design: parts with an edge table (index, from, to, length, eave/gable, pitch, eave height, overhang), job data and quantities. `result_recalculation`: Tectora's recalculation the stored result is (its `entry_ts_ms` for restore_offer_result), or null. `load_warnings`: what reading the job left out (`result_dropped`: a stored result with an impossible date); tell the user.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -974,7 +1245,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer` or `item` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out), `plane_over_wall` (a wing's plane runs on over the house's eave: no ridge of its own), `doubled_line` (joined roofs: a line lies on another one, `value` m counted twice), `no_roof_area` (roofed walls, 0 m² of roof: a chimney or opening took all of it, or eaves at 100 m), `objects_overlap` (`value` pairs of windows, chimneys, openings or dormers on top of each other, each still deducted), `dormer_above_roof` (a dormer `value` m above the roof it sits on: area and lines too large), `uncovered_plan` (joined buildings: `value` m2 of plan within this building's eave outline has no roof over it, the area is too small), `hidden_under_neighbour` (joined buildings: `value` m2 of this roof lies inside another building's walls under its roof, hidden yet counted; usually the overhang on a shared wall, which the user can set to 0), `inside_another` (a building wholly within another one's walls whose roof leaves the other roof's planes still adds area; keep a building that marks part of a face and give it the roof's pitch and eave height), the notice `far_from_origin` (the building is `value` m, 2.5 km or more, from the origin, where the area loses precision; move the plan to the origin) and three notices of a roof that is not the standard result because the standard calculation stops on it: `merged_planes` (two parallel planes within 10 cm calculated as one face), `wing_joined` (a low wing calculated as a lean-to against the house) and `not_calculated_by_core` (Tectora's own engine, result self-checked). Tell the user about every warning. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with.",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer`, `item`, `face` or `other_face` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out), `doubled_line` (joined roofs: a line lies on another one, `value` m counted twice), `no_roof_area` (roofed walls, 0 m² of roof: a chimney or opening took all of it, or eaves at 100 m), `objects_overlap` (`value` pairs of windows, chimneys, openings or dormers on top of each other, each still deducted), `dormer_above_roof` (a dormer `value` m above the roof it sits on: area and lines too large), `manual_face_crosses` (the hand-drawn face `face` index has an outline that crosses itself, corners out of order, so its area counts the difference of its two lobes; redraw it with the corners in order), `manual_faces_overlap` (hand-drawn faces `face` and `other_face` lie on each other over `value` m2 of plan, counted twice: ask whether one was drawn twice), `uncovered_plan` (joined buildings: `value` m2 of plan within this building's eave outline has no roof over it, the area is too small), `hidden_under_neighbour` (joined buildings: `value` m2 of this roof lies inside another building's walls under its roof, hidden yet counted; usually the overhang on a shared wall, which the user can set to 0), `inside_another` (a building wholly within another one's walls whose roof leaves the other roof's planes still adds area; keep a building that marks part of a face and give it the roof's pitch and eave height), `not_calculated_by_core` (the standard calculation stops on this roof and Tectora's own engine calculated it, result self-checked: its figures may differ from the standard result, so check the roof); and these notices, which say the roof is sound as calculated: `far_from_origin` (the building is `value` m, 2.5 km or more, from the origin, where the area loses precision; move the plan to the origin), `manual_face_over_roof` (the hand-drawn face `face` lies over `value` m2 of the calculated roof and adds its area: right for a roof drawn over the main roof), `plane_over_wall` (a wing's plane runs on over the house's eave: no ridge of its own), and two of a roof that is not the standard result because the standard calculation stops on it: `merged_planes` (two parallel planes within 10 cm calculated as one face) and `wing_joined` (a low wing calculated as a lean-to against the house). Tell the user about every warning and notice. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with. A `warnings` list beside `parts` holds the warnings that belong to no building (a hand-drawn face whose outline crosses itself, or two lying on each other, in a job without a building).",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -992,8 +1263,8 @@ fn base_tools() -> Value {
         },
         {
             "name": "revert_last_change",
-            "description": "Undo the latest recorded change of a design.",
-            "inputSchema": schema(json!({ "id": { "type": "string" }, "summary": summary_prop() }), &["id", "summary"]),
+            "description": "Undo the latest recorded change of a design. With `ts_ms` (from get_history) it is undone only if it is still that change: when another one was saved meanwhile nothing is undone (`revert_stale`). Refused with `busy` (nothing done, try again in a moment) while another program is saving the job.",
+            "inputSchema": schema(json!({ "id": { "type": "string" }, "ts_ms": { "type": "integer", "description": "The change you expect to undo." }, "summary": summary_prop() }), &["id", "summary"]),
         },
     ])
 }
@@ -1024,6 +1295,32 @@ impl Server {
         } else {
             self.within(f)
         }
+    }
+
+    /// The roofs of `project` for a tool that calculates beside its own
+    /// work (the commit's figures, a snap to the roof, a dormer's host):
+    /// within the work bound of `tectora_core::work`, and for a heavy job
+    /// within the commit timeout too. `None` when the job is too complex to
+    /// calculate here, so no MCP call waits minutes for a roof (audit
+    /// 2026-11-24 HUNT-1802). Every roof calculation of a tool outside a
+    /// whole-call bound goes through here or [`Server::host_roof_of`]
+    /// (`every_roof_calculation_of_a_tool_is_bounded`).
+    pub(crate) fn roof_of(&self, project: &Project) -> Option<Vec<RoofGeometry>> {
+        let p = project.clone();
+        self.bounded(project, move || {
+            tectora_core::work::calculate(|| tectora_core::openings::generate_project(&p)).ok()
+        })
+        .flatten()
+    }
+
+    /// [`Server::roof_of`] without the dormers (`dormers::host_roof`): the
+    /// roof a dormer sits on.
+    pub(crate) fn host_roof_of(&self, project: &Project) -> Option<Vec<RoofGeometry>> {
+        let p = project.clone();
+        self.bounded(project, move || {
+            tectora_core::work::calculate(|| tectora_core::edit::dormers::host_roof(&p)).ok()
+        })
+        .flatten()
     }
 
     /// Runs `f` on its own thread and waits for it at most the commit
@@ -1077,10 +1374,8 @@ impl Server {
         if settings.ai_may_read(path, &self.store.dir) {
             return Ok(());
         }
-        let asked = settings
-            .asking_for_file(path, &self.client, purpose)
-            .save()
-            .is_ok();
+        let asked =
+            Settings::update(|s| Ok(s.asking_for_file(path, &self.client, purpose))).is_ok();
         // A settings change: the app reads the settings again and asks.
         self.live(
             "settings",
@@ -1131,6 +1426,17 @@ impl Server {
         });
     }
 
+    /// [`Store::load_warnings`] of `id` as the tools give them: what
+    /// reading the job left out (a stored result with an impossible date).
+    fn load_warnings(&self, id: &str) -> Vec<Value> {
+        self.store
+            .load_warnings(id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|w| json!({ "code": w.code, "detail": w.detail }))
+            .collect()
+    }
+
     /// Saves `project` as a change by the connected client and reports it.
     fn commit(
         &self,
@@ -1140,6 +1446,10 @@ impl Server {
         summary: &str,
     ) -> ToolResult {
         project.check_limits()?;
+        // A job text or name this write sets is one line of plain text
+        // (ARCH-104, ARCH-202); one the job already had stays editable
+        // around it (TEST-206).
+        tectora_core::edit::check_texts_change(before, project)?;
         // Every write: no window of no size or larger than its face
         // (HUNTC-003), not only `set_openings`.
         let skipped_check = if project.windows.is_empty() {
@@ -1165,6 +1475,9 @@ impl Server {
                 "changes": [],
             }));
         }
+        // Read before the save, which writes the job without what reading
+        // it left out (audit 2026-11-23 ARCH-902).
+        let dropped = id.map(|id| self.load_warnings(id)).unwrap_or_default();
         let (id, before, project) = match (id, before) {
             (Some(id), Some(before)) => self.save_onto_current(id, before, project, summary)?,
             _ => {
@@ -1175,10 +1488,7 @@ impl Server {
             }
         };
         let project = &project;
-        let p = project.clone();
-        let geos = self.bounded(project, move || {
-            tectora_core::openings::generate_project(&p)
-        });
+        let geos = self.roof_of(project);
         self.live_follow("changed", None, summary.to_string(), &id);
         let changes = before
             .as_ref()
@@ -1197,6 +1507,50 @@ impl Server {
                 if let Some(t) = roof_trouble_of(&geos, project) {
                     out["roof_trouble"] = t;
                 }
+                // The roof's warnings, as calc gives them, so an AI hears
+                // about a roof that looks wrong at the write that made it
+                // (HUNT-106).
+                let warnings: Vec<Value> = geos
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(i, g)| {
+                        g.warnings.iter().map(move |w| {
+                            let mut v = warning(w);
+                            v["part"] = json!(i);
+                            v
+                        })
+                    })
+                    .collect();
+                if !warnings.is_empty() {
+                    out["warnings"] = Value::Array(warnings);
+                }
+                // A job past the draft keeps the figures its offer was made
+                // with: say at once when this write makes them differ
+                // (ERR-006), not only in a later calc.
+                if let Some(st) = tectora_core::snapshot::status_of(&geos, project)
+                    && !st.differences.is_empty()
+                {
+                    let status = serde_json::to_value(project.job.status)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_string))
+                        .unwrap_or_default();
+                    let area = st.differences.iter().find(|d| d.key == "roof_area");
+                    let figures = match area {
+                        Some(d) => format!(
+                            " (roof area stored {} m², now {} m²)",
+                            round(d.stored, 2),
+                            round(d.current, 2)
+                        ),
+                        None => String::new(),
+                    };
+                    out["note"] = json!(format!(
+                        "Saved. The change is now visible in the Tectora app for the user to review. The job is `{status}` and its stored offer figures differ from the roof now{figures}: tell the user, and call store_result only if they want the offer figures replaced."
+                    ));
+                    out["stored_result"] = json!({
+                        "status": status,
+                        "differences": st.differences,
+                    });
+                }
             }
             None => {
                 out["quantities"] = Value::Null;
@@ -1204,6 +1558,21 @@ impl Server {
                     "Saved, but the roof of this job takes too long to calculate here, so no figures are given. Call calc on it (it has its own limit) and tell the user."
                 );
             }
+        }
+        if !dropped.is_empty() {
+            let note = out["note"].as_str().unwrap_or("Saved.").to_string();
+            // What the saved job holds, not what was read (audit
+            // 2026-11-23 ERR-1001: store_result and a status change store
+            // the current figures in its place).
+            let what = if project.result_snapshot.is_some() {
+                "this save stored the current figures in its place: tell the user that the offer's own figures are lost and the stored result is now the current one."
+            } else {
+                "this save wrote the job without it: tell the user, and call store_result if they want the current figures stored as the offer's."
+            };
+            out["note"] = json!(format!(
+                "{note} The job's stored offer result had an impossible date, so it was left out when the job was read, and {what}"
+            ));
+            out["load_warnings"] = Value::Array(dropped);
         }
         if skipped_check {
             out["window_check_skipped"] = json!(
@@ -1229,11 +1598,22 @@ impl Server {
         let mut base = before.clone();
         let mut next = project.clone();
         for _ in 0..5 {
-            match self
+            let saved = self
                 .store
-                .save_as_checked(id, &next, &self.client, summary, Some(&base))?
-            {
-                CheckedSave::Saved { id } => return Ok((id, Some(base), next)),
+                .save_as_checked(id, &next, &self.client, summary, Some(&base))
+                .map_err(|e| match e {
+                    // The user deleted the job while this change was made:
+                    // nothing is written, the job stays in the trash (audit
+                    // 2026-11-24 ARCH-1702).
+                    StoreError::NotFound(_) => format!(
+                        "no design with id `{id}`: it was deleted in the app while this \
+                         change was made, and nothing was saved. Do not create it again \
+                         unless the user asks; call list_projects to see the ids"
+                    ),
+                    e => e.to_string(),
+                })?;
+            match saved {
+                CheckedSave::Saved { id, .. } => return Ok((id, Some(base), next)),
                 CheckedSave::Conflict { current } => {
                     let value = |p: &Project| serde_json::to_value(p).map_err(|e| e.to_string());
                     let merged = tectora_core::merge::merge3(
@@ -1288,12 +1668,15 @@ impl Server {
         if let Some(o) = patch.as_object_mut() {
             o.remove("summary");
         }
-        let old = Settings::load();
-        let (next, asked) = old
-            .patched_by_ai(&patch, &self.client, &summary)
-            .map_err(|e| format!("settings not saved: {e}"))?;
-        next.save()
-            .map_err(|e| format!("settings not saved: {e}"))?;
+        // Read, changed and written under the settings lock: a change the
+        // user makes in the app at the same moment is not lost, nor this one (TEST-307).
+        let mut asked = false;
+        let (old, next) = Settings::update(|s| {
+            let (next, a) = s.patched_by_ai(&patch, &self.client, &summary)?;
+            asked = a;
+            Ok(next)
+        })
+        .map_err(|e| format!("settings not saved: {}", e.explain()))?;
         self.live(
             "settings",
             None,
@@ -1301,12 +1684,23 @@ impl Server {
             None,
         );
         let mut out = next.describe();
+        let mut notes = Vec::new();
+        if next.ai_changes.last().map(|c| c.id) != old.ai_changes.last().map(|c| c.id) {
+            // Applied at once, but the user sees it and can put the old
+            // values back (UX-003).
+            notes.push(
+                "Applied. The app shows the user this change with your summary and the values before and after, to Accept or Revert; call get_settings later to see the answer (`ai_changes`).",
+            );
+        }
         if asked {
             // The folders change only when the user allows it in the app
             // (ARCH-052); this server keeps its library until then.
-            out["note"] = json!(
-                "The folder change waits for the user: the app asks them to allow it. Until then the jobs folder and the drawings inbox stay as they are; call get_settings later to see the answer."
+            notes.push(
+                "The folder change waits for the user: the app asks them to allow it. Until then the jobs folder and the drawings inbox stay as they are; call get_settings later to see the answer.",
             );
+        }
+        if !notes.is_empty() {
+            out["note"] = json!(notes.join(" "));
         }
         Ok(out)
     }
@@ -1314,18 +1708,21 @@ impl Server {
     /// Runs a tool; a panic in the geometry kernel becomes a tool error
     /// instead of ending the server for the rest of the session.
     pub fn call_tool(&mut self, name: &str, args: &Value) -> ToolResult {
+        // A tool that calculates the whole job stops at the work bound
+        // with "too complex" rather than keeping the server busy (HUNTIO-004).
+        if worker::bounds_whole_call(name) {
+            return tectora_core::work::calculate(|| self.call_tool_unguarded(name, args))?;
+        }
         tectora_core::model::guarded(|| self.call_tool_unguarded(name, args))?
     }
 
     fn call_tool_unguarded(&mut self, name: &str, args: &Value) -> ToolResult {
         // Every write is shown to the user with its summary (AGENTS.md):
         // a blank one is refused before anything is done.
-        if args
-            .get("summary")
-            .and_then(Value::as_str)
-            .is_some_and(|s| s.trim().is_empty())
-        {
-            return Err("`summary` is empty: give one sentence for the user on what you change and why (it is shown in the app)".into());
+        // Only invisible characters count as blank too, and a summary is
+        // one short line (ARCH-104, ARCH-105).
+        if let Some(summary) = args.get("summary").and_then(Value::as_str) {
+            tectora_core::edit::check_summary(summary)?;
         }
         // A misspelled key used to be ignored and the tool still answered
         // "Saved" with nothing changed (ERR-008): refuse keys the tool's
@@ -1341,6 +1738,11 @@ impl Server {
                 return Err(format!(
                     "unknown argument {} for `{name}`: check the spelling against the tool's input schema",
                     unknown.join(", ")
+                ));
+            }
+            if let Some(m) = schema_mismatch(&schema, args, "") {
+                return Err(format!(
+                    "{m} (`{name}`'s input schema); nothing was changed"
                 ));
             }
         }
@@ -1365,13 +1767,20 @@ impl Server {
                         json!({
                             "id": p.id, "name": p.name, "job": p.job,
                             // A roof the core refused has no area, not 0 m² (ERRU-005).
-                            "roof_area_m2": (!p.figures_pending && (p.parts_failed == 0 || p.parts_failed < p.parts))
-                                .then(|| round(p.roof_area, 2)),
+                            // Hand-drawn faces are a roof too (ERR-202); a
+                            // job with nothing has no figure.
+                            "roof_area_m2": matches!(
+                                p.coverage(),
+                                Some(RoofCoverage::Complete | RoofCoverage::Partial)
+                            )
+                            .then(|| round(p.roof_area, 2)),
+                            "roof_state": p.coverage(),
                             "figures_pending": p.figures_pending, "parts": p.parts,
-                            "parts_without_roof": p.parts_failed,
+                            "parts_without_roof": p.parts_failed, "too_complex": p.too_complex,
                             "pitch_range_deg": p.pitch_range.map(|[a, b]| [round(a, 2), round(b, 2)]),
                             "dormers": p.dormers, "files": p.files, "has_result": p.has_result,
                             "modified_ms": p.modified_ms, "last_change": p.last_activity,
+                            "review_pending": p.review_pending,
                         })
                     })
                     .collect();
@@ -1384,11 +1793,9 @@ impl Server {
                 Ok(json!({ "projects": list, "broken": broken }))
             }
             "get_project" => {
-                // A result stored by an older engine follows the corrected
-                // calculation, as when the app opens the job.
-                if let Ok(id) = arg_str(args, "id") {
-                    let _ = self.store.refresh_stored_result(id);
-                }
+                // A read: the stored result stays as it is. Only the app's
+                // open recalculates an older engine's result (Jakub's
+                // decision 2026-11-22, audit UX-702h).
                 let (id, p) = self.load(args)?;
                 self.live(
                     "reading",
@@ -1396,10 +1803,28 @@ impl Server {
                     format!("Reading “{}”", p.name),
                     Some(&id),
                 );
-                let host = if p.dormers.is_empty() {
-                    Vec::new()
-                } else {
-                    tectora_core::edit::dormers::host_roof(&p)
+                // The roof figures in the work bound: a job too complex to
+                // calculate is still read, walls and objects, so the AI can
+                // repair it (ARCH-103); only its figures are left out.
+                let calculated = tectora_core::work::calculate(|| {
+                    let host = if p.dormers.is_empty() {
+                        Vec::new()
+                    } else {
+                        tectora_core::edit::dormers::host_roof(&p)
+                    };
+                    let geos = tectora_core::openings::generate_project(&p);
+                    (
+                        host,
+                        // Each object's distances from the eave and the sides
+                        // of its face, as place_item takes them.
+                        json!(tectora_core::edit::position::placements(&p)),
+                        json!(tectora_core::snapshot::status_of(&geos, &p)),
+                        quantities_of(&geos, &p),
+                    )
+                });
+                let (host, placements, stored_result, quantities, refusal) = match calculated {
+                    Ok((h, pl, st, q)) => (h, pl, st, q, None),
+                    Err(r) => (Vec::new(), Value::Null, Value::Null, Value::Null, Some(r)),
                 };
                 let dormers: Vec<Value> = p
                     .dormers
@@ -1407,8 +1832,7 @@ impl Server {
                     .enumerate()
                     .map(|(i, d)| more::describe_dormer(i, d, &host))
                     .collect();
-                let geos = tectora_core::openings::generate_project(&p);
-                Ok(json!({
+                let mut v = json!({
                     "id": id,
                     "name": p.name,
                     "notes": p.notes,
@@ -1418,17 +1842,42 @@ impl Server {
                     "windows": p.windows,
                     "roof_openings": p.roof_openings,
                     "dormers": dormers,
-                    // Each object's distances from the eave and the sides of
-                    // its face, as place_item takes them.
-                    "placements": tectora_core::edit::position::placements(&p),
+                    "placements": placements,
                     "manual_lines": p.manual_lines,
                     "manual_faces": p.manual_faces,
                     "flat_roof": p.flat_roof,
-                    "materials": (1..=tectora_core::model::DACAD_MATERIALS).map(|m| json!({ "material": m, "name": p.material_name(m) })).collect::<Vec<_>>(),
+                    "materials": (1..=tectora_core::model::DACAD_MATERIALS).map(|m| json!({ "material": m, "name": p.material_label(m) })).collect::<Vec<_>>(),
                     "files": self.store.attachments(&id).iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
-                    "stored_result": tectora_core::snapshot::status_of(&geos, &p),
-                    "quantities": quantities_of(&geos, &p),
-                }))
+                    "stored_result": stored_result,
+                    "quantities": quantities,
+                    // The recalculation the stored result is (its entry
+                    // for restore_offer_result), also once the change log
+                    // no longer holds the entry (audit 2026-11-23 HUNT-902).
+                    "result_recalculation": self.store.recalculation(&id),
+                });
+                // What reading the job left out, as the app says it on
+                // open (audit 2026-11-23 ARCH-902).
+                let warnings = self.load_warnings(&id);
+                if !warnings.is_empty() {
+                    v["load_warnings"] = Value::Array(warnings);
+                }
+                match refusal {
+                    None => {}
+                    Some(tectora_core::work::Refusal::TooComplex) => {
+                        v["too_complex"] = json!(true);
+                        v["note"] = json!(format!(
+                            "{}. The walls and objects are listed; the roof, its figures, placements and the stored result's status are not calculated",
+                            tectora_core::work::TOO_COMPLEX
+                        ));
+                    }
+                    Some(tectora_core::work::Refusal::Failed(d)) => {
+                        v["calc_error"] = json!(d);
+                        v["note"] = json!(
+                            "the roof could not be calculated; the walls and objects are listed, its figures are not"
+                        );
+                    }
+                }
+                Ok(v)
             }
             "calc" => {
                 let (id, p) = self.load(args)?;
@@ -1476,6 +1925,15 @@ impl Server {
                 if !problems.is_empty() {
                     out["problems"] = serde_json::to_value(&problems).unwrap_or(Value::Null);
                 }
+                // Warnings that belong to no building (ERR-1901).
+                let job = tectora_core::check::job_warnings(&p, &geos);
+                if !job.is_empty() {
+                    out["warnings"] = job.iter().map(warning).collect();
+                }
+                // The one rule of the CLI, `calc` and the library card:
+                // hand-drawn faces are a roof (audit 2026-11-21 ERR-202).
+                let failed = tectora_core::quantities::parts_without_roof(&geos, &p);
+                out["roof_state"] = json!(tectora_core::quantities::RoofCoverage::of(&p, failed));
                 Ok(out)
             }
             "calc_breakdown" => {
@@ -1521,19 +1979,24 @@ impl Server {
                 let width = arg_f64(args, "width")?.unwrap_or(length);
                 let pitch = arg_f64(args, "pitch_deg")?.ok_or("missing `pitch_deg`")?;
                 let preset = Settings::load().roof_defaults;
-                if length <= 0.0 || width <= 0.0 || !(0.0 < pitch && pitch < 90.0) {
-                    return Err(
-                        "length and width must be positive and pitch between 0 and 90".into(),
-                    );
+                // The pitch is checked with the other wall values below, with
+                // its real lower limit (HUNT-108).
+                if length <= 0.0 || width <= 0.0 {
+                    return Err("length and width must be positive".into());
                 }
                 let eave = arg_f64(args, "eave_height")?.unwrap_or(preset.eave_height);
                 let overhang = arg_f64(args, "overhang")?.unwrap_or(preset.overhang);
                 // One check for every creating command (ARCH-007).
                 tectora_core::edit::check_new_wall(pitch, eave, overhang)?;
+                // The standard-roof form's bounds (ARCH-001): 4 mm typed for
+                // 4 m gave a job without a roof.
+                tectora_core::edit::check_standard_size(length, width)?;
                 tectora_core::edit::check_job_name(arg_str(args, "name")?)?;
-                let mut p = Project::new(arg_str(args, "name")?);
+                let empty = Project::new(arg_str(args, "name")?);
+                let mut p = empty.clone();
                 p.parts
                     .push(standard_roof(kind, length, width, pitch, eave, overhang));
+                crate::more::refuse_new_problems(&empty, &p)?;
                 self.commit(None, None, &p, arg_str(args, "summary")?)
             }
             "create_project" => {
@@ -1549,19 +2012,19 @@ impl Server {
                     p.parts
                         .push(parse_part(v, i).map_err(|m| format!("part {i}: {m}"))?);
                 }
-                if let Some(job) = args.get("job") {
+                if let Some(job) = args.get("job").filter(|j| !j.is_null()) {
                     for (key, slot) in [
                         ("number", &mut p.job.number),
                         ("customer", &mut p.job.customer),
                         ("address", &mut p.job.address),
                     ] {
-                        if let Some(s) = job.get(key).and_then(Value::as_str) {
-                            *slot = s.to_string();
+                        if let Some(s) = text_arg(job, key).map_err(|m| format!("job.{m}"))? {
+                            *slot = s;
                         }
                     }
                 }
-                if let Some(n) = args.get("notes").and_then(Value::as_str) {
-                    p.notes = n.to_string();
+                if let Some(n) = text_arg(args, "notes")? {
+                    p.notes = n;
                 }
                 self.commit(None, None, &p, arg_str(args, "summary")?)
             }
@@ -1592,11 +2055,17 @@ impl Server {
                     if let Some(o) = no_pitch.as_object_mut() {
                         o.remove("pitch_deg");
                     }
+                    let preset = Settings::load().roof_defaults.pitch_deg;
                     for i in edge_indices(c, part.edges.len())? {
                         let e = &part.edges[i];
                         let keep = all && ((e.is_gable() && !to_eave) || e.direction_rad.is_some());
-                        apply_edge_fields(&mut part.edges[i], if keep { &no_pitch } else { c })
-                            .map_err(|m| format!("edge {i}: {m}"))?;
+                        let fallback = tectora_core::edit::eave_pitch(&part.edges, i, None, preset);
+                        apply_edge_fields_with(
+                            &mut part.edges[i],
+                            if keep { &no_pitch } else { c },
+                            Some(fallback),
+                        )
+                        .map_err(|m| format!("edge {i}: {m}"))?;
                     }
                 }
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
@@ -1658,13 +2127,7 @@ impl Server {
                 let mut p = before.clone();
                 // A present key of the wrong type is refused, not ignored
                 // (HUNTIO-012).
-                let text = |key: &str| -> Result<Option<String>, String> {
-                    match args.get(key) {
-                        None | Some(Value::Null) => Ok(None),
-                        Some(Value::String(s)) => Ok(Some(s.clone())),
-                        Some(v) => Err(format!("`{key}` must be a string, not {v}")),
-                    }
-                };
+                let text = |key: &str| text_arg(args, key);
                 if let Some(s) = text("name")? {
                     tectora_core::edit::check_job_name(&s)?;
                     p.name = s;
@@ -1685,14 +2148,19 @@ impl Server {
                     let s = s.as_str();
                     let status = parse_status(s)?;
                     // Leaving the draft stores the result as the offer's
-                    // figures: refused for a roof that cannot be calculated.
-                    if p.job.status == JobStatus::Draft
-                        && status != JobStatus::Draft
-                        && p.result_snapshot.is_none()
-                    {
-                        p.result_snapshot = Some(
-                            tectora_core::snapshot::take_checked(&p).map_err(|e| e.to_string())?,
-                        );
+                    // figures: refused for a roof that cannot be calculated,
+                    // with the app's check (JobPanel `takeSnapshot`), also
+                    // when the job keeps a result stored for an earlier
+                    // offer, which is not of this roof (HUNT-504, ERR-303).
+                    // The kept result stays the offer's.
+                    if p.job.status == JobStatus::Draft && status != JobStatus::Draft {
+                        // Within the bound of a heavy job too (HUNT-1903).
+                        let q = p.clone();
+                        let fresh = self
+                            .bounded(&p, move || tectora_core::snapshot::take_checked(&q))
+                            .ok_or(ROOF_TOO_LONG)?
+                            .map_err(|e| e.to_string())?;
+                        p.result_snapshot.get_or_insert(fresh);
                     }
                     p.set_status(status);
                 }
@@ -1779,14 +2247,28 @@ impl Server {
             "revert_last_change" => {
                 let (id, _) = self.load(args)?;
                 let summary = arg_str(args, "summary")?;
-                let p = self.store.revert_last(&id, &self.client, Some(summary))?;
+                let expect: Option<u64> = match args.get("ts_ms") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(
+                        v.as_u64()
+                            .ok_or("`ts_ms` must be a whole number (from get_history)")?,
+                    ),
+                };
+                let r = self
+                    .store
+                    .revert_last_reported(&id, &self.client, Some(summary), expect)
+                    .map_err(coded)?;
+                let p = &r.project;
                 self.live_follow(
                     "reverted",
                     Some(&p.name),
                     format!("Reverted the latest change: {summary}"),
                     &id,
                 );
-                Ok(json!({ "id": id, "reverted": true, "quantities": quantities(&p) }))
+                let mut out = json!({ "id": id, "reverted": true });
+                self.quantities_into(&mut out, p);
+                replaced_note(&mut out, r.repaired);
+                Ok(out)
             }
             _ => self
                 .call_more(name, args)
@@ -1797,6 +2279,31 @@ impl Server {
 
     /// Handles one JSON-RPC message; returns the response for requests.
     pub fn handle(&mut self, msg: &Value) -> Option<Value> {
+        // A message that is not an object, or a request without a method,
+        // is an invalid request (JSON-RPC 2.0, -32600): it is answered, with
+        // id null when it has none, instead of left without an answer
+        // (HUNTIO-007).
+        let invalid = |id: Value, why: &str| {
+            Some(json!({
+                "jsonrpc": "2.0", "id": id,
+                "error": { "code": -32600, "message": format!("invalid request: {why}") }
+            }))
+        };
+        if !msg.is_object() {
+            return invalid(Value::Null, "a message must be a JSON object");
+        }
+        if msg.get("method").is_none()
+            && (msg.get("result").is_some() || msg.get("error").is_some())
+        {
+            // A response from the client: this server sends no requests.
+            return None;
+        }
+        if !msg.get("method").is_some_and(Value::is_string) {
+            return invalid(
+                msg.get("id").cloned().unwrap_or(Value::Null),
+                "`method` is missing or not a string",
+            );
+        }
         let id = msg.get("id").cloned();
         let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
         let params = msg.get("params").cloned().unwrap_or(json!({}));
@@ -1903,18 +2410,17 @@ pub fn run_worker_if_requested() -> bool {
 /// different name; an empty name is "AI", and the length is capped
 /// (HUNTIO-003).
 fn client_actor(name: &str) -> String {
-    let clean: String = name
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(60)
-        .collect::<String>()
+    // The text rules of a received change log's actor (ARCH-306 item 1):
+    // no control, invisible or line-breaking characters, and a name of
+    // blank-looking characters only is no name.
+    let clean = tectora_core::edit::clean_line(name, tectora_core::edit::MAX_ACTOR_CHARS)
         .trim()
         .to_string();
-    if clean.is_empty() {
+    if !tectora_core::edit::has_visible(&clean) {
         "AI".into()
-    } else if clean.eq_ignore_ascii_case(tectora_core::store::USER_ACTOR)
-        || clean.eq_ignore_ascii_case(tectora_core::store::ENGINE_ACTOR)
-    {
+    } else if tectora_core::store::is_reserved_actor(&clean) {
+        // One list of the names only Tectora writes (audit 2026-11-23
+        // ARCH-901: `tectora (received)` was missing).
         format!("AI ({clean})")
     } else {
         clean
@@ -1948,9 +2454,73 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_tool_the_guide_and_the_skill_name_exists() {
+        // Round 2 HUNT-102: the guide sent the AI to `delete_part` and
+        // `undo`, which do not exist. A backticked name with a tool's verb
+        // must be a tool.
+        let names: Vec<String> = tools()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(String::from))
+            .collect();
+        let verbs = [
+            "get_",
+            "list_",
+            "delete_",
+            "create_",
+            "update_",
+            "add_",
+            "remove_",
+            "revert_",
+            "export_",
+            "import_",
+            "show_",
+            "place_",
+            "transform_",
+            "duplicate_",
+            "restore_",
+            "view_",
+            "measure_",
+            "trace_",
+            "set_",
+        ];
+        for (file, text) in [
+            ("guide.md", GUIDE),
+            (
+                "tectora-roof/SKILL.md",
+                include_str!("../../../integrations/skills/tectora-roof/SKILL.md"),
+            ),
+        ] {
+            for (i, quoted) in text.split('`').enumerate() {
+                let word = quoted.trim();
+                let is_name = i % 2 == 1
+                    && !word.is_empty()
+                    && word.chars().all(|c| c.is_ascii_lowercase() || c == '_');
+                if is_name && (word == "undo" || verbs.iter().any(|v| word.starts_with(v))) {
+                    assert!(
+                        names.iter().any(|n| n == word),
+                        "{file}: `{word}` is not a tool"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_client_named_user_is_still_reviewed() {
         // HUNTIO-003: its saves were logged as the user's own.
-        for name in ["user", "User", "  USER ", "", "tectora", "Tectora"] {
+        // Audit 2026-11-23 ARCH-901: and like a received engine entry.
+        for name in [
+            "user",
+            "User",
+            "  USER ",
+            "",
+            "tectora",
+            "Tectora",
+            "tectora (received)",
+            " Tectora (Received) ",
+        ] {
             let mut s = server();
             s.handle(&json!({
                 "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -1967,7 +2537,8 @@ mod tests {
             assert!(!log.is_empty());
             assert!(
                 log.iter()
-                    .all(|e| e.actor != tectora_core::store::USER_ACTOR
+                    .all(|e| !tectora_core::store::is_reserved_actor(&e.actor)
+                        && e.actor != tectora_core::store::USER_ACTOR
                         && e.actor != tectora_core::store::ENGINE_ACTOR
                         && !e.actor.is_empty()),
                 "{name:?}: {:?}",
@@ -2153,11 +2724,7 @@ mod tests {
         assert!(r["note"].as_str().unwrap().contains("waits for the user"));
         assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
         let shown = Settings::load().folder_request.unwrap().changes;
-        Settings::load()
-            .answer_folder_request(&shown, true)
-            .unwrap()
-            .save()
-            .unwrap();
+        Settings::update(|s| s.answer_folder_request(&shown, true)).unwrap();
         let r = s.call_tool("get_settings", &json!({})).unwrap();
         assert_eq!(r["effective"]["drawings_dir"], json!(inbox));
         assert!(r["settings"].get("folder_request").is_none());
@@ -2175,6 +2742,45 @@ mod tests {
         );
         let r = s.call_tool("get_settings", &json!({})).unwrap();
         assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 35.0);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn an_ai_settings_change_is_recorded_for_the_user_to_revert() {
+        // UX-003: update_settings changed the roof defaults with no record,
+        // no before -> after and no way back.
+        let _settings = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner());
+        let base =
+            std::env::temp_dir().join(format!("tectora-mcp-aichange-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        // Tests touching the settings file hold SETTINGS_FILE, so the env var is safe here.
+        unsafe { std::env::set_var("TECTORA_CONFIG_DIR", base.join("cfg")) };
+        let mut s = server();
+        let r = s
+            .call_tool(
+                "update_settings",
+                &json!({ "roof_defaults": { "pitch_deg": 25, "overhang": 0.9 }, "summary": "Company defaults from the drawings" }),
+            )
+            .unwrap();
+        assert!(r["note"].as_str().unwrap().contains("Revert"), "{r}");
+        let saved = Settings::load();
+        let change = saved.open_ai_change().cloned().expect("recorded");
+        assert_eq!(change.summary, "Company defaults from the drawings");
+        assert_eq!(change.before["roof_defaults.pitch_deg"], 40.0);
+        assert_eq!(change.after["roof_defaults.pitch_deg"], 25.0);
+        assert_eq!(change.before["roof_defaults.overhang"], 0.5);
+        assert_eq!(change.after["roof_defaults.overhang"], 0.9);
+        assert_eq!(
+            r["settings"]["ai_changes"][0]["id"],
+            json!(change.id),
+            "the AI sees the record too"
+        );
+        // The user reverts it in the app.
+        Settings::update(|s| s.answer_ai_change(change.id, true)).unwrap();
+        let r = s.call_tool("get_settings", &json!({})).unwrap();
+        assert_eq!(r["settings"]["roof_defaults"]["pitch_deg"], 40.0);
+        assert_eq!(r["settings"]["roof_defaults"]["overhang"], 0.5);
+        assert_eq!(r["settings"]["ai_changes"][0]["state"], "reverted");
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -2267,6 +2873,44 @@ mod tests {
         assert!(r["parts"][0].get("warnings").is_none(), "{r}");
     }
 
+    /// Audit 2026-11-21 HUNT-106: a write answers with the roof's warnings
+    /// as calc gives them, and an outline drawn round twice is a problem.
+    #[test]
+    fn a_write_answers_with_the_roof_warnings_and_a_doubled_outline_is_refused() {
+        let mut s = server();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/check/C1_hips_outside.json");
+        let p: Project = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let id = s.store.save(None, &p).unwrap();
+        let r = s
+            .call_tool(
+                "update_job",
+                &json!({ "id": id, "number": "2026-7", "summary": "Job number from the order" }),
+            )
+            .unwrap();
+        let w = r["warnings"].as_array().expect("warnings in the answer");
+        assert_eq!(w[0]["kind"], "outside_outline", "{r}");
+        assert_eq!(w[0]["part"], 0);
+
+        let r = s
+            .call_tool(
+                "create_project",
+                &json!({ "name": "twice", "summary": "Footprint from the drawing",
+                         "parts": [{ "points": [[0, 0], [12, 0], [12, 8], [0, 8], [0, 0], [12, 0], [12, 8], [0, 8]],
+                                     "defaults": { "pitch_deg": 35, "eave_height": 3, "overhang": 0.5 } }] }),
+            )
+            .unwrap();
+        let problems = r["roof_trouble"]["problems"]
+            .as_array()
+            .expect("roof_trouble");
+        assert!(
+            problems
+                .iter()
+                .any(|q| q["code"] == "walls_overlap" && q["edge"] == 4),
+            "{r}"
+        );
+    }
+
     fn gable_job(s: &mut Server, pitch: f64) -> String {
         let r = s
             .call_tool(
@@ -2354,6 +2998,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
+    /// UX-2003 (owner decision 3 of round 21): the card says how many AI
+    /// steps wait for the user's review, and `review_pending` finds them;
+    /// a job the user saved has none.
+    #[test]
+    fn list_projects_names_and_finds_the_jobs_waiting_for_review() {
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let mine = s.store.save_as(None, &p, "user", "Created").unwrap();
+        let theirs = s.store.save_as(None, &p, "user", "Created").unwrap();
+        for n in ["A1", "A2"] {
+            s.call_tool(
+                "update_job",
+                &json!({ "id": theirs, "notes": n, "summary": n }),
+            )
+            .unwrap();
+        }
+        let r = s.call_tool("list_projects", &json!({})).unwrap();
+        let card = |id: &str| {
+            r["projects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["id"] == id)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(card(&theirs)["review_pending"], 2);
+        assert!(card(&mine)["review_pending"].is_null());
+        let r = s
+            .call_tool("list_projects", &json!({ "review_pending": true }))
+            .unwrap();
+        let ids: Vec<&str> = r["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec![theirs.as_str()]);
+    }
+
     #[test]
     fn list_projects_gives_no_area_for_a_roof_the_core_refused() {
         // ERRU-005: a refused roof was listed as 0 m², like an empty roof.
@@ -2392,6 +3076,65 @@ mod tests {
             .clone();
         assert!(card["roof_area_m2"].is_null(), "{card}");
         assert_eq!(card["parts_without_roof"], 1, "{card}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    #[test]
+    fn calc_and_the_card_count_hand_drawn_faces_as_a_roof() {
+        // Audit 2026-11-21 ERR-202: a broken building plus a hand-drawn
+        // face was listed without an area while `calc` gave one; HUNT-203:
+        // the area per pitch left the face out.
+        let mut s = server();
+        let p = json!({
+            "schema_version": 3, "name": "faces",
+            "parts": [{ "name": "A", "edges": [
+                { "start": { "x": 0, "y": 0 }, "pitch_deg": 35, "eave_height": 3, "overhang": 0.5 },
+                { "start": { "x": 5, "y": 0 }, "pitch_deg": 35, "eave_height": 3, "overhang": 0.5 }
+            ] }],
+            "manual_faces": [{ "points": [{"x": 0, "y": 0}, {"x": 5, "y": 0}, {"x": 5, "y": 4}, {"x": 0, "y": 4}], "pitch_deg": 30 }],
+        });
+        let id = s
+            .store
+            .save(None, &Project::from_json(&p.to_string()).unwrap())
+            .unwrap();
+        let empty = s
+            .store
+            .save(
+                None,
+                &Project::from_json(r#"{"name": "nothing", "parts": []}"#).unwrap(),
+            )
+            .unwrap();
+        let r = s.call_tool("list_projects", &json!({})).unwrap();
+        let card = |id: &str| {
+            r["projects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["id"] == id)
+                .unwrap()
+                .clone()
+        };
+        let c = card(&id);
+        assert_eq!(c["roof_state"], "partial", "{c}");
+        assert!(c["roof_area_m2"].as_f64().unwrap() > 23.0, "{c}");
+        let c = card(&empty);
+        assert_eq!(c["roof_state"], "no_building", "{c}");
+        assert!(c["roof_area_m2"].is_null(), "{c}");
+        let calc = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        assert_eq!(calc["roof_state"], "partial", "{calc}");
+        let total = &calc["total"];
+        let sum: f64 = total["area_by_pitch_m2"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["area"].as_f64().unwrap())
+            .sum();
+        assert!(
+            (sum - total["roof_area_m2"].as_f64().unwrap()).abs() < 0.02,
+            "{calc}"
+        );
+        let calc = s.call_tool("calc", &json!({ "id": empty })).unwrap();
+        assert_eq!(calc["roof_state"], "no_building", "{calc}");
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
@@ -2707,6 +3450,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
+    /// Audit 2026-11-23 ARCH-1504 / TEST-1505: the `calc` description
+    /// lists every warning kind of the core, the notices after "these
+    /// notices" and the rest before, as `WarningKind::is_notice` splits
+    /// them.
+    #[test]
+    fn calc_description_splits_warnings_and_notices_as_the_core_does() {
+        let check = include_str!("../../tectora-core/src/check.rs");
+        let body = |from: &str, to: &str| {
+            let at = check.find(from).unwrap() + from.len();
+            &check[at..at + check[at..].find(to).unwrap()]
+        };
+        let snake = |s: &str| {
+            let mut out = String::new();
+            for (i, c) in s.chars().enumerate() {
+                if c.is_ascii_uppercase() {
+                    if i > 0 {
+                        out.push('_');
+                    }
+                    out.push(c.to_ascii_lowercase());
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        };
+        let kinds: Vec<String> = body("pub enum WarningKind {", "\n}")
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
+            .map(|l| snake(l.trim_end_matches(',')))
+            .collect();
+        let notices: Vec<String> = body("pub fn is_notice(self) -> bool {", "\n    }")
+            .split("WarningKind::")
+            .skip(1)
+            .map(|w| {
+                snake(
+                    w.split(|c: char| !c.is_ascii_alphanumeric())
+                        .next()
+                        .unwrap(),
+                )
+            })
+            .collect();
+        assert!(
+            kinds.len() > 10 && notices.len() >= 4,
+            "{kinds:?} {notices:?}"
+        );
+        let tools = tools();
+        let calc = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "calc")
+            .unwrap()["description"]
+            .as_str()
+            .unwrap();
+        let (warnings, notes) = calc.split_once("these notices").unwrap();
+        for k in &kinds {
+            let named = format!("`{k}`");
+            let (in_warnings, in_notes) = (warnings.contains(&named), notes.contains(&named));
+            assert!(in_warnings != in_notes, "{k}: named once, in one list");
+            assert_eq!(in_notes, notices.contains(k), "{k}");
+        }
+    }
+
     #[test]
     fn calc_warns_about_a_window_on_no_roof_face() {
         // Re-check of ERR-011: the window was saved and left out silently.
@@ -2729,6 +3536,74 @@ mod tests {
             "{w}"
         );
         let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// Audit 2026-11-23 HUNT-1502: a window on no roof face beside a
+    /// building that calculated is named while another building of the
+    /// job has no roof; one over the failing building is not.
+    #[test]
+    fn set_openings_names_a_window_off_the_roof_while_another_building_fails() {
+        let mut s = server();
+        let id = gable_job(&mut s, 40.0);
+        let mut p = s.store.load(&id).unwrap();
+        let mut b = p.parts[0].clone();
+        b.name = "B".into();
+        for (e, (x, y)) in
+            b.edges
+                .iter_mut()
+                .zip([(40.0, 0.0), (46.0, 0.0), (46.0, 6.0), (40.0, 6.0)])
+        {
+            e.start = Point2::new(x, y);
+            e.pitch_deg = GABLE_PITCH_DEG;
+        }
+        p.parts.push(b);
+        s.store.save(Some(id.clone()), &p).unwrap();
+        let r = s
+            .call_tool(
+                "set_openings",
+                &json!({ "id": id, "summary": "Windows", "windows": [
+                    { "x": 6, "y": -5, "width": 0.78, "height": 1.18 },
+                    { "x": 43, "y": 3, "width": 0.78, "height": 1.18 }
+                ] }),
+            )
+            .unwrap();
+        assert!(r.to_string().contains("window_off_roof"), "{r}");
+        let r = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        assert!(r["parts"][1]["error"].is_object(), "B has no roof: {r}");
+        let warned: Vec<&Value> = r["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|p| p["warnings"].as_array().into_iter().flatten())
+            .filter(|w| w["kind"] == "window_off_roof")
+            .collect();
+        assert_eq!(warned.len(), 1, "{r}");
+        assert_eq!(warned[0]["item"], 0, "{r}");
+        assert!(
+            r["parts"][0]["warnings"]
+                .as_array()
+                .is_some_and(|w| w.iter().any(|w| w["kind"] == "window_off_roof")),
+            "{r}"
+        );
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// ARCH-1503 / ERR-1502: the revert codes an AI acts on keep their
+    /// code in front, and a revert over an unreadable file says so.
+    #[test]
+    fn a_damaged_out_of_limits_revert_keeps_its_code_and_a_replaced_file_is_named() {
+        let e = coded(StoreError::RevertOutOfLimitsDamaged {
+            id: "j".into(),
+            detail: "x".into(),
+        });
+        assert!(e.starts_with("revert_out_of_limits_damaged: "), "{e}");
+        assert!(e.contains("cannot be read"), "{e}");
+        let mut out = json!({ "reverted": true });
+        replaced_note(&mut out, false);
+        assert_eq!(out, json!({ "reverted": true }));
+        replaced_note(&mut out, true);
+        assert_eq!(out["replaced_unreadable_file"], true);
+        assert!(out["note"].as_str().unwrap().contains("replaced"), "{out}");
     }
 
     #[test]
@@ -2836,7 +3711,7 @@ mod tests {
         let req = asked.file_request.clone().unwrap();
         assert_eq!(req.purpose, "import");
         assert!(req.path.ends_with("other/contract.pdf"), "{:?}", req.path);
-        asked.answer_file_request(&req.path, true).save().unwrap();
+        Settings::update(|s| Ok(s.answer_file_request(&req.path, true))).unwrap();
         s.call_tool(
             "attach_file",
             &json!({ "id": id, "path": outside, "summary": "Drawing" }),
@@ -2922,5 +3797,43 @@ mod tests {
         fn list_projects_empty(&self) -> bool {
             self.store.list().is_empty()
         }
+    }
+}
+
+#[cfg(test)]
+mod material_names {
+    use super::*;
+
+    fn server() -> Server {
+        let dir = std::env::temp_dir().join(format!(
+            "tectora-mcp-materials-{}-{}",
+            now_ms(),
+            std::process::id()
+        ));
+        Server::new(Store::new(dir).unwrap())
+    }
+
+    #[test]
+    fn default_material_names_are_english_never_the_reference_programs_german() {
+        // ERR-004: `calc`, `get_project` and every write named the default
+        // materials "Ziegel", "Blech", "Stein", "Schiefer".
+        let mut s = server();
+        let r = s
+            .call_tool(
+                "create_standard_roof",
+                &json!({ "name": "A", "type": "gable", "length": 10, "width": 8, "pitch_deg": 40, "summary": "x" }),
+            )
+            .unwrap();
+        let id = r["id"].as_str().unwrap().to_string();
+        let calc = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        let project = s.call_tool("get_project", &json!({ "id": id })).unwrap();
+        for text in [r.to_string(), calc.to_string(), project.to_string()] {
+            for german in ["Ziegel", "Blech", "Stein", "Schiefer", "Solarpanel"] {
+                assert!(!text.contains(german), "{german} in {text}");
+            }
+        }
+        assert!(calc.to_string().contains("\"tiles\""), "{calc}");
+        assert!(project.to_string().contains("\"sheet metal\""), "{project}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 }

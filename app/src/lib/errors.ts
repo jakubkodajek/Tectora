@@ -22,6 +22,11 @@ export type Action =
   | "duplicate"
   | "import"
   | "revert"
+  | "revertAll"
+  | "undo"
+  | "redo"
+  | "restoreOffer"
+  | "accept"
   | "calc"
   | "preview"
   | "files"
@@ -29,7 +34,10 @@ export type Action =
   | "update"
   | "connect"
   | "restore"
-  | "settings";
+  | "status"
+  | "storeResult"
+  | "settings"
+  | "move";
 
 export interface Described {
   /** One sentence: what failed. */
@@ -67,11 +75,21 @@ const KNOWN = new Set([
   "library_changed",
   "permission_denied",
   "disk_full",
+  "foreign_entry",
   "io",
   "nothing_to_revert",
   "revert_created",
   "no_such_change",
   "revert_conflict",
+  "revert_stale",
+  "review_stale",
+  "revert_out_of_limits",
+  "revert_out_of_limits_damaged",
+  "revert_outside",
+  "busy",
+  "busy_edits",
+  "busy_open",
+  "left_before_action",
   "save_conflict",
   "not_saved",
   "unknown_example",
@@ -91,14 +109,24 @@ const KNOWN = new Set([
   "not_a_file",
   "unsupported_type",
   "invalid_name",
+  "not_attachable",
   "too_many",
+  "too_complex",
   "not_calculated",
+  "no_building",
+  "figures_too_large",
   "settings_unreadable",
+  "result_dropped",
   "refused",
 ]);
 
 /** Codes of the settings commands, with their messages under `settings.err.<code>`. */
 const SETTINGS_CODES = new Set(["not_absolute", "not_a_folder", "not_writable", "invalid_value", "io"]);
+
+/** The core's detail says a file is not UTF-8 text (store.rs `read_text`), not that it is damaged. */
+export function notUtf8(detail: string | null | undefined): boolean {
+  return /not UTF-8 text/.test(detail ?? "");
+}
 
 /** A translated description of an error from `action`. */
 export function describeError(e: unknown, action?: Action): Described {
@@ -106,12 +134,30 @@ export function describeError(e: unknown, action?: Action): Described {
   const code = KNOWN.has(err.code) ? err.code : "unknown";
   // A settings code says what is wrong with the folder or value (ERRU-002).
   const settings = SETTINGS_CODES.has(err.code) && (action === "settings" || !KNOWN.has(err.code));
+  // An export refused for the job's own size, not for its files (bundle.rs, ARCH-205).
+  const jobTooLarge = code === "too_large" && /the job is too large to hand over/.test(err.detail ?? "");
+  // Refused for its unknown keys (model.rs `check_counts`: their size or depth), not for its buildings or walls.
+  const unknownKeys = code === "too_many" && /unknown keys/.test(err.detail ?? "");
+  // A job file in another encoding is intact text, not a damaged file (store.rs `read_text`).
+  const notText = code === "unreadable" && notUtf8(err.detail);
   return {
     code: err.code,
     title: t(action ? `err.action.${action}` : "err.title"),
-    message: settings ? t(`settings.err.${err.code}`) : t(`err.${code}`, { id: err.id ?? "" }),
+    message: settings ? t(`settings.err.${err.code}`) : jobTooLarge ? t("err.job_too_large") : unknownKeys ? t("err.unknown_keys") : notText ? t("err.unreadable_text") : t(`err.${code}`, { id: err.id ?? "" }),
     detail: err.detail,
   };
+}
+
+/**
+ * Why the library cannot read one of its files (store.rs `scan`), in the
+ * user's language: the same text the editor gives when it opens that file
+ * (a job refused for its unknown keys, a file in another encoding, ...),
+ * not the operating system's refusal (ARCH-1303). A code this file does
+ * not know is an input / output error.
+ */
+export function describeBroken(b: { id: string; code: string; detail?: string | null }): string {
+  if (!KNOWN.has(b.code)) return t("err.io");
+  return describeError({ code: b.code, id: b.id, detail: b.detail ?? undefined }).message;
 }
 
 /**
@@ -172,6 +218,7 @@ export function refusalReason(detail: string | undefined): string {
   if (/below the ground/.test(d)) return t("refuse.belowGround");
   if (/leave its roof face/.test(d)) return t("place.refused");
   if (/stands on no roof face/.test(d)) return t("refuse.noFace");
+  if (/the helper gives values a wall does not take/.test(d)) return t("refuse.helperRange");
   const range = d.match(/out of range \((-?[\d.]+) to (-?[\d.]+) m/);
   if (range) {
     const f = (x: string) => new Intl.NumberFormat(numberLocale(), { useGrouping: false, maximumFractionDigits: 3 }).format(+x);
@@ -188,4 +235,17 @@ export function describeRefusal(e: unknown, action: RefusedAction): Described | 
   const err = toAppError(e);
   if (err.code !== "refused") return null;
   return { code: "refused", title: t(REFUSED_TITLE[action]), message: refusalReason(err.detail), detail: err.detail };
+}
+
+/**
+ * A dormer the core refused to store (`check_dormer`: `dormer_below_roof`,
+ * `dormer_pitch`, `dormer_segments`), as the dormer field's reason in the user's language;
+ * null for any other error (MATH-001, MATH-003).
+ */
+export function dormerRefusal(e: unknown): string | null {
+  const code = toAppError(e).code;
+  if (code === "dormer_below_roof") return t("dormer.err.eave_below_roof");
+  if (code === "dormer_pitch") return t("dormer.err.bad_pitch");
+  if (code === "dormer_segments") return t("dormer.err.segments");
+  return null;
 }

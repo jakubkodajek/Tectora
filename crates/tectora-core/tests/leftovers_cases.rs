@@ -1418,3 +1418,178 @@ fn windows_anywhere_on_a_departed_roof_stay_on_their_face() {
         bad.join("\n")
     );
 }
+
+// ------------------------------------------- audit 2026-11-23 HUNT-1502
+
+/// Building A, a gable roof, and building B with four gable walls, which
+/// the core cannot roof (`open_faces`).
+fn gable_and_failing_building() -> Project {
+    let mut p = Project::new("Two buildings");
+    let a = [
+        (0.0, 0.0, 40.0),
+        (12.0, 0.0, G),
+        (12.0, 8.0, 40.0),
+        (0.0, 8.0, G),
+    ];
+    let b = [(40.0, 0.0), (46.0, 0.0), (46.0, 6.0), (40.0, 6.0)];
+    p.parts = vec![
+        RoofPart::new(
+            "A",
+            a.iter().map(|&(x, y, d)| edge(x, y, d, 3.0, 0.5)).collect(),
+        ),
+        RoofPart::new(
+            "B",
+            b.iter().map(|&(x, y)| edge(x, y, G, 3.0, 0.5)).collect(),
+        ),
+    ];
+    p
+}
+
+fn square(x: f64, y: f64, s: f64) -> tectora_core::model::Chimney {
+    tectora_core::model::Chimney {
+        corners: vec![
+            Point2::new(x, y),
+            Point2::new(x + s, y),
+            Point2::new(x + s, y + s),
+            Point2::new(x, y + s),
+        ],
+        height: 1.0,
+    }
+}
+
+fn window(x: f64, y: f64) -> tectora_core::model::RoofWindow {
+    tectora_core::model::RoofWindow {
+        x,
+        y,
+        width: 0.78,
+        height: 1.18,
+    }
+}
+
+/// The off-roof warnings of `part` as `(kind, item)`.
+fn off_items(roof: &Roof, part: usize) -> Vec<(WarningKind, Option<usize>)> {
+    roof.geos[part]
+        .warnings
+        .iter()
+        .filter(|w| {
+            matches!(
+                w.kind,
+                WarningKind::WindowOffRoof
+                    | WarningKind::ChimneyOffRoof
+                    | WarningKind::OpeningOffRoof
+            )
+        })
+        .map(|w| (w.kind, w.item))
+        .collect()
+}
+
+/// HUNT-1502: an object on no roof face next to a building that calculated
+/// is reported while another building of the job fails; objects over the
+/// failing building cannot be judged and are not; nothing else changes.
+#[test]
+fn an_object_off_the_roof_is_warned_while_another_building_fails() {
+    let base = gable_and_failing_building();
+    let bare = calc(&base);
+    assert!(bare.geos[0].error.is_none(), "{:?}", bare.geos[0].error);
+    assert!(bare.geos[1].error.is_some(), "B fails");
+    let mut p = base.clone();
+    // Below A: off every face, nearest to A.
+    p.windows.push(window(6.0, -5.0));
+    p.chimneys.push(square(6.0, -7.0, 0.6));
+    p.roof_openings.push(square(3.0, -6.0, 0.8));
+    // Over B, which has no roof: not judged.
+    p.windows.push(window(43.0, 3.0));
+    p.chimneys.push(square(42.0, 2.0, 0.6));
+    let roof = calc(&p);
+    assert_eq!(
+        off_items(&roof, 0),
+        vec![
+            (WarningKind::WindowOffRoof, Some(0)),
+            (WarningKind::ChimneyOffRoof, Some(0)),
+            (WarningKind::OpeningOffRoof, Some(0)),
+        ]
+    );
+    assert_eq!(off_items(&roof, 1), vec![]);
+    // The roof itself is the one without the objects.
+    for (g, b) in roof.geos.iter().zip(&bare.geos) {
+        assert_eq!(g.faces, b.faces);
+        assert_eq!(
+            g.error.as_ref().map(|e| e.kind),
+            b.error.as_ref().map(|e| e.kind)
+        );
+    }
+    near("area", roof.area, bare.area, 1e-9);
+    assert_eq!(roof.lines, bare.lines);
+}
+
+/// HUNT-1603: B, a failing building, crosses A (a cross drawn as two
+/// rectangles). A window inside B's walls but nearer to A's eave wall is
+/// not judged (B has no roof yet); moved outside both it is warned on A.
+/// The roof itself is the same with and without the window.
+#[test]
+fn an_object_inside_a_failing_building_is_not_judged() {
+    let mut base = Project::new("Cross");
+    let a = [
+        (0.0, 0.0, 40.0),
+        (12.0, 0.0, G),
+        (12.0, 8.0, 40.0),
+        (0.0, 8.0, G),
+    ];
+    let b = [(6.0, -6.0), (10.0, -6.0), (10.0, 14.0), (6.0, 14.0)];
+    base.parts = vec![
+        RoofPart::new(
+            "Main",
+            a.iter().map(|&(x, y, d)| edge(x, y, d, 3.0, 0.5)).collect(),
+        ),
+        RoofPart::new(
+            "B",
+            b.iter().map(|&(x, y)| edge(x, y, G, 3.0, 0.5)).collect(),
+        ),
+    ];
+    let bare = calc(&base);
+    assert!(bare.geos[0].error.is_none(), "{:?}", bare.geos[0].error);
+    assert!(bare.geos[1].error.is_some(), "B fails");
+    let mut p = base.clone();
+    // Inside B's walls, 1 m from Main's eave wall, 2 m from B's walls.
+    p.windows.push(window(8.0, -1.0));
+    // A chimney inside B's walls too, near Main.
+    p.chimneys.push(square(7.8, -1.6, 0.4));
+    let roof = calc(&p);
+    assert_eq!(off_items(&roof, 0), vec![]);
+    assert_eq!(off_items(&roof, 1), vec![]);
+    for (g, b) in roof.geos.iter().zip(&bare.geos) {
+        assert_eq!(g.faces, b.faces);
+        assert_eq!(
+            g.error.as_ref().map(|e| e.kind),
+            b.error.as_ref().map(|e| e.kind)
+        );
+    }
+    near("area", roof.area, bare.area, 1e-9);
+    assert_eq!(roof.lines, bare.lines);
+    // Moved outside both buildings (and still nearest to Main): warned.
+    let mut q = base.clone();
+    q.windows.push(window(3.0, -3.0));
+    q.chimneys.push(square(2.0, -4.0, 0.4));
+    let roof = calc(&q);
+    assert_eq!(
+        off_items(&roof, 0),
+        vec![
+            (WarningKind::WindowOffRoof, Some(0)),
+            (WarningKind::ChimneyOffRoof, Some(0)),
+        ]
+    );
+    assert_eq!(off_items(&roof, 1), vec![]);
+}
+
+/// HUNT-1502 (pin): when every building fails nothing is reported, as
+/// before (the calculation's errors say enough).
+#[test]
+fn no_object_is_warned_when_every_building_fails() {
+    let mut p = gable_and_failing_building();
+    p.parts.remove(0);
+    p.windows.push(window(30.0, -5.0));
+    p.chimneys.push(square(30.0, -7.0, 0.6));
+    let roof = calc(&p);
+    assert!(roof.geos.iter().all(|g| g.error.is_some()));
+    assert_eq!(off_items(&roof, 0), vec![]);
+}

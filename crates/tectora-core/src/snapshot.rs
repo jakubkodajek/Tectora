@@ -38,6 +38,125 @@ pub struct ResultSnapshot {
     pub area_by_material: Vec<MaterialArea>,
 }
 
+/// Most line codes a stored result may hold: the core gives about 15.
+pub const MAX_STORED_CODES: usize = 64;
+/// Longest line code of a stored result, in characters (the core's are
+/// one or two letters).
+pub const MAX_CODE_CHARS: usize = 4;
+/// Longest engine version of a stored result, in characters.
+pub const MAX_ENGINE_VERSION_CHARS: usize = 40;
+/// Most material figures of a stored result (materials are 0 to 255).
+pub const MAX_STORED_MATERIALS: usize = 256;
+/// Largest absolute figure of a stored result (m², m).
+const MAX_FIGURE: f64 = 1.0e9;
+/// Latest time a stored result may carry, ms since the Unix epoch: the
+/// last date JavaScript (the app) can show, 13 September 275760. It is
+/// below 2^53, so the app reads and sends back every allowed time exactly
+/// (audit 2026-11-22 HUNT-802).
+pub const MAX_TAKEN_MS: u64 = 8_640_000_000_000_000;
+/// Most differences [`compare`] gives: a second bound after the stored
+/// result's own (ARCH-303).
+pub const MAX_DIFFERENCES: usize = 100;
+
+/// Whether `code` reads as a line code: 1 to [`MAX_CODE_CHARS`] ASCII
+/// letters and digits (`T`, `OL`, `c`, `WV`, …).
+pub fn is_line_code(code: &str) -> bool {
+    (1..=MAX_CODE_CHARS).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+impl ResultSnapshot {
+    /// Why this stored result is not one Tectora wrote, or `None`: too many
+    /// line codes or materials, a code that is no line code, an engine
+    /// version that is not one short line, a figure that is not a finite
+    /// number of a real roof. A job from outside (a received bundle, a file
+    /// copied into the library) is held to it: 200 000 codes froze the
+    /// editor and made every MCP read of the job 23 MB (ARCH-303).
+    pub fn problem(&self) -> Option<String> {
+        self.out_of_bounds()
+            .map(|why| format!("the stored result is damaged: {why}"))
+    }
+
+    /// What of this result is outside the bounds [`ResultSnapshot::problem`]
+    /// holds a stored result to, or `None`.
+    fn out_of_bounds(&self) -> Option<String> {
+        let why = if self.lines_by_code.len() > MAX_STORED_CODES {
+            format!(
+                "too many line codes: {} (at most {MAX_STORED_CODES})",
+                self.lines_by_code.len()
+            )
+        } else if let Some(k) = self.lines_by_code.keys().find(|k| !is_line_code(k)) {
+            let shown: String = k.chars().take(8).collect();
+            format!("{shown:?} is not a line code")
+        } else if self.area_by_material.len() > MAX_STORED_MATERIALS {
+            format!(
+                "too many materials: {} (at most {MAX_STORED_MATERIALS})",
+                self.area_by_material.len()
+            )
+        } else if self.engine_version.chars().count() > MAX_ENGINE_VERSION_CHARS
+            || crate::edit::check_label("engine version", &self.engine_version).is_err()
+        {
+            format!(
+                "the engine version is not one line of at most {MAX_ENGINE_VERSION_CHARS} characters"
+            )
+        } else if [self.roof_area, self.ridge_height]
+            .into_iter()
+            .chain(self.lines_by_code.values().copied())
+            .chain(self.area_by_material.iter().map(|m| m.area))
+            .any(|v| !(v.is_finite() && v.abs() <= MAX_FIGURE))
+        {
+            format!(
+                "a figure is not a number of a real roof (an area of at most {MAX_FIGURE} m², a length or height of at most {MAX_FIGURE} m)"
+            )
+        } else {
+            return None;
+        };
+        Some(why)
+    }
+
+    /// Why the time of this stored result cannot be a real one (after
+    /// [`MAX_TAKEN_MS`]), or `None`. Not a reason to refuse the job: the
+    /// time is metadata (lessons-learned 2026-11-03), so such a result is
+    /// dropped instead ([`drop_impossible`]).
+    pub fn impossible_time(&self) -> Option<String> {
+        (self.taken_ms > MAX_TAKEN_MS).then(|| {
+            format!(
+                "the stored result is dated {} ms after 1970, later than any calendar date (at most {MAX_TAKEN_MS}); it was left out",
+                self.taken_ms
+            )
+        })
+    }
+
+    /// Why this result, read from a record or the change log, may not be
+    /// written into a job as its stored result: damaged
+    /// ([`ResultSnapshot::problem`]) or dated after any calendar date
+    /// ([`ResultSnapshot::impossible_time`]), which every later read would
+    /// drop (audit 2026-11-23 HUNT-1102). `Ok` when it may.
+    pub fn writable(&self) -> Result<(), String> {
+        match self.problem().or_else(|| self.impossible_time()) {
+            Some(why) => Err(why),
+            None => Ok(()),
+        }
+    }
+
+    /// The engine version of a stored result from outside as one line of
+    /// at most [`MAX_ENGINE_VERSION_CHARS`] characters (ARCH-303).
+    pub fn clean(&mut self) {
+        self.engine_version =
+            crate::edit::clean_line(&self.engine_version, MAX_ENGINE_VERSION_CHARS);
+    }
+}
+
+/// Drops the stored result of `project` when its time cannot be a real
+/// one ([`ResultSnapshot::impossible_time`]) and says why; the job opens
+/// without it. The app could neither show nor send back such a time, so
+/// the job could never be saved from the app (audit 2026-11-22 HUNT-802;
+/// owner decision: open the job, drop the result, warn).
+pub fn drop_impossible(project: &mut Project) -> Option<String> {
+    let why = project.result_snapshot.as_ref()?.impossible_time()?;
+    project.result_snapshot = None;
+    Some(why)
+}
+
 fn r2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
@@ -48,6 +167,10 @@ fn r2(v: f64) -> f64 {
 /// `Err(Refused::Internal)` instead of aborting the caller.
 pub fn take_checked(project: &Project) -> Result<ResultSnapshot, Refused> {
     project.check_limits().map_err(Refused::OutOfRange)?;
+    // No building and no hand-drawn face: no figures to offer (UX-102).
+    if project.parts.is_empty() && project.manual_faces.is_empty() {
+        return Err(Refused::NoBuilding);
+    }
     // Input the calculation leaves out (a building with a wall shorter than
     // 1 cm, …) is missing from the figures (review UX-002).
     if let Some(p) = project.problems().first() {
@@ -63,17 +186,33 @@ pub fn take_checked(project: &Project) -> Result<ResultSnapshot, Refused> {
     }
     // A part the core gives no roof for counts 0 m²: storing that as the
     // offer's figures would hide the problem (review ERR-003, DR-001).
-    // One calculation for the check and the figures.
-    crate::model::guarded(|| {
+    // One calculation for the check and the figures, bounded in work like
+    // every calculating entry point: a job too complex to calculate is
+    // refused in seconds instead of keeping the caller (MCP `store_result`,
+    // `update_job` leaving the draft, the store's origin check) busy for
+    // minutes (audit 2026-11-24 HUNT-1903).
+    crate::work::calculate(|| {
         let geos = crate::openings::generate_project(project);
         match geos.iter().position(|g| g.error.is_some()) {
             Some(i) => Err(Refused::NotCalculated(format!(
                 "part index {i} has no roof"
             ))),
-            None => Ok(take_of(&geos, project)),
+            None => {
+                let taken = take_of(&geos, project);
+                // A result the store would refuse to keep is refused here,
+                // for what it is: the roof is too large, not a damaged
+                // file (audit 2026-11-22 HUNT-405, ARCH-403 item 1).
+                match taken.out_of_bounds() {
+                    Some(why) => Err(Refused::TooLarge(why)),
+                    None => Ok(taken),
+                }
+            }
         }
     })
-    .map_err(Refused::Internal)?
+    .map_err(|r| match r {
+        crate::work::Refusal::TooComplex => Refused::TooComplex,
+        crate::work::Refusal::Failed(d) => Refused::Internal(d),
+    })?
 }
 
 /// Why [`take_checked`] stored no result.
@@ -85,6 +224,14 @@ pub enum Refused {
     Internal(String),
     /// A part of the roof cannot be calculated (the detail says which).
     NotCalculated(String),
+    /// The job has no building and no hand-drawn face: nothing to store.
+    NoBuilding,
+    /// The figures are larger than a stored result may hold (a roof of
+    /// over 10⁹ m² or m): the detail says which bound.
+    TooLarge(String),
+    /// The calculation needs more work than [`crate::work::limit`]:
+    /// [`crate::work::TOO_COMPLEX`].
+    TooComplex,
 }
 
 impl std::fmt::Display for Refused {
@@ -93,6 +240,11 @@ impl std::fmt::Display for Refused {
             Refused::OutOfRange(d) => write!(f, "out of range: {d}"),
             Refused::Internal(d) => f.write_str(d),
             Refused::NotCalculated(d) => write!(f, "the roof cannot be calculated: {d}"),
+            Refused::NoBuilding => {
+                f.write_str("the job has no building, so there are no figures to store")
+            }
+            Refused::TooLarge(d) => write!(f, "the figures are too large to keep: {d}"),
+            Refused::TooComplex => f.write_str(crate::work::TOO_COMPLEX),
         }
     }
 }
@@ -169,6 +321,7 @@ pub fn compare(stored: &ResultSnapshot, current: &ResultSnapshot) -> Vec<Differe
         .collect();
     // One default material is the roof area again; only a split says more.
     if mats.iter().all(|&m| m == crate::model::DEFAULT_MATERIAL) {
+        out.truncate(MAX_DIFFERENCES);
         return out;
     }
     for m in mats {
@@ -180,6 +333,7 @@ pub fn compare(stored: &ResultSnapshot, current: &ResultSnapshot) -> Vec<Differe
         };
         check(format!("material:{m}"), get(stored), get(current));
     }
+    out.truncate(MAX_DIFFERENCES);
     out
 }
 
@@ -190,7 +344,10 @@ pub fn compare(stored: &ResultSnapshot, current: &ResultSnapshot) -> Vec<Differe
 pub fn change_in_figures(before: Option<&Project>, after: &Project) -> Option<Vec<Difference>> {
     let figures = |p: &Project| {
         p.check_limits().ok()?;
-        crate::model::guarded(|| take(p)).ok()
+        // Bounded: a job too complex to calculate gives "figures not
+        // available" in seconds, so the review banner (app and MCP
+        // `get_review`) still answers (audit 2026-11-24 HUNT-1903).
+        crate::work::calculate(|| take(p)).ok()
     };
     let empty = ResultSnapshot {
         engine_version: ENGINE_VERSION.to_string(),
@@ -210,7 +367,37 @@ pub fn change_in_figures(before: Option<&Project>, after: &Project) -> Option<Ve
 /// How the change-log entry of [`refreshed`] begins; the app reads it to
 /// show the sentence in the user's language. The entry reads
 /// `Stored result recalculated (Tectora <from> -> <to>): roof area <a> -> <b> m2`.
+/// When the roof area is the same it names what else changed instead
+/// ([`refreshed_what`]): `line lengths G, K` or `other figures`.
 pub const REFRESHED_PREFIX: &str = "Stored result recalculated";
+
+/// How many line codes the summary of a recalculation names.
+const REFRESHED_CODES: usize = 8;
+
+/// What a recalculation changed, for its change-log summary, from the
+/// `differences` themselves (audit 2026-11-22 UX-807: "roof area 142.83 ->
+/// 142.83 m2" read as "nothing changed" while the hips changed by 2 m):
+/// the roof area when it differs, else the codes of the lines whose
+/// lengths differ, else "other figures" (the ridge height, the areas by
+/// material). The app reads all three (`live.svelte.ts`).
+fn refreshed_what(differences: &[Difference]) -> String {
+    if let Some(area) = differences.iter().find(|d| d.key == "roof_area") {
+        return format!("roof area {:.2} -> {:.2} m2", area.stored, area.current);
+    }
+    let codes: Vec<&str> = differences
+        .iter()
+        .filter_map(|d| d.key.strip_prefix("line:"))
+        // A code is a word of a DACAD line table; one from a file that is
+        // none would break the sentence.
+        .filter(|c| !c.is_empty() && c.len() <= 8 && c.chars().all(|c| c.is_ascii_alphanumeric()))
+        .take(REFRESHED_CODES)
+        .collect();
+    if codes.is_empty() {
+        "other figures".into()
+    } else {
+        format!("line lengths {}", codes.join(", "))
+    }
+}
 
 /// `a.b.c` as numbers, for comparing engine versions.
 fn version(v: &str) -> Option<(u64, u64, u64)> {
@@ -261,12 +448,15 @@ pub fn refreshed(project: &Project) -> Option<(Project, String)> {
         return None;
     }
     let current = take_checked(project).ok()?;
-    if compare(stored, &current).is_empty() {
+    let differences = compare(stored, &current);
+    if differences.is_empty() {
         return None;
     }
     let summary = format!(
-        "{REFRESHED_PREFIX} (Tectora {} -> {}): roof area {:.2} -> {:.2} m2",
-        stored.engine_version, ENGINE_VERSION, stored.roof_area, current.roof_area
+        "{REFRESHED_PREFIX} (Tectora {} -> {}): {}",
+        stored.engine_version,
+        ENGINE_VERSION,
+        refreshed_what(&differences)
     );
     let mut p = project.clone();
     p.result_snapshot = Some(current);
@@ -303,6 +493,89 @@ mod tests {
     use super::*;
     use crate::examples;
     use crate::model::JobStatus;
+
+    /// Audit 2026-11-22 UX-807: the summary of a recalculation says what
+    /// changed, from the differences: the area when it differs, else the
+    /// line codes, else "other figures".
+    #[test]
+    fn the_recalculation_summary_names_what_changed() {
+        let d = |key: &str, stored: f64, current: f64| Difference {
+            key: key.into(),
+            stored,
+            current,
+        };
+        assert_eq!(
+            refreshed_what(&[d("roof_area", 150.0, 142.834), d("line:G", 30.41, 28.41)]),
+            "roof area 150.00 -> 142.83 m2"
+        );
+        assert_eq!(
+            refreshed_what(&[d("line:G", 30.41, 28.41), d("line:K", 1.0, 2.0)]),
+            "line lengths G, K"
+        );
+        assert_eq!(
+            refreshed_what(&[d("ridge_height", 4.0, 4.2)]),
+            "other figures"
+        );
+        assert_eq!(
+            refreshed_what(&[d("material:2", 4.0, 4.2)]),
+            "other figures"
+        );
+        // A code that is no word of a line table never breaks the sentence.
+        assert_eq!(
+            refreshed_what(&[d("line:a, b): x", 1.0, 2.0), d("line:WV", 1.0, 2.0)]),
+            "line lengths WV"
+        );
+        let many: Vec<Difference> = (0..20)
+            .map(|i| d(&format!("line:L{i}"), 1.0, 2.0))
+            .collect();
+        assert_eq!(refreshed_what(&many).split(", ").count(), REFRESHED_CODES);
+
+        // Through `refreshed`: the same area, one line 2 m longer before.
+        let mut p = examples::find("gable").unwrap().project();
+        let mut s = take(&p);
+        s.engine_version = "0.0.1".into();
+        let code = s.lines_by_code.keys().next().unwrap().clone();
+        *s.lines_by_code.get_mut(&code).unwrap() += 2.0;
+        p.result_snapshot = Some(s);
+        let (_, summary) = refreshed(&p).expect("recalculated");
+        assert_eq!(
+            summary,
+            format!("{REFRESHED_PREFIX} (Tectora 0.0.1 -> {ENGINE_VERSION}): line lengths {code}")
+        );
+    }
+
+    /// Audit 2026-11-22 HUNT-405, ARCH-403 item 1: the result of a roof
+    /// the core calculates but a stored result may not hold (a face of
+    /// 40 km x 40 km, 1.85e9 m²) is refused as too large, not as a damaged
+    /// file, and is never handed out to be stored.
+    #[test]
+    fn a_result_too_large_to_keep_is_refused_as_too_large_not_damaged() {
+        use crate::geom::Point2;
+        let mut p = examples::find("gable").unwrap().project();
+        let s = 40_000.0;
+        p.manual_faces.push(crate::model::ManualFace {
+            points: vec![
+                Point2::new(20.0, 0.0),
+                Point2::new(20.0 + s, 0.0),
+                Point2::new(20.0 + s, s),
+                Point2::new(20.0, s),
+            ],
+            pitch_deg: 30.0,
+            label: String::new(),
+        });
+        assert!(p.check_limits().is_ok());
+        assert!(take(&p).roof_area > MAX_FIGURE, "the core calculates it");
+        let e = take_checked(&p).unwrap_err();
+        assert!(matches!(e, Refused::TooLarge(_)), "{e:?}");
+        let text = e.to_string();
+        assert!(text.contains("too large"), "{text}");
+        // With its units, for the AI as for the app (UX-504).
+        assert!(text.contains(" m²") && text.contains(" m)"), "{text}");
+        assert!(!text.contains("damaged"), "{text}");
+        let e = crate::commands::take_snapshot(&p).unwrap_err();
+        assert_eq!(e.code, "figures_too_large", "{e:?}");
+        assert!(!e.detail.contains("damaged"), "{e:?}");
+    }
 
     /// A gable job whose stored result an older engine took with a roof
     /// area 2 m² off (a calculation fixed since).
@@ -416,6 +689,38 @@ mod tests {
         assert!(s.differences.iter().any(|d| d.key == "roof_area"));
     }
 
+    /// The cases the UI's copy of this rule (`app/src/lib/offer.ts`
+    /// `snapshotDifferences`) is tested with too, so the two cannot drift
+    /// (TEST-302): the keys `compare` reports, in its order.
+    #[test]
+    fn compare_matches_the_shared_cases() {
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/parity/snapshot_compare_cases.json"),
+        )
+        .unwrap();
+        let file: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let snap = |over: &serde_json::Value| -> ResultSnapshot {
+            let mut v = file["base"].clone();
+            v["engine_version"] = "test".into();
+            v["taken_ms"] = 0.into();
+            for (k, x) in over.as_object().unwrap() {
+                v[k] = x.clone();
+            }
+            serde_json::from_value(v).unwrap()
+        };
+        let cases = file["cases"].as_array().unwrap();
+        assert!(cases.len() >= 10);
+        for c in cases {
+            let keys: Vec<String> = compare(&snap(&c["stored"]), &snap(&c["current"]))
+                .into_iter()
+                .map(|d| d.key)
+                .collect();
+            let want: Vec<String> = serde_json::from_value(c["differs"].clone()).unwrap();
+            assert_eq!(keys, want, "{}", c["name"]);
+        }
+    }
+
     #[test]
     fn older_files_migrate_and_newer_ones_are_refused() {
         let p = examples::find("gable").unwrap().project();
@@ -426,5 +731,56 @@ mod tests {
         v["schema_version"] = 99.into();
         let err = Project::from_json(&v.to_string()).unwrap_err().to_string();
         assert!(err.contains("newer"), "{err}");
+    }
+
+    /// Audit 2026-11-24 HUNT-1903: the figures of the review and of a
+    /// stored result are calculated in the work bound, so a job too complex
+    /// to calculate answers "figures not available" / "too complex" in
+    /// seconds instead of keeping the review banner, MCP `get_review`,
+    /// `store_result` and `update_job` busy for minutes.
+    #[test]
+    fn the_review_figures_and_a_stored_result_stay_in_the_work_bound() {
+        // Two buildings that overlap: their join counts its work.
+        let mut a = examples::find("gable").unwrap().project();
+        let mut second = a.parts[0].clone();
+        for e in &mut second.edges {
+            e.start.x += 3.0;
+            e.start.y += 2.0;
+        }
+        a.parts.push(second);
+        let mut b = a.clone();
+        b.parts[0].edges[0].overhang = 0.7;
+        assert!(change_in_figures(Some(&a), &b).is_some());
+        let (_, once) = crate::work::bounded_by(u64::MAX, || take(&b));
+        assert!(once > 1);
+        crate::work::with_limit(once / 2, || {
+            assert_eq!(change_in_figures(Some(&a), &b), None);
+            assert_eq!(take_checked(&b), Err(Refused::TooComplex));
+            assert_eq!(
+                Refused::TooComplex.to_string(),
+                crate::work::TOO_COMPLEX.to_string()
+            );
+        });
+        // Through the store, as the app's banner and MCP `get_review` read it.
+        let dir = std::env::temp_dir().join(format!(
+            "tectora-test-review-bound-{}",
+            crate::store::now_ms()
+        ));
+        let store = crate::store::Store::new(dir.clone()).unwrap();
+        let id = store.save_as(None, &a, "claude", "Created").unwrap();
+        let ts = store.activity(&id)[0].ts_ms;
+        store.mark_reviewed(&id, ts).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .save_as(Some(id.clone()), &b, "claude", "Overhang")
+            .unwrap();
+        let open = store.review_status(&id).unwrap().expect("a review waits");
+        assert!(open.differences.is_some());
+        let bounded = crate::work::with_limit(once / 2, || store.review_status(&id))
+            .unwrap()
+            .expect("the review still answers");
+        assert_eq!(bounded.differences, None);
+        assert_eq!(bounded.pending.count, open.pending.count);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

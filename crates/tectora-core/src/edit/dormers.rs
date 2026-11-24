@@ -461,6 +461,83 @@ fn pitches_ok(p: &DormerParams) -> bool {
     pitches && p.width > 0.0 && p.width.is_finite() && len(p.overhang) && len(p.side_overhang)
 }
 
+/// Lowest front wall a dormer may have above the roof under its front,
+/// m: a pointed dormer's eave (on the roof, rounded to mm) passes.
+const WALL_HEIGHT_EPS: f64 = 1e-3;
+
+/// Why a dormer cannot be saved as typed, for every place that sets one
+/// (MCP `add_dormer` / `update_dormer`, the editor's dormer bar and
+/// dialog, mirrored in `dormers.ts` `dormerCheck`):
+/// - `dormer_pitch`: a pitch the dormer uses is below a wall's 2°
+///   ([`crate::model::MIN_PITCH_DEG`]) or 90° or more; the calculation
+///   leaves such a dormer out (MATH-003);
+/// - `dormer_below_roof`: its eave lies below the roof under its front
+///   (front wall height < 0 on `host`); the building's roof then fails
+///   (MATH-001), the same rule as `wall_height` 0 or more.
+///
+/// `host` is the roof under the front ([`host_slope_in`]); without one only
+/// the pitches are checked.
+pub fn check_params(
+    p: &DormerParams,
+    host: Option<HostSlope>,
+) -> Result<(), (&'static str, String)> {
+    let min = crate::model::MIN_PITCH_DEG;
+    let ok = |v: f64| v.is_finite() && v >= min && v < 90.0;
+    let used: &[(&str, f64)] = match p.kind {
+        DormerKind::Shed => &[("front_pitch_deg", p.front_pitch_deg)],
+        DormerKind::Trapezoid => &[
+            ("pitch_deg", p.pitch_deg),
+            ("front_pitch_deg", p.front_pitch_deg),
+        ],
+        DormerKind::HalfHip => &[
+            ("pitch_deg", p.pitch_deg),
+            ("half_hip_pitch_deg", p.half_hip_pitch_deg),
+        ],
+        DormerKind::Round | DormerKind::General => &[],
+        DormerKind::Gable | DormerKind::Pointed | DormerKind::Hip => &[("pitch_deg", p.pitch_deg)],
+    };
+    if let Some((name, v)) = used.iter().find(|(_, v)| !ok(*v)) {
+        return Err((
+            "dormer_pitch",
+            format!(
+                "{name} {v} must be at least {min} and below 90 degrees: the calculation leaves out a dormer with a flatter plane"
+            ),
+        ));
+    }
+    // A round dormer's cheeks get their pitches and breaks from its arc:
+    // with many segments on a small width the flattest is under 2° or two
+    // breaks fall on one height, and the calculation leaves the cheek out
+    // (HUNT-103).
+    if p.kind == DormerKind::Round
+        && let Some((code, _)) = build_dormer(p)
+            .edges
+            .iter()
+            .find_map(|e| e.problems().next())
+    {
+        return Err((
+            "dormer_segments",
+            format!(
+                "segments {}: too many for a round dormer {} m wide, its cheeks would be left out ({code}); give fewer segments (0 takes the usual count)",
+                p.segments, p.width
+            ),
+        ));
+    }
+    if let Some(host) = host {
+        let wall = section(p, host).wall_height;
+        if wall.is_finite() && wall < -WALL_HEIGHT_EPS {
+            let lowest = round_to(p.eave_height - wall, 3);
+            return Err((
+                "dormer_below_roof",
+                format!(
+                    "the dormer's eave_height {} lies below the roof under its front (its front wall would be {:.3} m high; wall_height must be 0 or more): give eave_height {lowest} or more",
+                    p.eave_height, wall
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 const BAD_PARAMS: &str = "the dormer's pitches must be between 0 and 90 degrees, its width positive and its overhangs 0 or more";
 
 /// The eave height that gives the dormer `target` on `host`.

@@ -432,7 +432,7 @@ fn report(t: &Tallies, show: usize) -> bool {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs DCORE_SETS (private DACAD material outside the repository)"]
 fn emulator_dumps() {
     let sets = std::env::var("DCORE_SETS").expect("DCORE_SETS=LIST=DIR;...");
     let mut t = Tallies::new();
@@ -529,7 +529,7 @@ fn x87_fixture_vectors() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs DCORE_X87 (private DACAD material outside the repository)"]
 fn x87_all_vectors() {
     let p = std::env::var("DCORE_X87").expect("DCORE_X87=file");
     let (n, bad) = x87_vectors(Path::new(&p));
@@ -633,7 +633,7 @@ fn geom_fixture_vectors() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs DCORE_GEOM (private DACAD material outside the repository)"]
 fn geom_all_vectors() {
     let p = std::env::var("DCORE_GEOM").expect("DCORE_GEOM=file");
     let (n, bad) = geom_vectors(Path::new(&p));
@@ -701,7 +701,7 @@ fn seg_fixture_vectors() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs DCORE_SEG (private DACAD material outside the repository)"]
 fn seg_all_vectors() {
     let p = std::env::var("DCORE_SEG").expect("DCORE_SEG=file");
     let (n, bad) = seg_vectors(Path::new(&p));
@@ -716,7 +716,7 @@ fn seg_all_vectors() {
 /// each outcome (for cases without dumps, e.g. one the original never
 /// finishes).
 #[test]
-#[ignore]
+#[ignore = "needs DCORE_RD2 (private DACAD material outside the repository)"]
 fn run_rd2() {
     let files = std::env::var("DCORE_RD2").expect("DCORE_RD2=files");
     let flags = std::env::var("DCORE_FLAGS")

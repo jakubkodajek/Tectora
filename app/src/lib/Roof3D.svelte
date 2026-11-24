@@ -1,8 +1,9 @@
 <script lang="ts">
   import { ui } from "./theme.svelte";
+  import { minOf } from "./extent";
   import { releaseRenderer } from "./webgl";
   import Icon from "./Icon.svelte";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import * as THREE from "three";
   import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
   import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
@@ -12,9 +13,10 @@
   import type { ItemRef, PlanTarget } from "./items";
   import { t } from "./i18n.svelte";
   import { radiogroup } from "./tabs";
-  import { hostHeightAt, isDormerFace, slopeAt } from "./dormers";
+  import { hscroll } from "./hscroll";
+  import { hostParts, isDormerFace, slopeAt } from "./dormers";
   import { isConvex, windowOutline } from "./openings";
-  import { chimneyTop, clipConvex, coveredByDormer, crossings, dormerFaces, dormerWallLines, manualFacePoly, planBox, onWallLine, outgrows, planArea, planeOf, wallTriangles, wallUnderRoof, gableShownByWall, inwardNormal, type Extent, type Poly3 } from "./scene3d";
+  import { chimneyTop, clipConvex, coveredByDormer, crossingIndex, dormerFaces, dormerWallLines, manualFacePoly, planBox, onWallLine, outgrows, planArea, planeOf, wallTriangles, wallUnderRoof, gableShownByWall, inwardNormal, type Extent, type Poly3 } from "./scene3d";
   import { presets } from "./settings.svelte";
 
   let {
@@ -90,8 +92,6 @@
   // Plan (x, y) with height z maps to three.js (x, z, -y): y-up world.
   const v3 = (p: [number, number, number]) => new THREE.Vector3(p[0], p[2], -p[1]);
 
-  const same = (a: ItemRef | null, b: ItemRef) => !!a && a.kind === b.kind && a.index === b.index;
-
   /** A mesh of plan-triangulated polygons lying in planes (`pts` in plan x, y, z). */
   function polyMesh(outer: Poly3, holes: Poly3[], mat: THREE.Material, target?: PlanTarget): THREE.Mesh {
     const contour = outer.map((p) => new THREE.Vector2(p[0], p[1]));
@@ -144,8 +144,54 @@
     return m;
   }
 
+  // The scene is built from plain copies, once per job and result: every
+  // read of the reactive props inside the loops below cost seconds on a job
+  // of 200 buildings (UI-602). The roof-height and line-crossing lookups are
+  // built once per result, bounded by plan boxes.
+  const plainProject = $derived($state.snapshot(project) as Project);
+  const plainResult = $derived($state.snapshot(result) as CalcResult | null);
+  const heights = $derived(hostParts(plainResult));
+  const crossingsOf = $derived(crossingIndex(plainResult?.parts));
+  /** Materials of the scene built last, disposed with it (also the selected ones not in use). */
+  let builtMats: THREE.Material[] = [];
+
+  /** What a mesh shows as selected: the wall or roof face of `selection`, or the selected object. */
+  const edgeKey = (part: number, edge: number) => `edge:${part}:${edge}`;
+  const itemKey = (it: ItemRef) => `item:${it.kind}:${it.index}`;
+  /** Marks `m` as showing `sel` instead of its own material while `key` is selected. */
+  function selectable<M extends THREE.Mesh>(m: M, key: string, sel: THREE.Material): M {
+    m.userData.selKey = key;
+    m.userData.base = m.material;
+    m.userData.sel = sel;
+    return m;
+  }
+
+  /**
+   * Shows the selection: only the materials of the meshes change. The
+   * scene used to be rebuilt on every click (UI-602).
+   */
+  function highlight() {
+    const keys = new Set<string>();
+    if (selection) keys.add(edgeKey(selection.part, selection.edge));
+    if (item) keys.add(itemKey(item));
+    const shown = new Set<string>();
+    content.traverse((o) => {
+      const m = o as THREE.Mesh;
+      const key = m.userData?.selKey as string | undefined;
+      if (key === undefined) return;
+      const want = keys.has(key) ? m.userData.sel : m.userData.base;
+      if (m.material !== want) m.material = want;
+      if (want === m.userData.sel) shown.add(key);
+    });
+    // What the view shows selected, for the tests (TEST-704).
+    if (host) host.dataset.selected = [...shown].sort().join(" ");
+  }
+
   function build() {
     if (!scene) return;
+    const project = plainProject;
+    const result = plainResult;
+    const hostHeightAt = (_: unknown, p: Point2) => heights.top(p);
     scene.remove(content);
     content.traverse((o) => {
       const m = o as THREE.Mesh;
@@ -154,6 +200,7 @@
       if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
       else mat?.dispose();
     });
+    for (const m of builtMats) m.dispose();
     content = new THREE.Group();
     lineMats.length = 0;
     groundMat?.color.copy(token("--scene-ground"));
@@ -205,12 +252,9 @@
     // line (scene3d.wallUnderRoof), so the building is closed from every
     // side and at every height. The roof decides the top; the building
     // height is the top only where no roof is over the wall.
-    const allLines = result ? result.parts.flatMap((rp) => rp.geometry.lines.map((l): [Poly3[number], Poly3[number]] => [l.a, l.b])) : [];
-    const walls: { part: number; wall: Poly3; inward: Point2; overhang: number }[] = [];
+    const walls: { wall: Poly3; inward: Point2; overhang: number }[][] = project.parts.map(() => []);
     project.parts.forEach((part, pi) => {
       const n = part.edges.length;
-      const rp = result?.parts[pi];
-      const own = rp && result ? { ...result, parts: [rp] } : null;
       const corners = part.edges.map((e) => e.start);
       part.edges.forEach((e, i) => {
         const b = part.edges[(i + 1) % n];
@@ -219,11 +263,11 @@
         const inward = inwardNormal(corners, e.start, b.start);
         const fallback = part.height ?? Math.min(e.eave_height, b.eave_height);
         // The building's own roof first; under a joined roof the other one.
-        const roofAt = (p: Point2) => hostHeightAt(own, p) ?? hostHeightAt(result, p);
-        const wall = wallUnderRoof(e.start, b.start, inward, crossings(e.start, b.start, allLines), roofAt, fallback);
+        const roofAt = (p: Point2) => heights.of(pi, p) ?? heights.top(p);
+        const wall = wallUnderRoof(e.start, b.start, inward, crossingsOf(e.start, b.start), roofAt, fallback);
         const idx = wallTriangles(wall);
         if (!idx) return;
-        walls.push({ part: pi, wall, inward, overhang: e.overhang ?? 0 });
+        walls[pi].push({ wall, inward, overhang: e.overhang ?? 0 });
         content.add(indexedMesh(wall, idx, wallMat, target));
       });
     });
@@ -231,13 +275,13 @@
     // Manual faces: counted in the roof area, so shown in 3D too (UX-009),
     // as neutral planes of their pitch from the lowest eave.
     const eaves = project.parts.flatMap((p) => p.edges.map((e) => e.eave_height));
-    const faceBase = eaves.length ? Math.min(...eaves) : presets.eave_height;
+    const faceBase = eaves.length ? minOf(eaves) : presets.eave_height;
     const manualMat = new THREE.MeshStandardMaterial({ color: token("--scene-wall"), roughness: 0.9, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 });
     (project.manual_faces ?? []).forEach((f, index) => {
       const poly = manualFacePoly(f.points, f.pitch_deg, faceBase);
       if (!poly || planArea(f.points) < 1e-6) return;
       const target: PlanTarget = { type: "item", item: { kind: "face", index } };
-      content.add(polyMesh(poly, [], same(item, target.item) ? selObjMat : manualMat, target));
+      content.add(selectable(polyMesh(poly, [], manualMat, target), itemKey(target.item), selObjMat));
     });
 
     // A non-convex opening stops the whole roof calculation (warned in the editor).
@@ -272,44 +316,44 @@
               if (a < 1e-4) continue;
               const lifted: Poly3 = inter.map((p) => [p.x, p.y, plane(p)]);
               const target: PlanTarget = { type: "item", item: { kind: "hole", index: h.index } };
-              const selected = same(item, target.item);
+              const key = itemKey(target.item);
               if (Math.abs(a - h.area) < 1e-4) {
                 cut.push(lifted);
                 // The opening's lining, 15 cm down from the roof surface.
                 lifted.forEach((p, k) => {
                   const q = lifted[(k + 1) % lifted.length];
-                  content.add(quad([p, q, [q[0], q[1], q[2] - 0.15], [p[0], p[1], p[2] - 0.15]], selected ? selObjMat : holeMat, target));
+                  content.add(selectable(quad([p, q, [q[0], q[1], q[2] - 0.15], [p[0], p[1], p[2] - 0.15]], holeMat, target), key, selObjMat));
                 });
                 // Closed at the bottom, so the hole reads as an opening and
                 // not as a view of the underside of the far roof face.
-                content.add(polyMesh(lifted.map((p) => [p[0], p[1], p[2] - 0.15]), [], selected ? selObjMat : holeMat, target));
+                content.add(selectable(polyMesh(lifted.map((p) => [p[0], p[1], p[2] - 0.15]), [], holeMat, target), key, selObjMat));
               } else {
-                content.add(polyMesh(lifted, [], selected ? selObjMat : holeMat, target));
+                content.add(selectable(polyMesh(lifted, [], holeMat, target), key, selObjMat));
               }
             }
           }
-          const sel = dormer >= 0 ? same(item, { kind: "dormer", index: dormer }) : selection?.part === pi && selection?.edge === f.edge;
           const target: PlanTarget = dormer >= 0 ? { type: "item", item: { kind: "dormer", index: dormer } } : { type: "edge", part: pi, edge: f.edge };
-          content.add(polyMesh(f.polygon, cut, sel ? (dormer >= 0 ? selDormerMat : selMat) : roofMat, isDormerFace(f.edge) && dormer < 0 ? undefined : target));
+          const faceMesh = polyMesh(f.polygon, cut, roofMat, isDormerFace(f.edge) && dormer < 0 ? undefined : target);
+          content.add(dormer >= 0 ? selectable(faceMesh, itemKey({ kind: "dormer", index: dormer }), selDormerMat) : selectable(faceMesh, edgeKey(pi, f.edge), selMat));
 
           // Dormer cheeks and front: walls hanging from the dormer roof's
           // edges on its wall lines down to the roof it stands on.
           if (dormer >= 0) {
-            const wm = same(item, { kind: "dormer", index: dormer }) ? selWallMat : wallMat;
+            const dormerKey = itemKey({ kind: "dormer", index: dormer });
             f.polygon.forEach((p, k) => {
               const q = f.polygon[(k + 1) % f.polygon.length];
               if (!onWallLine(dormerLines[dormer], p, q)) return;
               const zp = hostHeightAt(result, { x: p[0], y: p[1] });
               const zq = hostHeightAt(result, { x: q[0], y: q[1] });
               if (zp === null || zq === null || (p[2] - zp < 0.01 && q[2] - zq < 0.01)) return;
-              content.add(quad([p, q, [q[0], q[1], Math.min(zq, q[2])], [p[0], p[1], Math.min(zp, p[2])]], wm, { type: "item", item: { kind: "dormer", index: dormer } }));
+              content.add(selectable(quad([p, q, [q[0], q[1], Math.min(zq, q[2])], [p[0], p[1], Math.min(zp, p[2])]], wallMat, { type: "item", item: { kind: "dormer", index: dormer } }), dormerKey, selWallMat));
             });
           }
         }
         for (const poly of rp.geometry.gables) {
           if (coveredByDormer(poly, dormerWalls)) continue;
           // The wall under it is drawn up to the roof already.
-          if (walls.some((w) => w.part === pi && gableShownByWall(poly, w.wall, w.inward, w.overhang))) continue;
+          if ((walls[pi] ?? []).some((w) => gableShownByWall(poly, w.wall, w.inward, w.overhang))) continue;
           // Triangulated in the wall plane (scene3d.wallTriangles, tested).
           const idx = wallTriangles(poly);
           if (idx) content.add(indexedMesh(poly, idx, wallMat));
@@ -342,15 +386,15 @@
       if (c.corners.length < 3) return;
       const target: PlanTarget = { type: "item", item: { kind: "chimney", index } };
       const { bottom, top } = chimneyTop(c, (p) => hostHeightAt(result, p));
-      const selected = same(item, target.item);
-      content.add(prism(c.corners, bottom, top - 0.08, selected ? selObjMat : brickMat, target));
+      const key = itemKey(target.item);
+      content.add(selectable(prism(c.corners, bottom, top - 0.08, brickMat, target), key, selObjMat));
       const cx = c.corners.reduce((s, p) => s + p.x, 0) / c.corners.length;
       const cy = c.corners.reduce((s, p) => s + p.y, 0) / c.corners.length;
       const cap = c.corners.map((p) => {
         const l = Math.hypot(p.x - cx, p.y - cy) || 1;
         return { x: p.x + ((p.x - cx) / l) * 0.05, y: p.y + ((p.y - cy) / l) * 0.05 };
       });
-      content.add(prism(cap, top - 0.08, top, selected ? selObjMat : capMat, target));
+      content.add(selectable(prism(cap, top - 0.08, top, capMat, target), key, selObjMat));
     });
 
     // Roof windows: a frame box standing 9 cm proud of the roof face under
@@ -363,15 +407,15 @@
       const s = slopeAt(result, anchor);
       if (z0 === null || !s) return;
       const target: PlanTarget = { type: "item", item: { kind: "window", index } };
-      const fm = same(item, target.item) ? selObjMat : frameMat;
+      const frameOf = <M extends THREE.Mesh>(m: M) => selectable(m, itemKey(target.item), selObjMat);
       const lift = (p: Point2, up: number): [number, number, number] => [p.x, p.y, z0 + s.tan * ((p.x - w.x) * s.up.x + (p.y - w.y) * s.up.y) + up];
       const outline = windowOutline(result, w);
       const base = outline.map((p) => lift(p, -0.02));
       const top = outline.map((p) => lift(p, WINDOW_PROUD));
-      content.add(quad(top, fm, target));
+      content.add(frameOf(quad(top, frameMat, target)));
       top.forEach((p, k) => {
         const q = top[(k + 1) % 4];
-        content.add(quad([base[k], base[(k + 1) % 4], q, p], fm, target));
+        content.add(frameOf(quad([base[k], base[(k + 1) % 4], q, p], frameMat, target)));
       });
       const [a, b, , d] = top;
       const U = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
@@ -383,7 +427,11 @@
       content.add(quad([at(iu, iv), at(1 - iu, iv), at(1 - iu, 1 - iv), at(iu, 1 - iv)], glassMat, target));
     });
 
+    builtMats = [roofMat, selMat, wallMat, selDormerMat, selWallMat, brickMat, capMat, frameMat, glassMat, holeMat, selObjMat, manualMat];
     scene.add(content);
+    highlight();
+    // How often the scene was built, for the guard of UI-602.
+    host.dataset.builds = String(+(host.dataset.builds ?? 0) + 1);
     if (result && (!framed || growsPastFrame())) frame();
   }
 
@@ -466,7 +514,8 @@
     const ro = new ResizeObserver(resize);
     ro.observe(host);
     resize();
-    build();
+    // The first build comes from the rebuild effect below, which runs after
+    // this one; building here as well drew a large job twice on opening.
 
     // Click (no orbit or pan in between) picks what is under the pointer:
     // left selects it, right (or Ctrl+click) opens its menu.
@@ -527,18 +576,26 @@
   });
 
   $effect(() => {
-    // Rebuild whenever inputs change.
-    void project;
-    void result;
-    void selection;
-    void item;
+    // Rebuild when the job, its roof or the theme changes; never for the selection.
+    void plainProject;
+    void plainResult;
+    void heights;
+    void crossingsOf;
     void ui.dark;
-    build();
+    untrack(build);
+  });
+  $effect(() => {
+    // The selection only recolours (UI-602).
+    void selection?.part;
+    void selection?.edge;
+    void item?.kind;
+    void item?.index;
+    untrack(highlight);
   });
 </script>
 
 <div class="host" bind:this={host}>
-  <div class="views" role="radiogroup" use:radiogroup aria-label={t("view.title")}>
+  <div class="views" role="radiogroup" use:radiogroup use:hscroll aria-label={t("view.title")}>
     {#each Object.keys(VIEWS) as v}
       <button class:on={view === v} role="radio" aria-checked={view === v} onclick={() => frame(v as View)} title={t(`view.${v}Hint`)}>{t(`view.${v}`)}</button>
     {/each}
@@ -597,12 +654,13 @@
     background: var(--surface);
     border: 1px solid var(--border);
   }
-  /* Small 3D view (half-screen split): view buttons stay inside the view. */
+  /* Small 3D view (half-screen split): view buttons stay inside the view; when
+     they still do not fit, the strip scrolls with the wheel and shows its thin
+     scrollbar (UI-002). */
   @container (max-width: 420px) {
     .views {
       max-width: calc(100% - 16px);
       overflow-x: auto;
-      scrollbar-width: none;
     }
     .views button {
       padding: 4px 6px;

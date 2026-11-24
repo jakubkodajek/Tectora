@@ -23,6 +23,10 @@ pub const SCHEMA_VERSION: u32 = 3;
 /// Pitch at or above this value (degrees) means a vertical gable wall.
 pub const GABLE_PITCH_DEG: f64 = 89.999;
 
+/// A roof design, saved as a `.tectora` file. Top-level keys this version
+/// does not know are kept and written back as they are, up to 64 KB and 32
+/// levels of nesting (a deeper one refuses the job); a key named
+/// `__proto__` is not kept, at any depth.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Project {
     pub schema_version: u32,
@@ -62,8 +66,10 @@ pub struct Project {
     pub result_snapshot: Option<crate::snapshot::ResultSnapshot>,
     /// Top-level keys this build does not know (written by a later release
     /// of the same format version), kept and written back as they are.
-    /// Never read by the core; bounded by [`MAX_EXTRA_BYTES`].
-    #[serde(flatten)]
+    /// Never read by the core; bounded by [`MAX_EXTRA_BYTES`] and
+    /// [`MAX_EXTRA_DEPTH`]. A key named `__proto__` is not kept, at any
+    /// depth ([`without_proto`]).
+    #[serde(flatten, deserialize_with = "extra_without_proto")]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -89,6 +95,14 @@ pub struct ManualLine {
 /// DACAD line codes that count in the line totals.
 pub const COUNTED_LINE_CODES: [&str; 13] = [
     "T", "F", "G", "K", "OL", "OR", "OS", "P", "c", "S", "WV", "WH", "WS",
+];
+
+/// Every code a hand-drawn line can have: the counted ones, M (dimension
+/// line) and X (division). The editor and `set_manual` offer only these,
+/// and a received job's other codes become M (audit 2026-11-22 ARCH-403
+/// item 2).
+pub const MANUAL_LINE_CODES: [&str; 15] = [
+    "M", "T", "F", "G", "K", "P", "OL", "OR", "OS", "c", "S", "WV", "WH", "WS", "X",
 ];
 
 impl ManualLine {
@@ -141,6 +155,16 @@ impl ManualFace {
         plan / self.pitch_deg.to_radians().cos()
     }
 
+    /// Whether the face's outline crosses itself (a bow tie: corners given
+    /// out of order), or touches or folds over itself so that its area is
+    /// wrong ([`folded_loop`], HUNT-1902). Its [`ManualFace::area`] is then
+    /// the difference of its lobes; new faces like this are refused
+    /// ([`crate::edit::check_manual_face`]), stored ones are warned about
+    /// ([`crate::check::WarningKind::ManualFaceCrosses`]).
+    pub fn crosses(&self) -> bool {
+        !crossing_edges(&self.points).is_empty() || folded_loop(&self.points)
+    }
+
     /// Whether the pitch gives the face an area (see [`ManualFace::area`]).
     pub fn pitch_counts(&self) -> bool {
         self.pitch_deg >= 0.0 && self.pitch_deg < 90.0 && self.pitch_deg.to_radians().cos() > 1e-6
@@ -156,6 +180,20 @@ impl Project {
             _ => DACAD_MATERIAL_NAMES
                 .get(i)
                 .map_or_else(|| format!("Material {m}"), |s| (*s).to_string()),
+        }
+    }
+
+    /// The name of roof material `m` for MCP and the CLI: the project's own
+    /// name, else a neutral English one ([`MATERIAL_LABELS`]). The
+    /// reference program's German defaults stay in its file writers and the
+    /// price-sheet export (audit ERR-004).
+    pub fn material_label(&self, m: u8) -> String {
+        let i = usize::from(m.max(1) - 1);
+        match self.material_names.get(i).map(|s| s.trim()) {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => MATERIAL_LABELS
+                .get(i)
+                .map_or_else(|| format!("material {m}"), |s| (*s).to_string()),
         }
     }
 
@@ -231,6 +269,14 @@ impl Project {
                     code: "walls_cross",
                 });
             }
+            for ei in overlapping_walls(part) {
+                out.push(Problem {
+                    item: ProblemItem::Part,
+                    index: pi,
+                    edge: Some(ei),
+                    code: "walls_overlap",
+                });
+            }
         }
         for (di, d) in self.dormers.iter().enumerate() {
             if !finite_point(d.end) {
@@ -292,6 +338,9 @@ impl Project {
                     "has no length (two corners on one point); delete one of the corners"
                 }
                 "walls_cross" => "crosses another wall of the same building; move a corner",
+                "walls_overlap" => {
+                    "runs over another wall of the same building, or the outline goes round more than once; delete the walls of the extra lap or the wall drawn back"
+                }
                 "end_nan" => "end point is not a number or out of range",
                 "bad_corners" => "needs 3 or more finite corners",
                 "bad_size" => "needs a finite position and a positive size",
@@ -400,7 +449,8 @@ impl Project {
         ];
         for (i, part) in self.parts.iter().enumerate() {
             checks.push(over(
-                &format!("walls in part {}", i + 1),
+                // From 0, as every MCP tool and `calc.problems` (HUNTIO-007).
+                &format!("walls in part index {i}"),
                 part.edges.len(),
                 MAX_PART_WALLS,
             ));
@@ -414,7 +464,18 @@ impl Project {
             .max()
             .unwrap_or(0);
         checks.push(over("corners of one object", corners, MAX_PART_WALLS));
+        // The stored result comes with the file as well (ARCH-303).
+        checks.push(
+            self.result_snapshot
+                .as_ref()
+                .and_then(crate::snapshot::ResultSnapshot::problem),
+        );
         // Unknown top-level keys are kept, not used: bound what they cost.
+        // Their depth first, and alone: a file reads up to 128 levels, but
+        // the change log and the app's command arguments wrap the project
+        // two and one levels deeper (audit 2026-11-23 ERR-1202, ARCH-1201),
+        // and the byte count below recurses.
+        self.check_extra_depth()?;
         let extra_bytes = self
             .extra
             .iter()
@@ -431,11 +492,56 @@ impl Project {
         }
     }
 
+    /// Refuses unknown keys nested deeper than [`MAX_EXTRA_DEPTH`], with
+    /// the reason. The store reads no such job (`StoreError::TooMany`):
+    /// the app could not even send it back to the core.
+    pub fn check_extra_depth(&self) -> Result<(), String> {
+        let depth = self.extra_depth();
+        if depth > MAX_EXTRA_DEPTH {
+            return Err(format!(
+                "unknown keys nested too deep: {depth} levels (at most {MAX_EXTRA_DEPTH})"
+            ));
+        }
+        Ok(())
+    }
+
+    /// How deeply the unknown keys nest: arrays and objects inside each
+    /// other, 0 when every value is a plain one. Without recursion.
+    pub fn extra_depth(&self) -> usize {
+        let mut deepest = 0;
+        let mut stack: Vec<(&serde_json::Value, usize)> =
+            self.extra.values().map(|v| (v, 1)).collect();
+        while let Some((v, level)) = stack.pop() {
+            match v {
+                serde_json::Value::Array(a) => {
+                    deepest = deepest.max(level);
+                    stack.extend(a.iter().map(|v| (v, level + 1)));
+                }
+                serde_json::Value::Object(o) => {
+                    deepest = deepest.max(level);
+                    stack.extend(o.values().map(|v| (v, level + 1)));
+                }
+                _ => {}
+            }
+        }
+        deepest
+    }
+
     fn check_values(&self) -> Result<(), String> {
         let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
         // The stored result is computed output with a timestamp, not input.
+        // Unknown top-level keys are not input either: the core never
+        // reads them, and a CRM's millisecond time in one blocked the job
+        // (audit 2026-11-23 HUNT-901). `flatten` puts exactly these keys at
+        // the top level; a known field never lands in `extra`. Their size
+        // stays bounded ([`MAX_EXTRA_BYTES`]) and they stay finite (no
+        // JSON value holds NaN). The app's save may round an integer above
+        // 2^53 in such a key (JavaScript numbers), which is allowed.
         if let Some(obj) = value.as_object_mut() {
             obj.remove("result_snapshot");
+            for k in self.extra.keys() {
+                obj.remove(k);
+            }
         }
         if let Some((path, v)) = first_out_of_range(&value, &mut String::new()) {
             return Err(format!(
@@ -468,6 +574,43 @@ pub const MAX_ABS_VALUE: f64 = 1.0e5;
 /// Most bytes the unknown top-level keys of a file may hold together
 /// ([`Project::extra`]).
 pub const MAX_EXTRA_BYTES: usize = 64 * 1024;
+
+/// Most levels the unknown top-level keys may nest ([`Project::extra`]):
+/// far below the 128 levels `serde_json` reads, with room for the change
+/// log's and the app's wrappers around the project.
+pub const MAX_EXTRA_DEPTH: usize = 32;
+
+/// The one key name the unknown keys never carry (audit 2026-11-23
+/// ARCH-1202): JavaScript's `JSON.parse` keeps it, but a copy made with
+/// `out[k] = v` (the app's merge, Svelte's snapshot) sets the object's
+/// prototype instead, and the editor showed what was not in the job.
+pub const DROPPED_KEY: &str = "__proto__";
+
+fn extra_without_proto<'de, D>(d: D) -> Result<serde_json::Map<String, serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let mut extra = serde_json::Map::<String, serde_json::Value>::deserialize(d)?;
+    without_proto(&mut extra);
+    Ok(extra)
+}
+
+/// Removes every key named [`DROPPED_KEY`] from `map` and from the
+/// objects inside it, at any depth, without recursion.
+pub fn without_proto(map: &mut serde_json::Map<String, serde_json::Value>) {
+    map.remove(DROPPED_KEY);
+    let mut stack: Vec<&mut serde_json::Value> = map.values_mut().collect();
+    while let Some(v) = stack.pop() {
+        match v {
+            serde_json::Value::Array(a) => stack.extend(a.iter_mut()),
+            serde_json::Value::Object(o) => {
+                o.remove(DROPPED_KEY);
+                stack.extend(o.values_mut());
+            }
+            _ => {}
+        }
+    }
+}
 
 /// Most parts (buildings, wings) a design may have. Generous: a large
 /// TERRAN job has a few dozen; 200 still calculate in a few seconds.
@@ -537,8 +680,18 @@ fn first_out_of_range(v: &serde_json::Value, path: &mut String) -> Option<(Strin
 /// Runs `f` and turns a panic into an error, so one bad design cannot take
 /// down the app or the MCP server. The geometry kernel is a port of DACAD's
 /// core and still has `expect`s on cases DACAD itself aborts on.
+///
+/// The stop of a bounded calculation ([`crate::work`]) is passed on to the
+/// [`crate::work::bounded`] that set the limit, so an inner guard never
+/// turns it into an empty roof; outside one it is [`crate::work::TOO_COMPLEX`].
 pub fn guarded<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|e| {
+        if crate::work::is_too_complex(&*e) {
+            if crate::work::active() {
+                std::panic::resume_unwind(e);
+            }
+            return crate::work::TOO_COMPLEX.to_string();
+        }
         let msg = e
             .downcast_ref::<String>()
             .map(String::as_str)
@@ -572,7 +725,8 @@ pub struct Problem {
     /// `eave_nan`, `eave_negative`, `overhang_negative`, `direction_nan`,
     /// `stacked_nan`, `break_below_eave`, `break_duplicate`,
     /// `half_hip_below_eave`, `end_nan`,
-    /// `bad_corners`, `bad_size`, `zero_length_wall` or `walls_cross`.
+    /// `bad_corners`, `bad_size`, `zero_length_wall`, `walls_cross` or
+    /// `walls_overlap`.
     pub code: &'static str,
 }
 
@@ -628,7 +782,131 @@ pub fn crossing_walls(part: &RoofPart) -> Vec<usize> {
     {
         return Vec::new();
     }
-    let seg = |i: usize| (part.edges[i].start, part.edges[(i + 1) % n].start);
+    let pts: Vec<Point2> = part.edges.iter().map(|e| e.start).collect();
+    loop_crossings(&pts)
+}
+
+/// The first edge of each pair of edges of the closed point loop `points`
+/// that cross each other: the test of [`crossing_walls`] on a plain point
+/// loop (a hand-drawn roof face, audit 2026-11-24 HUNT-1801). Only a proper
+/// crossing counts; edges that touch at a corner or run along each other
+/// are left alone. A loop of fewer than 4 points or with a point that is
+/// not a finite coordinate is not checked.
+pub fn crossing_edges(points: &[Point2]) -> Vec<usize> {
+    if points.len() < 4 || !points.iter().all(|&p| finite_point(p)) {
+        return Vec::new();
+    }
+    loop_crossings(points)
+}
+
+/// Whether the closed point loop `points` (a hand-drawn roof face) touches
+/// or folds over itself so that its shoelace area is not the area it
+/// shows (audit 2026-11-24 HUNT-1902): a bow tie whose crossing point is
+/// clicked as a corner (two lobes of opposite turn, counted 0), the same
+/// within 1 mm, an edge that runs back along another one, or a face whose
+/// corners lie on one line. Corners within 1 mm of another corner or of an
+/// edge count as touching it. The loop is cut at every touch into simple
+/// loops: each must have an area (wider than 1 mm on average) and all must
+/// turn the same way. Two squares that meet corner to corner, turning the
+/// same way, are counted right and pass; proper crossings are
+/// [`crossing_edges`]'. Repeated consecutive corners (a double click) are
+/// ignored; a loop that is not finite is not checked.
+pub fn folded_loop(points: &[Point2]) -> bool {
+    const TOL: f64 = 1e-3;
+    if !points.iter().all(|&p| finite_point(p)) {
+        return false;
+    }
+    // Consecutive corners closer than the tolerance are one corner.
+    let mut pts: Vec<Point2> = Vec::with_capacity(points.len());
+    for &p in points {
+        if pts.last().is_none_or(|q: &Point2| q.distance(p) >= TOL) {
+            pts.push(p);
+        }
+    }
+    while pts.len() > 1 && pts[0].distance(pts[pts.len() - 1]) < TOL {
+        pts.pop();
+    }
+    if pts.len() < 3 {
+        return false;
+    }
+    // A corner lying on another edge (not at its ends) becomes a corner of
+    // that edge too, so every touch is a repeated corner.
+    let n = pts.len();
+    let mut loop_pts: Vec<Point2> = Vec::with_capacity(n * 2);
+    for i in 0..n {
+        let (a, b) = (pts[i], pts[(i + 1) % n]);
+        loop_pts.push(a);
+        let len2 = (b.x - a.x).powi(2) + (b.y - a.y).powi(2);
+        if len2 <= 0.0 {
+            continue;
+        }
+        let mut on: Vec<(f64, Point2)> = Vec::new();
+        for (k, &c) in pts.iter().enumerate() {
+            if k == i || k == (i + 1) % n || c.distance(a) < TOL || c.distance(b) < TOL {
+                continue;
+            }
+            let t = ((c.x - a.x) * (b.x - a.x) + (c.y - a.y) * (b.y - a.y)) / len2;
+            if !(0.0..=1.0).contains(&t) {
+                continue;
+            }
+            let foot = Point2::new(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y));
+            if foot.distance(c) < TOL {
+                on.push((t, c));
+            }
+        }
+        on.sort_by(|x, y| x.0.total_cmp(&y.0));
+        loop_pts.extend(on.into_iter().map(|(_, c)| c));
+    }
+    let signed = |l: &[Point2]| -> f64 {
+        (0..l.len())
+            .map(|i| {
+                let (p, q) = (l[i], l[(i + 1) % l.len()]);
+                p.x * q.y - q.x * p.y
+            })
+            .sum::<f64>()
+            / 2.0
+    };
+    let longest = |l: &[Point2]| -> f64 {
+        (0..l.len())
+            .map(|i| l[i].distance(l[(i + 1) % l.len()]))
+            .fold(0.0, f64::max)
+    };
+    // Cut at repeated corners until every loop is simple.
+    let mut todo = vec![loop_pts];
+    let mut turn = 0.0f64;
+    while let Some(l) = todo.pop() {
+        let m = l.len();
+        let pair = (0..m).find_map(|i| {
+            (i + 1..m)
+                .find(|&j| l[i].distance(l[j]) < TOL)
+                .map(|j| (i, j))
+        });
+        match pair {
+            Some((i, j)) => {
+                let inner: Vec<Point2> = l[i..j].to_vec();
+                let outer: Vec<Point2> = l[j..].iter().chain(&l[..i]).copied().collect();
+                todo.push(inner);
+                todo.push(outer);
+            }
+            None => {
+                let a = signed(&l);
+                // A loop thinner than the tolerance on average folds back.
+                if m < 3 || a.abs() < TOL * longest(&l) {
+                    return true;
+                }
+                if turn != 0.0 && turn.signum() != a.signum() {
+                    return true;
+                }
+                turn = a;
+            }
+        }
+    }
+    false
+}
+
+fn loop_crossings(pts: &[Point2]) -> Vec<usize> {
+    let n = pts.len();
+    let seg = |i: usize| (pts[i], pts[(i + 1) % n]);
     // Side of `c` relative to the line a-b, with a tolerance of 1 mm in
     // distance so that corners lying on a wall do not count as crossing.
     let side = |a: Point2, b: Point2, c: Point2| {
@@ -661,6 +939,73 @@ pub fn crossing_walls(part: &RoofPart) -> Vec<usize> {
     out
 }
 
+/// A direction marker shorter than this is a point to the core
+/// (`roof::snap_markers`), m.
+pub(crate) const MARKER_SNAP: f64 = 0.005;
+
+/// The later wall of each pair of walls of `part` that lie on each other
+/// along more than 1 mm: an outline that runs round the building twice,
+/// or a wall drawn back over another one. The core still returned a roof
+/// for it, each face twice and no eave (audit 2026-11-21 HUNT-106).
+/// Walls that only touch, at a wall or at a corner (two wings meeting
+/// corner to corner, which the core calculates, HUNT-202), that continue
+/// one another in a line, or that run side by side apart (a second lap a
+/// centimetre inside the first is two walls, not one) are left alone.
+/// Direction markers (zero-length walls with a direction) are skipped on
+/// their own, not with the whole part (HUNT-201). Parts with imported
+/// wall records are checked too (HUNT-302): of 3102 parts in 2670 DACAD
+/// files, none has walls on each other.
+pub fn overlapping_walls(part: &RoofPart) -> Vec<usize> {
+    let n = part.edges.len();
+    if n < 4 || part.edges.iter().any(|e| !finite_point(e.start)) {
+        return Vec::new();
+    }
+    // A marker a few millimetres long is a point to the core, which moves
+    // the next corner onto it (`roof::snap_markers`): so here too, or the
+    // wall after it runs those millimetres back over the wall before it
+    // (sample HPS01 without its wall records, HUNT-304).
+    let mut pts: Vec<Point2> = part.edges.iter().map(|e| e.start).collect();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let d = pts[i].distance(pts[j]);
+        if part.edges[i].direction_rad.is_some() && d > 0.0 && d < MARKER_SNAP {
+            pts[j] = pts[i];
+        }
+    }
+    // The walls with a length, by their index in `part.edges`; markers
+    // and walls of no length (reported as `zero_length_wall`) are left out.
+    let walls: Vec<(usize, Point2, Point2)> = (0..n)
+        .map(|i| (i, pts[i], pts[(i + 1) % n]))
+        .filter(|&(_, a, b)| a.distance(b) >= MIN_WALL_LENGTH)
+        .collect();
+    if walls.len() < 3 {
+        return Vec::new();
+    }
+    const TOL: f64 = 1e-3;
+    let mut out = Vec::new();
+    for (k, &(j, c, d)) in walls.iter().enumerate().skip(1) {
+        let on_top = walls[..k].iter().any(|&(_, a, b)| {
+            let len = a.distance(b);
+            let (ux, uy) = ((b.x - a.x) / len, (b.y - a.y) / len);
+            // Distance of a point from the line a-b and its position along it.
+            let off = |p: Point2| ((p.x - a.x) * uy - (p.y - a.y) * ux).abs();
+            let along = |p: Point2| (p.x - a.x) * ux + (p.y - a.y) * uy;
+            if off(c) > TOL || off(d) > TOL {
+                return false;
+            }
+            let (lo, hi) = {
+                let (s, t) = (along(c), along(d));
+                (s.min(t), s.max(t))
+            };
+            lo.max(0.0) + TOL < hi.min(len)
+        });
+        if on_top {
+            out.push(j);
+        }
+    }
+    out
+}
+
 impl Problem {
     fn of(item: ProblemItem, index: usize, code: &'static str) -> Problem {
         Problem {
@@ -681,10 +1026,31 @@ fn migrate(v: &mut serde_json::Value) -> serde_json::Result<()> {
             "a project file holds a JSON object",
         ));
     };
-    let version = obj
-        .get("schema_version")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(1);
+    // A file without the field is format 1; a field that is no whole
+    // number is a damaged file, not format 1 (it could be a newer one).
+    // `2.0` (as some JSON writers put a whole number) is version 2; a whole
+    // number beyond `u64` (`1e30`) is a version this release cannot know
+    // (ARCH-205 item 1).
+    let version = match obj.get("schema_version") {
+        None => 1,
+        Some(v) => match (v.as_u64(), v.as_f64()) {
+            (Some(n), _) => n,
+            (None, Some(f)) if f.is_finite() && f.fract() == 0.0 && f >= 0.0 => {
+                if f < u64::MAX as f64 {
+                    f as u64
+                } else {
+                    return Err(serde_json::Error::custom(format!(
+                        "the file's format version {f:e} is newer than this Tectora reads (up to {SCHEMA_VERSION}) or the file is damaged"
+                    )));
+                }
+            }
+            _ => {
+                return Err(serde_json::Error::custom(
+                    "the file's format version `schema_version` is not a whole number",
+                ));
+            }
+        },
+    };
     if version > u64::from(SCHEMA_VERSION) {
         return Err(serde_json::Error::custom(format!(
             "the file was saved by a newer Tectora (format {version}, this version reads up to {SCHEMA_VERSION})"
@@ -876,6 +1242,11 @@ fn finite_point(p: Point2) -> bool {
 /// build), material 1 first.
 pub const DACAD_MATERIAL_NAMES: [&str; DACAD_MATERIALS as usize] =
     ["Ziegel", "Blech", "Stein", "Schiefer", "Solarpanel"];
+
+/// Neutral English names of the default materials, material 1 first, as
+/// MCP and the CLI give them.
+pub const MATERIAL_LABELS: [&str; DACAD_MATERIALS as usize] =
+    ["tiles", "sheet metal", "stone", "slate", "solar panels"];
 
 /// DACAD's first material (tiles), the material of a new wall.
 pub const DEFAULT_MATERIAL: u8 = 1;
@@ -1205,6 +1576,244 @@ mod tests {
         );
     }
 
+    /// Audit 2026-11-21 HUNT-106: an outline that runs round twice, or
+    /// whose walls lie on each other, is not one building: the roof had
+    /// twice the area and no eave, with no problem reported.
+    #[test]
+    fn walls_that_retrace_the_outline_are_a_problem() {
+        let part = |pts: &[(f64, f64)]| {
+            RoofPart::new(
+                "A",
+                pts.iter()
+                    .map(|&(x, y)| crate::edit::plain_edge(Point2::new(x, y), 40.0, 3.0, 0.5))
+                    .collect(),
+            )
+        };
+        let r = [(0.0, 0.0), (12.0, 0.0), (12.0, 8.0), (0.0, 8.0)];
+        let twice: Vec<(f64, f64)> = r.iter().chain(r.iter()).copied().collect();
+        assert_eq!(overlapping_walls(&part(&twice)), [4, 5, 6, 7]);
+        // A wall run back over part of another one.
+        let back = part(&[
+            (0.0, 0.0),
+            (12.0, 0.0),
+            (12.0, 8.0),
+            (6.0, 8.0),
+            (6.0, 0.0),
+            (3.0, 0.0),
+            (3.0, -0.0001),
+            (0.0, 8.0),
+        ]);
+        assert!(!overlapping_walls(&back).is_empty());
+        // Ordinary outlines: rectangle, L, a notch touching a wall, two
+        // walls in line one after the other.
+        assert!(overlapping_walls(&part(&r)).is_empty());
+        let l = part(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 4.0),
+            (5.0, 4.0),
+            (5.0, 8.0),
+            (0.0, 8.0),
+        ]);
+        assert!(overlapping_walls(&l).is_empty());
+        let touch = part(&[(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (5.0, 0.0), (0.0, 8.0)]);
+        assert!(overlapping_walls(&touch).is_empty());
+        let inline = part(&[(0.0, 0.0), (5.0, 0.0), (12.0, 0.0), (12.0, 8.0), (0.0, 8.0)]);
+        assert!(overlapping_walls(&inline).is_empty());
+        let u = part(&[
+            (0.0, 0.0),
+            (12.0, 0.0),
+            (12.0, 8.0),
+            (8.0, 8.0),
+            (8.0, 3.0),
+            (4.0, 3.0),
+            (4.0, 8.0),
+            (0.0, 8.0),
+        ]);
+        assert!(overlapping_walls(&u).is_empty());
+        let mut p = crate::examples::find("gable").unwrap().project();
+        p.parts = vec![part(&twice)];
+        let codes: Vec<_> = p.problems().iter().map(|q| (q.code, q.edge)).collect();
+        assert!(codes.contains(&("walls_overlap", Some(4))), "{codes:?}");
+        assert!(p.validate().unwrap_err()[0].contains("runs over another wall"));
+    }
+
+    /// Audit 2026-11-21 HUNT-202, TEST-208: two wings meeting corner to
+    /// corner touch at one point only; the core calculates the roof, so it
+    /// is no `walls_overlap`.
+    #[test]
+    fn an_outline_touching_itself_at_one_corner_is_no_overlap() {
+        let part = |pts: &[(f64, f64)]| {
+            RoofPart::new(
+                "A",
+                pts.iter()
+                    .map(|&(x, y)| crate::edit::plain_edge(Point2::new(x, y), 35.0, 3.0, 0.5))
+                    .collect(),
+            )
+        };
+        let bow = part(&[
+            (0.0, 0.0),
+            (5.0, 0.0),
+            (5.0, 5.0),
+            (10.0, 5.0),
+            (10.0, 10.0),
+            (5.0, 10.0),
+            (5.0, 5.0),
+            (0.0, 5.0),
+        ]);
+        assert!(overlapping_walls(&bow).is_empty());
+        let corner_l = part(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 5.0),
+            (5.0, 5.0),
+            (5.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 5.0),
+            (5.0, 5.0),
+        ]);
+        assert!(overlapping_walls(&corner_l).is_empty());
+        let mut p = crate::examples::find("gable").unwrap().project();
+        p.parts = vec![bow];
+        assert!(p.validate().is_ok(), "{:?}", p.validate());
+        let area = crate::quantities::roof_totals(&p).roof_area;
+        assert!(area > 50.0, "{area}");
+    }
+
+    /// Audit 2026-11-21 HUNT-201: a direction marker does not switch the
+    /// check off for the whole part; imported wall records still do.
+    #[test]
+    fn a_direction_marker_does_not_switch_the_overlap_check_off() {
+        let edge = |x: f64, y: f64| crate::edit::plain_edge(Point2::new(x, y), 40.0, 3.0, 0.5);
+        let r = [(0.0, 0.0), (12.0, 0.0), (12.0, 8.0), (0.0, 8.0)];
+        let twice: Vec<EdgeDef> = r.iter().chain(r.iter()).map(|&(x, y)| edge(x, y)).collect();
+        let marker = || {
+            let mut m = edge(12.0, 0.0);
+            m.direction_rad = Some(0.0);
+            m
+        };
+        let mut marked = twice.clone();
+        marked.insert(1, marker());
+        assert_eq!(overlapping_walls(&RoofPart::new("A", marked)), [5, 6, 7, 8]);
+        let mut p = crate::examples::find("gable").unwrap().project();
+        let mut marked = twice.clone();
+        marked.insert(1, marker());
+        p.parts = vec![RoofPart::new("A", marked)];
+        assert!(p.problems().iter().any(|q| q.code == "walls_overlap"));
+        // A rectangle with a marker stays fine.
+        let mut one: Vec<EdgeDef> = r.iter().map(|&(x, y)| edge(x, y)).collect();
+        one.insert(1, marker());
+        assert!(overlapping_walls(&RoofPart::new("A", one)).is_empty());
+        // Imported wall records do not switch the check off (HUNT-302).
+        let mut sourced = twice.clone();
+        sourced[2].source = Some(WallSource {
+            id: 1,
+            roof: 1,
+            start: Point2::new(12.0, 8.0),
+            length: 12.0,
+            angle_deg: 180.0,
+        });
+        assert!(!overlapping_walls(&RoofPart::new("A", sourced)).is_empty());
+        // A second lap a centimetre inside the first: walls side by side,
+        // not on each other.
+        let g = 0.01;
+        let pts = [
+            (0.0, 0.0),
+            (12.0, 0.0),
+            (12.0, 8.0),
+            (0.0, 8.0),
+            (g * 4.0 / (8.0 - g), 4.0),
+            (g, g),
+            (12.0 - g, g),
+            (12.0 - g, 8.0 - g),
+            (g, 8.0 - g),
+        ];
+        let spiral = RoofPart::new("A", pts.iter().map(|&(x, y)| edge(x, y)).collect());
+        assert!(overlapping_walls(&spiral).is_empty());
+    }
+
+    /// Audit 2026-11-22 HUNT-304: a direction marker a few millimetres
+    /// long, which the core snaps back to a point, is no wall drawn back:
+    /// the wall after it continues the one before it (sample HPS01 without
+    /// its wall records).
+    #[test]
+    fn a_millimetre_marker_is_no_wall_drawn_back() {
+        let edge = |x: f64, y: f64, dir: Option<f64>| {
+            let mut e = crate::edit::plain_edge(Point2::new(x, y), 35.0, 3.0, 0.5);
+            e.direction_rad = dir;
+            e
+        };
+        let pi = std::f64::consts::PI;
+        // A wing up along x = 11 with a 2.4 mm marker pointing back down.
+        let hps = RoofPart::new(
+            "A",
+            vec![
+                edge(0.0, 0.0, None),
+                edge(15.8, 0.0, None),
+                edge(15.8, 12.0, None),
+                edge(11.0, 12.0, None),
+                edge(11.0, 14.7624, Some(pi)),
+                edge(11.0, 14.76, None),
+                edge(11.0, 20.0, None),
+                edge(5.6, 20.0, None),
+                edge(5.6, 12.0, None),
+                edge(0.0, 12.0, None),
+            ],
+        );
+        assert!(overlapping_walls(&hps).is_empty());
+        // A rectangle with a 3 mm marker pointing back along its eave.
+        let mm = RoofPart::new(
+            "A",
+            vec![
+                edge(0.0, 0.0, None),
+                edge(6.0, 0.0, Some(pi)),
+                edge(5.997, 0.0, None),
+                edge(12.0, 0.0, None),
+                edge(12.0, 8.0, None),
+                edge(0.0, 8.0, None),
+            ],
+        );
+        assert!(overlapping_walls(&mm).is_empty());
+        // A wall drawn back 2 cm after a marker is still one.
+        let back = RoofPart::new(
+            "A",
+            vec![
+                edge(0.0, 0.0, None),
+                edge(6.0, 0.0, Some(pi)),
+                edge(5.98, 0.0, None),
+                edge(12.0, 0.0, None),
+                edge(12.0, 8.0, None),
+                edge(0.0, 8.0, None),
+            ],
+        );
+        assert!(!overlapping_walls(&back).is_empty());
+    }
+
+    /// Audit 2026-11-21 ARCH-205 item 1: `2.0` is version 2, `1e30` a
+    /// version too new (or a damaged file), `3.5` no whole number.
+    #[test]
+    fn a_format_version_written_as_a_float_is_read_as_its_number() {
+        let mut v: serde_json::Value = serde_json::from_str(
+            &crate::examples::find("gable")
+                .unwrap()
+                .project()
+                .to_json()
+                .unwrap(),
+        )
+        .unwrap();
+        let with = |v: &mut serde_json::Value, version: &str| {
+            v["schema_version"] = serde_json::from_str(version).unwrap();
+            Project::from_json(&v.to_string())
+        };
+        assert!(with(&mut v, "2.0").is_ok());
+        let e = with(&mut v, "1e30").unwrap_err().to_string();
+        assert!(e.contains("newer") && !e.contains("whole number"), "{e}");
+        let e = with(&mut v, "3.5").unwrap_err().to_string();
+        assert!(e.contains("whole number"), "{e}");
+        let e = with(&mut v, "99").unwrap_err().to_string();
+        assert!(e.contains("newer Tectora"), "{e}");
+    }
+
     #[test]
     fn check_limits_reports_the_bad_value() {
         let mut p = crate::examples::find("gable").unwrap().project();
@@ -1215,10 +1824,153 @@ mod tests {
     }
 
     #[test]
+    fn the_limits_name_a_part_by_its_index_from_0_as_mcp_does() {
+        // HUNTIO-007 item 5: "part 1" for the only part, index 0.
+        let mut p = crate::examples::find("gable").unwrap().project();
+        let wall = p.parts[0].edges[0].clone();
+        p.parts[0].edges = vec![wall; MAX_PART_WALLS + 1];
+        let err = p.check_limits().unwrap_err();
+        assert!(err.contains("walls in part index 0:"), "{err}");
+    }
+
+    #[test]
     fn check_limits_ignores_the_stored_result() {
         let mut p = crate::examples::find("gable").unwrap().project();
         assert!(p.set_status(JobStatus::Offer));
         assert!(p.check_limits().is_ok());
+    }
+
+    /// Audit 2026-11-23 HUNT-901: unknown keys are metadata, not input
+    /// geometry (lessons-learned 2026-11-03), at any depth; a known field
+    /// out of range is still refused.
+    #[test]
+    fn check_limits_ignores_unknown_keys() {
+        let mut p = crate::examples::find("gable").unwrap().project();
+        p.extra.insert(
+            "exported_at_ms".into(),
+            serde_json::json!(1_732_300_000_000u64),
+        );
+        p.extra.insert(
+            "crm".into(),
+            serde_json::json!({ "price": 250_000.5, "ids": [1e21] }),
+        );
+        assert_eq!(p.check_limits(), Ok(()));
+        p.parts[0].edges[0].start.x = 1e9;
+        assert!(p.check_limits().unwrap_err().contains("out of range"));
+    }
+
+    /// `"k": [[…[]…]]` with `n` nested arrays.
+    fn nested(n: usize) -> serde_json::Value {
+        let mut v = serde_json::json!([]);
+        for _ in 1..n {
+            v = serde_json::Value::Array(vec![v]);
+        }
+        v
+    }
+
+    /// Audit 2026-11-23 ERR-1202, ARCH-1201: an unknown key nested near the
+    /// parser's 128 levels made the change log and the app's commands fail.
+    /// 32 levels pass, 33 are refused as `too_many`, with the reason.
+    #[test]
+    fn check_limits_refuses_deep_unknown_keys() {
+        let mut p = crate::examples::find("gable").unwrap().project();
+        p.extra.insert("crm".into(), nested(32));
+        assert_eq!(p.check_input(), Ok(()));
+        p.extra
+            .insert("crm".into(), serde_json::json!({ "a": nested(31) }));
+        assert_eq!(p.check_input(), Ok(()));
+        p.extra.insert("crm".into(), nested(33));
+        let e = p.check_input().unwrap_err();
+        assert_eq!(e.code, "too_many");
+        assert!(
+            e.message
+                .contains("unknown keys nested too deep: 33 levels (at most 32)"),
+            "{e}"
+        );
+        p.extra
+            .insert("crm".into(), serde_json::json!({ "a": nested(32) }));
+        assert_eq!(p.check_input().unwrap_err().code, "too_many");
+        // Thousands of levels built in code (no parser limit): no stack
+        // overflow.
+        p.extra.insert("crm".into(), nested(100_000));
+        assert_eq!(p.check_input().unwrap_err().code, "too_many");
+        // Dropped by hand: serde_json drops nested values recursively.
+        let mut stack = vec![p.extra.remove("crm").unwrap()];
+        while let Some(v) = stack.pop() {
+            if let serde_json::Value::Array(a) = v {
+                stack.extend(a);
+            }
+        }
+    }
+
+    /// Audit 2026-11-23 TEST-1302: objects inside objects, the usual shape
+    /// of foreign data, count as arrays do, and so do both in turn.
+    #[test]
+    fn deep_unknown_objects_are_refused_as_deep_arrays_are() {
+        let objects = |n: usize| {
+            let mut v = serde_json::json!({});
+            for _ in 1..n {
+                v = serde_json::json!({ "a": v });
+            }
+            v
+        };
+        let mixed = |n: usize| {
+            let mut v = serde_json::json!({});
+            for k in 1..n {
+                v = if k % 2 == 1 {
+                    serde_json::Value::Array(vec![v])
+                } else {
+                    serde_json::json!({ "a": v })
+                };
+            }
+            v
+        };
+        let mut p = crate::examples::find("gable").unwrap().project();
+        for (shape, chain) in [
+            ("objects", &objects as &dyn Fn(usize) -> serde_json::Value),
+            ("mixed", &mixed),
+        ] {
+            p.extra.insert("crm".into(), chain(MAX_EXTRA_DEPTH));
+            assert_eq!(p.extra_depth(), MAX_EXTRA_DEPTH, "{shape}");
+            assert_eq!(p.check_input(), Ok(()), "{shape}");
+            p.extra.insert("crm".into(), chain(MAX_EXTRA_DEPTH + 1));
+            assert_eq!(p.extra_depth(), MAX_EXTRA_DEPTH + 1, "{shape}");
+            let e = p.check_input().unwrap_err();
+            assert_eq!(e.code, "too_many", "{shape}");
+            assert!(e.message.contains("33 levels (at most 32)"), "{shape}: {e}");
+        }
+        // An object chain beside a short array: the deepest one counts.
+        p.extra.insert("crm".into(), serde_json::json!([1, 2]));
+        p.extra.insert("vendor".into(), objects(40));
+        assert_eq!(p.check_input().unwrap_err().code, "too_many");
+    }
+
+    /// Audit 2026-11-23 ARCH-1202: JavaScript turns a key named `__proto__`
+    /// into the object's prototype, so the core does not carry it: it is
+    /// dropped from the unknown keys on every read, at any depth; other
+    /// unknown keys, `constructor` among them, stay.
+    #[test]
+    fn a_key_named_proto_is_dropped_from_unknown_keys_on_load() {
+        let p = crate::examples::find("gable").unwrap().project();
+        let mut v = serde_json::to_value(&p).unwrap();
+        v["__proto__"] = serde_json::json!({ "flat_roof": true });
+        v["constructor"] = serde_json::json!({ "prototype": 1 });
+        v["crm"] = serde_json::json!({ "a": [{ "__proto__": 1, "b": 2 }], "__proto__": 3 });
+        let text = serde_json::to_string(&v).unwrap();
+        for read in [
+            Project::from_json(&text).unwrap(),
+            serde_json::from_value::<Project>(v.clone()).unwrap(),
+            serde_json::from_str::<Project>(&text).unwrap(),
+        ] {
+            assert!(!read.extra.contains_key("__proto__"), "{:?}", read.extra);
+            assert!(!read.flat_roof);
+            assert_eq!(
+                read.extra["constructor"],
+                serde_json::json!({ "prototype": 1 })
+            );
+            assert_eq!(read.extra["crm"], serde_json::json!({ "a": [{ "b": 2 }] }));
+            assert!(!read.to_json().unwrap().contains("__proto__"));
+        }
     }
 
     #[test]

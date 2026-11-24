@@ -1,14 +1,13 @@
 //! `tectora` command-line interface. Output is JSON so AI agents can drive it.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use tectora_core::Project;
-use tectora_core::quantities::{dacad_line_totals, plan_quantities};
+use tectora_core::quantities::plan_quantities;
 use tectora_core::store::Store;
 
 #[derive(Parser)]
@@ -36,7 +35,8 @@ enum Command {
         #[arg(long)]
         dir: Option<PathBuf>,
     },
-    /// Print a JSON summary of a .tectora file.
+    /// Print a JSON summary of a .tectora file (refused, exit 1, when the
+    /// file is outside the limits `calc` checks).
     Info { input: PathBuf },
     /// Run the MCP server on stdin/stdout for AI clients (Claude, ChatGPT, Gemini).
     Mcp {
@@ -45,6 +45,15 @@ enum Command {
         dir: Option<PathBuf>,
     },
     /// Generate the roof and print faces, lines and quantities as JSON.
+    ///
+    /// Exit status: 0 calculated; 2 calculated, but some buildings have no
+    /// roof (each part's `error`) or some buildings or objects have input
+    /// problems and are left out (`"partial": true`, the list in
+    /// `problems`), as in the app and over MCP; 1 not calculated
+    /// (unreadable, out of range, too complex, no building and no
+    /// hand-drawn face, no building with a roof and no hand-drawn face, or
+    /// the answer could not be written). `roof_state` says which:
+    /// `complete`, `partial`, `none` or `no_building`.
     Calc {
         input: PathBuf,
         /// Print quantities, warnings and errors only (no geometry).
@@ -54,8 +63,44 @@ enum Command {
 }
 
 fn load(path: &Path) -> Result<Project> {
-    let bytes = fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
-    let text = String::from_utf8(bytes).context("project file is not UTF-8")?;
+    // A job bundle is a ZIP, not a project file (HUNT-204 item 4). Read
+    // through `open_regular`, which never waits on a pipe.
+    let zip_magic = || {
+        tectora_core::store::open_regular(path, u64::MAX)
+            .ok()
+            .and_then(|mut f| {
+                let mut magic = [0u8; 4];
+                std::io::Read::read_exact(&mut f, &mut magic).ok()?;
+                Some(magic)
+            })
+            .is_some_and(|m| m == *b"PK\x03\x04")
+    };
+    let bundle = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case(tectora_core::bundle::EXTENSION))
+        || zip_magic();
+    if bundle {
+        anyhow::bail!(
+            "{} is a job bundle (.{}), not a project file: add it to the library with `tectora import-job`",
+            path.display(),
+            tectora_core::bundle::EXTENSION
+        );
+    }
+    // A newer Tectora's file is called that, also when this version cannot
+    // parse it (nested deeper than it reads, cut short by a sync): the same
+    // rule and sentence as the app and the MCP server (audit 2026-11-23
+    // HUNT-1503).
+    if let Some(version) = tectora_core::store::newer_format_of(path) {
+        anyhow::bail!(
+            "the file was saved by a newer Tectora (format {version}, this version reads up to {})",
+            tectora_core::model::SCHEMA_VERSION
+        );
+    }
+    // Bounded, and a pipe or device is refused instead of hanging or
+    // reading until the memory is gone (ARCH-204).
+    let text = tectora_core::store::read_job_text(path)
+        .map_err(|e| anyhow::anyhow!("cannot read {}: {}", path.display(), e.detail))?;
     Ok(Project::from_json(&text)?)
 }
 
@@ -72,6 +117,9 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
         Command::Schema => Ok(tectora_core::model::json_schema()),
         Command::ExportJob { id, output, dir } => {
             let store = library(dir)?;
+            // `u.tectora` becomes `u.tectora.tectorajob`, never the job
+            // file itself (HUNTIO-002).
+            let output = tectora_core::bundle::with_extension(&output);
             let manifest =
                 tectora_core::bundle::export(&store, &id, &output).map_err(anyhow::Error::msg)?;
             Ok(json!({ "ok": true, "output": output, "manifest": manifest }))
@@ -83,26 +131,46 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
         }
         Command::Info { input } => {
             let project = load(&input)?;
+            // The limits `calc` checks, answered as `calc` does: a file the
+            // app would refuse gets no sums (non-finite ones printed as
+            // null, audit 2026-11-23 ERR-1303). The roof is not calculated.
+            tectora_core::commands::check_input(&project)
+                .map_err(|e| anyhow::Error::msg(e.to_string()))?;
             Ok(json!({ "ok": true, "name": project.name, "quantities": plan_quantities(&project) }))
         }
         Command::Calc { input, summary } => {
             let project = load(&input)?;
-            // The same limits and panic guard as the app and the MCP server.
-            project.check_limits().map_err(anyhow::Error::msg)?;
-            if let Err(errors) = project.validate() {
-                bail!("invalid project:\n{}", errors.join("\n"));
-            }
-            project.check_limits().map_err(anyhow::Error::msg)?;
-            tectora_core::model::guarded(|| calc(&project, summary)).map_err(anyhow::Error::msg)
+            // The same limits, work bound and panic guard as the app and
+            // the MCP server (`commands::generate`); a building with an
+            // input problem is left out and listed, not the whole job
+            // refused (HUNTC-004).
+            let geos = tectora_core::commands::generate(&project)
+                .map_err(|e| anyhow::Error::msg(format!("{}: {}", e.code, e.detail)))?;
+            tectora_core::model::guarded(|| calc(&project, geos, summary))
+                .map_err(anyhow::Error::msg)
         }
     }
 }
 
-/// `tectora calc`: the roof of a valid project.
-fn calc(project: &Project, summary: bool) -> serde_json::Value {
-    let geos = tectora_core::openings::generate_project(project);
+/// `tectora calc`: the roof of a project, from one calculation of its roofs.
+fn calc(
+    project: &Project,
+    geos: Vec<tectora_core::roof::RoofGeometry>,
+    summary: bool,
+) -> serde_json::Value {
+    use tectora_core::quantities as q;
     // The calculation refused the roof: its error is the result, no quantities.
     let calc_error = geos.iter().find_map(|g| g.error.clone());
+    // Buildings without a roof: the core gave none, or their input left
+    // them out (`problems` of the part), as the library card counts them.
+    let failed = q::parts_without_roof(&geos, project);
+    let coverage = q::RoofCoverage::of(project, failed);
+    let lines_by_type = q::dacad_line_totals_of(&geos, project);
+    let totals = q::roof_totals_of(&geos, project);
+    let area_by_pitch = q::area_by_pitch_in(&geos, project);
+    let by_line_material = q::lines_by_material_of(&geos);
+    // Warnings that belong to no building, as MCP `calc` (ERR-1901).
+    let job = tectora_core::check::job_warnings(project, &geos);
     let parts: Vec<_> = project
         .parts
         .iter()
@@ -130,19 +198,20 @@ fn calc(project: &Project, summary: bool) -> serde_json::Value {
             v
         })
         .collect();
-    let lines_by_type = dacad_line_totals(project);
-    let totals = tectora_core::quantities::roof_totals(project);
-    let mut by_material = serde_json::Map::new();
-    for &(m, a) in &totals.area_by_material {
-        by_material.insert(project.material_name(m), json!(round2(a)));
-    }
+    // By material number, as MCP `calc`: two materials with one name are
+    // two rows (MATH-004), and a default name is English (ERR-004).
+    let by_material: Vec<_> = totals
+        .area_by_material
+        .iter()
+        .map(|&(m, a)| json!({ "material": m, "name": project.material_label(m), "area": round2(a) }))
+        .collect();
     let mut out = json!({
         "ok": true,
         "name": project.name,
         "parts": parts,
         "quantities": {
             "lines_by_type": lines_by_type,
-            "area_by_pitch": tectora_core::quantities::area_by_pitch(project)
+            "area_by_pitch": area_by_pitch
                 .iter()
                 .map(|&(p, a)| json!({ "pitch_deg": p, "area": a }))
                 .collect::<Vec<_>>(),
@@ -150,18 +219,52 @@ fn calc(project: &Project, summary: bool) -> serde_json::Value {
             "area_by_material": by_material,
         },
     });
-    let by_line_material = tectora_core::quantities::lines_by_material(project);
     if by_line_material.len() > 1 {
         out["quantities"]["lines_by_material"] = by_line_material
                     .into_iter()
                     .map(|(mat, lines)| {
-                        json!({ "material": mat, "name": project.material_name(mat), "lines": lines })
+                        json!({ "material": mat, "name": project.material_label(mat), "lines": lines })
                     })
                     .collect();
     }
     if let Some(e) = calc_error {
         out["calc_error"] = tectora_mcp::calc_error(&e);
     }
+    let problems = project.problems();
+    if !problems.is_empty() || failed > 0 {
+        out["partial"] = json!(true);
+    }
+    if !problems.is_empty() {
+        out["problems"] = json!(problems);
+    }
+    if !job.is_empty() {
+        out["warnings"] = job.iter().map(tectora_mcp::warning).collect();
+    }
+    match coverage {
+        // Nothing to calculate: the "no building" refusal of a stored
+        // result (HUNT-204).
+        q::RoofCoverage::NoBuilding => {
+            out["ok"] = json!(false);
+            out["partial"] = json!(false);
+            out["error"] = json!(
+                "no_building: the job has no building and no hand-drawn face, so there is no roof"
+            );
+        }
+        // No building has a roof and there is no hand-drawn face: nothing
+        // is calculated (round 2 ERR-103). Hand-drawn faces are a roof, so
+        // a job with them is at most partial (ERR-202).
+        q::RoofCoverage::None => {
+            out["ok"] = json!(false);
+            out["partial"] = json!(false);
+            out["error"] = json!(match &out["calc_error"]["kind"] {
+                serde_json::Value::String(k) =>
+                    format!("{k}: no building has a roof; see each part's `error`"),
+                _ => "no building has a roof; see each part's `error` and `problems`".to_string(),
+            });
+        }
+        q::RoofCoverage::Partial | q::RoofCoverage::Complete => {}
+    }
+    out["roof_state"] = json!(coverage);
     out
 }
 
@@ -192,8 +295,18 @@ fn main() -> ExitCode {
     }
     match run(cli) {
         Ok(v) => {
-            print_line(&serde_json::to_string_pretty(&v).expect("serializable"));
-            ExitCode::SUCCESS
+            if !print_line(&serde_json::to_string_pretty(&v).expect("serializable"))
+                || v["ok"] == json!(false)
+            {
+                // Not written (disk full, round 2 ERR-106), or no building
+                // has a roof (ERR-103).
+                ExitCode::FAILURE
+            } else if v["partial"] == json!(true) {
+                // Calculated, with buildings left out (see `Command::Calc`).
+                ExitCode::from(2)
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Err(e) => {
             print_line(&json!({ "ok": false, "error": format!("{e:#}") }).to_string());
@@ -202,15 +315,17 @@ fn main() -> ExitCode {
     }
 }
 
-/// Prints the answer. A reader that went away (`tectora calc … | head`) is
-/// not an error worth a panic (ARCH-008); other write errors go to stderr.
-fn print_line(text: &str) {
+/// Prints the answer; false when it could not be written. A reader that
+/// went away (`tectora calc … | head`) is not an error worth a panic
+/// (ARCH-008) and counts as written; other write errors go to stderr.
+fn print_line(text: &str) -> bool {
     use std::io::Write;
     let mut out = std::io::stdout().lock();
     match writeln!(out, "{text}").and_then(|()| out.flush()) {
         Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => {
             eprintln!("tectora: cannot write the answer: {e}");
+            false
         }
-        _ => {}
+        _ => true,
     }
 }

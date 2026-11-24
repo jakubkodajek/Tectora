@@ -192,6 +192,45 @@ pub fn check_manual_face_pitch(pitch_deg: f64) -> Result<(), String> {
     }
 }
 
+/// Why a hand-drawn face is refused: `face_corners` (fewer than 3 distinct
+/// corners), `pitch_range` (see [`check_manual_face_pitch`]) or
+/// `face_crosses` (its outline crosses itself: a bow tie, corners clicked
+/// out of order, whose area would be the difference of its two lobes; audit
+/// 2026-11-24 HUNT-1801, owner decision 2). The code is what the editor
+/// localizes; the text is for MCP.
+pub fn check_manual_face(face: &crate::model::ManualFace) -> Result<(), (&'static str, String)> {
+    let pts = &face.points;
+    if !pts.iter().all(|p| p.x.is_finite() && p.y.is_finite()) {
+        return Err(("face_corners", "a corner is not a number".into()));
+    }
+    let mut distinct: Vec<Point2> = Vec::new();
+    for &p in pts {
+        if !distinct
+            .iter()
+            .any(|&q| q.distance(p) < crate::model::MIN_WALL_LENGTH)
+        {
+            distinct.push(p);
+            if distinct.len() >= 3 {
+                break;
+            }
+        }
+    }
+    if distinct.len() < 3 {
+        return Err((
+            "face_corners",
+            "a face needs at least 3 different corners".into(),
+        ));
+    }
+    check_manual_face_pitch(face.pitch_deg).map_err(|m| ("pitch_range", m))?;
+    if face.crosses() {
+        return Err((
+            "face_crosses",
+            "its outline crosses itself (or touches or folds back over itself); give the corners in order around the face, each once".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// See [`check_manual_face_pitch`]: a typed length must be a number of 0 or more.
 pub fn check_manual_line_length(length: f64) -> Result<(), String> {
     if length.is_finite() && length >= 0.0 {
@@ -328,12 +367,385 @@ pub fn check_new_wall(pitch_deg: f64, eave_height: f64, overhang: f64) -> Result
     Ok(())
 }
 
-/// A job name must not be empty or blank (the editor refuses it too).
-pub fn check_job_name(name: &str) -> Result<(), String> {
-    if name.trim().is_empty() {
-        return Err("the job name must not be empty".into());
+/// Shortest side of a standard roof or a regular polygon, m: the editor's
+/// standard-roof form takes 0.1 m and up; a centimetre-rounded corner of a
+/// smaller shape leaves walls without length (ARCH-001, HUNTC-007).
+pub const MIN_STANDARD_SIDE: f64 = 0.1;
+/// Longest side of a standard roof, m (the form's bound, far beyond any
+/// building and inside the file limits).
+pub const MAX_STANDARD_SIDE: f64 = 10_000.0;
+
+/// The length and width of a standard roof (or the side of a regular
+/// polygon, given as both) as the editor's standard-roof form bounds them,
+/// for every creating command: the app's New job and standard-roof dialog
+/// (Tauri `create_standard` / `standard_part`) and MCP
+/// `create_standard_roof` / `add_shape_part` (ARCH-001).
+pub fn check_standard_size(length: f64, width: f64) -> Result<(), String> {
+    for (name, v) in [("length", length), ("width", width)] {
+        if !v.is_finite() || !(MIN_STANDARD_SIDE..=MAX_STANDARD_SIDE).contains(&v) {
+            // A tiny or huge value in its short form, not with hundreds
+            // of digits (round 2 ARCH-106).
+            let v = if v != 0.0 && !(1e-4..1e6).contains(&v.abs()) {
+                format!("{v:e}")
+            } else {
+                v.to_string()
+            };
+            return Err(format!(
+                "{name} {v} out of range ({MIN_STANDARD_SIDE} to {MAX_STANDARD_SIDE} m): check m against cm or mm"
+            ));
+        }
     }
     Ok(())
+}
+
+/// The pitch a gable wall gets when it is turned back into an eave (the
+/// wall bar's Eave button, the plan's context menu, MCP `update_edges`
+/// with `gable: false`): the pitch the wall had before, when the editor
+/// remembers it (`remembered`), else the pitch of the nearest eave wall of
+/// the same part (searching both ways, the previous wall first), else the
+/// user's default pitch `preset` (ARCH-005, UI-007). Mirrored in
+/// `app/src/lib/walltype.ts` and checked by `tests/edit_parity.rs`.
+pub fn eave_pitch(edges: &[EdgeDef], edge: usize, remembered: Option<f64>, preset: f64) -> f64 {
+    if let Some(p) = remembered.filter(|p| p.is_finite()) {
+        return p;
+    }
+    let n = edges.len() as isize;
+    for d in 1..=n / 2 {
+        for k in [edge as isize - d, edge as isize + d] {
+            let e = &edges[k.rem_euclid(n) as usize];
+            if !e.is_gable() && !is_marker(e) {
+                return e.pitch_deg;
+            }
+        }
+    }
+    preset
+}
+
+/// The ranges a wall bar field takes (eave height 0 to 1000 m, overhang 0
+/// to 20 m, an eave wall's pitch from [`crate::model::MIN_PITCH_DEG`] to
+/// below 90°), checked on the walls `changed` of `after`: a calculation
+/// helper's OK writes no value the wall bar would refuse, whether it comes
+/// from the dialog or MCP `roof_helper` (ARCH-003). A wall that was a
+/// gable in `before` keeps its gable pitch.
+pub fn check_wall_values(
+    before: &[EdgeDef],
+    after: &[EdgeDef],
+    changed: impl IntoIterator<Item = usize>,
+) -> Result<(), String> {
+    let (eave_lo, eave_hi) = crate::settings::RoofDefaults::EAVE;
+    let (over_lo, over_hi) = crate::settings::RoofDefaults::OVERHANG;
+    for i in changed {
+        let Some(e) = after.get(i) else { continue };
+        let was_gable = before.get(i).is_some_and(|b| b.is_gable());
+        if !was_gable && !is_marker(e) {
+            check_eave_pitch(e.pitch_deg, crate::model::MIN_PITCH_DEG)
+                .map_err(|m| format!("wall {i}: {m}"))?;
+        }
+        if !(e.eave_height.is_finite() && (eave_lo..=eave_hi).contains(&e.eave_height)) {
+            return Err(format!(
+                "wall {i}: eave_height {} out of range ({eave_lo} to {eave_hi} m)",
+                e.eave_height
+            ));
+        }
+        if !(e.overhang.is_finite() && (over_lo..=over_hi).contains(&e.overhang)) {
+            return Err(format!(
+                "wall {i}: overhang {} out of range ({over_lo} to {over_hi} m)",
+                e.overhang
+            ));
+        }
+        if let Some((code, why)) = e.problems().next() {
+            return Err(format!("wall {i}: {code}: {why}"));
+        }
+    }
+    Ok(())
+}
+
+/// A job name must not be empty or blank (the editor refuses it too), and
+/// must not hold control characters (NUL, line breaks, tabs) or invisible
+/// ones (bidirectional overrides, zero-width spaces) that change how the
+/// name reads in the library, the file name and the sheets (HUNTIO-007),
+/// and has at most [`MAX_JOB_TEXT_CHARS`] characters, what a received
+/// job's name is cut to (ARCH-302).
+pub fn check_job_name(name: &str) -> Result<(), String> {
+    if !has_visible(name) {
+        return Err("the job name must not be empty".into());
+    }
+    if name.chars().count() > MAX_JOB_TEXT_CHARS {
+        return Err(format!(
+            "the job name is too long (at most {MAX_JOB_TEXT_CHARS} characters)"
+        ));
+    }
+    if let Some(c) = name.chars().find(|&c| not_in_a_line(c)) {
+        return Err(format!(
+            "the job name must not contain control or invisible characters (U+{:04X}); use one line of plain text",
+            c as u32
+        ));
+    }
+    Ok(())
+}
+
+/// Longest summary of a write kept, in characters (ARCH-105): one
+/// sentence for the user, not a document.
+pub const MAX_SUMMARY_CHARS: usize = 500;
+
+/// Longest job number, customer or address, in characters.
+pub const MAX_JOB_TEXT_CHARS: usize = 500;
+
+/// Longest job notes, in characters: well inside what a job bundle carries.
+pub const MAX_NOTES_CHARS: usize = 1_000_000;
+
+/// `text` cut to at most `max` characters, with `…` when it was cut.
+pub fn capped(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// The summary of a write (every MCP write needs one, `AGENTS.md`) must
+/// have a visible character, at most [`MAX_SUMMARY_CHARS`] characters and
+/// no control or invisible characters (ARCH-104, ARCH-105): it is shown to
+/// the user as the reason for the change.
+pub fn check_summary(summary: &str) -> Result<(), String> {
+    if !has_visible(summary) {
+        return Err("`summary` is empty: give one sentence for the user on what you change and why (it is shown in the app)".into());
+    }
+    if summary.chars().count() > MAX_SUMMARY_CHARS {
+        return Err(format!(
+            "`summary` is too long: one sentence of at most {MAX_SUMMARY_CHARS} characters"
+        ));
+    }
+    if let Some(c) = summary.chars().find(|&c| not_in_a_line(c)) {
+        return Err(format!(
+            "`summary` must not contain control or invisible characters (U+{:04X}); use one line of plain text",
+            c as u32
+        ));
+    }
+    Ok(())
+}
+
+/// A job's number, customer or address (`field`): one line of plain text,
+/// at most [`MAX_JOB_TEXT_CHARS`] characters, the character rule of
+/// [`check_job_name`] (NUL or a bidirectional override reorders what the
+/// library card shows, ARCH-104). Notes may have line breaks and tabs and
+/// are capped at [`MAX_NOTES_CHARS`].
+pub fn check_job_text(field: &str, text: &str) -> Result<(), String> {
+    let notes = field == "notes";
+    let max = if notes {
+        MAX_NOTES_CHARS
+    } else {
+        MAX_JOB_TEXT_CHARS
+    };
+    if text.chars().count() > max {
+        return Err(format!("{field} is too long (at most {max} characters)"));
+    }
+    if let Some(c) = text.chars().find(|&c| {
+        if notes {
+            not_in_notes(c)
+        } else {
+            not_in_a_line(c)
+        }
+    }) {
+        return Err(format!(
+            "{field} must not contain control or invisible characters (U+{:04X})",
+            c as u32
+        ));
+    }
+    Ok(())
+}
+
+/// Longest name of a part, a material or a hand-drawn line or face, in
+/// characters (ARCH-202): it goes into the results, the sheets and the
+/// offer list.
+pub const MAX_LABEL_CHARS: usize = 200;
+
+/// Longest name of who made a change in a received change log, in
+/// characters, as a connected AI client's name (ARCH-201).
+pub const MAX_ACTOR_CHARS: usize = 60;
+
+/// Characters that show as blank although they are neither whitespace nor
+/// format characters (ARCH-203): the Hangul fillers, the combining
+/// grapheme joiner, the Khmer inherent vowels, the variation selectors and
+/// the blank Braille pattern, and the combining marks, which show only on
+/// a letter before them (HUNT-305 item 3). Allowed in a text, but they do
+/// not make it visible.
+fn looks_blank(c: char) -> bool {
+    matches!(
+        c,
+        '\u{300}'..='\u{36f}'
+            | '\u{1ab0}'..='\u{1aff}'
+            | '\u{1dc0}'..='\u{1dff}'
+            | '\u{20d0}'..='\u{20ff}'
+            | '\u{fe20}'..='\u{fe2f}'
+            | '\u{115f}'
+            | '\u{1160}'
+            | '\u{17b4}'
+            | '\u{17b5}'
+            | '\u{2800}'
+            | '\u{3164}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{ffa0}'
+            | '\u{e0100}'..='\u{e01ef}'
+    )
+}
+
+/// Whether `text` has a character one can see (ARCH-104, ARCH-203).
+pub fn has_visible(text: &str) -> bool {
+    text.chars().any(|c| {
+        !c.is_whitespace() && !c.is_control() && !crate::store::is_invisible(c) && !looks_blank(c)
+    })
+}
+
+/// Characters a one-line text must not hold: control characters,
+/// invisible format characters and the Unicode line and paragraph
+/// separators (U+2028, U+2029), which break the line as `\n` does.
+fn not_in_a_line(c: char) -> bool {
+    c.is_control() || crate::store::is_invisible(c) || matches!(c, '\u{2028}' | '\u{2029}')
+}
+
+/// [`not_in_a_line`] for job notes, which may have line breaks and tabs.
+fn not_in_notes(c: char) -> bool {
+    (c.is_control() && !matches!(c, '\n' | '\r' | '\t')) || crate::store::is_invisible(c)
+}
+
+/// The name of a part, a material or a hand-drawn line or face (`field`):
+/// at most [`MAX_LABEL_CHARS`] characters of one line of plain text, the
+/// character rule of [`check_job_name`] (ARCH-202). It may be empty.
+pub fn check_label(field: &str, text: &str) -> Result<(), String> {
+    if text.chars().count() > MAX_LABEL_CHARS {
+        return Err(format!(
+            "{field} is too long (at most {MAX_LABEL_CHARS} characters)"
+        ));
+    }
+    if let Some(c) = text.chars().find(|&c| not_in_a_line(c)) {
+        return Err(format!(
+            "{field} must not contain control or invisible characters (U+{:04X})",
+            c as u32
+        ));
+    }
+    Ok(())
+}
+
+/// The texts of `after` a write sets, checked by the rules above: the job
+/// name, number, customer, address and notes, and the names of parts,
+/// materials and hand-drawn lines and faces. A text `before` already had
+/// is not checked, so a job that came with one (an imported job, an old
+/// file) stays editable around it (ARCH-104, TEST-206).
+pub fn check_texts_change(before: Option<&Project>, after: &Project) -> Result<(), String> {
+    if before.map(|b| &b.name) != Some(&after.name) {
+        check_job_name(&after.name)?;
+    }
+    for (field, text, old) in [
+        ("number", &after.job.number, before.map(|b| &b.job.number)),
+        (
+            "customer",
+            &after.job.customer,
+            before.map(|b| &b.job.customer),
+        ),
+        (
+            "address",
+            &after.job.address,
+            before.map(|b| &b.job.address),
+        ),
+        ("notes", &after.notes, before.map(|b| &b.notes)),
+    ] {
+        if old != Some(text) {
+            check_job_text(field, text)?;
+        }
+    }
+    // Whether `before` had `text` among the texts `of` gives.
+    fn had<'a, T: 'a>(
+        before: Option<&'a Project>,
+        list: impl Fn(&'a Project) -> &'a [T],
+        of: impl Fn(&'a T) -> &'a String,
+        text: &String,
+    ) -> bool {
+        before.is_some_and(|b| list(b).iter().any(|x| of(x) == text))
+    }
+    for part in &after.parts {
+        if !had(before, |b| &b.parts, |p| &p.name, &part.name) {
+            check_label("part name", &part.name)?;
+        }
+    }
+    for name in &after.material_names {
+        if !had(before, |b| &b.material_names, |m| m, name) {
+            check_label("material name", name)?;
+        }
+    }
+    for l in &after.manual_lines {
+        if !had(before, |b| &b.manual_lines, |x| &x.label, &l.label) {
+            check_label("line label", &l.label)?;
+        }
+    }
+    for f in &after.manual_faces {
+        if !had(before, |b| &b.manual_faces, |x| &x.label, &f.label) {
+            check_label("face label", &f.label)?;
+        }
+    }
+    Ok(())
+}
+
+/// `text` with the characters `drop` names removed and cut to `max`
+/// characters (with `…`).
+fn cleaned(text: &str, max: usize, drop: fn(char) -> bool) -> String {
+    let kept: String = text.chars().filter(|&c| !drop(c)).collect();
+    capped(&kept, max)
+}
+
+/// A one-line text from outside (a received job, a change log): control,
+/// invisible and line-separator characters removed, cut to `max`
+/// characters (ARCH-201).
+pub fn clean_line(text: &str, max: usize) -> String {
+    cleaned(text, max, not_in_a_line)
+}
+
+/// Makes the texts of a job from outside (a received bundle, a `.tectora`
+/// file opened from elsewhere, a version in its change log) keep the rules
+/// a write is held to, by removing what they forbid and cutting what is
+/// too long, so the job opens and stays editable (ARCH-201): job name
+/// (`fallback` when nothing visible is left), number, customer, address,
+/// notes, the names of parts, materials and hand-drawn lines and faces,
+/// the hand-drawn lines' codes and the stored result's engine version.
+pub fn clean_received(project: &mut Project, fallback: &str) {
+    project.name = clean_line(&project.name, MAX_JOB_TEXT_CHARS);
+    if !has_visible(&project.name) {
+        let f = clean_line(fallback, MAX_JOB_TEXT_CHARS);
+        project.name = if has_visible(&f) { f } else { "Job".into() };
+    }
+    let job = &mut project.job;
+    for text in [&mut job.number, &mut job.customer, &mut job.address] {
+        *text = clean_line(text, MAX_JOB_TEXT_CHARS);
+    }
+    project.notes = cleaned(&project.notes, MAX_NOTES_CHARS, not_in_notes);
+    for part in &mut project.parts {
+        part.name = clean_line(&part.name, MAX_LABEL_CHARS);
+    }
+    for name in &mut project.material_names {
+        *name = clean_line(name, MAX_LABEL_CHARS);
+    }
+    for l in &mut project.manual_lines {
+        l.label = clean_line(&l.label, MAX_LABEL_CHARS);
+        // A code that is no line code (control, bidi or 20 000 characters)
+        // is a dimension line: drawn, not counted, as before (HUNT-301).
+        // So is one no tool can set (`Z9`, `t`): it was shown as a code the
+        // user could not choose again (ARCH-403 item 2).
+        if !crate::model::MANUAL_LINE_CODES.contains(&l.code.as_str()) {
+            l.code = "M".into();
+        }
+    }
+    for f in &mut project.manual_faces {
+        f.label = clean_line(&f.label, MAX_LABEL_CHARS);
+    }
+    // The stored result's text; its size is checked with the job's limits
+    // (ARCH-303).
+    if let Some(s) = &mut project.result_snapshot {
+        s.clean();
+    }
+    // One with an impossible time is left out, as when a job is read
+    // (HUNT-802).
+    crate::snapshot::drop_impossible(project);
 }
 
 /// [`check_windows`] for a save that changes `before` into `after`, used by
@@ -411,6 +823,30 @@ pub fn plain_edge(start: Point2, pitch_deg: f64, eave_height: f64, overhang: f64
 mod tests {
     use super::*;
     use crate::model::{Chimney, ManualLine};
+
+    /// Audit 2026-11-22 ARCH-403 item 2: a received hand-drawn line keeps
+    /// only a code the editor and `set_manual` can set; any other is a
+    /// dimension line (M), drawn and not counted.
+    #[test]
+    fn a_received_line_code_no_tool_can_set_becomes_a_dimension_line() {
+        let mut p = crate::examples::find("gable").unwrap().project();
+        let line = |code: &str| ManualLine {
+            a: [0.0, 0.0, 0.0],
+            b: [1.0, 0.0, 0.0],
+            code: code.into(),
+            length: None,
+            label: String::new(),
+        };
+        let sent = ["Z9", "t", "o", "O", "W", "WV", "c", "X", "M", "T"];
+        p.manual_lines = sent.iter().map(|c| line(c)).collect();
+        clean_received(&mut p, "x");
+        let got: Vec<&str> = p.manual_lines.iter().map(|l| l.code.as_str()).collect();
+        assert_eq!(got, ["M", "M", "M", "M", "M", "WV", "c", "X", "M", "T"]);
+        assert!(
+            got.iter()
+                .all(|c| crate::model::MANUAL_LINE_CODES.contains(c))
+        );
+    }
 
     #[test]
     fn a_typed_eave_pitch_over_90_is_refused_but_files_keep_dacads_range() {
@@ -708,5 +1144,10 @@ mod tests {
             assert!(check_new_wall(p, e, o).is_err(), "{p} {e} {o}");
         }
         assert!(check_job_name("  ").is_err() && check_job_name("A").is_ok());
+        // HUNTIO-007: one line of visible text.
+        for bad in ["A\r\nB", "A\tB", "A\u{0}B", "file\u{202e}gnp", "A\u{200b}B"] {
+            assert!(check_job_name(bad).is_err(), "{bad:?}");
+        }
+        assert!(check_job_name("Rodinný dům – garáž 6×4 m ≥ 2°").is_ok());
     }
 }

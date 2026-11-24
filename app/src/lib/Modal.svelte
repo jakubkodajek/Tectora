@@ -5,6 +5,9 @@
   import { onMount, tick, type Snippet } from "svelte";
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
+  import { shownNow } from "./dblclick";
+  import { anyWriterOpen } from "./dragsession";
+  import { modalOpened } from "./modalcount";
 
   let {
     title,
@@ -15,6 +18,9 @@
   }: { title: string; width?: number; onclose: () => void; children: Snippet; footer?: Snippet } = $props();
 
   let dialog: HTMLDivElement | undefined = $state();
+  // A double click on the button that opened the dialog: its second press
+  // lands on the backdrop and must not close the dialog again (UI-304).
+  const secondPress = shownNow();
 
   const FOCUSABLE =
     'a[href], button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
@@ -25,6 +31,7 @@
   }
 
   onMount(() => {
+    const closed = modalOpened();
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     tick().then(() => {
       if (!dialog || dialog.contains(document.activeElement)) return;
@@ -36,6 +43,7 @@
       (typing ? first! : dialog).focus({ preventScroll: true });
     });
     return () => {
+      closed();
       // Back to the opener when it is still on the page (not when another
       // dialog or the editor took the focus meanwhile).
       const now = document.activeElement;
@@ -44,6 +52,9 @@
   });
 
   function onkeydown(e: KeyboardEvent) {
+    // A window listener: no key closes or moves in a dialog while a writer
+    // of the job is out (round 12, fix design 1).
+    if (anyWriterOpen()) return;
     if (e.key === "Escape") {
       onclose();
       return;
@@ -73,7 +84,7 @@
 
 <svelte:window {onkeydown} />
 
-<div class="backdrop" role="presentation" onpointerdown={(e) => e.target === e.currentTarget && onclose()}>
+<div class="backdrop" role="presentation" onpointerdown={(e) => e.target === e.currentTarget && !secondPress(e) && onclose()}>
   <div class="modal" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" bind:this={dialog} style="width:min({width}px, calc(100vw - 32px))">
     <header>
       <h2>{title}</h2>
