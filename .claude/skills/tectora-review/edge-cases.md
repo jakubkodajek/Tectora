@@ -793,3 +793,52 @@ only), `keys.test.ts` (draftKey); core `snapshot::tests::the_review_figures_and_
 job), `set_manual_refuses_a_face_that_touches_or_folds_over_itself`,
 `calc_warns_about_a_crossing_face_in_a_job_without_a_building`;
 `app/e2e/audit-r20-b.e2e.ts`, `editor-ux.e2e.ts` "corners being placed".
+
+## 22. Calculations behind a tool, faces on each other, one key press more (@hunt, @errors, @ux, @ui, @test)
+
+Round 21 (HUNT-2001, HUNT-2002, UX-2002, UX-2004, UI-2001, UI-2002,
+OPENFAIL, TEST-2001 to TEST-2012; ERR-2001's class is section 20 plus the
+line below). Check each:
+
+- Every core function a tool or app command calls that calculates the roof
+  inside (`bare_roof`, `position::place` / `placement` / `placements`, a
+  host roof), not only the direct kernel calls: on a job too complex to
+  calculate it answers within the work bound, and a wrong kind, index or
+  distance answers at once, before any roof (MCP `place_item`, the dormer
+  dialog's `item_placement`, the distance fields' `place_item`).
+- Two hand-drawn faces on each other (the same face twice, one inside
+  another, a sliver at an edge, faces sharing an edge), and a hand-drawn
+  face over the calculated roof: a warning, a note, nothing; the areas never
+  change; in a job without a building the warning is job-level, marks the
+  Results tab and is in the CLI's `--summary`. A job without hand-drawn
+  faces never gets one of these kinds (every DACAD case).
+- A corner touching the middle of another edge (a T touch), also 0.5 mm off.
+- While corners are placed, one press more than there are corners
+  (Ctrl+Z, Redo with a redo step waiting, Backspace) and Delete do nothing;
+  picking a drawing tool ends the selection, so no wall is deleted.
+- An empty section heading (Results and Postup of a job of faces only);
+  a bar tip at the reference size 1360x860 in all four languages, whole.
+- A review read that fails at the open, once and always: the retry brings
+  the banner and the AI tab, or a notice says the review could not be read.
+- Accept is sent up to the newest step the banner's review lists, also when
+  the history read is older than the review read.
+- Another program (an older Tectora, a sync tool, a hand edit) saves the job
+  while an AI review waits: Revert all keeps that edit or refuses, never
+  removes it silently (ERR-2001).
+- A guard test must fail with its guard removed: hold the answer it orders,
+  switch file events off (`**/__events` answered empty) where a later read
+  would hide the stale one, keep a toast open under the pointer when it may
+  only go by a read, and never end with a fixed wait.
+
+Guards: core `position::tests::an_object_that_does_not_exist_is_refused_before_the_roof_is_calculated`,
+`work_bound_entries::placing_an_object_on_a_job_too_complex_answers_too_complex`,
+`app_commands::no_app_command_calculates_a_roof_outside_the_work_bound`
+(placing tokens), `check_cases::manual_faces_overlap::*`,
+`dacad_cases::no_case_without_hand_drawn_faces_gets_a_hand_drawn_face_warning`;
+MCP `bound_tests` (place_item, scan); CLI
+`calc_cli::the_summary_carries_the_job_level_warnings_of_a_job_of_faces_only`;
+vitest `keys.test.ts` (draftKey at 0 corners, Delete), `results.test.ts`
+(UI-2002, HUNT-2002 texts), `reviewstatus.test.ts` (acceptTs);
+`app/e2e/audit-r21-b.e2e.ts`, `editor-ux.e2e.ts` "one press more",
+`audit-r20-review.e2e.ts` (TEST-2001), `audit-r20-b.e2e.ts` (ERR-1906,
+ERR-1905, UI-1901), `audit-r19-b.e2e.ts` (HUNT-1805).
