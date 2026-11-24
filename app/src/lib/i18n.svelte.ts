@@ -1076,7 +1076,7 @@ const cs: Dict = {
   "ai.revertedOne": "Vrácena změna AI: {s}",
   "editor.outsideTitle": "Zakázku změnil jiný program",
   "editor.outsideState": "Soubor změnil jiný program",
-  "err.revert_out_of_limits_damaged": "Starší verzi zakázky z historie nelze obnovit, protože přesahuje dnešní limity Tectory. Soubor zakázky navíc nejde přečíst: uložte zakázku z editoru, nebo obnovte soubor ze zálohy.",
+  "err.revert_out_of_limits_damaged": "Starší verzi zakázky z historie nelze obnovit, protože přesahuje dnešní limity Tectory. Soubor zakázky navíc nejde přečíst: je-li zakázka otevřená v editoru, změňte v ní cokoli a uloží se znovu; jinak obnovte soubor ze zálohy.",
   "res.offRoof": "mimo střechu: {n}",
   "folderReq.reason": "Důvod od {by}:",
 };
@@ -2146,7 +2146,7 @@ const sk: Dict = {
   "ai.revertedOne": "Vrátená zmena AI: {s}",
   "editor.outsideTitle": "Zákazku zmenil iný program",
   "editor.outsideState": "Súbor zmenil iný program",
-  "err.revert_out_of_limits_damaged": "Staršiu verziu zákazky z histórie nemožno obnoviť, pretože presahuje dnešné limity Tectory. Súbor zákazky navyše nejde prečítať: uložte zákazku z editora alebo obnovte súbor zo zálohy.",
+  "err.revert_out_of_limits_damaged": "Staršiu verziu zákazky z histórie nemožno obnoviť, pretože presahuje dnešné limity Tectory. Súbor zákazky navyše nejde prečítať: ak je zákazka otvorená v editore, zmeňte v nej čokoľvek a uloží sa znova; inak obnovte súbor zo zálohy.",
   "res.offRoof": "mimo strechy: {n}",
   "folderReq.reason": "Dôvod od {by}:",
 };
@@ -3216,7 +3216,7 @@ const en: Dict = {
   "ai.revertedOne": "AI change reverted: {s}",
   "editor.outsideTitle": "Another program changed this job",
   "editor.outsideState": "File changed by another program",
-  "err.revert_out_of_limits_damaged": "The earlier version in the history cannot be restored because it is outside Tectora's current limits. The job file itself cannot be read either: save the job from the editor, or restore the file from a backup.",
+  "err.revert_out_of_limits_damaged": "The earlier version in the history cannot be restored because it is outside Tectora's current limits. The job file itself cannot be read either: if the job is open in the editor, change anything there and it is saved again; otherwise restore the file from a backup.",
   "res.offRoof": "off the roof: {n}",
   "folderReq.reason": "Reason given by {by}:",
 };
@@ -4286,7 +4286,7 @@ const de: Dict = {
   "ai.revertedOne": "KI-Änderung verworfen: {s}",
   "editor.outsideTitle": "Ein anderes Programm hat den Auftrag geändert",
   "editor.outsideState": "Datei von anderem Programm geändert",
-  "err.revert_out_of_limits_damaged": "Die frühere Fassung aus dem Verlauf lässt sich nicht wiederherstellen, weil sie außerhalb der heutigen Grenzen von Tectora liegt. Die Auftragsdatei selbst ist außerdem nicht lesbar: Speichern Sie den Auftrag aus dem Editor oder stellen Sie die Datei aus einer Sicherung wieder her.",
+  "err.revert_out_of_limits_damaged": "Die frühere Fassung aus dem Verlauf lässt sich nicht wiederherstellen, weil sie außerhalb der heutigen Grenzen von Tectora liegt. Die Auftragsdatei selbst ist außerdem nicht lesbar: Ist der Auftrag im Editor geöffnet, ändern Sie dort irgendetwas, dann wird er neu gespeichert; sonst stellen Sie die Datei aus einer Sicherung wieder her.",
   "res.offRoof": "nicht auf dem Dach: {n}",
   "folderReq.reason": "Begründung von {by}:",
 };
