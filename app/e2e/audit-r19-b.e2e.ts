@@ -176,3 +176,38 @@ test.describe("round 19, HUNT-1801: a hand-drawn face that crosses itself", () =
     await expect(page.getByRole("tabpanel")).toContainText(cs("res.warn.manual_face_crosses", { n: 1 }));
   });
 });
+
+test.describe("round 19, UX-1802: Undo / Redo pressed in the dock while an Undo is with the core", () => {
+  test("two Ctrl+Z with the focus on the AI tab: the second is queued behind the first and both go out (UX-1802)", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "R19 fronta v panelu");
+    await openEditor(app, "R19 fronta v panelu");
+    await mcp.call("update_job", { id, notes: "Od AI", summary: "Poznámka od AI" });
+    await expect(review(page)).toContainText("Poznámka od AI");
+    await mcp.call("update_job", { id, customer: "AI Zákazník", summary: "Zákazník od AI" });
+    await expect(review(page)).toContainText(cs("review.steps", { n: 2 }));
+    await app.saved();
+    await dockTab(page, "dock.ai").click();
+    await dockTab(page, "dock.ai").focus();
+    let calls = 0;
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    await page.route("**/revert_changes", async (route) => {
+      calls++;
+      const res = await route.fetch();
+      if (calls === 1) await gate;
+      await route.fulfill({ response: res }).catch(() => {});
+    });
+    await page.keyboard.press("ControlOrMeta+z");
+    await expect.poll(() => calls).toBe(1);
+    // The focus is still in the dock while the first answer is held.
+    expect(await page.evaluate(() => !!document.activeElement?.closest("aside"))).toBe(true);
+    await page.keyboard.press("ControlOrMeta+z");
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));
+    expect(calls).toBe(1);
+    open();
+    await waitForProject(id, (p) => !p.notes && p.job.customer === "");
+    await expect.poll(() => calls).toBe(2);
+    await expect(review(page)).toHaveCount(0);
+    expect(await page.locator(".stack .toast.error").count()).toBe(0);
+  });
+});

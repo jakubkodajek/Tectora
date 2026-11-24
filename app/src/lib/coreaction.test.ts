@@ -118,6 +118,25 @@ describe("refuseInput (design A1, UI-604)", () => {
     a.destroy();
     expect(node.listeners.size).toBe(0);
   });
+
+  // UX-1802: Undo / Redo pressed in the dock while an Undo through the core
+  // is out reach the editor's window handler, which queues them; every
+  // other key and press is still swallowed.
+  it("lets the events `pass` names through to the window, without the browser's own action", () => {
+    const node = new Node();
+    const pass = (e: Event) => (e as unknown as { key?: string }).key === "z";
+    refuseInput(node as unknown as HTMLElement, { on: true, pass });
+    const keyEvent = (key: string) => {
+      const e = { key, prevented: false, stopped: false, preventDefault: () => (e.prevented = true), stopImmediatePropagation: () => (e.stopped = true) };
+      return e;
+    };
+    const z = keyEvent("z");
+    node.listeners.get("keydown")!(z as unknown as Event);
+    expect([z.prevented, z.stopped]).toEqual([true, false]);
+    const other = keyEvent("a");
+    node.listeners.get("keydown")!(other as unknown as Event);
+    expect([other.prevented, other.stopped]).toEqual([true, true]);
+  });
 });
 
 // Round 12 (audit 2026-11-23 fix design 1, HUNT-1101, UI-1101, ERR-1105):

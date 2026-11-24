@@ -3124,6 +3124,9 @@
   const isMac = isMacPlatform();
   const keys = (k: string) => shortcut(k, isMac);
 
+  /** Undo / Redo pressed in the dock or the banner during a review call reach `onkeydown`, which queues them behind an Undo through the core (UX-1802). */
+  const passUndoKeys = (e: Event) => e.type === "keydown" && !!undoKey(e as KeyboardEvent);
+
   function onkeydown(e: KeyboardEvent) {
     const mod = e.metaKey || e.ctrlKey;
     const del = e.key === "Delete" || (e.key === "Backspace" && !mod);
@@ -3285,7 +3288,7 @@
       <div class="main" use:inertBut={{ on: closed, keep: reviewOut ? "review" : "views" }}>
         {#if pending}
           <!-- Not inert while Revert is out: its pressed button keeps the keyboard's focus; the banner swallows input itself (UI-1103). -->
-          <div class="review" class:open={reviewDetails} role="status" tabindex="-1" bind:this={bannerEl} use:refuseInput={{ on: reviewOut }}>
+          <div class="review" class:open={reviewDetails} role="status" tabindex="-1" bind:this={bannerEl} use:refuseInput={{ on: reviewOut, pass: passUndoKeys }}>
             <Icon name="sparkle" size={18} />
             <div class="review-text">
               <strong>
@@ -3451,7 +3454,7 @@
         {/if}
       </div>
 
-      <aside class:open={dockOpen} inert={dragState !== "idle"} use:refuseInput={{ on: reviewOut }}>
+      <aside class:open={dockOpen} inert={dragState !== "idle"} use:refuseInput={{ on: reviewOut, pass: passUndoKeys }}>
         <div class="tabs" role="tablist" use:tablist use:fitlabels>
           <button role="tab" id={dockIds.tab("results")} aria-controls={dockIds.panel} aria-selected={dock === "results"} class:on={dock === "results"} onclick={() => showDock("results")} title={t("dock.results")} aria-label={roofWarned ? t("dock.resultsWarned") : undefined}><Icon name="chart" size={15} /><span class="tab-label">{t("dock.results")}</span>{#if roofWarned}<i class="badge warned" data-testid="results-warned"></i>{/if}</button>
           <button role="tab" id={dockIds.tab("breakdown")} aria-controls={dockIds.panel} aria-selected={dock === "breakdown"} class:on={dock === "breakdown"} onclick={() => showDock("breakdown")} title={t("bd.title")}><Icon name="sigma" size={15} /><span class="tab-label">{t("dock.breakdown")}</span></button>
