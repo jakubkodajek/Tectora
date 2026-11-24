@@ -1102,6 +1102,7 @@ const cs: Dict = {
   "editor.undoing": "Vracím krok zpět…",
   "editor.redoing": "Provádím krok znovu…",
   "review.deleteUnchecked": "Zakázka se nesmazala: nepodařilo se ověřit, zda do ní AI mezitím nepřidala další krok. Zkuste to znovu.",
+  "home.restoreGone": "Zakázka „{name}“ už v koši není: mezitím ji někdo obnovil nebo odstranil.",
 };
 
 const sk: Dict = {
@@ -2195,6 +2196,7 @@ const sk: Dict = {
   "editor.undoing": "Vraciam krok späť…",
   "editor.redoing": "Vykonávam krok znova…",
   "review.deleteUnchecked": "Zákazka sa nezmazala: nepodarilo sa overiť, či do nej AI medzitým nepridala ďalší krok. Skúste to znova.",
+  "home.restoreGone": "Zákazka „{name}“ už v koši nie je: medzitým ju niekto obnovil alebo odstránil.",
 };
 
 const en: Dict = {
@@ -3288,6 +3290,7 @@ const en: Dict = {
   "editor.undoing": "Undoing…",
   "editor.redoing": "Redoing…",
   "review.deleteUnchecked": "The job was not deleted: it could not be checked whether the AI added another step meanwhile. Try again.",
+  "home.restoreGone": "Job “{name}” is no longer in the trash: it was restored or removed meanwhile.",
 };
 
 const de: Dict = {
@@ -4381,6 +4384,7 @@ const de: Dict = {
   "editor.undoing": "Wird rückgängig gemacht…",
   "editor.redoing": "Wird wiederholt…",
   "review.deleteUnchecked": "Der Auftrag wurde nicht gelöscht: Es ließ sich nicht prüfen, ob die KI inzwischen einen weiteren Schritt hinzugefügt hat. Versuchen Sie es erneut.",
+  "home.restoreGone": "Auftrag „{name}“ ist nicht mehr im Papierkorb: Er wurde inzwischen wiederhergestellt oder entfernt.",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };

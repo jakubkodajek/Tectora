@@ -341,3 +341,48 @@ test.describe("round 19, HUNT-1804: a long AI summary in the AI tab", () => {
     expect(await panel.evaluate((e) => e.scrollWidth <= e.clientWidth + 1)).toBe(true);
   });
 });
+
+test.describe("round 19, HUNT-1805: Restore of a job the AI already brought back", () => {
+  async function deletedFromBanner(app: any, page: Page, mcp: any, name: string) {
+    const created = await mcp.call("create_from_example", { example_id: "gable", name, summary: "Založeno podle výkresu" });
+    await app.open({ prefs: { followAi: false } });
+    await app.openJob(name);
+    await app.answerConfirm(true);
+    await review(page).getByTestId("review-delete").click();
+    await expect(page.locator("header .brand")).toBeVisible();
+    const toast = app.toasts().filter({ hasText: cs("home.deleted", { name }) });
+    await expect(toast).toHaveCount(1);
+    const entry = (await mcp.call("list_deleted", {})).find((e: any) => e.id === created.id).entry as string;
+    return { id: created.id as string, toast, entry };
+  }
+
+  test("Restore pressed after the AI restored the entry says it is no longer in the trash, not that the job is gone (HUNT-1805)", async ({ app, page, mcp }) => {
+    const name = "R19 obnoveno AI";
+    const { id, toast, entry } = await deletedFromBanner(app, page, mcp, name);
+    // The library's trash read is held, so the notice is still there when the user presses.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    await page.route("**/list_deleted", async (route) => {
+      const res = await route.fetch();
+      await gate;
+      await route.fulfill({ response: res }).catch(() => {});
+    });
+    await mcp.call("restore_project", { entry, summary: "Zakázka zpět" });
+    await toast.getByRole("button", { name: cs("home.restore") }).click();
+    await expect(app.toasts().filter({ hasText: cs("home.restoreGone", { name }) })).toHaveCount(1);
+    await expect(page.locator(".stack .toast.error")).toHaveCount(0);
+    release();
+    await page.unroute("**/list_deleted");
+    await expect(toast).toHaveCount(0);
+    await expect(page.getByRole("row").filter({ hasText: name })).toHaveCount(1);
+    expect(fs.existsSync(path.join(LIBRARY_DIR, `${id}.tectora`))).toBe(true);
+  });
+
+  test("the delete notice goes by itself once the AI has restored its entry (HUNT-1805)", async ({ app, page, mcp }) => {
+    const name = "R19 obnoveno samo";
+    const { toast, entry } = await deletedFromBanner(app, page, mcp, name);
+    await mcp.call("restore_project", { entry, summary: "Zakázka zpět" });
+    await expect(page.getByRole("row").filter({ hasText: name })).toHaveCount(1);
+    await expect(toast).toHaveCount(0);
+  });
+});
