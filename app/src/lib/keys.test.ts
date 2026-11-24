@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deleteKeyHint, drawKeyHint, editorTakesUndo, isDrawKey, isMacPlatform, shortcut, undoKey, zoomKey } from "./keys";
+import { deleteKeyHint, drawKeyHint, editorTakesUndo, isDrawKey, isMacPlatform, shortcut, undoKey, zoomKey, draftKey } from "./keys";
 import { i18n } from "./i18n.svelte";
 
 const key = (key: string, mods: Partial<{ ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; altKey: boolean }> = {}) => ({
@@ -84,5 +84,32 @@ describe("zoom keys (UX-805)", () => {
     expect(zoomKey(key("-", { altKey: true }))).toBeNull();
     expect(zoomKey(key("a"))).toBeNull();
     expect(zoomKey(key("_"))).toBeNull();
+  });
+});
+
+describe("keys while corners are placed (audit 2026-11-24 UX-1902)", () => {
+  const k = (key: string, mods: Partial<{ ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; altKey: boolean }> = {}) => ({
+    key,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    altKey: false,
+    ...mods,
+  });
+  it("Ctrl+Z / ⌘Z removes the last corner of a building or a face, Redo does nothing", () => {
+    expect(draftKey(k("z", { ctrlKey: true }), "walls", 2)).toBe("drop");
+    expect(draftKey(k("z", { metaKey: true }), "manual", 1)).toBe("drop");
+    expect(draftKey(k("z", { ctrlKey: true, shiftKey: true }), "walls", 2)).toBe("ignore");
+    expect(draftKey(k("y", { ctrlKey: true }), "manual", 2)).toBe("ignore");
+  });
+  it("Backspace removes a face's or line's last corner; the draw bar has its own for walls", () => {
+    expect(draftKey(k("Backspace"), "manual", 3)).toBe("drop");
+    expect(draftKey(k("Backspace"), "walls", 3)).toBeNull();
+  });
+  it("leaves every key alone without corners, and other keys always", () => {
+    expect(draftKey(k("z", { ctrlKey: true }), "walls", 0)).toBeNull();
+    expect(draftKey(k("z", { ctrlKey: true }), null, 3)).toBeNull();
+    expect(draftKey(k("Backspace"), "manual", 0)).toBeNull();
+    expect(draftKey(k("a"), "manual", 3)).toBeNull();
   });
 });
