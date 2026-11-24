@@ -3,8 +3,12 @@
 // OPENFAIL  a job opened while its review cannot be read: the retry's
 //           review brings the banner and the AI tab; when it fails too, a
 //           notice says the review could not be read
+// UI-2002   a job of hand-drawn faces only with a warning marks the Results tab
+// HUNT-2002 two hand-drawn faces on each other are warned about in Results
+// UX-2004   Postup of a job of hand-drawn faces only has no empty line heading
+// TEST-2009 U20: one hand-drawn face alone is listed under the areas
 import type { Page } from "@playwright/test";
-import { createExample, expect, test } from "./fixtures";
+import { bridge, createExample, expect, loadProject, test } from "./fixtures";
 import { cs } from "./i18n";
 
 // TECTORA_SHOTS=<folder>/ saves a screenshot after each test (fix evidence).
@@ -62,5 +66,54 @@ test.describe("round 21: the review read fails when the job opens (OPENFAIL)", (
     await mcp.call("update_job", { id, customer: "AI", summary: "Zákazník od AI" });
     await expect(review(page)).toContainText("Zákazník od AI", { timeout: 10_000 });
     app.errors.length = 0;
+  });
+});
+
+type Face = { points: { x: number; y: number }[]; pitch_deg: number; label: string };
+const square = (x: number, side: number): Face => ({
+  points: [{ x, y: 0 }, { x: x + side, y: 0 }, { x: x + side, y: side }, { x, y: side }],
+  pitch_deg: 30,
+  label: "",
+});
+
+/** A job of hand-drawn faces only, opened in the editor. */
+async function facesOnly(app: any, name: string, faces: Face[]) {
+  const id = await createExample("gable", name);
+  const p = await loadProject(id);
+  p.parts = [];
+  p.dormers = [];
+  p.windows = [];
+  p.chimneys = [];
+  p.roof_openings = [];
+  p.manual_faces = faces;
+  await bridge("save_project", { id, project: p });
+  await app.open();
+  await app.openJob(name);
+  return id;
+}
+
+test.describe("round 21: a job of hand-drawn faces only", () => {
+  test("two faces on each other: Results warns and the tab is marked (HUNT-2002, UI-2002)", async ({ app, page }) => {
+    await facesOnly(app, "R21 plochy přes sebe", [square(0, 10), square(2, 6)]);
+    await page.locator("aside .tabs").getByRole("tab", { name: cs("dock.results") }).click();
+    const res = page.locator(".results");
+    await expect(res.locator(".warn")).toContainText(cs("res.warn.manual_faces_overlap", { a: 1, b: 2, v: "36,00" }));
+    // The job-level warning marks the tab, also while another tab is open.
+    await dockTab(page, "dock.job").click();
+    await expect(page.getByTestId("results-warned")).toHaveCount(1);
+    await expect(page.locator("aside .tabs").getByRole("tab", { name: cs("dock.resultsWarned") })).toHaveCount(1);
+  });
+
+  test("one face alone: listed under the areas, no warning mark, and Postup has no empty line heading (TEST-2009 U20, UX-2004)", async ({ app, page }) => {
+    await facesOnly(app, "R21 jedna plocha", [square(0, 4)]);
+    await page.locator("aside .tabs").getByRole("tab", { name: cs("dock.results") }).click();
+    const res = page.locator(".results");
+    await expect(res.getByRole("heading", { name: cs("res.areas") })).toHaveCount(1);
+    await expect(res).toContainText(cs("manual.faceN", { n: 1 }));
+    await expect(page.getByTestId("results-warned")).toHaveCount(0);
+    await dockTab(page, "dock.breakdown").click();
+    const panel = page.getByRole("tabpanel");
+    await expect(panel.getByRole("heading", { name: cs("bd.total") })).toHaveCount(1);
+    await expect(panel.getByRole("heading", { name: cs("res.lines") })).toHaveCount(0);
   });
 });
