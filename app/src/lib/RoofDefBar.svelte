@@ -215,6 +215,8 @@
 </script>
 
 <div class="bar" role="toolbar" aria-label={t("def.title")} bind:this={barEl} use:freshBar>
+  <!-- More sits beside the scrolled strip, not on it: at 600 px it never lies over a field (UI-1901). -->
+  <div class="line">
   <div class="row" use:hscroll>
     <div class="nav">
       <button class="icon-btn" onclick={() => step(-1)} title="{t('def.prev')} (PageUp, {alt}←)" aria-label={t("def.prev")}><Icon name="left" /></button>
@@ -267,12 +269,6 @@
         <span>{t("edge.overhang")}{#if unusualOverhang}<b class="mark" data-testid="unusual-overhang"><i></i>{t("edge.unusual")}</b>{/if}</span>
         <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: edge.overhang, step: 0.05, min: 0, onchange: bounded(OVERHANG, (v) => ({ overhang: v })) }} /><em>m</em></div>
       </label>
-      <button class="btn sm more-btn" class:on={moreOpen} data-testid="def-more" aria-expanded={moreOpen} aria-controls="def-more-row"
-        aria-describedby={moreSet.length ? "def-more-set" : undefined}
-        title={moreTitle} onclick={toggleMore}>
-        {t("bar.more")}
-        {#if moreSet.length}<b class="count" data-testid="def-more-count">{moreSet.length}</b><span class="sr-only" id="def-more-set">{t("bar.moreSet", { list: moreSet.join(", ") })}</span>{/if}
-      </button>
     {:else}
       {#if project.parts.length === 0}
         <!-- An empty job: no wall to pick, so say how to start (UX-004). -->
@@ -284,6 +280,15 @@
       {:else}
         <p class="tip">{t("editor.tip")}</p>
       {/if}
+    {/if}
+  </div>
+    {#if edge && part}
+      <button class="btn sm more-btn" class:on={moreOpen} data-testid="def-more" aria-expanded={moreOpen} aria-controls="def-more-row"
+      aria-describedby={moreSet.length ? "def-more-set" : undefined}
+      title={moreTitle} onclick={toggleMore}>
+      {t("bar.more")}
+      {#if moreSet.length}<b class="count" data-testid="def-more-count">{moreSet.length}</b><span class="sr-only" id="def-more-set">{t("bar.moreSet", { list: moreSet.join(", ") })}</span>{/if}
+    </button>
     {/if}
   </div>
 
@@ -434,18 +439,25 @@
   .row.more .unit input {
     width: 92px;
   }
-  /* Stays in view at the row's end when a narrow window scrolls the row. */
+  /* The first row and More: the row scrolls, More stays beside it at the
+     end, never over a field (UI-1901). */
+  .line {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    min-width: 0;
+  }
+  .line > .row {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
   .more-btn {
-    position: sticky;
-    right: 0;
-    z-index: 1;
+    flex-shrink: 0;
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    margin-bottom: 1px;
+    margin-bottom: 3px;
     margin-left: auto;
-    background: var(--surface);
-    box-shadow: -8px 0 8px -4px var(--surface);
   }
   .more-btn.on {
     background: var(--accent-soft);
