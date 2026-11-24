@@ -3,7 +3,7 @@
 import { num } from "./format";
 import { minOf } from "./extent";
 import { DICTS, t } from "./i18n.svelte";
-import { ENGINE_ACTOR, RECEIVED_ENGINE_ACTOR, USER_ACTOR, isAi, type ActivityItem, type EntryKind, type LiveStatus } from "./types";
+import { ENGINE_ACTOR, RECEIVED_ENGINE_ACTOR, RECEIVED_USER_ACTOR, byAUser, isAi, type ActivityItem, type EntryKind, type LiveStatus } from "./types";
 
 /** A status older than this is shown as idle. */
 export const LIVE_FRESH_MS = 90_000;
@@ -34,6 +34,8 @@ export function actorLabel(actor: string): string {
   if (isAi(actor)) return actorName(actor);
   // An engine's entry that came with a bundle: the sender's Tectora, said so (ARCH-802).
   if (actor === RECEIVED_ENGINE_ACTOR) return t("ai.receivedEngine");
+  // The sender's own entries of a received job: not "you" (UX-1801).
+  if (actor === RECEIVED_USER_ACTOR) return t("ai.receivedUser");
   return actor === ENGINE_ACTOR ? "Tectora" : t("ai.you");
 }
 
@@ -256,7 +258,7 @@ export function entryKind(a: Pick<EntryLike, "actor" | "kind" | "undid_from" | "
   if (a.kind !== undefined) return a.kind;
   const summary = a.summary ?? "";
   if (a.restores != null) return "restore";
-  if (a.undid_from != null || (a.actor === USER_ACTOR && revertSentence(summary))) return "revert";
+  if (a.undid_from != null || (byAUser(a.actor) && revertSentence(summary))) return "revert";
   if ((a.actor === ENGINE_ACTOR || a.actor === RECEIVED_ENGINE_ACTOR) && REFRESHED_ANY.test(summary)) return "refresh";
   return null;
 }

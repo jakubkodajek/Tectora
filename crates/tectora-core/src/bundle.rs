@@ -646,9 +646,15 @@ fn received_history(bytes: &[u8]) -> Option<(String, u64)> {
         // shown or trusted as this engine's recalculation (audit
         // 2026-11-22 ARCH-802).
         // Also one that already reads as received (any spelling), so the
-        // app knows it by its one name (audit 2026-11-23 ARCH-901).
-        if crate::store::reserved_actor(&e.actor).is_some_and(|r| r != crate::store::USER_ACTOR) {
-            e.actor = crate::store::RECEIVED_ENGINE_ACTOR.to_string();
+        // app knows it by its one name (audit 2026-11-23 ARCH-901). The
+        // sender's own entries are the sender's, not this user's: the
+        // history must not say "you" reverted what a colleague did (audit
+        // 2026-11-24 UX-1801).
+        use crate::store::{RECEIVED_ENGINE_ACTOR, RECEIVED_USER_ACTOR, USER_ACTOR};
+        match crate::store::reserved_actor(&e.actor) {
+            Some(USER_ACTOR | RECEIVED_USER_ACTOR) => e.actor = RECEIVED_USER_ACTOR.to_string(),
+            Some(_) => e.actor = RECEIVED_ENGINE_ACTOR.to_string(),
+            None => {}
         }
         for p in [&mut e.before, &mut e.after].into_iter().flatten() {
             let name = p.name.clone();
@@ -1608,19 +1614,32 @@ mod tests {
             .find(|e| e.ts_ms == revert.ts_ms)
             .expect("the revert");
         assert_eq!(r.undid_from, Some(noted));
-        assert_eq!(r.actor, USER_ACTOR);
+        // The sender's, not the importer's (audit 2026-11-24 UX-1801).
+        assert_eq!(r.actor, crate::store::RECEIVED_USER_ACTOR);
         assert_eq!(r.kind(), Some(EntryKind::Revert));
         let b = log
             .iter()
             .find(|e| e.ts_ms == put_back.ts_ms)
             .expect("the put-back");
         assert_eq!(b.restores, Some(done.entry_ts_ms));
-        assert_eq!(b.actor, USER_ACTOR);
+        assert_eq!(b.actor, crate::store::RECEIVED_USER_ACTOR);
         assert_eq!(b.kind(), Some(EntryKind::Restore));
         let items = other.activity_items(&got);
         assert_eq!(items[0].kind, Some(EntryKind::Restore));
         assert_eq!(items[1].kind, Some(EntryKind::Revert));
         assert!(other.pending_review(&got).is_none());
+        // The importer's Undo of the sender's revert brings the AI's note
+        // back, which this user never accepted: it waits for review (round
+        // 19 design A, difference 4).
+        let last = log.last().unwrap().ts_ms;
+        other
+            .take_back_revert(&got, revert.ts_ms, last, USER_ACTOR)
+            .unwrap();
+        assert_eq!(other.load(&got).unwrap().notes, "AI note");
+        assert_eq!(
+            other.pending_review(&got).expect("waits").steps,
+            vec![noted]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1921,13 +1940,14 @@ mod tests {
             let e: crate::store::ActivityEntry = serde_json::from_str(text.trim()).unwrap();
             assert_eq!(e.actor, RECEIVED_ENGINE_ACTOR, "{actor:?}");
         }
-        // The sender's own entries stay the user's, in any spelling as the
-        // one name (audit 2026-11-23 TEST-1006).
-        for actor in ["user", " User "] {
+        // The sender's own entries are the sender's, in any spelling as
+        // the one name (audit 2026-11-23 TEST-1006; 2026-11-24 UX-1801:
+        // never this user's).
+        for actor in ["user", " User ", "user (received)", " USER (Received) "] {
             let (text, _) = received_history(line(actor).as_bytes()).unwrap();
             let e: crate::store::ActivityEntry = serde_json::from_str(text.trim()).unwrap();
-            assert_eq!(e.actor.trim().to_ascii_lowercase(), USER_ACTOR, "{actor:?}");
-            assert_ne!(e.actor, RECEIVED_ENGINE_ACTOR, "{actor:?}");
+            assert_eq!(e.actor, crate::store::RECEIVED_USER_ACTOR, "{actor:?}");
+            assert_ne!(e.actor, USER_ACTOR, "{actor:?}");
         }
         // A received reason is held to what a write keeps: one line,
         // no control or bidi characters, at most the summary cap.

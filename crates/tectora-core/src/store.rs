@@ -38,12 +38,24 @@ pub const ENGINE_ACTOR: &str = "tectora";
 /// or trusted as the engine's own (audit 2026-11-22 ARCH-802). The app
 /// knows the name (`types.ts`).
 pub const RECEIVED_ENGINE_ACTOR: &str = "tectora (received)";
+/// What the sender's own entries (by [`USER_ACTOR`]) in a received
+/// bundle's change log are renamed to: the colleague who sent the job made
+/// them, not the user who imported it (audit 2026-11-24 UX-1801). Read as
+/// a user's entry for what it did (a revert, a put-back of the offer's
+/// figures), never as this user's review decision. The app knows the name
+/// (`types.ts`).
+pub const RECEIVED_USER_ACTOR: &str = "user (received)";
 /// The actor names only Tectora itself writes: a name from outside (an
 /// MCP client's, a received bundle's entry) that reads as one of them is
 /// renamed, or its change would skip the user's review (HUNTIO-003, audit
 /// 2026-11-23 ARCH-901). One list for every such check; the app's copy
 /// (`types.ts`) is compared with it by `actors.test.ts`.
-pub const RESERVED_ACTORS: [&str; 3] = [USER_ACTOR, ENGINE_ACTOR, RECEIVED_ENGINE_ACTOR];
+pub const RESERVED_ACTORS: [&str; 4] = [
+    USER_ACTOR,
+    ENGINE_ACTOR,
+    RECEIVED_ENGINE_ACTOR,
+    RECEIVED_USER_ACTOR,
+];
 
 /// The reserved actor ([`RESERVED_ACTORS`]) `name` reads as, compared as
 /// a written entry's actor is (control and invisible characters taken
@@ -433,7 +445,7 @@ pub fn changed_by_ai(log: &[ActivityEntry]) -> Option<&ActivityEntry> {
                 && e.restores.is_none()
         })
         .map(|(_, e)| e)
-        .filter(|e| e.actor != USER_ACTOR)
+        .filter(|e| !RESERVED_ACTORS.contains(&e.actor.as_str()))
 }
 
 /// How many stored results of a job keep their origin: a result put back
@@ -512,8 +524,14 @@ impl ActivityEntry {
     /// The user's own "offer result restored": it touches the stored
     /// result only, so it neither ends an AI review nor counts in one, and
     /// a revert of other entries leaves it alone.
+    /// Written by this user or, received with a bundle, by its sender
+    /// ([`RECEIVED_USER_ACTOR`]).
+    fn by_a_user(&self) -> bool {
+        self.actor == USER_ACTOR || self.actor == RECEIVED_USER_ACTOR
+    }
+
     fn user_restore(&self) -> bool {
-        self.restores.is_some() && self.actor == USER_ACTOR
+        self.restores.is_some() && self.by_a_user()
     }
 
     pub fn info(&self) -> ActivityInfo {
@@ -550,7 +568,7 @@ impl ActivityEntry {
     /// revert of a Tectora that did not record `undid_from` yet, told by
     /// its sentence ([`reverted_count`]); 0 for every other entry.
     fn legacy_user_revert(&self) -> usize {
-        if self.undid_from.is_none() && self.restores.is_none() && self.actor == USER_ACTOR {
+        if self.undid_from.is_none() && self.restores.is_none() && self.by_a_user() {
             reverted_count(&self.summary)
         } else {
             0
@@ -4949,6 +4967,8 @@ fn review_of(log: &[ActivityEntry], accepted: u64) -> Review {
     let mut start = 0;
     for (k, e) in log.iter().enumerate() {
         work(1);
+        // This user's own entry; the sender's of a received job settles
+        // nothing (it is below the import's Accept anyway).
         let user = e.actor == USER_ACTOR && !e.user_restore();
         let settles = last_accepted == Some(k)
             || e.actor == ENGINE_ACTOR
@@ -5203,12 +5223,18 @@ mod tests {
             "tectora (received)",
             " Tectora (Received) ",
             "tectora (received)\u{200b}",
+            "user (received)",
+            " User (Received) ",
         ] {
             assert!(is_reserved_actor(name), "{name:?}");
         }
         assert_eq!(
             reserved_actor(" Tectora (Received) "),
             Some(RECEIVED_ENGINE_ACTOR)
+        );
+        assert_eq!(
+            reserved_actor(" USER (received) "),
+            Some(RECEIVED_USER_ACTOR)
         );
         for name in ["claude", "AI (tectora)", "tectora received", "users", ""] {
             assert!(!is_reserved_actor(name), "{name:?}");

@@ -1095,6 +1095,8 @@ const cs: Dict = {
   "err.action.redo": "Krok se nepodařilo zopakovat",
   "review.deleteChanged": "Zakázka se nesmazala: AI do ní mezitím přidala další krok. Podívejte se na něj a rozhodněte znovu.",
   "review.confirmRevertAllCreated": "Vrátit kroky AI ({n})? Zakázka se vrátí do stavu, v jakém ji AI založila.",
+  // The sender of a received job, in its history (audit 2026-11-24 UX-1801).
+  "ai.receivedUser": "Odesílatel",
 };
 
 const sk: Dict = {
@@ -2181,6 +2183,8 @@ const sk: Dict = {
   "err.action.redo": "Krok sa nepodarilo zopakovať",
   "review.deleteChanged": "Zákazka sa nezmazala: AI do nej medzitým pridala ďalší krok. Pozrite sa naň a rozhodnite znova.",
   "review.confirmRevertAllCreated": "Vrátiť kroky AI ({n})? Zákazka sa vráti do stavu, v akom ju AI založila.",
+  // The sender of a received job, in its history (audit 2026-11-24 UX-1801).
+  "ai.receivedUser": "Odosielateľ",
 };
 
 const en: Dict = {
@@ -3267,6 +3271,8 @@ const en: Dict = {
   "err.action.redo": "Could not redo the step",
   "review.deleteChanged": "The job was not deleted: the AI added another step meanwhile. Look at it and decide again.",
   "review.confirmRevertAllCreated": "Revert {n} AI steps? The job goes back to how the AI created it.",
+  // The sender of a received job, in its history (audit 2026-11-24 UX-1801).
+  "ai.receivedUser": "Sender",
 };
 
 const de: Dict = {
@@ -4353,6 +4359,8 @@ const de: Dict = {
   "err.action.redo": "Der Schritt konnte nicht wiederholt werden",
   "review.deleteChanged": "Der Auftrag wurde nicht gelöscht: Die KI hat inzwischen einen weiteren Schritt hinzugefügt. Sehen Sie ihn an und entscheiden Sie erneut.",
   "review.confirmRevertAllCreated": "{n} KI-Schritte verwerfen? Der Auftrag wird auf den Stand zurückgesetzt, in dem die KI ihn angelegt hat.",
+  // The sender of a received job, in its history (audit 2026-11-24 UX-1801).
+  "ai.receivedUser": "Absender",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };

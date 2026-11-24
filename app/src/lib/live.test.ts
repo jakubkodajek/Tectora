@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DICTS, i18n } from "./i18n.svelte";
 import { actorLabel, entryKind, entrySummary, entryText, historyText, liveText, receivedRecalculation, refreshedNotice } from "./live.svelte";
-import { RECEIVED_ENGINE_ACTOR } from "./types";
+import { RECEIVED_ENGINE_ACTOR, RECEIVED_USER_ACTOR, isAi } from "./types";
 
 // The codes the MCP server sends (crates/tectora-core/src/store.rs LIVE_KINDS).
 const KINDS = [
@@ -594,5 +594,64 @@ describe("historyText by what a revert did (UX-1701, ERR-1703)", () => {
     ];
     expect(historyText(mine[0], mine)).toBe("Put back: Mine");
     i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-24 TEST-1803: the core's mixed sentence ("Reverted n and
+// put back m changes since: …", store.rs `revert_summary`) with n ≠ m is
+// read by the app in every language, and the history's mixed sentence
+// counts the AI changes on each side.
+describe("the mixed revert sentence with n ≠ m (TEST-1803)", () => {
+  const rev = "revert" as const;
+  const log = [
+    { ts_ms: 30, actor: "claude", summary: "A3", kind: null },
+    { ts_ms: 25, actor: "claude", summary: "A2", kind: null },
+    { ts_ms: 20, actor: "claude", summary: "A1", kind: null },
+    { ts_ms: 10, actor: "user", summary: "Created", kind: null },
+  ];
+
+  it("entryText translates the core's sentence with both counts", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const d = DICTS[locale];
+      const q = (s: string) => d["ai.quoted"].replace("{s}", s);
+      const text = entryText({ actor: "claude", summary: "Reverted 2 and put back 1 changes since: A1", undid_from: 85, kind: rev });
+      expect(text, locale).toBe(d["chg.revertedMixed"].replace("{n}", "2").replace("{m}", "1").replace("{s}", q("A1")));
+      // Not the raw core sentence (English reads the same).
+      if (locale !== "en") expect(text, locale).not.toContain("Reverted 2");
+      const other = entryText({ actor: "claude", summary: "Reverted 1 and put back 3 changes since: A1", undid_from: 85, kind: rev });
+      expect(other, locale).toBe(d["chg.revertedMixed"].replace("{n}", "1").replace("{m}", "3").replace("{s}", q("A1")));
+    }
+    i18n.locale = "cs";
+  });
+
+  it("historyText counts what was taken out and put back, not swapped", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const d = DICTS[locale];
+      const mixed = { ts_ms: 90, actor: "user", summary: "Reverted 2 and put back 1 changes since: A1", undid_from: 20, kind: rev, took_out: [20, 25], put_back: [30] };
+      expect(historyText(mixed, [mixed, ...log]), locale).toBe(d["ai.revertedMixed"].replace("{n}", "2").replace("{m}", "1"));
+    }
+    i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-24 UX-1801: the sender's own entries of a received job are
+// shown as the sender's, never as "you", in every language.
+describe("actorLabel of a received user entry (UX-1801)", () => {
+  it("names the sender", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const label = actorLabel(RECEIVED_USER_ACTOR);
+      expect(label, locale).toBe(DICTS[locale]["ai.receivedUser"]);
+      expect(label, locale).not.toBe(actorLabel("user"));
+      expect(label, locale).not.toBe(DICTS[locale]["ai.receivedEngine"]);
+    }
+    i18n.locale = "cs";
+  });
+
+  it("is no AI, and its reverts and put-backs keep their kinds", () => {
+    expect(isAi(RECEIVED_USER_ACTOR)).toBe(false);
+    expect(entryKind({ actor: RECEIVED_USER_ACTOR, summary: "Reverted: A1", undid_from: 3 })).toBe("revert");
   });
 });
