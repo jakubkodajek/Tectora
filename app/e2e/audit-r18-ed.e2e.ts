@@ -23,6 +23,7 @@ import { bar, openEditor, selectWall, setField } from "./editor";
 import { E2E_DIR, LIBRARY_DIR } from "./env";
 import { bridge, createExample, expect, listProjects, noToast, test, waitForProject } from "./fixtures";
 import { cs, tr } from "./i18n";
+import { Mcp } from "./mcp";
 
 // TECTORA_SHOTS=<folder>/ saves a screenshot after each test (fix evidence).
 test.afterEach(async ({ page }, info) => {
@@ -499,7 +500,10 @@ test.describe("round 18, design F", () => {
     expect(await retry.evaluate((b) => b.scrollWidth <= b.clientWidth)).toBe(true);
   });
 
-  test("the folder request names the AI client as the app does and wraps an unbroken reason (HUNT-1707)", async ({ app, page, mcp }) => {
+  // TEST-1805: the client connects as "claude-code", so the raw id and the
+  // name the app shows ("Claude") differ and the guard can fail.
+  test("the folder request names the AI client as the app does and wraps an unbroken reason (HUNT-1707)", async ({ app, page }) => {
+    const mcp = await Mcp.start("claude-code");
     await app.open();
     const other = path.join(E2E_DIR, "r18-folder");
     fs.rmSync(other, { recursive: true, force: true });
@@ -511,8 +515,10 @@ test.describe("round 18, design F", () => {
     await expect(reason).toBeVisible();
     expect((await reason.innerText()).trim().startsWith(cs("folderReq.reason", { by: "Claude" }))).toBe(true);
     await expect(dlg).toContainText(cs("folderReq.lead", { by: "Claude" }));
+    await expect(dlg).not.toContainText("claude-code");
     expect(await reason.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
     await dlg.getByRole("button", { name: cs("folderReq.keep") }).click();
     await expect(dlg).toHaveCount(0);
+    mcp.stop();
   });
 });
