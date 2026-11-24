@@ -843,17 +843,32 @@ impl Server {
                     .collect::<Vec<_>>())
             }),
             "get_review" => (|| {
-                let (id, _) = self.load(args)?;
-                let status = self.store.review_status(&id)?;
+                let (id, current) = self.load(args)?;
+                let pending = self.store.pending_review(&id);
+                // The figures of `Store::review_status`, within the bound of
+                // a heavy job too: a job too complex to calculate gives
+                // `differences: null` ("not available") in seconds instead
+                // of no answer (audit 2026-11-24 HUNT-1903).
+                let differences = match &pending {
+                    Some(pr) => {
+                        let before = pr.before.clone();
+                        let after = current.clone();
+                        self.bounded(&current, move || {
+                            snapshot::change_in_figures(before.as_ref(), &after)
+                        })
+                        .flatten()
+                    }
+                    None => None,
+                };
                 Ok(json!({
                     "id": id,
                     "accepted_ms": self.store.reviewed_at(&id),
-                    "pending": status.map(|s| json!({
-                        "since_ts_ms": s.pending.since_ts_ms,
-                        "count": s.pending.count,
-                        "actors": s.pending.actors,
-                        "steps": s.pending.steps,
-                        "differences": s.differences,
+                    "pending": pending.map(|s| json!({
+                        "since_ts_ms": s.since_ts_ms,
+                        "count": s.count,
+                        "actors": s.actors,
+                        "steps": s.steps,
+                        "differences": differences,
                     })),
                 }))
             })(),
@@ -1049,7 +1064,13 @@ impl Server {
             "store_result" => (|| {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
-                p.result_snapshot = Some(snapshot::take_checked(&p).map_err(|e| e.to_string())?);
+                // Within the bound of a heavy job too (HUNT-1903).
+                let q = p.clone();
+                p.result_snapshot = Some(
+                    self.bounded(&p, move || snapshot::take_checked(&q))
+                        .ok_or(crate::ROOF_TOO_LONG)?
+                        .map_err(|e| e.to_string())?,
+                );
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
             })(),
             "restore_offer_result" => (|| {

@@ -186,8 +186,12 @@ pub fn take_checked(project: &Project) -> Result<ResultSnapshot, Refused> {
     }
     // A part the core gives no roof for counts 0 m²: storing that as the
     // offer's figures would hide the problem (review ERR-003, DR-001).
-    // One calculation for the check and the figures.
-    crate::model::guarded(|| {
+    // One calculation for the check and the figures, bounded in work like
+    // every calculating entry point: a job too complex to calculate is
+    // refused in seconds instead of keeping the caller (MCP `store_result`,
+    // `update_job` leaving the draft, the store's origin check) busy for
+    // minutes (audit 2026-11-24 HUNT-1903).
+    crate::work::calculate(|| {
         let geos = crate::openings::generate_project(project);
         match geos.iter().position(|g| g.error.is_some()) {
             Some(i) => Err(Refused::NotCalculated(format!(
@@ -205,7 +209,10 @@ pub fn take_checked(project: &Project) -> Result<ResultSnapshot, Refused> {
             }
         }
     })
-    .map_err(Refused::Internal)?
+    .map_err(|r| match r {
+        crate::work::Refusal::TooComplex => Refused::TooComplex,
+        crate::work::Refusal::Failed(d) => Refused::Internal(d),
+    })?
 }
 
 /// Why [`take_checked`] stored no result.
@@ -222,6 +229,9 @@ pub enum Refused {
     /// The figures are larger than a stored result may hold (a roof of
     /// over 10⁹ m² or m): the detail says which bound.
     TooLarge(String),
+    /// The calculation needs more work than [`crate::work::limit`]:
+    /// [`crate::work::TOO_COMPLEX`].
+    TooComplex,
 }
 
 impl std::fmt::Display for Refused {
@@ -234,6 +244,7 @@ impl std::fmt::Display for Refused {
                 f.write_str("the job has no building, so there are no figures to store")
             }
             Refused::TooLarge(d) => write!(f, "the figures are too large to keep: {d}"),
+            Refused::TooComplex => f.write_str(crate::work::TOO_COMPLEX),
         }
     }
 }
@@ -333,7 +344,10 @@ pub fn compare(stored: &ResultSnapshot, current: &ResultSnapshot) -> Vec<Differe
 pub fn change_in_figures(before: Option<&Project>, after: &Project) -> Option<Vec<Difference>> {
     let figures = |p: &Project| {
         p.check_limits().ok()?;
-        crate::model::guarded(|| take(p)).ok()
+        // Bounded: a job too complex to calculate gives "figures not
+        // available" in seconds, so the review banner (app and MCP
+        // `get_review`) still answers (audit 2026-11-24 HUNT-1903).
+        crate::work::calculate(|| take(p)).ok()
     };
     let empty = ResultSnapshot {
         engine_version: ENGINE_VERSION.to_string(),
@@ -717,5 +731,56 @@ mod tests {
         v["schema_version"] = 99.into();
         let err = Project::from_json(&v.to_string()).unwrap_err().to_string();
         assert!(err.contains("newer"), "{err}");
+    }
+
+    /// Audit 2026-11-24 HUNT-1903: the figures of the review and of a
+    /// stored result are calculated in the work bound, so a job too complex
+    /// to calculate answers "figures not available" / "too complex" in
+    /// seconds instead of keeping the review banner, MCP `get_review`,
+    /// `store_result` and `update_job` busy for minutes.
+    #[test]
+    fn the_review_figures_and_a_stored_result_stay_in_the_work_bound() {
+        // Two buildings that overlap: their join counts its work.
+        let mut a = examples::find("gable").unwrap().project();
+        let mut second = a.parts[0].clone();
+        for e in &mut second.edges {
+            e.start.x += 3.0;
+            e.start.y += 2.0;
+        }
+        a.parts.push(second);
+        let mut b = a.clone();
+        b.parts[0].edges[0].overhang = 0.7;
+        assert!(change_in_figures(Some(&a), &b).is_some());
+        let (_, once) = crate::work::bounded_by(u64::MAX, || take(&b));
+        assert!(once > 1);
+        crate::work::with_limit(once / 2, || {
+            assert_eq!(change_in_figures(Some(&a), &b), None);
+            assert_eq!(take_checked(&b), Err(Refused::TooComplex));
+            assert_eq!(
+                Refused::TooComplex.to_string(),
+                crate::work::TOO_COMPLEX.to_string()
+            );
+        });
+        // Through the store, as the app's banner and MCP `get_review` read it.
+        let dir = std::env::temp_dir().join(format!(
+            "tectora-test-review-bound-{}",
+            crate::store::now_ms()
+        ));
+        let store = crate::store::Store::new(dir.clone()).unwrap();
+        let id = store.save_as(None, &a, "claude", "Created").unwrap();
+        let ts = store.activity(&id)[0].ts_ms;
+        store.mark_reviewed(&id, ts).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .save_as(Some(id.clone()), &b, "claude", "Overhang")
+            .unwrap();
+        let open = store.review_status(&id).unwrap().expect("a review waits");
+        assert!(open.differences.is_some());
+        let bounded = crate::work::with_limit(once / 2, || store.review_status(&id))
+            .unwrap()
+            .expect("the review still answers");
+        assert_eq!(bounded.differences, None);
+        assert_eq!(bounded.pending.count, open.pending.count);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

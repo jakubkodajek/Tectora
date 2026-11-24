@@ -2130,8 +2130,12 @@ impl Server {
                     // offer, which is not of this roof (HUNT-504, ERR-303).
                     // The kept result stays the offer's.
                     if p.job.status == JobStatus::Draft && status != JobStatus::Draft {
-                        let fresh =
-                            tectora_core::snapshot::take_checked(&p).map_err(|e| e.to_string())?;
+                        // Within the bound of a heavy job too (HUNT-1903).
+                        let q = p.clone();
+                        let fresh = self
+                            .bounded(&p, move || tectora_core::snapshot::take_checked(&q))
+                            .ok_or(ROOF_TOO_LONG)?
+                            .map_err(|e| e.to_string())?;
                         p.result_snapshot.get_or_insert(fresh);
                     }
                     p.set_status(status);
