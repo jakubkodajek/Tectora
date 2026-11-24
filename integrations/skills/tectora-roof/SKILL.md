@@ -137,7 +137,12 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    means the plan should be moved to the origin; `manual_face_crosses`
    means a hand-drawn face's corners are out of order (set it again with
    `set_manual`, corners in order around the face, each once: an outline
-   that crosses, touches or folds back over itself is refused); never bend the input to
+   that crosses, touches or folds back over itself is refused);
+   `manual_faces_overlap` means two hand-drawn faces lie on each other and
+   that plan is counted twice (ask whether one was drawn twice);
+   the notice `manual_face_over_roof` means a hand-drawn face lies over the
+   calculated roof and adds its area (right for a roof drawn over the main
+   roof); never bend the input to
    make a warning go away.
    `merged_planes`, `wing_joined` and `not_calculated_by_core` mean the
    roof is not the standard calculation's result (two planes joined, a low

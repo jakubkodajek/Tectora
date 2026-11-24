@@ -689,3 +689,172 @@ mod manual_face_crossing {
         assert!(!none);
     }
 }
+
+/// Audit 2026-11-24 HUNT-2002 (Jakub's decision 2 of round 21): two
+/// hand-drawn faces lying on each other get a warning, a hand-drawn face
+/// over the calculated roof a note; the areas are never changed.
+mod manual_faces_overlap {
+    use tectora_core::check::WarningKind;
+    use tectora_core::geom::Point2;
+    use tectora_core::model::ManualFace;
+    use tectora_core::openings::generate_project;
+
+    fn square(x: f64, y: f64, side: f64) -> ManualFace {
+        ManualFace {
+            points: [(x, y), (x + side, y), (x + side, y + side), (x, y + side)]
+                .iter()
+                .map(|&(x, y)| Point2::new(x, y))
+                .collect(),
+            pitch_deg: 30.0,
+            label: String::new(),
+        }
+    }
+
+    /// A job without a building with `faces`.
+    fn faces_only(faces: Vec<ManualFace>) -> tectora_core::Project {
+        let mut p = tectora_core::examples::find("gable").unwrap().project();
+        p.parts.clear();
+        p.dormers.clear();
+        p.chimneys.clear();
+        p.windows.clear();
+        p.roof_openings.clear();
+        p.manual_faces = faces;
+        p
+    }
+
+    fn job(p: &tectora_core::Project) -> Vec<tectora_core::check::RoofWarning> {
+        tectora_core::check::job_warnings(p, &generate_project(p))
+    }
+
+    fn near(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-6, "{a} != {b}");
+    }
+
+    #[test]
+    fn the_same_face_twice_is_one_warning_with_its_plan_area() {
+        let p = faces_only(vec![square(0.0, 0.0, 10.0), square(0.0, 0.0, 10.0)]);
+        let w = job(&p);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!(
+            (w[0].kind, w[0].face, w[0].other_face),
+            (WarningKind::ManualFacesOverlap, Some(0), Some(1))
+        );
+        near(w[0].value, 100.0);
+        assert!(!w[0].kind.is_notice());
+        let json = serde_json::to_value(&w[0]).unwrap();
+        assert_eq!(json["kind"], "manual_faces_overlap");
+        assert_eq!((json["face"].as_u64(), json["other_face"].as_u64()), (Some(0), Some(1)));
+        // The report lists it at job level and keeps both areas.
+        let report = tectora_core::report::calc(&p);
+        assert_eq!(report["warnings"][0]["kind"], "manual_faces_overlap", "{report}");
+        let a = 100.0 / 30f64.to_radians().cos();
+        for i in 0..2 {
+            near(report["manual_faces"][i]["area"].as_f64().unwrap(), a);
+        }
+        near(report["totals"]["roof_area"].as_f64().unwrap(), 2.0 * a);
+    }
+
+    #[test]
+    fn a_face_inside_another_is_warned_with_the_shared_area() {
+        let p = faces_only(vec![square(0.0, 0.0, 10.0), square(2.0, 2.0, 6.0)]);
+        let w = job(&p);
+        assert_eq!(w.len(), 1, "{w:?}");
+        near(w[0].value, 36.0);
+        assert_eq!((w[0].face, w[0].other_face), (Some(0), Some(1)));
+    }
+
+    #[test]
+    fn faces_sharing_an_edge_or_a_corner_or_far_apart_are_not_warned() {
+        for faces in [
+            vec![square(0.0, 0.0, 10.0), square(10.0, 0.0, 10.0)],
+            vec![square(0.0, 0.0, 10.0), square(10.0, 10.0, 4.0)],
+            vec![square(0.0, 0.0, 10.0), square(30.0, 0.0, 10.0)],
+            // A sliver of a few square centimetres: rounding.
+            vec![square(0.0, 0.0, 10.0), square(9.999, 0.0, 10.0)],
+            vec![square(0.0, 0.0, 10.0)],
+        ] {
+            assert!(job(&faces_only(faces.clone())).is_empty(), "{faces:?}");
+        }
+    }
+
+    #[test]
+    fn with_a_building_the_overlap_is_on_the_nearest_building() {
+        // The gable example (12 x 8 m); two faces 40 m beside it.
+        let mut p = tectora_core::examples::find("gable").unwrap().project();
+        p.manual_faces = vec![square(40.0, 0.0, 5.0), square(41.0, 1.0, 3.0)];
+        let geos = generate_project(&p);
+        let w: Vec<_> = geos
+            .iter()
+            .flat_map(|g| g.warnings.iter())
+            .filter(|w| {
+                matches!(
+                    w.kind,
+                    WarningKind::ManualFacesOverlap | WarningKind::ManualFaceOverRoof
+                )
+            })
+            .collect();
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!(w[0].kind, WarningKind::ManualFacesOverlap);
+        near(w[0].value, 9.0);
+        assert!(tectora_core::check::job_warnings(&p, &geos).is_empty());
+    }
+
+    #[test]
+    fn a_face_over_the_calculated_roof_is_a_note_and_changes_no_area() {
+        let mut p = tectora_core::examples::find("gable").unwrap().project();
+        p.dormers.clear();
+        p.chimneys.clear();
+        p.windows.clear();
+        p.roof_openings.clear();
+        let alone = tectora_core::report::calc(&p)["totals"]["roof_area"]
+            .as_f64()
+            .unwrap();
+        // 4 x 2 m on the roof, well inside the walls.
+        p.manual_faces = vec![ManualFace {
+            points: [(2.0, 2.0), (6.0, 2.0), (6.0, 4.0), (2.0, 4.0)]
+                .iter()
+                .map(|&(x, y)| Point2::new(x, y))
+                .collect(),
+            pitch_deg: 30.0,
+            label: String::new(),
+        }];
+        let geos = generate_project(&p);
+        let w: Vec<_> = geos
+            .iter()
+            .flat_map(|g| g.warnings.iter())
+            .filter(|w| w.kind == WarningKind::ManualFaceOverRoof)
+            .collect();
+        assert_eq!(w.len(), 1, "{:?}", geos[0].warnings);
+        assert_eq!(w[0].face, Some(0));
+        near(w[0].value, 8.0);
+        assert!(w[0].kind.is_notice());
+        let report = tectora_core::report::calc(&p);
+        let total = report["totals"]["roof_area"].as_f64().unwrap();
+        near(total, alone + 8.0 / 30f64.to_radians().cos());
+        // Beside the roof: no note.
+        for q in &mut p.manual_faces[0].points {
+            q.x += 30.0;
+        }
+        assert!(
+            !generate_project(&p)
+                .iter()
+                .flat_map(|g| g.warnings.iter())
+                .any(|w| w.kind == WarningKind::ManualFaceOverRoof)
+        );
+    }
+
+    #[test]
+    fn a_crossing_face_is_left_to_its_own_warning() {
+        let bow = ManualFace {
+            points: [(0.0, 0.0), (10.0, 10.0), (10.0, 0.0), (0.0, 10.0)]
+                .iter()
+                .map(|&(x, y)| Point2::new(x, y))
+                .collect(),
+            pitch_deg: 30.0,
+            label: String::new(),
+        };
+        let p = faces_only(vec![square(0.0, 0.0, 10.0), bow]);
+        let kinds: Vec<_> = job(&p).iter().map(|w| w.kind).collect();
+        assert_eq!(kinds, vec![WarningKind::ManualFaceCrosses]);
+    }
+}

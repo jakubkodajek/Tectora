@@ -101,6 +101,11 @@ The tools cover every operation of the Tectora editor:
   around it, each corner once: an outline that crosses itself (a bow tie),
   touches itself at a corner or folds back along an edge is refused, and a
   stored one gets the `manual_face_crosses` warning (its `face` index).
+  Two hand-drawn faces lying on each other in plan get the
+  `manual_faces_overlap` warning (`face`, `other_face`, `value` the plan m²
+  counted twice); a hand-drawn face over the calculated roof gets the
+  `manual_face_over_roof` notice (`value` the plan m² over the roof). Both
+  areas are kept as counted.
 - Single objects (dormers, chimneys, windows, openings, hand-drawn lines and
   faces): `transform_items` moves, rotates (about the object's centre) or
   copies them, as the user drags them in the plan or uses their right-click
@@ -422,7 +427,14 @@ face, or joined buildings), so the area is too small.
 `manual_face_crosses`: the hand-drawn face `face` (0-based) has an outline
 that crosses itself, so its area is the difference of its two lobes; ask
 the user and set it again with its corners in order (in a job without a
-building it is in the `warnings` list beside `parts`). `dormer_off_roof`: the
+building it is in the `warnings` list beside `parts`).
+`manual_faces_overlap`: hand-drawn faces `face` and `other_face` lie on
+each other over `value` m² of plan, so that plan is counted twice; ask the
+user whether one was drawn twice (in a job without a building it is in the
+`warnings` list too). `manual_face_over_roof` is a notice: hand-drawn face
+`face` lies over `value` m² of the calculated roof and adds its area; right
+for a roof drawn on top of the main roof, worth a word when it traces a roof
+that is already calculated. `dormer_off_roof`: the
 dormer (`dormer`, index from 0) sits on no roof face and is left out of the
 result; move it onto the roof or delete it. `window_off_roof`,
 `chimney_off_roof`, `opening_off_roof`: that window, chimney or opening

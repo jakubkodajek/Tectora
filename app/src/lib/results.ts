@@ -34,6 +34,10 @@ export function warningText(w: RoofWarning): string {
       return t(`res.warn.${w.kind}`, { n: (w.item ?? 0) + 1 });
     case "manual_face_crosses":
       return t("res.warn.manual_face_crosses", { n: (w.face ?? 0) + 1 });
+    case "manual_faces_overlap":
+      return t("res.warn.manual_faces_overlap", { a: (w.face ?? 0) + 1, b: (w.other_face ?? 0) + 1, v: num(w.value) });
+    case "manual_face_over_roof":
+      return t("res.warn.manual_face_over_roof", { n: (w.face ?? 0) + 1, v: num(w.value) });
     case "area_mismatch":
       return t("res.warn.area_mismatch", { v: num(w.value * 100) });
     case "far_from_origin":
@@ -50,7 +54,7 @@ export function warningText(w: RoofWarning): string {
  * standard calculation, not a sign that the roof is wrong (core
  * `WarningKind::is_notice`).
  */
-const NOTICES = new Set<RoofWarning["kind"]>(["plane_over_wall", "merged_planes", "wing_joined", "far_from_origin"]);
+const NOTICES = new Set<RoofWarning["kind"]>(["plane_over_wall", "merged_planes", "wing_joined", "far_from_origin", "manual_face_over_roof"]);
 
 /** Whether the calculation holds a warning that is not a notice: the Results tab is marked (UX-1401). */
 export function hasRoofWarning(result: CalcResult | null): boolean {

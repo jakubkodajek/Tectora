@@ -220,6 +220,42 @@ fn engine_matches_dacad() {
     );
 }
 
+/// Audit 2026-11-24 HUNT-2002: the hand-drawn face checks (Tectora's own,
+/// not DACAD's) never speak on a job without hand-drawn faces: no DACAD case,
+/// joined-roofs case or built-in example gets one of their warnings, so the
+/// parity of every fixture stays as it is.
+#[test]
+fn no_case_without_hand_drawn_faces_gets_a_hand_drawn_face_warning() {
+    use tectora_core::check::WarningKind as W;
+    let mine = |k: W| matches!(k, W::ManualFaceCrosses | W::ManualFacesOverlap | W::ManualFaceOverRoof);
+    let mut projects: Vec<(String, Project)> = fixtures()
+        .into_iter()
+        .chain(fixtures_in("multiroof"))
+        .map(|(name, case)| {
+            let p = project(&name, &case);
+            (name, p)
+        })
+        .collect();
+    assert!(projects.len() >= 68, "fixtures missing");
+    projects.extend(
+        tectora_core::examples::EXAMPLES
+            .iter()
+            .map(|e| (e.id.to_string(), e.project())),
+    );
+    for (name, p) in projects {
+        assert!(p.manual_faces.is_empty(), "{name}");
+        let geos = generate_project(&p);
+        let bad: Vec<_> = geos
+            .iter()
+            .flat_map(|g| g.warnings.iter())
+            .chain(tectora_core::check::job_warnings(&p, &geos).iter())
+            .filter(|w| mine(w.kind))
+            .map(|w| w.kind)
+            .collect();
+        assert!(bad.is_empty(), "{name}: {bad:?}");
+    }
+}
+
 /// Random projects of two or three roofs of our own (the mr3 stress set),
 /// calculated by DACAD: joined by the Modellverschnitt.
 #[test]
