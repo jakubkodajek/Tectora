@@ -143,6 +143,28 @@ export function areaRows(result: CalcResult | null): AreaRow[] {
   return [...parts, ...faces];
 }
 
+/**
+ * Whether Results lists the areas: with more than one row, and also for the
+ * one face of a job without a building, whose area is otherwise
+ * unexplained (audit 2026-11-24 UX-1904).
+ */
+export function areaListShown(rows: AreaRow[], facesOnly: boolean): boolean {
+  return rows.length > 1 || (facesOnly && rows.length > 0);
+}
+
+/**
+ * The calculation's plausibility warnings: each part's, named after the
+ * part when there are several, and those that belong to no building (a
+ * crossing hand-drawn face in a job without one, ERR-1901), unnamed.
+ */
+export function resultWarnings(result: CalcResult | null): { part: string | null; text: string }[] {
+  if (!result) return [];
+  const parts = result.parts.flatMap((p, i) =>
+    (p.geometry.warnings ?? []).map((w) => ({ part: result.parts.length > 1 ? partLabel(p.name, i) : null, text: warningText(w) })),
+  );
+  return parts.concat((result.warnings ?? []).map((w) => ({ part: null, text: warningText(w) })));
+}
+
 /** Per part, the parts its roof is joined with, as the calculation joined them. */
 export function joinedWith(result: CalcResult | null): number[][] {
   return (result?.parts ?? []).map((p) => p.geometry.joined_with ?? []);

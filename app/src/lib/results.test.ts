@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DICTS, i18n } from "./i18n.svelte";
-import { areaRows, failedParts, hasRoofWarning, joinedWith, objectCounts, offRoofWarning, roofState, warningText } from "./results";
+import { areaListShown, areaRows, failedParts, hasRoofWarning, joinedWith, objectCounts, offRoofWarning, resultWarnings, roofState, warningText } from "./results";
 import type { CalcResult, Project, RoofWarning } from "./types";
 
 const part = (name: string, joined_with?: number[]) => ({
@@ -310,5 +310,32 @@ describe("objectCounts (audit 2026-11-23 UX-1503)", () => {
     expect([c.chimneys, c.holes, c.dormers]).toEqual([1, 0, 1]);
     expect(c.off).toEqual({ windows: 0, chimneys: 1, holes: 1, dormers: 1 });
     expect(c.windows).toEqual([win(1), win(2)]);
+  });
+});
+
+describe("a job of hand-drawn faces only (audit 2026-11-24 UX-1904, ERR-1901)", () => {
+  const facesOnly = {
+    parts: [],
+    manual_faces: [{ label: "", pitch_deg: 30, area: 27.71 }],
+    totals: { roof_area: 27.71 },
+    codes: {},
+    warnings: [{ kind: "manual_face_crosses", value: 0, face: 0 }],
+  } as unknown as CalcResult;
+
+  it("lists its one face under the areas, and a building's single row stays unlisted", () => {
+    i18n.locale = "en";
+    expect(areaListShown(areaRows(facesOnly), true)).toBe(true);
+    const one = { parts: [{ ...part("A"), quantities: { roof_area: 10 } }], manual_faces: [] } as unknown as CalcResult;
+    expect(areaListShown(areaRows(one), false)).toBe(false);
+    expect(areaListShown([], true)).toBe(false);
+  });
+
+  it("shows the warnings that belong to no building, with no building name", () => {
+    i18n.locale = "en";
+    const w = resultWarnings(facesOnly);
+    expect(w).toHaveLength(1);
+    expect(w[0].part).toBeNull();
+    expect(w[0].text).toContain(" 1 ");
+    expect(resultWarnings(null)).toEqual([]);
   });
 });
