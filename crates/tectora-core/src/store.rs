@@ -3638,6 +3638,25 @@ impl Store {
         actor: &str,
         reason: Option<&str>,
     ) -> Result<RevertedChanges, StoreError> {
+        self.revert_to_counted_seen(id, ts_ms, None, actor, reason)
+    }
+
+    /// [`Store::revert_to_counted`] by a caller that names the newest entry
+    /// whose effect it has applied, `seen_ts` (the editor's Undo over an
+    /// AI's outside save): when the log ends at another entry by now (an
+    /// AI saved during the press) nothing is undone and the error is
+    /// [`StoreError::RevertStale`], so a key press never reverts a change
+    /// the user has not seen (audit 2026-11-24 ERR-1704, design B). `None`
+    /// is the banner's Revert all, whose "and N more" counts such changes
+    /// (round 13).
+    pub fn revert_to_counted_seen(
+        &self,
+        id: &str,
+        ts_ms: u64,
+        seen_ts: Option<u64>,
+        actor: &str,
+        reason: Option<&str>,
+    ) -> Result<RevertedChanges, StoreError> {
         // As in `revert_last_expecting`: one hold of the lock.
         if !self.has_job_or_log(id)? {
             return Err(StoreError::NoSuchChange {
@@ -3654,6 +3673,12 @@ impl Store {
                     id: id.to_string(),
                     ts_ms,
                 })?;
+        if seen_ts.is_some_and(|seen| log.last().is_none_or(|e| e.ts_ms != seen)) {
+            return Err(StoreError::RevertStale {
+                id: id.to_string(),
+                detail: "the job has a change the editor has not shown yet".into(),
+            });
+        }
         // What `revert_locked` undoes, by its own rule: the user's put-back
         // of the offer's figures after `pos` stays and is not counted
         // (audit 2026-11-23 HUNT-1301). The history line counts the
@@ -3699,7 +3724,10 @@ impl Store {
     /// Redo) of a review's Revert, so that whatever puts AI work back into
     /// the job, or takes it out again, is a logged revert and the review
     /// reads it (audit 2026-11-24 UX-1601, design A2). The entry must be a
-    /// revert and the newest entry of the log, else
+    /// revert, and the log must end at `seen_ts`, the newest entry whose
+    /// effect the caller has applied (audit 2026-11-24 ARCH-1703, design
+    /// B: Undo and Redo are last in, first out, so a revert from an older
+    /// entry covers the steps undone after it); else
     /// [`StoreError::RevertStale`] and nothing is written; then it is
     /// [`Store::revert_to_counted`] from it under the same hold of the
     /// lock (its merge, conflict and limits rules), and the new entry
@@ -3710,6 +3738,7 @@ impl Store {
         &self,
         id: &str,
         revert_ts: u64,
+        seen_ts: u64,
         actor: &str,
     ) -> Result<RevertedChanges, StoreError> {
         let stale = |detail: &str| StoreError::RevertStale {
@@ -3721,14 +3750,15 @@ impl Store {
         }
         let _lock = self.lock_briefly(id)?;
         let log = self.activity(id);
-        let pos = log
-            .len()
-            .checked_sub(1)
-            .ok_or_else(|| stale("the job has no change log"))?;
-        let last = &log[pos];
-        if last.ts_ms != revert_ts || !is_revert_entry(last) {
+        if log.last().is_none_or(|e| e.ts_ms != seen_ts) {
             return Err(stale("another change is the latest one by now"));
         }
+        let pos = log
+            .iter()
+            .rposition(|e| e.ts_ms == revert_ts)
+            .filter(|&i| is_revert_entry(&log[i]))
+            .ok_or_else(|| stale("the job has no such revert"))?;
+        let last = &log[pos];
         let summary = format!("{REVERTED_PREFIX}{}", last.summary);
         let (project, entry, repaired) =
             self.revert_locked(id, &log, pos, actor, with_reason(None, summary))?;
@@ -10324,7 +10354,9 @@ mod tests {
         assert_eq!(store.activity(&id).last().unwrap().ts_ms, revert);
         assert!(store.pending_review(&id).is_none());
 
-        let back = store.take_back_revert(&id, revert, USER_ACTOR).unwrap();
+        let back = store
+            .take_back_revert(&id, revert, revert, USER_ACTOR)
+            .unwrap();
         assert_eq!(back.project, with_a1);
         assert_eq!(store.load(&id).unwrap(), with_a1);
         let taken = back.entry_ts_ms.expect("the take-back was logged");
@@ -10343,12 +10375,15 @@ mod tests {
         assert!(store.summarize(&id).unwrap().changed_by_ai.is_some());
 
         // Redo: the take-back taken back, A1 out again.
-        let again = store.take_back_revert(&id, taken, USER_ACTOR).unwrap();
+        let again = store
+            .take_back_revert(&id, taken, taken, USER_ACTOR)
+            .unwrap();
         assert_eq!(again.project, created);
         assert!(store.pending_review(&id).is_none());
         assert!(store.summarize(&id).unwrap().changed_by_ai.is_none());
 
-        // Not the newest entry, or no revert: stale, nothing written.
+        // A newer entry than the caller has seen, or no revert: stale,
+        // nothing written (design B: "seen", not "newest").
         let id = users_job(&store);
         let a1 = ai_change(&store, &id, 1);
         let r = store.revert_to_counted(&id, a1, USER_ACTOR, None).unwrap();
@@ -10356,16 +10391,112 @@ mod tests {
         let a2 = ai_change(&store, &id, 2);
         let file = fs::read(store.path(&id).unwrap()).unwrap();
         let entries = store.activity(&id).len();
-        for ts in [revert, a2, 0] {
-            let e = store.take_back_revert(&id, ts, USER_ACTOR).unwrap_err();
+        for (ts, seen) in [(revert, revert), (a2, a2), (0, a2)] {
+            let e = store
+                .take_back_revert(&id, ts, seen, USER_ACTOR)
+                .unwrap_err();
             assert_eq!(e.code(), "revert_stale", "{ts}: {e}");
         }
         assert_eq!(fs::read(store.path(&id).unwrap()).unwrap(), file);
         assert_eq!(store.activity(&id).len(), entries);
         let e = store
-            .take_back_revert("missing", 1, USER_ACTOR)
+            .take_back_revert("missing", 1, 1, USER_ACTOR)
             .unwrap_err();
         assert_eq!(e.code(), "revert_stale");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Design B (ARCH-1703, HUNT-1703): Undo, Undo, Redo, Redo over two AI
+    /// saves. Each press names the newest entry the editor has applied;
+    /// the second Redo takes back the first Undo's revert, which is no
+    /// longer the newest entry, and covers everything after it: A1 and A2
+    /// stand again and both wait for review.
+    #[test]
+    fn undo_undo_redo_redo_over_two_ai_saves_brings_both_back() {
+        let store = temp_store("r18-uurr");
+        let id = users_job(&store);
+        let created = store.load(&id).unwrap();
+        let a1 = ai_change(&store, &id, 1);
+        let a2 = ai_change(&store, &id, 2);
+        let both = store.load(&id).unwrap();
+        let r1 = store
+            .revert_to_counted_seen(&id, a2, Some(a2), USER_ACTOR, None)
+            .unwrap()
+            .entry_ts_ms
+            .unwrap();
+        let r2 = store
+            .revert_to_counted_seen(&id, a1, Some(r1), USER_ACTOR, None)
+            .unwrap()
+            .entry_ts_ms
+            .unwrap();
+        assert_eq!(store.load(&id).unwrap(), created);
+        let x1 = store
+            .take_back_revert(&id, r2, r2, USER_ACTOR)
+            .unwrap()
+            .entry_ts_ms
+            .unwrap();
+        let after_x1 = store.load(&id).unwrap();
+        assert_eq!(
+            (after_x1.notes.as_str(), after_x1.job.address.as_str()),
+            ("A1", "")
+        );
+        let x2 = store.take_back_revert(&id, r1, x1, USER_ACTOR).unwrap();
+        assert!(x2.entry_ts_ms.is_some());
+        assert_eq!(x2.project, both);
+        assert_eq!(store.load(&id).unwrap(), both);
+        assert_eq!(
+            store.pending_review(&id).expect("both wait").steps,
+            vec![a1, a2]
+        );
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Design B (ERR-1704): the editor's Undo of an AI's outside save names
+    /// the newest entry it has applied. An AI save that came in during the
+    /// press is newer: `revert_stale`, the file and the log unchanged.
+    #[test]
+    fn an_undo_from_an_entry_refuses_when_a_newer_ai_change_came_in() {
+        let store = temp_store("r18-undo-seen");
+        let id = users_job(&store);
+        let a1 = ai_change(&store, &id, 1);
+        let _a2 = ai_change(&store, &id, 2);
+        let file = fs::read(store.path(&id).unwrap()).unwrap();
+        let n = store.activity(&id).len();
+        let e = store
+            .revert_to_counted_seen(&id, a1, Some(a1), USER_ACTOR, None)
+            .unwrap_err();
+        assert_eq!(e.code(), "revert_stale", "{e}");
+        assert_eq!(fs::read(store.path(&id).unwrap()).unwrap(), file);
+        assert_eq!(store.activity(&id).len(), n);
+        // Without `seen_ts` (the banner's Revert all) both are undone.
+        let r = store.revert_to_counted(&id, a1, USER_ACTOR, None).unwrap();
+        assert_eq!(r.undone_ai, 2);
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// TEST-1704 (t1801): a take-back names its revert. When an AI's revert
+    /// came in after the user's (also a revert, also the newest entry) and
+    /// the editor has not seen it, the take-back is stale and nothing is
+    /// written; it never takes back the AI's revert instead.
+    #[test]
+    fn t1801_a_take_back_names_its_revert_even_when_the_newest_is_another_revert() {
+        let store = temp_store("t1801");
+        let id = users_job(&store);
+        let _a1 = ai_change(&store, &id, 1);
+        let a2 = ai_change(&store, &id, 2);
+        store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(a2))
+            .unwrap();
+        let user_revert = store.activity(&id).last().unwrap().ts_ms;
+        store.revert_last(&id, "claude", Some("oops")).unwrap();
+        let file = fs::read(store.path(&id).unwrap()).unwrap();
+        let n = store.activity(&id).len();
+        let e = store
+            .take_back_revert(&id, user_revert, user_revert, USER_ACTOR)
+            .unwrap_err();
+        assert_eq!(e.code(), "revert_stale", "{e}");
+        assert_eq!(fs::read(store.path(&id).unwrap()).unwrap(), file);
+        assert_eq!(store.activity(&id).len(), n);
         let _ = fs::remove_dir_all(&store.dir);
     }
 

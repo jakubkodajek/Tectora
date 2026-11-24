@@ -160,30 +160,39 @@ fn revert_last_change(
 
 /// Undoes the change recorded at `ts_ms` and everything after it, with
 /// the number of entries undone (Revert all, audit 2026-11-23 ERR-1002).
+/// `seen_ts`: the newest entry the editor has applied (its Undo over an
+/// AI's save); `revert_stale` when a newer one is there (ERR-1704).
 #[tauri::command(async)]
 fn revert_changes(
     state: State<AppState>,
     id: String,
     ts_ms: u64,
+    seen_ts: Option<u64>,
 ) -> CmdResult<store::RevertedChanges> {
     guard(|| {
         Ok(state
             .store()
-            .revert_to_counted(&id, ts_ms, USER_ACTOR, None)?)
+            .revert_to_counted_seen(&id, ts_ms, seen_ts, USER_ACTOR, None)?)
     })
 }
 
 /// Takes back the review revert logged at `revert_ts` (the editor's Undo
 /// and Redo of a review's Revert), itself a logged revert, so the review
-/// reads it (audit 2026-11-24 UX-1601). `revert_stale` when another entry
-/// is the latest by now.
+/// reads it (audit 2026-11-24 UX-1601). `seen_ts`: the newest entry the
+/// editor has applied; `revert_stale` when the log ends at another one
+/// (ARCH-1703, design B).
 #[tauri::command(async)]
 fn take_back_revert(
     state: State<AppState>,
     id: String,
     revert_ts: u64,
+    seen_ts: u64,
 ) -> CmdResult<store::RevertedChanges> {
-    guard(|| Ok(state.store().take_back_revert(&id, revert_ts, USER_ACTOR)?))
+    guard(|| {
+        Ok(state
+            .store()
+            .take_back_revert(&id, revert_ts, seen_ts, USER_ACTOR)?)
+    })
 }
 
 /// The AI changes of `id` waiting for review, with the version before them
