@@ -23,6 +23,8 @@ export type Action =
   | "import"
   | "revert"
   | "revertAll"
+  | "undo"
+  | "redo"
   | "restoreOffer"
   | "accept"
   | "calc"

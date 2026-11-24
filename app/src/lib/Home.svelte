@@ -17,6 +17,7 @@
   import { fold, searchWords } from "./fold";
   import { foreignSentences, type Foreign } from "./foreign";
   import { dismiss, notify, notifyError } from "./notify.svelte";
+  import { takeDeleted } from "./deleted";
   import UpdateBanner from "./UpdateBanner.svelte";
   import { prefs, savePrefs } from "./settings.svelte";
   import { hscroll } from "./hscroll";
@@ -202,7 +203,7 @@
       onchanged();
       loadTrash();
       // The confirm promised the trash: say where it went and offer it back at once (UX-010).
-      if (gone) deleteToasts.set(gone.entry, notify({ kind: "info", title: t("home.deleted", { name: gone.name || p.name }), key: gone.entry, action: { label: t("home.restore"), run: () => restore(gone) } }));
+      if (gone) deletedToast(gone, p.name);
     });
 
   /** Deleted jobs in the library's trash (removed attachments are left out), newest first. */
@@ -224,6 +225,13 @@
   /** The delete toast offering each trash entry back, so a restore from the
    *  trash list takes the offer away (UI-001). */
   const deleteToasts = new Map<string, number>();
+  function deletedToast(gone: TrashEntry, name: string) {
+    deleteToasts.set(gone.entry, notify({ kind: "info", title: t("home.deleted", { name: gone.name || name }), key: gone.entry, action: { label: t("home.restore"), run: () => restore(gone) } }));
+  }
+  // The review banner's Delete job left the editor for the library: the
+  // same notice, with Restore, and the focus on the list (UX-1703, UI-1702).
+  const handed = takeDeleted();
+  if (handed) deletedToast(handed.gone, handed.name);
 
   /** Brings a deleted job back into the library and selects it. Once: a
    *  double click must not restore and then report the entry missing (UI-001). */

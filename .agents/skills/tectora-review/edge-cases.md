@@ -659,6 +659,17 @@ logged revert, and every view must use the one predicate (`store::waits`).
   (HUNT-1601).
 - A received log with one entry dated far ahead keeps distinct, increasing
   times and its links (HUNT-1602).
+- Undo / Redo through the core name the newest entry the editor has
+  applied (`seenTs`, round 18 design B): Undo, Undo, Redo, Redo over two AI
+  saves ends with both in the job and waiting; two review Reverts then
+  Ctrl+Z twice bring both back; an AI save that lands during the press is
+  never reverted unseen (`revert_stale`, a note under the Undo title, the
+  save arrives as its own step); an AI save while Revert is out comes in as
+  a step whose Ctrl+Z is logged; Ctrl+Z pressed twice fast runs both
+  (ARCH-1703, ERR-1704, ERR-1702, UI-1704).
+- Delete job: an AI step that came in during the question is not deleted;
+  the notice offers Restore; a failed delete reads the job again (UI-1702,
+  UX-1703, HUNT-1706).
 
 Guards: store tests `an_ais_own_revert_of_its_only_step_ends_the_review`,
 `t1701_revert_all_over_an_ais_own_revert_ends_the_review`,
@@ -668,7 +679,11 @@ Guards: store tests `an_ais_own_revert_of_its_only_step_ends_the_review`,
 `the_creation_is_marked_and_the_ai_mark_follows_what_stands`; bundle test
 `a_received_log_with_one_entry_far_ahead_keeps_distinct_times`; MCP
 `get_history_marks_what_a_revert_undid`; `live.test.ts` "historyText of
-reverts of AI steps"; `app/e2e/audit-r17-review.e2e.ts`.
+reverts of AI steps"; `app/e2e/audit-r17-review.e2e.ts`; round 18 (editor):
+store tests `undo_undo_redo_redo_over_two_ai_saves_brings_both_back`,
+`an_undo_from_an_entry_refuses_when_a_newer_ai_change_came_in`,
+`t1801_a_take_back_names_its_revert_even_when_the_newest_is_another_revert`,
+`app/e2e/audit-r18-ed.e2e.ts`.
 
 Round 18 (a revert is read by what it did, `store::revert_effect`):
 

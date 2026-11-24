@@ -172,12 +172,22 @@ stay a `folder_request` the user allows or keeps.
 - **Undo and Redo of a Revert are logged** (owner decision 2 of round 17,
   UX-1601). Revert all and a one-step Revert answer the revert entry they
   logged (`RevertedChanges.entry_ts_ms`); the editor's Ctrl+Z over that
-  step calls `take_back_revert` (`Store::take_back_revert`: the entry must
-  be a revert and the newest one, else `revert_stale` with nothing
-  written), a revert of the revert, so the AI's steps stand and wait for
-  review again; Redo takes the take-back back. Ctrl+Z over an AI's outside
-  save is the banner's Revert from its oldest new entry. No Undo moves AI
-  work in or out of the job without a log entry. MCP has the same as
+  step calls `take_back_revert` (`Store::take_back_revert`), a revert of
+  the revert, so the AI's steps stand and wait for review again; Redo
+  takes the take-back back. Ctrl+Z over an AI's outside save is a revert
+  from its oldest new entry (`Store::revert_to_counted_seen`). No Undo
+  moves AI work in or out of the job without a log entry. Every such press
+  names the newest log entry whose effect the editor has applied
+  (`seen_ts`, set only when the editor applies a job read or a core
+  answer); the core refuses with `revert_stale`, nothing written, when the
+  log has a newer entry (an AI saved during the press), so a key press
+  never reverts an AI change the user has not seen. The editor then reads
+  the job again (the AI's save comes in as its own step) and says so under
+  the Undo / Redo title. Because Undo and Redo are last in, first out, a
+  revert from an older entry covers the steps undone after it, so any
+  number of presses in a row work (round 18 design B, owner decision 2).
+  Presses made while one is with the core are queued and run in order; a
+  refusal drops the rest. MCP has the same as
   `revert_to` with the revert's `ts_ms`. The put-back of the offer's
   figures stays an ordinary undo step (UI-802).
 - **History marks.** `ActivityItem.undone`: a change a standing revert

@@ -251,11 +251,14 @@ fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fa
             )
         }
         // With the number of entries undone, as the app (ERR-1002).
+        // `seenTs`: the newest entry the editor has applied, for its Undo
+        // (`revert_stale` when a newer one is there, ERR-1704).
         "revert_changes" => {
             let ts = arg::<u64>(a, "tsMs").ok()?;
+            let seen = arg::<Option<u64>>(a, "seenTs").ok()?;
             Some(
                 store
-                    .revert_to_counted(&id, ts, USER_ACTOR, None)
+                    .revert_to_counted_seen(&id, ts, seen, USER_ACTOR, None)
                     .map(|r| to_json(r).unwrap_or(Value::Null))
                     .map_err(Fail::from),
             )
@@ -263,9 +266,10 @@ fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fa
         // The editor's Undo / Redo of a review revert, logged (UX-1601).
         "take_back_revert" => {
             let ts = arg::<u64>(a, "revertTs").ok()?;
+            let seen = arg::<u64>(a, "seenTs").ok()?;
             Some(
                 store
-                    .take_back_revert(&id, ts, USER_ACTOR)
+                    .take_back_revert(&id, ts, seen, USER_ACTOR)
                     .map(|r| to_json(r).unwrap_or(Value::Null))
                     .map_err(Fail::from),
             )

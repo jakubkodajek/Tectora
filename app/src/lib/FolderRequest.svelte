@@ -7,6 +7,7 @@
   import { mayLeave } from "./leave";
   import { notifyError } from "./notify.svelte";
   import { t } from "./i18n.svelte";
+  import { actorName } from "./live.svelte";
   import type { FolderRequest } from "./types";
 
   let { request, onanswered, jobOpen = false }: { request: FolderRequest; onanswered: (moved: boolean) => void; jobOpen?: boolean } = $props();
@@ -44,7 +45,7 @@
 </script>
 
 <Modal title={t("folderReq.title")} width={520} onclose={() => answer(false)}>
-  <p>{t("folderReq.lead", { by: request.by })}</p>
+  <p>{t("folderReq.lead", { by: actorName(request.by) })}</p>
   <dl>
     {#each rows as r (r.label)}
       <dt>{r.label}</dt>
@@ -52,7 +53,7 @@
     {/each}
   </dl>
   <!-- The AI's own words, quoted after a lead naming it: never read as Tectora's advice (UI-1604). -->
-  {#if request.summary}<p class="why" data-testid="folder-reason">{t("folderReq.reason", { by: request.by })} {t("ai.quoted", { s: request.summary })}</p>{/if}
+  {#if request.summary}<p class="why" data-testid="folder-reason">{t("folderReq.reason", { by: actorName(request.by) })} {t("ai.quoted", { s: request.summary })}</p>{/if}
   <!-- What Allow does to the jobs: the open one closes, the others stay behind (UX-1302). -->
   {#if "projects_dir" in request.changes}<p class="muted" data-testid="folder-consequence">{jobOpen ? `${t("folderReq.jobCloses")} ` : ""}{t("folderReq.jobsStay")}</p>{/if}
   <p class="muted">{t("folderReq.note")}</p>
@@ -79,6 +80,8 @@
   .why {
     color: var(--text-2);
     font-style: italic;
+    /* An unbroken reason (a path, a URL) wraps inside the dialog (HUNT-1707). */
+    overflow-wrap: anywhere;
   }
   .muted {
     color: var(--text-2);

@@ -1091,6 +1091,10 @@ const cs: Dict = {
   "chg.putBack": "Obnoveno: {s}",
   "chg.putBackMany": "Obnoveno změn: {n}, od: {s}",
   "chg.revertedMixed": "Vráceno změn: {n}, obnoveno: {m}, od: {s}",
+  "err.action.undo": "Krok se nepodařilo vrátit zpět",
+  "err.action.redo": "Krok se nepodařilo zopakovat",
+  "review.deleteChanged": "Zakázka se nesmazala: AI do ní mezitím přidala další krok. Podívejte se na něj a rozhodněte znovu.",
+  "review.confirmRevertAllCreated": "Vrátit kroky AI ({n})? Zakázka se vrátí do stavu, v jakém ji AI založila.",
 };
 
 const sk: Dict = {
@@ -2173,6 +2177,10 @@ const sk: Dict = {
   "chg.putBack": "Obnovené: {s}",
   "chg.putBackMany": "Obnovené zmeny: {n}, od: {s}",
   "chg.revertedMixed": "Vrátené zmeny: {n}, obnovené: {m}, od: {s}",
+  "err.action.undo": "Krok sa nepodarilo vrátiť späť",
+  "err.action.redo": "Krok sa nepodarilo zopakovať",
+  "review.deleteChanged": "Zákazka sa nezmazala: AI do nej medzitým pridala ďalší krok. Pozrite sa naň a rozhodnite znova.",
+  "review.confirmRevertAllCreated": "Vrátiť kroky AI ({n})? Zákazka sa vráti do stavu, v akom ju AI založila.",
 };
 
 const en: Dict = {
@@ -3255,6 +3263,10 @@ const en: Dict = {
   "chg.putBack": "Put back: {s}",
   "chg.putBackMany": "Put back {n} changes since: {s}",
   "chg.revertedMixed": "Reverted {n} and put back {m} changes since: {s}",
+  "err.action.undo": "Could not undo the step",
+  "err.action.redo": "Could not redo the step",
+  "review.deleteChanged": "The job was not deleted: the AI added another step meanwhile. Look at it and decide again.",
+  "review.confirmRevertAllCreated": "Revert {n} AI steps? The job goes back to how the AI created it.",
 };
 
 const de: Dict = {
@@ -4337,6 +4349,10 @@ const de: Dict = {
   "chg.putBack": "Zurückgeholt: {s}",
   "chg.putBackMany": "{n} Änderungen zurückgeholt seit: {s}",
   "chg.revertedMixed": "{n} Änderungen verworfen und {m} zurückgeholt seit: {s}",
+  "err.action.undo": "Der Schritt konnte nicht rückgängig gemacht werden",
+  "err.action.redo": "Der Schritt konnte nicht wiederholt werden",
+  "review.deleteChanged": "Der Auftrag wurde nicht gelöscht: Die KI hat inzwischen einen weiteren Schritt hinzugefügt. Sehen Sie ihn an und entscheiden Sie erneut.",
+  "review.confirmRevertAllCreated": "{n} KI-Schritte verwerfen? Der Auftrag wird auf den Stand zurückgesetzt, in dem die KI ihn angelegt hat.",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };

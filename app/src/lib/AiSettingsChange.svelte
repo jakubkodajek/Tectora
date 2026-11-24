@@ -112,6 +112,8 @@
     margin: 4px 0 0 14px;
     color: var(--text-2);
     font-style: italic;
+    /* An unbroken reason wraps (HUNT-1707). */
+    overflow-wrap: anywhere;
   }
   dl {
     display: grid;

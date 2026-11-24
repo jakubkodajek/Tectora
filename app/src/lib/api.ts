@@ -122,12 +122,12 @@ export const api = {
   /** Undoes the latest change; with `expectTs` only if it is still that entry (`revert_stale` otherwise). */
   /** Answers as Revert all (`Store::revert_last_reported`), with `repaired` (ERR-1502). */
   revertLastChange: (id: string, expectTs?: number) => invoke<RevertedChanges>("revert_last_change", { id, expectTs: expectTs ?? null }),
-  /** Revert all: undoes the change at `tsMs` and every later one; `undone_ai` counts the AI entries undone, also ones that came in after the press (ERR-1002, HUNT-1401). */
-  revertAll: (id: string, tsMs: number) => invoke<RevertedChanges>("revert_changes", { id, tsMs }),
+  /** Revert all: undoes the change at `tsMs` and every later one; `undone_ai` counts the AI entries undone, also ones that came in after the press (ERR-1002, HUNT-1401). `seenTs`: the newest entry the editor has applied (its Undo over an AI's save); the core answers `revert_stale` when a newer one is there (ERR-1704). */
+  revertAll: (id: string, tsMs: number, seenTs?: number) => invoke<RevertedChanges>("revert_changes", { id, tsMs, seenTs: seenTs ?? null }),
   revertChanges: (id: string, tsMs: number) =>
-    invoke<RevertedChanges>("revert_changes", { id, tsMs }).then((r) => r.project),
-  /** Takes back the review revert logged at `revertTs` (Undo / Redo of a Revert), itself logged; `revert_stale` when another entry is the latest by now (UX-1601). */
-  takeBackRevert: (id: string, revertTs: number) => invoke<RevertedChanges>("take_back_revert", { id, revertTs }),
+    invoke<RevertedChanges>("revert_changes", { id, tsMs, seenTs: null }).then((r) => r.project),
+  /** Takes back the review revert logged at `revertTs` (Undo / Redo of a Revert), itself logged (UX-1601). `seenTs`: the newest entry the editor has applied; `revert_stale` when the log ends at another one (ARCH-1703, design B). */
+  takeBackRevert: (id: string, revertTs: number, seenTs: number) => invoke<RevertedChanges>("take_back_revert", { id, revertTs, seenTs }),
   reviewStatus: (id: string) => invoke<ReviewStatus | null>("review_status", { id }),
   acceptChanges: (id: string, tsMs: number) => invoke<number>("accept_changes", { id, tsMs }),
   liveStatus: () => invoke<LiveStatus | null>("live_status"),
