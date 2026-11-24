@@ -736,3 +736,31 @@ Guards: store tests `t1901_*` to `t1907_*` (t1905 seeded, `T1905_SEED` /
 `a_received_log_keeps_its_reverts_and_put_backs`; `live.test.ts` "the
 mixed revert sentence with n ≠ m", "actorLabel of a received user entry";
 `app/e2e/audit-r19-a.e2e.ts`.
+
+## 20. The review's baseline (@arch, @test, @errors, @ux)
+
+- More AI steps in one review than the log keeps (50): an AI revert, the
+  user's Revert all and Accept still see every change; accepted work is
+  never taken out with no banner (ARCH-1901, TEST-1902).
+- Revert all over an AI's revert of accepted work, then Ctrl+Z: the banner
+  is back with the same steps (UX-1901, TEST-1901).
+- The AI takes accepted work out, then makes and reverts another change:
+  the banner lists the revert that took the accepted work out, and its
+  figures are the settled job against now (HUNT-1901).
+- A banner read that lands after Accept: its Revert all is refused as
+  stale, nothing written (ERR-1905).
+- Duplicate / new job from this roof of a job with a waiting AI change: the
+  copy has the same banner and Revert all (UX-1905).
+- The AI puts back a change the user reverted: the live status says "put
+  back", not "reverted" (UX-1903).
+- A job of an older Tectora (log, no baseline file), a damaged, linked or
+  hostile baseline file, an older Tectora's unlogged save while the review
+  waits (`revert_outside`), delete and restore of a job with a waiting
+  review.
+
+Guards: store tests `t2001_*` (`T2001_SEED` / `T2001_RUNS` /
+`T2001_STEPS`), `t2002_*`, `t2003_*`, `t2004_*`, `arch1901_shape{1,2}_trim`,
+`hunt1901_shape`, `t1905_long_mixes_cross_the_log_trim`, `y_*`; MCP tests
+`a_put_back_by_revert_to_is_told_as_a_put_back`,
+`a_review_past_the_log_trim_still_waits_over_mcp`; E2E
+`app/e2e/audit-r20-review.e2e.ts`.

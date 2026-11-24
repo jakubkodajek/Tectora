@@ -138,40 +138,53 @@ stay a `folder_request` the user allows or keeps.
   kept in the library (`.activity/<id>.review.json`), so it survives a restart
   and the agent can read it with `get_review`; only the user accepts.
   The AI tab keeps the full history.
-- **The review by the job's version** (audit 2026-11-24 round 19 design A,
-  ADR 0006, replacing the per-entry rules of rounds 17 and 18). Every
-  logged entry leaves the job in a *version* (`store::versions`): a change
-  makes a new one, a revert of `log[u..]` goes back to the version that
-  stood just before `log[u]`, the user's put-back of the offer's figures
-  keeps the version. The user **settles** the job, its version and every
-  version it was made from: by Accept (the newest entry at or before the
-  accepted time), by their own change, by their own revert that lands on a
-  version already settled, and Tectora's own recalculation settles it; an
-  AI's entry never settles anything. The review starts at the entry after
-  the last settling one; its *baseline* is the version before that entry.
-  **A review is open exactly while the job's version is not the baseline
-  because of the AI** (`store::review_of`, one forward walk). Revert all
-  reverts from that first entry (`since_ts_ms`, which may be an AI's revert
-  that is no listed step) as one logged revert and lands on the baseline,
-  so it always ends the review and never takes accepted work out. Accept
-  marks the newest entry the editor has shown (`seenTs`), so one Accept
-  ends the review. The steps are for display only: the AI's changes in the
-  job's version that no settled version has; the newest AI revert when
-  settled work was taken out or put back; else the newest AI entry. The
-  banner, the AI tab, MCP `get_review` / `get_history`, the library's AI
-  mark (the newest step while a review is open, else the newest change
-  that stands, `changed_by_ai`) and `list_projects by_ai` read the one
-  function. Visible consequences: the AI taking a change out and putting it
-  back exactly (or the reverse) leaves no banner; the user's own Undo that
-  brings back an AI change they never accepted (one the sender of a bundle
-  had reverted) opens it. A Revert that finds the file already as before is
-  still logged when it moves the version (the user typed the old value
-  back), so the review ends (ERR-1701); only a revert that changes neither
-  the file nor the version writes nothing and says "nothing to revert".
-  What every revert covers is read in one forward walk of the log (a map of
-  times, a binary search in time order, a scan with a budget out of order:
-  ARCH-1801), so a long foreign log costs linear work; nothing in the file
-  format or `.review.json` changed.
+- **The review keeps the job as the user last settled it** (ADR 0007,
+  audit 2026-11-24 round 20 design Y, superseding the version rule of ADR
+  0006, whose log-derived settle point broke after the 50-entry trim and
+  after an Undo of Revert all: ARCH-1901, UX-1901, HUNT-1901). From an
+  AI's first write since the job was settled until the user's Accept,
+  `.activity/<id>.baseline.json` holds the **baseline**: the job before
+  that write (for a job an AI created, the job as created, and the creation
+  waits), with `since_ts_ms` the AI's entry. **A review is open exactly
+  while the baseline exists and the job differs from it** (or the AI's
+  creation waits); **Revert all writes the baseline**, logged as the user's
+  revert from `since_ts_ms`, so Ctrl+Z takes it back through the log and
+  the review is open again. Later AI writes, AI reverts and the user's
+  reverts from inside the review leave the baseline as it is; the editor's
+  unlogged saves and the user's put-back of the offer's figures are applied
+  to it too (a three-way merge), and where the user edited a value the AI
+  had set, Revert all refuses with `revert_conflict` naming it; the user's
+  own other logged change and the engine's recalculation settle the job
+  (no baseline); the user's revert from before `since_ts_ms` (Ctrl+Z past
+  work accepted earlier) makes the job it writes the baseline, and its
+  Redo brings the old one back; Accept drops it, or, when an AI entry came
+  after the accepted time, starts it again before that entry. The steps
+  `get_review` and the banner list are for display: the AI's changes from
+  `since_ts_ms` on that stand, and the AI's reverts that reach back before
+  it (they took settled work out or put it back). `since_ts_ms` may name an
+  entry the log no longer holds; `before` is the baseline; the figures are
+  the baseline against the job now. The banner's Revert all names the
+  review it showed (`revert_changes` with `review: true`,
+  `Store::revert_review`): when that review is over by now (accepted,
+  reverted, or another one) the answer is `revert_stale` and nothing is
+  written (ERR-1905). An older Tectora on the same folder does not apply
+  the merge for its unlogged saves: the baseline records a digest of the
+  job as Tectora last wrote it, and Revert all then answers
+  `revert_outside` (Accept and the Revert of single steps still work); an
+  older Tectora's logged entries are caught up on read. A job of an older
+  Tectora (no baseline file) gets its review from the log once, by the
+  round-19 rule, and the file is written at its next write. The file is
+  read only as a regular file (never through a link) of bounded size; a
+  damaged one counts as missing. It moves with the job to the trash and
+  back; Duplicate and a new job from this roof copy a waiting review (the
+  copy's log gets the AI's entries from `since_ts_ms`, the baseline gets the
+  copy's name and job data: the same banner and Revert all; owner decision
+  2 of round 20); a bundle does not carry it (a received job arrives
+  reviewed). The change log is trimmed to its newest 50 entries again,
+  nothing kept in place. What every revert covers is still read in one
+  forward walk of the log (ARCH-1801). Visible consequences: the AI or the
+  user putting the job back exactly as settled leaves no banner, and a
+  Revert all then has nothing to write.
 - **A received job names the sender** (UX-1801). Importing a bundle renames
   the sender's own entries to `user (received)` (shown as "Sender") like
   the engine's to `tectora (received)`: they keep their kinds (revert,

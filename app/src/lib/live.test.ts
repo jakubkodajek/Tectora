@@ -14,6 +14,7 @@ const KINDS = [
   "showing",
   "reverted",
   "reverted_changes",
+  "put_back",
   "copied",
   "deleted",
   "restored",

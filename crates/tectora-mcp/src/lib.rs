@@ -419,10 +419,13 @@ fn roof_trouble_of(geos: &[RoofGeometry], project: &Project) -> Option<Value> {
 /// again in a moment, audit 2026-11-23 ERR-1002), `revert_out_of_limits`
 /// (the earlier version is outside the limits; the job is unchanged) and
 /// `revert_out_of_limits_damaged` (the same, while the job file itself
-/// cannot be read, audit 2026-11-23 ARCH-1503).
+/// cannot be read, audit 2026-11-23 ARCH-1503), `revert_outside` (a
+/// revert of the whole review while another program saved the job
+/// unlogged, ADR 0007).
 pub(crate) fn coded(e: StoreError) -> String {
     match e {
         StoreError::RevertStale { .. }
+        | StoreError::RevertOutside { .. }
         | StoreError::Busy(_)
         | StoreError::TooMany { .. }
         | StoreError::RevertOutOfLimits { .. }

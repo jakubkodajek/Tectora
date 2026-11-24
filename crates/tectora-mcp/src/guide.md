@@ -157,19 +157,25 @@ The tools cover every operation of the Tectora editor:
   of Tectora's recalculation of them (see "Stored result" below). `get_review`
   tells whether the user has accepted your changes yet and how they changed
   the figures; only the user accepts, in the app. Do not treat a design as
-  approved while `pending` is set. A review is open exactly while the design
-  differs, because of something you did, from the state the user last
-  settled (their Accept, their own change, or their revert to a state they
-  had settled). When you put the design back exactly as the user left it
-  (you reverted your own changes, or took out what you had put back),
-  nothing waits. When the user reverts one of your changes the others still
-  wait (`steps`, their ts_ms). Your revert of a change the user already
-  accepted is a step, and so is putting back a change the user reverted
-  (`revert_to` with the user's revert): the user reviews it like a new
-  change. `steps` are what the banner lists; `since_ts_ms` is where the
-  user's Revert all starts, which may be an entry that is not a listed step
-  (one of your reverts): Revert all always ends at the settled state, and
-  the user's Accept accepts everything they have seen. A job received from
+  approved while `pending` is set. From your first change since the user
+  last settled the design (their Accept, their own change) Tectora keeps a
+  copy of the design as they settled it, and a review is open exactly
+  while the design differs from that copy. When the design is back exactly
+  as the user left it (you reverted your own changes, took out what you
+  had put back, or set a value back by hand), nothing waits. When the user
+  reverts one of your changes the others still wait (`steps`, their
+  ts_ms). Your revert of a change the user already accepted is a step, and
+  so is putting back a change the user reverted (`revert_to` with the
+  user's revert): the user reviews it like a new change. `steps` are what
+  the banner lists; `differences` compare the settled copy with the design
+  now; `since_ts_ms` is your first change of the review, where the user's
+  Revert all is logged from (it may be older than the 50 entries
+  `get_history` shows). Revert all puts the settled copy back, however
+  many changes you made, and the user's Accept accepts everything they
+  have seen. `revert_to` with `since_ts_ms` reverts your whole review the
+  same way; it answers "revert_outside" and does nothing when another
+  program (an older Tectora) saved the design meanwhile without a history
+  entry: then ask the user to accept or revert your changes one by one. A job received from
   a colleague (`import_job`) names the sender's own entries
   `user (received)`, never `user`. `get_history` marks an entry
   that is not in the design with `undone: true` (a revert with `undone` was

@@ -15,6 +15,15 @@ use serde_json::{Map, Value};
 /// `parts[0].edges[3].pitch_deg`.
 pub type Conflicts = Vec<String>;
 
+/// [`merge3`] that always gives a value: where both sides changed the same
+/// value `ours` stays, and the places are named (the review's baseline,
+/// ADR 0007).
+pub fn merge3_keep_ours(base: &Value, ours: &Value, theirs: &Value) -> (Value, Conflicts) {
+    let mut conflicts = Vec::new();
+    let v = merge_value(base, ours, theirs, "", &mut conflicts);
+    (v, conflicts)
+}
+
 pub fn merge3(base: &Value, ours: &Value, theirs: &Value) -> Result<Value, Conflicts> {
     let mut conflicts = Vec::new();
     let v = merge_value(base, ours, theirs, "", &mut conflicts);

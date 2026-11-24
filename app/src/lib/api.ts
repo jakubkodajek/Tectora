@@ -124,6 +124,8 @@ export const api = {
   revertLastChange: (id: string, expectTs?: number) => invoke<RevertedChanges>("revert_last_change", { id, expectTs: expectTs ?? null }),
   /** Revert all: undoes the change at `tsMs` and every later one; `undone_ai` counts the AI entries undone, also ones that came in after the press (ERR-1002, HUNT-1401). `seenTs`: the newest entry the editor has applied (its Undo over an AI's save); the core answers `revert_stale` when a newer one is there (ERR-1704). */
   revertAll: (id: string, tsMs: number, seenTs?: number) => invoke<RevertedChanges>("revert_changes", { id, tsMs, seenTs: seenTs ?? null }),
+  /** Revert all of the review the banner showed (`since_ts_ms`): writes the job as the user last settled it (ADR 0007); `revert_stale` when that review is not open any more (ERR-1905). */
+  revertReview: (id: string, sinceTsMs: number) => invoke<RevertedChanges>("revert_changes", { id, tsMs: sinceTsMs, seenTs: null, review: true }),
   revertChanges: (id: string, tsMs: number) =>
     invoke<RevertedChanges>("revert_changes", { id, tsMs, seenTs: null }).then((r) => r.project),
   /** Takes back the review revert logged at `revertTs` (Undo / Redo of a Revert), itself logged (UX-1601). `seenTs`: the newest entry the editor has applied; `revert_stale` when the log ends at another one (ARCH-1703, design B). */

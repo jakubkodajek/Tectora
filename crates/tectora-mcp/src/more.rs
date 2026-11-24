@@ -866,7 +866,13 @@ impl Server {
                     .revert_to_counted(&id, ts, &self.client, Some(summary))
                     .map_err(super::coded)?;
                 let p = &r.project;
-                self.live_follow("reverted_changes", Some(&p.name), format!("Reverted changes: {summary}"), &id);
+                // A revert of a revert that only put changes back says so
+                // (audit 2026-11-24 UX-1903).
+                if tectora_core::store::only_put_back(&self.store.activity(&id), r.entry_ts_ms) {
+                    self.live_follow("put_back", Some(&p.name), format!("Put back changes: {summary}"), &id);
+                } else {
+                    self.live_follow("reverted_changes", Some(&p.name), format!("Reverted changes: {summary}"), &id);
+                }
                 let mut out = json!({ "id": id, "reverted": true });
                 self.quantities_into(&mut out, p);
                 super::replaced_note(&mut out, r.repaired);
@@ -3574,6 +3580,103 @@ mod tool_coverage {
         assert_eq!(h[1]["undone"], true, "{history}");
         assert!(h[2].get("undone").is_none(), "{history}");
         assert_eq!(h[2]["pending_review"], true, "{history}");
+    }
+
+    /// Audit 2026-11-24 UX-1903: the AI's `revert_to` of the user's revert
+    /// puts the change back, and the live status says so (`put_back`),
+    /// not "reverted".
+    #[test]
+    fn a_put_back_by_revert_to_is_told_as_a_put_back() {
+        use tectora_core::store::USER_ACTOR;
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let id = s.store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "AI", "summary": "AI note" }),
+        );
+        s.store.revert_last(&id, USER_ACTOR, None).unwrap();
+        let r = s.store.activity(&id).last().unwrap().ts_ms;
+        call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": r, "summary": "Note back." }),
+        );
+        assert_eq!(s.store.live().unwrap().kind.as_deref(), Some("put_back"));
+        let a = s.store.activity(&id).last().unwrap().ts_ms;
+        let first = s.store.activity(&id)[1].ts_ms;
+        call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": first, "summary": "All out." }),
+        );
+        assert_ne!(a, s.store.activity(&id).last().unwrap().ts_ms);
+        assert_eq!(
+            s.store.live().unwrap().kind.as_deref(),
+            Some("reverted_changes")
+        );
+    }
+
+    /// Audit 2026-11-24 ARCH-1901 over MCP: the AI takes accepted work out,
+    /// makes 60 more changes (past the 50 entries a log keeps) and reverts
+    /// to one of them: `get_review` still waits, and `get_history` marks
+    /// exactly the listed steps.
+    #[test]
+    fn a_review_past_the_log_trim_still_waits_over_mcp() {
+        use tectora_core::store::USER_ACTOR;
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let id = s.store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "A1", "summary": "A1" }),
+        );
+        let a1 = s.store.activity(&id).last().unwrap().ts_ms;
+        s.store.mark_reviewed(&id, a1).unwrap();
+        call(
+            &mut s,
+            "revert_last_change",
+            json!({ "id": id, "summary": "Out." }),
+        );
+        for i in 1..=60 {
+            call(
+                &mut s,
+                "update_job",
+                json!({ "id": id, "customer": format!("C{i}"), "summary": format!("C{i}") }),
+            );
+        }
+        let old = s.store.activity(&id)[1].ts_ms;
+        call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": old, "summary": "Back." }),
+        );
+        let review = call(&mut s, "get_review", json!({ "id": id }));
+        let steps = review["pending"]["steps"]
+            .as_array()
+            .cloned()
+            .expect("waits");
+        assert!(!steps.is_empty(), "{review}");
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let marked: Vec<Value> = history
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["pending_review"] == true)
+            .map(|e| e["ts_ms"].clone())
+            .collect();
+        let mut want = steps.clone();
+        want.reverse();
+        assert_eq!(marked, want, "{history}");
+        // The user's Revert all ends at the accepted job.
+        let since = review["pending"]["since_ts_ms"].as_u64().unwrap();
+        let r = s.store.revert_review(&id, since, USER_ACTOR, None).unwrap();
+        assert_eq!(
+            (r.project.notes.as_str(), r.project.job.customer.as_str()),
+            ("A1", "")
+        );
     }
 
     /// ARCH-1701 / TEST-1708: the AI's `revert_to` of the user's revert of

@@ -680,7 +680,7 @@ fn received_history(bytes: &[u8]) -> Option<(String, u64)> {
     let last = order_times(&mut entries, now_ms());
     // Within the bytes a log is read to, as a save trims it; every entry
     // is the sender's, none waits for this user's review.
-    let text = crate::store::trim_log(&entries, entries.len(), crate::store::MAX_ACTIVITY_FILE);
+    let text = crate::store::trim_log(&entries, crate::store::MAX_ACTIVITY_FILE);
     Some((text, last))
 }
 
