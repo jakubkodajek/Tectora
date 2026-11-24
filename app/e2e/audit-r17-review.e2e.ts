@@ -137,7 +137,9 @@ test.describe("round 17, design A: the review reads what stands in the log", () 
     await mcp.call("update_job", { id, customer: "AI Zákazník", summary: "Zákazník od AI" });
     await app.open({ prefs: { followAi: false } });
     await app.openJob("R17 od AI");
-    await expect(review(page)).toContainText(cs("review.steps", { n: 3 }));
+    // The creation is listed, not counted (UI-1802): two steps to revert.
+    await expect(review(page)).toContainText(cs("review.steps", { n: 2 }));
+    await expect(review(page)).toContainText("Založeno podle výkresu");
     await app.answerConfirm(true);
     await review(page).getByRole("button", { name: cs("review.revertAll") }).click();
     await waitForProject(id, (p) => !p.notes && p.job.customer === "");

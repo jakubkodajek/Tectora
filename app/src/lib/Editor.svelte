@@ -3292,7 +3292,7 @@
             <Icon name="sparkle" size={18} />
             <div class="review-text">
               <strong>
-                {t("review.title", { who: actorName(pending.actor) })}{#if pendingList.length > 1}<span class="steps">{t("review.steps", { n: pendingList.length })}</span>{/if}
+                {t("review.title", { who: actorName(pending.actor) })}<!-- The steps Revert all takes back: a creation is listed, not counted (UI-1802). -->{#if revertSteps > 1}<span class="steps">{t("review.steps", { n: revertSteps })}</span>{/if}
               </strong>
               <span class="review-summary" title={pendingList.map((a) => entryText(a, activity)).reverse().join(" → ")}>{pendingList.map((a) => entryText(a, activity)).reverse().join(" → ")}</span>
               {#if pendingChanges.length}
