@@ -751,6 +751,8 @@ mixed revert sentence with n ≠ m", "actorLabel of a received user entry";
   stale, nothing written (ERR-1905).
 - Duplicate / new job from this roof of a job with a waiting AI change: the
   copy has the same banner and Revert all (UX-1905).
+- The AI puts back a change the user reverted: the live status says "put
+  back", not "reverted" (UX-1903).
 - A job of an older Tectora (log, no baseline file), a damaged, linked or
   hostile baseline file, an older Tectora's unlogged save while the review
   waits (`revert_outside`), delete and restore of a job with a waiting
@@ -758,6 +760,7 @@ mixed revert sentence with n ≠ m", "actorLabel of a received user entry";
 
 Guards: store tests `t2001_*` (`T2001_SEED` / `T2001_RUNS` /
 `T2001_STEPS`), `t2002_*`, `t2003_*`, `t2004_*`, `arch1901_shape{1,2}_trim`,
-`hunt1901_shape`, `t1905_long_mixes_cross_the_log_trim`, `y_*`; MCP test
+`hunt1901_shape`, `t1905_long_mixes_cross_the_log_trim`, `y_*`; MCP tests
+`a_put_back_by_revert_to_is_told_as_a_put_back`,
 `a_review_past_the_log_trim_still_waits_over_mcp`; E2E
 `app/e2e/audit-r20-review.e2e.ts`.

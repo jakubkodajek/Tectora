@@ -866,7 +866,13 @@ impl Server {
                     .revert_to_counted(&id, ts, &self.client, Some(summary))
                     .map_err(super::coded)?;
                 let p = &r.project;
-                self.live_follow("reverted_changes", Some(&p.name), format!("Reverted changes: {summary}"), &id);
+                // A revert of a revert that only put changes back says so
+                // (audit 2026-11-24 UX-1903).
+                if tectora_core::store::only_put_back(&self.store.activity(&id), r.entry_ts_ms) {
+                    self.live_follow("put_back", Some(&p.name), format!("Put back changes: {summary}"), &id);
+                } else {
+                    self.live_follow("reverted_changes", Some(&p.name), format!("Reverted changes: {summary}"), &id);
+                }
                 let mut out = json!({ "id": id, "reverted": true });
                 self.quantities_into(&mut out, p);
                 super::replaced_note(&mut out, r.repaired);
@@ -3574,6 +3580,42 @@ mod tool_coverage {
         assert_eq!(h[1]["undone"], true, "{history}");
         assert!(h[2].get("undone").is_none(), "{history}");
         assert_eq!(h[2]["pending_review"], true, "{history}");
+    }
+
+    /// Audit 2026-11-24 UX-1903: the AI's `revert_to` of the user's revert
+    /// puts the change back, and the live status says so (`put_back`),
+    /// not "reverted".
+    #[test]
+    fn a_put_back_by_revert_to_is_told_as_a_put_back() {
+        use tectora_core::store::USER_ACTOR;
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let id = s.store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "AI", "summary": "AI note" }),
+        );
+        s.store.revert_last(&id, USER_ACTOR, None).unwrap();
+        let r = s.store.activity(&id).last().unwrap().ts_ms;
+        call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": r, "summary": "Note back." }),
+        );
+        assert_eq!(s.store.live().unwrap().kind.as_deref(), Some("put_back"));
+        let a = s.store.activity(&id).last().unwrap().ts_ms;
+        let first = s.store.activity(&id)[1].ts_ms;
+        call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": first, "summary": "All out." }),
+        );
+        assert_ne!(a, s.store.activity(&id).last().unwrap().ts_ms);
+        assert_eq!(
+            s.store.live().unwrap().kind.as_deref(),
+            Some("reverted_changes")
+        );
     }
 
     /// Audit 2026-11-24 ARCH-1901 over MCP: the AI takes accepted work out,

@@ -650,7 +650,7 @@ pub struct LiveStatus {
 
 /// The codes of [`LiveStatus::kind`] (the app has a sentence for each, in
 /// every UI language: `ai.live.<kind>`).
-pub const LIVE_KINDS: [&str; 18] = [
+pub const LIVE_KINDS: [&str; 19] = [
     "changed",
     "settings",
     "browsing",
@@ -661,6 +661,7 @@ pub const LIVE_KINDS: [&str; 18] = [
     "showing",
     "reverted",
     "reverted_changes",
+    "put_back",
     "copied",
     "deleted",
     "restored",
@@ -670,6 +671,18 @@ pub const LIVE_KINDS: [&str; 18] = [
     "exported_sheet",
     "imported",
 ];
+
+/// Whether the revert logged at `ts_ms` in `log` only put changes back
+/// (its stored sentence, [`revert_summary`], is `Put back: …`): the live
+/// status then says so, not "reverted" (audit 2026-11-24 UX-1903).
+pub fn only_put_back(log: &[ActivityEntry], ts_ms: Option<u64>) -> bool {
+    ts_ms
+        .and_then(|ts| log.iter().rfind(|e| e.ts_ms == ts))
+        .is_some_and(|e| {
+            e.undid_from.is_some()
+                && (e.summary.starts_with(PUT_BACK_PREFIX) || e.summary.starts_with("Put back "))
+        })
+}
 
 /// How the change-log entry of [`Store::restore_offer_result`] begins; the
 /// app reads it (`live.svelte.ts`). The entry reads

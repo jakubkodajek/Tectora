@@ -1105,6 +1105,7 @@ const cs: Dict = {
   "editor.redoing": "Provádím krok znovu…",
   "review.deleteUnchecked": "Zakázka se nesmazala: nepodařilo se ověřit, zda do ní AI mezitím nepřidala další krok. Zkuste to znovu.",
   "home.restoreGone": "Zakázka „{name}“ už v koši není: mezitím ji někdo obnovil nebo odstranil.",
+  "ai.live.put_back": "Změny v „{name}“ obnoveny",
   "err.revert_outside": "Zakázku mezitím uložil i jiný program (například starší Tectora), zatímco změny AI čekaly na kontrolu. Vaše úpravy a změny AI už nejde oddělit, proto se nic nevrátilo. Změny AI přijměte nebo vraťte jednotlivě na kartě AI."
 };
 
@@ -2202,6 +2203,7 @@ const sk: Dict = {
   "editor.redoing": "Vykonávam krok znova…",
   "review.deleteUnchecked": "Zákazka sa nezmazala: nepodarilo sa overiť, či do nej AI medzitým nepridala ďalší krok. Skúste to znova.",
   "home.restoreGone": "Zákazka „{name}“ už v koši nie je: medzitým ju niekto obnovil alebo odstránil.",
+  "ai.live.put_back": "Zmeny v „{name}“ obnovené",
   "err.revert_outside": "Zákazku medzitým uložil aj iný program (napríklad staršia Tectora), kým zmeny AI čakali na kontrolu. Vaše úpravy a zmeny AI sa už nedajú oddeliť, preto sa nič nevrátilo. Zmeny AI prijmite alebo vráťte jednotlivo na karte AI."
 };
 
@@ -3299,6 +3301,7 @@ const en: Dict = {
   "editor.redoing": "Redoing…",
   "review.deleteUnchecked": "The job was not deleted: it could not be checked whether the AI added another step meanwhile. Try again.",
   "home.restoreGone": "Job “{name}” is no longer in the trash: it was restored or removed meanwhile.",
+  "ai.live.put_back": "Put back changes in “{name}”",
   "err.revert_outside": "Another program (for example an older Tectora) also saved the job while the AI's changes waited for review. Your edits and the AI's changes can no longer be told apart, so nothing was reverted. Accept or revert the AI's changes one by one in the AI tab."
 };
 
@@ -4396,6 +4399,7 @@ const de: Dict = {
   "editor.redoing": "Wird wiederholt…",
   "review.deleteUnchecked": "Der Auftrag wurde nicht gelöscht: Es ließ sich nicht prüfen, ob die KI inzwischen einen weiteren Schritt hinzugefügt hat. Versuchen Sie es erneut.",
   "home.restoreGone": "Auftrag „{name}“ ist nicht mehr im Papierkorb: Er wurde inzwischen wiederhergestellt oder entfernt.",
+  "ai.live.put_back": "Änderungen in „{name}“ zurückgeholt",
   "err.revert_outside": "Ein anderes Programm (zum Beispiel eine ältere Tectora) hat den Auftrag ebenfalls gespeichert, während die KI-Änderungen auf die Prüfung warteten. Ihre Änderungen und die der KI lassen sich nicht mehr trennen, daher wurde nichts verworfen. Übernehmen oder verwerfen Sie die KI-Änderungen einzeln im KI-Tab."
 };
 
