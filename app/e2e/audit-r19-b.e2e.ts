@@ -317,3 +317,27 @@ test.describe("round 19, UI-1805: an AI save in a narrow window with the drawer 
     });
   }
 });
+
+test.describe("round 19, HUNT-1804: a long AI summary in the AI tab", () => {
+  test("a summary of one 161-character word wraps in the AI tab, which does not scroll sideways (HUNT-1804)", async ({ app, page, mcp }) => {
+    await page.setViewportSize({ width: 1100, height: 700 });
+    const id = await createExample("gable", "R19 dlouhé shrnutí");
+    await openEditor(app, "R19 dlouhé shrnutí");
+    const word = "vykres_" + "x".repeat(150) + ".pdf";
+    await mcp.call("update_job", { id, notes: "Od AI", summary: word });
+    await expect(review(page)).toContainText(word.slice(0, 20));
+    await dockTab(page, "dock.ai").click();
+    const row = page.getByTestId("history-entry").first().locator(".summary");
+    await expect(row).toContainText(word);
+    const panel = page.getByRole("tabpanel");
+    const [rw, pw] = [(await row.boundingBox())!.width, await panel.evaluate((e) => e.clientWidth)];
+    expect(rw).toBeLessThanOrEqual(pw);
+    const wide = await panel.evaluate((e) => {
+      const r = e.getBoundingClientRect();
+      return [...e.querySelectorAll("*")].filter((c) => c.getBoundingClientRect().right > r.right + 1 || (c as HTMLElement).scrollWidth > e.clientWidth + 1).map((c) => `${c.tagName}.${c.className}`).slice(0, 8);
+    });
+    expect(wide).toEqual([]);
+    // Nothing in the tab is wider than it, and it does not scroll sideways.
+    expect(await panel.evaluate((e) => e.scrollWidth <= e.clientWidth + 1)).toBe(true);
+  });
+});
